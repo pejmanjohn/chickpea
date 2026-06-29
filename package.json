@@ -1,0 +1,26 @@
+{
+  "name": "slack-flue",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "npm run typecheck && node --test --import tsx tests/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "flue:build": "flue build --target cloudflare",
+    "dev:slack": "tsx src/server.ts"
+  },
+  "dependencies": {
+    "@flue/runtime": "1.0.0-beta.8",
+    "@hono/node-server": "^2.0.3",
+    "agents": "0.17.1",
+    "hono": "^4.12.27",
+    "valibot": "^1.4.2"
+  },
+  "devDependencies": {
+    "@flue/cli": "1.0.0-beta.8",
+    "@types/node": "26.0.0",
+    "tsx": "^4.22.4",
+    "typescript": "6.0.3",
+    "wrangler": "4.103.0"
+  }
+}

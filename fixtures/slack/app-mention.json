@@ -1,0 +1,16 @@
+{
+  "token": "verification-token-not-a-secret",
+  "team_id": "T_DEMO",
+  "api_app_id": "A_DEMO",
+  "event_id": "Ev_DEMO_001",
+  "event_time": 1782770400,
+  "type": "event_callback",
+  "event": {
+    "type": "app_mention",
+    "user": "U_ALICE",
+    "text": "<@U_BOT> please use channel context and draft an exec summary",
+    "ts": "1782770400.000100",
+    "channel": "C_EXEC",
+    "event_ts": "1782770400.000100"
+  }
+}
