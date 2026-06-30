@@ -9,6 +9,8 @@ const botToken = process.env.SLACK_BOT_TOKEN;
 const providerId = (process.env.SLACK_FLUE_PROVIDER ?? 'workers-ai') as ProviderId;
 const port = Number(process.env.PORT ?? '8789');
 const workersAi = buildWorkersAiOptions(providerId);
+const requestedPresentationDelayMs = numberEnv('SLACK_FLUE_PRESENTATION_DELAY_MS') ?? 0;
+const presentationDelayMs = workersAi ? 0 : requestedPresentationDelayMs;
 
 if (!signingSecret || !botToken) {
   console.error('Missing SLACK_SIGNING_SECRET or SLACK_BOT_TOKEN. See docs/play-slack.md.');
@@ -19,6 +21,7 @@ const app = createSlackEventsApp({
   signingSecret,
   botToken,
   providerId,
+  presentationDelayMs,
   ...(workersAi ? { workersAi } : {}),
 });
 
@@ -32,6 +35,12 @@ serve(
     console.log('Configure Slack Events Request URL as <tunnel-url>/slack/events');
     if (workersAi) {
       console.log(`Workers AI live mode enabled for ${workersAi.model}`);
+    }
+    if (presentationDelayMs > 0) {
+      console.log(`Presentation delay enabled: ${presentationDelayMs}ms`);
+    }
+    if (workersAi && requestedPresentationDelayMs > 0) {
+      console.log('Presentation delay disabled in live Workers AI mode');
     }
   },
 );

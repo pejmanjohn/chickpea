@@ -1,0 +1,19 @@
+{
+  "token": "verification-token-not-a-secret",
+  "team_id": "T_DEMO",
+  "api_app_id": "A_DEMO",
+  "event_id": "Ev_ASSISTANT_001",
+  "event_time": 1782770450,
+  "type": "event_callback",
+  "event": {
+    "type": "assistant_thread_started",
+    "event_ts": "1782770450.000100",
+    "assistant_thread": {
+      "channel_id": "C_EXEC",
+      "thread_ts": "1782770450.000100"
+    },
+    "channel": "C_EXEC",
+    "thread_ts": "1782770450.000100",
+    "user": "U_ALICE"
+  }
+}

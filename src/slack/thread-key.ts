@@ -1,7 +1,7 @@
-import type { NormalizedSlackMention, SlackEventFixture } from './types.ts';
+import { isSlackAppMentionEvent, type NormalizedSlackMention, type SlackEventFixture } from './types.ts';
 
 export function normalizeAppMention(payload: SlackEventFixture): NormalizedSlackMention {
-  if (payload.type !== 'event_callback' || payload.event.type !== 'app_mention') {
+  if (payload.type !== 'event_callback' || !isSlackAppMentionEvent(payload.event)) {
     throw new Error('Expected Slack app_mention event_callback payload');
   }
 

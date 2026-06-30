@@ -10,6 +10,9 @@ Add bot scopes:
 
 - `app_mentions:read`
 - `chat:write`
+- `assistant:write`
+
+Enable Slack's Agents & AI Apps surface for the app when the workspace allows it. This makes Slack eligible to render Assistant status, working indicators, and message streams. Slack-owned visual chrome such as the purple app-name flash is not directly configurable by this codebase; verify the actual rendering in the Slack client after the app is configured.
 
 Install the app to the workspace, then copy:
 
@@ -20,7 +23,7 @@ Install the app to the workspace, then copy:
 
 ```bash
 export SLACK_SIGNING_SECRET="..."
-export SLACK_BOT_TOKEN="xoxb-..."
+export SLACK_BOT_TOKEN="<bot-token>"
 export SLACK_FLUE_PROVIDER="workers-ai"
 export SLACK_FLUE_WORKERS_AI_MODE="live"
 export CLOUDFLARE_ACCOUNT_ID="..."
@@ -29,6 +32,8 @@ export CLOUDFLARE_WORKERS_AI_MODEL="@cf/zai-org/glm-5.2"
 export PORT=8789
 npm run dev:slack
 ```
+
+For local UI capture only, set `SLACK_FLUE_PRESENTATION_DELAY_MS=1000` to hold each transient status long enough to observe it. Leave it unset for normal use; live Workers AI mode ignores the delay so Slack event handling is not intentionally slowed.
 
 The server exposes:
 
@@ -54,6 +59,8 @@ Slack should verify the URL challenge.
 Subscribe to bot event:
 
 - `app_mention`
+- `assistant_thread_started`
+- `assistant_thread_context_changed`
 
 ## 4. Try it in Slack
 
@@ -65,9 +72,11 @@ Invite the bot to a channel, then mention it:
 
 Expected behavior:
 
-- immediate threaded progress reply;
-- final threaded reply from `Exec Research`;
-- no live model call yet;
+- immediate Assistant status such as `Slack Flue Demo is checking context` where Slack renders Assistant status for the surface;
+- transient safe loading/status text during approved tool work, such as channel-context gathering;
+- no permanent progress lines such as `Gathering channel context` should remain in the thread after the final answer;
+- streamed final reply from `Exec Research` when Slack accepts the streaming APIs;
+- fallback final threaded reply when status or streaming is unavailable;
 - duplicate Slack retries are acknowledged without duplicate posts.
 
 The Paperplane Labs playtest app is configured for:
@@ -83,6 +92,8 @@ That exact channel row returns a seeded channel brief when the message includes 
 ## Safety Notes
 
 - Do not paste Slack tokens into chat, docs, tests, or fixtures.
+- Redact Signing Secret, Bot User OAuth Token, app-level tokens, and request headers before capturing screenshots or logs.
+- Pause for confirmation before enabling Agents & AI Apps, adding OAuth scopes, changing event subscriptions, or reinstalling the Slack app.
 - Keep `.env` and `.dev.vars` uncommitted.
 - Keep `SLACK_FLUE_WORKERS_AI_MODE=deterministic` for offline fixture work.
 - Use `SLACK_FLUE_WORKERS_AI_MODE=live` only when the ignored local env file has `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`.

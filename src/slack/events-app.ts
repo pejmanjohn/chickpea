@@ -9,7 +9,7 @@ import {
 } from '../runtime/slack-thread-runner.ts';
 import { SlackWebApiReplySink } from './web-api-replies.ts';
 import { verifySlackSignature } from './signature.ts';
-import type { SlackEventFixture } from './types.ts';
+import { isSlackAppMentionEvent, isSlackAssistantEvent, type SlackEventFixture } from './types.ts';
 
 interface SlackUrlVerificationPayload {
   type: 'url_verification';
@@ -25,6 +25,7 @@ export interface SlackEventsAppOptions {
   fetch?: typeof fetch;
   environment?: DemoEnvironment;
   workersAi?: WorkersAiRestProviderOptions;
+  presentationDelayMs?: number;
 }
 
 export function createSlackEventsApp(options: SlackEventsAppOptions): Hono {
@@ -44,6 +45,7 @@ export function createSlackEventsApp(options: SlackEventsAppOptions): Hono {
             },
       ),
       ...(options.workersAi ? { workersAi: options.workersAi } : {}),
+      presentationDelayMs: options.presentationDelayMs ?? 0,
     });
 
   app.post('/slack/events', async (c) => {
@@ -70,7 +72,19 @@ export function createSlackEventsApp(options: SlackEventsAppOptions): Hono {
       return c.json({ challenge: payload.challenge });
     }
 
-    if (payload.type !== 'event_callback' || payload.event.type !== 'app_mention') {
+    if (payload.type !== 'event_callback') {
+      return c.json({ ok: true, status: 'ignored' });
+    }
+
+    if (isSlackAssistantEvent(payload.event)) {
+      return c.json({
+        ok: true,
+        status: 'assistant_event_acknowledged',
+        event_id: payload.event_id,
+      });
+    }
+
+    if (!isSlackAppMentionEvent(payload.event)) {
       return c.json({ ok: true, status: 'ignored' });
     }
 

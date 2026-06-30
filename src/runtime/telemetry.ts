@@ -9,11 +9,13 @@ export interface ModelCallTelemetry {
 }
 
 export interface TurnTelemetry {
-  firstVisibleResponseKind: 'slack_progress';
+  firstVisibleResponseKind: 'slack_progress' | 'slack_status';
   timeToFirstVisibleResponseMs: number;
   providerId: ProviderId;
   model: string;
   totalLatencyMs: number;
+  deliveryMode?: 'stream' | 'fallback_post';
+  degradations?: string[];
 }
 
 export class TelemetryStore {
