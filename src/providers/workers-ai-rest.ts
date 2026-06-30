@@ -1,4 +1,8 @@
 import type { ProviderId } from '../config/types.ts';
+import {
+  formatSlackContextRows,
+  slackContextWindowLabel,
+} from '../slack/context-format.ts';
 import type { ModelProvider, ProviderRequest, ProviderResponse } from './types.ts';
 
 export interface WorkersAiRestProviderOptions {
@@ -61,7 +65,7 @@ export class WorkersAiRestProvider implements ModelProvider {
     }
 
     const text = extractText(envelope.body);
-    const usage = extractUsage(envelope.body, request.message, text);
+    const usage = extractUsage(envelope.body, `${system}\n\n${user}`, text);
 
     return {
       providerId: this.providerId,
@@ -107,7 +111,7 @@ function buildSystemPrompt(request: ProviderRequest): string {
   return [
     `You are ${request.agent.name}, a Slack channel agent.`,
     request.agent.instructions,
-    'Use only the Slack message and approved tool context below.',
+    'Use only the Slack message, bounded Slack context, and approved tool context below.',
     'Reply in concise standard Markdown suitable for Slack markdown blocks. Use Markdown sparingly for headings, bullets, links, and code. Do not use Slack-specific mrkdwn unless preserving Slack IDs already present in the user message.',
     'Do not mention hidden implementation details or credentials.',
     `Approved tool context:\n${toolContext}`,
@@ -115,7 +119,16 @@ function buildSystemPrompt(request: ProviderRequest): string {
 }
 
 function buildUserPrompt(request: ProviderRequest): string {
-  return request.message.replace(/<@[A-Z0-9]+>/g, '').trim() || request.message;
+  const message = request.message.replace(/<@[A-Z0-9]+>/g, '').trim() || request.message;
+  const slackContext =
+    request.slackContext && request.slackContext.messages.length > 0
+      ? formatSlackContextRows(request.slackContext.messages, { prefix: '- ', separator: '\n' })
+      : '- No bounded Slack context was available.';
+
+  return [
+    `Triggering Slack message:\n${message}`,
+    `Bounded Slack context (${slackContextWindowLabel(request.slackContext, 'none')}):\n${slackContext}`,
+  ].join('\n\n');
 }
 
 function extractText(body: unknown): string {

@@ -1,0 +1,17 @@
+{
+  "token": "verification-token-not-a-secret",
+  "team_id": "T_DEMO",
+  "api_app_id": "A_DEMO",
+  "event_id": "Ev_MSG_TOP_001",
+  "event_time": 1782770410,
+  "type": "event_callback",
+  "event": {
+    "type": "message",
+    "channel": "C_EXEC",
+    "user": "U_ALICE",
+    "text": "top-level channel chatter",
+    "ts": "1782770410.000200",
+    "event_ts": "1782770410.000200",
+    "channel_type": "channel"
+  }
+}

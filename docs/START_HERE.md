@@ -9,11 +9,13 @@ follow blindly.
 Build a Claude Tag-shaped Slack workspace prototype without Anthropic lock-in:
 
 1. A Slack `app_mention` starts or continues a thread-scoped agent session.
-2. The Slack workspace/channel resolves to a configured custom agent.
-3. Flue owns the agent harness/session loop.
-4. The app owns Slack install state, channel assignment, access policy, billing
+2. Direct messages respond without mention syntax.
+3. Public-channel thread replies can continue without another mention only after the bot has already joined that thread through a process-local session.
+4. The Slack workspace/channel resolves to a configured custom agent.
+5. Flue owns the agent harness/session loop.
+6. The app owns Slack install state, channel assignment, access policy, billing
    or usage gates, audit, and secrets.
-5. The same task can run on Claude and at least one non-Claude model.
+7. The same task can run on Claude and at least one non-Claude model.
 
 ## Source Map
 
@@ -82,11 +84,13 @@ Build the smallest vertical slice in a fresh Flue app:
 1. One hardcoded workspace, channel, and custom agent config.
 2. One Slack `app_mention` route with signature verification or a local signed
    fixture harness.
-3. One generic Flue agent module that loads dynamic agent config by id.
-4. One safe built-in tool, with explicit allow/deny tests.
-5. Threaded Slack progress and final replies.
-6. A local web page that can open the same session transcript.
-7. A provider switch test that runs the same fixture on Claude and a non-Claude
+3. Generic Slack `message` event admission for public thread continuations and DMs, with top-level ambient channel messages ignored.
+4. Bounded Slack context hydration: `conversations.replies` for active threads/DMs and `conversations.history` only for explicit top-level mentions.
+5. One generic Flue agent module that loads dynamic agent config by id.
+6. One safe built-in tool, with explicit allow/deny tests.
+7. Threaded Slack progress and final replies.
+8. A local web page that can open the same session transcript.
+9. A provider switch test that runs the same fixture on Claude and a non-Claude
    model.
 
 ## Decision Gates
@@ -96,6 +100,7 @@ Continue with Flue if:
 - Dynamic DB-configured agents fit cleanly through one generic Flue agent module.
 - Slack event routing can dispatch to continuing Flue agent sessions without
   reimplementing most of the harness outside Flue.
+- Slack `message.channels` and `message.im` admission remains narrowly filtered: no top-level ambient channel replies, no bot/self loops, no private-channel or MPIM expansion without a deliberate config decision.
 - Access policy and secrets stay outside model-visible state.
 - Usage, latency, and tool events are observable enough for staff canary.
 

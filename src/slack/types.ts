@@ -8,6 +8,24 @@ export interface SlackAppMentionEvent {
   thread_ts?: string;
 }
 
+export interface SlackMessageEvent {
+  type: 'message';
+  channel: string;
+  ts: string;
+  event_ts?: string;
+  user?: string;
+  text?: string;
+  thread_ts?: string;
+  channel_type?: string;
+  subtype?: string;
+  bot_id?: string;
+  app_id?: string;
+  bot_profile?: {
+    app_id?: string;
+    id?: string;
+  };
+}
+
 export interface SlackAssistantThreadStartedEvent {
   type: 'assistant_thread_started';
   event_ts: string;
@@ -34,6 +52,7 @@ export interface SlackAssistantThreadContextChangedEvent {
 
 export type SlackEvent =
   | SlackAppMentionEvent
+  | SlackMessageEvent
   | SlackAssistantThreadStartedEvent
   | SlackAssistantThreadContextChangedEvent;
 
@@ -47,7 +66,22 @@ export interface SlackEventFixture {
   event: SlackEvent;
 }
 
-export interface NormalizedSlackMention {
+export type SlackTurnSource = 'app_mention' | 'implicit_thread_reply' | 'dm_message';
+export type SlackContextMode = 'thread' | 'channel_history' | 'dm_history';
+export type SlackTurnIgnoreReason =
+  | 'non_event_callback'
+  | 'self_message'
+  | 'missing_bot_user_id'
+  | 'unsupported_event_type'
+  | 'message_subtype'
+  | 'bot_message'
+  | 'missing_user'
+  | 'empty_text'
+  | 'missing_thread_metadata'
+  | 'unsupported_channel_type'
+  | 'top_level_channel_message';
+
+export interface NormalizedSlackTurn {
   workspaceId: string;
   channelId: string;
   eventId: string;
@@ -55,10 +89,32 @@ export interface NormalizedSlackMention {
   userId: string;
   messageTs: string;
   threadTs: string;
+  sessionThreadTs?: string;
+  source: SlackTurnSource;
+  channelType?: string;
+  contextMode: SlackContextMode;
 }
+
+export type NormalizedSlackMention = NormalizedSlackTurn & { source: 'app_mention' };
+
+export interface IgnoredSlackTurn {
+  status: 'ignored';
+  reason: SlackTurnIgnoreReason;
+}
+
+export interface RunnableSlackTurn {
+  status: 'runnable';
+  turn: NormalizedSlackTurn;
+}
+
+export type SlackTurnNormalization = RunnableSlackTurn | IgnoredSlackTurn;
 
 export function isSlackAppMentionEvent(event: SlackEvent): event is SlackAppMentionEvent {
   return event.type === 'app_mention';
+}
+
+export function isSlackMessageEvent(event: SlackEvent): event is SlackMessageEvent {
+  return event.type === 'message';
 }
 
 export function isSlackAssistantEvent(

@@ -1,5 +1,6 @@
 import type { CustomAgentConfig, ProviderId } from '../config/types.ts';
 import type { SessionRecord } from '../runtime/session-store.ts';
+import type { SlackTurnContext } from '../slack/thread-context.ts';
 import type { ToolRunResult } from '../tools/safe-tools.ts';
 
 export interface ProviderRequest {
@@ -7,6 +8,7 @@ export interface ProviderRequest {
   message: string;
   session: SessionRecord;
   toolResults: ToolRunResult[];
+  slackContext?: SlackTurnContext;
 }
 
 export interface ProviderResponse {

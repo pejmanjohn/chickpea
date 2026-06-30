@@ -1,11 +1,10 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
 import {
   createDemoEnvironment,
   handleSlackAppMention,
-  type SlackEventFixture,
+  handleSlackTurn,
 } from '../src/runtime/slack-thread-runner.ts';
 import type { ProviderRegistry } from '../src/providers/deterministic.ts';
 import { renderSlackMessage } from '../src/slack/message-format.ts';
@@ -24,29 +23,82 @@ import {
   type SlackReplyPost,
   type SlackReplySink,
 } from '../src/slack/replies.ts';
-import type { SlackAppMentionEvent } from '../src/slack/types.ts';
+import {
+  computeChannelHistoryWindow,
+  type SlackContextClient,
+  type SlackTurnContext,
+} from '../src/slack/thread-context.ts';
+import { slackThreadKey } from '../src/slack/thread-key.ts';
+import { normalizeSlackTurn } from '../src/slack/turn-normalization.ts';
 import { ToolDeniedError, runAllowedTool } from '../src/tools/safe-tools.ts';
+import {
+  appHomeMessage,
+  appMention as fixture,
+  channelThreadMessage,
+  dmMessage,
+  topLevelChannelMessage,
+} from './helpers/slack-fixtures.ts';
 
-type AppMentionFixture = SlackEventFixture & { event: SlackAppMentionEvent };
-type AppMentionFixtureOverrides = Omit<Partial<SlackEventFixture>, 'event'> & {
-  event?: Partial<SlackAppMentionEvent>;
-};
+test('Slack turn normalization classifies mentions, thread replies, DMs, and ignored top-level messages', () => {
+  const mention = normalizeSlackTurn(fixture());
+  assert.ok(mention.status === 'runnable');
+  assert.equal(mention.turn.source, 'app_mention');
+  assert.equal(mention.turn.contextMode, 'channel_history');
+  assert.equal(slackThreadKey(mention.turn), 'T_DEMO:C_EXEC:1782770400.000100');
 
-function fixture(overrides: AppMentionFixtureOverrides = {}): AppMentionFixture {
-  const base = JSON.parse(
-    readFileSync(new URL('../fixtures/slack/app-mention.json', import.meta.url), 'utf8'),
-  ) as AppMentionFixture;
+  const options = { botUserId: 'U_BOT' };
+  const threadReply = normalizeSlackTurn(channelThreadMessage(), options);
+  assert.ok(threadReply.status === 'runnable');
+  assert.equal(threadReply.turn.source, 'implicit_thread_reply');
+  assert.equal(threadReply.turn.contextMode, 'thread');
+  assert.equal(slackThreadKey(threadReply.turn), 'T_DEMO:C_EXEC:1782770400.000100');
 
-  return {
-    ...base,
-    ...overrides,
-    event: {
-      ...base.event,
-      ...overrides.event,
-      type: 'app_mention',
-    },
-  };
-}
+  const dm = normalizeSlackTurn(dmMessage(), options);
+  assert.ok(dm.status === 'runnable');
+  assert.equal(dm.turn.source, 'dm_message');
+  assert.equal(dm.turn.contextMode, 'dm_history');
+  assert.equal(slackThreadKey(dm.turn), 'T_DEMO:D_DEMO_DM:dm');
+
+  const appHome = normalizeSlackTurn(appHomeMessage(), options);
+  assert.ok(appHome.status === 'runnable');
+  assert.equal(appHome.turn.source, 'dm_message');
+  assert.equal(appHome.turn.channelType, 'app_home');
+  assert.equal(appHome.turn.contextMode, 'dm_history');
+  assert.equal(slackThreadKey(appHome.turn), 'T_DEMO:D_DEMO_APP_HOME:dm');
+
+  const topLevel = normalizeSlackTurn(topLevelChannelMessage(), options);
+  assert.ok(topLevel.status === 'ignored');
+  assert.equal(topLevel.reason, 'top_level_channel_message');
+
+  const missingBotUserId = normalizeSlackTurn(channelThreadMessage());
+  assert.ok(missingBotUserId.status === 'ignored');
+  assert.equal(missingBotUserId.reason, 'missing_bot_user_id');
+
+  const missingChannelType = channelThreadMessage({ event_id: 'Ev_MSG_NO_CHANNEL_TYPE' });
+  delete missingChannelType.event.channel_type;
+  const unsupportedChannelType = normalizeSlackTurn(missingChannelType, options);
+  assert.ok(unsupportedChannelType.status === 'ignored');
+  assert.equal(unsupportedChannelType.reason, 'unsupported_channel_type');
+});
+
+test('natural-language channel history windows do not match adjacent words', () => {
+  assert.equal(
+    computeChannelHistoryWindow('what happened last weekend?', '1782770400.000100').reason,
+    'default_24h',
+  );
+  assert.equal(
+    computeChannelHistoryWindow('plans for this weekend', '1782770400.000100').reason,
+    'default_24h',
+  );
+  assert.equal(
+    computeChannelHistoryWindow('todays numbers', '1782770400.000100').reason,
+    'default_24h',
+  );
+  assert.equal(
+    computeChannelHistoryWindow('what happened last week?', '1782770400.000100').reason,
+    'last_week',
+  );
+});
 
 test('app_mention resolves workspace and channel to a configured custom agent session', async () => {
   const replies = new LocalSlackReplySink();
@@ -240,6 +292,97 @@ test('thread replies continue the same session snapshot', async () => {
   assert.equal(env.replies.posts.length, 2);
 });
 
+test('plain channel thread replies run only when a process-local session already exists', async () => {
+  const env = createDemoEnvironment({ botUserId: 'U_BOT' });
+
+  const first = await handleSlackAppMention(fixture(), env, { providerId: 'claude' });
+  const second = await handleSlackTurn(channelThreadMessage(), env, { providerId: 'workers-ai' });
+
+  assert.equal(first.status, 'handled');
+  assert.ok(second.status === 'handled');
+  assert.equal(second.session.id, first.session.id);
+  assert.equal(second.session.isNew, false);
+  assert.equal(second.session.snapshot.providerId, 'claude');
+  assert.equal(second.provider.providerId, 'claude');
+  assert.equal(second.session.turnCount, 2);
+  assert.equal(env.replies.posts.length, 2);
+
+  const unknownEnv = createDemoEnvironment({ botUserId: 'U_BOT' });
+  const ignored = await handleSlackTurn(channelThreadMessage(), unknownEnv, {
+    providerId: 'claude',
+  });
+
+  assert.deepEqual(ignored, {
+    status: 'ignored',
+    reason: 'unknown_thread',
+    eventId: 'Ev_MSG_THREAD_001',
+  });
+  assert.equal(unknownEnv.replies.posts.length, 0);
+  assert.equal(unknownEnv.telemetry.modelCalls.length, 0);
+});
+
+test('direct messages create and continue sessions without mention syntax', async () => {
+  const env = createDemoEnvironment({ botUserId: 'U_BOT' });
+  const root = dmMessage();
+  const reply = dmMessage({
+    event_id: 'Ev_MSG_DM_002',
+    event: {
+      ts: '1782770430.000400',
+      event_ts: '1782770430.000400',
+      text: 'continue the DM conversation',
+    },
+  });
+
+  const first = await handleSlackTurn(root, env, { providerId: 'workers-ai' });
+  const second = await handleSlackTurn(reply, env, { providerId: 'workers-ai' });
+
+  assert.ok(first.status === 'handled');
+  assert.equal(first.assignment.agentId, 'agent_exec_research');
+  assert.equal(first.session.threadKey, 'T_DEMO:D_DEMO_DM:dm');
+  assert.equal(first.session.isNew, true);
+  assert.ok(second.status === 'handled');
+  assert.equal(second.session.id, first.session.id);
+  assert.equal(second.session.turnCount, 2);
+  assert.equal(env.replies.posts.length, 2);
+});
+
+test('dedupe applies to implicit thread replies and DMs', async () => {
+  const env = createDemoEnvironment({ botUserId: 'U_BOT' });
+
+  await handleSlackAppMention(fixture(), env, { providerId: 'claude' });
+  const implicitFirst = await handleSlackTurn(channelThreadMessage(), env, { providerId: 'claude' });
+  const implicitDuplicate = await handleSlackTurn(channelThreadMessage(), env, {
+    providerId: 'claude',
+  });
+
+  assert.ok(implicitFirst.status === 'handled');
+  assert.ok(implicitDuplicate.status === 'duplicate');
+  assert.equal(env.replies.posts.length, 2);
+  assert.equal(env.telemetry.modelCalls.length, 2);
+
+  const dmEnv = createDemoEnvironment({ botUserId: 'U_BOT' });
+  const dmFirst = await handleSlackTurn(dmMessage(), dmEnv, { providerId: 'workers-ai' });
+  const dmDuplicate = await handleSlackTurn(dmMessage(), dmEnv, { providerId: 'workers-ai' });
+
+  assert.ok(dmFirst.status === 'handled');
+  assert.ok(dmDuplicate.status === 'duplicate');
+  assert.equal(dmEnv.replies.posts.length, 1);
+  assert.equal(dmEnv.telemetry.modelCalls.length, 1);
+});
+
+test('Slack context read failures degrade to current-message context without blocking final replies', async () => {
+  const env = createDemoEnvironment({ slackContext: new ThrowingSlackContextClient() });
+
+  const result = await handleSlackAppMention(fixture(), env, { providerId: 'claude' });
+
+  assert.equal(result.status, 'handled');
+  assert.match(result.finalReply.text, /Slack context \(default_24h\)/);
+  assert.match(result.finalReply.text, /please use channel context/);
+  assert.deepEqual(result.telemetry.degradations, [
+    'slack_context.channel_history:missing_scope',
+  ]);
+});
+
 test('provider failures emit a sanitized final reply and clear visible working state', async () => {
   const replies = new LocalSlackReplySink();
   const env = createDemoEnvironment({ replies });
@@ -313,16 +456,14 @@ test('provider-authored standard Markdown reaches the local Slack adapter as a m
   assert.doesNotMatch(finalPost?.rendered.text ?? '', /\*\*Bold\*\*/);
 });
 
-test('Paperplane Labs playtest channel uses exact assignment and channel brief', async () => {
+test('configured demo channel uses exact assignment and channel brief', async () => {
   const env = createDemoEnvironment();
 
   const result = await handleSlackAppMention(
     fixture({
-      team_id: 'T0AJZ12JALU',
-      event_id: 'Ev_PAPERPLANE_001',
+      event_id: 'Ev_DEMO_ASSIGNMENT_001',
       event: {
         ...fixture().event,
-        channel: 'C0AJVCUNL4A',
         text: '<@U_BOT> channel context smoke test from Codex',
       },
     }),
@@ -331,10 +472,10 @@ test('Paperplane Labs playtest channel uses exact assignment and channel brief',
   );
 
   assert.equal(result.status, 'handled');
-  assert.equal(result.assignment.workspaceId, 'T0AJZ12JALU');
-  assert.equal(result.assignment.channelId, 'C0AJVCUNL4A');
+  assert.equal(result.assignment.workspaceId, 'T_DEMO');
+  assert.equal(result.assignment.channelId, 'C_EXEC');
   assert.equal(result.assignment.agentId, 'agent_exec_research');
-  assert.match(result.finalReply.text, /Paperplane Labs #all-paperplane-labs/);
+  assert.match(result.finalReply.text, /exec leadership channel/);
   assert.match(result.finalReply.text, /non-Claude Cloudflare Workers AI lane/);
 });
 
@@ -409,5 +550,11 @@ class FlakyFinalDeliverySink extends LocalSlackReplySink {
       throw new Error('delivery_unavailable');
     }
     return super.deliverFinal(context, text, format);
+  }
+}
+
+class ThrowingSlackContextClient implements SlackContextClient {
+  async hydrate(): Promise<SlackTurnContext> {
+    throw new Error('missing_scope');
   }
 }

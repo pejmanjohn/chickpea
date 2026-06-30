@@ -70,7 +70,7 @@ test('Workers AI REST provider calls Cloudflare with bearer auth and parses resp
     toolResults: [
       {
         toolName: 'lookup_channel_brief',
-        content: 'Paperplane Labs test context',
+        content: 'Demo workspace test context',
       },
     ],
   });
@@ -84,6 +84,6 @@ test('Workers AI REST provider calls Cloudflare with bearer auth and parses resp
   assert.deepEqual(response.usage, { inputTokens: 12, outputTokens: 5 });
   assert.equal(response.model, '@cf/zai-org/glm-5.2');
   assert.equal(response.text, 'Live Workers AI reply');
-  assert.match(JSON.stringify(requests[0]?.body), /Paperplane Labs test context/);
+  assert.match(JSON.stringify(requests[0]?.body), /Demo workspace test context/);
   assert.match(JSON.stringify(requests[0]?.body), /standard Markdown/);
 });
