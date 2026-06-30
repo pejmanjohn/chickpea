@@ -1,0 +1,17 @@
+{
+  "token": "verification-token-not-a-secret",
+  "team_id": "T_DEMO",
+  "api_app_id": "A_DEMO",
+  "event_id": "Ev_MSG_APP_HOME_001",
+  "event_time": 1782770430,
+  "type": "event_callback",
+  "event": {
+    "type": "message",
+    "channel": "D_DEMO_APP_HOME",
+    "user": "U_ALICE",
+    "text": "please help from App Home",
+    "ts": "1782770430.000300",
+    "event_ts": "1782770430.000300",
+    "channel_type": "app_home"
+  }
+}

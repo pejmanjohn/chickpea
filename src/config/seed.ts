@@ -18,12 +18,6 @@ export const seededAgents: CustomAgentConfig[] = [
 
 export const seededAssignments: ChannelAssignment[] = [
   {
-    workspaceId: 'T0AJZ12JALU',
-    channelId: 'C0AJVCUNL4A',
-    agentId: 'agent_exec_research',
-    enabled: true,
-  },
-  {
     workspaceId: 'T_DEMO',
     channelId: 'C_EXEC',
     agentId: 'agent_exec_research',
@@ -38,8 +32,6 @@ export const seededAssignments: ChannelAssignment[] = [
 ];
 
 export const seededChannelBriefs: Record<string, string> = {
-  C0AJVCUNL4A:
-    'Paperplane Labs #all-paperplane-labs is the live Slack Flue playtest channel. Keep replies concise, explain what happened, and call out whether the non-Claude lane, channel assignment, and safe channel-context tool were exercised.',
   C_EXEC:
     'The exec leadership channel tracks board prep, paid acquisition, and weekly customer-proof priorities.',
 };

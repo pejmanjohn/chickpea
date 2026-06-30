@@ -4,12 +4,18 @@ import type { ProviderId } from '../config/types.ts';
 import type { WorkersAiRestProviderOptions } from '../providers/workers-ai-rest.ts';
 import {
   createDemoEnvironment,
-  handleSlackAppMention,
+  handleSlackTurn,
   type DemoEnvironment,
 } from '../runtime/slack-thread-runner.ts';
+import { SlackWebApiContextClient } from './thread-context.ts';
 import { SlackWebApiReplySink } from './web-api-replies.ts';
 import { verifySlackSignature } from './signature.ts';
-import { isSlackAppMentionEvent, isSlackAssistantEvent, type SlackEventFixture } from './types.ts';
+import {
+  isSlackAppMentionEvent,
+  isSlackAssistantEvent,
+  isSlackMessageEvent,
+  type SlackEventFixture,
+} from './types.ts';
 
 interface SlackUrlVerificationPayload {
   type: 'url_verification';
@@ -22,30 +28,34 @@ export interface SlackEventsAppOptions {
   signingSecret: string;
   botToken: string;
   providerId?: ProviderId;
+  dispatchMode?: 'sync' | 'async';
   fetch?: typeof fetch;
   environment?: DemoEnvironment;
   workersAi?: WorkersAiRestProviderOptions;
   presentationDelayMs?: number;
+  botUserId?: string;
 }
 
 export function createSlackEventsApp(options: SlackEventsAppOptions): Hono {
   const app = new Hono();
   const providerId = options.providerId ?? 'workers-ai';
+  const dispatchMode = options.dispatchMode ?? 'sync';
+  const webApiOptions = options.fetch
+    ? {
+        botToken: options.botToken,
+        fetch: options.fetch,
+      }
+    : {
+        botToken: options.botToken,
+      };
   const environment =
     options.environment ??
     createDemoEnvironment({
-      replies: new SlackWebApiReplySink(
-        options.fetch
-          ? {
-              botToken: options.botToken,
-              fetch: options.fetch,
-            }
-          : {
-              botToken: options.botToken,
-            },
-      ),
+      replies: new SlackWebApiReplySink(webApiOptions),
+      slackContext: new SlackWebApiContextClient(webApiOptions),
       ...(options.workersAi ? { workersAi: options.workersAi } : {}),
       presentationDelayMs: options.presentationDelayMs ?? 0,
+      ...(options.botUserId ? { botUserId: options.botUserId } : {}),
     });
 
   app.post('/slack/events', async (c) => {
@@ -84,19 +94,59 @@ export function createSlackEventsApp(options: SlackEventsAppOptions): Hono {
       });
     }
 
-    if (!isSlackAppMentionEvent(payload.event)) {
+    if (!isSlackAppMentionEvent(payload.event) && !isSlackMessageEvent(payload.event)) {
       return c.json({ ok: true, status: 'ignored' });
     }
 
-    const result = await handleSlackAppMention(payload, environment, { providerId });
+    if (dispatchMode === 'async') {
+      dispatchSlackTurn(c, handleSlackTurn(payload, environment, { providerId }));
+      return c.json({
+        ok: true,
+        status: 'accepted',
+        event_id: payload.event_id,
+      });
+    }
+
+    const result = await handleSlackTurn(payload, environment, { providerId });
     return c.json({
       ok: true,
       status: result.status,
       event_id: payload.event_id,
+      ...(result.status === 'ignored' ? { reason: result.reason } : {}),
     });
   });
 
   app.get('/health', (c) => c.json({ ok: true }));
 
   return app;
+}
+
+function dispatchSlackTurn(c: unknown, turn: Promise<unknown>): void {
+  const guarded = turn.catch((error) => {
+    console.error(`Slack event processing failed: ${sanitizeAsyncError(error)}`);
+  });
+  const executionCtx = getExecutionContext(c);
+
+  if (executionCtx?.waitUntil) {
+    executionCtx.waitUntil(guarded);
+    return;
+  }
+
+  void guarded;
+}
+
+function getExecutionContext(
+  c: unknown,
+): { waitUntil?: (promise: Promise<unknown>) => void } | undefined {
+  try {
+    return (c as { executionCtx?: { waitUntil?: (promise: Promise<unknown>) => void } })
+      .executionCtx;
+  } catch {
+    return undefined;
+  }
+}
+
+function sanitizeAsyncError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.replace(/[^A-Za-z0-9_.:-]/g, '_').slice(0, 160);
 }

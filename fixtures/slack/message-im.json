@@ -1,0 +1,17 @@
+{
+  "token": "verification-token-not-a-secret",
+  "team_id": "T_DEMO",
+  "api_app_id": "A_DEMO",
+  "event_id": "Ev_MSG_DM_001",
+  "event_time": 1782770420,
+  "type": "event_callback",
+  "event": {
+    "type": "message",
+    "channel": "D_DEMO_DM",
+    "user": "U_ALICE",
+    "text": "please help in DM",
+    "ts": "1782770420.000300",
+    "event_ts": "1782770420.000300",
+    "channel_type": "im"
+  }
+}

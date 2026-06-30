@@ -52,6 +52,11 @@ export class ThreadSessionStore {
     return { ...session, isNew: true };
   }
 
+  getExisting(threadKey: string): SessionView | undefined {
+    const existing = this.sessions.get(threadKey);
+    return existing ? { ...existing, isNew: false } : undefined;
+  }
+
   incrementTurn(threadKey: string): SessionRecord {
     const session = this.sessions.get(threadKey);
     if (!session) {
