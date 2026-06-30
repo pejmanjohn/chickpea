@@ -108,7 +108,8 @@ function buildSystemPrompt(request: ProviderRequest): string {
     `You are ${request.agent.name}, a Slack channel agent.`,
     request.agent.instructions,
     'Use only the Slack message and approved tool context below.',
-    'Reply in concise Slack-friendly plain text. Do not mention hidden implementation details or credentials.',
+    'Reply in concise standard Markdown suitable for Slack markdown blocks. Use Markdown sparingly for headings, bullets, links, and code. Do not use Slack-specific mrkdwn unless preserving Slack IDs already present in the user message.',
+    'Do not mention hidden implementation details or credentials.',
     `Approved tool context:\n${toolContext}`,
   ].join('\n\n');
 }

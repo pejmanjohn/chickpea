@@ -23,7 +23,7 @@ export class DeterministicProvider implements ModelProvider {
     return {
       providerId: this.providerId,
       model: this.model,
-      text: `${request.agent.name} handled turn ${request.session.turnCount + 1} on the ${lane}. ${context}`.trim(),
+      text: `**${request.agent.name}** handled turn ${request.session.turnCount + 1} on the ${lane}. ${context}`.trim(),
       usage: {
         inputTokens: Math.ceil(request.message.length / 4),
         outputTokens: this.providerId === 'claude' ? 42 : 37,

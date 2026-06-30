@@ -85,4 +85,5 @@ test('Workers AI REST provider calls Cloudflare with bearer auth and parses resp
   assert.equal(response.model, '@cf/zai-org/glm-5.2');
   assert.equal(response.text, 'Live Workers AI reply');
   assert.match(JSON.stringify(requests[0]?.body), /Paperplane Labs test context/);
+  assert.match(JSON.stringify(requests[0]?.body), /standard Markdown/);
 });

@@ -78,7 +78,13 @@ test('Slack Events route rejects requests with an invalid signature', async () =
 });
 
 test('signed app_mention posts progress and final replies into the Slack thread', async () => {
-  const posts: Array<{ channel: string; thread_ts: string; text: string }> = [];
+  const posts: Array<{
+    channel: string;
+    thread_ts: string;
+    text: string;
+    mrkdwn?: boolean;
+    blocks?: Array<{ type: string; text: string }>;
+  }> = [];
   const app = createSlackEventsApp({
     signingSecret,
     botToken: 'xoxb-test-token',
@@ -91,6 +97,8 @@ test('signed app_mention posts progress and final replies into the Slack thread'
         channel: string;
         thread_ts: string;
         text: string;
+        mrkdwn?: boolean;
+        blocks?: Array<{ type: string; text: string }>;
       };
       posts.push(body);
       return Response.json({ ok: true, ts: `1782770400.00030${posts.length}` });
@@ -108,8 +116,14 @@ test('signed app_mention posts progress and final replies into the Slack thread'
   assert.equal(posts.length, 2);
   assert.equal(posts[0]?.channel, 'C_EXEC');
   assert.equal(posts[0]?.thread_ts, '1782770400.000100');
+  assert.equal(posts[0]?.mrkdwn, false);
+  assert.equal(posts[0]?.blocks, undefined);
   assert.match(posts[0]?.text ?? '', /checking the Slack thread context/);
   assert.match(posts[1]?.text ?? '', /non-Claude Cloudflare Workers AI lane/);
+  assert.equal(posts[1]?.mrkdwn, undefined);
+  assert.equal(posts[1]?.blocks?.[0]?.type, 'markdown');
+  assert.match(posts[1]?.blocks?.[0]?.text ?? '', /^\*\*Exec Research\*\*/);
+  assert.match(posts[1]?.blocks?.[0]?.text ?? '', /non-Claude Cloudflare Workers AI lane/);
 });
 
 test('Slack retry with the same event id is acknowledged without reposting', async () => {

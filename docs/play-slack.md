@@ -67,8 +67,14 @@ Expected behavior:
 
 - immediate threaded progress reply;
 - final threaded reply from `Exec Research`;
-- no live model call yet;
+- final replies use Slack `markdown` blocks, so standard Markdown like `**bold**`, links, lists, blockquotes, tables, and fenced code should render instead of appearing literally;
 - duplicate Slack retries are acknowledged without duplicate posts.
+
+For a formatting smoke, mention the bot with a prompt like:
+
+```text
+@Slack Flue channel context formatting smoke: reply with a short heading, **bold text**, a bullet list, a link, a blockquote, inline code, a fenced code block, and a tiny markdown table.
+```
 
 The Paperplane Labs playtest app is configured for:
 
@@ -86,3 +92,4 @@ That exact channel row returns a seeded channel brief when the message includes 
 - Keep `.env` and `.dev.vars` uncommitted.
 - Keep `SLACK_FLUE_WORKERS_AI_MODE=deterministic` for offline fixture work.
 - Use `SLACK_FLUE_WORKERS_AI_MODE=live` only when the ignored local env file has `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`.
+- Treat Slack formatting as an adapter contract: providers should emit concise standard Markdown, and `src/slack/message-format.ts` decides how to post it to Slack.

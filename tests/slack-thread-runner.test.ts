@@ -7,6 +7,7 @@ import {
   handleSlackAppMention,
   type SlackEventFixture,
 } from '../src/runtime/slack-thread-runner.ts';
+import type { ProviderRegistry } from '../src/providers/deterministic.ts';
 import { ToolDeniedError, runAllowedTool } from '../src/tools/safe-tools.ts';
 
 function fixture(overrides: Partial<SlackEventFixture> = {}): SlackEventFixture {
@@ -38,7 +39,12 @@ test('app_mention resolves workspace and channel to a configured custom agent se
   assert.equal(env.replies.posts.length, 2);
   assert.equal(env.replies.posts[0]?.kind, 'progress');
   assert.equal(env.replies.posts[0]?.threadTs, '1782770400.000100');
+  assert.equal(env.replies.posts[0]?.format, 'plain_text');
+  assert.equal(env.replies.posts[0]?.rendered.mrkdwn, false);
   assert.match(env.replies.posts[1]?.text ?? '', /Exec Research/);
+  assert.equal(env.replies.posts[1]?.format, 'markdown');
+  assert.equal(env.replies.posts[1]?.rendered.blocks?.[0]?.type, 'markdown');
+  assert.match(env.replies.posts[1]?.rendered.blocks?.[0]?.text ?? '', /^\*\*Exec Research\*\*/);
   assert.equal(result.telemetry.firstVisibleResponseKind, 'slack_progress');
   assert.equal(typeof result.telemetry.timeToFirstVisibleResponseMs, 'number');
 });
@@ -119,6 +125,53 @@ test('thread replies continue the same session snapshot', async () => {
   assert.equal(second.session.snapshot.snapshotHash, first.session.snapshot.snapshotHash);
   assert.equal(second.session.turnCount, 2);
   assert.equal(env.replies.posts.length, 4);
+});
+
+test('provider-authored standard Markdown reaches the local Slack adapter as a markdown block', async () => {
+  const markdown = [
+    '# Formatting smoke',
+    '',
+    '**Bold** and _italic_ with `inline code`.',
+    '',
+    '- Bullet one',
+    '- Bullet two',
+    '',
+    '> Blockquote',
+    '',
+    '[Slack docs](https://docs.slack.dev/)',
+    '',
+    '```json',
+    '{"ok":true}',
+    '```',
+    '',
+    '| Feature | Status |',
+    '|---|---|',
+    '| markdown block | covered |',
+  ].join('\n');
+  const providers = {
+    get: () => ({
+      providerId: 'workers-ai',
+      model: 'formatting-test-model',
+      generate: async () => ({
+        providerId: 'workers-ai',
+        model: 'formatting-test-model',
+        text: markdown,
+        usage: { inputTokens: 1, outputTokens: 1 },
+        latencyMs: 1,
+      }),
+    }),
+  } as unknown as ProviderRegistry;
+  const env = createDemoEnvironment({ providers });
+
+  await handleSlackAppMention(fixture({ event_id: 'Ev_FORMATTING_001' }), env, {
+    providerId: 'workers-ai',
+  });
+
+  const finalPost = env.replies.posts.at(-1);
+  assert.equal(finalPost?.format, 'markdown');
+  assert.deepEqual(finalPost?.rendered.blocks, [{ type: 'markdown', text: markdown }]);
+  assert.match(finalPost?.rendered.text ?? '', /Formatting smoke/);
+  assert.doesNotMatch(finalPost?.rendered.text ?? '', /\*\*Bold\*\*/);
 });
 
 test('Paperplane Labs playtest channel uses exact assignment and channel brief', async () => {

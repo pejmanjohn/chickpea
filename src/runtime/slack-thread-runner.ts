@@ -108,6 +108,7 @@ export async function handleSlackAppMention(
           threadTs: mention.threadTs,
           text: 'Duplicate event acknowledged.',
           postedAt: env.now(),
+          format: 'plain_text',
         })),
       telemetry: {
         firstVisibleResponseKind: 'slack_progress',
@@ -124,6 +125,7 @@ export async function handleSlackAppMention(
     threadTs: mention.threadTs,
     text: `${assignment.agent.name} is checking the Slack thread context.`,
     postedAt: env.now(),
+    format: 'plain_text',
   });
   const toolResults = await collectAllowedToolResults(assignment, mention.channelId, mention.text);
   let providerResponse;
@@ -140,6 +142,7 @@ export async function handleSlackAppMention(
       threadTs: mention.threadTs,
       text: providerFailureText(error),
       postedAt: env.now(),
+      format: 'plain_text',
     });
 
     const telemetry: TurnTelemetry = {
@@ -170,6 +173,7 @@ export async function handleSlackAppMention(
     threadTs: mention.threadTs,
     text: providerResponse.text,
     postedAt: env.now(),
+    format: 'markdown',
   });
 
   env.telemetry.recordModelCall({
