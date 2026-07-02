@@ -10,3 +10,4 @@ dist-node/
 .flue-vite.wrangler.jsonc
 coverage/
 tmp/
+.gstack/
