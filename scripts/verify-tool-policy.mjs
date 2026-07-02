@@ -159,15 +159,20 @@ try {
 
   const deniedFinal = backend.finals().at(-1)?.text ?? '';
   const deniedToolResults = toolResultMessages(backend.providerCalls());
+  // Scan the ENTIRE denied-turn wire log — every Slack call and every provider
+  // request body, i.e. exactly the data just written to tool-policy-denied.json —
+  // not just the final Slack text. This is what actually backs the "brief never
+  // leaks" claim.
+  const deniedWireLog = JSON.stringify(denied);
   record(
     'FORBIDDEN: final relays the honest denial',
     deniedFinal.includes(DENIAL_TEXT),
     `denialInFinal=${deniedFinal.includes(DENIAL_TEXT)}`,
   );
   record(
-    'FORBIDDEN: final does NOT leak the brief content',
-    !deniedFinal.includes(BRIEF_TEXT),
-    `briefLeaked=${deniedFinal.includes(BRIEF_TEXT)}`,
+    'FORBIDDEN: brief never leaks anywhere on the wire (Slack calls + provider requests)',
+    !deniedWireLog.includes(BRIEF_TEXT),
+    `briefLeaked=${deniedWireLog.includes(BRIEF_TEXT)}`,
   );
   record(
     'FORBIDDEN: the denial arrived as a real tool result on the provider wire',

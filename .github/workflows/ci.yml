@@ -31,6 +31,6 @@ jobs:
       - name: Test (both parity lanes + legacy)
         run: npm test
 
-      # Confirm the production cloudflare artifact still builds.
-      - name: Build (cloudflare target)
+      # Confirm the production node artifact still builds.
+      - name: Build (node target)
         run: npm run flue:build
