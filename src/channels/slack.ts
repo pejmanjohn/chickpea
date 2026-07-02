@@ -33,7 +33,7 @@ const LOOPBACK_HOSTNAMES = new Set(['127.0.0.1', '::1', '[::1]', 'localhost']);
  * raw-fetch sinks (deterministic, no 30-minute backoff on a transient upstream).
  */
 let cachedClient: WebClient | undefined;
-export function getClient(): WebClient {
+function getClient(): WebClient {
   if (!cachedClient) {
     const slackApiUrl = process.env.SLACK_API_URL;
     cachedClient = new WebClient(process.env.SLACK_BOT_TOKEN, {
@@ -145,7 +145,11 @@ export const channel = createSlackChannel({
     }
 
     // g. Mark this thread as started so its later implicit replies are admitted
-    //    (mentions and DMs both open a thread the app owns).
+    //    (mentions and DMs both open a thread the app owns). Registered
+    //    pre-turn (before runTurn) on purpose: it admits implicit replies that
+    //    arrive while the root turn is still in flight, matching the old lane's
+    //    session-created-before-provider-call semantics. A failed turn leaves
+    //    the thread registered (only the claims are released, for retry).
     sessionRegistry.start(threadKey);
 
     void runTurn(turn, assignment, selfBaseUrl).catch((err) => {
@@ -218,22 +222,26 @@ async function runTurn(
   const context = await hydrateSlackContextViaWebClient(client, turn);
   const prompt = assembleSlackPrompt(turn, context);
 
-  // 3. Prompt the durable agent. A provider failure surfaces as a non-2xx
-  //    ?wait=result envelope; deliver the sanitized static final and clear.
-  await presenter.setStatus('generating_answer');
-  let text: string;
+  // 3 + 4. Prompt the durable agent, then deliver the final — with clearStatus
+  //    in a finally so a status that was actually set is cleared even if
+  //    delivery throws (old-lane parity: the clear happened in a finally; keeps
+  //    S03/S15/S16 green). clearStatus is a no-op when no status was set. A
+  //    provider failure surfaces as a non-2xx ?wait=result envelope; we deliver
+  //    the sanitized static final (no provider error text ever reaches Slack).
   try {
-    text = await promptAgent(turn, prompt, selfBaseUrl);
-  } catch (err) {
-    console.error('[slack-flue] provider call failed:', sanitizeError(err));
-    await presenter.deliverFinal(PROVIDER_FAILURE_TEXT, 'plain_text');
+    await presenter.setStatus('generating_answer');
+    let text: string;
+    try {
+      text = await promptAgent(turn, prompt, selfBaseUrl);
+    } catch (err) {
+      console.error('[slack-flue] provider call failed:', sanitizeError(err));
+      await presenter.deliverFinal(PROVIDER_FAILURE_TEXT, 'plain_text');
+      return;
+    }
+    await presenter.deliverFinal(text, 'markdown');
+  } finally {
     await presenter.clearStatus();
-    return;
   }
-
-  // 4. Deliver the streamed final (fallback post handled by the presenter).
-  await presenter.deliverFinal(text, 'markdown');
-  await presenter.clearStatus();
 }
 
 /**

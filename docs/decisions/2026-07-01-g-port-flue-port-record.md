@@ -196,3 +196,8 @@ Node 22.14). The verify scripts are net-guarded (`scripts/net-guard.mjs` patches
 - **Net-guard covers global `fetch` only.** The offline guarantee rests on patching
   `globalThis.fetch`; a dependency reaching the network through another mechanism
   (raw sockets, a native http agent) would not be caught by it.
+- **DM transcripts grow unbounded.** DM thread keys collapse to
+  `workspace:channel:dm`, so with the file-backed `db.ts` a DM channel is one
+  perpetual conversation whose transcript grows without bound into every provider
+  request; this needs a windowing/compaction policy review (Flue auto-compaction
+  may mitigate — unverified).

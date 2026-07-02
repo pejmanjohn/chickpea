@@ -32,6 +32,7 @@ import {
   buildNodeServer,
   getFreePort,
   loadFake,
+  loadTsModule,
   postSignedEvent,
   spawnServer,
   stopChild,
@@ -41,8 +42,8 @@ import {
 
 const EXEC_CHANNEL = 'C_EXEC';
 const INTERNAL_TOKEN = 'tool-policy-internal-token';
-const BRIEF_TEXT =
-  'The exec leadership channel tracks board prep, paid acquisition, and weekly customer-proof priorities.';
+// Trigger words and the brief text are imported from the app/fake below (not
+// re-typed) so this gate can't silently drift from the real seed + stub.
 const DENIAL_TEXT = 'Denied: lookup_channel_brief is restricted to the assigned channel.';
 const ARTIFACT_DIR = join(REPO_ROOT, 'docs', 'decisions', 'artifacts', 'g-port-stage4');
 
@@ -91,7 +92,9 @@ function transcript(turn, backend) {
 }
 
 const netGuardLog = join(mkdtempSync(join(tmpdir(), 'flue-tool-guard-')), 'external-hosts.log');
-const { FakeSlackBackend } = await loadFake();
+const { FakeSlackBackend, TOOL_TRIGGER, TOOL_TRIGGER_FORBIDDEN } = await loadFake();
+const { seededChannelBriefs } = await loadTsModule('src/config/seed.ts');
+const BRIEF_TEXT = seededChannelBriefs[EXEC_CHANNEL];
 const backend = new FakeSlackBackend({ provider: { mode: 'ok', toolChannelId: EXEC_CHANNEL } });
 const fake = await backend.listen();
 console.log(`fake backend listening at ${fake.url}`);
@@ -123,7 +126,7 @@ try {
     mention({
       eventId: 'Ev_TOOL_ALLOW',
       ts: '1782770700.000100',
-      text: '<@U_BOT> PLEASE_USE_CHANNEL_BRIEF_TOOL and summarize our channel brief',
+      text: `<@U_BOT> ${TOOL_TRIGGER} and summarize our channel brief`,
     }),
   );
   await waitForFinals(backend, 1, 15_000);
@@ -150,7 +153,7 @@ try {
     mention({
       eventId: 'Ev_TOOL_DENY',
       ts: '1782770800.000100',
-      text: '<@U_BOT> PLEASE_USE_CHANNEL_BRIEF_TOOL_FORBIDDEN and read another channel',
+      text: `<@U_BOT> ${TOOL_TRIGGER_FORBIDDEN} and read another channel`,
     }),
   );
   await waitForFinals(backend, 1, 15_000);

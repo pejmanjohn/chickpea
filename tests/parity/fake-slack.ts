@@ -181,7 +181,7 @@ export class FakeSlackBackend {
     });
     this.servers.push(server);
 
-    await new Promise<void>((resolve) => server.listen(port, resolve));
+    await new Promise<void>((resolve) => server.listen(port, '127.0.0.1', resolve));
     const address = server.address() as AddressInfo;
     const url = `http://127.0.0.1:${address.port}`;
     return {

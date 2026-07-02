@@ -1,8 +1,10 @@
 name: CI
 
 on:
+  # Only build on pushes to main; PR branches are covered by pull_request, so
+  # scoping push to main stops every PR from double-running the suite.
   push:
-    branches: ['**']
+    branches: [main]
   pull_request:
 
 # Offline by design: the parity suite runs the real Flue app against an

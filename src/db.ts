@@ -4,8 +4,9 @@ import { sqlite } from '@flue/runtime/node';
 // persistence is an in-memory SQLite DB that is lost on process exit, so a
 // Slack redelivery after a restart would re-run a turn and lose the thread's
 // conversation history. A file-backed adapter makes the agent's conversation
-// transcript (and dedupe-relevant execution state) survive restarts, so a
-// second turn in the same thread replays the prior turn from durable storage.
+// transcript survive restarts, so a second turn in the same thread replays the
+// prior turn from durable storage. (Claims and the session registry are NOT
+// durable — they live in process memory; see the claim-store follow-up.)
 //
 // The path defaults to `./tmp/flue.db` (tmp/ is git-ignored). Override with
 // FLUE_DB_PATH — parity/offline harnesses pass `:memory:` for per-process

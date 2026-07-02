@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 /**
  * Stage-2 gate: prove the Flue lane's full turn policy works completely offline
- * under `flue dev --target node` with zero external traffic. This is the fast
+ * under the built node server with zero external traffic. This is the fast
  * feedback loop for Task 2b; the parity suite (Stage 3) is the real gate.
  *
- * One `flue dev` process + one in-memory fake Slack/provider backend. The fake's
+ * One built Flue server + one in-memory fake Slack/provider backend. The fake's
  * behavior knobs are reconfigured in-process between scenarios (the same knobs
  * are also exposed over `POST /__config` for the future Lane B adapter), and
  * each scenario uses a distinct event id / message ts so the process-local claim
@@ -24,36 +24,39 @@
  *   7. direct POST to the internal agent endpoint without the internal token
  *      -> 401 (the agent route is not reachable unauthenticated)
  *
- * Run with Node >= 22.19 (flue requirement):
+ * Runs like the other Stage-4 verify scripts (a suitable Node >= 22.19 builds
+ * and spawns the Flue server; the shared harness resolves a free port itself):
  *   PATH=/opt/homebrew/opt/node@24/bin:$PATH node scripts/verify-flue-offline-turn.mjs
  */
-import { spawn } from 'node:child_process';
-import { createHmac } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
-const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
-const FLUE_BIN = join(REPO_ROOT, 'node_modules', '.bin', 'flue');
-const NET_GUARD = join(REPO_ROOT, 'scripts', 'net-guard.mjs');
-const PORT = 3599;
-const BASE_URL = `http://127.0.0.1:${PORT}`;
-const EVENTS_URL = `${BASE_URL}/channels/slack/events`;
-const SIGNING_SECRET = 'test-signing-secret';
+import {
+  REPO_ROOT,
+  assertNodeVersion,
+  buildNodeServer,
+  getFreePort,
+  loadFake,
+  postSignedEvent,
+  spawnServer,
+  stopChild,
+  waitForFinals,
+  waitForReady,
+} from './lib/offline-harness.mjs';
+
 const EXEC_CHANNEL = 'C_EXEC';
 const ROOT_THREAD_TS = '1782770400.000100';
 
-// Load the Stage-0 fake backend (TypeScript) through tsx's runtime loader.
-const { register } = await import('tsx/esm/api');
-const unregister = register();
-const { FakeSlackBackend, STUB_REPLY_MARKER, RAW_PROVIDER_ERROR_MARKER } = await import(
-  join(REPO_ROOT, 'tests', 'parity', 'fake-slack.ts')
-);
-unregister();
-
+// Intentionally an INDEPENDENT oracle: this copy of the sanitized provider-
+// failure final is kept local (not imported from src) so the check catches a
+// drift in the app's own PROVIDER_FAILURE_TEXT rather than moving in lockstep.
 const PROVIDER_FAILURE_TEXT =
   'I reached the Slack thread, but the model provider call failed before completion. I did not expose provider error details in Slack.';
+
+// Load the Stage-0 fake backend (TypeScript) through tsx's runtime loader.
+const { FakeSlackBackend, STUB_REPLY_MARKER, RAW_PROVIDER_ERROR_MARKER, isMarkdownPost } =
+  await loadFake();
 
 const netGuardLog = join(mkdtempSync(join(tmpdir(), 'flue-net-guard-')), 'external-hosts.log');
 
@@ -70,51 +73,6 @@ function craftMention({ eventId, ts }) {
   };
 }
 
-function signedHeaders(rawBody, { tamper = false } = {}) {
-  const timestamp = Math.floor(Date.now() / 1000);
-  let digest = createHmac('sha256', SIGNING_SECRET)
-    .update(`v0:${timestamp}:${rawBody}`)
-    .digest('hex');
-  if (tamper) {
-    const last = digest.at(-1);
-    digest = `${digest.slice(0, -1)}${last === '0' ? '1' : '0'}`;
-  }
-  return {
-    'content-type': 'application/json',
-    'x-slack-request-timestamp': String(timestamp),
-    'x-slack-signature': `v0=${digest}`,
-  };
-}
-
-async function postSignedEvent(payload, opts = {}) {
-  const rawBody = JSON.stringify(payload);
-  const response = await fetch(EVENTS_URL, {
-    method: 'POST',
-    headers: signedHeaders(rawBody, opts),
-    body: rawBody,
-  });
-  const text = await response.text();
-  let body;
-  try {
-    body = text ? JSON.parse(text) : undefined;
-  } catch {
-    body = text;
-  }
-  return { status: response.status, body };
-}
-
-/** Poll the wire log until at least `minFinals` finals have landed (or timeout). */
-async function waitForFinals(minFinals, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (backend.finals().length >= minFinals) {
-      return backend.finals();
-    }
-    await new Promise((resolve) => setTimeout(resolve, 250));
-  }
-  return backend.finals();
-}
-
 const results = [];
 function record(name, passed, detail) {
   results.push({ name, passed, detail });
@@ -125,62 +83,29 @@ const backend = new FakeSlackBackend();
 const fake = await backend.listen();
 console.log(`fake Slack/provider backend listening at ${fake.url}`);
 
-const child = spawn(FLUE_BIN, ['dev', '--target', 'node', '--port', String(PORT)], {
-  cwd: REPO_ROOT,
-  env: {
-    ...process.env,
-    PATH: `/opt/homebrew/opt/node@24/bin:${process.env.PATH ?? ''}`,
-    SLACK_SIGNING_SECRET: SIGNING_SECRET,
-    SLACK_BOT_TOKEN: 'test-bot-token',
-    SLACK_BOT_USER_ID: 'U_BOT',
-    SLACK_API_URL: `${fake.url}/api/`,
-    LOCAL_STUB_URL: `${fake.url}/v1`,
-    SLACK_FLUE_MODEL: 'local-stub/parity-stub-1',
-    // Stage 4 added src/db.ts (file-backed persistence). Pin an in-memory DB so
-    // this single-process offline gate stays deterministic across runs (no
-    // cross-run accumulation in ./tmp/flue.db).
-    FLUE_DB_PATH: ':memory:',
-    NET_GUARD_LOG: netGuardLog,
-    NODE_OPTIONS: `--import ${NET_GUARD}`,
-  },
-  stdio: ['ignore', 'pipe', 'pipe'],
-});
-let serverOutput = '';
-child.stdout.on('data', (chunk) => {
-  serverOutput += chunk;
-});
-child.stderr.on('data', (chunk) => {
-  serverOutput += chunk;
-});
-
-async function waitForReady(timeoutMs = 60_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (child.exitCode !== null) {
-      throw new Error(`flue dev exited early (code ${child.exitCode}):\n${serverOutput}`);
-    }
-    try {
-      // The dev server accepts requests before the in-memory runtime finishes
-      // loading (503 runtime_unavailable). Ready = any non-503 HTTP response.
-      const response = await fetch(`${BASE_URL}/`, { method: 'GET' });
-      if (response.status !== 503) {
-        return;
-      }
-    } catch {
-      // not accepting connections yet
-    }
-    await new Promise((resolve) => setTimeout(resolve, 250));
-  }
-  throw new Error(`flue dev never became ready:\n${serverOutput}`);
-}
-
+let child;
 try {
-  await waitForReady();
-  console.log(`flue dev ready at ${BASE_URL}`);
+  const serverEntry = await buildNodeServer();
+  console.log(`built node server; node ${assertNodeVersion()}`);
+
+  const port = await getFreePort();
+  const spawned = spawnServer({
+    serverEntry,
+    port,
+    fakeUrl: fake.url,
+    netGuardLog,
+    // Pin an in-memory DB so this single-process offline gate stays
+    // deterministic across runs (no cross-run accumulation in ./tmp/flue.db).
+    env: { FLUE_DB_PATH: ':memory:' },
+  });
+  child = spawned.child;
+  const { baseUrl, eventsUrl, getOutput } = spawned;
+  await waitForReady(child, eventsUrl, getOutput);
+  console.log(`flue node server ready at ${baseUrl}`);
 
   // Check 1: signed url_verification echoes the challenge.
   {
-    const response = await postSignedEvent({
+    const response = await postSignedEvent(eventsUrl, {
       type: 'url_verification',
       challenge: 'offline-turn-challenge',
     });
@@ -199,7 +124,7 @@ try {
   // Check 2: tampered signature is rejected before the events callback.
   {
     const wireBefore = backend.wireLog.length;
-    const response = await postSignedEvent(appMention, { tamper: true });
+    const response = await postSignedEvent(eventsUrl, appMention, { tamper: true });
     await backend.quiesce();
     const passed = response.status === 401 && backend.wireLog.length === wireBefore;
     record(
@@ -214,8 +139,8 @@ try {
   {
     backend.reset();
     backend.configure({ slack: { rejectSetStatus: false }, provider: { mode: 'ok' } });
-    const response = await postSignedEvent(appMention);
-    const finals = await waitForFinals(1, 15_000);
+    const response = await postSignedEvent(eventsUrl, appMention);
+    const finals = await waitForFinals(backend, 1, 15_000);
     const [final] = finals;
 
     const historyCalls = backend.callsOfMethod('conversations.history');
@@ -260,13 +185,16 @@ try {
   {
     backend.reset();
     backend.configure({ slack: { rejectSetStatus: true }, provider: { mode: 'ok' } });
-    await postSignedEvent(craftMention({ eventId: 'Ev_OFFLINE_REJECT', ts: '1782770910.000100' }));
-    const finals = await waitForFinals(1, 15_000);
+    await postSignedEvent(
+      eventsUrl,
+      craftMention({ eventId: 'Ev_OFFLINE_REJECT', ts: '1782770910.000100' }),
+    );
+    const finals = await waitForFinals(backend, 1, 15_000);
     const [final] = finals;
 
     const progressPosts = backend.progressPosts();
     const firstProgressIndex = backend.wireLog.findIndex(
-      (entry) => entry.method === 'chat.postMessage' && !isMarkdownBody(entry.body),
+      (entry) => entry.method === 'chat.postMessage' && !isMarkdownPost(entry.body),
     );
     const nonEmpty = backend
       .statusCalls()
@@ -292,8 +220,11 @@ try {
   {
     backend.reset();
     backend.configure({ slack: { rejectSetStatus: false }, provider: { mode: 'http_500' } });
-    await postSignedEvent(craftMention({ eventId: 'Ev_OFFLINE_500', ts: '1782770920.000100' }));
-    const finals = await waitForFinals(1, 40_000);
+    await postSignedEvent(
+      eventsUrl,
+      craftMention({ eventId: 'Ev_OFFLINE_500', ts: '1782770920.000100' }),
+    );
+    const finals = await waitForFinals(backend, 1, 40_000);
     const [final] = finals;
     const lastStatus = backend.statusCalls().at(-1);
 
@@ -326,7 +257,7 @@ try {
   // present the internal token (the channel's self-call is signature-verified
   // upstream on /channels/slack/events; this endpoint has no other gate).
   {
-    const response = await fetch(`${BASE_URL}/agents/slack-thread/some-id`, {
+    const response = await fetch(`${baseUrl}/agents/slack-thread/some-id`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ message: 'unauthenticated probe' }),
@@ -341,13 +272,10 @@ try {
 } catch (error) {
   record('verification harness', false, error instanceof Error ? error.message : String(error));
 } finally {
-  child.kill('SIGKILL');
+  if (child) {
+    await stopChild(child);
+  }
   await backend.close();
-}
-
-/** A markdown chat.postMessage carries at least one block; a plain progress post does not. */
-function isMarkdownBody(body) {
-  return Array.isArray(body.blocks) && body.blocks.length > 0;
 }
 
 const failed = results.filter((result) => !result.passed);

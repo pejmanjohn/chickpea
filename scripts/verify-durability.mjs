@@ -140,7 +140,7 @@ try {
   // --- Turn 2 on DB_A: fresh process, same DB. Marker must replay. ---
   backend.reset();
   {
-    const { child, eventsUrl, baseUrl } = await runServerTurn({
+    const { child, baseUrl } = await runServerTurn({
       serverEntry,
       fakeUrl: fake.url,
       dbPath: dbA,
@@ -185,7 +185,7 @@ try {
   // --- Negative control: follow-up on a DIFFERENT fresh DB → no replay. ---
   backend.reset();
   {
-    const { child, eventsUrl } = await runServerTurn({
+    const { child } = await runServerTurn({
       serverEntry,
       fakeUrl: fake.url,
       dbPath: dbB,

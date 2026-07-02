@@ -19,13 +19,18 @@ export const SIGNING_SECRET = 'test-signing-secret';
 export const EVENTS_PATH = '/channels/slack/events';
 const MIN_NODE = [22, 19, 0];
 
-/** Load the TypeScript fake backend through tsx's runtime loader. */
-export async function loadFake() {
+/** Load an arbitrary repo-relative TypeScript module through tsx's runtime loader. */
+export async function loadTsModule(relativePath) {
   const { register } = await import('tsx/esm/api');
   const unregister = register();
-  const mod = await import(join(REPO_ROOT, 'tests', 'parity', 'fake-slack.ts'));
+  const mod = await import(join(REPO_ROOT, relativePath));
   unregister();
   return mod;
+}
+
+/** Load the TypeScript fake backend through tsx's runtime loader. */
+export function loadFake() {
+  return loadTsModule('tests/parity/fake-slack.ts');
 }
 
 export function assertNodeVersion() {
