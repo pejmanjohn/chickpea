@@ -17,6 +17,10 @@ export interface ChannelAssignment {
   enabled: boolean;
 }
 
+export interface BotIdentityConfig {
+  avatarPath: string;
+}
+
 export interface ResolvedAssignment {
   workspaceId: string;
   channelId: string;
