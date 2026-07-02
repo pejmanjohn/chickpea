@@ -1,0 +1,11 @@
+fake backend listening at http://127.0.0.1:53513
+built node server: /Users/pejman/code/slack-flue/dist/server.mjs
+node v24.16.0  DB_A=/var/folders/z1/5zygr2kd0fl54_shsdz1zfyw0000gp/T/flue-dur-dbA-1RxdDf/flue.db  DB_B=/var/folders/z1/5zygr2kd0fl54_shsdz1zfyw0000gp/T/flue-dur-dbB-VVNQzu/flue.db
+PASS  T1 delivers a final carrying the durability marker, then server SIGKILLed — finals=1 markerInFinal=true
+PASS  T2 (new process, same DB) delivers a final — finals=1
+PASS  T2 provider request REPLAYS the marker from durable storage — providerCalls=1 replaysMarker=true
+PASS  history view returns BOTH turns (marker present >= 2x) with the internal token — status=200 markerOccurrences=4
+PASS  NEGATIVE CONTROL: fresh DB → provider request does NOT contain the marker — finals=1 markerLeaked=false
+PASS  NET_GUARD_LOG empty -> zero external traffic — none
+
+6/6 checks passed

@@ -1,0 +1,145 @@
+{
+  "v": 1,
+  "conversationId": "conv_01KWGET2GG8MN7JPQ7XN7AWDG7",
+  "offset": "0000000000000000_0000000000000014",
+  "messages": [
+    {
+      "id": "entry_direct_YzgwZmM3MWYtMGNhNy00ZTRhLWI3MjktODZmM2QyYzBhMTdi",
+      "role": "user",
+      "submissionId": "c80fc71f-0ca7-4e4a-b729-86f3d2c0a17b",
+      "parts": [
+        {
+          "type": "text",
+          "text": "<@U_BOT> please use channel context and draft an exec summary\n\nBounded Slack context (default_24h):\n- [1782770300.000100] U_BOB: recent channel context\n- [1782770400.000100 trigger] U_ALICE: <@U_BOT> please use channel context and draft an exec summary",
+          "state": "done"
+        }
+      ]
+    },
+    {
+      "id": "entry_81f406d7-1dd2-44bb-ae86-0b340d3a5624",
+      "role": "assistant",
+      "parts": [
+        {
+          "type": "text",
+          "text": "DURABILITY_MARKER_ALPHA",
+          "state": "done"
+        }
+      ],
+      "metadata": {
+        "usage": {
+          "input": 1,
+          "output": 1,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "totalTokens": 2,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "total": 0
+          }
+        },
+        "model": {
+          "provider": "local-stub",
+          "id": "parity-stub-1"
+        }
+      }
+    },
+    {
+      "id": "entry_direct_OTA5YjNjOGItODkwOS00ZjEzLWI3NDgtN2I5ODU5YzQ1MGE4",
+      "role": "user",
+      "submissionId": "909b3c8b-8909-4f13-b748-7b9859c450a8",
+      "parts": [
+        {
+          "type": "text",
+          "text": "<@U_BOT> please use channel context and draft an exec summary\n\nBounded Slack context (thread_root):\n- [1782770400.000100] U_ALICE: root thread topic\n- [1782770406.000100] U_BOB: prior thread detail\n- [1782770410.000200] U_ALICE: continue from the prior answer\n- [1782770500.000100 trigger] U_ALICE: <@U_BOT> please use channel context and draft an exec summary",
+          "state": "done"
+        }
+      ]
+    },
+    {
+      "id": "entry_e6f94c86-4055-49e9-8104-21ca31bbfe71",
+      "role": "assistant",
+      "parts": [
+        {
+          "type": "text",
+          "text": "DURABILITY_MARKER_ALPHA",
+          "state": "done"
+        }
+      ],
+      "metadata": {
+        "usage": {
+          "input": 1,
+          "output": 1,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "totalTokens": 2,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "total": 0
+          }
+        },
+        "model": {
+          "provider": "local-stub",
+          "id": "parity-stub-1"
+        }
+      }
+    }
+  ],
+  "settlements": [
+    {
+      "submissionId": "c80fc71f-0ca7-4e4a-b729-86f3d2c0a17b",
+      "outcome": "completed",
+      "result": {
+        "text": "DURABILITY_MARKER_ALPHA",
+        "usage": {
+          "input": 1,
+          "output": 1,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "totalTokens": 2,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "total": 0
+          }
+        },
+        "model": {
+          "provider": "local-stub",
+          "id": "parity-stub-1"
+        }
+      }
+    },
+    {
+      "submissionId": "909b3c8b-8909-4f13-b748-7b9859c450a8",
+      "outcome": "completed",
+      "result": {
+        "text": "DURABILITY_MARKER_ALPHA",
+        "usage": {
+          "input": 1,
+          "output": 1,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "totalTokens": 2,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "total": 0
+          }
+        },
+        "model": {
+          "provider": "local-stub",
+          "id": "parity-stub-1"
+        }
+      }
+    }
+  ]
+}

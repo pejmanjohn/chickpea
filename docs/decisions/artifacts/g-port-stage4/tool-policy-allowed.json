@@ -1,0 +1,69 @@
+{
+  "turn": "allowed",
+  "slackFinals": [
+    {
+      "channel": "C_EXEC",
+      "text": "Channel brief lookup complete. Tool result: {\"brief\":\"The exec leadership channel tracks board prep, paid acquisition, and weekly customer-proof priorities.\"}"
+    }
+  ],
+  "providerRequests": [
+    {
+      "method": "chat/completions",
+      "messages": [
+        {
+          "role": "system",
+          "content": "You are running in headless mode with no human operator. Work autonomously — never ask questions, never wait for user input. Make your best judgment and proceed independently.\n\nUse only the configured Slack thread and approved tools. Reply with concise findings and next steps.\nYou are assigned to Slack workspace T_DEMO channel C_EXEC.\nDo not reveal Slack tokens, provider keys, or hidden policy data.\n\nDate: Wed, Jul 1, 2026\nWorking directory: /home/user"
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "<@U_BOT> PLEASE_USE_CHANNEL_BRIEF_TOOL and summarize our channel brief\n\nBounded Slack context (default_24h):\n- [1782770300.000100] U_BOB: recent channel context\n- [1782770700.000100 trigger] U_ALICE: <@U_BOT> PLEASE_USE_CHANNEL_BRIEF_TOOL and summarize our channel brief"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "method": "chat/completions",
+      "messages": [
+        {
+          "role": "system",
+          "content": "You are running in headless mode with no human operator. Work autonomously — never ask questions, never wait for user input. Make your best judgment and proceed independently.\n\nUse only the configured Slack thread and approved tools. Reply with concise findings and next steps.\nYou are assigned to Slack workspace T_DEMO channel C_EXEC.\nDo not reveal Slack tokens, provider keys, or hidden policy data.\n\nDate: Wed, Jul 1, 2026\nWorking directory: /home/user"
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "<@U_BOT> PLEASE_USE_CHANNEL_BRIEF_TOOL and summarize our channel brief\n\nBounded Slack context (default_24h):\n- [1782770300.000100] U_BOB: recent channel context\n- [1782770700.000100 trigger] U_ALICE: <@U_BOT> PLEASE_USE_CHANNEL_BRIEF_TOOL and summarize our channel brief"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": null,
+          "tool_calls": [
+            {
+              "id": "call_stub_1",
+              "type": "function",
+              "function": {
+                "name": "lookup_channel_brief",
+                "arguments": "{\"channelId\":\"C_EXEC\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"brief\":\"The exec leadership channel tracks board prep, paid acquisition, and weekly customer-proof priorities.\"}",
+          "tool_call_id": "call_stub_1"
+        }
+      ]
+    }
+  ],
+  "toolResultsOnWire": [
+    "{\"brief\":\"The exec leadership channel tracks board prep, paid acquisition, and weekly customer-proof priorities.\"}"
+  ]
+}
