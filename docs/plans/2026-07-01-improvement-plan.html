@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>slack-flue — Two Lanes, One Decision · Improvement Plan · 2026-07-01</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=IBM+Plex+Serif:ital,wght@0,400;0,500;1,400&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#FBFBF9; --ink:#1B1C20; --muted:#5F6167; --line:#E6E4DE; --line-strong:#C9C6BE;
+  --aub:#4A154B; --aub-soft:#F3ECF3; --aub-mid:#7A4E7B;
+  --high:#A61B29; --high-soft:#F9ECED;
+  --med:#B45309; --med-soft:#FBF1E6;
+  --low:#6B6E76; --low-soft:#EFEFED;
+  --ok:#1F7A4D; --ok-soft:#EAF3EE;
+  --serif:"IBM Plex Serif",Georgia,serif;
+  --sans:"IBM Plex Sans",system-ui,-apple-system,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  --display:"Fraunces",Georgia,serif;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--serif);font-size:17px;line-height:1.65;-webkit-font-smoothing:antialiased}
+a{color:var(--aub);text-decoration-thickness:1px;text-underline-offset:3px}
+a:hover{color:var(--aub-mid)}
+code,.mono{font-family:var(--mono);font-size:.85em;background:var(--low-soft);padding:.08em .35em;border-radius:3px;white-space:nowrap}
+.wrap{max-width:1240px;margin:0 auto;padding:0 28px}
+.layout{display:grid;grid-template-columns:230px minmax(0,1fr);gap:56px}
+main{max-width:76ch;min-width:0}
+
+/* ---------- top rail / toc ---------- */
+nav.toc{position:sticky;top:0;align-self:start;padding:40px 0 40px;font-family:var(--sans);font-size:13px;max-height:100vh;overflow-y:auto}
+nav.toc .brand{font-family:var(--mono);font-size:12px;letter-spacing:.06em;color:var(--muted);margin-bottom:22px}
+nav.toc ol{list-style:none;margin:0;padding:0}
+nav.toc li{margin:0 0 2px}
+nav.toc a{display:flex;gap:10px;color:var(--muted);text-decoration:none;padding:5px 10px;border-left:2px solid transparent;line-height:1.35}
+nav.toc a:hover{color:var(--ink);border-left-color:var(--line-strong)}
+nav.toc .n{font-family:var(--mono);color:var(--line-strong);min-width:18px}
+nav.toc a:hover .n{color:var(--aub)}
+
+/* ---------- hero ---------- */
+header.hero{padding:64px 0 8px}
+.eyebrow{font-family:var(--mono);font-size:12.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--aub);margin:0 0 18px}
+h1{font-family:var(--display);font-weight:600;font-size:clamp(38px,5.4vw,58px);line-height:1.04;letter-spacing:-.015em;margin:0 0 18px}
+h1 em{font-style:italic;font-weight:500;color:var(--aub)}
+.standfirst{font-size:19.5px;line-height:1.6;color:var(--ink);max-width:66ch;margin:0 0 8px}
+.provenance{font-family:var(--sans);font-size:13.5px;color:var(--muted);margin:14px 0 0;max-width:70ch}
+.provenance b{color:var(--ink);font-weight:600}
+
+/* ---------- the lanes diagram (signature) ---------- */
+.lanes{margin:44px 0 10px;font-family:var(--sans)}
+.lanes-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.lane{border:1px solid var(--line-strong);background:#fff;border-radius:6px;padding:18px 20px 16px;position:relative}
+.lane h3{font-family:var(--mono);font-size:12.5px;letter-spacing:.06em;text-transform:uppercase;margin:0 0 10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.lane .dot{width:9px;height:9px;border-radius:50%;display:inline-block}
+.lane-a .dot{background:var(--ok)}
+.lane-b .dot{background:var(--high)}
+.lane p{font-size:13.5px;line-height:1.55;color:var(--muted);margin:0}
+.lane p b{color:var(--ink);font-weight:600}
+.lane .tag{margin-left:auto;font-family:var(--mono);font-size:10.5px;letter-spacing:.05em;padding:3px 8px;border-radius:3px;white-space:nowrap}
+.lane-a .tag{background:var(--ok-soft);color:var(--ok)}
+.lane-b .tag{background:var(--high-soft);color:var(--high)}
+.gate-stem{display:flex;justify-content:center}
+.gate-stem span{width:1px;height:26px;background:var(--line-strong)}
+.gate{border:1.5px solid var(--aub);background:var(--aub-soft);border-radius:6px;padding:14px 22px;text-align:center;max-width:520px;margin:0 auto}
+.gate .g-title{font-family:var(--mono);font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--aub);margin:0 0 4px}
+.gate p{font-size:13.5px;color:var(--ink);margin:0;line-height:1.5}
+.lanes .merge{display:flex;justify-content:center;font-family:var(--mono);font-size:12px;color:var(--muted);padding-top:10px}
+
+/* ---------- sections ---------- */
+section{padding:34px 0 6px;border-top:1px solid var(--line);margin-top:38px}
+section:first-of-type{border-top:none;margin-top:0}
+h2{font-family:var(--display);font-weight:600;font-size:30px;line-height:1.15;letter-spacing:-.01em;margin:0 0 6px;display:flex;align-items:baseline;gap:14px}
+h2 .sn{font-family:var(--mono);font-weight:400;font-size:15px;color:var(--aub);letter-spacing:.04em}
+.kicker{font-family:var(--sans);font-size:14.5px;color:var(--muted);margin:2px 0 26px;max-width:66ch}
+h3{font-family:var(--sans);font-weight:600;font-size:17.5px;margin:34px 0 10px;letter-spacing:-.005em}
+h4{font-family:var(--sans);font-weight:600;font-size:15px;margin:22px 0 8px}
+p{margin:0 0 14px;max-width:72ch}
+ul,ol{padding-left:24px;margin:0 0 16px}
+li{margin-bottom:7px;max-width:68ch}
+li::marker{color:var(--aub-mid)}
+strong{font-weight:600}
+
+/* pull verdict */
+.verdict{border-left:3px solid var(--aub);background:var(--aub-soft);padding:18px 22px;margin:26px 0;border-radius:0 6px 6px 0}
+.verdict p{font-family:var(--display);font-size:20px;line-height:1.45;font-weight:500;margin:0;max-width:64ch}
+.verdict .who{font-family:var(--mono);font-size:12px;color:var(--aub);letter-spacing:.05em;display:block;margin-top:10px}
+
+/* chips */
+.chip{display:inline-block;font-family:var(--mono);font-size:10.5px;font-weight:500;letter-spacing:.05em;padding:2.5px 8px;border-radius:3px;vertical-align:1px;white-space:nowrap}
+.chip.high{background:var(--high-soft);color:var(--high)}
+.chip.med{background:var(--med-soft);color:var(--med)}
+.chip.low{background:var(--low-soft);color:var(--low)}
+.chip.ok{background:var(--ok-soft);color:var(--ok)}
+.chip.aub{background:var(--aub-soft);color:var(--aub)}
+
+/* ---------- findings table ---------- */
+table{border-collapse:collapse;width:100%;font-family:var(--sans);font-size:14px;margin:12px 0 26px}
+th{font-family:var(--mono);font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);text-align:left;font-weight:500;padding:8px 12px 8px 0;border-bottom:1px solid var(--line-strong)}
+td{padding:10px 12px 10px 0;border-bottom:1px solid var(--line);vertical-align:top;line-height:1.5}
+td.fid{font-family:var(--mono);font-size:12.5px;color:var(--muted);white-space:nowrap;width:46px}
+td.sev{width:70px}
+td .loc{display:block;font-family:var(--mono);font-size:11.5px;color:var(--muted);margin-top:3px}
+details.ev{margin-top:6px}
+details.ev summary{font-family:var(--mono);font-size:11.5px;color:var(--aub);cursor:pointer;list-style:none}
+details.ev summary::before{content:"▸ "}
+details.ev[open] summary::before{content:"▾ "}
+details.ev div{font-size:13px;color:var(--muted);background:var(--low-soft);border-radius:4px;padding:10px 14px;margin-top:6px;line-height:1.55}
+
+/* ---------- tiers ---------- */
+.tier{border:1px solid var(--line-strong);border-radius:8px;background:#fff;margin:0 0 26px;overflow:hidden}
+.tier-head{display:flex;align-items:baseline;gap:16px;padding:18px 22px 14px;border-bottom:1px solid var(--line)}
+.tier-head .tn{font-family:var(--display);font-size:34px;font-weight:600;color:var(--aub);line-height:1;min-width:34px}
+.tier-head h3{margin:0;font-size:18px}
+.tier-head .meta{font-family:var(--mono);font-size:11.5px;color:var(--muted);margin-left:auto;text-align:right;white-space:nowrap}
+.tier ul.items{list-style:none;margin:0;padding:8px 0}
+.tier ul.items li{display:grid;grid-template-columns:56px minmax(0,1fr);gap:14px;padding:10px 22px;margin:0;max-width:none;border-bottom:1px solid var(--line)}
+.tier ul.items li:last-child{border-bottom:none}
+.tier .iid{font-family:var(--mono);font-size:12.5px;color:var(--aub);padding-top:2px}
+.tier .it{font-family:var(--sans);font-size:14.5px;line-height:1.55}
+.tier .it b{font-weight:600}
+.tier .it .why{color:var(--muted);font-size:13px;display:block;margin-top:2px}
+.tier-foot{padding:12px 22px 14px;background:var(--low-soft);font-family:var(--sans);font-size:13px;color:var(--muted);line-height:1.5}
+.tier-foot b{color:var(--ink)}
+
+/* ---------- goal cards ---------- */
+.goal{border:1px solid var(--line-strong);border-radius:8px;background:#fff;margin:0 0 30px;overflow:hidden}
+.goal-head{background:var(--ink);color:#F2F1EC;padding:14px 22px;display:flex;align-items:baseline;gap:14px;flex-wrap:wrap}
+.goal-head .slash{font-family:var(--mono);font-size:13px;color:#C7A9C8}
+.goal-head h3{margin:0;color:#fff;font-size:16.5px}
+.goal-head .est{font-family:var(--mono);font-size:11.5px;color:#9a9da5;margin-left:auto}
+.goal-body{padding:18px 22px 6px}
+.goal-body p{font-size:15.5px}
+.goal-body ul{font-family:var(--sans);font-size:14.5px}
+.goal .proof{margin:14px 22px 20px;border:1px solid var(--ok);border-radius:6px;overflow:hidden}
+.goal .proof .p-head{background:var(--ok-soft);color:var(--ok);font-family:var(--mono);font-size:11.5px;letter-spacing:.07em;text-transform:uppercase;padding:8px 16px}
+.goal .proof ol{margin:0;padding:12px 16px 14px 36px;font-family:var(--sans);font-size:14px}
+.goal .proof li{margin-bottom:8px;max-width:none}
+.goal .proof li::marker{color:var(--ok);font-family:var(--mono);font-size:12px}
+
+/* ---------- scorecard ---------- */
+.scorecard{border:1.5px solid var(--aub);border-radius:8px;overflow:hidden;margin:20px 0 10px}
+.scorecard table{margin:0;font-size:14px}
+.scorecard th{padding:10px 16px;background:var(--aub-soft);color:var(--aub);border-bottom:1px solid var(--aub)}
+.scorecard td{padding:10px 16px;border-bottom:1px solid var(--line)}
+.scorecard tr:last-child td{border-bottom:none}
+.scorecard td.num{font-family:var(--mono);color:var(--muted);width:30px}
+.scorecard td.must{width:80px;font-family:var(--mono);font-size:11px;color:var(--aub);white-space:nowrap}
+.score-rule{font-family:var(--sans);font-size:14.5px;background:var(--aub-soft);border-radius:6px;padding:14px 18px;margin:14px 0 26px;line-height:1.6}
+
+/* skip list */
+.skip{border-left:3px solid var(--high);padding:4px 0 4px 20px;margin:22px 0}
+.skip h4{margin-top:0;color:var(--high)}
+.skip ul{font-family:var(--sans);font-size:14px;margin-bottom:4px}
+
+/* appendix */
+.appx{font-family:var(--sans);font-size:14px;color:var(--muted)}
+.appx code{white-space:normal}
+footer{padding:44px 0 60px;font-family:var(--mono);font-size:12px;color:var(--muted);border-top:1px solid var(--line);margin-top:50px}
+
+@media (max-width:1080px){
+  .layout{grid-template-columns:1fr;gap:0}
+  nav.toc{position:static;max-height:none;padding:28px 0 0;border-bottom:1px solid var(--line)}
+  nav.toc ol{display:flex;flex-wrap:wrap;gap:2px 14px}
+  nav.toc a{border-left:none;padding:3px 0}
+}
+@media (max-width:640px){
+  body{font-size:16px}
+  .lanes-grid{grid-template-columns:1fr}
+  .tier ul.items li{grid-template-columns:44px minmax(0,1fr);padding:10px 14px}
+  .goal-head,.tier-head{padding-left:14px;padding-right:14px}
+  .goal-body{padding:14px 14px 4px}
+  .goal .proof{margin:12px 14px 16px}
+}
+@media print{
+  nav.toc{display:none}
+  .layout{grid-template-columns:1fr}
+  body{font-size:12px}
+  section{break-inside:avoid-page}
+  .goal,.tier{break-inside:avoid}
+  details.ev{open:true}
+  a{color:var(--ink)}
+}
+</style>
+</head>
+<body>
+<div class="wrap"><div class="layout">
+
+<nav class="toc" aria-label="Contents">
+  <div class="brand">slack-flue · plan<br>2026-07-01</div>
+  <ol>
+    <li><a href="#summary"><span class="n">01</span>Executive summary</a></li>
+    <li><a href="#method"><span class="n">02</span>How this was verified</a></li>
+    <li><a href="#lanes"><span class="n">03</span>Two lanes, one decision</a></li>
+    <li><a href="#findings"><span class="n">04</span>Verified findings</a></li>
+    <li><a href="#plan"><span class="n">05</span>The plan, in tiers</a></li>
+    <li><a href="#goals"><span class="n">06</span>Goal statements</a></li>
+    <li><a href="#scorecard"><span class="n">07</span>Port acceptance gates</a></li>
+    <li><a href="#appendix"><span class="n">08</span>Appendix</a></li>
+  </ol>
+</nav>
+
+<main>
+
+<header class="hero">
+  <p class="eyebrow">slack-flue · state of the prototype &amp; improvement plan · July 1, 2026</p>
+  <h1>Two lanes.<br><em>One decision.</em></h1>
+  <p class="standfirst">slack-flue answers Slack mentions with an AI agent. Today it does this through a hand-rolled harness that works and is well-tested — while the framework it was built to evaluate sits in a second, broken lane that has never actually been tried. Everything in this plan flows from closing that gap deliberately instead of by accident.</p>
+  <p class="provenance">Produced by a four-phase multi-agent review: <b>8 subsystem readers</b> → <b>10 hands-on scenario testers</b> (real servers, signed fixtures, recorded wire traffic) → <b>21 adversarial verifiers</b> (independent re-reproduction; <b>31/31 findings confirmed</b>, 1 sub-claim refuted, 7 severities corrected) → <b>3 plan critics</b> (a Flue skeptic, an OSS maintainer, a prototype-purpose auditor) whose objections reshaped the priorities below.</p>
+  <p class="provenance"><b>Updated 2026-07-01:</b> the owner made the call — <b>the product runs on Flue.</b> Tier 2 is no longer a decision spike; it is a gated behavioral-parity port (<a href="#gport">/goal G-PORT</a>). The old decision scorecard survives as port acceptance criteria (§07).</p>
+
+  <div class="lanes" role="img" aria-label="Diagram: two lanes converging on a decision gate">
+    <div class="lanes-grid">
+      <div class="lane lane-a">
+        <h3><span class="dot"></span>Lane A · hand-rolled<span class="tag">RUNS TODAY</span></h3>
+        <p><b>src/server.ts → events-app → slack-thread-runner.</b> 2.9k lines, 46 green tests, fully offline-testable. But: no real tool loop (a keyword substring fires one fixed tool), no conversation memory, a closed 2-provider union, and all state in per-process Maps.</p>
+      </div>
+      <div class="lane lane-b">
+        <h3><span class="dot"></span>Lane B · Flue / Cloudflare<span class="tag">BROKEN ON ARRIVAL</span></h3>
+        <p><b>defineAgent + flue build.</b> Ships an invalid model specifier (throws at init) and a built Worker with zero working endpoints. Yet Flue itself offers exactly what Lane A lacks: durable conversations, an open provider registry, a real tool loop, and an official Slack channel.</p>
+      </div>
+    </div>
+    <div class="gate-stem"><span></span></div>
+    <div class="gate">
+      <p class="g-title">Decision made · gated port, time-boxed ≈2–3 weeks</p>
+      <p>The product runs on Flue. A lane-agnostic scenario suite extracted from the existing tests becomes the port's contract: Lane A passes it today, the Flue lane must pass it unmodified, and only then is the custom harness deleted — with the suite still green after deletion.</p>
+    </div>
+    <div class="merge">↓ the contract outlives the harness; Lane A is deleted at the end</div>
+  </div>
+</header>
+
+<section id="summary">
+  <h2><span class="sn">01</span>Executive summary</h2>
+  <p class="kicker">What we found, what we recommend, and what to do first.</p>
+
+  <p><strong>The system works.</strong> The primary loop — signed Slack event in, status shown, context hydrated, model reply streamed back into the thread — passed hands-on testing end to end, offline, across mentions, DMs, App Home, thread continuations, duplicates, and malformed input. The test suite is fast (2.2&nbsp;s) and the core has genuinely good seams (injectable fetch, sink/context/provider interfaces).</p>
+
+  <p><strong>But the project is quietly failing its own charter.</strong> <code>docs/START_HERE.md</code> defines this repo as a prototype for evaluating Flue, with explicit stop/pivot gates. Verified reality: the tested stack contains no Flue, the Flue stack contains no Slack and has never executed successfully (invalid model specifier; a deployable artifact serving only 404s), and the "same task on Claude and a non-Claude model" gate is unproven because the Claude lane is a hardcoded stub. Hardening the hand-rolled harness further is not a neutral default — it is the charter's stop condition, enacted by accident.</p>
+
+  <p><strong>Meanwhile two high-severity correctness bugs are live in the lane that runs</strong>, and both are independent of the framework decision: any <em>other bot</em> that mentions this bot triggers full agent turns (a bot-to-bot loop risk with no rate limiter anywhere), and one human mention inside an active thread arrives as two Slack events and produces two full replies.</p>
+
+  <p><strong>Recommendation, in order:</strong></p>
+  <ol>
+    <li><strong>Tier 0 (same day):</strong> five small, lane-invariant unblocks — fix the Flue specifier, pin Node, validate env at boot, add one structured log line per turn, stand up CI, add a README. Hours each.</li>
+    <li><strong>Tier 1 (1–2 days):</strong> kill both high-severity admission bugs with regression tests converted from this review's repro drivers.</li>
+    <li><strong>Tier 2 (≈2–3 weeks, time-boxed):</strong> execute <a href="#gport">/goal G-PORT</a> — the behavioral-parity port to Flue. Extract the existing tests' expectations into a lane-agnostic scenario suite, make the Flue lane pass it unmodified, prove the Flue-only gains (restart durability, provider swap, model-invoked tools), then delete the custom harness with the suite still green.</li>
+    <li><strong>Tiers 3–4 (post-port):</strong> the power pack (memory, tool loop, durability, resilience, output safety) and the contributor platform (offline demo loop, four-seam CONTRIBUTING, good-first-issue pipeline) — built once, on the Flue lane only.</li>
+  </ol>
+  <p>Five of these items carry full <a href="#goals">/goal statements</a> written to be handed off and verified without further planning.</p>
+  <p><strong>One operational note:</strong> the <code>CLOUDFLARE_API_TOKEN</code> in <code>.env.slack.local</code> is invalid (verified 401 against Cloudflare's token-verify endpoint on 2026-07-01). Live Workers AI runs are impossible until it is re-minted.</p>
+</section>
+
+<section id="method">
+  <h2><span class="sn">02</span>How this was verified</h2>
+  <p class="kicker">Every claim below survived independent, adversarial reproduction. Nothing here rests on code reading alone.</p>
+  <ul>
+    <li><strong>Phase 1 — Understand.</strong> Eight parallel readers mapped the subsystems (ingress, admission, context, runtime, presentation, providers/config/tools, Flue usage, test/doc coverage), each returning flows, coupling points, extension-point pain, and suspected risks with file:line evidence.</li>
+    <li><strong>Phase 2 — Exercise.</strong> Ten testers drove the real system: the actual <code>src/server.ts</code> entrypoint plus a fake-Slack HTTP rig built on the app factory's injectable fetch. 87 checks across happy paths, admission negatives, fan-out/dedupe, restarts and dual instances, signature hardening, context-window matrices, formatting and streaming, provider failure matrices against a local stub, the Flue build lane, and a fresh-contributor dry run. All with fake Slack credentials; zero traffic reached the real workspace.</li>
+    <li><strong>Phase 3 — Refute.</strong> Twenty-one verifiers, each instructed that the finding was <em>wrong until their own fresh reproduction proved otherwise</em>, re-reproduced every finding from scratch and hunted for rig artifacts. Result: 31/31 confirmed; the DM half of the double-post claim was refuted (Slack never sends <code>app_mention</code> in DMs); seven severities corrected, both up and down.</li>
+    <li><strong>Phase 4 — Critique.</strong> Three critics attacked the draft plan itself. Their material changes: the two high bugs moved ahead of the framework bet (they are lane-invariant), the open-ended "convergence slice" became a time-boxed spike with a pass/fail scorecard, "durable state for free" was re-costed as real work on the Node lane, and the contributor story gained a license/governance floor and a fourth seam (context-sources/domain packs).</li>
+  </ul>
+</section>
+
+<section id="lanes">
+  <h2><span class="sn">03</span>Two lanes, one decision</h2>
+  <p class="kicker">The strategic question, both sides steelmanned, and how the plan resolves it.</p>
+
+  <h3>The case for converging on Flue</h3>
+  <ul>
+    <li><strong>The charter demands it.</strong> START_HERE goal 5: "Flue owns the agent harness/session loop." Its stop gate: "Slack/channel policy must be custom-built outside Flue with little remaining harness benefit." Building a tool loop, durable sessions, and an open provider registry by hand <em>is</em> that stop condition.</li>
+    <li><strong>The gaps map one-to-one.</strong> Lane A's four structural ceilings — no model-driven tools, no conversation memory, closed provider union, process-local state — are precisely Flue's shipped competencies: <code>defineTool</code>, durable Durable-Object-backed conversation streams, <code>registerProvider()</code> (Anthropic, Workers AI bindings, Ollama, gateways in one call), and <code>flue dev</code> for both Node and Cloudflare targets.</li>
+    <li><strong>The damning evidence is self-inflicted.</strong> The broken specifier is a one-line fix (the verifier proved <code>cloudflare-workers-ai/@cf/zai-org/glm-5.2</code> resolves against the installed runtime), and the empty Worker exists because <code>flue add channel slack</code> — Flue's official Slack ingress blueprint — was never run. The lane failed because it was never seriously attempted, not because it was attempted and failed.</li>
+    <li><strong>Seam economics decide the contributor goal.</strong> Measured in the dry run: adding one tool today touches 6 files across both lanes including a hardcoded keyword gate; adding a provider touches 8 files across a closed union. On Flue: one <code>defineTool</code>, one <code>registerProvider</code> call — and 16 more channel blueprints (Discord, Teams, GitHub, Telegram…) as the integration surface this project would otherwise have to invent.</li>
+  </ul>
+
+  <h3>The case for keeping the hand-rolled lane (the skeptic's brief)</h3>
+  <ul>
+    <li><strong>Convergence fixes neither high-severity bug.</strong> Flue's own Slack docs assign bot-filtering, admission, and duplicate-claiming to the application. The rewrite spends effort on the part that already works while the broken part stays app-owned in both worlds.</li>
+    <li><strong>The team could not see Flue failing.</strong> The lane shipped 100%-broken twice over and nobody noticed: <code>flue build</code> succeeded while producing a dead artifact, and <code>flue run --target cloudflare</code> swallowed the real error behind a generic 500. A framework you cannot observe failing is a framework you cannot yet operate.</li>
+    <li><strong>Beta churn, stacked three deep.</strong> <code>@flue 1.0.0-beta.8</code> (pinned exact), a Slack Web API "v8 release candidate," a Node ≥22.18 floor the default toolchain fails — and a runtime flag literally named <code>temporaryLocalExposure</code> on the exact surface that broke.</li>
+    <li><strong>"Durable for free" is oversold.</strong> Per Flue's own docs, the Node target without a <code>db.ts</code> adapter loses all conversations on restart, and multi-instance active-active is forbidden. Real durability means the currently-dead Cloudflare lane or writing a persistence adapter — work, not a freebie.</li>
+    <li><strong>Asymmetric abandonment.</strong> 1,697 test lines encode hard-won wire knowledge (form-encoding asymmetry, streaming sequences, the signature recipe). A rewrite discards proven verification for abstractions the project doesn't control.</li>
+  </ul>
+
+  <div class="verdict">
+    <p>Decided 2026-07-01: the product runs on Flue. The skeptic's brief above stands as the risk register, and his scorecard survives — no longer as a decision gate, but as the port's acceptance criteria. The port is gated by a behavioral parity harness: the existing tests' expectations, extracted into a lane-agnostic scenario suite, must pass on Flue before the custom harness is deleted.</p>
+    <span class="who">OWNER DECISION · EXECUTED AS /GOAL G-PORT</span>
+  </div>
+
+  <p>The port is cheap for the same reason the spike would have been: the product's entire observable surface is Slack wire traffic — signed fixtures in, recorded Web API calls out — and both lanes speak exactly that surface. The tests' value is the encoded expectations, which port cleanly once decoupled from the lane-specific rigs. It is honest because its mandatory acceptance gates target exactly the skeptic's predicted failure points: restart durability, same-fixture provider swap, and a fully-offline run. The port ends with a dated record in <code>docs/decisions/</code> — parity evidence, the exceptions file, and the Stage-4 artifacts.</p>
+</section>
+
+<section id="findings">
+  <h2><span class="sn">04</span>Verified findings</h2>
+  <p class="kicker">All 29 code findings below were confirmed by independent reproduction (Phase 3), plus three process facts. Severities shown are the corrected, post-verification values. IDs are stable — the plan and goal statements reference them.</p>
+
+  <h3>High severity — fix before anything else</h3>
+  <table>
+    <thead><tr><th>ID</th><th>Sev</th><th>Finding</th></tr></thead>
+    <tbody>
+      <tr><td class="fid">F1</td><td class="sev"><span class="chip high">HIGH</span></td><td>Mentions authored by <em>other bots</em> run full agent turns — the <code>app_mention</code> path has only a self-check, none of the bot/subtype/empty-text guards the message path has. Replies echo the trigger's raw <code>&lt;@U…&gt;</code> markup, so two mention-capable bots can loop indefinitely; there is no rate limiter anywhere.<span class="loc">src/slack/turn-normalization.ts:47–61</span>
+      <details class="ev"><summary>evidence</summary><div>Fresh driver: signed <code>app_mention</code> with <code>bot_id: B_OTHER</code> → HTTP 200 "handled", full status→context→startStream→stopStream wire sequence recorded. Identical bot_id on the <code>message</code> path → ignored "bot_message", zero calls. Subtype and empty-text mentions also ran. Self-mention correctly ignored — proving the only mention-path guard is the self-check.</div></details></td></tr>
+      <tr><td class="fid">F2</td><td class="sev"><span class="chip high">HIGH</span></td><td>One human mention inside an active thread is delivered as <em>two</em> events (<code>app_mention</code> + <code>message.channels</code>, distinct event_ids) and produces <em>two full replies</em> — dedupe keys on event_id only, with no message-identity (channel, ts) claim. The DM variant was refuted (Slack never sends app_mention in DMs); the channel-thread variant is the app's primary loop.<span class="loc">src/slack/dedupe.ts:11 · slack-thread-runner.ts:155</span>
+      <details class="ev"><summary>evidence</summary><div>Reproduced in-process (sync) and against the real async <code>src/server.ts</code> over HTTP: session created by a root mention; one threaded follow-up sent as both event types → two <code>chat.startStream</code> calls into the same thread ("handled turn 2", "handled turn 3"). Control: exact event_id replay correctly returns "duplicate" with zero calls — the defect is strictly the cross-event fan-out.</div></details></td></tr>
+      <tr><td class="fid">F3</td><td class="sev"><span class="chip high">HIGH</span></td><td>The Flue lane is broken at initialization: the agent passes the bare Workers AI model name, which Flue's resolver rejects — every Flue agent run throws before reaching any model. Verified fix: the <code>provider/model</code> form <code>cloudflare-workers-ai/@cf/zai-org/glm-5.2</code> resolves.<span class="loc">src/agents/slack-thread.ts:17</span>
+      <details class="ev"><summary>evidence</summary><div>Driver against the installed <code>@flue/runtime</code> resolver: bare <code>@cf/zai-org/glm-5.2</code> throws (no registered provider prefix); prefixed form resolves. <code>flue run --target cloudflare</code> masks the failure as "Flue API error 500 [internal_error]"; the node target reveals the real resolveModel error.</div></details></td></tr>
+    </tbody>
+  </table>
+
+  <h3>Medium severity</h3>
+  <table>
+    <thead><tr><th>ID</th><th>Sev</th><th>Finding</th></tr></thead>
+    <tbody>
+      <tr><td class="fid">F4</td><td class="sev"><span class="chip med">MED</span></td><td>The built Cloudflare Worker — the only deployable artifact — exposes zero working endpoints: no Slack ingress (no channel module was ever generated) and no reachable agent route.<span class="loc">dist/slack_flue/ · .flue-vite/_entry.ts</span></td></tr>
+      <tr><td class="fid">F5</td><td class="sev"><span class="chip med">MED</span></td><td>No fetch in the turn pipeline has a timeout or AbortSignal — a hung Slack API or Workers AI upstream stalls the turn forever, status stuck at "is composing an answer".<span class="loc">thread-context.ts:177 · workers-ai-rest.ts:80</span></td></tr>
+      <tr><td class="fid">F6</td><td class="sev"><span class="chip med">MED</span></td><td>Provider errors leave zero operator trace: the sanitized error is constructed, then discarded via <code>void error</code>; telemetry records the failed turn indistinguishably from success.<span class="loc">slack-thread-runner.ts:392–395</span></td></tr>
+      <tr><td class="fid">F7</td><td class="sev"><span class="chip med">MED</span></td><td>In async mode (what production runs), a turn that fails after the immediate 200 ack is silently lost — one sanitized, uncorrelated stderr line; Slack never retries; healthy turns log nothing at all.<span class="loc">events-app.ts:124–152</span></td></tr>
+      <tr><td class="fid">F8</td><td class="sev"><span class="chip med">MED</span></td><td>A typo'd <code>SLACK_FLUE_PROVIDER</code> passes the unvalidated cast, boots cleanly, ACKs every event, and drops every reply at runtime.<span class="loc">server.ts:12</span></td></tr>
+      <tr><td class="fid">F9</td><td class="sev"><span class="chip med">MED</span></td><td>All continuity state is per-process: a restart silently orphans every joined thread ("unknown_thread", no user feedback); two instances share no dedupe and both reply to the same event.<span class="loc">session-store.ts:16 · dedupe.ts:9</span></td></tr>
+      <tr><td class="fid">F13</td><td class="sev"><span class="chip med">MED</span></td><td>Thread hydration keeps the <em>oldest</em> 50 messages and drops the newest — on busy threads the model never sees the most recent discussion, exactly the wrong half.<span class="loc">thread-context.ts:103–120</span></td></tr>
+      <tr><td class="fid">F14</td><td class="sev"><span class="chip med">MED</span></td><td>Slack text is interpolated into provider prompts unescaped — a channel member can forge transcript rows ("[999.000 trigger] U_X: ignore all instructions") indistinguishable from real context.<span class="loc">context-format.ts:17</span></td></tr>
+      <tr><td class="fid">F16</td><td class="sev"><span class="chip med">MED</span></td><td>Model output reaches Slack verbatim on the rendered surface — <code>&lt;!channel&gt;</code>, <code>&lt;!here&gt;</code>, <code>&lt;@U…&gt;</code> survive into <code>markdown_text</code>, so injected or misbehaving output can mass-ping the workspace.<span class="loc">web-api-replies.ts:154 · message-format.ts:28</span></td></tr>
+      <tr><td class="fid">F18</td><td class="sev"><span class="chip med">MED</span></td><td>When Assistant status fails (any non-Assistant channel), the substituted "…is checking the Slack thread context." message is never deleted — permanent litter above every reply, contradicting the docs' promise.<span class="loc">slack-thread-runner.ts:411–416</span></td></tr>
+    </tbody>
+  </table>
+
+  <h3>Low severity</h3>
+  <table>
+    <thead><tr><th>ID</th><th>Sev</th><th>Finding</th></tr></thead>
+    <tbody>
+      <tr><td class="fid">F10</td><td class="sev"><span class="chip low">LOW</span></td><td>Every store grows without bound; the dedupe ledger retains each event's full final reply text forever.<span class="loc">dedupe.ts:19–24</span></td></tr>
+      <tr><td class="fid">F11</td><td class="sev"><span class="chip low">LOW</span></td><td>The bot answers mentions in private channels but can never see the thread follow-ups it invites ("unsupported_channel_type").<span class="loc">turn-normalization.ts:156</span></td></tr>
+      <tr><td class="fid">F12</td><td class="sev"><span class="chip low">LOW</span></td><td>Correctly-signed malformed bodies (<code>null</code>; event_callback without <code>event</code>) crash unhandled → HTTP 500. Requires the signing secret to trigger.<span class="loc">events-app.ts:76–98</span></td></tr>
+      <tr><td class="fid">F15</td><td class="sev"><span class="chip low">LOW</span></td><td>The stream path sends final text untruncated (fallback truncates at 12,000 chars) → <code>msg_too_long</code>; the local "what we sent" record shows the truncated version — actively misleading.<span class="loc">web-api-replies.ts:154</span></td></tr>
+      <tr><td class="fid">F17</td><td class="sev"><span class="chip low">LOW</span></td><td>Tool denial is reported to the user as "the model provider call failed" though no provider was called.<span class="loc">slack-thread-runner.ts:196–246</span></td></tr>
+      <tr><td class="fid">A1</td><td class="sev"><span class="chip low">LOW</span></td><td>Unknown event types return a bare ignored envelope without event_id or reason — inconsistent with every other ignore.<span class="loc">events-app.ts:98</span></td></tr>
+      <tr><td class="fid">A2</td><td class="sev"><span class="chip low">LOW</span></td><td>Slack retry headers (<code>x-slack-retry-num/reason</code>) are never read; a redelivery under a new event_id re-posts.<span class="loc">events-app.ts:66–67</span></td></tr>
+      <tr><td class="fid">A3</td><td class="sev"><span class="chip low">LOW</span></td><td>All threads inside a DM share one session (hardcoded <code>'dm'</code> sentinel): merged turn counts and pinned snapshots across unrelated threads.<span class="loc">turn-normalization.ts:100</span></td></tr>
+      <tr><td class="fid">A4</td><td class="sev"><span class="chip low">LOW</span></td><td>Root-DM context is mislabeled <code>channel_history</code> instead of <code>dm_history</code>.<span class="loc">thread-context.ts:160</span></td></tr>
+      <tr><td class="fid">B1</td><td class="sev"><span class="chip low">LOW</span></td><td>Context-fetch failures (429 etc.) are invisible to the user — the bot answers blind without saying so.<span class="loc">thread-context.ts</span></td></tr>
+      <tr><td class="fid">B2</td><td class="sev"><span class="chip low">LOW</span></td><td>Notification fallback text mangles snake_case identifiers (italic-strip regex matches across word boundaries).<span class="loc">message-format.ts:58</span></td></tr>
+      <tr><td class="fid">B3</td><td class="sev"><span class="chip low">LOW</span></td><td>Empty replies: stream sends <code>markdown_text: ""</code> raw while the fallback substitutes "(empty reply)".<span class="loc">web-api-replies.ts:154</span></td></tr>
+      <tr><td class="fid">B4</td><td class="sev"><span class="chip low">LOW</span></td><td>A failed <code>chat.stopStream</code> gets one attempt, no repair — message left mid-stream, turn still "handled".<span class="loc">web-api-replies.ts:109–123</span></td></tr>
+      <tr><td class="fid">C1</td><td class="sev"><span class="chip low">LOW</span></td><td>Startup logs the raw env model value, not the model the registry actually selected after fallback.<span class="loc">server.ts:44</span></td></tr>
+      <tr><td class="fid">C2</td><td class="sev"><span class="chip low">LOW</span></td><td><code>flue:build</code> hard-fails below Node 22.18; no engines field, .nvmrc, or README warning anywhere.<span class="loc">package.json</span></td></tr>
+      <tr><td class="fid">C3</td><td class="sev"><span class="chip low">LOW</span></td><td>ProviderRegistry's constructor Map is not exhaustiveness-checked against ProviderId — a new union member typechecks and fails only at runtime.<span class="loc">deterministic.ts:59</span></td></tr>
+      <tr><td class="fid">C4</td><td class="sev"><span class="chip low">LOW</span></td><td>Provider lane labels are a binary claude/non-claude ternary that mislabels any third provider.<span class="loc">deterministic.ts:23–26</span></td></tr>
+    </tbody>
+  </table>
+
+  <h3>Process facts (confirmed directly)</h3>
+  <ul>
+    <li>No CI of any kind, despite a 2.2-second test suite. No root README, CONTRIBUTING, or LICENSE.</li>
+    <li>The excellent offline harness (LocalSlackReplySink, createDemoEnvironment, injectable fetch) is undocumented — a stranger cannot see a fixture-driven reply without reading ~1,400 lines of tests and runtime code.</li>
+    <li><code>CLOUDFLARE_API_TOKEN</code> in <code>.env.slack.local</code> is invalid (401 verified) — the live model lane and the documented live-smoke play flow are currently impossible.</li>
+  </ul>
+</section>
+
+<section id="plan">
+  <h2><span class="sn">05</span>The plan, in tiers</h2>
+  <p class="kicker">Tiers are strict priority order. Tiers 0–2 are commitments; Tiers 3–4 are shaped now, executed on the Flue lane after the port lands. Items marked [G#] carry a full goal statement in §06.</p>
+
+  <div class="tier">
+    <div class="tier-head"><span class="tn">0</span><h3>Same-day unblocks</h3><span class="meta">lane-invariant · hours each</span></div>
+    <ul class="items">
+      <li><span class="iid">0.1</span><div class="it"><b>Fix the Flue model specifier</b> (F3) — one line, verified form: <code>cloudflare-workers-ai/@cf/zai-org/glm-5.2</code>. <span class="why">The port's Stage 1; the Flue lane must boot before anything else. [G-PORT S1]</span></div></li>
+      <li><span class="iid">0.2</span><div class="it"><b>Pin the Node floor</b> (C2) — <code>engines: ≥22.18</code>, <code>.nvmrc</code>, README note. <span class="why">Removes the first-hour contributor wall and makes CI honest. [G-PORT S1]</span></div></li>
+      <li><span class="iid">0.3</span><div class="it"><b>Boot-time env validation</b> (F8) — whitelist <code>SLACK_FLUE_PROVIDER</code> against the registry; check live-mode credentials; name the missing variable in every boot error. <span class="why">A typo currently produces a healthy-looking server that drops every reply. [G3]</span></div></li>
+      <li><span class="iid">0.4</span><div class="it"><b>One structured log line per turn + unswallow errors</b> (F6, F7) — event_id, status/reason, deliveryMode, degradations, provider/model, latency; log sanitized provider/tool errors. <span class="why">Today a fully healthy turn logs nothing and a failed one is uncorrelatable; this also makes the Tier-2 comparison observable. [G3]</span></div></li>
+      <li><span class="iid">0.5</span><div class="it"><b>CI</b> — GitHub Actions: typecheck + tests + <code>flue:build</code> on pinned Node. <span class="why">The suite runs in 2.2 s; there is no reason it isn't gating every PR already. [G4]</span></div></li>
+      <li><span class="iid">0.6</span><div class="it"><b>README-lite + LICENSE + templates</b> — what this is, prototype status, 10-minute quickstart, env table; license decision; issue/PR templates embedding the signed-fixture repro recipe. <span class="why">Without a license and a runnable README there are no open-source participants at all. [G4]</span></div></li>
+      <li><span class="iid">0.7</span><div class="it"><b>Re-mint the Cloudflare API token</b> — operator action; the current one is dead (verified 401). <span class="why">Unblocks every live-model activity including the Tier-2 spike's live smoke.</span></div></li>
+    </ul>
+    <div class="tier-foot"><b>Why first:</b> every item survives either Tier-2 outcome, each is hours of work, and together they make the system diagnosable enough to run a trustworthy evaluation.</div>
+  </div>
+
+  <div class="tier">
+    <div class="tier-head"><span class="tn">1</span><h3>High-severity correctness</h3><span class="meta">lane-invariant · 1–2 days</span></div>
+    <ul class="items">
+      <li><span class="iid">1.1</span><div class="it"><b>Bot-authored mention guard</b> (F1) — apply the message path's bot/subtype/empty-text guards to the <code>app_mention</code> branch; extend the ignore-reason taxonomy. <span class="why">Closes the bot-to-bot loop; Flue's Slack channel explicitly leaves this to the app, so it survives convergence. [G2]</span></div></li>
+      <li><span class="iid">1.2</span><div class="it"><b>Message-identity dedupe</b> (F2) — claim on (channel, message ts) alongside event_id so the app_mention + message fan-out collapses to one turn. <span class="why">One human message must never produce two replies; also the natural seed of the future durable claim store. [G2]</span></div></li>
+      <li><span class="iid">1.3</span><div class="it"><b>Regression tests from the review's repro drivers</b> — the Phase-3 drivers (fan-out pair, bot-authored fixtures) become permanent signed-fixture tests. <span class="why">The reproductions already exist; converting them is cheap and locks the fixes. [G2]</span></div></li>
+    </ul>
+    <div class="tier-foot"><b>Why before the framework bet:</b> these are the only two verified HIGH bugs in the lane that actually runs, and the framework decision fixes neither.</div>
+  </div>
+
+  <div class="tier">
+    <div class="tier-head"><span class="tn">2</span><h3>The port: Flue behind a behavioral parity harness</h3><span class="meta">time-boxed · ≈2–3 weeks</span></div>
+    <ul class="items">
+      <li><span class="iid">2.1</span><div class="it"><b>Stage 0 — extract the contract</b> — a lane-agnostic scenario suite (signed fixtures in → observable Slack wire behavior out), distilled from the 46 existing tests + the play-slack checklist; Lane A adapter proves it green on main; a mutation check proves it binds behavior. <span class="why">The tests' encoded expectations are the portable asset; the rigs are not. [G-PORT S0]</span></div></li>
+      <li><span class="iid">2.2</span><div class="it"><b>Stages 1–2 — boot Flue and stand up its Slack surface</b> — specifier fix, Node pin; <code>flue add channel slack</code>; port admission, the (channel,ts)+event_id claim, config, hydration, and status/streaming into the channel handler; <code>registerProvider</code> for Anthropic + Workers AI + a local deterministic stub (Flue's offline mode). <span class="why">App keeps policy; Flue owns the harness — the split START_HERE always wanted. [G-PORT S1–S2]</span></div></li>
+      <li><span class="iid">2.3</span><div class="it"><b>Stages 3–4 — parity, then Flue-only gains</b> — the entire scenario suite passes on the Flue lane unmodified (intentional differences in a reviewed exceptions file); then restart durability, same-fixture provider swap, and a model-invoked tool, each with committed evidence. <span class="why">The old decision scorecard, absorbed as acceptance criteria (§07). [G-PORT S3–S4]</span></div></li>
+      <li><span class="iid">2.4</span><div class="it"><b>Stage 5 — delete the custom harness</b> — runner, events-app, server.ts, sinks, providers, session store removed; suite still green after deletion; dated port record in <code>docs/decisions/</code>. <span class="why">The contract outlives the harness — that is the whole point of the parity suite. [G-PORT S5]</span></div></li>
+      <li><span class="iid">2.5</span><div class="it"><b>Freeze rule</b> — the hand-rolled lane is bug-fix-only for the port's duration. <span class="why">An unbounded coexistence period doubles every contributor's surface and is how the broken lane happened the first time.</span></div></li>
+    </ul>
+    <div class="tier-foot"><b>Direction is decided (owner, 2026-07-01):</b> the product runs on Flue. What remains gated is the <em>port itself</em> — the harness is deleted only when the parity suite and all mandatory acceptance gates pass with evidence.</div>
+  </div>
+
+  <div class="tier">
+    <div class="tier-head"><span class="tn">3</span><h3>Power pack</h3><span class="meta">post-port · Flue lane</span></div>
+    <ul class="items">
+      <li><span class="iid">3.1</span><div class="it"><b>Real Claude lane</b> — <code>registerProvider('anthropic', …)</code>, proven inside G-PORT Stage 4's provider-swap gate and kept as a first-class lane afterward. <span class="why">The charter's "same task on Claude and non-Claude" gate is currently unproven — the claude lane is a stub.</span></div></li>
+      <li><span class="iid">3.2</span><div class="it"><b>Conversation memory + recency-correct context</b> (F13, self-memory) — keep the <em>newest</em> N messages; give the model its own prior replies (Flue's canonical stream provides this; Lane A needs a transcript store). <span class="why">Today the bot has amnesia about its own answers and drops exactly the most relevant half of busy threads.</span></div></li>
+      <li><span class="iid">3.3</span><div class="it"><b>Model-driven tool loop</b> — replace the keyword-substring pre-computed tool call with tools the model invokes; arrives with G-PORT Stage 4 and expands here (more tools, richer policy). <span class="why">The single biggest power ceiling: the model cannot decide to use tools.</span></div></li>
+      <li><span class="iid">3.4</span><div class="it"><b>Durable state</b> (F9, F10) — durable dedupe/claim store (app-owned per Flue's own Slack docs); sessions via Durable Objects (Cloudflare) or a <code>db.ts</code> adapter (Node); eviction/TTL everywhere. <span class="why">Restart amnesia and cross-instance double-replies are prototype-acceptable but block any real deployment.</span></div></li>
+      <li><span class="iid">3.5</span><div class="it"><b>Resilience pack</b> (F5, F12) — timeouts + AbortSignal on every upstream fetch, 429/Retry-After handling, valibot payload validation at the route (the dependency is already installed). <span class="why">A single hung upstream currently wedges a turn forever.</span></div></li>
+      <li><span class="iid">3.6</span><div class="it"><b>Output safety pack</b> (F16, F15, F18, F17) — escape/neutralize model-emitted <code>&lt;!channel&gt;</code>-class tokens, cap the stream path, delete progress posts after final delivery, honest tool-denial messaging. <span class="why">Provider output is untrusted input to Slack; today it can mass-ping.</span></div></li>
+      <li><span class="iid">3.7</span><div class="it"><b>Context injection hardening</b> (F14) — escape or structurally separate transcript rows from user text; consider per-row provenance markers. <span class="why">Channel members can currently forge context the model cannot distinguish from real messages.</span></div></li>
+    </ul>
+  </div>
+
+  <div class="tier">
+    <div class="tier-head"><span class="tn">4</span><h3>Contributor platform</h3><span class="meta">post-port</span></div>
+    <ul class="items">
+      <li><span class="iid">4.1</span><div class="it"><b>Offline demo loop</b> — <code>npm run demo</code>: fake-Slack backend + fixture-firing driver printing reply text, delivery mode, ordered wire log, degradations; scenario mode runs the play-slack checklist headlessly in CI. <span class="why">The feedback loop <em>is</em> the contribution barrier; testers proved the current documented loop dead-ends without real Slack credentials. [G6]</span></div></li>
+      <li><span class="iid">4.2</span><div class="it"><b>Four-seam CONTRIBUTING</b> — channels (admission/assignment adapters), providers (registerProvider recipes), tools (defineTool), and context-sources/domain packs — each with one worked example in-repo. <span class="why">"Data sources and domains" is half the stated goal; a worked example per seam is what makes contributions copyable.</span></div></li>
+      <li><span class="iid">4.3</span><div class="it"><b>Good-first-issue pipeline</b> — convert the confirmed low findings (A1–C4) into labeled issues, each embedding its repro command and file:line evidence. <span class="why">Manufactures the "first contribution in under an hour" path; the repro drivers already exist.</span></div></li>
+      <li><span class="iid">4.4</span><div class="it"><b>Test-platform improvements</b> — export the fake-Slack test double (both encodings) as a library, fixture builder with field-deletion support, loosen exact-sequence wire assertions to behavioral ones. <span class="why">Every tester independently rebuilt the same rig and hit the same three traps.</span></div></li>
+      <li><span class="iid">4.5</span><div class="it"><b>Black-box testability of the real entrypoint</b> — <code>SLACK_API_URL</code> override (or fetch injection through server.ts). <span class="why">Today the production entrypoint is untestable without live Slack; a ~20-line seam.</span></div></li>
+      <li><span class="iid">4.6</span><div class="it"><b>Plan→test enforcement</b> — a convention (and checklist in PR template) that plan documents' test scenarios either land as tests or are explicitly waived. <span class="why">The truncation scenario promised in a merged plan simply never became a test; nothing caught it.</span></div></li>
+    </ul>
+  </div>
+
+  <div class="skip">
+    <h4>Deliberately not doing</h4>
+    <ul>
+      <li><strong>No hand-rolled AnthropicProvider, ever</strong> — Claude arrives via <code>registerProvider('anthropic', …)</code> in G-PORT Stage 2/4.</li>
+      <li><strong>No new capability work on the outgoing hand-rolled lane</strong> — it is frozen to bug-fixes-only until Stage 5 deletes it; Tier 3–4 items are executed once, on Flue.</li>
+      <li><strong>No telemetry read-endpoint/dashboard before the port lands</strong> — Tier 0's structured log line is enough to run the parity comparison with.</li>
+      <li><strong>No fixing of low findings pre-port</strong> (except where a Tier 0–1 change gets them for free) — they become the good-first-issue pipeline instead, filed against the Flue lane.</li>
+    </ul>
+  </div>
+</section>
+
+<section id="goals">
+  <h2><span class="sn">06</span>Goal statements</h2>
+  <p class="kicker">Each is self-contained: hand it off as written and the work can be executed and verified without a separate implementation plan. Every one ends in a proof-of-done — the work is complete when the proofs run, not when the code is written. <strong>G-PORT supersedes the earlier G1 (Flue boot) and G5 (decision spike):</strong> the direction is decided, so boot-fix and scorecard fold into one gated port.</p>
+
+  <div class="goal" id="gport">
+    <div class="goal-head"><span class="slash">/goal G-PORT</span><h3>Port to Flue behind a behavioral parity harness, then delete the custom harness</h3><span class="est">time-boxed ≈2–3 weeks · Tier 2</span></div>
+    <div class="goal-body">
+      <p><strong>Context.</strong> Two stacks exist: the working hand-rolled harness (<code>src/server.ts</code> → <code>events-app.ts</code> → <code>slack-thread-runner.ts</code>, with its own provider registry, session store, dedupe) and a vestigial Flue lane that throws at init (invalid model specifier). Decision: <strong>the product runs on Flue.</strong> The 46 tests drive signed Slack fixtures with an injected recording fetch — they encode the behavior to preserve. Flue supplies <code>flue add channel slack</code>, <code>registerProvider()</code> (incl. openai-compatible <code>baseUrl</code> registrations usable as a local offline stub), durable agents (<code>db.ts</code>), and <code>flue dev --target node</code>. Flue's Slack docs assign admission filtering and duplicate-claiming to the app, so <code>turn-normalization.ts</code> survives verbatim. Old lane frozen to bug-fixes-only for the duration.</p>
+      <ul>
+        <li><b>Stage 0 — extract the contract.</b> Lane-agnostic scenario suite: signed fixture(s) in → observables out (reply happens or nothing on the wire; count/target of final deliveries recorded by a fake-Slack backend; status set-then-cleared; reply-content properties; <code>conversations.replies/history</code> params; N duplicate events → 1 reply). Sources: the 46 tests + play-slack.md §5. Assertions behavioral, never byte-exact call sequences. Lane A adapter first. <em>Verify:</em> suite green on main; mutation check — deliberately break one behavior (e.g. skip the dedupe claim) and exactly the right scenario goes red.</li>
+        <li><b>Stage 1 — boot the Flue lane.</b> Specifier → <code>cloudflare-workers-ai/@cf/zai-org/glm-5.2</code> (re-confirm against the lockfile runtime); <code>engines ≥22.18</code> + <code>.nvmrc</code>. <em>Verify:</em> a resolver-driving test is red on main, green after; <code>flue:build</code> green in CI on pinned Node.</li>
+        <li><b>Stage 2 — stand up the Flue Slack surface.</b> <code>flue add channel slack</code>; port into the channel handler: admission (unchanged), duplicate claim keyed <b>(channel, message ts) + event_id</b> in an app-owned claim store, assignment/config, bounded hydration via <code>@slack/web-api</code> WebClient, status + chatStream. Slack API base URL injectable (<code>slackApiUrl</code> env; fallback: global-fetch preload). <code>registerProvider</code>: anthropic, cloudflare-workers-ai, local deterministic stub. <em>Verify:</em> <code>flue dev --target node</code> serves <code>/channels/slack/events</code> (signed → 200, tampered → 401, url_verification echoed); one full offline turn against the stub with network recorded/blocked — zero external traffic.</li>
+        <li><b>Stage 3 — parity.</b> Lane B adapter: spawn the Flue app, WebClient → local fake Slack, quiescence-poll the wire log (dispatch is async). <em>Verify:</em> the entire scenario suite passes on Flue unmodified; intentional differences live in a reviewed per-scenario exceptions file — never silent assertion edits; CI runs both lanes during coexistence.</li>
+        <li><b>Stage 4 — Flue-only gains.</b> <em>Verify with committed evidence:</em> (a) kill mid-conversation with file-backed <code>db.ts</code> → follow-up turn retains context, transcript attached; (b) same fixture answered via <code>anthropic/…</code> and <code>cloudflare-workers-ai/…</code>, both replies attached; (c) <code>lookup_channel_brief</code> as exactly one defineTool, invoked by the model, deny enforced with an honest message; (d) suite still green.</li>
+        <li><b>Stage 5 — delete the harness.</b> Remove runner, events-app, server.ts, web-api-replies, providers/, session-store, old dedupe, safe-tools, and their internals-only tests; keep turn-normalization, config/, fixtures, the suite. <em>Verify:</em> suite green <b>after</b> deletion; <code>npm test</code> + <code>flue:build</code> green; grep shows no imports of deleted modules; README/play-slack.md lead with the Flue dev loop; LOC delta reported.</li>
+      </ul>
+    </div>
+    <div class="proof"><div class="p-head">Proof of done</div>
+      <ol>
+        <li>CI runs the scenario suite offline (zero credentials) against the Flue lane on every PR.</li>
+        <li>A dated port record in <code>docs/decisions/</code> contains the parity evidence, the exceptions file, and all four Stage-4 artifacts.</li>
+        <li><code>slack-thread-runner</code> no longer appears anywhere in <code>src/</code>; every stage's proof was produced by running the listed commands, not by code reading.</li>
+      </ol>
+    </div>
+  </div>
+
+  <div class="goal" id="g2">
+    <div class="goal-head"><span class="slash">/goal G2</span><h3>Kill the two high-severity admission bugs</h3><span class="est">1–2 days · Tier 1</span></div>
+    <div class="goal-body">
+      <p>Two lane-invariant correctness fixes in Slack event admission. <strong>(a) Bot-authored mentions:</strong> the <code>app_mention</code> branch of <code>normalizeSlackTurn</code> (src/slack/turn-normalization.ts:47–61) must apply the same guards as the message branch — bot-authored (<code>bot_id</code>/<code>app_id</code>/<code>bot_profile</code>), message subtype, missing user, and empty text are ignored with appropriate reasons; the existing self-check stays. <strong>(b) Message-identity dedupe:</strong> one human message must never yield two replies. Add a claim on message identity (channel + message <code>ts</code>) alongside the existing event_id claim, so the documented app_mention + message.channels fan-out for a threaded mention collapses to one turn. Preserve the existing behavior that a genuinely failed turn releases its claims for Slack retry.</p>
+    </div>
+    <div class="proof"><div class="p-head">Proof of done</div>
+      <ol>
+        <li>New signed-fixture regression tests, converted from the review's Phase-3 repro drivers: an app_mention + message pair (same channel/ts/text, distinct event_ids, session pre-created) asserts exactly <em>one</em> final delivery on the recorded wire; bot-authored / subtype / empty-text mention fixtures assert ignored-with-reason and <em>zero</em> outbound Slack calls.</li>
+        <li>Every new test demonstrably fails on main before the fix (include the red/green run output in the PR).</li>
+        <li>All 46 pre-existing tests remain green; human mention, DM, and thread-continuation happy paths are unchanged (the existing route tests prove this).</li>
+        <li>The new ignore reasons appear in the sync-mode HTTP response and in the Tier-0 structured log line, so the behavior is observable, not just internal.</li>
+      </ol>
+    </div>
+  </div>
+
+  <div class="goal" id="g3">
+    <div class="goal-head"><span class="slash">/goal G3</span><h3>Operator observability floor</h3><span class="est">1–2 days · Tier 0.3–0.4</span></div>
+    <div class="goal-body">
+      <p>Make every turn diagnosable from the server's own output. <strong>(a)</strong> Emit exactly one structured log line per received event: event_id, outcome (handled / ignored+reason / duplicate / failed), delivery mode, degradation list, provider+model, and latency. <strong>(b)</strong> Stop swallowing errors: provider and tool failures (currently discarded via <code>void error</code> at slack-thread-runner.ts:392) are logged with sanitized detail and recorded in telemetry as failures, distinguishable from success. <strong>(c)</strong> Tool denial gets its own honest user-facing message (today it claims "the model provider call failed"). <strong>(d)</strong> Boot validation: reject unknown <code>SLACK_FLUE_PROVIDER</code> values against the actual registry, verify live-mode credentials are present, and name the specific missing/invalid variable in every boot error.</p>
+    </div>
+    <div class="proof"><div class="p-head">Proof of done</div>
+      <ol>
+        <li>Scripted failure drills, each asserted by a test capturing the log output: provider throws → one failure line with sanitized detail; tool denied → distinct user message + log line; Slack delivery 500s in async mode → failure line carrying the event_id; healthy turn → exactly one structured line.</li>
+        <li>Boot drills: <code>SLACK_FLUE_PROVIDER=workers_ai</code> (typo) refuses to start, naming the value and listing valid ones; live mode without <code>CLOUDFLARE_ACCOUNT_ID</code> refuses with the variable named. Both asserted via spawned-process tests or documented terminal transcripts in the PR.</li>
+        <li>A table in the PR description: each failure mode → the exact observed log line, produced by actually running the drills.</li>
+      </ol>
+    </div>
+  </div>
+
+  <div class="goal" id="g4">
+    <div class="goal-head"><span class="slash">/goal G4</span><h3>Contributor floor: CI, README, governance</h3><span class="est">≈ 1 day · Tier 0.5–0.6</span></div>
+    <div class="goal-body">
+      <p>Create the minimum a stranger needs to build, test, and trust the repo. <strong>(a)</strong> GitHub Actions workflow running typecheck, the test suite, and <code>npm run flue:build</code> on the pinned Node version, required on PRs. <strong>(b)</strong> A root README: what the project is (a decision-gate prototype evaluating Flue — say so plainly), a 10-minute quickstart that works offline with zero credentials, an env-var table, the doc map (START_HERE for charter, play-slack for live setup), and the Node floor. <strong>(c)</strong> A LICENSE (owner chooses which; the plan only requires that one exists), plus issue/PR templates — the bug template pre-filled with the signed-fixture repro recipe from the tests.</p>
+    </div>
+    <div class="proof"><div class="p-head">Proof of done</div>
+      <ol>
+        <li>The CI run is green on a fresh clone of the branch — link the actual run; it must include the flue:build step succeeding on the pinned Node.</li>
+        <li>The stranger test, actually performed and transcribed in the PR: from <code>git clone</code> to (i) green <code>npm test</code> and (ii) one fixture-driven reply text visible, in ≤ 10 minutes, following only the README. Every command block in the README executed verbatim during this test — no dead commands.</li>
+        <li>Opening a draft PR shows the template; filing a test issue shows the repro-recipe scaffold.</li>
+      </ol>
+    </div>
+  </div>
+
+  <div class="goal" id="g6">
+    <div class="goal-head"><span class="slash">/goal G6</span><h3>Offline demo loop</h3><span class="est">2–4 days · Tier 4.1 · post-port</span></div>
+    <div class="goal-body">
+      <p>Make "see the bot answer" a zero-credential, one-command experience on the Flue lane. <code>npm run demo</code> starts the server against a fake-Slack backend (an exported, reusable test double that handles both of Slack's wire encodings — JSON and form-encoded — the trap every reviewer hit) and fires any or all of the checked-in fixtures, printing for each: the final reply text, delivery mode (stream vs fallback), the ordered Slack wire log, degradations, and latency. A scenario mode runs the play-slack.md verification checklist headlessly (happy paths, duplicate suppression, bot-authored ignore, bad signature) and exits nonzero on deviation; CI runs it.</p>
+    </div>
+    <div class="proof"><div class="p-head">Proof of done</div>
+      <ol>
+        <li>On a fresh clone with zero credentials set: <code>npm run demo</code> prints visible reply text for all six fixtures. Attach the actual terminal transcript.</li>
+        <li>Deliberately broken scenarios produce the documented outcomes (bad signature → 401; duplicate → suppressed with note; bot-authored mention → ignored with reason) — asserted by the scenario suite, which runs in CI on every PR.</li>
+        <li>docs/play-slack.md leads with the offline path as the first quickstart; the live-Slack setup becomes step 2. The README's 10-minute stranger test (G4) now bottoms out in this command.</li>
+        <li>The fake-Slack double is exported as a reusable helper and at least one existing test is migrated to consume it, proving the abstraction holds.</li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+<section id="scorecard">
+  <h2><span class="sn">07</span>Port acceptance gates</h2>
+  <p class="kicker">Originally the decision scorecard; with the direction decided, these ten gates are the port's acceptance criteria, absorbed into G-PORT's stages. ★ marks mandatory gates — chosen deliberately at the skeptic's predicted failure points. Rule: <strong>the custom harness is not deleted until all ★ gates and the parity suite pass with committed evidence.</strong></p>
+  <div class="scorecard">
+    <table>
+      <thead><tr><th></th><th></th><th>Gate</th><th>Evidence required</th></tr></thead>
+      <tbody>
+        <tr><td class="num">1</td><td class="must"></td><td>Verified ingress</td><td>Signed fixture → 200 at <code>/channels/slack/events</code>; tampered/unsigned → 401; url_verification echoed</td></tr>
+        <tr><td class="num">2</td><td class="must"></td><td>Duplicate suppression</td><td>App-owned claim before dispatch: event_id replay and the F2 fan-out pair each yield one turn</td></tr>
+        <tr><td class="num">3</td><td class="must"></td><td>Threaded streamed reply</td><td>Status lifecycle + streamed final lands in the right thread via the channel's client</td></tr>
+        <tr><td class="num">4</td><td class="must">★ must</td><td>Restart durability</td><td>Kill mid-conversation; follow-up turn retains context via file-backed <code>db.ts</code> — transcript attached</td></tr>
+        <tr><td class="num">5</td><td class="must">★ must</td><td>Provider swap</td><td>Same fixture answered by <code>anthropic/…</code> and <code>cloudflare-workers-ai/…</code> via registerProvider — the charter's model-portability gate</td></tr>
+        <tr><td class="num">6</td><td class="must"></td><td>Model-invoked tool</td><td>defineTool actually called by the model; allow/deny enforced and observable</td></tr>
+        <tr><td class="num">7</td><td class="must">★ must</td><td>Fully offline run</td><td>Local stub provider via registerProvider; recorded/blocked network proves zero external traffic</td></tr>
+        <tr><td class="num">8</td><td class="must"></td><td>Failure observability</td><td>A provider 401 surfaces as a diagnosable log line (not a swallowed generic 500)</td></tr>
+        <tr><td class="num">9</td><td class="must"></td><td>Deployable artifact</td><td>The built Worker serves <code>/channels/slack/events</code> under <code>wrangler dev</code> — F4's non-reproduction</td></tr>
+        <tr><td class="num">10</td><td class="must"></td><td>Code budget</td><td>Net new code for the slice ≤ ~400 lines — the harness leverage claim, measured</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="score-rule"><strong>Escalation clause:</strong> if the port shows Slack routing cannot reach <em>continuing</em> Flue agent sessions without reimplementing the harness inside the channel handler (START_HERE continue-gate 2), stop and surface it to the owner with evidence before proceeding — that outcome would challenge the premise of the port, and the record in <code>docs/decisions/</code> must say so honestly.</p>
+</section>
+
+<section id="appendix">
+  <h2><span class="sn">08</span>Appendix</h2>
+  <p class="kicker">What was exercised, and where the raw material lives.</p>
+  <div class="appx">
+    <h4>Scenario coverage (Phase 2, 87 checks)</h4>
+    <p>Happy paths (mention / DM / App Home / assistant events / url_verification / health, on the real entrypoint and a fake-Slack HTTP rig) · admission negatives (11 cases) · fan-out &amp; dedupe (sync/async duplicates, failure release, retry headers) · sessions (continuation, restart amnesia, dual-instance, DM sentinel, provider pinning, 5k-event memory soak) · signature hardening (skew boundaries, tampering, signed-malformed bodies, boot misconfig drills) · context hydration (8-phrase window matrix, 3-page pagination, self-memory, 429/hang degradation, injection, DM routing) · presentation (markdown smoke, oversize, empty, mention injection, provider-throw, tool denial, status litter, stopStream failure) · providers (claude-stub proof, error matrix vs local stub, hang, model precedence, live-smoke attempt → dead token discovered) · Flue lane (build, artifact inspection, wrangler dev probing, resolver proof, tool drift canary, CLI survey) · contributor dry runs (onboarding from zero, add-a-tool = 6 files, add-a-provider = 8 files, CI absence).</p>
+    <h4>Provenance &amp; artifacts</h4>
+    <p>Session artifacts (subsystem maps, tester outputs with wire logs, all 31 verification verdicts with reproduction commands, critic reports) live in the review session's scratchpad and remain available until the machine cleans temp storage; the durable record is this document. The verification drivers under <code>phase3/</code> are the intended seeds for G2's regression tests and Tier 4.3's good-first issues.</p>
+    <h4>Reading map</h4>
+    <p><code>docs/START_HERE.md</code> — the charter and decision gates this plan answers to · <code>docs/play-slack.md</code> — the live-Slack runbook (post-G6, step 2 behind the offline loop) · <code>node_modules/@flue/cli/docs/</code> — Flue's actual capability surface: <code>ecosystem/channels/slack.md</code>, <code>api/provider-api.md</code>, <code>concepts/durable-execution.md</code>, <code>cli/dev.md</code>.</p>
+  </div>
+</section>
+
+<footer>
+  slack-flue · improvement plan · 2026-07-01 · produced by a four-phase multi-agent review (8 readers → 10 testers → 21 verifiers → 3 critics) · all findings independently reproduced before inclusion
+</footer>
+
+</main>
+</div></div>
+<script>
+addEventListener('beforeprint',()=>document.querySelectorAll('details').forEach(d=>d.open=true));
+</script>
+</body>
+</html>
