@@ -26,11 +26,11 @@ export interface SlackPresenterTarget {
 }
 
 /**
- * Slack presentation over a `@slack/web-api` WebClient. Mirrors the hand-rolled
- * lane's presentation policy (src/runtime/slack-thread-runner.ts +
- * src/slack/web-api-replies.ts) using the same status texts / loading messages
- * and the same fallback ordering, but as a fresh WebClient-based module (the old
- * `web-api-replies.ts` sink is deleted in a later stage).
+ * Slack presentation over a `@slack/web-api` WebClient. This is the sole Slack
+ * presentation path: it carries forward the status texts / loading messages and
+ * fallback ordering that the deleted hand-rolled lane once implemented (in the
+ * former src/runtime/slack-thread-runner.ts + src/slack/web-api-replies.ts),
+ * now as a fresh WebClient-based module.
  *
  * Status policy: attempted per stage but latched off after the first rejection
  * for the turn (no retry storm — scenario S16); a clear is only issued when a
