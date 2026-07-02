@@ -12,7 +12,7 @@ import type { NormalizedSlackTurn, SlackEventFixture } from '../slack/types.ts';
 // Loopback-only hostnames: an origin derived from the inbound request's Host
 // header (see `resolveSelfBaseUrl`) is only trusted when it points back at
 // this same process, since Slack's request signature does not cover Host.
-const LOOPBACK_HOSTNAMES = new Set(['127.0.0.1', '::1', 'localhost']);
+const LOOPBACK_HOSTNAMES = new Set(['127.0.0.1', '::1', '[::1]', 'localhost']);
 
 /**
  * Lazily-constructed outbound Slack client. Reading env at first use (not module
