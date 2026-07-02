@@ -9,6 +9,8 @@
  *   3. signed app_mention      -> 200, exactly ONE chat.postMessage final in
  *      C_EXEC thread 1782770400.000100 containing the stub reply marker
  *   4. NET_GUARD_LOG empty     -> zero external traffic
+ *   5. direct POST to the internal agent endpoint without the internal
+ *      token  -> 401 (proves the agent route is not reachable unauthenticated)
  *
  * Run with Node >= 22.19 (flue requirement):
  *   PATH=/opt/homebrew/opt/node@24/bin:$PATH node scripts/verify-flue-offline-turn.mjs
@@ -194,6 +196,24 @@ try {
       'NET_GUARD_LOG empty -> zero external traffic',
       attempted === '',
       attempted === '' ? 'no external hosts attempted' : `attempted: ${attempted}`,
+    );
+  }
+
+  // Check 5: the internal agent endpoint rejects direct callers that don't
+  // present the internal token (Finding 2 — the channel's self-call is
+  // signature-verified upstream on /channels/slack/events; this endpoint has
+  // no other gate, so it must reject unauthenticated requests on its own).
+  {
+    const response = await fetch(`${BASE_URL}/agents/slack-thread/some-id`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: 'unauthenticated probe' }),
+    });
+    const text = await response.text();
+    record(
+      'unauthenticated POST /agents/slack-thread/:id -> 401',
+      response.status === 401,
+      `status=${response.status} body=${text}`,
     );
   }
 } catch (error) {

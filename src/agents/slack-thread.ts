@@ -1,13 +1,23 @@
 import { defineAgent, type AgentRouteHandler } from '@flue/runtime';
 
 import { AgentStore, AssignmentStore, resolveAssignmentFromThreadKey } from '../config/resolver.ts';
+import { INTERNAL_AGENT_TOKEN_HEADER, isValidInternalAgentToken } from '../slack/internal-auth.ts';
 import { createLookupChannelBriefTool } from '../tools/flue-tools.ts';
 
 // Expose the agent over HTTP at `POST /agents/slack-thread/:id` so the Slack
-// channel can drive one durable turn via `?wait=result`. Access control for the
-// direct prompt is the channel's responsibility (it only ever self-calls with a
-// conversation key it just derived from a signature-verified event).
-export const route: AgentRouteHandler = async (_c, next) => next();
+// channel can drive one durable turn via `?wait=result`. This endpoint is
+// otherwise unauthenticated (Slack signature verification happens upstream,
+// on the channel's `/channels/slack/events` route, not here) — anyone who can
+// reach the app could otherwise drive the agent directly (LLM cost,
+// channel-brief disclosure). Gate every method, including GET history views,
+// on the shared internal token; the channel's self-call sends it.
+export const route: AgentRouteHandler = async (c, next) => {
+  const token = c.req.header(INTERNAL_AGENT_TOKEN_HEADER);
+  if (!isValidInternalAgentToken(token)) {
+    return c.json({ error: 'unauthorized' }, 401);
+  }
+  return next();
+};
 
 export default defineAgent(async ({ id }) => {
   const stores = {

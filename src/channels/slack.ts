@@ -4,9 +4,15 @@ import { WebClient } from '@slack/web-api';
 
 import { AgentStore, AssignmentStore, resolveAssignment } from '../config/resolver.ts';
 import { InMemoryClaimStore, type SlackClaimStore } from '../slack/claim-store.ts';
+import { INTERNAL_AGENT_TOKEN, INTERNAL_AGENT_TOKEN_HEADER } from '../slack/internal-auth.ts';
 import { slackThreadKey } from '../slack/thread-key.ts';
 import { normalizeSlackTurn } from '../slack/turn-normalization.ts';
 import type { NormalizedSlackTurn, SlackEventFixture } from '../slack/types.ts';
+
+// Loopback-only hostnames: an origin derived from the inbound request's Host
+// header (see `resolveSelfBaseUrl`) is only trusted when it points back at
+// this same process, since Slack's request signature does not cover Host.
+const LOOPBACK_HOSTNAMES = new Set(['127.0.0.1', '::1', 'localhost']);
 
 /**
  * Lazily-constructed outbound Slack client. Reading env at first use (not module
@@ -101,8 +107,17 @@ export const channel = createSlackChannel({
     }
 
     // e. Capture the self-origin BEFORE detaching, then run the turn as a
-    //    detached promise so the events callback returns a fast 200.
-    const selfBaseUrl = process.env.FLUE_SELF_URL ?? new URL(c.req.url).origin;
+    //    detached promise so the events callback returns a fast 200. Slack
+    //    signatures don't cover the Host header, so an untrusted derived
+    //    origin means we skip the turn rather than let a spoofed Host divert
+    //    it (with the message content) to an attacker-controlled origin.
+    const selfBaseUrl = resolveSelfBaseUrl(c.req.url);
+    if (!selfBaseUrl) {
+      claimStore.release(evtKey);
+      claimStore.release(msgKey);
+      console.error('[slack-flue] rejected self-call: untrusted request origin');
+      return;
+    }
     void runTurn(turn, selfBaseUrl).catch((err) => {
       // Release on failure so a Slack retry can re-drive the turn.
       claimStore.release(evtKey);
@@ -111,6 +126,30 @@ export const channel = createSlackChannel({
     });
   },
 });
+
+/**
+ * Resolve the base URL for the app's own self-call to the agent endpoint.
+ *
+ * `new URL(c.req.url).origin` is derived from the inbound request's Host
+ * header, which Slack's request signature does NOT cover. A captured signed
+ * event replayed within the timestamp window with a forged Host header would
+ * otherwise make the app POST the turn (message content) to an
+ * attacker-controlled origin. So: prefer an explicit operator-configured URL,
+ * and otherwise only trust the derived origin when it is loopback (dev/test
+ * always run against 127.0.0.1/localhost) — any other host is rejected.
+ */
+function resolveSelfBaseUrl(requestUrl: string): string | undefined {
+  const configured = process.env.FLUE_SELF_URL;
+  if (configured) return configured;
+
+  let origin: URL;
+  try {
+    origin = new URL(requestUrl);
+  } catch {
+    return undefined;
+  }
+  return LOOPBACK_HOSTNAMES.has(origin.hostname) ? origin.origin : undefined;
+}
 
 /**
  * Minimal turn: prompt the durable agent over the app's own HTTP API and block
@@ -125,7 +164,10 @@ async function runTurn(turn: NormalizedSlackTurn, selfBaseUrl: string): Promise<
 
   const response = await fetch(url, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: {
+      'content-type': 'application/json',
+      [INTERNAL_AGENT_TOKEN_HEADER]: INTERNAL_AGENT_TOKEN,
+    },
     body: JSON.stringify({ message: turn.text }),
   });
   if (!response.ok) {
