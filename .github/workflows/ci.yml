@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+# Offline by design: the parity suite runs the real Flue app against an
+# in-memory fake Slack/provider backend. No secrets, no network beyond the npm
+# registry (npm ci). The CI runner's Node is pinned by .nvmrc (>= 22.19), so
+# Lane B builds and spawns the Flue app with the runner's own Node — no
+# FLUE_NODE_BIN override is needed (that is only for the local default Node 22.14).
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Runs typecheck, the legacy suite, Lane A, and Lane B (which builds
+      # dist-node/ once and spawns a fresh Flue server per scenario).
+      - name: Test (both parity lanes + legacy)
+        run: npm test
+
+      # Confirm the production cloudflare artifact still builds.
+      - name: Build (cloudflare target)
+        run: npm run flue:build

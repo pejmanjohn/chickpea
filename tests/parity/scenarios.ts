@@ -10,6 +10,7 @@ import {
   topLevelChannelMessage,
 } from '../helpers/slack-fixtures.ts';
 import { RAW_PROVIDER_ERROR_MARKER, STUB_REPLY_MARKER, isMarkdownPost } from './fake-slack.ts';
+import type { ParityException } from './exceptions.ts';
 import type { Lane, LaneInstance, ScenarioLaneConfig } from './lane.ts';
 import type { SlackEventFixture } from '../../src/slack/types.ts';
 
@@ -422,16 +423,89 @@ export const scenarios: Scenario[] = [
       assert.ok(finals.every((final) => final.threadTs === ROOT_THREAD_TS));
     },
   },
+  {
+    id: 'S21',
+    title: 'threaded mention fan-out (mention + companion message) yields one reply',
+    config: {},
+    async run(instance) {
+      // Slack delivers BOTH an app_mention and a message event for a single
+      // in-thread mention: same channel + message ts, different event_ids. A
+      // correct app replies exactly once. The Flue lane claims
+      // msg:channel:messageTs (in addition to evt:event_id), so the companion
+      // is deduped. Lane A dedupes on event_id only, so it double-replies —
+      // that lane is frozen and registered as an expected-fail exception.
+      const fanoutTs = ROOT_THREAD_TS;
+      const mention = appMention({
+        event_id: 'Ev_FANOUT_MENTION',
+        event: { text: '<@U_BOT> fan-out check', ts: fanoutTs, event_ts: fanoutTs },
+      });
+      const companion = channelThreadMessage({
+        event_id: 'Ev_FANOUT_MESSAGE',
+        event: {
+          text: '<@U_BOT> fan-out check',
+          ts: fanoutTs,
+          event_ts: fanoutTs,
+          thread_ts: fanoutTs,
+        },
+      });
+
+      const mentionResponse = await instance.postEvent(mention);
+      assert.equal(mentionResponse.status, 200);
+      await instance.quiesce();
+
+      const companionResponse = await instance.postEvent(companion);
+      assert.equal(companionResponse.status, 200);
+      await instance.quiesce();
+
+      assert.equal(instance.backend.finals().length, 1);
+    },
+  },
 ];
 
-export function runScenarioSuite(lane: Lane): void {
+/**
+ * Register the scenario suite as `node:test` tests for a lane.
+ *
+ * `exceptions` is additive (default `[]` preserves the original behavior). An
+ * entry whose `scenarioId` + `lane` match is honored per its `behavior`:
+ * `expected-fail` scenarios still RUN, an assertion failure passes the test
+ * with a printed `EXCEPTION` note, and an unexpected PASS fails the test as a
+ * stale exception.
+ */
+export function runScenarioSuite(lane: Lane, exceptions: ParityException[] = []): void {
   for (const scenario of scenarios) {
+    const exception = exceptions.find(
+      (entry) => entry.scenarioId === scenario.id && entry.lane === lane.name,
+    );
     test(`${lane.name} · ${scenario.id} ${scenario.title}`, async () => {
       const instance = await lane.start(scenario.config);
+      let scenarioError: unknown;
       try {
         await scenario.run(instance);
+      } catch (error) {
+        scenarioError = error;
       } finally {
         await instance.stop();
+      }
+
+      if (exception?.behavior === 'expected-fail') {
+        if (scenarioError === undefined) {
+          throw new Error(
+            `Stale exception: ${scenario.id} on ${lane.name} is registered as ` +
+              `expected-fail but PASSED. Remove the exceptions.ts entry. Rationale ` +
+              `was: ${exception.rationale}`,
+          );
+        }
+        const reason =
+          scenarioError instanceof Error ? scenarioError.message : String(scenarioError);
+        console.log(
+          `EXCEPTION  ${lane.name} · ${scenario.id}: expected-fail as designed — ` +
+            `${exception.rationale} (observed failure: ${reason.split('\n')[0]})`,
+        );
+        return;
+      }
+
+      if (scenarioError !== undefined) {
+        throw scenarioError;
       }
     });
   }
