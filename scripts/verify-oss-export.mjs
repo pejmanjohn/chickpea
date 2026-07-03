@@ -7,6 +7,7 @@ import {
   rmSync,
   statSync,
 } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { dirname, extname, join, posix, relative } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -51,6 +52,13 @@ const forbiddenBinaryExtensions = new Set([
   '.pdf',
   '.png',
   '.webp',
+]);
+
+const allowedBinaryFiles = new Map([
+  [
+    exportPath('assets', 'bot-avatar.png'),
+    '31b6bd258c2c9acc2fa7c1600789cbaaeb13c8dc39c33ca036e14c17f13ab822',
+  ],
 ]);
 
 function fail(message) {
@@ -100,17 +108,30 @@ function walk(dir, files = []) {
   return files;
 }
 
+function sha256(file) {
+  return createHash('sha256').update(readFileSync(file)).digest('hex');
+}
+
 function scanExportTree() {
   const findings = [];
   for (const file of walk(scratch)) {
     const rel = relative(scratch, file);
     const extension = extname(file).toLowerCase();
+    const size = statSync(file).size;
     if (forbiddenBinaryExtensions.has(extension)) {
-      findings.push(`${rel}: forbidden binary/image extension ${extension}`);
+      const expectedHash = allowedBinaryFiles.get(rel);
+      if (!expectedHash) {
+        findings.push(`${rel}: forbidden binary/image extension ${extension}`);
+        continue;
+      }
+
+      const actualHash = sha256(file);
+      if (actualHash !== expectedHash) {
+        findings.push(`${rel}: allowed binary hash mismatch (${actualHash})`);
+      }
       continue;
     }
 
-    const size = statSync(file).size;
     if (size > 5_000_000) {
       findings.push(`${rel}: file is too large for text leak scanning (${size} bytes)`);
       continue;
