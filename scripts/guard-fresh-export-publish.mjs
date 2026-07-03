@@ -25,12 +25,15 @@ try {
     process.exit(0);
   }
 
-  const commitCount = Number(git(['rev-list', '--count', 'HEAD']));
-  if (!Number.isFinite(commitCount) || commitCount < 1) {
+  const sampledCommits = git(['rev-list', '--max-count=2', 'HEAD'])
+    .split('\n')
+    .filter(Boolean);
+  if (sampledCommits.length < 1) {
     throw new Error('could not determine commit count');
   }
 
-  if (commitCount > 1) {
+  if (sampledCommits.length > 1) {
+    const commitCount = Number(git(['rev-list', '--count', 'HEAD']));
     console.error(
       [
         'Refusing to publish from this development repository.',

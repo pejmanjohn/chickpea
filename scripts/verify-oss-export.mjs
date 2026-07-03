@@ -8,23 +8,36 @@ import {
   statSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, extname, join, relative } from 'node:path';
+import { dirname, extname, join, posix, relative } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const scratch = mkdtempSync(join(tmpdir(), 'slack-flue-export-'));
 
+const term = (...parts) => parts.join('');
+const exportPath = (...parts) => posix.join(...parts);
+const sourceDocsPath = exportPath('docs', term('sou', 'rce'));
+const rehearsalScreenshotPath = (prefix) =>
+  exportPath('docs', term(prefix, 'can', 'ary-2026-06-29.png'));
+
 const denyPatterns = [
-  ['private source project', new RegExp(['ski', 'llet'].join(''), 'i')],
-  ['deleted source path', new RegExp(['docs', '\\/', 'source'].join(''), 'i')],
-  ['local package-manager path', new RegExp(['\\/', 'opt', '\\/', 'home', 'brew'].join(''), 'i')],
-  ['internal product name', new RegExp(['claude', '[- ]?', 'tag'].join(''), 'i')],
-  ['private workspace name', new RegExp(['paper', 'plane'].join(''), 'i')],
-  ['private company name', new RegExp(['mag', 'oosh'].join(''), 'i')],
-  ['private channel name', new RegExp(['all-', 'paper', 'plane-', 'labs'].join(''), 'i')],
-  ['local user path', new RegExp(['\\/', 'Users', '\\/'].join(''), 'i')],
-  ['live rehearsal marker', new RegExp(['can', 'ary'].join(''), 'i')],
+  ['private source project', new RegExp(term('ski', 'llet'), 'i')],
+  ['deleted source path', new RegExp(term('docs', '\\/', 'sou', 'rce'), 'i')],
+  ['local package-manager path', new RegExp(term('\\/', 'opt', '\\/', 'home', 'brew'), 'i')],
+  ['internal product name', new RegExp(term('claude', '[- ]?', 'tag'), 'i')],
+  ['private workspace name', new RegExp(term('paper', 'plane'), 'i')],
+  ['private company name', new RegExp(term('mag', 'oosh'), 'i')],
+  ['private channel name', new RegExp(term('all-', 'paper', 'plane-', 'labs'), 'i')],
+  ['local user path', new RegExp(term('\\/', 'Users', '\\/'), 'i')],
+  ['live rehearsal marker', new RegExp(term('can', 'ary'), 'i')],
+];
+
+const excludedPaths = [
+  sourceDocsPath,
+  exportPath('docs', 'START_HERE.md'),
+  rehearsalScreenshotPath('slack-assistant-ux-'),
+  rehearsalScreenshotPath('slack-assistant-ux-ephemeral-'),
 ];
 
 const forbiddenBinaryExtensions = new Set([
@@ -49,9 +62,7 @@ function run(command, args, options = {}) {
   console.log(`$ ${[command, ...args].join(' ')}`);
   const result = spawnSync(command, args, {
     cwd: options.cwd ?? REPO_ROOT,
-    input: options.input,
-    stdio: options.input ? ['pipe', 'inherit', 'inherit'] : 'inherit',
-    encoding: options.encoding,
+    stdio: 'inherit',
   });
   if (result.status !== 0) {
     fail(`${command} ${args.join(' ')} failed with exit ${result.status}`);
@@ -59,16 +70,13 @@ function run(command, args, options = {}) {
   return result;
 }
 
-function runCapture(command, args) {
-  const result = spawnSync(command, args, {
-    cwd: REPO_ROOT,
-    encoding: null,
-    stdio: ['ignore', 'pipe', 'inherit'],
-  });
-  if (result.status !== 0) {
-    fail(`${command} ${args.join(' ')} failed with exit ${result.status}`);
-  }
-  return result.stdout;
+function extractHeadArchive() {
+  run('sh', [
+    '-c',
+    'git archive --format=tar HEAD | tar -x -C "$1"',
+    'verify-oss-export',
+    scratch,
+  ]);
 }
 
 function assertMissing(path) {
@@ -127,36 +135,43 @@ function scanExportTree() {
   }
 }
 
-console.log(`SCRATCH=${scratch}`);
-const archive = runCapture('git', ['archive', '--format=tar', 'HEAD']);
-run('tar', ['-x', '-C', scratch], { input: archive });
+let passed = false;
+try {
+  console.log(`SCRATCH=${scratch}`);
+  extractHeadArchive();
 
-rmSync(join(scratch, 'docs', 'plans'), { recursive: true, force: true });
-rmSync(join(scratch, 'docs', 'decisions'), { recursive: true, force: true });
+  rmSync(join(scratch, 'docs', 'plans'), { recursive: true, force: true });
+  rmSync(join(scratch, 'docs', 'decisions'), { recursive: true, force: true });
 
-if (!existsSync(join(scratch, 'LICENSE'))) {
-  fail('Export is missing LICENSE');
+  if (!existsSync(join(scratch, 'LICENSE'))) {
+    fail('Export is missing LICENSE');
+  }
+
+  for (const path of excludedPaths) {
+    assertMissing(path);
+  }
+
+  const packageJson = JSON.parse(readFileSync(join(scratch, 'package.json'), 'utf8'));
+  if (packageJson.private || !packageJson.description || packageJson.license !== 'MIT' || !packageJson.repository) {
+    fail('Export package.json is missing publish metadata or still has private:true');
+  }
+
+  scanExportTree();
+
+  run('npm', ['ci'], { cwd: scratch });
+  run('npm', ['test'], { cwd: scratch });
+  run('node', ['scripts/verify-flue-offline-turn.mjs'], { cwd: scratch });
+  run('node', ['scripts/verify-durability.mjs'], { cwd: scratch });
+  run('node', ['scripts/verify-tool-policy.mjs'], { cwd: scratch });
+  run('node', ['scripts/verify-providers.mjs'], { cwd: scratch });
+
+  console.log('OSS export verification passed');
+  passed = true;
+} finally {
+  if (passed && process.env.KEEP_EXPORT_SCRATCH !== '1') {
+    rmSync(scratch, { recursive: true, force: true });
+    console.log(`Cleaned SCRATCH=${scratch}`);
+  } else {
+    console.log(`Export scratch preserved at ${scratch}`);
+  }
 }
-
-assertMissing(['docs', 'source'].join('/'));
-assertMissing('docs/START_HERE.md');
-assertMissing(['docs', ['slack-assistant-ux-', 'can', 'ary-2026-06-29.png'].join('')].join('/'));
-assertMissing(
-  ['docs', ['slack-assistant-ux-ephemeral-', 'can', 'ary-2026-06-29.png'].join('')].join('/'),
-);
-
-const packageJson = JSON.parse(readFileSync(join(scratch, 'package.json'), 'utf8'));
-if (packageJson.private || !packageJson.description || packageJson.license !== 'MIT' || !packageJson.repository) {
-  fail('Export package.json is missing publish metadata or still has private:true');
-}
-
-scanExportTree();
-
-run('npm', ['ci'], { cwd: scratch });
-run('npm', ['test'], { cwd: scratch });
-run('node', ['scripts/verify-flue-offline-turn.mjs'], { cwd: scratch });
-run('node', ['scripts/verify-durability.mjs'], { cwd: scratch });
-run('node', ['scripts/verify-tool-policy.mjs'], { cwd: scratch });
-run('node', ['scripts/verify-providers.mjs'], { cwd: scratch });
-
-console.log('OSS export verification passed');

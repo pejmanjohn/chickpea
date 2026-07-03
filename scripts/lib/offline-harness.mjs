@@ -8,6 +8,7 @@
  */
 import { execFileSync, spawn } from 'node:child_process';
 import { createHmac } from 'node:crypto';
+import { mkdirSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -17,7 +18,13 @@ const FLUE_BIN = join(REPO_ROOT, 'node_modules', '.bin', 'flue');
 export const NET_GUARD = join(REPO_ROOT, 'scripts', 'net-guard.mjs');
 export const SIGNING_SECRET = 'test-signing-secret';
 export const EVENTS_PATH = '/channels/slack/events';
+const STAGE4_ARTIFACT_DIR = join(REPO_ROOT, 'docs', 'decisions', 'artifacts', 'g-port-stage4');
 const MIN_NODE = [22, 19, 0];
+
+export function stage4ArtifactPath(fileName) {
+  mkdirSync(STAGE4_ARTIFACT_DIR, { recursive: true });
+  return join(STAGE4_ARTIFACT_DIR, fileName);
+}
 
 /** Load an arbitrary repo-relative TypeScript module through tsx's runtime loader. */
 export async function loadTsModule(relativePath) {

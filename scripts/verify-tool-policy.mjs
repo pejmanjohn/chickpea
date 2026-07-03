@@ -21,8 +21,7 @@
  * Run with Node >= 22.19:
  *   node scripts/verify-tool-policy.mjs
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { mkdtempSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -35,6 +34,7 @@ import {
   loadTsModule,
   postSignedEvent,
   spawnServer,
+  stage4ArtifactPath,
   stopChild,
   waitForFinals,
   waitForReady,
@@ -45,8 +45,6 @@ const INTERNAL_TOKEN = 'tool-policy-internal-token';
 // Trigger words and the brief text are imported from the app/fake below (not
 // re-typed) so this gate can't silently drift from the real seed + stub.
 const DENIAL_TEXT = 'Denied: lookup_channel_brief is restricted to the assigned channel.';
-const ARTIFACT_DIR = join(REPO_ROOT, 'docs', 'decisions', 'artifacts', 'g-port-stage4');
-mkdirSync(ARTIFACT_DIR, { recursive: true });
 
 const results = [];
 function record(name, passed, detail) {
@@ -132,7 +130,7 @@ try {
   );
   await waitForFinals(backend, 1, 15_000);
   const allowed = transcript('allowed', backend);
-  writeFileSync(join(ARTIFACT_DIR, 'tool-policy-allowed.json'), `${JSON.stringify(allowed, null, 2)}\n`);
+  writeFileSync(stage4ArtifactPath('tool-policy-allowed.json'), `${JSON.stringify(allowed, null, 2)}\n`);
 
   const allowedFinal = backend.finals().at(-1)?.text ?? '';
   const allowedToolResults = toolResultMessages(backend.providerCalls());
@@ -159,7 +157,7 @@ try {
   );
   await waitForFinals(backend, 1, 15_000);
   const denied = transcript('denied', backend);
-  writeFileSync(join(ARTIFACT_DIR, 'tool-policy-denied.json'), `${JSON.stringify(denied, null, 2)}\n`);
+  writeFileSync(stage4ArtifactPath('tool-policy-denied.json'), `${JSON.stringify(denied, null, 2)}\n`);
 
   const deniedFinal = backend.finals().at(-1)?.text ?? '';
   const deniedToolResults = toolResultMessages(backend.providerCalls());
