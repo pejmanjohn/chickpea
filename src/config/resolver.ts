@@ -1,6 +1,19 @@
 import { seededAgents, seededAssignments } from './seed.ts';
 import type { ChannelAssignment, CustomAgentConfig, ResolvedAssignment } from './types.ts';
 
+export interface AgentReader {
+  getAgent(agentId: string): CustomAgentConfig;
+}
+
+export interface AssignmentReader {
+  find(workspaceId: string, channelId: string): ChannelAssignment | undefined;
+}
+
+export interface ConfigStores {
+  agents: AgentReader;
+  assignments: AssignmentReader;
+}
+
 export class AgentStore {
   readonly agents: Map<string, CustomAgentConfig>;
 
@@ -47,7 +60,7 @@ export class AssignmentStore {
 export function resolveAssignment(
   workspaceId: string,
   channelId: string,
-  stores: { agents: AgentStore; assignments: AssignmentStore },
+  stores: ConfigStores,
 ): ResolvedAssignment {
   const assignment = stores.assignments.find(workspaceId, channelId);
   if (!assignment) {
@@ -63,13 +76,16 @@ export function resolveAssignment(
     workspaceId,
     channelId,
     agentId: agent.id,
+    ...(assignment.channelPromptAddendum
+      ? { channelPromptAddendum: assignment.channelPromptAddendum }
+      : {}),
     agent,
   };
 }
 
 export function resolveAssignmentFromThreadKey(
   threadKey: string,
-  stores: { agents: AgentStore; assignments: AssignmentStore },
+  stores: ConfigStores,
 ): ResolvedAssignment {
   const [workspaceId, channelId] = threadKey.split(':');
   if (!workspaceId || !channelId) {

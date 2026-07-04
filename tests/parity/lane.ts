@@ -5,6 +5,7 @@ import type {
   FakeSlackBackend,
   FakeSlackBehaviorConfig,
 } from './fake-slack.ts';
+import type { ConfigSeed } from '../../src/config/store.ts';
 
 /** Signing secret shared by every lane's `postEvent` signer and the lane app. */
 export const PARITY_SIGNING_SECRET = 'test-signing-secret';
@@ -14,6 +15,8 @@ export interface ScenarioLaneConfig {
   botUserId?: string | null;
   slack?: FakeSlackBehaviorConfig;
   provider?: FakeProviderConfig;
+  configSeed?: ConfigSeed;
+  env?: Record<string, string | undefined>;
 }
 
 export interface PostEventResult {

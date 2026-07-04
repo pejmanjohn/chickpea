@@ -547,6 +547,119 @@ export const scenarios: Scenario[] = [
       assert.ok(final.text.includes(STUB_REPLY_MARKER));
     },
   },
+  {
+    id: 'S24',
+    title: 'agent-pinned local-stub model overrides the lane fallback model',
+    config: {
+      configSeed: {
+        agents: [
+          {
+            id: 'agent_pinned_model',
+            name: 'Pinned Model Agent',
+            description: 'Pins a local-stub model for parity.',
+            instructions: 'Use the pinned parity model.',
+            enabled: true,
+            model: 'local-stub/agent-pinned',
+            defaultModels: {
+              claude: 'anthropic/pinned-claude',
+              'workers-ai': '@cf/pinned/model',
+            },
+            allowedTools: [],
+          },
+        ],
+        assignments: [
+          {
+            workspaceId: 'T_DEMO',
+            channelId: EXEC_CHANNEL,
+            agentId: 'agent_pinned_model',
+            enabled: true,
+          },
+        ],
+      },
+    },
+    async run(instance) {
+      const response = await instance.postEvent(
+        appMention({
+          event_id: 'Ev_PINNED_MODEL',
+          event: { ts: '1782770900.000100' },
+        }),
+      );
+      assert.equal(response.status, 200);
+      await instance.quiesce();
+
+      const provider = instance.backend.providerCalls().at(-1);
+      assert.ok(provider);
+      assert.equal(provider.body.model, 'agent-pinned');
+      assert.notEqual(provider.body.model, 'parity-stub-1');
+    },
+  },
+  {
+    id: 'S25',
+    title: 'channel prompt addendum appears only for assignments that set one',
+    config: {
+      configSeed: {
+        agents: [
+          {
+            id: 'agent_addendum',
+            name: 'Addendum Agent',
+            description: 'Exercises channel prompt addenda.',
+            instructions: 'Base addendum test instructions.',
+            enabled: true,
+            defaultModels: {
+              claude: 'anthropic/addendum-claude',
+              'workers-ai': '@cf/addendum/model',
+            },
+            allowedTools: [],
+          },
+        ],
+        assignments: [
+          {
+            workspaceId: 'T_DEMO',
+            channelId: EXEC_CHANNEL,
+            agentId: 'agent_addendum',
+            enabled: true,
+            channelPromptAddendum: 'CHANNEL_ADDENDUM_MARKER: prefer launch-local context.',
+          },
+          {
+            workspaceId: 'T_DEMO',
+            channelId: 'C_NOADD',
+            agentId: 'agent_addendum',
+            enabled: true,
+          },
+        ],
+      },
+    },
+    async run(instance) {
+      await instance.postEvent(
+        appMention({
+          event_id: 'Ev_ADDENDUM_PRESENT',
+          event: { ts: '1782771000.000100', event_ts: '1782771000.000100' },
+        }),
+      );
+      await instance.quiesce();
+
+      const withAddendum = instance.backend.providerCalls().at(-1);
+      assert.ok(withAddendum);
+      assert.match(JSON.stringify(withAddendum.body), /CHANNEL_ADDENDUM_MARKER/);
+
+      await instance.postEvent(
+        appMention({
+          event_id: 'Ev_ADDENDUM_ABSENT',
+          event: {
+            channel: 'C_NOADD',
+            ts: '1782771001.000100',
+            event_ts: '1782771001.000100',
+            text: '<@U_BOT> summarize without an addendum',
+          },
+        }),
+      );
+      await instance.quiesce();
+
+      const withoutAddendum = instance.backend.providerCalls().at(-1);
+      assert.ok(withoutAddendum);
+      assert.doesNotMatch(JSON.stringify(withoutAddendum.body), /CHANNEL_ADDENDUM_MARKER/);
+    },
+  },
 ];
 
 /**

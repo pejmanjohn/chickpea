@@ -2,7 +2,8 @@
 import { createSlackChannel } from '@flue/slack';
 import { WebClient } from '@slack/web-api';
 
-import { AgentStore, AssignmentStore, resolveAssignment } from '../config/resolver.ts';
+import { resolveAssignment } from '../config/resolver.ts';
+import { getConfigStore } from '../config/store.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
 import {
   SqliteSlackStateStore,
@@ -44,11 +45,6 @@ function getClient(): WebClient {
   }
   return cachedClient;
 }
-
-const stores = {
-  agents: new AgentStore(),
-  assignments: new AssignmentStore(),
-};
 
 // Claims + thread registry are SQLite-backed (own file, sibling of the Flue
 // transcript DB) so a Slack redelivery right after a restart is still
@@ -135,7 +131,11 @@ export const channel = createSlackChannel({
     // e. Gate on an enabled assignment (fail closed if unassigned).
     let assignment: ResolvedAssignment;
     try {
-      assignment = resolveAssignment(turn.workspaceId, turn.channelId, stores);
+      const store = getConfigStore();
+      assignment = resolveAssignment(turn.workspaceId, turn.channelId, {
+        agents: store,
+        assignments: store,
+      });
     } catch (err) {
       state.release(evtKey);
       state.release(msgKey);

@@ -2,6 +2,8 @@ import { registerProvider } from '@flue/runtime';
 import { flue } from '@flue/runtime/routing';
 import { Hono } from 'hono';
 
+import { createAdminRoutes } from './admin/routes.ts';
+
 // Provider registrations run at module scope so they are in place before any
 // agent resolves its model. Registering `cloudflare-workers-ai` is REQUIRED:
 // the seeded model id `@cf/zai-org/glm-5.2` is not in Flue's catalog and only
@@ -49,6 +51,7 @@ if (process.env.LOCAL_STUB_URL) {
 }
 
 const app = new Hono();
+app.route('/', createAdminRoutes());
 app.route('/', flue());
 
 export default app;

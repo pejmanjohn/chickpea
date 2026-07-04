@@ -1,8 +1,11 @@
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { dirname, join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
+import { SqliteConfigStore } from '../../src/config/store.ts';
 import { FakeSlackBackend } from './fake-slack.ts';
 import {
   PARITY_SIGNING_SECRET,
@@ -60,6 +63,15 @@ export const laneB: Lane = {
       ...(config.provider ? { provider: config.provider } : {}),
     });
     const fake = await backend.listen();
+    let configDir: string | undefined;
+    const configEnv: Record<string, string> = {};
+    if (config.configSeed) {
+      configDir = mkdtempSync(join(tmpdir(), 'slack-flue-parity-config-'));
+      const configDbPath = join(configDir, 'state.db');
+      const store = new SqliteConfigStore(configDbPath, config.configSeed);
+      store.close();
+      configEnv.SLACK_STATE_DB_PATH = configDbPath;
+    }
 
     const port = await getFreePort();
     const baseUrl = `http://127.0.0.1:${port}`;
@@ -92,6 +104,8 @@ export const laneB: Lane = {
         // (a shared file would cross-contaminate). `:memory:` matches the exact
         // pre-db.ts default (in-memory SQLite, process lifetime).
         FLUE_DB_PATH: ':memory:',
+        ...configEnv,
+        ...(config.env ?? {}),
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -109,6 +123,7 @@ export const laneB: Lane = {
     } catch (error) {
       await stopChild(child);
       await backend.close();
+      if (configDir) rmSync(configDir, { recursive: true, force: true });
       throw error;
     }
 
@@ -134,6 +149,7 @@ export const laneB: Lane = {
       async stop() {
         await stopChild(child);
         await backend.close();
+        if (configDir) rmSync(configDir, { recursive: true, force: true });
       },
     };
   },
