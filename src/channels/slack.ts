@@ -6,7 +6,7 @@ import { resolveAgentModel } from '../config/model-policy.ts';
 import { resolveAssignment, type AssignmentSurface } from '../config/resolver.ts';
 import { getAgentSnapshotStore } from '../config/snapshot-store.ts';
 import { getConfigStore } from '../config/store.ts';
-import type { AgentSnapshot, ResolvedAssignment } from '../config/types.ts';
+import type { ResolvedAssignment } from '../config/types.ts';
 import {
   SqliteSlackStateStore,
   resolveStateDbPath,
@@ -163,13 +163,10 @@ export const channel = createSlackChannel({
     //    fall through to the global '*,*' wildcard; only direct turns use it as
     //    their default (see turnSurface / the config resolver). The durable
     //    agent writes the snapshot on that first turn.
-    const frozenSnapshot = getAgentSnapshotStore().get(threadKey);
-    let assignment: ResolvedAssignment;
-    let frozenModelLabel: string | undefined;
-    if (frozenSnapshot) {
-      assignment = assignmentFromSnapshot(frozenSnapshot);
-      frozenModelLabel = frozenSnapshot.model;
-    } else {
+    // A frozen snapshot IS a ResolvedAssignment (with a pre-resolved model), so
+    // it is used directly; only a first turn resolves fresh.
+    let assignment: ResolvedAssignment | undefined = getAgentSnapshotStore().get(threadKey);
+    if (!assignment) {
       try {
         const store = getConfigStore();
         assignment = resolveAssignment(
@@ -207,7 +204,7 @@ export const channel = createSlackChannel({
     //    the thread registered (only the claims are released, for retry).
     state.start(threadKey);
 
-    void runTurn(turn, assignment, selfBaseUrl, frozenModelLabel).catch((err) => {
+    void runTurn(turn, assignment, selfBaseUrl).catch((err) => {
       // Release on a genuine delivery failure so a Slack retry can re-drive the
       // turn. A completed turn (including a delivered provider-failure final)
       // returns normally and keeps its claim, so it never re-runs.
@@ -256,12 +253,11 @@ async function runTurn(
   turn: NormalizedSlackTurn,
   assignment: ResolvedAssignment,
   selfBaseUrl: string,
-  // The frozen model label from a thread's snapshot; when set (a started thread),
-  // the footer shows the model the thread was frozen with rather than re-resolving.
-  modelLabelOverride?: string,
 ): Promise<void> {
   const client = getClient();
-  const resolvedModel = modelLabelOverride ?? tryResolveAgentModel(assignment.agent);
+  // A frozen assignment (from a thread snapshot) carries its model; otherwise
+  // resolve it from the agent via policy.
+  const resolvedModel = assignment.model ?? tryResolveAgentModel(assignment.agent);
   const presenter = new WebClientPresenter(client, {
     channelId: turn.channelId,
     threadTs: turn.threadTs,
@@ -382,21 +378,6 @@ function tryResolveAgentModel(agent: Parameters<typeof resolveAgentModel>[0]): s
   } catch {
     return undefined;
   }
-}
-
-// Build a resolved assignment from a thread's frozen snapshot, so a started
-// thread is served from the config it began with even after its profile is
-// edited, disabled, or removed.
-function assignmentFromSnapshot(snapshot: AgentSnapshot): ResolvedAssignment {
-  return {
-    workspaceId: snapshot.workspaceId,
-    channelId: snapshot.channelId,
-    agentId: snapshot.agentId,
-    ...(snapshot.channelPromptAddendum
-      ? { channelPromptAddendum: snapshot.channelPromptAddendum }
-      : {}),
-    agent: snapshot.agent,
-  };
 }
 
 // The turn's surface, from the normalizer's authoritative source/channel_type

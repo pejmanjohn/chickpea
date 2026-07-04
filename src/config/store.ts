@@ -1,8 +1,6 @@
-import { mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
 import { DatabaseSync, type StatementSync } from 'node:sqlite';
 
-import { resolveStateDbPath } from '../slack/claim-store.ts';
+import { openStateDb, resolveStateDbPath } from '../slack/claim-store.ts';
 import { AgentExistsError, AgentStillAssignedError, UnknownAgentError } from './errors.ts';
 import type { AssignmentLookupOptions } from './resolver.ts';
 import { seededAgents, seededAssignments } from './seed.ts';
@@ -55,13 +53,7 @@ export class SqliteConfigStore {
   private readonly db: DatabaseSync;
 
   constructor(path: string = resolveStateDbPath(), seed: ConfigSeed = DEFAULT_SEED) {
-    if (path !== ':memory:') {
-      mkdirSync(dirname(path), { recursive: true });
-    }
-    this.db = new DatabaseSync(path);
-    if (path !== ':memory:') {
-      this.db.exec('PRAGMA journal_mode = WAL;');
-    }
+    this.db = openStateDb(path);
     this.db.exec(
       `CREATE TABLE IF NOT EXISTS config_meta (
         key TEXT PRIMARY KEY,

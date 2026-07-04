@@ -1,10 +1,8 @@
-import { mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import { computeSnapshotHash, type EffectiveSlackConfig } from './effective-config.ts';
 import type { AgentSnapshot } from './types.ts';
-import { resolveStateDbPath } from '../slack/claim-store.ts';
+import { openStateDb, resolveStateDbPath } from '../slack/claim-store.ts';
 
 interface SnapshotRow {
   snapshot_json: string;
@@ -15,14 +13,8 @@ export class SqliteAgentSnapshotStore {
   private readonly now: () => number;
 
   constructor(path: string = resolveStateDbPath(), now: () => number = Date.now) {
-    if (path !== ':memory:') {
-      mkdirSync(dirname(path), { recursive: true });
-    }
-    this.db = new DatabaseSync(path);
+    this.db = openStateDb(path);
     this.now = now;
-    if (path !== ':memory:') {
-      this.db.exec('PRAGMA journal_mode = WAL;');
-    }
     this.db.exec(
       `CREATE TABLE IF NOT EXISTS agent_snapshots (
         thread_key TEXT PRIMARY KEY,
@@ -48,23 +40,18 @@ export class SqliteAgentSnapshotStore {
     const existing = this.get(threadKey);
     if (existing) return existing;
 
+    // get() and the insert run with no await between them in this single-process
+    // app, so the row provably does not exist yet; INSERT OR IGNORE keeps the
+    // write-once guarantee if that assumption ever changes.
     const snapshot = snapshotFromEffectiveConfig(resolve(), this.now());
-    const inserted = this.db
+    this.db
       .prepare(
         `INSERT OR IGNORE INTO agent_snapshots (
           thread_key, snapshot_json, snapshot_hash, created_at
         ) VALUES (?, ?, ?, ?)`,
       )
       .run(threadKey, JSON.stringify(snapshot), snapshot.snapshotHash, snapshot.createdAt);
-
-    if (inserted.changes === 1) {
-      return snapshot;
-    }
-    const stored = this.get(threadKey);
-    if (!stored) {
-      throw new Error(`Agent snapshot for ${threadKey} was not readable after insert`);
-    }
-    return stored;
+    return snapshot;
   }
 }
 

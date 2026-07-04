@@ -80,14 +80,8 @@ export class SqliteSlackStateStore implements SlackClaimStore, SlackThreadRegist
   private readonly now: () => number;
 
   constructor(path: string, now: () => number = Date.now) {
-    if (path !== ':memory:') {
-      mkdirSync(dirname(path), { recursive: true });
-    }
-    this.db = new DatabaseSync(path);
+    this.db = openStateDb(path);
     this.now = now;
-    if (path !== ':memory:') {
-      this.db.exec('PRAGMA journal_mode = WAL;');
-    }
     this.db.exec(
       'CREATE TABLE IF NOT EXISTS slack_claims (key TEXT PRIMARY KEY, claimed_at INTEGER NOT NULL);' +
         'CREATE TABLE IF NOT EXISTS slack_threads (key TEXT PRIMARY KEY, started_at INTEGER NOT NULL);',
@@ -136,4 +130,21 @@ export function resolveStateDbPath(env: NodeJS.ProcessEnv = process.env): string
   if (configured) return configured;
   const fluePath = env.FLUE_DB_PATH ?? './tmp/flue.db';
   return fluePath === ':memory:' ? ':memory:' : `${fluePath}.state`;
+}
+
+/**
+ * Open an app-owned SQLite database: create the parent directory and enable WAL
+ * for a file path; a `:memory:` path is left ephemeral. Shared by every app
+ * state store (claims/threads, config, snapshots) so the open/mkdir/WAL sequence
+ * lives in one place. Callers run their own `CREATE TABLE` on the returned handle.
+ */
+export function openStateDb(path: string): DatabaseSync {
+  if (path !== ':memory:') {
+    mkdirSync(dirname(path), { recursive: true });
+  }
+  const db = new DatabaseSync(path);
+  if (path !== ':memory:') {
+    db.exec('PRAGMA journal_mode = WAL;');
+  }
+  return db;
 }
