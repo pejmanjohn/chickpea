@@ -4,8 +4,8 @@ import { Hono } from 'hono';
 
 import { createAdminRoutes } from './admin/routes.ts';
 import { recordRegisteredProvider } from './config/providers.ts';
+import { toolStatus } from './slack/replies.ts';
 import { setObservedSlackStatus } from './slack/status-registry.ts';
-import { parseSlackThreadKey } from './slack/thread-key.ts';
 
 // Provider registrations run at module scope so they are in place before any
 // agent resolves its model. Registering `cloudflare-workers-ai` is REQUIRED:
@@ -56,21 +56,17 @@ if (process.env.LOCAL_STUB_URL) {
   recordRegisteredProvider('local-stub');
 }
 
+// Bridge Flue's tool-start events to the per-turn Slack status line. The status
+// registry keys turns by the durable agent id, so its Map lookup is the sole,
+// authoritative "is this one of my Slack turns?" filter — no need to re-parse
+// the id as a thread key here (that re-encoded the same coupling and paid a
+// throw on every non-Slack agent's tool call). All status wording lives in the
+// builder layer (toolStatus), keeping this composition root free of copy.
 observe((event) => {
-  if (event.type !== 'tool_start') {
+  if (event.type !== 'tool_start' || typeof event.instanceId !== 'string') {
     return;
   }
-  if (typeof event.instanceId !== 'string') {
-    return;
-  }
-  try {
-    parseSlackThreadKey(event.instanceId);
-  } catch {
-    return;
-  }
-  setObservedSlackStatus(event.instanceId, {
-    text: `is running ${event.toolName}`,
-  });
+  setObservedSlackStatus(event.instanceId, toolStatus(event.toolName));
 });
 
 const app = new Hono();

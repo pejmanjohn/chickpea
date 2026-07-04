@@ -4,10 +4,13 @@ export type SlackReplyKind = 'progress' | 'final';
 
 export interface SlackStatusUpdate {
   text: string;
-  loadingMessages?: readonly string[];
 }
 
-export type SlackPresentationStage = SlackStatusUpdate;
+// Status vocabulary for the observe() tool bridge lives here (not in app.ts, which
+// is route composition): "is running <tool>" in Slack's status voice.
+export function toolStatus(toolName: string): SlackStatusUpdate {
+  return { text: `is running ${toolName}` };
+}
 
 export interface SlackReplyInput {
   channelId: string;
@@ -60,7 +63,7 @@ export interface SlackReplySink {
   post(kind: SlackReplyKind, post: SlackReplyInput): SlackReplyPost | Promise<SlackReplyPost>;
   setStatus?(
     context: SlackPresentationContext,
-    stage: SlackPresentationStage,
+    stage: SlackStatusUpdate,
   ): SlackPresentationEvent | Promise<SlackPresentationEvent>;
   clearStatus?(context: SlackPresentationContext): SlackPresentationEvent | Promise<SlackPresentationEvent>;
   deliverFinal?(
@@ -90,7 +93,7 @@ export class LocalSlackReplySink implements SlackReplySink {
     return saved;
   }
 
-  setStatus(context: SlackPresentationContext, stage: SlackPresentationStage): SlackPresentationEvent {
+  setStatus(context: SlackPresentationContext, stage: SlackStatusUpdate): SlackPresentationEvent {
     return this.savePresentationEvent(context, 'status_set', {
       ok: true,
       text: slackStatusText(stage),
@@ -146,20 +149,13 @@ export class LocalSlackReplySink implements SlackReplySink {
 
 const FALLBACK_STATUS_TEXT = 'is working on the request';
 
-export function slackStatusText(stage: SlackPresentationStage): string {
+export function slackStatusText(stage: SlackStatusUpdate): string {
   return stage.text.trim() || FALLBACK_STATUS_TEXT;
 }
 
-export function slackLoadingMessages(stage: SlackPresentationStage): string[] {
-  const loadingMessages = stage.loadingMessages
-    ?.map((message) => message.trim())
-    .filter((message) => message.length > 0);
-  if (loadingMessages && loadingMessages.length > 0) {
-    return loadingMessages;
-  }
-
-  // Fallback only when a caller has no separate loading fact; derive it from
-  // the same event-derived status text instead of rotating canned copy.
+export function slackLoadingMessages(stage: SlackStatusUpdate): string[] {
+  // The loading phrase is derived from the same event-derived status text
+  // (e.g. "is running lookup_channel_brief" -> "Running lookup_channel_brief").
   return [statusToLoadingMessage(slackStatusText(stage))];
 }
 

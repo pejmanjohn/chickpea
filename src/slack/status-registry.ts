@@ -10,7 +10,7 @@ export interface SlackStatusTurnRegistration {
 type StatusPresenter = Pick<WebClientPresenter, 'setStatus'>;
 
 class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
-  private readonly pending = new Set<Promise<void>>();
+  private readonly pending = new Set<Promise<unknown>>();
   private closed = false;
 
   constructor(
@@ -23,17 +23,15 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
       return Promise.resolve(false);
     }
     const attempt = this.presenter.setStatus(update).catch(() => false);
-    const pending = attempt.then(() => {
-      this.pending.delete(pending);
-    });
-    this.pending.add(pending);
+    this.pending.add(attempt);
+    void attempt.finally(() => this.pending.delete(attempt));
     return attempt;
   }
 
+  // Called only after the agent turn has resolved, so no further tool_start
+  // events can fire — a single settle over the in-flight status writes is enough.
   async drain(): Promise<void> {
-    while (this.pending.size > 0) {
-      await Promise.allSettled([...this.pending]);
-    }
+    await Promise.allSettled([...this.pending]);
   }
 
   close(): void {
