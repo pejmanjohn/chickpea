@@ -3,7 +3,7 @@ import { createSlackChannel } from '@flue/slack';
 import { WebClient } from '@slack/web-api';
 
 import { resolveAgentModel } from '../config/model-policy.ts';
-import { resolveAssignment, surfaceForChannelId } from '../config/resolver.ts';
+import { resolveAssignment, type AssignmentSurface } from '../config/resolver.ts';
 import { getConfigStore } from '../config/store.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
 import {
@@ -136,9 +136,9 @@ export const channel = createSlackChannel({
 
     // c2. Direct messages / App Home are a separate surface, on by default.
     //     When SLACK_FLUE_ALLOW_DMS is turned off, the bot is reachable only in
-    //     channels — mirroring Claude Tag's org-wide "Allow direct messages"
-    //     toggle. Checked before any claim so a disabled DM stays fully silent.
-    const surface = surfaceForChannelId(turn.channelId);
+    //     channels (an org-wide direct-message opt-out). Checked before any
+    //     claim so a disabled DM stays fully silent.
+    const surface = turnSurface(turn);
     if (surface === 'direct' && !directMessagesEnabled()) {
       return;
     }
@@ -155,7 +155,7 @@ export const channel = createSlackChannel({
 
     // e. Gate on an enabled assignment (fail closed if unassigned). Channels
     //    never fall through to the global '*,*' wildcard; only direct turns use
-    //    it as their default (see surfaceForChannelId / the config resolver).
+    //    it as their default (see turnSurface / the config resolver).
     let assignment: ResolvedAssignment;
     try {
       const store = getConfigStore();
@@ -365,6 +365,22 @@ function tryResolveAgentModel(agent: Parameters<typeof resolveAgentModel>[0]): s
   } catch {
     return undefined;
   }
+}
+
+// The turn's surface, from the normalizer's authoritative source/channel_type
+// (not a channel-id prefix): a DM or App Home message ('dm_message'), and any
+// im/app_home/mpim thread, is 'direct'; everything else is a channel. A group-DM
+// app_mention carries no channel_type and falls through to 'channel' — the
+// fail-closed default (see surfaceForChannelId for the id ambiguity).
+function turnSurface(turn: NormalizedSlackTurn): AssignmentSurface {
+  if (turn.source === 'dm_message') {
+    return 'direct';
+  }
+  const channelType = turn.channelType;
+  if (channelType === 'im' || channelType === 'app_home' || channelType === 'mpim') {
+    return 'direct';
+  }
+  return 'channel';
 }
 
 // Direct messages / App Home are on by default; SLACK_FLUE_ALLOW_DMS=false (or

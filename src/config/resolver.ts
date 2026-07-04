@@ -9,20 +9,31 @@ export interface AgentReader {
 }
 
 // A turn's surface. The global '*,*' wildcard assignment is the default for
-// DIRECT conversations only (DMs, App Home) — mirroring Claude Tag, where a DM
-// is a separate surface, not a channel with an access bundle. CHANNELS are
-// fail-closed: they resolve only via an explicit (exact / workspace / channel)
-// assignment and never fall through to the global wildcard.
+// DIRECT conversations only (DMs, App Home): a direct message is a separate
+// surface, not a channel that access attaches to. CHANNELS are fail-closed —
+// they resolve only via an explicit (exact / workspace / channel) assignment
+// and never fall through to the global wildcard.
 export type AssignmentSurface = 'channel' | 'direct';
 
 export interface AssignmentLookupOptions {
   surface?: AssignmentSurface;
 }
 
-// Slack DM and App Home channel ids are 'D…'; public/private channels are
-// 'C…'/'G…'. Used to infer the surface where only the channel id is known
-// (the durable agent and admin resolve from a thread key, not a live turn).
+// Infer the surface from a channel id, for the paths that resolve from a thread
+// key rather than a live turn (the durable agent and admin). Prefer the live
+// turn's authoritative source/channel_type when available (see turnSurface in
+// the Slack channel) — this id heuristic is the fallback.
+//
+// Slack 1:1 DM and App Home channel ids are 'D…'; public channels are 'C…'.
+// A 'G…' id is ambiguous — legacy private channel vs group DM (mpim) — and the
+// app_mention event carries no channel_type to disambiguate, so it is treated
+// as a channel: the fail-closed default (better to require an explicit
+// assignment than to let a private channel answer via the DM wildcard). The
+// literal '*' key is the direct-message default row itself.
 export function surfaceForChannelId(channelId: string): AssignmentSurface {
+  if (channelId === '*') {
+    return 'direct';
+  }
   return channelId.startsWith('D') ? 'direct' : 'channel';
 }
 

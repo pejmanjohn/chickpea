@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 
-import { resolveAssignment } from '../src/config/resolver.ts';
+import { resolveEffectiveSlackConfig } from '../src/config/effective-config.ts';
+import { resolveAssignment, surfaceForChannelId } from '../src/config/resolver.ts';
 import { seededAgents, seededAssignments } from '../src/config/seed.ts';
 import { getConfigStore, SqliteConfigStore } from '../src/config/store.ts';
 import type { ChannelAssignment, CustomAgentConfig } from '../src/config/types.ts';
@@ -347,6 +348,41 @@ test('getConfigStore writes are visible to later slack-thread initializations in
   });
 
   rmSync(dir, { recursive: true, force: true });
+});
+
+test('surfaceForChannelId classifies DM/App Home and the wildcard key as direct, channels as fail-closed', () => {
+  // 1:1 DM and App Home ids ('D…') and the '*' wildcard key are direct.
+  assert.equal(surfaceForChannelId('D_DEMO_DM'), 'direct');
+  assert.equal(surfaceForChannelId('D_DEMO_APP_HOME'), 'direct');
+  assert.equal(surfaceForChannelId('*'), 'direct');
+  // Public ('C…') and ambiguous group/private ('G…') ids are treated as
+  // channels (fail-closed) — a 'G…' id could be a legacy private channel.
+  assert.equal(surfaceForChannelId('C_PUBLIC'), 'channel');
+  assert.equal(surfaceForChannelId('G_PRIVATE_OR_MPIM'), 'channel');
+});
+
+test('the direct-message default (the seeded "*,*" row) is resolvable — admin can preview it', () => {
+  // Regression: surfaceForChannelId('*') must be 'direct' so resolving the
+  // effective config of the '*/*' DM-default key does not 404 (it is the profile
+  // that answers DMs, so the admin must be able to preview/configure it). Uses
+  // the SQLite store — the one the admin actually queries, whose channel-surface
+  // WHERE clause excludes the '*,*' row (the in-memory store's exact-match branch
+  // would mask this).
+  const store = new SqliteConfigStore(':memory:', {
+    agents: seededAgents,
+    assignments: seededAssignments,
+  });
+  try {
+    const effective = resolveEffectiveSlackConfig(
+      '*',
+      '*',
+      { agents: store, assignments: store },
+      { SLACK_FLUE_MODEL: 'local-stub/parity-stub-1' } as NodeJS.ProcessEnv,
+    );
+    assert.equal(effective.agentId, 'agent_exec_brief');
+  } finally {
+    store.close();
+  }
 });
 
 test('a disabled assignment at the winning specificity turns the channel off instead of falling back to the wildcard', () => {
