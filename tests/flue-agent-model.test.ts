@@ -154,6 +154,11 @@ test('slack-thread initializes from the SQLite config store for the current stat
       {
         SLACK_STATE_DB_PATH: dbPath,
         SLACK_FLUE_MODEL: 'local-stub/runtime-fallback',
+        // Scrub ambient provider creds: they outrank the fallback model and
+        // would flip the resolved model on a developer/CI machine.
+        ANTHROPIC_API_KEY: undefined,
+        CLOUDFLARE_API_TOKEN: undefined,
+        CLOUDFLARE_ACCOUNT_ID: undefined,
       },
       () => slackThreadAgent.initialize({ id: 'T_RUNTIME:C_RUNTIME:1782770400.000100', env: {} }),
     );

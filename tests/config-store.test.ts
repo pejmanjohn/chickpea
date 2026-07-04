@@ -214,3 +214,31 @@ test('getConfigStore writes are visible to later slack-thread initializations in
 
   rmSync(dir, { recursive: true, force: true });
 });
+
+test('a disabled assignment at the winning specificity turns the channel off instead of falling back to the wildcard', () => {
+  const store = new SqliteConfigStore(':memory:', {
+    agents: [
+      {
+        id: 'agent_default',
+        name: 'Default',
+        description: '',
+        instructions: 'Default instructions.',
+        enabled: true,
+        defaultModels: { claude: 'anthropic/x', 'workers-ai': '@cf/x' },
+        allowedTools: [],
+      },
+    ],
+    assignments: [
+      { workspaceId: '*', channelId: '*', agentId: 'agent_default', enabled: true },
+      { workspaceId: 'T_OFF', channelId: 'C_OFF', agentId: 'agent_default', enabled: false },
+    ],
+  });
+  try {
+    // Explicitly disabled exact row: no fall-through to the enabled catch-all.
+    assert.equal(store.find('T_OFF', 'C_OFF'), undefined);
+    // Other channels still resolve through the wildcard.
+    assert.equal(store.find('T_OFF', 'C_ELSEWHERE')?.agentId, 'agent_default');
+  } finally {
+    store.close();
+  }
+});

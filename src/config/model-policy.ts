@@ -1,7 +1,13 @@
 import type { CustomAgentConfig } from './types.ts';
 
+// Accepts `model: null` alongside the stored shape so admin PATCH previews
+// (where null means "clear the pin") can be checked without re-shaping.
+export type ModelResolvableAgent = Pick<CustomAgentConfig, 'id' | 'defaultModels'> & {
+  model?: string | null;
+};
+
 export function resolveAgentModel(
-  agent: CustomAgentConfig,
+  agent: ModelResolvableAgent,
   env: NodeJS.ProcessEnv = process.env,
 ): string {
   if (agent.model) {

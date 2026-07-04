@@ -83,10 +83,22 @@ export const laneB: Lane = {
     const slackBotUserId =
       config.botUserId === undefined ? 'U_BOT' : (config.botUserId ?? '');
 
+    // Scrub ambient provider credentials: model resolution prefers real creds
+    // over the SLACK_FLUE_MODEL fallback, so a developer/CI shell with
+    // ANTHROPIC_API_KEY or Cloudflare creds exported would silently route
+    // every scenario's provider traffic to the live API instead of the stub.
+    // A scenario that needs them can re-add via `config.env` (spreads last).
+    const ambientEnv = { ...process.env };
+    delete ambientEnv.ANTHROPIC_API_KEY;
+    delete ambientEnv.ANTHROPIC_BASE_URL;
+    delete ambientEnv.CLOUDFLARE_API_TOKEN;
+    delete ambientEnv.CLOUDFLARE_ACCOUNT_ID;
+    delete ambientEnv.CLOUDFLARE_WORKERS_AI_BASE_URL;
+
     const child = spawn(nodeBin, [SERVER_ENTRY], {
       cwd: REPO_ROOT,
       env: {
-        ...process.env,
+        ...ambientEnv,
         PORT: String(port),
         SLACK_SIGNING_SECRET: PARITY_SIGNING_SECRET,
         SLACK_BOT_TOKEN: 'test-bot-token',

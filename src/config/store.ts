@@ -114,9 +114,13 @@ export class SqliteConfigStore {
 
   updateAgent(
     agentId: string,
-    patch: Partial<Omit<CustomAgentConfig, 'id'>>,
+    // `model: null` clears a pinned model (PATCH semantics); omitting it keeps
+    // the current pin.
+    patch: Partial<Omit<CustomAgentConfig, 'id' | 'model'>> & { model?: string | null },
   ): CustomAgentConfig {
-    const next = { ...this.getAgent(agentId), ...patch, id: agentId };
+    const current = this.getAgent(agentId);
+    const model = patch.model === undefined ? (current.model ?? null) : patch.model;
+    const next = { ...current, ...patch, id: agentId };
     this.db
       .prepare(
         `UPDATE config_agents
@@ -129,7 +133,7 @@ export class SqliteConfigStore {
         next.description,
         next.instructions,
         next.enabled ? 1 : 0,
-        next.model ?? null,
+        model,
         JSON.stringify(next.defaultModels),
         JSON.stringify(next.allowedTools),
         agentId,
@@ -203,12 +207,17 @@ export class SqliteConfigStore {
     return deleted.changes === 1;
   }
 
+  // Assignment precedence, most specific first: exact (workspace, channel), then
+  // (workspace, '*'), then ('*', channel), then the ('*', '*') catch-all. The
+  // winning row is selected regardless of its enabled flag: a disabled row at the
+  // winning specificity turns the channel OFF rather than silently falling
+  // through to a broader enabled rule, so PUT {enabled: false} is an explicit
+  // off switch — not a reset to the wildcard agent.
   find(workspaceId: string, channelId: string): ChannelAssignment | undefined {
     const row = this.db
       .prepare(
         `SELECT * FROM config_assignments
-         WHERE enabled = 1
-           AND (workspace_id = ? OR workspace_id = '*')
+         WHERE (workspace_id = ? OR workspace_id = '*')
            AND (channel_id = ? OR channel_id = '*')
          ORDER BY CASE
            WHEN workspace_id = ? AND channel_id = ? THEN 0
@@ -219,7 +228,9 @@ export class SqliteConfigStore {
          LIMIT 1`,
       )
       .get(workspaceId, channelId, workspaceId, channelId, workspaceId, channelId);
-    return row ? rowToAssignment(row as unknown as AssignmentRow) : undefined;
+    if (!row) return undefined;
+    const assignment = rowToAssignment(row as unknown as AssignmentRow);
+    return assignment.enabled ? assignment : undefined;
   }
 
   private seedOnce(seed: ConfigSeed): void {
@@ -228,20 +239,29 @@ export class SqliteConfigStore {
       .get(SEED_META_KEY);
     if (seeded) return;
 
-    const agentCount = countRows(this.db, 'config_agents');
-    const assignmentCount = countRows(this.db, 'config_assignments');
-    if (agentCount === 0 && assignmentCount === 0) {
-      const insertAgent = this.agentInsertStatement();
-      for (const agent of seed.agents) {
-        insertAgent.run(...agentStatementValues(agent));
+    // Seed rows and the seeded marker commit atomically: a crash mid-seed must
+    // not leave a half-seeded DB that the marker then stamps as complete.
+    this.db.exec('BEGIN IMMEDIATE;');
+    try {
+      const agentCount = countRows(this.db, 'config_agents');
+      const assignmentCount = countRows(this.db, 'config_assignments');
+      if (agentCount === 0 && assignmentCount === 0) {
+        const insertAgent = this.agentInsertStatement();
+        for (const agent of seed.agents) {
+          insertAgent.run(...agentStatementValues(agent));
+        }
+        for (const assignment of seed.assignments) {
+          this.putAssignment(assignment);
+        }
       }
-      for (const assignment of seed.assignments) {
-        this.putAssignment(assignment);
-      }
+      this.db
+        .prepare('INSERT INTO config_meta (key, value) VALUES (?, ?)')
+        .run(SEED_META_KEY, new Date().toISOString());
+      this.db.exec('COMMIT;');
+    } catch (err) {
+      this.db.exec('ROLLBACK;');
+      throw err;
     }
-    this.db
-      .prepare('INSERT INTO config_meta (key, value) VALUES (?, ?)')
-      .run(SEED_META_KEY, new Date().toISOString());
   }
 
   private agentInsertStatement(): StatementSync {

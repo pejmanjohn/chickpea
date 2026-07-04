@@ -128,10 +128,20 @@ export async function postSignedEvent(eventsUrl, payload, opts = {}) {
  */
 export function spawnServer({ serverEntry, port, fakeUrl, netGuardLog, env = {} }) {
   const baseUrl = `http://127.0.0.1:${port}`;
+  // Scrub ambient provider credentials so the offline gates stay hermetic:
+  // model resolution prefers real creds over the SLACK_FLUE_MODEL pin. A
+  // script that intends to exercise a provider passes its own values via
+  // `env`, which spreads after (and therefore overrides) this scrub.
+  const ambientEnv = { ...process.env };
+  delete ambientEnv.ANTHROPIC_API_KEY;
+  delete ambientEnv.ANTHROPIC_BASE_URL;
+  delete ambientEnv.CLOUDFLARE_API_TOKEN;
+  delete ambientEnv.CLOUDFLARE_ACCOUNT_ID;
+  delete ambientEnv.CLOUDFLARE_WORKERS_AI_BASE_URL;
   const child = spawn(process.execPath, [serverEntry], {
     cwd: REPO_ROOT,
     env: {
-      ...process.env,
+      ...ambientEnv,
       PORT: String(port),
       SLACK_SIGNING_SECRET: SIGNING_SECRET,
       SLACK_BOT_TOKEN: 'test-bot-token',

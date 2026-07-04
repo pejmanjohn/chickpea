@@ -1,7 +1,8 @@
 import { Hono } from 'hono';
 import * as v from 'valibot';
 
-import { resolveAgentModel } from '../config/model-policy.ts';
+import { resolveAgentModel, type ModelResolvableAgent } from '../config/model-policy.ts';
+import { knownProviderIds } from '../config/providers.ts';
 import { getConfigStore, type SqliteConfigStore } from '../config/store.ts';
 import type { ChannelAssignment, CustomAgentConfig } from '../config/types.ts';
 import { constantTimeEquals } from '../slack/internal-auth.ts';
@@ -9,6 +10,7 @@ import { constantTimeEquals } from '../slack/internal-auth.ts';
 interface AdminRoutesOptions {
   store?: SqliteConfigStore | undefined;
   adminToken?: string | undefined;
+  knownProviders?: ReadonlySet<string> | undefined;
 }
 
 const nonEmptyString = v.pipe(v.string(), v.minLength(1));
@@ -36,7 +38,7 @@ const agentPatchSchema = v.partial(
     description: v.string(),
     instructions: nonEmptyString,
     enabled: v.boolean(),
-    model: modelSpecifier,
+    model: v.nullable(modelSpecifier),
     defaultModels: defaultModelsSchema,
     allowedTools: v.array(v.string()),
   }),
@@ -56,6 +58,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   const store = () => options.store ?? getConfigStore();
   const adminToken = () =>
     tokenFromOptions ? options.adminToken : process.env.FLUE_ADMIN_TOKEN;
+  const providers = () => options.knownProviders ?? knownProviderIds();
 
   app.use('/admin/*', async (c, next) => {
     const expected = adminToken();
@@ -78,6 +81,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return invalidRequest(c);
     }
     const agent = toAgentConfig(parsed.output);
+    const badProvider = unknownProvider(agent.model, providers());
+    if (badProvider) {
+      return unknownProviderResponse(c, badProvider, providers());
+    }
     if (!isModelResolvable(agent)) {
       return c.json({ error: 'model_not_resolvable' }, 422);
     }
@@ -85,15 +92,21 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const configStore = store();
       return c.json({ agent: configStore.createAgent(agent) }, 201);
     } catch (err) {
-      return c.json({ error: errorMessage(err) }, 409);
+      if (isUniqueConstraintError(err)) {
+        return c.json({ error: 'agent_exists' }, 409);
+      }
+      return internalError(c, err);
     }
   });
 
   app.get('/admin/api/agents/:id', (c) => {
     try {
       return c.json({ agent: store().getAgent(c.req.param('id')) });
-    } catch {
-      return c.json({ error: 'not_found' }, 404);
+    } catch (err) {
+      if (isUnknownAgentError(err)) {
+        return c.json({ error: 'not_found' }, 404);
+      }
+      return internalError(c, err);
     }
   });
 
@@ -108,13 +121,25 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const agentId = c.req.param('id');
       const current = configStore.getAgent(agentId);
       const patch = toAgentPatch(parsed.output);
-      const next = { ...current, ...patch };
+      const next: ModelResolvableAgent = {
+        ...current,
+        ...patch,
+        id: agentId,
+        defaultModels: patch.defaultModels ?? current.defaultModels,
+      };
+      const badProvider = unknownProvider(next.model, providers());
+      if (badProvider) {
+        return unknownProviderResponse(c, badProvider, providers());
+      }
       if (!isModelResolvable(next)) {
         return c.json({ error: 'model_not_resolvable' }, 422);
       }
       return c.json({ agent: configStore.updateAgent(agentId, patch) });
-    } catch {
-      return c.json({ error: 'not_found' }, 404);
+    } catch (err) {
+      if (isUnknownAgentError(err)) {
+        return c.json({ error: 'not_found' }, 404);
+      }
+      return internalError(c, err);
     }
   });
 
@@ -131,8 +156,15 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         409,
       );
     }
-    const deleted = configStore.deleteAgent(agentId);
-    return deleted ? c.body(null, 204) : c.json({ error: 'not_found' }, 404);
+    try {
+      const deleted = configStore.deleteAgent(agentId);
+      return deleted ? c.body(null, 204) : c.json({ error: 'not_found' }, 404);
+    } catch (err) {
+      if (isStillAssignedError(err)) {
+        return c.json({ error: 'agent_still_assigned' }, 409);
+      }
+      return internalError(c, err);
+    }
   });
 
   app.get('/admin/api/assignments', (c) => {
@@ -153,7 +185,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     try {
       return c.json({ assignment: store().putAssignment(toAssignment(parsed.output)) });
     } catch (err) {
-      return c.json({ error: errorMessage(err) }, 404);
+      if (isUnknownAgentError(err)) {
+        return c.json({ error: 'unknown_agent' }, 404);
+      }
+      return internalError(c, err);
     }
   });
 
@@ -187,10 +222,10 @@ function toAgentConfig(input: v.InferOutput<typeof agentSchema>): CustomAgentCon
   };
 }
 
-function toAgentPatch(
-  input: v.InferOutput<typeof agentPatchSchema>,
-): Partial<Omit<CustomAgentConfig, 'id'>> {
-  const patch: Partial<Omit<CustomAgentConfig, 'id'>> = {};
+type AgentPatch = Partial<Omit<CustomAgentConfig, 'id' | 'model'>> & { model?: string | null };
+
+function toAgentPatch(input: v.InferOutput<typeof agentPatchSchema>): AgentPatch {
+  const patch: AgentPatch = {};
   if (input.name !== undefined) patch.name = input.name;
   if (input.description !== undefined) patch.description = input.description;
   if (input.instructions !== undefined) patch.instructions = input.instructions;
@@ -213,7 +248,7 @@ function toAssignment(input: v.InferOutput<typeof assignmentSchema>): ChannelAss
   };
 }
 
-function isModelResolvable(agent: CustomAgentConfig): boolean {
+function isModelResolvable(agent: ModelResolvableAgent): boolean {
   try {
     resolveAgentModel(agent);
     return true;
@@ -245,6 +280,47 @@ function invalidRequest(c: { json(body: { error: string }, status: 400): Respons
   return c.json({ error: 'invalid_request' }, 400);
 }
 
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
+function isUnknownAgentError(err: unknown): boolean {
+  return err instanceof Error && err.message.startsWith('Unknown agent ');
+}
+
+function isUniqueConstraintError(err: unknown): boolean {
+  return err instanceof Error && err.message.includes('UNIQUE constraint failed');
+}
+
+function isStillAssignedError(err: unknown): boolean {
+  return err instanceof Error && err.message.includes('is still assigned to');
+}
+
+// Never echo internal error text (raw SQLite messages) to API clients; log it
+// server-side and return a stable retriable status instead.
+function internalError(
+  c: { json(body: { error: string }, status: 500): Response },
+  err: unknown,
+): Response {
+  console.error('[slack-flue] admin API failure:', err instanceof Error ? err.message : String(err));
+  return c.json({ error: 'internal_error' }, 500);
+}
+
+function unknownProvider(
+  model: string | null | undefined,
+  known: ReadonlySet<string>,
+): string | undefined {
+  // An empty registry means "unknown environment" (route module used without
+  // src/app.ts registrations, e.g. unit tests) — skip validation rather than
+  // rejecting every model.
+  if (!model || known.size === 0) return undefined;
+  const prefix = model.slice(0, model.indexOf('/'));
+  return known.has(prefix) ? undefined : prefix;
+}
+
+function unknownProviderResponse(
+  c: { json(body: object, status: 422): Response },
+  provider: string,
+  known: ReadonlySet<string>,
+): Response {
+  return c.json(
+    { error: 'unknown_provider', provider, knownProviders: [...known].sort() },
+    422,
+  );
 }

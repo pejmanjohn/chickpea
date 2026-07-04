@@ -14,7 +14,13 @@ const ADMIN_TOKEN = 'admin-secret-token';
 function appWithAdmin(store: SqliteConfigStore, adminToken?: string): Hono {
   const app = new Hono();
   const token = arguments.length >= 2 ? adminToken : ADMIN_TOKEN;
-  app.route('/', createAdminRoutes({ store, adminToken: token }));
+  // Pin the provider registry: importing src/app.ts anywhere in this test
+  // process records real registrations, which would otherwise make the
+  // unknown-provider pre-check reject the local-stub models used here.
+  app.route(
+    '/',
+    createAdminRoutes({ store, adminToken: token, knownProviders: new Set(['local-stub']) }),
+  );
   return app;
 }
 
@@ -320,4 +326,77 @@ test('main app mounts admin routes before flue routing', async () => {
       assert.equal(Array.isArray(body.agents), true);
     },
   );
+});
+
+test('admin API rejects a model whose provider prefix is not known', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  try {
+    const app = appWithAdmin(store);
+
+    const response = await app.request('/admin/api/agents', {
+      method: 'POST',
+      headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+      body: JSON.stringify(agent({ model: 'anthropc/claude-sonnet-4-6' })),
+    });
+
+    assert.equal(response.status, 422);
+    assert.deepEqual(await response.json(), {
+      error: 'unknown_provider',
+      provider: 'anthropc',
+      knownProviders: ['local-stub'],
+    });
+  } finally {
+    store.close();
+  }
+});
+
+test('admin API clears a pinned model with PATCH model: null', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const previousFallback = process.env.SLACK_FLUE_MODEL;
+  process.env.SLACK_FLUE_MODEL = 'local-stub/fallback-after-clear';
+  try {
+    const app = appWithAdmin(store);
+    store.createAgent(agent());
+
+    const response = await app.request('/admin/api/agents/agent_admin', {
+      method: 'PATCH',
+      headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+      body: JSON.stringify({ model: null }),
+    });
+
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as { agent: CustomAgentConfig };
+    assert.equal('model' in body.agent, false);
+    assert.equal('model' in store.getAgent('agent_admin'), false);
+  } finally {
+    if (previousFallback === undefined) {
+      delete process.env.SLACK_FLUE_MODEL;
+    } else {
+      process.env.SLACK_FLUE_MODEL = previousFallback;
+    }
+    store.close();
+  }
+});
+
+test('admin API maps an assignment to a missing agent to a stable unknown_agent error', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  try {
+    const app = appWithAdmin(store);
+
+    const response = await app.request('/admin/api/assignments', {
+      method: 'PUT',
+      headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        workspaceId: 'T_ADMIN',
+        channelId: 'C_ADMIN',
+        agentId: 'agent_missing',
+        enabled: true,
+      }),
+    });
+
+    assert.equal(response.status, 404);
+    assert.deepEqual(await response.json(), { error: 'unknown_agent' });
+  } finally {
+    store.close();
+  }
 });
