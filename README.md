@@ -10,12 +10,13 @@ tool is exposed to agents that opt in.
 
 The product runs entirely on the **Flue lane**. The earlier hand-rolled harness has
 been deleted; the behavior it encoded is preserved by a lane-agnostic parity suite
-(`tests/parity/`) that now runs against the real Flue app (Lane B, 23 scenarios).
+(`tests/parity/`) that now runs against the real Flue app (Lane B, 25 scenarios).
 
 ## Architecture
 
 - `src/app.ts` — Flue app entry: registers providers (`cloudflare-workers-ai`,
-  optional `anthropic`, optional offline `local-stub`) and mounts the Flue router.
+  optional `anthropic`, optional offline `local-stub`), mounts the fail-closed
+  admin API, then mounts the Flue router.
 - `src/channels/slack.ts` — Slack channel (`POST /channels/slack/events`): admission,
   duplicate-claiming, context hydration, and the self-call that drives the agent.
 - `src/agents/slack-thread.ts` — durable agent (`POST /agents/slack-thread/:id`),
@@ -23,7 +24,9 @@ been deleted; the behavior it encoded is preserved by a lane-agnostic parity sui
 - `src/slack/` — shared, lane-agnostic Slack modules kept verbatim from the contract:
   turn normalization, thread keys, context hydration/formatting, message rendering,
   presentation, claim store, internal auth.
-- `src/config/` — seeded agents, assignments, and channel briefs; assignment resolver.
+- `src/admin/routes.ts` — token-gated runtime config CRUD API under `/admin/api/*`.
+- `src/config/` — seeded agents, assignments, channel briefs, assignment resolver,
+  and the SQLite-backed runtime config store.
 - `src/db.ts` — file-backed SQLite for the durable agent transcript (Node target).
 
 ## Quickstart
@@ -63,16 +66,29 @@ are vestigial and intentionally unbuildable (a custom `src/db.ts` is Node-only).
 | `SLACK_BOT_TOKEN` | yes | Bot token for outbound Slack Web API calls. |
 | `SLACK_BOT_USER_ID` | optional | Bot user id used to filter self/loop messages. If unset, resolved once via `auth.test`; an explicit empty string means "no bot user id" (fail-closed for message-family events). |
 | `SLACK_API_URL` | optional | Override the Slack Web API base URL (offline/fake Slack). |
-| `SLACK_FLUE_MODEL` | optional | Override the agent model specifier (`provider/model`). Defaults to the seeded `cloudflare-workers-ai/<model>`. |
+| `SLACK_FLUE_MODEL` | optional | Offline/development fallback model specifier (`provider/model`) used only when the assigned agent has no explicit `model` and live provider credentials are absent. |
 | `FLUE_SELF_URL` | optional | Explicit base URL for the app's self-call to its agent endpoint. Without it, only loopback origins are trusted (Slack signatures do not cover `Host`). |
 | `FLUE_AGENT_API_TOKEN` | optional | Shared internal token gating `POST /agents/slack-thread/:id`. Random per-process if unset. |
+| `FLUE_ADMIN_TOKEN` | optional | Bearer token for `/admin/api/*`. If unset, every `/admin/*` route returns 404. This is separate from `FLUE_AGENT_API_TOKEN`. |
 | `FLUE_DB_PATH` | optional | SQLite path for the durable agent transcript. Default `./tmp/flue.db`; use `:memory:` for ephemeral runs. |
-| `SLACK_STATE_DB_PATH` | optional | SQLite path for the durable dedupe claims + joined-thread registry. Defaults to `<FLUE_DB_PATH>.state`; a `:memory:` transcript DB implies a `:memory:` state store, so ephemeral runs stay fully ephemeral. |
+| `SLACK_STATE_DB_PATH` | optional | SQLite path for app-owned state: runtime agent config, channel assignments, durable dedupe claims, and joined-thread registry. Defaults to `<FLUE_DB_PATH>.state`; a `:memory:` transcript DB implies a `:memory:` state store, so ephemeral runs stay fully ephemeral. |
 | `LOCAL_STUB_URL` / `LOCAL_STUB_API_KEY` | optional | Register an offline `local-stub` provider speaking the OpenAI-completions wire protocol (`SLACK_FLUE_MODEL=local-stub/<model>`). |
 | `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` | optional | Credentials/base URL for the catalog `anthropic` provider. |
 | `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_WORKERS_AI_BASE_URL` | optional | Credentials/base URL for the `cloudflare-workers-ai` provider. |
 
 `.env.example` lists the offline-safe defaults.
+
+Model selection is per agent:
+
+1. `agent.model` from the runtime config store, when set.
+2. The agent's Anthropic default when `ANTHROPIC_API_KEY` is present.
+3. The agent's Workers AI default when `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` are present.
+4. `SLACK_FLUE_MODEL` as the offline/dev fallback.
+
+If none of those are available, agent initialization fails with an error naming
+the missing env vars. Runtime agent and assignment config is seeded into the app
+state DB once when that DB is empty; later edits made through `/admin/api/*`
+apply to new Slack thread agent initializations without restarting the server.
 
 ## Tests and verification
 
@@ -82,14 +98,16 @@ are vestigial and intentionally unbuildable (a custom `src/db.ts` is Node-only).
 FLUE_NODE_BIN=/path/to/node npm test
 ```
 
-The suite is 42 tests: the 23 parity scenarios on the Flue lane (Lane B), the
-identity checks, fake-Slack smoke tests, Slack formatting, the agent model
-resolver, and the turn-normalization/history-window unit tests.
+The suite is 67 tests: the 25 parity scenarios on the Flue lane (Lane B), the
+admin/config-store checks, identity checks, fake-Slack smoke tests, Slack
+formatting, the agent model resolver, and the turn-normalization/history-window
+unit tests.
 
 Offline, net-guarded evidence scripts (run with Node >= 22.19 on `PATH`):
 
 ```bash
 node scripts/verify-flue-offline-turn.mjs
+node scripts/verify-agent-config.mjs
 node scripts/verify-durability.mjs
 node scripts/verify-tool-policy.mjs
 node scripts/verify-providers.mjs

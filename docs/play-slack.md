@@ -1,6 +1,6 @@
 # Play With Slack Flue
 
-This is the smallest real Slack loop, driven by the Flue lane with `flue dev --target node`. The agent's provider and model come from `SLACK_FLUE_MODEL` (default: the seeded Cloudflare Workers AI model under the registered `cloudflare-workers-ai` provider). For offline runs, point it at a local stub with `LOCAL_STUB_URL` and `SLACK_FLUE_MODEL=local-stub/<model>`.
+This is the smallest real Slack loop, driven by the Flue lane with `flue dev --target node`. The agent's model is selected from the runtime agent config first, then live provider credentials, then `SLACK_FLUE_MODEL` as an offline/development fallback. For offline runs, point it at a local stub with `LOCAL_STUB_URL` and `SLACK_FLUE_MODEL=local-stub/<model>`.
 
 ## 1. Create a Slack app
 
@@ -67,10 +67,11 @@ SLACK_BOT_TOKEN="<bot-token>" node scripts/verify-identity-live.mjs
 export SLACK_SIGNING_SECRET="..."
 export SLACK_BOT_TOKEN="<bot-token>"
 export SLACK_BOT_USER_ID="U..." # optional; resolved via Slack auth.test if omitted
+export FLUE_ADMIN_TOKEN="<long-random-admin-token>" # optional; enables /admin/api/*
 # Default provider: the seeded Cloudflare Workers AI model.
 export CLOUDFLARE_ACCOUNT_ID="..."
 export CLOUDFLARE_API_TOKEN="..."
-# Or override the agent model directly, for example:
+# Or set the offline fallback model directly, for example:
 # export SLACK_FLUE_MODEL="anthropic/claude-haiku-4-5"
 # export ANTHROPIC_API_KEY="..."
 flue dev --target node --port 8789
@@ -82,6 +83,7 @@ The server exposes:
 
 - `POST /channels/slack/events` — the Slack Events endpoint.
 - `POST /agents/slack-thread/:id` — the durable agent, gated by the shared internal token (`FLUE_AGENT_API_TOKEN`); the channel makes this self-call, you do not call it directly.
+- `/admin/api/*` — runtime agent and assignment CRUD, gated by `FLUE_ADMIN_TOKEN`. If `FLUE_ADMIN_TOKEN` is unset, `/admin/*` returns 404. Do not reuse `FLUE_AGENT_API_TOKEN` for this surface.
 
 After verifying the request signature, the Slack channel returns a fast HTTP acknowledgement and then runs the turn (context hydration, agent prompt, final delivery) as detached work, so Slack is acknowledged before the reply is produced.
 
@@ -161,7 +163,14 @@ The checked-in seed data is for local demo playtesting:
 - Workers AI model: `@cf/zai-org/glm-5.2`;
 - fallback assignment: `*/* -> agent_exec_research`.
 
-For a new workspace, replace the seeded assignments and channel briefs in `src/config/seed.ts` with your own demo workspace/channel values. Do not commit private workspace IDs, private channel names, tokens, or customer-specific channel briefs to public docs. Replace the catch-all assignment before testing anything beyond a private demo workspace.
+Runtime agent config and assignments live in the app state SQLite DB (`SLACK_STATE_DB_PATH`, defaulting to `<FLUE_DB_PATH>.state`). On an empty DB, `src/config/seed.ts` is copied in once; after that, edit agents and assignments through `/admin/api/*`. New Slack thread agent initializations read the current store without restarting the server. Do not commit private workspace IDs, private channel names, tokens, or customer-specific channel briefs to public docs. Replace or delete the catch-all assignment before testing anything beyond a private demo workspace.
+
+Model precedence for each agent is:
+
+1. `agent.model` in the runtime config store.
+2. The agent's Anthropic default when `ANTHROPIC_API_KEY` is present.
+3. The agent's Workers AI default when `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` are present.
+4. `SLACK_FLUE_MODEL` as the offline/dev fallback.
 
 ## 6. Live verification checklist
 
@@ -184,9 +193,10 @@ Rollback: remove `message.channels`, `message.im`, and `message.app_home` subscr
 - Redact Signing Secret, Bot User OAuth Token, app-level tokens, and request headers before capturing screenshots or logs.
 - Pause for confirmation before enabling Agents & AI Apps, adding OAuth scopes, changing event subscriptions, or reinstalling the Slack app.
 - Keep `.env` and `.dev.vars` uncommitted.
+- Keep `FLUE_ADMIN_TOKEN` separate from `FLUE_AGENT_API_TOKEN`; the admin API must fail closed when the admin token is unset.
 - For offline work, drive the app through a local stub provider (`LOCAL_STUB_URL` + `SLACK_FLUE_MODEL=local-stub/<model>`), as the `scripts/verify-*.mjs` evidence scripts do — no external network.
 - Use a live provider (`cloudflare-workers-ai` via `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_API_TOKEN`, or `anthropic` via `ANTHROPIC_API_KEY`) only from an ignored local env file.
 - If a Cloudflare API token gets `401` from Workers AI, it lacks the Workers AI permission. Mint a dashboard API token (My Profile → API Tokens) that includes Workers AI, and store it only in ignored local env files. `npx wrangler auth token` does NOT work for this — verified 2026-07-02: wrangler's OAuth token gets 401 on both `/ai/run/*` and `/ai/v1/chat/completions`.
 - Treat Slack formatting as an adapter contract: providers should emit concise standard Markdown, and `src/slack/message-format.ts` decides how to post it to Slack.
 - Treat Slack history as per-turn ephemeral provider context in this prototype. Do not persist raw Slack messages beyond existing telemetry/degradation metadata.
-- Duplicate suppression and mention-free channel-thread continuation are restart-durable on a single host (SQLite-backed claims + thread registry, `SLACK_STATE_DB_PATH`). Multi-instance or serverless-horizontal deployments still need a shared store and single-owner routing per agent instance before those guarantees are production-grade.
+- Duplicate suppression, runtime agent config, assignments, and mention-free channel-thread continuation are restart-durable on a single host (SQLite-backed app state, `SLACK_STATE_DB_PATH`). Multi-instance or serverless-horizontal deployments still need a shared store and single-owner routing per agent instance before those guarantees are production-grade.

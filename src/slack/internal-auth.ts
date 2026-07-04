@@ -16,13 +16,20 @@ export const INTERNAL_AGENT_TOKEN = process.env.FLUE_AGENT_API_TOKEN ?? randomUU
 
 export const INTERNAL_AGENT_TOKEN_HEADER = 'x-flue-internal-token';
 
-/** Constant-time comparison against the configured/generated internal token. */
-export function isValidInternalAgentToken(candidate: string | null | undefined): boolean {
-  if (!candidate) return false;
+export function constantTimeEquals(
+  candidate: string | null | undefined,
+  expected: string | null | undefined,
+): boolean {
+  if (!candidate || !expected) return false;
   const candidateBuffer = Buffer.from(candidate);
-  const expectedBuffer = Buffer.from(INTERNAL_AGENT_TOKEN);
+  const expectedBuffer = Buffer.from(expected);
   return (
     candidateBuffer.length === expectedBuffer.length &&
     timingSafeEqual(candidateBuffer, expectedBuffer)
   );
+}
+
+/** Constant-time comparison against the configured/generated internal token. */
+export function isValidInternalAgentToken(candidate: string | null | undefined): boolean {
+  return constantTimeEquals(candidate, INTERNAL_AGENT_TOKEN);
 }

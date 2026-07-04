@@ -6,6 +6,7 @@ export interface CustomAgentConfig {
   description: string;
   instructions: string;
   enabled: boolean;
+  model?: string;
   defaultModels: Record<ProviderId, string>;
   allowedTools: string[];
 }
@@ -15,6 +16,7 @@ export interface ChannelAssignment {
   channelId: string;
   agentId: string;
   enabled: boolean;
+  channelPromptAddendum?: string;
 }
 
 export interface BotIdentityConfig {
@@ -25,6 +27,7 @@ export interface ResolvedAssignment {
   workspaceId: string;
   channelId: string;
   agentId: string;
+  channelPromptAddendum?: string;
   agent: CustomAgentConfig;
 }
 
