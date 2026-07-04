@@ -62,8 +62,10 @@ export class ThreadSessionRegistry implements SlackThreadRegistry {
 // hour); the TTL is what keeps the claims table from growing without bound.
 const CLAIM_TTL_MS = 2 * 60 * 60 * 1000;
 // Joined threads stay continuable for much longer, but not forever — expiring
-// them bounds the table and matches how stale a weeks-old thread really is.
-const THREAD_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+// them bounds the table and matches how stale a weeks-old thread really is. A
+// thread's config snapshot is bounded to the same horizon (see snapshot-store):
+// past it, an implicit reply is no longer admitted, so the snapshot is dead.
+export const THREAD_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 /**
  * SQLite-backed claims + thread registry so dedupe and joined-thread admission

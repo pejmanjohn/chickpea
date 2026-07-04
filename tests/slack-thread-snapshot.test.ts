@@ -5,8 +5,11 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 
 import slackThreadAgent from '../src/agents/slack-thread.ts';
+import type { EffectiveSlackConfig } from '../src/config/effective-config.ts';
+import { SqliteAgentSnapshotStore } from '../src/config/snapshot-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import type { ChannelAssignment, CustomAgentConfig } from '../src/config/types.ts';
+import { THREAD_TTL_MS } from '../src/slack/claim-store.ts';
 import { withEnv } from './helpers/env.ts';
 
 const AGENT_ID = 'agent_snapshot_unit';
@@ -41,6 +44,36 @@ function assignment(overrides: Partial<ChannelAssignment> = {}): ChannelAssignme
     ...overrides,
   };
 }
+
+test('agent snapshots are purged past the thread TTL, bounding the table', () => {
+  const effConfig = (channelId: string): EffectiveSlackConfig => ({
+    workspaceId: 'T_SNAPSHOT',
+    channelId,
+    agentId: AGENT_ID,
+    agent: agent(),
+    model: 'local-stub/snapshot-unit',
+    provider: 'local-stub',
+    allowedTools: [],
+    instructions: ALPHA,
+    instructionLayers: [],
+  });
+
+  let now = 1_000_000;
+  const store = new SqliteAgentSnapshotStore(':memory:', () => now);
+  try {
+    store.getOrCreate('T_SNAPSHOT:C_OLD:1', () => effConfig('C_OLD'));
+    assert.ok(store.get('T_SNAPSHOT:C_OLD:1'));
+
+    // Advance past the TTL, then write another snapshot (which triggers a purge).
+    now += THREAD_TTL_MS + 1;
+    store.getOrCreate('T_SNAPSHOT:C_NEW:1', () => effConfig('C_NEW'));
+
+    assert.equal(store.get('T_SNAPSHOT:C_OLD:1'), undefined, 'the expired snapshot must be purged');
+    assert.ok(store.get('T_SNAPSHOT:C_NEW:1'), 'the fresh snapshot must remain');
+  } finally {
+    store.close();
+  }
+});
 
 test('slack-thread freezes effective config per durable thread id', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'slack-flue-thread-snapshot-'));

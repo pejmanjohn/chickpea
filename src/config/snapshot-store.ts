@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 
 import { computeSnapshotHash, type EffectiveSlackConfig } from './effective-config.ts';
 import type { AgentSnapshot } from './types.ts';
-import { openStateDb, resolveStateDbPath } from '../slack/claim-store.ts';
+import { openStateDb, resolveStateDbPath, THREAD_TTL_MS } from '../slack/claim-store.ts';
 
 interface SnapshotRow {
   snapshot_json: string;
@@ -40,24 +40,43 @@ export class SqliteAgentSnapshotStore {
     const existing = this.get(threadKey);
     if (existing) return existing;
 
-    // get() and the insert run with no await between them in this single-process
-    // app, so the row provably does not exist yet; INSERT OR IGNORE keeps the
-    // write-once guarantee if that assumption ever changes.
+    this.purgeExpired();
     const snapshot = snapshotFromEffectiveConfig(resolve(), this.now());
-    this.db
+    const inserted = this.db
       .prepare(
         `INSERT OR IGNORE INTO agent_snapshots (
           thread_key, snapshot_json, snapshot_hash, created_at
         ) VALUES (?, ?, ?, ?)`,
       )
       .run(threadKey, JSON.stringify(snapshot), snapshot.snapshotHash, snapshot.createdAt);
-    return snapshot;
+
+    if (inserted.changes === 1) {
+      return snapshot;
+    }
+    // A concurrent writer (e.g. the agent self-call as a separate process with
+    // its own SQLite connection) won the write-once INSERT. Return the PERSISTED
+    // row, never our discarded build, so the snapshot the caller acts on is the
+    // one actually stored and served.
+    const stored = this.get(threadKey);
+    if (!stored) {
+      throw new Error(`Agent snapshot for ${threadKey} was not readable after insert`);
+    }
+    return stored;
+  }
+
+  // Snapshots outlive their thread's admissibility by no more than the thread
+  // TTL: past it an implicit reply is no longer admitted (slack_threads is
+  // purged on the same horizon), so the row is dead weight. Bounds the table.
+  private purgeExpired(): void {
+    this.db
+      .prepare('DELETE FROM agent_snapshots WHERE created_at < ?')
+      .run(this.now() - THREAD_TTL_MS);
   }
 }
 
 export function snapshotFromEffectiveConfig(
   config: EffectiveSlackConfig,
-  createdAt: number = Date.now(),
+  createdAt: number,
 ): AgentSnapshot {
   return {
     workspaceId: config.workspaceId,

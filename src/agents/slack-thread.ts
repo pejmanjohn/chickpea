@@ -2,6 +2,7 @@ import { defineAgent, type AgentRouteHandler } from '@flue/runtime';
 
 import { resolveEffectiveSlackConfig } from '../config/effective-config.ts';
 import { resolveAgentModel } from '../config/model-policy.ts';
+import { surfaceForChannelId } from '../config/resolver.ts';
 import { getAgentSnapshotStore } from '../config/snapshot-store.ts';
 import { getConfigStore } from '../config/store.ts';
 import { INTERNAL_AGENT_TOKEN_HEADER, isValidInternalAgentToken } from '../slack/internal-auth.ts';
@@ -26,19 +27,28 @@ export const route: AgentRouteHandler = async (c, next) => {
 };
 
 export default defineAgent(async ({ id }) => {
-  const snapshot = getAgentSnapshotStore().getOrCreate(id, () => {
-    const store = getConfigStore();
-    const stores = { agents: store, assignments: store };
-    const { workspaceId, channelId } = parseSlackThreadKey(id);
-    return resolveEffectiveSlackConfig(workspaceId, channelId, stores);
-  });
-  const tools = snapshot.allowedTools.includes('lookup_channel_brief')
-    ? [createLookupChannelBriefTool(snapshot)]
+  const store = getConfigStore();
+  const stores = { agents: store, assignments: store };
+  const { workspaceId, channelId } = parseSlackThreadKey(id);
+  const resolve = () => resolveEffectiveSlackConfig(workspaceId, channelId, stores);
+
+  // Channel threads are frozen (the channel handler wrote the snapshot at the
+  // first turn; getOrCreate serves that row). Direct conversations (DMs, App
+  // Home) are one continuous session, not a discrete thread, so they resolve the
+  // current config every turn instead of freezing — admin edits to the DM
+  // profile reach existing DM users.
+  const config =
+    surfaceForChannelId(channelId) === 'direct'
+      ? resolve()
+      : getAgentSnapshotStore().getOrCreate(id, resolve);
+
+  const tools = config.allowedTools.includes('lookup_channel_brief')
+    ? [createLookupChannelBriefTool(config)]
     : [];
 
   return {
-    model: snapshot.model,
-    instructions: snapshot.instructions,
+    model: config.model,
+    instructions: config.instructions,
     tools,
   };
 });

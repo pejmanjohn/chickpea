@@ -2,6 +2,8 @@
 import { createSlackChannel } from '@flue/slack';
 import { WebClient } from '@slack/web-api';
 
+import { resolveEffectiveSlackConfig } from '../config/effective-config.ts';
+import { ModelResolutionError } from '../config/errors.ts';
 import { resolveAgentModel } from '../config/model-policy.ts';
 import { resolveAssignment, type AssignmentSurface } from '../config/resolver.ts';
 import { getAgentSnapshotStore } from '../config/snapshot-store.ts';
@@ -154,28 +156,46 @@ export const channel = createSlackChannel({
       return;
     }
 
-    // e. Resolve the config for this turn. A thread that already has a frozen
-    //    snapshot (a started thread) is served from it — even if its profile was
-    //    since disabled or removed, a disable must not break an in-flight thread.
-    //    A snapshot only exists for a thread whose first turn already passed this
-    //    fail-closed gate, so serving from it cannot bypass fail-closed. Only a
-    //    first turn resolves fresh: channels fail closed if unassigned and never
-    //    fall through to the global '*,*' wildcard; only direct turns use it as
-    //    their default (see turnSurface / the config resolver). The durable
-    //    agent writes the snapshot on that first turn.
-    // A frozen snapshot IS a ResolvedAssignment (with a pre-resolved model), so
-    // it is used directly; only a first turn resolves fresh.
-    let assignment: ResolvedAssignment | undefined = getAgentSnapshotStore().get(threadKey);
-    if (!assignment) {
-      try {
-        const store = getConfigStore();
+    // e. Resolve the config for this turn — inside a try so any failure releases
+    //    the claims (a Slack retry can then re-drive the turn) rather than
+    //    leaking them and dropping the message.
+    //    - CHANNELS freeze at the first turn: the gate resolves the effective
+    //      config ONCE and writes the write-once snapshot, so the presenter and
+    //      the durable agent both serve that same row (no first-turn attribution
+    //      drift). A started thread is served from its snapshot even if its
+    //      profile was since disabled/removed — a disable must not break an
+    //      in-flight thread — and a snapshot exists only for a thread whose first
+    //      turn passed this gate, so it cannot bypass fail-closed. Channels fail
+    //      closed if unassigned and never fall through to the global '*,*'
+    //      wildcard (see turnSurface / the resolver).
+    //    - DIRECT conversations (DMs, App Home) are one continuous session, not a
+    //      discrete thread, so they are NOT frozen: they resolve current config
+    //      every turn, so admin edits to the DM profile reach existing DM users.
+    let assignment: ResolvedAssignment;
+    try {
+      const store = getConfigStore();
+      const stores = { agents: store, assignments: store };
+      assignment =
+        surface === 'channel'
+          ? getAgentSnapshotStore().getOrCreate(threadKey, () =>
+              resolveEffectiveSlackConfig(turn.workspaceId, turn.channelId, stores),
+            )
+          : resolveAssignment(turn.workspaceId, turn.channelId, stores, { surface });
+    } catch (err) {
+      // A model that cannot resolve is NOT fail-closed: admit with a best-effort
+      // assignment so the turn still delivers the sanitized provider-failure
+      // final (no snapshot is written — a misconfigured-model thread has no
+      // usable config to freeze). Everything else (unassigned/disabled channel,
+      // disabled DM default) is fail-closed: release the claims and stay silent.
+      const store = getConfigStore();
+      if (err instanceof ModelResolutionError) {
         assignment = resolveAssignment(
           turn.workspaceId,
           turn.channelId,
           { agents: store, assignments: store },
           { surface },
         );
-      } catch (err) {
+      } else {
         state.release(evtKey);
         state.release(msgKey);
         console.error('[slack-flue] no assignment for turn:', sanitizeError(err));

@@ -1154,6 +1154,64 @@ export const scenarios: Scenario[] = [
       });
     },
   },
+  {
+    id: 'S37',
+    title: 'a DM tracks current config — an edit reaches the same DM user (DMs are not frozen)',
+    // A DM is one continuous session (constant ':dm' key), not a discrete thread,
+    // so it must NOT freeze: an edit to the DM profile must reach existing DM
+    // users on their next message. (Freezing would make the edit unreachable
+    // forever, since a DM never starts a "new thread".)
+    config: {
+      configSeed: {
+        agents: [
+          {
+            id: 'agent_dm_snapshot',
+            name: 'DM Profile',
+            description: 'Exercises DM config tracking.',
+            instructions: 'SNAPSHOT_ALPHA_INSTRUCTIONS: original DM instructions.',
+            enabled: true,
+            model: 'local-stub/snapshot-profile',
+            defaultModels: {
+              claude: 'anthropic/snapshot-claude',
+              'workers-ai': '@cf/snapshot/model',
+            },
+            allowedTools: [],
+          },
+        ],
+        // The '*,*' direct-message default answers DMs.
+        assignments: [{ workspaceId: '*', channelId: '*', agentId: 'agent_dm_snapshot', enabled: true }],
+      },
+    },
+    async run(instance) {
+      await instance.postEvent(
+        dmMessage({
+          event_id: 'Ev_S37_T1',
+          event: { ts: '1782771700.000100', event_ts: '1782771700.000100' },
+        }),
+      );
+      await waitForProviderCallCount(instance, 1);
+      assertProviderPrompt(instance, -1, {
+        includes: 'SNAPSHOT_ALPHA_INSTRUCTIONS',
+        excludes: 'SNAPSHOT_BETA_INSTRUCTIONS',
+      });
+
+      await patchAgent(instance, 'agent_dm_snapshot', {
+        instructions: 'SNAPSHOT_BETA_INSTRUCTIONS: edited DM instructions.',
+      });
+
+      await instance.postEvent(
+        dmMessage({
+          event_id: 'Ev_S37_T2',
+          event: { ts: '1782771701.000100', event_ts: '1782771701.000100' },
+        }),
+      );
+      await waitForProviderCallCount(instance, 2);
+      assertProviderPrompt(instance, -1, {
+        includes: 'SNAPSHOT_BETA_INSTRUCTIONS',
+        excludes: 'SNAPSHOT_ALPHA_INSTRUCTIONS',
+      });
+    },
+  },
 ];
 
 function snapshotScenarioConfig(agentId: string): ScenarioLaneConfig {
