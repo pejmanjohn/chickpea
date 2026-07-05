@@ -47,20 +47,6 @@ export const seededAgents: CustomAgentConfig[] = [
 
 export const seededAssignments: ChannelAssignment[] = [
   {
-    workspaceId: 'T_DEMO',
-    channelId: 'C_ENG',
-    agentId: 'agent_release_scribe',
-    enabled: true,
-    channelLabel: 'eng-releases',
-  },
-  {
-    workspaceId: 'T_DEMO',
-    channelId: 'C_EXEC',
-    agentId: 'agent_exec_brief',
-    enabled: true,
-    channelLabel: 'exec-briefing',
-  },
-  {
     // The global '*,*' wildcard is the DIRECT-conversation default (DMs, App
     // Home) — NOT a channel catch-all. The config resolver excludes it for
     // channel turns, so a fresh install is fail-closed in channels: the bot

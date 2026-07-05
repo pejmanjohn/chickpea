@@ -39,6 +39,7 @@ import {
   getFreePort,
   loadFake,
   postSignedEvent,
+  seedOfflineDemoChannelConfig,
   spawnServer,
   stopChild,
   waitForFinals,
@@ -59,6 +60,7 @@ const { FakeSlackBackend, STUB_REPLY_MARKER, RAW_PROVIDER_ERROR_MARKER, isMarkdo
   await loadFake();
 
 const netGuardLog = join(mkdtempSync(join(tmpdir(), 'flue-net-guard-')), 'external-hosts.log');
+const stateDbPath = join(mkdtempSync(join(tmpdir(), 'flue-offline-state-')), 'state.db');
 
 const appMention = JSON.parse(
   readFileSync(join(REPO_ROOT, 'fixtures', 'slack', 'app-mention.json'), 'utf8'),
@@ -87,6 +89,7 @@ let child;
 try {
   const serverEntry = await buildNodeServer();
   console.log(`built node server; node ${assertNodeVersion()}`);
+  await seedOfflineDemoChannelConfig(stateDbPath);
 
   const port = await getFreePort();
   const spawned = spawnServer({
@@ -96,7 +99,7 @@ try {
     netGuardLog,
     // Pin an in-memory DB so this single-process offline gate stays
     // deterministic across runs (no cross-run accumulation in ./tmp/flue.db).
-    env: { FLUE_DB_PATH: ':memory:' },
+    env: { FLUE_DB_PATH: ':memory:', SLACK_STATE_DB_PATH: stateDbPath },
   });
   child = spawned.child;
   const { baseUrl, eventsUrl, getOutput } = spawned;

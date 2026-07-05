@@ -111,7 +111,7 @@ test('SqliteConfigStore seeds an empty file database exactly once', () => {
   }
 });
 
-test('default seed ships the two demo profiles and their channel assignments', () => {
+test('default seed ships starter profiles plus the direct-message wildcard only', () => {
   const store = new SqliteConfigStore(':memory:');
 
   const agents = store.listAgents();
@@ -131,24 +131,21 @@ test('default seed ships the two demo profiles and their channel assignments', (
   assert.match(execBrief.instructions, /bold-led bullets/i);
   assert.match(execBrief.instructions, /no code/i);
 
-  assert.deepEqual(store.find('T_DEMO', 'C_ENG'), {
-    workspaceId: 'T_DEMO',
-    channelId: 'C_ENG',
-    agentId: releaseScribe.id,
-    enabled: true,
-    channelLabel: 'eng-releases',
-  });
-  assert.deepEqual(store.find('T_DEMO', 'C_EXEC'), {
-    workspaceId: 'T_DEMO',
-    channelId: 'C_EXEC',
-    agentId: execBrief.id,
-    enabled: true,
-    channelLabel: 'exec-briefing',
-  });
-  assert.equal(store.find('T_OTHER', 'C_OTHER')?.agentId, execBrief.id);
+  assert.equal(store.getAssignment('T_DEMO', 'C_ENG'), undefined);
+  assert.equal(store.getAssignment('T_DEMO', 'C_EXEC'), undefined);
+  assert.deepEqual(store.listAssignments(), [
+    {
+      workspaceId: '*',
+      channelId: '*',
+      agentId: execBrief.id,
+      enabled: true,
+    },
+  ]);
+  assert.equal(store.find('T_OTHER', 'D_DM')?.agentId, execBrief.id);
+  assert.equal(store.find('T_OTHER', 'C_OTHER', { surface: 'channel' }), undefined);
 
   assert.equal(seededAgents.length, 2);
-  assert.equal(seededAssignments.length, 3);
+  assert.equal(seededAssignments.length, 1);
   store.close();
 });
 

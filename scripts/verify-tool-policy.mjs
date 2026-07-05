@@ -15,7 +15,9 @@
  *               honest, non-leaking denial; that error comes back as a tool
  *               result and the final relays the denial — never the brief.
  *
- * Offline, net-guarded, stub provider. Saves the two wire transcripts to
+ * Offline, net-guarded, stub provider. Seeds an explicit offline C_EXEC
+ * assignment so this gate never depends on first-install demo data. Saves the
+ * two wire transcripts to
  * docs/decisions/artifacts/g-port-stage4/tool-policy-{allowed,denied}.json.
  *
  * Run with Node >= 22.19:
@@ -33,6 +35,7 @@ import {
   loadFake,
   loadTsModule,
   postSignedEvent,
+  seedOfflineDemoChannelConfig,
   spawnServer,
   stage4ArtifactPath,
   stopChild,
@@ -43,7 +46,7 @@ import {
 const EXEC_CHANNEL = 'C_EXEC';
 const INTERNAL_TOKEN = 'tool-policy-internal-token';
 // Trigger words and the brief text are imported from the app/fake below (not
-// re-typed) so this gate can't silently drift from the real seed + stub.
+// re-typed) so this gate can't silently drift from the real brief map + stub.
 const DENIAL_TEXT = 'Denied: lookup_channel_brief is restricted to the assigned channel.';
 
 const results = [];
@@ -91,6 +94,7 @@ function transcript(turn, backend) {
 }
 
 const netGuardLog = join(mkdtempSync(join(tmpdir(), 'flue-tool-guard-')), 'external-hosts.log');
+const stateDbPath = join(mkdtempSync(join(tmpdir(), 'flue-tool-state-')), 'state.db');
 const { FakeSlackBackend, TOOL_TRIGGER, TOOL_TRIGGER_FORBIDDEN } = await loadFake();
 const { seededChannelBriefs } = await loadTsModule('src/config/seed.ts');
 const BRIEF_TEXT = seededChannelBriefs[EXEC_CHANNEL];
@@ -102,6 +106,7 @@ let child;
 try {
   const serverEntry = await buildNodeServer();
   console.log(`built node server; node ${assertNodeVersion()}`);
+  await seedOfflineDemoChannelConfig(stateDbPath);
 
   const port = await getFreePort();
   const spawned = spawnServer({
@@ -111,6 +116,7 @@ try {
     netGuardLog,
     env: {
       FLUE_DB_PATH: ':memory:',
+      SLACK_STATE_DB_PATH: stateDbPath,
       FLUE_AGENT_API_TOKEN: INTERNAL_TOKEN,
       SLACK_FLUE_MODEL: 'local-stub/parity-stub-1',
     },

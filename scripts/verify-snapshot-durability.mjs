@@ -23,6 +23,7 @@ import {
   getFreePort,
   loadFake,
   postSignedEvent,
+  seedOfflineDemoChannelConfig,
   spawnServer,
   stopChild,
   waitForFinals,
@@ -163,6 +164,7 @@ try {
   log(`built node server: ${serverEntry}`);
   log(`node ${assertNodeVersion()}  DB=${dbPath}  STATE=${stateDbPath}`);
   log(`fake backend listening at ${fake.url}`);
+  await seedOfflineDemoChannelConfig(stateDbPath);
 
   let server = await startServer({ serverEntry, fakeUrl: fake.url, dbPath, stateDbPath, netGuardLog });
   const patchA = await patchInstructions(server.baseUrl, ALPHA);

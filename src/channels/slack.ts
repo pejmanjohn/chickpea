@@ -350,9 +350,8 @@ async function handleMemberJoinedChannel(payload: SlackEventFixture): Promise<vo
   }
 
   // Fail-closed, exactly like every turn: only greet in a channel that has an
-  // enabled assignment. Without this, an operator who removes the demo wildcard
-  // would still get an unsolicited onboarding message posted into a channel the
-  // bot was never configured for.
+  // enabled assignment. The direct-message wildcard must never cause an
+  // unsolicited onboarding message in a channel the bot was never configured for.
   const workspaceId = payload.team_id ?? event.team;
   if (!workspaceId) {
     return;

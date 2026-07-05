@@ -161,13 +161,13 @@ For a formatting smoke, mention the bot with a prompt like:
 @Slack Flue channel context formatting smoke: reply with a short heading, **bold text**, a bullet list, a link, a blockquote, inline code, a fenced code block, and a tiny markdown table.
 ```
 
-The checked-in seed data is for local demo playtesting:
+The checked-in seed data is the fresh-install starter config:
 
 - app name: `Slack Flue Demo`;
 - provider: `workers-ai`;
 - Workers AI model: `@cf/zai-org/glm-5.2`;
-- engineering demo assignment: `T_DEMO/C_ENG -> agent_release_scribe` (`Release Scribe`), which leads with a summary table and includes a fenced code/diff snippet;
-- executive demo assignment: `T_DEMO/C_EXEC -> agent_exec_brief` (`Exec Brief`), which uses bold-led bullets, closes with `Next steps`, and avoids code;
+- starter profile: `agent_release_scribe` (`Release Scribe`), which leads with a summary table and includes a fenced code/diff snippet;
+- starter profile: `agent_exec_brief` (`Exec Brief`), which uses bold-led bullets, closes with `Next steps`, and avoids code;
 - direct-message default: `*/* -> agent_exec_brief` (the profile that answers DMs and App Home — it is NOT a channel catch-all; channels are fail-closed and the wildcard never applies to them).
 
 Set `SLACK_FLUE_PUBLIC_URL` to the same public base URL Slack can reach for this
@@ -175,7 +175,7 @@ server. Reply footers link to `/admin?agent=<id>` and channel onboarding links t
 `/admin?channel=<channel-id>`; when it is unset, Slack shows `Configure` as a
 plain label.
 
-Runtime agent config and assignments live in the app state SQLite DB (`SLACK_STATE_DB_PATH`, defaulting to `<FLUE_DB_PATH>.state`). On an empty DB, `src/config/seed.ts` is copied in once; after that, edit agents and assignments through `/admin/api/*`. New Slack thread agent initializations read the current store without restarting the server. Do not commit private workspace IDs, private channel names, tokens, or customer-specific channel briefs to public docs. Channels are fail-closed, so the demo channel assignments are inert in a real workspace until you assign your own channels in `/admin`; the `*/*` row only governs DMs. Set `SLACK_FLUE_ALLOW_DMS=false` to disable direct messages entirely.
+Runtime agent config and assignments live in the app state SQLite DB (`SLACK_STATE_DB_PATH`, defaulting to `<FLUE_DB_PATH>.state`). On an empty DB, `src/config/seed.ts` is copied in once; after that, edit agents and assignments through `/admin/api/*`. New Slack thread agent initializations read the current store without restarting the server. Do not commit private workspace IDs, private channel names, tokens, or customer-specific channel briefs to public docs. Channels are fail-closed, so a fresh install does not answer in any channel until you assign your own channels in `/admin`; the `*/*` row only governs DMs. Set `SLACK_FLUE_ALLOW_DMS=false` to disable direct messages entirely.
 
 Model precedence for each agent is:
 

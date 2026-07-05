@@ -40,6 +40,36 @@ export function loadFake() {
   return loadTsModule('tests/parity/fake-slack.ts');
 }
 
+export async function seedOfflineDemoChannelConfig(stateDbPath, { includeRelease = false } = {}) {
+  const { SqliteConfigStore } = await loadTsModule('src/config/store.ts');
+  const { seededAgents } = await loadTsModule('src/config/seed.ts');
+  const assignments = [
+    {
+      workspaceId: 'T_DEMO',
+      channelId: 'C_EXEC',
+      agentId: 'agent_exec_brief',
+      enabled: true,
+      channelLabel: 'exec-briefing',
+    },
+    { workspaceId: '*', channelId: '*', agentId: 'agent_exec_brief', enabled: true },
+  ];
+  if (includeRelease) {
+    assignments.unshift({
+      workspaceId: 'T_DEMO',
+      channelId: 'C_ENG',
+      agentId: 'agent_release_scribe',
+      enabled: true,
+      channelLabel: 'eng-releases',
+    });
+  }
+
+  const store = new SqliteConfigStore(stateDbPath, {
+    agents: seededAgents,
+    assignments,
+  });
+  store.close();
+}
+
 export function assertNodeVersion() {
   const raw = execFileSync(process.execPath, ['--version'], { encoding: 'utf8' }).trim();
   const parts = raw.replace(/^v/, '').split('.').map((piece) => Number(piece));

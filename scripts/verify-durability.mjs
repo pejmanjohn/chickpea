@@ -42,6 +42,7 @@ import {
   getFreePort,
   loadFake,
   postSignedEvent,
+  seedOfflineDemoChannelConfig,
   spawnServer,
   stage4ArtifactPath,
   stopChild,
@@ -151,6 +152,9 @@ try {
   const serverEntry = await buildNodeServer();
   log(`built node server: ${serverEntry}`);
   log(`node ${assertNodeVersion()}  DB_A=${dbA}  DB_B=${dbB}`);
+  await seedOfflineDemoChannelConfig(`${dbA}.state`);
+  await seedOfflineDemoChannelConfig(`${dbB}.state`);
+  await seedOfflineDemoChannelConfig(`${dbC}.state`);
 
   // --- Turn 1 on DB_A, then kill the process. ---
   {

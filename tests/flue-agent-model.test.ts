@@ -14,6 +14,7 @@ import { resolveModel } from '@flue/runtime/internal';
 
 import { SqliteConfigStore } from '../src/config/store.ts';
 import slackThreadAgent, { resolveAgentModel } from '../src/agents/slack-thread.ts';
+import { seededAgents } from '../src/config/seed.ts';
 import type { CustomAgentConfig } from '../src/config/types.ts';
 import { withEnv } from './helpers/env.ts';
 
@@ -36,6 +37,22 @@ function modelAgent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConf
 }
 
 test('Flue resolves the model specifier produced by the slack-thread agent', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'slack-flue-model-seed-'));
+  const dbPath = join(dir, 'state.db');
+  const store = new SqliteConfigStore(dbPath, {
+    agents: seededAgents,
+    assignments: [
+      {
+        workspaceId: 'T_DEMO',
+        channelId: 'C_EXEC',
+        agentId: 'agent_exec_brief',
+        enabled: true,
+      },
+      { workspaceId: '*', channelId: '*', agentId: 'agent_exec_brief', enabled: true },
+    ],
+  });
+  store.close();
+
   // The `cloudflare-workers-ai` provider id is in Flue's model catalog, but
   // the specific seeded model id is not — so it must be registered before
   // resolution will admit it. An empty registration is enough for a catalog
@@ -43,22 +60,27 @@ test('Flue resolves the model specifier produced by the slack-thread agent', asy
   // suffixes under it.
   registerProvider('cloudflare-workers-ai', {});
 
-  const config = await withEnv(
-    {
-      ANTHROPIC_API_KEY: undefined,
-      CLOUDFLARE_API_TOKEN: 'cf-token',
-      CLOUDFLARE_ACCOUNT_ID: 'cf-account',
-      SLACK_FLUE_MODEL: undefined,
-    },
-    () => slackThreadAgent.initialize({ id: THREAD_KEY, env: {} }),
-  );
+  try {
+    const config = await withEnv(
+      {
+        SLACK_STATE_DB_PATH: dbPath,
+        ANTHROPIC_API_KEY: undefined,
+        CLOUDFLARE_API_TOKEN: 'cf-token',
+        CLOUDFLARE_ACCOUNT_ID: 'cf-account',
+        SLACK_FLUE_MODEL: undefined,
+      },
+      () => slackThreadAgent.initialize({ id: THREAD_KEY, env: {} }),
+    );
 
-  assert.equal(typeof config.model, 'string');
+    assert.equal(typeof config.model, 'string');
 
-  const resolved = resolveModel(config.model as string);
+    const resolved = resolveModel(config.model as string);
 
-  assert.ok(resolved, 'resolveModel should return a resolved model, not throw or return nothing');
-  assert.equal(resolved.provider, 'cloudflare-workers-ai');
+    assert.ok(resolved, 'resolveModel should return a resolved model, not throw or return nothing');
+    assert.equal(resolved.provider, 'cloudflare-workers-ai');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('model policy prefers an explicit per-agent model over provider credentials and fallback', () => {

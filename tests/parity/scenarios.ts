@@ -21,6 +21,7 @@ import type { Lane, LaneInstance, ScenarioLaneConfig } from './lane.ts';
 import { PROVIDER_FAILURE_TEXT } from '../../src/slack/web-client-presenter.ts';
 import { slackFallbackTextLimit } from '../../src/slack/message-format.ts';
 import type { SlackEventFixture } from '../../src/slack/types.ts';
+import { seededAgents } from '../../src/config/seed.ts';
 
 /** The exec channel / root thread the default fixtures target. */
 const EXEC_CHANNEL = 'C_EXEC';
@@ -31,6 +32,32 @@ export interface Scenario {
   title: string;
   config: ScenarioLaneConfig;
   run(instance: LaneInstance): Promise<void>;
+}
+
+function demoChannelConfig(config: ScenarioLaneConfig = {}): ScenarioLaneConfig {
+  return {
+    ...config,
+    configSeed: {
+      agents: seededAgents,
+      assignments: [
+        {
+          workspaceId: 'T_DEMO',
+          channelId: 'C_ENG',
+          agentId: 'agent_release_scribe',
+          enabled: true,
+          channelLabel: 'eng-releases',
+        },
+        {
+          workspaceId: 'T_DEMO',
+          channelId: EXEC_CHANNEL,
+          agentId: 'agent_exec_brief',
+          enabled: true,
+          channelLabel: 'exec-briefing',
+        },
+        { workspaceId: '*', channelId: '*', agentId: 'agent_exec_brief', enabled: true },
+      ],
+    },
+  };
 }
 
 export const scenarios: Scenario[] = [
@@ -65,7 +92,7 @@ export const scenarios: Scenario[] = [
   {
     id: 'S03',
     title: 'mention full turn delivers one final, sets then clears status',
-    config: {},
+    config: demoChannelConfig(),
     async run(instance) {
       const response = await instance.postEvent(appMention());
       assert.equal(response.status, 200);
@@ -105,7 +132,7 @@ export const scenarios: Scenario[] = [
   {
     id: 'S04',
     title: 'duplicate delivery yields one final and at most one provider call',
-    config: {},
+    config: demoChannelConfig(),
     async run(instance) {
       const payload = appMention();
       const responses = [
@@ -126,7 +153,7 @@ export const scenarios: Scenario[] = [
   {
     id: 'S05',
     title: 'default 24h window drives conversations.history',
-    config: {},
+    config: demoChannelConfig(),
     async run(instance) {
       await instance.postEvent(appMention());
       await instance.quiesce();
@@ -147,7 +174,7 @@ export const scenarios: Scenario[] = [
   {
     id: 'S06',
     title: '"last 2 days" widens the history window to 172800s',
-    config: {},
+    config: demoChannelConfig(),
     async run(instance) {
       await instance.postEvent(
         appMention({
@@ -168,7 +195,7 @@ export const scenarios: Scenario[] = [
   {
     id: 'S07',
     title: 'thread continuation reads replies and feeds human context to the provider',
-    config: {},
+    config: demoChannelConfig(),
     async run(instance) {
       await instance.postEvent(appMention());
       await instance.quiesce();
@@ -314,7 +341,7 @@ export const scenarios: Scenario[] = [
   {
     id: 'S14',
     title: 'fail-closed without a bot user id: mention runs, thread reply does not',
-    config: { botUserId: null },
+    config: demoChannelConfig({ botUserId: null }),
     async run(instance) {
       await instance.postEvent(appMention());
       await instance.quiesce();
@@ -328,7 +355,7 @@ export const scenarios: Scenario[] = [
   {
     id: 'S15',
     title: 'provider failure still delivers one sanitized final and clears status',
-    config: { provider: { mode: 'http_500' } },
+    config: demoChannelConfig({ provider: { mode: 'http_500' } }),
     async run(instance) {
       await instance.postEvent(appMention());
       await instance.quiesce();
@@ -356,7 +383,7 @@ export const scenarios: Scenario[] = [
   {
     id: 'S16',
     title: 'status rejection falls back to a durable progress post before the final',
-    config: { slack: { rejectSetStatus: true } },
+    config: demoChannelConfig({ slack: { rejectSetStatus: true } }),
     async run(instance) {
       await instance.postEvent(appMention());
       await instance.quiesce();
@@ -383,7 +410,7 @@ export const scenarios: Scenario[] = [
   {
     id: 'S17',
     title: 'startStream rejection delivers the final via chat.postMessage once',
-    config: { slack: { rejectStartStream: true } },
+    config: demoChannelConfig({ slack: { rejectStartStream: true } }),
     async run(instance) {
       await instance.postEvent(appMention());
       await instance.quiesce();
@@ -401,7 +428,7 @@ export const scenarios: Scenario[] = [
   {
     id: 'S18',
     title: 'a single stopStream failure does not duplicate the final',
-    config: { slack: { failStopStreamOnce: true } },
+    config: demoChannelConfig({ slack: { failStopStreamOnce: true } }),
     async run(instance) {
       await instance.postEvent(appMention());
       await instance.quiesce();
@@ -432,7 +459,7 @@ export const scenarios: Scenario[] = [
   {
     id: 'S20',
     title: 'explicit mention follow-up delivers two finals in the same thread',
-    config: {},
+    config: demoChannelConfig(),
     async run(instance) {
       await instance.postEvent(appMention());
       await instance.quiesce();
@@ -457,7 +484,7 @@ export const scenarios: Scenario[] = [
   {
     id: 'S21',
     title: 'threaded mention fan-out (mention + companion message) yields one reply',
-    config: {},
+    config: demoChannelConfig(),
     async run(instance) {
       // Slack delivers BOTH an app_mention and a message event for a single
       // in-thread mention: same channel + message ts, different event_ids. A
@@ -497,7 +524,7 @@ export const scenarios: Scenario[] = [
   {
     id: 'S22',
     title: 'context read failure degrades to current-message context without blocking the final',
-    config: { slack: { failConversationReads: true } },
+    config: demoChannelConfig({ slack: { failConversationReads: true } }),
     async run(instance) {
       // The mention's channel_history hydration calls conversations.history,
       // which the fake rejects with { ok:false } so the product WebClient throws
@@ -541,7 +568,7 @@ export const scenarios: Scenario[] = [
   {
     id: 'S23',
     title: 'final delivery failure releases the claim so a Slack retry re-drives exactly one final',
-    config: { slack: { failFinalDeliveryOnce: true } },
+    config: demoChannelConfig({ slack: { failFinalDeliveryOnce: true } }),
     async run(instance) {
       const event = appMention();
 
@@ -689,7 +716,7 @@ export const scenarios: Scenario[] = [
   {
     id: 'S26',
     title: 'tool-triggered turns surface lookup_channel_brief status without changing final delivery',
-    config: {},
+    config: demoChannelConfig(),
     async run(instance) {
       await instance.postEvent(
         appMention({
@@ -722,7 +749,7 @@ export const scenarios: Scenario[] = [
   {
     id: 'S27',
     title: 'tool-triggered turns still deliver one final when status updates reject',
-    config: { slack: { rejectSetStatus: true } },
+    config: demoChannelConfig({ slack: { rejectSetStatus: true } }),
     async run(instance) {
       await instance.postEvent(
         appMention({
@@ -786,8 +813,8 @@ export const scenarios: Scenario[] = [
   },
   {
     id: 'S29',
-    title: 'seeded demo channels feed distinct profile instructions to the provider',
-    config: {},
+    title: 'explicit demo channel fixtures feed distinct profile instructions to the provider',
+    config: demoChannelConfig(),
     async run(instance) {
       await instance.postEvent(
         appMention({
@@ -828,9 +855,9 @@ export const scenarios: Scenario[] = [
   {
     id: 'S30',
     title: 'reply footer appears on streamed fallback and provider-failure finals',
-    config: {
+    config: demoChannelConfig({
       env: { SLACK_FLUE_PUBLIC_URL: 'https://demo.example' },
-    },
+    }),
     async run(instance) {
       await instance.postEvent(
         appMention({
@@ -900,9 +927,9 @@ export const scenarios: Scenario[] = [
   {
     id: 'S31',
     title: 'bot channel join posts onboarding once and ignores non-bot joins',
-    config: {
+    config: demoChannelConfig({
       env: { SLACK_FLUE_PUBLIC_URL: 'https://demo.example' },
-    },
+    }),
     async run(instance) {
       const botJoin = memberJoinedChannel({
         event_id: 'Ev_BOT_JOINED_CHANNEL',
@@ -1012,9 +1039,9 @@ export const scenarios: Scenario[] = [
   {
     id: 'S33',
     title: 'SLACK_FLUE_ALLOW_DMS=false silences DMs but leaves channels working',
-    config: {
+    config: demoChannelConfig({
       env: { SLACK_FLUE_ALLOW_DMS: 'false' },
-    },
+    }),
     async run(instance) {
       // Direct messages are turned off org-wide → no reply, nothing on the wire.
       await instance.postEvent(dmMessage());
