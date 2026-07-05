@@ -81,6 +81,13 @@ flue dev --target node --port 8789
 
 `flue dev` is a long-running watch-mode dev server (default port 3583; `--port` overrides). It loads `.env` from the project root by default; pass `--env <path>` to select another env file, and shell-exported values always win. See the full env-var table in `README.md`.
 
+By default, the durable transcript DB is `./tmp/flue.db` and the app-owned
+state DB is `<FLUE_DB_PATH>.state`; `flue.config.ts` ignores `tmp/**` during
+watch mode, so SQLite writes and `-wal`/`-shm` sidecars do not reload the dev
+server. Keep using `FLUE_DB_PATH` and `SLACK_STATE_DB_PATH` when you want an
+explicit self-hosted location, or `FLUE_DB_PATH=:memory:` for ephemeral
+offline/parity runs.
+
 The server exposes:
 
 - `POST /channels/slack/events` — the Slack Events endpoint.

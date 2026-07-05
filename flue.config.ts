@@ -6,3 +6,13 @@ export default defineConfig({
   // Durable Object SQLite automatically).
   target: 'node',
 });
+
+export const vite = {
+  server: {
+    watch: {
+      // Default SQLite dev files live in tmp/. Ignore them and their WAL/SHM
+      // sidecars so Flue watch mode does not reload on every DB write.
+      ignored: ['**/tmp/**'],
+    },
+  },
+};
