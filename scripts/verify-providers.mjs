@@ -29,6 +29,7 @@ import {
   getFreePort,
   loadFake,
   postSignedEvent,
+  seedOfflineDemoChannelConfig,
   spawnServer,
   stage4ArtifactPath,
   stopChild,
@@ -50,6 +51,12 @@ function record(name, passed, detail) {
 async function runProvider({ serverEntry, fake, backend, netGuardLog, model, replyText, env }) {
   backend.reset();
   backend.configure({ provider: { mode: 'ok', replyText } });
+  // Channels are fail-closed and the install seed no longer includes the
+  // T_DEMO demo assignments, so the C_EXEC mention fixture needs an explicitly
+  // seeded state DB (a ':memory:' transcript DB would derive an unseedable
+  // ':memory:' state store).
+  const stateDbPath = join(mkdtempSync(join(tmpdir(), 'flue-prov-state-')), 'state.db');
+  await seedOfflineDemoChannelConfig(stateDbPath);
   const port = await getFreePort();
   const spawned = spawnServer({
     serverEntry,
@@ -58,6 +65,7 @@ async function runProvider({ serverEntry, fake, backend, netGuardLog, model, rep
     netGuardLog,
     env: {
       FLUE_DB_PATH: ':memory:',
+      SLACK_STATE_DB_PATH: stateDbPath,
       FLUE_AGENT_API_TOKEN: 'providers-internal-token',
       SLACK_FLUE_MODEL: model,
       ...env,

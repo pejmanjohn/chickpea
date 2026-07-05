@@ -14,7 +14,7 @@ import { resolveModel } from '@flue/runtime/internal';
 
 import { SqliteConfigStore } from '../src/config/store.ts';
 import slackThreadAgent, { resolveAgentModel } from '../src/agents/slack-thread.ts';
-import { seededAgents } from '../src/config/seed.ts';
+import { demoExecChannelAssignment, seededAgents } from '../src/config/seed.ts';
 import type { CustomAgentConfig } from '../src/config/types.ts';
 import { withEnv } from './helpers/env.ts';
 
@@ -42,12 +42,7 @@ test('Flue resolves the model specifier produced by the slack-thread agent', asy
   const store = new SqliteConfigStore(dbPath, {
     agents: seededAgents,
     assignments: [
-      {
-        workspaceId: 'T_DEMO',
-        channelId: 'C_EXEC',
-        agentId: 'agent_exec_brief',
-        enabled: true,
-      },
+      demoExecChannelAssignment,
       { workspaceId: '*', channelId: '*', agentId: 'agent_exec_brief', enabled: true },
     ],
   });

@@ -17,14 +17,11 @@ import { join } from 'node:path';
 
 import {
   REPO_ROOT,
-  EVENTS_PATH,
   assertNodeVersion,
   buildNodeServer,
   getFreePort,
   loadFake,
-  loadTsModule,
   postSignedEvent,
-  signedHeaders,
   spawnServer,
   stopChild,
   waitForFinals,
@@ -72,25 +69,6 @@ async function postAdminJson(baseUrl, method, path, body) {
   return { status: response.status, body: parsed };
 }
 
-async function postAdminJsonToApp(app, method, path, body) {
-  const response = await app.request(path, {
-    method,
-    headers: {
-      authorization: `Bearer ${ADMIN_TOKEN}`,
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify(body),
-  });
-  const text = await response.text();
-  let parsed;
-  try {
-    parsed = text ? JSON.parse(text) : undefined;
-  } catch {
-    parsed = text;
-  }
-  return { status: response.status, body: parsed };
-}
-
 function mentionForNewChannel() {
   return {
     ...appMention,
@@ -105,213 +83,6 @@ function mentionForNewChannel() {
   };
 }
 
-async function postSignedEventToApp(app, path, payload) {
-  const rawBody = JSON.stringify(payload);
-  const response = await app.request(path, {
-    method: 'POST',
-    headers: signedHeaders(rawBody),
-    body: rawBody,
-  });
-  const text = await response.text();
-  let body;
-  try {
-    body = text ? JSON.parse(text) : undefined;
-  } catch {
-    body = text;
-  }
-  return { status: response.status, body };
-}
-
-async function withProcessEnv(patch, fn) {
-  const previous = new Map();
-  for (const [key, value] of Object.entries(patch)) {
-    previous.set(key, process.env[key]);
-    if (value === undefined) {
-      delete process.env[key];
-    } else {
-      process.env[key] = value;
-    }
-  }
-  try {
-    return await fn();
-  } finally {
-    for (const [key, value] of previous.entries()) {
-      if (value === undefined) {
-        delete process.env[key];
-      } else {
-        process.env[key] = value;
-      }
-    }
-  }
-}
-
-function isLoopbackListenDenied(error) {
-  return (
-    error &&
-    typeof error === 'object' &&
-    error.code === 'EPERM' &&
-    error.syscall === 'listen'
-  );
-}
-
-async function runInProcessFallback(backend, listenError) {
-  console.log(
-    `loopback listen unavailable (${listenError.code}); running in-process app fallback`,
-  );
-
-  const fakeFetch = backend.asFetch();
-  const selfBaseUrl = 'http://flue-in-process.local';
-  const stateDir = mkdtempSync(join(tmpdir(), 'flue-agent-config-state-'));
-  const stateDbPath = join(stateDir, 'state.db');
-  const attemptedExternal = [];
-
-  await withProcessEnv(
-    {
-      FLUE_DB_PATH: ':memory:',
-      SLACK_STATE_DB_PATH: stateDbPath,
-      FLUE_ADMIN_TOKEN: ADMIN_TOKEN,
-      FLUE_AGENT_API_TOKEN: 'agent-config-internal-token',
-      FLUE_SELF_URL: selfBaseUrl,
-      SLACK_SIGNING_SECRET: 'test-signing-secret',
-      LOCAL_STUB_URL: 'https://fake-provider.local/v1',
-      SLACK_API_URL: 'https://fake-slack.local/api/',
-      SLACK_BOT_TOKEN: 'test-bot-token',
-      SLACK_BOT_USER_ID: 'U_BOT',
-      SLACK_FLUE_MODEL: 'local-stub/parity-stub-1',
-    },
-    async () => {
-      let app;
-      let slackThreadAgent;
-      const originalFetch = globalThis.fetch;
-      globalThis.fetch = async (input, init) => {
-        const url =
-          typeof input === 'string'
-            ? input
-            : input instanceof URL
-              ? input.href
-              : input.url;
-        if (url.startsWith('https://fake-slack.local/') || url.startsWith('https://fake-provider.local/')) {
-          return fakeFetch(input, init);
-        }
-        if (url.startsWith(selfBaseUrl) && app) {
-          const parsed = new URL(url);
-          const agentMatch = parsed.pathname.match(/^\/agents\/slack-thread\/(.+)$/);
-          if (agentMatch && slackThreadAgent) {
-            const agentId = decodeURIComponent(agentMatch[1]);
-            const requestBody = init?.body ? JSON.parse(String(init.body)) : {};
-            const agentConfig = await slackThreadAgent.initialize({ id: agentId, env: {} });
-            const providerModel = String(agentConfig.model ?? '').replace(/^local-stub\//, '');
-            await fakeFetch('https://fake-provider.local/v1/chat/completions', {
-              method: 'POST',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({
-                model: providerModel,
-                messages: [
-                  { role: 'system', content: String(agentConfig.instructions ?? '') },
-                  { role: 'user', content: String(requestBody.message ?? '') },
-                ],
-              }),
-            });
-            return Response.json({ result: STUB_REPLY_MARKER });
-          }
-          return app.request(`${parsed.pathname}${parsed.search}`, init);
-        }
-        attemptedExternal.push(url);
-        return new Response(JSON.stringify({ error: 'external_fetch_blocked', url }), {
-          status: 599,
-          headers: { 'content-type': 'application/json' },
-        });
-      };
-      try {
-        const { Hono } = await import('hono');
-        const { createAdminRoutes } = await loadTsModule('src/admin/routes.ts');
-        const { channel } = await loadTsModule('src/channels/slack.ts');
-        slackThreadAgent = (await loadTsModule('src/agents/slack-thread.ts')).default;
-        app = new Hono();
-        app.route('/', createAdminRoutes());
-        for (const route of channel.routes) {
-          app.on(route.method, `/channels/slack${route.path}`, route.handler);
-        }
-
-        const createAgent = await postAdminJsonToApp(app, 'POST', '/admin/api/agents', {
-          id: AGENT_ID,
-          name: 'Runtime Config Agent',
-          description: 'Created by verify-agent-config.mjs',
-          instructions: `${INSTRUCTIONS_MARKER}: answer through the runtime-created agent.`,
-          enabled: true,
-          model: MODEL_SPECIFIER,
-          defaultModels: {
-            claude: 'anthropic/runtime-config-claude',
-            'workers-ai': '@cf/runtime-config/model',
-          },
-          allowedTools: [],
-        });
-        record(
-          'POST /admin/api/agents creates runtime agent',
-          createAgent.status === 201 && createAgent.body?.agent?.id === AGENT_ID,
-          `status=${createAgent.status} body=${JSON.stringify(createAgent.body)}`,
-        );
-
-        const putAssignment = await postAdminJsonToApp(app, 'PUT', '/admin/api/assignments', {
-          workspaceId: 'T_DEMO',
-          channelId: NEW_CHANNEL,
-          agentId: AGENT_ID,
-          enabled: true,
-          channelPromptAddendum: `${ADDENDUM_MARKER}: prefer the fresh channel assignment.`,
-        });
-        record(
-          'PUT /admin/api/assignments creates addendum-bearing channel assignment',
-          putAssignment.status === 200 &&
-            putAssignment.body?.assignment?.channelPromptAddendum?.includes(ADDENDUM_MARKER),
-          `status=${putAssignment.status} body=${JSON.stringify(putAssignment.body)}`,
-        );
-
-        backend.reset();
-        const response = await postSignedEventToApp(app, EVENTS_PATH, mentionForNewChannel());
-        const finals = await waitForFinals(backend, 1, 15_000);
-        const final = finals.at(-1);
-        const provider = backend.providerCalls().at(-1);
-        const serializedProvider = JSON.stringify(provider?.body ?? {});
-
-        record(
-          'signed mention in new channel returns 200',
-          response.status === 200,
-          `status=${response.status} body=${JSON.stringify(response.body)}`,
-        );
-        record(
-          'provider request uses runtime-created agent model',
-          provider?.body?.model === PROVIDER_MODEL,
-          `model=${String(provider?.body?.model)}`,
-        );
-        record(
-          'provider request contains runtime-created instructions and channel addendum',
-          serializedProvider.includes(INSTRUCTIONS_MARKER) &&
-            serializedProvider.includes(ADDENDUM_MARKER),
-          `instructions=${serializedProvider.includes(INSTRUCTIONS_MARKER)} ` +
-            `addendum=${serializedProvider.includes(ADDENDUM_MARKER)}`,
-        );
-        record(
-          'Slack final reply lands in the new channel',
-          finals.length === 1 &&
-            final?.channel === NEW_CHANNEL &&
-            final?.threadTs === NEW_THREAD_TS &&
-            final?.text.includes(STUB_REPLY_MARKER),
-          `finals=${finals.length} channel=${String(final?.channel)} thread=${String(final?.threadTs)}`,
-        );
-        record(
-          'NET_GUARD_LOG empty -> zero external traffic',
-          attemptedExternal.length === 0,
-          attemptedExternal.length === 0
-            ? 'no external hosts attempted'
-            : `attempted: ${attemptedExternal.join(', ')}`,
-        );
-      } finally {
-        globalThis.fetch = originalFetch;
-      }
-    },
-  );
-}
-
 function finish() {
   const failed = results.filter((result) => !result.passed);
   console.log(`\n${results.length - failed.length}/${results.length} checks passed`);
@@ -324,19 +95,17 @@ try {
   fake = await backend.listen();
   console.log(`fake Slack/provider backend listening at ${fake.url}`);
 } catch (error) {
-  if (isLoopbackListenDenied(error)) {
-    // The in-process fallback is weaker evidence than the real spawned server
-    // (no real port bind, no real HTTP hop). CI must never take it silently:
-    // FLUE_REQUIRE_LOOPBACK=1 turns a would-be fallback into a hard failure,
-    // same contract as tests/helpers/listen.ts.
-    if (process.env.FLUE_REQUIRE_LOOPBACK === '1') {
-      throw new Error(
-        `FLUE_REQUIRE_LOOPBACK=1 but loopback listen is denied (${error.code}). ` +
-          'This verifier must run against a real server here — do not fall back silently.',
-      );
-    }
-    await runInProcessFallback(backend, error);
-    finish();
+  // No in-process fallback here on purpose: a fallback that hand-simulates the
+  // agent hop produces PASS lines indistinguishable from real-server evidence
+  // (reviewed out 2026-07-05). Sandboxes that deny loopback listen cannot run
+  // this verifier; fail loudly instead of fabricating a green gate.
+  if (error && typeof error === 'object' && error.syscall === 'listen') {
+    console.error(
+      `verify-agent-config: loopback listen denied (${error.code}). This verifier ` +
+        'needs a real server on 127.0.0.1 and has no weaker fallback — run it in an ' +
+        'environment that allows loopback listeners.',
+    );
+    process.exit(1);
   }
   throw error;
 }

@@ -30,6 +30,7 @@ import {
   getFreePort,
   loadFake,
   postSignedEvent,
+  seedOfflineDemoChannelConfig,
   spawnServer,
   stage4ArtifactPath,
   stopChild,
@@ -82,6 +83,12 @@ async function runLiveProvider(provider, serverEntry, fake, backend) {
   backend.reset();
   const guardDir = mkdtempSync(join(tmpdir(), `flue-live-${provider.id}-`));
   const netGuardLog = join(guardDir, 'external-hosts.log');
+  // Channels are fail-closed and the install seed no longer includes the
+  // T_DEMO demo assignments, so the C_EXEC mention fixture needs an explicitly
+  // seeded state DB (a ':memory:' transcript DB would derive an unseedable
+  // ':memory:' state store).
+  const stateDbPath = join(guardDir, 'state.db');
+  await seedOfflineDemoChannelConfig(stateDbPath);
   const port = await getFreePort();
   const spawned = spawnServer({
     serverEntry,
@@ -90,6 +97,7 @@ async function runLiveProvider(provider, serverEntry, fake, backend) {
     netGuardLog,
     env: {
       FLUE_DB_PATH: ':memory:',
+      SLACK_STATE_DB_PATH: stateDbPath,
       FLUE_AGENT_API_TOKEN: 'providers-live-internal-token',
       SLACK_FLUE_MODEL: provider.model,
       NET_GUARD_ALLOW: provider.liveHost,

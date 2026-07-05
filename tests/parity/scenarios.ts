@@ -21,7 +21,11 @@ import type { Lane, LaneInstance, ScenarioLaneConfig } from './lane.ts';
 import { PROVIDER_FAILURE_TEXT } from '../../src/slack/web-client-presenter.ts';
 import { slackFallbackTextLimit } from '../../src/slack/message-format.ts';
 import type { SlackEventFixture } from '../../src/slack/types.ts';
-import { seededAgents } from '../../src/config/seed.ts';
+import {
+  demoChannelAssignments,
+  seededAgents,
+  seededAssignments,
+} from '../../src/config/seed.ts';
 
 /** The exec channel / root thread the default fixtures target. */
 const EXEC_CHANNEL = 'C_EXEC';
@@ -35,27 +39,18 @@ export interface Scenario {
 }
 
 function demoChannelConfig(config: ScenarioLaneConfig = {}): ScenarioLaneConfig {
+  if (config.configSeed) {
+    // A caller-provided configSeed must never be silently replaced by the demo
+    // fixtures — a scenario that needs both should compose them explicitly.
+    throw new Error('demoChannelConfig: pass a custom configSeed directly, not through this helper');
+  }
   return {
     ...config,
     configSeed: {
       agents: seededAgents,
-      assignments: [
-        {
-          workspaceId: 'T_DEMO',
-          channelId: 'C_ENG',
-          agentId: 'agent_release_scribe',
-          enabled: true,
-          channelLabel: 'eng-releases',
-        },
-        {
-          workspaceId: 'T_DEMO',
-          channelId: EXEC_CHANNEL,
-          agentId: 'agent_exec_brief',
-          enabled: true,
-          channelLabel: 'exec-briefing',
-        },
-        { workspaceId: '*', channelId: '*', agentId: 'agent_exec_brief', enabled: true },
-      ],
+      // The T_DEMO fixtures (single source: src/config/seed.ts) on top of the
+      // real install seed (the '*/*' DM wildcard).
+      assignments: [...demoChannelAssignments, ...seededAssignments],
     },
   };
 }
@@ -266,7 +261,10 @@ export const scenarios: Scenario[] = [
   {
     id: 'S10',
     title: 'top-level channel message is ignored with no wire calls',
-    config: {},
+    // The channel MUST be assigned here: with no assignment the turn would be
+    // dropped by fail-closed resolution and this scenario would pass without
+    // exercising the top-level-ignore gate it exists to protect.
+    config: demoChannelConfig(),
     async run(instance) {
       const response = await instance.postEvent(topLevelChannelMessage());
       assert.equal(response.status, 200);
@@ -330,7 +328,10 @@ export const scenarios: Scenario[] = [
   {
     id: 'S13',
     title: 'implicit thread reply with no prior session is dropped',
-    config: {},
+    // The channel MUST be assigned here: with no assignment the reply would be
+    // dropped by fail-closed resolution and this scenario would pass without
+    // exercising the thread-registry gate it exists to protect.
+    config: demoChannelConfig(),
     async run(instance) {
       const response = await instance.postEvent(channelThreadMessage());
       assert.equal(response.status, 200);

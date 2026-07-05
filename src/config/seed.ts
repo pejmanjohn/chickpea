@@ -59,6 +59,31 @@ export const seededAssignments: ChannelAssignment[] = [
   },
 ];
 
+// T_DEMO channel-assignment FIXTURES for the offline harnesses (parity
+// scenarios, verify scripts, unit tests). These are intentionally NOT part of
+// seededAssignments: a fresh install must not show demo channels in /admin.
+// Single source of truth so the harnesses cannot drift from each other.
+export const demoEngChannelAssignment: ChannelAssignment = {
+  workspaceId: 'T_DEMO',
+  channelId: 'C_ENG',
+  agentId: 'agent_release_scribe',
+  enabled: true,
+  channelLabel: 'eng-releases',
+};
+
+export const demoExecChannelAssignment: ChannelAssignment = {
+  workspaceId: 'T_DEMO',
+  channelId: 'C_EXEC',
+  agentId: 'agent_exec_brief',
+  enabled: true,
+  channelLabel: 'exec-briefing',
+};
+
+export const demoChannelAssignments: ChannelAssignment[] = [
+  demoEngChannelAssignment,
+  demoExecChannelAssignment,
+];
+
 export const seededChannelBriefs: Record<string, string> = {
   C_ENG:
     'The engineering release channel tracks shipped fixes, launch risks, owners, and verification evidence.',

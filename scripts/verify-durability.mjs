@@ -120,6 +120,11 @@ async function runServerTurn({ serverEntry, fakeUrl, dbPath, netGuardLog, payloa
     netGuardLog,
     env: {
       FLUE_DB_PATH: dbPath,
+      // Pin the state DB to the seeded `${dbPath}.state` explicitly: spawnServer
+      // forwards ambient process.env, so an exported SLACK_STATE_DB_PATH (e.g.
+      // from a live-Slack shell) would otherwise redirect every server here to
+      // the operator's live state store and merge the three "isolated" DBs.
+      SLACK_STATE_DB_PATH: `${dbPath}.state`,
       FLUE_AGENT_API_TOKEN: INTERNAL_TOKEN,
       SLACK_FLUE_MODEL: 'local-stub/parity-stub-1',
     },
