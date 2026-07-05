@@ -454,7 +454,7 @@ details[open].advanced summary::before { content: "▾"; }
     effective: null,
     effectiveError: "",
     addChannelOpen: false,
-    channelFormDraft: { workspaceId: "T_DEMO", channelId: "", channelLabel: "" },
+    channelFormDraft: { workspaceId: "", channelId: "", channelLabel: "" },
     addChannelError: "",
     swapOpen: false,
     channelDraft: { enabled: true, channelPromptAddendum: "" },
@@ -471,7 +471,7 @@ details[open].advanced summary::before { content: "▾"; }
   // rail add-channel form and the profile modal's Channels tab.
   function channelFieldsHtml(idPrefix) {
     var draft = state.channelFormDraft;
-    return '<div class="field"><label class="field-label" for="' + idPrefix + '-workspace">Workspace ID</label><input class="input mono" id="' + idPrefix + '-workspace" name="workspaceId" value="' + esc(draft.workspaceId) + '"></div>' +
+    return '<div class="field"><label class="field-label" for="' + idPrefix + '-workspace">Workspace ID</label><input class="input mono" id="' + idPrefix + '-workspace" name="workspaceId" value="' + esc(draft.workspaceId) + '" placeholder="T0123ABC"></div>' +
       '<div class="field"><label class="field-label" for="' + idPrefix + '-channel">Channel ID</label><input class="input mono" id="' + idPrefix + '-channel" name="channelId" value="' + esc(draft.channelId) + '" placeholder="C0123ABC"></div>' +
       '<div class="field full"><label class="field-label" for="' + idPrefix + '-channel-label">Channel name</label><input class="input" id="' + idPrefix + '-channel-label" name="channelLabel" value="' + esc(draft.channelLabel || "") + '" placeholder="eng-releases"></div>';
   }
@@ -522,6 +522,24 @@ details[open].advanced summary::before { content: "▾"; }
     return state.assignments.find(function (assignment) {
       return assignment.workspaceId === state.active.workspaceId && assignment.channelId === state.active.channelId;
     }) || null;
+  }
+
+  function firstWorkspaceAssignment() {
+    return state.assignments.find(function (assignment) {
+      return assignment.workspaceId !== "*";
+    }) || null;
+  }
+
+  function defaultChannelFormWorkspaceId() {
+    if (state.active && state.active.workspaceId) return state.active.workspaceId;
+    var assignment = firstWorkspaceAssignment();
+    return assignment ? assignment.workspaceId : "";
+  }
+
+  function syncChannelFormWorkspacePrefill() {
+    if (!state.channelFormDraft.workspaceId) {
+      state.channelFormDraft.workspaceId = defaultChannelFormWorkspaceId();
+    }
   }
 
   function agentById(id) {
@@ -578,19 +596,30 @@ details[open].advanced summary::before { content: "▾"; }
 
   function railHtml() {
     var channels = concreteAssignments();
-    var workspaceId = state.active ? state.active.workspaceId : (channels[0] ? channels[0].workspaceId : state.channelFormDraft.workspaceId || "T_DEMO");
+    var groups = [];
+    channels.forEach(function (assignment) {
+      var group = groups.find(function (candidate) { return candidate.workspaceId === assignment.workspaceId; });
+      if (!group) {
+        group = { workspaceId: assignment.workspaceId, assignments: [] };
+        groups.push(group);
+      }
+      group.assignments.push(assignment);
+    });
     var html = '<nav class="rail" aria-label="Channels">' +
       '<div class="rail-head"><span class="section-eyebrow">Slack channels</span><span class="hint" style="font-size:0.6875rem;">' + channels.length + '</span></div>' +
-      '<div class="ws-row">▾ ' + esc(workspaceId || "Workspace") + '</div>';
+      (channels.length === 0 ? '<div class="ws-row">▾ Workspace</div>' : "");
     if (channels.length === 0) {
       html += '<div class="empty" style="margin:8px 0 8px 12px; padding:12px;"><p class="field-label">No channels yet &mdash; add one</p><p class="hint">Attach a profile by Slack channel ID.</p></div>';
     } else {
-      channels.forEach(function (assignment) {
-        var active = state.active && state.active.workspaceId === assignment.workspaceId && state.active.channelId === assignment.channelId;
-        var railAgent = agentById(assignment.agentId);
-        html += '<button type="button" class="chan-item' + (active ? " active" : "") + '" data-action="select-channel" data-workspace="' + esc(assignment.workspaceId) + '" data-channel="' + esc(assignment.channelId) + '">' +
-          '<span class="chan-name">' + esc(channelLabel(assignment)) + '</span>' +
-          '<span class="chan-meta">' + esc(railAgent ? railAgent.name : assignment.agentId) + '</span></button>';
+      groups.forEach(function (group) {
+        html += '<div class="ws-row">▾ ' + esc(group.workspaceId || "Workspace") + '</div>';
+        group.assignments.forEach(function (assignment) {
+          var active = state.active && state.active.workspaceId === assignment.workspaceId && state.active.channelId === assignment.channelId;
+          var railAgent = agentById(assignment.agentId);
+          html += '<button type="button" class="chan-item' + (active ? " active" : "") + '" data-action="select-channel" data-workspace="' + esc(assignment.workspaceId) + '" data-channel="' + esc(assignment.channelId) + '">' +
+            '<span class="chan-name">' + esc(channelLabel(assignment)) + '</span>' +
+            '<span class="chan-meta">' + esc(railAgent ? railAgent.name : assignment.agentId) + '</span></button>';
+        });
       });
     }
     html += '<button type="button" class="rail-add" data-action="toggle-add-channel">+ Add channel</button>';
@@ -906,6 +935,7 @@ details[open].advanced summary::before { content: "▾"; }
           state.channelDraft = channelDraftFrom(assignment);
         }
       }
+      syncChannelFormWorkspacePrefill();
       return loadEffective();
     }).then(render).catch(function (error) {
       document.querySelector(".main-inner").innerHTML = '<div class="empty"><p class="field-label">Admin failed to load</p><p class="error">' + esc(error.message) + '</p></div>';
@@ -944,14 +974,14 @@ details[open].advanced summary::before { content: "▾"; }
     }
     if (action === "close-profiles") { state.modalOpen = false; render(); }
     if (action === "select-channel") { selectActive(target.getAttribute("data-workspace"), target.getAttribute("data-channel")); render(); }
-    if (action === "toggle-add-channel") { state.addChannelOpen = true; state.addChannelError = ""; render(); }
+    if (action === "toggle-add-channel") { state.addChannelOpen = true; state.addChannelError = ""; syncChannelFormWorkspacePrefill(); render(); }
     if (action === "cancel-add-channel") { state.addChannelOpen = false; state.addChannelError = ""; render(); }
     if (action === "toggle-swap") { state.swapOpen = !state.swapOpen; render(); }
     if (action === "attach-selected-profile") { attachSelectedProfile(); }
     if (action === "detach-profile") { detachProfile(); }
     if (action === "discard-channel") { var a = activeAssignment(); if (a) selectActive(a.workspaceId, a.channelId); render(); }
     if (action === "save-channel") { saveChannel(); }
-    if (action === "profile-tab") { collectProfileDraft(); state.modalTab = target.getAttribute("data-tab"); renderModal(); }
+    if (action === "profile-tab") { collectProfileDraft(); state.modalTab = target.getAttribute("data-tab"); if (state.modalTab === "channels") syncChannelFormWorkspacePrefill(); renderModal(); }
     if (action === "select-profile") { var selected = agentById(target.getAttribute("data-agent")); if (selected) { state.editingAgentId = selected.id; state.profileDraft = cloneAgent(selected); state.profileError = ""; renderModal(); } }
     if (action === "new-profile") { state.editingAgentId = null; state.profileDraft = newProfileDraft(); state.modalTab = "details"; state.profileError = ""; renderModal(); }
     if (action === "pick-model") { var modelInput = document.getElementById("p-model"); if (modelInput) modelInput.value = target.getAttribute("data-model") || ""; collectProfileDraft(); renderModal(); }
@@ -1001,11 +1031,12 @@ details[open].advanced summary::before { content: "▾"; }
   // callers differ only in agent source and error sink. Returns null when
   // validation failed (the fail sink has already rendered the message).
   function submitChannelForm(formData, agentId, missingAgentMessage, fail, blockExisting) {
-    var workspaceId = String(formData.get("workspaceId") || "").trim() || "T_DEMO";
+    var workspaceId = String(formData.get("workspaceId") || "").trim();
     var channelId = String(formData.get("channelId") || "").trim();
     var channelLabel = resolveChannelLabelToPersist(workspaceId, channelId, formData.get("channelLabel"));
     state.channelFormDraft = { workspaceId: workspaceId, channelId: channelId, channelLabel: channelLabel };
     if (!agentId) { fail(missingAgentMessage); return null; }
+    if (!workspaceId) { fail("Workspace ID is required."); return null; }
     if (!channelId) { fail("Channel ID is required."); return null; }
     var existing = assignmentByKey(workspaceId, channelId);
     // The rail's "+ Add channel" is for creating a NEW channel — refuse to
