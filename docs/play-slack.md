@@ -13,6 +13,8 @@ Add bot scopes:
 - `assistant:write`
 - `channels:history` (new for public-channel thread continuation and explicit top-level mention context)
 - `channels:read` (required for Slack to deliver `member_joined_channel`, which drives the channel onboarding disclosure)
+- `groups:history` (private-channel thread continuation and explicit mention context, when the bot is invited)
+- `groups:read` (private-channel metadata, the private-channel counterpart to `channels:read`)
 - `im:history` (new for direct-message replies and DM thread context)
 - `users:read` (required by `scripts/verify-identity-live.mjs` to verify the bot name and avatar)
 
@@ -159,6 +161,7 @@ Subscribe to bot event:
 
 - `app_mention`
 - `message.channels`
+- `message.groups`
 - `message.im`
 - `message.app_home`
 - `member_joined_channel`

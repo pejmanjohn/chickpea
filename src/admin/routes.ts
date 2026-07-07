@@ -4,7 +4,7 @@ import { Hono, type Context, type Next } from 'hono';
 import { getCookie, setCookie } from 'hono/cookie';
 import * as v from 'valibot';
 
-import { renderAdminPage } from './page.ts';
+import { renderAdminLogin, renderAdminPage } from './page.ts';
 // Build-time JSON import: the committed manifest is the single source of the
 // Slack app identity; the wizard deep-link below substitutes the request host
 // so users never hand-edit a request_url.
@@ -25,7 +25,12 @@ import { resolveAgentModel, type ModelResolvableAgent } from '../config/model-po
 import { knownProviderIds, listRuntimeModelProviders } from '../config/providers.ts';
 import { SEED_DEFAULT_MODELS } from '../config/seed.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
-import { getConfigStore, getSettingsStore, type PlatformEnv } from '../config/state-backend.ts';
+import {
+  getConfigStore,
+  getSettingsStore,
+  isCloudflareTarget,
+  type PlatformEnv,
+} from '../config/state-backend.ts';
 import type { ConfigStore } from '../config/store.ts';
 import type { ChannelAssignment, CustomAgentConfig } from '../config/types.ts';
 import {
@@ -150,6 +155,15 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
 
     if (!constantTimeEquals(getCookie(c, ADMIN_COOKIE), cookieValue)) {
+      // A browser navigating to the /admin PAGE with no valid session gets a
+      // minimal token-entry form instead of a bare JSON 401 — otherwise the
+      // documented "/admin?token=..." login has no visible entry point. XHR
+      // and /admin/api/* callers still get the JSON 401 they can handle. Kept
+      // at 401 (not 200) so it is never cached as a real page; `invalidToken`
+      // is set only when a ?token= was supplied and rejected.
+      if (isAdminPageGet(c)) {
+        return c.html(renderAdminLogin({ invalidToken: queryToken !== undefined }), 401);
+      }
       return c.json({ error: 'unauthorized' }, 401);
     }
     return next();
@@ -365,10 +379,17 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (!parsed.success) {
       return invalidRequest(c);
     }
-    const { botToken, signingSecret } = parsed.output;
+    // Trim and require non-empty AFTER trimming: a whitespace-only value clears
+    // the schema's min-length but would store as empty and resolve back as
+    // 'missing', so reject it as an invalid request before touching Slack.
+    const botToken = parsed.output.botToken.trim();
+    const signingSecret = parsed.output.signingSecret.trim();
+    if (!botToken || !signingSecret) {
+      return invalidRequest(c);
+    }
     let auth;
     try {
-      auth = await slackAuthTest(botToken.trim());
+      auth = await slackAuthTest(botToken);
     } catch (err) {
       // Distinct from a rejected token: Slack (or the SLACK_API_URL override)
       // could not be reached at all — retriable, nothing stored.
@@ -386,8 +407,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
     try {
       const settingsStore = settings(c);
-      await settingsStore.setSetting(SLACK_SETTING_KEYS.botToken, botToken.trim());
-      await settingsStore.setSetting(SLACK_SETTING_KEYS.signingSecret, signingSecret.trim());
+      await settingsStore.setSetting(SLACK_SETTING_KEYS.botToken, botToken);
+      await settingsStore.setSetting(SLACK_SETTING_KEYS.signingSecret, signingSecret);
       if (auth.botUserId) {
         await settingsStore.setSetting(SLACK_SETTING_KEYS.botUserId, auth.botUserId);
       }
@@ -395,8 +416,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       // event verifies with the just-stored secret instead of waiting out
       // the cache TTL.
       primeStoredSlackCredentials({
-        botToken: botToken.trim(),
-        signingSecret: signingSecret.trim(),
+        botToken,
+        signingSecret,
         botUserId: auth.botUserId,
       });
       return c.json({
@@ -414,16 +435,42 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   return app;
 }
 
-// The origin Slack must call back into. Behind Cloudflare/reverse proxies the
-// socket-level URL is not the public one — honor x-forwarded-proto/host when
-// present (matching isHttps below), else fall back to the request URL itself.
+// The origin Slack must call back into, resolved fail-closed against header
+// spoofing (the events URL this origin builds becomes a stored Slack config):
+//   1. SLACK_TAG_PUBLIC_URL, when set, is the operator's explicit pin and wins
+//      outright — no request header can override it.
+//   2. On the Cloudflare target the edge terminates TLS and rewrites Host, so
+//      the request URL / Host ARE the public origin; x-forwarded-* here is
+//      caller-supplied and untrusted, so it is ignored entirely.
+//   3. On Node behind a reverse proxy, honor x-forwarded-proto/host but take
+//      the LAST comma-separated hop — the value the proxy nearest this app set
+//      — not the first, which a client can forge by pre-seeding the header.
 function requestOrigin(c: Context): string {
+  const pinned = process.env.SLACK_TAG_PUBLIC_URL?.trim();
+  if (pinned) {
+    return pinned.replace(/\/+$/, '');
+  }
   const url = new URL(c.req.url);
-  const forwardedProto = c.req.header('x-forwarded-proto')?.split(',')[0]?.trim();
-  const forwardedHost = c.req.header('x-forwarded-host')?.split(',')[0]?.trim();
+  if (isCloudflareTarget()) {
+    return `${url.protocol.replace(/:$/, '')}://${c.req.header('host') || url.host}`;
+  }
+  const forwardedProto = lastForwardedHop(c.req.header('x-forwarded-proto'));
+  const forwardedHost = lastForwardedHop(c.req.header('x-forwarded-host'));
   const proto = forwardedProto || url.protocol.replace(/:$/, '');
   const host = forwardedHost || c.req.header('host') || url.host;
   return `${proto}://${host}`;
+}
+
+// The trusted hop of an X-Forwarded-* header is the LAST value: each proxy
+// appends, so the rightmost entry is the one set by the proxy closest to this
+// app. Taking the first would trust a value a client can pre-populate.
+function lastForwardedHop(header: string | undefined): string | undefined {
+  if (!header) return undefined;
+  const hops = header
+    .split(',')
+    .map((hop) => hop.trim())
+    .filter(Boolean);
+  return hops.length ? hops[hops.length - 1] : undefined;
 }
 
 /**
@@ -437,6 +484,18 @@ function slackManifestUrl(origin: string): string {
   const { $schema: _schema, ...manifest } = slackAppManifest;
   const json = JSON.stringify(manifest).replaceAll('https://<YOUR_PUBLIC_HOST>', origin);
   return `https://api.slack.com/apps?new_app=1&manifest_json=${encodeURIComponent(json)}`;
+}
+
+// A top-level GET of the /admin page (a browser navigation), as opposed to an
+// /admin/api/* XHR — the only request that should receive the HTML login form
+// rather than a JSON 401.
+function isAdminPageGet(c: Context): boolean {
+  if (c.req.method !== 'GET') return false;
+  try {
+    return new URL(c.req.url).pathname === '/admin';
+  } catch {
+    return false;
+  }
 }
 
 function bearerToken(header: string | undefined): string | undefined {

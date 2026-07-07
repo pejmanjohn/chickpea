@@ -12,10 +12,11 @@
     "node": ">=22.19.0"
   },
   "scripts": {
+    "pretest": "node scripts/preflight-node-lane.mjs",
     "test": "npm run typecheck && node --test --import tsx tests/*.test.ts",
     "test:ci": "TAG_REQUIRE_LOOPBACK=1 npm test",
     "typecheck": "tsc --noEmit",
-    "flue:build": "flue build --target node",
+    "flue:build": "node scripts/preflight-node-lane.mjs && flue build --target node",
     "flue:build:cf": "node scripts/flue-build-cf.mjs --output dist-cf",
     "build": "npm run flue:build:cf",
     "deploy": "wrangler deploy",

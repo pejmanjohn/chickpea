@@ -8,9 +8,13 @@ import { toolStatus } from './slack/replies.ts';
 import { setObservedSlackStatus } from './slack/status-registry.ts';
 
 // Provider registrations run at module scope so they are in place before any
-// agent resolves its model. Registering `cloudflare-workers-ai` is REQUIRED:
-// the seeded model id `@cf/zai-org/glm-5.2` is not in Flue's catalog and only
-// resolves once the provider id is registered.
+// agent resolves its model. On the Cloudflare target the seeded Workers AI
+// default (`@cf/zai-org/glm-5.2`) resolves keylessly through Flue's
+// binding-backed `cloudflare` provider — no registration needed there.
+// Registering `cloudflare-workers-ai` here is the NODE path: the REST provider
+// that serves the same non-catalog model id from CLOUDFLARE_API_TOKEN +
+// CLOUDFLARE_ACCOUNT_ID (and declares a context-window floor below so that
+// path keeps auto-compaction, unlike the binding provider's contextWindow 0).
 // `||` (not `??`): an empty-string env var means "unset" here — an empty
 // baseUrl would otherwise be accepted and the openai-completions client would
 // silently fall back to api.openai.com.

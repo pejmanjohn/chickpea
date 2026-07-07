@@ -36,6 +36,18 @@ declare module 'cloudflare:workers' {
     sql: SqlStorage;
     /** Synchronous transaction; rolls back when `fn` throws. */
     transactionSync<T>(fn: () => T): T;
+    /**
+     * Arm the object's single alarm for `scheduledTime` (epoch ms). Awaiting it
+     * makes the alarm durable before the caller returns — the turn-relay ack
+     * depends on that (the enqueued job survives even if the acking invocation
+     * dies the instant after). Only one alarm exists at a time; a later call
+     * overwrites the pending time.
+     */
+    setAlarm(scheduledTime: number): Promise<void>;
+    /** The currently-armed alarm time (epoch ms), or null if none. */
+    getAlarm(): Promise<number | null>;
+    /** Cancel the pending alarm, if any. */
+    deleteAlarm(): Promise<void>;
   }
 
   interface DurableObjectState {
@@ -43,9 +55,19 @@ declare module 'cloudflare:workers' {
     id: { toString(): string };
   }
 
+  /** Metadata the platform passes to `alarm()` about the current invocation. */
+  interface DurableObjectAlarmInfo {
+    /** True when this alarm firing is a platform retry of a prior throw. */
+    isRetry: boolean;
+    /** Zero on the first firing; increments on each at-least-once retry. */
+    retryCount: number;
+  }
+
   abstract class DurableObject<Env = unknown> {
     protected ctx: DurableObjectState;
     protected env: Env;
     constructor(ctx: DurableObjectState, env: Env);
+    /** Optional alarm handler; the platform invokes it when the alarm fires. */
+    alarm?(alarmInfo?: DurableObjectAlarmInfo): void | Promise<void>;
   }
 }

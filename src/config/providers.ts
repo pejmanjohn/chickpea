@@ -82,7 +82,15 @@ export function listRuntimeModelProviders({
     .sort((a, b) => a.localeCompare(b))
     .map((id) => {
       const entry = catalogById.get(id) ?? customProviderEntry(id);
-      const registered = registeredProviders.has(id);
+      // The REST `cloudflare-workers-ai` provider is registered in src/app.ts on
+      // EVERY target, but on Cloudflare it still needs its own API token +
+      // account id to actually work — the keyless entry there is the
+      // binding-backed `cloudflare` provider. So on CF ignore its registration:
+      // it counts as configured only with real REST credentials, and never
+      // masquerades as the keyless default a button deploy relies on.
+      const registered =
+        registeredProviders.has(id) &&
+        !(id === 'cloudflare-workers-ai' && isCloudflareTarget());
       const bindingBacked = entry.id === CF_BINDING_PROVIDER.id && isCloudflareTarget();
       const envConfigured =
         entry.envVars.length > 0 && entry.envVars.every((envVar) => Boolean(env[envVar]));

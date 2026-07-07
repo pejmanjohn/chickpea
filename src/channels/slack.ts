@@ -4,38 +4,29 @@ import {
   type SlackChannel,
   type SlackChannelOptions,
 } from '@flue/slack';
-import { WebClient } from '@slack/web-api';
 
 import { resolveEffectiveSlackConfig } from '../config/effective-config.ts';
 import { ModelResolutionError, NoAssignmentError } from '../config/errors.ts';
-import { resolveAgentModel } from '../config/model-policy.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import { resolveAssignment, type AssignmentSurface } from '../config/resolver.ts';
 import { getOrCreateSnapshot } from '../config/snapshot-store.ts';
 import { resolveStores, type AppStores, type PlatformEnv } from '../config/state-backend.ts';
+import { tagStateStub, type TurnJob } from '../config/state-rpc.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
-import { promptSlackThreadAgent } from '../slack/agent-dispatch.ts';
 import type { SlackClaimStore } from '../slack/claim-store.ts';
 import { resolveSlackCredentials } from '../slack/credentials.ts';
 import {
   renderChannelOnboarding,
   renderUnassignedChannelHint,
 } from '../slack/message-format.ts';
-import type { SlackStatusUpdate } from '../slack/replies.ts';
-import { registerSlackStatusTurn } from '../slack/status-registry.ts';
+import { getClient, runTurn, sanitizeError } from '../slack/run-turn.ts';
 import { slackThreadKey } from '../slack/thread-key.ts';
-import type { SlackTurnContext } from '../slack/thread-context.ts';
 import { normalizeSlackTurn } from '../slack/turn-normalization.ts';
 import {
   isSlackMemberJoinedChannelEvent,
   type NormalizedSlackTurn,
   type SlackEventFixture,
 } from '../slack/types.ts';
-import {
-  assembleSlackPrompt,
-  hydrateSlackContextViaWebClient,
-} from '../slack/web-client-context.ts';
-import { PROVIDER_FAILURE_TEXT, WebClientPresenter } from '../slack/web-client-presenter.ts';
 
 /**
  * Run `task` past the events ack. On Cloudflare the response completing would
@@ -60,50 +51,6 @@ function detach(
   } catch {
     // node: no ExecutionContext — the promise simply runs detached.
   }
-}
-
-/**
- * Lazily-constructed outbound Slack client, keyed by the RESOLVED bot token
- * (env > wizard-stored; see slack/credentials.ts). Resolving at first use (not
- * module load) lets the offline verification point `slackApiUrl` at a fake
- * Slack, keeps the cloudflare build from binding a token at import time, and
- * — because the cache is token-keyed — makes a wizard save take effect on the
- * next event instead of pinning the first-seen token for the isolate's
- * lifetime. The v8 client appends the method to `slackApiUrl`, which must end
- * with `/` (it self-corrects if not). `retryConfig` is pinned to no retries to
- * match the hand-rolled lane's raw-fetch sinks (deterministic, no 30-minute
- * backoff on a transient upstream).
- */
-let cachedClient: { botToken: string | undefined; client: WebClient } | undefined;
-async function getClient(env: PlatformEnv | undefined): Promise<WebClient> {
-  const { botToken } = await resolveSlackCredentials(env);
-  if (!cachedClient || cachedClient.botToken !== botToken) {
-    const slackApiUrl = process.env.SLACK_API_URL;
-    const client = new WebClient(botToken, {
-      retryConfig: { retries: 0 },
-      // Two measured workerd incompatibilities in the WebClient's fetch use,
-      // both fixed by this wrapper and both no-ops on node:
-      //   1. It stores the function and calls it as a method
-      //      (`this.fetchFn(url, ...)`), so the receiver is the client
-      //      instance — workerd rejects fetch invoked with any receiver other
-      //      than globalThis ("Illegal invocation").
-      //   2. It hardcodes `redirect: 'error'`, which workerd refuses to
-      //      implement (only 'follow'/'manual' exist at the edge). Slack's API
-      //      never redirects, and under 'manual' a hypothetical redirect still
-      //      fails the call (3xx body isn't the JSON envelope) — same outcome
-      //      as 'error', without the unsupported value.
-      fetch: (input, init) => {
-        const patchedInit =
-          isCloudflareTarget() && init?.redirect === 'error'
-            ? { ...init, redirect: 'manual' as RequestRedirect }
-            : init;
-        return globalThis.fetch(input, patchedInit);
-      },
-      ...(slackApiUrl ? { slackApiUrl } : {}),
-    });
-    cachedClient = { botToken, client };
-  }
-  return cachedClient.client;
 }
 
 // Bot user id resolution: prefer the configured value (env, then the
@@ -167,14 +114,48 @@ function identityChannel(): SlackChannel {
 type SlackRouteHandler = SlackChannel['routes'][number]['handler'];
 
 /**
+ * Read a Slack `url_verification` challenge from an UNVERIFIED body, returning
+ * the challenge string only for exactly that payload shape. Used solely on the
+ * bootstrap path below (no signing secret yet); anything else returns
+ * undefined so the caller fails closed.
+ */
+async function urlVerificationChallenge(c: {
+  req?: { json(): Promise<unknown> };
+}): Promise<string | undefined> {
+  try {
+    const body = await c.req?.json();
+    if (
+      body &&
+      typeof body === 'object' &&
+      (body as Record<string, unknown>).type === 'url_verification' &&
+      typeof (body as Record<string, unknown>).challenge === 'string'
+    ) {
+      return (body as { challenge: string }).challenge;
+    }
+  } catch {
+    // Not JSON / no readable body — treat as not-a-challenge, fail closed.
+  }
+  return undefined;
+}
+
+/**
  * Events gate: resolve the signing secret (env > wizard-stored) per request,
  * then delegate to the real channel's verification + dispatch. No secret yet
- * (first-run, wizard not completed) → a graceful 401 — Slack will retry the
- * event later and the rest of the app (notably /admin) keeps serving.
+ * (first-run, wizard not completed) → fail closed (401) so Slack retries later
+ * and the rest of the app (notably /admin) keeps serving — with ONE
+ * exception: a `url_verification` challenge is echoed unverified so a
+ * manifest-created Slack app can verify its request URL BEFORE the wizard has
+ * stored any credential. This is bootstrap-only: once a signing secret exists,
+ * challenges take the verified path below and must pass signature verification
+ * like any other event.
  */
 const verifiedEventsHandler: SlackRouteHandler = async (c, next) => {
   const { signingSecret } = await resolveSlackCredentials(c.env as PlatformEnv | undefined);
   if (!signingSecret) {
+    const challenge = await urlVerificationChallenge(c);
+    if (challenge !== undefined) {
+      return c.json({ challenge });
+    }
     return c.json({ error: 'slack_not_configured' }, 401);
   }
   const route = channelForSecret(signingSecret).routes.find((r) => r.path === '/events');
@@ -334,8 +315,31 @@ const handleSlackEvents: NonNullable<SlackChannelOptions['events']> = async ({ c
   //    the thread registered (only the claims are released, for retry).
   await state.start(threadKey);
 
-  // h. Run the turn past the fast events ack — waitUntil on Cloudflare, a
-  //    plain floating promise on node (see detach).
+  // h. Run the turn past the fast events ack.
+  //    - NODE runs it inline as a floating promise: node has no waitUntil
+  //      horizon, so a long turn just outlives the response.
+  //    - CLOUDFLARE cannot do that. A turn driven inside the events
+  //      invocation's `waitUntil` is cancelled ~30s after the response
+  //      (tail-log-confirmed), killing any longer model turn. So the handler
+  //      ENQUEUES the job into the state Durable Object — awaited, so the job +
+  //      armed alarm are durable BEFORE the ack (milliseconds) — and the DO's
+  //      alarm() runs the SAME runTurn with the platform's 15-minute wall-time
+  //      budget. The claims are already held; on the CF path the alarm owns
+  //      releasing them on terminal failure, exactly as the node .catch does.
+  if (isCloudflareTarget()) {
+    // id = msgKey: the message claim key already dedupes the app_mention +
+    // message fan-out, so keying the job by it makes the enqueue idempotent.
+    const job: TurnJob = { id: msgKey, evtKey, msgKey, turn, assignment };
+    const enqueued = await tagStateStub(platformEnv).enqueueTurn(job);
+    if (!enqueued.ok) {
+      // Enqueue failed before anything ran: free the claims so a Slack
+      // redelivery can re-drive, and stay silent.
+      await state.release(evtKey);
+      await state.release(msgKey);
+      console.error('[tag-team] enqueue turn failed:', enqueued.error.message);
+    }
+    return;
+  }
   detach(
     c,
     runTurn(turn, assignment, platformEnv).catch(async (err) => {
@@ -348,85 +352,6 @@ const handleSlackEvents: NonNullable<SlackChannelOptions['events']> = async ({ c
     }),
   );
 };
-
-/**
- * Full turn lifecycle for the Flue lane, at parity with the hand-rolled lane:
- *   1. set Assistant status (or post a durable progress placeholder on reject),
- *   2. hydrate the bounded Slack context per contextMode,
- *   3. prompt the durable agent in-process (slack/agent-dispatch.ts) with the
- *      trigger text + hydrated (bot-filtered) context rows,
- *   4. stream the final (fallback to a markdown post), and clear status.
- * A provider failure is delivered as the sanitized static final (no provider
- * error text ever reaches Slack) and the turn still completes.
- */
-async function runTurn(
-  turn: NormalizedSlackTurn,
-  assignment: ResolvedAssignment,
-  platformEnv: PlatformEnv | undefined,
-): Promise<void> {
-  const client = await getClient(platformEnv);
-  // A frozen assignment (from a thread snapshot) carries its model; otherwise
-  // resolve it from the agent via policy.
-  const resolvedModel = assignment.model ?? tryResolveAgentModel(assignment.agent);
-  const presenter = new WebClientPresenter(client, {
-    channelId: turn.channelId,
-    threadTs: turn.threadTs,
-    agentName: assignment.agent.name,
-    agentId: assignment.agent.id,
-    modelLabel: resolvedModel,
-    publicUrl: process.env.SLACK_TAG_PUBLIC_URL,
-    userId: turn.userId,
-    workspaceId: turn.workspaceId,
-  });
-  const conversationKey = slackThreadKey(turn);
-  const statusTurn = registerSlackStatusTurn(conversationKey, presenter);
-
-  // 1. Visible work: set status; if it is rejected, post a durable progress
-  //    placeholder so the user still sees work in-flight before the final.
-  try {
-    const statusSet = await statusTurn.setStatus(readingThreadStatus());
-    if (!statusSet) {
-      await presenter.postProgress(`${assignment.agent.name} is reading the thread.`);
-    }
-
-    // 2. Hydrate bounded context (degrades to current-message-only on failure).
-    const context = await hydrateSlackContextViaWebClient(client, turn);
-    await statusTurn.setStatus(hydratedContextStatus(context));
-    const prompt = assembleSlackPrompt(turn, context);
-
-    // 3 + 4. Prompt the durable agent, then deliver the final — with clearStatus
-    //    in a finally so a status that was actually set is cleared even if
-    //    delivery throws (old-lane parity: the clear happened in a finally; keeps
-    //    S03/S15/S16 green). clearStatus is a no-op when no status was set. A
-    //    provider failure surfaces as a non-2xx ?wait=result envelope; we deliver
-    //    the sanitized static final (no provider error text ever reaches Slack).
-    // The model status is cosmetic: resolving it must never abort the turn.
-    // If the model is unresolvable (misconfig), skip the status and let the
-    // durable agent's own resolution fail, so the prompt's catch below still
-    // delivers the sanitized provider-failure final (not silence + a Slack
-    // retry loop from the claims being released on an uncaught throw).
-    if (resolvedModel) {
-      await statusTurn.setStatus(modelStatus(resolvedModel));
-    }
-    let text: string;
-    try {
-      text = await promptSlackThreadAgent(conversationKey, prompt, platformEnv);
-    } catch (err) {
-      console.error('[tag-team] provider call failed:', sanitizeError(err));
-      await statusTurn.drain();
-      await presenter.deliverFinal(PROVIDER_FAILURE_TEXT, 'plain_text');
-      return;
-    }
-    await statusTurn.drain();
-    await presenter.deliverFinal(text, 'markdown');
-  } finally {
-    // Close the status registration BEFORE clearing: a late tool_start observed
-    // during the clear window is then a no-op instead of writing a fresh status
-    // the turn never clears.
-    statusTurn.close();
-    await presenter.clearStatus();
-  }
-}
 
 async function handleMemberJoinedChannel(
   payload: SlackEventFixture,
@@ -482,14 +407,6 @@ async function handleMemberJoinedChannel(
     // double-post the disclosure. Never rethrow — the events route turns a
     // throw into a 500, which is exactly what makes Slack redeliver the event.
     console.error('[tag-team] channel onboarding post failed:', sanitizeError(err));
-  }
-}
-
-function tryResolveAgentModel(agent: Parameters<typeof resolveAgentModel>[0]): string | undefined {
-  try {
-    return resolveAgentModel(agent);
-  } catch {
-    return undefined;
   }
 }
 
@@ -576,27 +493,4 @@ async function postUnassignedChannelHint(
   } catch (err) {
     console.error('[tag-team] unassigned-channel hint failed:', sanitizeError(err));
   }
-}
-
-function readingThreadStatus(): SlackStatusUpdate {
-  return { text: 'is reading the thread' };
-}
-
-function hydratedContextStatus(context: SlackTurnContext): SlackStatusUpdate {
-  const count = context.messages.length;
-  const noun = count === 1 ? 'message' : 'messages';
-  return {
-    text: `is using ${count} ${noun} of ${context.mode} context`,
-  };
-}
-
-function modelStatus(modelId: string): SlackStatusUpdate {
-  return {
-    text: `is using ${modelId}`,
-  };
-}
-
-function sanitizeError(err: unknown): string {
-  if (err instanceof Error) return err.message;
-  return String(err);
 }

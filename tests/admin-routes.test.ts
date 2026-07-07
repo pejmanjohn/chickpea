@@ -142,6 +142,35 @@ test('admin query token redirects to strip the secret and sets a hashed HttpOnly
   }
 });
 
+test('unauthenticated page GET renders a login form while XHR/API still gets JSON 401', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  try {
+    const app = appWithAdmin(store);
+
+    // A browser navigating to /admin with no session gets the token-entry form
+    // (401, HTML) instead of a bare JSON error — the documented ?token= login
+    // has a visible entry point.
+    const page = await app.request('/admin');
+    assert.equal(page.status, 401);
+    assert.match(page.headers.get('content-type') ?? '', /text\/html/);
+    const html = await page.text();
+    assert.match(html, /name="token"/);
+    assert.match(html, /Sign in to Tag Team/);
+
+    // A wrong ?token= surfaces the rejection notice (without echoing the token).
+    const rejected = await app.request('/admin?token=nope');
+    assert.equal(rejected.status, 401);
+    assert.match(await rejected.text(), /was not accepted/);
+
+    // API/XHR callers under /admin/* keep the JSON 401 they can handle.
+    const api = await app.request('/admin/api/agents');
+    assert.equal(api.status, 401);
+    assert.deepEqual(await api.json(), { error: 'unauthorized' });
+  } finally {
+    store.close();
+  }
+});
+
 test('admin API validates request bodies with valibot', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   try {

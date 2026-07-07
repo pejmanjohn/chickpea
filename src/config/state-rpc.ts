@@ -1,6 +1,7 @@
 import type { AssignmentLookupOptions } from './resolver.ts';
 import type { ConfigAgentPatch } from './store.ts';
-import type { AgentSnapshot, ChannelAssignment, CustomAgentConfig } from './types.ts';
+import type { AgentSnapshot, ChannelAssignment, CustomAgentConfig, ResolvedAssignment } from './types.ts';
+import type { NormalizedSlackTurn } from '../slack/types.ts';
 
 /**
  * Wire contract between the Cloudflare store proxies and the TagStateStore
@@ -37,6 +38,27 @@ export interface StateRpcError {
 }
 
 export type StateRpcResult<T> = { ok: true; value: T } | { ok: false; error: StateRpcError };
+
+/**
+ * A queued Slack turn, handed from the events handler to the state Durable
+ * Object so its `alarm()` can run the turn AFTER the events ack — the Cloudflare
+ * turn-horizon fix. On Cloudflare a turn driven inside the events invocation's
+ * `waitUntil` is cancelled ~30s after the response, killing any longer model
+ * turn; a DO alarm handler gets the platform's 15-minute wall-time budget
+ * instead, so the alarm relay is what lets a slow keyless turn finish and
+ * deliver. Every field is JSON-clonable (the whole job crosses the RPC boundary
+ * and is persisted as JSON): `turn` is the normalized turn, `assignment` is the
+ * SAME resolved assignment/snapshot the handler already computed (re-resolving
+ * in the alarm could drift), and `id` is the idempotency key (the message
+ * claim key) so a duplicate enqueue is ignored.
+ */
+export interface TurnJob {
+  id: string;
+  evtKey: string;
+  msgKey: string;
+  turn: NormalizedSlackTurn;
+  assignment: ResolvedAssignment;
+}
 
 /**
  * Flat RPC surface of the state Durable Object stub: all four store domains
@@ -85,6 +107,14 @@ export interface TagStateRpc {
   settingGet(key: string): Promise<StateRpcResult<string | null>>;
   settingSet(key: string, value: string): Promise<StateRpcResult<null>>;
   settingDelete(key: string): Promise<StateRpcResult<null>>;
+  // -- turn relay (Cloudflare turn-horizon fix) ----------------------------
+  /**
+   * Persist a turn job and arm the alarm so `alarm()` runs it past the events
+   * ack. Resolves only after the write + `setAlarm` are durable, so the caller
+   * can ack Slack knowing the turn survives regardless of the events
+   * invocation's fate. Idempotent by `job.id` (a duplicate enqueue is ignored).
+   */
+  enqueueTurn(job: TurnJob): Promise<StateRpcResult<null>>;
 }
 
 /**

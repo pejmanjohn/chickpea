@@ -24,6 +24,9 @@ const NO_SLACK_ENV: NodeJS.ProcessEnv = {
   SLACK_SIGNING_SECRET: undefined,
   SLACK_BOT_USER_ID: undefined,
   SLACK_API_URL: undefined,
+  // requestOrigin() honors SLACK_TAG_PUBLIC_URL as an operator pin; clear it so
+  // the request-derived origin tests are hermetic against the dev shell.
+  SLACK_TAG_PUBLIC_URL: undefined,
 };
 
 function appWith(settings: SqliteSettingsStore): Hono {
@@ -240,7 +243,11 @@ test('wizard POST validates via auth.test, persists creds + bot user id, and the
         const resolved = await resolveSlackCredentials(undefined, settings);
         assert.equal(resolved.botToken, 'xoxb-env-wins');
         assert.equal(resolved.signingSecret, 'env-secret-wins');
-        assert.equal(resolved.botUserId, 'U_TAG_BOT');
+        // The env bot token wins, so the STORED bot user id (saved with the
+        // stored token) is NOT adopted: with no env SLACK_BOT_USER_ID this
+        // falls through to the auth.test probe (undefined), never binding a
+        // different bot's id to the env token.
+        assert.equal(resolved.botUserId, undefined);
       },
     );
   } finally {
@@ -286,6 +293,10 @@ test('wizard POST rejects a missing/empty credential body without calling Slack'
       assert.equal((await postCreds(app, { botToken: 'xoxb-x' })).status, 400);
       assert.equal((await postCreds(app, { botToken: '', signingSecret: '' })).status, 400);
       assert.equal((await postCreds(app, undefined)).status, 400);
+      // Whitespace-only clears the schema's min-length but must still 400: it
+      // would otherwise store empty and resolve back as 'missing'.
+      assert.equal((await postCreds(app, { botToken: '   ', signingSecret: '\t' })).status, 400);
+      assert.equal(await settings.getSetting(SLACK_SETTING_KEYS.botToken), undefined);
     });
   } finally {
     settings.close();
@@ -311,4 +322,129 @@ test('events route fails closed (401) when no signing secret is configured anywh
     assert.equal(response.status, 401);
     assert.deepEqual(await response.json(), { error: 'slack_not_configured' });
   });
+});
+
+test('events route echoes a url_verification challenge before any signing secret exists (bootstrap)', async () => {
+  await withEnv(
+    { ...NO_SLACK_ENV, TAG_DB_PATH: ':memory:', SLACK_STATE_DB_PATH: undefined },
+    async () => {
+      invalidateStoredSlackCredentials();
+      const { channel } = await import('../src/channels/slack.ts');
+      const route = channel.routes.find((r) => r.path === '/events');
+      assert.ok(route, 'channel must expose the /events route');
+      const json = (body: unknown, status?: number) =>
+        Response.json(body, { status: status ?? 200 });
+
+      // A challenge body with no secret configured is accepted ONCE so a
+      // manifest-created app can verify its request URL before the wizard runs.
+      const challengeCtx = {
+        env: undefined,
+        req: { json: async () => ({ type: 'url_verification', challenge: 'abc123' }) },
+        json,
+      };
+      const ok = (await route.handler(challengeCtx as never, undefined as never)) as Response;
+      assert.equal(ok.status, 200);
+      assert.deepEqual(await ok.json(), { challenge: 'abc123' });
+
+      // A NON-challenge event with no secret still fails closed.
+      const eventCtx = {
+        env: undefined,
+        req: { json: async () => ({ type: 'event_callback', event: { type: 'app_mention' } }) },
+        json,
+      };
+      const denied = (await route.handler(eventCtx as never, undefined as never)) as Response;
+      assert.equal(denied.status, 401);
+      assert.deepEqual(await denied.json(), { error: 'slack_not_configured' });
+    },
+  );
+});
+
+test('requestOrigin honors SLACK_TAG_PUBLIC_URL as an operator pin over the request host', async () => {
+  await withEnv(
+    { ...NO_SLACK_ENV, SLACK_TAG_PUBLIC_URL: 'https://pinned.example.com/' },
+    async () => {
+      const settings = new SqliteSettingsStore(':memory:');
+      try {
+        const app = appWith(settings);
+        // Request arrives on a different host AND carries a forged x-forwarded-*
+        // — the pin must win over both, with the trailing slash trimmed.
+        const response = await app.request('https://socket.internal/admin/api/slack-connection', {
+          headers: { ...auth(), 'x-forwarded-host': 'attacker.example', 'x-forwarded-proto': 'http' },
+        });
+        const body = (await response.json()) as { requestUrl: string };
+        assert.equal(body.requestUrl, 'https://pinned.example.com/channels/slack/events');
+      } finally {
+        settings.close();
+      }
+    },
+  );
+});
+
+test('requestOrigin on Node takes the LAST x-forwarded hop, not a client-forged first', async () => {
+  await withEnv(NO_SLACK_ENV, async () => {
+    const settings = new SqliteSettingsStore(':memory:');
+    try {
+      const app = appWith(settings);
+      // A client can pre-seed the first hop; the proxy nearest us appends the
+      // real one. The derivation must trust the LAST value.
+      const response = await app.request('http://127.0.0.1:8787/admin/api/slack-connection', {
+        headers: {
+          ...auth(),
+          'x-forwarded-proto': 'http, https',
+          'x-forwarded-host': 'client-forged.example, tag-team.real.workers.dev',
+        },
+      });
+      const body = (await response.json()) as { requestUrl: string };
+      assert.equal(body.requestUrl, 'https://tag-team.real.workers.dev/channels/slack/events');
+    } finally {
+      settings.close();
+    }
+  });
+});
+
+test('bot user id resolution ties a stored id to a stored token, and env token probes instead', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    await settings.setSetting(SLACK_SETTING_KEYS.botToken, 'xoxb-stored');
+    await settings.setSetting(SLACK_SETTING_KEYS.signingSecret, 'stored-secret');
+    await settings.setSetting(SLACK_SETTING_KEYS.botUserId, 'U_STORED_BOT');
+
+    // No env token: the stored token wins, so its stored bot user id is honored.
+    await withEnv(NO_SLACK_ENV, async () => {
+      const resolved = await resolveSlackCredentials(undefined, settings);
+      assert.equal(resolved.botToken, 'xoxb-stored');
+      assert.equal(resolved.botUserId, 'U_STORED_BOT');
+    });
+
+    // Env token, NO env SLACK_BOT_USER_ID: the env token wins, so the stored
+    // bot user id (from a possibly-different bot) must NOT be adopted — it falls
+    // through to the auth.test probe (undefined), matching main.
+    await withEnv({ ...NO_SLACK_ENV, SLACK_BOT_TOKEN: 'xoxb-env' }, async () => {
+      const resolved = await resolveSlackCredentials(undefined, settings);
+      assert.equal(resolved.botToken, 'xoxb-env');
+      assert.equal(resolved.botUserId, undefined);
+    });
+
+    // Env token + explicit empty SLACK_BOT_USER_ID: '' is preserved ('no bot
+    // user id, do not probe' — the fail-closed knob), never overwritten by the
+    // stored id.
+    await withEnv(
+      { ...NO_SLACK_ENV, SLACK_BOT_TOKEN: 'xoxb-env', SLACK_BOT_USER_ID: '' },
+      async () => {
+        const resolved = await resolveSlackCredentials(undefined, settings);
+        assert.equal(resolved.botUserId, '');
+      },
+    );
+
+    // Env token + explicit env SLACK_BOT_USER_ID: the env id wins outright.
+    await withEnv(
+      { ...NO_SLACK_ENV, SLACK_BOT_TOKEN: 'xoxb-env', SLACK_BOT_USER_ID: 'U_ENV_BOT' },
+      async () => {
+        const resolved = await resolveSlackCredentials(undefined, settings);
+        assert.equal(resolved.botUserId, 'U_ENV_BOT');
+      },
+    );
+  } finally {
+    settings.close();
+  }
 });

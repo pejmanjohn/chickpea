@@ -16,7 +16,7 @@
  * So: park src/db.ts under a non-discoverable name for the duration of the
  * build, and ALWAYS restore it (finally + signal handlers).
  */
-import { existsSync, renameSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import process from 'node:process';
@@ -24,6 +24,30 @@ import { fileURLToPath } from 'node:url';
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const dbFile = path.join(projectRoot, 'src', 'db.ts');
+
+// Preserve the operator's local dev secrets across rebuilds. The flue build
+// wipes the output dir, which is where the documented `wrangler dev` loop keeps
+// its `.dev.vars` (next to the emitted wrangler.json, at
+// <output>/tag_team/.dev.vars). Snapshot it before the build and restore it
+// after so a rebuild never deletes the secrets file. `--output` is parsed from
+// the same argv forwarded to flue (defaults to the committed dist-cf).
+const forwardedArgs = process.argv.slice(2);
+const outputArgIndex = forwardedArgs.indexOf('--output');
+const outputDir =
+  outputArgIndex >= 0 && forwardedArgs[outputArgIndex + 1]
+    ? forwardedArgs[outputArgIndex + 1]
+    : 'dist-cf';
+const devVarsFile = path.join(projectRoot, outputDir, 'tag_team', '.dev.vars');
+const devVarsSnapshot = existsSync(devVarsFile) ? readFileSync(devVarsFile) : undefined;
+
+function restoreDevVars() {
+  // Only rewrite when the build removed it: never clobber a fresher file the
+  // build (or the operator) just wrote.
+  if (devVarsSnapshot !== undefined && !existsSync(devVarsFile)) {
+    mkdirSync(path.dirname(devVarsFile), { recursive: true });
+    writeFileSync(devVarsFile, devVarsSnapshot);
+  }
+}
 // ".node-lane" is not one of the extensions flue discovers (ts|mts|js|mjs),
 // is not compiled by tsc, and is not importable — invisible to the CF build.
 const parkedFile = path.join(projectRoot, 'src', 'db.ts.node-lane');
@@ -59,10 +83,14 @@ function restore() {
 for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
   process.on(signal, () => {
     restore();
+    restoreDevVars();
     process.exit(1);
   });
 }
-process.on('exit', restore);
+process.on('exit', () => {
+  restore();
+  restoreDevVars();
+});
 
 // Invoke the flue CLI bin directly with the current node — works whether or
 // not node_modules/.bin is on PATH (npm scripts vs. direct `node scripts/...`).
@@ -80,5 +108,6 @@ try {
   status = result.status ?? 1;
 } finally {
   restore();
+  restoreDevVars();
 }
 process.exit(status);

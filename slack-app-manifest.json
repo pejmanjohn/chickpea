@@ -28,6 +28,8 @@
         "channels:history",
         "channels:read",
         "chat:write",
+        "groups:history",
+        "groups:read",
         "im:history",
         "users:read"
       ]
@@ -43,6 +45,7 @@
         "member_joined_channel",
         "message.app_home",
         "message.channels",
+        "message.groups",
         "message.im"
       ]
     },

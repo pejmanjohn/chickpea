@@ -1,4 +1,4 @@
-import { createServer, type Server } from 'node:http';
+import { createServer, type Server, type ServerResponse } from 'node:http';
 import { AddressInfo } from 'node:net';
 
 /**
@@ -113,6 +113,16 @@ export interface FakeProviderConfig {
   replyText?: string;
   /** channelId the scripted (allowed) tool call targets. Defaults to `C_EXEC`. */
   toolChannelId?: string;
+  /**
+   * Hold the openai-completions SSE response open this long BEFORE emitting the
+   * reply content, simulating a slow model turn. The stream head + periodic
+   * SSE keepalive comments are sent immediately so the connection stays active
+   * (an idle stream is reset by workerd/miniflare); only the content is
+   * deferred. Used by the cf-smoke slow-turn case to prove a turn that outlives
+   * the old ~30s waitUntil horizon still delivers via the DO alarm relay. `0`
+   * (default) responds immediately. HTTP transport only.
+   */
+  delayMs?: number;
 }
 
 export interface FakeSlackBackendConfig {
@@ -165,6 +175,7 @@ export class FakeSlackBackend {
   private providerMode: 'ok' | 'http_500';
   private replyText: string;
   private toolChannelId: string;
+  private providerDelayMs: number;
   private readonly repliesPages: RepliesPage[];
   private readonly historyMessages: unknown[];
   private readonly cursorToIndex = new Map<string, number>();
@@ -197,6 +208,7 @@ export class FakeSlackBackend {
     this.providerMode = config.provider?.mode ?? 'ok';
     this.replyText = config.provider?.replyText ?? STUB_REPLY_MARKER;
     this.toolChannelId = config.provider?.toolChannelId ?? DEFAULT_TOOL_CHANNEL;
+    this.providerDelayMs = config.provider?.delayMs ?? 0;
 
     this.repliesPages.forEach((page, index) => {
       if (page.next_cursor) {
@@ -229,6 +241,10 @@ export class FakeSlackBackend {
       req.on('data', (chunk: Buffer) => chunks.push(chunk));
       req.on('end', () => {
         const bodyString = Buffer.concat(chunks).toString('utf8');
+        // Slow-turn path streams its own (delayed) response over `res`.
+        if (this.tryStreamDelayedProvider(req.url ?? '/', bodyString, res)) {
+          return;
+        }
         const result = this.route(req.url ?? '/', bodyString);
         if (result.rawBody !== undefined) {
           res.writeHead(result.status, { 'content-type': result.contentType ?? 'text/plain' });
@@ -398,6 +414,9 @@ export class FakeSlackBackend {
       }
       if (config.provider.toolChannelId !== undefined) {
         this.toolChannelId = config.provider.toolChannelId;
+      }
+      if (config.provider.delayMs !== undefined) {
+        this.providerDelayMs = config.provider.delayMs;
       }
     }
   }
@@ -620,14 +639,7 @@ export class FakeSlackBackend {
 
   /** OpenAI SSE stream carrying a single assistant text block. */
   private openAiTextStream(text: string): RouteResult {
-    const base = { id: 'chatcmpl-parity', object: 'chat.completion.chunk', created: 0, model: 'parity-stub' };
-    const chunks: Record<string, unknown>[] = [
-      { ...base, choices: [{ index: 0, delta: { role: 'assistant', content: text }, finish_reason: null }] },
-      { ...base, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] },
-      { ...base, choices: [], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } },
-    ];
-    const rawBody = `${chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join('')}data: [DONE]\n\n`;
-    return { status: 200, contentType: 'text/event-stream', rawBody };
+    return { status: 200, contentType: 'text/event-stream', rawBody: openAiTextStreamBody(text) };
   }
 
   /** OpenAI SSE stream carrying a single function tool call. */
@@ -712,10 +724,60 @@ export class FakeSlackBackend {
     return { status: 200, contentType: 'text/event-stream', rawBody };
   }
 
+  /**
+   * Slow openai-completions turn: hold the SSE response open for
+   * `providerDelayMs` before emitting the reply content, keeping the connection
+   * alive with immediate + periodic keepalive comments so workerd/miniflare
+   * does not reset an idle stream. Returns true if it took over the response.
+   * Only plain replies are delayed (a scripted tool trigger stays synchronous).
+   */
+  private tryStreamDelayedProvider(url: string, bodyString: string, res: ServerResponse): boolean {
+    const pathname = url.startsWith('http') ? new URL(url).pathname : (url.split('?')[0] ?? url);
+    if (!pathname.endsWith('/chat/completions')) return false;
+    if (this.providerMode !== 'ok' || this.providerDelayMs <= 0) return false;
+    const body = decodeWireBody(bodyString);
+    const messages = Array.isArray(body.messages) ? (body.messages as Record<string, unknown>[]) : [];
+    if (messages.map((message) => messageText(message)).join('\n').includes(TOOL_TRIGGER)) {
+      return false;
+    }
+
+    this.wireLog.push({ kind: 'provider', method: 'chat/completions', url, body });
+    res.writeHead(200, {
+      'content-type': 'text/event-stream',
+      'cache-control': 'no-cache',
+      connection: 'keep-alive',
+    });
+    res.write(': keepalive\n\n');
+    const keepalive = setInterval(() => {
+      if (!res.writableEnded) {
+        res.write(': keepalive\n\n');
+      }
+    }, 2000);
+    const content = openAiTextStreamBody(this.replyText);
+    setTimeout(() => {
+      clearInterval(keepalive);
+      if (res.writableEnded) return;
+      res.write(content);
+      res.end();
+    }, this.providerDelayMs);
+    return true;
+  }
+
   private nextTs(): string {
     this.tsCounter += 1;
     return `1990000000.${String(this.tsCounter).padStart(6, '0')}`;
   }
+}
+
+/** The OpenAI SSE body (content chunks + [DONE]) for a single text reply. */
+function openAiTextStreamBody(text: string): string {
+  const base = { id: 'chatcmpl-parity', object: 'chat.completion.chunk', created: 0, model: 'parity-stub' };
+  const chunks: Record<string, unknown>[] = [
+    { ...base, choices: [{ index: 0, delta: { role: 'assistant', content: text }, finish_reason: null }] },
+    { ...base, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] },
+    { ...base, choices: [], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } },
+  ];
+  return `${chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join('')}data: [DONE]\n\n`;
 }
 
 export function isMarkdownPost(body: Record<string, unknown>): boolean {

@@ -51,6 +51,14 @@ const CHANNEL = 'C_SMOKE';
 const MENTION_TS = '1782770400.000100';
 const PORT = Number(process.env.SMOKE_WRANGLER_PORT ?? 8788);
 
+// Slow-turn case: a distinct channel + thread whose provider is held open past
+// the old ~30s waitUntil horizon, proving the DO alarm relay delivers anyway.
+const SLOW_CHANNEL = 'C_SMOKE_SLOW';
+const SLOW_MENTION_TS = '1782771000.000100';
+// >35s so the turn outlives the ~30s cancellation a real deploy's events-
+// invocation waitUntil would hit. Overridable for iteration; keep it above 35s.
+const SLOW_TURN_DELAY_MS = Number(process.env.SMOKE_SLOW_TURN_DELAY_MS ?? 36_000);
+
 const failures = [];
 function check(ok, label, detail = '') {
   const status = ok ? 'ok  ' : 'FAIL';
@@ -210,6 +218,25 @@ function mentionEvent(eventId = 'Ev_SMOKE_MENTION_1') {
       ts: MENTION_TS,
       channel: CHANNEL,
       event_ts: MENTION_TS,
+    },
+  };
+}
+
+function slowMentionEvent(eventId = 'Ev_SMOKE_SLOW_1') {
+  return {
+    token: 'verification-token-not-a-secret',
+    team_id: WORKSPACE,
+    api_app_id: 'A_SMOKE',
+    event_id: eventId,
+    event_time: 1782771000,
+    type: 'event_callback',
+    event: {
+      type: 'app_mention',
+      user: 'U_ALICE',
+      text: '<@U_BOT> slow: take as long as you need',
+      ts: SLOW_MENTION_TS,
+      channel: SLOW_CHANNEL,
+      event_ts: SLOW_MENTION_TS,
     },
   };
 }
@@ -448,10 +475,90 @@ async function main() {
       `${replyFinals.length} finals in ${Date.now() - replyStartedAt}ms`,
     );
 
+    // --- Slow-turn case: DO alarm relay past the old ~30s waitUntil horizon ---
+    //
+    // The provider now holds its SSE response open for SLOW_TURN_DELAY_MS
+    // (>35s) — longer than a real deploy's events-invocation waitUntil survives
+    // (tail-log-confirmed death at ~29.5s). Under the relay the events handler
+    // only enqueues (fast ack) and the state DO's alarm() runs the turn with the
+    // platform's 15-minute budget, so the final still lands. miniflare does not
+    // enforce the 30s cap, so this proves the relay PATH works end-to-end for a
+    // long turn; the cancellation it replaces is doc/tail-log-backed.
+    console.log(`• slow-turn case: provider will hold ${SLOW_TURN_DELAY_MS}ms before replying…`);
+    backend.configure({ provider: { delayMs: SLOW_TURN_DELAY_MS } });
+    const slowAssign = await adminFetch(baseUrl, '/admin/api/assignments', {
+      method: 'PUT',
+      body: JSON.stringify({
+        workspaceId: WORKSPACE,
+        channelId: SLOW_CHANNEL,
+        agentId: 'agent_exec_brief',
+        enabled: true,
+      }),
+    });
+    check(slowAssign.status === 200, 'admin PUT created the slow-turn assignment', `HTTP ${slowAssign.status}`);
+
+    const finalsBeforeSlow = backend.finals().length;
+    const slowStartedAt = Date.now();
+    const slowAdmission = await postSignedEvent(eventsUrl, slowMentionEvent());
+    const slowAckMs = Date.now() - slowStartedAt;
+    check(
+      slowAdmission.status === 200 || slowAdmission.status === 202,
+      'slow-turn mention admitted',
+      `HTTP ${slowAdmission.status}`,
+    );
+    // The events ack must return FAST: the turn runs in the alarm, not inline.
+    // A ~SLOW_TURN_DELAY_MS ack here would mean the handler blocked on the turn.
+    check(
+      slowAckMs < 10_000,
+      'events ack returned before the turn ran (enqueued, not inline)',
+      `${slowAckMs}ms`,
+    );
+
+    const slowFinals = await waitForFinalCount(backend, finalsBeforeSlow + 1, 120_000);
+    const slowDeliveryMs = Date.now() - slowStartedAt;
+    check(
+      slowFinals.length === finalsBeforeSlow + 1,
+      'slow turn delivered its final via the DO alarm relay',
+      `${slowFinals.length - finalsBeforeSlow} new final(s) in ${slowDeliveryMs}ms`,
+    );
+    const slowFinal = slowFinals[slowFinals.length - 1];
+    check(
+      Boolean(slowFinal?.text.includes(STUB_REPLY_MARKER)),
+      'slow-turn final carries the stub provider reply (not the failure text)',
+    );
+    check(slowFinal?.channel === SLOW_CHANNEL, 'slow-turn final landed in the slow channel');
+    check(
+      slowDeliveryMs > 35_000,
+      'slow-turn delivery exceeded the old ~30s waitUntil ceiling',
+      `${slowDeliveryMs}ms`,
+    );
+    console.log(
+      `• measured slow-turn delivery: ${slowDeliveryMs}ms (fast ack ${slowAckMs}ms; provider held ${SLOW_TURN_DELAY_MS}ms)`,
+    );
+
+    // Claims settle: the completed slow turn keeps its claim, so an identical
+    // redelivery is deduped. Reset the provider delay first so a wrongly-
+    // admitted redelivery would deliver fast (and be caught) instead of hanging.
+    backend.configure({ provider: { delayMs: 0 } });
+    const slowRedelivery = await postSignedEvent(eventsUrl, slowMentionEvent());
+    check(
+      slowRedelivery.status === 200 || slowRedelivery.status === 202,
+      'slow-turn redelivery acked',
+      `HTTP ${slowRedelivery.status}`,
+    );
+    await backend.quiesce(1500, 15_000);
+    check(
+      backend.finals().length === finalsBeforeSlow + 1,
+      'slow-turn redelivery deduped (claims settled after the alarm ran)',
+      `${backend.finals().length - finalsBeforeSlow} new final(s)`,
+    );
+
     if (failures.length > 0) {
       throw new Error(`assertions failed: ${failures.join('; ')}`);
     }
-    console.log(`\nPASS cf-smoke — turn wall-time ${turnWallTimeMs}ms`);
+    console.log(
+      `\nPASS cf-smoke — turn wall-time ${turnWallTimeMs}ms; slow-turn delivery ${slowDeliveryMs}ms`,
+    );
   } catch (err) {
     console.error(`\nFAIL cf-smoke: ${err instanceof Error ? err.message : String(err)}`);
     console.error('\n--- wrangler dev output (tail) ---');

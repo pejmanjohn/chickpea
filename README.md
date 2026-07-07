@@ -24,11 +24,15 @@ The fastest way to run Tag Team is your own Cloudflare account:
 1. **Click the button.** Cloudflare clones this repo into your GitHub, provisions
    the Durable Objects, and prompts for one secret: `TAG_ADMIN_TOKEN` (generate it
    with `openssl rand -hex 32`).
-2. **Open `https://tag-team.<your-account>.workers.dev/admin`** and log in with
-   that token.
+2. **Log in.** Open `https://tag-team.<your-account>.workers.dev/admin?token=<your
+   TAG_ADMIN_TOKEN>` — that sets the session cookie and strips the token from the
+   URL. (Opening `/admin` without a valid session shows a token-entry form that
+   does the same thing.)
 3. **Click "Create your Slack app".** The first-run wizard deep-links Slack's app
    console with this repo's manifest, the events request URL already pointing at
-   your worker. Install the app to your workspace.
+   your worker. Install the app to your workspace. If Slack shows the request URL
+   as unverified, click **Retry** on the app's Event Subscriptions page — the
+   worker echoes the verification challenge even before you save credentials.
 4. **Paste back the bot token and signing secret.** The wizard validates the token
    live (`auth.test`) and stores both in the worker's Durable Object state; env
    secrets (`wrangler secret put`) always take precedence if you set them later.
@@ -36,6 +40,12 @@ The fastest way to run Tag Team is your own Cloudflare account:
 The first mention answers with **zero model keys**: on the Cloudflare target the
 default model resolves to `@cf/zai-org/glm-5.2` through the Workers AI binding.
 Add an `ANTHROPIC_API_KEY` secret to upgrade the default to Claude.
+
+Pinned or default non-catalog `cloudflare/*` models (including the keyless
+`@cf/zai-org/glm-5.2`) resolve through the binding with **no declared context
+window**, so Flue's threshold auto-compaction is disabled and long DM transcripts
+grow unbounded. Set `ANTHROPIC_API_KEY` (or pin a catalog model) for a bounded,
+auto-compacting context.
 
 Free-plan honesty: Workers AI allows ~10K Neurons/day and Durable Objects 100K row
 writes/day — both are **hard errors** once exceeded, so a busy workspace needs a
@@ -58,8 +68,10 @@ npx wrangler dev --config dist-cf/tag_team/wrangler.json --persist-to .wrangler-
 
 Keep `--persist-to` outside `dist-cf/` (as above): the build output is disposable
 and a rebuild would otherwise wipe your local Durable Object state. Local dev
-secrets live in a `.dev.vars` file next to the built `wrangler.json`;
-`.dev.vars.example` documents the two that matter.
+secrets live in a `.dev.vars` file next to the built `wrangler.json`
+(`dist-cf/tag_team/.dev.vars`); `.dev.vars.example` documents the two that matter.
+`npm run flue:build:cf` snapshots and restores that `.dev.vars` across rebuilds,
+so re-running the build never deletes your local secrets.
 
 ## Architecture
 
@@ -124,7 +136,7 @@ state store at runtime.
 | `SLACK_BOT_USER_ID` | optional | Bot user id used to filter self/loop messages. If unset, taken from the `/admin` wizard (stored from `auth.test`) or resolved once via `auth.test`; an explicit empty string means "no bot user id" (fail-closed for message-family events). |
 | `SLACK_API_URL` | optional | Override the Slack Web API base URL (offline/fake Slack). |
 | `SLACK_TAG_PUBLIC_URL` | optional | Public base URL for Slack-visible `/admin` Configure links in reply footers and bot-invited channel onboarding. If unset, Slack shows a `Configure` label without a link. |
-| `SLACK_TAG_MODEL` | optional | Offline/development fallback model specifier (`provider/model`) used only when the assigned agent has no explicit `model` and live provider credentials are absent. |
+| `SLACK_TAG_MODEL` | optional | Fallback/override model specifier (`provider/model`). Used when the assigned agent has no explicit `model` and no live provider credentials — and, on the Cloudflare target, as an explicit operator override taken *ahead of* the keyless Workers AI binding default. |
 | `SLACK_TAG_ALLOW_DMS` | optional | Direct messages are on by default; `false` makes the bot reachable only in channels. |
 | `SLACK_TAG_UNASSIGNED_HINT` | optional | On by default: a mention in a channel with no enabled assignment posts one ephemeral hint (rate-limited per channel) to the mentioner linking to `/admin`. `false` disables the hint; the channel itself never sees anything either way. |
 | `TAG_AGENT_API_TOKEN` | optional | Shared internal token gating `POST /agents/slack-thread/:id` for **external callers only** — the app's own agent dispatch is in-process and needs no configuration. Random per-process/per-isolate if unset (external calls then cannot authenticate). |
@@ -137,16 +149,22 @@ state store at runtime.
 
 `.env.example` lists the offline-safe defaults.
 
+Upgrade note: `TAG_SELF_URL` (used by pre-in-process builds for the HTTP
+self-call) is ignored now — agent dispatch is in-process and needs no self URL.
+Remove it from your environment; the app logs a one-time warning if it is still
+set.
+
 Seeded starter profiles (no channel assignments — a fresh install's `/admin`
 shows only your real channels):
 
 - `Release Scribe` (`agent_release_scribe`) leads with a summary table and includes a fenced code/diff snippet for engineering updates.
 - `Exec Brief` (`agent_exec_brief`) uses bold-led bullets, closes with `Next steps`, and avoids code. It is the `*/*` **direct-message default** — the profile that answers DMs and App Home.
 
-Channels are **fail-closed**: the bot answers in a channel only where a profile
-is explicitly assigned (the `*/*` wildcard is the DM default and does not apply
-to channels), so a fresh install never replies in a channel it was merely
-invited to. When someone explicitly mentions the bot in an unassigned channel,
+Channels are **fail-closed** across both public and private channels (the bot
+must be invited to a private channel for Slack to deliver its events): the bot
+answers in a channel only where a profile is explicitly assigned (the `*/*`
+wildcard is the DM default and does not apply to channels), so a fresh install
+never replies in a channel it was merely invited to. When someone explicitly mentions the bot in an unassigned channel,
 the channel still gets nothing — only the mentioner receives a single ephemeral
 hint pointing at that channel's `/admin` page (`SLACK_TAG_UNASSIGNED_HINT=false`
 turns this off). A Slack thread freezes the resolved profile, model, tools, and

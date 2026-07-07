@@ -70,7 +70,10 @@ export class ThreadSessionRegistry implements SlackThreadRegistry {
 
 // Claims only need to outlive Slack's redelivery horizon (retries span about an
 // hour); the TTL is what keeps the claims table from growing without bound.
-const CLAIM_TTL_MS = 2 * 60 * 60 * 1000;
+// Exported so the turn-relay job table (turn-jobs.ts) purges on the SAME
+// horizon: past it Slack no longer redelivers the originating event, so a
+// leftover job row can no longer matter.
+export const CLAIM_TTL_MS = 2 * 60 * 60 * 1000;
 // Joined threads stay continuable for much longer, but not forever — expiring
 // them bounds the table and matches how stale a weeks-old thread really is. A
 // thread's config snapshot is bounded to the same horizon (see snapshot-store):

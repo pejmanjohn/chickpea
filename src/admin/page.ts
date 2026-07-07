@@ -1,4 +1,14 @@
+import { isCloudflareTarget } from '../config/runtime-target.ts';
+
 export function renderAdminPage(): string {
+  // Target-aware chrome: the header chip and the provider-hint copy differ
+  // between the Node and Cloudflare runtimes. Resolved server-side (the inline
+  // script has no runtime-target check of its own) and interpolated as plain
+  // text into both the first-paint skeleton and the inlined script.
+  const targetChip = isCloudflareTarget() ? 'cloudflare · workers' : 'local · node';
+  const providerHint = isCloudflareTarget()
+    ? 'Read-only &mdash; the Workers AI binding is always available; configure others via wrangler secrets (built-ins) or src/app.ts (custom).'
+    : 'Read-only &mdash; configured via .env (built-ins) or src/app.ts (custom).';
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -424,7 +434,7 @@ details[open].advanced summary::before { content: "▾"; }
     <div class="brand">
       <span class="avatar">T</span>
       <span class="brand-name">Tag Team</span>
-      <span class="chip">local · node</span>
+      <span class="chip">${targetChip}</span>
     </div>
     <div class="actions">
       <a class="btn btn-ghost" href="https://api.slack.com/apps" rel="noreferrer">Open Slack console &nearr;</a>
@@ -501,7 +511,11 @@ details[open].advanced summary::before { content: "▾"; }
         try { body = text ? JSON.parse(text) : null; } catch (_) { body = text; }
         if (!response.ok) {
           var message = body && body.error ? body.error : "HTTP " + response.status;
-          throw new Error(message);
+          var err = new Error(message);
+          // Keep a server-provided detail (e.g. the wizard's slack_auth_failed
+          // carries Slack's machine error code) so callers can surface it.
+          if (body && body.detail) err.detail = body.detail;
+          throw err;
         }
         return body;
       });
@@ -593,7 +607,7 @@ details[open].advanced summary::before { content: "▾"; }
 
   function topbarHtml() {
     return '<header class="topbar">' +
-      '<div class="brand"><span class="avatar">T</span><span class="brand-name">Tag Team</span><span class="chip">local · node</span></div>' +
+      '<div class="brand"><span class="avatar">T</span><span class="brand-name">Tag Team</span><span class="chip">${targetChip}</span></div>' +
       '<div class="actions"><a class="btn btn-ghost" href="https://api.slack.com/apps" rel="noreferrer">Open Slack console &nearr;</a>' +
       '<button type="button" class="btn btn-soft" data-action="open-profiles">Profiles</button></div>' +
       "</header>";
@@ -706,6 +720,7 @@ details[open].advanced summary::before { content: "▾"; }
       '<div class="step"><span class="n">2</span><span><b style="font-weight:500; color:var(--text);">Install to your workspace</b> &mdash; then copy the <b style="font-weight:500; color:var(--text);">Bot User OAuth Token</b> (OAuth &amp; Permissions) and the <b style="font-weight:500; color:var(--text);">Signing Secret</b> (Basic Information).</span></div>' +
       '<div class="step"><span class="n">3</span><span><b style="font-weight:500; color:var(--text);">Paste both below</b> &mdash; the token is validated live against Slack before anything is stored.</span></div>' +
       '</div>' +
+      '<p class="hint">If Slack shows the request URL as unverified (for example the app was created before the worker was reachable), open <b style="font-weight:500; color:var(--text);">Event Subscriptions</b> in Slack and click <b style="font-weight:500; color:var(--text);">Retry</b> &mdash; the worker echoes the verification challenge even before these credentials are saved.</p>' +
       '<div><a class="btn btn-primary" href="' + esc(conn.manifestUrl) + '" target="_blank" rel="noreferrer">Create your Slack app &nearr;</a></div>' +
       '<form class="form-grid" data-action="slack-connect-form">' +
       '<div class="field"><label class="field-label" for="slack-bot-token">Bot token</label><input class="input mono" id="slack-bot-token" name="botToken" type="password" autocomplete="off" placeholder="xoxb-..." value="' + esc(state.slackDraft.botToken) + '" data-action="slack-bot-token"></div>' +
@@ -717,10 +732,11 @@ details[open].advanced summary::before { content: "▾"; }
       '</div></form></section>';
   }
 
-  function slackErrorText(message) {
-    if (message === "slack_auth_failed") return "Slack rejected the bot token (auth.test failed). Re-copy the xoxb- token and try again.";
+  function slackErrorText(message, detail) {
+    if (message === "slack_auth_failed") return "Slack rejected the bot token (auth.test failed" + (detail ? ": " + detail : "") + "). Re-copy the xoxb- token and try again.";
     if (message === "slack_unreachable") return "Could not reach the Slack API to validate the token. Check connectivity and try again.";
-    return message;
+    if (message === "internal_error") return "Tag Team could not store the credentials (an internal error). Check the worker logs and try again.";
+    return detail ? message + ": " + detail : message;
   }
 
   function submitSlackConnection(formData) {
@@ -739,7 +755,7 @@ details[open].advanced summary::before { content: "▾"; }
       return refreshData();
     }).catch(function (error) {
       state.slackBusy = false;
-      state.slackError = slackErrorText(error.message);
+      state.slackError = slackErrorText(error.message, error.detail);
       render();
     });
   }
@@ -788,7 +804,7 @@ details[open].advanced summary::before { content: "▾"; }
     return '<details class="advanced"><summary>Advanced</summary><div class="adv-rows"><dl style="display:contents;">' +
       '<div class="kv"><dt>Channel ID</dt><dd class="mono">' + esc(assignment.channelId) + '</dd></div>' +
       '<div class="kv"><dt>Workspace ID</dt><dd class="mono">' + esc(assignment.workspaceId) + '</dd></div>' +
-      '<div class="kv"><dt>Providers</dt><dd style="display:flex; flex-wrap:wrap; gap:6px; align-items:center;">' + providerBadges() + '<span class="hint" style="font-size:0.75rem;">Read-only &mdash; configured via .env (built-ins) or src/app.ts (custom).</span></dd></div>' +
+      '<div class="kv"><dt>Providers</dt><dd style="display:flex; flex-wrap:wrap; gap:6px; align-items:center;">' + providerBadges() + '<span class="hint" style="font-size:0.75rem;">${providerHint}</span></dd></div>' +
       '<div class="kv"><dt>Coming later</dt><dd>Inherited defaults, guest policy, and channel-member edits arrive with scope inheritance &mdash; see the roadmap.</dd></div>' +
       '</dl></div></details>';
   }
@@ -1253,6 +1269,59 @@ details[open].advanced summary::before { content: "▾"; }
   refreshData();
 })();
 </script>
+</body>
+</html>`;
+}
+
+/**
+ * Minimal token-entry form for browser GETs of /admin that arrive without a
+ * valid session. It introduces no new auth path: submitting navigates to
+ * /admin?token=<value>, the exact query-token mechanism the admin gate already
+ * handles (sets the hashed cookie, then strips the token via redirect). This
+ * renders only when TAG_ADMIN_TOKEN is set — the gate 404s the whole route
+ * otherwise — so it never signals more than "admin exists here". Self-contained
+ * LIGHT-mode markup, no external assets, matching the admin page's palette.
+ */
+export function renderAdminLogin(options: { invalidToken?: boolean } = {}): string {
+  // The one conditional fragment: a static, non-reflecting error notice (the
+  // rejected token is never echoed back into the page).
+  const error = options.invalidToken
+    ? '<p class="err">That token was not accepted. Check TAG_ADMIN_TOKEN and try again.</p>'
+    : '';
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tag Team · Sign in</title>
+<style>
+:root { --bg:#ffffff; --well:#f7f5f2; --line:rgba(28,25,23,0.12); --text:#201d1a; --text-2:#57534c; --ember:#e8833a; --ember-bright:#f09a55; --danger:#c03538; --font:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; --radius:8px; }
+* { box-sizing:border-box; margin:0; padding:0; }
+html { color-scheme:light; }
+body { background:var(--bg); color:var(--text-2); font-family:var(--font); min-height:100dvh; display:flex; align-items:center; justify-content:center; padding:24px; -webkit-font-smoothing:antialiased; }
+.card { background:var(--well); box-shadow:inset 0 0 0 1px var(--line); border-radius:14px; padding:28px; width:100%; max-width:380px; display:flex; flex-direction:column; gap:14px; }
+h1 { color:var(--text); font-size:1.0625rem; font-weight:600; }
+p { font-size:0.8125rem; line-height:1.5; }
+.err { color:var(--danger); }
+label { color:var(--text); display:block; font-size:0.8125rem; font-weight:500; margin-bottom:6px; }
+.mono { font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace; }
+input { background:#fff; border:0; border-radius:var(--radius); box-shadow:inset 0 0 0 1px rgba(28,25,23,0.15); color:var(--text); font:inherit; font-size:0.875rem; padding:9px 11px; width:100%; }
+input:focus-visible { outline:2px solid #b05415; outline-offset:-1px; }
+button { align-items:center; background:var(--ember); border:0; border-radius:var(--radius); color:#22130a; cursor:pointer; display:inline-flex; font:inherit; font-size:0.8125rem; font-weight:500; justify-content:center; min-height:36px; padding:8px 14px; }
+button:hover { background:var(--ember-bright); }
+</style>
+</head>
+<body>
+<form class="card" method="get" action="/admin">
+  <h1>Sign in to Tag Team</h1>
+  <p>Enter your <span class="mono">TAG_ADMIN_TOKEN</span> to open the admin.</p>
+  ${error}
+  <div>
+    <label for="token">Admin token</label>
+    <input id="token" name="token" type="password" autocomplete="off" autofocus placeholder="TAG_ADMIN_TOKEN">
+  </div>
+  <button type="submit">Sign in</button>
+</form>
 </body>
 </html>`;
 }

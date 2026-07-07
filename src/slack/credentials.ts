@@ -120,10 +120,17 @@ export async function resolveSlackCredentials(
     return fromEnv;
   }
   const stored = await readStoredCredentials(env, store);
+  // The bot user id belongs to whichever bot TOKEN won. Honor a STORED bot
+  // user id only when the token ALSO resolved from the store (the wizard saved
+  // the pair together from one auth.test). An env token with no env
+  // SLACK_BOT_USER_ID must fall through to the auth.test probe (undefined) —
+  // never adopt a stored id that may belong to a different bot (main's
+  // behavior). The env empty-string ('explicit none') is preserved by `??`.
+  const tokenFromStore = !fromEnv.botToken && Boolean(stored.botToken);
   return {
     botToken: fromEnv.botToken ?? stored.botToken,
     signingSecret: fromEnv.signingSecret ?? stored.signingSecret,
-    botUserId: fromEnv.botUserId ?? stored.botUserId,
+    botUserId: fromEnv.botUserId ?? (tokenFromStore ? stored.botUserId : undefined),
   };
 }
 

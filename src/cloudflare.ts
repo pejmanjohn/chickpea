@@ -1,4 +1,5 @@
 import { DurableObject, type DurableObjectState, type DurableObjectStorage } from 'cloudflare:workers';
+import type { WebClient } from '@slack/web-api';
 
 import {
   AgentExistsError,
@@ -6,13 +7,29 @@ import {
   UnknownAgentError,
 } from './config/errors.ts';
 import type { AssignmentLookupOptions } from './config/resolver.ts';
+import type { SettingsStore } from './config/settings-store.ts';
 import { SettingsStoreLogic } from './config/settings-store.ts';
 import { SnapshotStoreLogic } from './config/snapshot-store.ts';
-import type { StateRpcResult, TagStateRpc } from './config/state-rpc.ts';
+import type { StateRpcResult, TagStateRpc, TurnJob } from './config/state-rpc.ts';
+import type { PlatformEnv } from './config/state-backend.ts';
 import { ConfigStoreLogic, type ConfigAgentPatch } from './config/store.ts';
 import type { AgentSnapshot, ChannelAssignment, CustomAgentConfig } from './config/types.ts';
 import { SlackStateLogic } from './slack/claim-store.ts';
+import { resolveSlackCredentials } from './slack/credentials.ts';
+import {
+  createSlackWebClient,
+  deliverProviderFailureFinal,
+  runTurn,
+  sanitizeError,
+} from './slack/run-turn.ts';
+import { MAX_TURN_ATTEMPTS, TurnJobStoreLogic } from './slack/turn-jobs.ts';
 import type { SqlParam, StateDb } from './state/state-db.ts';
+
+// Backoff before the alarm re-fires for a job whose attempt failed but is not
+// yet at the cap. A short delay (matching the DO alarm base retry) is enough:
+// the failure that got here is a genuine delivery error, so an immediate retry
+// would likely re-fail; a couple of seconds lets a transient Slack blip clear.
+const RELAY_RETRY_BACKOFF_MS = 2_000;
 
 /**
  * Cloudflare entrypoint. Named exports of this file become top-level Worker
@@ -72,6 +89,7 @@ interface TagStateStores {
   snapshots: SnapshotStoreLogic;
   slack: SlackStateLogic;
   settings: SettingsStoreLogic;
+  turnJobs: TurnJobStoreLogic;
 }
 
 export class TagStateStore extends DurableObject implements TagStateRpc {
@@ -79,28 +97,43 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
   /**
    * Constructor failures are latched instead of thrown: a throwing DO
    * constructor makes EVERY subsequent RPC fail with an opaque platform 500.
-   * Latching turns that into a clear `{ok:false}` envelope per call (and a
-   * fresh construction attempt on the next isolate) that the proxies surface
-   * as a normal store error.
+   * Latching turns that into a clear `{ok:false}` envelope per call that the
+   * proxies surface as a normal store error. The failure is NOT permanent for
+   * the isolate: `call()` re-attempts construction (a transient storage error
+   * on first boot should not brick every later RPC), so only the calls made
+   * before a successful re-init see the envelope.
    */
   private initError: string | undefined;
 
   constructor(ctx: DurableObjectState, env: unknown) {
     super(ctx, env);
+    this.stores = this.tryInit();
+  }
+
+  /**
+   * Build the store set over the DO's SQL storage, or latch the failure and
+   * return undefined. Idempotent by design so `call()` can re-run it to
+   * self-heal a failed first construction.
+   */
+  private tryInit(): TagStateStores | undefined {
     try {
-      const db = new DoSqlStateDb(ctx.storage);
+      const db = new DoSqlStateDb(this.ctx.storage);
       // Same construction order as the node backend: each logic class creates
       // its own tables (and the config store runs migrations + seedOnce), so a
       // fresh DO is fully seeded before it answers its first RPC.
-      this.stores = {
+      const stores: TagStateStores = {
         config: new ConfigStoreLogic(db),
         snapshots: new SnapshotStoreLogic(db),
         slack: new SlackStateLogic(db),
         settings: new SettingsStoreLogic(db),
+        turnJobs: new TurnJobStoreLogic(db),
       };
+      this.initError = undefined;
+      return stores;
     } catch (err) {
       this.initError = err instanceof Error ? err.message : String(err);
       console.error('[tag-team] TagStateStore init failed:', this.initError);
+      return undefined;
     }
   }
 
@@ -226,6 +259,111 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     });
   }
 
+  // ── turn relay (Cloudflare turn-horizon fix) ─────────────────────────────
+
+  async enqueueTurn(job: TurnJob): Promise<StateRpcResult<null>> {
+    const result = this.call((stores) => {
+      stores.turnJobs.enqueue(job);
+      return null;
+    });
+    // Arm the alarm only after the row is written, and AWAIT it: the job + the
+    // armed alarm must both be durable before this RPC resolves, because the
+    // events handler acks Slack the instant it does. `setAlarm(now)` fires the
+    // handler as soon as the platform can. Re-arming for an already-queued
+    // (duplicate) job is harmless.
+    if (result.ok) {
+      await this.ctx.storage.setAlarm(Date.now());
+    }
+    return result;
+  }
+
+  /**
+   * Drain queued turns past the events ack — the whole point of the relay. Each
+   * turn runs with this DO alarm's 15-minute wall-time budget instead of the
+   * events invocation's ~30s waitUntil cancellation, so a slow keyless model
+   * turn finishes and delivers.
+   *
+   * The handler NEVER throws for a per-job failure (it catches and either
+   * re-arms or gives up), so its attempt-count / delivered writes always commit
+   * on a normal return — no dependency on Durable Object throw-rollback
+   * semantics. It throws ONLY when the store itself is unavailable, so the
+   * platform's at-least-once alarm retry re-drives the queue after a transient
+   * storage error rather than dropping every job.
+   */
+  async alarm(): Promise<void> {
+    this.stores ??= this.tryInit();
+    if (!this.stores) {
+      throw new Error(`state store unavailable in alarm: ${this.initError ?? 'unknown'}`);
+    }
+    const stores = this.stores;
+    const pending = stores.turnJobs.listPending();
+    if (pending.length === 0) {
+      return;
+    }
+    // One client per alarm firing, resolved from THIS DO's LOCAL settings so
+    // credential resolution never RPCs into this same object (a self-call while
+    // the alarm holds the thread). runTurn takes it as an override.
+    const client = await this.resolveAlarmClient(stores);
+    let needsRetry = false;
+    for (const job of pending) {
+      const attempt = job.attempts + 1;
+      // Advance the attempt count before running the turn: a crash mid-turn
+      // then re-fires with the count already committed, bounding retries.
+      stores.turnJobs.recordAttempt(job.id, attempt);
+      try {
+        await runTurn(job.turn, job.assignment, this.env as PlatformEnv, { client });
+        // Delivered (a real final, or the sanitized provider-failure final that
+        // runTurn posts on a provider error): tombstone so no later scan
+        // re-delivers it. Claims stay held — a completed turn never re-runs.
+        stores.turnJobs.markDelivered(job.id);
+      } catch (err) {
+        console.error(
+          `[tag-team] relay turn attempt ${attempt} failed:`,
+          sanitizeError(err),
+        );
+        if (attempt >= MAX_TURN_ATTEMPTS) {
+          // Terminal: best-effort sanitized final so the thread is not left
+          // silent, then release the claims (parity with the node .catch's
+          // "failed delivery frees the claim") and tombstone so no further
+          // attempt runs.
+          await deliverProviderFailureFinal(job.turn, job.assignment, client).catch(
+            (finalErr) => {
+              console.error('[tag-team] relay terminal final failed:', sanitizeError(finalErr));
+            },
+          );
+          stores.slack.release(job.evtKey);
+          stores.slack.release(job.msgKey);
+          stores.turnJobs.markError(job.id);
+        } else {
+          needsRetry = true;
+        }
+      }
+    }
+    if (needsRetry) {
+      // Re-arm (do NOT throw) so this invocation returns normally and its
+      // attempt-count writes commit; the next firing re-drives the leftover
+      // pending jobs.
+      await this.ctx.storage.setAlarm(Date.now() + RELAY_RETRY_BACKOFF_MS);
+    }
+  }
+
+  /**
+   * A Slack WebClient for the alarm, using the bot token resolved from env
+   * (process.env) first and this DO's LOCAL settings store second. Passing the
+   * local settings as the resolver's store bypasses both the resolver cache AND
+   * the Cloudflare settings proxy — so this never opens an RPC back into this
+   * same Durable Object while the alarm is executing.
+   */
+  private async resolveAlarmClient(stores: TagStateStores): Promise<WebClient> {
+    const localSettings: SettingsStore = {
+      getSetting: async (key) => stores.settings.getSetting(key),
+      setSetting: async (key, value) => stores.settings.setSetting(key, value),
+      deleteSetting: async (key) => stores.settings.deleteSetting(key),
+    };
+    const { botToken } = await resolveSlackCredentials(this.env as PlatformEnv, localSettings);
+    return createSlackWebClient(botToken);
+  }
+
   /**
    * Run one store operation and map the outcome onto the RPC envelope. Typed
    * domain errors become stable codes with their constructor args so the
@@ -234,6 +372,10 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
    * preserved for server-side logs.
    */
   private call<T>(fn: (stores: TagStateStores) => T): StateRpcResult<T> {
+    // Self-heal: re-attempt a construction that failed on first boot rather
+    // than latching the isolate into permanent failure. A still-broken store
+    // returns the {ok:false} envelope only for THIS call.
+    this.stores ??= this.tryInit();
     if (!this.stores) {
       return {
         ok: false,
