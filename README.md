@@ -112,7 +112,7 @@ npx wrangler dev --config dist-cf/tag_team/wrangler.json --persist-to .wrangler-
 
 Keep `--persist-to` outside `dist-cf/`: the build output is disposable, and a rebuild would otherwise wipe your local Durable Object state. Local dev secrets live in `dist-cf/tag_team/.dev.vars` (`.dev.vars.example` documents them); `npm run flue:build:cf` snapshots and restores that file across rebuilds.
 
-For live Slack testing without a public tunnel, `npm run slack:bridge` forwards Socket Mode events to the local server with genuine v0 signatures. Dev-only; see "Option B — Socket Mode bridge" in `docs/play-slack.md`.
+For live Slack testing without a public tunnel, `npm run slack:bridge` forwards Socket Mode events to the local server with genuine v0 signatures (dev-only; requires an app-level token with `connections:write`).
 
 ### Bot identity
 
@@ -218,6 +218,7 @@ MIT.
 
 ## More
 
-- `docs/play-slack.md` — end-to-end real-Slack setup: scopes, event subscriptions, App Home, and the live verification checklist.
-- `slack-app-manifest.json` + `assets/bot-avatar.png` — the default Slack app identity for fresh installs.
+- `slack-app-manifest.json` + `assets/bot-avatar.png` — the default Slack app identity
+  for fresh installs. The manifest carries the scopes and event subscriptions the bot
+  needs; the `/admin` wizard's "Create your Slack app" link applies it for you.
 - `.env.example` / `.dev.vars.example` — offline-safe defaults for the Node and Cloudflare targets.
