@@ -1,5 +1,14 @@
 import { slackConversationsList, type SlackChannelSummary } from './credentials.ts';
 
+// The bot self-join helper lives with the other raw Slack fetch helpers (it
+// needs the private SLACK_API_URL base), but the auto-join-on-assignment flow
+// belongs conceptually to this channels module — re-export so callers reach it
+// from here.
+export {
+  slackConversationsJoin,
+  type SlackConversationsJoinResult,
+} from './credentials.ts';
+
 /**
  * Server-side channel listing for the admin Add-channel picker.
  *

@@ -114,6 +114,28 @@ button, input, textarea, select { font: inherit; }
 }
 .textarea { line-height: 1.55; min-height: 96px; resize: vertical; }
 .input.mono, .textarea.mono { font-size: 0.8125rem; }
+/* Native <select> with a custom chevron: the browser's default caret varies by
+   OS and does not match the app's icon set, so hide it (appearance:none) and
+   overlay the inline chevron-down SVG. The select keeps its full width; the
+   wrapper is the positioning context and the SVG is right-aligned, centered,
+   and click-through (pointer-events:none). */
+.select-wrap { align-items: center; display: inline-grid; grid-template-columns: 1fr; width: 100%; }
+.select-wrap select.input {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  grid-column: 1;
+  grid-row: 1;
+  padding-right: 32px;
+}
+.select-wrap .select-caret {
+  color: var(--text-3);
+  grid-column: 1;
+  grid-row: 1;
+  justify-self: end;
+  margin-right: 10px;
+  pointer-events: none;
+}
 .toggle {
   background: rgba(28, 25, 23, 0.12);
   border-radius: 999px;
@@ -523,6 +545,29 @@ details[open].advanced summary::before {
 .combo-opt:hover { background: var(--raise); }
 .combo-opt.active { background: var(--ember-tint); color: var(--ember-deep); }
 .combo-foot { border-top: 1px solid var(--line); color: var(--text-3); font-size: 0.75rem; margin-top: 4px; padding: 8px 9px 4px; }
+/* ---- profile Model click-to-open combobox (F6) ---- */
+.model-combo { position: relative; }
+.model-combo .model-combo-input { padding-right: 32px; }
+.model-combo .model-combo-caret {
+  color: var(--text-3);
+  pointer-events: none;
+  position: absolute;
+  right: 10px;
+  top: 9px;
+}
+/* The open popover is an elevated overlay under the input so it never reflows
+   the form. max-height keeps a long provider list scrollable in place. */
+.model-combo .combo-list {
+  left: 0;
+  margin-top: 4px;
+  max-height: 320px;
+  overflow-y: auto;
+  position: absolute;
+  right: 0;
+  top: 100%;
+  z-index: 20;
+}
+.combo-empty { color: var(--text-3); font-size: 0.8125rem; padding: 8px 9px; }
 @media (max-width: 720px) {
   .body { flex-direction: column; }
   .rail { border-bottom: 1px solid var(--line); border-right: 0; width: 100%; }
@@ -783,8 +828,23 @@ details[open].advanced summary::before {
     settingsError: "",
     provUi: {},
     favUi: {},
-    favorites: { openrouter: [], "workers-ai": [] },
-    providerModels: { openrouter: null, "workers-ai": null }
+    // null = favorites not yet fetched (picker/Settings load them lazily). The
+    // profile Model picker distinguishes "not loaded" (fall back to static
+    // suggestions mid-load) from "loaded but empty" (suppress the group). Readers
+    // outside the picker go through favoritesFor(), which null-coalesces to [].
+    favorites: { openrouter: null, "workers-ai": null },
+    // Dynamic model lists per provider id, loaded lazily. openrouter/workers-ai
+    // feed the Settings favorites managers; anthropic/openai feed the profile
+    // Model picker's FULL dynamic group (F5). null = not yet loaded.
+    providerModels: { anthropic: null, openai: null, openrouter: null, "workers-ai": null },
+    // Profile Model picker (F6): a real click-to-open combobox. Closed = the
+    // input + chevron; open = the grouped dynamic options popover. The filter
+    // mirrors the input value so typing narrows the list. providerModelsError
+    // marks a provider whose model fetch failed so the picker can fall back to
+    // the static suggestions for it (offline).
+    modelPickerOpen: false,
+    modelPickerFilter: "",
+    providerModelsError: {}
   };
 
   // Inline Heroicons (micro, 16px) — solid unless noted. Colour inherits from
@@ -1188,7 +1248,9 @@ details[open].advanced summary::before {
         : "";
       selector = '<div class="field"><label class="field-label" for="add-channel-select">Channel</label>' +
         '<div style="display:flex; gap:8px; align-items:center;">' +
-        '<select class="input" id="add-channel-select" name="channelSelect" data-action="select-channel-option" style="flex:1;">' + channelOptionsHtml() + '</select>' +
+        '<span class="select-wrap" style="flex:1;">' +
+        '<select class="input" id="add-channel-select" name="channelSelect" data-action="select-channel-option">' + channelOptionsHtml() + '</select>' +
+        icon("chevron-down", "select-caret") + '</span>' +
         refreshBtn + '</div>' +
         truncated +
         '<p class="hint">Don\\'t see it? Invite @Tag to the channel in Slack, then click Refresh. ' +
@@ -1332,13 +1394,16 @@ details[open].advanced summary::before {
   function profileSectionHtml(agent, assignment) {
     var meta = agent ? modelLabel(agent) + " · " + toolsLabel(agent.allowedTools) + " · used in " + channelCountLabel(allAssignmentsForAgent(agent.id).length) : "Unknown profile";
     var row = agent
-      ? '<div class="bundle-row"><span class="b-name">' + esc(agent.name) + '</span><span class="b-meta">' + esc(meta) + '</span><span class="spacer"></span><button type="button" class="btn btn-soft btn-sm" data-action="toggle-swap">Change</button><button type="button" class="x-btn" data-action="detach-profile" aria-label="Detach profile">' + icon("x-mark") + '</button></div>' +
+      ? '<div class="bundle-row"><span class="b-name">' + esc(agent.name) + '</span><span class="b-meta">' + esc(meta) + '</span><span class="spacer"></span>' +
+        '<button type="button" class="btn btn-soft btn-sm" data-action="open-profiles" data-agent="' + esc(agent.id) + '">Edit</button>' +
+        '<button type="button" class="btn btn-soft btn-sm" data-action="toggle-swap">Change</button>' +
+        '<button type="button" class="x-btn" data-action="detach-profile" aria-label="Detach profile">' + icon("x-mark") + '</button></div>' +
         (agent.description ? '<p class="hint">' + esc(agent.description) + '</p>' : "")
       : '<div class="empty"><p class="field-label">No profile attached</p><p class="hint">Attach a profile before the channel can answer.</p></div>';
     if (state.swapOpen) {
-      row += '<div class="bundle-row"><select class="input" data-role="swap-profile">' + state.agents.map(function (profile) {
+      row += '<div class="bundle-row"><span class="select-wrap"><select class="input" data-role="swap-profile">' + state.agents.map(function (profile) {
         return '<option value="' + esc(profile.id) + '"' + (profile.id === assignment.agentId ? " selected" : "") + '>' + esc(profile.name) + '</option>';
-      }).join("") + '</select><button type="button" class="btn btn-primary btn-sm" data-action="attach-selected-profile">Attach</button></div>';
+      }).join("") + '</select>' + icon("chevron-down", "select-caret") + '</span><button type="button" class="btn btn-primary btn-sm" data-action="attach-selected-profile">Attach</button></div>';
     }
     return '<section class="section"><div class="section-head"><div><h2 class="section-title">Profile</h2><p class="hint">The reusable behavior attached to this channel &mdash; instructions, model, and tools.</p></div><button type="button" class="btn btn-ghost btn-sm" data-action="open-profiles">Manage profiles</button></div>' + row + '</section>';
   }
@@ -1473,12 +1538,20 @@ details[open].advanced summary::before {
     var model = draft.model || "";
     var warning = modelWarning(model);
     var caveat = modelCompactionCaveat(model);
+    var open = state.modelPickerOpen;
+    // Click-to-open combobox (F6): the input is always the current pin; clicking
+    // or focusing it opens the grouped options popover below, and typing filters.
+    // The popover is a positioned overlay so it never reflows the form.
     return '<div class="field"><label class="field-label" for="p-model">Model</label>' +
-      '<input class="input mono" id="p-model" name="model" type="text" value="' + esc(model) + '" role="combobox" aria-expanded="true" placeholder="Pick a model &mdash; none pinned" data-action="profile-model">' +
+      '<div class="model-combo">' +
+      '<input class="input mono model-combo-input" id="p-model" name="model" type="text" value="' + esc(model) + '" autocomplete="off" role="combobox" aria-expanded="' + (open ? "true" : "false") + '" aria-haspopup="listbox" placeholder="Pick a model &mdash; none pinned" data-action="profile-model">' +
+      icon("chevron-down", "model-combo-caret") +
+      (open ? modelPickerHtml(model) : "") +
+      '</div>' +
       '<p class="hint">Every profile runs one pinned model. Suggestions come from this install\\'s configured providers &mdash; manage them in <button type="button" class="link-btn" data-action="open-settings">Settings &nearr;</button>. Any provider/model specifier works.</p>' +
       (warning ? '<p class="field-error">' + esc(warning) + '</p>' : "") +
       (caveat ? '<p class="hint warn-accent">' + caveat + '</p>' : "") +
-      modelPickerHtml(model) + '</div>';
+      '</div>';
   }
 
   function modelCompactionCaveat(model) {
@@ -1659,18 +1732,87 @@ details[open].advanced summary::before {
       '<div style="display:flex; gap:10px;"><button type="button" class="btn btn-soft btn-sm" data-action="disable-keep">Keep enabled</button><button type="button" class="btn btn-danger btn-sm" data-action="disable-confirm">Disable everywhere</button></div>';
   }
 
+  // Map a /admin/api/models provider id to the admin id under which its dynamic
+  // model list + favorites are keyed (state.providerModels / state.favorites).
+  // The binding-backed "cloudflare" provider keys its data as "workers-ai"; the
+  // REST "cloudflare-workers-ai" provider is skipped in the picker entirely (the
+  // keyless binding provider is the one the picker surfaces on Cloudflare).
+  function pickerAdminIdFor(providerId) {
+    if (providerId === "cloudflare") return "workers-ai";
+    if (providerId === "cloudflare-workers-ai") return null;
+    return providerId;
+  }
+
+  // The picker's per-provider group label is user-facing and never leaks the
+  // internal src path. "cloudflare" shows as "workers-ai"; every other provider
+  // keeps its own id.
+  function pickerGroupLabel(providerId) {
+    return providerId === "cloudflare" ? "workers-ai" : providerId;
+  }
+
+  // Translate the RuntimeModelProvider.source string into a user-facing phrase.
+  // The runtime emits "registered in src/app.ts" for a stored/registered key —
+  // that internal path must never reach the UI, so it maps to "via your key".
+  // A "via ENV_VAR" source collapses to "via environment"; the binding phrase is
+  // already user-facing and passes through.
+  function pickerSourcePhrase(source) {
+    if (!source) return "";
+    if (source === "Workers AI binding") return "Workers AI binding";
+    if (source === "registered in src/app.ts") return "via your key";
+    if (source.indexOf("via ") === 0) return "via environment";
+    return source;
+  }
+
+  // Build the dynamic specifier list for one configured picker provider.
+  // anthropic/openai render their FULL live model list (prefix "anthropic/" /
+  // "openai/"); openrouter/workers-ai render only starred FAVORITES ("openrouter/"
+  // / "cloudflare/"). A dynamic source that is not yet fetched (null) or whose
+  // fetch failed falls back to the provider's static suggestions, so the group is
+  // never empty mid-load or offline. openModelPicker kicks the lazy fetches.
+  function pickerModelsFor(provider, adminId) {
+    var suggestions = (provider.suggestions || []).slice();
+    if (adminId === "anthropic" || adminId === "openai") {
+      var live = state.providerModels[adminId];
+      if (live && state.providerModelsError[adminId] !== true) {
+        return live.map(function (m) { return adminId + "/" + m.id; });
+      }
+      return suggestions;
+    }
+    if (adminId === "openrouter" || adminId === "workers-ai") {
+      var favs = state.favorites[adminId];
+      var prefix = adminId === "workers-ai" ? "cloudflare/" : "openrouter/";
+      if (favs != null) {
+        return favs.map(function (favId) { return prefix + favId; });
+      }
+      // Favorites not yet loaded: fall back to static suggestions mid-load.
+      return suggestions;
+    }
+    // Any other (custom) provider: static suggestions only.
+    return suggestions;
+  }
+
   function modelPickerHtml(current) {
+    var filter = (state.modelPickerFilter || "").toLowerCase();
     var html = '<div class="combo-list" role="listbox">';
     var rendered = false;
     var sawConfigured = false;
     state.models.providers.forEach(function (provider) {
       if (!provider.configured) return;
+      var adminId = pickerAdminIdFor(provider.id);
+      // Skip the REST cloudflare-workers-ai provider — the keyless binding
+      // "cloudflare" provider is the one the picker surfaces.
+      if (adminId == null) return;
       sawConfigured = true;
-      if (!provider.suggestions || provider.suggestions.length === 0) return;
+      var models = pickerModelsFor(provider, adminId);
+      if (filter) {
+        models = models.filter(function (model) { return model.toLowerCase().indexOf(filter) >= 0; });
+      }
+      if (!models.length) return;
       rendered = true;
-      var label = provider.id === "cloudflare" ? "workers-ai" : provider.id;
-      html += '<div class="combo-group">' + esc(label) + '<span class="src">· ' + esc(provider.source) + '</span></div>';
-      provider.suggestions.forEach(function (model) {
+      var label = pickerGroupLabel(provider.id);
+      var phrase = pickerSourcePhrase(provider.source);
+      html += '<div class="combo-group">' + esc(label) + (phrase ? '<span class="src">· ' + esc(phrase) + '</span>' : "") + '</div>';
+      models.forEach(function (model) {
         html += '<button type="button" class="combo-opt ' + (current === model ? "active" : "") + '" data-action="pick-model" data-model="' + esc(model) + '">' + esc(model) + '</button>';
       });
     });
@@ -1685,7 +1827,7 @@ details[open].advanced summary::before {
       }
       return html + '<div class="combo-group">no providers configured</div><div class="combo-foot">No provider keys on this install yet. Type any provider/model specifier to pin one now, or set <span class="mono" style="color:var(--text-2);">SLACK_TAG_MODEL</span> (<span class="mono" style="color:var(--text-2);">provider/model</span>) as an offline/dev fallback so an unpinned profile still replies.</div>' + settingsRow + '</div>';
     }
-    return html + '<div class="combo-foot">Grouped by configured provider; OpenRouter and Workers AI show your starred favorites. Type any provider/model specifier.</div>' + settingsRow + '</div>';
+    return html + '<div class="combo-foot">Anthropic and OpenAI list their live models; OpenRouter and Workers AI show your starred favorites. Type any provider/model specifier.</div>' + settingsRow + '</div>';
   }
 
   // ---- Settings: model providers (cards 13-14) -----------------------------
@@ -2032,16 +2174,75 @@ details[open].advanced summary::before {
   function loadProviderModels(id) {
     return api("/admin/api/providers/" + encodeURIComponent(id) + "/models").then(function (body) {
       state.providerModels[id] = body.models || [];
+      state.providerModelsError[id] = false;
       favUiFor(id).error = "";
-      if (state.view === "settings") render();
+      if (state.view === "settings" || state.modelPickerOpen) render();
     }).catch(function (error) {
+      // Mark the fetch failed so the picker falls back to the provider's static
+      // suggestions for this provider (offline), and the Settings manager shows
+      // its own error string.
+      state.providerModelsError[id] = true;
       favUiFor(id).error = favModelsErrorText(id, error);
-      if (state.view === "settings") render();
+      if (state.view === "settings" || state.modelPickerOpen) render();
     });
   }
 
   function refreshModels() {
     return api("/admin/api/models").then(function (body) { state.models = body; }).catch(function () {});
+  }
+
+  // Open the profile Model combobox (F6) and lazily fetch the dynamic lists it
+  // renders (F5): the FULL model list for anthropic/openai and the starred
+  // favorites for openrouter/workers-ai. The picker can open without ever
+  // visiting Settings, so it kicks its own loads here, guarded so nothing
+  // re-fetches. loadProviderModels/loadFavorites re-render while the picker is
+  // open (state.modelPickerOpen).
+  function openModelPicker() {
+    if (state.modelPickerOpen) return;
+    state.modelPickerOpen = true;
+    state.modelPickerFilter = "";
+    (state.models && state.models.providers ? state.models.providers : []).forEach(function (provider) {
+      if (!provider.configured) return;
+      var adminId = pickerAdminIdFor(provider.id);
+      if (adminId == null) return;
+      if (adminId === "anthropic" || adminId === "openai") {
+        if (state.providerModels[adminId] == null) loadProviderModels(adminId);
+      } else if (adminId === "openrouter" || adminId === "workers-ai") {
+        // Favorites drive these groups; the model list is only needed by the
+        // Settings favorites manager, not the picker, so load favorites only.
+        if (state.favorites[adminId] == null) loadFavorites(adminId);
+      }
+    });
+    render();
+  }
+
+  function closeModelPicker() {
+    if (!state.modelPickerOpen) return;
+    state.modelPickerOpen = false;
+    state.modelPickerFilter = "";
+    render();
+  }
+
+  // A keystroke in the Model input both pins the free-text value (draft) and
+  // narrows the open picker to matching specifiers (F6 filter). Typing opens the
+  // picker if it was closed. A full re-render rebuilds the popover, so restore
+  // focus + caret to the input afterward (a no-op in the test harness, which
+  // does not track the input element).
+  function filterModelPicker(target) {
+    state.profileDraft.model = target.value;
+    state.modelPickerFilter = target.value;
+    markProfileDirty();
+    if (!state.modelPickerOpen) { openModelPicker(); return; }
+    var caret = null;
+    try { caret = target.selectionStart; } catch (error) { caret = null; }
+    render();
+    var input = document.getElementById("p-model");
+    if (input && input.focus) {
+      input.focus();
+      if (caret != null && input.setSelectionRange) {
+        try { input.setSelectionRange(caret, caret); } catch (error) { /* ignore */ }
+      }
+    }
   }
 
   function openProviderPaste(id, mode) {
@@ -2352,11 +2553,21 @@ details[open].advanced summary::before {
   }
 
   document.addEventListener("click", function (event) {
+    // Outside-click closes the open Model combobox (F6). A click inside the
+    // combo (the input, an option, or the Settings row) is left to the
+    // data-action branch below; anything else dismisses the popover. Guarded by
+    // closest so it is inert unless a real .model-combo ancestor exists.
+    if (state.modelPickerOpen && event.target && event.target.closest) {
+      var insideCombo = event.target.closest(".model-combo");
+      if (!insideCombo) closeModelPicker();
+    }
     var target = event.target.closest("[data-action]");
     if (!target) return;
     var action = target.getAttribute("data-action");
-    // Profiles is now a main-panel destination — open lands on the overview.
-    if (action === "open-profiles") { enterProfiles(); }
+    // Profiles is now a main-panel destination — open lands on the overview,
+    // or (with a data-agent) directly on that profile's edit detail (the
+    // channel-page Profile row's Edit affordance).
+    if (action === "open-profiles") { enterProfiles(target.getAttribute("data-agent")); }
     // Brand-as-home: the reliable exit back to the channel view from Profiles.
     if (action === "go-home") { state.view = "channels"; state.profileScreen = "list"; state.disableConfirm = false; render(); }
     // Stepper: mark step 1 done and reveal step 2. Not preventing default lets
@@ -2374,10 +2585,10 @@ details[open].advanced summary::before {
     if (action === "discard-channel") { var a = activeAssignment(); if (a) selectActive(a.workspaceId, a.channelId); render(); }
     if (action === "save-channel") { saveChannel(); }
     // Profiles master-detail navigation + form actions.
-    if (action === "new-profile") { state.view = "profiles"; state.profileScreen = "create"; state.profileDraft = newProfileDraft(); state.editingAgentId = null; state.profileError = ""; state.profileDirty = false; state.disableConfirm = false; render(); }
-    if (action === "edit-profile") { var selected = agentById(target.getAttribute("data-agent")); if (selected) { state.view = "profiles"; state.profileScreen = "edit"; state.editingAgentId = selected.id; state.profileDraft = cloneAgent(selected); state.profileError = ""; state.profileDirty = false; state.disableConfirm = false; render(); } }
-    if (action === "profiles-back") { state.profileScreen = "list"; state.profileDraft = null; state.editingAgentId = null; state.profileError = ""; state.profileDirty = false; state.disableConfirm = false; render(); }
-    if (action === "cancel-create") { state.profileScreen = "list"; state.profileDraft = null; state.profileError = ""; state.profileDirty = false; render(); }
+    if (action === "new-profile") { state.view = "profiles"; state.profileScreen = "create"; state.profileDraft = newProfileDraft(); state.editingAgentId = null; state.profileError = ""; state.profileDirty = false; state.disableConfirm = false; state.modelPickerOpen = false; state.modelPickerFilter = ""; render(); }
+    if (action === "edit-profile") { var selected = agentById(target.getAttribute("data-agent")); if (selected) { state.view = "profiles"; state.profileScreen = "edit"; state.editingAgentId = selected.id; state.profileDraft = cloneAgent(selected); state.profileError = ""; state.profileDirty = false; state.disableConfirm = false; state.modelPickerOpen = false; state.modelPickerFilter = ""; render(); } }
+    if (action === "profiles-back") { state.profileScreen = "list"; state.profileDraft = null; state.editingAgentId = null; state.profileError = ""; state.profileDirty = false; state.disableConfirm = false; state.modelPickerOpen = false; state.modelPickerFilter = ""; render(); }
+    if (action === "cancel-create") { state.profileScreen = "list"; state.profileDraft = null; state.profileError = ""; state.profileDirty = false; state.modelPickerOpen = false; state.modelPickerFilter = ""; render(); }
     // Settings (model-providers) is a separate destination that lands with its
     // own build; the affordance is present per the approved model-field design.
     if (action === "open-settings") { openSettings(); }
@@ -2389,7 +2600,11 @@ details[open].advanced summary::before {
     if (action === "prov-remove-cancel") { closeProviderRemove(target.getAttribute("data-provider")); }
     if (action === "prov-remove-confirm") { removeProviderKey(target.getAttribute("data-provider")); }
     if (action === "fav-star") { toggleFavorite(target.getAttribute("data-provider"), target.getAttribute("data-model")); }
-    if (action === "pick-model") { var modelInput = document.getElementById("p-model"); if (modelInput) modelInput.value = target.getAttribute("data-model") || ""; collectProfileDraft(); state.profileDirty = true; render(); }
+    // Open the Model combobox (F6) when the input is clicked/focused. The input
+    // carries data-action="profile-model"; the same action feeds keystrokes to
+    // the filter in the input listener below.
+    if (action === "profile-model") { openModelPicker(); }
+    if (action === "pick-model") { var modelInput = document.getElementById("p-model"); if (modelInput) modelInput.value = target.getAttribute("data-model") || ""; collectProfileDraft(); state.profileDirty = true; closeModelPicker(); }
     if (action === "save-profile") { saveProfile(); }
     if (action === "discard-profile") { discardProfile(); }
     if (action === "delete-profile") { deleteProfile(); }
@@ -2424,7 +2639,7 @@ details[open].advanced summary::before {
     // without a full re-render, preserving focus.
     if (state.profileDraft) {
       if (action === "profile-name") { state.profileDraft.name = target.value; markProfileDirty(); }
-      if (action === "profile-model") { state.profileDraft.model = target.value; markProfileDirty(); }
+      if (action === "profile-model") { filterModelPicker(target); }
       if (action === "profile-desc") { state.profileDraft.description = target.value; markProfileDirty(); }
       if (action === "profile-instructions") { state.profileDraft.instructions = target.value; markProfileDirty(); }
     }
@@ -2470,15 +2685,31 @@ details[open].advanced summary::before {
     if (action === "slack-connect-form") submitSlackConnection(new FormData(form));
   });
 
-  // Land on the Profiles overview (topbar / channel-page "Manage profiles").
-  function enterProfiles() {
+  // Escape dismisses the open Model combobox (F6) without picking a model.
+  document.addEventListener("keydown", function (event) {
+    if (state.modelPickerOpen && (event.key === "Escape" || event.key === "Esc")) {
+      closeModelPicker();
+    }
+  });
+
+  // Land on the Profiles overview (topbar / channel-page "Manage profiles"), or
+  // directly on a profile's edit detail when a target id is supplied (the
+  // channel-page Profile row's Edit affordance).
+  function enterProfiles(targetAgentId) {
     state.view = "profiles";
-    state.profileScreen = "list";
-    state.profileDraft = null;
-    state.editingAgentId = null;
     state.profileError = "";
     state.profileDirty = false;
     state.disableConfirm = false;
+    var target = targetAgentId ? agentById(targetAgentId) : null;
+    if (target) {
+      state.profileScreen = "edit";
+      state.editingAgentId = target.id;
+      state.profileDraft = cloneAgent(target);
+    } else {
+      state.profileScreen = "list";
+      state.profileDraft = null;
+      state.editingAgentId = null;
+    }
     render();
   }
 

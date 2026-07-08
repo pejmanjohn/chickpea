@@ -5,7 +5,7 @@ import { isCloudflareTarget } from '../config/runtime-target.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
 import { promptSlackThreadAgent } from './agent-dispatch.ts';
-import { resolveSlackCredentials } from './credentials.ts';
+import { resolveSlackCredentials, resolveSlackPublicUrl } from './credentials.ts';
 import type { SlackStatusUpdate } from './replies.ts';
 import { registerSlackStatusTurn } from './status-registry.ts';
 import type { SlackTurnContext } from './thread-context.ts';
@@ -107,13 +107,17 @@ export async function runTurn(
   // A frozen assignment (from a thread snapshot) carries its model; otherwise
   // resolve it from the agent via policy.
   const resolvedModel = assignment.model ?? tryResolveAgentModel(assignment.agent);
+  // env (SLACK_TAG_PUBLIC_URL) → stored slack.publicUrl (the origin the admin
+  // pinned): on a button deploy nobody sets the env var, so without the stored
+  // fallback the footer's "Configure" link would be dead.
+  const publicUrl = await resolveSlackPublicUrl(platformEnv);
   const presenter = new WebClientPresenter(client, {
     channelId: turn.channelId,
     threadTs: turn.threadTs,
     agentName: assignment.agent.name,
     agentId: assignment.agent.id,
     modelLabel: resolvedModel,
-    publicUrl: process.env.SLACK_TAG_PUBLIC_URL,
+    publicUrl,
     userId: turn.userId,
     workspaceId: turn.workspaceId,
   });
@@ -178,15 +182,17 @@ export async function deliverProviderFailureFinal(
   turn: NormalizedSlackTurn,
   assignment: ResolvedAssignment,
   client: WebClient,
+  platformEnv?: PlatformEnv,
 ): Promise<void> {
   const resolvedModel = assignment.model ?? tryResolveAgentModel(assignment.agent);
+  const publicUrl = await resolveSlackPublicUrl(platformEnv);
   const presenter = new WebClientPresenter(client, {
     channelId: turn.channelId,
     threadTs: turn.threadTs,
     agentName: assignment.agent.name,
     agentId: assignment.agent.id,
     modelLabel: resolvedModel,
-    publicUrl: process.env.SLACK_TAG_PUBLIC_URL,
+    publicUrl,
     userId: turn.userId,
     workspaceId: turn.workspaceId,
   });

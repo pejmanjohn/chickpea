@@ -326,11 +326,14 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           // silent, then release the claims (parity with the node .catch's
           // "failed delivery frees the claim") and tombstone so no further
           // attempt runs.
-          await deliverProviderFailureFinal(job.turn, job.assignment, client).catch(
-            (finalErr) => {
-              console.error('[tag-team] relay terminal final failed:', sanitizeError(finalErr));
-            },
-          );
+          await deliverProviderFailureFinal(
+            job.turn,
+            job.assignment,
+            client,
+            this.env as PlatformEnv,
+          ).catch((finalErr) => {
+            console.error('[tag-team] relay terminal final failed:', sanitizeError(finalErr));
+          });
           stores.slack.release(job.evtKey);
           stores.slack.release(job.msgKey);
           stores.turnJobs.markError(job.id);

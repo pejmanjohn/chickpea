@@ -64,8 +64,10 @@ import {
   readStoredSlackTeamInfo,
   resolveSlackCredentials,
   resolveSlackTeamInfo,
+  primeStoredSlackPublicUrl,
   slackAuthTest,
   slackConversationsInfo,
+  slackConversationsJoin,
   slackTokenFingerprint,
   SLACK_SETTING_KEYS,
   type SlackTeamInfo,
@@ -204,7 +206,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   app.use('/admin/*', adminGate);
   app.use('/admin/api/*', async (c, next) => {
     const platformEnv = c.env as PlatformEnv | undefined;
-    await applyResolvedProviderKeys(platformEnv, settings(c));
+    const settingsStore = settings(c);
+    await applyResolvedProviderKeys(platformEnv, settingsStore);
+    // Opportunistically pin the resolved origin so the Slack "Configure" deep
+    // link works even on a button deploy that never set SLACK_TAG_PUBLIC_URL,
+    // and even when creds arrived via env. No-op on the steady state.
+    await persistRequestOrigin(c, settingsStore);
     return next();
   });
 
@@ -484,6 +491,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const isWildcard = input.workspaceId === '*' || input.channelId === '*';
 
     let isMember: boolean | undefined;
+    let joined: boolean | undefined;
     let authoritativeLabel: string | undefined;
     if (botToken && !isWildcard) {
       const teamInfo = await resolveTeamInfoSafely(platformEnv, settingsStore);
@@ -528,6 +536,25 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         if (info.channel.name) {
           authoritativeLabel = info.channel.name;
         }
+        // (d) A bot CAN self-join a PUBLIC channel it is not yet in (via the
+        //     channels:join scope) — do it now so the operator does not have to
+        //     switch to Slack and invite it. A PRIVATE channel cannot be
+        //     self-joined (Slack forbids it), so it keeps the invite reminder.
+        //     Any failure — missing_scope on installs that predate the scope, a
+        //     transient error — is graceful: the assignment still saves and the
+        //     invite reminder still shows. The join must never fail the save.
+        if (isMember === false && info.channel.isPrivate === false) {
+          try {
+            const join = await slackConversationsJoin(botToken, input.channelId);
+            if (join.ok) {
+              isMember = true;
+              joined = true;
+            }
+          } catch {
+            // Slack unreachable mid-join: leave isMember false so the invite
+            // reminder shows; the save proceeds regardless.
+          }
+        }
       }
     }
 
@@ -540,6 +567,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return c.json({
         assignment: saved,
         ...(isMember !== undefined ? { isMember } : {}),
+        ...(joined !== undefined ? { joined } : {}),
       });
     } catch (err) {
       if (err instanceof UnknownAgentError) {
@@ -757,6 +785,36 @@ function requestOrigin(c: Context): string {
   const proto = forwardedProto || url.protocol.replace(/:$/, '');
   const host = forwardedHost || c.req.header('host') || url.host;
   return `${proto}://${host}`;
+}
+
+// Per-isolate memo of the last origin we wrote to slack.publicUrl, so the
+// opportunistic persist below is a no-op read/write on the steady state (every
+// admin request would otherwise hit the settings store).
+let lastPersistedPublicUrl: string | undefined;
+
+/**
+ * Persist the request origin as slack.publicUrl so the Slack reply footer /
+ * onboarding "Configure" deep link works on a button deploy where
+ * SLACK_TAG_PUBLIC_URL is never set. Best-effort and non-blocking to the
+ * response: an env pin already wins at resolution time, and a settings write
+ * failure must never break an admin request. Skips the write when the origin is
+ * unchanged since this isolate last wrote it.
+ */
+async function persistRequestOrigin(c: Context, store: SettingsStore): Promise<void> {
+  const origin = requestOrigin(c);
+  if (!origin || origin === lastPersistedPublicUrl) {
+    return;
+  }
+  try {
+    await store.setSetting(SLACK_SETTING_KEYS.publicUrl, origin);
+    primeStoredSlackPublicUrl(origin);
+    lastPersistedPublicUrl = origin;
+  } catch (err) {
+    console.error(
+      '[tag-team] failed to persist slack.publicUrl:',
+      err instanceof Error ? err.message : String(err),
+    );
+  }
 }
 
 // The trusted hop of an X-Forwarded-* header is the LAST value: each proxy

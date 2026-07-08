@@ -10,9 +10,12 @@ import type { CustomAgentConfig } from '../src/config/types.ts';
 import { invalidateSlackChannelsCache } from '../src/slack/channels.ts';
 import {
   invalidateStoredSlackCredentials,
+  invalidateStoredSlackPublicUrl,
+  resolveSlackPublicUrl,
   slackTokenFingerprint,
   SLACK_SETTING_KEYS,
 } from '../src/slack/credentials.ts';
+import { renderSlackConfigureLink } from '../src/slack/message-format.ts';
 import { FakeSlackBackend, type FakeSlackBackendConfig } from './parity/fake-slack.ts';
 import { withEnv } from './helpers/env.ts';
 import { loopbackListenSkipReason } from './helpers/listen.ts';
@@ -373,10 +376,13 @@ test('assignment PUT adopts Slack authoritative name and passes membership throu
     {
       slack: {
         identity: { teamId: 'T_ACME', teamName: 'Acme Inc' },
-        channels: [{ id: 'C_REAL', name: 'canonical-name', isPrivate: false, isMember: false }],
+        // Private + not-member: Slack forbids self-join, so this isolates the
+        // name-adoption + membership-passthrough contract with no join in the
+        // way (the public auto-join path is proven by the F2 tests below).
+        channels: [{ id: 'C_REAL', name: 'canonical-name', isPrivate: true, isMember: false }],
       },
     },
-    async () => {
+    async (backend) => {
       const settings = new SqliteSettingsStore(':memory:');
       const store = new SqliteConfigStore(':memory:', { agents: [agent()], assignments: [] });
       try {
@@ -400,11 +406,152 @@ test('assignment PUT adopts Slack authoritative name and passes membership throu
         const body = (await response.json()) as {
           assignment: { channelLabel?: string };
           isMember?: boolean;
+          joined?: boolean;
         };
         // Slack's authoritative name wins over the typed label...
         assert.equal(body.assignment.channelLabel, 'canonical-name');
-        // ...and membership is surfaced for the UI's invite reminder.
+        // ...and membership is surfaced for the UI's invite reminder...
         assert.equal(body.isMember, false);
+        // ...and no self-join was attempted for a private channel.
+        assert.equal(backend.callsOfMethod('conversations.join').length, 0);
+        assert.equal('joined' in body, false);
+      } finally {
+        settings.close();
+        store.close();
+      }
+    },
+  );
+});
+
+test('assignment PUT auto-joins a public not-member channel and reports joined:true', async (t) => {
+  const skip = await loopbackListenSkipReason();
+  if (skip) return t.skip(skip);
+
+  await withFake(
+    {
+      slack: {
+        identity: { teamId: 'T_ACME', teamName: 'Acme Inc' },
+        channels: [{ id: 'C_PUB', name: 'public-room', isPrivate: false, isMember: false }],
+      },
+    },
+    async (backend) => {
+      const settings = new SqliteSettingsStore(':memory:');
+      const store = new SqliteConfigStore(':memory:', { agents: [agent()], assignments: [] });
+      try {
+        await settings.setSetting(SLACK_SETTING_KEYS.botToken, 'xoxb-acme');
+        await settings.setSetting(SLACK_SETTING_KEYS.teamId, 'T_ACME');
+        await settings.setSetting(
+          SLACK_SETTING_KEYS.teamTokenFingerprint,
+          slackTokenFingerprint('xoxb-acme'),
+        );
+        const app = appWith(settings, store);
+
+        const response = await putAssignment(app, {
+          workspaceId: 'T_ACME',
+          channelId: 'C_PUB',
+          agentId: 'agent_channels',
+          enabled: true,
+        });
+        assert.equal(response.status, 200);
+        const body = (await response.json()) as { isMember?: boolean; joined?: boolean };
+        // The bot self-joined, so membership flips true and joined is surfaced.
+        assert.equal(body.isMember, true);
+        assert.equal(body.joined, true);
+        assert.equal(backend.callsOfMethod('conversations.join').length, 1);
+        assert.equal((await store.listAssignments()).length, 1);
+      } finally {
+        settings.close();
+        store.close();
+      }
+    },
+  );
+});
+
+test('assignment PUT never self-joins a private channel and keeps the invite reminder', async (t) => {
+  const skip = await loopbackListenSkipReason();
+  if (skip) return t.skip(skip);
+
+  await withFake(
+    {
+      slack: {
+        identity: { teamId: 'T_ACME', teamName: 'Acme Inc' },
+        channels: [{ id: 'C_PRIV', name: 'secret-room', isPrivate: true, isMember: false }],
+      },
+    },
+    async (backend) => {
+      const settings = new SqliteSettingsStore(':memory:');
+      const store = new SqliteConfigStore(':memory:', { agents: [agent()], assignments: [] });
+      try {
+        await settings.setSetting(SLACK_SETTING_KEYS.botToken, 'xoxb-acme');
+        await settings.setSetting(SLACK_SETTING_KEYS.teamId, 'T_ACME');
+        await settings.setSetting(
+          SLACK_SETTING_KEYS.teamTokenFingerprint,
+          slackTokenFingerprint('xoxb-acme'),
+        );
+        const app = appWith(settings, store);
+
+        const response = await putAssignment(app, {
+          workspaceId: 'T_ACME',
+          channelId: 'C_PRIV',
+          agentId: 'agent_channels',
+          enabled: true,
+        });
+        assert.equal(response.status, 200);
+        const body = (await response.json()) as { isMember?: boolean; joined?: boolean };
+        // Private: Slack forbids self-join, so membership stays false, no join
+        // was even attempted, and joined is absent (the UI keeps its reminder).
+        assert.equal(body.isMember, false);
+        assert.equal('joined' in body, false);
+        assert.equal(backend.callsOfMethod('conversations.join').length, 0);
+        assert.equal((await store.listAssignments()).length, 1);
+      } finally {
+        settings.close();
+        store.close();
+      }
+    },
+  );
+});
+
+test('assignment PUT saves gracefully when conversations.join hits missing_scope', async (t) => {
+  const skip = await loopbackListenSkipReason();
+  if (skip) return t.skip(skip);
+
+  await withFake(
+    {
+      slack: {
+        identity: { teamId: 'T_ACME', teamName: 'Acme Inc' },
+        channels: [{ id: 'C_PUB', name: 'public-room', isPrivate: false, isMember: false }],
+        // An install that predates the channels:join scope: the join call is
+        // rejected, but the save must still succeed and the reminder still show.
+        conversationsJoinError: 'missing_scope',
+      },
+    },
+    async (backend) => {
+      const settings = new SqliteSettingsStore(':memory:');
+      const store = new SqliteConfigStore(':memory:', { agents: [agent()], assignments: [] });
+      try {
+        await settings.setSetting(SLACK_SETTING_KEYS.botToken, 'xoxb-acme');
+        await settings.setSetting(SLACK_SETTING_KEYS.teamId, 'T_ACME');
+        await settings.setSetting(
+          SLACK_SETTING_KEYS.teamTokenFingerprint,
+          slackTokenFingerprint('xoxb-acme'),
+        );
+        const app = appWith(settings, store);
+
+        const response = await putAssignment(app, {
+          workspaceId: 'T_ACME',
+          channelId: 'C_PUB',
+          agentId: 'agent_channels',
+          enabled: true,
+        });
+        assert.equal(response.status, 200);
+        const body = (await response.json()) as { isMember?: boolean; joined?: boolean };
+        // The join was attempted and rejected: membership stays false, joined is
+        // absent, and the assignment still persisted.
+        assert.equal(body.isMember, false);
+        assert.equal('joined' in body, false);
+        assert.equal(backend.callsOfMethod('conversations.join').length, 1);
+        assert.equal((await store.listAssignments()).length, 1);
       } finally {
         settings.close();
         store.close();
@@ -538,4 +685,68 @@ test('an env bot token pointing at another workspace overrides the stale wizard-
       });
     },
   );
+});
+
+// --- 5. Public URL resolution feeds the reply-footer "Configure" link --------
+
+test('resolveSlackPublicUrl prefers env, falls back to the stored origin, else undefined', async () => {
+  await withEnv({ SLACK_TAG_PUBLIC_URL: undefined }, async () => {
+    const settings = new SqliteSettingsStore(':memory:');
+    invalidateStoredSlackPublicUrl();
+    try {
+      // Neither set → no link: the footer renders the bare "Configure" word.
+      assert.equal(await resolveSlackPublicUrl(undefined, settings), undefined);
+      assert.equal(
+        renderSlackConfigureLink(await resolveSlackPublicUrl(undefined, settings), {
+          agentId: 'agent_default',
+        }),
+        'Configure',
+      );
+
+      // A stored origin (what the admin pins on a button deploy) → the footer
+      // renders the mrkdwn <url|Configure> deep link.
+      await settings.setSetting(SLACK_SETTING_KEYS.publicUrl, 'https://tag.example.workers.dev');
+      assert.equal(
+        await resolveSlackPublicUrl(undefined, settings),
+        'https://tag.example.workers.dev',
+      );
+      assert.equal(
+        renderSlackConfigureLink(await resolveSlackPublicUrl(undefined, settings), {
+          agentId: 'agent_default',
+        }),
+        '<https://tag.example.workers.dev/admin?agent=agent_default|Configure>',
+      );
+
+      // Env wins outright, even over a stored value.
+      await withEnv({ SLACK_TAG_PUBLIC_URL: 'https://pinned.example/' }, async () => {
+        assert.equal(await resolveSlackPublicUrl(undefined, settings), 'https://pinned.example');
+      });
+    } finally {
+      settings.close();
+      invalidateStoredSlackPublicUrl();
+    }
+  });
+});
+
+test('an admin API request opportunistically persists the resolved origin to slack.publicUrl', async () => {
+  await withEnv({ ...NO_SLACK_ENV }, async () => {
+    const settings = new SqliteSettingsStore(':memory:');
+    invalidateStoredSlackPublicUrl();
+    try {
+      const app = appWith(settings);
+      // A plain admin API GET (no env pin) must pin the request origin so the
+      // Slack "Configure" link later resolves it.
+      const response = await app.request('http://tag.example.test/admin/api/agents', {
+        headers: auth(),
+      });
+      assert.equal(response.status, 200);
+      assert.equal(
+        await settings.getSetting(SLACK_SETTING_KEYS.publicUrl),
+        'http://tag.example.test',
+      );
+    } finally {
+      settings.close();
+      invalidateStoredSlackPublicUrl();
+    }
+  });
 });

@@ -175,6 +175,8 @@ function runAdminPageHarness(
     openrouterModels?: Array<{ id: string; context_length?: number; pricing?: Record<string, string> }>;
     workersAiFavorites?: string[];
     workersAiModels?: Array<{ id: string }>;
+    anthropicModels?: Array<{ id: string }>;
+    openaiModels?: Array<{ id: string }>;
     providerKeyReject?: { status: number; detail: string };
     modelProviders?: ModelProviderFixture[];
     effectiveError?: { status: number; error: string; message?: string };
@@ -238,6 +240,8 @@ function runAdminPageHarness(
         { id: 'meta-llama/llama-3.3-70b-instruct', context_length: 131072, pricing: { prompt: '0.00000013', completion: '0.0000004' } },
       ],
     'workers-ai': options.workersAiModels ?? [{ id: '@cf/zai-org/glm-5.2' }, { id: '@cf/moonshotai/kimi-k2.7-code' }],
+    ...(options.anthropicModels ? { anthropic: options.anthropicModels } : {}),
+    ...(options.openaiModels ? { openai: options.openaiModels } : {}),
   };
 
   const document = {
@@ -1116,11 +1120,16 @@ test('the profile Model picker shows the node-unpinned pick-a-model prompt with 
   await flushAsync();
   const click = harness.listeners.click;
   assert.ok(click);
-  // A blank profile has no pinned model — the field opens in the prompt state.
+  // A blank profile has no pinned model. The Model field is now a click-to-open
+  // combobox (F6): opening it renders the grouped popover. With no providers
+  // configured the popover shows the pick-a-model prompt.
   click({ target: actionTarget({ 'data-action': 'new-profile' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-model' }) });
+  await flushAsync();
   const html = harness.app.innerHTML;
 
   assert.match(html, /placeholder="Pick a model &mdash; none pinned"/);
+  assert.match(html, /aria-expanded="true"/);
   assert.match(html, /<div class="combo-group">no providers configured<\/div>/);
   // The empty-ish combo carries the offline/dev fallback note and a Settings link.
   assert.match(html, /set <span class="mono"[^>]*>SLACK_TAG_MODEL<\/span>/);
@@ -1143,9 +1152,85 @@ test('the profile Model picker labels Cloudflare binding suggestions as workers-
   const click = harness.listeners.click;
   assert.ok(click);
   click({ target: actionTarget({ 'data-action': 'new-profile' }) });
+  // Opening the picker lazily loads the workers-ai favorites that drive the
+  // binding group's options.
+  click({ target: actionTarget({ 'data-action': 'profile-model' }) });
+  await flushAsync();
 
   assert.match(harness.app.innerHTML, /<div class="combo-group">workers-ai<span class="src">· Workers AI binding<\/span><\/div>/);
   assert.doesNotMatch(harness.app.innerHTML, /<div class="combo-group">cloudflare<span/);
+  // The binding group's options carry the cloudflare/ specifier prefix, built
+  // from the starred favorites (not the leaked src path or a raw @cf id).
+  assert.match(harness.app.innerHTML, /data-model="cloudflare\/@cf\/zai-org\/glm-5\.2"/);
+});
+
+test('the profile Model picker renders the FULL live Anthropic list (Opus) with a user-facing source', async () => {
+  const harness = runAdminPageHarness({
+    // A stored Anthropic key: the runtime reports its source as the internal
+    // "registered in src/app.ts" path, which must never leak to the UI.
+    modelProviders: [
+      {
+        id: 'anthropic',
+        configured: true,
+        source: 'registered in src/app.ts',
+        suggestions: ['anthropic/claude-sonnet-4-6', 'anthropic/claude-haiku-4-5'],
+      },
+    ],
+    // The live /models list carries the full catalog — including Opus, which the
+    // static 2-model suggestions omitted (the F5 bug this fixes).
+    anthropicModels: [
+      { id: 'claude-opus-4-1' },
+      { id: 'claude-sonnet-4-6' },
+      { id: 'claude-haiku-4-5' },
+    ],
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'new-profile' }) });
+  // Opening the picker lazily loads the full Anthropic model list.
+  click({ target: actionTarget({ 'data-action': 'profile-model' }) });
+  await flushAsync();
+
+  const html = harness.app.innerHTML;
+  // The group is labeled by provider id with a user-facing phrase — never the
+  // leaked src path.
+  assert.match(html, /<div class="combo-group">anthropic<span class="src">· via your key<\/span><\/div>/);
+  assert.doesNotMatch(html, /registered in src\/app\.ts/);
+  // Every live model renders as an anthropic/ specifier — Opus now appears.
+  assert.match(html, /data-model="anthropic\/claude-opus-4-1"/);
+  assert.match(html, /data-model="anthropic\/claude-sonnet-4-6"/);
+  assert.match(html, /data-model="anthropic\/claude-haiku-4-5"/);
+});
+
+test('the profile Model picker filters options by the typed specifier', async () => {
+  const harness = runAdminPageHarness({
+    modelProviders: [
+      {
+        id: 'anthropic',
+        configured: true,
+        source: 'registered in src/app.ts',
+        suggestions: ['anthropic/claude-sonnet-4-6'],
+      },
+    ],
+    anthropicModels: [{ id: 'claude-opus-4-1' }, { id: 'claude-sonnet-4-6' }, { id: 'claude-haiku-4-5' }],
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  assert.ok(click);
+  assert.ok(input);
+  click({ target: actionTarget({ 'data-action': 'new-profile' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-model' }) });
+  await flushAsync();
+
+  // Typing "opus" narrows the open picker to matching specifiers only.
+  input({ target: inputTarget({ 'data-action': 'profile-model' }, 'opus') });
+  await flushAsync();
+  const html = harness.app.innerHTML;
+  assert.match(html, /data-model="anthropic\/claude-opus-4-1"/);
+  assert.doesNotMatch(html, /data-model="anthropic\/claude-sonnet-4-6"/);
+  assert.doesNotMatch(html, /data-model="anthropic\/claude-haiku-4-5"/);
 });
 
 test('the profile Model picker suppresses configured provider groups with no favorites', async () => {
@@ -1158,11 +1243,16 @@ test('the profile Model picker suppresses configured provider groups with no fav
         suggestions: [],
       },
     ],
+    // OpenRouter renders from starred favorites; with none starred its group is
+    // suppressed even though the provider is configured.
+    openrouterFavorites: [],
   });
   await flushAsync();
   const click = harness.listeners.click;
   assert.ok(click);
   click({ target: actionTarget({ 'data-action': 'new-profile' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-model' }) });
+  await flushAsync();
 
   assert.doesNotMatch(harness.app.innerHTML, /<div class="combo-group">openrouter/);
   assert.doesNotMatch(harness.app.innerHTML, /no providers configured/);
@@ -1190,10 +1280,14 @@ test('node-target Default seed is unpinned and its profile editor renders the pi
 
   click({ target: actionTarget({ 'data-action': 'open-profiles' }) });
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_default' }) });
+  // The seed's editor opens with an empty Model field; opening the combobox
+  // proves the unpinned pick-a-model guidance renders in the popover.
+  click({ target: actionTarget({ 'data-action': 'profile-model' }) });
+  await flushAsync();
   const html = harness.app.innerHTML;
 
   assert.match(html, /<h1 class="page-title">Default<\/h1>/);
-  assert.match(html, /value="" role="combobox" aria-expanded="true" placeholder="Pick a model &mdash; none pinned"/);
+  assert.match(html, /value="" autocomplete="off" role="combobox" aria-expanded="true" aria-haspopup="listbox" placeholder="Pick a model &mdash; none pinned"/);
   assert.match(html, /<div class="combo-group">no providers configured<\/div>/);
   assert.match(html, /SLACK_TAG_MODEL/);
   assert.match(html, /as an offline\/dev fallback so an unpinned profile still replies/);

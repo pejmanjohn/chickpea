@@ -106,6 +106,12 @@ export interface FakeSlackBehaviorConfig {
   channels?: FakeSlackChannel[];
   /** Page size for conversations.list cursor pagination (default 100). */
   conversationsListPageSize?: number;
+  /**
+   * Force `conversations.join` to answer `{ ok:false, error }` (e.g.
+   * `missing_scope` for installs that predate the `channels:join` scope). When
+   * unset, a join of a known public channel succeeds and flips its membership.
+   */
+  conversationsJoinError?: string;
 }
 
 export interface FakeSlackIdentityConfig {
@@ -197,6 +203,7 @@ export class FakeSlackBackend {
   private providerDelayMs: number;
   private channels: FakeSlackChannel[];
   private conversationsListPageSize: number;
+  private conversationsJoinError: string | undefined;
   private readonly repliesPages: RepliesPage[];
   private readonly historyMessages: unknown[];
   private readonly cursorToIndex = new Map<string, number>();
@@ -230,6 +237,7 @@ export class FakeSlackBackend {
     this.historyMessages = slack.historyMessages ?? DEFAULT_HISTORY_MESSAGES;
     this.channels = slack.channels ?? [];
     this.conversationsListPageSize = slack.conversationsListPageSize ?? 100;
+    this.conversationsJoinError = slack.conversationsJoinError;
     this.providerMode = config.provider?.mode ?? 'ok';
     this.replyText = config.provider?.replyText ?? STUB_REPLY_MARKER;
     this.toolChannelId = config.provider?.toolChannelId ?? DEFAULT_TOOL_CHANNEL;
@@ -432,6 +440,9 @@ export class FakeSlackBackend {
       }
       if (config.slack.conversationsListPageSize !== undefined) {
         this.conversationsListPageSize = config.slack.conversationsListPageSize;
+      }
+      if (config.slack.conversationsJoinError !== undefined) {
+        this.conversationsJoinError = config.slack.conversationsJoinError;
       }
     }
     if (config.provider) {
@@ -711,6 +722,25 @@ export class FakeSlackBackend {
         return found
           ? { ok: true, channel: channelPayload(found) }
           : { ok: false, error: 'channel_not_found' };
+      }
+      case 'conversations.join': {
+        // A configured error (e.g. missing_scope on installs predating the
+        // channels:join scope) short-circuits without joining.
+        if (this.conversationsJoinError) {
+          return { ok: false, error: this.conversationsJoinError };
+        }
+        const channelId = String(body.channel ?? '');
+        const found = this.channels.find((channel) => channel.id === channelId);
+        if (!found) {
+          return { ok: false, error: 'channel_not_found' };
+        }
+        // Slack forbids self-joining a private channel.
+        if (found.isPrivate) {
+          return { ok: false, error: 'method_not_supported_for_channel_type' };
+        }
+        // Mutate the fixture so a follow-up conversations.info reports membership.
+        found.isMember = true;
+        return { ok: true, channel: channelPayload(found) };
       }
       case 'users.info':
         return {

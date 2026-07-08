@@ -35,6 +35,11 @@ export const SLACK_SETTING_KEYS = {
   // id must not outlive the token that earned it, or the workspace-mismatch
   // guard validates against the wrong workspace.
   teamTokenFingerprint: 'slack.teamTokenFingerprint',
+  // The public origin (scheme+host, no trailing slash) the admin resolves for
+  // this install — persisted so reply footers / onboarding can build the
+  // "Configure" deep link on a button deploy where SLACK_TAG_PUBLIC_URL is
+  // unset. Environment (SLACK_TAG_PUBLIC_URL) still wins at resolution time.
+  publicUrl: 'slack.publicUrl',
 } as const;
 
 /** Non-reversible identifier for "which bot token produced this team info". */
@@ -183,6 +188,62 @@ export function invalidateStoredSlackCredentials(): void {
   storedCache = undefined;
 }
 
+// --- Public URL resolution (env > stored) -----------------------------------
+//
+// The "Configure" reply-footer / onboarding deep link needs the install's own
+// public origin. On a Node deploy the operator usually sets SLACK_TAG_PUBLIC_URL;
+// on a Cloudflare button deploy nobody does, so the admin persists the origin it
+// resolved for the manifest link (slack.publicUrl) and this resolver reads it as
+// the fallback. Env still wins outright. Cached briefly per isolate like the
+// cred resolver so the events hot path pays no store read per turn.
+
+let publicUrlCache: { expiresAt: number; value: string | undefined } | undefined;
+
+function envPublicUrl(): string | undefined {
+  const raw = process.env.SLACK_TAG_PUBLIC_URL?.trim();
+  return raw ? raw.replace(/\/+$/, '') : undefined;
+}
+
+/**
+ * Resolve the install's public origin: `SLACK_TAG_PUBLIC_URL` (env) → stored
+ * `slack.publicUrl` → undefined. An explicit `store` bypasses the cache (tests);
+ * otherwise the stored read is cached for the TTL. Env is never cached — a
+ * process env is already a cheap read and must reflect changes immediately.
+ */
+export async function resolveSlackPublicUrl(
+  env?: PlatformEnv,
+  store?: SettingsStore,
+): Promise<string | undefined> {
+  const fromEnv = envPublicUrl();
+  if (fromEnv) {
+    return fromEnv;
+  }
+  const now = Date.now();
+  if (!store && publicUrlCache && publicUrlCache.expiresAt > now) {
+    return publicUrlCache.value;
+  }
+  const settings = store ?? getSettingsStore(env);
+  const stored = await settings.getSetting(SLACK_SETTING_KEYS.publicUrl);
+  const value = stored ? stored.replace(/\/+$/, '') : undefined;
+  if (!store) {
+    publicUrlCache = { expiresAt: now + STORED_CACHE_TTL_MS, value };
+  }
+  return value;
+}
+
+/** Prime the public-URL cache so the isolate that stored it resolves it now. */
+export function primeStoredSlackPublicUrl(value: string | undefined): void {
+  publicUrlCache = {
+    expiresAt: Date.now() + STORED_CACHE_TTL_MS,
+    value: value ? value.replace(/\/+$/, '') : undefined,
+  };
+}
+
+/** Drop the cached public URL (tests; never needed in production flow). */
+export function invalidateStoredSlackPublicUrl(): void {
+  publicUrlCache = undefined;
+}
+
 export interface SlackAuthTestResult {
   ok: boolean;
   /** Slack's machine error code when ok is false (e.g. 'invalid_auth'). */
@@ -327,6 +388,38 @@ export async function slackConversationsInfo(
     ok: body.ok === true,
     error: typeof body.error === 'string' ? body.error : undefined,
     channel: toChannelSummary(body.channel) ?? undefined,
+  };
+}
+
+export interface SlackConversationsJoinResult {
+  ok: boolean;
+  error: string | undefined;
+}
+
+/**
+ * `conversations.join` — the bot self-joins a PUBLIC channel (needs the
+ * `channels:join` bot scope). Slack cannot self-join a PRIVATE channel; a human
+ * must invite it, so the caller only reaches here for public not-member
+ * channels. Raw fetch, workerd-safe, honoring `SLACK_API_URL` like the others.
+ * The caller treats any `ok:false` (notably `missing_scope` on installs that
+ * predate the scope) as "could not join" and falls back to the invite reminder.
+ */
+export async function slackConversationsJoin(
+  botToken: string,
+  channelId: string,
+): Promise<SlackConversationsJoinResult> {
+  const response = await fetch(`${slackApiBase()}/conversations.join`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${botToken}`,
+      'content-type': 'application/x-www-form-urlencoded',
+    },
+    body: new URLSearchParams({ channel: channelId }).toString(),
+  });
+  const body = (await response.json()) as Record<string, unknown>;
+  return {
+    ok: body.ok === true,
+    error: typeof body.error === 'string' ? body.error : undefined,
   };
 }
 

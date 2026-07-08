@@ -14,7 +14,7 @@ import { resolveStores, type AppStores, type PlatformEnv } from '../config/state
 import { tagStateStub, type TurnJob } from '../config/state-rpc.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
 import type { SlackClaimStore } from '../slack/claim-store.ts';
-import { resolveSlackCredentials } from '../slack/credentials.ts';
+import { resolveSlackCredentials, resolveSlackPublicUrl } from '../slack/credentials.ts';
 import {
   renderChannelOnboarding,
   renderUnassignedChannelHint,
@@ -399,7 +399,7 @@ async function handleMemberJoinedChannel(
       text: renderChannelOnboarding({
         botUserId: resolvedBotUserId,
         channelId: event.channel,
-        publicUrl: process.env.SLACK_TAG_PUBLIC_URL,
+        publicUrl: await resolveSlackPublicUrl(platformEnv),
       }),
     });
   } catch (err) {
@@ -483,7 +483,7 @@ async function postUnassignedChannelHint(
         text: renderUnassignedChannelHint({
           botUserId,
           channelId: turn.channelId,
-          publicUrl: process.env.SLACK_TAG_PUBLIC_URL,
+          publicUrl: await resolveSlackPublicUrl(platformEnv),
         }),
       });
     } catch (err) {
