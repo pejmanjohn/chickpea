@@ -146,10 +146,14 @@ It calls `auth.test` and `users.info`, compares the display name to the manifest
 
 `.env.example` lists the offline-safe defaults. `TAG_SELF_URL` is ignored — agent dispatch is in-process; the app logs a one-time warning if it is still set.
 
-**Starter profiles.** Two seeded profiles, deliberately with no channel assignments — a fresh install's `/admin` shows only your real channels:
+**Starter profile.** One seeded profile, `Default` — a neutral, general-purpose assistant with no channel assignments, so a fresh install's `/admin` shows only your real channels and first-run onboarding has no profile decision to make. `Default` answers DMs and App Home (it is the direct-message default) and is pre-selected for every new channel unless you pick another.
+
+Two opinionated profiles ship as one-click **templates** in the Profiles modal, not as seeded profiles:
 
 - `Release Scribe` leads with a summary table and a fenced code/diff snippet, for engineering updates.
-- `Exec Brief` uses bold-led bullets and closes with `Next steps`, no code. It is the direct-message default — the profile that answers DMs and App Home.
+- `Exec Brief` uses bold-led bullets and closes with `Next steps`, no code.
+
+Clicking a template pre-fills the create-profile form; nothing is created until you save it.
 
 **Model selection, per agent:**
 

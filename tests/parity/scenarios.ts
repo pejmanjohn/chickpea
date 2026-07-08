@@ -26,6 +26,8 @@ import {
   seededAgents,
   seededAssignments,
 } from '../../src/config/seed.ts';
+import { profileTemplates } from '../../src/config/profile-templates.ts';
+import type { CustomAgentConfig } from '../../src/config/types.ts';
 
 /** The exec channel / root thread the default fixtures target. */
 const EXEC_CHANNEL = 'C_EXEC';
@@ -814,8 +816,11 @@ export const scenarios: Scenario[] = [
   },
   {
     id: 'S29',
-    title: 'explicit demo channel fixtures feed distinct profile instructions to the provider',
-    config: demoChannelConfig(),
+    title: 'two distinct profiles feed distinct per-channel instructions to the provider',
+    // The seed now ships ONE neutral profile, so this per-channel-differentiation
+    // proof builds its own two distinct profiles (from the profile templates) in
+    // the scenario's own store seed rather than relying on the install seed.
+    config: twoProfileDifferentiationConfig(),
     async run(instance) {
       await instance.postEvent(
         appMention({
@@ -874,9 +879,9 @@ export const scenarios: Scenario[] = [
       const streamedStop = instance.backend.callsOfMethod('chat.stopStream').at(-1);
       assert.ok(streamedStop);
       assertFooterBlock(streamedStop.body.blocks, {
-        profileName: 'Exec Brief',
+        profileName: 'Default',
         modelLabel: 'local-stub/parity-stub-1',
-        configureUrl: 'https://demo.example/admin?agent=agent_exec_brief',
+        configureUrl: 'https://demo.example/admin?agent=agent_default',
       });
 
       instance.backend.configure({ slack: { rejectStartStream: true } });
@@ -894,9 +899,9 @@ export const scenarios: Scenario[] = [
       const fallbackPost = instance.backend.callsOfMethod('chat.postMessage').at(-1);
       assert.ok(fallbackPost);
       assertFooterBlock(fallbackPost.body.blocks, {
-        profileName: 'Exec Brief',
+        profileName: 'Default',
         modelLabel: 'local-stub/parity-stub-1',
-        configureUrl: 'https://demo.example/admin?agent=agent_exec_brief',
+        configureUrl: 'https://demo.example/admin?agent=agent_default',
       });
       assert.ok(String(fallbackPost.body.text ?? '').length <= slackFallbackTextLimit);
 
@@ -918,9 +923,9 @@ export const scenarios: Scenario[] = [
       const failureStop = instance.backend.callsOfMethod('chat.stopStream').at(-1);
       assert.ok(failureStop);
       assertFooterBlock(failureStop.body.blocks, {
-        profileName: 'Exec Brief',
+        profileName: 'Default',
         modelLabel: 'local-stub/parity-stub-1',
-        configureUrl: 'https://demo.example/admin?agent=agent_exec_brief',
+        configureUrl: 'https://demo.example/admin?agent=agent_default',
       });
       assert.equal(instance.backend.finals().at(-1)?.text, PROVIDER_FAILURE_TEXT);
     },
@@ -1300,6 +1305,41 @@ export const scenarios: Scenario[] = [
     },
   },
 ];
+
+/** Build a full agent config from a profile template for a scenario's own seed. */
+function templateAgentConfig(templateId: string, agentId: string): CustomAgentConfig {
+  const template = profileTemplates.find((item) => item.id === templateId);
+  assert.ok(template, `expected the ${templateId} profile template`);
+  return {
+    id: agentId,
+    name: template.name,
+    description: template.description,
+    instructions: template.instructions,
+    enabled: true,
+    defaultModels: { ...template.defaultModels },
+    allowedTools: [...template.allowedTools],
+  };
+}
+
+/**
+ * Seed for S29: two distinct profiles (Release Scribe on #eng, Exec Brief on the
+ * exec channel) so the scenario can prove the same install produces DIFFERENT
+ * per-channel voices — the proof that used to lean on the two seeded profiles.
+ */
+function twoProfileDifferentiationConfig(): ScenarioLaneConfig {
+  return {
+    configSeed: {
+      agents: [
+        templateAgentConfig('release_scribe', 'agent_release_scribe'),
+        templateAgentConfig('exec_brief', 'agent_exec_brief'),
+      ],
+      assignments: [
+        { workspaceId: 'T_DEMO', channelId: 'C_ENG', agentId: 'agent_release_scribe', enabled: true },
+        { workspaceId: 'T_DEMO', channelId: EXEC_CHANNEL, agentId: 'agent_exec_brief', enabled: true },
+      ],
+    },
+  };
+}
 
 function snapshotScenarioConfig(agentId: string): ScenarioLaneConfig {
   return {

@@ -10,34 +10,20 @@ export const SEED_DEFAULT_MODELS = {
 
 export const seededAgents: CustomAgentConfig[] = [
   {
-    id: 'agent_release_scribe',
-    name: 'Release Scribe',
-    description: 'Engineering release profile for launch notes and incident-quality detail.',
+    id: 'agent_default',
+    name: 'Default',
+    description:
+      'The general-purpose profile Tag ships with. Answers DMs and is pre-selected for new channels unless you choose another.',
+    // PROFILE layer only — the runtime composes the RUNTIME and GUARDRAIL layers
+    // separately. A neutral, general-purpose voice with zero product-specific
+    // opinion, so first-run onboarding involves no profile decisions.
     instructions:
       [
-        'You are Release Scribe, the engineering release profile for this Slack channel.',
-        'Use only the configured Slack thread, bounded recent context, and approved tools.',
-        'Write visibly markdown-rich engineering replies.',
-        'Always lead with a summary table.',
-        'Include a fenced code/diff snippet that makes the concrete change easy to inspect.',
-        'Call out risks, owners, and verification evidence without inventing facts.',
-      ].join(' '),
-    enabled: true,
-    defaultModels: { ...SEED_DEFAULT_MODELS },
-    allowedTools: ['lookup_channel_brief'],
-  },
-  {
-    id: 'agent_exec_brief',
-    name: 'Exec Brief',
-    description: 'Executive profile for concise launch and business updates.',
-    instructions:
-      [
-        'You are Exec Brief, the executive briefing profile for this Slack channel.',
-        'Use only the configured Slack thread, bounded recent context, and approved tools.',
-        'Write with bold-led bullets for fast scanning.',
-        'Close every answer with a numbered "Next steps" list.',
-        'Use business impact, decisions, and owner language.',
-        'Use no code, code fences, diffs, or implementation snippets.',
+        'You are a general-purpose Slack assistant.',
+        'Be direct and concise, and match the formality of the conversation.',
+        'Use Slack-friendly markdown only where it aids clarity — short lists or a small code block — and skip decorative formatting.',
+        'Say what is missing when you lack the context to answer.',
+        'Never invent facts.',
       ].join(' '),
     enabled: true,
     defaultModels: { ...SEED_DEFAULT_MODELS },
@@ -54,7 +40,7 @@ export const seededAssignments: ChannelAssignment[] = [
     // teammate can still DM it out of the box. See surfaceForChannelId.
     workspaceId: '*',
     channelId: '*',
-    agentId: 'agent_exec_brief',
+    agentId: 'agent_default',
     enabled: true,
   },
 ];
@@ -62,11 +48,14 @@ export const seededAssignments: ChannelAssignment[] = [
 // T_DEMO channel-assignment FIXTURES for the offline harnesses (parity
 // scenarios, verify scripts, unit tests). These are intentionally NOT part of
 // seededAssignments: a fresh install must not show demo channels in /admin.
-// Single source of truth so the harnesses cannot drift from each other.
+// Both point at the single seeded profile (agent_default) so the harnesses can
+// seed T_DEMO channels with the same agent list the install ships. A scenario
+// that needs two DISTINCT profiles builds them in its own setup (see the
+// profile templates), not from these fixtures.
 export const demoEngChannelAssignment: ChannelAssignment = {
   workspaceId: 'T_DEMO',
   channelId: 'C_ENG',
-  agentId: 'agent_release_scribe',
+  agentId: 'agent_default',
   enabled: true,
   channelLabel: 'eng-releases',
 };
@@ -74,7 +63,7 @@ export const demoEngChannelAssignment: ChannelAssignment = {
 export const demoExecChannelAssignment: ChannelAssignment = {
   workspaceId: 'T_DEMO',
   channelId: 'C_EXEC',
-  agentId: 'agent_exec_brief',
+  agentId: 'agent_default',
   enabled: true,
   channelLabel: 'exec-briefing',
 };

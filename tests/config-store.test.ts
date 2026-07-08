@@ -112,25 +112,21 @@ test('SqliteConfigStore seeds an empty file database exactly once', async () => 
   }
 });
 
-test('default seed ships starter profiles plus the direct-message wildcard only', async () => {
+test('default seed ships a single Default profile plus the direct-message wildcard only', async () => {
   const store = new SqliteConfigStore(':memory:');
 
   const agents = await store.listAgents();
-  assert.equal(agents.length, 2);
+  assert.equal(agents.length, 1);
   assert.deepEqual(
-    agents.map((item) => item.name).sort(),
-    ['Exec Brief', 'Release Scribe'],
+    agents.map((item) => item.name),
+    ['Default'],
   );
 
-  const releaseScribe = agents.find((item) => item.name === 'Release Scribe');
-  assert.ok(releaseScribe);
-  assert.match(releaseScribe.instructions, /summary table/i);
-  assert.match(releaseScribe.instructions, /fenced code/i);
-
-  const execBrief = agents.find((item) => item.name === 'Exec Brief');
-  assert.ok(execBrief);
-  assert.match(execBrief.instructions, /bold-led bullets/i);
-  assert.match(execBrief.instructions, /no code/i);
+  const [defaultProfile] = agents;
+  assert.ok(defaultProfile);
+  assert.equal(defaultProfile.id, 'agent_default');
+  assert.match(defaultProfile.instructions, /general-purpose Slack assistant/i);
+  assert.match(defaultProfile.instructions, /never invent facts/i);
 
   assert.equal(await store.getAssignment('T_DEMO', 'C_ENG'), undefined);
   assert.equal(await store.getAssignment('T_DEMO', 'C_EXEC'), undefined);
@@ -138,14 +134,14 @@ test('default seed ships starter profiles plus the direct-message wildcard only'
     {
       workspaceId: '*',
       channelId: '*',
-      agentId: execBrief.id,
+      agentId: defaultProfile.id,
       enabled: true,
     },
   ]);
-  assert.equal((await store.find('T_OTHER', 'D_DM'))?.agentId, execBrief.id);
+  assert.equal((await store.find('T_OTHER', 'D_DM'))?.agentId, defaultProfile.id);
   assert.equal(await store.find('T_OTHER', 'C_OTHER', { surface: 'channel' }), undefined);
 
-  assert.equal(seededAgents.length, 2);
+  assert.equal(seededAgents.length, 1);
   assert.equal(seededAssignments.length, 1);
   store.close();
 });
@@ -391,7 +387,7 @@ test('the direct-message default (the seeded "*,*" row) is resolvable — admin 
       { agents: store, assignments: store },
       { SLACK_TAG_MODEL: 'local-stub/parity-stub-1' } as NodeJS.ProcessEnv,
     );
-    assert.equal(effective.agentId, 'agent_exec_brief');
+    assert.equal(effective.agentId, 'agent_default');
   } finally {
     store.close();
   }

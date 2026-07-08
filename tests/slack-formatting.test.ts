@@ -78,14 +78,14 @@ test('fallback text is plain enough for notifications and accessibility', () => 
 
 test('reply footers render profile, model, and optional configure link', () => {
   assert.equal(
-    buildSlackAdminUrl('https://demo.example', { agentId: 'agent_exec_brief' }),
-    'https://demo.example/admin?agent=agent_exec_brief',
+    buildSlackAdminUrl('https://demo.example', { agentId: 'agent_default' }),
+    'https://demo.example/admin?agent=agent_default',
   );
 
   const linked = renderSlackReplyFooterBlock({
-    profileName: 'Exec <Brief>',
+    profileName: 'Default <Team>',
     modelLabel: 'local-stub/parity-stub-1',
-    agentId: 'agent_exec_brief',
+    agentId: 'agent_default',
     publicUrl: 'https://demo.example/flue',
   });
   assert.deepEqual(linked, {
@@ -93,33 +93,33 @@ test('reply footers render profile, model, and optional configure link', () => {
     elements: [
       {
         type: 'mrkdwn',
-        text: 'Exec &lt;Brief&gt; | local-stub/parity-stub-1 | <https://demo.example/admin?agent=agent_exec_brief|Configure>',
+        text: 'Default &lt;Team&gt; | local-stub/parity-stub-1 | <https://demo.example/admin?agent=agent_default|Configure>',
       },
     ],
   });
 
   const unlinked = renderSlackReplyFooterBlock({
-    profileName: 'Release Scribe',
+    profileName: 'Default',
     modelLabel: 'local-stub/parity-stub-1',
-    agentId: 'agent_release_scribe',
+    agentId: 'agent_default',
   });
   assert.deepEqual(unlinked.elements, [
     {
       type: 'mrkdwn',
-      text: 'Release Scribe | local-stub/parity-stub-1 | Configure',
+      text: 'Default | local-stub/parity-stub-1 | Configure',
     },
   ]);
 
   // An unresolvable model omits the segment entirely — no 'unresolved model'
   // diagnostic leaks into the user-facing footer.
   const noModel = renderSlackReplyFooterBlock({
-    profileName: 'Release Scribe',
-    agentId: 'agent_release_scribe',
+    profileName: 'Default',
+    agentId: 'agent_default',
     publicUrl: 'https://demo.example',
   });
   assert.equal(
     noModel.elements[0]?.text,
-    'Release Scribe | <https://demo.example/admin?agent=agent_release_scribe|Configure>',
+    'Default | <https://demo.example/admin?agent=agent_default|Configure>',
   );
 });
 
@@ -139,9 +139,9 @@ test('a plain_text final with a footer keeps its content literal (not markdown-p
   assert.equal(plain.blocks, undefined);
 
   const withFooter = appendSlackReplyFooter(plain, {
-    profileName: 'Exec Brief',
+    profileName: 'Default',
     modelLabel: 'local-stub/parity-stub-1',
-    agentId: 'agent_exec_brief',
+    agentId: 'agent_default',
   });
   const [content, footer] = withFooter.blocks ?? [];
   // Content stays a literal plain_text section, NOT a markdown block that would

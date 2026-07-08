@@ -113,7 +113,7 @@ async function adminRequest(baseUrl, path, init = {}) {
 }
 
 async function patchInstructions(baseUrl, instructions) {
-  return adminRequest(baseUrl, '/admin/api/agents/agent_exec_brief', {
+  return adminRequest(baseUrl, '/admin/api/agents/agent_default', {
     method: 'PATCH',
     body: JSON.stringify({ instructions }),
   });

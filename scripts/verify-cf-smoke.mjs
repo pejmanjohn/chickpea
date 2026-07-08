@@ -314,8 +314,8 @@ async function main() {
     const agents = await waitForAdminReady(wrangler, baseUrl);
     const agentIds = agents.map((agent) => agent.id).sort();
     check(
-      agentIds.includes('agent_exec_brief') && agentIds.includes('agent_release_scribe'),
-      'DO-backed config store served the seeded agents',
+      agentIds.includes('agent_default'),
+      'DO-backed config store served the seeded agent',
       agentIds.join(','),
     );
 
@@ -404,7 +404,7 @@ async function main() {
 
     // Pin the smoke channel to the local-stub provider through the REAL admin
     // API (config writes go through the DO like any operator edit would).
-    const patch = await adminFetch(baseUrl, '/admin/api/agents/agent_exec_brief', {
+    const patch = await adminFetch(baseUrl, '/admin/api/agents/agent_default', {
       method: 'PATCH',
       body: JSON.stringify({ model: 'local-stub/smoke-model' }),
     });
@@ -416,7 +416,7 @@ async function main() {
       body: JSON.stringify({
         workspaceId: 'T_WRONG_WS',
         channelId: CHANNEL,
-        agentId: 'agent_exec_brief',
+        agentId: 'agent_default',
         enabled: true,
       }),
     });
@@ -431,7 +431,7 @@ async function main() {
       body: JSON.stringify({
         workspaceId: WORKSPACE,
         channelId: CHANNEL,
-        agentId: 'agent_exec_brief',
+        agentId: 'agent_default',
         enabled: true,
       }),
     });
@@ -541,7 +541,7 @@ async function main() {
       body: JSON.stringify({
         workspaceId: WORKSPACE,
         channelId: SLOW_CHANNEL,
-        agentId: 'agent_exec_brief',
+        agentId: 'agent_default',
         enabled: true,
       }),
     });

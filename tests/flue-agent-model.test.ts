@@ -43,7 +43,7 @@ test('Flue resolves the model specifier produced by the slack-thread agent', asy
     agents: seededAgents,
     assignments: [
       demoExecChannelAssignment,
-      { workspaceId: '*', channelId: '*', agentId: 'agent_exec_brief', enabled: true },
+      { workspaceId: '*', channelId: '*', agentId: 'agent_default', enabled: true },
     ],
   });
   store.close();

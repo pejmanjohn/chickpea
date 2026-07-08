@@ -15,9 +15,9 @@ function assignmentFixture(overrides: Partial<ResolvedAssignment> = {}): Resolve
     agentId: 'agent_real',
     agent: {
       id: 'agent_real',
-      name: 'Release Scribe',
+      name: 'Real Profile',
       description: 'Engineering release notes.',
-      instructions: 'You are Release Scribe.',
+      instructions: 'You are the real profile.',
       enabled: true,
       defaultModels: { claude: 'anthropic/test-claude', 'workers-ai': '@cf/test/model' },
       allowedTools: ['lookup_channel_brief'],
@@ -36,7 +36,7 @@ test('lookup_channel_brief composes a real-install brief from the assignment con
   const { brief } = await tool.run({ input: { channelId: 'C0REALCHAN' } });
 
   assert.match(brief, /Channel: #eng-releases\./);
-  assert.match(brief, /Assigned profile: Release Scribe — Engineering release notes\./);
+  assert.match(brief, /Assigned profile: Real Profile — Engineering release notes\./);
   assert.match(brief, /Channel instructions: Close every answer with a Ship checklist\./);
 });
 
@@ -44,7 +44,7 @@ test('lookup_channel_brief still works with a bare assignment (no label, no adde
   const tool = createLookupChannelBriefTool(assignmentFixture());
   const { brief } = await tool.run({ input: { channelId: 'C0REALCHAN' } });
 
-  assert.match(brief, /Assigned profile: Release Scribe/);
+  assert.match(brief, /Assigned profile: Real Profile/);
   assert.doesNotMatch(brief, /Channel instructions:/);
   assert.doesNotMatch(brief, /No configured channel brief/);
 });
