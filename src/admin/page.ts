@@ -1,5 +1,4 @@
 import { isCloudflareTarget } from '../config/runtime-target.ts';
-import { profileTemplates } from '../config/profile-templates.ts';
 
 export function renderAdminPage(): string {
   // Target-aware chrome: the header chip and the provider-hint copy differ
@@ -10,9 +9,6 @@ export function renderAdminPage(): string {
   const providerHint = isCloudflareTarget()
     ? 'Read-only &mdash; the Workers AI binding is always available; configure others via wrangler secrets (built-ins) or src/app.ts (custom).'
     : 'Read-only &mdash; configured via .env (built-ins) or src/app.ts (custom).';
-  // One-click starting points for the create-profile flow, serialized into the
-  // inline script. `<` is escaped so the JSON can never close the <script> tag.
-  const profileTemplatesJson = JSON.stringify(profileTemplates).replace(/</g, '\\u003c');
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -373,8 +369,6 @@ details[open].advanced summary::before { content: "▾"; }
 .modal-head { align-items: center; display: flex; gap: 10px; }
 .modal-title { color: var(--text); flex: 1; font-size: 1.0625rem; font-weight: 600; }
 .profile-list { display: flex; flex-wrap: wrap; gap: 8px; }
-.template-strip { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 2px; }
-.template-strip .template-label { color: var(--text-3); font-size: 0.75rem; }
 .tabs { border-bottom: 1px solid var(--line); display: flex; gap: 22px; }
 .tab {
   background: none;
@@ -470,10 +464,6 @@ details[open].advanced summary::before { content: "▾"; }
   // defaultModels() prefers the server-supplied pair (single source of truth in
   // src/config/seed.ts) so a bumped seed default never goes stale here.
   var DEFAULT_MODELS_FALLBACK = { claude: "anthropic/claude-sonnet-4-6", "workers-ai": "@cf/zai-org/glm-5.2" };
-  // One-click starting points offered in the create-profile flow (single source
-  // of truth in src/config/profile-templates.ts). Clicking one pre-fills the
-  // form; they are not seeded profiles.
-  var PROFILE_TEMPLATES = ${profileTemplatesJson};
   var state = {
     agents: [],
     assignments: [],
@@ -967,7 +957,6 @@ details[open].advanced summary::before { content: "▾"; }
     root.innerHTML = '<div class="scrim open"><div class="modal" role="dialog" aria-labelledby="pm-title">' +
       '<div class="modal-head"><h1 class="modal-title" id="pm-title">' + esc(draft.name || "New profile") + '</h1><button type="button" class="x-btn" data-action="close-profiles" aria-label="Close">&times;</button></div>' +
       profileListHtml() +
-      templateStripHtml(draft) +
       '<div class="tabs"><button type="button" class="tab ' + tabClass("details") + '" data-action="profile-tab" data-tab="details">Details</button><button type="button" class="tab ' + tabClass("instructions") + '" data-action="profile-tab" data-tab="instructions">Instructions</button><button type="button" class="tab ' + tabClass("channels") + '" data-action="profile-tab" data-tab="channels">Channels</button></div>' +
       profileTabHtml(draft) +
       '<div class="modal-foot"><button type="button" class="btn btn-danger btn-sm" data-action="delete-profile" ' + (!draft.id ? "disabled" : "") + '>Delete profile</button><button type="button" class="btn btn-soft btn-sm" data-action="profile-tab" data-tab="channels">Add to channels</button><span class="hint" style="font-size:0.75rem;">Used in ' + channelCountLabel(allAssignmentsForAgent(draft.id).length) + '</span><span class="spacer"></span>' + (state.profileError ? '<span class="field-error">' + esc(state.profileError) + '</span>' : "") + '<button type="button" class="btn btn-primary" data-action="save-profile">Done</button></div>' +
@@ -980,18 +969,6 @@ details[open].advanced summary::before { content: "▾"; }
       return '<button type="button" class="btn ' + (active ? "btn-primary" : "btn-soft") + ' btn-sm" data-action="select-profile" data-agent="' + esc(agent.id) + '">' + esc(agent.name) + '</button>';
     }).join("");
     return '<div class="profile-list">' + buttons + '<button type="button" class="btn btn-ghost btn-sm" data-action="new-profile">+ New profile</button></div>';
-  }
-
-  // Offered only while CREATING a profile (no id yet): one click pre-fills the
-  // form from a ready-made template. Editing an existing profile hides these so
-  // a template can't silently clobber saved instructions.
-  function templateStripHtml(draft) {
-    if (draft.id) return "";
-    if (!PROFILE_TEMPLATES.length) return "";
-    var buttons = PROFILE_TEMPLATES.map(function (tpl) {
-      return '<button type="button" class="btn btn-soft btn-sm" data-action="apply-template" data-template="' + esc(tpl.id) + '" title="' + esc(tpl.description) + '">' + esc(tpl.name) + '</button>';
-    }).join("");
-    return '<div class="template-strip"><span class="template-label">Start from a template</span>' + buttons + '</div>';
   }
 
   function profileTabHtml(draft) {
@@ -1095,27 +1072,6 @@ details[open].advanced summary::before { content: "▾"; }
       defaultModels: base ? base.defaultModels : defaultModels(),
       allowedTools: base ? base.allowedTools : []
     };
-  }
-
-  // Pre-fill the create form from a template. Always builds a NEW (unsaved)
-  // draft — the operator still reviews and clicks Done to create the profile.
-  function applyTemplate(templateId) {
-    var tpl = PROFILE_TEMPLATES.find(function (item) { return item.id === templateId; });
-    if (!tpl) return;
-    state.editingAgentId = null;
-    state.profileDraft = {
-      id: "",
-      name: tpl.name,
-      description: tpl.description,
-      instructions: tpl.instructions,
-      enabled: true,
-      model: "",
-      defaultModels: tpl.defaultModels || defaultModels(),
-      allowedTools: tpl.allowedTools || []
-    };
-    state.modalTab = "details";
-    state.profileError = "";
-    renderModal();
   }
 
   function cloneAgent(agent) {
@@ -1268,7 +1224,6 @@ details[open].advanced summary::before { content: "▾"; }
     if (action === "profile-tab") { collectProfileDraft(); state.modalTab = target.getAttribute("data-tab"); if (state.modalTab === "channels") syncChannelFormWorkspacePrefill(); renderModal(); }
     if (action === "select-profile") { var selected = agentById(target.getAttribute("data-agent")); if (selected) { state.editingAgentId = selected.id; state.profileDraft = cloneAgent(selected); state.profileError = ""; renderModal(); } }
     if (action === "new-profile") { state.editingAgentId = null; state.profileDraft = newProfileDraft(); state.modalTab = "details"; state.profileError = ""; renderModal(); }
-    if (action === "apply-template") { applyTemplate(target.getAttribute("data-template")); }
     if (action === "pick-model") { var modelInput = document.getElementById("p-model"); if (modelInput) modelInput.value = target.getAttribute("data-model") || ""; collectProfileDraft(); renderModal(); }
     if (action === "save-profile") { saveProfile(); }
     if (action === "delete-profile") { deleteProfile(); }

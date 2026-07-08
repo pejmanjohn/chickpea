@@ -25,13 +25,53 @@ import {
   demoChannelAssignments,
   seededAgents,
   seededAssignments,
+  SEED_DEFAULT_MODELS,
 } from '../../src/config/seed.ts';
-import { profileTemplates } from '../../src/config/profile-templates.ts';
 import type { CustomAgentConfig } from '../../src/config/types.ts';
 
 /** The exec channel / root thread the default fixtures target. */
 const EXEC_CHANNEL = 'C_EXEC';
 const ROOT_THREAD_TS = '1782770400.000100';
+
+// S29 fixtures. The two opinionated profiles used to be seeded, then briefly
+// shipped as create-profile templates; profile creation is now blank-only, so
+// they live here as pure parity test fixtures. Their instruction text is kept
+// verbatim so S29's per-channel-differentiation proof is unchanged. Declared
+// before `scenarios` because twoProfileDifferentiationConfig() reads them while
+// that array is being built at module load.
+const RELEASE_SCRIBE_PROFILE: CustomAgentConfig = {
+  id: 'agent_release_scribe',
+  name: 'Release Scribe',
+  description: 'Engineering release profile for launch notes and incident-quality detail.',
+  instructions: [
+    'You are Release Scribe, the engineering release profile for this Slack channel.',
+    'Use only the configured Slack thread, bounded recent context, and approved tools.',
+    'Write visibly markdown-rich engineering replies.',
+    'Always lead with a summary table.',
+    'Include a fenced code/diff snippet that makes the concrete change easy to inspect.',
+    'Call out risks, owners, and verification evidence without inventing facts.',
+  ].join(' '),
+  enabled: true,
+  defaultModels: { ...SEED_DEFAULT_MODELS },
+  allowedTools: ['lookup_channel_brief'],
+};
+
+const EXEC_BRIEF_PROFILE: CustomAgentConfig = {
+  id: 'agent_exec_brief',
+  name: 'Exec Brief',
+  description: 'Executive profile for concise launch and business updates.',
+  instructions: [
+    'You are Exec Brief, the executive briefing profile for this Slack channel.',
+    'Use only the configured Slack thread, bounded recent context, and approved tools.',
+    'Write with bold-led bullets for fast scanning.',
+    'Close every answer with a numbered "Next steps" list.',
+    'Use business impact, decisions, and owner language.',
+    'Use no code, code fences, diffs, or implementation snippets.',
+  ].join(' '),
+  enabled: true,
+  defaultModels: { ...SEED_DEFAULT_MODELS },
+  allowedTools: ['lookup_channel_brief'],
+};
 
 export interface Scenario {
   id: string;
@@ -818,8 +858,8 @@ export const scenarios: Scenario[] = [
     id: 'S29',
     title: 'two distinct profiles feed distinct per-channel instructions to the provider',
     // The seed now ships ONE neutral profile, so this per-channel-differentiation
-    // proof builds its own two distinct profiles (from the profile templates) in
-    // the scenario's own store seed rather than relying on the install seed.
+    // proof builds its own two distinct profiles (inline fixtures below) in the
+    // scenario's own store seed rather than relying on the install seed.
     config: twoProfileDifferentiationConfig(),
     async run(instance) {
       await instance.postEvent(
@@ -1306,21 +1346,6 @@ export const scenarios: Scenario[] = [
   },
 ];
 
-/** Build a full agent config from a profile template for a scenario's own seed. */
-function templateAgentConfig(templateId: string, agentId: string): CustomAgentConfig {
-  const template = profileTemplates.find((item) => item.id === templateId);
-  assert.ok(template, `expected the ${templateId} profile template`);
-  return {
-    id: agentId,
-    name: template.name,
-    description: template.description,
-    instructions: template.instructions,
-    enabled: true,
-    defaultModels: { ...template.defaultModels },
-    allowedTools: [...template.allowedTools],
-  };
-}
-
 /**
  * Seed for S29: two distinct profiles (Release Scribe on #eng, Exec Brief on the
  * exec channel) so the scenario can prove the same install produces DIFFERENT
@@ -1330,8 +1355,8 @@ function twoProfileDifferentiationConfig(): ScenarioLaneConfig {
   return {
     configSeed: {
       agents: [
-        templateAgentConfig('release_scribe', 'agent_release_scribe'),
-        templateAgentConfig('exec_brief', 'agent_exec_brief'),
+        { ...RELEASE_SCRIBE_PROFILE },
+        { ...EXEC_BRIEF_PROFILE },
       ],
       assignments: [
         { workspaceId: 'T_DEMO', channelId: 'C_ENG', agentId: 'agent_release_scribe', enabled: true },
