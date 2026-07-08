@@ -10,6 +10,7 @@ import type { CustomAgentConfig } from '../src/config/types.ts';
 import { invalidateSlackChannelsCache } from '../src/slack/channels.ts';
 import {
   invalidateStoredSlackCredentials,
+  slackTokenFingerprint,
   SLACK_SETTING_KEYS,
 } from '../src/slack/credentials.ts';
 import { FakeSlackBackend, type FakeSlackBackendConfig } from './parity/fake-slack.ts';
@@ -175,6 +176,11 @@ test('channels proxy cursor-paginates, merges, and name-sorts the workspace chan
       try {
         await settings.setSetting(SLACK_SETTING_KEYS.botToken, 'xoxb-acme');
         await settings.setSetting(SLACK_SETTING_KEYS.teamId, 'T_ACME');
+      // A wizard-connected install also records which token earned the team id.
+      await settings.setSetting(
+        SLACK_SETTING_KEYS.teamTokenFingerprint,
+        slackTokenFingerprint('xoxb-acme'),
+      );
         await settings.setSetting(SLACK_SETTING_KEYS.teamName, 'Acme Inc');
         const app = appWith(settings);
 
@@ -221,6 +227,11 @@ test('channels proxy caches within the TTL and ?refresh=1 bypasses the cache', a
       try {
         await settings.setSetting(SLACK_SETTING_KEYS.botToken, 'xoxb-cache');
         await settings.setSetting(SLACK_SETTING_KEYS.teamId, 'T_ACME');
+      // A wizard-connected install also records which token earned the team id.
+      await settings.setSetting(
+        SLACK_SETTING_KEYS.teamTokenFingerprint,
+        slackTokenFingerprint('xoxb-acme'),
+      );
         const app = appWith(settings);
 
         const first = (await (await getJson(app, '/admin/api/slack-channels')).json()) as {
@@ -279,6 +290,11 @@ test('assignment PUT rejects a channel from a different workspace with a naming 
       // is stored so no network is needed for the mismatch short-circuit.
       await settings.setSetting(SLACK_SETTING_KEYS.botToken, 'xoxb-acme');
       await settings.setSetting(SLACK_SETTING_KEYS.teamId, 'T_ACME');
+      // A wizard-connected install also records which token earned the team id.
+      await settings.setSetting(
+        SLACK_SETTING_KEYS.teamTokenFingerprint,
+        slackTokenFingerprint('xoxb-acme'),
+      );
       await settings.setSetting(SLACK_SETTING_KEYS.teamName, 'Acme Inc');
       const app = appWith(settings, store);
 
@@ -322,6 +338,11 @@ test('assignment PUT rejects a channel Slack cannot find with a channel_not_foun
       try {
         await settings.setSetting(SLACK_SETTING_KEYS.botToken, 'xoxb-acme');
         await settings.setSetting(SLACK_SETTING_KEYS.teamId, 'T_ACME');
+      // A wizard-connected install also records which token earned the team id.
+      await settings.setSetting(
+        SLACK_SETTING_KEYS.teamTokenFingerprint,
+        slackTokenFingerprint('xoxb-acme'),
+      );
         await settings.setSetting(SLACK_SETTING_KEYS.teamName, 'Acme Inc');
         const app = appWith(settings, store);
 
@@ -361,6 +382,11 @@ test('assignment PUT adopts Slack authoritative name and passes membership throu
       try {
         await settings.setSetting(SLACK_SETTING_KEYS.botToken, 'xoxb-acme');
         await settings.setSetting(SLACK_SETTING_KEYS.teamId, 'T_ACME');
+      // A wizard-connected install also records which token earned the team id.
+      await settings.setSetting(
+        SLACK_SETTING_KEYS.teamTokenFingerprint,
+        slackTokenFingerprint('xoxb-acme'),
+      );
         const app = appWith(settings, store);
 
         const response = await putAssignment(app, {
@@ -399,6 +425,11 @@ test('assignment PUT skips Slack validation for wildcard ids even when connected
       try {
         await settings.setSetting(SLACK_SETTING_KEYS.botToken, 'xoxb-acme');
         await settings.setSetting(SLACK_SETTING_KEYS.teamId, 'T_ACME');
+      // A wizard-connected install also records which token earned the team id.
+      await settings.setSetting(
+        SLACK_SETTING_KEYS.teamTokenFingerprint,
+        slackTokenFingerprint('xoxb-acme'),
+      );
         const app = appWith(settings, store);
 
         const response = await putAssignment(app, {
@@ -447,4 +478,64 @@ test('assignment PUT keeps offline behavior when no Slack connection exists', as
       store.close();
     }
   });
+});
+
+// --- 4. Team identity is bound to the token that earned it -------------------
+
+test('an env bot token pointing at another workspace overrides the stale wizard-stored team', async (t) => {
+  const skip = await loopbackListenSkipReason();
+  if (skip) return t.skip(skip);
+
+  // The fake now answers auth.test for the ENV token's workspace.
+  await withFake(
+    { slack: { identity: { teamId: 'T_ENV', teamName: 'Env Co' } } },
+    async () => {
+      // Env token beats the stored one (env-first resolution)…
+      await withEnv({ SLACK_BOT_TOKEN: 'xoxb-env' }, async () => {
+        const settings = new SqliteSettingsStore(':memory:');
+        const store = new SqliteConfigStore(':memory:', {
+          agents: [agent()],
+          assignments: [],
+        });
+        try {
+          // …while the settings still carry a wizard-era identity for T_ACME,
+          // fingerprinted to the OLD token. Trusting it would validate against
+          // the wrong workspace and mis-key every assignment (the reviewer's
+          // reproduced failure).
+          await settings.setSetting(SLACK_SETTING_KEYS.botToken, 'xoxb-acme');
+          await settings.setSetting(SLACK_SETTING_KEYS.teamId, 'T_ACME');
+          await settings.setSetting(SLACK_SETTING_KEYS.teamName, 'Acme Inc');
+          await settings.setSetting(
+            SLACK_SETTING_KEYS.teamTokenFingerprint,
+            slackTokenFingerprint('xoxb-acme'),
+          );
+          const app = appWith(settings, store);
+
+          // The channels proxy reports the ENV token's workspace, not the stale one.
+          const channels = await getJson(app, '/admin/api/slack-channels');
+          const body = (await channels.json()) as Record<string, unknown>;
+          assert.equal(body.teamId, 'T_ENV');
+          assert.equal(body.teamName, 'Env Co');
+          // The re-resolved identity was persisted (self-healing migration).
+          assert.equal(await settings.getSetting(SLACK_SETTING_KEYS.teamId), 'T_ENV');
+
+          // And the guard now enforces the REAL workspace: the stale wizard-era
+          // workspace id is rejected like any other mismatch.
+          const response = await putAssignment(app, {
+            workspaceId: 'T_ACME',
+            channelId: 'C_ELSEWHERE',
+            agentId: 'agent_channels',
+            enabled: true,
+          });
+          assert.equal(response.status, 400);
+          const rejected = (await response.json()) as Record<string, unknown>;
+          assert.equal(rejected.error, 'workspace_mismatch');
+          assert.equal(rejected.connectedTeamId, 'T_ENV');
+        } finally {
+          settings.close();
+          store.close();
+        }
+      });
+    },
+  );
 });

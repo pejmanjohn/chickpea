@@ -19,7 +19,7 @@
     "flue:build": "node scripts/preflight-node-lane.mjs && flue build --target node",
     "flue:build:cf": "node scripts/flue-build-cf.mjs --output dist-cf",
     "build": "npm run flue:build:cf",
-    "deploy": "wrangler deploy",
+    "deploy": "node scripts/deploy-with-epilogue.mjs",
     "verify:cf-smoke": "node scripts/verify-cf-smoke.mjs",
     "verify:admin-ui": "node scripts/verify-admin-ui.mjs",
     "prepublishOnly": "node scripts/guard-fresh-export-publish.mjs",

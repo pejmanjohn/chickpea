@@ -134,10 +134,14 @@ button, input, textarea, select { font: inherit; }
   align-items: center;
   border-radius: 999px;
   display: inline-flex;
+  /* Flex child of .section-head: without these it shrinks below content
+     width and "Not connected" wraps mid-phrase. */
+  flex-shrink: 0;
   font-size: 0.75rem;
   font-weight: 500;
   gap: 5px;
   padding: 2px 9px;
+  white-space: nowrap;
 }
 .badge .dot { background: currentColor; border-radius: 999px; height: 5px; width: 5px; }
 .badge-on { background: var(--ok-tint); color: var(--ok); }
@@ -843,6 +847,10 @@ details[open].advanced summary::before { content: "▾"; }
       '</div>' +
       '<p class="hint">If Slack shows the request URL as unverified (for example the app was created before the worker was reachable), open <b style="font-weight:500; color:var(--text);">Event Subscriptions</b> in Slack and click <b style="font-weight:500; color:var(--text);">Retry</b> &mdash; the worker echoes the verification challenge even before these credentials are saved.</p>' +
       '<div><a class="btn btn-primary" href="' + esc(conn.manifestUrl) + '" target="_blank" rel="noreferrer">Create your Slack app &nearr;</a></div>' +
+      // The one unrecoverable choice: Slack forces a workspace pick during
+      // creation and the manifest cannot pre-select it (the Acme-vs-Paperplane
+      // trap from the first live walkthrough).
+      '<p class="hint">Slack will ask you to <b style="font-weight:500; color:var(--text);">pick a workspace</b> &mdash; choose the one you want Tag in. It can\\'t be changed later without reinstalling.</p>' +
       '<form class="form-grid" data-action="slack-connect-form">' +
       '<div class="field"><label class="field-label" for="slack-bot-token">Bot token</label><input class="input mono" id="slack-bot-token" name="botToken" type="password" autocomplete="off" placeholder="xoxb-..." value="' + esc(state.slackDraft.botToken) + '" data-action="slack-bot-token"></div>' +
       '<div class="field"><label class="field-label" for="slack-signing-secret">Signing secret</label><input class="input mono" id="slack-signing-secret" name="signingSecret" type="password" autocomplete="off" value="' + esc(state.slackDraft.signingSecret) + '" data-action="slack-signing-secret"></div>' +
