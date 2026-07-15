@@ -36,6 +36,7 @@ function agent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig {
     },
     allowedTools: [],
     skills: [],
+    mcpServers: [],
     ...overrides,
   };
 }

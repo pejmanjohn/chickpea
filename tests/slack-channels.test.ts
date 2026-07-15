@@ -47,6 +47,7 @@ function agent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig {
     defaultModels: { claude: 'anthropic/x', 'workers-ai': '@cf/x' },
     allowedTools: [],
     skills: [],
+    mcpServers: [],
     ...overrides,
   };
 }

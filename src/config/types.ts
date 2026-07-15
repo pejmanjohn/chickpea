@@ -14,6 +14,41 @@ export interface SkillConfig {
   enabled: boolean;
 }
 
+/**
+ * Metadata for a single tool discovered on an MCP server's last successful test.
+ * Truncated to keep the profile row bounded (name ≤120, title ≤160, desc ≤400).
+ * Policy only — never a secret.
+ */
+export interface McpConnectionToolInfo {
+  name: string;
+  title?: string;
+  description?: string;
+}
+
+/**
+ * A profile-attached remote MCP server ("Connection"): tools added by URL that
+ * join the agent's toolset at the `slack-thread.ts` seam. This is POLICY ONLY —
+ * bearer tokens and header values live in the settings store by reference
+ * (`headerNames` carries the names, never the values) and never touch this row,
+ * snapshots, or API responses. The security invariant is `approved ∩ discovered`:
+ * only tools in `allowedTools` that are still in `discoveredTools` are exposed.
+ */
+export interface McpConnectionConfig {
+  id: string;
+  displayName: string;
+  url: string;
+  transport: 'streamable-http' | 'sse';
+  authMode: 'none' | 'bearer';
+  headerNames: string[];
+  trusted: boolean;
+  enabled: boolean;
+  lifecycleStatus: 'pending' | 'ready' | 'failed';
+  statusText: string;
+  discoveredTools: McpConnectionToolInfo[];
+  allowedTools: string[];
+  lastCheckedAt?: number;
+}
+
 export interface CustomAgentConfig {
   id: string;
   name: string;
@@ -24,6 +59,7 @@ export interface CustomAgentConfig {
   defaultModels: Record<ProviderId, string>;
   allowedTools: string[];
   skills: SkillConfig[];
+  mcpServers: McpConnectionConfig[];
 }
 
 export interface ChannelAssignment {

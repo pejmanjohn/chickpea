@@ -16,6 +16,7 @@ const AGENT: CustomAgentConfig = {
   defaultModels: { claude: 'claude-x', 'workers-ai': 'cf-x' },
   allowedTools: [],
   skills: [],
+  mcpServers: [],
 };
 
 function turn(overrides: Partial<NormalizedSlackTurn> = {}): NormalizedSlackTurn {

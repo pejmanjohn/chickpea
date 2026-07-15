@@ -57,6 +57,7 @@ const RELEASE_SCRIBE_PROFILE: CustomAgentConfig = {
   defaultModels: { ...SEED_DEFAULT_MODELS },
   allowedTools: ['lookup_channel_brief'],
   skills: [],
+  mcpServers: [],
 };
 
 const EXEC_BRIEF_PROFILE: CustomAgentConfig = {
@@ -76,6 +77,7 @@ const EXEC_BRIEF_PROFILE: CustomAgentConfig = {
   defaultModels: { ...SEED_DEFAULT_MODELS },
   allowedTools: ['lookup_channel_brief'],
   skills: [],
+  mcpServers: [],
 };
 
 export interface Scenario {
@@ -667,6 +669,7 @@ export const scenarios: Scenario[] = [
             },
             allowedTools: [],
             skills: [],
+            mcpServers: [],
           },
         ],
         assignments: [
@@ -714,6 +717,7 @@ export const scenarios: Scenario[] = [
             },
             allowedTools: [],
             skills: [],
+            mcpServers: [],
           },
         ],
         assignments: [
@@ -840,6 +844,7 @@ export const scenarios: Scenario[] = [
             },
             allowedTools: [],
             skills: [],
+            mcpServers: [],
           },
         ],
         assignments: [
@@ -1055,6 +1060,7 @@ export const scenarios: Scenario[] = [
             },
             allowedTools: [],
             skills: [],
+            mcpServers: [],
           },
         ],
         assignments: [
@@ -1261,6 +1267,7 @@ export const scenarios: Scenario[] = [
             },
             allowedTools: [],
             skills: [],
+            mcpServers: [],
           },
         ],
         // The '*,*' direct-message default answers DMs.
@@ -1399,6 +1406,7 @@ function snapshotScenarioConfig(agentId: string): ScenarioLaneConfig {
           },
           allowedTools: [],
           skills: [],
+          mcpServers: [],
         },
       ],
       assignments: [

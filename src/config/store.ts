@@ -31,6 +31,9 @@ interface AgentRow {
   // Nullable in the row type because pre-skills DBs may briefly surface the
   // column as NULL before/around migration; rowToAgent coerces to [].
   skills_json: string | null;
+  // Same treatment as skills_json: pre-v4 DBs surface NULL before/around the
+  // migration; rowToAgent coerces to [].
+  mcp_servers_json: string | null;
 }
 
 interface AssignmentRow {
@@ -103,7 +106,8 @@ export class ConfigStoreLogic {
         model TEXT,
         default_models_json TEXT NOT NULL,
         allowed_tools_json TEXT NOT NULL,
-        skills_json TEXT NOT NULL DEFAULT '[]'
+        skills_json TEXT NOT NULL DEFAULT '[]',
+        mcp_servers_json TEXT NOT NULL DEFAULT '[]'
       )`,
     );
     db.exec(
@@ -158,7 +162,7 @@ export class ConfigStoreLogic {
     this.db.run(
       `UPDATE config_agents
        SET name = ?, description = ?, instructions = ?, enabled = ?, model = ?,
-           default_models_json = ?, allowed_tools_json = ?, skills_json = ?
+           default_models_json = ?, allowed_tools_json = ?, skills_json = ?, mcp_servers_json = ?
        WHERE id = ?`,
       next.name,
       next.description,
@@ -168,6 +172,7 @@ export class ConfigStoreLogic {
       JSON.stringify(next.defaultModels),
       JSON.stringify(next.allowedTools),
       JSON.stringify(next.skills),
+      JSON.stringify(next.mcpServers),
       agentId,
     );
     return this.getAgent(agentId);
@@ -310,8 +315,8 @@ export class ConfigStoreLogic {
     return this.db.run(
       `INSERT INTO config_agents (
         id, name, description, instructions, enabled, model,
-        default_models_json, allowed_tools_json, skills_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        default_models_json, allowed_tools_json, skills_json, mcp_servers_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       agent.id,
       agent.name,
       agent.description,
@@ -321,6 +326,7 @@ export class ConfigStoreLogic {
       JSON.stringify(agent.defaultModels),
       JSON.stringify(agent.allowedTools),
       JSON.stringify(agent.skills ?? []),
+      JSON.stringify(agent.mcpServers ?? []),
     );
   }
 
@@ -364,6 +370,20 @@ export class ConfigStoreLogic {
           const columns = db.all('PRAGMA table_info(config_agents)') as Array<{ name: string }>;
           if (!columns.some((column) => column.name === 'skills_json')) {
             db.exec("ALTER TABLE config_agents ADD COLUMN skills_json TEXT NOT NULL DEFAULT '[]'");
+          }
+        },
+      },
+      {
+        version: 4,
+        up: (db) => {
+          // Add the per-profile MCP connections column to DBs created before it
+          // existed. Same shape as v3: NOT NULL with a DEFAULT so existing rows
+          // backfill to an empty list.
+          const columns = db.all('PRAGMA table_info(config_agents)') as Array<{ name: string }>;
+          if (!columns.some((column) => column.name === 'mcp_servers_json')) {
+            db.exec(
+              "ALTER TABLE config_agents ADD COLUMN mcp_servers_json TEXT NOT NULL DEFAULT '[]'",
+            );
           }
         },
       },
@@ -481,6 +501,10 @@ function rowToAgent(row: AgentRow): CustomAgentConfig {
     // Coerce a NULL/absent column (pre-migration read) to an empty list.
     skills: row.skills_json
       ? (JSON.parse(row.skills_json) as CustomAgentConfig['skills'])
+      : [],
+    // Same coercion for the pre-v4 connections column.
+    mcpServers: row.mcp_servers_json
+      ? (JSON.parse(row.mcp_servers_json) as CustomAgentConfig['mcpServers'])
       : [],
   };
 }

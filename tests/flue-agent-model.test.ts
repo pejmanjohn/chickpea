@@ -33,6 +33,7 @@ function modelAgent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConf
     },
     allowedTools: [],
     skills: [],
+    mcpServers: [],
     ...overrides,
   };
 }
@@ -154,6 +155,7 @@ test('slack-thread initializes from the SQLite config store for the current stat
         enabled: false,
       },
     ],
+    mcpServers: [],
   });
   await store.putAssignment({
     workspaceId: 'T_RUNTIME',

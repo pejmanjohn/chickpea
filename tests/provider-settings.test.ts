@@ -71,6 +71,7 @@ function providerSettingsAgent(id: string, model: string) {
     defaultModels: { claude: 'anthropic/claude-sonnet-4-6', 'workers-ai': '@cf/zai-org/glm-5.2' },
     allowedTools: [],
     skills: [],
+    mcpServers: [],
   };
 }
 

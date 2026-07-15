@@ -96,6 +96,9 @@ export function computeSnapshotHash(config: EffectiveSlackConfig): string {
         // Skills ride inside the frozen agent; include them so an
         // Access-summary drift check notices a skill edit vs. a live thread.
         skills: config.agent.skills,
+        // MCP connections ride inside the frozen agent too (policy only — no
+        // secrets); include them so drift checks notice a connection edit.
+        mcpServers: config.agent.mcpServers,
       }),
     )
     .digest('hex');

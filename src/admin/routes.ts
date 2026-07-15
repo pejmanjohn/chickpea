@@ -946,6 +946,9 @@ function toAgentConfig(input: v.InferOutput<typeof agentSchema>): CustomAgentCon
     defaultModels: input.defaultModels,
     allowedTools: input.allowedTools,
     skills: input.skills,
+    // Interim until the Connections schema lands (plan Task 7 wires
+    // mcpServerSchema into agentSchema and passes input.mcpServers through).
+    mcpServers: [],
   };
 }
 

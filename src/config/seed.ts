@@ -38,6 +38,7 @@ export function createSeededAgents(
     defaultModels: { ...SEED_DEFAULT_MODELS },
     allowedTools: ['lookup_channel_brief'],
     skills: [],
+    mcpServers: [],
   };
   return [defaultAgent];
 }

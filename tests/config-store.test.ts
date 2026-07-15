@@ -50,6 +50,7 @@ function agent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig {
     },
     allowedTools: ['lookup_channel_brief'],
     skills: [],
+    mcpServers: [],
     ...overrides,
   };
 }
@@ -175,6 +176,131 @@ test('migration backfills skills_json as [] on a pre-skills database', async () 
       skills: [{ name: 'triage', description: 'Triage.', instructions: '# t', enabled: true }],
     });
     assert.equal(withSkill.skills.length, 1);
+    store.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('SqliteConfigStore round-trips non-empty mcpServers through create and update', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const withServers = agent({
+    mcpServers: [
+      {
+        id: 'linear-mcp',
+        displayName: 'Linear',
+        url: 'https://mcp.linear.app/mcp',
+        transport: 'streamable-http',
+        authMode: 'bearer',
+        headerNames: ['X-Api-Key'],
+        trusted: true,
+        enabled: true,
+        lifecycleStatus: 'ready',
+        statusText: 'Connected · 3 tools',
+        discoveredTools: [
+          { name: 'create_issue', title: 'Create Issue', description: 'Open a new issue.' },
+          { name: 'search_issues' },
+        ],
+        allowedTools: ['create_issue'],
+        lastCheckedAt: 1_700_000_000_000,
+      },
+    ],
+  });
+
+  await store.createAgent(withServers);
+  assert.deepEqual((await store.getAgent(withServers.id)).mcpServers, withServers.mcpServers);
+
+  const nextServers = [
+    {
+      id: 'deepwiki',
+      displayName: 'DeepWiki',
+      url: 'https://mcp.deepwiki.com/mcp',
+      transport: 'sse' as const,
+      authMode: 'none' as const,
+      headerNames: [],
+      trusted: true,
+      enabled: false,
+      lifecycleStatus: 'pending' as const,
+      statusText: '',
+      discoveredTools: [],
+      allowedTools: [],
+    },
+  ];
+  const updated = await store.updateAgent(withServers.id, { mcpServers: nextServers });
+  assert.deepEqual(updated.mcpServers, nextServers);
+  assert.deepEqual((await store.getAgent(withServers.id)).mcpServers, nextServers);
+
+  store.close();
+});
+
+test('migration backfills mcp_servers_json as [] on a pre-v4 database', async () => {
+  const { dir, path } = tempDbPath();
+  try {
+    // Legacy schema: config_agents WITH skills_json but WITHOUT mcp_servers_json,
+    // schema_version = 3 (post-skills, pre-connections).
+    const legacy = new DatabaseSync(path);
+    legacy.exec('CREATE TABLE config_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
+    legacy.exec(
+      `CREATE TABLE config_agents (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL,
+        instructions TEXT NOT NULL, enabled INTEGER NOT NULL, model TEXT,
+        default_models_json TEXT NOT NULL, allowed_tools_json TEXT NOT NULL,
+        skills_json TEXT NOT NULL DEFAULT '[]')`,
+    );
+    legacy.exec(
+      `CREATE TABLE config_assignments (
+        workspace_id TEXT NOT NULL, channel_id TEXT NOT NULL, agent_id TEXT NOT NULL,
+        enabled INTEGER NOT NULL, channel_label TEXT, channel_prompt_addendum TEXT,
+        PRIMARY KEY (workspace_id, channel_id))`,
+    );
+    legacy
+      .prepare(
+        `INSERT INTO config_agents
+         (id, name, description, instructions, enabled, model, default_models_json, allowed_tools_json, skills_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        'agent_legacy',
+        'Legacy',
+        'A pre-connections agent',
+        'Legacy instructions',
+        1,
+        null,
+        '{"claude":"anthropic/x","workers-ai":"@cf/y"}',
+        '["lookup_channel_brief"]',
+        '[]',
+      );
+    legacy.prepare('INSERT INTO config_meta (key, value) VALUES (?, ?)').run('schema_version', '3');
+    legacy
+      .prepare('INSERT INTO config_meta (key, value) VALUES (?, ?)')
+      .run('config_seeded_v1', new Date().toISOString());
+    legacy.close();
+
+    // Opening the store runs migration v4: adds mcp_servers_json, existing rows read as [].
+    const store = new SqliteConfigStore(path, { agents: [], assignments: [] });
+    const migrated = await store.getAgent('agent_legacy');
+    assert.deepEqual(migrated.mcpServers, []);
+
+    // And the migrated row now accepts mcpServers.
+    const withServer = await store.updateAgent('agent_legacy', {
+      mcpServers: [
+        {
+          id: 'srv',
+          displayName: 'Srv',
+          url: 'https://mcp.example.com/mcp',
+          transport: 'streamable-http',
+          authMode: 'none',
+          headerNames: [],
+          trusted: true,
+          enabled: true,
+          lifecycleStatus: 'ready',
+          statusText: '',
+          discoveredTools: [],
+          allowedTools: [],
+        },
+      ],
+    });
+    assert.equal(withServer.mcpServers.length, 1);
     store.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -595,6 +721,7 @@ test('a disabled assignment at the winning specificity turns the channel off ins
         defaultModels: { claude: 'anthropic/x', 'workers-ai': '@cf/x' },
         allowedTools: [],
         skills: [],
+        mcpServers: [],
       },
     ],
     assignments: [
