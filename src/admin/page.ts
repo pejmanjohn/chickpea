@@ -531,9 +531,62 @@ details[open].advanced summary::before {
   padding: 16px 18px;
 }
 .skill-form-actions { align-items: center; display: flex; gap: 8px; justify-content: flex-end; }
+.skill-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 @media (max-width: 720px) {
   .skill-row { align-items: stretch; flex-direction: column; }
 }
+
+/* ---- import skills from a URL (panel + picker) ---- */
+.import-panel { gap: 12px; }
+.import-summary {
+  align-items: baseline;
+  color: var(--text-2);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 0.8125rem;
+  gap: 8px 12px;
+  justify-content: space-between;
+}
+.import-summary .import-note { color: var(--text-3); }
+.import-list { display: flex; flex-direction: column; gap: 8px; }
+.import-row {
+  align-items: flex-start;
+  border-radius: var(--radius);
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+  cursor: pointer;
+  display: flex;
+  gap: 11px;
+  padding: 11px 13px;
+  position: relative;
+}
+.import-row:focus-within { outline: 2px solid var(--ember-deep); outline-offset: 2px; }
+.import-row.on { box-shadow: inset 0 0 0 1px var(--ember-deep); }
+.import-check {
+  background: #fff;
+  border-radius: 5px;
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+  flex-shrink: 0;
+  height: 16px;
+  margin-top: 1px;
+  position: relative;
+  width: 16px;
+}
+.import-check.on { background: var(--ember); box-shadow: none; }
+.import-check.on::after {
+  background-color: #22130a;
+  content: "";
+  height: 12px;
+  inset: 2px;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2016%2016%27%3E%3Cpath%20d%3D%27M12.416%203.376a.75.75%200%200%201%20.208%201.04l-5%207.5a.75.75%200%200%201-1.154.114l-3-3a.75.75%200%201%201%201.06-1.06l2.353%202.353%204.493-6.74a.75.75%200%200%201%201.04-.207Z%27%2F%3E%3C%2Fsvg%3E") center / 12px 12px no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2016%2016%27%3E%3Cpath%20d%3D%27M12.416%203.376a.75.75%200%200%201%20.208%201.04l-5%207.5a.75.75%200%200%201-1.154.114l-3-3a.75.75%200%201%201%201.06-1.06l2.353%202.353%204.493-6.74a.75.75%200%200%201%201.04-.207Z%27%2F%3E%3C%2Fsvg%3E") center / 12px 12px no-repeat;
+  position: absolute;
+  width: 12px;
+}
+.import-check input { appearance: none; cursor: pointer; inset: 0; margin: 0; opacity: 0; position: absolute; }
+.import-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.import-name { align-items: center; color: var(--text); display: flex; flex-wrap: wrap; font-family: var(--mono); font-size: 0.8125rem; font-weight: 600; gap: 8px; overflow-wrap: anywhere; }
+.import-desc { color: var(--text-3); font-size: 0.78125rem; overflow-wrap: anywhere; }
+.badge-src.import-scripts { text-transform: none; letter-spacing: 0; }
 
 /* ---- profile danger zone ---- */
 .danger-zone {
@@ -895,6 +948,11 @@ details[open].advanced summary::before {
     // open it is { index: <number|null for a new skill>, name, description,
     // instructions, error }. Only one editor is open at a time.
     skillEditor: null,
+    // Inline "Import from URL" panel on the profile edit page. null when closed.
+    // When open it is { source, loading, error, resolution, selected } where
+    // resolution is the /admin/api/skills/resolve payload (null until "Find
+    // skills" returns) and selected is a boolean[] parallel to resolution.skills.
+    skillImport: null,
     // When the user tries to leave a dirty profile editor, this holds the
     // pending navigation { action, agent } and the confirm modal is shown.
     leavePrompt: null,
@@ -1726,9 +1784,82 @@ details[open].advanced summary::before {
       '<button type="button" class="btn btn-primary btn-sm" data-action="skill-save-row">' + (isNew ? "Add skill" : "Save skill") + '</button></div></div>';
   }
 
+  // Human fallback text per SkillImportError code, used when the 502 carried no
+  // message (error.serverMessage). Keyed by the code the server puts in body.error
+  // (which the api() helper surfaces as error.message).
+  function skillImportFallback(code) {
+    if (code === "not_found") return "Could not find that repo or skill. Check the link and try again.";
+    if (code === "rate_limited") return "GitHub rate limit hit. Try again in a little while.";
+    if (code === "github_error") return "GitHub had trouble with that request. Try again in a moment.";
+    if (code === "unrecognized_source") return "That does not look like a repo, a GitHub URL, or a skills.sh link.";
+    return "Could not import skills from that source.";
+  }
+
+  // The picker rows shown after "Find skills" resolves. resolution.skills is
+  // third-party content, so every field is esc()'d — a description could smuggle
+  // a script-closing tag or an onerror img.
+  function skillImportPickerHtml(imp) {
+    var resolution = imp.resolution;
+    var skills = resolution.skills || [];
+    var selected = imp.selected || [];
+    var repo = esc(resolution.owner) + "/" + esc(resolution.repo);
+    var count = skills.length;
+    var summary = "Found " + count + " skill" + (count === 1 ? "" : "s") + " in " + repo;
+    var notes = "";
+    if (resolution.capped) {
+      notes += ' <span class="import-note">showing the first ' + count + " &mdash; narrow with owner/repo@skill</span>";
+    }
+    if (resolution.skipped > 0) {
+      notes += ' <span class="import-note">(' + resolution.skipped + " skipped &mdash; missing a name or description)</span>";
+    }
+    var allSelected = count > 0 && selected.every(function (on) { return on; });
+    var rows = skills.map(function (skill, index) {
+      var on = !!selected[index];
+      var badge = skill.hasScripts
+        ? '<span class="badge-src import-scripts">has scripts &middot; won&rsquo;t run yet</span>'
+        : "";
+      return '<label class="import-row' + (on ? " on" : "") + '">' +
+        '<span class="import-check' + (on ? " on" : "") + '"><input type="checkbox" data-action="import-row-toggle" data-index="' + index + '" ' + (on ? "checked" : "") + ' aria-label="Import ' + esc(skill.name) + '"></span>' +
+        '<span class="import-body"><span class="import-name">' + esc(skill.name) + badge + '</span>' +
+        '<span class="import-desc">' + esc(skill.description) + '</span></span></label>';
+    }).join("");
+    var listOrEmpty = count > 0
+      ? '<div class="import-list">' + rows + '</div>'
+      : '<p class="hint">No importable skills were found here.</p>';
+    var actions = '<div class="skill-form-actions">' +
+      '<button type="button" class="btn btn-ghost btn-sm" data-action="import-cancel">Cancel</button>' +
+      (count > 0 ? '<button type="button" class="btn btn-primary btn-sm" data-action="import-add">Add selected</button>' : "") + '</div>';
+    var selectAll = count > 0
+      ? '<button type="button" class="link-btn" data-action="import-select-all">' + (allSelected ? "Clear all" : "Select all") + "</button>"
+      : "";
+    return '<div class="import-summary"><span>' + summary + notes + '</span>' + selectAll + "</div>" +
+      listOrEmpty + actions;
+  }
+
+  function skillImportPanelHtml(imp) {
+    // Before "Find skills" resolves: the source input + Find/Cancel actions.
+    if (!imp.resolution) {
+      var findLabel = imp.loading ? "Finding&hellip;" : "Find skills";
+      return '<div class="skill-form import-panel">' +
+        '<div class="field"><label class="field-label" for="import-source">Import from a URL</label>' +
+        '<input class="input mono" id="import-source" type="text" value="' + esc(imp.source) + '" placeholder="owner/repo, a GitHub URL, or a skills.sh link" data-action="import-source">' +
+        '<p class="hint">Paste a repo, a GitHub link, or a skills.sh page. Narrow to one skill with owner/repo@skill.</p></div>' +
+        (imp.error ? '<p class="field-error">' + esc(imp.error) + '</p>' : "") +
+        '<div class="skill-form-actions">' +
+        '<button type="button" class="btn btn-ghost btn-sm" data-action="import-cancel">Cancel</button>' +
+        '<button type="button" class="btn btn-primary btn-sm"' + (imp.loading ? " disabled" : "") + ' data-action="import-find">' + findLabel + '</button></div></div>';
+    }
+    // After it resolves: the picker (with an inline error area for a retry-less
+    // add that hit a snag — kept for parity, though add is local-only).
+    return '<div class="skill-form import-panel">' +
+      (imp.error ? '<p class="field-error">' + esc(imp.error) + '</p>' : "") +
+      skillImportPickerHtml(imp) + "</div>";
+  }
+
   function skillsSectionHtml(draft) {
     var skills = draft.skills || [];
     var editor = state.skillEditor;
+    var imp = state.skillImport;
     var rows = skills.map(function (skill, index) {
       // The row's editor opens in place; hide the row that is being edited so the
       // form takes its slot (a new-skill editor renders below the whole list).
@@ -1743,14 +1874,18 @@ details[open].advanced summary::before {
     var list = rows ? '<div class="skill-list">' + rows + '</div>' : "";
     // A new-skill editor (index === null) renders below the list, not in a row.
     var newForm = (editor && (editor.index === null || editor.index === undefined)) ? '<div class="skill-list">' + skillEditorFormHtml(editor) + '</div>' : "";
-    var addButton = editor
+    // The import panel takes the place of the action buttons while it is open,
+    // mirroring the inline skill editor. Only one of editor/import is ever open.
+    var importPanel = imp ? '<div class="skill-list">' + skillImportPanelHtml(imp) + '</div>' : "";
+    var addButtons = (editor || imp)
       ? ""
-      : '<div><button type="button" class="btn btn-soft btn-sm i-lead" data-action="skill-new">' +
-        '<svg class="ic" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><path d="M8.75 3.75a.75.75 0 0 0-1.5 0v3.5h-3.5a.75.75 0 0 0 0 1.5h3.5v3.5a.75.75 0 0 0 1.5 0v-3.5h3.5a.75.75 0 0 0 0-1.5h-3.5v-3.5Z"/></svg>New skill</button></div>';
+      : '<div class="skill-actions"><button type="button" class="btn btn-soft btn-sm i-lead" data-action="skill-new">' +
+        '<svg class="ic" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><path d="M8.75 3.75a.75.75 0 0 0-1.5 0v3.5h-3.5a.75.75 0 0 0 0 1.5h3.5v3.5a.75.75 0 0 0 1.5 0v-3.5h3.5a.75.75 0 0 0 0-1.5h-3.5v-3.5Z"/></svg>New skill</button>' +
+        '<button type="button" class="btn btn-soft btn-sm" data-action="import-skills">Import from URL</button></div>';
     var hint = 'Named playbooks this profile can pull in when a task calls for one. The model always sees each skill&rsquo;s name and description; the full instructions load only when a skill is used.';
-    var body = list + newForm + addButton;
-    if (!list && !newForm) {
-      body = '<div class="empty"><p class="field-label">No custom skills yet</p><p class="hint">Add one to give this profile a named playbook it can load on demand.</p></div>' + addButton;
+    var body = list + newForm + importPanel + addButtons;
+    if (!list && !newForm && !importPanel) {
+      body = '<div class="empty"><p class="field-label">No custom skills yet</p><p class="hint">Add one to give this profile a named playbook it can load on demand.</p></div>' + addButtons;
     }
     return '<section class="section"><div class="section-head"><div><h2 class="section-title">Skills</h2><p class="hint">' + hint + '</p></div></div>' + body + '</section>';
   }
@@ -2800,10 +2935,10 @@ details[open].advanced summary::before {
     if (action === "discard-channel") { var a = activeAssignment(); if (a) selectActive(a.workspaceId, a.channelId); render(); }
     if (action === "save-channel") { saveChannel(); }
     // Profiles master-detail navigation + form actions.
-    if (action === "new-profile") { state.view = "profiles"; state.profileScreen = "create"; state.profileDraft = newProfileDraft(); state.editingAgentId = null; state.profileError = ""; state.profileDirty = false; state.disableConfirm = false; state.skillEditor = null; state.modelPickerOpen = false; state.modelPickerFilter = ""; render(); }
-    if (action === "edit-profile") { var selected = agentById(target.getAttribute("data-agent")); if (selected) { state.view = "profiles"; state.profileScreen = "edit"; state.editingAgentId = selected.id; state.profileDraft = cloneAgent(selected); state.profileError = ""; state.profileDirty = false; state.disableConfirm = false; state.skillEditor = null; state.modelPickerOpen = false; state.modelPickerFilter = ""; render(); } }
-    if (action === "profiles-back") { state.profileScreen = "list"; state.profileDraft = null; state.editingAgentId = null; state.profileError = ""; state.profileDirty = false; state.disableConfirm = false; state.skillEditor = null; state.modelPickerOpen = false; state.modelPickerFilter = ""; render(); }
-    if (action === "cancel-create") { state.profileScreen = "list"; state.profileDraft = null; state.profileError = ""; state.profileDirty = false; state.skillEditor = null; state.modelPickerOpen = false; state.modelPickerFilter = ""; render(); }
+    if (action === "new-profile") { state.view = "profiles"; state.profileScreen = "create"; state.profileDraft = newProfileDraft(); state.editingAgentId = null; state.profileError = ""; state.profileDirty = false; state.disableConfirm = false; state.skillEditor = null; state.skillImport = null; state.modelPickerOpen = false; state.modelPickerFilter = ""; render(); }
+    if (action === "edit-profile") { var selected = agentById(target.getAttribute("data-agent")); if (selected) { state.view = "profiles"; state.profileScreen = "edit"; state.editingAgentId = selected.id; state.profileDraft = cloneAgent(selected); state.profileError = ""; state.profileDirty = false; state.disableConfirm = false; state.skillEditor = null; state.skillImport = null; state.modelPickerOpen = false; state.modelPickerFilter = ""; render(); } }
+    if (action === "profiles-back") { state.profileScreen = "list"; state.profileDraft = null; state.editingAgentId = null; state.profileError = ""; state.profileDirty = false; state.disableConfirm = false; state.skillEditor = null; state.skillImport = null; state.modelPickerOpen = false; state.modelPickerFilter = ""; render(); }
+    if (action === "cancel-create") { state.profileScreen = "list"; state.profileDraft = null; state.profileError = ""; state.profileDirty = false; state.skillEditor = null; state.skillImport = null; state.modelPickerOpen = false; state.modelPickerFilter = ""; render(); }
     // Settings (model-providers) is a separate destination that lands with its
     // own build; the affordance is present per the approved model-field design.
     if (action === "open-settings") { openSettings(); }
@@ -2861,6 +2996,19 @@ details[open].advanced summary::before {
         }
       }
     }
+    // Import skills from a URL: open the panel, run the resolve, drive the picker.
+    // Opening captures the current draft first so a filled skill editor is not
+    // lost, and closes any open inline skill editor so only one panel shows.
+    if (action === "import-skills") { collectProfileDraft(); state.skillEditor = null; state.skillImport = { source: "", loading: false, error: "", resolution: null, selected: [] }; render(); }
+    if (action === "import-cancel") { state.skillImport = null; render(); }
+    if (action === "import-find") { findSkillsFromSource(); }
+    if (action === "import-select-all" && state.skillImport && state.skillImport.resolution) {
+      var imp = state.skillImport;
+      var allOn = imp.selected.length > 0 && imp.selected.every(function (on) { return on; });
+      imp.selected = (imp.resolution.skills || []).map(function () { return !allOn; });
+      render();
+    }
+    if (action === "import-add") { addSelectedSkills(); }
   });
 
   document.addEventListener("input", function (event) {
@@ -2878,6 +3026,9 @@ details[open].advanced summary::before {
     if (action === "slack-signing-secret") { state.slackDraft.signingSecret = target.value; }
     // Preserve a half-typed manual channel id across re-renders.
     if (action === "manual-channel-input") { state.channelFormDraft.channelId = target.value; }
+    // Mirror the import source into state without a re-render so the input keeps
+    // focus; "Find skills" reads it off state.skillImport.
+    if (action === "import-source" && state.skillImport) { state.skillImport.source = target.value; }
     // Mirror the pasted provider key into state so a re-render (e.g. a validate
     // spinner) never wipes it; the favorites search re-renders only its own
     // results container to keep the input focused.
@@ -2941,6 +3092,15 @@ details[open].advanced summary::before {
       var toggleIndex = Number(target.getAttribute("data-index"));
       var toggleSkills = state.profileDraft.skills || [];
       if (toggleSkills[toggleIndex]) { toggleSkills[toggleIndex].enabled = target.checked; state.profileDraft.skills = toggleSkills; markProfileDirty(); render(); }
+    }
+    // Import picker per-row checkbox: flip the parallel selected[] flag and
+    // re-render so the row highlight + Select all/Clear all label stay in sync.
+    if (action === "import-row-toggle" && state.skillImport && state.skillImport.resolution) {
+      var importIndex = Number(target.getAttribute("data-index"));
+      var importSelected = state.skillImport.selected || [];
+      importSelected[importIndex] = target.checked;
+      state.skillImport.selected = importSelected;
+      render();
     }
   });
 
@@ -3133,6 +3293,63 @@ details[open].advanced summary::before {
     return true;
   }
 
+  // POST the raw pasted source to the resolve endpoint and, on success, open the
+  // picker with every skill pre-selected. On error, surface the server message
+  // (error.serverMessage) or a friendly fallback keyed by the code (error.message,
+  // which the api() helper set from body.error). The panel stays open either way.
+  function findSkillsFromSource() {
+    var imp = state.skillImport;
+    if (!imp || imp.loading) return;
+    var source = String(imp.source || "").trim();
+    if (!source) { imp.error = "Paste a repo, a GitHub URL, or a skills.sh link."; render(); return; }
+    imp.loading = true;
+    imp.error = "";
+    render();
+    postJson("/admin/api/skills/resolve", "POST", { source: source }).then(function (body) {
+      var current = state.skillImport;
+      // The panel may have been closed while the request was in flight.
+      if (!current) return;
+      var resolution = body && body.resolution ? body.resolution : { owner: "", repo: "", skills: [], capped: false, skipped: 0 };
+      current.loading = false;
+      current.error = "";
+      current.resolution = resolution;
+      current.selected = (resolution.skills || []).map(function () { return true; });
+      render();
+    }).catch(function (error) {
+      var current = state.skillImport;
+      if (!current) return;
+      current.loading = false;
+      current.error = (error && error.serverMessage) || skillImportFallback(error && error.message);
+      render();
+    });
+  }
+
+  // Merge the checked skills into the draft as { name, description, instructions,
+  // enabled: true }. DEDUPE by name: an imported skill replaces a same-named
+  // existing one in place (duplicate names are a hard turn-killer). Then close
+  // the panel, mark dirty, and re-render so they show as normal rows.
+  function addSelectedSkills() {
+    var imp = state.skillImport;
+    if (!imp || !imp.resolution || !state.profileDraft) return;
+    var picked = imp.resolution.skills || [];
+    var selected = imp.selected || [];
+    var skills = state.profileDraft.skills || [];
+    picked.forEach(function (skill, index) {
+      if (!selected[index]) return;
+      var entry = { name: skill.name, description: skill.description, instructions: skill.instructions, enabled: true };
+      var existingIndex = -1;
+      for (var i = 0; i < skills.length; i += 1) {
+        if (skills[i].name === entry.name) { existingIndex = i; break; }
+      }
+      if (existingIndex >= 0) { skills[existingIndex] = entry; }
+      else { skills.push(entry); }
+    });
+    state.profileDraft.skills = skills;
+    state.skillImport = null;
+    markProfileDirty();
+    render();
+  }
+
   // The four ways to leave the profile editor: the top-nav Profiles/Settings,
   // the brand-home logo, and the "<- Profiles" back link.
   function isEditLeaveAction(action) {
@@ -3147,6 +3364,7 @@ details[open].advanced summary::before {
     state.leavePrompt = null;
     state.profileDirty = false;
     state.skillEditor = null;
+    state.skillImport = null;
     state.profileError = "";
     state.profileDraft = null;
     state.editingAgentId = null;
@@ -3222,6 +3440,7 @@ details[open].advanced summary::before {
     state.profileDirty = false;
     state.disableConfirm = false;
     state.skillEditor = null;
+    state.skillImport = null;
     render();
   }
 

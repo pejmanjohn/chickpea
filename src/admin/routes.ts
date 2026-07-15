@@ -48,6 +48,7 @@ import {
 } from '../config/provider-models.ts';
 import { knownProviderIds, listRuntimeModelProviders } from '../config/providers.ts';
 import { SEED_DEFAULT_MODELS } from '../config/seed.ts';
+import { parseSkillSource, resolveSkillSource, SkillImportError } from '../config/skill-import.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import {
   getConfigStore,
@@ -417,6 +418,31 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     } catch (err) {
       if (err instanceof AgentExistsError) {
         return c.json({ error: 'agent_exists' }, 409);
+      }
+      return internalError(c, err);
+    }
+  });
+
+  // Resolve a pasted GitHub repo / skills.sh link into importable skill
+  // candidates (Phase 3). Read-only: the operator picks in the UI and the
+  // selected skills persist via the normal agent PATCH (the skills column).
+  app.post('/admin/api/skills/resolve', async (c) => {
+    const body = await readJson(c.req);
+    const parsed = v.safeParse(v.object({ source: nonEmptyString }), body);
+    if (!parsed.success) {
+      return invalidRequest(c);
+    }
+    const source = parseSkillSource(parsed.output.source);
+    if (!source) {
+      return c.json({ error: 'unrecognized_source' }, 400);
+    }
+    const token = process.env.GITHUB_TOKEN?.trim() || undefined;
+    try {
+      const resolution = await resolveSkillSource(source, fetch, token);
+      return c.json({ resolution });
+    } catch (err) {
+      if (err instanceof SkillImportError) {
+        return c.json({ error: err.code, message: err.message }, 502);
       }
       return internalError(c, err);
     }

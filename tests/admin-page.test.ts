@@ -181,6 +181,8 @@ function runAdminPageHarness(
     modelProviders?: ModelProviderFixture[];
     effectiveError?: { status: number; error: string; message?: string };
     agentWriteError?: { status: number; error: string; message?: string };
+    skillResolution?: Record<string, unknown>;
+    skillResolveError?: { status: number; error: string; message?: string };
   } = {},
 ): {
   app: FakeElement;
@@ -195,6 +197,7 @@ function runAdminPageHarness(
   favoritesPuts: Array<{ id: string; favorites: string[] }>;
   agentPatchBodies: Array<{ id: string; body: Record<string, unknown> }>;
   agentPostBodies: Array<Record<string, unknown>>;
+  skillResolvePosts: Array<{ source: string }>;
   resolveOpsEffective(): void;
 } {
   const app: FakeElement = { innerHTML: '' };
@@ -209,6 +212,7 @@ function runAdminPageHarness(
   const favoritesPuts: Array<{ id: string; favorites: string[] }> = [];
   const agentPatchBodies: Array<{ id: string; body: Record<string, unknown> }> = [];
   const agentPostBodies: Array<Record<string, unknown>> = [];
+  const skillResolvePosts: Array<{ source: string }> = [];
   let assignments = options.assignments ?? defaultAssignments();
   const slackConnection = options.slackConnection;
   const slackChannels = options.slackChannels;
@@ -220,6 +224,8 @@ function runAdminPageHarness(
   const modelProviders = options.modelProviders;
   const effectiveError = options.effectiveError;
   const agentWriteError = options.agentWriteError;
+  const skillResolveError = options.skillResolveError;
+  const skillResolution = options.skillResolution;
   let resolveOpsEffective: (() => void) | undefined;
 
   // Mutable provider state so a POST/DELETE key flips the /admin/api/providers
@@ -294,6 +300,49 @@ function runAdminPageHarness(
       agentPostBodies.push(body);
       agentsList.push({ ...body });
       return Promise.resolve(jsonResponse({ agent: body }, 201));
+    }
+    if (path === '/admin/api/skills/resolve' && method === 'POST') {
+      const body = JSON.parse(options?.body ?? '{}') as { source: string };
+      skillResolvePosts.push({ source: body.source });
+      if (skillResolveError) {
+        return Promise.resolve(
+          jsonResponse(
+            {
+              error: skillResolveError.error,
+              ...(skillResolveError.message ? { message: skillResolveError.message } : {}),
+            },
+            skillResolveError.status,
+          ),
+        );
+      }
+      const resolution =
+        skillResolution ?? {
+          owner: 'acme',
+          repo: 'skills',
+          ref: 'main',
+          total: 2,
+          capped: false,
+          skipped: 0,
+          skills: [
+            {
+              name: 'release-notes',
+              description: 'Turns merged PRs into a changelog.',
+              instructions: '# Release notes\nWrite in launch voice.',
+              hasScripts: false,
+              path: 'release-notes',
+              sourceUrl: 'https://github.com/acme/skills/tree/main/release-notes',
+            },
+            {
+              name: 'incident-scribe',
+              description: 'Builds an incident timeline.',
+              instructions: '# Incident scribe\nAssemble the timeline.',
+              hasScripts: true,
+              path: 'incident-scribe',
+              sourceUrl: 'https://github.com/acme/skills/tree/main/incident-scribe',
+            },
+          ],
+        };
+      return Promise.resolve(jsonResponse({ resolution }));
     }
     const agentPatchMatch = path.match(/^\/admin\/api\/agents\/([^/]+)$/);
     if (agentPatchMatch && method === 'PATCH') {
@@ -508,6 +557,7 @@ function runAdminPageHarness(
     favoritesPuts,
     agentPatchBodies,
     agentPostBodies,
+    skillResolvePosts,
     resolveOpsEffective() {
       assert.ok(resolveOpsEffective, 'expected C_OPS effective-config request to be pending');
       resolveOpsEffective();
@@ -756,6 +806,169 @@ test('the profile editor manages custom skills end to end and carries them in th
   await flushAsync();
   assert.equal(harness.agentPatchBodies.length, 2);
   assert.deepEqual(harness.agentPatchBodies[1]?.body.skills, []);
+});
+
+test('importing skills from a URL resolves a picker, adds the selected skill, and carries it in the save body', async () => {
+  const harness = runAdminPageHarness({
+    agents: [
+      {
+        id: 'agent_import',
+        name: 'Import Profile',
+        description: 'Import readiness profile',
+        instructions: 'Answer with import context.',
+        enabled: true,
+        model: 'local-stub/import',
+        defaultModels: { claude: 'anthropic/import', 'workers-ai': '@cf/import' },
+        allowedTools: [],
+        skills: [],
+      },
+    ],
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  const change = harness.listeners.change;
+  assert.ok(click && input && change);
+
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_import' }) });
+
+  // The Skills section offers an "Import from URL" affordance next to New skill.
+  assert.match(harness.app.innerHTML, /data-action="import-skills"/);
+
+  // Open the import panel — the source input appears; the picker is not shown yet.
+  click({ target: actionTarget({ 'data-action': 'import-skills' }) });
+  assert.match(harness.app.innerHTML, /data-action="import-source"/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="import-add"/);
+
+  // Type a source and Find skills — the endpoint gets the raw string.
+  input({ target: inputTarget({ 'data-action': 'import-source' }, 'acme/skills') });
+  click({ target: actionTarget({ 'data-action': 'import-find' }) });
+  await flushAsync();
+  assert.equal(harness.skillResolvePosts.length, 1);
+  assert.equal(harness.skillResolvePosts[0]?.source, 'acme/skills');
+
+  // The picker renders both skills, the summary line, and the has-scripts badge.
+  assert.match(harness.app.innerHTML, /Found 2 skills in acme\/skills/);
+  assert.match(harness.app.innerHTML, /release-notes/);
+  assert.match(harness.app.innerHTML, /incident-scribe/);
+  assert.match(harness.app.innerHTML, /won&rsquo;t run yet/);
+  assert.match(harness.app.innerHTML, /data-action="import-add"/);
+
+  // Both rows start selected; deselect the scripts one so only release-notes adds.
+  change({ target: checkboxTarget({ 'data-action': 'import-row-toggle', 'data-index': '1' }, false) });
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="import-row-toggle" data-index="1" checked/);
+
+  // Add selected — the panel closes and the imported skill shows as a normal row.
+  click({ target: actionTarget({ 'data-action': 'import-add' }) });
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="import-source"/);
+  assert.match(harness.app.innerHTML, /release-notes/);
+  assert.match(harness.app.innerHTML, /class="badge-src">custom/);
+  // Only the selected skill was imported.
+  assert.doesNotMatch(harness.app.innerHTML, /incident-scribe/);
+
+  // Save — the PATCH body carries the imported skill in the client shape.
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+  assert.equal(harness.agentPatchBodies.length, 1);
+  assert.deepEqual(harness.agentPatchBodies[0]?.body.skills, [
+    {
+      name: 'release-notes',
+      description: 'Turns merged PRs into a changelog.',
+      instructions: '# Release notes\nWrite in launch voice.',
+      enabled: true,
+    },
+  ]);
+});
+
+test('an import error is surfaced in the panel and dedupes a same-named skill on add', async () => {
+  const harness = runAdminPageHarness({
+    agents: [
+      {
+        id: 'agent_dupe',
+        name: 'Dupe Profile',
+        description: 'Dedupe profile',
+        instructions: 'Answer with context.',
+        enabled: true,
+        model: 'local-stub/dupe',
+        defaultModels: { claude: 'anthropic/dupe', 'workers-ai': '@cf/dupe' },
+        allowedTools: [],
+        skills: [{ name: 'release-notes', description: 'Old copy.', instructions: 'Old body.', enabled: false }],
+      },
+    ],
+    skillResolveError: { status: 502, error: 'rate_limited', message: 'GitHub rate limit hit. Add a GITHUB_TOKEN or try later.' },
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  assert.ok(click && input);
+
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_dupe' }) });
+  click({ target: actionTarget({ 'data-action': 'import-skills' }) });
+
+  // A server error surfaces its message inline and keeps the panel open.
+  input({ target: inputTarget({ 'data-action': 'import-source' }, 'acme/skills') });
+  click({ target: actionTarget({ 'data-action': 'import-find' }) });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /GitHub rate limit hit\. Add a GITHUB_TOKEN or try later\./);
+  assert.match(harness.app.innerHTML, /data-action="import-source"/);
+});
+
+test('importing a same-named skill replaces the existing one rather than duplicating it', async () => {
+  const harness = runAdminPageHarness({
+    agents: [
+      {
+        id: 'agent_replace',
+        name: 'Replace Profile',
+        description: 'Replace profile',
+        instructions: 'Answer with context.',
+        enabled: true,
+        model: 'local-stub/replace',
+        defaultModels: { claude: 'anthropic/replace', 'workers-ai': '@cf/replace' },
+        allowedTools: [],
+        skills: [{ name: 'release-notes', description: 'Old copy.', instructions: 'Old body.', enabled: false }],
+      },
+    ],
+    skillResolution: {
+      owner: 'acme',
+      repo: 'skills',
+      ref: 'main',
+      total: 1,
+      capped: false,
+      skipped: 0,
+      skills: [
+        {
+          name: 'release-notes',
+          description: 'Fresh copy.',
+          instructions: 'Fresh body.',
+          hasScripts: false,
+          path: 'release-notes',
+          sourceUrl: 'https://github.com/acme/skills/tree/main/release-notes',
+        },
+      ],
+    },
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  assert.ok(click && input);
+
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_replace' }) });
+  click({ target: actionTarget({ 'data-action': 'import-skills' }) });
+  input({ target: inputTarget({ 'data-action': 'import-source' }, 'acme/skills@release-notes') });
+  click({ target: actionTarget({ 'data-action': 'import-find' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'import-add' }) });
+
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+  assert.equal(harness.agentPatchBodies.length, 1);
+  // Exactly one release-notes skill, replaced with the imported copy (no duplicate).
+  assert.deepEqual(harness.agentPatchBodies[0]?.body.skills, [
+    { name: 'release-notes', description: 'Fresh copy.', instructions: 'Fresh body.', enabled: true },
+  ]);
 });
 
 test('saving a profile with a filled-but-not-added skill editor commits the skill, not drops it', async () => {
