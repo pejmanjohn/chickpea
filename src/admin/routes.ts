@@ -289,10 +289,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       });
       // Strip ?token= from the URL so the secret does not linger in the address
       // bar, browser history, or proxy access logs, and is not a standing query
-      // credential. Only redirect the page GET; API callers using ?token get the
-      // cookie set and proceed (they have no address bar to leak into).
-      if (c.req.method === 'GET' && new URL(c.req.url).pathname === '/admin') {
-        return c.redirect('/admin', 303);
+      // credential. Only redirect page GETs (any client-routed /admin path);
+      // API callers using ?token get the cookie set and proceed (they have no
+      // address bar to leak into).
+      if (isAdminPageGet(c)) {
+        return c.redirect(new URL(c.req.url).pathname, 303);
       }
       return next();
     }
@@ -1028,6 +1029,15 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
   });
 
+  // SPA catch-all, registered LAST: every client-routed page path
+  // (/admin/profiles, /admin/channels/T/C, ...) serves the same page so deep
+  // links and refreshes work. Unmatched /admin/api/* stays a 404, never HTML.
+  app.get('/admin/*', (c) => {
+    const pathname = new URL(c.req.url).pathname;
+    if (pathname.startsWith('/admin/api/')) return c.notFound();
+    return c.html(renderAdminPage());
+  });
+
   return app;
 }
 
@@ -1115,10 +1125,16 @@ function slackManifestUrl(origin: string): string {
 // A top-level GET of the /admin page (a browser navigation), as opposed to an
 // /admin/api/* XHR — the only request that should receive the HTML login form
 // rather than a JSON 401.
+// Any GET under /admin that is a PAGE navigation (the SPA serves every
+// client-routed path), as opposed to an /admin/api/* call.
 function isAdminPageGet(c: Context): boolean {
   if (c.req.method !== 'GET') return false;
   try {
-    return new URL(c.req.url).pathname === '/admin';
+    const pathname = new URL(c.req.url).pathname;
+    return (
+      pathname === '/admin' ||
+      (pathname.startsWith('/admin/') && !pathname.startsWith('/admin/api/'))
+    );
   } catch {
     return false;
   }

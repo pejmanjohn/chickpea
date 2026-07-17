@@ -195,6 +195,36 @@ test('admin query token redirects to strip the secret and sets a hashed HttpOnly
   }
 });
 
+test('client-routed admin paths serve the SPA page and deep-link login keeps the path', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  try {
+    const app = appWithAdmin(store);
+
+    // A deep page path serves the same SPA (client router takes it from there).
+    const page = await app.request('/admin/profiles/agent_default', { headers: auth(ADMIN_TOKEN) });
+    assert.equal(page.status, 200);
+    assert.match(await page.text(), /Tag Team/);
+
+    // ?token= on a deep path redirects to the SAME path with the query
+    // stripped, and still sets the session cookie.
+    const login = await app.request(`/admin/profiles?token=${ADMIN_TOKEN}`);
+    assert.equal(login.status, 303);
+    assert.equal(login.headers.get('location'), '/admin/profiles');
+    assert.match(login.headers.get('set-cookie') ?? '', /flue_admin=/);
+
+    // An unauthenticated deep page GET gets the HTML login form, not JSON.
+    const anon = await app.request('/admin/channels/T_X/C_Y');
+    assert.equal(anon.status, 401);
+    assert.match(anon.headers.get('content-type') ?? '', /text\/html/);
+
+    // Unknown API paths stay 404 — never swallowed by the SPA catch-all.
+    const api = await app.request('/admin/api/nope', { headers: auth(ADMIN_TOKEN) });
+    assert.equal(api.status, 404);
+  } finally {
+    store.close();
+  }
+});
+
 test('unauthenticated page GET renders a login form while XHR/API still gets JSON 401', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   try {

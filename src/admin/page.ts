@@ -1215,9 +1215,95 @@ details[open].advanced summary::before {
     return state.agents[0] || null;
   }
 
+  // Open a profile's edit screen (from a click or a route), resetting every
+  // transient editor state.
+  function openProfileEditor(selected) {
+    state.view = "profiles";
+    state.profileScreen = "edit";
+    state.editingAgentId = selected.id;
+    state.profileDraft = cloneAgent(selected);
+    state.profileError = "";
+    state.profileDirty = false;
+    state.disableConfirm = false;
+    state.profileTab = "instructions";
+    state.profileRenaming = null;
+    state.attachPicker = false;
+    state.skillEditor = null;
+    state.skillImport = null;
+    state.connectionEditor = null;
+    state.connectionRemove = null;
+    state.modelPickerOpen = false;
+    state.modelPickerFilter = "";
+    render();
+  }
+
+  // ---- URL routing ----------------------------------------------------------
+  // The address bar mirrors the main-panel destination. render() pushes the
+  // canonical path when it changes; popstate and the initial deep link apply
+  // the inverse. Headless test harnesses have no history/location — every
+  // touchpoint no-ops there.
+  var canNavigate = typeof history !== "undefined" && typeof location !== "undefined" && !!history.pushState;
+  // URL sync stays off until the boot sequence has applied the initial route,
+  // so the first data render can't clobber a deep link before it is read.
+  var routeReady = false;
+
+  function canonicalPath() {
+    if (state.view === "settings") return "/admin/settings";
+    if (state.view === "profiles") {
+      if (state.profileScreen === "create") return "/admin/profiles/new";
+      if (state.profileScreen === "edit" && state.editingAgentId) return "/admin/profiles/" + encodeURIComponent(state.editingAgentId);
+      return "/admin/profiles";
+    }
+    if (state.active) return "/admin/channels/" + encodeURIComponent(state.active.workspaceId) + "/" + encodeURIComponent(state.active.channelId);
+    return "/admin";
+  }
+
+  function syncUrl(replace) {
+    if (!canNavigate || !routeReady) return;
+    var canonical = canonicalPath();
+    if (location.pathname === canonical) return;
+    if (replace) history.replaceState(null, "", canonical);
+    else history.pushState(null, "", canonical);
+  }
+
+  // Apply a URL path to state — the inverse of canonicalPath(). Unknown paths
+  // land on the channels view.
+  function applyRoute(pathname) {
+    var parts = String(pathname || "").split("/").filter(Boolean).map(function (part) {
+      try { return decodeURIComponent(part); } catch (err) { return part; }
+    });
+    state.leavePrompt = null;
+    if (parts[1] === "settings") { openSettings(); return; }
+    if (parts[1] === "profiles") {
+      if (parts[2] === "new") {
+        state.view = "profiles"; state.profileScreen = "create"; state.profileDraft = newProfileDraft(); state.editingAgentId = null; state.profileError = ""; state.profileDirty = false; state.disableConfirm = false; state.skillEditor = null; state.skillImport = null; state.connectionEditor = null; state.connectionRemove = null; state.modelPickerOpen = false; state.modelPickerFilter = "";
+        render();
+        return;
+      }
+      if (parts[2]) {
+        var routedAgent = agentById(parts[2]);
+        if (routedAgent) { openProfileEditor(routedAgent); return; }
+      }
+      enterProfiles(null);
+      return;
+    }
+    if (parts[1] === "channels" && parts[2] && parts[3]) {
+      state.view = "channels";
+      state.profileScreen = "list";
+      selectActive(parts[2], parts[3]);
+      render();
+      return;
+    }
+    state.view = "channels";
+    state.profileScreen = "list";
+    state.disableConfirm = false;
+    render();
+  }
+
   function render() {
     var app = document.getElementById("app");
     app.innerHTML = topbarHtml() + '<div class="body">' + railHtml() + mainHtml() + "</div>" + leavePromptModalHtml() + connectionRemoveModalHtml();
+    syncUrl();
   }
 
   // The unsaved-changes guard modal. Rendered only while state.leavePrompt is
@@ -3252,7 +3338,7 @@ details[open].advanced summary::before {
     if (action === "save-channel") { saveChannel(); }
     // Profiles master-detail navigation + form actions.
     if (action === "new-profile") { state.view = "profiles"; state.profileScreen = "create"; state.profileDraft = newProfileDraft(); state.editingAgentId = null; state.profileError = ""; state.profileDirty = false; state.disableConfirm = false; state.skillEditor = null; state.skillImport = null; state.connectionEditor = null; state.connectionRemove = null; state.modelPickerOpen = false; state.modelPickerFilter = ""; render(); }
-    if (action === "edit-profile") { var selected = agentById(target.getAttribute("data-agent")); if (selected) { state.view = "profiles"; state.profileScreen = "edit"; state.editingAgentId = selected.id; state.profileDraft = cloneAgent(selected); state.profileError = ""; state.profileDirty = false; state.disableConfirm = false; state.profileTab = "instructions"; state.profileRenaming = null; state.attachPicker = false; state.skillEditor = null; state.skillImport = null; state.connectionEditor = null; state.connectionRemove = null; state.modelPickerOpen = false; state.modelPickerFilter = ""; render(); } }
+    if (action === "edit-profile") { var selected = agentById(target.getAttribute("data-agent")); if (selected) openProfileEditor(selected); }
     if (action === "profiles-back") { state.profileScreen = "list"; state.profileDraft = null; state.editingAgentId = null; state.profileError = ""; state.profileDirty = false; state.disableConfirm = false; state.skillEditor = null; state.skillImport = null; state.connectionEditor = null; state.connectionRemove = null; state.modelPickerOpen = false; state.modelPickerFilter = ""; render(); }
     // Capability tab switch. The keystroke mirrors keep the draft in sync, so
     // no collectProfileDraft here — its trim() would strip whitespace out of
@@ -3603,6 +3689,20 @@ details[open].advanced summary::before {
         event.preventDefault();
         event.returnValue = "";
       }
+    });
+    // Back/forward apply the popped URL to state. A dirty editor is guarded
+    // here too: restore the editor's URL and park the destination behind the
+    // same leave modal the in-app navigation uses.
+    window.addEventListener("popstate", function () {
+      if (!canNavigate || !routeReady) return;
+      var targetPath = location.pathname;
+      if (state.profileScreen === "edit" && state.profileDirty && targetPath !== canonicalPath()) {
+        history.pushState(null, "", canonicalPath());
+        state.leavePrompt = { action: "route", path: targetPath };
+        render();
+        return;
+      }
+      applyRoute(targetPath);
     });
   }
 
@@ -4134,7 +4234,11 @@ details[open].advanced summary::before {
     state.editingAgentId = null;
     state.disableConfirm = false;
     var action = pending ? pending.action : "profiles-back";
-    if (action === "open-settings") {
+    if (action === "route") {
+      // Browser back/forward while the editor was dirty: the pending path was
+      // parked while the guard asked; carry it out now.
+      applyRoute(pending.path);
+    } else if (action === "open-settings") {
       openSettings();
     } else if (action === "go-home") {
       state.view = "channels";
@@ -4268,7 +4372,16 @@ details[open].advanced summary::before {
       .catch(function (error) { state.profileError = error.message; render(); });
   }
 
-  refreshData();
+  // Boot: capture the deep link BEFORE the first data render (which would
+  // otherwise sync the URL to the default state), apply it once data is
+  // loaded, then turn URL sync on with a replace so landing on /admin doesn't
+  // add a history entry for the auto-selected channel.
+  var initialRoute = canNavigate ? location.pathname : "/admin";
+  refreshData().then(function () {
+    if (initialRoute !== "/admin") applyRoute(initialRoute);
+    routeReady = true;
+    syncUrl(true);
+  });
 })();
 </script>
 </body>
