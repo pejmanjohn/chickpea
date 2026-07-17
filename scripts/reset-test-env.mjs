@@ -1,16 +1,16 @@
 #!/usr/bin/env node
 /**
- * Reset the Tag Team live-test environment for a clean fresh install.
+ * Reset the Chickpea live-test environment for a clean fresh install.
  *
  * We do this reset every test cycle. The steps:
  *
  *   1. Ship the code the Deploy button installs from:
  *        git push origin main
  *      (The README's "Deploy to Cloudflare" button clones github.com/pejmanjohn/
- *       tag-team, so unpushed local commits will NOT be in a fresh install.)
+ *       chickpea, so unpushed local commits will NOT be in a fresh install.)
  *
  *   2. Delete the previous test run's Cloudflare Worker (this script, with --yes).
- *      Each install creates a new worker (e.g. `tag-team-test-run`); pass its
+ *      Each install creates a new worker (e.g. `chickpea-test-run`); pass its
  *      name with --worker. Deleting it (with force) also drops its Durable
  *      Object, which held the last test's Slack creds + config.
  *
@@ -29,7 +29,7 @@
  *
  * Usage:
  *   node scripts/reset-test-env.mjs                                  # dry run — print the plan
- *   node scripts/reset-test-env.mjs --worker tag-team-test-run --yes # delete worker + clear local state
+ *   node scripts/reset-test-env.mjs --worker chickpea-test-run --yes # delete worker + clear local state
  *   node scripts/reset-test-env.mjs --worker <name> --yes --wipe-creds
  *
  * Requires Node >= 22.19 and an authenticated wrangler (`wrangler whoami`).
@@ -40,7 +40,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const DEPLOY_URL = 'https://deploy.workers.cloudflare.com/?url=https://github.com/pejmanjohn/tag-team';
+const DEPLOY_URL = 'https://deploy.workers.cloudflare.com/?url=https://github.com/pejmanjohn/chickpea';
 
 const args = process.argv.slice(2);
 const flag = (name) => args.includes(name);
@@ -55,7 +55,7 @@ const wipeCreds = flag('--wipe-creds');
 
 const localTargets = ['tmp', '.wrangler', ...(wipeCreds ? ['.env.slack.local', '.env.slack.rehearsal'] : [])];
 
-console.log('\nTag Team test-env reset' + (apply ? '' : '  (dry run — pass --yes to execute)'));
+console.log('\nChickpea test-env reset' + (apply ? '' : '  (dry run — pass --yes to execute)'));
 console.log('─'.repeat(52));
 console.log('1. Push code first (manual):  git push origin main');
 console.log(`2. Cloudflare worker:         ${worker ? `delete "${worker}"` : '(pass --worker <name> to delete)'}`);

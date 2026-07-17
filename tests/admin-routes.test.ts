@@ -161,7 +161,7 @@ test('admin API rejects a wrong bearer token and accepts the configured admin to
       headers: auth(ADMIN_TOKEN),
     });
     assert.equal(page.status, 200);
-    assert.match(await page.text(), /Tag Team/);
+    assert.match(await page.text(), /Chickpea/);
   } finally {
     store.close();
   }
@@ -203,7 +203,7 @@ test('client-routed admin paths serve the SPA page and deep-link login keeps the
     // A deep page path serves the same SPA (client router takes it from there).
     const page = await app.request('/admin/profiles/agent_default', { headers: auth(ADMIN_TOKEN) });
     assert.equal(page.status, 200);
-    assert.match(await page.text(), /Tag Team/);
+    assert.match(await page.text(), /Chickpea/);
 
     // ?token= on a deep path redirects to the SAME path with the query
     // stripped, and still sets the session cookie.
@@ -238,7 +238,7 @@ test('unauthenticated page GET renders a login form while XHR/API still gets JSO
     assert.match(page.headers.get('content-type') ?? '', /text\/html/);
     const html = await page.text();
     assert.match(html, /name="token"/);
-    assert.match(html, /Sign in to Tag Team/);
+    assert.match(html, /Sign in to Chickpea/);
 
     // A wrong ?token= surfaces the rejection notice (without echoing the token).
     const rejected = await app.request('/admin?token=nope');

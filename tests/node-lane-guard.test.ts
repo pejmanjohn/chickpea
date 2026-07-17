@@ -18,7 +18,7 @@ function runGuard(root: string): { status: number | null; stderr: string } {
 }
 
 test('node-lane preflight fails loudly with a recovery hint when db.ts is parked', () => {
-  const root = mkdtempSync(join(tmpdir(), 'tag-team-parked-'));
+  const root = mkdtempSync(join(tmpdir(), 'chickpea-parked-'));
   try {
     mkdirSync(join(root, 'src'), { recursive: true });
     writeFileSync(join(root, 'src', 'db.ts.node-lane'), '// parked by an interrupted CF build\n');
@@ -34,7 +34,7 @@ test('node-lane preflight fails loudly with a recovery hint when db.ts is parked
 });
 
 test('node-lane preflight passes when db.ts is not parked', () => {
-  const root = mkdtempSync(join(tmpdir(), 'tag-team-unparked-'));
+  const root = mkdtempSync(join(tmpdir(), 'chickpea-unparked-'));
   try {
     mkdirSync(join(root, 'src'), { recursive: true });
     writeFileSync(join(root, 'src', 'db.ts'), 'export {};\n');

@@ -67,7 +67,7 @@ export const laneB: Lane = {
     let configDir: string | undefined;
     const configEnv: Record<string, string> = {};
     if (config.configSeed) {
-      configDir = mkdtempSync(join(tmpdir(), 'tag-team-parity-config-'));
+      configDir = mkdtempSync(join(tmpdir(), 'chickpea-parity-config-'));
       const configDbPath = join(configDir, 'state.db');
       const store = new SqliteConfigStore(configDbPath, config.configSeed);
       store.close();

@@ -15,37 +15,68 @@ export function renderAdminPage(): string {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Tag Team · /admin</title>
+<title>Chickpea · /admin</title>
 <style>
+/* ============================================================================
+   CHICKPEA THEME — drop-in replacement for the <style> block in
+   src/admin/page.ts (the big one at the top of renderAdminPage()).
+
+   RULES OF ENGAGEMENT
+   - This is a STYLE-ONLY change. Same selectors, same layout system, same
+     class names, same media queries. Do not change markup, copy, or JS.
+   - Token NAMES are unchanged (--ember etc.) because inline style="" strings
+     in the render JS reference them; only their VALUES changed.
+   - The logo is applied to .avatar via background-image (the "T" text is
+     hidden with font-size:0), so no markup change is needed for the mark.
+   - Optional copy change (separate, tiny): "Tag Team" -> "Chickpea" in the
+     two brand spans + <title>. See RESTYLE_PROMPT.md.
+   ============================================================================ */
+
+@import url("https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;600;700;800&family=Quicksand:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap");
+
 :root {
-  --bg: #ffffff;
-  --well: #f7f5f2;
-  --raise: rgba(28, 25, 23, 0.04);
-  --line: rgba(28, 25, 23, 0.08);
-  --line-strong: rgba(28, 25, 23, 0.14);
-  --text: #201d1a;
-  --text-2: #57534c;
-  --text-3: #8a857d;
-  --ember: #e8833a;
-  --ember-deep: #b05415;
-  --ember-bright: #f09a55;
-  --ember-tint: rgba(232, 131, 58, 0.13);
-  --ok: #1f7a44;
-  --ok-tint: rgba(31, 122, 68, 0.1);
-  --danger: #c03538;
-  --danger-tint: rgba(192, 53, 56, 0.08);
-  --font: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  --radius: 8px;
+  /* surfaces */
+  --bg: #fffdf6;            /* card cream (was white) */
+  --canvas: #f4ebd8;        /* NEW: page tan behind the cards */
+  --well: #f8f1df;          /* inset clay wells */
+  --raise: rgba(59, 50, 32, 0.06);
+  --line: rgba(59, 50, 32, 0.1);
+  --line-strong: rgba(59, 50, 32, 0.16);
+  /* ink */
+  --text: #3b3220;
+  --text-2: #6b5c42;
+  --text-3: #9f8f72;
+  /* accent — names kept for compatibility; values are now chickpea gold */
+  --ember: #dda033;
+  --ember-deep: #8a6410;
+  --ember-bright: #e5ac44;
+  --ember-tint: rgba(221, 160, 51, 0.18);
+  --ember-press: #b27e1f;   /* NEW: hard press-shadow under gold buttons */
+  /* status */
+  --ok: #4e7a3e;
+  --ok-solid: #6fa25b;      /* NEW: solid sprout green (badges, toggle on) */
+  --ok-tint: rgba(111, 162, 91, 0.16);
+  --danger: #b5473a;
+  --danger-tint: rgba(206, 101, 83, 0.16);
+  --danger-well: #fbe3dc;   /* NEW: soft red panel fill */
+  /* type */
+  --font: Quicksand, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --display: "Baloo 2", var(--font);  /* NEW: headings */
+  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --radius: 13px;
+  /* depth */
+  --card-shadow: 0 2px 0 rgba(59, 50, 32, 0.08);      /* NEW */
+  --press-shadow: 0 2px 0 rgba(59, 50, 32, 0.14);     /* NEW */
+  --pop-shadow: 0 10px 26px -10px rgba(59, 50, 32, 0.4); /* NEW */
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html { color-scheme: light; }
 body {
-  background: var(--bg);
+  background: var(--canvas);
   color: var(--text-2);
   font-family: var(--font);
-  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
   font-size: 0.875rem;
+  font-weight: 500;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
 }
@@ -54,71 +85,78 @@ button, input, textarea, select { font: inherit; }
 .ic   { flex-shrink: 0; height: 16px; width: 16px; }
 .ic-l { height: 1lh; }
 .step-num, .layer-legend .step .n, .fav-meta, .fav-model { font-variant-numeric: tabular-nums; }
-.page-title { color: var(--text); font-size: 1.0625rem; font-weight: 600; letter-spacing: 0; text-wrap: balance; }
-.page-title.mono-title { font-family: var(--mono); font-size: 1rem; }
+.page-title { color: var(--text); font-family: var(--display); font-size: 1.375rem; font-weight: 700; letter-spacing: 0; text-wrap: balance; }
+.page-title.mono-title { font-family: var(--mono); font-size: 1.0625rem; }
 .section-eyebrow {
   color: var(--text-3);
-  font-family: var(--mono);
   font-size: 0.6875rem;
-  font-weight: 500;
-  letter-spacing: 0.08em;
+  font-weight: 700;
+  letter-spacing: 0.09em;
   text-transform: uppercase;
 }
-.field-label { color: var(--text); display: block; font-size: 0.8125rem; font-weight: 500; }
+.field-label { color: var(--text); display: block; font-size: 0.8125rem; font-weight: 700; }
 .hint { color: var(--text-3); font-size: 0.8125rem; text-wrap: pretty; }
-.mono { font-family: var(--mono); font-size: 0.78125rem; }
+.mono { font-family: var(--mono); font-size: 0.75rem; }
 .btn {
   align-items: center;
   border: 0;
-  border-radius: var(--radius);
+  border-radius: 12px;
   cursor: pointer;
   display: inline-flex;
   font-size: 0.8125rem;
-  font-weight: 500;
+  font-weight: 700;
   gap: 6px;
   justify-content: center;
   min-height: 34px;
-  padding: 7px 12px;
+  padding: 7px 14px;
   text-decoration: none;
 }
-.btn:disabled { cursor: not-allowed; opacity: 0.5; }
+.btn:disabled { cursor: not-allowed; opacity: 0.55; }
 .btn:focus-visible, .x-btn:focus-visible, .rail-add:focus-visible, .chan-item:focus-visible {
-  outline: 2px solid var(--ember-deep);
+  outline: 2px solid var(--ember-press);
   outline-offset: 2px;
 }
-.btn-primary { background: var(--ember); color: #22130a; }
+.btn-primary { background: var(--ember); box-shadow: 0 2.5px 0 var(--ember-press); color: #3a2a08; }
 .btn-primary:hover:not(:disabled) { background: var(--ember-bright); }
-.btn-soft { background: rgba(28, 25, 23, 0.06); color: var(--text); }
-.btn-soft:hover:not(:disabled) { background: rgba(28, 25, 23, 0.09); }
-.btn-ghost { background: transparent; color: var(--text-2); }
-.btn-ghost:hover:not(:disabled) { background: rgba(28, 25, 23, 0.05); color: var(--text); }
-.btn-danger { background: var(--danger-tint); color: #a92c30; }
-.btn-danger:hover:not(:disabled) { background: rgba(192, 53, 56, 0.13); }
-.btn-sm { border-radius: 6px; font-size: 0.75rem; min-height: 28px; padding: 4px 9px; }
-.btn.i-lead { padding-left: 8px; }
-.btn-sm.i-lead { padding-left: 6px; }
+.btn-primary:active:not(:disabled) { box-shadow: 0 0.5px 0 var(--ember-press); transform: translateY(2px); }
+.btn-soft { background: var(--bg); box-shadow: var(--press-shadow); color: var(--text); }
+.btn-soft:hover:not(:disabled) { background: #fff9e9; }
+.btn-soft:active:not(:disabled) { box-shadow: 0 0.5px 0 rgba(59, 50, 32, 0.14); transform: translateY(1.5px); }
+.btn-ghost { background: transparent; color: var(--text-2); font-weight: 600; }
+.btn-ghost:hover:not(:disabled) { background: rgba(59, 50, 32, 0.06); color: var(--text); }
+.btn-danger { background: var(--danger-well); box-shadow: 0 2px 0 rgba(180, 71, 58, 0.25); color: var(--danger); }
+.btn-danger:hover:not(:disabled) { background: #f8d8cf; }
+.btn-danger:active:not(:disabled) { box-shadow: 0 0.5px 0 rgba(180, 71, 58, 0.25); transform: translateY(1.5px); }
+/* Destructive PRIMARY (inside the soft-red container / profile footer): solid
+   deep red with cream text, so it contrasts with the tinted well around it. */
+.danger-zone .btn-danger, .profile-foot .btn-danger {
+  background: #b5473a;
+  box-shadow: 0 2.5px 0 #8f3428;
+  color: #fff6f3;
+}
+.danger-zone .btn-danger:hover:not(:disabled), .profile-foot .btn-danger:hover:not(:disabled) { background: #c4574a; }
+.danger-zone .btn-danger:active:not(:disabled), .profile-foot .btn-danger:active:not(:disabled) { box-shadow: 0 0.5px 0 #8f3428; transform: translateY(2px); }
+.btn-sm { border-radius: 11px; font-size: 0.75rem; min-height: 28px; padding: 4px 11px; }
+.btn.i-lead { padding-left: 10px; }
+.btn-sm.i-lead { padding-left: 8px; }
 .input, .textarea {
-  background: #fff;
+  background: var(--bg);
   border: 0;
   border-radius: var(--radius);
-  box-shadow: inset 0 0 0 1px rgba(28, 25, 23, 0.15);
+  box-shadow: inset 0 2px 3px rgba(59, 50, 32, 0.09), inset 0 0 0 1.5px rgba(59, 50, 32, 0.1);
   color: var(--text);
   font-size: 0.875rem;
-  padding: 8px 11px;
+  font-weight: 600;
+  padding: 9px 14px;
   width: 100%;
 }
-.input::placeholder, .textarea::placeholder { color: var(--text-3); }
+.input::placeholder, .textarea::placeholder { color: var(--text-3); font-weight: 500; }
 .input:focus-visible, .textarea:focus-visible {
-  outline: 2px solid var(--ember-deep);
+  outline: 2px solid var(--ember-press);
   outline-offset: -1px;
 }
-.textarea { line-height: 1.55; min-height: 96px; resize: vertical; }
-.input.mono, .textarea.mono { font-size: 0.8125rem; }
-/* Native <select> with a custom chevron: the browser's default caret varies by
-   OS and does not match the app's icon set, so hide it (appearance:none) and
-   overlay the inline chevron-down SVG. The select keeps its full width; the
-   wrapper is the positioning context and the SVG is right-aligned, centered,
-   and click-through (pointer-events:none). */
+.textarea { line-height: 1.6; min-height: 96px; resize: vertical; }
+.input.mono, .textarea.mono { font-size: 0.78125rem; font-weight: 500; }
 .select-wrap { align-items: center; display: inline-grid; grid-template-columns: 1fr; width: 100%; }
 .select-wrap select.input {
   appearance: none;
@@ -137,85 +175,114 @@ button, input, textarea, select { font: inherit; }
   pointer-events: none;
 }
 .toggle {
-  background: rgba(28, 25, 23, 0.12);
+  background: rgba(59, 50, 32, 0.16);
   border-radius: 999px;
+  box-shadow: inset 0 1.5px 3px rgba(59, 50, 32, 0.2);
   display: inline-flex;
   flex-shrink: 0;
-  padding: 2px;
+  padding: 3px;
   position: relative;
   transition: background 0.2s ease-in-out;
-  width: 36px;
+  width: 46px;
 }
-.toggle:has(:checked) { background: var(--ember); }
+.toggle:has(:checked) { background: var(--ok-solid); }
 .toggle .thumb {
   aspect-ratio: 1;
-  background: #fff;
+  background: var(--bg);
   border-radius: 999px;
-  box-shadow: 0 1px 2px rgba(28, 25, 23, 0.2);
+  box-shadow: 0 1.5px 2px rgba(59, 50, 32, 0.3);
   transition: transform 0.2s ease-in-out;
   width: 50%;
 }
 .toggle:has(:checked) .thumb { transform: translateX(100%); }
 .toggle input { appearance: none; cursor: pointer; inset: 0; position: absolute; }
-.toggle:has(:focus-visible) { outline: 2px solid var(--ember-deep); outline-offset: 2px; }
+.toggle:has(:focus-visible) { outline: 2px solid var(--ember-press); outline-offset: 2px; }
 .badge {
   align-items: center;
   border-radius: 999px;
   display: inline-flex;
-  /* Flex child of .section-head: without these it shrinks below content
-     width and "Not connected" wraps mid-phrase. */
   flex-shrink: 0;
-  font-size: 0.75rem;
-  font-weight: 500;
+  font-size: 0.71875rem;
+  font-weight: 700;
   gap: 5px;
-  padding: 2px 9px 2px 6px;
+  padding: 4px 11px;
   white-space: nowrap;
 }
 .badge .dot { background: currentColor; border-radius: 999px; height: 5px; width: 5px; }
-.badge-on { background: var(--ok-tint); color: var(--ok); }
-.badge-off { background: rgba(28, 25, 23, 0.06); color: var(--text-3); }
+.badge-on { background: var(--ok-solid); box-shadow: 0 1.5px 0 rgba(78, 122, 62, 0.6); color: #fffdf6; }
+.badge-off { background: rgba(59, 50, 32, 0.1); color: #8a7a5c; }
 .chip {
-  background: rgba(28, 25, 23, 0.06);
-  border-radius: 5px;
+  background: rgba(59, 50, 32, 0.08);
+  border-radius: 8px;
   color: var(--text-2);
   display: inline-flex;
   font-family: var(--mono);
-  font-size: 0.71875rem;
+  font-size: 0.6875rem;
   max-width: 100%;
   overflow-wrap: anywhere;
-  padding: 2px 7px;
+  padding: 2px 8px;
 }
-.frame { display: flex; flex-direction: column; min-height: 100dvh; }
+/* Cap the whole shell (topbar + card together) so the cream card doesn't track
+   ultra-wide viewports; the tan canvas absorbs the extra width on both sides. */
+.frame { display: flex; flex-direction: column; margin: 0 auto; max-width: 1080px; min-height: 100dvh; width: 100%; }
 .topbar {
   align-items: center;
-  border-bottom: 1px solid var(--line);
+  border-bottom: 0;
   display: flex;
   gap: 12px;
-  height: 54px;
-  padding: 0 20px;
+  height: 60px;
+  padding: 4px 24px 0;
   position: relative;
 }
 .brand { align-items: center; display: flex; flex: 1; gap: 10px; min-width: 0; }
-.brand-home { align-items: center; background: none; border: 0; border-radius: 7px; cursor: pointer; display: flex; gap: 10px; min-width: 0; padding: 0; }
-.brand-home:focus-visible { outline: 2px solid var(--ember-deep); outline-offset: 2px; }
+.brand-home { align-items: center; background: none; border: 0; border-radius: 10px; cursor: pointer; display: flex; gap: 10px; min-width: 0; padding: 0; }
+.brand-home:focus-visible { outline: 2px solid var(--ember-press); outline-offset: 2px; }
+/* The mark: smiling chickpea, as a background image so the markup's "T" stays.
+   Source SVG: handoff/chickpea-mark.svg */
 .avatar {
   align-items: center;
-  background: var(--ember-tint);
-  border-radius: 7px;
-  color: var(--ember-deep);
+  border-radius: 0;
+  color: transparent;
   display: flex;
   flex-shrink: 0;
-  font-size: 0.8125rem;
-  font-weight: 600;
-  height: 26px;
+  font-size: 0;
+  height: 32px;
   justify-content: center;
-  width: 26px;
+  width: 32px;
 }
-.brand-name { color: var(--text); font-size: 0.875rem; font-weight: 600; }
-.topbar .actions { align-items: center; display: flex; gap: 8px; }
-.body { display: flex; flex: 1; min-height: 0; }
+/* The mark is inline SVG (see topbarHtml) so the face can react: JS sets
+   --prox (0 at >=420px from the cursor, 1 at the mark) and lerps the pupil
+   translate inline; everything below is driven by those two inputs. */
+.avatar .pea { display: block; height: 32px; overflow: visible; width: 32px; }
+.pea-eyes { transform: scale(calc(1 + var(--prox, 0) * 0.14)); transform-box: fill-box; transform-origin: center; transition: transform 0.25s ease; }
+.pea-smile { opacity: calc(1 - clamp(0, (var(--prox, 0) - 0.55) * 3.3, 1)); transition: opacity 0.2s ease; }
+.pea-grin { opacity: clamp(0, (var(--prox, 0) - 0.55) * 3.3, 1); transition: opacity 0.2s ease; }
+.pea-blush { opacity: calc(0.4 + var(--prox, 0) * 0.45); transition: opacity 0.25s ease; }
+.pea-lids { opacity: 0; }
+.avatar.is-boop .pea { animation: pea-boop 0.45s cubic-bezier(0.34, 1.56, 0.64, 1); transform-origin: 50% 88%; }
+.avatar.is-boop .pea-eyes { opacity: 0; }
+.avatar.is-boop .pea-lids { opacity: 1; }
+.avatar.is-boop .pea-smile { opacity: 0; }
+.avatar.is-boop .pea-grin { opacity: 1; }
+.avatar.is-boop .pea-blush { opacity: 0.9; }
+@keyframes pea-boop {
+  0% { transform: scale(1, 1); }
+  30% { transform: scale(1.18, 0.8); }
+  62% { transform: scale(0.92, 1.1); }
+  100% { transform: scale(1, 1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pea-eyes, .pea-smile, .pea-grin, .pea-blush { transition: none; }
+  .avatar.is-boop .pea { animation: none; }
+}
+.brand-name { color: var(--text); font-family: var(--display); font-size: 1.125rem; font-weight: 700; }
+.topbar .actions { align-items: center; display: flex; gap: 9px; }
+.body { display: flex; flex: 1; gap: 14px; min-height: 0; padding: 8px 16px 16px; }
 .rail {
-  border-right: 1px solid var(--line);
+  background: var(--bg);
+  border-radius: 18px;
+  border-right: 0;
+  box-shadow: var(--card-shadow);
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -229,110 +296,119 @@ button, input, textarea, select { font: inherit; }
   display: flex;
   gap: 7px;
   font-size: 0.8125rem;
-  font-weight: 500;
+  font-weight: 700;
   padding: 6px 10px;
 }
 .chan-item {
   background: transparent;
   border: 0;
-  border-radius: var(--radius);
+  border-radius: 12px;
   cursor: pointer;
   display: flex;
   flex-direction: column;
   gap: 2px;
   margin-left: 12px;
-  padding: 8px 10px;
+  padding: 8px 11px;
   text-align: left;
   text-decoration: none;
 }
-.chan-item:hover { background: var(--raise); }
-.chan-item.active { background: rgba(28, 25, 23, 0.07); }
-.chan-name { color: var(--text); font-family: var(--mono); font-size: 0.8125rem; font-weight: 500; overflow-wrap: anywhere; }
-.chan-meta { color: var(--text-3); font-size: 0.71875rem; overflow-wrap: anywhere; }
+.chan-item:hover { background: #f6eedc; }
+.chan-item.active { background: var(--ember-tint); }
+.chan-name { color: var(--text); font-family: var(--mono); font-size: 0.78125rem; font-weight: 500; overflow-wrap: anywhere; }
+.chan-meta { color: var(--text-3); font-size: 0.6875rem; font-weight: 600; overflow-wrap: anywhere; }
 .rail-add {
   background: none;
   border: 0;
-  border-radius: var(--radius);
+  border-radius: 12px;
   align-items: center;
   color: var(--text-3);
   cursor: pointer;
   display: flex;
   font-size: 0.8125rem;
+  font-weight: 700;
   gap: 7px;
   margin-left: 12px;
   padding: 7px 10px 7px 8px;
   text-align: left;
 }
 .ws-row .ic { color: var(--text-3); }
-.rail-add:hover:not(:disabled) { background: var(--raise); color: var(--text-2); }
+.rail-add:hover:not(:disabled) { background: #f6eedc; color: var(--text-2); }
 .rail-add:disabled { cursor: not-allowed; opacity: 0.5; }
 .chan-opt-note { color: var(--text-3); font-size: 0.71875rem; }
-.link-btn { background: none; border: 0; color: var(--ember-deep); cursor: pointer; font-size: 0.8125rem; padding: 0; text-decoration: underline; }
+.link-btn { background: none; border: 0; color: var(--ember-press); cursor: pointer; font-size: 0.8125rem; font-weight: 600; padding: 0; text-decoration: underline; }
 .link-btn:hover { color: var(--ember); }
 .rail-form {
-  border-top: 1px solid var(--line);
+  border-top: 1.5px dashed rgba(59, 50, 32, 0.15);
   display: flex;
   flex-direction: column;
   gap: 8px;
   margin: 8px 0 0 12px;
   padding-top: 10px;
 }
-.main { flex: 1; min-width: 0; overflow-y: auto; padding: 26px 32px 48px; }
-.main-inner { display: flex; flex-direction: column; gap: 28px; margin: 0 auto; max-width: 760px; }
+.main {
+  background: var(--bg);
+  border-radius: 20px;
+  box-shadow: var(--card-shadow);
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 48px 32px 48px;
+}
+.main-inner { display: flex; flex-direction: column; gap: 26px; margin: 0 auto; max-width: 760px; }
 .main-head { align-items: flex-start; display: flex; gap: 12px; justify-content: space-between; }
-.section { border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 14px; padding-top: 20px; }
+.section { border-top: 1.5px dashed rgba(59, 50, 32, 0.15); display: flex; flex-direction: column; gap: 13px; padding-top: 18px; }
 .section:first-child { border-top: 0; padding-top: 0; }
 .section-head { align-items: baseline; display: flex; gap: 10px; justify-content: space-between; }
-.section-title { color: var(--text); font-size: 0.875rem; font-weight: 600; text-wrap: balance; }
+.section-title { color: var(--text); font-family: var(--display); font-size: 1rem; font-weight: 700; text-wrap: balance; }
 .field { display: flex; flex-direction: column; gap: 6px; }
 .form-grid { display: grid; gap: 16px 18px; grid-template-columns: 1fr 1fr; }
 .form-grid .full { grid-column: 1 / -1; }
 .bundle-row {
   align-items: center;
-  border-radius: var(--radius);
-  box-shadow: inset 0 0 0 1px var(--line-strong);
+  background: var(--well);
+  border-radius: 14px;
+  box-shadow: none;
   display: flex;
   gap: 10px;
-  min-height: 44px;
-  padding: 9px 12px;
+  min-height: 46px;
+  padding: 10px 14px;
 }
-/* The name never breaks mid-word ("Defaul/t") or shrinks — the flexible meta
-   text absorbs the squeeze instead. Very long names ellipsize. */
-.bundle-row .b-name { align-items: center; color: var(--text); display: inline-flex; flex-shrink: 0; font-size: 0.8125rem; font-weight: 500; gap: 6px; max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.bundle-row .b-meta { color: var(--text-3); font-family: var(--mono); font-size: 0.71875rem; min-width: 0; overflow-wrap: anywhere; }
+.bundle-row .b-name { align-items: center; color: var(--text); display: inline-flex; flex-shrink: 0; font-size: 0.8125rem; font-weight: 700; gap: 6px; max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bundle-row .b-meta { color: var(--text-3); font-family: var(--mono); font-size: 0.6875rem; min-width: 0; overflow-wrap: anywhere; }
 .bundle-row .spacer { flex: 1; }
 .x-btn {
   background: none;
   border: 0;
-  border-radius: 5px;
+  border-radius: 9px;
   color: var(--text-3);
   cursor: pointer;
   font-size: 0.875rem;
   line-height: 1;
   padding: 4px 7px;
 }
-.x-btn:hover { background: rgba(28, 25, 23, 0.06); color: var(--text); }
+.x-btn:hover { background: rgba(59, 50, 32, 0.08); color: var(--text); }
 .well {
   background: var(--well);
-  border-radius: 10px;
-  box-shadow: inset 0 0 0 1px var(--line);
-  padding: 4px 18px;
+  border-radius: 14px;
+  box-shadow: none;
+  padding: 5px 16px;
 }
 .well dl { display: flex; flex-direction: column; }
 .well .kv, .adv-rows .kv {
-  border-top: 1px solid var(--line);
+  border-top: 1.5px solid var(--bg);
   display: grid;
   gap: 16px;
   grid-template-columns: 148px 1fr;
   padding: 11px 0;
 }
 .well .kv:first-child, .adv-rows .kv:first-child { border-top: 0; }
-.well dt, .adv-rows dt { color: var(--text); font-size: 0.8125rem; font-weight: 500; }
+.well dt, .adv-rows dt { color: var(--text); font-size: 0.8125rem; font-weight: 700; }
 .well dd, .adv-rows dd { color: var(--text-2); font-size: 0.8125rem; min-width: 0; }
-.well dd.mono, .adv-rows dd.mono { font-size: 0.78125rem; overflow-wrap: anywhere; }
+.well dd.mono, .adv-rows dd.mono { font-size: 0.75rem; overflow-wrap: anywhere; }
 .instructions-preview {
-  background: #fff;
-  border-left: 2px solid var(--line-strong);
+  background: var(--bg);
+  border-left: 3px solid var(--line-strong);
+  border-radius: 0 10px 10px 0;
   color: var(--text-2);
   display: flex;
   flex-direction: column;
@@ -343,24 +419,24 @@ button, input, textarea, select { font: inherit; }
 }
 .layer-tag {
   color: var(--text-3);
-  font-family: var(--mono);
   font-size: 0.65625rem;
+  font-weight: 700;
   letter-spacing: 0.07em;
   text-transform: uppercase;
 }
-.layer-tag.ember { color: var(--ember-deep); }
-.from-addendum { border-left: 2px solid var(--ember); margin-left: -16px; padding-left: 14px; }
-details.advanced { border-top: 1px solid var(--line); padding-top: 4px; }
+.layer-tag.ember { color: var(--ember-press); }
+.from-addendum { border-left: 3px solid var(--ember); margin-left: -16px; padding-left: 13px; }
+details.advanced { border-top: 1.5px dashed rgba(59, 50, 32, 0.15); padding-top: 4px; }
 details.advanced summary {
   align-items: center;
   color: var(--text-2);
   cursor: pointer;
   display: flex;
   font-size: 0.875rem;
-  font-weight: 600;
+  font-weight: 700;
   gap: 7px;
   list-style: none;
-  padding: 14px 0;
+  padding: 13px 0;
 }
 details.advanced summary::-webkit-details-marker { display: none; }
 details.advanced summary::before {
@@ -381,9 +457,9 @@ details[open].advanced summary::before {
 .save-note { color: var(--text-3); font-size: 0.75rem; margin-right: auto; }
 .save-bar-sticky {
   background: var(--bg);
-  border-top: 1px solid var(--line);
+  border-top: 0;
   bottom: 0;
-  box-shadow: 0 -6px 20px rgba(28, 25, 23, 0.08);
+  box-shadow: 0 -8px 24px rgba(59, 50, 32, 0.14);
   left: 0;
   padding: 13px 32px calc(13px + env(safe-area-inset-bottom, 0px));
   position: fixed;
@@ -395,7 +471,7 @@ details[open].advanced summary::before {
 .save-bar-inner .save-note { margin-right: auto; }
 .modal-backdrop {
   align-items: center;
-  background: rgba(28, 25, 23, 0.4);
+  background: rgba(59, 50, 32, 0.4);
   bottom: 0;
   display: flex;
   justify-content: center;
@@ -408,13 +484,13 @@ details[open].advanced summary::before {
 }
 .modal-card {
   background: var(--bg);
-  border-radius: 12px;
-  box-shadow: 0 24px 60px rgba(28, 25, 23, 0.28);
+  border-radius: 20px;
+  box-shadow: 0 24px 60px rgba(59, 50, 32, 0.3);
   max-width: 440px;
   padding: 20px 22px;
   width: 100%;
 }
-.modal-title { color: var(--text); font-size: 1rem; font-weight: 600; }
+.modal-title { color: var(--text); font-family: var(--display); font-size: 1.0625rem; font-weight: 700; }
 .modal-body { color: var(--text-2); font-size: 0.875rem; margin-top: 6px; }
 .modal-foot { align-items: center; display: flex; gap: 8px; margin-top: 18px; }
 .modal-foot .spacer { flex: 1; }
@@ -422,26 +498,27 @@ details[open].advanced summary::before {
   .modal-foot { flex-direction: column-reverse; align-items: stretch; }
   .modal-foot .spacer { display: none; }
 }
-.error, .field-error { color: var(--danger); font-size: 0.8125rem; }
+.error, .field-error { color: var(--danger); font-size: 0.8125rem; font-weight: 600; }
 .empty {
   align-items: flex-start;
   background: var(--well);
-  border-radius: 10px;
-  box-shadow: inset 0 0 0 1px var(--line);
+  border-radius: 16px;
+  box-shadow: none;
   display: flex;
   flex-direction: column;
   gap: 10px;
   padding: 18px;
 }
 /* ---- profiles master-detail (topbar nav active + role badge) ---- */
-.nav-active { background: var(--ember-tint); color: var(--ember-deep); }
-.badge-role { background: var(--ember-tint); color: var(--ember-deep); }
+.nav-active { background: var(--text); box-shadow: 0 2px 0 rgba(30, 24, 12, 0.5); color: #f6edda; }
+.nav-active:hover:not(:disabled) { background: #4a4028; color: #f6edda; }
+.badge-role { background: var(--ember-tint); color: var(--ember-press); }
 
 /* ---- profiles overview cards ---- */
 .pcard {
   background: var(--well);
-  border-radius: 10px;
-  box-shadow: inset 0 0 0 1px var(--line);
+  border-radius: 18px;
+  box-shadow: none;
   display: flex;
   flex-direction: column;
   gap: 9px;
@@ -449,166 +526,100 @@ details[open].advanced summary::before {
 }
 .pcard + .pcard { margin-top: 12px; }
 .pcard .pcard-head { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; }
-.pcard .pcard-name { color: var(--text); font-size: 0.9375rem; font-weight: 600; }
+.pcard .pcard-name { color: var(--text); font-family: var(--display); font-size: 0.9375rem; font-weight: 700; }
+.pcard .pcard-desc { color: var(--text-2); font-size: 0.8125rem; max-width: 62ch; }
 .pcard .pcard-foot { align-items: center; display: flex; flex-wrap: wrap; gap: 10px; }
 .pcard .pcard-foot .spacer { flex: 1; }
 
-/* ---- inline title rename (profile edit head) ---- */
-.title-row { align-items: center; display: flex; gap: 8px; }
-.rename-btn {
-  align-items: center;
-  background: rgba(28, 25, 23, 0.05);
+/* ---- allowed-tools editor (LEGACY — older builds; current builds render tools
+   as .conn-tool rows under Connections. Kept so both markups style correctly,
+   and .tool-check remains the shared checkbox idiom) ---- */
+.tool-row {
+  align-items: flex-start;
+  background: var(--well);
   border: 0;
-  border-radius: 8px;
-  color: var(--text-2);
+  border-radius: 14px;
+  box-shadow: none;
+  color: inherit;
   cursor: pointer;
-  display: inline-flex;
-  flex-shrink: 0;
-  height: 26px;
-  justify-content: center;
-  width: 26px;
-}
-.rename-btn:hover { background: rgba(28, 25, 23, 0.08); color: var(--text); }
-.rename-btn:focus-visible { outline: 2px solid var(--ember-deep); outline-offset: 2px; }
-.page-title-input { font-size: 1.0625rem; font-weight: 600; max-width: 32ch; }
-
-/* ---- profile capability tabs (Instructions / Skills / Connections) ----
-   Segmented pill bar on a recessed well; the active pill lifts to white with
-   a hairline ring. Muted-background + darker-text active state (never the
-   brand fill — that idiom is reserved for the .seg form control). */
-.ptabs {
-  align-self: flex-start;
-  background: rgba(28, 25, 23, 0.05);
-  border-radius: 999px;
   display: flex;
-  gap: 2px;
-  max-width: 100%;
-  overflow-x: auto;
-  padding: 3px;
+  gap: 11px;
+  padding: 12px 14px;
+  position: relative;
+  text-align: left;
+  width: 100%;
 }
-.ptab {
-  background: none;
-  border: 0;
-  border-radius: 999px;
-  color: var(--text-2);
-  cursor: pointer;
-  flex-shrink: 0;
-  font-family: inherit;
-  font-size: 0.8125rem;
-  font-weight: 500;
-  line-height: 1;
-  padding: 7px 14px;
-  white-space: nowrap;
-}
-.ptab:hover { color: var(--text); }
-.ptab.on {
+.tool-row + .tool-row { margin-top: 8px; }
+.tool-row:focus-within { outline: 2px solid var(--ember-press); outline-offset: 2px; }
+.tool-check {
   background: var(--bg);
-  box-shadow: inset 0 0 0 1px var(--line), 0 1px 2px rgba(28, 25, 23, 0.06);
-  color: var(--text);
+  border-radius: 6px;
+  box-shadow: inset 0 0 0 1.5px rgba(59, 50, 32, 0.18);
+  flex-shrink: 0;
+  height: 18px;
+  margin-top: 1px;
+  position: relative;
+  width: 18px;
 }
-.ptab:focus-visible { outline: 2px solid var(--ember-deep); outline-offset: 2px; }
-.ptab .ptab-count { color: var(--text-3); font-family: var(--mono); font-size: 0.75rem; font-weight: 400; margin-left: 7px; }
-.ptab.on .ptab-count { color: var(--text-2); }
-.ptab .ptab-dot { background: var(--ember); border-radius: 999px; display: inline-block; height: 6px; margin-left: 7px; vertical-align: 1px; width: 6px; }
-/* The panel shares the section's 14px column rhythm; the explicit [hidden]
-   rule is required because display:flex would otherwise beat the UA's
-   [hidden] { display: none }. */
-.ptab-panel { display: flex; flex-direction: column; gap: 14px; }
-.ptab-panel[hidden] { display: none; }
-.ptab-hint { margin: 0; max-width: 62ch; }
+.tool-check.on { background: var(--ember); box-shadow: 0 1.5px 0 var(--ember-press); }
+.tool-check.on::after {
+  background-color: #3a2a08;
+  content: "";
+  height: 12px;
+  inset: 3px;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2016%2016%27%3E%3Cpath%20d%3D%27M12.416%203.376a.75.75%200%200%201%20.208%201.04l-5%207.5a.75.75%200%200%201-1.154.114l-3-3a.75.75%200%201%201%201.06-1.06l2.353%202.353%204.493-6.74a.75.75%200%200%201%201.04-.207Z%27%2F%3E%3C%2Fsvg%3E") center / 12px 12px no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2016%2016%27%3E%3Cpath%20d%3D%27M12.416%203.376a.75.75%200%200%201%20.208%201.04l-5%207.5a.75.75%200%200%201-1.154.114l-3-3a.75.75%200%201%201%201.06-1.06l2.353%202.353%204.493-6.74a.75.75%200%200%201%201.04-.207Z%27%2F%3E%3C%2Fsvg%3E") center / 12px 12px no-repeat;
+  position: absolute;
+  width: 12px;
+}
+.tool-check input { appearance: none; cursor: pointer; inset: 0; margin: 0; opacity: 0; position: absolute; }
+.tool-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.tool-body .t-name { color: var(--text); font-family: var(--mono); font-size: 0.75rem; font-weight: 500; }
+.tool-body .t-desc { color: var(--text-3); font-size: 0.78125rem; }
 
 /* ---- profile custom skills ---- */
 .skill-list { display: flex; flex-direction: column; gap: 8px; }
 .skill-row {
   align-items: center;
-  border-radius: var(--radius);
-  box-shadow: inset 0 0 0 1px var(--line-strong);
+  background: var(--well);
+  border-radius: 14px;
+  box-shadow: none;
   display: flex;
   gap: 12px;
-  padding: 11px 13px;
+  padding: 12px 14px;
 }
 .skill-row .sk-body { display: flex; flex: 1; flex-direction: column; gap: 2px; min-width: 0; }
-.skill-row .sk-name { align-items: center; color: var(--text); display: flex; flex-wrap: wrap; font-family: var(--mono); font-size: 0.8125rem; font-weight: 600; gap: 8px; overflow-wrap: anywhere; }
+.skill-row .sk-name { align-items: center; color: var(--text); display: flex; flex-wrap: wrap; font-family: var(--mono); font-size: 0.78125rem; font-weight: 600; gap: 8px; overflow-wrap: anywhere; }
 .skill-row .sk-desc { color: var(--text-3); font-size: 0.78125rem; overflow-wrap: anywhere; }
 .badge-src {
-  background: rgba(28, 25, 23, 0.06);
+  background: rgba(59, 50, 32, 0.08);
   border-radius: 999px;
   color: var(--text-3);
   font-family: var(--mono);
-  font-size: 0.65625rem;
+  font-size: 0.625rem;
   font-weight: 500;
   letter-spacing: 0.05em;
-  padding: 2px 8px;
+  padding: 2px 9px;
   text-transform: uppercase;
   white-space: nowrap;
 }
 .skill-form {
   background: var(--well);
-  border-radius: 10px;
-  box-shadow: inset 0 0 0 1px var(--line);
+  border-radius: 16px;
+  box-shadow: none;
   display: flex;
   flex-direction: column;
   gap: 14px;
   padding: 16px 18px;
 }
+.skill-form .input, .skill-form .textarea { background: var(--bg); }
 .skill-form-actions { align-items: center; display: flex; gap: 8px; justify-content: flex-end; }
 .skill-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 @media (max-width: 720px) {
   .skill-row { align-items: stretch; flex-direction: column; }
 }
 
-/* ---- profile connections (remote MCP servers) ---- */
-.conn-host { color: var(--text-3); font-family: var(--mono); font-size: 0.75rem; overflow-wrap: anywhere; }
-.conn-meta { align-items: center; display: flex; flex-wrap: wrap; gap: 6px 10px; }
-.conn-pill {
-  align-items: center;
-  border-radius: 999px;
-  display: inline-flex;
-  flex-shrink: 0;
-  font-size: 0.71875rem;
-  font-weight: 500;
-  gap: 5px;
-  padding: 2px 9px;
-  white-space: nowrap;
-}
-.conn-pill-on { background: var(--ok-tint); color: var(--ok); }
-.conn-pill-off { background: rgba(28, 25, 23, 0.06); color: var(--text-3); }
-.conn-pill-warn { background: var(--danger-tint); color: #a92c30; }
-.seg { box-shadow: inset 0 0 0 1px var(--line-strong); border-radius: 8px; display: inline-flex; overflow: hidden; }
-.seg button {
-  appearance: none;
-  background: transparent;
-  border: 0;
-  color: var(--text-2);
-  cursor: pointer;
-  font: inherit;
-  font-size: 0.8125rem;
-  padding: 7px 13px;
-}
-.seg button + button { box-shadow: inset 1px 0 0 var(--line-strong); }
-.seg button.on { background: var(--ember); color: #22130a; font-weight: 500; }
-.seg button:disabled { color: var(--text-3); cursor: not-allowed; opacity: 0.55; }
-.conn-tools { display: flex; flex-direction: column; gap: 6px; }
-.conn-tool {
-  align-items: flex-start;
-  border-radius: var(--radius);
-  box-shadow: inset 0 0 0 1px var(--line-strong);
-  cursor: pointer;
-  display: flex;
-  gap: 11px;
-  padding: 9px 12px;
-}
-.conn-tool .tool-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.conn-tool .tool-name { color: var(--text); font-family: var(--mono); font-size: 0.78125rem; font-weight: 600; overflow-wrap: anywhere; }
-.conn-tool .tool-desc { color: var(--text-3); font-size: 0.75rem; overflow-wrap: anywhere; }
-.conn-header-row { display: flex; flex-wrap: wrap; gap: 8px; }
-.conn-header-row .input { flex: 1; min-width: 140px; }
-.conn-security { color: var(--text-3); font-size: 0.78125rem; text-wrap: pretty; }
-@media (max-width: 720px) {
-  .skill-row.conn-row { align-items: stretch; flex-direction: column; }
-}
-
-/* ---- import skills from a URL (panel + picker) ---- */
+/* ---- import skills from a URL ---- */
 .import-panel { gap: 12px; }
 .import-summary {
   align-items: baseline;
@@ -623,32 +634,33 @@ details[open].advanced summary::before {
 .import-list { display: flex; flex-direction: column; gap: 8px; }
 .import-row {
   align-items: flex-start;
-  border-radius: var(--radius);
-  box-shadow: inset 0 0 0 1px var(--line-strong);
+  background: var(--well);
+  border-radius: 14px;
+  box-shadow: none;
   cursor: pointer;
   display: flex;
   gap: 11px;
-  padding: 11px 13px;
+  padding: 12px 14px;
   position: relative;
 }
-.import-row:focus-within { outline: 2px solid var(--ember-deep); outline-offset: 2px; }
-.import-row.on { box-shadow: inset 0 0 0 1px var(--ember-deep); }
+.import-row:focus-within { outline: 2px solid var(--ember-press); outline-offset: 2px; }
+.import-row.on { box-shadow: inset 0 0 0 2px var(--ember); }
 .import-check {
-  background: #fff;
-  border-radius: 5px;
-  box-shadow: inset 0 0 0 1px var(--line-strong);
+  background: var(--bg);
+  border-radius: 6px;
+  box-shadow: inset 0 0 0 1.5px rgba(59, 50, 32, 0.18);
   flex-shrink: 0;
-  height: 16px;
+  height: 18px;
   margin-top: 1px;
   position: relative;
-  width: 16px;
+  width: 18px;
 }
-.import-check.on { background: var(--ember); box-shadow: none; }
+.import-check.on { background: var(--ember); box-shadow: 0 1.5px 0 var(--ember-press); }
 .import-check.on::after {
-  background-color: #22130a;
+  background-color: #3a2a08;
   content: "";
   height: 12px;
-  inset: 2px;
+  inset: 3px;
   -webkit-mask: url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2016%2016%27%3E%3Cpath%20d%3D%27M12.416%203.376a.75.75%200%200%201%20.208%201.04l-5%207.5a.75.75%200%200%201-1.154.114l-3-3a.75.75%200%201%201%201.06-1.06l2.353%202.353%204.493-6.74a.75.75%200%200%201%201.04-.207Z%27%2F%3E%3C%2Fsvg%3E") center / 12px 12px no-repeat;
   mask: url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2016%2016%27%3E%3Cpath%20d%3D%27M12.416%203.376a.75.75%200%200%201%20.208%201.04l-5%207.5a.75.75%200%200%201-1.154.114l-3-3a.75.75%200%201%201%201.06-1.06l2.353%202.353%204.493-6.74a.75.75%200%200%201%201.04-.207Z%27%2F%3E%3C%2Fsvg%3E") center / 12px 12px no-repeat;
   position: absolute;
@@ -656,105 +668,115 @@ details[open].advanced summary::before {
 }
 .import-check input { appearance: none; cursor: pointer; inset: 0; margin: 0; opacity: 0; position: absolute; }
 .import-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
-.import-name { align-items: center; color: var(--text); display: flex; flex-wrap: wrap; font-family: var(--mono); font-size: 0.8125rem; font-weight: 600; gap: 8px; overflow-wrap: anywhere; }
+.import-name { align-items: center; color: var(--text); display: flex; flex-wrap: wrap; font-family: var(--mono); font-size: 0.78125rem; font-weight: 600; gap: 8px; overflow-wrap: anywhere; }
 .import-desc { color: var(--text-3); font-size: 0.78125rem; overflow-wrap: anywhere; }
 .badge-src.import-scripts { text-transform: none; letter-spacing: 0; }
 
-/* ---- profile footer (delete / add-to-channels / usage) ---- */
-.profile-foot { align-items: center; border-top: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 10px; padding-top: 20px; }
+/* ---- profile danger zone (LEGACY — replaced by .profile-foot in current builds) ---- */
+.danger-zone {
+  align-items: flex-start;
+  background: var(--danger-well);
+  border-radius: 18px;
+  box-shadow: none;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 16px 18px;
+}
+.danger-zone .field-label { color: #8f3428; }
+.danger-zone .hint { color: #9e5a4e; }
 
 /* ---- settings: model-provider rows + favorites ---- */
-.prov-row { border-radius: 10px; box-shadow: inset 0 0 0 1px var(--line-strong); display: flex; flex-direction: column; }
+.prov-row { background: var(--well); border-radius: 18px; box-shadow: none; display: flex; flex-direction: column; }
 .prov-row + .prov-row { margin-top: 12px; }
-.prov-head { align-items: center; display: flex; flex-wrap: wrap; gap: 10px 12px; padding: 14px 16px; }
+.prov-head { align-items: center; display: flex; flex-wrap: wrap; gap: 10px 12px; padding: 15px 18px; }
 .prov-id { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.prov-name { color: var(--text); font-size: 0.9375rem; font-weight: 600; }
+.prov-name { color: var(--text); font-family: var(--display); font-size: 0.9375rem; font-weight: 700; }
 .prov-sub { color: var(--text-3); font-size: 0.75rem; }
-.prov-sub .mono-frag { font-family: var(--mono); font-size: 0.71875rem; }
+.prov-sub .mono-frag { font-family: var(--mono); font-size: 0.6875rem; }
 .prov-status { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; }
 .prov-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; margin-left: auto; }
-.prov-body { border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 13px; padding: 14px 16px; }
-.paste-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.prov-body { border-top: 1.5px solid var(--bg); display: flex; flex-direction: column; gap: 12px; padding: 15px 18px; }
+.prov-body .input { background: var(--bg); }
+.paste-row { display: flex; flex-wrap: wrap; gap: 9px; }
 .paste-row .input { flex: 1; min-width: 220px; }
-.fav-sub { color: var(--text-3); font-family: var(--mono); font-size: 0.65625rem; letter-spacing: 0.07em; text-transform: uppercase; }
-.fav-list { display: flex; flex-direction: column; }
-.fav-row { align-items: center; border-top: 1px solid var(--line); display: flex; gap: 10px; padding: 9px 2px; }
+.fav-sub { color: var(--text-3); font-size: 0.65625rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
+.fav-list { display: flex; flex-direction: column; gap: 6px; }
+.fav-row { align-items: center; background: var(--bg); border-radius: 13px; border-top: 0; box-shadow: 0 1.5px 0 rgba(59, 50, 32, 0.08); display: flex; gap: 10px; padding: 8px 12px; }
 .fav-row:first-child { border-top: 0; }
-.fav-model { color: var(--text); font-family: var(--mono); font-size: 0.78125rem; min-width: 0; overflow-wrap: anywhere; }
-.fav-meta { color: var(--text-3); flex-shrink: 0; font-size: 0.71875rem; margin-left: auto; text-align: right; white-space: nowrap; }
+.fav-model { color: var(--text); font-family: var(--mono); font-size: 0.75rem; min-width: 0; overflow-wrap: anywhere; }
+.fav-meta { color: var(--text-3); flex-shrink: 0; font-size: 0.6875rem; font-weight: 600; margin-left: auto; text-align: right; white-space: nowrap; }
 .fav-meta .price { color: var(--text-2); }
 .star { background: none; border: 0; color: var(--text-3); cursor: pointer; flex-shrink: 0; font-size: 1rem; line-height: 1; padding: 2px; }
-.star.on { color: var(--ember-deep); }
-.star:focus-visible { outline: 2px solid var(--ember-deep); outline-offset: 2px; }
+.star.on { color: #d9962c; }
+.star:focus-visible { outline: 2px solid var(--ember-press); outline-offset: 2px; }
 .fav-empty { color: var(--text-3); font-size: 0.8125rem; padding: 6px 2px; }
 .raw-error {
-  background: var(--danger-tint);
-  border-radius: 8px;
-  box-shadow: inset 0 0 0 1px rgba(192, 53, 56, 0.18);
-  color: #a92c30;
+  background: var(--danger-well);
+  border-radius: 12px;
+  box-shadow: inset 0 0 0 1.5px rgba(180, 71, 58, 0.18);
+  color: #9e3d31;
   font-family: var(--mono);
-  font-size: 0.71875rem;
+  font-size: 0.6875rem;
   line-height: 1.5;
   overflow-wrap: anywhere;
   padding: 10px 12px;
   white-space: pre-wrap;
 }
 
-/* ---- model picker Settings action footer (pinned below combo-foot) ---- */
-.combo-settings { border-top: 1px solid var(--line); font-size: 0.8125rem; margin-top: 4px; padding: 9px; }
+/* ---- model picker Settings action footer ---- */
+.combo-settings { border-top: 1.5px solid var(--well); font-size: 0.8125rem; margin-top: 4px; padding: 9px 10px; }
 .layer-legend { display: flex; flex-direction: column; gap: 6px; }
 .layer-legend .step { align-items: baseline; display: flex; gap: 9px; font-size: 0.8125rem; }
 .layer-legend .step .n { color: var(--text-3); font-family: var(--mono); font-size: 0.6875rem; }
 .combo-list {
-  background: #fff;
-  border-radius: 10px;
-  box-shadow: 0 8px 24px rgba(28, 25, 23, 0.14), inset 0 0 0 1px var(--line);
+  background: var(--bg);
+  border-radius: 16px;
+  box-shadow: var(--pop-shadow), inset 0 0 0 1.5px rgba(59, 50, 32, 0.08);
   display: flex;
   flex-direction: column;
   margin-top: 6px;
   overflow: hidden;
-  padding: 5px;
+  padding: 6px;
 }
 .combo-group {
   align-items: baseline;
   color: var(--text-3);
   display: flex;
   gap: 8px;
-  font-family: var(--mono);
-  font-size: 0.65625rem;
-  letter-spacing: 0.07em;
-  padding: 8px 9px 4px;
+  font-size: 0.625rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  padding: 8px 10px 4px;
   text-transform: uppercase;
 }
 .combo-group .src { letter-spacing: 0; text-transform: none; }
 .combo-opt {
   background: transparent;
   border: 0;
-  border-radius: 6px;
+  border-radius: 10px;
   color: var(--text);
   cursor: pointer;
   font-family: var(--mono);
-  font-size: 0.8125rem;
-  padding: 6px 9px;
+  font-size: 0.75rem;
+  padding: 7px 10px;
   text-align: left;
   width: 100%;
 }
-.combo-opt.plain { font-family: var(--font); }
-.combo-opt:hover { background: var(--raise); }
-.combo-opt.active { background: var(--ember-tint); color: var(--ember-deep); }
-.combo-foot { border-top: 1px solid var(--line); color: var(--text-3); font-size: 0.75rem; margin-top: 4px; padding: 8px 9px 4px; }
-/* ---- profile Model click-to-open combobox (F6) ---- */
+.combo-opt.plain { font-family: var(--font); font-weight: 600; }
+.combo-opt:hover { background: #f6eedc; }
+.combo-opt.active { background: rgba(221, 160, 51, 0.22); color: var(--ember-press); }
+.combo-foot { border-top: 1.5px solid var(--well); color: var(--text-3); font-size: 0.75rem; margin-top: 4px; padding: 9px 10px 4px; }
+/* ---- profile Model click-to-open combobox ---- */
 .model-combo { position: relative; }
 .model-combo .model-combo-input { padding-right: 32px; }
 .model-combo .model-combo-caret {
   color: var(--text-3);
   pointer-events: none;
   position: absolute;
-  right: 10px;
-  top: 9px;
+  right: 12px;
+  top: 10px;
 }
-/* The open popover is an elevated overlay under the input so it never reflows
-   the form. max-height keeps a long provider list scrollable in place. */
 .model-combo .combo-list {
   left: 0;
   margin-top: 4px;
@@ -765,16 +787,16 @@ details[open].advanced summary::before {
   top: 100%;
   z-index: 20;
 }
-.combo-empty { color: var(--text-3); font-size: 0.8125rem; padding: 8px 9px; }
+.combo-empty { color: var(--text-3); font-size: 0.8125rem; padding: 8px 10px; }
 @media (max-width: 720px) {
   .body { flex-direction: column; }
-  .rail { border-bottom: 1px solid var(--line); border-right: 0; width: 100%; }
+  .rail { border-bottom: 0; width: 100%; }
   .main { padding: 20px; }
   .form-grid { grid-template-columns: 1fr; }
   .prov-actions { margin-left: 0; width: 100%; }
   .well .kv, .adv-rows .kv { grid-template-columns: 1fr; gap: 3px; }
-  .btn { font-size: 0.875rem; padding: 9px 14px; }
-  .btn-sm { font-size: 0.8125rem; padding: 6px 11px; }
+  .btn { font-size: 0.875rem; padding: 9px 15px; }
+  .btn-sm { font-size: 0.8125rem; padding: 6px 12px; }
   .main-head, .section-head, .bundle-row, .save-bar { align-items: stretch; flex-direction: column; }
   .bundle-row .b-name { max-width: 100%; }
   .save-note { margin-right: 0; }
@@ -786,41 +808,38 @@ details[open].advanced summary::before {
   .mono { font-size: 0.9375rem; }
   .input, .textarea { font-size: 1rem; }
   .input.mono, .textarea.mono { font-size: 1rem; }
-  .badge { font-size: 0.8125rem; padding: 3px 10px 3px 7px; }
+  .badge { font-size: 0.8125rem; padding: 4px 12px; }
   .chip { font-size: 0.8125rem; }
-  .toggle { width: 44px; }
+  .toggle { width: 52px; }
   .ic { height: 18px; width: 18px; }
   .step-num { font-size: 0.9375rem; height: 30px; width: 30px; }
   .success-toast { align-items: flex-start; }
-  /* Specificity is bumped with a .topbar prefix so these beat the later
-     source-order desktop rules (.topbar-menu{display:none} / summary{display:none});
-     media queries add no specificity, so equal-specificity later rules would win. */
   .topbar .topbar-menu { display: inline-flex; }
   .topbar .topbar-menu > summary { display: inline-flex; }
   .topbar .actions-list { display: none; }
   .topbar-menu[open] ~ .actions-list {
     align-items: stretch;
     background: var(--bg);
-    border-radius: 10px;
-    box-shadow: 0 12px 30px rgba(28, 25, 23, 0.16), inset 0 0 0 1px var(--line);
+    border-radius: 16px;
+    box-shadow: 0 12px 30px rgba(59, 50, 32, 0.22), inset 0 0 0 1.5px rgba(59, 50, 32, 0.08);
     display: flex;
     flex-direction: column;
     padding: 6px;
     position: absolute;
     right: 20px;
-    top: 50px;
+    top: 54px;
     z-index: 30;
   }
 }
 
-/* ---- action buttons never wrap their label when squeezed beside an inline error ---- */
+/* ---- action buttons never wrap their label ---- */
 .save-bar .btn { flex-shrink: 0; white-space: nowrap; }
 
-/* ---- topbar hamburger disclosure (mobile navigation only; hidden on desktop) ---- */
+/* ---- topbar hamburger disclosure (mobile only) ---- */
 .topbar-menu { display: none; }
 .topbar-menu > summary {
   align-items: center;
-  border-radius: var(--radius);
+  border-radius: 12px;
   color: var(--text-2);
   cursor: pointer;
   display: none;
@@ -829,29 +848,29 @@ details[open].advanced summary::before {
   padding: 6px 8px;
 }
 .topbar-menu > summary::-webkit-details-marker { display: none; }
-.topbar-menu > summary:hover { background: rgba(28, 25, 23, 0.05); color: var(--text); }
-.topbar-menu > summary:focus-visible { outline: 2px solid var(--ember-deep); outline-offset: 2px; }
-.actions-list { align-items: center; display: flex; gap: 8px; }
+.topbar-menu > summary:hover { background: rgba(59, 50, 32, 0.06); color: var(--text); }
+.topbar-menu > summary:focus-visible { outline: 2px solid var(--ember-press); outline-offset: 2px; }
+.actions-list { align-items: center; display: flex; gap: 9px; }
 
-/* ---- wizard steps: scaled-up .layer-legend/.step language ---- */
+/* ---- wizard steps ---- */
 .stepper { display: flex; flex-direction: column; gap: 22px; }
-.step-block { display: flex; gap: 14px; }
-.step-block.dimmed { opacity: 0.42; }
+.step-block { display: flex; gap: 13px; }
+.step-block.dimmed { opacity: 0.45; }
 .step-num {
   align-items: center;
   border-radius: 999px;
   display: inline-flex;
   flex-shrink: 0;
-  font-family: var(--mono);
-  font-size: 0.8125rem;
-  font-weight: 600;
-  height: 26px;
+  font-family: var(--display);
+  font-size: 0.875rem;
+  font-weight: 700;
+  height: 28px;
   justify-content: center;
-  width: 26px;
+  width: 28px;
 }
-.step-num.active { background: var(--ember); color: #22130a; }
-.step-num.idle { background: rgba(28, 25, 23, 0.08); color: var(--text-3); }
-.step-num.done { background: var(--ok-tint); color: var(--ok); }
+.step-num.active { background: var(--ember); box-shadow: 0 1.5px 0 var(--ember-press); color: #3a2a08; }
+.step-num.idle { background: rgba(59, 50, 32, 0.1); color: var(--text-3); }
+.step-num.done { background: var(--ok-solid); box-shadow: 0 1.5px 0 rgba(78, 122, 62, 0.6); color: #fffdf6; }
 .step-block.dimmed .step-num { cursor: pointer; }
 .advance-step {
   background: none;
@@ -859,34 +878,34 @@ details[open].advanced summary::before {
   cursor: pointer;
   display: flex;
   flex: 1;
-  gap: 14px;
+  gap: 13px;
   padding: 0;
   text-align: left;
 }
-.advance-step:focus-visible { outline: 2px solid var(--ember-deep); outline-offset: 2px; }
-.step-body { display: flex; flex: 1; flex-direction: column; gap: 12px; min-width: 0; }
-.step-title { color: var(--text); font-size: 0.875rem; font-weight: 600; }
-.step-done-line { align-items: center; display: flex; gap: 10px; min-height: 26px; }
-.warn-accent { border-left: 2px solid var(--ember); padding-left: 12px; }
+.advance-step:focus-visible { outline: 2px solid var(--ember-press); outline-offset: 2px; }
+.step-body { display: flex; flex: 1; flex-direction: column; gap: 11px; min-width: 0; }
+.step-title { color: var(--text); font-size: 0.875rem; font-weight: 700; }
+.step-done-line { align-items: center; display: flex; gap: 10px; min-height: 28px; }
+.warn-accent { border-left: 3px solid var(--ember); padding-left: 11px; }
 .callout {
   align-items: flex-start;
-  background: var(--ember-tint);
-  border-radius: 8px;
+  background: rgba(221, 160, 51, 0.16);
+  border-radius: 14px;
   color: var(--text-2);
   display: flex;
   font-size: 0.8125rem;
   gap: 9px;
-  line-height: 1.5;
-  padding: 11px 13px;
+  line-height: 1.55;
+  padding: 12px 14px;
 }
 .callout .g { color: var(--ember-deep); flex-shrink: 0; }
 .tiny-label { color: var(--text-3); font-size: 0.6875rem; }
 
-/* ---- paired instruction+field block (Step 2: instruction + the field it fills, coupled in one inset) ---- */
+/* ---- paired instruction+field block ---- */
 .paste-pair {
   background: var(--well);
-  border-radius: 10px;
-  box-shadow: inset 0 0 0 1px var(--line);
+  border-radius: 16px;
+  box-shadow: none;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -898,28 +917,27 @@ details[open].advanced summary::before {
   display: flex;
   font-size: 0.8125rem;
   gap: 9px;
-  line-height: 1.5;
+  line-height: 1.55;
 }
 .paste-pair .pair-head .n {
   align-items: center;
-  background: var(--ember-tint);
+  background: rgba(221, 160, 51, 0.28);
   border-radius: 999px;
   color: var(--ember-deep);
   display: inline-flex;
   flex-shrink: 0;
-  font-family: var(--mono);
   font-size: 0.6875rem;
-  font-weight: 600;
-  height: 19px;
+  font-weight: 700;
+  height: 20px;
   justify-content: center;
   position: relative;
   top: 2px;
-  width: 19px;
+  width: 20px;
 }
-.paste-pair .input { background: #fff; }
+.paste-pair .input { background: var(--bg); }
 .spinner {
   animation: ds-spin 0.7s linear infinite;
-  border: 2px solid var(--ember-tint);
+  border: 2.5px solid rgba(221, 160, 51, 0.35);
   border-radius: 999px;
   border-top-color: var(--ember-deep);
   display: inline-block;
@@ -932,26 +950,186 @@ details[open].advanced summary::before {
 .success-toast {
   align-items: center;
   background: var(--ok-tint);
-  border-radius: 8px;
+  border-radius: 14px;
+  color: var(--ok);
   display: flex;
   font-size: 0.8125rem;
+  font-weight: 600;
   gap: 9px;
-  padding: 8px 12px;
+  padding: 9px 13px;
 }
 
-/* ---- 48px touch targets on icon-only buttons (coarse pointers) ---- */
+/* ---- 48px touch targets on icon-only buttons ---- */
 @media (pointer: coarse) {
   .x-btn { position: relative; }
   .x-btn::after { content: ""; inset: 50%; min-height: 44px; min-width: 44px; position: absolute; transform: translate(-50%, -50%); }
 }
+
+/* ---- inline title rename (profile edit head) ---- */
+.title-row { align-items: center; display: flex; gap: 8px; }
+.rename-btn {
+  align-items: center;
+  background: rgba(59, 50, 32, 0.07);
+  border: 0;
+  border-radius: 9px;
+  color: var(--text-2);
+  cursor: pointer;
+  display: inline-flex;
+  flex-shrink: 0;
+  height: 26px;
+  justify-content: center;
+  width: 26px;
+}
+.rename-btn:hover { background: rgba(59, 50, 32, 0.11); color: var(--text); }
+.rename-btn:focus-visible { outline: 2px solid var(--ember-press); outline-offset: 2px; }
+.page-title-input { font-family: var(--display); font-size: 1.25rem; font-weight: 700; max-width: 32ch; }
+
+/* ---- profile capability tabs (Instructions / Skills / Connections) ----
+   "Ringed tray": the tab bar and its visible panel read as ONE cream container
+   outlined by a 1.5px ring, with a dashed seam under the tabs. The active tab
+   is a solid cocoa pill (same idiom as the topbar's active nav). Pills INSIDE
+   panels stay clay, like every other row on the page.
+
+   Markup note: .ptabs and the .ptab-panel siblings have no shared wrapper, so
+   the tray is drawn as two halves (rounded top on .ptabs, rounded bottom on
+   the visible panel) and the panel pulls itself flush with a -14px margin
+   (cancelling .section's 14px gap). If you'd rather not rely on that, wrap
+   them in <div class="ptab-tray"> — rules for that path are included below —
+   and drop the margin-top hack automatically (the .ptab-tray rules override). */
+.ptabs {
+  align-self: stretch;
+  background: var(--bg);
+  border: 1.5px solid rgba(59, 50, 32, 0.14);
+  border-bottom: 1.5px dashed rgba(59, 50, 32, 0.13);
+  border-radius: 18px 18px 0 0;
+  display: flex;
+  gap: 3px;
+  max-width: 100%;
+  overflow-x: auto;
+  padding: 10px 12px;
+}
+.ptab {
+  background: none;
+  border: 0;
+  border-radius: 999px;
+  color: var(--text-2);
+  cursor: pointer;
+  flex-shrink: 0;
+  font-family: inherit;
+  font-size: 0.8125rem;
+  font-weight: 700;
+  line-height: 1;
+  padding: 8px 15px;
+  white-space: nowrap;
+}
+.ptab:hover { background: var(--well); color: var(--text); }
+.ptab.on {
+  background: var(--text);
+  box-shadow: 0 2px 0 rgba(30, 24, 12, 0.5);
+  color: #f6edda;
+}
+.ptab:focus-visible { outline: 2px solid var(--ember-press); outline-offset: 2px; }
+.ptab .ptab-count { color: var(--text-3); font-family: var(--mono); font-size: 0.71875rem; font-weight: 400; margin-left: 7px; }
+.ptab.on .ptab-count { color: #cbbfa5; }
+.ptab .ptab-dot { background: var(--ember); border-radius: 999px; box-shadow: 0 0 0 3px var(--ember-tint); display: inline-block; height: 6px; margin-left: 7px; vertical-align: 1px; width: 6px; }
+.ptab-panel {
+  border: 1.5px solid rgba(59, 50, 32, 0.14);
+  border-radius: 0 0 18px 18px;
+  border-top: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: -14px; /* cancels .section's gap so the panel sits flush under .ptabs */
+  padding: 16px 18px 18px;
+}
+.ptab-panel[hidden] { display: none; }
+.ptab-hint { margin: 0; max-width: 62ch; }
+/* Optional wrapper path (preferred if you can touch markup): */
+.ptab-tray { display: flex; flex-direction: column; }
+.ptab-tray .ptab-panel { margin-top: 0; }
+/* Inside the tray, list rows are clay wells (no under-shadow needed) */
+.ptab-panel .skill-row, .ptab-panel .conn-tool { background: var(--well); box-shadow: none; }
+.ptab-panel .skill-form { background: var(--well); }
+.ptab-panel .skill-form .conn-tool, .ptab-panel .skill-form .import-row { background: var(--bg); box-shadow: 0 1.5px 0 rgba(59, 50, 32, 0.08); }
+
+/* ---- profile connections (remote MCP servers) ---- */
+.conn-host { color: var(--text-3); font-family: var(--mono); font-size: 0.71875rem; overflow-wrap: anywhere; }
+.conn-meta { align-items: center; display: flex; flex-wrap: wrap; gap: 6px 10px; }
+.conn-pill {
+  align-items: center;
+  border-radius: 999px;
+  display: inline-flex;
+  flex-shrink: 0;
+  font-size: 0.71875rem;
+  font-weight: 700;
+  gap: 5px;
+  padding: 3px 10px;
+  white-space: nowrap;
+}
+.conn-pill-on { background: var(--ok-tint); color: var(--ok); }
+.conn-pill-off { background: rgba(59, 50, 32, 0.08); color: #8a7a5c; }
+.conn-pill-warn { background: var(--danger-well); color: var(--danger); }
+.seg { background: var(--bg); border-radius: 12px; box-shadow: inset 0 0 0 1.5px rgba(59, 50, 32, 0.12); display: inline-flex; overflow: hidden; }
+.seg button {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  color: var(--text-2);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  padding: 8px 14px;
+}
+.seg button + button { box-shadow: inset 1.5px 0 0 rgba(59, 50, 32, 0.12); }
+.seg button.on { background: var(--ember); box-shadow: inset 0 1.5px 0 rgba(255, 240, 205, 0.6); color: #3a2a08; font-weight: 700; }
+.seg button:disabled { color: var(--text-3); cursor: not-allowed; opacity: 0.55; }
+.conn-tools { display: flex; flex-direction: column; gap: 6px; }
+.conn-tool {
+  align-items: flex-start;
+  background: var(--bg);
+  border-radius: 13px;
+  box-shadow: 0 1.5px 0 rgba(59, 50, 32, 0.08);
+  cursor: pointer;
+  display: flex;
+  gap: 11px;
+  padding: 10px 13px;
+}
+.conn-tool .tool-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.conn-tool .tool-name { color: var(--text); font-family: var(--mono); font-size: 0.75rem; font-weight: 600; overflow-wrap: anywhere; }
+.conn-tool .tool-desc { color: var(--text-3); font-size: 0.75rem; overflow-wrap: anywhere; }
+.conn-header-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.conn-header-row .input { flex: 1; min-width: 140px; }
+.conn-security { color: var(--text-3); font-size: 0.78125rem; text-wrap: pretty; }
+@media (max-width: 720px) {
+  .skill-row.conn-row { align-items: stretch; flex-direction: column; }
+}
+
+/* ---- profile footer (delete / add-to-channels / usage) ---- */
+.profile-foot { align-items: center; border-top: 1.5px dashed rgba(59, 50, 32, 0.15); display: flex; flex-wrap: wrap; gap: 10px; padding-top: 20px; }
+
+/* ============================================================================
+   LOGIN PAGE (second, small <style> block near the bottom of page.ts).
+   Replace only the :root values and the button colors there with:
+
+   :root { --bg:#f4ebd8; --well:#fffdf6; --line:rgba(59,50,32,0.12);
+           --text:#3b3220; --text-2:#6b5c42; --ember:#dda033;
+           --ember-bright:#e5ac44; --danger:#b5473a;
+           --font:Quicksand,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+           --radius:13px; }
+   button { background:var(--ember); box-shadow:0 2.5px 0 #b27e1f;
+            color:#3a2a08; font-weight:700; }
+   button:hover { background:var(--ember-bright); }
+   (plus the same @import font line at the top of that block)
+   ============================================================================ */
 </style>
 </head>
 <body>
 <div id="app" class="frame">
   <header class="topbar">
     <div class="brand">
-      <span class="avatar">T</span>
-      <span class="brand-name">Tag Team</span>
+      <span class="avatar">T<svg class="pea" viewBox="0 0 48 48" aria-hidden="true" focusable="false"><circle cx="24" cy="25" r="15.5" fill="#E3AC45"></circle><circle cx="17" cy="17.5" r="4.2" fill="#F4D084"></circle><g class="pea-eyes"><circle class="pea-eye" cx="18.5" cy="24" r="1.9" fill="#3B3220"></circle><circle class="pea-eye" cx="29.5" cy="24" r="1.9" fill="#3B3220"></circle></g><g class="pea-lids"><path d="M16.4 24.2 Q18.5 22 20.6 24.2" fill="none" stroke="#3B3220" stroke-width="1.8" stroke-linecap="round"></path><path d="M27.4 24.2 Q29.5 22 31.6 24.2" fill="none" stroke="#3B3220" stroke-width="1.8" stroke-linecap="round"></path></g><path class="pea-smile" d="M19 29 Q24 32.5 29 29" fill="none" stroke="#3B3220" stroke-width="1.8" stroke-linecap="round"></path><path class="pea-grin" d="M18.5 28.5 Q24 35.5 29.5 28.5 Z" fill="#3B3220"></path><circle class="pea-blush" cx="15.5" cy="28.5" r="2" fill="#DC8A4F"></circle><circle class="pea-blush" cx="32.5" cy="28.5" r="2" fill="#DC8A4F"></circle></svg></span>
+      <span class="brand-name">Chickpea</span>
       <span class="chip">${targetChip}</span>
     </div>
     <div class="actions">
@@ -1339,7 +1517,7 @@ details[open].advanced summary::before {
     // reliable exit from the Profiles destination when the channel rail is empty
     // (e.g. a not-yet-connected install with no channels to click back to).
     return '<header class="topbar">' +
-      '<div class="brand"><button type="button" class="brand-home" data-action="go-home" aria-label="Home"><span class="avatar">T</span><span class="brand-name">Tag Team</span></button><span class="chip">${targetChip}</span></div>' +
+      '<div class="brand"><button type="button" class="brand-home" data-action="go-home" aria-label="Home"><span class="avatar">T<svg class="pea" viewBox="0 0 48 48" aria-hidden="true" focusable="false"><circle cx="24" cy="25" r="15.5" fill="#E3AC45"></circle><circle cx="17" cy="17.5" r="4.2" fill="#F4D084"></circle><g class="pea-eyes"><circle class="pea-eye" cx="18.5" cy="24" r="1.9" fill="#3B3220"></circle><circle class="pea-eye" cx="29.5" cy="24" r="1.9" fill="#3B3220"></circle></g><g class="pea-lids"><path d="M16.4 24.2 Q18.5 22 20.6 24.2" fill="none" stroke="#3B3220" stroke-width="1.8" stroke-linecap="round"></path><path d="M27.4 24.2 Q29.5 22 31.6 24.2" fill="none" stroke="#3B3220" stroke-width="1.8" stroke-linecap="round"></path></g><path class="pea-smile" d="M19 29 Q24 32.5 29 29" fill="none" stroke="#3B3220" stroke-width="1.8" stroke-linecap="round"></path><path class="pea-grin" d="M18.5 28.5 Q24 35.5 29.5 28.5 Z" fill="#3B3220"></path><circle class="pea-blush" cx="15.5" cy="28.5" r="2" fill="#DC8A4F"></circle><circle class="pea-blush" cx="32.5" cy="28.5" r="2" fill="#DC8A4F"></circle></svg></span><span class="brand-name">Chickpea</span></button><span class="chip">${targetChip}</span></div>' +
       '<details class="topbar-menu"><summary aria-label="Menu">' + icon("bars-3") + '</summary></details>' +
       '<div class="actions actions-list">' + connectedBadge +
       '<a class="btn btn-ghost" href="https://api.slack.com/apps" rel="noreferrer">Open Slack console &nearr;</a>' +
@@ -1349,7 +1527,7 @@ details[open].advanced summary::before {
   }
 
   // The connected workspace's display name for a rail group header: the friendly
-  // team name for the workspace Tag is installed in, else the raw workspace id
+  // team name for the workspace Chickpea is installed in, else the raw workspace id
   // (multiple workspaces can be grouped; only the connected one has a name).
   function railGroupLabel(workspaceId) {
     if (isSlackConnected() && workspaceId === connectedTeamId() && state.slack.teamName) return state.slack.teamName;
@@ -1435,7 +1613,7 @@ details[open].advanced summary::before {
       // non-blocking empty so the rest of the admin still renders.
       var emptyBlock = state.addChannelOpen ? "" : '<div class="empty">' +
         '<h1 class="page-title">No channels yet &mdash; add one</h1>' +
-        '<p class="hint">Pick a Slack channel and attach a profile. Tag answers @mentions there.</p>' +
+        '<p class="hint">Pick a Slack channel and attach a profile. Chickpea answers @mentions there.</p>' +
         addChannelButtonHtml("btn btn-soft") +
         '</div>';
       return '<main class="main"><div class="main-inner">' + invite + addPanel + emptyBlock + '</div></main>';
@@ -1445,7 +1623,7 @@ details[open].advanced summary::before {
     return '<main class="main"><div class="main-inner">' + invite + addPanel +
       '<div class="main-head"><div style="display:flex; flex-direction:column; gap:2px;">' +
       '<h1 class="page-title mono-title">' + esc(channelLabel(assignment)) + '</h1>' +
-      '<p class="hint">What Tag can do in this channel. It answers mentions here, always as @Tag.</p>' +
+      '<p class="hint">What Chickpea can do in this channel. It answers mentions here, always as @Chickpea.</p>' +
       '</div><label style="display:flex; align-items:center; gap:10px;"><span class="hint">' + (enabled ? "Enabled" : "Disabled") + '</span>' +
       '<span class="toggle"><span class="thumb"></span><input type="checkbox" data-action="channel-enabled" ' + (enabled ? "checked" : "") + ' aria-label="Channel enabled"></span></label></div>' +
       profileSectionHtml(agent, assignment) +
@@ -1475,10 +1653,10 @@ details[open].advanced summary::before {
 
   function funnelHtml() {
     return '<div class="empty" style="align-items:center; text-align:center; gap:14px; padding:46px 32px;">' +
-      '<h1 class="page-title" style="font-size:1.1875rem;">Choose where Tag answers</h1>' +
-      '<p class="hint" style="max-width:452px; font-size:0.875rem; line-height:1.55;">Tag only answers where you allow it. Pick a Slack channel to start &mdash; it comes with sensible defaults, and you can customize instructions, model, and tools per channel anytime.</p>' +
+      '<h1 class="page-title" style="font-size:1.1875rem;">Choose where Chickpea answers</h1>' +
+      '<p class="hint" style="max-width:452px; font-size:0.875rem; line-height:1.55;">Chickpea only answers where you allow it. Pick a Slack channel to start &mdash; it comes with sensible defaults, and you can customize instructions, model, and tools per channel anytime.</p>' +
       '<button type="button" class="btn btn-primary" style="margin-top:4px; padding:9px 18px;" data-action="toggle-add-channel">Choose a channel</button>' +
-      '<p class="hint">Want proof right now? DM <span class="mono" style="color:var(--text-2);">@Tag</span> &mdash; direct messages already work.</p>' +
+      '<p class="hint">Want proof right now? DM <span class="mono" style="color:var(--text-2);">@Chickpea</span> &mdash; direct messages already work.</p>' +
       '</div>';
   }
 
@@ -1527,18 +1705,18 @@ details[open].advanced summary::before {
 
   function inviteReminderHtml() {
     if (!state.addChannelInvite) return "";
-    return '<div class="empty" style="border-left:2px solid var(--ember);"><p class="field-label">Invite Tag to finish</p>' +
+    return '<div class="empty" style="border-left:2px solid var(--ember);"><p class="field-label">Invite Chickpea to finish</p>' +
       '<p class="hint">' + esc(state.addChannelInvite) + '</p></div>';
   }
 
   function channelOptionsHtml() {
     var channels = (state.slackChannels && state.slackChannels.channels) || [];
     if (channels.length === 0) {
-      return '<option value="">No channels found &mdash; invite @Tag, then Refresh</option>';
+      return '<option value="">No channels found &mdash; invite @Chickpea, then Refresh</option>';
     }
     var selected = state.addChannelSelected || channels[0].id;
     // Grouped PUBLIC / PRIVATE (native optgroups). No lock emoji: privacy is
-    // conveyed by the group, and the trailing note flags a channel Tag has not
+    // conveyed by the group, and the trailing note flags a channel Chickpea has not
     // been invited to (it will not hear mentions there until invited).
     var pub = [];
     var priv = [];
@@ -1558,7 +1736,7 @@ details[open].advanced summary::before {
   function addChannelPanelHtml() {
     if (!state.addChannelOpen) return "";
     var head = '<div class="section-head"><div><h2 class="section-title">Add a channel</h2>' +
-      '<p class="hint">Attach to a Slack channel. Tag answers @mentions there with the ' + esc(defaultAgentName()) + ' profile &mdash; customize it on the channel page after.</p></div>' +
+      '<p class="hint">Attach to a Slack channel. Chickpea answers @mentions there with the ' + esc(defaultAgentName()) + ' profile &mdash; customize it on the channel page after.</p></div>' +
       '<button type="button" class="btn btn-ghost btn-sm" data-action="cancel-add-channel">Cancel</button></div>';
     if (!isSlackConnected()) {
       return '<section class="section">' + head +
@@ -1571,7 +1749,7 @@ details[open].advanced summary::before {
       '<div class="bundle-row"><span class="b-name">' + icon("lock-closed") + esc(connectedTeamName()) + '</span>' +
       '<span class="b-meta">' + esc(connectedTeamId()) + '</span><span class="spacer"></span>' +
       '<span class="chip">locked</span></div>' +
-      '<p class="hint">Locked to the workspace Tag is installed in. To use another, reinstall Tag there.</p></div>';
+      '<p class="hint">Locked to the workspace Chickpea is installed in. To use another, reinstall Chickpea there.</p></div>';
     var refreshBtn = '<button type="button" class="btn btn-soft btn-sm i-lead" data-action="refresh-channels" title="Refresh channel list">' + icon("arrow-path") + 'Refresh</button>';
     var selector;
     if (state.slackChannelsLoading) {
@@ -1596,7 +1774,7 @@ details[open].advanced summary::before {
         icon("chevron-down", "select-caret") + '</span>' +
         refreshBtn + '</div>' +
         truncated +
-        '<p class="hint">Don\\'t see it? Invite @Tag to the channel in Slack, then click Refresh. ' +
+        '<p class="hint">Don\\'t see it? Invite @Chickpea to the channel in Slack, then click Refresh. ' +
         '<button type="button" class="link-btn" data-action="toggle-manual-channel">Enter ID manually</button></p></div>';
     }
     var foot = '<div class="save-bar" style="justify-content:flex-start;">' +
@@ -1649,7 +1827,7 @@ details[open].advanced summary::before {
       // The one unrecoverable choice: Slack forces a workspace pick during
       // creation and the manifest cannot pre-select it (the Acme-vs-Paperplane
       // trap from the first live walkthrough).
-      '<p class="hint warn-accent">Slack will ask you to ' + slackStepBoldHint("pick a workspace") + ' &mdash; choose the one you want Tag in. It can&rsquo;t be changed later without reinstalling.</p>' +
+      '<p class="hint warn-accent">Slack will ask you to ' + slackStepBoldHint("pick a workspace") + ' &mdash; choose the one you want Chickpea in. It can&rsquo;t be changed later without reinstalling.</p>' +
       '</div></div>';
   }
 
@@ -1701,7 +1879,7 @@ details[open].advanced summary::before {
   function slackErrorText(message, detail) {
     if (message === "slack_auth_failed") return "Slack rejected the bot token (auth.test failed" + (detail ? ": " + detail : "") + "). Re-copy the xoxb- token and try again.";
     if (message === "slack_unreachable") return "Could not reach the Slack API to validate the token. Check connectivity and try again.";
-    if (message === "internal_error") return "Tag Team could not store the credentials (an internal error). Check the worker logs and try again.";
+    if (message === "internal_error") return "Chickpea could not store the credentials (an internal error). Check the worker logs and try again.";
     return detail ? message + ": " + detail : message;
   }
 
@@ -1768,7 +1946,7 @@ details[open].advanced summary::before {
       // Provider, and Snapshot are diagnostic and move under Advanced (card 07).
       body = '<div class="well"><dl>' +
         '<div class="kv"><dt>Profile</dt><dd>' + esc(profile.name) + ' ' + enabledBadge(profile.enabled) + '</dd></div>' +
-        '<div class="kv"><dt>Replies as</dt><dd>Tag &mdash; the install-wide Slack identity shared by every channel</dd></div>' +
+        '<div class="kv"><dt>Replies as</dt><dd>Chickpea &mdash; the install-wide Slack identity shared by every channel</dd></div>' +
         '<div class="kv"><dt>Instructions</dt><dd><div class="instructions-preview">' + instructionLayersHtml(state.effective.instructionLayers) + '</div></dd></div>' +
         '</dl></div>';
     }
@@ -1833,10 +2011,10 @@ details[open].advanced summary::before {
     var cards = state.agents.map(profileCardHtml).join("");
     return '<div class="main-head"><div style="display:flex; flex-direction:column; gap:6px;">' +
       '<h1 class="page-title">Profiles</h1>' +
-      '<p class="hint" style="max-width:58ch;">A profile is the reusable behavior you attach to a channel &mdash; its instructions, model, skills, and connections. One profile can answer in many channels, and it always replies as <b style="font-weight:500; color:var(--text);">@Tag</b> &mdash; a profile changes how Tag answers, never who it is.</p>' +
+      '<p class="hint" style="max-width:58ch;">A profile is the reusable behavior you attach to a channel &mdash; its instructions, model, skills, and connections. One profile can answer in many channels, and it always replies as <b style="font-weight:500; color:var(--text);">@Chickpea</b> &mdash; a profile changes how Chickpea answers, never who it is.</p>' +
       '</div><button type="button" class="btn btn-primary" style="flex-shrink:0;" data-action="new-profile">New profile</button></div>' +
-      '<section class="section"><div class="section-head"><div><h2 class="section-title">Your profiles</h2><p class="hint">Everything Tag can be in this workspace.</p></div></div>' +
-      (cards || '<div class="empty"><p class="field-label">No profiles yet</p><p class="hint">Create one to give Tag a behavior you can attach to channels.</p></div>') +
+      '<section class="section"><div class="section-head"><div><h2 class="section-title">Your profiles</h2><p class="hint">Everything Chickpea can be in this workspace.</p></div></div>' +
+      (cards || '<div class="empty"><p class="field-label">No profiles yet</p><p class="hint">Create one to give Chickpea a behavior you can attach to channels.</p></div>') +
       '</section>';
   }
 
@@ -2030,10 +2208,12 @@ details[open].advanced summary::before {
       return '<div class="ptab-panel" id="ptab-panel-' + id + '" role="tabpanel" aria-labelledby="ptab-' + id + '"' + (id === active ? "" : " hidden") + '>' + html + '</div>';
     }
     return '<section class="section">' +
+      '<div class="ptab-tray">' +
       '<div class="ptabs" role="tablist" aria-label="Profile behavior">' + bar + '</div>' +
       panel("instructions", instructionsPanelHtml(draft)) +
       panel("skills", skillsPanelHtml(draft)) +
       panel("connections", connectionsPanelHtml(draft)) +
+      '</div>' +
       '</section>';
   }
 
@@ -2262,7 +2442,7 @@ details[open].advanced summary::before {
     var err = state.profileError === "Name is required.";
     return '<div class="field"><label class="field-label" for="p-name">Name</label>' +
       '<input class="input" id="p-name" name="name" type="text" value="' + esc(draft.name) + '"' + (err ? ' style="outline:2px solid var(--danger); outline-offset:-1px;"' : "") + ' data-action="profile-name">' +
-      '<p class="hint">Shown here in /admin only. Replies in Slack always post as @Tag.</p>' +
+      '<p class="hint">Shown here in /admin only. Replies in Slack always post as @Chickpea.</p>' +
       (err ? '<p class="field-error">Name is required.</p>' : "") + '</div>';
   }
 
@@ -2288,7 +2468,7 @@ details[open].advanced summary::before {
     return '<div style="display:flex; flex-direction:column; gap:6px;">' +
       '<button type="button" class="link-btn" style="align-self:flex-start;" data-action="profiles-back">&larr; Profiles</button>' +
       '<h1 class="page-title">New profile</h1>' +
-      '<p class="hint">Create a reusable behavior you can attach to channels. It always replies as <b style="font-weight:500; color:var(--text);">@Tag</b>.</p></div>' +
+      '<p class="hint">Create a reusable behavior you can attach to channels. It always replies as <b style="font-weight:500; color:var(--text);">@Chickpea</b>.</p></div>' +
       '<section class="section"><div class="section-head"><div><h2 class="section-title">Details</h2></div></div>' +
       '<div class="form-grid">' +
       profileNameFieldHtml(draft) +
@@ -2313,7 +2493,7 @@ details[open].advanced summary::before {
     return '<div class="main-head"><div style="display:flex; flex-direction:column; gap:6px;">' +
       '<button type="button" class="link-btn" style="align-self:flex-start;" data-action="profiles-back">&larr; Profiles</button>' +
       titleRow +
-      '<p class="hint">Edit this reusable behavior. It always replies as <b style="font-weight:500; color:var(--text);">@Tag</b>.</p></div>' +
+      '<p class="hint">Edit this reusable behavior. It always replies as <b style="font-weight:500; color:var(--text);">@Chickpea</b>.</p></div>' +
       '<label style="display:flex; align-items:center; gap:10px;"><span class="hint">' + (draft.enabled ? "Enabled" : "Disabled") + '</span>' +
       '<span class="toggle"><span class="thumb"></span><input type="checkbox" name="profile-enabled" data-action="profile-enable-toggle" ' + (draft.enabled ? "checked" : "") + ' aria-label="Profile enabled"></span></label></div>' +
       disableConfirmHtml(draft) +
@@ -2581,7 +2761,7 @@ details[open].advanced summary::before {
   function settingsMainHtml() {
     var head = '<div style="display:flex; flex-direction:column; gap:6px;">' +
       '<h1 class="page-title">Settings</h1>' +
-      '<p class="hint">Where Tag gets its model keys, and which models show up when you pin one to a profile.</p></div>';
+      '<p class="hint">Where Chickpea gets its model keys, and which models show up when you pin one to a profile.</p></div>';
     if (state.settingsError) {
       return head + '<div class="empty"><p class="field-label">Settings failed to load</p><p class="error">' + esc(state.settingsError) + '</p></div>';
     }
@@ -2595,7 +2775,7 @@ details[open].advanced summary::before {
     var rows = providers.map(providerRowHtml).join("");
     return head +
       '<section class="section"><div class="section-head"><div><h2 class="section-title">Model providers</h2>' +
-      '<p class="hint">A key lets Tag run that provider\\'s models. Environment variables always win over keys stored here &mdash; same rule as the Slack connection. Validating a key makes one live call to the provider\\'s models endpoint, which also loads its model list.</p></div></div>' +
+      '<p class="hint">A key lets Chickpea run that provider\\'s models. Environment variables always win over keys stored here &mdash; same rule as the Slack connection. Validating a key makes one live call to the provider\\'s models endpoint, which also loads its model list.</p></div></div>' +
       rows +
       '<p class="hint">More providers appear here as this install registers them in <span class="mono" style="color:var(--text-2);">src/app.ts</span>.</p></section>';
   }
@@ -3285,6 +3465,68 @@ details[open].advanced summary::before {
     return postJson("/admin/api/assignments", "PUT", body);
   }
 
+  // ---- pea mascot: eye tracking, proximity expression, click boop ----------
+  // The tick re-queries .pea every frame because render() rebuilds the topbar
+  // wholesale; all transient state lives in this closure, not the DOM. The
+  // CSS drives expression from the --prox custom property; JS only supplies
+  // --prox and the lerped pupil translate.
+  var peaMotionOk = typeof window === "undefined" || !window.matchMedia || !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  var peaMouseX = -1;
+  var peaMouseY = -1;
+  var peaEyeX = 0;
+  var peaEyeY = 0;
+  var peaRaf = 0;
+  function peaTick() {
+    peaRaf = 0;
+    var pea = document.querySelector(".avatar .pea");
+    if (!pea || !pea.getBoundingClientRect || peaMouseX < 0) return;
+    var rect = pea.getBoundingClientRect();
+    if (!rect.width) return;
+    var dx = peaMouseX - (rect.left + rect.width / 2);
+    var dy = peaMouseY - (rect.top + rect.height / 2);
+    var dist = Math.sqrt(dx * dx + dy * dy);
+    // Expression ramps from neutral to grin as the cursor closes within 420px.
+    var prox = Math.max(0, Math.min(1, 1 - dist / 420));
+    // Pupils hit full travel (1.3 SVG units) once the cursor is 60px out.
+    var reach = Math.min(1, dist / 60) * 1.3;
+    var targetX = dist > 0 ? (dx / dist) * reach : 0;
+    var targetY = dist > 0 ? (dy / dist) * reach : 0;
+    peaEyeX += (targetX - peaEyeX) * 0.22;
+    peaEyeY += (targetY - peaEyeY) * 0.22;
+    var eyes = pea.querySelectorAll(".pea-eye");
+    for (var i = 0; i < eyes.length; i++) {
+      eyes[i].style.transform = "translate(" + peaEyeX.toFixed(2) + "px, " + peaEyeY.toFixed(2) + "px)";
+    }
+    pea.style.setProperty("--prox", prox.toFixed(3));
+    if (Math.abs(targetX - peaEyeX) > 0.02 || Math.abs(targetY - peaEyeY) > 0.02) {
+      peaRaf = requestAnimationFrame(peaTick);
+    }
+  }
+  function peaBoop() {
+    // Deferred a frame so it lands on the avatar the go-home re-render just
+    // built (a class added before render() would be wiped with the old DOM).
+    requestAnimationFrame(function () {
+      var wrap = document.querySelector(".brand-home .avatar");
+      if (!wrap || !wrap.classList) return;
+      wrap.classList.remove("is-boop");
+      void wrap.offsetWidth;
+      wrap.classList.add("is-boop");
+      setTimeout(function () {
+        if (wrap.classList) wrap.classList.remove("is-boop");
+      }, 520);
+    });
+  }
+  if (peaMotionOk && typeof requestAnimationFrame === "function") {
+    document.addEventListener("mousemove", function (event) {
+      peaMouseX = event.clientX;
+      peaMouseY = event.clientY;
+      if (!peaRaf) peaRaf = requestAnimationFrame(peaTick);
+    }, { passive: true });
+    document.addEventListener("click", function (event) {
+      if (event.target && event.target.closest && event.target.closest(".brand-home")) peaBoop();
+    });
+  }
+
   document.addEventListener("click", function (event) {
     // Outside-click closes the open Model combobox (F6). A click inside the
     // combo (the input, an option, or the Settings row) is left to the
@@ -3772,8 +4014,8 @@ details[open].advanced summary::before {
   function addChannelErrorText(error) {
     if (error && error.serverMessage) return error.serverMessage;
     var message = error && error.message;
-    if (message === "channel_not_found") return "Slack could not find that channel in the connected workspace. Check the ID, and invite @Tag if it is private.";
-    if (message === "workspace_mismatch") return "That channel belongs to a different workspace than the one Tag is connected to.";
+    if (message === "channel_not_found") return "Slack could not find that channel in the connected workspace. Check the ID, and invite @Chickpea if it is private.";
+    if (message === "workspace_mismatch") return "That channel belongs to a different workspace than the one Chickpea is connected to.";
     if (message === "unknown_agent") return "The profile no longer exists. Reload and try again.";
     return message || "Could not add the channel.";
   }
@@ -3812,7 +4054,7 @@ details[open].advanced summary::before {
       // Slack's authoritative name (server override) becomes the display label.
       var savedLabel = normalizeChannelLabel((result && result.assignment && result.assignment.channelLabel) || label || channelId);
       state.addChannelInvite = result && result.isMember === false
-        ? "#" + savedLabel + " was added, but @Tag isn't a member of it yet, so it won't hear mentions there. Invite @Tag to #" + savedLabel + " in Slack — no need to come back here."
+        ? "#" + savedLabel + " was added, but @Chickpea isn't a member of it yet, so it won't hear mentions there. Invite @Chickpea to #" + savedLabel + " in Slack — no need to come back here."
         : "";
       return refreshData();
     }).catch(function (error) { fail(addChannelErrorText(error)); });
@@ -4408,9 +4650,10 @@ export function renderAdminLogin(options: { invalidToken?: boolean } = {}): stri
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Tag Team · Sign in</title>
+<title>Chickpea · Sign in</title>
 <style>
-:root { --bg:#ffffff; --well:#f7f5f2; --line:rgba(28,25,23,0.12); --text:#201d1a; --text-2:#57534c; --ember:#e8833a; --ember-bright:#f09a55; --danger:#c03538; --font:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; --radius:8px; }
+@import url("https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;600;700;800&family=Quicksand:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap");
+:root { --bg:#f4ebd8; --well:#fffdf6; --line:rgba(59,50,32,0.12); --text:#3b3220; --text-2:#6b5c42; --ember:#dda033; --ember-bright:#e5ac44; --danger:#b5473a; --font:Quicksand,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; --radius:13px; }
 * { box-sizing:border-box; margin:0; padding:0; }
 html { color-scheme:light; }
 body { background:var(--bg); color:var(--text-2); font-family:var(--font); min-height:100dvh; display:flex; align-items:center; justify-content:center; padding:24px; -webkit-font-smoothing:antialiased; }
@@ -4422,13 +4665,13 @@ label { color:var(--text); display:block; font-size:0.8125rem; font-weight:500; 
 .mono { font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace; }
 input { background:#fff; border:0; border-radius:var(--radius); box-shadow:inset 0 0 0 1px rgba(28,25,23,0.15); color:var(--text); font:inherit; font-size:0.875rem; padding:9px 11px; width:100%; }
 input:focus-visible { outline:2px solid #b05415; outline-offset:-1px; }
-button { align-items:center; background:var(--ember); border:0; border-radius:var(--radius); color:#22130a; cursor:pointer; display:inline-flex; font:inherit; font-size:0.8125rem; font-weight:500; justify-content:center; min-height:36px; padding:8px 14px; }
+button { align-items:center; background:var(--ember); border:0; border-radius:var(--radius); box-shadow:0 2.5px 0 #b27e1f; color:#3a2a08; cursor:pointer; display:inline-flex; font:inherit; font-size:0.8125rem; font-weight:700; justify-content:center; min-height:36px; padding:8px 14px; }
 button:hover { background:var(--ember-bright); }
 </style>
 </head>
 <body>
 <form class="card" method="get" action="/admin">
-  <h1>Sign in to Tag Team</h1>
+  <h1>Sign in to Chickpea</h1>
   <p>Enter your <span class="mono">TAG_ADMIN_TOKEN</span> to open the admin.</p>
   ${error}
   <div>

@@ -140,11 +140,11 @@ test('wizard GET honors x-forwarded-proto/host when deriving the events URL', as
         headers: {
           ...auth(),
           'x-forwarded-proto': 'https',
-          'x-forwarded-host': 'tag-team.acme.workers.dev',
+          'x-forwarded-host': 'chickpea.acme.workers.dev',
         },
       });
       const body = (await response.json()) as { requestUrl: string; manifestUrl: string };
-      assert.equal(body.requestUrl, 'https://tag-team.acme.workers.dev/channels/slack/events');
+      assert.equal(body.requestUrl, 'https://chickpea.acme.workers.dev/channels/slack/events');
       assert.ok(body.manifestUrl.includes(encodeURIComponent(body.requestUrl)));
     } finally {
       settings.close();
@@ -391,11 +391,11 @@ test('requestOrigin on Node takes the LAST x-forwarded hop, not a client-forged 
         headers: {
           ...auth(),
           'x-forwarded-proto': 'http, https',
-          'x-forwarded-host': 'client-forged.example, tag-team.real.workers.dev',
+          'x-forwarded-host': 'client-forged.example, chickpea.real.workers.dev',
         },
       });
       const body = (await response.json()) as { requestUrl: string };
-      assert.equal(body.requestUrl, 'https://tag-team.real.workers.dev/channels/slack/events');
+      assert.equal(body.requestUrl, 'https://chickpea.real.workers.dev/channels/slack/events');
     } finally {
       settings.close();
     }

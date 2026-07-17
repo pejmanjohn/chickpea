@@ -19,7 +19,7 @@ import type { ChannelAssignment, CustomAgentConfig } from '../src/config/types.t
 import { withEnv } from './helpers/env.ts';
 
 function tempDbPath(): { dir: string; path: string } {
-  const dir = mkdtempSync(join(tmpdir(), 'tag-team-config-store-'));
+  const dir = mkdtempSync(join(tmpdir(), 'chickpea-config-store-'));
   return { dir, path: join(dir, 'state.db') };
 }
 

@@ -66,7 +66,7 @@ function workerName() {
   } catch {
     /* unknown */
   }
-  return 'tag-team';
+  return 'chickpea';
 }
 
 const RULE = '────────────────────────────────────────────────────────';
@@ -84,7 +84,7 @@ child.on('close', (code) => {
       [
         '',
         RULE,
-        '  ✔ Deployed. Tag Team is live.',
+        '  ✔ Deployed. Chickpea is live.',
         '',
         '  Next steps:',
         `    1. Open  ${deployedUrl}/admin`,

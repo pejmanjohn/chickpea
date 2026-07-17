@@ -87,7 +87,7 @@ test('agent snapshots are purged past the thread TTL, bounding the table', async
 test('putIfAbsent is write-once: a losing writer gets the PERSISTED row back', async () => {
   // Two stores on the same file DB model the real race (the channel process
   // and the agent self-call each hold their own SQLite connection).
-  const dir = mkdtempSync(join(tmpdir(), 'tag-team-snapshot-race-'));
+  const dir = mkdtempSync(join(tmpdir(), 'chickpea-snapshot-race-'));
   const dbPath = join(dir, 'state.db');
   // Pin the store clock: putIfAbsent TTL-purges rows older than now - TTL, and
   // the fixture createdAt values must stay inside that window.
@@ -119,7 +119,7 @@ test('putIfAbsent is write-once: a losing writer gets the PERSISTED row back', a
 });
 
 test('slack-thread freezes effective config per durable thread id', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'tag-team-thread-snapshot-'));
+  const dir = mkdtempSync(join(tmpdir(), 'chickpea-thread-snapshot-'));
   const dbPath = join(dir, 'state.db');
 
   try {

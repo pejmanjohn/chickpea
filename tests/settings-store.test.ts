@@ -35,7 +35,7 @@ test('SqliteSettingsStore round-trips set, overwrite, and delete', async () => {
 });
 
 test('SqliteSettingsStore persists across restart on a file database', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'tag-team-settings-store-'));
+  const dir = mkdtempSync(join(tmpdir(), 'chickpea-settings-store-'));
   const path = join(dir, 'state.db');
   try {
     const first = new SqliteSettingsStore(path);
@@ -53,7 +53,7 @@ test('SqliteSettingsStore persists across restart on a file database', async () 
 test('settings share the state DB file with the other app stores without clashing', async () => {
   // All four app stores open the same SQLite file; the settings table must
   // coexist with the config/claims/snapshot tables created by the others.
-  const dir = mkdtempSync(join(tmpdir(), 'tag-team-settings-shared-'));
+  const dir = mkdtempSync(join(tmpdir(), 'chickpea-settings-shared-'));
   const path = join(dir, 'state.db');
   const { SqliteConfigStore } = await import('../src/config/store.ts');
   const config = new SqliteConfigStore(path, { agents: [], assignments: [] });

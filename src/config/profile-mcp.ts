@@ -110,7 +110,7 @@ async function resolveOneServer(
   } catch (err) {
     // Graceful degrade: skip this server, never abort the turn. Log SAFE text
     // only — raw error strings never reach logs, the DB, or the UI.
-    console.warn('[tag-team] MCP connection ' + server.id + ' skipped: ' + safeMcpFailureText(err));
+    console.warn('[chickpea] MCP connection ' + server.id + ' skipped: ' + safeMcpFailureText(err));
     return [];
   }
 }

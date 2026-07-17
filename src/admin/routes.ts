@@ -801,7 +801,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         );
       }
       if (info?.ok && info.channel) {
-        // (c) Membership drives the UI's "invite @Tag or it never hears
+        // (c) Membership drives the UI's "invite @Chickpea or it never hears
         //     mentions" reminder; Slack's authoritative name becomes the label.
         isMember = info.channel.isMember;
         if (info.channel.name) {
@@ -975,7 +975,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       // Distinct from a rejected token: Slack (or the SLACK_API_URL override)
       // could not be reached at all — retriable, nothing stored.
       console.error(
-        '[tag-team] wizard auth.test unreachable:',
+        '[chickpea] wizard auth.test unreachable:',
         err instanceof Error ? err.message : String(err),
       );
       return c.json({ error: 'slack_unreachable' }, 502);
@@ -1091,7 +1091,7 @@ async function persistRequestOrigin(c: Context, store: SettingsStore): Promise<v
     lastPersistedPublicUrl = origin;
   } catch (err) {
     console.error(
-      '[tag-team] failed to persist slack.publicUrl:',
+      '[chickpea] failed to persist slack.publicUrl:',
       err instanceof Error ? err.message : String(err),
     );
   }
@@ -1249,9 +1249,9 @@ function connectedWorkspaceLabel(team: SlackTeamInfo): string {
 
 function workspaceMismatchMessage(team: SlackTeamInfo, workspaceId: string): string {
   return (
-    `Tag Team is connected to ${connectedWorkspaceLabel(team)}, but this channel belongs to a ` +
-    `different workspace (${workspaceId}). Add Tag to ${team.teamName ?? 'the connected workspace'} ` +
-    `in Slack, or connect Tag to that workspace instead.`
+    `Chickpea is connected to ${connectedWorkspaceLabel(team)}, but this channel belongs to a ` +
+    `different workspace (${workspaceId}). Add Chickpea to ${team.teamName ?? 'the connected workspace'} ` +
+    `in Slack, or connect Chickpea to that workspace instead.`
   );
 }
 
@@ -1259,7 +1259,7 @@ function channelNotFoundMessage(channelId: string, team: SlackTeamInfo): string 
   const where = team.teamName ? ` in ${team.teamName}` : '';
   return (
     `Slack could not find channel ${channelId}${where}. Check for a typo, make sure the channel ` +
-    `is in the connected workspace, and if it is private invite @Tag to it first — then try again.`
+    `is in the connected workspace, and if it is private invite @Chickpea to it first — then try again.`
   );
 }
 
@@ -1396,7 +1396,7 @@ function internalError(
   c: { json(body: { error: string }, status: 500): Response },
   err: unknown,
 ): Response {
-  console.error('[tag-team] admin API failure:', err instanceof Error ? err.message : String(err));
+  console.error('[chickpea] admin API failure:', err instanceof Error ? err.message : String(err));
   return c.json({ error: 'internal_error' }, 500);
 }
 

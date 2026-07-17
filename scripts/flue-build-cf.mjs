@@ -28,7 +28,7 @@ const dbFile = path.join(projectRoot, 'src', 'db.ts');
 // Preserve the operator's local dev secrets across rebuilds. The flue build
 // wipes the output dir, which is where the documented `wrangler dev` loop keeps
 // its `.dev.vars` (next to the emitted wrangler.json, at
-// <output>/tag_team/.dev.vars). Snapshot it before the build and restore it
+// <output>/chickpea/.dev.vars). Snapshot it before the build and restore it
 // after so a rebuild never deletes the secrets file. `--output` is parsed from
 // the same argv forwarded to flue (defaults to the committed dist-cf).
 const forwardedArgs = process.argv.slice(2);
@@ -37,7 +37,7 @@ const outputDir =
   outputArgIndex >= 0 && forwardedArgs[outputArgIndex + 1]
     ? forwardedArgs[outputArgIndex + 1]
     : 'dist-cf';
-const devVarsFile = path.join(projectRoot, outputDir, 'tag_team', '.dev.vars');
+const devVarsFile = path.join(projectRoot, outputDir, 'chickpea', '.dev.vars');
 const devVarsSnapshot = existsSync(devVarsFile) ? readFileSync(devVarsFile) : undefined;
 
 function restoreDevVars() {

@@ -43,7 +43,7 @@ function warnSelfUrlIgnoredOnce(): void {
   if (process.env.TAG_SELF_URL) {
     selfUrlWarned = true;
     console.warn(
-      '[tag-team] TAG_SELF_URL is set but ignored: agent dispatch is now in-process. ' +
+      '[chickpea] TAG_SELF_URL is set but ignored: agent dispatch is now in-process. ' +
         'Remove it from your environment.',
     );
   }

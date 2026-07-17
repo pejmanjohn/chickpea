@@ -36,7 +36,7 @@ function noteResolvedModel(model: string): string {
   if (model.startsWith('cloudflare/') && !warnedUnboundedCloudflareModels.has(model)) {
     warnedUnboundedCloudflareModels.add(model);
     console.warn(
-      `[tag-team] model ${model} resolves through the Workers AI binding with no declared ` +
+      `[chickpea] model ${model} resolves through the Workers AI binding with no declared ` +
         'context window (contextWindow 0): auto-compaction is disabled and long DM transcripts ' +
         'grow unbounded.',
     );

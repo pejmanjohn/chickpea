@@ -285,7 +285,7 @@ const handleSlackEvents: NonNullable<SlackChannelOptions['events']> = async ({ c
     } else {
       await state.release(evtKey);
       await state.release(msgKey);
-      console.error('[tag-team] no assignment for turn:', sanitizeError(err));
+      console.error('[chickpea] no assignment for turn:', sanitizeError(err));
       // Fail-closed with feedback: the channel stays silent, but the person
       // who explicitly mentioned the bot gets an ephemeral pointer at /admin.
       // Detached so the events ack is not delayed by the Slack Web API call.
@@ -293,7 +293,7 @@ const handleSlackEvents: NonNullable<SlackChannelOptions['events']> = async ({ c
         detach(
           c,
           postUnassignedChannelHint(turn, surface, state, platformEnv).catch((hintErr) => {
-            console.error('[tag-team] unassigned-channel hint failed:', sanitizeError(hintErr));
+            console.error('[chickpea] unassigned-channel hint failed:', sanitizeError(hintErr));
           }),
         );
       }
@@ -336,7 +336,7 @@ const handleSlackEvents: NonNullable<SlackChannelOptions['events']> = async ({ c
       // redelivery can re-drive, and stay silent.
       await state.release(evtKey);
       await state.release(msgKey);
-      console.error('[tag-team] enqueue turn failed:', enqueued.error.message);
+      console.error('[chickpea] enqueue turn failed:', enqueued.error.message);
     }
     return;
   }
@@ -348,7 +348,7 @@ const handleSlackEvents: NonNullable<SlackChannelOptions['events']> = async ({ c
       // final) returns normally and keeps its claim, so it never re-runs.
       await state.release(evtKey);
       await state.release(msgKey);
-      console.error('[tag-team] turn failed:', sanitizeError(err));
+      console.error('[chickpea] turn failed:', sanitizeError(err));
     }),
   );
 };
@@ -406,7 +406,7 @@ async function handleMemberJoinedChannel(
     // Best-effort courtesy: log and KEEP the claim so a Slack retry cannot
     // double-post the disclosure. Never rethrow — the events route turns a
     // throw into a 500, which is exactly what makes Slack redeliver the event.
-    console.error('[tag-team] channel onboarding post failed:', sanitizeError(err));
+    console.error('[chickpea] channel onboarding post failed:', sanitizeError(err));
   }
 }
 
@@ -491,6 +491,6 @@ async function postUnassignedChannelHint(
       throw err;
     }
   } catch (err) {
-    console.error('[tag-team] unassigned-channel hint failed:', sanitizeError(err));
+    console.error('[chickpea] unassigned-channel hint failed:', sanitizeError(err));
   }
 }

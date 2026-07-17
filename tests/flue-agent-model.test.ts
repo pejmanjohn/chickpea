@@ -37,7 +37,7 @@ function modelAgent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConf
 }
 
 test('Flue resolves the model specifier produced by the slack-thread agent', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'tag-team-model-seed-'));
+  const dir = mkdtempSync(join(tmpdir(), 'chickpea-model-seed-'));
   const dbPath = join(dir, 'state.db');
   const pinnedSeedAgents = seededAgents.map((agent) => ({
     ...agent,
@@ -123,7 +123,7 @@ test('model policy fails with the /admin fix when an unpinned agent has no fallb
 });
 
 test('slack-thread initializes from the SQLite config store for the current state DB path', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'tag-team-agent-config-'));
+  const dir = mkdtempSync(join(tmpdir(), 'chickpea-agent-config-'));
   const dbPath = join(dir, 'state.db');
   const store = new SqliteConfigStore(dbPath, { agents: [], assignments: [] });
   await store.createAgent({

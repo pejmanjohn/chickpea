@@ -1,11 +1,11 @@
 # Slack setup runbook — for an AI agent (or a careful human)
 
-This walks the Slack side of a Tag Team install: create the app, install it,
+This walks the Slack side of a Chickpea install: create the app, install it,
 and hand two values back to `/admin`. It exists because two steps confuse
 everyone: the bot token **does not exist** until the app is installed, and
 Slack's console offers three other token-shaped strings that are all wrong.
 
-**What you need before starting:** the Tag Team `/admin` URL (printed at the
+**What you need before starting:** the Chickpea `/admin` URL (printed at the
 end of the deploy: `https://<worker>.<subdomain>.workers.dev/admin`), the
 `TAG_ADMIN_TOKEN` chosen at deploy time, and — critically — the name of the
 **Slack workspace the bot should live in**.
@@ -48,7 +48,7 @@ prefers that; everything else is clicking.
      Mode disabled. Wrong value.
    - **Verification Token** — deprecated by Slack. Wrong value.
    - **Client Secret** — OAuth-flow plumbing. Wrong value.
-   Tag Team wants exactly two values: the `xoxb-…` bot token and the
+   Chickpea wants exactly two values: the `xoxb-…` bot token and the
    Signing Secret.
 
 7. **Paste both into `/admin`** → Connect Slack → **Validate & save**. The

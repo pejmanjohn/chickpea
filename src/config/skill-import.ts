@@ -154,7 +154,7 @@ function unquote(value: string): string {
 }
 
 /**
- * Normalize an arbitrary skill name (or directory basename) into Tag Team's
+ * Normalize an arbitrary skill name (or directory basename) into Chickpea's
  * strict rule (`^[a-z0-9]+(?:-[a-z0-9]+)*$`, ≤64). Returns "" if nothing usable
  * survives (the caller skips those).
  */
@@ -188,7 +188,7 @@ export async function resolveSkillSource(
   const { owner, repo } = parsed;
   const headers: Record<string, string> = {
     accept: 'application/vnd.github+json',
-    'user-agent': 'tag-team-skill-import',
+    'user-agent': 'chickpea-skill-import',
     ...(token ? { authorization: `Bearer ${token}` } : {}),
   };
 

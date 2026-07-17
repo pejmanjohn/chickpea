@@ -1,11 +1,11 @@
 {
-  "name": "tag-team",
+  "name": "chickpea",
   "version": "0.0.0",
   "description": "Self-hosted, model-agnostic AI agent for Slack.",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/pejmanjohn/tag-team.git"
+    "url": "git+https://github.com/pejmanjohn/chickpea.git"
   },
   "type": "module",
   "engines": {
@@ -44,7 +44,7 @@
     "wrangler": "4.103.0"
   },
   "cloudflare": {
-    "label": "Tag Team",
+    "label": "Chickpea",
     "products": [
       "Workers",
       "Durable Objects",

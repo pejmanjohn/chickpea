@@ -155,7 +155,7 @@ export async function runTurn(
     try {
       text = await promptSlackThreadAgent(conversationKey, prompt, platformEnv);
     } catch (err) {
-      console.error('[tag-team] provider call failed:', sanitizeError(err));
+      console.error('[chickpea] provider call failed:', sanitizeError(err));
       await statusTurn.drain();
       await presenter.deliverFinal(PROVIDER_FAILURE_TEXT, 'plain_text');
       return;

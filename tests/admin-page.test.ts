@@ -1700,7 +1700,7 @@ test('add-channel opens a main-panel picker with the locked workspace and a chan
   assert.match(harness.app.innerHTML, /secret-room/);
   assert.match(harness.app.innerHTML, /not a member/);
   // Helper copy + the manual fallback affordance.
-  assert.match(harness.app.innerHTML, /Invite @Tag to the channel in Slack, then click Refresh/);
+  assert.match(harness.app.innerHTML, /Invite @Chickpea to the channel in Slack, then click Refresh/);
   assert.match(harness.app.innerHTML, /Enter ID manually/);
   // The picker fetched the proxy exactly once on open.
   assert.equal(harness.channelListCalls.length, 1);
@@ -1739,8 +1739,8 @@ test('add-channel submit PUTs the connected workspace id and surfaces the invite
     },
   ]);
   // isMember:false from the server drives the invite reminder (channel-specific).
-  assert.match(harness.app.innerHTML, /Invite Tag to finish/);
-  assert.match(harness.app.innerHTML, /Invite @Tag to #secret-room in Slack/);
+  assert.match(harness.app.innerHTML, /Invite Chickpea to finish/);
+  assert.match(harness.app.innerHTML, /Invite @Chickpea to #secret-room in Slack/);
 });
 
 test('the rail and add-channel affordance stay gated until Slack is connected', async () => {
@@ -1836,7 +1836,7 @@ test('connected + zero channels shows the funnel with credentials demoted to a d
 
   // The funnel is the focus; the header chip flips to Connected and credential
   // provenance is demoted to a collapsed "Connection details" disclosure.
-  assert.match(harness.app.innerHTML, /Choose where Tag answers/);
+  assert.match(harness.app.innerHTML, /Choose where Chickpea answers/);
   assert.match(harness.app.innerHTML, /Connected/);
   assert.match(harness.app.innerHTML, /Connection details/);
   assert.doesNotMatch(harness.app.innerHTML, /name="botToken"/);

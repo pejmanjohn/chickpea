@@ -44,7 +44,7 @@ import {
 const WRANGLER_BIN = join(REPO_ROOT, 'node_modules', '.bin', 'wrangler');
 const CF_BUILD_SCRIPT = join(REPO_ROOT, 'scripts', 'flue-build-cf.mjs');
 const CF_OUTPUT_DIR = join(REPO_ROOT, 'dist-cf');
-const CF_WRANGLER_CONFIG = join(CF_OUTPUT_DIR, 'tag_team', 'wrangler.json');
+const CF_WRANGLER_CONFIG = join(CF_OUTPUT_DIR, 'chickpea', 'wrangler.json');
 const PERSIST_DIR = join(REPO_ROOT, '.wrangler-state');
 const ADMIN_TOKEN = 'test-token';
 const WORKSPACE = 'T_SMOKE';
@@ -122,7 +122,7 @@ function writeDevVars(fakeUrl) {
   // story — the app boots credential-less and the /admin wizard stores the
   // bot token, signing secret, and bot user id into the DO settings store.
   writeFileSync(
-    join(CF_OUTPUT_DIR, 'tag_team', '.dev.vars'),
+    join(CF_OUTPUT_DIR, 'chickpea', '.dev.vars'),
     [
       `TAG_ADMIN_TOKEN=${ADMIN_TOKEN}`,
       `SLACK_API_URL=${fakeUrl}/api/`,
@@ -450,7 +450,7 @@ async function main() {
     );
     check(
       firstRunAdmin.html.length > 0 &&
-        !firstRunAdmin.html.includes('Choose where Tag answers') &&
+        !firstRunAdmin.html.includes('Choose where Chickpea answers') &&
         !firstRunAdmin.html.includes('data-action="toggle-add-channel"'),
       'first-run admin render does not show the connected funnel',
     );
@@ -488,7 +488,7 @@ async function main() {
     );
     const connectedAdmin = await renderAdminWithWorkerdState(baseUrl);
     check(
-      connectedAdmin.html.includes('Choose where Tag answers') &&
+      connectedAdmin.html.includes('Choose where Chickpea answers') &&
         connectedAdmin.html.includes('data-action="toggle-add-channel"'),
       'post-wizard admin render shows the connected channel funnel',
     );

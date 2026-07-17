@@ -132,7 +132,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       return stores;
     } catch (err) {
       this.initError = err instanceof Error ? err.message : String(err);
-      console.error('[tag-team] TagStateStore init failed:', this.initError);
+      console.error('[chickpea] TagStateStore init failed:', this.initError);
       return undefined;
     }
   }
@@ -318,7 +318,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         stores.turnJobs.markDelivered(job.id);
       } catch (err) {
         console.error(
-          `[tag-team] relay turn attempt ${attempt} failed:`,
+          `[chickpea] relay turn attempt ${attempt} failed:`,
           sanitizeError(err),
         );
         if (attempt >= MAX_TURN_ATTEMPTS) {
@@ -332,7 +332,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
             client,
             this.env as PlatformEnv,
           ).catch((finalErr) => {
-            console.error('[tag-team] relay terminal final failed:', sanitizeError(finalErr));
+            console.error('[chickpea] relay terminal final failed:', sanitizeError(finalErr));
           });
           stores.slack.release(job.evtKey);
           stores.slack.release(job.msgKey);
@@ -404,7 +404,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         });
       }
       const message = err instanceof Error ? err.message : String(err);
-      console.error('[tag-team] TagStateStore RPC failure:', message);
+      console.error('[chickpea] TagStateStore RPC failure:', message);
       return rpcError('internal', message);
     }
   }

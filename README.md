@@ -1,10 +1,10 @@
-# Tag Team
+# Chickpea
 
 **Self-hosted, model-agnostic AI agent for Slack. One click to your own Cloudflare account — the first mention answers before you add a single model API key.**
 
-Tag Team answers `@`-mentions, thread replies, and DMs in your workspace, and every channel can get its own profile: separate instructions, model, and allowed tools, managed from a token-gated `/admin` page. It is built for teams that want an AI agent in Slack without routing messages, tokens, or model traffic through someone else's cloud: your Slack credentials live in your own Cloudflare Durable Object (or your own SQLite file), model calls go directly to the provider you pick, and this project hosts nothing. Built on [Flue](https://www.npmjs.com/package/@flue/runtime). MIT-licensed.
+Chickpea answers `@`-mentions, thread replies, and DMs in your workspace, and every channel can get its own profile: separate instructions, model, and allowed tools, managed from a token-gated `/admin` page. It is built for teams that want an AI agent in Slack without routing messages, tokens, or model traffic through someone else's cloud: your Slack credentials live in your own Cloudflare Durable Object (or your own SQLite file), model calls go directly to the provider you pick, and this project hosts nothing. Built on [Flue](https://www.npmjs.com/package/@flue/runtime). MIT-licensed.
 
-![The /admin page on a local install: the first-run Connect Slack wizard, a channel with its attached profile, and per-channel instructions](assets/admin-page.png)
+![The /admin page on a local install: a connected workspace, a channel with its attached profile, and per-channel instructions](assets/admin-page.png)
 
 **Is this for you?** The hard constraints, up front (details under [Good to know](#good-to-know)):
 
@@ -16,12 +16,12 @@ Tag Team answers `@`-mentions, thread replies, and DMs in your workspace, and ev
 
 ## Deploy to Cloudflare
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/pejmanjohn/tag-team)
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/pejmanjohn/chickpea)
 
 Button to first answer in four steps — expect one detour out to Slack's app console (step 3):
 
 1. **Click the button.** Cloudflare clones this repo into your GitHub, provisions the Durable Objects, wires Workers Builds CI, and prompts for one secret: `TAG_ADMIN_TOKEN` (generate it with `openssl rand -hex 32`).
-2. **Log in.** Open `https://tag-team.<your-account>.workers.dev/admin?token=<your TAG_ADMIN_TOKEN>`. That sets a session cookie and strips the token from the URL; opening `/admin` without a session shows a token-entry form that does the same.
+2. **Log in.** Open `https://chickpea.<your-account>.workers.dev/admin?token=<your TAG_ADMIN_TOKEN>`. That sets a session cookie and strips the token from the URL; opening `/admin` without a session shows a token-entry form that does the same.
 3. **Click "Create your Slack app".** The first-run wizard deep-links Slack's app console with this repo's manifest — the events request URL already points at your worker. Install the app to your workspace. If Slack shows the request URL as unverified, click **Retry** on Event Subscriptions: the worker echoes the verification challenge even before credentials are saved.
 4. **Paste back the bot token and signing secret.** The wizard validates the token live against Slack `auth.test` and stores both in Durable Object state. Env secrets (`wrangler secret put`) always take precedence if you set them later.
 
@@ -107,10 +107,10 @@ Local Cloudflare dev loop, under real workerd:
 
 ```bash
 npm run flue:build:cf
-npx wrangler dev --config dist-cf/tag_team/wrangler.json --persist-to .wrangler-state
+npx wrangler dev --config dist-cf/chickpea/wrangler.json --persist-to .wrangler-state
 ```
 
-Keep `--persist-to` outside `dist-cf/`: the build output is disposable, and a rebuild would otherwise wipe your local Durable Object state. Local dev secrets live in `dist-cf/tag_team/.dev.vars` (`.dev.vars.example` documents them); `npm run flue:build:cf` snapshots and restores that file across rebuilds.
+Keep `--persist-to` outside `dist-cf/`: the build output is disposable, and a rebuild would otherwise wipe your local Durable Object state. Local dev secrets live in `dist-cf/chickpea/.dev.vars` (`.dev.vars.example` documents them); `npm run flue:build:cf` snapshots and restores that file across rebuilds.
 
 For live Slack testing without a public tunnel, `npm run slack:bridge` forwards Socket Mode events to the local server with genuine v0 signatures (dev-only; requires an app-level token with `connections:write`).
 
@@ -170,7 +170,7 @@ If neither exists, initialization fails with an error that tells the operator to
 Direction, not commitment — open an issue if one of these matters to you; that is how they get ordered.
 
 - **Optional Cloudflare Access for `/admin`.** In-worker verification of the `Cf-Access-Jwt-Assertion` JWT, skipping the token gate when configured. It has to be in-worker: a hostname-wide Access policy would block Slack's event webhooks.
-- **A guided `npx tag-team deploy`.** The same artifact the button ships, driven from the terminal.
+- **A guided `npx chickpea deploy`.** The same artifact the button ships, driven from the terminal.
 - **Multi-workspace Slack OAuth distribution**, so one deploy can serve several workspaces with per-workspace tokens.
 - **Connection presets.** Profiles gain capability through skills and remote MCP connections; a curated gallery of known-good servers (web search, docs) that pre-fills everything but the credential is the natural next step.
 - **More providers in the `/admin` model picker** — OpenAI, OpenRouter, and OpenAI-compatible endpoints such as Ollama and gateways. This is provider registration, not new plumbing.

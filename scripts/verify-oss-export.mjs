@@ -14,7 +14,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const scratch = mkdtempSync(join(tmpdir(), 'tag-team-export-'));
+const scratch = mkdtempSync(join(tmpdir(), 'chickpea-export-'));
 
 const term = (...parts) => parts.join('');
 const exportPath = (...parts) => posix.join(...parts);
