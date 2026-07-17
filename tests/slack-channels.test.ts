@@ -40,7 +40,6 @@ function agent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig {
   return {
     id: 'agent_channels',
     name: 'Channels Agent',
-    description: 'Assignment-validation fixture',
     instructions: 'Answer with channel context.',
     enabled: true,
     model: 'local-stub/channels',

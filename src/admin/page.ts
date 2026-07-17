@@ -450,9 +450,72 @@ details[open].advanced summary::before {
 .pcard + .pcard { margin-top: 12px; }
 .pcard .pcard-head { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; }
 .pcard .pcard-name { color: var(--text); font-size: 0.9375rem; font-weight: 600; }
-.pcard .pcard-desc { color: var(--text-2); font-size: 0.8125rem; max-width: 62ch; }
 .pcard .pcard-foot { align-items: center; display: flex; flex-wrap: wrap; gap: 10px; }
 .pcard .pcard-foot .spacer { flex: 1; }
+
+/* ---- inline title rename (profile edit head) ---- */
+.title-row { align-items: center; display: flex; gap: 8px; }
+.rename-btn {
+  align-items: center;
+  background: rgba(28, 25, 23, 0.05);
+  border: 0;
+  border-radius: 8px;
+  color: var(--text-2);
+  cursor: pointer;
+  display: inline-flex;
+  flex-shrink: 0;
+  height: 26px;
+  justify-content: center;
+  width: 26px;
+}
+.rename-btn:hover { background: rgba(28, 25, 23, 0.08); color: var(--text); }
+.rename-btn:focus-visible { outline: 2px solid var(--ember-deep); outline-offset: 2px; }
+.page-title-input { font-size: 1.0625rem; font-weight: 600; max-width: 32ch; }
+
+/* ---- profile capability tabs (Instructions / Skills / Connections) ----
+   Segmented pill bar on a recessed well; the active pill lifts to white with
+   a hairline ring. Muted-background + darker-text active state (never the
+   brand fill — that idiom is reserved for the .seg form control). */
+.ptabs {
+  align-self: flex-start;
+  background: rgba(28, 25, 23, 0.05);
+  border-radius: 999px;
+  display: flex;
+  gap: 2px;
+  max-width: 100%;
+  overflow-x: auto;
+  padding: 3px;
+}
+.ptab {
+  background: none;
+  border: 0;
+  border-radius: 999px;
+  color: var(--text-2);
+  cursor: pointer;
+  flex-shrink: 0;
+  font-family: inherit;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  line-height: 1;
+  padding: 7px 14px;
+  white-space: nowrap;
+}
+.ptab:hover { color: var(--text); }
+.ptab.on {
+  background: var(--bg);
+  box-shadow: inset 0 0 0 1px var(--line), 0 1px 2px rgba(28, 25, 23, 0.06);
+  color: var(--text);
+}
+.ptab:focus-visible { outline: 2px solid var(--ember-deep); outline-offset: 2px; }
+.ptab .ptab-count { color: var(--text-3); font-family: var(--mono); font-size: 0.75rem; font-weight: 400; margin-left: 7px; }
+.ptab.on .ptab-count { color: var(--text-2); }
+.ptab .ptab-dot { background: var(--ember); border-radius: 999px; display: inline-block; height: 6px; margin-left: 7px; vertical-align: 1px; width: 6px; }
+/* The panel shares the section's 14px column rhythm; the explicit [hidden]
+   rule is required because display:flex would otherwise beat the UA's
+   [hidden] { display: none }. */
+.ptab-panel { display: flex; flex-direction: column; gap: 14px; }
+.ptab-panel[hidden] { display: none; }
+.ptab-hint { margin: 0; max-width: 62ch; }
 
 /* ---- profile custom skills ---- */
 .skill-list { display: flex; flex-direction: column; gap: 8px; }
@@ -597,17 +660,8 @@ details[open].advanced summary::before {
 .import-desc { color: var(--text-3); font-size: 0.78125rem; overflow-wrap: anywhere; }
 .badge-src.import-scripts { text-transform: none; letter-spacing: 0; }
 
-/* ---- profile danger zone ---- */
-.danger-zone {
-  align-items: flex-start;
-  background: var(--danger-tint);
-  border-radius: 10px;
-  box-shadow: inset 0 0 0 1px rgba(192, 53, 56, 0.18);
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 16px 18px;
-}
+/* ---- profile footer (delete / add-to-channels / usage) ---- */
+.profile-foot { align-items: center; border-top: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 10px; padding-top: 20px; }
 
 /* ---- settings: model-provider rows + favorites ---- */
 .prov-row { border-radius: 10px; box-shadow: inset 0 0 0 1px var(--line-strong); display: flex; flex-direction: column; }
@@ -954,6 +1008,16 @@ details[open].advanced summary::before {
     editingAgentId: null,
     profileDraft: null,
     profileError: "",
+    // Active capability tab on the profile edit screen. Panels stay mounted
+    // ([hidden]) across switches, so no draft state lives here — just which
+    // panel is visible.
+    profileTab: "instructions",
+    // Inline title rename on the profile edit screen. null when closed; when
+    // open it carries { prev } so Escape (or an emptied field) can revert.
+    profileRenaming: null,
+    // "Add to channels" picker in the profile footer. Boolean — the candidate
+    // list is derived from state.assignments at render time.
+    attachPicker: false,
     // Inline custom-skill editor on the profile edit page. null when closed; when
     // open it is { index: <number|null for a new skill>, name, description,
     // instructions, error }. Only one editor is open at a time.
@@ -968,7 +1032,7 @@ details[open].advanced summary::before {
     // TRANSIENT secrets (bearerToken + headerValues) that live ONLY here and are
     // PUT to the settings store on save, then cleared — they never enter the
     // profile PATCH body. { index: <number|null for new>, id, displayName, url,
-    // transport, authMode, headerNames, headerValues, bearerToken, trusted,
+    // transport, authMode, headerNames, headerValues, bearerToken,
     // enabled, testing, testError, discoveredTools, checked (bool[] parallel to
     // discoveredTools), lifecycleStatus, statusText, lastCheckedAt, sources
     // (secret presence from a prior save: {bearer, headers}), error }.
@@ -1028,6 +1092,7 @@ details[open].advanced summary::before {
       check: "M12.416 3.376a.75.75 0 0 1 .208 1.04l-5 7.5a.75.75 0 0 1-1.154.114l-3-3a.75.75 0 1 1 1.06-1.06l2.353 2.353 4.493-6.74a.75.75 0 0 1 1.04-.207Z",
       "x-mark": "M2.22 2.22a.75.75 0 0 1 1.06 0L8 6.94l4.72-4.72a.75.75 0 1 1 1.06 1.06L9.06 8l4.72 4.72a.75.75 0 1 1-1.06 1.06L8 9.06l-4.72 4.72a.75.75 0 0 1-1.06-1.06L6.94 8 2.22 3.28a.75.75 0 0 1 0-1.06Z",
       plus: "M8.75 3.75a.75.75 0 0 0-1.5 0v3.5h-3.5a.75.75 0 0 0 0 1.5h3.5v3.5a.75.75 0 0 0 1.5 0v-3.5h3.5a.75.75 0 0 0 0-1.5h-3.5v-3.5Z",
+      pencil: "M13.488 2.513a1.75 1.75 0 0 0-2.475 0L6.75 6.774a2.75 2.75 0 0 0-.596.892l-.848 2.047a.75.75 0 0 0 .98.98l2.047-.848a2.75 2.75 0 0 0 .892-.596l4.263-4.262a1.75 1.75 0 0 0 0-2.474Z",
       "lock-closed": "M8 1a3.5 3.5 0 0 0-3.5 3.5V7A1.5 1.5 0 0 0 3 8.5v5A1.5 1.5 0 0 0 4.5 15h7a1.5 1.5 0 0 0 1.5-1.5v-5A1.5 1.5 0 0 0 11.5 7V4.5A3.5 3.5 0 0 0 8 1Zm2 6V4.5a2 2 0 1 0-4 0V7h4Z",
       "arrow-path": "M13.836 2.477a.75.75 0 0 1 .75.75v3.182a.75.75 0 0 1-.75.75h-3.182a.75.75 0 0 1 0-1.5h1.37l-.84-.841a4.5 4.5 0 0 0-7.08.932.75.75 0 0 1-1.3-.75 6 6 0 0 1 9.44-1.242l.842.84V3.227a.75.75 0 0 1 .75-.75Zm-.911 7.5A.75.75 0 0 1 13.2 11a6 6 0 0 1-9.44 1.241l-.84-.84v1.372a.75.75 0 0 1-1.5 0V9.591a.75.75 0 0 1 .75-.75H5.35a.75.75 0 0 1 0 1.5H3.98l.841.84a4.5 4.5 0 0 0 7.08-.932.75.75 0 0 1 1.025-.272Z",
       "exclamation-triangle": "M6.701 2.25c.577-1 2.02-1 2.598 0l5.196 9a1.5 1.5 0 0 1-1.299 2.25H2.804a1.5 1.5 0 0 1-1.299-2.25l5.196-9ZM8 5a.75.75 0 0 1 .75.75v2.5a.75.75 0 0 1-1.5 0v-2.5A.75.75 0 0 1 8 5Zm0 6a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z",
@@ -1589,8 +1654,7 @@ details[open].advanced summary::before {
       ? '<div class="bundle-row"><span class="b-name">' + esc(agent.name) + '</span><span class="b-meta">' + esc(meta) + '</span><span class="spacer"></span>' +
         '<button type="button" class="btn btn-soft btn-sm" data-action="open-profiles" data-agent="' + esc(agent.id) + '">Edit</button>' +
         '<button type="button" class="btn btn-soft btn-sm" data-action="toggle-swap">Change</button>' +
-        '<button type="button" class="x-btn" data-action="detach-profile" aria-label="Detach profile">' + icon("x-mark") + '</button></div>' +
-        (agent.description ? '<p class="hint">' + esc(agent.description) + '</p>' : "")
+        '<button type="button" class="x-btn" data-action="detach-profile" aria-label="Detach profile">' + icon("x-mark") + '</button></div>'
       : '<div class="empty"><p class="field-label">No profile attached</p><p class="hint">Attach a profile before the channel can answer.</p></div>';
     if (state.swapOpen) {
       row += '<div class="bundle-row"><span class="select-wrap"><select class="input" data-role="swap-profile">' + state.agents.map(function (profile) {
@@ -1701,7 +1765,6 @@ details[open].advanced summary::before {
     var usage = "used in " + channelCountLabel(concrete.length) + (dm ? " + DMs" : "");
     var meta = modelPart + " &middot; " + usage;
     return '<div class="pcard"><div class="pcard-head"><span class="pcard-name">' + esc(agent.name) + '</span>' + roleBadge + stateBadge + '</div>' +
-      (agent.description ? '<p class="pcard-desc">' + esc(agent.description) + '</p>' : "") +
       '<div class="pcard-foot"><span class="hint">' + meta + '</span><span class="spacer"></span>' +
       '<button type="button" class="btn btn-soft btn-sm" data-action="edit-profile" data-agent="' + esc(agent.id) + '">Edit</button></div></div>';
   }
@@ -1722,7 +1785,7 @@ details[open].advanced summary::before {
       icon("chevron-down", "model-combo-caret") +
       (open ? modelPickerHtml(model) : "") +
       '</div>' +
-      '<p class="hint">Every profile runs one pinned model. Suggestions come from this install\\'s configured providers &mdash; manage them in <button type="button" class="link-btn" data-action="open-settings">Settings &nearr;</button>. Any provider/model specifier works.</p>' +
+      '<p class="hint">Suggestions come from your providers in <button type="button" class="link-btn" data-action="open-settings">Settings &nearr;</button></p>' +
       (warning ? '<p class="field-error">' + esc(warning) + '</p>' : "") +
       (caveat ? '<p class="hint warn-accent">' + caveat + '</p>' : "") +
       '</div>';
@@ -1770,7 +1833,7 @@ details[open].advanced summary::before {
       '<input class="input" id="skill-desc" type="text" value="' + esc(editor.description) + '" placeholder="What this skill does, in one line." data-action="skill-field-description">' +
       '<p class="hint">One line. The model always sees this alongside the name.</p></div>' +
       '<div class="field"><label class="field-label" for="skill-instr">Instructions</label>' +
-      '<textarea class="textarea mono" id="skill-instr" placeholder="Markdown playbook the model loads only when it uses this skill." data-action="skill-field-instructions">' + esc(editor.instructions) + '</textarea>' +
+      '<textarea class="textarea mono" id="skill-instr" placeholder="Markdown instructions the model loads only when it uses this skill." data-action="skill-field-instructions">' + esc(editor.instructions) + '</textarea>' +
       '<p class="hint">Markdown. Loads only when the skill is used, so it can be long.</p></div>' +
       (editor.error ? '<p class="field-error">' + esc(editor.error) + '</p>' : "") +
       '<div class="skill-form-actions">' +
@@ -1850,7 +1913,50 @@ details[open].advanced summary::before {
       skillImportPickerHtml(imp) + "</div>";
   }
 
-  function skillsSectionHtml(draft) {
+  // ---- Capability tabs (Instructions / Skills / Connections) ---------------
+
+  // One panel is visible at a time; the other two stay MOUNTED but [hidden] so
+  // their form fields survive re-renders and collectProfileDraft() keeps
+  // reading p-instr regardless of the active tab. Edit screen only — the
+  // create screen has no skills/connections yet.
+  function profileTabsHtml(draft) {
+    var active = state.profileTab || "instructions";
+    // An open inline editor (or import panel, or an async test result landing
+    // in it) on a NON-active tab gets an attention dot — the panel is
+    // [hidden], so without the dot the user would never see what's in flight.
+    var attention = {
+      instructions: false,
+      skills: !!(state.skillEditor || state.skillImport),
+      connections: !!state.connectionEditor
+    };
+    var tabs = [
+      { id: "instructions", label: "Instructions", count: 0 },
+      { id: "skills", label: "Skills", count: (draft.skills || []).length },
+      { id: "connections", label: "Connections", count: (draft.mcpServers || []).length }
+    ];
+    var bar = tabs.map(function (tab) {
+      var on = tab.id === active;
+      return '<button type="button" id="ptab-' + tab.id + '" class="ptab' + (on ? " on" : "") + '" role="tab" aria-selected="' + (on ? "true" : "false") + '" tabindex="' + (on ? "0" : "-1") + '" aria-controls="ptab-panel-' + tab.id + '" data-action="profile-tab" data-tab="' + tab.id + '">' + tab.label +
+        (tab.count ? '<span class="ptab-count">' + tab.count + '</span>' : "") +
+        (!on && attention[tab.id] ? '<span class="ptab-dot" aria-hidden="true"></span>' : "") + '</button>';
+    }).join("");
+    function panel(id, html) {
+      return '<div class="ptab-panel" id="ptab-panel-' + id + '" role="tabpanel" aria-labelledby="ptab-' + id + '"' + (id === active ? "" : " hidden") + '>' + html + '</div>';
+    }
+    return '<section class="section">' +
+      '<div class="ptabs" role="tablist" aria-label="Profile behavior">' + bar + '</div>' +
+      panel("instructions", instructionsPanelHtml(draft)) +
+      panel("skills", skillsPanelHtml(draft)) +
+      panel("connections", connectionsPanelHtml(draft)) +
+      '</section>';
+  }
+
+  function instructionsPanelHtml(draft) {
+    return '<p class="hint ptab-hint">These travel with the profile to every channel it&rsquo;s attached to. Channels can append their own instructions on each channel&rsquo;s page.</p>' +
+      '<div class="field">' + profileInstructionsFieldHtml(draft, false) + '</div>';
+  }
+
+  function skillsPanelHtml(draft) {
     var skills = draft.skills || [];
     var editor = state.skillEditor;
     var imp = state.skillImport;
@@ -1876,12 +1982,11 @@ details[open].advanced summary::before {
       : '<div class="skill-actions"><button type="button" class="btn btn-soft btn-sm i-lead" data-action="skill-new">' +
         '<svg class="ic" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><path d="M8.75 3.75a.75.75 0 0 0-1.5 0v3.5h-3.5a.75.75 0 0 0 0 1.5h3.5v3.5a.75.75 0 0 0 1.5 0v-3.5h3.5a.75.75 0 0 0 0-1.5h-3.5v-3.5Z"/></svg>New skill</button>' +
         '<button type="button" class="btn btn-soft btn-sm" data-action="import-skills">Import from URL</button></div>';
-    var hint = 'Named playbooks this profile can pull in when a task calls for one. The model always sees each skill&rsquo;s name and description; the full instructions load only when a skill is used.';
     var body = list + newForm + importPanel + addButtons;
     if (!list && !newForm && !importPanel) {
-      body = '<div class="empty"><p class="field-label">No custom skills yet</p><p class="hint">Add one to give this profile a named playbook it can load on demand.</p></div>' + addButtons;
+      body = '<div class="empty"><p class="field-label">No custom skills yet</p><p class="hint">Add one to extend what this profile can do.</p></div>' + addButtons;
     }
-    return '<section class="section"><div class="section-head"><div><h2 class="section-title">Skills</h2><p class="hint">' + hint + '</p></div></div>' + body + '</section>';
+    return body;
   }
 
   /* ---- Connections (remote MCP servers) ---------------------------------- */
@@ -1968,7 +2073,7 @@ details[open].advanced summary::before {
 
   function connectionEditorFormHtml(editor) {
     var isNew = editor.index === null || editor.index === undefined;
-    var testDisabled = !editor.trusted || !String(editor.url || "").trim();
+    var testDisabled = !String(editor.url || "").trim();
     var bearerStored = editor.sources && editor.sources.bearer && editor.sources.bearer !== "missing";
     var bearerPlaceholder = bearerStored ? "\\u2022\\u2022\\u2022\\u2022 stored" : "Paste token \\u2014 stored securely, never shown again";
     var authHtml = '<div class="field"><label class="field-label" for="conn-auth">Authentication</label>' +
@@ -1992,8 +2097,6 @@ details[open].advanced summary::before {
       '<div class="field"><label class="field-label">Transport</label>' + transportSegmentHtml(editor.transport) + '</div>' +
       authHtml +
       connectionHeadersHtml(editor) +
-      '<label class="conn-tool" style="cursor:pointer;"><span class="import-check' + (editor.trusted ? " on" : "") + '"><input type="checkbox" data-action="conn-trust" ' + (editor.trusted ? "checked" : "") + ' aria-label="I trust this server"></span>' +
-      '<span class="tool-body"><span class="tool-name" style="font-family:inherit; font-weight:500;">I trust this server. It can see conversation content sent to its tools.</span></span></label>' +
       '<div><button type="button" class="btn btn-soft btn-sm" data-action="conn-test"' + (testDisabled ? " disabled" : "") + '>' + testLabel + '</button>' + testError + '</div>' +
       toolsHtml +
       (editor.error ? '<p class="field-error">' + esc(editor.error) + '</p>' : "") +
@@ -2023,7 +2126,7 @@ details[open].advanced summary::before {
     return "";
   }
 
-  function connectionsSectionHtml(draft) {
+  function connectionsPanelHtml(draft) {
     var servers = draft.mcpServers || [];
     var editor = state.connectionEditor;
     var rows = servers.map(function (conn, index) {
@@ -2042,14 +2145,13 @@ details[open].advanced summary::before {
     var addButton = editor ? "" :
       '<div class="skill-actions"><button type="button" class="btn btn-soft btn-sm i-lead" data-action="conn-new">' +
       '<svg class="ic" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><path d="M8.75 3.75a.75.75 0 0 0-1.5 0v3.5h-3.5a.75.75 0 0 0 0 1.5h3.5v3.5a.75.75 0 0 0 1.5 0v-3.5h3.5a.75.75 0 0 0 0-1.5h-3.5v-3.5Z"/></svg>Add connection</button></div>';
-    var hint = 'Remote MCP servers this profile can call. Only connect to servers you trust.';
-    // The security-boundary copy is exact per the spec — do not paraphrase.
-    var security = '<p class="conn-security">Only connect to servers you trust. MCP servers can see the conversation content sent to their tools, and a malicious server can try to manipulate the agent (prompt injection). Uncheck write-capable tools you don&rsquo;t need. Your profile stores connection policy and tool approvals only &mdash; tokens live in the settings store and are never shown again.</p>';
+    var hint = 'Remote MCP servers this profile can call.';
+    var security = '<p class="conn-security">Your profile stores connection policy and tool approvals only &mdash; tokens live in the settings store and are never shown again.</p>';
     var body = list + newForm + addButton;
     if (!list && !newForm) {
       body = '<div class="empty"><p class="field-label">No connections yet</p><p class="hint">Add a remote MCP server by URL to give this profile extra tools.</p></div>' + addButton;
     }
-    return '<section class="section"><div class="section-head"><div><h2 class="section-title">Connections</h2><p class="hint">' + hint + '</p></div></div>' + body + security + '</section>';
+    return '<p class="hint ptab-hint">' + hint + '</p>' + body + security;
   }
 
   // The Remove-connection confirm modal. Rendered only while state.connectionRemove
@@ -2068,14 +2170,6 @@ details[open].advanced summary::before {
       '<button type="button" class="btn btn-ghost" data-action="conn-remove-cancel">Cancel</button>' +
       '<button type="button" class="btn btn-danger" data-action="conn-remove-confirm">Remove connection</button>' +
       '</div></div></div>';
-  }
-
-  function layerLegendHtml() {
-    return '<div class="layer-legend"><p class="field-label">How instructions layer at runtime</p>' +
-      '<div class="step"><span class="n">1</span><span><b style="font-weight:500; color:var(--text);">Profile instructions</b> &mdash; this section, shared across every channel.</span></div>' +
-      '<div class="step"><span class="n">2</span><span><b style="font-weight:500; color:var(--text);">Channel instructions</b> &mdash; appended per channel, set on each channel page.</span></div>' +
-      '<div class="step"><span class="n">3</span><span><b style="font-weight:500; color:var(--text);">Guardrail</b> &mdash; always appended by the runtime.</span></div>' +
-      '<p class="hint">Each channel\\'s Access summary shows the exact resolved stack.</p></div>';
   }
 
   function profileNameFieldHtml(draft) {
@@ -2113,7 +2207,6 @@ details[open].advanced summary::before {
       '<div class="form-grid">' +
       profileNameFieldHtml(draft) +
       modelFieldHtml(draft) +
-      '<div class="field full"><label class="field-label" for="p-desc">Description</label><input class="input" id="p-desc" name="description" type="text" value="' + esc(draft.description) + '" data-action="profile-desc"><p class="hint">One line, so future-you can tell profiles apart at a glance.</p></div>' +
       '<div class="field full"><label class="field-label" for="p-instr">Instructions</label>' + profileInstructionsFieldHtml(draft, true) + '<p class="hint">These travel with the profile to every channel it&rsquo;s attached to.</p></div>' +
       '</div></section>' +
       '<div class="save-bar">' + profileGenericErrorHtml() +
@@ -2125,28 +2218,26 @@ details[open].advanced summary::before {
 
   function profileEditHtml() {
     var draft = state.profileDraft;
+    // The name lives in the title with an inline rename affordance (pencil →
+    // input; Enter/blur commit, Escape reverts) — there is no Name field below.
+    var titleRow = state.profileRenaming
+      ? '<input class="input page-title-input" id="p-name" name="name" type="text" value="' + esc(draft.name) + '" aria-label="Profile name" data-action="profile-name">'
+      : '<span class="title-row"><h1 class="page-title">' + esc(draft.name || "Profile") + '</h1>' +
+        '<button type="button" class="rename-btn" data-action="profile-rename" aria-label="Rename profile">' + icon("pencil") + '</button></span>';
     return '<div class="main-head"><div style="display:flex; flex-direction:column; gap:6px;">' +
       '<button type="button" class="link-btn" style="align-self:flex-start;" data-action="profiles-back">&larr; Profiles</button>' +
-      '<h1 class="page-title">' + esc(draft.name || "Profile") + '</h1>' +
-      // Subtitle is the profile's own description (cards 11/12, spec §129) so the
-      // edit head reads as "this profile" — falls back to the generic edit hint
-      // for a profile that has no description yet.
-      '<p class="hint">' + (draft.description ? esc(draft.description) : 'Edit this reusable behavior. It always replies as <b style="font-weight:500; color:var(--text);">@Tag</b>.') + '</p></div>' +
+      titleRow +
+      '<p class="hint">Edit this reusable behavior. It always replies as <b style="font-weight:500; color:var(--text);">@Tag</b>.</p></div>' +
       '<label style="display:flex; align-items:center; gap:10px;"><span class="hint">' + (draft.enabled ? "Enabled" : "Disabled") + '</span>' +
       '<span class="toggle"><span class="thumb"></span><input type="checkbox" name="profile-enabled" data-action="profile-enable-toggle" ' + (draft.enabled ? "checked" : "") + ' aria-label="Profile enabled"></span></label></div>' +
       disableConfirmHtml(draft) +
       '<section class="section"><div class="section-head"><div><h2 class="section-title">Details</h2></div></div>' +
       '<div class="form-grid">' +
-      profileNameFieldHtml(draft) +
       modelFieldHtml(draft) +
-      '<div class="field full"><label class="field-label" for="p-desc">Description</label><input class="input" id="p-desc" name="description" type="text" value="' + esc(draft.description) + '" data-action="profile-desc"><p class="hint">One line, so future-you can tell profiles apart at a glance.</p></div>' +
       '</div></section>' +
-      '<section class="section"><div class="section-head"><div><h2 class="section-title">Instructions</h2><p class="hint">These travel with the profile to every channel it&rsquo;s attached to.</p></div></div>' +
-      '<div class="field">' + profileInstructionsFieldHtml(draft, false) + '</div>' + layerLegendHtml() + '</section>' +
-      skillsSectionHtml(draft) +
-      connectionsSectionHtml(draft) +
+      profileTabsHtml(draft) +
       usedInHtml(draft) +
-      dangerZoneHtml(draft) +
+      profileFooterHtml(draft) +
       '<div class="save-bar-sticky' + (state.profileDirty ? "" : " is-clean") + '">' +
       '<div class="save-bar-inner">' +
       '<p class="save-note">&#9679; Unsaved changes &mdash; applies to new threads</p>' + profileGenericErrorHtml() +
@@ -2170,7 +2261,7 @@ details[open].advanced summary::before {
         '<button type="button" class="btn btn-danger btn-sm" data-action="detach-channel" data-workspace="' + esc(assignment.workspaceId) + '" data-channel="' + esc(assignment.channelId) + '">Detach</button></div>';
     });
     if (!rows) {
-      rows = '<div class="empty"><p class="field-label">Not attached to any channels yet</p><p class="hint">Attach this profile from a channel page&rsquo;s Profile section.</p></div>';
+      rows = '<div class="empty"><p class="field-label">Not attached to any channels yet</p><p class="hint">Use Add to channels below, or attach it from a channel page.</p></div>';
     }
     var hint = 'Editing here changes how ' + esc(draft.name || "this profile") + ' answers in all of these. <b style="font-weight:500; color:var(--text);">Changes apply to new threads</b> &mdash; threads already underway keep the config they started with.';
     return '<section class="section"><div class="section-head"><div><h2 class="section-title">Used in</h2><p class="hint">' + hint + '</p></div></div>' + rows + '</section>';
@@ -2191,25 +2282,50 @@ details[open].advanced summary::before {
     return parts.slice(0, -1).join(", ") + ", and " + parts[parts.length - 1];
   }
 
-  function dangerZoneHtml(draft) {
+  // Compact footer row (mirrors the reference pattern): destructive action,
+  // the attach affordance, and the usage count that doubles as the reason the
+  // Delete button is disabled while attachments exist.
+  function profileFooterHtml(draft) {
     var dm = agentHasDmDefault(draft.id);
     var concrete = concreteAssignmentsForAgent(draft.id);
     var blocked = dm || concrete.length > 0;
     var name = esc(draft.name || "This profile");
-    var hint;
-    if (!blocked) {
-      hint = name + " isn\\u2019t attached to any channels, so it can be deleted. This can\\u2019t be undone.";
-    } else if (dm && concrete.length > 0) {
-      hint = name + " is the DM default and is attached to " + channelCountLabel(concrete.length) + ", so it can\\u2019t be deleted. Detach it everywhere first.";
-    } else if (dm) {
-      hint = name + " is the DM default, so it can\\u2019t be deleted. It always answers direct messages.";
-    } else {
-      var tail = concrete.length === 1 ? "first" : concrete.length === 2 ? "from both" : "from all of them";
-      hint = name + " is attached to " + channelCountLabel(concrete.length) + " &mdash; " + joinChannelNames(concrete, true) +
-        " &mdash; so it can\\u2019t be deleted. Detach it " + tail + " (or delete those channels\\u2019 assignment) first.";
+    var usage = name + " used in " + channelCountLabel(concrete.length) + (dm ? " + DMs" : "");
+    var deleteTitle = blocked
+      ? (dm ? "The DM default can\\u2019t be deleted. Detach it everywhere first." : "Detach it from every channel first.")
+      : "This can\\u2019t be undone.";
+    return '<div class="profile-foot">' +
+      '<button type="button" class="btn btn-danger" data-action="delete-profile"' + (blocked ? " disabled" : "") + ' title="' + deleteTitle + '">Delete profile</button>' +
+      '<button type="button" class="btn btn-soft" data-action="attach-open">Add to channels</button>' +
+      '<span class="hint">' + usage + '</span>' +
+      '</div>' + attachPickerHtml(draft);
+  }
+
+  // Channels this profile could take over: every non-wildcard assignment that
+  // currently points at a DIFFERENT profile. The admin only knows channels it
+  // has assignments for, so "add" here means reassign an existing channel.
+  function attachCandidates(agentId) {
+    return state.assignments.filter(function (assignment) {
+      return assignment.agentId !== agentId &&
+        !(assignment.workspaceId === "*" && assignment.channelId === "*");
+    });
+  }
+
+  function attachPickerHtml(draft) {
+    if (!state.attachPicker) return "";
+    var candidates = attachCandidates(draft.id);
+    if (!candidates.length) {
+      return '<div class="bundle-row"><span class="hint">Every channel already uses this profile. Add more channels from the Channels list.</span>' +
+        '<span class="spacer"></span><button type="button" class="btn btn-ghost btn-sm" data-action="attach-cancel">Close</button></div>';
     }
-    return '<div class="danger-zone"><p class="field-label">Delete this profile</p><p class="hint">' + hint + '</p>' +
-      '<button type="button" class="btn btn-danger" data-action="delete-profile"' + (blocked ? " disabled" : "") + '>Delete profile</button></div>';
+    var options = candidates.map(function (assignment, index) {
+      var current = agentById(assignment.agentId);
+      return '<option value="' + index + '">' + esc(channelLabel(assignment)) +
+        (current ? ' &mdash; currently ' + esc(current.name) : "") + '</option>';
+    }).join("");
+    return '<div class="bundle-row"><span class="select-wrap"><select class="input" data-role="attach-channel" aria-label="Channel to attach">' + options + '</select>' + icon("chevron-down", "select-caret") + '</span>' +
+      '<button type="button" class="btn btn-primary btn-sm" data-action="attach-channel-confirm">Attach</button>' +
+      '<button type="button" class="btn btn-ghost btn-sm" data-action="attach-cancel">Cancel</button></div>';
   }
 
   function disableConfirmHtml(draft) {
@@ -2894,7 +3010,6 @@ details[open].advanced summary::before {
     return {
       id: "",
       name: "",
-      description: "",
       instructions: "",
       enabled: true,
       model: "",
@@ -2910,7 +3025,6 @@ details[open].advanced summary::before {
     return {
       id: agent.id,
       name: agent.name,
-      description: agent.description,
       instructions: agent.instructions,
       enabled: agent.enabled,
       model: agent.model || "",
@@ -2937,7 +3051,6 @@ details[open].advanced summary::before {
       transport: conn.transport || "streamable-http",
       authMode: conn.authMode || "none",
       headerNames: (conn.headerNames || []).slice(),
-      trusted: !!conn.trusted,
       enabled: !!conn.enabled,
       lifecycleStatus: conn.lifecycleStatus || "pending",
       statusText: conn.statusText || "",
@@ -2968,15 +3081,21 @@ details[open].advanced summary::before {
     return id + "_" + Date.now().toString(36);
   }
 
+  // Bring a capability tab into view after a validation failure elsewhere on
+  // the page, so the inline error is never hidden behind an inactive tab.
+  function showProfileTab(tab) {
+    if (state.profileTab === tab) return;
+    state.profileTab = tab;
+    render();
+  }
+
   function collectProfileDraft() {
     var draft = state.profileDraft || newProfileDraft();
     var nameInput = document.getElementById("p-name");
     var modelInput = document.getElementById("p-model");
-    var descInput = document.getElementById("p-desc");
     var instructionsInput = document.getElementById("p-instr");
     if (nameInput) draft.name = nameInput.value.trim();
     if (modelInput) draft.model = modelInput.value.trim();
-    if (descInput) draft.description = descInput.value;
     if (instructionsInput) draft.instructions = instructionsInput.value.trim();
     state.profileDraft = draft;
     return draft;
@@ -3133,8 +3252,27 @@ details[open].advanced summary::before {
     if (action === "save-channel") { saveChannel(); }
     // Profiles master-detail navigation + form actions.
     if (action === "new-profile") { state.view = "profiles"; state.profileScreen = "create"; state.profileDraft = newProfileDraft(); state.editingAgentId = null; state.profileError = ""; state.profileDirty = false; state.disableConfirm = false; state.skillEditor = null; state.skillImport = null; state.connectionEditor = null; state.connectionRemove = null; state.modelPickerOpen = false; state.modelPickerFilter = ""; render(); }
-    if (action === "edit-profile") { var selected = agentById(target.getAttribute("data-agent")); if (selected) { state.view = "profiles"; state.profileScreen = "edit"; state.editingAgentId = selected.id; state.profileDraft = cloneAgent(selected); state.profileError = ""; state.profileDirty = false; state.disableConfirm = false; state.skillEditor = null; state.skillImport = null; state.connectionEditor = null; state.connectionRemove = null; state.modelPickerOpen = false; state.modelPickerFilter = ""; render(); } }
+    if (action === "edit-profile") { var selected = agentById(target.getAttribute("data-agent")); if (selected) { state.view = "profiles"; state.profileScreen = "edit"; state.editingAgentId = selected.id; state.profileDraft = cloneAgent(selected); state.profileError = ""; state.profileDirty = false; state.disableConfirm = false; state.profileTab = "instructions"; state.profileRenaming = null; state.attachPicker = false; state.skillEditor = null; state.skillImport = null; state.connectionEditor = null; state.connectionRemove = null; state.modelPickerOpen = false; state.modelPickerFilter = ""; render(); } }
     if (action === "profiles-back") { state.profileScreen = "list"; state.profileDraft = null; state.editingAgentId = null; state.profileError = ""; state.profileDirty = false; state.disableConfirm = false; state.skillEditor = null; state.skillImport = null; state.connectionEditor = null; state.connectionRemove = null; state.modelPickerOpen = false; state.modelPickerFilter = ""; render(); }
+    // Capability tab switch. The keystroke mirrors keep the draft in sync, so
+    // no collectProfileDraft here — its trim() would strip whitespace out of
+    // text the user is mid-typing. showProfileTab's guard also makes
+    // re-clicking the active pill a free no-op instead of a full re-render.
+    if (action === "profile-tab" && state.profileDraft) {
+      showProfileTab(target.getAttribute("data-tab") || "instructions");
+    }
+    // Inline title rename: open the input seeded with the current name, focused
+    // and selected. Commit is Enter/blur; Escape reverts to prev.
+    if (action === "profile-rename" && state.profileDraft) {
+      state.profileRenaming = { prev: state.profileDraft.name };
+      render();
+      var renameInput = document.getElementById("p-name");
+      if (renameInput) { renameInput.focus(); renameInput.select(); }
+    }
+    // Footer "Add to channels" picker.
+    if (action === "attach-open" && state.profileDraft) { state.attachPicker = true; render(); }
+    if (action === "attach-cancel") { state.attachPicker = false; render(); }
+    if (action === "attach-channel-confirm" && state.profileDraft) { attachProfileToChannel(); }
     if (action === "cancel-create") { state.profileScreen = "list"; state.profileDraft = null; state.profileError = ""; state.profileDirty = false; state.skillEditor = null; state.skillImport = null; state.connectionEditor = null; state.connectionRemove = null; state.modelPickerOpen = false; state.modelPickerFilter = ""; render(); }
     // Settings (model-providers) is a separate destination that lands with its
     // own build; the affordance is present per the approved model-field design.
@@ -3298,8 +3436,9 @@ details[open].advanced summary::before {
     // without a full re-render, preserving focus.
     if (state.profileDraft) {
       if (action === "profile-name") { state.profileDraft.name = target.value; markProfileDirty(); }
-      if (action === "profile-model") { filterModelPicker(target); }
-      if (action === "profile-desc") { state.profileDraft.description = target.value; markProfileDirty(); }
+      // Mirror the typed model too: tab switches re-render from the draft, and
+      // without this a half-typed specifier would be lost with the picker open.
+      if (action === "profile-model") { state.profileDraft.model = target.value; markProfileDirty(); filterModelPicker(target); }
       if (action === "profile-instructions") { state.profileDraft.instructions = target.value; markProfileDirty(); }
       // Skill editor fields mirror into state.skillEditor without a re-render so
       // the textarea keeps focus; validation/upsert happens on skill-save-row.
@@ -3318,7 +3457,15 @@ details[open].advanced summary::before {
       if (state.connectionEditor) {
         var connEditor = state.connectionEditor;
         if (action === "conn-field-name") { connEditor.displayName = target.value; markProfileDirty(); }
-        if (action === "conn-field-url") { connEditor.url = target.value; markProfileDirty(); }
+        if (action === "conn-field-url") {
+          connEditor.url = target.value;
+          markProfileDirty();
+          // Sync the Test button's disabled state directly (no re-render, so
+          // the input keeps focus) — the URL is now its only gate, and nothing
+          // else re-renders between typing the URL and clicking Test.
+          var connTestButton = document.querySelector('[data-action="conn-test"]');
+          if (connTestButton) connTestButton.disabled = !String(connEditor.url || "").trim();
+        }
         if (action === "conn-field-bearer") { connEditor.bearerToken = target.value; markProfileDirty(); }
         if (action === "conn-header-name") { connEditor.headerNames[Number(target.getAttribute("data-index"))] = target.value; markProfileDirty(); }
         if (action === "conn-header-value") { connEditor.headerValues[Number(target.getAttribute("data-index"))] = target.value; markProfileDirty(); }
@@ -3375,13 +3522,6 @@ details[open].advanced summary::before {
       markProfileDirty();
       render();
     }
-    // Trust checkbox gates Test + enable. Re-render so the Test button's disabled
-    // state and the checkbox's visual sync with the flag.
-    if (action === "conn-trust" && state.connectionEditor) {
-      state.connectionEditor.trusted = !!target.checked;
-      markProfileDirty();
-      render();
-    }
     // Discovered-tool checkbox: flip the parallel checked[] flag. Re-render so the
     // check visual and the count line stay in sync.
     if (action === "conn-tool-toggle" && state.connectionEditor) {
@@ -3391,6 +3531,16 @@ details[open].advanced summary::before {
       state.connectionEditor.checked = connChecked;
       markProfileDirty();
       render();
+    }
+  });
+
+  // Blur commits the inline title rename (same as Enter). focusout bubbles;
+  // blur does not.
+  document.addEventListener("focusout", function (event) {
+    var target = event.target;
+    var action = target && target.getAttribute && target.getAttribute("data-action");
+    if (action === "profile-name" && state.profileRenaming) {
+      closeProfileRename(false);
     }
   });
 
@@ -3404,10 +3554,43 @@ details[open].advanced summary::before {
   });
 
   // Escape dismisses the open Model combobox (F6) without picking a model.
+  // Close the inline title rename. Empty names revert to the previous name
+  // (the title must never go blank), so "Name is required." is unreachable on
+  // the edit screen.
+  function closeProfileRename(revert) {
+    if (!state.profileRenaming || !state.profileDraft) return;
+    var prev = state.profileRenaming.prev;
+    if (revert || !String(state.profileDraft.name || "").trim()) {
+      state.profileDraft.name = prev;
+    }
+    state.profileRenaming = null;
+    render();
+  }
+
   document.addEventListener("keydown", function (event) {
+    if (state.profileRenaming) {
+      if (event.key === "Enter") { event.preventDefault(); closeProfileRename(false); return; }
+      if (event.key === "Escape" || event.key === "Esc") { closeProfileRename(true); return; }
+    }
     if (event.key === "Escape" || event.key === "Esc") {
       if (state.leavePrompt) { state.leavePrompt = null; render(); return; }
       if (state.modelPickerOpen) { closeModelPicker(); }
+    }
+    // ARIA tabs keyboard contract for the capability tab bar: Left/Right (and
+    // Home/End) move focus AND activate; the roving tabindex in profileTabsHtml
+    // keeps exactly one pill in the document Tab order.
+    var tabButton = event.target && event.target.closest && event.target.closest(".ptab");
+    if (tabButton && (event.key === "ArrowLeft" || event.key === "ArrowRight" || event.key === "Home" || event.key === "End")) {
+      event.preventDefault();
+      var order = ["instructions", "skills", "connections"];
+      var current = order.indexOf(state.profileTab || "instructions");
+      var next =
+        event.key === "ArrowLeft" ? (current + order.length - 1) % order.length :
+        event.key === "ArrowRight" ? (current + 1) % order.length :
+        event.key === "Home" ? 0 : order.length - 1;
+      showProfileTab(order[next]);
+      var focusTarget = document.getElementById("ptab-" + order[next]);
+      if (focusTarget) focusTarget.focus();
     }
   });
 
@@ -3431,6 +3614,9 @@ details[open].advanced summary::before {
     state.profileError = "";
     state.profileDirty = false;
     state.disableConfirm = false;
+    state.profileTab = "instructions";
+    state.profileRenaming = null;
+    state.attachPicker = false;
     state.connectionEditor = null;
     state.connectionRemove = null;
     var target = targetAgentId ? agentById(targetAgentId) : null;
@@ -3599,7 +3785,6 @@ details[open].advanced summary::before {
       headerNames: [],
       headerValues: [],
       bearerToken: "",
-      trusted: false,
       enabled: true,
       testing: false,
       testError: "",
@@ -3630,7 +3815,6 @@ details[open].advanced summary::before {
     editor.authMode = conn.authMode || "none";
     editor.headerNames = (conn.headerNames || []).slice();
     editor.headerValues = editor.headerNames.map(function () { return ""; });
-    editor.trusted = !!conn.trusted;
     editor.enabled = !!conn.enabled;
     editor.lifecycleStatus = conn.lifecycleStatus || "pending";
     editor.statusText = conn.statusText || "";
@@ -3697,7 +3881,7 @@ details[open].advanced summary::before {
   function testConnection() {
     var editor = state.connectionEditor;
     if (!editor || editor.testing) return;
-    if (!editor.trusted || !String(editor.url || "").trim()) return;
+    if (!String(editor.url || "").trim()) return;
     editor.testing = true;
     editor.testError = "";
     editor.error = "";
@@ -3763,7 +3947,6 @@ details[open].advanced summary::before {
       transport: editor.transport,
       authMode: editor.authMode,
       headerNames: headerNames,
-      trusted: !!editor.trusted,
       enabled: !!editor.enabled,
       lifecycleStatus: editor.lifecycleStatus || "pending",
       statusText: editor.statusText || "",
@@ -3966,18 +4149,20 @@ details[open].advanced summary::before {
 
   function saveProfile(onSaved) {
     var draft = collectProfileDraft();
+    // Clear any stale field error BEFORE the commit gates below render — a
+    // fixed-but-uncleared error would otherwise resurface on a hidden panel.
+    state.profileError = "";
     // Commit an open inline skill editor into the draft first — a filled-but-
-    // not-"Added" skill must be saved, not silently dropped. Abort on invalid.
-    if (!commitOpenSkillEditor()) return;
+    // not-"Added" skill must be saved, not silently dropped. Abort on invalid,
+    // jumping to the tab that carries the inline error so it is visible.
+    if (!commitOpenSkillEditor()) { showProfileTab("skills"); return; }
     // Same for an open Connections editor — commit it into mcpServers (and stage
     // its typed secrets) before the PATCH, or bail on an inline validation error.
-    if (!commitOpenConnectionEditor()) return;
-    state.profileError = "";
+    if (!commitOpenConnectionEditor()) { showProfileTab("connections"); return; }
     if (!draft.name) { state.profileError = "Name is required."; render(); return; }
-    if (!draft.instructions) { state.profileError = "Profile instructions are required."; render(); return; }
+    if (!draft.instructions) { state.profileError = "Profile instructions are required."; state.profileTab = "instructions"; render(); return; }
     var body = {
       name: draft.name,
-      description: draft.description,
       instructions: draft.instructions,
       enabled: draft.enabled,
       defaultModels: draft.defaultModels || defaultModels(),
@@ -4059,6 +4244,22 @@ details[open].advanced summary::before {
       state.profileError = "";
       return refreshData();
     }).catch(function (error) { state.profileError = deleteProfileErrorText(error); render(); });
+  }
+
+  // Reassign an existing channel to the profile being edited. Preserves the
+  // channel's enabled flag, addendum, and label — only the profile changes
+  // (same contract as the channel page's swap flow).
+  function attachProfileToChannel() {
+    var draft = state.profileDraft;
+    if (!draft || !draft.id) return;
+    var select = document.querySelector('[data-role="attach-channel"]');
+    if (!select) return;
+    var chosen = attachCandidates(draft.id)[Number(select.value)];
+    if (!chosen) return;
+    putAssignment(chosen.workspaceId, chosen.channelId, draft.id, chosen.enabled, chosen.channelPromptAddendum, chosen.channelLabel).then(function () {
+      state.attachPicker = false;
+      return refreshData();
+    }).catch(function (error) { state.profileError = error.message; render(); });
   }
 
   function detachProfileChannel(workspaceId, channelId) {

@@ -42,7 +42,6 @@ const PARITY_MODEL = 'local-stub/parity-stub-1';
 const RELEASE_SCRIBE_PROFILE: CustomAgentConfig = {
   id: 'agent_release_scribe',
   name: 'Release Scribe',
-  description: 'Engineering release profile for launch notes and incident-quality detail.',
   instructions: [
     'You are Release Scribe, the engineering release profile for this Slack channel.',
     'Use only the configured Slack thread, bounded recent context, and approved tools.',
@@ -61,7 +60,6 @@ const RELEASE_SCRIBE_PROFILE: CustomAgentConfig = {
 const EXEC_BRIEF_PROFILE: CustomAgentConfig = {
   id: 'agent_exec_brief',
   name: 'Exec Brief',
-  description: 'Executive profile for concise launch and business updates.',
   instructions: [
     'You are Exec Brief, the executive briefing profile for this Slack channel.',
     'Use only the configured Slack thread, bounded recent context, and approved tools.',
@@ -656,7 +654,6 @@ export const scenarios: Scenario[] = [
           {
             id: 'agent_pinned_model',
             name: 'Pinned Model Agent',
-            description: 'Pins a local-stub model for parity.',
             instructions: 'Use the pinned parity model.',
             enabled: true,
             model: 'local-stub/agent-pinned',
@@ -703,7 +700,6 @@ export const scenarios: Scenario[] = [
           {
             id: 'agent_addendum',
             name: 'Addendum Agent',
-            description: 'Exercises channel prompt addenda.',
             instructions: 'Base addendum test instructions.',
             enabled: true,
             model: PARITY_MODEL,
@@ -778,7 +774,6 @@ export const scenarios: Scenario[] = [
           {
             id: 'agent_unresolvable',
             name: 'Unresolvable Model Agent',
-            description: 'Has no resolvable model in the parity environment.',
             instructions: 'Reply if you can.',
             enabled: true,
             defaultModels: {
@@ -992,7 +987,6 @@ export const scenarios: Scenario[] = [
           {
             id: 'agent_scoped',
             name: 'Scoped Profile',
-            description: 'Assigned to exactly one channel.',
             instructions: 'Reply.',
             enabled: true,
             model: PARITY_MODEL,
@@ -1198,7 +1192,6 @@ export const scenarios: Scenario[] = [
           {
             id: 'agent_dm_snapshot',
             name: 'DM Profile',
-            description: 'Exercises DM config tracking.',
             instructions: 'SNAPSHOT_ALPHA_INSTRUCTIONS: original DM instructions.',
             enabled: true,
             model: 'local-stub/snapshot-profile',
@@ -1336,7 +1329,6 @@ function snapshotScenarioConfig(agentId: string): ScenarioLaneConfig {
         {
           id: agentId,
           name: 'Snapshot Profile',
-          description: 'Exercises thread config snapshots.',
           instructions: 'SNAPSHOT_ALPHA_INSTRUCTIONS: original profile instructions.',
           enabled: true,
           model: 'local-stub/snapshot-profile',

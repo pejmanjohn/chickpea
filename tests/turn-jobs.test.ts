@@ -10,7 +10,6 @@ import { MAX_TURN_ATTEMPTS, TURN_JOB_TTL_MS, TurnJobStoreLogic } from '../src/sl
 const AGENT: CustomAgentConfig = {
   id: 'agent_test',
   name: 'Test',
-  description: 'desc',
   instructions: 'do the thing',
   enabled: true,
   defaultModels: { claude: 'claude-x', 'workers-ai': 'cf-x' },

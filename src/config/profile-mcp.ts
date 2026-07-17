@@ -56,7 +56,7 @@ export async function resolveProfileMcpTools(
     return [];
   }
   const eligible = servers.filter(
-    (s) => s.enabled && s.trusted && s.lifecycleStatus === 'ready' && s.allowedTools.length > 0,
+    (s) => s.enabled && s.lifecycleStatus === 'ready' && s.allowedTools.length > 0,
   );
   if (eligible.length === 0) {
     return [];

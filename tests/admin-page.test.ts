@@ -700,9 +700,9 @@ test('the profile editor blocks delete while assigned and confirms disable every
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_release' }) });
 
   // Delete is disabled while the profile is attached (the server 409s too); the
-  // hint names the blocking channel.
-  assert.match(harness.app.innerHTML, /<button type="button" class="btn btn-danger" data-action="delete-profile" disabled>Delete profile<\/button>/);
-  assert.match(harness.app.innerHTML, /is attached to 1 channel/);
+  // footer's usage count explains why.
+  assert.match(harness.app.innerHTML, /data-action="delete-profile" disabled[^>]*>Delete profile<\/button>/);
+  assert.match(harness.app.innerHTML, /used in 1 channel/);
 
   // Turning the enable toggle off on an assigned profile asks for confirmation
   // (stops-everywhere) before it commits, rather than silently disabling it.
@@ -739,6 +739,40 @@ test('New profile opens a blank create screen and validation gates save', async 
   // agents request is issued.
   click({ target: actionTarget({ 'data-action': 'save-profile' }) });
   assert.match(harness.app.innerHTML, /Name is required\./);
+});
+
+test('profile capability tabs switch the visible panel on click', async () => {
+  const harness = runAdminPageHarness();
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  assert.ok(click && input);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_release' }) });
+
+  // Instructions is the default tab: its panel is visible, the others [hidden].
+  assert.match(harness.app.innerHTML, /id="ptab-instructions" class="ptab on"/);
+  assert.match(harness.app.innerHTML, /id="ptab-panel-skills"[^>]* hidden/);
+  assert.doesNotMatch(harness.app.innerHTML, /id="ptab-panel-instructions"[^>]* hidden/);
+
+  // Clicking the Skills tab swaps the visible panel and the active pill.
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'skills' }) });
+  assert.match(harness.app.innerHTML, /id="ptab-skills" class="ptab on"/);
+  assert.match(harness.app.innerHTML, /id="ptab-panel-instructions"[^>]* hidden/);
+  assert.doesNotMatch(harness.app.innerHTML, /id="ptab-panel-skills"[^>]* hidden/);
+
+  // And back to Connections.
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  assert.match(harness.app.innerHTML, /id="ptab-connections" class="ptab on"/);
+  assert.doesNotMatch(harness.app.innerHTML, /id="ptab-panel-connections"[^>]* hidden/);
+
+  // Mid-typed whitespace survives a tab round-trip: the keystroke mirror (not
+  // a trimming collectProfileDraft) carries the draft across the re-render.
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'instructions' }) });
+  input({ target: inputTarget({ 'data-action': 'profile-instructions' }, 'Answer carefully.\n\n- next bullet ') });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'skills' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'instructions' }) });
+  assert.match(harness.app.innerHTML, /Answer carefully\.\n\n- next bullet </);
 });
 
 // A checkbox change target that also exposes `checked` (the skill enable toggle
@@ -779,8 +813,8 @@ test('the profile editor manages custom skills end to end and carries them in th
 
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_release' }) });
 
-  // The Skills section renders after Instructions, empty at first.
-  assert.match(harness.app.innerHTML, /<h2 class="section-title">Skills<\/h2>/);
+  // The Skills capability tab renders, its panel empty at first.
+  assert.match(harness.app.innerHTML, /data-action="profile-tab" data-tab="skills"/);
   assert.match(harness.app.innerHTML, /No custom skills yet/);
 
   // Open a blank editor; the inline form appears with the three fields.
@@ -1074,12 +1108,13 @@ test('the Connections section renders empty, with the STDIO-greyed form, exact s
 
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
 
-  // The section renders after Skills, empty at first, with the exact security copy.
-  assert.match(harness.app.innerHTML, /<h2 class="section-title">Connections<\/h2>/);
+  // The Connections capability tab renders, its panel empty at first, with the
+  // tokens-by-reference note.
+  assert.match(harness.app.innerHTML, /data-action="profile-tab" data-tab="connections"/);
   assert.match(harness.app.innerHTML, /No connections yet/);
   assert.match(
     harness.app.innerHTML,
-    /Only connect to servers you trust\. MCP servers can see the conversation content sent to their tools, and a malicious server can try to manipulate the agent \(prompt injection\)\. Uncheck write-capable tools you don&rsquo;t need\. Your profile stores connection policy and tool approvals only &mdash; tokens live in the settings store and are never shown again\./,
+    /Your profile stores connection policy and tool approvals only &mdash; tokens live in the settings store and are never shown again\./,
   );
 
   // Open the add form — Name + URL + transport control appear.
@@ -1093,12 +1128,12 @@ test('the Connections section renders empty, with the STDIO-greyed form, exact s
   assert.match(harness.app.innerHTML, /data-action="conn-transport" data-transport="streamable-http"/);
   assert.match(harness.app.innerHTML, /data-action="conn-transport" data-transport="sse"/);
 
-  // Test is disabled until BOTH url is filled and trust is checked.
+  // Test is disabled until the url is filled. The input handler doesn't
+  // re-render, so trigger one via the transport segment.
   assert.match(harness.app.innerHTML, /data-action="conn-test" disabled/);
   input({ target: inputTarget({ 'data-action': 'conn-field-name' }, 'Linear') });
   input({ target: inputTarget({ 'data-action': 'conn-field-url' }, 'https://mcp.example.com/mcp') });
-  // Still disabled without trust (input handler doesn't re-render, so trigger one).
-  change({ target: checkboxTarget({ 'data-action': 'conn-trust' }, true) });
+  click({ target: actionTarget({ 'data-action': 'conn-transport', 'data-transport': 'streamable-http' }) });
   assert.doesNotMatch(harness.app.innerHTML, /data-action="conn-test" disabled/);
 });
 
@@ -1125,7 +1160,6 @@ test('testing a connection renders discovered-tool checkboxes all checked and ca
     } as unknown as FakeTarget,
   });
   input({ target: inputTarget({ 'data-action': 'conn-field-bearer' }, 'sk-secret-token') });
-  change({ target: checkboxTarget({ 'data-action': 'conn-trust' }, true) });
 
   // Test the connection — the endpoint gets the id/url/transport/authMode + token.
   click({ target: actionTarget({ 'data-action': 'conn-test' }) });
@@ -1189,7 +1223,6 @@ test('re-testing a connection replaces discovered tools and resets approvals to 
             transport: 'streamable-http',
             authMode: 'none',
             headerNames: [],
-            trusted: true,
             enabled: true,
             lifecycleStatus: 'ready',
             statusText: '',
@@ -1262,7 +1295,6 @@ test('a failed test marks the connection failed with the safe status text and no
   click({ target: actionTarget({ 'data-action': 'conn-new' }) });
   input({ target: inputTarget({ 'data-action': 'conn-field-name' }, 'Linear') });
   input({ target: inputTarget({ 'data-action': 'conn-field-url' }, 'https://mcp.example.com/mcp') });
-  change({ target: checkboxTarget({ 'data-action': 'conn-trust' }, true) });
   click({ target: actionTarget({ 'data-action': 'conn-test' }) });
   await flushAsync();
 
@@ -1292,7 +1324,6 @@ test('removing a connection confirms in a modal and DELETEs its secrets on save'
             transport: 'streamable-http',
             authMode: 'bearer',
             headerNames: ['X-Api-Key'],
-            trusted: true,
             enabled: true,
             lifecycleStatus: 'ready',
             statusText: '',
@@ -1347,7 +1378,6 @@ test('saving with a filled-but-not-added connection editor commits it, not drops
   click({ target: actionTarget({ 'data-action': 'conn-new' }) });
   input({ target: inputTarget({ 'data-action': 'conn-field-name' }, 'Deepwiki') });
   input({ target: inputTarget({ 'data-action': 'conn-field-url' }, 'https://mcp.deepwiki.com/mcp') });
-  change({ target: checkboxTarget({ 'data-action': 'conn-trust' }, true) });
 
   // Save changes directly — the filled editor must be committed.
   click({ target: actionTarget({ 'data-action': 'save-profile' }) });
@@ -1356,7 +1386,6 @@ test('saving with a filled-but-not-added connection editor commits it, not drops
   assert.equal(servers.length, 1);
   assert.equal(servers[0]?.id, 'deepwiki');
   assert.equal(servers[0]?.displayName, 'Deepwiki');
-  assert.equal(servers[0]?.trusted, true);
 });
 
 test('a duplicate connection name and a non-https URL are rejected inline before save', async () => {
@@ -1371,7 +1400,6 @@ test('a duplicate connection name and a non-https URL are rejected inline before
             transport: 'streamable-http',
             authMode: 'none',
             headerNames: [],
-            trusted: false,
             enabled: true,
             lifecycleStatus: 'pending',
             statusText: '',
@@ -1446,10 +1474,10 @@ test('creating a blank profile round-trips with an empty skills array', async ()
   const input = harness.listeners.input;
   assert.ok(click && input);
 
-  // The create screen has no Skills section (M3 scope is edit-only), but a new
+  // The create screen has no capability tabs (M3 scope is edit-only), but a new
   // profile defaults skills to [] and the POST body must still carry the field.
   click({ target: actionTarget({ 'data-action': 'new-profile' }) });
-  assert.doesNotMatch(harness.app.innerHTML, /<h2 class="section-title">Skills<\/h2>/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="profile-tab"/);
   input({ target: inputTarget({ 'data-action': 'profile-name' }, 'Fresh Profile') });
   input({ target: inputTarget({ 'data-action': 'profile-instructions' }, 'Answer freshly.') });
   click({ target: actionTarget({ 'data-action': 'save-profile' }) });
@@ -1534,12 +1562,12 @@ test('leaving a dirty profile editor prompts, and honors keep/discard/save', asy
   click({ target: actionTarget({ 'data-action': 'open-profiles' }) });
   assert.match(harness.app.innerHTML, /modal-backdrop/);
   assert.match(harness.app.innerHTML, /Unsaved changes/);
-  assert.match(harness.app.innerHTML, /<h2 class="section-title">Skills<\/h2>/);
+  assert.match(harness.app.innerHTML, /data-action="profile-tab" data-tab="skills"/);
 
   // Keep editing → modal closes, still on the editor.
   click({ target: actionTarget({ 'data-action': 'leave-cancel' }) });
   assert.doesNotMatch(harness.app.innerHTML, /modal-backdrop/);
-  assert.match(harness.app.innerHTML, /<h2 class="section-title">Skills<\/h2>/);
+  assert.match(harness.app.innerHTML, /data-action="profile-tab" data-tab="skills"/);
 
   // Discard & leave → navigate to the list, and NO save was sent.
   click({ target: actionTarget({ 'data-action': 'open-profiles' }) });

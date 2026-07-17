@@ -56,7 +56,6 @@ function mcpServer(overrides: Partial<McpConnectionConfig> = {}): McpConnectionC
     transport: 'streamable-http',
     authMode: 'bearer',
     headerNames: [],
-    trusted: true,
     enabled: true,
     lifecycleStatus: 'ready',
     statusText: 'Connected · 2 tools',
@@ -74,7 +73,6 @@ function agent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig {
   return {
     id: 'agent_admin',
     name: 'Admin Agent',
-    description: 'Managed through the admin API',
     instructions: 'Use admin-managed instructions.',
     enabled: true,
     model: 'local-stub/admin-agent',
@@ -403,7 +401,6 @@ test('admin API rejects patches that leave an agent without a resolvable model',
         const unpinnedAgent: CustomAgentConfig = {
           id: 'agent_admin',
           name: 'Admin Agent',
-          description: 'Managed through the admin API',
           instructions: 'Use admin-managed instructions.',
           enabled: true,
           defaultModels: {

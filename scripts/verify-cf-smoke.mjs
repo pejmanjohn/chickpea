@@ -575,7 +575,6 @@ async function main() {
       body: JSON.stringify({
         id: 'agent_cf_smoke_profile',
         name: 'CF Smoke Profile',
-        description: 'Created by the CF smoke gate.',
         instructions: 'Answer only from the CF smoke gate fixture.',
         enabled: true,
         model: 'anthropic/claude-sonnet-4-6',

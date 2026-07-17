@@ -39,7 +39,6 @@ function server(overrides: Partial<McpConnectionConfig> = {}): McpConnectionConf
     transport: 'streamable-http',
     authMode: 'none',
     headerNames: [],
-    trusted: true,
     enabled: true,
     lifecycleStatus: 'ready',
     statusText: '',
@@ -71,12 +70,11 @@ function stubConnect(
 
 const noSecretsEnv = {} as Record<string, unknown>;
 
-// --- (a) filtering: disabled/untrusted/failed/empty-allowlist never connect --
+// --- (a) filtering: disabled/failed/empty-allowlist never connect --
 
-test('skips servers that are disabled, untrusted, not ready, or have an empty allowlist', async () => {
+test('skips servers that are disabled, not ready, or have an empty allowlist', async () => {
   const servers: McpConnectionConfig[] = [
     server({ id: 'disabled', enabled: false }),
-    server({ id: 'untrusted', trusted: false }),
     server({ id: 'pending', lifecycleStatus: 'pending' }),
     server({ id: 'failed', lifecycleStatus: 'failed' }),
     server({ id: 'empty', allowedTools: [] }),

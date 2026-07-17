@@ -134,7 +134,6 @@ try {
   const createAgent = await postAdminJson(baseUrl, 'POST', '/admin/api/agents', {
     id: AGENT_ID,
     name: 'Runtime Config Agent',
-    description: 'Created by verify-agent-config.mjs',
     instructions: `${INSTRUCTIONS_MARKER}: answer through the runtime-created agent.`,
     enabled: true,
     model: MODEL_SPECIFIER,

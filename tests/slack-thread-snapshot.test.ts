@@ -26,7 +26,6 @@ function agent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig {
   return {
     id: AGENT_ID,
     name: 'Snapshot Unit Profile',
-    description: 'Exercises thread config snapshots.',
     instructions: ALPHA,
     enabled: true,
     model: 'local-stub/snapshot-unit',

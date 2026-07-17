@@ -22,7 +22,6 @@ const SCHEMA_VERSION_KEY = 'schema_version';
 interface AgentRow {
   id: string;
   name: string;
-  description: string;
   instructions: string;
   enabled: number;
   model: string | null;
@@ -99,7 +98,6 @@ export class ConfigStoreLogic {
       `CREATE TABLE IF NOT EXISTS config_agents (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
-        description TEXT NOT NULL,
         instructions TEXT NOT NULL,
         enabled INTEGER NOT NULL,
         model TEXT,
@@ -159,11 +157,10 @@ export class ConfigStoreLogic {
     const next = { ...current, ...patch, id: agentId };
     this.db.run(
       `UPDATE config_agents
-       SET name = ?, description = ?, instructions = ?, enabled = ?, model = ?,
+       SET name = ?, instructions = ?, enabled = ?, model = ?,
            default_models_json = ?, skills_json = ?, mcp_servers_json = ?
        WHERE id = ?`,
       next.name,
-      next.description,
       next.instructions,
       next.enabled ? 1 : 0,
       model,
@@ -311,12 +308,11 @@ export class ConfigStoreLogic {
   private insertAgent(agent: CustomAgentConfig): { changes: number } {
     return this.db.run(
       `INSERT INTO config_agents (
-        id, name, description, instructions, enabled, model,
+        id, name, instructions, enabled, model,
         default_models_json, skills_json, mcp_servers_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       agent.id,
       agent.name,
-      agent.description,
       agent.instructions,
       agent.enabled ? 1 : 0,
       agent.model ?? null,
@@ -401,6 +397,20 @@ export class ConfigStoreLogic {
           const columns = db.all('PRAGMA table_info(config_agents)') as Array<{ name: string }>;
           if (columns.some((column) => column.name === 'allowed_tools_json')) {
             db.exec('ALTER TABLE config_agents DROP COLUMN allowed_tools_json');
+          }
+        },
+      },
+      {
+        version: 6,
+        up: (db) => {
+          // The per-profile description field was removed with the editor
+          // cleanup — a profile is identified by its name alone. Destructive
+          // like v5, with the same rollback recovery shape:
+          //   ALTER TABLE config_agents
+          //     ADD COLUMN description TEXT NOT NULL DEFAULT ''
+          const columns = db.all('PRAGMA table_info(config_agents)') as Array<{ name: string }>;
+          if (columns.some((column) => column.name === 'description')) {
+            db.exec('ALTER TABLE config_agents DROP COLUMN description');
           }
         },
       },
@@ -509,7 +519,6 @@ function rowToAgent(row: AgentRow): CustomAgentConfig {
   return {
     id: row.id,
     name: row.name,
-    description: row.description,
     instructions: row.instructions,
     enabled: Boolean(row.enabled),
     ...(row.model ? { model: row.model } : {}),

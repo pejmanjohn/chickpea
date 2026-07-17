@@ -158,7 +158,6 @@ const mcpServerSchema = v.pipe(
     transport: v.picklist(['streamable-http', 'sse']),
     authMode: v.picklist(['none', 'bearer']),
     headerNames: v.array(v.pipe(v.string(), v.trim(), v.regex(/^[A-Za-z0-9-]{1,128}$/))),
-    trusted: v.boolean(),
     enabled: v.boolean(),
     lifecycleStatus: v.picklist(['pending', 'ready', 'failed']),
     statusText: v.pipe(v.string(), v.maxLength(300)),
@@ -186,7 +185,6 @@ const mcpServersSchema = v.pipe(
 const agentSchema = v.object({
   id: nonEmptyString,
   name: nonEmptyString,
-  description: v.string(),
   instructions: nonEmptyString,
   enabled: v.boolean(),
   model: v.optional(modelSpecifier),
@@ -198,7 +196,6 @@ const agentSchema = v.object({
 const agentPatchSchema = v.partial(
   v.object({
     name: nonEmptyString,
-    description: v.string(),
     instructions: nonEmptyString,
     enabled: v.boolean(),
     model: v.nullable(modelSpecifier),
@@ -1152,7 +1149,6 @@ function toAgentConfig(input: v.InferOutput<typeof agentSchema>): CustomAgentCon
   return {
     id: input.id,
     name: input.name,
-    description: input.description,
     instructions: input.instructions,
     enabled: input.enabled,
     ...(input.model !== undefined ? { model: input.model } : {}),
@@ -1176,7 +1172,6 @@ function toMcpServers(
     transport: server.transport,
     authMode: server.authMode,
     headerNames: server.headerNames,
-    trusted: server.trusted,
     enabled: server.enabled,
     lifecycleStatus: server.lifecycleStatus,
     statusText: server.statusText,
@@ -1195,7 +1190,6 @@ type AgentPatch = Partial<Omit<CustomAgentConfig, 'id' | 'model'>> & { model?: s
 function toAgentPatch(input: v.InferOutput<typeof agentPatchSchema>): AgentPatch {
   const patch: AgentPatch = {};
   if (input.name !== undefined) patch.name = input.name;
-  if (input.description !== undefined) patch.description = input.description;
   if (input.instructions !== undefined) patch.instructions = input.instructions;
   if (input.enabled !== undefined) patch.enabled = input.enabled;
   if (input.model !== undefined) patch.model = input.model;
@@ -1398,7 +1392,6 @@ function effectiveConfigResponse(config: EffectiveSlackConfig): object {
     profile: {
       id: config.agent.id,
       name: config.agent.name,
-      description: config.agent.description,
       enabled: config.agent.enabled,
       model: config.agent.model ?? null,
     },

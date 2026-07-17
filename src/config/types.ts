@@ -40,7 +40,6 @@ export interface McpConnectionConfig {
   transport: 'streamable-http' | 'sse';
   authMode: 'none' | 'bearer';
   headerNames: string[];
-  trusted: boolean;
   enabled: boolean;
   lifecycleStatus: 'pending' | 'ready' | 'failed';
   statusText: string;
@@ -52,7 +51,6 @@ export interface McpConnectionConfig {
 export interface CustomAgentConfig {
   id: string;
   name: string;
-  description: string;
   instructions: string;
   enabled: boolean;
   model?: string;

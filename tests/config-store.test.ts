@@ -41,7 +41,6 @@ function agent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig {
   return {
     id: 'agent_test',
     name: 'Test Agent',
-    description: 'A test agent',
     instructions: 'Answer from the test fixture.',
     enabled: true,
     defaultModels: {
@@ -192,7 +191,6 @@ test('SqliteConfigStore round-trips non-empty mcpServers through create and upda
         transport: 'streamable-http',
         authMode: 'bearer',
         headerNames: ['X-Api-Key'],
-        trusted: true,
         enabled: true,
         lifecycleStatus: 'ready',
         statusText: 'Connected · 3 tools',
@@ -217,7 +215,6 @@ test('SqliteConfigStore round-trips non-empty mcpServers through create and upda
       transport: 'sse' as const,
       authMode: 'none' as const,
       headerNames: [],
-      trusted: true,
       enabled: false,
       lifecycleStatus: 'pending' as const,
       statusText: '',
@@ -290,7 +287,6 @@ test('migration backfills mcp_servers_json as [] on a pre-v4 database', async ()
           transport: 'streamable-http',
           authMode: 'none',
           headerNames: [],
-          trusted: true,
           enabled: true,
           lifecycleStatus: 'ready',
           statusText: '',
@@ -460,7 +456,7 @@ test('SqliteConfigStore migrates pre-existing assignment tables to support chann
       .run(
         createdAgent.id,
         createdAgent.name,
-        createdAgent.description,
+        'Legacy profile',
         createdAgent.instructions,
         1,
         null,
@@ -497,14 +493,16 @@ test('SqliteConfigStore migrates pre-existing assignment tables to support chann
     assert.equal((await store.getAssignment('T_LEGACY', 'C_LEGACY'))?.channelLabel, 'eng-releases');
     store.close();
 
-    // The v5 migration drops the removed allowed_tools_json column from the
-    // legacy DB, and the row still reads back through the current schema.
+    // The v5/v6 migrations drop the removed allowed_tools_json and description
+    // columns from the legacy DB, and the row still reads back through the
+    // current schema.
     const migrated = new DatabaseSync(path);
     const columns = migrated
       .prepare('SELECT name FROM pragma_table_info(?)')
       .all('config_agents') as Array<{ name: string }>;
     migrated.close();
     assert.ok(!columns.some((column) => column.name === 'allowed_tools_json'));
+    assert.ok(!columns.some((column) => column.name === 'description'));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -557,7 +555,7 @@ test('Cloudflare v2 migration pins an unpinned legacy Default', async () => {
       .run(
         legacyDefault.id,
         legacyDefault.name,
-        legacyDefault.description,
+        'Legacy profile',
         legacyDefault.instructions,
         1,
         null,
@@ -723,7 +721,6 @@ test('a disabled assignment at the winning specificity turns the channel off ins
       {
         id: 'agent_default',
         name: 'Default',
-        description: '',
         instructions: 'Default instructions.',
         enabled: true,
         defaultModels: { claude: 'anthropic/x', 'workers-ai': '@cf/x' },

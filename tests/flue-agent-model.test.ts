@@ -24,7 +24,6 @@ function modelAgent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConf
   return {
     id: 'agent_model',
     name: 'Model Agent',
-    description: 'Exercises model policy',
     instructions: 'Model policy instructions.',
     enabled: true,
     defaultModels: {
@@ -130,7 +129,6 @@ test('slack-thread initializes from the SQLite config store for the current stat
   await store.createAgent({
     id: 'agent_runtime',
     name: 'Runtime Agent',
-    description: 'Configured at runtime',
     instructions: 'Runtime configured instructions.',
     enabled: true,
     model: 'local-stub/runtime-pinned',

@@ -88,7 +88,6 @@ try {
   const created = await adminBody(app, 'POST', '/admin/api/agents', {
     id: AGENT_ID,
     name: 'Admin UI Profile',
-    description: 'Created by verify-admin-ui.mjs',
     instructions: 'ADMIN_UI_PROFILE_INSTRUCTIONS: answer from the admin-created profile.',
     enabled: true,
     model: MODEL_SPECIFIER,
