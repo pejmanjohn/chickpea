@@ -24,7 +24,6 @@ export interface EffectiveSlackConfig {
   agent: CustomAgentConfig;
   model: string;
   provider: string;
-  allowedTools: string[];
   instructions: string;
   instructionLayers: InstructionLayer[];
 }
@@ -60,7 +59,6 @@ export async function resolveEffectiveSlackConfig(
     { source: 'guardrail', label: 'Guardrail', text: SLACK_RUNTIME_GUARDRAIL },
   ];
   const instructions = instructionLayers.map((layer) => layer.text).join('\n');
-  const allowedTools = [...assignment.agent.allowedTools];
 
   return {
     workspaceId: assignment.workspaceId,
@@ -73,7 +71,6 @@ export async function resolveEffectiveSlackConfig(
     agent: assignment.agent,
     model,
     provider: providerPrefix(model),
-    allowedTools,
     instructions,
     instructionLayers,
   };
@@ -91,7 +88,6 @@ export function computeSnapshotHash(config: EffectiveSlackConfig): string {
         channelId: config.channelId,
         agentId: config.agentId,
         model: config.model,
-        allowedTools: config.allowedTools,
         instructions: config.instructions,
         // Skills ride inside the frozen agent; include them so an
         // Access-summary drift check notices a skill edit vs. a live thread.

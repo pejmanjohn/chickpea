@@ -580,7 +580,6 @@ async function main() {
         enabled: true,
         model: 'anthropic/claude-sonnet-4-6',
         defaultModels: { claude: 'anthropic/claude-sonnet-4-6', 'workers-ai': '@cf/zai-org/glm-5.2' },
-        allowedTools: ['lookup_channel_brief'],
       }),
     });
     check(

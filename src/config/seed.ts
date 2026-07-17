@@ -36,7 +36,6 @@ export function createSeededAgents(
     enabled: true,
     ...(target === 'cloudflare' ? { model: SEED_CLOUDFLARE_MODEL_PIN } : {}),
     defaultModels: { ...SEED_DEFAULT_MODELS },
-    allowedTools: ['lookup_channel_brief'],
     skills: [],
     mcpServers: [],
   };
@@ -86,10 +85,3 @@ export const demoChannelAssignments: ChannelAssignment[] = [
   demoEngChannelAssignment,
   demoExecChannelAssignment,
 ];
-
-export const seededChannelBriefs: Record<string, string> = {
-  C_ENG:
-    'The engineering release channel tracks shipped fixes, launch risks, owners, and verification evidence.',
-  C_EXEC:
-    'The exec leadership channel tracks board prep, paid acquisition, and weekly customer-proof priorities.',
-};

@@ -48,7 +48,6 @@ function agent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig {
       claude: 'anthropic/test-claude',
       'workers-ai': '@cf/test/model',
     },
-    allowedTools: ['lookup_channel_brief'],
     skills: [],
     mcpServers: [],
     ...overrides,
@@ -466,7 +465,7 @@ test('SqliteConfigStore migrates pre-existing assignment tables to support chann
         1,
         null,
         JSON.stringify(createdAgent.defaultModels),
-        JSON.stringify(createdAgent.allowedTools),
+        '["lookup_channel_brief"]',
       );
     legacy
       .prepare(
@@ -497,6 +496,15 @@ test('SqliteConfigStore migrates pre-existing assignment tables to support chann
     assert.equal(labeled.channelLabel, 'eng-releases');
     assert.equal((await store.getAssignment('T_LEGACY', 'C_LEGACY'))?.channelLabel, 'eng-releases');
     store.close();
+
+    // The v5 migration drops the removed allowed_tools_json column from the
+    // legacy DB, and the row still reads back through the current schema.
+    const migrated = new DatabaseSync(path);
+    const columns = migrated
+      .prepare('SELECT name FROM pragma_table_info(?)')
+      .all('config_agents') as Array<{ name: string }>;
+    migrated.close();
+    assert.ok(!columns.some((column) => column.name === 'allowed_tools_json'));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -554,7 +562,7 @@ test('Cloudflare v2 migration pins an unpinned legacy Default', async () => {
         1,
         null,
         JSON.stringify(legacyDefault.defaultModels),
-        JSON.stringify(legacyDefault.allowedTools),
+        '["lookup_channel_brief"]',
       );
     legacy.close();
 
@@ -719,7 +727,6 @@ test('a disabled assignment at the winning specificity turns the channel off ins
         instructions: 'Default instructions.',
         enabled: true,
         defaultModels: { claude: 'anthropic/x', 'workers-ai': '@cf/x' },
-        allowedTools: [],
         skills: [],
         mcpServers: [],
       },

@@ -82,7 +82,6 @@ function agent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig {
       claude: 'anthropic/admin-claude',
       'workers-ai': '@cf/admin/model',
     },
-    allowedTools: [],
     skills: [],
     mcpServers: [],
     ...overrides,
@@ -411,7 +410,6 @@ test('admin API rejects patches that leave an agent without a resolvable model',
             claude: 'anthropic/admin-claude',
             'workers-ai': '@cf/admin/model',
           },
-          allowedTools: [],
           skills: [],
           mcpServers: [],
         };
@@ -649,7 +647,6 @@ test('effective config endpoint resolves through the runtime assignment path', a
       agent({
         instructions: 'Base profile instructions from the admin test.',
         model: 'local-stub/effective-model',
-        allowedTools: ['lookup_channel_brief'],
         skills: [],
       }),
     );
@@ -672,7 +669,6 @@ test('effective config endpoint resolves through the runtime assignment path', a
         agentId: string;
         model: string;
         provider: string;
-        allowedTools: string[];
         instructions: string;
         instructionLayers: Array<{ source: string; text: string }>;
       };
@@ -680,7 +676,6 @@ test('effective config endpoint resolves through the runtime assignment path', a
     assert.equal(body.config.agentId, 'agent_admin');
     assert.equal(body.config.model, 'local-stub/effective-model');
     assert.equal(body.config.provider, 'local-stub');
-    assert.deepEqual(body.config.allowedTools, ['lookup_channel_brief']);
     assert.match(body.config.instructions, /Base profile instructions from the admin test\./);
     assert.match(body.config.instructions, /Channel addendum from the admin test\./);
     assert.match(body.config.instructions, /Do not reveal Slack tokens/);

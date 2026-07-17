@@ -191,7 +191,6 @@ const agentSchema = v.object({
   enabled: v.boolean(),
   model: v.optional(modelSpecifier),
   defaultModels: defaultModelsSchema,
-  allowedTools: v.array(v.string()),
   skills: v.optional(skillsSchema, []),
   mcpServers: v.optional(mcpServersSchema, []),
 });
@@ -204,7 +203,6 @@ const agentPatchSchema = v.partial(
     enabled: v.boolean(),
     model: v.nullable(modelSpecifier),
     defaultModels: defaultModelsSchema,
-    allowedTools: v.array(v.string()),
     skills: skillsSchema,
     mcpServers: mcpServersSchema,
   }),
@@ -1159,7 +1157,6 @@ function toAgentConfig(input: v.InferOutput<typeof agentSchema>): CustomAgentCon
     enabled: input.enabled,
     ...(input.model !== undefined ? { model: input.model } : {}),
     defaultModels: input.defaultModels,
-    allowedTools: input.allowedTools,
     skills: input.skills,
     mcpServers: toMcpServers(input.mcpServers),
   };
@@ -1203,7 +1200,6 @@ function toAgentPatch(input: v.InferOutput<typeof agentPatchSchema>): AgentPatch
   if (input.enabled !== undefined) patch.enabled = input.enabled;
   if (input.model !== undefined) patch.model = input.model;
   if (input.defaultModels !== undefined) patch.defaultModels = input.defaultModels;
-  if (input.allowedTools !== undefined) patch.allowedTools = input.allowedTools;
   if (input.skills !== undefined) patch.skills = input.skills;
   if (input.mcpServers !== undefined) patch.mcpServers = toMcpServers(input.mcpServers);
   return patch;
@@ -1408,7 +1404,6 @@ function effectiveConfigResponse(config: EffectiveSlackConfig): object {
     },
     model: config.model,
     provider: config.provider,
-    allowedTools: config.allowedTools,
     instructions: config.instructions,
     instructionLayers: config.instructionLayers,
     snapshotHash: computeSnapshotHash(config),

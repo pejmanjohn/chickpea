@@ -13,7 +13,6 @@ import {
 import {
   RAW_PROVIDER_ERROR_MARKER,
   STUB_REPLY_MARKER,
-  TOOL_TRIGGER,
   isMarkdownPost,
 } from './fake-slack.ts';
 import type { ParityException } from './exceptions.ts';
@@ -55,7 +54,6 @@ const RELEASE_SCRIBE_PROFILE: CustomAgentConfig = {
   enabled: true,
   model: PARITY_MODEL,
   defaultModels: { ...SEED_DEFAULT_MODELS },
-  allowedTools: ['lookup_channel_brief'],
   skills: [],
   mcpServers: [],
 };
@@ -75,7 +73,6 @@ const EXEC_BRIEF_PROFILE: CustomAgentConfig = {
   enabled: true,
   model: PARITY_MODEL,
   defaultModels: { ...SEED_DEFAULT_MODELS },
-  allowedTools: ['lookup_channel_brief'],
   skills: [],
   mcpServers: [],
 };
@@ -667,7 +664,6 @@ export const scenarios: Scenario[] = [
               claude: 'anthropic/pinned-claude',
               'workers-ai': '@cf/pinned/model',
             },
-            allowedTools: [],
             skills: [],
             mcpServers: [],
           },
@@ -715,7 +711,6 @@ export const scenarios: Scenario[] = [
               claude: 'anthropic/addendum-claude',
               'workers-ai': '@cf/addendum/model',
             },
-            allowedTools: [],
             skills: [],
             mcpServers: [],
           },
@@ -769,58 +764,6 @@ export const scenarios: Scenario[] = [
     },
   },
   {
-    id: 'S26',
-    title: 'tool-triggered turns surface lookup_channel_brief status without changing final delivery',
-    config: demoChannelConfig(),
-    async run(instance) {
-      await instance.postEvent(
-        appMention({
-          event_id: 'Ev_TOOL_STATUS',
-          event: {
-            text: `<@U_BOT> ${TOOL_TRIGGER}`,
-            ts: '1782771100.000100',
-            event_ts: '1782771100.000100',
-          },
-        }),
-      );
-      await instance.quiesce();
-
-      const finals = instance.backend.finals();
-      assert.equal(finals.length, 1);
-      const [final] = finals;
-      assert.ok(final);
-      assert.match(final.text, /Tool result:/);
-      assert.match(final.text, /exec leadership channel tracks board prep/);
-
-      const toolStatusIndex = instance.backend.wireLog.findIndex(
-        (entry) =>
-          entry.method === 'assistant.threads.setStatus' &&
-          String(entry.body.status).includes('lookup_channel_brief'),
-      );
-      assert.ok(toolStatusIndex >= 0, 'expected a lookup_channel_brief status on the wire');
-      assert.ok(toolStatusIndex < final.index, 'tool status must precede the final');
-    },
-  },
-  {
-    id: 'S27',
-    title: 'tool-triggered turns still deliver one final when status updates reject',
-    config: demoChannelConfig({ slack: { rejectSetStatus: true } }),
-    async run(instance) {
-      await instance.postEvent(
-        appMention({
-          event_id: 'Ev_TOOL_STATUS_REJECT',
-          event: {
-            text: `<@U_BOT> ${TOOL_TRIGGER}`,
-            ts: '1782771101.000100',
-            event_ts: '1782771101.000100',
-          },
-        }),
-      );
-      await instance.quiesce();
-      assert.equal(instance.backend.finals().length, 1);
-    },
-  },
-  {
     id: 'S28',
     title: 'unresolvable agent model degrades to one sanitized final, not silence',
     // Agent has no pinned model, and the lane fallback SLACK_TAG_MODEL is
@@ -842,7 +785,6 @@ export const scenarios: Scenario[] = [
               claude: 'anthropic/parity-claude',
               'workers-ai': '@cf/parity/model',
             },
-            allowedTools: [],
             skills: [],
             mcpServers: [],
           },
@@ -1058,7 +1000,6 @@ export const scenarios: Scenario[] = [
               claude: 'anthropic/parity-claude',
               'workers-ai': '@cf/parity/model',
             },
-            allowedTools: [],
             skills: [],
             mcpServers: [],
           },
@@ -1265,7 +1206,6 @@ export const scenarios: Scenario[] = [
               claude: 'anthropic/snapshot-claude',
               'workers-ai': '@cf/snapshot/model',
             },
-            allowedTools: [],
             skills: [],
             mcpServers: [],
           },
@@ -1404,7 +1344,6 @@ function snapshotScenarioConfig(agentId: string): ScenarioLaneConfig {
             claude: 'anthropic/snapshot-claude',
             'workers-ai': '@cf/snapshot/model',
           },
-          allowedTools: [],
           skills: [],
           mcpServers: [],
         },

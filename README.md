@@ -172,7 +172,7 @@ Direction, not commitment — open an issue if one of these matters to you; that
 - **Optional Cloudflare Access for `/admin`.** In-worker verification of the `Cf-Access-Jwt-Assertion` JWT, skipping the token gate when configured. It has to be in-worker: a hostname-wide Access policy would block Slack's event webhooks.
 - **A guided `npx tag-team deploy`.** The same artifact the button ships, driven from the terminal.
 - **Multi-workspace Slack OAuth distribution**, so one deploy can serve several workspaces with per-workspace tokens.
-- **A wider tool surface per profile.** Profiles already carry an allowed-tools list; today the only built-in is an assignment-scoped `lookup_channel_brief`. Custom tools and MCP servers are the natural next step.
+- **Connection presets.** Profiles gain capability through skills and remote MCP connections; a curated gallery of known-good servers (web search, docs) that pre-fills everything but the credential is the natural next step.
 - **More providers in the `/admin` model picker** — OpenAI, OpenRouter, and OpenAI-compatible endpoints such as Ollama and gateways. This is provider registration, not new plumbing.
 - **Usage visibility in `/admin`**: Workers AI Neuron and Durable Object write budgets, surfaced before the free-tier caps turn into errors.
 - **State export/backup and a documented upgrade path** — release tags plus a template-sync flow, backed by the append-only migration guarantee.
@@ -188,7 +188,7 @@ The behavior described above is a tested contract, not a description.
 FLUE_NODE_BIN=/path/to/node npm test
 ```
 
-The suite covers 38 parity scenarios — signature checks, dedupe, streaming fallbacks, fail-closed admission, thread snapshots — plus admin/config-store checks, identity checks, fake-Slack smoke tests, Slack formatting, the model resolver, and turn-normalization/history-window units. Set `TAG_REQUIRE_LOOPBACK=1` (what `npm run test:ci` does) so a loopback-denied environment fails instead of silently skipping the parity run.
+The suite covers 36 parity scenarios — signature checks, dedupe, streaming fallbacks, fail-closed admission, thread snapshots — plus admin/config-store checks, identity checks, fake-Slack smoke tests, Slack formatting, the model resolver, and turn-normalization/history-window units. Set `TAG_REQUIRE_LOOPBACK=1` (what `npm run test:ci` does) so a loopback-denied environment fails instead of silently skipping the parity run.
 
 Offline, net-guarded evidence scripts (run with Node >= 22.19 on `PATH`) spawn the real app against a fake Slack/provider backend and assert zero external network traffic (`scripts/net-guard.mjs`):
 
@@ -196,7 +196,6 @@ Offline, net-guarded evidence scripts (run with Node >= 22.19 on `PATH`) spawn t
 node scripts/verify-flue-offline-turn.mjs
 node scripts/verify-agent-config.mjs
 node scripts/verify-durability.mjs
-node scripts/verify-tool-policy.mjs
 node scripts/verify-providers.mjs
 npm run verify:cf-smoke
 ```

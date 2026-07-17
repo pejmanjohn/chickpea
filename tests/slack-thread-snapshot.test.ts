@@ -34,7 +34,6 @@ function agent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig {
       claude: 'anthropic/snapshot-unit',
       'workers-ai': '@cf/snapshot/unit',
     },
-    allowedTools: [],
     skills: [],
     mcpServers: [],
     ...overrides,
@@ -59,7 +58,6 @@ function effConfig(channelId: string, instructions: string = ALPHA): EffectiveSl
     agent: agent(),
     model: 'local-stub/snapshot-unit',
     provider: 'local-stub',
-    allowedTools: [],
     instructions,
     instructionLayers: [],
   };

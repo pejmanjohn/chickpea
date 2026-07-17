@@ -15,7 +15,6 @@ import {
 } from '../config/state-backend.ts';
 import { INTERNAL_AGENT_TOKEN_HEADER, isValidInternalAgentToken } from '../slack/internal-auth.ts';
 import { parseSlackThreadKey } from '../slack/thread-key.ts';
-import { createLookupChannelBriefTool } from '../tools/flue-tools.ts';
 
 export { resolveAgentModel } from '../config/model-policy.ts';
 
@@ -52,10 +51,6 @@ export default defineAgent(async ({ id }) => {
       ? await resolve()
       : await getOrCreateSnapshot(getAgentSnapshotStore(env), id, resolve);
 
-  const tools = config.allowedTools.includes('lookup_channel_brief')
-    ? [createLookupChannelBriefTool(config)]
-    : [];
-
   // Skills ride inside the resolved agent — frozen in the snapshot for channel
   // threads, live-resolved for DMs — so they inherit the same freeze contract
   // as instructions. resolveProfileSkills dedupes names and skips invalid rows.
@@ -68,13 +63,13 @@ export default defineAgent(async ({ id }) => {
   // name collides with a built-in or skill (a duplicate name kills the turn).
   const mcpTools = await resolveProfileMcpTools(config.agent.mcpServers, {
     env,
-    existingToolNames: [...tools.map((t) => t.name), ...skills.map((s) => s.name)],
+    existingToolNames: skills.map((s) => s.name),
   });
 
   return {
     model: config.model,
     instructions: config.instructions,
-    tools: [...tools, ...mcpTools],
+    tools: mcpTools,
     ...(skills.length > 0 ? { skills } : {}),
   };
 });

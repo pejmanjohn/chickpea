@@ -31,7 +31,6 @@ function modelAgent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConf
       claude: 'claude-sonnet-model',
       'workers-ai': '@cf/workers/model',
     },
-    allowedTools: [],
     skills: [],
     mcpServers: [],
     ...overrides,
@@ -139,7 +138,6 @@ test('slack-thread initializes from the SQLite config store for the current stat
       claude: 'anthropic/runtime-claude',
       'workers-ai': '@cf/runtime/model',
     },
-    allowedTools: [],
     skills: [
       {
         name: 'runtime-skill',

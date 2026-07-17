@@ -32,9 +32,9 @@ test('two same-thread turns: an earlier turn closing does not evict the later li
   turnA.close();
 
   // An observed tool_start for the thread must still route to the live turn B.
-  setObservedSlackStatus(KEY, { text: 'is running lookup_channel_brief' });
+  setObservedSlackStatus(KEY, { text: 'is running mcp__search__query' });
 
-  assert.deepEqual(second.statuses, ['is running lookup_channel_brief']);
+  assert.deepEqual(second.statuses, ['is running mcp__search__query']);
   assert.deepEqual(first.statuses, []);
 
   turnB.close();
@@ -45,7 +45,7 @@ test('observed status after close is a no-op (no status lands after the turn end
   const turn = registerSlackStatusTurn(KEY, presenter);
 
   turn.close();
-  setObservedSlackStatus(KEY, { text: 'is running lookup_channel_brief' });
+  setObservedSlackStatus(KEY, { text: 'is running mcp__search__query' });
 
   assert.deepEqual(presenter.statuses, [], 'a closed turn must not accept further statuses');
 });

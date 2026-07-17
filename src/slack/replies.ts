@@ -155,7 +155,7 @@ export function slackStatusText(stage: SlackStatusUpdate): string {
 
 export function slackLoadingMessages(stage: SlackStatusUpdate): string[] {
   // The loading phrase is derived from the same event-derived status text
-  // (e.g. "is running lookup_channel_brief" -> "Running lookup_channel_brief").
+  // (e.g. "is running mcp__search__query" -> "Running mcp__search__query").
   return [statusToLoadingMessage(slackStatusText(stage))];
 }
 

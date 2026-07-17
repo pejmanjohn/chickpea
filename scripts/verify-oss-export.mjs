@@ -183,7 +183,6 @@ try {
   run('npm', ['test'], { cwd: scratch });
   run('node', ['scripts/verify-flue-offline-turn.mjs'], { cwd: scratch });
   run('node', ['scripts/verify-durability.mjs'], { cwd: scratch });
-  run('node', ['scripts/verify-tool-policy.mjs'], { cwd: scratch });
   run('node', ['scripts/verify-providers.mjs'], { cwd: scratch });
 
   console.log('OSS export verification passed');

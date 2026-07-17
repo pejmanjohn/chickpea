@@ -27,7 +27,6 @@ interface AgentRow {
   enabled: number;
   model: string | null;
   default_models_json: string;
-  allowed_tools_json: string;
   // Nullable in the row type because pre-skills DBs may briefly surface the
   // column as NULL before/around migration; rowToAgent coerces to [].
   skills_json: string | null;
@@ -105,7 +104,6 @@ export class ConfigStoreLogic {
         enabled INTEGER NOT NULL,
         model TEXT,
         default_models_json TEXT NOT NULL,
-        allowed_tools_json TEXT NOT NULL,
         skills_json TEXT NOT NULL DEFAULT '[]',
         mcp_servers_json TEXT NOT NULL DEFAULT '[]'
       )`,
@@ -162,7 +160,7 @@ export class ConfigStoreLogic {
     this.db.run(
       `UPDATE config_agents
        SET name = ?, description = ?, instructions = ?, enabled = ?, model = ?,
-           default_models_json = ?, allowed_tools_json = ?, skills_json = ?, mcp_servers_json = ?
+           default_models_json = ?, skills_json = ?, mcp_servers_json = ?
        WHERE id = ?`,
       next.name,
       next.description,
@@ -170,7 +168,6 @@ export class ConfigStoreLogic {
       next.enabled ? 1 : 0,
       model,
       JSON.stringify(next.defaultModels),
-      JSON.stringify(next.allowedTools),
       JSON.stringify(next.skills),
       JSON.stringify(next.mcpServers),
       agentId,
@@ -315,8 +312,8 @@ export class ConfigStoreLogic {
     return this.db.run(
       `INSERT INTO config_agents (
         id, name, description, instructions, enabled, model,
-        default_models_json, allowed_tools_json, skills_json, mcp_servers_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        default_models_json, skills_json, mcp_servers_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       agent.id,
       agent.name,
       agent.description,
@@ -324,7 +321,6 @@ export class ConfigStoreLogic {
       agent.enabled ? 1 : 0,
       agent.model ?? null,
       JSON.stringify(agent.defaultModels),
-      JSON.stringify(agent.allowedTools),
       JSON.stringify(agent.skills ?? []),
       JSON.stringify(agent.mcpServers ?? []),
     );
@@ -384,6 +380,27 @@ export class ConfigStoreLogic {
             db.exec(
               "ALTER TABLE config_agents ADD COLUMN mcp_servers_json TEXT NOT NULL DEFAULT '[]'",
             );
+          }
+        },
+      },
+      {
+        version: 5,
+        up: (db) => {
+          // The per-profile allowed-tools axis was removed (capability comes
+          // from Skills and Connections; built-ins are wired unconditionally).
+          // Drop the column so old DBs match the current CREATE TABLE — it was
+          // NOT NULL without a DEFAULT, so merely not writing it would break
+          // inserts on pre-v5 DBs. DROP COLUMN needs SQLite ≥3.35; both
+          // node:sqlite (Node 22+) and DO SQLite are well past that.
+          //
+          // CAUTION: this is the chain's first destructive step. Rolling back
+          // to a pre-v5 build against a v5 DB breaks profile writes (old code
+          // still sets allowed_tools_json); recover by re-adding the column:
+          //   ALTER TABLE config_agents
+          //     ADD COLUMN allowed_tools_json TEXT NOT NULL DEFAULT '[]'
+          const columns = db.all('PRAGMA table_info(config_agents)') as Array<{ name: string }>;
+          if (columns.some((column) => column.name === 'allowed_tools_json')) {
+            db.exec('ALTER TABLE config_agents DROP COLUMN allowed_tools_json');
           }
         },
       },
@@ -497,7 +514,6 @@ function rowToAgent(row: AgentRow): CustomAgentConfig {
     enabled: Boolean(row.enabled),
     ...(row.model ? { model: row.model } : {}),
     defaultModels: JSON.parse(row.default_models_json) as CustomAgentConfig['defaultModels'],
-    allowedTools: JSON.parse(row.allowed_tools_json) as string[],
     // Coerce a NULL/absent column (pre-migration read) to an empty list.
     skills: row.skills_json
       ? (JSON.parse(row.skills_json) as CustomAgentConfig['skills'])

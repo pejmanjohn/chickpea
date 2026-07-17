@@ -57,7 +57,6 @@ const releaseAgent = {
   enabled: true,
   model: 'local-stub/release',
   defaultModels: { claude: 'anthropic/release', 'workers-ai': '@cf/release' },
-  allowedTools: ['lookup_channel_brief'],
 };
 
 const opsAgent = {
@@ -68,7 +67,6 @@ const opsAgent = {
   enabled: true,
   model: 'local-stub/ops',
   defaultModels: { claude: 'anthropic/ops', 'workers-ai': '@cf/ops' },
-  allowedTools: [],
 };
 
 function inlineScript(): string {
@@ -127,7 +125,6 @@ function effectiveConfig(agent: typeof releaseAgent, channelId: string): unknown
       profile: agent,
       model: agent.model,
       provider: 'local-stub',
-      allowedTools: agent.allowedTools,
       instructions: `${agent.name} resolved instructions.`,
       instructionLayers: [{ source: 'profile', label: 'Profile', text: agent.instructions }],
       snapshotHash: `sha256-${channelId}`,
@@ -732,10 +729,9 @@ test('New profile opens a blank create screen and validation gates save', async 
   click({ target: actionTarget({ 'data-action': 'new-profile' }) });
 
   // The create screen is a full page (not a modal): back link, ghost-example
-  // instructions placeholder, the one registered tool, and Create/Cancel.
+  // instructions placeholder, and Create/Cancel.
   assert.match(harness.app.innerHTML, /<h1 class="page-title">New profile<\/h1>/);
   assert.match(harness.app.innerHTML, /Answer teammates/);
-  assert.match(harness.app.innerHTML, /lookup_channel_brief/);
   assert.match(harness.app.innerHTML, /data-action="cancel-create"/);
   assert.match(harness.app.innerHTML, /data-action="save-profile"/);
 
@@ -770,7 +766,6 @@ test('the profile editor manages custom skills end to end and carries them in th
         enabled: true,
         model: 'local-stub/release',
         defaultModels: { claude: 'anthropic/release', 'workers-ai': '@cf/release' },
-        allowedTools: ['lookup_channel_brief'],
         skills: [],
       },
     ],
@@ -784,7 +779,7 @@ test('the profile editor manages custom skills end to end and carries them in th
 
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_release' }) });
 
-  // The Skills section renders between Instructions and Allowed tools, empty at first.
+  // The Skills section renders after Instructions, empty at first.
   assert.match(harness.app.innerHTML, /<h2 class="section-title">Skills<\/h2>/);
   assert.match(harness.app.innerHTML, /No custom skills yet/);
 
@@ -864,7 +859,6 @@ test('importing skills from a URL resolves a picker, adds the selected skill, an
         enabled: true,
         model: 'local-stub/import',
         defaultModels: { claude: 'anthropic/import', 'workers-ai': '@cf/import' },
-        allowedTools: [],
         skills: [],
       },
     ],
@@ -937,7 +931,6 @@ test('an import error is surfaced in the panel and dedupes a same-named skill on
         enabled: true,
         model: 'local-stub/dupe',
         defaultModels: { claude: 'anthropic/dupe', 'workers-ai': '@cf/dupe' },
-        allowedTools: [],
         skills: [{ name: 'release-notes', description: 'Old copy.', instructions: 'Old body.', enabled: false }],
       },
     ],
@@ -971,7 +964,6 @@ test('importing a same-named skill replaces the existing one rather than duplica
         enabled: true,
         model: 'local-stub/replace',
         defaultModels: { claude: 'anthropic/replace', 'workers-ai': '@cf/replace' },
-        allowedTools: [],
         skills: [{ name: 'release-notes', description: 'Old copy.', instructions: 'Old body.', enabled: false }],
       },
     ],
@@ -1027,7 +1019,6 @@ test('saving a profile with a filled-but-not-added skill editor commits the skil
         enabled: true,
         model: 'local-stub/trap',
         defaultModels: { claude: 'anthropic/x', 'workers-ai': '@cf/y' },
-        allowedTools: ['lookup_channel_brief'],
         skills: [],
       },
     ],
@@ -1066,7 +1057,6 @@ function connectionsAgent(overrides: Record<string, unknown> = {}): Record<strin
     enabled: true,
     model: 'local-stub/conn',
     defaultModels: { claude: 'anthropic/conn', 'workers-ai': '@cf/conn' },
-    allowedTools: ['lookup_channel_brief'],
     skills: [],
     mcpServers: [],
     ...overrides,
@@ -1425,7 +1415,6 @@ test('saving a profile with an invalid open skill editor blocks the save and sho
         enabled: true,
         model: 'local-stub/be',
         defaultModels: { claude: 'anthropic/x', 'workers-ai': '@cf/y' },
-        allowedTools: ['lookup_channel_brief'],
         skills: [],
       },
     ],
@@ -1484,7 +1473,6 @@ test('the profile editor save bar is sticky, hidden when clean, and revealed whe
         enabled: true,
         model: 'local-stub/bar',
         defaultModels: { claude: 'anthropic/x', 'workers-ai': '@cf/y' },
-        allowedTools: ['lookup_channel_brief'],
         skills: [{ name: 'a-skill', description: 'desc', instructions: '# body', enabled: true }],
       },
     ],
@@ -1519,7 +1507,6 @@ test('leaving a dirty profile editor prompts, and honors keep/discard/save', asy
         enabled: true,
         model: 'local-stub/guard',
         defaultModels: { claude: 'anthropic/x', 'workers-ai': '@cf/y' },
-        allowedTools: ['lookup_channel_brief'],
         skills: [{ name: 'a-skill', description: 'desc', instructions: '# body', enabled: true }],
       },
     ],
@@ -1997,9 +1984,9 @@ test('Settings remove-key confirmation names the pinned profiles and the honest 
   const harness = runAdminPageHarness({
     assignments: [],
     agents: [
-      { id: 'agent_a', name: 'Support Triage', description: '', instructions: 'x', enabled: true, model: 'anthropic/claude-sonnet-4-6', defaultModels: { claude: 'anthropic/claude-sonnet-4-6', 'workers-ai': '@cf/zai-org/glm-5.2' }, allowedTools: [] },
-      { id: 'agent_b', name: 'Release Scribe', description: '', instructions: 'x', enabled: true, model: 'anthropic/claude-haiku-4-5', defaultModels: { claude: 'anthropic/claude-sonnet-4-6', 'workers-ai': '@cf/zai-org/glm-5.2' }, allowedTools: [] },
-      { id: 'agent_c', name: 'Ops', description: '', instructions: 'x', enabled: true, model: 'openai/gpt-4.1', defaultModels: { claude: 'anthropic/claude-sonnet-4-6', 'workers-ai': '@cf/zai-org/glm-5.2' }, allowedTools: [] },
+      { id: 'agent_a', name: 'Support Triage', description: '', instructions: 'x', enabled: true, model: 'anthropic/claude-sonnet-4-6', defaultModels: { claude: 'anthropic/claude-sonnet-4-6', 'workers-ai': '@cf/zai-org/glm-5.2' } },
+      { id: 'agent_b', name: 'Release Scribe', description: '', instructions: 'x', enabled: true, model: 'anthropic/claude-haiku-4-5', defaultModels: { claude: 'anthropic/claude-sonnet-4-6', 'workers-ai': '@cf/zai-org/glm-5.2' } },
+      { id: 'agent_c', name: 'Ops', description: '', instructions: 'x', enabled: true, model: 'openai/gpt-4.1', defaultModels: { claude: 'anthropic/claude-sonnet-4-6', 'workers-ai': '@cf/zai-org/glm-5.2' } },
     ],
   });
   await flushAsync();

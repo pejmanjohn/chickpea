@@ -454,50 +454,6 @@ details[open].advanced summary::before {
 .pcard .pcard-foot { align-items: center; display: flex; flex-wrap: wrap; gap: 10px; }
 .pcard .pcard-foot .spacer { flex: 1; }
 
-/* ---- allowed-tools editor (checkbox + mono name + description) ---- */
-.tool-row {
-  align-items: flex-start;
-  background: none;
-  border: 0;
-  border-radius: var(--radius);
-  box-shadow: inset 0 0 0 1px var(--line);
-  color: inherit;
-  cursor: pointer;
-  display: flex;
-  gap: 11px;
-  padding: 11px 13px;
-  position: relative;
-  text-align: left;
-  width: 100%;
-}
-.tool-row + .tool-row { margin-top: 8px; }
-.tool-row:focus-within { outline: 2px solid var(--ember-deep); outline-offset: 2px; }
-.tool-check {
-  background: #fff;
-  border-radius: 5px;
-  box-shadow: inset 0 0 0 1px var(--line-strong);
-  flex-shrink: 0;
-  height: 16px;
-  margin-top: 1px;
-  position: relative;
-  width: 16px;
-}
-.tool-check.on { background: var(--ember); box-shadow: none; }
-.tool-check.on::after {
-  background-color: #22130a;
-  content: "";
-  height: 12px;
-  inset: 2px;
-  -webkit-mask: url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2016%2016%27%3E%3Cpath%20d%3D%27M12.416%203.376a.75.75%200%200%201%20.208%201.04l-5%207.5a.75.75%200%200%201-1.154.114l-3-3a.75.75%200%201%201%201.06-1.06l2.353%202.353%204.493-6.74a.75.75%200%200%201%201.04-.207Z%27%2F%3E%3C%2Fsvg%3E") center / 12px 12px no-repeat;
-  mask: url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2016%2016%27%3E%3Cpath%20d%3D%27M12.416%203.376a.75.75%200%200%201%20.208%201.04l-5%207.5a.75.75%200%200%201-1.154.114l-3-3a.75.75%200%201%201%201.06-1.06l2.353%202.353%204.493-6.74a.75.75%200%200%201%201.04-.207Z%27%2F%3E%3C%2Fsvg%3E") center / 12px 12px no-repeat;
-  position: absolute;
-  width: 12px;
-}
-.tool-check input { appearance: none; cursor: pointer; inset: 0; margin: 0; opacity: 0; position: absolute; }
-.tool-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.tool-body .t-name { color: var(--text); font-family: var(--mono); font-size: 0.78125rem; font-weight: 500; }
-.tool-body .t-desc { color: var(--text-3); font-size: 0.78125rem; }
-
 /* ---- profile custom skills ---- */
 .skill-list { display: flex; flex-direction: column; gap: 8px; }
 .skill-row {
@@ -1628,7 +1584,7 @@ details[open].advanced summary::before {
   }
 
   function profileSectionHtml(agent, assignment) {
-    var meta = agent ? modelLabel(agent) + " · " + toolsLabel(agent.allowedTools) + " · used in " + channelCountLabel(allAssignmentsForAgent(agent.id).length) : "Unknown profile";
+    var meta = agent ? modelLabel(agent) + " · used in " + channelCountLabel(allAssignmentsForAgent(agent.id).length) : "Unknown profile";
     var row = agent
       ? '<div class="bundle-row"><span class="b-name">' + esc(agent.name) + '</span><span class="b-meta">' + esc(meta) + '</span><span class="spacer"></span>' +
         '<button type="button" class="btn btn-soft btn-sm" data-action="open-profiles" data-agent="' + esc(agent.id) + '">Edit</button>' +
@@ -1641,7 +1597,7 @@ details[open].advanced summary::before {
         return '<option value="' + esc(profile.id) + '"' + (profile.id === assignment.agentId ? " selected" : "") + '>' + esc(profile.name) + '</option>';
       }).join("") + '</select>' + icon("chevron-down", "select-caret") + '</span><button type="button" class="btn btn-primary btn-sm" data-action="attach-selected-profile">Attach</button></div>';
     }
-    return '<section class="section"><div class="section-head"><div><h2 class="section-title">Profile</h2><p class="hint">The reusable behavior attached to this channel &mdash; instructions, model, and tools.</p></div><button type="button" class="btn btn-ghost btn-sm" data-action="open-profiles">Manage profiles</button></div>' + row + '</section>';
+    return '<section class="section"><div class="section-head"><div><h2 class="section-title">Profile</h2><p class="hint">The reusable behavior attached to this channel &mdash; instructions, model, skills, and connections.</p></div><button type="button" class="btn btn-ghost btn-sm" data-action="open-profiles">Manage profiles</button></div>' + row + '</section>';
   }
 
   function channelInstructionsHtml() {
@@ -1663,7 +1619,6 @@ details[open].advanced summary::before {
       body = '<div class="well"><dl>' +
         '<div class="kv"><dt>Profile</dt><dd>' + esc(profile.name) + ' ' + enabledBadge(profile.enabled) + '</dd></div>' +
         '<div class="kv"><dt>Replies as</dt><dd>Tag &mdash; the install-wide Slack identity shared by every channel</dd></div>' +
-        '<div class="kv"><dt>Allowed tools</dt><dd>' + toolsChips(state.effective.allowedTools) + '</dd></div>' +
         '<div class="kv"><dt>Instructions</dt><dd><div class="instructions-preview">' + instructionLayersHtml(state.effective.instructionLayers) + '</div></dd></div>' +
         '</dl></div>';
     }
@@ -1704,17 +1659,6 @@ details[open].advanced summary::before {
 
   // ---- Profiles master-detail view (cards 09-12) ---------------------------
 
-  // The single registered model-facing tool today. Flue has no default tool
-  // catalog (tools are app-defined via defineTool or MCP), so the editor renders
-  // exactly the tools this install registers — one row plus the "more appear
-  // here" hint. Never mock nonexistent tools.
-  var AVAILABLE_TOOLS = [
-    {
-      name: "lookup_channel_brief",
-      description: "Read the configured brief for the channel it\\u2019s answering in (name, profile, channel instructions).",
-    },
-  ];
-
   function profilesMainHtml() {
     if (state.profileScreen === "create") return profileCreateHtml();
     if (state.profileScreen === "edit" && state.profileDraft) return profileEditHtml();
@@ -1733,19 +1677,13 @@ details[open].advanced summary::before {
     });
   }
 
-  function toolsCountLabel(tools) {
-    var count = (tools && tools.length) || 0;
-    if (count === 0) return "no tools";
-    return count + " tool" + (count === 1 ? "" : "s");
-  }
-
   // ---- Overview (card 09) --------------------------------------------------
 
   function profileOverviewHtml() {
     var cards = state.agents.map(profileCardHtml).join("");
     return '<div class="main-head"><div style="display:flex; flex-direction:column; gap:6px;">' +
       '<h1 class="page-title">Profiles</h1>' +
-      '<p class="hint" style="max-width:58ch;">A profile is the reusable behavior you attach to a channel &mdash; its instructions, model, and tools. One profile can answer in many channels, and it always replies as <b style="font-weight:500; color:var(--text);">@Tag</b> &mdash; a profile changes how Tag answers, never who it is.</p>' +
+      '<p class="hint" style="max-width:58ch;">A profile is the reusable behavior you attach to a channel &mdash; its instructions, model, skills, and connections. One profile can answer in many channels, and it always replies as <b style="font-weight:500; color:var(--text);">@Tag</b> &mdash; a profile changes how Tag answers, never who it is.</p>' +
       '</div><button type="button" class="btn btn-primary" style="flex-shrink:0;" data-action="new-profile">New profile</button></div>' +
       '<section class="section"><div class="section-head"><div><h2 class="section-title">Your profiles</h2><p class="hint">Everything Tag can be in this workspace.</p></div></div>' +
       (cards || '<div class="empty"><p class="field-label">No profiles yet</p><p class="hint">Create one to give Tag a behavior you can attach to channels.</p></div>') +
@@ -1761,7 +1699,7 @@ details[open].advanced summary::before {
       : '<span class="badge badge-off"><span class="dot"></span>Disabled</span>';
     var modelPart = agent.model ? '<span class="mono">' + esc(agent.model) + '</span>' : "No model pinned";
     var usage = "used in " + channelCountLabel(concrete.length) + (dm ? " + DMs" : "");
-    var meta = modelPart + " &middot; " + toolsCountLabel(agent.allowedTools) + " &middot; " + usage;
+    var meta = modelPart + " &middot; " + usage;
     return '<div class="pcard"><div class="pcard-head"><span class="pcard-name">' + esc(agent.name) + '</span>' + roleBadge + stateBadge + '</div>' +
       (agent.description ? '<p class="pcard-desc">' + esc(agent.description) + '</p>' : "") +
       '<div class="pcard-foot"><span class="hint">' + meta + '</span><span class="spacer"></span>' +
@@ -1799,17 +1737,6 @@ details[open].advanced summary::before {
       return "This model resolves through the Workers AI binding, which declares no context window &mdash; so auto-compaction is off and long threads grow unbounded. Pin a catalog model (Claude, GPT) for bounded, auto-compacting context.";
     }
     return "";
-  }
-
-  function allowedToolsHtml(draft) {
-    var tools = draft.allowedTools || [];
-    var rows = AVAILABLE_TOOLS.map(function (tool) {
-      var on = tools.indexOf(tool.name) >= 0;
-      return '<label class="tool-row"><span class="tool-check' + (on ? " on" : "") + '">' +
-        '<input type="checkbox" data-action="toggle-tool" data-tool="' + esc(tool.name) + '" ' + (on ? "checked" : "") + ' aria-label="Allow ' + esc(tool.name) + '"></span>' +
-        '<span class="tool-body"><span class="t-name">' + esc(tool.name) + '</span><span class="t-desc">' + esc(tool.description) + '</span></span></label>';
-    }).join("");
-    return '<div>' + rows + '</div><p class="hint">Only the tools you check are available to this profile. More appear here as this install registers them.</p>';
   }
 
   // Custom-skill rules mirror the server-side valibot schema so an inline error
@@ -2188,7 +2115,6 @@ details[open].advanced summary::before {
       modelFieldHtml(draft) +
       '<div class="field full"><label class="field-label" for="p-desc">Description</label><input class="input" id="p-desc" name="description" type="text" value="' + esc(draft.description) + '" data-action="profile-desc"><p class="hint">One line, so future-you can tell profiles apart at a glance.</p></div>' +
       '<div class="field full"><label class="field-label" for="p-instr">Instructions</label>' + profileInstructionsFieldHtml(draft, true) + '<p class="hint">These travel with the profile to every channel it&rsquo;s attached to.</p></div>' +
-      '<div class="field full"><label class="field-label">Allowed tools</label>' + allowedToolsHtml(draft) + '</div>' +
       '</div></section>' +
       '<div class="save-bar">' + profileGenericErrorHtml() +
       '<button type="button" class="btn btn-ghost" data-action="cancel-create">Cancel</button>' +
@@ -2219,7 +2145,6 @@ details[open].advanced summary::before {
       '<div class="field">' + profileInstructionsFieldHtml(draft, false) + '</div>' + layerLegendHtml() + '</section>' +
       skillsSectionHtml(draft) +
       connectionsSectionHtml(draft) +
-      '<section class="section"><div class="section-head"><div><h2 class="section-title">Allowed tools</h2></div></div>' + allowedToolsHtml(draft) + '</section>' +
       usedInHtml(draft) +
       dangerZoneHtml(draft) +
       '<div class="save-bar-sticky' + (state.profileDirty ? "" : " is-clean") + '">' +
@@ -2941,15 +2866,6 @@ details[open].advanced summary::before {
     return '<span class="badge ' + (enabled ? "badge-on" : "badge-off") + '" style="margin-left:6px;"><span class="dot"></span>' + (enabled ? "Enabled" : "Disabled") + '</span>';
   }
 
-  function toolsChips(tools) {
-    if (!tools || tools.length === 0) return '<span class="hint">No tools allowed</span>';
-    return tools.map(function (tool) { return '<span class="chip">' + esc(tool) + '</span>'; }).join(" ");
-  }
-
-  function toolsLabel(tools) {
-    return tools && tools.length ? tools.join(" · ") : "no tools";
-  }
-
   function modelLabel(agent) {
     return agent.model || "No model pinned";
   }
@@ -2974,8 +2890,7 @@ details[open].advanced summary::before {
   function newProfileDraft() {
     var base = defaultAgent();
     // A blank profile starts empty (name + instructions are required, so the
-    // ghost-example placeholder shows until the operator writes them) and pre-
-    // checks the one registered tool, matching the create card.
+    // ghost-example placeholder shows until the operator writes them).
     return {
       id: "",
       name: "",
@@ -2984,7 +2899,6 @@ details[open].advanced summary::before {
       enabled: true,
       model: "",
       defaultModels: base ? base.defaultModels : defaultModels(),
-      allowedTools: (base && base.allowedTools && base.allowedTools.length) ? base.allowedTools.slice() : ["lookup_channel_brief"],
       // New profiles carry no custom skills; the array is what the API persists.
       skills: [],
       // New profiles carry no Connections either; the array is what the API persists.
@@ -3001,9 +2915,6 @@ details[open].advanced summary::before {
       enabled: agent.enabled,
       model: agent.model || "",
       defaultModels: agent.defaultModels || defaultModels(),
-      // Copy the array: the tools editor mutates draft.allowedTools in place, and
-      // it must not reach through into the shared state.agents entry.
-      allowedTools: (agent.allowedTools || []).slice(),
       // Deep-copy each skill so the inline editor never mutates the shared
       // state.agents entry — a discard/reopen must show the persisted values.
       skills: (agent.skills || []).map(function (skill) {
@@ -3431,18 +3342,6 @@ details[open].advanced summary::before {
       if (target.checked) { state.profileDraft.enabled = true; state.disableConfirm = false; state.profileDirty = true; render(); }
       else if (allAssignmentsForAgent(state.profileDraft.id).length > 0) { state.disableConfirm = true; render(); }
       else { state.profileDraft.enabled = false; state.profileDirty = true; render(); }
-    }
-    // Allowed-tools checkbox: update the draft's tool set and re-render the row.
-    if (action === "toggle-tool" && state.profileDraft) {
-      collectProfileDraft();
-      var toolName = target.getAttribute("data-tool");
-      var draftTools = state.profileDraft.allowedTools || [];
-      var index = draftTools.indexOf(toolName);
-      if (target.checked) { if (index < 0) draftTools.push(toolName); }
-      else if (index >= 0) { draftTools.splice(index, 1); }
-      state.profileDraft.allowedTools = draftTools;
-      state.profileDirty = true;
-      render();
     }
     // Custom-skill enable toggle: flip enabled on the row at data-index. Re-render
     // so the checked attribute in the HTML stays in sync with the draft (the
@@ -4082,7 +3981,6 @@ details[open].advanced summary::before {
       instructions: draft.instructions,
       enabled: draft.enabled,
       defaultModels: draft.defaultModels || defaultModels(),
-      allowedTools: draft.allowedTools || [],
       skills: draft.skills || [],
       // POLICY ONLY. connectionFromEditor / cloneConnection strip secrets by
       // construction — no token or header VALUE is ever in this array.

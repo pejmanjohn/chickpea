@@ -96,7 +96,6 @@ try {
       claude: 'anthropic/admin-ui-claude',
       'workers-ai': '@cf/admin-ui/model',
     },
-    allowedTools: ['lookup_channel_brief'],
   });
   record(
     'POST /admin/api/agents creates the profile',

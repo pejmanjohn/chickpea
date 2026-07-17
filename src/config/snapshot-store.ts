@@ -144,7 +144,6 @@ export function snapshotFromEffectiveConfig(
     agent: config.agent,
     model: config.model,
     providerId: config.provider,
-    allowedTools: [...config.allowedTools],
     instructions: config.instructions,
     snapshotHash: computeSnapshotHash(config),
     createdAt,

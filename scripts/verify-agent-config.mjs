@@ -142,7 +142,6 @@ try {
       claude: 'anthropic/runtime-config-claude',
       'workers-ai': '@cf/runtime-config/model',
     },
-    allowedTools: [],
   });
   record(
     'POST /admin/api/agents creates runtime agent',

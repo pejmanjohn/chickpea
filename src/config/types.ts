@@ -57,7 +57,6 @@ export interface CustomAgentConfig {
   enabled: boolean;
   model?: string;
   defaultModels: Record<ProviderId, string>;
-  allowedTools: string[];
   skills: SkillConfig[];
   mcpServers: McpConnectionConfig[];
 }
@@ -89,12 +88,11 @@ export interface ResolvedAssignment {
 }
 
 // A snapshot IS a resolved assignment frozen at a thread's first turn, plus the
-// resolved model/provider/tools/instructions. Declaring the relation lets a
+// resolved model/provider/instructions. Declaring the relation lets a
 // snapshot be used directly wherever a ResolvedAssignment is expected.
 export interface AgentSnapshot extends ResolvedAssignment {
   model: string;
   providerId: string;
-  allowedTools: string[];
   instructions: string;
   snapshotHash: string;
   createdAt: number;
