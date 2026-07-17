@@ -1,4 +1,4 @@
-# Chickpea
+# <img src="assets/chickpea-mark.svg" alt="" width="34" height="34"> Chickpea
 
 **Self-hosted, model-agnostic AI agent for Slack. One click to your own Cloudflare account — the first mention answers before you add a single model API key.**
 
