@@ -16,6 +16,8 @@ import { ConfigStoreLogic, type ConfigAgentPatch } from './config/store.ts';
 import type { AgentSnapshot, ChannelAssignment, CustomAgentConfig } from './config/types.ts';
 import { SlackStateLogic } from './slack/claim-store.ts';
 import { resolveSlackCredentials } from './slack/credentials.ts';
+import { toolStatus } from './slack/replies.ts';
+import { setObservedSlackStatus } from './slack/status-registry.ts';
 import {
   createSlackWebClient,
   deliverProviderFailureFinal,
@@ -275,6 +277,17 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       await this.ctx.storage.setAlarm(Date.now());
     }
     return result;
+  }
+
+  /**
+   * Cross-isolate tool narration (see src/slack/status-relay.ts): the agent DO
+   * observes its own tool_start events and relays them here, where the alarm
+   * registered the live turn's status presenter. A registry miss just means
+   * the turn already finished — still a success by contract.
+   */
+  async observedToolStatus(instanceId: string, toolName: string): Promise<StateRpcResult<null>> {
+    setObservedSlackStatus(instanceId, toolStatus(toolName));
+    return { ok: true, value: null };
   }
 
   /**

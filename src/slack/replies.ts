@@ -7,8 +7,17 @@ export interface SlackStatusUpdate {
 }
 
 // Status vocabulary for the observe() tool bridge lives here (not in app.ts, which
-// is route composition): "is running <tool>" in Slack's status voice.
+// is route composition). MCP tools arrive as Flue's `mcp__<server>__<tool>` —
+// render them as "is calling <server>: <tool>" so the status line names the
+// connection a human recognizes. Tool NAMES only; arguments never reach here.
 export function toolStatus(toolName: string): SlackStatusUpdate {
+  if (toolName.startsWith('mcp__')) {
+    const rest = toolName.slice(5);
+    const sep = rest.indexOf('__');
+    if (sep > 0) {
+      return { text: `is calling ${rest.slice(0, sep)}: ${rest.slice(sep + 2)}` };
+    }
+  }
   return { text: `is running ${toolName}` };
 }
 

@@ -6,6 +6,7 @@ import { createAdminRoutes } from './admin/routes.ts';
 import { recordRegisteredProvider } from './config/providers.ts';
 import { toolStatus } from './slack/replies.ts';
 import { setObservedSlackStatus } from './slack/status-registry.ts';
+import { relayObservedToolStatus } from './slack/status-relay.ts';
 
 // Provider registrations run at module scope so they are in place before any
 // agent resolves its model. On the Cloudflare target the seeded Workers AI
@@ -70,7 +71,13 @@ observe((event) => {
   if (event.type !== 'tool_start' || typeof event.instanceId !== 'string') {
     return;
   }
-  setObservedSlackStatus(event.instanceId, toolStatus(event.toolName));
+  if (setObservedSlackStatus(event.instanceId, toolStatus(event.toolName))) {
+    return;
+  }
+  // Local miss: on Cloudflare this subscriber also runs inside the agent DO
+  // isolate, where the turn's registry lives elsewhere — relay the tool name
+  // to the state DO (no-op on node / outside a DO handler).
+  void relayObservedToolStatus(event.instanceId, event.toolName);
 });
 
 const app = new Hono();

@@ -115,6 +115,13 @@ export interface TagStateRpc {
    * invocation's fate. Idempotent by `job.id` (a duplicate enqueue is ignored).
    */
   enqueueTurn(job: TurnJob): Promise<StateRpcResult<null>>;
+  // -- status relay (Cloudflare cross-isolate tool narration) ---------------
+  /**
+   * Forward a tool-start observed inside the agent DO isolate to the status
+   * registry living in this DO's isolate (where the alarm runs the turn).
+   * Best-effort: a miss (turn already closed) is a success, never an error.
+   */
+  observedToolStatus(instanceId: string, toolName: string): Promise<StateRpcResult<null>>;
 }
 
 /**

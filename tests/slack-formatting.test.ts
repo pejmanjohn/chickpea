@@ -15,6 +15,7 @@ import {
   LocalSlackReplySink,
   slackLoadingMessages,
   slackStatusText,
+  toolStatus,
 } from '../src/slack/replies.ts';
 
 test('standard Markdown final replies render as Slack markdown blocks', () => {
@@ -217,6 +218,26 @@ test('status updates use factual text and derive loading copy from the same fact
   assert.deepEqual(slackLoadingMessages(update), [
     'Using 2 messages of channel_history context',
   ]);
+});
+
+test('toolStatus names the MCP connection instead of the raw mcp__ identifier', () => {
+  assert.deepEqual(toolStatus('mcp__context7__resolve-library-id'), {
+    text: 'is calling context7: resolve-library-id',
+  });
+  // Builtin (non-MCP) tools keep the plain form.
+  assert.deepEqual(toolStatus('lookup_thread_history'), {
+    text: 'is running lookup_thread_history',
+  });
+  // A malformed mcp__ name (no second separator) falls back rather than
+  // rendering an empty server or tool segment.
+  assert.deepEqual(toolStatus('mcp__broken'), { text: 'is running mcp__broken' });
+});
+
+test('MCP tool status still respects Slack’s 50-character loading cap', () => {
+  const update = toolStatus('mcp__some-long-server-name__a-very-long-tool-name-indeed');
+  const [loading] = slackLoadingMessages(update);
+  assert.ok(loading);
+  assert.ok(loading.length <= 50, `expected <= 50 chars, got ${loading.length}`);
 });
 
 test('derived loading message is capped to Slack’s 50-character limit', () => {

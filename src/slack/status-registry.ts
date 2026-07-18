@@ -58,13 +58,20 @@ export function registerSlackStatusTurn(
   return turn;
 }
 
+/**
+ * Route an observed tool status to the live turn registered in THIS isolate.
+ * Returns false on a miss so the caller can decide to relay cross-isolate
+ * (on Cloudflare the agent DO and the turn's alarm isolate never share this
+ * Map — see relayObservedToolStatus).
+ */
 export function setObservedSlackStatus(
   instanceId: string,
   update: SlackStatusUpdate,
-): void {
+): boolean {
   const turn = activeSlackStatusTurns.get(instanceId);
   if (!turn) {
-    return;
+    return false;
   }
   void turn.setStatus(update);
+  return true;
 }

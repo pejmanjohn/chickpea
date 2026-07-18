@@ -3,6 +3,10 @@
   "name": "chickpea",
   "compatibility_date": "2026-06-01",
   "compatibility_flags": ["nodejs_compat"],
+  // Without this, a fresh install captures NO logs at all — the sanitized
+  // Slack error is then the only trace of a provider failure (learned the
+  // hard way: the raw error behind a keyless-anthropic 401 was unrecoverable).
+  "observability": { "enabled": true },
   "ai": {
     "binding": "AI"
   },
