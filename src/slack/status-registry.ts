@@ -36,42 +36,54 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
 
   close(): void {
     this.closed = true;
-    // Identity-guarded: two turns in the same Slack thread share one registry
-    // key (workspace:channel:thread), and a later turn's registration overwrites
-    // an earlier one. Only evict the map entry if it still points at THIS turn,
-    // so an earlier turn finishing never removes a later, still-running turn's
-    // registration (which would silently drop its tool statuses).
-    if (activeSlackStatusTurns.get(this.instanceId) === this) {
-      activeSlackStatusTurns.delete(this.instanceId);
+    // Two turns in the same Slack conversation share one registry key
+    // (workspace:channel:thread — and ALL DM turns share workspace:dm-channel:dm),
+    // so each key holds a SET of live turns. Closing removes only this turn;
+    // an earlier turn finishing never drops a later, still-running turn.
+    const turns = activeSlackStatusTurns.get(this.instanceId);
+    if (turns) {
+      turns.delete(this);
+      if (turns.size === 0) {
+        activeSlackStatusTurns.delete(this.instanceId);
+      }
     }
   }
 }
 
-const activeSlackStatusTurns = new Map<string, ActiveSlackStatusTurn>();
+const activeSlackStatusTurns = new Map<string, Set<ActiveSlackStatusTurn>>();
 
 export function registerSlackStatusTurn(
   instanceId: string,
   presenter: StatusPresenter,
 ): SlackStatusTurnRegistration {
   const turn = new ActiveSlackStatusTurn(instanceId, presenter);
-  activeSlackStatusTurns.set(instanceId, turn);
+  const turns = activeSlackStatusTurns.get(instanceId) ?? new Set<ActiveSlackStatusTurn>();
+  turns.add(turn);
+  activeSlackStatusTurns.set(instanceId, turns);
   return turn;
 }
 
 /**
- * Route an observed tool status to the live turn registered in THIS isolate.
- * Returns false on a miss so the caller can decide to relay cross-isolate
- * (on Cloudflare the agent DO and the turn's alarm isolate never share this
- * Map — see relayObservedToolStatus).
+ * Route an observed tool status to every live turn registered under the key in
+ * THIS isolate. Broadcast, not last-writer-wins: Flue's tool events carry only
+ * the conversation key, so with two concurrent turns in one conversation we
+ * cannot tell whose tool fired — sending to both keeps the status on the RIGHT
+ * thread (plus a transient extra on the other), where routing to only the
+ * newest registration put it exclusively on the WRONG thread for DMs.
+ * Returns false on a miss so the caller can relay cross-isolate (on Cloudflare
+ * the agent DO and the turn's alarm isolate never share this Map — see
+ * relayObservedToolStatus).
  */
 export function setObservedSlackStatus(
   instanceId: string,
   update: SlackStatusUpdate,
 ): boolean {
-  const turn = activeSlackStatusTurns.get(instanceId);
-  if (!turn) {
+  const turns = activeSlackStatusTurns.get(instanceId);
+  if (!turns || turns.size === 0) {
     return false;
   }
-  void turn.setStatus(update);
+  for (const turn of turns) {
+    void turn.setStatus(update);
+  }
   return true;
 }

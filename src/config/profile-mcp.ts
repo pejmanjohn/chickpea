@@ -1,6 +1,6 @@
 import type { ToolDefinition, connectMcpServer } from '@flue/runtime';
 
-import { safeMcpFailureText } from './mcp-errors.ts';
+import { mcpDebugText } from './mcp-errors.ts';
 import { buildMcpRequestHeaders, resolveMcpSecrets } from './mcp-secrets.ts';
 import { connectMcp } from './mcp-test.ts';
 import { isCloudflareTarget } from './runtime-target.ts';
@@ -108,9 +108,10 @@ async function resolveOneServer(
     scheduleClose(connection, false);
     return kept;
   } catch (err) {
-    // Graceful degrade: skip this server, never abort the turn. Log SAFE text
-    // only — raw error strings never reach logs, the DB, or the UI.
-    console.warn('[chickpea] MCP connection ' + server.id + ' skipped: ' + safeMcpFailureText(err));
+    // Graceful degrade: skip this server, never abort the turn. The DB and UI
+    // only ever see the safe sentence; the log line carries the bounded debug
+    // text so a live connect failure is actually diagnosable in observability.
+    console.warn('[chickpea] MCP connection ' + server.id + ' skipped: ' + mcpDebugText(err));
     return [];
   }
 }

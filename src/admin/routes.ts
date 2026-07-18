@@ -21,11 +21,13 @@ import {
   NoAssignmentError,
   UnknownAgentError,
 } from '../config/errors.ts';
-import { classifyMcpError, McpBlockedUrlError, safeMcpFailureText } from '../config/mcp-errors.ts';
+import { classifyMcpError, McpBlockedUrlError, mcpDebugText, safeMcpFailureText } from '../config/mcp-errors.ts';
 import {
   buildMcpRequestHeaders,
   deleteMcpSecrets,
   describeMcpSecretSources,
+  mcpBearerSettingKey,
+  mcpHeaderSettingKey,
   resolveMcpSecrets,
   saveMcpSecrets,
   type ResolvedMcpSecrets,
@@ -213,7 +215,9 @@ const mcpTestSchema = v.object({
   transport: v.picklist(['streamable-http', 'sse']),
   authMode: v.picklist(['none', 'bearer']),
   bearerToken: v.optional(v.string()),
-  headers: v.optional(v.record(v.string(), v.string())),
+  // KEYS validated like headerNames — a raw key with ':' or CR/LF would throw
+  // deep inside new Headers() and read as a misleading connect failure.
+  headers: v.optional(v.record(v.pipe(v.string(), v.trim(), v.regex(/^[A-Za-z0-9-]{1,128}$/)), v.string())),
   // The connection's known header names, so re-testing an existing connection
   // resolves STORED header values even when the operator didn't re-type them
   // (the client seeds those fields blank). Typed values in `headers` still win.
@@ -222,10 +226,19 @@ const mcpTestSchema = v.object({
 
 // Secrets PUT payload — values plus the header NAMES they map to (the settings
 // store has no prefix scan, so delete/describe need the name list).
+const headerNameSchema = v.pipe(v.string(), v.trim(), v.regex(/^[A-Za-z0-9-]{1,128}$/));
+
 const mcpSecretsPutSchema = v.object({
   bearerToken: v.optional(v.string()),
-  headers: v.optional(v.record(v.string(), v.string())),
-  headerNames: v.array(v.pipe(v.string(), v.trim(), v.regex(/^[A-Za-z0-9-]{1,128}$/))),
+  // Record KEYS are header names and get the same validation as headerNames —
+  // an unvalidated key with ':' or CR/LF would explode later in new Headers().
+  headers: v.optional(v.record(headerNameSchema, v.string())),
+  headerNames: v.array(headerNameSchema),
+  // Cleanup of orphans: header names removed/renamed in the editor, and a
+  // bearer -> none switch, delete their stored settings instead of leaving
+  // dead secrets behind under keys nothing references anymore.
+  removeHeaderNames: v.optional(v.array(headerNameSchema)),
+  clearBearer: v.optional(v.boolean()),
 });
 
 const mcpSecretsDeleteSchema = v.object({
@@ -593,7 +606,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return c.json({ ok: true, tools: result.tools });
     } catch (err) {
       // Classify first — err.message may carry raw internals and must never be
-      // returned to the client.
+      // returned to the client. The log line keeps the bounded debug text so a
+      // failing Test connection is diagnosable from observability.
+      console.warn('[chickpea] MCP test failed (' + input.id + '): ' + mcpDebugText(err));
       return c.json({ ok: false, code: classifyMcpError(err), message: safeMcpFailureText(err) });
     }
   });
@@ -624,6 +639,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       platformEnv,
       settingsStore,
     );
+    if (input.clearBearer) {
+      await settingsStore.deleteSetting(mcpBearerSettingKey(id));
+    }
+    for (const name of input.removeHeaderNames ?? []) {
+      await settingsStore.deleteSetting(mcpHeaderSettingKey(id, name));
+    }
     const sources = await describeMcpSecretSources(id, input.headerNames, platformEnv, settingsStore);
     return c.json(sources);
   });

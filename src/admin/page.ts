@@ -4340,13 +4340,31 @@ details[open].advanced summary::before {
   // Stage the transient secrets typed into an editor for the settings PUT that
   // saveProfile issues after the profile PATCH. Only non-empty values are staged;
   // an empty box leaves the stored/env value untouched. NEVER goes in the PATCH.
-  function stagePendingSecrets(id, editor) {
+  function stagePendingSecrets(id, editor, prior) {
     if (!state.profileDraft) return;
     var pending = state.profileDraft.pendingSecrets || {};
     var entry = pending[id] || { headerNames: [] };
     entry.headerNames = (editor.headerNames || []).map(function (name) { return String(name || "").trim(); }).filter(function (name) { return !!name; });
+    // Orphan cleanup: a header renamed/removed in this edit, or an auth switch
+    // away from bearer, deletes its stored secret on save — otherwise dead
+    // values linger in settings under keys nothing references anymore.
+    if (prior && prior.id === id) {
+      var keptNames = {};
+      entry.headerNames.forEach(function (name) { keptNames[name] = true; });
+      var removedNames = (prior.headerNames || []).filter(function (name) { return !keptNames[name]; });
+      if (removedNames.length) {
+        var staged = entry.removeHeaderNames || [];
+        removedNames.forEach(function (name) { if (staged.indexOf(name) < 0) staged.push(name); });
+        entry.removeHeaderNames = staged;
+      }
+      if (prior.authMode === "bearer" && editor.authMode !== "bearer") {
+        entry.clearBearer = true;
+      }
+    }
     if (editor.authMode === "bearer" && String(editor.bearerToken || "").trim()) {
       entry.bearerToken = editor.bearerToken;
+      // A re-entered bearer supersedes any staged clear from an earlier edit.
+      delete entry.clearBearer;
     }
     var headers = entry.headers || {};
     var names = editor.headerNames || [];
@@ -4370,10 +4388,11 @@ details[open].advanced summary::before {
     var validationError = validateConnectionEditor(editor, servers);
     if (validationError) { editor.error = validationError; render(); return; }
     var conn = connectionFromEditor(editor);
+    var prior = (editor.index === null || editor.index === undefined) ? null : servers[editor.index];
     if (editor.index === null || editor.index === undefined) { servers.push(conn); }
     else { servers[editor.index] = conn; }
     state.profileDraft.mcpServers = servers;
-    stagePendingSecrets(conn.id, editor);
+    stagePendingSecrets(conn.id, editor, prior);
     state.connectionEditor = null;
     markProfileDirty();
     render();
@@ -4394,10 +4413,11 @@ details[open].advanced summary::before {
     var validationError = validateConnectionEditor(editor, servers);
     if (validationError) { editor.error = validationError; render(); return false; }
     var conn = connectionFromEditor(editor);
+    var prior = (editor.index === null || editor.index === undefined) ? null : servers[editor.index];
     if (editor.index === null || editor.index === undefined) { servers.push(conn); }
     else { servers[editor.index] = conn; }
     state.profileDraft.mcpServers = servers;
-    stagePendingSecrets(conn.id, editor);
+    stagePendingSecrets(conn.id, editor, prior);
     state.connectionEditor = null;
     return true;
   }
@@ -4426,8 +4446,10 @@ details[open].advanced summary::before {
       var body = { headerNames: entry.headerNames || [] };
       if (entry.bearerToken !== undefined) body.bearerToken = entry.bearerToken;
       if (entry.headers !== undefined) body.headers = entry.headers;
-      // Only round-trip when there is actually a value to store.
-      if (body.bearerToken !== undefined || body.headers !== undefined) {
+      if (entry.removeHeaderNames && entry.removeHeaderNames.length) body.removeHeaderNames = entry.removeHeaderNames;
+      if (entry.clearBearer) body.clearBearer = true;
+      // Round-trip when there is a value to store OR an orphan to clean up.
+      if (body.bearerToken !== undefined || body.headers !== undefined || body.removeHeaderNames !== undefined || body.clearBearer !== undefined) {
         postJson("/admin/api/mcp/secrets/" + encodeURIComponent(id), "PUT", body).catch(function () {});
       }
     });

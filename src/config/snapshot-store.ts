@@ -50,7 +50,19 @@ export class SnapshotStoreLogic {
       'SELECT snapshot_json FROM agent_snapshots WHERE thread_key = ?',
       threadKey,
     ) as SnapshotRow | undefined;
-    return row ? (JSON.parse(row.snapshot_json) as AgentSnapshot) : undefined;
+    if (!row) {
+      return undefined;
+    }
+    // Touch on read: the purge horizon must track LAST ACTIVITY, not thread
+    // birth. The thread registry refreshes started_at on every turn, so a
+    // long-lived thread stays admissible past 30 days — a birth-dated snapshot
+    // would be purged under it, silently un-freezing the live thread's config.
+    this.db.run(
+      'UPDATE agent_snapshots SET created_at = ? WHERE thread_key = ?',
+      this.now(),
+      threadKey,
+    );
+    return JSON.parse(row.snapshot_json) as AgentSnapshot;
   }
 
   putIfAbsent(threadKey: string, snapshot: AgentSnapshot): AgentSnapshot {

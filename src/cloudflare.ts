@@ -4,8 +4,11 @@ import type { WebClient } from '@slack/web-api';
 import {
   AgentExistsError,
   AgentStillAssignedError,
+  NoAssignmentError,
   UnknownAgentError,
 } from './config/errors.ts';
+import { resolveAssignment, surfaceForChannelId } from './config/resolver.ts';
+import { slackThreadKey } from './slack/thread-key.ts';
 import type { AssignmentLookupOptions } from './config/resolver.ts';
 import type { SettingsStore } from './config/settings-store.ts';
 import { SettingsStoreLogic } from './config/settings-store.ts';
@@ -318,7 +321,37 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     // the alarm holds the thread). runTurn takes it as an override.
     const client = await this.resolveAlarmClient(stores);
     let needsRetry = false;
-    for (const job of pending) {
+    // The resolver's store contract is async; the DO's logic classes are sync.
+    // A tiny async adapter bridges them for the fail-closed re-check below.
+    const configReader = {
+      getAgent: async (id: string) => stores.config.getAgent(id),
+      find: async (workspaceId: string, channelId: string, options?: AssignmentLookupOptions) =>
+        stores.config.find(workspaceId, channelId, options),
+    };
+    const runJob = async (job: (typeof pending)[number]): Promise<void> => {
+      // DM turns resolve their profile live at agent time, so a profile
+      // disabled in the enqueue->alarm gap would otherwise surface as a fake
+      // "provider failed" final. Re-check here and fail closed exactly like
+      // the admit path: silent, claims released, job tombstoned.
+      if (surfaceForChannelId(job.turn.channelId) === 'direct') {
+        try {
+          await resolveAssignment(
+            job.turn.workspaceId,
+            job.turn.channelId,
+            { agents: configReader, assignments: configReader },
+            { surface: 'direct' },
+          );
+        } catch (err) {
+          if (err instanceof NoAssignmentError) {
+            stores.slack.release(job.evtKey);
+            stores.slack.release(job.msgKey);
+            stores.turnJobs.markDelivered(job.id);
+            return;
+          }
+          // Any other resolution error falls through to the normal turn path,
+          // which owns retry/terminal semantics.
+        }
+      }
       const attempt = job.attempts + 1;
       // Advance the attempt count before running the turn: a crash mid-turn
       // then re-fires with the count already committed, bounding retries.
@@ -354,7 +387,39 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           needsRetry = true;
         }
       }
+    };
+
+    // Group by conversation so ordering INSIDE a thread is preserved (a
+    // thread's second turn never overtakes its first), then drain groups with
+    // bounded fan-out: one slow turn no longer head-of-line-blocks every other
+    // conversation in the workspace behind a strictly sequential loop. Turns
+    // are I/O-bound (model + Slack calls), so async interleaving inside this
+    // single-threaded DO is safe; storage writes stay per-job and atomic.
+    const groups = new Map<string, (typeof pending)[number][]>();
+    for (const job of pending) {
+      const key = slackThreadKey(job.turn);
+      const list = groups.get(key);
+      if (list) {
+        list.push(job);
+      } else {
+        groups.set(key, [job]);
+      }
     }
+    const groupLists = [...groups.values()];
+    const DRAIN_CONCURRENCY = 4;
+    let nextGroup = 0;
+    await Promise.all(
+      Array.from({ length: Math.min(DRAIN_CONCURRENCY, groupLists.length) }, async () => {
+        while (nextGroup < groupLists.length) {
+          const mine = groupLists[nextGroup];
+          nextGroup += 1;
+          if (!mine) break;
+          for (const job of mine) {
+            await runJob(job);
+          }
+        }
+      }),
+    );
     if (needsRetry) {
       // Re-arm (do NOT throw) so this invocation returns normally and its
       // attempt-count writes commit; the next firing re-drives the leftover

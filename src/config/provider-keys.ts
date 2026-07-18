@@ -28,7 +28,11 @@ export interface ResolvedProviderApiKey {
   source: ProviderKeySource;
 }
 
-const STORED_CACHE_TTL_MS = 60_000;
+// Short on purpose: the agent Durable Object isolate reads stored keys through
+// this cache on every turn, so the TTL is the worst-case lag between saving a
+// provider key in /admin and a warm isolate honoring it. 60s read as "my key
+// doesn't work"; 5s reads as instant while still coalescing reads in a turn.
+const STORED_CACHE_TTL_MS = 5_000;
 
 type StoredProviderKeys = Partial<Record<ProviderKeyId, string>>;
 type ProviderRegistrationOptions = { apiKey?: string; baseUrl?: string };

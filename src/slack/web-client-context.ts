@@ -162,7 +162,16 @@ export function assembleSlackPrompt(turn: NormalizedSlackTurn, context: SlackTur
 
   const rows = formatSlackContextRows(context.messages, { prefix: '- ', separator: '\n' });
   const label = slackContextWindowLabel(context, 'none');
-  return [turn.text, '', `Bounded Slack context (${label}):`, rows].join('\n');
+  const parts = [turn.text, '', `Bounded Slack context (${label}):`, rows];
+  if (context.truncated) {
+    // Tell the model the window is partial so a "summarize today" over a busy
+    // channel can caveat what it covers instead of presenting the newest slice
+    // as the whole story.
+    parts.push(
+      '(Context truncated: only the most recent messages of this window are included; older messages were dropped.)',
+    );
+  }
+  return parts.join('\n');
 }
 
 function sanitizeError(error: unknown): string {

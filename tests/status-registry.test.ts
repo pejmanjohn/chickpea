@@ -40,6 +40,24 @@ test('two same-thread turns: an earlier turn closing does not evict the later li
   turnB.close();
 });
 
+test('two concurrent open turns BOTH receive observed statuses (broadcast, not last-writer-wins)', () => {
+  const first = recordingPresenter();
+  const second = recordingPresenter();
+  const turnA = registerSlackStatusTurn(KEY, first);
+  const turnB = registerSlackStatusTurn(KEY, second);
+
+  // Flue's tool events carry only the conversation key, so with two live turns
+  // we cannot know whose tool fired — both presenters must get the update (the
+  // right thread always included), instead of only the newest registration.
+  setObservedSlackStatus(KEY, { text: 'is calling context7: query-docs' });
+
+  assert.deepEqual(first.statuses, ['is calling context7: query-docs']);
+  assert.deepEqual(second.statuses, ['is calling context7: query-docs']);
+
+  turnA.close();
+  turnB.close();
+});
+
 test('observed status after close is a no-op (no status lands after the turn ends)', () => {
   const presenter = recordingPresenter();
   const turn = registerSlackStatusTurn(KEY, presenter);
