@@ -1923,7 +1923,15 @@ details[open].advanced summary::before {
   }
 
   function profileSectionHtml(agent, assignment) {
-    var meta = agent ? modelLabel(agent) + " · used in " + channelCountLabel(allAssignmentsForAgent(agent.id).length) : "Unknown profile";
+    // Count concrete channels + a separate "+ DMs" suffix — never fold the DM
+    // wildcard into the channel count (that read "used in 2 channels" for a
+    // profile on 1 channel + the DM default), matching the profile list/footer.
+    var meta = "Unknown profile";
+    if (agent) {
+      var usedChannels = concreteAssignmentsForAgent(agent.id).length;
+      var usedDm = agentHasDmDefault(agent.id);
+      meta = modelLabel(agent) + " · used in " + channelCountLabel(usedChannels) + (usedDm ? " + DMs" : "");
+    }
     var row = agent
       ? '<div class="bundle-row"><span class="b-name">' + esc(agent.name) + '</span><span class="b-meta">' + esc(meta) + '</span><span class="spacer"></span>' +
         '<button type="button" class="btn btn-soft btn-sm" data-action="open-profiles" data-agent="' + esc(agent.id) + '">Edit</button>' +
@@ -4258,11 +4266,22 @@ details[open].advanced summary::before {
           if (tool.description !== undefined) t.description = tool.description;
           return t;
         });
+        // A (re-)test refreshes discoveredTools but PRESERVES the operator's
+        // approvals: a tool the operator unchecked must stay unchecked across a
+        // re-test (silently re-approving a write-capable tool is a real footgun).
+        // Carry each still-present tool's prior checked state by name; only
+        // genuinely new tools default to checked.
+        var priorApproval = {};
+        (current.discoveredTools || []).forEach(function (tool, index) {
+          priorApproval[tool.name] = (current.checked || [])[index];
+        });
         current.discoveredTools = tools;
-        // A (re-)test REPLACES discoveredTools and RESETS approvals: every fresh
-        // tool defaults checked, so a previously-approved tool that still exists
-        // keeps its check and a vanished approval simply cannot survive.
-        current.checked = tools.map(function () { return true; });
+        current.checked = tools.map(function (tool) {
+          var prior = priorApproval[tool.name];
+          // Keep a still-present tool's prior approval; a genuinely new tool
+          // (never seen in a prior test) defaults to checked.
+          return prior === undefined ? true : prior;
+        });
         current.lifecycleStatus = "ready";
         current.statusText = "";
         current.lastCheckedAt = Date.now();

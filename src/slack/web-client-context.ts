@@ -96,27 +96,38 @@ async function fetchThread(
   maxMessages: number,
   maxPages: number,
 ): Promise<SlackTurnContext> {
+  // conversations.replies paginates OLDEST-first from the thread root. A long
+  // thread's most recent messages (including the one that triggered this turn)
+  // live on the LAST page, so we must not stop after the first maxMessages —
+  // that kept the oldest 50 and dropped all recent context. Walk pages (bounded
+  // by maxPages) and retain the NEWEST maxMessages as a rolling tail.
   const collected: SlackContextMessage[] = [];
   const degradations: string[] = [];
   let cursor: string | undefined;
 
-  for (let page = 0; page < maxPages && collected.length < maxMessages; page += 1) {
-    const remaining = maxMessages - collected.length;
+  for (let page = 0; page < maxPages; page += 1) {
     const response = await client.conversations.replies({
       channel: turn.channelId,
       ts: turn.threadTs,
-      limit: Math.min(remaining, maxMessages),
+      limit: maxMessages,
       ...(cursor ? { cursor } : {}),
     });
 
     const rawMessages = (response.messages ?? []) as unknown as SlackWebApiMessage[];
-    collected.push(...toContextMessages(rawMessages).slice(0, remaining));
+    collected.push(...toContextMessages(rawMessages));
+    // Keep only the newest maxMessages so an early page never crowds out the
+    // recent tail; slicing each round bounds memory on very long threads.
+    if (collected.length > maxMessages) {
+      collected.splice(0, collected.length - maxMessages);
+    }
     cursor = response.response_metadata?.next_cursor?.trim() || undefined;
     if (!cursor) {
       break;
     }
   }
 
+  // Truncated when the thread had more pages than maxPages allowed us to walk —
+  // we then hold the most-recent window we could reach, not the whole thread.
   const truncated = Boolean(cursor);
   if (truncated) {
     degradations.push('slack_context.thread:truncated');

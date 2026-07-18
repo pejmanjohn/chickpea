@@ -1211,7 +1211,7 @@ test('testing a connection renders discovered-tool checkboxes all checked and ca
   assert.equal((harness.mcpSecretPuts[0]?.body as Record<string, unknown>).bearerToken, 'sk-secret-token');
 });
 
-test('re-testing a connection replaces discovered tools and resets approvals to the fresh set', async () => {
+test('re-testing a connection refreshes discovered tools; a vanished tool drops and a new one defaults checked', async () => {
   const harness = runAdminPageHarness({
     agents: [
       connectionsAgent({
@@ -1260,8 +1260,8 @@ test('re-testing a connection replaces discovered tools and resets approvals to 
   click({ target: actionTarget({ 'data-action': 'conn-test' }) });
   await flushAsync();
 
-  // The stale old_tool_b approval is gone; both freshly-discovered tools show,
-  // all checked by default (the reset).
+  // The vanished old_tool_b is gone; the kept tool retains its approval and the
+  // brand-new tool defaults checked.
   assert.match(harness.app.innerHTML, /brand_new_tool/);
   assert.doesNotMatch(harness.app.innerHTML, /old_tool_b/);
   assert.match(harness.app.innerHTML, /data-action="conn-tool-toggle" data-index="0" checked/);
@@ -1277,6 +1277,55 @@ test('re-testing a connection replaces discovered tools and resets approvals to 
     (servers[0]?.discoveredTools as Array<Record<string, unknown>>).map((t) => t.name),
     ['old_tool_a', 'brand_new_tool'],
   );
+});
+
+test('re-testing preserves a deliberately-unchecked tool that still exists (no silent re-approval)', async () => {
+  const harness = runAdminPageHarness({
+    agents: [
+      connectionsAgent({
+        mcpServers: [
+          {
+            id: 'linear',
+            displayName: 'Linear',
+            url: 'https://mcp.example.com/mcp',
+            transport: 'streamable-http',
+            authMode: 'none',
+            headerNames: [],
+            enabled: true,
+            lifecycleStatus: 'ready',
+            statusText: '',
+            discoveredTools: [{ name: 'read_tool' }, { name: 'write_tool' }],
+            // Operator approved only the read tool; write_tool was left unchecked.
+            allowedTools: ['read_tool'],
+            lastCheckedAt: 1000,
+          },
+        ],
+      }),
+    ],
+    // Re-test rediscovers the SAME two tools — write_tool still exists.
+    mcpTestResult: {
+      ok: true,
+      tools: [{ name: 'read_tool', description: 'r' }, { name: 'write_tool', description: 'w' }],
+    },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-edit', 'data-index': '0' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-test' }) });
+  await flushAsync();
+
+  // read_tool stays checked; write_tool must remain UNCHECKED across the re-test.
+  assert.match(harness.app.innerHTML, /data-action="conn-tool-toggle" data-index="0" checked/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="conn-tool-toggle" data-index="1" checked/);
+
+  click({ target: actionTarget({ 'data-action': 'conn-save-row' }) });
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+  const servers = harness.agentPatchBodies[0]?.body.mcpServers as Array<Record<string, unknown>>;
+  assert.deepEqual(servers[0]?.allowedTools, ['read_tool']);
 });
 
 test('a failed test marks the connection failed with the safe status text and no tool checkboxes', async () => {
