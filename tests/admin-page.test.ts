@@ -162,7 +162,9 @@ function runAdminPageHarness(
     assignments?: AssignmentFixture[];
     slackConnection?: SlackConnectionFixture;
     slackChannels?: SlackChannelsFixture;
+    slackChannelFailures?: number;
     putIsMember?: boolean;
+    putAssignmentError?: { status: number; error: string; message?: string };
     cloudflare?: boolean;
     agents?: unknown[];
     providers?: ProviderSummaryFixture[];
@@ -174,6 +176,7 @@ function runAdminPageHarness(
     openaiModels?: Array<{ id: string }>;
     providerKeyReject?: { status: number; detail: string };
     modelProviders?: ModelProviderFixture[];
+    attachSelectionValue?: string;
     effectiveError?: { status: number; error: string; message?: string };
     agentWriteError?: { status: number; error: string; message?: string };
     skillResolution?: Record<string, unknown>;
@@ -220,6 +223,8 @@ function runAdminPageHarness(
   const slackConnection = options.slackConnection;
   const slackChannels = options.slackChannels;
   const putIsMember = options.putIsMember;
+  const putAssignmentError = options.putAssignmentError;
+  let slackChannelFailures = options.slackChannelFailures ?? 0;
   // Captured out here because the fetch parameter below is also named `options`
   // (the request init) and would otherwise shadow these harness fixtures.
   const agentsFixture = options.agents;
@@ -268,7 +273,10 @@ function runAdminPageHarness(
       }
       return null;
     },
-    querySelector() {
+    querySelector(selector: string) {
+      if (selector === '[data-role="attach-channel"]' && options.attachSelectionValue !== undefined) {
+        return { value: options.attachSelectionValue };
+      }
       return null;
     },
     addEventListener(type: string, listener: Listener) {
@@ -411,6 +419,17 @@ function runAdminPageHarness(
     if (path === '/admin/api/assignments' && method === 'PUT') {
       const body = JSON.parse(options?.body ?? '{}') as AssignmentFixture;
       putAssignments.push(body);
+      if (putAssignmentError) {
+        return Promise.resolve(
+          jsonResponse(
+            {
+              error: putAssignmentError.error,
+              ...(putAssignmentError.message ? { message: putAssignmentError.message } : {}),
+            },
+            putAssignmentError.status,
+          ),
+        );
+      }
       assignments = [
         ...assignments.filter(
           (assignment) => assignment.workspaceId !== body.workspaceId || assignment.channelId !== body.channelId,
@@ -426,6 +445,10 @@ function runAdminPageHarness(
     }
     if (path === '/admin/api/slack-channels' || path.startsWith('/admin/api/slack-channels?')) {
       channelListCalls.push(path);
+      if (slackChannelFailures > 0) {
+        slackChannelFailures -= 1;
+        return Promise.resolve(jsonResponse({ error: 'slack_list_failed', detail: 'missing_scope' }, 502));
+      }
       if (!slackChannels) {
         return Promise.resolve(jsonResponse({ error: 'slack_not_configured' }, 409));
       }
@@ -610,6 +633,18 @@ function runAdminPageHarness(
   };
 }
 
+async function openReleaseAttachPicker(
+  harness: ReturnType<typeof runAdminPageHarness>,
+): Promise<Listener> {
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_release' }) });
+  click({ target: actionTarget({ 'data-action': 'attach-open' }) });
+  await flushAsync();
+  return click;
+}
+
 // IS_CLOUDFLARE is baked into the inline script at render time from
 // isCloudflareTarget() (globalThis.navigator.userAgent). The Workers AI row is
 // binding-only, so a Cloudflare-target harness renders it by masquerading the
@@ -651,17 +686,35 @@ function connectedSlackFixture(): SlackConnectionFixture {
   };
 }
 
-function channelsFixture(): SlackChannelsFixture {
+function channelsFixture(
+  channels: SlackChannelFixture[] = [
+    { id: 'C_NEW', name: 'new-channel', isPrivate: false, isMember: true },
+    { id: 'C_PRIVATE', name: 'secret-room', isPrivate: true, isMember: false },
+  ],
+  truncated = false,
+): SlackChannelsFixture {
   return {
     teamId: 'T_DESIGN',
     teamName: 'Acme Inc',
-    truncated: false,
-    channels: [
-      { id: 'C_NEW', name: 'new-channel', isPrivate: false, isMember: true },
-      { id: 'C_PRIVATE', name: 'secret-room', isPrivate: true, isMember: false },
-    ],
+    truncated,
+    channels,
   };
 }
+
+test('Open Slack console uses a safe new tab from first paint through client renders', async () => {
+  const firstPaint = renderAdminPage().split('<script>')[0] ?? '';
+  const harness = runAdminPageHarness();
+  await flushAsync();
+
+  [firstPaint, harness.app.innerHTML].forEach((html) => {
+    const anchor = html.match(/<a\b[^>]*href="https:\/\/api\.slack\.com\/apps"[^>]*>Open Slack console &nearr;<\/a>/)?.[0];
+    assert.ok(anchor, 'expected the Slack console anchor');
+    assert.match(anchor, /\btarget="_blank"/);
+    const rel = anchor.match(/\brel="([^"]+)"/)?.[1]?.split(/\s+/) ?? [];
+    assert.ok(rel.includes('noopener'));
+    assert.ok(rel.includes('noreferrer'));
+  });
+});
 
 test('admin page renders channel labels, profile secondary text, and singular channel counts', async () => {
   const harness = runAdminPageHarness();
@@ -729,11 +782,20 @@ test('New profile opens a blank create screen and validation gates save', async 
 
   const click = harness.listeners.click;
   assert.ok(click);
+  // A previous editor tab must not leak into the create flow.
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_release' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  click({ target: actionTarget({ 'data-action': 'profiles-back' }) });
   click({ target: actionTarget({ 'data-action': 'new-profile' }) });
 
-  // The create screen is a full page (not a modal): back link, ghost-example
-  // instructions placeholder, and Create/Cancel.
+  // The create screen is a full page (not a modal): back link, all three
+  // capability tabs, a ghost-example instructions placeholder, and Create/Cancel.
   assert.match(harness.app.innerHTML, /<h1 class="page-title">New profile<\/h1>/);
+  assert.match(harness.app.innerHTML, /data-action="profile-tab" data-tab="instructions"/);
+  assert.match(harness.app.innerHTML, /data-action="profile-tab" data-tab="skills"/);
+  assert.match(harness.app.innerHTML, /data-action="profile-tab" data-tab="connections"/);
+  assert.doesNotMatch(harness.app.innerHTML, /id="ptab-panel-instructions"[^>]* hidden/);
+  assert.match(harness.app.innerHTML, /id="ptab-panel-connections"[^>]* hidden/);
   assert.match(harness.app.innerHTML, /Answer teammates/);
   assert.match(harness.app.innerHTML, /data-action="cancel-create"/);
   assert.match(harness.app.innerHTML, /data-action="save-profile"/);
@@ -742,6 +804,240 @@ test('New profile opens a blank create screen and validation gates save', async 
   // agents request is issued.
   click({ target: actionTarget({ 'data-action': 'save-profile' }) });
   assert.match(harness.app.innerHTML, /Name is required\./);
+});
+
+test('Add to channels loads the Slack catalog and can attach an unassigned workspace channel', async () => {
+  const harness = runAdminPageHarness({
+    slackConnection: connectedSlackFixture(),
+    slackChannels: channelsFixture([
+      { id: 'C0EXR3L9T', name: 'eng-releases' },
+      { id: 'C_OPS', name: 'bot-test' },
+      { id: 'C_NEW', name: 'new-channel' },
+    ]),
+    attachSelectionValue: 'C_NEW',
+  });
+  const click = await openReleaseAttachPicker(harness);
+
+  assert.equal(harness.channelListCalls.length, 1);
+  const picker = harness.app.innerHTML.match(/<select class="input" data-role="attach-channel"[\s\S]*?<\/select>/)?.[0] ?? '';
+  assert.match(picker, /#bot-test &mdash; currently Ops Profile/);
+  assert.match(picker, /#new-channel/);
+  assert.doesNotMatch(picker, /#eng-releases/);
+
+  click({ target: actionTarget({ 'data-action': 'attach-channel-confirm' }) });
+  await flushAsync();
+  assert.deepEqual(harness.putAssignments, [
+    {
+      workspaceId: 'T_DESIGN',
+      channelId: 'C_NEW',
+      agentId: 'agent_release',
+      enabled: true,
+      channelLabel: 'new-channel',
+    },
+  ]);
+  assert.doesNotMatch(harness.app.innerHTML, /data-role="attach-channel"/);
+  assert.match(harness.app.innerHTML, /#new-channel/);
+});
+
+test('Add to channels preserves an existing channel assignment while changing its profile', async () => {
+  const harness = runAdminPageHarness({
+    assignments: [
+      defaultAssignments()[0] as AssignmentFixture,
+      {
+        workspaceId: 'T_DESIGN',
+        channelId: 'C_OPS',
+        channelLabel: 'ops-room',
+        agentId: 'agent_ops',
+        enabled: false,
+        channelPromptAddendum: 'Keep the incident summary current.',
+      },
+    ],
+    slackConnection: connectedSlackFixture(),
+    slackChannels: channelsFixture([
+      { id: 'C0EXR3L9T', name: 'eng-releases' },
+      { id: 'C_OPS', name: 'ops-room' },
+    ]),
+    attachSelectionValue: 'C_OPS',
+  });
+  const click = await openReleaseAttachPicker(harness);
+  click({ target: actionTarget({ 'data-action': 'attach-channel-confirm' }) });
+  await flushAsync();
+
+  assert.deepEqual(harness.putAssignments, [
+    {
+      workspaceId: 'T_DESIGN',
+      channelId: 'C_OPS',
+      agentId: 'agent_release',
+      enabled: false,
+      channelLabel: 'ops-room',
+      channelPromptAddendum: 'Keep the incident summary current.',
+    },
+  ]);
+});
+
+test('Add to channels keeps a non-first selection across profile re-renders', async () => {
+  const harness = runAdminPageHarness({
+    slackConnection: connectedSlackFixture(),
+    slackChannels: channelsFixture([
+      { id: 'C_OPS', name: 'bot-test' },
+      { id: 'C_NEW', name: 'new-channel' },
+    ]),
+    // If the state-backed choice is lost, confirmation falls back to this
+    // rebuilt DOM select value and targets the wrong (first) channel.
+    attachSelectionValue: 'C_OPS',
+  });
+  const click = await openReleaseAttachPicker(harness);
+  const change = harness.listeners.change;
+  assert.ok(change);
+  change({ target: inputTarget({ 'data-action': 'attach-channel-option' }, 'C_NEW') });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'skills' }) });
+
+  assert.match(harness.app.innerHTML, /<option value="C_NEW" selected>/);
+  click({ target: actionTarget({ 'data-action': 'attach-channel-confirm' }) });
+  await flushAsync();
+  assert.equal((harness.putAssignments[0] as AssignmentFixture).channelId, 'C_NEW');
+});
+
+test('Add to channels surfaces assignment failures beside the open picker', async () => {
+  const harness = runAdminPageHarness({
+    slackConnection: connectedSlackFixture(),
+    slackChannels: channelsFixture([{ id: 'C_NEW', name: 'new-channel' }]),
+    attachSelectionValue: 'C_NEW',
+    putAssignmentError: {
+      status: 502,
+      error: 'assignment_write_failed',
+      message: 'Could not save the channel assignment.',
+    },
+  });
+  const click = await openReleaseAttachPicker(harness);
+  click({ target: actionTarget({ 'data-action': 'attach-channel-confirm' }) });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /Could not save the channel assignment\./);
+  assert.match(harness.app.innerHTML, /data-role="attach-channel"/);
+});
+
+test('Add to channels warns when Tag still needs a Slack invitation', async () => {
+  const harness = runAdminPageHarness({
+    slackConnection: connectedSlackFixture(),
+    slackChannels: channelsFixture([{ id: 'C_NEW', name: 'new-channel' }]),
+    attachSelectionValue: 'C_NEW',
+    putIsMember: false,
+  });
+  const click = await openReleaseAttachPicker(harness);
+  click({ target: actionTarget({ 'data-action': 'attach-channel-confirm' }) });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /#new-channel was added, but @Tag isn&#39;t a member of it yet/);
+  assert.match(harness.app.innerHTML, /Invite @Tag to #new-channel in Slack/);
+});
+
+test('Add to channels preserves the catalog invite warning when assignment membership is unavailable', async () => {
+  const harness = runAdminPageHarness({
+    slackConnection: connectedSlackFixture(),
+    slackChannels: channelsFixture([{ id: 'C_NEW', name: 'new-channel', isMember: false }]),
+    attachSelectionValue: 'C_NEW',
+    // No putIsMember fixture: this mirrors the assignment route's graceful
+    // conversations.info failure, where the save succeeds without that field.
+  });
+  const click = await openReleaseAttachPicker(harness);
+  click({ target: actionTarget({ 'data-action': 'attach-channel-confirm' }) });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /#new-channel was added, but @Tag isn&#39;t a member of it yet/);
+});
+
+test('Add to channels recovers from a Slack catalog failure with Retry', async () => {
+  const harness = runAdminPageHarness({
+    slackConnection: connectedSlackFixture(),
+    slackChannels: channelsFixture([{ id: 'C_NEW', name: 'new-channel' }]),
+    slackChannelFailures: 1,
+  });
+  const click = await openReleaseAttachPicker(harness);
+
+  assert.match(harness.app.innerHTML, /Slack could not list channels \(missing_scope\)\./);
+  assert.match(harness.app.innerHTML, /data-action="refresh-channels">Retry/);
+  click({ target: actionTarget({ 'data-action': 'refresh-channels' }) });
+  await flushAsync();
+
+  assert.deepEqual(harness.channelListCalls, ['/admin/api/slack-channels', '/admin/api/slack-channels?refresh=1']);
+  assert.match(harness.app.innerHTML, /#new-channel/);
+});
+
+test('Add to channels can refresh an already-loaded workspace catalog', async () => {
+  const harness = runAdminPageHarness({
+    slackConnection: connectedSlackFixture(),
+    slackChannels: channelsFixture([{ id: 'C_NEW', name: 'new-channel' }]),
+    attachSelectionValue: 'C_NEW',
+  });
+  const click = await openReleaseAttachPicker(harness);
+  const change = harness.listeners.change;
+  assert.ok(change);
+
+  assert.match(harness.app.innerHTML, /data-action="refresh-channels"[^>]*>[^<]*<svg[\s\S]*?Refresh<\/button>/);
+  // Simulate a previously selected channel disappearing from the refreshed
+  // catalog; confirmation must fall back to the browser's current option.
+  change({ target: inputTarget({ 'data-action': 'attach-channel-option' }, 'C_GONE') });
+  click({ target: actionTarget({ 'data-action': 'refresh-channels' }) });
+  await flushAsync();
+  assert.deepEqual(harness.channelListCalls, ['/admin/api/slack-channels', '/admin/api/slack-channels?refresh=1']);
+  click({ target: actionTarget({ 'data-action': 'attach-channel-confirm' }) });
+  await flushAsync();
+  assert.equal((harness.putAssignments[0] as AssignmentFixture).channelId, 'C_NEW');
+});
+
+test('Add to channels explains the disconnected state without requesting a catalog', async () => {
+  const harness = runAdminPageHarness();
+  await openReleaseAttachPicker(harness);
+
+  assert.match(harness.app.innerHTML, /Connect Slack first to list workspace channels\./);
+  assert.deepEqual(harness.channelListCalls, []);
+});
+
+test('Add to channels reports when every available channel already uses the profile', async () => {
+  const harness = runAdminPageHarness({
+    slackConnection: connectedSlackFixture(),
+    slackChannels: channelsFixture([{ id: 'C0EXR3L9T', name: 'eng-releases' }]),
+  });
+  await openReleaseAttachPicker(harness);
+
+  assert.match(harness.app.innerHTML, /All available Slack channels already use this profile\./);
+  assert.match(harness.app.innerHTML, /Add a new channel with this profile/);
+});
+
+test('Add to channels escapes catalog values and offers the truncated-list fallback', async () => {
+  const harness = runAdminPageHarness({
+    slackConnection: connectedSlackFixture(),
+    slackChannels: channelsFixture(
+      [{ id: 'C_NEW"><script>', name: '<img src=x onerror=alert(1)>' }],
+      true,
+    ),
+  });
+  await openReleaseAttachPicker(harness);
+
+  assert.ok(harness.app.innerHTML.includes('value="C_NEW&quot;&gt;&lt;script&gt;"'));
+  assert.ok(harness.app.innerHTML.includes('#&lt;img src=x onerror=alert(1)&gt;'));
+  assert.doesNotMatch(harness.app.innerHTML, /<img src=x/);
+  assert.match(harness.app.innerHTML, /data-action="attach-new-channel"[^>]*>Add a new channel/);
+});
+
+test('the truncated-list fallback carries the edited profile into Add channel', async () => {
+  const harness = runAdminPageHarness({
+    slackConnection: connectedSlackFixture(),
+    slackChannels: channelsFixture([{ id: 'C_NEW', name: 'new-channel' }], true),
+  });
+  const click = await openReleaseAttachPicker(harness);
+  const submit = harness.listeners.submit;
+  assert.ok(submit);
+  click({ target: actionTarget({ 'data-action': 'attach-new-channel', 'data-agent': 'agent_release' }) });
+
+  assert.match(harness.app.innerHTML, /with the Release Profile profile/);
+  submit({
+    target: submitTarget({ 'data-action': 'add-channel-form' }, { channelSelect: 'C_NEW' }),
+    preventDefault() {},
+  });
+  await flushAsync();
+  assert.equal((harness.putAssignments[0] as AssignmentFixture).agentId, 'agent_release');
 });
 
 test('profile capability tabs switch the visible panel on click', async () => {
@@ -1239,6 +1535,13 @@ test('creating a profile writes connection secrets under the generated profile i
   await flushAsync();
 
   assert.equal(harness.agentPostBodies[0]?.id, 'agent_support_profile');
+  const createdServers = harness.agentPostBodies[0]?.mcpServers as Array<Record<string, unknown>>;
+  assert.equal(createdServers.length, 1);
+  assert.equal(createdServers[0]?.id, 'linear');
+  assert.equal(createdServers[0]?.displayName, 'Linear');
+  assert.equal(createdServers[0]?.url, 'https://mcp.example.com/mcp');
+  assert.equal(createdServers[0]?.authMode, 'bearer');
+  assert.doesNotMatch(JSON.stringify(harness.agentPostBodies[0]), /new-profile-token/);
   assert.equal(harness.mcpSecretPuts[0]?.agentId, 'agent_support_profile');
   assert.equal(harness.mcpSecretPuts[0]?.id, 'linear');
   assert.equal(harness.mcpSecretPuts[0]?.body.bearerToken, 'new-profile-token');
@@ -1556,10 +1859,10 @@ test('creating a blank profile round-trips with an empty skills array', async ()
   const input = harness.listeners.input;
   assert.ok(click && input);
 
-  // The create screen has no capability tabs (M3 scope is edit-only), but a new
-  // profile defaults skills to [] and the POST body must still carry the field.
+  // A new profile starts on the Instructions tab and defaults skills to []; the
+  // POST body must still carry the field when no custom skills are added.
   click({ target: actionTarget({ 'data-action': 'new-profile' }) });
-  assert.doesNotMatch(harness.app.innerHTML, /data-action="profile-tab"/);
+  assert.match(harness.app.innerHTML, /id="ptab-instructions" class="ptab on"/);
   input({ target: inputTarget({ 'data-action': 'profile-name' }, 'Fresh Profile') });
   input({ target: inputTarget({ 'data-action': 'profile-instructions' }, 'Answer freshly.') });
   click({ target: actionTarget({ 'data-action': 'save-profile' }) });
@@ -1570,7 +1873,37 @@ test('creating a blank profile round-trips with an empty skills array', async ()
   assert.equal(harness.agentPostBodies.length, 1);
   assert.equal(harness.agentPostBodies[0]?.name, 'Fresh Profile');
   assert.deepEqual(harness.agentPostBodies[0]?.skills, []);
+  assert.deepEqual(harness.agentPostBodies[0]?.mcpServers, []);
   assert.equal(Object.hasOwn(harness.agentPostBodies[0] ?? {}, 'defaultModels'), false);
+});
+
+test('creating a profile persists a custom skill configured from the Skills tab', async () => {
+  const harness = runAdminPageHarness();
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  assert.ok(click && input);
+
+  click({ target: actionTarget({ 'data-action': 'new-profile' }) });
+  input({ target: inputTarget({ 'data-action': 'profile-name' }, 'Research Profile') });
+  input({ target: inputTarget({ 'data-action': 'profile-instructions' }, 'Research carefully.') });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'skills' }) });
+  click({ target: actionTarget({ 'data-action': 'skill-new' }) });
+  input({ target: inputTarget({ 'data-action': 'skill-field-name' }, 'source-check') });
+  input({ target: inputTarget({ 'data-action': 'skill-field-description' }, 'Verify primary sources.') });
+  input({ target: inputTarget({ 'data-action': 'skill-field-instructions' }, 'Prefer first-party documentation.') });
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+
+  assert.deepEqual(harness.agentPostBodies[0]?.skills, [
+    {
+      name: 'source-check',
+      description: 'Verify primary sources.',
+      instructions: 'Prefer first-party documentation.',
+      enabled: true,
+    },
+  ]);
 });
 
 test('the profile editor save bar is sticky, hidden when clean, and revealed when dirty', async () => {

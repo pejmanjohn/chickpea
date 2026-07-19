@@ -1034,7 +1034,7 @@ details[open].advanced summary::before {
       <span class="chip">${targetChip}</span>
     </div>
     <div class="actions">
-      <a class="btn btn-ghost" href="https://api.slack.com/apps" rel="noreferrer">Open Slack console &nearr;</a>
+      <a class="btn btn-ghost" href="https://api.slack.com/apps" target="_blank" rel="noopener noreferrer">Open Slack console &nearr;</a>
       <button type="button" class="btn btn-soft" disabled>Profiles</button>
       <button type="button" class="btn btn-soft" disabled>Settings</button>
     </div>
@@ -1093,9 +1093,12 @@ details[open].advanced summary::before {
     // Inline title rename on the profile edit screen. null when closed; when
     // open it carries { prev } so Escape (or an emptied field) can revert.
     profileRenaming: null,
-    // "Add to channels" picker in the profile footer. Boolean — the candidate
-    // list is derived from state.assignments at render time.
+    // "Add to channels" picker in the profile footer. Candidates come from the
+    // Slack workspace catalog; assignments only label or exclude them.
     attachPicker: false,
+    attachChannelSelected: "",
+    attachError: "",
+    attachNotice: "",
     // Inline custom-skill editor on the profile edit page. null when closed; when
     // open it is { index: <number|null for a new skill>, name, description,
     // instructions, error }. Only one editor is open at a time.
@@ -1285,6 +1288,24 @@ details[open].advanced summary::before {
     return state.agents[0] || null;
   }
 
+  function resetProfileTransientState() {
+    state.profileError = "";
+    state.profileDirty = false;
+    state.disableConfirm = false;
+    state.profileTab = "instructions";
+    state.profileRenaming = null;
+    state.attachPicker = false;
+    state.attachChannelSelected = "";
+    state.attachError = "";
+    state.attachNotice = "";
+    state.skillEditor = null;
+    state.skillImport = null;
+    state.connectionEditor = null;
+    state.connectionRemove = null;
+    state.modelPickerOpen = false;
+    state.modelPickerFilter = "";
+  }
+
   // Open a profile's edit screen (from a click or a route), resetting every
   // transient editor state.
   function openProfileEditor(selected) {
@@ -1292,18 +1313,16 @@ details[open].advanced summary::before {
     state.profileScreen = "edit";
     state.editingAgentId = selected.id;
     state.profileDraft = cloneAgent(selected);
-    state.profileError = "";
-    state.profileDirty = false;
-    state.disableConfirm = false;
-    state.profileTab = "instructions";
-    state.profileRenaming = null;
-    state.attachPicker = false;
-    state.skillEditor = null;
-    state.skillImport = null;
-    state.connectionEditor = null;
-    state.connectionRemove = null;
-    state.modelPickerOpen = false;
-    state.modelPickerFilter = "";
+    resetProfileTransientState();
+    render();
+  }
+
+  function openNewProfile() {
+    state.view = "profiles";
+    state.profileScreen = "create";
+    state.profileDraft = newProfileDraft();
+    state.editingAgentId = null;
+    resetProfileTransientState();
     render();
   }
 
@@ -1346,8 +1365,7 @@ details[open].advanced summary::before {
     if (parts[1] === "settings") { openSettings(); return; }
     if (parts[1] === "profiles") {
       if (parts[2] === "new") {
-        state.view = "profiles"; state.profileScreen = "create"; state.profileDraft = newProfileDraft(); state.editingAgentId = null; state.profileError = ""; state.profileDirty = false; state.disableConfirm = false; state.skillEditor = null; state.skillImport = null; state.connectionEditor = null; state.connectionRemove = null; state.modelPickerOpen = false; state.modelPickerFilter = "";
-        render();
+        openNewProfile();
         return;
       }
       if (parts[2]) {
@@ -1412,7 +1430,7 @@ details[open].advanced summary::before {
       '<div class="brand"><button type="button" class="brand-home" data-action="go-home" aria-label="Home"><span class="avatar">T<svg class="pea" viewBox="0 0 48 48" aria-hidden="true" focusable="false"><circle cx="24" cy="25" r="15.5" fill="#E3AC45"></circle><circle cx="17" cy="17.5" r="4.2" fill="#F4D084"></circle><g class="pea-eyes"><circle class="pea-eye" cx="18.5" cy="24" r="1.9" fill="#3B3220"></circle><circle class="pea-eye" cx="29.5" cy="24" r="1.9" fill="#3B3220"></circle></g><g class="pea-lids"><path d="M16.4 24.2 Q18.5 22 20.6 24.2" fill="none" stroke="#3B3220" stroke-width="1.8" stroke-linecap="round"></path><path d="M27.4 24.2 Q29.5 22 31.6 24.2" fill="none" stroke="#3B3220" stroke-width="1.8" stroke-linecap="round"></path></g><path class="pea-smile" d="M19 29 Q24 32.5 29 29" fill="none" stroke="#3B3220" stroke-width="1.8" stroke-linecap="round"></path><path class="pea-grin" d="M18.5 28.5 Q24 35.5 29.5 28.5 Z" fill="#3B3220"></path><circle class="pea-blush" cx="15.5" cy="28.5" r="2" fill="#DC8A4F"></circle><circle class="pea-blush" cx="32.5" cy="28.5" r="2" fill="#DC8A4F"></circle></svg></span><span class="brand-name">Chickpea</span></button><span class="chip">${targetChip}</span></div>' +
       '<details class="topbar-menu"><summary aria-label="Menu">' + icon("bars-3") + '</summary></details>' +
       '<div class="actions actions-list">' + connectedBadge +
-      '<a class="btn btn-ghost" href="https://api.slack.com/apps" rel="noreferrer">Open Slack console &nearr;</a>' +
+      '<a class="btn btn-ghost" href="https://api.slack.com/apps" target="_blank" rel="noopener noreferrer">Open Slack console &nearr;</a>' +
       '<button type="button" class="btn btn-soft' + (state.view === "profiles" ? " nav-active" : "") + '" data-action="open-profiles">Profiles</button>' +
       '<button type="button" class="btn btn-soft' + (state.view === "settings" ? " nav-active" : "") + '" data-action="open-settings">Settings</button></div>' +
       "</header>";
@@ -2087,8 +2105,8 @@ details[open].advanced summary::before {
 
   // One panel is visible at a time; the other two stay MOUNTED but [hidden] so
   // their form fields survive re-renders and collectProfileDraft() keeps
-  // reading p-instr regardless of the active tab. Edit screen only — the
-  // create screen has no skills/connections yet.
+  // reading p-instr regardless of the active tab. The same tray serves create
+  // and edit so every profile capability is reachable before the first save.
   function profileTabsHtml(draft) {
     var active = state.profileTab || "instructions";
     // An open inline editor (or import panel, or an async test result landing
@@ -2116,16 +2134,16 @@ details[open].advanced summary::before {
     return '<section class="section">' +
       '<div class="ptab-tray">' +
       '<div class="ptabs" role="tablist" aria-label="Profile behavior">' + bar + '</div>' +
-      panel("instructions", instructionsPanelHtml(draft)) +
+      panel("instructions", instructionsPanelHtml(draft, state.profileScreen === "create")) +
       panel("skills", skillsPanelHtml(draft)) +
       panel("connections", connectionsPanelHtml(draft)) +
       '</div>' +
       '</section>';
   }
 
-  function instructionsPanelHtml(draft) {
+  function instructionsPanelHtml(draft, showPlaceholder) {
     return '<p class="hint ptab-hint">These travel with the profile to every channel it&rsquo;s attached to. Channels can append their own instructions on each channel&rsquo;s page.</p>' +
-      '<div class="field">' + profileInstructionsFieldHtml(draft, false) + '</div>';
+      '<div class="field">' + profileInstructionsFieldHtml(draft, showPlaceholder) + '</div>';
   }
 
   function skillsPanelHtml(draft) {
@@ -2388,8 +2406,8 @@ details[open].advanced summary::before {
       '<div class="form-grid">' +
       profileNameFieldHtml(draft) +
       modelFieldHtml(draft) +
-      '<div class="field full"><label class="field-label" for="p-instr">Instructions</label>' + profileInstructionsFieldHtml(draft, true) + '<p class="hint">These travel with the profile to every channel it&rsquo;s attached to.</p></div>' +
       '</div></section>' +
+      profileTabsHtml(draft) +
       '<div class="save-bar">' + profileGenericErrorHtml() +
       '<button type="button" class="btn btn-ghost" data-action="cancel-create">Cancel</button>' +
       '<button type="button" class="btn btn-primary" data-action="save-profile">Create profile</button></div>';
@@ -2479,36 +2497,77 @@ details[open].advanced summary::before {
       '<button type="button" class="btn btn-danger" data-action="delete-profile"' + (blocked ? " disabled" : "") + ' title="' + deleteTitle + '">Delete profile</button>' +
       '<button type="button" class="btn btn-soft" data-action="attach-open">Add to channels</button>' +
       '<span class="hint">' + usage + '</span>' +
-      '</div>' + attachPickerHtml(draft);
+      '</div>' + attachPickerHtml(draft) + attachNoticeHtml();
   }
 
-  // Channels this profile could take over: every non-wildcard assignment that
-  // currently points at a DIFFERENT profile. The admin only knows channels it
-  // has assignments for, so "add" here means reassign an existing channel.
+  function attachNoticeHtml() {
+    if (!state.attachNotice) return "";
+    return '<div class="callout">' + icon("exclamation-triangle", "ic-l g") +
+      '<span>' + esc(state.attachNotice) + '</span></div>';
+  }
+
+  // Every Slack channel in the connected workspace catalog except channels
+  // already using this profile. A candidate may carry an existing assignment
+  // (reassign it) or no assignment at all (create one).
   function attachCandidates(agentId) {
-    return state.assignments.filter(function (assignment) {
-      return assignment.agentId !== agentId &&
-        !(assignment.workspaceId === "*" && assignment.channelId === "*");
+    var workspaceId = connectedTeamId();
+    var channels = (state.slackChannels && state.slackChannels.channels) || [];
+    if (!workspaceId) return [];
+    var assignmentsByChannel = new Map();
+    state.assignments.forEach(function (assignment) {
+      if (assignment.workspaceId === workspaceId) assignmentsByChannel.set(assignment.channelId, assignment);
+    });
+    return channels.map(function (channel) {
+      var assignment = assignmentsByChannel.get(channel.id) || null;
+      return {
+        channelId: channel.id,
+        channelLabel: channel.name,
+        assignment: assignment
+      };
+    }).filter(function (candidate) {
+      return !candidate.assignment || candidate.assignment.agentId !== agentId;
     });
   }
 
   function attachPickerHtml(draft) {
     if (!state.attachPicker) return "";
+    if (!isSlackConnected()) {
+      return '<div class="bundle-row"><span class="hint">Connect Slack first to list workspace channels.</span>' +
+        '<span class="spacer"></span><button type="button" class="btn btn-ghost btn-sm" data-action="attach-cancel">Close</button></div>';
+    }
+    if (state.slackChannelsError) {
+      return '<div class="bundle-row"><span class="field-error">' + esc(state.slackChannelsError) + '</span>' +
+        '<span class="spacer"></span><button type="button" class="btn btn-soft btn-sm" data-action="refresh-channels">Retry</button>' +
+        '<button type="button" class="btn btn-ghost btn-sm" data-action="attach-cancel">Close</button></div>';
+    }
+    if (state.slackChannelsLoading || !state.slackChannels) {
+      return '<div class="bundle-row"><span class="hint">Loading workspace channels&hellip;</span>' +
+        '<span class="spacer"></span><button type="button" class="btn btn-ghost btn-sm" data-action="attach-cancel">Cancel</button></div>';
+    }
     var candidates = attachCandidates(draft.id);
     if (!candidates.length) {
-      return '<div class="bundle-row"><span class="hint">All added channels already use this profile.</span>' +
+      return '<div class="bundle-row"><span class="hint">All available Slack channels already use this profile.</span>' +
         '<span class="spacer"></span>' +
         '<button type="button" class="btn btn-soft btn-sm" data-action="attach-new-channel" data-agent="' + esc(draft.id) + '">Add a new channel with this profile</button>' +
         '<button type="button" class="btn btn-ghost btn-sm" data-action="attach-cancel">Close</button></div>';
     }
-    var options = candidates.map(function (assignment, index) {
-      var current = agentById(assignment.agentId);
-      return '<option value="' + index + '">' + esc(channelLabel(assignment)) +
+    var agentsById = new Map();
+    state.agents.forEach(function (agent) { agentsById.set(agent.id, agent); });
+    var options = candidates.map(function (candidate) {
+      var current = candidate.assignment ? agentsById.get(candidate.assignment.agentId) : null;
+      return '<option value="' + esc(candidate.channelId) + '"' +
+        (candidate.channelId === state.attachChannelSelected ? " selected" : "") + '>' + esc(channelLabel(candidate)) +
         (current ? ' &mdash; currently ' + esc(current.name) : "") + '</option>';
     }).join("");
-    return '<div class="bundle-row"><span class="select-wrap"><select class="input" data-role="attach-channel" aria-label="Channel to attach">' + options + '</select>' + icon("chevron-down", "select-caret") + '</span>' +
+    var truncated = state.slackChannels.truncated
+      ? '<span class="hint">Showing the first workspace channels.</span>' +
+        '<button type="button" class="btn btn-soft btn-sm" data-action="attach-new-channel" data-agent="' + esc(draft.id) + '">Add a new channel</button>'
+      : "";
+    return '<div class="bundle-row"><span class="select-wrap"><select class="input" data-role="attach-channel" data-action="attach-channel-option" aria-label="Channel to attach">' + options + '</select>' + icon("chevron-down", "select-caret") + '</span>' +
+      '<button type="button" class="btn btn-soft btn-sm i-lead" data-action="refresh-channels" title="Refresh channel list">' + icon("arrow-path") + 'Refresh</button>' +
       '<button type="button" class="btn btn-primary btn-sm" data-action="attach-channel-confirm">Attach</button>' +
-      '<button type="button" class="btn btn-ghost btn-sm" data-action="attach-cancel">Cancel</button></div>';
+      '<button type="button" class="btn btn-ghost btn-sm" data-action="attach-cancel">Cancel</button>' + truncated +
+      (state.attachError ? '<span class="field-error">' + esc(state.attachError) + '</span>' : "") + '</div>';
   }
 
   function disableConfirmHtml(draft) {
@@ -3497,9 +3556,9 @@ details[open].advanced summary::before {
     if (action === "discard-channel") { var a = activeAssignment(); if (a) selectActive(a.workspaceId, a.channelId); render(); }
     if (action === "save-channel") { saveChannel(); }
     // Profiles master-detail navigation + form actions.
-    if (action === "new-profile") { state.view = "profiles"; state.profileScreen = "create"; state.profileDraft = newProfileDraft(); state.editingAgentId = null; state.profileError = ""; state.profileDirty = false; state.disableConfirm = false; state.skillEditor = null; state.skillImport = null; state.connectionEditor = null; state.connectionRemove = null; state.modelPickerOpen = false; state.modelPickerFilter = ""; render(); }
+    if (action === "new-profile") { openNewProfile(); }
     if (action === "edit-profile") { var selected = agentById(target.getAttribute("data-agent")); if (selected) openProfileEditor(selected); }
-    if (action === "profiles-back") { state.profileScreen = "list"; state.profileDraft = null; state.editingAgentId = null; state.profileError = ""; state.profileDirty = false; state.disableConfirm = false; state.skillEditor = null; state.skillImport = null; state.connectionEditor = null; state.connectionRemove = null; state.modelPickerOpen = false; state.modelPickerFilter = ""; render(); }
+    if (action === "profiles-back") { state.profileScreen = "list"; state.profileDraft = null; state.editingAgentId = null; resetProfileTransientState(); render(); }
     // Capability tab switch. The keystroke mirrors keep the draft in sync, so
     // no collectProfileDraft here — its trim() would strip whitespace out of
     // text the user is mid-typing. showProfileTab's guard also makes
@@ -3516,11 +3575,11 @@ details[open].advanced summary::before {
       if (renameInput) { renameInput.focus(); renameInput.select(); }
     }
     // Footer "Add to channels" picker.
-    if (action === "attach-open" && state.profileDraft) { state.attachPicker = true; render(); }
-    if (action === "attach-new-channel") { state.attachPicker = false; openAddChannel(target.getAttribute("data-agent") || ""); }
-    if (action === "attach-cancel") { state.attachPicker = false; render(); }
+    if (action === "attach-open" && state.profileDraft) { openProfileAttachPicker(); }
+    if (action === "attach-new-channel") { state.attachPicker = false; state.attachChannelSelected = ""; state.attachError = ""; openAddChannel(target.getAttribute("data-agent") || ""); }
+    if (action === "attach-cancel") { state.attachPicker = false; state.attachChannelSelected = ""; state.attachError = ""; render(); }
     if (action === "attach-channel-confirm" && state.profileDraft) { attachProfileToChannel(); }
-    if (action === "cancel-create") { state.profileScreen = "list"; state.profileDraft = null; state.profileError = ""; state.profileDirty = false; state.skillEditor = null; state.skillImport = null; state.connectionEditor = null; state.connectionRemove = null; state.modelPickerOpen = false; state.modelPickerFilter = ""; render(); }
+    if (action === "cancel-create") { state.profileScreen = "list"; state.profileDraft = null; resetProfileTransientState(); render(); }
     // Settings (model-providers) is a separate destination that lands with its
     // own build; the affordance is present per the approved model-field design.
     if (action === "open-settings") { openSettings(); }
@@ -3730,6 +3789,7 @@ details[open].advanced summary::before {
     }
     // Remember the picked channel so a Refresh / re-render keeps the selection.
     if (action === "select-channel-option") { state.addChannelSelected = target.value; }
+    if (action === "attach-channel-option") { state.attachChannelSelected = target.value; }
     // Profile enable toggle: enabling is harmless, but turning OFF an assigned
     // profile stops it answering everywhere — confirm before staging that.
     if (action === "profile-enable-toggle" && state.profileDraft) {
@@ -3872,14 +3932,7 @@ details[open].advanced summary::before {
   // channel-page Profile row's Edit affordance).
   function enterProfiles(targetAgentId) {
     state.view = "profiles";
-    state.profileError = "";
-    state.profileDirty = false;
-    state.disableConfirm = false;
-    state.profileTab = "instructions";
-    state.profileRenaming = null;
-    state.attachPicker = false;
-    state.connectionEditor = null;
-    state.connectionRemove = null;
+    resetProfileTransientState();
     var target = targetAgentId ? agentById(targetAgentId) : null;
     if (target) {
       state.profileScreen = "edit";
@@ -3899,11 +3952,25 @@ details[open].advanced summary::before {
     state.addChannelError = "";
     state.addChannelInvite = "";
     state.addChannelAgentId = agentId || "";
-    render();
-    // Lazily populate the picker the first time it opens (connected only).
+    if (!ensureSlackChannelsLoaded()) render();
+  }
+
+  function openProfileAttachPicker() {
+    state.attachPicker = true;
+    state.attachChannelSelected = "";
+    state.attachError = "";
+    state.attachNotice = "";
+    if (!ensureSlackChannelsLoaded()) render();
+  }
+
+  // Returns true when loadSlackChannels owns the next render. Both channel
+  // pickers use this guard so an open does not duplicate requests or renders.
+  function ensureSlackChannelsLoaded() {
     if (isSlackConnected() && !state.slackChannels && !state.slackChannelsLoading) {
       loadSlackChannels(false);
+      return true;
     }
+    return false;
   }
 
   function loadSlackChannels(refresh) {
@@ -3924,11 +3991,17 @@ details[open].advanced summary::before {
       render();
     }).catch(function (error) {
       state.slackChannelsLoading = false;
-      state.slackChannelsError = error.message === "slack_not_configured"
-        ? "Connect Slack first to list channels."
-        : (error.serverMessage || error.message || "Could not load channels.");
+      state.slackChannelsError = slackChannelsErrorText(error);
       render();
     });
+  }
+
+  function slackChannelsErrorText(error) {
+    if (error && error.message === "slack_not_configured") return "Connect Slack first to list channels.";
+    if (error && error.message === "slack_list_failed" && error.detail) {
+      return "Slack could not list channels (" + error.detail + ").";
+    }
+    return (error && (error.serverMessage || error.message)) || "Could not load channels.";
   }
 
   function addChannelErrorText(error) {
@@ -3938,6 +4011,10 @@ details[open].advanced summary::before {
     if (message === "workspace_mismatch") return "That channel belongs to a different workspace than the one Chickpea is connected to.";
     if (message === "unknown_agent") return "The profile no longer exists. Reload and try again.";
     return message || "Could not add the channel.";
+  }
+
+  function channelInviteWarning(channelName) {
+    return "#" + channelName + " was added, but @Tag isn't a member of it yet, so it won't hear mentions there. Invite @Tag to #" + channelName + " in Slack — no need to come back here.";
   }
 
   function addChannel(formData) {
@@ -3975,7 +4052,7 @@ details[open].advanced summary::before {
       // Slack's authoritative name (server override) becomes the display label.
       var savedLabel = normalizeChannelLabel((result && result.assignment && result.assignment.channelLabel) || label || channelId);
       state.addChannelInvite = result && result.isMember === false
-        ? "#" + savedLabel + " was added, but @Tag isn't a member of it yet, so it won't hear mentions there. Invite @Tag to #" + savedLabel + " in Slack — no need to come back here."
+        ? channelInviteWarning(savedLabel)
         : "";
       return refreshData();
     }).catch(function (error) { fail(addChannelErrorText(error)); });
@@ -4546,20 +4623,34 @@ details[open].advanced summary::before {
     }).catch(function (error) { state.profileError = deleteProfileErrorText(error); render(); });
   }
 
-  // Reassign an existing channel to the profile being edited. Preserves the
-  // channel's enabled flag, addendum, and label — only the profile changes
-  // (same contract as the channel page's swap flow).
+  // Attach a catalog channel to this profile. Existing assignments preserve
+  // their enabled flag and addendum; previously unassigned channels get the
+  // same enabled-by-default contract as the main Add-channel flow.
   function attachProfileToChannel() {
     var draft = state.profileDraft;
     if (!draft || !draft.id) return;
     var select = document.querySelector('[data-role="attach-channel"]');
     if (!select) return;
-    var chosen = attachCandidates(draft.id)[Number(select.value)];
-    if (!chosen) return;
-    putAssignment(chosen.workspaceId, chosen.channelId, draft.id, chosen.enabled, chosen.channelPromptAddendum, chosen.channelLabel).then(function () {
+    var candidates = attachCandidates(draft.id);
+    var chosenId = state.attachChannelSelected;
+    if (!candidates.some(function (candidate) { return candidate.channelId === chosenId; })) chosenId = select.value;
+    var chosen = candidates.find(function (candidate) { return candidate.channelId === chosenId; });
+    var channel = chosen && findSlackChannel(chosen.channelId);
+    var workspaceId = connectedTeamId();
+    if (!channel || !workspaceId) return;
+    var assignment = chosen.assignment;
+    var enabled = assignment ? assignment.enabled : true;
+    var addendum = assignment ? assignment.channelPromptAddendum : undefined;
+    var label = assignment && assignment.channelLabel ? assignment.channelLabel : channel.name;
+    putAssignment(workspaceId, channel.id, draft.id, enabled, addendum, label).then(function (result) {
+      var savedLabel = normalizeChannelLabel((result && result.assignment && result.assignment.channelLabel) || label || channel.id);
+      var needsInvite = result && result.isMember !== undefined ? result.isMember === false : channel.isMember === false;
       state.attachPicker = false;
+      state.attachChannelSelected = "";
+      state.attachError = "";
+      state.attachNotice = needsInvite ? channelInviteWarning(savedLabel) : "";
       return refreshData();
-    }).catch(function (error) { state.profileError = error.message; render(); });
+    }).catch(function (error) { state.attachError = addChannelErrorText(error); render(); });
   }
 
   function detachProfileChannel(workspaceId, channelId) {
