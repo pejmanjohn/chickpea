@@ -137,10 +137,6 @@ try {
     instructions: `${INSTRUCTIONS_MARKER}: answer through the runtime-created agent.`,
     enabled: true,
     model: MODEL_SPECIFIER,
-    defaultModels: {
-      claude: 'anthropic/runtime-config-claude',
-      'workers-ai': '@cf/runtime-config/model',
-    },
   });
   record(
     'POST /admin/api/agents creates runtime agent',

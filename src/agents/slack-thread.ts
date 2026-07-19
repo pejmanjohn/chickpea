@@ -23,7 +23,7 @@ export { resolveAgentModel } from '../config/model-policy.ts';
 // on the channel's `/channels/slack/events` route, not here) — anyone who can
 // reach the app could otherwise drive the agent directly (LLM cost,
 // channel-brief disclosure). Gate every method, including GET history views,
-// on the shared internal token; the channel's self-call sends it.
+// on the shared internal token; the channel's in-process dispatch sends it.
 export const route: AgentRouteHandler = async (c, next) => {
   const token = c.req.header(INTERNAL_AGENT_TOKEN_HEADER);
   if (!isValidInternalAgentToken(token)) {

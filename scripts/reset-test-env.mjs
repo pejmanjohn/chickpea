@@ -24,8 +24,8 @@
  *      .env.slack.* credential files.
  *
  *   5. Fresh install: click Deploy to Cloudflare, set TAG_ADMIN_TOKEN
- *      (openssl rand -hex 32), open /admin?token=…, and follow the wizard's
- *      Slack manifest deep-link to connect a fresh app.
+ *      (openssl rand -hex 32), open /admin, sign in through the token form,
+ *      and follow the wizard's Slack manifest deep-link to connect a fresh app.
  *
  * Usage:
  *   node scripts/reset-test-env.mjs                                  # dry run — print the plan

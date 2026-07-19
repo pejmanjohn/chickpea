@@ -1,7 +1,4 @@
-import { parseSlackThreadKey } from '../slack/thread-key.ts';
-
-import { DisabledAgentError, NoAssignmentError, UnknownAgentError } from './errors.ts';
-import { seededAgents, seededAssignments } from './seed.ts';
+import { DisabledAgentError, NoAssignmentError } from './errors.ts';
 import type { ChannelAssignment, CustomAgentConfig, ResolvedAssignment } from './types.ts';
 
 // Store readers are async — the Cloudflare backend answers over Durable
@@ -52,56 +49,6 @@ export interface ConfigStores {
   assignments: AssignmentReader;
 }
 
-export class AgentStore {
-  readonly agents: Map<string, CustomAgentConfig>;
-
-  constructor(agents: CustomAgentConfig[] = seededAgents) {
-    this.agents = new Map(agents.map((agent) => [agent.id, agent]));
-  }
-
-  async getAgent(agentId: string): Promise<CustomAgentConfig> {
-    const agent = this.agents.get(agentId);
-    if (!agent) {
-      throw new UnknownAgentError(agentId);
-    }
-    return agent;
-  }
-}
-
-export class AssignmentStore {
-  readonly assignments: ChannelAssignment[];
-
-  constructor(assignments: ChannelAssignment[] = seededAssignments) {
-    this.assignments = assignments;
-  }
-
-  async find(
-    workspaceId: string,
-    channelId: string,
-    options: AssignmentLookupOptions = {},
-  ): Promise<ChannelAssignment | undefined> {
-    const surface = options.surface ?? 'direct';
-    const exact = this.assignments.find(
-      (assignment) =>
-        assignment.workspaceId === workspaceId &&
-        assignment.channelId === channelId &&
-        assignment.enabled,
-    );
-    if (exact) {
-      return exact;
-    }
-
-    return this.assignments.find(
-      (assignment) =>
-        assignment.enabled &&
-        (assignment.workspaceId === workspaceId || assignment.workspaceId === '*') &&
-        (assignment.channelId === channelId || assignment.channelId === '*') &&
-        // Channels never fall through to the global wildcard (fail-closed).
-        !(surface === 'channel' && assignment.workspaceId === '*' && assignment.channelId === '*'),
-    );
-  }
-}
-
 export async function resolveAssignment(
   workspaceId: string,
   channelId: string,
@@ -128,14 +75,4 @@ export async function resolveAssignment(
       : {}),
     agent,
   };
-}
-
-export function resolveAssignmentFromThreadKey(
-  threadKey: string,
-  stores: ConfigStores,
-): Promise<ResolvedAssignment> {
-  const { workspaceId, channelId } = parseSlackThreadKey(threadKey);
-  return resolveAssignment(workspaceId, channelId, stores, {
-    surface: surfaceForChannelId(channelId),
-  });
 }

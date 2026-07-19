@@ -24,7 +24,6 @@ interface AgentRow {
   instructions: string;
   enabled: number;
   model: string | null;
-  default_models_json: string;
   skills_json: string;
   mcp_servers_json: string;
 }
@@ -130,13 +129,12 @@ export class ConfigStoreLogic {
     this.db.run(
       `UPDATE config_agents
        SET name = ?, instructions = ?, enabled = ?, model = ?,
-           default_models_json = ?, skills_json = ?, mcp_servers_json = ?
+           skills_json = ?, mcp_servers_json = ?
        WHERE id = ?`,
       next.name,
       next.instructions,
       next.enabled ? 1 : 0,
       model,
-      JSON.stringify(next.defaultModels),
       JSON.stringify(next.skills),
       JSON.stringify(next.mcpServers),
       agentId,
@@ -281,23 +279,21 @@ export class ConfigStoreLogic {
     return this.db.run(
       `INSERT INTO config_agents (
         id, name, instructions, enabled, model,
-        default_models_json, skills_json, mcp_servers_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        skills_json, mcp_servers_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
       agent.id,
       agent.name,
       agent.instructions,
       agent.enabled ? 1 : 0,
       agent.model ?? null,
-      JSON.stringify(agent.defaultModels),
       JSON.stringify(agent.skills ?? []),
       JSON.stringify(agent.mcpServers ?? []),
     );
   }
 
-  // Public schema history starts at v1. This baseline deliberately contains
-  // the complete current schema: the pre-open-source private migration chain
-  // has no supported upgrade target. Keep v1 frozen; future public schema
-  // changes append a new numbered step.
+  // Fresh databases start from the clean v1 schema. Migration v2 is a narrow
+  // compatibility bridge for databases created by the pre-release v1 schema,
+  // which still included the removed default_models_json column.
   private runMigrations(): void {
     const MIGRATIONS: Array<{ version: number; up: (db: StateDb) => void }> = [
       {
@@ -312,7 +308,6 @@ export class ConfigStoreLogic {
               instructions TEXT NOT NULL,
               enabled INTEGER NOT NULL,
               model TEXT,
-              default_models_json TEXT NOT NULL,
               skills_json TEXT NOT NULL DEFAULT '[]',
               mcp_servers_json TEXT NOT NULL DEFAULT '[]'
             )`,
@@ -328,6 +323,17 @@ export class ConfigStoreLogic {
               PRIMARY KEY (workspace_id, channel_id)
             )`,
           );
+        },
+      },
+      {
+        version: 2,
+        up: (db) => {
+          const hasLegacyDefaultModels = db
+            .all('PRAGMA table_info(config_agents)')
+            .some((column) => column.name === 'default_models_json');
+          if (hasLegacyDefaultModels) {
+            db.exec('ALTER TABLE config_agents DROP COLUMN default_models_json');
+          }
         },
       },
     ];
@@ -438,7 +444,6 @@ function rowToAgent(row: AgentRow): CustomAgentConfig {
     instructions: row.instructions,
     enabled: Boolean(row.enabled),
     ...(row.model ? { model: row.model } : {}),
-    defaultModels: JSON.parse(row.default_models_json) as CustomAgentConfig['defaultModels'],
     skills: JSON.parse(row.skills_json) as CustomAgentConfig['skills'],
     mcpServers: JSON.parse(row.mcp_servers_json) as CustomAgentConfig['mcpServers'],
   };

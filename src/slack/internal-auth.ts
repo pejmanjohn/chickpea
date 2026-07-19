@@ -1,8 +1,8 @@
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 
 // Shared secret gating the internal `/agents/slack-thread/:id` HTTP endpoint.
-// The Slack channel is the only intended caller (it self-calls with a
-// conversation key derived from a signature-verified event) — this token
+// The Slack channel is the only intended caller (it dispatches in-process with
+// a conversation key derived from a signature-verified event) — this token
 // stops anyone else who can reach the app from driving the agent directly
 // (LLM cost, channel-brief disclosure) and bypassing Slack signature
 // verification entirely.
@@ -10,7 +10,7 @@ import { randomUUID, timingSafeEqual } from 'node:crypto';
 // Prefer an operator-configured token so external callers (and multi-process
 // deployments) can be authorized deliberately. Otherwise fall back to a
 // random token generated once per process/isolate: the channel and the agent
-// route share this module instance, so the self-call and the route guard
+// route share this module instance, so the dispatcher and the route guard
 // agree even though no token was configured.
 //
 // Resolved LAZILY (first use, inside a request) rather than at module scope:

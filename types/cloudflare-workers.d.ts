@@ -10,6 +10,16 @@
  * and the SELECT changes()/rowsWritten probe, 2026-07-06).
  */
 declare module 'cloudflare:workers' {
+  /**
+   * Ambient bindings available to this Worker. Kept local to this declaration
+   * because the Node and Cloudflare lanes share one TypeScript project.
+   */
+  interface WorkerEnv {
+    AI: import('@flue/runtime/cloudflare').CloudflareAIBinding;
+  }
+
+  const env: WorkerEnv;
+
   /** One row from `SqlStorage.exec` — column name to SQLite value. */
   type SqlRow = Record<string, string | number | ArrayBuffer | null>;
 

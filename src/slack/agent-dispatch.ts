@@ -34,21 +34,6 @@ function getRouter(): Hono {
   return cachedRouter;
 }
 
-// TAG_SELF_URL configured the old HTTP self-call's base. Dispatch is in-process
-// now, so it is ignored — warn ONCE (an upgraded .env may still carry it) so an
-// operator is not left believing it still routes anything.
-let selfUrlWarned = false;
-function warnSelfUrlIgnoredOnce(): void {
-  if (selfUrlWarned) return;
-  if (process.env.TAG_SELF_URL) {
-    selfUrlWarned = true;
-    console.warn(
-      '[chickpea] TAG_SELF_URL is set but ignored: agent dispatch is now in-process. ' +
-        'Remove it from your environment.',
-    );
-  }
-}
-
 /**
  * Prompt the durable agent and block for the terminal result. Throws on a
  * non-2xx (the ?wait=result typed error envelope a provider failure produces)
@@ -60,7 +45,6 @@ export async function promptSlackThreadAgent(
   message: string,
   env: PlatformEnv | undefined,
 ): Promise<string> {
-  warnSelfUrlIgnoredOnce();
   const path = `/agents/slack-thread/${encodeURIComponent(conversationKey)}?wait=result`;
   const response = await getRouter().request(
     path,

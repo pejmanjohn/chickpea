@@ -304,7 +304,7 @@ const handleSlackEvents: NonNullable<SlackChannelOptions['events']> = async ({ c
   //    since Slack signatures don't cover Host — is gone: the agent prompt
   //    now dispatches in-process (see slack/agent-dispatch.ts) with the
   //    platform env captured at the top of this handler, so there is no
-  //    origin to spoof and no TAG_SELF_URL to configure.
+  //    origin to spoof or configure.
 
   // g. Mark this thread as started so its later implicit replies are admitted
   //    (mentions and DMs both open a thread the app owns). Registered

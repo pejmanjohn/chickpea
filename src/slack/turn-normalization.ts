@@ -1,7 +1,6 @@
 import {
   isSlackAppMentionEvent,
   isSlackMessageEvent,
-  type NormalizedSlackMention,
   type NormalizedSlackTurn,
   type SlackContextMode,
   type SlackEventFixture,
@@ -25,15 +24,6 @@ interface RunnableTurnInput {
   source: SlackTurnSource;
   channelType?: string;
   contextMode: SlackContextMode;
-}
-
-export function normalizeAppMention(payload: SlackEventFixture): NormalizedSlackMention {
-  const normalization = normalizeSlackTurn(payload);
-  if (normalization.status !== 'runnable' || normalization.turn.source !== 'app_mention') {
-    throw new Error('Expected Slack app_mention event_callback payload');
-  }
-
-  return normalization.turn as NormalizedSlackMention;
 }
 
 export function normalizeSlackTurn(

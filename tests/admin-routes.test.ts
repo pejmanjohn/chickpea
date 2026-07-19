@@ -77,10 +77,6 @@ function agent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig {
     instructions: 'Use admin-managed instructions.',
     enabled: true,
     model: 'local-stub/admin-agent',
-    defaultModels: {
-      claude: 'anthropic/admin-claude',
-      'workers-ai': '@cf/admin/model',
-    },
     skills: [],
     mcpServers: [],
     ...overrides,
@@ -110,9 +106,15 @@ test('admin API returns 404 for every admin route when TAG_ADMIN_TOKEN is unset'
     const pageResponse = await app.request('/admin', {
       headers: auth(ADMIN_TOKEN),
     });
+    const loginResponse = await app.request('/admin/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ token: ADMIN_TOKEN }).toString(),
+    });
 
     assert.equal(apiResponse.status, 404);
     assert.equal(pageResponse.status, 404);
+    assert.equal(loginResponse.status, 404);
   } finally {
     store.close();
   }
@@ -168,14 +170,16 @@ test('admin API rejects a wrong bearer token and accepts the configured admin to
   }
 });
 
-test('admin query token redirects to strip the secret and sets a hashed HttpOnly cookie', async () => {
+test('admin POST login exchanges the body token for a hashed HttpOnly cookie', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   try {
     const app = appWithAdmin(store);
 
-    const login = await app.request(`/admin?token=${ADMIN_TOKEN}`);
-    // The page GET redirects to /admin without the query so the token does not
-    // linger in the address bar / history / access logs.
+    const login = await app.request('/admin/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ token: ADMIN_TOKEN, returnTo: '/admin' }).toString(),
+    });
     assert.equal(login.status, 303);
     assert.equal(login.headers.get('location'), '/admin');
 
@@ -191,12 +195,31 @@ test('admin query token redirects to strip the secret and sets a hashed HttpOnly
       headers: { cookie: cookieValue },
     });
     assert.equal(api.status, 200);
+
+    // Query parameters are never credentials: GETs cannot create a session,
+    // even if they carry the right token.
+    const queryAttempt = await app.request(`/admin?token=${ADMIN_TOKEN}`);
+    assert.equal(queryAttempt.status, 401);
+    assert.equal(queryAttempt.headers.get('set-cookie'), null);
+
+    // The return path is local admin UI only; an absolute URL cannot turn the
+    // login exchange into an open redirect.
+    const unsafeReturn = await app.request('/admin/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        token: ADMIN_TOKEN,
+        returnTo: 'https://example.test/steal',
+      }).toString(),
+    });
+    assert.equal(unsafeReturn.status, 303);
+    assert.equal(unsafeReturn.headers.get('location'), '/admin');
   } finally {
     store.close();
   }
 });
 
-test('client-routed admin paths serve the SPA page and deep-link login keeps the path', async () => {
+test('client-routed admin paths serve the SPA page and POST login keeps a safe deep path', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   try {
     const app = appWithAdmin(store);
@@ -206,9 +229,12 @@ test('client-routed admin paths serve the SPA page and deep-link login keeps the
     assert.equal(page.status, 200);
     assert.match(await page.text(), /Chickpea/);
 
-    // ?token= on a deep path redirects to the SAME path with the query
-    // stripped, and still sets the session cookie.
-    const login = await app.request(`/admin/profiles?token=${ADMIN_TOKEN}`);
+    // A body-authenticated login can return to the same client-routed path.
+    const login = await app.request('/admin/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ token: ADMIN_TOKEN, returnTo: '/admin/profiles' }).toString(),
+    });
     assert.equal(login.status, 303);
     assert.equal(login.headers.get('location'), '/admin/profiles');
     assert.match(login.headers.get('set-cookie') ?? '', /flue_admin=/);
@@ -217,6 +243,10 @@ test('client-routed admin paths serve the SPA page and deep-link login keeps the
     const anon = await app.request('/admin/channels/T_X/C_Y');
     assert.equal(anon.status, 401);
     assert.match(anon.headers.get('content-type') ?? '', /text\/html/);
+    assert.match(
+      await anon.text(),
+      /name="returnTo"[^>]*value="\/admin\/channels\/T_X\/C_Y"/,
+    );
 
     // Unknown API paths stay 404 — never swallowed by the SPA catch-all.
     const api = await app.request('/admin/api/nope', { headers: auth(ADMIN_TOKEN) });
@@ -231,25 +261,61 @@ test('unauthenticated page GET renders a login form while XHR/API still gets JSO
   try {
     const app = appWithAdmin(store);
 
-    // A browser navigating to /admin with no session gets the token-entry form
-    // (401, HTML) instead of a bare JSON error — the documented ?token= login
-    // has a visible entry point.
+    // A browser navigating to /admin with no session gets the POST token-entry
+    // form (401, HTML) instead of a bare JSON error.
     const page = await app.request('/admin');
     assert.equal(page.status, 401);
     assert.match(page.headers.get('content-type') ?? '', /text\/html/);
     const html = await page.text();
     assert.match(html, /name="token"/);
+    assert.match(html, /method="post" action="\/admin\/login"/);
     assert.match(html, /Sign in to Chickpea/);
 
-    // A wrong ?token= surfaces the rejection notice (without echoing the token).
-    const rejected = await app.request('/admin?token=nope');
+    // A rejected body token is never echoed and never creates a session.
+    const rejected = await app.request('/admin/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ token: 'do-not-reflect', returnTo: '/admin' }).toString(),
+    });
     assert.equal(rejected.status, 401);
-    assert.match(await rejected.text(), /was not accepted/);
+    assert.equal(rejected.headers.get('set-cookie'), null);
+    const rejectedHtml = await rejected.text();
+    assert.match(rejectedHtml, /was not accepted/);
+    assert.doesNotMatch(rejectedHtml, /do-not-reflect/);
 
     // API/XHR callers under /admin/* keep the JSON 401 they can handle.
     const api = await app.request('/admin/api/agents');
     assert.equal(api.status, 401);
     assert.deepEqual(await api.json(), { error: 'unauthorized' });
+  } finally {
+    store.close();
+  }
+});
+
+test('admin login rejects non-form and oversized bodies without setting a cookie', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  try {
+    const app = appWithAdmin(store);
+    const nonForm = await app.request('/admin/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ token: ADMIN_TOKEN }),
+    });
+    assert.equal(nonForm.status, 401);
+    assert.equal(nonForm.headers.get('set-cookie'), null);
+
+    const oversizedRequest = new Request('http://localhost/admin/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new Blob([
+        new URLSearchParams({ token: '🐣'.repeat(2_048) }).toString(),
+      ]),
+    });
+    assert.equal(oversizedRequest.headers.get('content-length'), null);
+    const oversized = await app.request(oversizedRequest);
+    assert.equal(oversized.status, 401);
+    assert.equal(oversized.headers.get('set-cookie'), null);
+    assert.doesNotMatch(await oversized.text(), /🐣{16}/);
   } finally {
     store.close();
   }
@@ -434,10 +500,6 @@ test('admin API rejects patches that leave an agent without a resolvable model',
           name: 'Admin Agent',
           instructions: 'Use admin-managed instructions.',
           enabled: true,
-          defaultModels: {
-            claude: 'anthropic/admin-claude',
-            'workers-ai': '@cf/admin/model',
-          },
           skills: [],
           mcpServers: [],
         };
@@ -637,10 +699,9 @@ test('admin API exposes model suggestions for configured provider sources', asyn
         const body = (await response.json()) as {
           automatic?: unknown;
           providers: Array<{ id: string; configured: boolean; suggestions: string[] }>;
-          defaultModels: unknown;
         };
         assert.equal(body.automatic, undefined);
-        assert.ok(body.defaultModels);
+        assert.equal(Object.hasOwn(body, 'defaultModels'), false);
         assert.equal(
           body.providers.some(
             (provider) =>

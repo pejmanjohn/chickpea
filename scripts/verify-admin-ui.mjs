@@ -2,9 +2,10 @@
 /**
  * Prove the /admin configuration loop without Slack credentials:
  *   1. mount the real Hono admin routes against an in-memory SQLite store,
- *   2. create a profile and addendum-bearing assignment through /admin/api,
- *   3. read the server-side effective-config panel data,
- *   4. edit the addendum and prove the panel data changes in the same process.
+ *   2. exchange the POSTed admin token for a browser session cookie,
+ *   3. create a profile and addendum-bearing assignment through /admin/api,
+ *   4. read the server-side effective-config panel data,
+ *   5. edit the addendum and prove the panel data changes in the same process.
  */
 import {
   assertNodeVersion,
@@ -78,11 +79,26 @@ try {
     }),
   );
 
-  const page = await adminJson(app, '/admin');
+  const loginForm = await app.request('/admin');
+  const loginHtml = await loginForm.text();
+  const login = await app.request('/admin/login', {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ token: ADMIN_TOKEN, returnTo: '/admin' }).toString(),
+  });
+  const sessionCookie = (login.headers.get('set-cookie') ?? '').split(';')[0];
+  const pageResponse = await app.request('/admin', { headers: { cookie: sessionCookie } });
+  const pageHtml = await pageResponse.text();
   record(
-    'GET /admin serves the single-page UI',
-    page.status === 200 && typeof page.body === 'string' && page.body.includes('Access summary'),
-    `status=${page.status}`,
+    'POST /admin/login exchanges the body token for the UI session',
+    loginForm.status === 401 &&
+      loginHtml.includes('method="post" action="/admin/login"') &&
+      login.status === 303 &&
+      login.headers.get('location') === '/admin' &&
+      sessionCookie.startsWith('flue_admin=') &&
+      pageResponse.status === 200 &&
+      pageHtml.includes('Access summary'),
+    `login=${login.status} page=${pageResponse.status}`,
   );
 
   const created = await adminBody(app, 'POST', '/admin/api/agents', {
@@ -91,10 +107,6 @@ try {
     instructions: 'ADMIN_UI_PROFILE_INSTRUCTIONS: answer from the admin-created profile.',
     enabled: true,
     model: MODEL_SPECIFIER,
-    defaultModels: {
-      claude: 'anthropic/admin-ui-claude',
-      'workers-ai': '@cf/admin-ui/model',
-    },
   });
   record(
     'POST /admin/api/agents creates the profile',

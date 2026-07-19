@@ -22,17 +22,6 @@ export interface SlackTurnContext {
   degradations: string[];
 }
 
-export interface SlackContextClient {
-  hydrate(turn: NormalizedSlackTurn): Promise<SlackTurnContext>;
-}
-
-export interface SlackWebApiContextClientOptions {
-  botToken: string;
-  fetch?: typeof fetch;
-  maxMessages?: number;
-  maxPages?: number;
-}
-
 export interface SlackWebApiMessage {
   type?: string;
   user?: string;
@@ -42,161 +31,11 @@ export interface SlackWebApiMessage {
   bot_id?: string;
 }
 
-interface SlackMessagesResponse {
-  ok: boolean;
-  messages?: SlackWebApiMessage[];
-  error?: string;
-  response_metadata?: {
-    next_cursor?: string;
-  };
-}
-
 export const DEFAULT_MAX_MESSAGES = 50;
 export const DEFAULT_MAX_PAGES = 3;
 const SECONDS_PER_HOUR = 60 * 60;
 const SECONDS_PER_DAY = 24 * SECONDS_PER_HOUR;
 const SECONDS_PER_WEEK = 7 * SECONDS_PER_DAY;
-
-export class NoopSlackContextClient implements SlackContextClient {
-  async hydrate(turn: NormalizedSlackTurn): Promise<SlackTurnContext> {
-    return {
-      mode: turn.contextMode,
-      messages: [],
-      truncated: false,
-      degradations: [],
-    };
-  }
-}
-
-export class SlackWebApiContextClient implements SlackContextClient {
-  private readonly botToken: string;
-  private readonly fetchImpl: typeof fetch;
-  private readonly maxMessages: number;
-  private readonly maxPages: number;
-
-  constructor(options: SlackWebApiContextClientOptions) {
-    this.botToken = options.botToken;
-    this.fetchImpl = options.fetch ?? globalThis.fetch;
-    this.maxMessages = options.maxMessages ?? DEFAULT_MAX_MESSAGES;
-    this.maxPages = options.maxPages ?? DEFAULT_MAX_PAGES;
-  }
-
-  async hydrate(turn: NormalizedSlackTurn): Promise<SlackTurnContext> {
-    try {
-      if (turn.contextMode === 'channel_history' || turn.contextMode === 'dm_history') {
-        return await this.fetchConversationHistory(turn);
-      }
-      return await this.fetchThread(turn);
-    } catch (error) {
-      return currentMessageOnlyContext(turn, [
-        `slack_context.${turn.contextMode}:${sanitizeError(error)}`,
-      ]);
-    }
-  }
-
-  private async fetchThread(turn: NormalizedSlackTurn): Promise<SlackTurnContext> {
-    const collected: SlackContextMessage[] = [];
-    const degradations: string[] = [];
-    let cursor: string | undefined;
-    let truncated = false;
-
-    for (let page = 0; page < this.maxPages && collected.length < this.maxMessages; page += 1) {
-      const remaining = this.maxMessages - collected.length;
-      const payload: Record<string, unknown> = {
-        channel: turn.channelId,
-        ts: turn.threadTs,
-        limit: Math.min(remaining, this.maxMessages),
-      };
-      if (cursor) {
-        payload.cursor = cursor;
-      }
-
-      const response = await this.slackApi('conversations.replies', payload);
-      collected.push(...toContextMessages(response.messages ?? []).slice(0, remaining));
-      cursor = response.response_metadata?.next_cursor?.trim() || undefined;
-      if (!cursor) {
-        break;
-      }
-    }
-
-    if (cursor) {
-      truncated = true;
-      degradations.push('slack_context.thread:truncated');
-    }
-
-    const messages = ensureTriggerMessage(orderMessages(collected), turn);
-    return {
-      mode: 'thread',
-      messages,
-      window: {
-        mode: 'thread',
-        oldest: turn.threadTs,
-        latest: turn.messageTs,
-        reason: 'thread_root',
-      },
-      truncated,
-      degradations,
-    };
-  }
-
-  private async fetchConversationHistory(turn: NormalizedSlackTurn): Promise<SlackTurnContext> {
-    if (turn.contextMode === 'thread') {
-      throw new Error('thread_context_requires_conversations_replies');
-    }
-
-    const window = computeHistoryWindow(turn.contextMode, turn.text, turn.messageTs);
-    const response = await this.slackApi('conversations.history', {
-      channel: turn.channelId,
-      latest: window.latest,
-      oldest: window.oldest,
-      inclusive: false,
-      limit: this.maxMessages,
-    });
-    const hasCursor = Boolean(response.response_metadata?.next_cursor?.trim());
-    const messages = ensureTriggerMessage(orderMessages(toContextMessages(response.messages ?? [])), turn);
-    const degradations = hasCursor ? [`slack_context.${turn.contextMode}:truncated`] : [];
-
-    return {
-      mode: 'channel_history',
-      messages,
-      window,
-      truncated: hasCursor,
-      degradations,
-    };
-  }
-
-  private async slackApi(
-    method: 'conversations.replies' | 'conversations.history',
-    payload: Record<string, unknown>,
-  ): Promise<SlackMessagesResponse> {
-    const formBody = new URLSearchParams();
-    for (const [key, value] of Object.entries(payload)) {
-      formBody.set(key, String(value));
-    }
-
-    const response = await this.fetchImpl(`https://slack.com/api/${method}`, {
-      method: 'POST',
-      headers: {
-        authorization: `Bearer ${this.botToken}`,
-        'content-type': 'application/x-www-form-urlencoded; charset=utf-8',
-      },
-      body: formBody,
-    });
-
-    let body: SlackMessagesResponse;
-    try {
-      body = (await response.json()) as SlackMessagesResponse;
-    } catch {
-      throw new Error(`http_${response.status}`);
-    }
-
-    if (!response.ok || !body.ok) {
-      throw new Error(body.error ?? `http_${response.status}`);
-    }
-
-    return body;
-  }
-}
 
 export function currentMessageOnlyContext(
   turn: NormalizedSlackTurn,
@@ -217,10 +56,6 @@ export function currentMessageOnlyContext(
     truncated: false,
     degradations,
   };
-}
-
-export function computeChannelHistoryWindow(text: string, latest: string): SlackContextWindow {
-  return computeHistoryWindow('channel_history', text, latest);
 }
 
 export function computeHistoryWindow(
@@ -378,9 +213,4 @@ function startOfMostRecentUtcWeekday(seconds: number, weekday: string): number {
   const current = new Date(dayStart * 1000).getUTCDay();
   const delta = (current - target + 7) % 7;
   return dayStart - delta * SECONDS_PER_DAY;
-}
-
-function sanitizeError(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
-  return message.replace(/[^A-Za-z0-9_.-]/g, '_').slice(0, 120);
 }

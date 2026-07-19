@@ -91,7 +91,6 @@ function raceDeadline<T>(promise: Promise<T>, ms: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<never>((_, reject) => {
     timer = setTimeout(() => reject(new Error('connect timeout after ' + ms + 'ms')), ms);
-    timer.unref?.();
   });
   return Promise.race([promise, deadline]).finally(() => {
     if (timer !== undefined) clearTimeout(timer);

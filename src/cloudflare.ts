@@ -1,4 +1,9 @@
-import { DurableObject, type DurableObjectState, type DurableObjectStorage } from 'cloudflare:workers';
+import {
+  DurableObject,
+  env,
+  type DurableObjectState,
+  type DurableObjectStorage,
+} from 'cloudflare:workers';
 import type { WebClient } from '@slack/web-api';
 
 import {
@@ -29,6 +34,13 @@ import {
 } from './slack/run-turn.ts';
 import { MAX_TURN_ATTEMPTS, TurnJobStoreLogic } from './slack/turn-jobs.ts';
 import type { SqlParam, StateDb } from './state/state-db.ts';
+import { registerCloudflareBindingProvider } from './cloudflare-provider.ts';
+
+// This module is imported only by Flue's Cloudflare entry. Register before
+// the generated entry's guarded default so `cloudflare/*` remains keyless but
+// calls env.AI directly, without the default payload-logging AI Gateway.
+// Importable `env` is Cloudflare's ambient binding object; no I/O runs here.
+registerCloudflareBindingProvider(env.AI);
 
 // Backoff before the alarm re-fires for a job whose attempt failed but is not
 // yet at the cap. A short delay (matching the DO alarm base retry) is enough:

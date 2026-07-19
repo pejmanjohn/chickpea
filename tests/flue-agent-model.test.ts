@@ -27,10 +27,6 @@ function modelAgent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConf
     name: 'Model Agent',
     instructions: 'Model policy instructions.',
     enabled: true,
-    defaultModels: {
-      claude: 'claude-sonnet-model',
-      'workers-ai': '@cf/workers/model',
-    },
     skills: [],
     mcpServers: [],
     ...overrides,
@@ -164,10 +160,6 @@ test('slack-thread initializes from the SQLite config store for the current stat
     instructions: 'Runtime configured instructions.',
     enabled: true,
     model: 'local-stub/runtime-pinned',
-    defaultModels: {
-      claude: 'anthropic/runtime-claude',
-      'workers-ai': '@cf/runtime/model',
-    },
     skills: [
       {
         name: 'runtime-skill',

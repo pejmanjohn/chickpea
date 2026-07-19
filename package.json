@@ -1,6 +1,7 @@
 {
   "name": "chickpea",
   "version": "0.0.0",
+  "private": true,
   "description": "Self-hosted, model-agnostic AI agent for Slack.",
   "license": "MIT",
   "repository": {
@@ -43,7 +44,6 @@
     "verify:durability": "node scripts/verify-durability.mjs",
     "verify:providers": "node scripts/verify-providers.mjs",
     "verify:providers:live": "node scripts/verify-providers-live.mjs",
-    "prepublishOnly": "node scripts/guard-fresh-export-publish.mjs",
     "verify:oss-export": "node scripts/verify-oss-export.mjs",
     "slack:bridge": "node scripts/slack-socket-bridge.mjs",
     "reset:test-env": "node scripts/reset-test-env.mjs"

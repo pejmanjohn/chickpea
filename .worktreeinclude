@@ -1,3 +1,0 @@
-# Local Codex-managed worktrees need the same ignored env files as the root
-# checkout. Keep this list exact; do not use broad .env* or cache globs.
-.env.slack.local

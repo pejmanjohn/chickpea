@@ -106,8 +106,6 @@ export interface NormalizedSlackTurn {
   contextMode: SlackContextMode;
 }
 
-export type NormalizedSlackMention = NormalizedSlackTurn & { source: 'app_mention' };
-
 export interface IgnoredSlackTurn {
   status: 'ignored';
   reason: SlackTurnIgnoreReason;
@@ -126,15 +124,6 @@ export function isSlackAppMentionEvent(event: SlackEvent): event is SlackAppMent
 
 export function isSlackMessageEvent(event: SlackEvent): event is SlackMessageEvent {
   return event.type === 'message';
-}
-
-export function isSlackAssistantEvent(
-  event: SlackEvent,
-): event is SlackAssistantThreadStartedEvent | SlackAssistantThreadContextChangedEvent {
-  return (
-    event.type === 'assistant_thread_started' ||
-    event.type === 'assistant_thread_context_changed'
-  );
 }
 
 export function isSlackMemberJoinedChannelEvent(

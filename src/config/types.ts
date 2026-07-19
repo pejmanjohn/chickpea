@@ -1,5 +1,3 @@
-export type ProviderId = 'claude' | 'workers-ai';
-
 /**
  * A profile-attached skill: a named playbook the agent can load on demand.
  * `name` must satisfy Flue's `defineSkill` rule (`^[a-z0-9]+(?:-[a-z0-9]+)*$`,
@@ -54,7 +52,6 @@ export interface CustomAgentConfig {
   instructions: string;
   enabled: boolean;
   model?: string;
-  defaultModels: Record<ProviderId, string>;
   skills: SkillConfig[];
   mcpServers: McpConnectionConfig[];
 }

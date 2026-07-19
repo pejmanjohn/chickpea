@@ -1,5 +1,7 @@
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 
+const ADMIN_FAVICON = `<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='8 9 32 32'%3E%3Ccircle cx='24' cy='25' r='15.5' fill='%23E3AC45'/%3E%3Ccircle cx='17' cy='17.5' r='4.2' fill='%23F4D084'/%3E%3Ccircle cx='18.5' cy='24' r='1.9' fill='%233B3220'/%3E%3Ccircle cx='29.5' cy='24' r='1.9' fill='%233B3220'/%3E%3Cpath d='M19 29 Q24 32.5 29 29' fill='none' stroke='%233B3220' stroke-width='1.8' stroke-linecap='round'/%3E%3Ccircle cx='15.5' cy='28.5' r='2' fill='%23DC8A4F' opacity='0.4'/%3E%3Ccircle cx='32.5' cy='28.5' r='2' fill='%23DC8A4F' opacity='0.4'/%3E%3C/svg%3E">`;
+
 export function renderAdminPage(): string {
   // Target-aware chrome: the header chip and the provider-hint copy differ
   // between the Node and Cloudflare runtimes. Resolved server-side (the inline
@@ -16,7 +18,7 @@ export function renderAdminPage(): string {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Chickpea · /admin</title>
-<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='8 9 32 32'%3E%3Ccircle cx='24' cy='25' r='15.5' fill='%23E3AC45'/%3E%3Ccircle cx='17' cy='17.5' r='4.2' fill='%23F4D084'/%3E%3Ccircle cx='18.5' cy='24' r='1.9' fill='%233B3220'/%3E%3Ccircle cx='29.5' cy='24' r='1.9' fill='%233B3220'/%3E%3Cpath d='M19 29 Q24 32.5 29 29' fill='none' stroke='%233B3220' stroke-width='1.8' stroke-linecap='round'/%3E%3Ccircle cx='15.5' cy='28.5' r='2' fill='%23DC8A4F' opacity='0.4'/%3E%3Ccircle cx='32.5' cy='28.5' r='2' fill='%23DC8A4F' opacity='0.4'/%3E%3C/svg%3E">
+${ADMIN_FAVICON}
 <style>
 @import url("https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;600;700;800&family=Quicksand:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap");
 
@@ -70,7 +72,7 @@ button, input, textarea, select { font: inherit; }
 ::selection { background: var(--ember-tint); }
 .ic   { flex-shrink: 0; height: 16px; width: 16px; }
 .ic-l { height: 1lh; }
-.step-num, .layer-legend .step .n, .fav-meta, .fav-model { font-variant-numeric: tabular-nums; }
+.step-num, .fav-meta, .fav-model { font-variant-numeric: tabular-nums; }
 .page-title { color: var(--text); font-family: var(--display); font-size: 1.375rem; font-weight: 700; letter-spacing: 0; text-wrap: balance; }
 .page-title.mono-title { font-family: var(--mono); font-size: 1.0625rem; }
 .section-eyebrow {
@@ -113,15 +115,15 @@ button, input, textarea, select { font: inherit; }
 .btn-danger { background: var(--danger-well); box-shadow: 0 2px 0 rgba(180, 71, 58, 0.25); color: var(--danger); }
 .btn-danger:hover:not(:disabled) { background: #f8d8cf; }
 .btn-danger:active:not(:disabled) { box-shadow: 0 0.5px 0 rgba(180, 71, 58, 0.25); transform: translateY(1.5px); }
-/* Destructive PRIMARY (inside the soft-red container / profile footer): solid
-   deep red with cream text, so it contrasts with the tinted well around it. */
-.danger-zone .btn-danger, .profile-foot .btn-danger {
+/* Destructive PRIMARY inside the profile footer: solid deep red with cream
+   text, so it contrasts with the tinted well around it. */
+.profile-foot .btn-danger {
   background: #b5473a;
   box-shadow: 0 2.5px 0 #8f3428;
   color: #fff6f3;
 }
-.danger-zone .btn-danger:hover:not(:disabled), .profile-foot .btn-danger:hover:not(:disabled) { background: #c4574a; }
-.danger-zone .btn-danger:active:not(:disabled), .profile-foot .btn-danger:active:not(:disabled) { box-shadow: 0 0.5px 0 #8f3428; transform: translateY(2px); }
+.profile-foot .btn-danger:hover:not(:disabled) { background: #c4574a; }
+.profile-foot .btn-danger:active:not(:disabled) { box-shadow: 0 0.5px 0 #8f3428; transform: translateY(2px); }
 .btn-sm { border-radius: 11px; font-size: 0.75rem; min-height: 28px; padding: 4px 11px; }
 .btn.i-lead { padding-left: 10px; }
 .btn-sm.i-lead { padding-left: 8px; }
@@ -321,14 +323,6 @@ button, input, textarea, select { font: inherit; }
 .chan-opt-note { color: var(--text-3); font-size: 0.71875rem; }
 .link-btn { background: none; border: 0; color: var(--ember-press); cursor: pointer; font-size: 0.8125rem; font-weight: 600; padding: 0; text-decoration: underline; }
 .link-btn:hover { color: var(--ember); }
-.rail-form {
-  border-top: 1.5px dashed rgba(59, 50, 32, 0.15);
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin: 8px 0 0 12px;
-  padding-top: 10px;
-}
 .main {
   background: var(--bg);
   border-radius: 20px;
@@ -511,55 +505,10 @@ details[open].advanced summary::before {
 .pcard + .pcard { margin-top: 12px; }
 .pcard .pcard-head { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; }
 .pcard .pcard-name { color: var(--text); font-family: var(--display); font-size: 0.9375rem; font-weight: 700; }
-.pcard .pcard-desc { color: var(--text-2); font-size: 0.8125rem; max-width: 62ch; }
 .pcard .pcard-foot { align-items: center; display: flex; flex-wrap: wrap; gap: 10px; }
 .pcard .pcard-foot .spacer { flex: 1; }
 
-/* ---- allowed-tools editor (LEGACY — older builds; current builds render tools
-   as .conn-tool rows under Connections. Kept so both markups style correctly,
-   and .tool-check remains the shared checkbox idiom) ---- */
-.tool-row {
-  align-items: flex-start;
-  background: var(--well);
-  border: 0;
-  border-radius: 14px;
-  box-shadow: none;
-  color: inherit;
-  cursor: pointer;
-  display: flex;
-  gap: 11px;
-  padding: 12px 14px;
-  position: relative;
-  text-align: left;
-  width: 100%;
-}
-.tool-row + .tool-row { margin-top: 8px; }
-.tool-row:focus-within { outline: 2px solid var(--ember-press); outline-offset: 2px; }
-.tool-check {
-  background: var(--bg);
-  border-radius: 6px;
-  box-shadow: inset 0 0 0 1.5px rgba(59, 50, 32, 0.18);
-  flex-shrink: 0;
-  height: 18px;
-  margin-top: 1px;
-  position: relative;
-  width: 18px;
-}
-.tool-check.on { background: var(--ember); box-shadow: 0 1.5px 0 var(--ember-press); }
-.tool-check.on::after {
-  background-color: #3a2a08;
-  content: "";
-  height: 12px;
-  inset: 3px;
-  -webkit-mask: url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2016%2016%27%3E%3Cpath%20d%3D%27M12.416%203.376a.75.75%200%200%201%20.208%201.04l-5%207.5a.75.75%200%200%201-1.154.114l-3-3a.75.75%200%201%201%201.06-1.06l2.353%202.353%204.493-6.74a.75.75%200%200%201%201.04-.207Z%27%2F%3E%3C%2Fsvg%3E") center / 12px 12px no-repeat;
-  mask: url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2016%2016%27%3E%3Cpath%20d%3D%27M12.416%203.376a.75.75%200%200%201%20.208%201.04l-5%207.5a.75.75%200%200%201-1.154.114l-3-3a.75.75%200%201%201%201.06-1.06l2.353%202.353%204.493-6.74a.75.75%200%200%201%201.04-.207Z%27%2F%3E%3C%2Fsvg%3E") center / 12px 12px no-repeat;
-  position: absolute;
-  width: 12px;
-}
-.tool-check input { appearance: none; cursor: pointer; inset: 0; margin: 0; opacity: 0; position: absolute; }
 .tool-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.tool-body .t-name { color: var(--text); font-family: var(--mono); font-size: 0.75rem; font-weight: 500; }
-.tool-body .t-desc { color: var(--text-3); font-size: 0.78125rem; }
 
 /* ---- profile custom skills ---- */
 .skill-list { display: flex; flex-direction: column; gap: 8px; }
@@ -656,20 +605,6 @@ details[open].advanced summary::before {
 .import-desc { color: var(--text-3); font-size: 0.78125rem; overflow-wrap: anywhere; }
 .badge-src.import-scripts { text-transform: none; letter-spacing: 0; }
 
-/* ---- profile danger zone (LEGACY — replaced by .profile-foot in current builds) ---- */
-.danger-zone {
-  align-items: flex-start;
-  background: var(--danger-well);
-  border-radius: 18px;
-  box-shadow: none;
-  display: flex;
-  flex-direction: column;
-  gap: 9px;
-  padding: 16px 18px;
-}
-.danger-zone .field-label { color: #8f3428; }
-.danger-zone .hint { color: #9e5a4e; }
-
 /* ---- settings: model-provider rows + favorites ---- */
 .prov-row { background: var(--well); border-radius: 18px; box-shadow: none; display: flex; flex-direction: column; }
 .prov-row + .prov-row { margin-top: 12px; }
@@ -710,9 +645,6 @@ details[open].advanced summary::before {
 
 /* ---- model picker Settings action footer ---- */
 .combo-settings { border-top: 1.5px solid var(--well); font-size: 0.8125rem; margin-top: 4px; padding: 9px 10px; }
-.layer-legend { display: flex; flex-direction: column; gap: 6px; }
-.layer-legend .step { align-items: baseline; display: flex; gap: 9px; font-size: 0.8125rem; }
-.layer-legend .step .n { color: var(--text-3); font-family: var(--mono); font-size: 0.6875rem; }
 .combo-list {
   background: var(--bg);
   border-radius: 16px;
@@ -771,7 +703,6 @@ details[open].advanced summary::before {
   top: 100%;
   z-index: 20;
 }
-.combo-empty { color: var(--text-3); font-size: 0.8125rem; padding: 8px 10px; }
 @media (max-width: 720px) {
   .body { flex-direction: column; }
   .rail { border-bottom: 0; width: 100%; }
@@ -1118,10 +1049,6 @@ details[open].advanced summary::before {
 </div>
 <script>
 (function () {
-  // Fallback only for the very first paint before /admin/api/models resolves;
-  // defaultModels() prefers the server-supplied suggestions (single source of
-  // truth in src/config/seed.ts) so a bumped seed suggestion never goes stale.
-  var DEFAULT_MODELS_FALLBACK = { claude: "anthropic/claude-sonnet-4-6", "workers-ai": "@cf/zai-org/glm-5.2" };
   // Server-resolved runtime target: the Workers AI row is binding-only, so it is
   // shown on Cloudflare and hidden on Node (the inline script has no target check
   // of its own — this is interpolated as a literal boolean at render time).
@@ -1129,7 +1056,7 @@ details[open].advanced summary::before {
   var state = {
     agents: [],
     assignments: [],
-    models: { providers: [], defaultModels: DEFAULT_MODELS_FALLBACK },
+    models: { providers: [] },
     active: null,
     effective: null,
     effectiveError: "",
@@ -1252,10 +1179,6 @@ details[open].advanced summary::before {
     return '<svg class="ic' + (extra ? " " + extra : "") + '" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><path d="' + paths[name] + '"/></svg>';
   }
 
-  function defaultModels() {
-    return (state.models && state.models.defaultModels) || DEFAULT_MODELS_FALLBACK;
-  }
-
   function esc(value) {
     return String(value == null ? "" : value)
       .replace(/&/g, "&amp;")
@@ -1356,10 +1279,6 @@ details[open].advanced summary::before {
     return state.assignments.find(function (assignment) {
       return assignment.workspaceId === workspaceId && assignment.channelId === channelId;
     }) || null;
-  }
-
-  function isWildcardAssignment(assignment) {
-    return assignment.workspaceId === "*" || assignment.channelId === "*";
   }
 
   function defaultAgent() {
@@ -2323,7 +2242,7 @@ details[open].advanced summary::before {
     var sources = (editor.sources && editor.sources.headers) || {};
     var rows = names.map(function (name, index) {
       var storedHere = sources[name] && sources[name] !== "missing";
-      var placeholder = storedHere ? "\\u2022\\u2022\\u2022\\u2022 stored" : "Header value \\u2014 stored securely, never shown again";
+      var placeholder = storedHere ? "\\u2022\\u2022\\u2022\\u2022 stored" : "Header value \\u2014 stored, never returned by the API";
       return '<div class="conn-header-row">' +
         '<input class="input mono" type="text" value="' + esc(name) + '" placeholder="X-Api-Key" aria-label="Header name" data-action="conn-header-name" data-index="' + index + '">' +
         '<input class="input mono" type="password" autocomplete="off" value="' + esc(values[index] || "") + '" placeholder="' + placeholder + '" aria-label="Header value" data-action="conn-header-value" data-index="' + index + '">' +
@@ -2337,7 +2256,7 @@ details[open].advanced summary::before {
     var isNew = editor.index === null || editor.index === undefined;
     var testDisabled = !String(editor.url || "").trim();
     var bearerStored = editor.sources && editor.sources.bearer && editor.sources.bearer !== "missing";
-    var bearerPlaceholder = bearerStored ? "\\u2022\\u2022\\u2022\\u2022 stored" : "Paste token \\u2014 stored securely, never shown again";
+    var bearerPlaceholder = bearerStored ? "\\u2022\\u2022\\u2022\\u2022 stored" : "Paste token \\u2014 stored, never returned by the API";
     var authHtml = '<div class="field"><label class="field-label" for="conn-auth">Authentication</label>' +
       '<div class="select-wrap"><select class="input" id="conn-auth" data-action="conn-auth">' +
       '<option value="none"' + (editor.authMode === "none" ? " selected" : "") + '>None</option>' +
@@ -2408,7 +2327,7 @@ details[open].advanced summary::before {
       '<div class="skill-actions"><button type="button" class="btn btn-soft btn-sm i-lead" data-action="conn-new">' +
       '<svg class="ic" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><path d="M8.75 3.75a.75.75 0 0 0-1.5 0v3.5h-3.5a.75.75 0 0 0 0 1.5h3.5v3.5a.75.75 0 0 0 1.5 0v-3.5h3.5a.75.75 0 0 0 0-1.5h-3.5v-3.5Z"/></svg>Add connection</button></div>';
     var hint = 'Remote MCP servers this profile can call.';
-    var security = '<p class="conn-security">Your profile stores connection policy and tool approvals only &mdash; tokens live in the settings store and are never shown again.</p>';
+    var security = '<p class="conn-security">Your profile stores connection policy and tool approvals only &mdash; tokens live in the settings store and are never returned by the API.</p>';
     var body = list + newForm + addButton;
     if (!list && !newForm) {
       body = '<div class="empty"><p class="field-label">No connections yet</p><p class="hint">Add a remote MCP server by URL to give this profile extra tools.</p></div>' + addButton;
@@ -3268,7 +3187,6 @@ details[open].advanced summary::before {
   }
 
   function newProfileDraft() {
-    var base = defaultAgent();
     // A blank profile starts empty (name + instructions are required, so the
     // ghost-example placeholder shows until the operator writes them).
     return {
@@ -3277,7 +3195,6 @@ details[open].advanced summary::before {
       instructions: "",
       enabled: true,
       model: "",
-      defaultModels: base ? base.defaultModels : defaultModels(),
       // New profiles carry no custom skills; the array is what the API persists.
       skills: [],
       // New profiles carry no Connections either; the array is what the API persists.
@@ -3292,7 +3209,6 @@ details[open].advanced summary::before {
       instructions: agent.instructions,
       enabled: agent.enabled,
       model: agent.model || "",
-      defaultModels: agent.defaultModels || defaultModels(),
       // Deep-copy each skill so the inline editor never mutates the shared
       // state.agents entry — a discard/reopen must show the persisted values.
       skills: (agent.skills || []).map(function (skill) {
@@ -4549,7 +4465,6 @@ details[open].advanced summary::before {
       name: draft.name,
       instructions: draft.instructions,
       enabled: draft.enabled,
-      defaultModels: draft.defaultModels || defaultModels(),
       skills: draft.skills || [],
       // POLICY ONLY. connectionFromEditor / cloneConnection strip secrets by
       // construction — no token or header VALUE is ever in this array.
@@ -4671,26 +4586,29 @@ details[open].advanced summary::before {
 
 /**
  * Minimal token-entry form for browser GETs of /admin that arrive without a
- * valid session. It introduces no new auth path: submitting navigates to
- * /admin?token=<value>, the exact query-token mechanism the admin gate already
- * handles (sets the hashed cookie, then strips the token via redirect). This
- * renders only when TAG_ADMIN_TOKEN is set — the gate 404s the whole route
- * otherwise — so it never signals more than "admin exists here". Self-contained
- * LIGHT-mode markup, no external assets, matching the admin page's palette.
+ * valid session. The credential is submitted in a POST body and exchanged for
+ * a hashed session cookie, so it never enters browser history, referrers, or
+ * request URLs. This renders only when TAG_ADMIN_TOKEN is set — the gate 404s
+ * the whole route otherwise — so it never signals more than "admin exists
+ * here". Self-contained LIGHT-mode markup, no external assets, matching the
+ * admin page's palette.
  */
-export function renderAdminLogin(options: { invalidToken?: boolean } = {}): string {
+export function renderAdminLogin(
+  options: { invalidToken?: boolean; returnTo?: string } = {},
+): string {
   // The one conditional fragment: a static, non-reflecting error notice (the
   // rejected token is never echoed back into the page).
   const error = options.invalidToken
     ? '<p class="err">That token was not accepted. Check TAG_ADMIN_TOKEN and try again.</p>'
     : '';
+  const returnTo = escapeHtmlAttribute(options.returnTo ?? '/admin');
   return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Chickpea · Sign in</title>
-<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='8 9 32 32'%3E%3Ccircle cx='24' cy='25' r='15.5' fill='%23E3AC45'/%3E%3Ccircle cx='17' cy='17.5' r='4.2' fill='%23F4D084'/%3E%3Ccircle cx='18.5' cy='24' r='1.9' fill='%233B3220'/%3E%3Ccircle cx='29.5' cy='24' r='1.9' fill='%233B3220'/%3E%3Cpath d='M19 29 Q24 32.5 29 29' fill='none' stroke='%233B3220' stroke-width='1.8' stroke-linecap='round'/%3E%3Ccircle cx='15.5' cy='28.5' r='2' fill='%23DC8A4F' opacity='0.4'/%3E%3Ccircle cx='32.5' cy='28.5' r='2' fill='%23DC8A4F' opacity='0.4'/%3E%3C/svg%3E">
+${ADMIN_FAVICON}
 <style>
 @import url("https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;600;700;800&family=Quicksand:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap");
 :root { --bg:#f4ebd8; --well:#fffdf6; --line:rgba(59,50,32,0.12); --text:#3b3220; --text-2:#6b5c42; --ember:#dda033; --ember-bright:#e5ac44; --danger:#b5473a; --font:Quicksand,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; --radius:13px; }
@@ -4711,7 +4629,7 @@ button:hover { background:var(--ember-bright); }
 </style>
 </head>
 <body>
-<form class="card" method="get" action="/admin">
+<form class="card" method="post" action="/admin/login">
   <svg class="pea-login" viewBox="8 9 32 32" aria-hidden="true" focusable="false"><circle cx="24" cy="25" r="15.5" fill="#E3AC45"></circle><circle cx="17" cy="17.5" r="4.2" fill="#F4D084"></circle><circle cx="18.5" cy="24" r="1.9" fill="#3B3220"></circle><circle cx="29.5" cy="24" r="1.9" fill="#3B3220"></circle><path d="M19 29 Q24 32.5 29 29" fill="none" stroke="#3B3220" stroke-width="1.8" stroke-linecap="round"></path><circle cx="15.5" cy="28.5" r="2" fill="#DC8A4F" opacity="0.4"></circle><circle cx="32.5" cy="28.5" r="2" fill="#DC8A4F" opacity="0.4"></circle></svg>
   <h1>Sign in to Chickpea</h1>
   <p>Enter your <span class="mono">TAG_ADMIN_TOKEN</span> to open the admin.</p>
@@ -4720,8 +4638,18 @@ button:hover { background:var(--ember-bright); }
     <label for="token">Admin token</label>
     <input id="token" name="token" type="password" autocomplete="off" autofocus placeholder="TAG_ADMIN_TOKEN">
   </div>
+  <input name="returnTo" type="hidden" value="${returnTo}">
   <button type="submit">Sign in</button>
 </form>
 </body>
 </html>`;
+}
+
+function escapeHtmlAttribute(value: string): string {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;');
 }

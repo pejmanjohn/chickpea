@@ -11,8 +11,8 @@ interface SnapshotRow {
 /**
  * Public async snapshot store. The write path is `putIfAbsent`, not a plain
  * put: snapshots are write-once per thread, and INSERT OR IGNORE inside the
- * backend keeps the first-writer-wins race decision next to the data (a Node
- * self-call process or a Durable Object resolves it identically).
+ * backend keeps the first-writer-wins race decision next to the data (Node and
+ * Durable Object callers resolve it identically).
  */
 export interface AgentSnapshotStore {
   get(threadKey: string): Promise<AgentSnapshot | undefined>;
@@ -80,8 +80,8 @@ export class SnapshotStoreLogic {
     if (inserted.changes === 1) {
       return snapshot;
     }
-    // A concurrent writer (e.g. the agent self-call as a separate process with
-    // its own SQLite connection) won the write-once INSERT. Return the PERSISTED
+    // A concurrent writer with its own SQLite connection won the write-once
+    // INSERT. Return the PERSISTED
     // row, never our discarded build, so the snapshot the caller acts on is the
     // one actually stored and served.
     const stored = this.get(threadKey);

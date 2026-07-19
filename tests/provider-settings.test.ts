@@ -69,7 +69,6 @@ function providerSettingsAgent(id: string, model: string) {
     instructions: 'Exercise provider settings endpoints.',
     enabled: true,
     model,
-    defaultModels: { claude: 'anthropic/claude-sonnet-4-6', 'workers-ai': '@cf/zai-org/glm-5.2' },
     skills: [],
     mcpServers: [],
   };
@@ -539,11 +538,10 @@ test('models endpoint folds OpenRouter favorites into the picker suggestions (no
     const body = (await response.json()) as {
       automatic?: unknown;
       providers: Array<{ id: string; configured: boolean; suggestions: string[] }>;
-      defaultModels: unknown;
     };
     // The explicit-only ruling removed the Automatic entry entirely.
     assert.equal(body.automatic, undefined);
-    assert.ok(body.defaultModels);
+    assert.equal(Object.hasOwn(body, 'defaultModels'), false);
     // The OpenRouter picker group is EXACTLY the starred favorites, prefixed with
     // the provider id — the raw 343-model list stays behind the Settings search.
     const openrouter = body.providers.find((provider) => provider.id === 'openrouter');

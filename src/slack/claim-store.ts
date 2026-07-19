@@ -39,35 +39,6 @@ export interface SlackStateStore extends SlackClaimStore, SlackThreadRegistry {
   close?(): void;
 }
 
-export class InMemoryClaimStore implements SlackClaimStore {
-  private readonly claimed = new Set<string>();
-
-  async claim(key: string): Promise<boolean> {
-    if (this.claimed.has(key)) {
-      return false;
-    }
-    this.claimed.add(key);
-    return true;
-  }
-
-  async release(key: string): Promise<void> {
-    this.claimed.delete(key);
-  }
-}
-
-/** Process-local thread registry (the pre-durability semantics). */
-export class ThreadSessionRegistry implements SlackThreadRegistry {
-  private readonly known = new Set<string>();
-
-  async start(key: string): Promise<void> {
-    this.known.add(key);
-  }
-
-  async has(key: string): Promise<boolean> {
-    return this.known.has(key);
-  }
-}
-
 // Claims only need to outlive Slack's redelivery horizon (retries span about an
 // hour); the TTL is what keeps the claims table from growing without bound.
 // Exported so the turn-relay job table (turn-jobs.ts) purges on the SAME

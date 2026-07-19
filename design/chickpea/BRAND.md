@@ -12,7 +12,8 @@ guide records the design rules that should remain consistent as the UI evolves.
   display name is **@Tag**.
 - Mark: single smiling chickpea — gold pea, highlight top-left, two dot eyes,
   smile, faint blush. Canonical source: [`assets/chickpea-mark.svg`](../../assets/chickpea-mark.svg).
-  In the app it ships as a CSS `background-image` on `.avatar`.
+  The admin page renders an inline SVG variant inside `.avatar` so its face can
+  animate; the canonical asset remains the static reference.
 - Never add the sprout leaf back; never put faces on more than one pea in a
   lockup. Secondary peas (marketing/illustration) are faceless.
 - Minimum sizes: mark alone ≥ 14px; with face ≥ 20px.

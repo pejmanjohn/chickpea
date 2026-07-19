@@ -3,7 +3,8 @@
 This walks the Slack side of a Chickpea install: create the app, install it,
 and hand two values back to `/admin`. It exists because two steps confuse
 everyone: the bot token **does not exist** until the app is installed, and
-Slack's console offers three other token-shaped strings that are all wrong.
+Slack's console offers three other token-shaped strings that are wrong for the
+normal HTTP Events API setup.
 
 **What you need before starting:** the Chickpea `/admin` URL (printed at the
 end of the deploy: `https://<worker>.<subdomain>.workers.dev/admin`), the
@@ -44,8 +45,9 @@ prefers that; everything else is clicking.
    **App Credentials** → **Signing Secret** → **Show** → copy.
 
 6. **The traps — do not copy these:**
-   - **App-Level Token** (`xapp-…`) — Socket Mode only; this app has Socket
-     Mode disabled. Wrong value.
+   - **App-Level Token** (`xapp-…`) — wrong for `/admin` and the normal HTTP
+     Events API setup. It is used only by the optional local-development Socket
+     Mode bridge documented in `README.md`.
    - **Verification Token** — deprecated by Slack. Wrong value.
    - **Client Secret** — OAuth-flow plumbing. Wrong value.
    Chickpea wants exactly two values: the `xoxb-…` bot token and the
@@ -58,10 +60,9 @@ prefers that; everything else is clicking.
    Slack's console and restart from step 1; do not proceed.
 
 8. **Add a channel.** In `/admin`, add the channel the bot should answer in
-   (the picker lists channels by name). Then, in Slack, **invite the bot to
-   that channel** (`/invite @Tag`) — Slack only delivers mentions in
-   channels the bot has joined. For private channels, invite first, then
-   refresh the picker.
+   (the picker lists channels by name). Chickpea joins an assigned public
+   channel automatically. For a private channel, invite the bot first with
+   `/invite @Tag`, then refresh the picker and add it.
 
 9. **Verify.** Mention `@Tag` in the assigned channel with any question. One
    streamed reply should arrive in a thread, footed with the profile and

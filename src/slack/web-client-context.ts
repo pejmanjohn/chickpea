@@ -17,9 +17,8 @@ import type { NormalizedSlackTurn } from './types.ts';
 
 /**
  * WebClient-backed hydration of the bounded Slack context that feeds a turn's
- * prompt. This is the Flue lane's transport equivalent of the hand-rolled
- * lane's `SlackWebApiContextClient` (src/slack/thread-context.ts): it reuses
- * that module's *pure* policy helpers verbatim — window computation
+ * prompt. It reuses the shared pure policy helpers from thread-context.ts —
+ * window computation
  * (`computeHistoryWindow`), bot/app/subtype row filtering (`toContextMessages`),
  * ordering (`orderMessages`), trigger insertion (`ensureTriggerMessage`), and
  * the page/message limits (`DEFAULT_MAX_*`) — and only reimplements the thin

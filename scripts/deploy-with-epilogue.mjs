@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
- * `npm run deploy` — wrangler deploy plus a next-steps epilogue.
+ * `npm run deploy` — build the current source, run wrangler deploy, then print
+ * a next-steps epilogue. Pass `--skip-build` only when a caller has just run
+ * `npm run build` and wants to reuse that exact artifact.
  *
  * Workers Builds streams the build and deploy steps into one log that ends,
  * without this, at wrangler's own output: a raw workers.dev URL and no hint
@@ -12,7 +14,7 @@
  * non-zero exit propagates unchanged with no epilogue (never dress up a
  * failed deploy), and stdout is scanned line-by-line rather than buffered.
  */
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
@@ -22,10 +24,32 @@ const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 // Invoke wrangler's bin with the current node (mirrors flue-build-cf.mjs):
 // works whether or not node_modules/.bin is on PATH.
 const wranglerBin = path.join(projectRoot, 'node_modules', 'wrangler', 'bin', 'wrangler.js');
+const cliArgs = process.argv.slice(2);
+const deployArgs = cliArgs.filter((arg) => arg !== '--skip-build');
+const skipBuild = cliArgs.includes('--skip-build');
+
+if (!skipBuild) {
+  process.stdout.write('Building the Cloudflare artifact from current source...\n');
+  const npmExecPath = process.env.npm_execpath;
+  const buildCommand = npmExecPath
+    ? [process.execPath, [npmExecPath, 'run', 'build']]
+    : [process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', 'build']];
+  const build = spawnSync(buildCommand[0], buildCommand[1], {
+    cwd: projectRoot,
+    stdio: 'inherit',
+  });
+  if (build.error) {
+    console.error(`Unable to start the Cloudflare build: ${build.error.message}`);
+    process.exit(1);
+  }
+  if (build.status !== 0) {
+    process.exit(build.status ?? 1);
+  }
+}
 
 const child = spawn(
   process.execPath,
-  [wranglerBin, 'deploy', ...process.argv.slice(2)],
+  [wranglerBin, 'deploy', ...deployArgs],
   { cwd: projectRoot, stdio: ['inherit', 'pipe', 'inherit'] },
 );
 
@@ -76,7 +100,7 @@ child.on('close', (code) => {
     process.exit(code ?? 1);
   }
   // A dry run deploys nothing — next-steps instructions would be a lie.
-  if (process.argv.includes('--dry-run')) {
+  if (deployArgs.includes('--dry-run')) {
     process.exit(0);
   }
   if (deployedUrl) {

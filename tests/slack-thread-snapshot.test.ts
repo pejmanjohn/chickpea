@@ -29,10 +29,6 @@ function agent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig {
     instructions: ALPHA,
     enabled: true,
     model: 'local-stub/snapshot-unit',
-    defaultModels: {
-      claude: 'anthropic/snapshot-unit',
-      'workers-ai': '@cf/snapshot/unit',
-    },
     skills: [],
     mcpServers: [],
     ...overrides,
@@ -85,8 +81,8 @@ test('agent snapshots are purged past the thread TTL, bounding the table', async
 });
 
 test('putIfAbsent is write-once: a losing writer gets the PERSISTED row back', async () => {
-  // Two stores on the same file DB model the real race (the channel process
-  // and the agent self-call each hold their own SQLite connection).
+  // Two stores on the same file DB model concurrent callers with independent
+  // SQLite connections.
   const dir = mkdtempSync(join(tmpdir(), 'chickpea-snapshot-race-'));
   const dbPath = join(dir, 'state.db');
   // Pin the store clock: putIfAbsent TTL-purges rows older than now - TTL, and

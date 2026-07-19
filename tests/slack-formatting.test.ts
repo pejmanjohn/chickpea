@@ -12,7 +12,6 @@ import {
   slackMarkdownBlockTextLimit,
 } from '../src/slack/message-format.ts';
 import {
-  LocalSlackReplySink,
   slackLoadingMessages,
   slackStatusText,
   toolStatus,
@@ -187,28 +186,6 @@ test('unassigned-channel hint names the bot, explains the silence, and links Con
   });
   assert.match(unlinked, /(^|\s)Configure this channel's profile/);
   assert.doesNotMatch(unlinked, /\|Configure>/);
-});
-
-test('reply sinks default final replies to markdown and progress replies to plain text', () => {
-  const sink = new LocalSlackReplySink();
-
-  sink.post('progress', {
-    channelId: 'C',
-    threadTs: '1.0',
-    text: '<@U123> working',
-    postedAt: 1,
-  });
-  sink.post('final', {
-    channelId: 'C',
-    threadTs: '1.0',
-    text: '**Done**',
-    postedAt: 2,
-  });
-
-  assert.equal(sink.posts[0]?.format, 'plain_text');
-  assert.equal(sink.posts[0]?.rendered.mrkdwn, false);
-  assert.equal(sink.posts[1]?.format, 'markdown');
-  assert.deepEqual(sink.posts[1]?.rendered.blocks, [{ type: 'markdown', text: '**Done**' }]);
 });
 
 test('status updates use factual text and derive loading copy from the same fact', () => {

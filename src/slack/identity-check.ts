@@ -109,8 +109,8 @@ export async function checkIdentity(
   const appId = getString(auth.app_id) || getString(profile.api_app_id) || undefined;
 
   return {
-    // Users see the bot-user display name on messages; the app name
-    // (display_information.name) may intentionally differ per docs/play-slack.md.
+    // Users see the bot-user display name on messages; the Slack app manifest's
+    // display_information.name is a separate identity field.
     name: liveName === expected.botDisplayName ? 'match' : 'mismatch',
     icon: classifySlackIconUrl(iconUrl),
     details: {

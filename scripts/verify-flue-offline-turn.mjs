@@ -257,8 +257,9 @@ try {
   }
 
   // Check 7: the internal agent endpoint rejects direct callers that don't
-  // present the internal token (the channel's self-call is signature-verified
-  // upstream on /channels/slack/events; this endpoint has no other gate).
+  // present the internal token (normal channel dispatch starts from a
+  // signature-verified /channels/slack/events request; this endpoint has no
+  // other gate).
   {
     const response = await fetch(`${baseUrl}/agents/slack-thread/some-id`, {
       method: 'POST',

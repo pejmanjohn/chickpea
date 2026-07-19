@@ -29,10 +29,6 @@ function agent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig {
     name: 'Test Agent',
     instructions: 'Answer from the test fixture.',
     enabled: true,
-    defaultModels: {
-      claude: 'anthropic/test-claude',
-      'workers-ai': '@cf/test/model',
-    },
     skills: [],
     mcpServers: [],
     ...overrides,
@@ -273,7 +269,90 @@ test('SqliteConfigStore survives restart on a file database', async () => {
   }
 });
 
-test('fresh databases start at the complete public v1 config schema', () => {
+test('SqliteConfigStore migrates the legacy v1 default-models column without losing agents', async () => {
+  const { dir, path } = tempDbPath();
+  const legacyAgent = agent({ id: 'agent_legacy', name: 'Legacy Agent' });
+  const createdAgent = agent({ id: 'agent_created_after_v2' });
+
+  try {
+    const legacyDb = new DatabaseSync(path);
+    legacyDb.exec(`CREATE TABLE config_meta (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    )`);
+    legacyDb.exec(`CREATE TABLE config_agents (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      instructions TEXT NOT NULL,
+      enabled INTEGER NOT NULL,
+      model TEXT,
+      default_models_json TEXT NOT NULL,
+      skills_json TEXT NOT NULL DEFAULT '[]',
+      mcp_servers_json TEXT NOT NULL DEFAULT '[]'
+    )`);
+    legacyDb.exec(`CREATE TABLE config_assignments (
+      workspace_id TEXT NOT NULL,
+      channel_id TEXT NOT NULL,
+      agent_id TEXT NOT NULL,
+      enabled INTEGER NOT NULL,
+      channel_label TEXT,
+      channel_prompt_addendum TEXT,
+      PRIMARY KEY (workspace_id, channel_id)
+    )`);
+    legacyDb
+      .prepare('INSERT INTO config_meta (key, value) VALUES (?, ?)')
+      .run('schema_version', '1');
+    legacyDb
+      .prepare(
+        `INSERT INTO config_agents (
+          id, name, instructions, enabled, model,
+          default_models_json, skills_json, mcp_servers_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        legacyAgent.id,
+        legacyAgent.name,
+        legacyAgent.instructions,
+        1,
+        null,
+        '["anthropic/legacy-fallback"]',
+        '[]',
+        '[]',
+      );
+    legacyDb.close();
+
+    const store = new SqliteConfigStore(path, { agents: [], assignments: [] });
+    assert.deepEqual(await store.getAgent(legacyAgent.id), legacyAgent);
+    assert.deepEqual(await store.createAgent(createdAgent), createdAgent);
+    store.close();
+
+    const migratedDb = new DatabaseSync(path);
+    const version = migratedDb
+      .prepare('SELECT value FROM config_meta WHERE key = ?')
+      .get('schema_version') as { value: string };
+    const agentColumns = migratedDb
+      .prepare('SELECT name FROM pragma_table_info(?) ORDER BY cid')
+      .all('config_agents') as Array<{ name: string }>;
+    const persistedAgentIds = migratedDb
+      .prepare('SELECT id FROM config_agents ORDER BY id')
+      .all() as Array<{ id: string }>;
+    migratedDb.close();
+
+    assert.equal(version.value, '2');
+    assert.equal(
+      agentColumns.some(({ name }) => name === 'default_models_json'),
+      false,
+    );
+    assert.deepEqual(
+      persistedAgentIds.map(({ id }) => id),
+      ['agent_created_after_v2', 'agent_legacy'],
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('fresh databases start at the clean current config schema', () => {
   const { dir, path } = tempDbPath();
 
   try {
@@ -292,7 +371,7 @@ test('fresh databases start at the complete public v1 config schema', () => {
       .all('config_assignments') as Array<{ name: string }>;
     db.close();
 
-    assert.equal(version.value, '1');
+    assert.equal(version.value, '2');
     assert.deepEqual(
       agentColumns.map(({ name }) => name),
       [
@@ -301,7 +380,6 @@ test('fresh databases start at the complete public v1 config schema', () => {
         'instructions',
         'enabled',
         'model',
-        'default_models_json',
         'skills_json',
         'mcp_servers_json',
       ],
@@ -470,7 +548,6 @@ test('a disabled assignment at the winning specificity turns the channel off ins
         name: 'Default',
         instructions: 'Default instructions.',
         enabled: true,
-        defaultModels: { claude: 'anthropic/x', 'workers-ai': '@cf/x' },
         skills: [],
         mcpServers: [],
       },

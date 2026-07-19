@@ -2,12 +2,21 @@
 // the local HTTP events endpoint. Run via `npm run slack:bridge`.
 //
 // WHEN TO USE: you want to drive the locally running server with REAL Slack
-// events but don't want (or can't run) a public tunnel. See
-// docs/play-slack.md §4 "Option B — Socket Mode bridge" for setup and
-// trade-offs. Not a production transport: single consumer, immediate acks (so
+// events but don't want (or can't run) a public tunnel. Not a production
+// transport: single consumer, immediate acks (so
 // Slack-side retry semantics are not exercised — test those over HTTP), and it
 // requires Socket Mode to be enabled on the app, which stops Slack from
 // delivering events to the HTTP Request URL while enabled.
+//
+// SETUP:
+//   1. In the Slack app console, enable Socket Mode.
+//   2. Create an app-level token with the `connections:write` scope; it starts
+//      with `xapp-` and is separate from the bot's `xoxb-` token.
+//   3. Put that token and the app's signing secret in `.env.slack.local` as
+//      SLACK_APP_TOKEN and SLACK_SIGNING_SECRET (or pass `--env <path>`).
+//   4. Start the local Chickpea server, then run `npm run slack:bridge`.
+// Disable Socket Mode again before testing or deploying the normal HTTP Events
+// API path.
 //
 // HOW IT WORKS: the app's endpoint (POST /channels/slack/events) is what a
 // public Slack Events API subscription would hit. This script opens a Socket

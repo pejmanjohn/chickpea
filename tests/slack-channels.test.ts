@@ -43,7 +43,6 @@ function agent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig {
     instructions: 'Answer with channel context.',
     enabled: true,
     model: 'local-stub/channels',
-    defaultModels: { claude: 'anthropic/x', 'workers-ai': '@cf/x' },
     skills: [],
     mcpServers: [],
     ...overrides,

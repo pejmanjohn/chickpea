@@ -25,7 +25,6 @@ import {
   demoChannelAssignments,
   seededAgents,
   seededAssignments,
-  SEED_DEFAULT_MODELS,
 } from '../../src/config/seed.ts';
 import type { CustomAgentConfig } from '../../src/config/types.ts';
 
@@ -54,7 +53,6 @@ const RELEASE_SCRIBE_PROFILE: CustomAgentConfig = {
   ].join(' '),
   enabled: true,
   model: PARITY_MODEL,
-  defaultModels: { ...SEED_DEFAULT_MODELS },
   skills: [],
   mcpServers: [],
 };
@@ -72,7 +70,6 @@ const EXEC_BRIEF_PROFILE: CustomAgentConfig = {
   ].join(' '),
   enabled: true,
   model: PARITY_MODEL,
-  defaultModels: { ...SEED_DEFAULT_MODELS },
   skills: [],
   mcpServers: [],
 };
@@ -657,10 +654,6 @@ export const scenarios: Scenario[] = [
             instructions: 'Use the pinned parity model.',
             enabled: true,
             model: 'local-stub/agent-pinned',
-            defaultModels: {
-              claude: 'anthropic/pinned-claude',
-              'workers-ai': '@cf/pinned/model',
-            },
             skills: [],
             mcpServers: [],
           },
@@ -703,10 +696,6 @@ export const scenarios: Scenario[] = [
             instructions: 'Base addendum test instructions.',
             enabled: true,
             model: PARITY_MODEL,
-            defaultModels: {
-              claude: 'anthropic/addendum-claude',
-              'workers-ai': '@cf/addendum/model',
-            },
             skills: [],
             mcpServers: [],
           },
@@ -776,10 +765,6 @@ export const scenarios: Scenario[] = [
             name: 'Unresolvable Model Agent',
             instructions: 'Reply if you can.',
             enabled: true,
-            defaultModels: {
-              claude: 'anthropic/parity-claude',
-              'workers-ai': '@cf/parity/model',
-            },
             skills: [],
             mcpServers: [],
           },
@@ -990,10 +975,6 @@ export const scenarios: Scenario[] = [
             instructions: 'Reply.',
             enabled: true,
             model: PARITY_MODEL,
-            defaultModels: {
-              claude: 'anthropic/parity-claude',
-              'workers-ai': '@cf/parity/model',
-            },
             skills: [],
             mcpServers: [],
           },
@@ -1195,10 +1176,6 @@ export const scenarios: Scenario[] = [
             instructions: 'SNAPSHOT_ALPHA_INSTRUCTIONS: original DM instructions.',
             enabled: true,
             model: 'local-stub/snapshot-profile',
-            defaultModels: {
-              claude: 'anthropic/snapshot-claude',
-              'workers-ai': '@cf/snapshot/model',
-            },
             skills: [],
             mcpServers: [],
           },
@@ -1368,10 +1345,6 @@ function snapshotScenarioConfig(agentId: string): ScenarioLaneConfig {
           instructions: 'SNAPSHOT_ALPHA_INSTRUCTIONS: original profile instructions.',
           enabled: true,
           model: 'local-stub/snapshot-profile',
-          defaultModels: {
-            claude: 'anthropic/snapshot-claude',
-            'workers-ai': '@cf/snapshot/model',
-          },
           skills: [],
           mcpServers: [],
         },

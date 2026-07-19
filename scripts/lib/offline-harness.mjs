@@ -161,7 +161,6 @@ export function spawnServer({ serverEntry, port, fakeUrl, netGuardLog, env = {} 
       SLACK_API_URL: `${fakeUrl}/api/`,
       LOCAL_STUB_URL: `${fakeUrl}/v1`,
       SLACK_TAG_MODEL: 'local-stub/parity-stub-1',
-      TAG_SELF_URL: baseUrl,
       ...(netGuardLog ? { NET_GUARD_LOG: netGuardLog, NODE_OPTIONS: `--import ${NET_GUARD}` } : {}),
       ...env,
     },

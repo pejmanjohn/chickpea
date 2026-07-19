@@ -12,7 +12,6 @@ const AGENT: CustomAgentConfig = {
   name: 'Test',
   instructions: 'do the thing',
   enabled: true,
-  defaultModels: { claude: 'claude-x', 'workers-ai': 'cf-x' },
   skills: [],
   mcpServers: [],
 };

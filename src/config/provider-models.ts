@@ -343,7 +343,6 @@ async function withProviderDeadline<T>(
     timedOut = true;
     controller.abort();
   }, deadlineMs);
-  timer.unref?.();
 
   try {
     return await Promise.race([operation(controller.signal), aborted]);

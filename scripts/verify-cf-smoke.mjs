@@ -45,12 +45,19 @@ const WRANGLER_BIN = join(REPO_ROOT, 'node_modules', '.bin', 'wrangler');
 const CF_BUILD_SCRIPT = join(REPO_ROOT, 'scripts', 'flue-build-cf.mjs');
 const CF_OUTPUT_DIR = join(REPO_ROOT, 'dist-cf');
 const CF_WRANGLER_CONFIG = join(CF_OUTPUT_DIR, 'chickpea', 'wrangler.json');
+const CF_SMOKE_WRANGLER_CONFIG = join(CF_OUTPUT_DIR, 'chickpea', 'wrangler.smoke.json');
+const CF_AI_SMOKE_CONFIG = join(CF_OUTPUT_DIR, 'chickpea', 'wrangler.ai-smoke.json');
 const PERSIST_DIR = join(REPO_ROOT, '.wrangler-state');
 const ADMIN_TOKEN = 'test-token';
 const WORKSPACE = 'T_SMOKE';
 const CHANNEL = 'C_SMOKE';
+const AI_CHANNEL = 'C_SMOKE_AI';
 const MENTION_TS = '1782770400.000100';
+const AI_MENTION_TS = '1782770100.000100';
 const PORT = Number(process.env.SMOKE_WRANGLER_PORT ?? 8788);
+const AI_SMOKE_SERVICE = 'chickpea-ai-smoke-stub';
+const AI_SMOKE_REPLY = 'workers-ai-binding-smoke::gateway-disabled';
+const AI_SMOKE_RPC_FLAG = 'enable_abortsignal_rpc';
 
 // Slow-turn case: a distinct channel + thread whose provider is held open past
 // the old ~30s waitUntil horizon, proving the DO alarm relay delivers anyway.
@@ -111,6 +118,41 @@ function verifyBuildArtifacts() {
   const redirectBody = existsSync(redirect) ? readFileSync(redirect, 'utf8') : '';
   check(redirectBody.includes('dist-cf'), '.wrangler/deploy/config.json points into dist-cf');
   check(existsSync(join(REPO_ROOT, 'src', 'db.ts')), 'src/db.ts restored after the CF build');
+  check(config.ai?.binding === 'AI', 'built wrangler.json carries the production AI binding');
+}
+
+function writeSmokeWranglerConfigs() {
+  const productionConfig = JSON.parse(readFileSync(CF_WRANGLER_CONFIG, 'utf8'));
+  // The production AI binding accepts the turn's AbortSignal directly. Our
+  // local stand-in crosses a service-RPC boundary, so opt only the disposable
+  // smoke workers into serializing that otherwise-identical argument.
+  const smokeCompatibilityFlags = [
+    ...new Set([...(productionConfig.compatibility_flags ?? []), AI_SMOKE_RPC_FLAG]),
+  ];
+  const smokeConfig = {
+    ...productionConfig,
+    compatibility_flags: smokeCompatibilityFlags,
+    services: [
+      ...(productionConfig.services ?? []).filter((service) => service.binding !== 'AI'),
+      { binding: 'AI', service: AI_SMOKE_SERVICE },
+    ],
+  };
+  delete smokeConfig.ai;
+  writeFileSync(CF_SMOKE_WRANGLER_CONFIG, `${JSON.stringify(smokeConfig, null, 2)}\n`);
+  writeFileSync(
+    CF_AI_SMOKE_CONFIG,
+    `${JSON.stringify(
+      {
+        name: AI_SMOKE_SERVICE,
+        main: '../../scripts/fixtures/cloudflare-ai-binding-smoke.mjs',
+        compatibility_date: productionConfig.compatibility_date,
+        compatibility_flags: smokeCompatibilityFlags,
+        vars: { AI_SMOKE_REPLY },
+      },
+      null,
+      2,
+    )}\n`,
+  );
 }
 
 function writeDevVars(fakeUrl) {
@@ -141,7 +183,9 @@ function spawnWranglerDev() {
     [
       'dev',
       '--config',
-      CF_WRANGLER_CONFIG,
+      CF_SMOKE_WRANGLER_CONFIG,
+      '--config',
+      CF_AI_SMOKE_CONFIG,
       '--port',
       String(PORT),
       // OUTSIDE dist-cf on purpose: a rebuild wipes the build output, and local
@@ -304,6 +348,20 @@ function mentionEvent(eventId = 'Ev_SMOKE_MENTION_1') {
   };
 }
 
+function aiMentionEvent() {
+  const payload = mentionEvent('Ev_SMOKE_AI_PRIVACY_1');
+  return {
+    ...payload,
+    event: {
+      ...payload.event,
+      text: '<@U_BOT> privacy smoke: answer through the Workers AI binding',
+      ts: AI_MENTION_TS,
+      channel: AI_CHANNEL,
+      event_ts: AI_MENTION_TS,
+    },
+  };
+}
+
 function slowMentionEvent(eventId = 'Ev_SMOKE_SLOW_1') {
   return {
     token: 'verification-token-not-a-secret',
@@ -363,6 +421,7 @@ async function main() {
   if (failures.length > 0) {
     throw new Error('build artifacts failed verification');
   }
+  writeSmokeWranglerConfigs();
 
   // Fresh local DO state every run: the seeding + dedupe assertions assume a
   // first-boot Durable Object.
@@ -377,6 +436,7 @@ async function main() {
       identity: { teamId: WORKSPACE, teamName: 'Smoke Workspace' },
       channels: [
         { id: CHANNEL, name: 'smoke-mentions', isMember: true },
+        { id: AI_CHANNEL, name: 'smoke-workers-ai', isMember: true },
         { id: SLOW_CHANNEL, name: 'smoke-slow', isMember: true },
         { id: 'C_SMOKE_EXTRA', name: 'general', isMember: false },
       ],
@@ -604,10 +664,6 @@ async function main() {
       instructions: 'Answer only from the CF smoke gate fixture.',
       enabled: true,
       model: 'anthropic/claude-sonnet-4-6',
-      defaultModels: {
-        claude: 'anthropic/claude-sonnet-4-6',
-        'workers-ai': '@cf/zai-org/glm-5.2',
-      },
       mcpServers: smokeConnections,
     };
     const profileCreate = await adminFetch(baseUrl, '/admin/api/agents', {
@@ -716,13 +772,6 @@ async function main() {
 
     // --- Turn flow, verifying against the STORED signing secret ------------
 
-    // Pin the smoke channel to the local-stub provider through the REAL admin
-    // API (config writes go through the DO like any operator edit would).
-    const patch = await adminFetch(baseUrl, '/admin/api/agents/agent_default', {
-      method: 'PATCH',
-      body: JSON.stringify({ model: 'local-stub/smoke-model' }),
-    });
-    check(patch.status === 200, 'admin PATCH pinned the agent model', `HTTP ${patch.status}`);
     // A channel whose workspace does NOT match the connected team is rejected
     // at the API — the exact miss that let a wrong-workspace channel through.
     const mismatch = await adminFetch(baseUrl, '/admin/api/assignments', {
@@ -760,6 +809,47 @@ async function main() {
       'tampered signature is rejected (stored secret enforced)',
       `HTTP ${tampered.status}`,
     );
+
+    // Before the local-stub repin, exercise the seeded model through the real
+    // built entry and its ambient env.AI registration. The smoke-only binding
+    // rejects any non-undefined `gateway` option, so a removed or overwritten
+    // `gateway:false` registration produces a provider-failure final instead.
+    const aiPut = await adminFetch(baseUrl, '/admin/api/assignments', {
+      method: 'PUT',
+      body: JSON.stringify({
+        workspaceId: WORKSPACE,
+        channelId: AI_CHANNEL,
+        agentId: 'agent_default',
+        enabled: true,
+      }),
+    });
+    check(aiPut.status === 200, 'admin PUT created the Workers AI smoke assignment', `HTTP ${aiPut.status}`);
+    const aiAdmission = await postSignedEvent(eventsUrl, aiMentionEvent());
+    check(
+      aiAdmission.status === 200 || aiAdmission.status === 202,
+      'seeded Workers AI mention admitted',
+      `HTTP ${aiAdmission.status}`,
+    );
+    const aiFinals = await waitForFinalCount(backend, 1, 90_000);
+    const aiFinal = aiFinals.find((final) => final.channel === AI_CHANNEL);
+    const aiBindingProofPassed = Boolean(aiFinal?.text.includes(AI_SMOKE_REPLY));
+    check(
+      aiBindingProofPassed,
+      'built Cloudflare entry resolves env.AI without a default gateway',
+      aiFinal?.text ?? 'no Workers AI final',
+    );
+    if (!aiBindingProofPassed) {
+      throw new Error('Workers AI binding privacy proof failed');
+    }
+    backend.reset();
+
+    // The remaining durability cases stay on the HTTP fake provider. This
+    // model edit still goes through the real admin API and DO-backed store.
+    const patch = await adminFetch(baseUrl, '/admin/api/agents/agent_default', {
+      method: 'PATCH',
+      body: JSON.stringify({ model: 'local-stub/smoke-model' }),
+    });
+    check(patch.status === 200, 'admin PATCH pinned the agent model', `HTTP ${patch.status}`);
 
     // The real turn: signed app_mention → admission → in-process dispatch →
     // agent DO → local-stub provider → final delivered to fake Slack.

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 
 import { Hono, type Context, type Next } from 'hono';
+import { bodyLimit } from 'hono/body-limit';
 import { getCookie, setCookie } from 'hono/cookie';
 import * as v from 'valibot';
 
@@ -62,7 +63,6 @@ import {
   type AdminProviderId,
 } from '../config/provider-models.ts';
 import { knownProviderIds, listRuntimeModelProviders } from '../config/providers.ts';
-import { SEED_DEFAULT_MODELS } from '../config/seed.ts';
 import { parseSkillSource, resolveSkillSource, SkillImportError } from '../config/skill-import.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import {
@@ -106,17 +106,13 @@ interface AdminRoutesOptions {
 }
 
 const ADMIN_COOKIE = 'flue_admin';
+const MAX_ADMIN_LOGIN_BODY_BYTES = 4_096;
 
 const nonEmptyString = v.pipe(v.string(), v.minLength(1));
 const modelSpecifier = v.pipe(v.string(), v.regex(/^[^/]+\/.+$/));
 const AGENT_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,127}$/;
 const MCP_CONNECTION_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const agentIdSchema = v.pipe(v.string(), v.regex(AGENT_ID_PATTERN));
-
-const defaultModelsSchema = v.object({
-  claude: nonEmptyString,
-  'workers-ai': nonEmptyString,
-});
 
 // A profile skill. `name` must satisfy Flue's `defineSkill` rule so a stored
 // row can never become a turn-killing validation throw at runtime; description
@@ -195,7 +191,6 @@ const agentSchema = v.object({
   instructions: nonEmptyString,
   enabled: v.boolean(),
   model: v.optional(modelSpecifier),
-  defaultModels: defaultModelsSchema,
   skills: v.optional(skillsSchema, []),
   mcpServers: v.optional(mcpServersSchema, []),
 });
@@ -206,7 +201,6 @@ const agentPatchSchema = v.partial(
     instructions: nonEmptyString,
     enabled: v.boolean(),
     model: v.nullable(modelSpecifier),
-    defaultModels: defaultModelsSchema,
     skills: skillsSchema,
     mcpServers: mcpServersSchema,
   }),
@@ -281,6 +275,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   // real network connect is attempted (same seam idea as the store/settings).
   const discoverMcp = (input: McpConnectInput): Promise<McpDiscoveryResult> =>
     (options.discoverMcp ?? discoverMcpTools)(input);
+  const adminLoginBodyLimit = bodyLimit({
+    maxSize: MAX_ADMIN_LOGIN_BODY_BYTES,
+    onError: (c) =>
+      c.html(renderAdminLogin({ invalidToken: true, returnTo: '/admin' }), 401),
+  });
 
   const adminGate = async (c: Context, next: Next) => {
     const expected = adminToken();
@@ -290,30 +289,20 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
 
     // The cookie carries a hash of the token, never the token itself: a captured
     // cookie can't be replayed as a Bearer credential and doesn't reveal
-    // TAG_ADMIN_TOKEN. Bearer/query still send the raw token (standard), but the
-    // long-lived browser credential is the derived value.
+    // TAG_ADMIN_TOKEN. The raw browser token exists only in the POST body, never
+    // in a URL that access logs, browser history, or referrers can retain.
     const cookieValue = cookieTokenFor(expected);
 
-    const queryToken = c.req.query('token');
-    if (constantTimeEquals(queryToken, expected)) {
-      setCookie(c, ADMIN_COOKIE, cookieValue, {
-        path: '/admin',
-        httpOnly: true,
-        sameSite: 'Lax',
-        // Send only over TLS when the request arrived over TLS; on plain-http
-        // dev there is no transport to protect, so forcing Secure would just
-        // drop the cookie and break login.
-        secure: isHttps(c),
-      });
-      // Strip ?token= from the URL so the secret does not linger in the address
-      // bar, browser history, or proxy access logs, and is not a standing query
-      // credential. Only redirect page GETs (any client-routed /admin path);
-      // API callers using ?token get the cookie set and proceed (they have no
-      // address bar to leak into).
-      if (isAdminPageGet(c)) {
-        return c.redirect(new URL(c.req.url).pathname, 303);
+    if (isAdminLoginPost(c)) {
+      const login = await readAdminLogin(c);
+      if (!constantTimeEquals(login.token, expected)) {
+        return c.html(
+          renderAdminLogin({ invalidToken: true, returnTo: login.returnTo }),
+          401,
+        );
       }
-      return next();
+      setAdminCookie(c, cookieValue);
+      return c.redirect(login.returnTo, 303);
     }
 
     const candidate = bearerToken(c.req.header('authorization'));
@@ -325,18 +314,31 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
 
     if (!constantTimeEquals(getCookie(c, ADMIN_COOKIE), cookieValue)) {
-      // A browser navigating to the /admin PAGE with no valid session gets a
-      // minimal token-entry form instead of a bare JSON 401 — otherwise the
-      // documented "/admin?token=..." login has no visible entry point. XHR
-      // and /admin/api/* callers still get the JSON 401 they can handle. Kept
-      // at 401 (not 200) so it is never cached as a real page; `invalidToken`
-      // is set only when a ?token= was supplied and rejected.
+      // A browser navigating to an /admin page with no valid session gets a
+      // minimal POST token-entry form instead of a bare JSON 401. XHR and
+      // /admin/api/* callers still get the JSON 401 they can handle. Kept at
+      // 401 (not 200) so it is never cached as a real page.
       if (isAdminPageGet(c)) {
-        return c.html(renderAdminLogin({ invalidToken: queryToken !== undefined }), 401);
+        return c.html(
+          renderAdminLogin({ returnTo: safeAdminReturnPath(c.req.path) }),
+          401,
+        );
       }
       return c.json({ error: 'unauthorized' }, 401);
     }
     return next();
+  };
+
+  const setAdminCookie = (c: Context, cookieValue: string): void => {
+    setCookie(c, ADMIN_COOKIE, cookieValue, {
+      path: '/admin',
+      httpOnly: true,
+      sameSite: 'Lax',
+      // Send only over TLS when the request arrived over TLS; on plain-http
+      // dev there is no transport to protect, so forcing Secure would just
+      // drop the cookie and break login.
+      secure: isHttps(c),
+    });
   };
 
   // The worker's root is not a product surface — send visitors to the admin
@@ -344,6 +346,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   // install during live testing.
   app.get('/', (c) => c.redirect('/admin', 302));
 
+  // Apply the byte cap before the unauthenticated body is buffered. Keep the
+  // missing-token 404 contract by letting adminGate handle disabled admin UI.
+  app.use('/admin/login', (c, next) =>
+    adminToken() ? adminLoginBodyLimit(c, next) : next(),
+  );
   app.use('/admin', adminGate);
   app.use('/admin/*', adminGate);
   app.use('/admin/api/*', async (c, next) => {
@@ -383,7 +390,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         return provider;
       }),
     );
-    return c.json({ providers, defaultModels: SEED_DEFAULT_MODELS });
+    return c.json({ providers });
   });
 
   app.get('/admin/api/providers', async (c) => {
@@ -1270,21 +1277,61 @@ function slackManifestUrl(origin: string): string {
   return `https://api.slack.com/apps?new_app=1&manifest_json=${encodeURIComponent(json)}`;
 }
 
-// A top-level GET of the /admin page (a browser navigation), as opposed to an
-// /admin/api/* XHR — the only request that should receive the HTML login form
-// rather than a JSON 401.
 // Any GET under /admin that is a PAGE navigation (the SPA serves every
 // client-routed path), as opposed to an /admin/api/* call.
 function isAdminPageGet(c: Context): boolean {
   if (c.req.method !== 'GET') return false;
+  const pathname = c.req.path;
+  return (
+    pathname === '/admin' ||
+    (pathname.startsWith('/admin/') && !pathname.startsWith('/admin/api/'))
+  );
+}
+
+function isAdminLoginPost(c: Context): boolean {
+  return c.req.method === 'POST' && c.req.path === '/admin/login';
+}
+
+async function readAdminLogin(
+  c: Context,
+): Promise<{ token: string | undefined; returnTo: string }> {
+  const contentType = c.req.header('content-type')?.split(';', 1)[0]?.trim().toLowerCase();
+  const contentLength = Number(c.req.header('content-length'));
+  if (
+    contentType !== 'application/x-www-form-urlencoded' ||
+    (Number.isFinite(contentLength) && contentLength > MAX_ADMIN_LOGIN_BODY_BYTES)
+  ) {
+    return { token: undefined, returnTo: '/admin' };
+  }
+
+  const raw = await c.req.text();
+  if (new TextEncoder().encode(raw).byteLength > MAX_ADMIN_LOGIN_BODY_BYTES) {
+    return { token: undefined, returnTo: '/admin' };
+  }
+  const params = new URLSearchParams(raw);
+  return {
+    token: params.get('token') ?? undefined,
+    returnTo: safeAdminReturnPath(params.get('returnTo')),
+  };
+}
+
+function safeAdminReturnPath(candidate: string | null | undefined): string {
+  if (!candidate) return '/admin';
   try {
-    const pathname = new URL(c.req.url).pathname;
-    return (
-      pathname === '/admin' ||
-      (pathname.startsWith('/admin/') && !pathname.startsWith('/admin/api/'))
-    );
+    const parsed = new URL(candidate, 'https://chickpea.invalid');
+    if (
+      parsed.origin !== 'https://chickpea.invalid' ||
+      parsed.pathname !== candidate ||
+      parsed.pathname === '/admin/login' ||
+      parsed.pathname === '/admin/api' ||
+      parsed.pathname.startsWith('/admin/api/') ||
+      !(parsed.pathname === '/admin' || parsed.pathname.startsWith('/admin/'))
+    ) {
+      return '/admin';
+    }
+    return parsed.pathname;
   } catch {
-    return false;
+    return '/admin';
   }
 }
 
@@ -1316,7 +1363,6 @@ function toAgentConfig(input: v.InferOutput<typeof agentSchema>): CustomAgentCon
     instructions: input.instructions,
     enabled: input.enabled,
     ...(input.model !== undefined ? { model: input.model } : {}),
-    defaultModels: input.defaultModels,
     skills: input.skills,
     mcpServers: toMcpServers(input.mcpServers),
   };
@@ -1357,7 +1403,6 @@ function toAgentPatch(input: v.InferOutput<typeof agentPatchSchema>): AgentPatch
   if (input.instructions !== undefined) patch.instructions = input.instructions;
   if (input.enabled !== undefined) patch.enabled = input.enabled;
   if (input.model !== undefined) patch.model = input.model;
-  if (input.defaultModels !== undefined) patch.defaultModels = input.defaultModels;
   if (input.skills !== undefined) patch.skills = input.skills;
   if (input.mcpServers !== undefined) patch.mcpServers = toMcpServers(input.mcpServers);
   return patch;

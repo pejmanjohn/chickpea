@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { computeChannelHistoryWindow } from '../src/slack/thread-context.ts';
+import { computeHistoryWindow } from '../src/slack/thread-context.ts';
 import { slackThreadKey } from '../src/slack/thread-key.ts';
 import { normalizeSlackTurn } from '../src/slack/turn-normalization.ts';
 import {
@@ -83,19 +83,31 @@ test('Slack turn normalization classifies mentions, thread replies, DMs, and ign
 
 test('natural-language channel history windows do not match adjacent words', () => {
   assert.equal(
-    computeChannelHistoryWindow('what happened last weekend?', '1782770400.000100').reason,
+    computeHistoryWindow(
+      'channel_history',
+      'what happened last weekend?',
+      '1782770400.000100',
+    ).reason,
     'default_24h',
   );
   assert.equal(
-    computeChannelHistoryWindow('plans for this weekend', '1782770400.000100').reason,
+    computeHistoryWindow(
+      'channel_history',
+      'plans for this weekend',
+      '1782770400.000100',
+    ).reason,
     'default_24h',
   );
   assert.equal(
-    computeChannelHistoryWindow('todays numbers', '1782770400.000100').reason,
+    computeHistoryWindow('channel_history', 'todays numbers', '1782770400.000100').reason,
     'default_24h',
   );
   assert.equal(
-    computeChannelHistoryWindow('what happened last week?', '1782770400.000100').reason,
+    computeHistoryWindow(
+      'channel_history',
+      'what happened last week?',
+      '1782770400.000100',
+    ).reason,
     'last_week',
   );
 });
