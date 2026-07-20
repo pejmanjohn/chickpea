@@ -5,6 +5,11 @@ import { Hono } from 'hono';
 
 import { createAdminRoutes } from '../src/admin/routes.ts';
 import flueApp from '../src/app.ts';
+import {
+  connectorCredentialSettingKey,
+  connectorSecretCleanupMarkerKey,
+  describeConnectorCredentialSource,
+} from '../src/config/connector-secrets.ts';
 import { DEFAULT_EGRESS_POLICY } from '../src/config/egress.ts';
 import { mcpSecretCleanupMarkerKey } from '../src/config/mcp-secrets.ts';
 import type { McpConnectInput, McpDiscoveryResult } from '../src/config/mcp-test.ts';
@@ -959,13 +964,11 @@ test('admin API maps an assignment to a missing agent to a stable unknown_agent 
 
 // --- API Connections -----------------------------------------------------------
 
-test('admin API accepts valid apiConnections, including wildcard hosts, and round-trips every field', async () => {
+test('admin API accepts exact apiConnection hosts and round-trips every field', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   try {
     const app = appWithAdmin(store);
-    const connection = apiConnection({
-      allowedHosts: ['api.linear.app', '*.example.com'],
-    });
+    const connection = apiConnection({ allowedHosts: ['api.linear.app'] });
     const createdAgent = agent({ id: 'agent_api_connection', apiConnections: [connection] });
 
     const create = await app.request('/admin/api/agents', {
@@ -979,7 +982,7 @@ test('admin API accepts valid apiConnections, including wildcard hosts, and roun
     const patched = [
       apiConnection({
         displayName: 'Linear API v2',
-        allowedHosts: ['*.example.com'],
+        allowedHosts: ['api.github.com'],
         pathPrefixes: ['/v2/issues'],
         headerName: 'X-Api-Key',
         headerValuePrefix: 'token ',
@@ -1017,6 +1020,7 @@ test('admin API rejects invalid apiConnection hosts, methods, and header names',
     const cases: Array<[string, ApiConnectionConfig]> = [
       ['private_host', apiConnection({ allowedHosts: ['10.0.0.1'] })],
       ['localhost', apiConnection({ allowedHosts: ['localhost'] })],
+      ['wildcard_host', apiConnection({ allowedHosts: ['*.example.com'] })],
       ['empty_hosts', apiConnection({ allowedHosts: [] })],
       ['bad_method', apiConnection({ allowedMethods: ['TRACE'] })],
       ['bad_header', apiConnection({ headerName: 'Authorization:' })],
@@ -1026,6 +1030,193 @@ test('admin API rejects invalid apiConnection hosts, methods, and header names',
       assert.equal(response.status, 400, id);
     }
   } finally {
+    store.close();
+  }
+});
+
+test('API connection secret PUT stores a write-only credential and keeps blank values', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    await store.createAgent(
+      agent({
+        id: 'agent_connector',
+        apiConnections: [apiConnection({ id: 'linear-api' })],
+      }),
+    );
+    const app = appWithAdminOptions(store, { settings });
+    const url = '/admin/api/agents/agent_connector/api-connections/secrets/linear-api';
+    const headers = { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' };
+
+    const response = await app.request(url, {
+      method: 'PUT',
+      headers,
+      body: JSON.stringify({ credential: 'super-secret-credential' }),
+    });
+
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.deepEqual(body, { source: 'stored' });
+    assert.doesNotMatch(JSON.stringify(body), /super-secret-credential/);
+    assert.equal(
+      await describeConnectorCredentialSource(
+        'agent_connector',
+        'linear-api',
+        undefined,
+        settings,
+      ),
+      'stored',
+    );
+    assert.equal(
+      await settings.getSetting(
+        connectorCredentialSettingKey('agent_connector', 'linear-api'),
+      ),
+      'super-secret-credential',
+    );
+    assert.equal(
+      await settings.getSetting(connectorSecretCleanupMarkerKey('agent_connector')),
+      JSON.stringify(['connector.agent_connector.linear-api.credential']),
+    );
+
+    for (const requestBody of [{ credential: '' }, {}]) {
+      const keep = await app.request(url, {
+        method: 'PUT',
+        headers,
+        body: JSON.stringify(requestBody),
+      });
+      assert.equal(keep.status, 200);
+      assert.deepEqual(await keep.json(), { source: 'stored' });
+    }
+
+    const profile = await app.request('/admin/api/agents/agent_connector', {
+      headers: auth(ADMIN_TOKEN),
+    });
+    assert.equal(profile.status, 200);
+    assert.doesNotMatch(await profile.text(), /super-secret-credential/);
+
+    const clear = await app.request(url, {
+      method: 'PUT',
+      headers,
+      body: JSON.stringify({ clearCredential: true }),
+    });
+    assert.equal(clear.status, 200);
+    assert.deepEqual(await clear.json(), { source: 'missing' });
+    assert.equal(
+      await settings.getSetting(
+        connectorCredentialSettingKey('agent_connector', 'linear-api'),
+      ),
+      undefined,
+    );
+  } finally {
+    settings.close();
+    store.close();
+  }
+});
+
+test('API connection secret PUT rejects a connection outside the profile', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    await store.createAgent(agent({ id: 'agent_connector', apiConnections: [apiConnection()] }));
+    const app = appWithAdminOptions(store, { settings });
+
+    const response = await app.request(
+      '/admin/api/agents/agent_connector/api-connections/secrets/missing-api',
+      {
+        method: 'PUT',
+        headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+        body: JSON.stringify({ credential: 'orphan-secret' }),
+      },
+    );
+
+    assert.equal(response.status, 404);
+    assert.equal(
+      await settings.getSetting(
+        connectorCredentialSettingKey('agent_connector', 'missing-api'),
+      ),
+      undefined,
+    );
+    assert.equal(
+      await settings.getSetting(connectorSecretCleanupMarkerKey('agent_connector')),
+      undefined,
+    );
+  } finally {
+    settings.close();
+    store.close();
+  }
+});
+
+test('API connection secret PUT removes its write when the profile disappears in flight', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  let reads = 0;
+  const disappearingStore = new Proxy(store, {
+    get(target, property, receiver) {
+      if (property === 'getAgent') {
+        return async (agentId: string) => {
+          const current = await target.getAgent(agentId);
+          reads += 1;
+          if (reads === 1) {
+            await target.deleteAgent(agentId);
+          }
+          return current;
+        };
+      }
+      const value = Reflect.get(target, property, receiver) as unknown;
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  }) as ConfigStore;
+
+  try {
+    await store.createAgent(
+      agent({ id: 'agent_disappearing_api', apiConnections: [apiConnection()] }),
+    );
+    const app = appWithAdminOptions(disappearingStore, { settings });
+
+    const response = await app.request(
+      '/admin/api/agents/agent_disappearing_api/api-connections/secrets/linear-api',
+      {
+        method: 'PUT',
+        headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+        body: JSON.stringify({ credential: 'late-secret' }),
+      },
+    );
+
+    assert.equal(response.status, 404);
+    assert.equal(
+      await settings.getSetting(
+        connectorCredentialSettingKey('agent_disappearing_api', 'linear-api'),
+      ),
+      undefined,
+    );
+    assert.equal(
+      await settings.getSetting(connectorSecretCleanupMarkerKey('agent_disappearing_api')),
+      undefined,
+    );
+  } finally {
+    settings.close();
+    store.close();
+  }
+});
+
+test('API connection secret DELETE clears the stored credential and returns its source', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    const key = connectorCredentialSettingKey('agent_connector', 'linear-api');
+    await settings.setSetting(key, 'stored-secret');
+    const app = appWithAdminOptions(store, { settings });
+
+    const response = await app.request(
+      '/admin/api/agents/agent_connector/api-connections/secrets/linear-api',
+      { method: 'DELETE', headers: auth(ADMIN_TOKEN) },
+    );
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { source: 'missing' });
+    assert.equal(await settings.getSetting(key), undefined);
+  } finally {
+    settings.close();
     store.close();
   }
 });
@@ -1602,7 +1793,7 @@ test('profile-scoped MCP routes reject invalid agent and connection ids', async 
   }
 });
 
-test('deleting an agent sweeps only that agent\'s mcp connection secrets', async () => {
+test('deleting an agent sweeps only that agent\'s connection secrets', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   const settings = new SqliteSettingsStore(':memory:');
   try {
@@ -1611,11 +1802,20 @@ test('deleting an agent sweeps only that agent\'s mcp connection secrets', async
       agent({
         id: 'agent_sweep',
         mcpServers: [mcpServer({ id: 'linear-mcp', headerNames: ['X-Api-Key'] })],
+        apiConnections: [apiConnection({ id: 'linear-api' })],
       }),
     );
     await settings.setSetting('mcp.agent_sweep.linear-mcp.bearer', 'tok');
     await settings.setSetting('mcp.agent_sweep.linear-mcp.header.X-Api-Key', 'val');
     await settings.setSetting('mcp.agent_survivor.linear-mcp.bearer', 'survivor-token');
+    await settings.setSetting(
+      'connector.agent_sweep.linear-api.credential',
+      'connector-secret',
+    );
+    await settings.setSetting(
+      'connector.agent_survivor.linear-api.credential',
+      'survivor-connector-secret',
+    );
 
     const response = await app.request('/admin/api/agents/agent_sweep', {
       method: 'DELETE',
@@ -1632,6 +1832,14 @@ test('deleting an agent sweeps only that agent\'s mcp connection secrets', async
       await settings.getSetting('mcp.agent_survivor.linear-mcp.bearer'),
       'survivor-token',
     );
+    assert.equal(
+      await settings.getSetting('connector.agent_sweep.linear-api.credential'),
+      undefined,
+    );
+    assert.equal(
+      await settings.getSetting('connector.agent_survivor.linear-api.credential'),
+      'survivor-connector-secret',
+    );
   } finally {
     settings.close?.();
     store.close();
@@ -1644,6 +1852,8 @@ test('agent deletion keeps a durable cleanup marker when secret deletion fails a
   const bearerKey = 'mcp.agent_cleanup_retry.linear-mcp.bearer';
   const headerKey = 'mcp.agent_cleanup_retry.linear-mcp.header.X-Api-Key';
   const survivorKey = 'mcp.agent_survivor.linear-mcp.bearer';
+  const connectorKey = 'connector.agent_cleanup_retry.linear-api.credential';
+  const survivorConnectorKey = 'connector.agent_survivor.linear-api.credential';
   let failSecretDeletion = true;
   const settings: SettingsStore = {
     getSetting: (key) => persistedSettings.getSetting(key),
@@ -1651,7 +1861,7 @@ test('agent deletion keeps a durable cleanup marker when secret deletion fails a
     mergeSettingStringSet: (key, values) =>
       persistedSettings.mergeSettingStringSet(key, values),
     deleteSetting: async (key) => {
-      if (failSecretDeletion && key === headerKey) {
+      if (failSecretDeletion && key === connectorKey) {
         throw new Error('settings deletion unavailable');
       }
       await persistedSettings.deleteSetting(key);
@@ -1661,11 +1871,17 @@ test('agent deletion keeps a durable cleanup marker when secret deletion fails a
   try {
     const connection = mcpServer({ id: 'linear-mcp', headerNames: ['X-Api-Key'] });
     await store.createAgent(
-      agent({ id: 'agent_cleanup_retry', mcpServers: [connection] }),
+      agent({
+        id: 'agent_cleanup_retry',
+        mcpServers: [connection],
+        apiConnections: [apiConnection({ id: 'linear-api' })],
+      }),
     );
     await persistedSettings.setSetting(bearerKey, 'tok');
     await persistedSettings.setSetting(headerKey, 'val');
     await persistedSettings.setSetting(survivorKey, 'survivor-token');
+    await persistedSettings.setSetting(connectorKey, 'connector-secret');
+    await persistedSettings.setSetting(survivorConnectorKey, 'survivor-connector-secret');
     const app = appWithAdminOptions(store, { settings });
 
     const failed = await app.request('/admin/api/agents/agent_cleanup_retry', {
@@ -1680,12 +1896,23 @@ test('agent deletion keeps a durable cleanup marker when secret deletion fails a
       false,
     );
     assert.equal(await persistedSettings.getSetting(bearerKey), undefined);
-    assert.equal(await persistedSettings.getSetting(headerKey), 'val');
+    assert.equal(await persistedSettings.getSetting(headerKey), undefined);
     assert.equal(
       await persistedSettings.getSetting(mcpSecretCleanupMarkerKey('agent_cleanup_retry')),
-      JSON.stringify([bearerKey, headerKey]),
+      undefined,
+    );
+    assert.equal(await persistedSettings.getSetting(connectorKey), 'connector-secret');
+    assert.equal(
+      await persistedSettings.getSetting(
+        connectorSecretCleanupMarkerKey('agent_cleanup_retry'),
+      ),
+      JSON.stringify([connectorKey]),
     );
     assert.equal(await persistedSettings.getSetting(survivorKey), 'survivor-token');
+    assert.equal(
+      await persistedSettings.getSetting(survivorConnectorKey),
+      'survivor-connector-secret',
+    );
 
     failSecretDeletion = false;
     const retried = await app.request('/admin/api/agents/agent_cleanup_retry', {
@@ -1701,8 +1928,19 @@ test('agent deletion keeps a durable cleanup marker when secret deletion fails a
     assert.equal(await persistedSettings.getSetting(bearerKey), undefined);
     assert.equal(await persistedSettings.getSetting(headerKey), undefined);
     assert.equal(await persistedSettings.getSetting(survivorKey), 'survivor-token');
+    assert.equal(await persistedSettings.getSetting(connectorKey), undefined);
+    assert.equal(
+      await persistedSettings.getSetting(survivorConnectorKey),
+      'survivor-connector-secret',
+    );
     assert.equal(
       await persistedSettings.getSetting(mcpSecretCleanupMarkerKey('agent_cleanup_retry')),
+      undefined,
+    );
+    assert.equal(
+      await persistedSettings.getSetting(
+        connectorSecretCleanupMarkerKey('agent_cleanup_retry'),
+      ),
       undefined,
     );
 

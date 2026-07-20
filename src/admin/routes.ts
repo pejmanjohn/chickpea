@@ -11,6 +11,14 @@ import { renderAdminLogin, renderAdminPage } from './page.ts';
 // so users never hand-edit a request_url.
 import slackAppManifest from '../../slack-app-manifest.json' with { type: 'json' };
 import {
+  clearConnectorCredential,
+  deleteConnectorSecrets,
+  describeConnectorCredentialSource,
+  finishConnectorSecretCleanup,
+  saveConnectorCredential,
+  stageConnectorSecretCleanup,
+} from '../config/connector-secrets.ts';
+import {
   computeSnapshotHash,
   resolveEffectiveSlackConfig,
   type EffectiveSlackConfig,
@@ -192,10 +200,11 @@ const mcpServersSchema = v.pipe(
 );
 
 function isAllowedConnectorHost(host: string): boolean {
-  const hasWildcard = host.startsWith('*.');
-  if (host.includes('*') && !hasWildcard) return false;
-  const hostname = hasWildcard ? host.slice(2) : host;
-  if (!hostname || hostname.includes('*')) return false;
+  // Wildcards need a custom SecureFetch wrapper (documented follow-up).
+  // Exact hosts cover the target connectors: Asana app.asana.com, Zendesk
+  // <subdomain>.zendesk.com, and GitHub api.github.com.
+  if (host.includes('*')) return false;
+  const hostname = host;
 
   const result = validateMcpUrl(`https://${hostname}`);
   if (!result.ok) return false;
@@ -309,6 +318,11 @@ const mcpSecretsPutSchema = v.object({
 
 const mcpSecretsDeleteSchema = v.object({
   headerNames: v.array(v.pipe(v.string(), v.trim(), v.regex(/^[A-Za-z0-9-]{1,128}$/))),
+});
+
+const connectorSecretsPutSchema = v.object({
+  credential: v.optional(v.string()),
+  clearCredential: v.optional(v.boolean()),
 });
 
 const assignmentSchema = v.object({
@@ -839,6 +853,123 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     return c.json(sources);
   });
 
+  app.put('/admin/api/agents/:agentId/api-connections/secrets/:connectionId', async (c) => {
+    const agentId = c.req.param('agentId');
+    const connectionId = c.req.param('connectionId');
+    if (!AGENT_ID_PATTERN.test(agentId) || !MCP_CONNECTION_ID_PATTERN.test(connectionId)) {
+      return invalidRequest(c);
+    }
+    const parsed = v.safeParse(connectorSecretsPutSchema, await readJson(c.req));
+    if (!parsed.success) {
+      return invalidRequest(c);
+    }
+
+    const input = parsed.output;
+    const platformEnv = c.env as PlatformEnv | undefined;
+    const configStore = store(c);
+    const settingsStore = settings(c);
+    let connection: CustomAgentConfig['apiConnections'][number] | undefined;
+    try {
+      connection = (await configStore.getAgent(agentId)).apiConnections.find(
+        (candidate) => candidate.id === connectionId,
+      );
+    } catch (err) {
+      if (err instanceof UnknownAgentError) {
+        return c.json({ error: 'not_found' }, 404);
+      }
+      return internalError(c, err);
+    }
+    if (!connection) {
+      return c.json({ error: 'not_found' }, 404);
+    }
+
+    await stageConnectorSecretCleanup(
+      agentId,
+      [connectionId],
+      platformEnv,
+      settingsStore,
+    );
+    if (input.credential !== undefined && input.credential !== '') {
+      await saveConnectorCredential(
+        agentId,
+        connectionId,
+        input.credential,
+        platformEnv,
+        settingsStore,
+      );
+    }
+    if (input.clearCredential) {
+      await clearConnectorCredential(agentId, connectionId, platformEnv, settingsStore);
+    }
+
+    let currentConnection: CustomAgentConfig['apiConnections'][number] | undefined;
+    try {
+      currentConnection = (await configStore.getAgent(agentId)).apiConnections.find(
+        (candidate) => candidate.id === connectionId,
+      );
+    } catch (err) {
+      if (!(err instanceof UnknownAgentError)) {
+        return internalError(c, err);
+      }
+      try {
+        // The profile disappeared after the pre-write check. Remove this
+        // credential explicitly in case profile cleanup consumed its marker
+        // just before the write landed, then finish any marker still present.
+        await deleteConnectorSecrets(
+          agentId,
+          [connectionId],
+          platformEnv,
+          settingsStore,
+        );
+        await finishConnectorSecretCleanup(agentId, platformEnv, settingsStore);
+        return c.json({ error: 'not_found' }, 404);
+      } catch (cleanupError) {
+        return internalError(c, cleanupError);
+      }
+    }
+    if (!currentConnection) {
+      try {
+        await deleteConnectorSecrets(
+          agentId,
+          [connectionId],
+          platformEnv,
+          settingsStore,
+        );
+      } catch (cleanupError) {
+        return internalError(c, cleanupError);
+      }
+      return c.json({ error: 'not_found' }, 404);
+    }
+
+    return c.json({
+      source: await describeConnectorCredentialSource(
+        agentId,
+        connectionId,
+        platformEnv,
+        settingsStore,
+      ),
+    });
+  });
+
+  app.delete('/admin/api/agents/:agentId/api-connections/secrets/:connectionId', async (c) => {
+    const agentId = c.req.param('agentId');
+    const connectionId = c.req.param('connectionId');
+    if (!AGENT_ID_PATTERN.test(agentId) || !MCP_CONNECTION_ID_PATTERN.test(connectionId)) {
+      return invalidRequest(c);
+    }
+    const platformEnv = c.env as PlatformEnv | undefined;
+    const settingsStore = settings(c);
+    await clearConnectorCredential(agentId, connectionId, platformEnv, settingsStore);
+    return c.json({
+      source: await describeConnectorCredentialSource(
+        agentId,
+        connectionId,
+        platformEnv,
+        settingsStore,
+      ),
+    });
+  });
+
   app.delete('/admin/api/agents/:agentId/mcp/secrets/:connectionId', async (c) => {
     const agentId = c.req.param('agentId');
     const connectionId = c.req.param('connectionId');
@@ -914,8 +1045,16 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         return internalError(c, err);
       }
       try {
-        const resumed = await finishMcpSecretCleanup(agentId, settings(c));
-        return resumed ? c.body(null, 204) : c.json({ error: 'not_found' }, 404);
+        const settingsStore = settings(c);
+        const resumedMcp = await finishMcpSecretCleanup(agentId, settingsStore);
+        const resumedConnector = await finishConnectorSecretCleanup(
+          agentId,
+          c.env as PlatformEnv | undefined,
+          settingsStore,
+        );
+        return resumedMcp || resumedConnector
+          ? c.body(null, 204)
+          : c.json({ error: 'not_found' }, 404);
       } catch (cleanupError) {
         return internalError(c, cleanupError);
       }
@@ -946,6 +1085,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
     try {
       await stageMcpSecretCleanup(agentId, [...secretKeys], settingsStore);
+      await stageConnectorSecretCleanup(
+        agentId,
+        agent.apiConnections.map((connection) => connection.id),
+        c.env as PlatformEnv | undefined,
+        settingsStore,
+      );
     } catch (err) {
       return internalError(c, err);
     }
@@ -963,6 +1108,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           // durable marker rather than restoring secrets into an orphaned scope.
           try {
             await finishMcpSecretCleanup(agentId, settingsStore);
+            await finishConnectorSecretCleanup(
+              agentId,
+              c.env as PlatformEnv | undefined,
+              settingsStore,
+            );
             return c.body(null, 204);
           } catch (cleanupError) {
             return internalError(c, cleanupError);
@@ -978,6 +1128,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
 
     try {
       await finishMcpSecretCleanup(agentId, settingsStore);
+      await finishConnectorSecretCleanup(
+        agentId,
+        c.env as PlatformEnv | undefined,
+        settingsStore,
+      );
       return c.body(null, 204);
     } catch (err) {
       return internalError(c, err);
