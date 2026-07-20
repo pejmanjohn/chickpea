@@ -207,6 +207,8 @@ function runAdminPageHarness(
   mcpTestPosts: Array<Record<string, unknown>>;
   mcpSecretPuts: Array<{ agentId: string; id: string; body: Record<string, unknown> }>;
   mcpSecretDeletes: Array<{ agentId: string; id: string; body: Record<string, unknown> }>;
+  apiConnectionSecretPuts: Array<{ agentId: string; id: string; body: Record<string, unknown> }>;
+  apiConnectionSecretDeletes: Array<{ agentId: string; id: string; body: Record<string, unknown> }>;
   gallerySearchFocusCalls(): number;
   gallerySearchSelections: Array<[number, number]>;
   resolveOpsEffective(): void;
@@ -228,6 +230,8 @@ function runAdminPageHarness(
   const mcpTestPosts: Array<Record<string, unknown>> = [];
   const mcpSecretPuts: Array<{ agentId: string; id: string; body: Record<string, unknown> }> = [];
   const mcpSecretDeletes: Array<{ agentId: string; id: string; body: Record<string, unknown> }> = [];
+  const apiConnectionSecretPuts: Array<{ agentId: string; id: string; body: Record<string, unknown> }> = [];
+  const apiConnectionSecretDeletes: Array<{ agentId: string; id: string; body: Record<string, unknown> }> = [];
   let gallerySearchFocusCalls = 0;
   const gallerySearchSelections: Array<[number, number]> = [];
   const mcpTestResult = options.mcpTestResult;
@@ -419,6 +423,22 @@ function runAdminPageHarness(
       if (method === 'DELETE') {
         mcpSecretDeletes.push({ agentId, id, body });
         return Promise.resolve(jsonResponse({ ok: true }));
+      }
+    }
+    const apiConnectionSecretsMatch = path.match(
+      /^\/admin\/api\/agents\/([^/]+)\/api-connections\/secrets\/([^/]+)$/,
+    );
+    if (apiConnectionSecretsMatch) {
+      const agentId = decodeURIComponent(apiConnectionSecretsMatch[1] as string);
+      const id = decodeURIComponent(apiConnectionSecretsMatch[2] as string);
+      const body = JSON.parse(options?.body ?? '{}') as Record<string, unknown>;
+      if (method === 'PUT') {
+        apiConnectionSecretPuts.push({ agentId, id, body });
+        return Promise.resolve(jsonResponse({ source: 'stored' }));
+      }
+      if (method === 'DELETE') {
+        apiConnectionSecretDeletes.push({ agentId, id, body });
+        return Promise.resolve(jsonResponse({ source: 'missing' }));
       }
     }
     const agentPatchMatch = path.match(/^\/admin\/api\/agents\/([^/]+)$/);
@@ -670,6 +690,8 @@ function runAdminPageHarness(
     mcpTestPosts,
     mcpSecretPuts,
     mcpSecretDeletes,
+    apiConnectionSecretPuts,
+    apiConnectionSecretDeletes,
     gallerySearchFocusCalls: () => gallerySearchFocusCalls,
     gallerySearchSelections,
     resolveOpsEffective() {
@@ -1432,9 +1454,164 @@ function connectionsAgent(overrides: Record<string, unknown> = {}): Record<strin
     model: 'local-stub/conn',
     skills: [],
     mcpServers: [],
+    apiConnections: [],
     ...overrides,
   };
 }
+
+function apiConnectionFixture(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: 'issue-api',
+    displayName: 'Issue API',
+    allowedHosts: ['api.example.com'],
+    pathPrefixes: ['/v1'],
+    headerName: 'Authorization',
+    headerValuePrefix: 'Bearer ',
+    allowedMethods: ['GET', 'POST'],
+    enabled: true,
+    ...overrides,
+  };
+}
+
+test('the Connections tab adds an API connection policy and stores its credential separately', async () => {
+  const harness = runAdminPageHarness({ agents: [connectionsAgent()] });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  const change = harness.listeners.change;
+  assert.ok(click && input && change);
+
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+
+  const panel = harness.app.innerHTML;
+  assert.match(panel, /<h3 class="section-title">API connections<\/h3>/);
+  assert.match(panel, /Give the agent a credential to call a REST API directly\./);
+  assert.match(panel, /data-action="apiconn-new"/);
+  assert.ok(panel.indexOf('data-action="conn-gallery-search"') < panel.indexOf('>API connections<'));
+
+  click({ target: actionTarget({ 'data-action': 'apiconn-new' }) });
+  const editor = harness.app.innerHTML;
+  assert.match(editor, /data-action="apiconn-field-name"/);
+  assert.match(editor, /placeholder="api\.example\.com"[^>]*data-action="apiconn-host-input"/);
+  assert.match(editor, /placeholder="\/v1"[^>]*data-action="apiconn-path-input"/);
+  assert.match(editor, /placeholder="Authorization"[^>]*data-action="apiconn-field-header-name"/);
+  assert.match(editor, /data-action="apiconn-method-toggle" data-index="0" checked/);
+  assert.match(editor, /data-action="apiconn-method-toggle" data-index="2" checked/);
+  assert.match(editor, /type="password"[^>]*data-action="apiconn-field-credential"/);
+
+  input({ target: inputTarget({ 'data-action': 'apiconn-field-name' }, 'Issue API') });
+  input({ target: inputTarget({ 'data-action': 'apiconn-host-input', 'data-index': '0' }, 'api.example.com') });
+  input({ target: inputTarget({ 'data-action': 'apiconn-field-header-name' }, 'Authorization') });
+  input({ target: inputTarget({ 'data-action': 'apiconn-field-header-prefix' }, 'Bearer ') });
+  input({ target: inputTarget({ 'data-action': 'apiconn-field-credential' }, 'rest-secret-token') });
+  change({ target: checkboxTarget({ 'data-action': 'apiconn-method-toggle', 'data-index': '2' }, false) });
+
+  click({ target: actionTarget({ 'data-action': 'apiconn-save-row' }) });
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+
+  assert.equal(harness.agentPatchBodies.length, 1);
+  assert.deepEqual(harness.agentPatchBodies[0]?.body.apiConnections, [
+    {
+      id: 'issue-api',
+      displayName: 'Issue API',
+      allowedHosts: ['api.example.com'],
+      pathPrefixes: [],
+      headerName: 'Authorization',
+      headerValuePrefix: 'Bearer ',
+      allowedMethods: ['GET'],
+      enabled: true,
+    },
+  ]);
+  assert.doesNotMatch(JSON.stringify(harness.agentPatchBodies[0]?.body), /rest-secret-token/);
+  assert.deepEqual(harness.apiConnectionSecretPuts, [
+    {
+      agentId: 'agent_conn',
+      id: 'issue-api',
+      body: { credential: 'rest-secret-token' },
+    },
+  ]);
+});
+
+test('editing a saved API connection shows a stored write-only credential placeholder', async () => {
+  const harness = runAdminPageHarness({
+    agents: [
+      connectionsAgent({
+        apiConnections: [apiConnectionFixture()],
+      }),
+    ],
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  click({ target: actionTarget({ 'data-action': 'apiconn-edit', 'data-index': '0' }) });
+
+  assert.match(
+    harness.app.innerHTML,
+    /placeholder="•••• stored"[^>]*data-action="apiconn-field-credential"/,
+  );
+});
+
+test('the API connection editor enforces its required policy fields', async () => {
+  const harness = runAdminPageHarness({ agents: [connectionsAgent()] });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  const change = harness.listeners.change;
+  assert.ok(click && input && change);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  click({ target: actionTarget({ 'data-action': 'apiconn-new' }) });
+
+  click({ target: actionTarget({ 'data-action': 'apiconn-save-row' }) });
+  assert.match(harness.app.innerHTML, /Name is required\./);
+
+  input({ target: inputTarget({ 'data-action': 'apiconn-field-name' }, 'Issue API') });
+  click({ target: actionTarget({ 'data-action': 'apiconn-save-row' }) });
+  assert.match(harness.app.innerHTML, /Add at least one allowed host\./);
+
+  input({ target: inputTarget({ 'data-action': 'apiconn-host-input', 'data-index': '0' }, 'api.example.com') });
+  input({ target: inputTarget({ 'data-action': 'apiconn-field-header-name' }, 'Bad header') });
+  click({ target: actionTarget({ 'data-action': 'apiconn-save-row' }) });
+  assert.match(harness.app.innerHTML, /Header name may contain only letters, digits, and hyphens\./);
+
+  input({ target: inputTarget({ 'data-action': 'apiconn-field-header-name' }, 'Authorization') });
+  change({ target: checkboxTarget({ 'data-action': 'apiconn-method-toggle', 'data-index': '0' }, false) });
+  change({ target: checkboxTarget({ 'data-action': 'apiconn-method-toggle', 'data-index': '2' }, false) });
+  click({ target: actionTarget({ 'data-action': 'apiconn-save-row' }) });
+  assert.match(harness.app.innerHTML, /Select at least one method\./);
+});
+
+test('removing an API connection confirms and deletes its credential after the policy save', async () => {
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent({ apiConnections: [apiConnectionFixture()] })],
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  click({ target: actionTarget({ 'data-action': 'apiconn-remove', 'data-index': '0' }) });
+
+  assert.match(harness.app.innerHTML, /Remove Issue API\?/);
+  assert.match(harness.app.innerHTML, /data-action="apiconn-remove-confirm"/);
+
+  click({ target: actionTarget({ 'data-action': 'apiconn-remove-confirm' }) });
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+
+  assert.deepEqual(harness.agentPatchBodies[0]?.body.apiConnections, []);
+  assert.deepEqual(harness.apiConnectionSecretDeletes, [
+    { agentId: 'agent_conn', id: 'issue-api', body: {} },
+  ]);
+});
 
 test('the inline script embeds the connector preset catalog and brand logos', () => {
   const script = inlineScript();

@@ -1078,6 +1078,7 @@ details[open].advanced summary::before {
   var IS_CLOUDFLARE = ${isCloudflare};
   var CONNECTOR_PRESETS = ${JSON.stringify(CONNECTOR_PRESETS).replace(/</g, '\\u003c')};
   var CONNECTOR_LOGOS = ${JSON.stringify(CONNECTOR_LOGOS).replace(/</g, '\\u003c')};
+  var API_CONNECTION_METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"];
   var state = {
     agents: [],
     assignments: [],
@@ -1143,10 +1144,15 @@ details[open].advanced summary::before {
     // discoveredTools), lifecycleStatus, statusText, lastCheckedAt, sources
     // (secret presence from a prior save: {bearer, headers}), error }.
     connectionEditor: null,
+    // Inline credentialed REST API editor. Its credential is transient and is
+    // written to the API-connection secret endpoint only after the profile
+    // policy saves successfully.
+    apiConnectionEditor: null,
     connectorGallerySearch: "",
     // Index of the connection pending removal (its confirm modal is open), or
     // null. The DELETE of its secrets is issued on the next profile save.
     connectionRemove: null,
+    apiConnectionRemove: null,
     // When the user tries to leave a dirty profile editor, this holds the
     // pending navigation { action, agent } and the confirm modal is shown.
     leavePrompt: null,
@@ -1332,8 +1338,10 @@ details[open].advanced summary::before {
     state.skillEditor = null;
     state.skillImport = null;
     state.connectionEditor = null;
+    state.apiConnectionEditor = null;
     state.connectorGallerySearch = "";
     state.connectionRemove = null;
+    state.apiConnectionRemove = null;
     state.modelPickerOpen = false;
     state.modelPickerFilter = "";
   }
@@ -1422,7 +1430,7 @@ details[open].advanced summary::before {
 
   function render() {
     var app = document.getElementById("app");
-    app.innerHTML = topbarHtml() + '<div class="body">' + railHtml() + mainHtml() + "</div>" + leavePromptModalHtml() + connectionRemoveModalHtml();
+    app.innerHTML = topbarHtml() + '<div class="body">' + railHtml() + mainHtml() + "</div>" + leavePromptModalHtml() + connectionRemoveModalHtml() + apiConnectionRemoveModalHtml();
     syncUrl();
   }
 
@@ -2147,12 +2155,12 @@ details[open].advanced summary::before {
     var attention = {
       instructions: false,
       skills: !!(state.skillEditor || state.skillImport),
-      connections: !!state.connectionEditor
+      connections: !!(state.connectionEditor || state.apiConnectionEditor)
     };
     var tabs = [
       { id: "instructions", label: "Instructions", count: 0 },
       { id: "skills", label: "Skills", count: (draft.skills || []).length },
-      { id: "connections", label: "Connections", count: (draft.mcpServers || []).length }
+      { id: "connections", label: "Connections", count: (draft.mcpServers || []).length + (draft.apiConnections || []).length }
     ];
     var bar = tabs.map(function (tab) {
       var on = tab.id === active;
@@ -2474,7 +2482,111 @@ details[open].advanced summary::before {
     var hint = 'Remote MCP servers this profile can call.';
     var security = '<p class="conn-security">Your profile stores connection policy and tool approvals only &mdash; tokens live in the settings store and are never returned by the API.</p>';
     var body = list + newForm + gallery;
-    return '<p class="hint ptab-hint">' + hint + '</p>' + body + security;
+    return '<p class="hint ptab-hint">' + hint + '</p>' + body + security + apiConnectionsPanelHtml(draft);
+  }
+
+  function apiConnectionMethodsHtml(editor) {
+    var checked = editor.methodChecked || [];
+    var rows = API_CONNECTION_METHODS.map(function (method, index) {
+      var on = checked[index] === true;
+      return '<label class="conn-tool">' +
+        '<span class="import-check' + (on ? " on" : "") + '"><input type="checkbox" data-action="apiconn-method-toggle" data-index="' + index + '" ' + (on ? "checked" : "") + ' aria-label="Allow ' + method + '"></span>' +
+        '<span class="tool-body"><span class="tool-name">' + method + '</span></span></label>';
+    }).join("");
+    return '<div class="field"><label class="field-label">Methods</label><div class="conn-tools">' + rows + '</div></div>';
+  }
+
+  function apiConnectionHostsHtml(editor) {
+    var rows = (editor.allowedHosts || []).map(function (host, index) {
+      return '<div class="conn-header-row">' +
+        '<input class="input mono" type="text" value="' + esc(host) + '" placeholder="api.example.com" aria-label="Allowed host" data-action="apiconn-host-input" data-index="' + index + '">' +
+        '<button type="button" class="x-btn" data-action="apiconn-host-remove" data-index="' + index + '" aria-label="Remove allowed host">&times;</button></div>';
+    }).join("");
+    return '<div class="field"><label class="field-label">Allowed hosts</label>' + rows +
+      '<p class="hint">Exact hostnames only (no wildcards).</p>' +
+      '<div><button type="button" class="btn btn-ghost btn-sm" data-action="apiconn-host-add">Add host</button></div></div>';
+  }
+
+  function apiConnectionPathsHtml(editor) {
+    var rows = (editor.pathPrefixes || []).map(function (prefix, index) {
+      return '<div class="conn-header-row">' +
+        '<input class="input mono" type="text" value="' + esc(prefix) + '" placeholder="/v1" aria-label="Path prefix" data-action="apiconn-path-input" data-index="' + index + '">' +
+        '<button type="button" class="x-btn" data-action="apiconn-path-remove" data-index="' + index + '" aria-label="Remove path prefix">&times;</button></div>';
+    }).join("");
+    return '<div class="field"><label class="field-label">Path prefixes <span class="hint">(optional)</span></label>' + rows +
+      '<p class="hint">Leave empty to allow the whole host.</p>' +
+      '<div><button type="button" class="btn btn-ghost btn-sm" data-action="apiconn-path-add">Add path prefix</button></div></div>';
+  }
+
+  function apiConnectionEditorFormHtml(editor) {
+    var isNew = editor.index === null || editor.index === undefined;
+    var credentialStored = editor.sources && editor.sources.credential && editor.sources.credential !== "missing";
+    var credentialPlaceholder = credentialStored ? "\\u2022\\u2022\\u2022\\u2022 stored" : "Paste credential \\u2014 stored, never returned by the API";
+    var credentialHint = credentialStored ? '<p class="hint">Leave blank to keep the stored credential.</p>' : "";
+    return '<div class="skill-form">' +
+      '<div class="field"><label class="field-label" for="apiconn-name">Name</label>' +
+      '<input class="input" id="apiconn-name" type="text" value="' + esc(editor.displayName) + '" placeholder="Issue tracker API" data-action="apiconn-field-name"></div>' +
+      apiConnectionHostsHtml(editor) + apiConnectionPathsHtml(editor) +
+      '<div class="form-grid"><div class="field"><label class="field-label" for="apiconn-header-name">Header name</label>' +
+      '<input class="input mono" id="apiconn-header-name" type="text" value="' + esc(editor.headerName || "") + '" placeholder="Authorization" data-action="apiconn-field-header-name"></div>' +
+      '<div class="field"><label class="field-label" for="apiconn-header-prefix">Value prefix</label>' +
+      '<input class="input mono" id="apiconn-header-prefix" type="text" value="' + esc(editor.headerValuePrefix || "") + '" placeholder="Bearer " data-action="apiconn-field-header-prefix">' +
+      '<p class="hint">The credential is appended to the prefix.</p></div></div>' +
+      apiConnectionMethodsHtml(editor) +
+      '<div class="field"><label class="field-label" for="apiconn-credential">Credential</label>' +
+      '<input class="input mono" id="apiconn-credential" type="password" autocomplete="off" value="' + esc(editor.credential || "") + '" placeholder="' + credentialPlaceholder + '" data-action="apiconn-field-credential">' + credentialHint + '</div>' +
+      (editor.error ? '<p class="field-error">' + esc(editor.error) + '</p>' : "") +
+      '<div class="skill-form-actions">' +
+      '<button type="button" class="btn btn-ghost btn-sm" data-action="apiconn-cancel">Cancel</button>' +
+      '<button type="button" class="btn btn-primary btn-sm" data-action="apiconn-save-row">' + (isNew ? "Add connection" : "Save connection") + '</button></div></div>';
+  }
+
+  function apiConnectionHostSummary(conn) {
+    var hosts = conn.allowedHosts || [];
+    if (!hosts.length) return "No hosts";
+    if (hosts.length === 1) return hosts[0];
+    return hosts[0] + " +" + (hosts.length - 1);
+  }
+
+  function apiConnectionsPanelHtml(draft) {
+    var connections = draft.apiConnections || [];
+    var editor = state.apiConnectionEditor;
+    var rows = connections.map(function (conn, index) {
+      if (editor && editor.index === index) return apiConnectionEditorFormHtml(editor);
+      return '<div class="skill-row conn-row">' +
+        '<div class="sk-body"><span class="sk-name" style="font-family:inherit;">' + esc(conn.displayName) + '</span>' +
+        '<span class="conn-host">' + esc(apiConnectionHostSummary(conn)) + '</span></div>' +
+        '<span class="toggle"><span class="thumb"></span><input type="checkbox" data-action="apiconn-toggle" data-index="' + index + '" ' + (conn.enabled ? "checked" : "") + ' aria-label="API connection enabled"></span>' +
+        '<button type="button" class="btn btn-ghost btn-sm" data-action="apiconn-edit" data-index="' + index + '">Edit</button>' +
+        '<button type="button" class="x-btn" data-action="apiconn-remove" data-index="' + index + '" aria-label="Remove API connection">&times;</button></div>';
+    }).join("");
+    var list = rows ? '<div class="skill-list">' + rows + '</div>' : "";
+    var newForm = editor && (editor.index === null || editor.index === undefined) ? apiConnectionEditorFormHtml(editor) : "";
+    var add = editor ? "" : '<div class="skill-actions"><button type="button" class="btn btn-soft btn-sm" data-action="apiconn-new">Add API connection</button></div>';
+    var empty = !connections.length && !editor
+      ? '<div class="empty"><p class="field-label">No API connections yet</p><p class="hint">Add one to give this profile scoped REST API access.</p></div>'
+      : "";
+    return '<div class="section api-connections-section">' +
+      '<div class="section-head"><div><h3 class="section-title">API connections</h3>' +
+      '<p class="hint">Give the agent a credential to call a REST API directly. It reaches only the hosts you list; the credential is injected server-side and never shown to the model.</p></div></div>' +
+      list + newForm + empty + add + '</div>';
+  }
+
+  function validateApiConnectionEditor(editor, connections) {
+    var name = String(editor.displayName || "").trim();
+    if (!name) return "Name is required.";
+    if (name.length > 80) return "Name must be 80 characters or fewer.";
+    var id = editor.id || connectionSlug(name);
+    if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(id)) return "Name must contain at least one letter or digit.";
+    var duplicate = (connections || []).some(function (conn, index) { return index !== editor.index && conn.id === id; });
+    if (duplicate) return "Another API connection already uses that name.";
+    var hosts = (editor.allowedHosts || []).map(function (host) { return String(host || "").trim(); }).filter(function (host) { return !!host; });
+    if (!hosts.length) return "Add at least one allowed host.";
+    var headerName = String(editor.headerName || "").trim();
+    if (!/^[A-Za-z0-9-]{1,128}$/.test(headerName)) return "Header name may contain only letters, digits, and hyphens.";
+    var hasMethod = (editor.methodChecked || []).some(function (checked) { return checked === true; });
+    if (!hasMethod) return "Select at least one method.";
+    return "";
   }
 
   // The Remove-connection confirm modal. Rendered only while state.connectionRemove
@@ -2492,6 +2604,22 @@ details[open].advanced summary::before {
       '<div class="modal-foot"><span class="spacer"></span>' +
       '<button type="button" class="btn btn-ghost" data-action="conn-remove-cancel">Cancel</button>' +
       '<button type="button" class="btn btn-danger" data-action="conn-remove-confirm">Remove connection</button>' +
+      '</div></div></div>';
+  }
+
+  function apiConnectionRemoveModalHtml() {
+    if (state.apiConnectionRemove === null || state.apiConnectionRemove === undefined) return "";
+    var draft = state.profileDraft;
+    var connections = (draft && draft.apiConnections) || [];
+    var conn = connections[state.apiConnectionRemove];
+    if (!conn) return "";
+    return '<div class="modal-backdrop">' +
+      '<div class="modal-card" role="dialog" aria-modal="true" aria-label="Remove API connection">' +
+      '<h2 class="modal-title">Remove ' + esc(conn.displayName) + '?</h2>' +
+      '<p class="modal-body">This drops the API policy from this profile. Its stored credential is deleted when you save.</p>' +
+      '<div class="modal-foot"><span class="spacer"></span>' +
+      '<button type="button" class="btn btn-ghost" data-action="apiconn-remove-cancel">Cancel</button>' +
+      '<button type="button" class="btn btn-danger" data-action="apiconn-remove-confirm">Remove connection</button>' +
       '</div></div></div>';
   }
 
@@ -3450,7 +3578,10 @@ details[open].advanced summary::before {
       // New profiles carry no custom skills; the array is what the API persists.
       skills: [],
       // New profiles carry no Connections either; the array is what the API persists.
-      mcpServers: []
+      mcpServers: [],
+      apiConnections: [],
+      pendingApiSecrets: {},
+      removedApiConnections: []
     };
   }
 
@@ -3468,7 +3599,10 @@ details[open].advanced summary::before {
       }),
       // Deep-copy each connection (policy only — never a secret) so the inline
       // editor never mutates the shared state.agents entry.
-      mcpServers: (agent.mcpServers || []).map(cloneConnection)
+      mcpServers: (agent.mcpServers || []).map(cloneConnection),
+      apiConnections: (agent.apiConnections || []).map(cloneApiConnection),
+      pendingApiSecrets: {},
+      removedApiConnections: []
     };
   }
 
@@ -3495,6 +3629,21 @@ details[open].advanced summary::before {
       allowedTools: (conn.allowedTools || []).slice()
     };
     if (conn.lastCheckedAt !== undefined) copy.lastCheckedAt = conn.lastCheckedAt;
+    return copy;
+  }
+
+  function cloneApiConnection(conn) {
+    var copy = {
+      id: conn.id,
+      displayName: conn.displayName,
+      allowedHosts: (conn.allowedHosts || []).slice(),
+      pathPrefixes: (conn.pathPrefixes || []).slice(),
+      headerName: conn.headerName,
+      allowedMethods: (conn.allowedMethods || []).slice(),
+      enabled: !!conn.enabled
+    };
+    if (conn.headerValuePrefix !== undefined) copy.headerValuePrefix = conn.headerValuePrefix;
+    if (conn.presetId !== undefined) copy.presetId = conn.presetId;
     return copy;
   }
 
@@ -3936,6 +4085,60 @@ details[open].advanced summary::before {
     }
     if (action === "conn-test") { testConnection(); }
     if (action === "conn-save-row") { commitConnectionRow(); }
+    // Credentialed REST API connections use their own action namespace so the
+    // editor can coexist with the MCP gallery without sharing transient state.
+    if (action === "apiconn-new") {
+      collectProfileDraft();
+      state.apiConnectionEditor = newApiConnectionEditor();
+      render();
+    }
+    if (action === "apiconn-edit") {
+      collectProfileDraft();
+      var apiConnEditIndex = Number(target.getAttribute("data-index"));
+      var apiConnEditValue = (state.profileDraft.apiConnections || [])[apiConnEditIndex];
+      if (apiConnEditValue) { state.apiConnectionEditor = editorFromApiConnection(apiConnEditIndex, apiConnEditValue); render(); }
+    }
+    if (action === "apiconn-cancel") { state.apiConnectionEditor = null; render(); }
+    if (action === "apiconn-remove") {
+      collectProfileDraft();
+      state.apiConnectionRemove = Number(target.getAttribute("data-index"));
+      render();
+    }
+    if (action === "apiconn-remove-cancel") { state.apiConnectionRemove = null; render(); }
+    if (action === "apiconn-remove-confirm") {
+      var apiConnRemoveIndex = state.apiConnectionRemove;
+      var apiConnRemoveValues = (state.profileDraft && state.profileDraft.apiConnections) || [];
+      if (apiConnRemoveIndex !== null && apiConnRemoveIndex >= 0 && apiConnRemoveIndex < apiConnRemoveValues.length) {
+        rememberRemovedApiConnection(apiConnRemoveValues[apiConnRemoveIndex]);
+        apiConnRemoveValues.splice(apiConnRemoveIndex, 1);
+        state.profileDraft.apiConnections = apiConnRemoveValues;
+        state.apiConnectionEditor = null;
+        markProfileDirty();
+      }
+      state.apiConnectionRemove = null;
+      render();
+    }
+    if (action === "apiconn-host-add" && state.apiConnectionEditor) {
+      state.apiConnectionEditor.allowedHosts = (state.apiConnectionEditor.allowedHosts || []).concat("");
+      markProfileDirty();
+      render();
+    }
+    if (action === "apiconn-host-remove" && state.apiConnectionEditor) {
+      (state.apiConnectionEditor.allowedHosts || []).splice(Number(target.getAttribute("data-index")), 1);
+      markProfileDirty();
+      render();
+    }
+    if (action === "apiconn-path-add" && state.apiConnectionEditor) {
+      state.apiConnectionEditor.pathPrefixes = (state.apiConnectionEditor.pathPrefixes || []).concat("");
+      markProfileDirty();
+      render();
+    }
+    if (action === "apiconn-path-remove" && state.apiConnectionEditor) {
+      (state.apiConnectionEditor.pathPrefixes || []).splice(Number(target.getAttribute("data-index")), 1);
+      markProfileDirty();
+      render();
+    }
+    if (action === "apiconn-save-row") { commitApiConnectionRow(); }
   });
 
   document.addEventListener("input", function (event) {
@@ -4017,6 +4220,17 @@ details[open].advanced summary::before {
         if (action === "conn-header-name") { connEditor.headerNames[Number(target.getAttribute("data-index"))] = target.value; markProfileDirty(); }
         if (action === "conn-header-value") { connEditor.headerValues[Number(target.getAttribute("data-index"))] = target.value; markProfileDirty(); }
       }
+      // API policy fields mirror keystrokes without re-rendering; the credential
+      // remains transient in editor state until the profile PATCH succeeds.
+      if (state.apiConnectionEditor) {
+        var apiConnEditor = state.apiConnectionEditor;
+        if (action === "apiconn-field-name") { apiConnEditor.displayName = target.value; markProfileDirty(); }
+        if (action === "apiconn-host-input") { apiConnEditor.allowedHosts[Number(target.getAttribute("data-index"))] = target.value; markProfileDirty(); }
+        if (action === "apiconn-path-input") { apiConnEditor.pathPrefixes[Number(target.getAttribute("data-index"))] = target.value; markProfileDirty(); }
+        if (action === "apiconn-field-header-name") { apiConnEditor.headerName = target.value; markProfileDirty(); }
+        if (action === "apiconn-field-header-prefix") { apiConnEditor.headerValuePrefix = target.value; markProfileDirty(); }
+        if (action === "apiconn-field-credential") { apiConnEditor.credential = target.value; markProfileDirty(); }
+      }
     }
   });
 
@@ -4077,6 +4291,20 @@ details[open].advanced summary::before {
       var connChecked = state.connectionEditor.checked || [];
       connChecked[connToolIndex] = target.checked;
       state.connectionEditor.checked = connChecked;
+      markProfileDirty();
+      render();
+    }
+    if (action === "apiconn-toggle" && state.profileDraft) {
+      collectProfileDraft();
+      var apiConnToggleIndex = Number(target.getAttribute("data-index"));
+      var apiConnToggleValues = state.profileDraft.apiConnections || [];
+      if (apiConnToggleValues[apiConnToggleIndex]) { apiConnToggleValues[apiConnToggleIndex].enabled = target.checked; state.profileDraft.apiConnections = apiConnToggleValues; markProfileDirty(); render(); }
+    }
+    if (action === "apiconn-method-toggle" && state.apiConnectionEditor) {
+      var apiConnMethodIndex = Number(target.getAttribute("data-index"));
+      var apiConnMethodChecked = state.apiConnectionEditor.methodChecked || [];
+      apiConnMethodChecked[apiConnMethodIndex] = target.checked;
+      state.apiConnectionEditor.methodChecked = apiConnMethodChecked;
       markProfileDirty();
       render();
     }
@@ -4706,6 +4934,134 @@ details[open].advanced summary::before {
     if (draft) { draft.pendingSecrets = {}; draft.removedConnections = []; }
   }
 
+  /* ---- Credentialed REST API connection editor --------------------------- */
+
+  function newApiConnectionEditor() {
+    var defaults = { GET: true, POST: true };
+    return {
+      index: null,
+      id: "",
+      displayName: "",
+      allowedHosts: [""],
+      pathPrefixes: [""],
+      headerName: "",
+      headerValuePrefix: "",
+      methodChecked: API_CONNECTION_METHODS.map(function (method) { return defaults[method] === true; }),
+      credential: "",
+      enabled: true,
+      sources: { credential: "missing" },
+      error: ""
+    };
+  }
+
+  function editorFromApiConnection(index, conn) {
+    var editor = newApiConnectionEditor();
+    var allowedMethods = conn.allowedMethods || [];
+    editor.index = index;
+    editor.id = conn.id;
+    editor.displayName = conn.displayName;
+    editor.allowedHosts = (conn.allowedHosts || []).length ? conn.allowedHosts.slice() : [""];
+    editor.pathPrefixes = (conn.pathPrefixes || []).length ? conn.pathPrefixes.slice() : [""];
+    editor.headerName = conn.headerName || "";
+    editor.headerValuePrefix = conn.headerValuePrefix || "";
+    editor.methodChecked = API_CONNECTION_METHODS.map(function (method) { return allowedMethods.indexOf(method) >= 0; });
+    editor.enabled = !!conn.enabled;
+    editor.presetId = conn.presetId;
+    // Credentials are write-only. As with saved MCP auth policy, an existing
+    // connection is the only client-side signal available for the stored badge.
+    editor.sources = { credential: "stored" };
+    return editor;
+  }
+
+  function apiConnectionFromEditor(editor) {
+    var checked = editor.methodChecked || [];
+    var conn = {
+      id: editor.id || connectionSlug(editor.displayName),
+      displayName: String(editor.displayName || "").trim(),
+      allowedHosts: (editor.allowedHosts || []).map(function (host) { return String(host || "").trim(); }).filter(function (host) { return !!host; }),
+      pathPrefixes: (editor.pathPrefixes || []).map(function (prefix) { return String(prefix || "").trim(); }).filter(function (prefix) { return !!prefix; }),
+      headerName: String(editor.headerName || "").trim(),
+      allowedMethods: API_CONNECTION_METHODS.filter(function (_method, index) { return checked[index] === true; }),
+      enabled: !!editor.enabled
+    };
+    if (String(editor.headerValuePrefix || "") !== "") conn.headerValuePrefix = String(editor.headerValuePrefix);
+    if (editor.presetId) conn.presetId = editor.presetId;
+    return conn;
+  }
+
+  function stagePendingApiSecret(id, editor) {
+    if (!state.profileDraft || !String(editor.credential || "").trim()) return;
+    var pending = state.profileDraft.pendingApiSecrets || {};
+    pending[id] = { credential: editor.credential };
+    state.profileDraft.pendingApiSecrets = pending;
+  }
+
+  function rememberRemovedApiConnection(conn) {
+    if (!state.profileDraft) return;
+    var removed = state.profileDraft.removedApiConnections || [];
+    removed.push({ id: conn.id });
+    state.profileDraft.removedApiConnections = removed;
+    // If this row was added/edited earlier in the same draft, its staged value
+    // must not be written after removal. A later same-slug re-add can stage it anew.
+    var pending = state.profileDraft.pendingApiSecrets || {};
+    delete pending[conn.id];
+    state.profileDraft.pendingApiSecrets = pending;
+  }
+
+  function commitApiConnectionRow() {
+    var editor = state.apiConnectionEditor;
+    if (!editor) return;
+    var connections = (state.profileDraft && state.profileDraft.apiConnections) || [];
+    var validationError = validateApiConnectionEditor(editor, connections);
+    if (validationError) { editor.error = validationError; render(); return; }
+    var conn = apiConnectionFromEditor(editor);
+    if (editor.index === null || editor.index === undefined) connections.push(conn);
+    else connections[editor.index] = conn;
+    state.profileDraft.apiConnections = connections;
+    stagePendingApiSecret(conn.id, editor);
+    state.apiConnectionEditor = null;
+    markProfileDirty();
+    render();
+  }
+
+  function commitOpenApiConnectionEditor() {
+    var editor = state.apiConnectionEditor;
+    if (!editor) return true;
+    var hasTypedValue = String(editor.displayName || "").trim() ||
+      (editor.allowedHosts || []).some(function (host) { return !!String(host || "").trim(); }) ||
+      String(editor.headerName || "").trim() || String(editor.credential || "").trim();
+    if (!hasTypedValue) { state.apiConnectionEditor = null; return true; }
+    var connections = (state.profileDraft && state.profileDraft.apiConnections) || [];
+    var validationError = validateApiConnectionEditor(editor, connections);
+    if (validationError) { editor.error = validationError; render(); return false; }
+    var conn = apiConnectionFromEditor(editor);
+    if (editor.index === null || editor.index === undefined) connections.push(conn);
+    else connections[editor.index] = conn;
+    state.profileDraft.apiConnections = connections;
+    stagePendingApiSecret(conn.id, editor);
+    state.apiConnectionEditor = null;
+    return true;
+  }
+
+  function flushApiConnectionSecrets(draft, agentId) {
+    var pending = (draft && draft.pendingApiSecrets) || {};
+    var removed = (draft && draft.removedApiConnections) || [];
+    function pendingHasValue(id) {
+      return !!pending[id] && pending[id].credential !== undefined;
+    }
+    removed.forEach(function (entry) {
+      if (pendingHasValue(entry.id)) return;
+      postJson("/admin/api/agents/" + encodeURIComponent(agentId) + "/api-connections/secrets/" + encodeURIComponent(entry.id), "DELETE", {}).catch(function () {});
+    });
+    Object.keys(pending).forEach(function (id) {
+      var entry = pending[id];
+      if (entry.credential !== undefined) {
+        postJson("/admin/api/agents/" + encodeURIComponent(agentId) + "/api-connections/secrets/" + encodeURIComponent(id), "PUT", { credential: entry.credential }).catch(function () {});
+      }
+    });
+    if (draft) { draft.pendingApiSecrets = {}; draft.removedApiConnections = []; }
+  }
+
   // POST the raw pasted source to the resolve endpoint and, on success, open the
   // picker with every skill pre-selected. On error, surface the server message
   // (error.serverMessage) or a friendly fallback keyed by the code (error.message,
@@ -4779,8 +5135,10 @@ details[open].advanced summary::before {
     state.skillEditor = null;
     state.skillImport = null;
     state.connectionEditor = null;
+    state.apiConnectionEditor = null;
     state.connectorGallerySearch = "";
     state.connectionRemove = null;
+    state.apiConnectionRemove = null;
     state.profileError = "";
     state.profileDraft = null;
     state.editingAgentId = null;
@@ -4815,6 +5173,7 @@ details[open].advanced summary::before {
     // Same for an open Connections editor — commit it into mcpServers (and stage
     // its typed secrets) before the PATCH, or bail on an inline validation error.
     if (!commitOpenConnectionEditor()) { showProfileTab("connections"); return; }
+    if (!commitOpenApiConnectionEditor()) { showProfileTab("connections"); return; }
     if (!draft.name) { state.profileError = "Name is required."; render(); return; }
     if (!draft.instructions) { state.profileError = "Profile instructions are required."; state.profileTab = "instructions"; render(); return; }
     var body = {
@@ -4824,7 +5183,8 @@ details[open].advanced summary::before {
       skills: draft.skills || [],
       // POLICY ONLY. connectionFromEditor / cloneConnection strip secrets by
       // construction — no token or header VALUE is ever in this array.
-      mcpServers: draft.mcpServers || []
+      mcpServers: draft.mcpServers || [],
+      apiConnections: draft.apiConnections || []
     };
     var isEdit = !!draft.id;
     // Capture the draft carrying the transient secrets + removals BEFORE the
@@ -4848,6 +5208,7 @@ details[open].advanced summary::before {
       // never survive a save. Fire-and-forget: a secret write failure must not
       // block the saved profile.
       flushConnectionSecrets(secretsDraft, secretAgentId);
+      flushApiConnectionSecrets(secretsDraft, secretAgentId);
       if (isEdit) {
         // Stay on the editor; re-clone the draft from the refreshed agent so the
         // form reflects exactly what persisted (and the save bar re-disables).
@@ -4876,8 +5237,10 @@ details[open].advanced summary::before {
     state.skillEditor = null;
     state.skillImport = null;
     state.connectionEditor = null;
+    state.apiConnectionEditor = null;
     state.connectorGallerySearch = "";
     state.connectionRemove = null;
+    state.apiConnectionRemove = null;
     render();
   }
 
