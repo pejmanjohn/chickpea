@@ -1,4 +1,4 @@
-import type { NetworkConfig } from 'just-bash';
+import type { NetworkConfig, SecureFetch } from 'just-bash';
 
 import { getSettingsStore, type PlatformEnv } from './state-backend.ts';
 
@@ -35,6 +35,17 @@ interface DnsResponse {
 
 type DnsResult = { address: string; family: number };
 
+interface EgressEntry {
+  url: string;
+  transform?: [{ headers: Record<string, string> }];
+  methods: string[];
+}
+
+export interface EgressMethodEntry {
+  prefix: string;
+  methods: Set<string>;
+}
+
 const dnsCache = new Map<string, Promise<DnsResult[]>>();
 
 export function parseEgressPolicy(raw: string | undefined): EgressPolicy {
@@ -64,7 +75,15 @@ export function buildEgressNetworkConfig(
   opts: { cloudflare: boolean },
   connectors: ResolvedApiConnection[] = [],
 ): NetworkConfig {
-  const activeConnectors = connectors.filter((connector) => connector.headerValue);
+  return buildEgressPlan(policy, opts, connectors).network;
+}
+
+export function buildEgressPlan(
+  policy: EgressPolicy,
+  opts: { cloudflare: boolean },
+  connectors: ResolvedApiConnection[] = [],
+): { network: NetworkConfig; methodMap: EgressMethodEntry[] } {
+  const entries = buildEgressEntries(policy, connectors);
   const allowedMethods = [
     ...new Set([
       'GET',
@@ -74,8 +93,8 @@ export function buildEgressNetworkConfig(
     ]),
   ] as NonNullable<NetworkConfig['allowedMethods']>;
   const network: NetworkConfig = {
-    // just-bash enforces methods globally as a union, not per connection.
-    // Precise per-connection methods need a follow-up SecureFetch wrapper.
+    // This global union remains the graceful fallback when just-bash's
+    // unsupported secureFetch property is unavailable.
     allowedMethods,
     denyPrivateRanges: true,
   };
@@ -88,31 +107,73 @@ export function buildEgressNetworkConfig(
   if (policy.mode === 'open') {
     network.dangerouslyAllowFullInternetAccess = true;
   } else {
-    network.allowedUrlPrefixes =
-      policy.mode === 'off'
-        ? []
-        : [
-            ...new Set(
-              policy.domains
-                .map(normalizeDomain)
-                .filter((domain): domain is string => domain !== undefined),
-            ),
-          ];
+    network.allowedUrlPrefixes = [];
   }
 
-  for (const connector of activeConnectors) {
+  if (entries.length > 0) {
+    network.allowedUrlPrefixes = entries.map(({ url, transform }) =>
+      transform === undefined ? url : { url, transform },
+    );
+  }
+
+  return {
+    network,
+    methodMap: entries
+      .map(({ url, methods }) => ({ prefix: url, methods: new Set(methods) }))
+      .sort((left, right) => right.prefix.length - left.prefix.length),
+  };
+}
+
+export function createMethodEnforcingFetch(
+  delegate: SecureFetch,
+  methodMap: EgressMethodEntry[],
+): SecureFetch {
+  return async (url, options) => {
+    const method = (options?.method || 'GET').toUpperCase();
+    const match = methodMap.find((entry) => url.startsWith(entry.prefix));
+    if (match && !match.methods.has(method)) {
+      const error = new Error(
+        "HTTP method '" +
+          method +
+          "' not allowed. Allowed methods: " +
+          [...match.methods].join(', '),
+      );
+      error.name = 'MethodNotAllowedError';
+      throw error;
+    }
+    return delegate(url, options);
+  };
+}
+
+function buildEgressEntries(
+  policy: EgressPolicy,
+  connectors: ResolvedApiConnection[],
+): EgressEntry[] {
+  const entries: EgressEntry[] = [];
+
+  if (policy.mode === 'allowlist') {
+    for (const url of new Set(
+      policy.domains
+        .map(normalizeDomain)
+        .filter((domain): domain is string => domain !== undefined),
+    )) {
+      entries.push({ url, methods: ['GET', 'HEAD'] });
+    }
+  }
+
+  for (const connector of connectors.filter((candidate) => candidate.headerValue)) {
     for (const host of connector.allowedHosts) {
       for (const prefix of connector.pathPrefixes.length > 0 ? connector.pathPrefixes : ['']) {
-        network.allowedUrlPrefixes ??= [];
-        network.allowedUrlPrefixes.push({
+        entries.push({
           url: 'https://' + host + prefix,
           transform: [{ headers: { [connector.headerName]: connector.headerValue } }],
+          methods: connector.allowedMethods,
         });
       }
     }
   }
 
-  return network;
+  return entries;
 }
 
 function isEgressPolicyShape(value: unknown): value is EgressPolicy {

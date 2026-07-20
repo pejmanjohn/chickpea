@@ -1,9 +1,10 @@
 import { bash, defineAgent, type AgentRouteHandler } from '@flue/runtime';
-import { Bash, InMemoryFs } from 'just-bash';
+import { Bash, InMemoryFs, type SecureFetch } from 'just-bash';
 
 import { resolveConnectorCredential } from '../config/connector-secrets.ts';
 import {
-  buildEgressNetworkConfig,
+  buildEgressPlan,
+  createMethodEnforcingFetch,
   resolveEgressPolicy,
   type ResolvedApiConnection,
 } from '../config/egress.ts';
@@ -98,17 +99,31 @@ export default defineAgent(async ({ id }) => {
         }),
     )
   ).filter((connection): connection is ResolvedApiConnection => connection !== undefined);
-  const egressNetwork = buildEgressNetworkConfig(
+  const { network, methodMap } = buildEgressPlan(
     egressPolicy,
     { cloudflare: isCloudflareTarget() },
     resolvedConnectors,
   );
+  let sandbox;
+  const delegate = (
+    new Bash({ fs: new InMemoryFs(), network }) as unknown as {
+      secureFetch?: SecureFetch;
+    }
+  ).secureFetch;
+  if (typeof delegate === 'function') {
+    const enforcingFetch = createMethodEnforcingFetch(delegate, methodMap);
+    sandbox = bash(() => new Bash({ fs: new InMemoryFs(), fetch: enforcingFetch }));
+  } else {
+    // just-bash internal changed; retain its global method, URL, transform,
+    // and private-range enforcement through the supported network path.
+    sandbox = bash(() => new Bash({ fs: new InMemoryFs(), network }));
+  }
 
   return {
     model: config.model,
     instructions: config.instructions,
     tools: mcpTools,
-    sandbox: bash(() => new Bash({ fs: new InMemoryFs(), network: egressNetwork })),
+    sandbox,
     ...(skills.length > 0 ? { skills } : {}),
   };
 });

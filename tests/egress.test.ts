@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { Bash, InMemoryFs, type SecureFetch } from 'just-bash';
 
 import {
+  buildEgressPlan,
   buildEgressNetworkConfig,
+  createMethodEnforcingFetch,
   DEFAULT_EGRESS_POLICY,
   parseEgressPolicy,
   type ResolvedApiConnection,
@@ -198,3 +201,110 @@ test('buildEgressNetworkConfig skips connector entries with empty credentials', 
   assert.deepEqual(network.allowedUrlPrefixes, []);
   assert.deepEqual(network.allowedMethods, ['GET', 'HEAD', 'POST', 'DELETE']);
 });
+
+test('buildEgressPlan derives per-prefix methods and sorts longest prefixes first', () => {
+  const { methodMap } = buildEgressPlan(
+    {
+      mode: 'allowlist',
+      domains: ['api.linear.app'],
+    },
+    { cloudflare: false },
+    [
+      {
+        ...LINEAR_CONNECTION,
+        pathPrefixes: ['/v1/issues'],
+        allowedMethods: ['GET', 'DELETE'],
+      },
+    ],
+  );
+
+  assert.deepEqual(
+    methodMap.map(({ prefix, methods }) => ({ prefix, methods: [...methods] })),
+    [
+      {
+        prefix: 'https://api.linear.app/v1/issues',
+        methods: ['GET', 'DELETE'],
+      },
+      {
+        prefix: 'https://api.linear.app',
+        methods: ['GET', 'HEAD'],
+      },
+    ],
+  );
+});
+
+test('createMethodEnforcingFetch rejects disallowed methods before delegating', async () => {
+  const calls: Array<{ url: string; options: Parameters<SecureFetch>[1] }> = [];
+  const delegate: SecureFetch = async (url, options) => {
+    calls.push({ url, options });
+    return fetchResult(url);
+  };
+  const enforcingFetch = createMethodEnforcingFetch(delegate, [
+    { prefix: 'https://api.linear.app/v1', methods: new Set(['GET', 'POST']) },
+  ]);
+
+  await assert.rejects(
+    enforcingFetch('https://api.linear.app/v1/issues/123', { method: 'DELETE' }),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.equal(error.name, 'MethodNotAllowedError');
+      assert.equal(
+        error.message,
+        "HTTP method 'DELETE' not allowed. Allowed methods: GET, POST",
+      );
+      return true;
+    },
+  );
+  assert.deepEqual(calls, []);
+});
+
+test('createMethodEnforcingFetch delegates allowed methods and returns the result', async () => {
+  const calls: Array<{ url: string; options: Parameters<SecureFetch>[1] }> = [];
+  const expected = fetchResult('https://api.linear.app/v1/issues');
+  const delegate: SecureFetch = async (url, options) => {
+    calls.push({ url, options });
+    return expected;
+  };
+  const enforcingFetch = createMethodEnforcingFetch(delegate, [
+    { prefix: 'https://api.linear.app/v1', methods: new Set(['GET']) },
+  ]);
+
+  const options = { method: 'get' };
+  assert.equal(await enforcingFetch(expected.url, options), expected);
+  assert.deepEqual(calls, [{ url: expected.url, options }]);
+});
+
+test('createMethodEnforcingFetch delegates URLs that match no prefix', async () => {
+  const calls: Array<{ url: string; options: Parameters<SecureFetch>[1] }> = [];
+  const expected = fetchResult('https://not-allowlisted.example/resource');
+  const delegate: SecureFetch = async (url, options) => {
+    calls.push({ url, options });
+    return expected;
+  };
+  const enforcingFetch = createMethodEnforcingFetch(delegate, [
+    { prefix: 'https://api.linear.app/v1', methods: new Set(['GET']) },
+  ]);
+
+  const options = { method: 'DELETE' };
+  assert.equal(await enforcingFetch(expected.url, options), expected);
+  assert.deepEqual(calls, [{ url: expected.url, options }]);
+});
+
+test('just-bash exposes its generated secure fetch on Bash instances', () => {
+  const instance = new Bash({
+    fs: new InMemoryFs(),
+    network: { allowedUrlPrefixes: [] },
+  }) as unknown as { secureFetch?: SecureFetch };
+
+  assert.equal(typeof instance.secureFetch, 'function');
+});
+
+function fetchResult(url: string) {
+  return {
+    status: 200,
+    statusText: 'OK',
+    headers: {},
+    body: new Uint8Array(),
+    url,
+  };
+}
