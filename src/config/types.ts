@@ -44,6 +44,11 @@ export interface McpConnectionConfig {
   discoveredTools: McpConnectionToolInfo[];
   allowedTools: string[];
   lastCheckedAt?: number;
+  /**
+   * Policy-only back-reference to the connector-preset catalog used to create
+   * this connection; enables badge rendering and "reset to preset".
+   */
+  presetId?: string;
 }
 
 export interface CustomAgentConfig {

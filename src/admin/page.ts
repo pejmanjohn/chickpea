@@ -1,4 +1,6 @@
 import { isCloudflareTarget } from '../config/runtime-target.ts';
+import { CONNECTOR_LOGOS } from '../config/connector-logos.ts';
+import { CONNECTOR_PRESETS } from '../config/presets.ts';
 
 const ADMIN_FAVICON = `<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='8 9 32 32'%3E%3Ccircle cx='24' cy='25' r='15.5' fill='%23E3AC45'/%3E%3Ccircle cx='17' cy='17.5' r='4.2' fill='%23F4D084'/%3E%3Ccircle cx='18.5' cy='24' r='1.9' fill='%233B3220'/%3E%3Ccircle cx='29.5' cy='24' r='1.9' fill='%233B3220'/%3E%3Cpath d='M19 29 Q24 32.5 29 29' fill='none' stroke='%233B3220' stroke-width='1.8' stroke-linecap='round'/%3E%3Ccircle cx='15.5' cy='28.5' r='2' fill='%23DC8A4F' opacity='0.4'/%3E%3Ccircle cx='32.5' cy='28.5' r='2' fill='%23DC8A4F' opacity='0.4'/%3E%3C/svg%3E">`;
 
@@ -984,6 +986,27 @@ details[open].advanced summary::before {
 .conn-pill-on { background: var(--ok-tint); color: var(--ok); }
 .conn-pill-off { background: rgba(59, 50, 32, 0.08); color: #8a7a5c; }
 .conn-pill-warn { background: var(--danger-well); color: var(--danger); }
+#conn-gallery-search-input { margin-bottom: 8px; }
+.gallery-head { align-items: center; color: var(--text-3); display: flex; font-size: 0.75rem; font-weight: 600; gap: 8px; letter-spacing: 0.04em; margin: 12px 2px 4px; text-transform: uppercase; }
+.gallery-head-count { margin-left: auto; }
+.gallery-list { border-radius: var(--radius); box-shadow: inset 0 0 0 1px var(--line); overflow: hidden; }
+.gallery-row { align-items: center; display: flex; gap: 12px; padding: 9px 12px; }
+.gallery-row + .gallery-row { box-shadow: inset 0 1px 0 var(--line); }
+.gallery-row:hover { background: var(--well); }
+.gallery-row-name { font-weight: 600; }
+.gallery-row-spacer { margin-left: auto; }
+.gallery-empty { color: var(--text-3); font-size: 0.8125rem; padding: 14px 4px; }
+.conn-logo { align-items: center; border-radius: 8px; display: inline-flex; flex: none; height: 30px; justify-content: center; width: 30px; }
+.conn-logo-mono { color: #fff; font-size: 0.6875rem; font-weight: 600; letter-spacing: 0.02em; }
+.conn-logo-img { background: #fff; box-shadow: inset 0 0 0 1px var(--line); }
+.conn-logo-img svg { max-width: 20px; max-height: 20px; height: auto; width: auto; }
+.conn-logo-raster { overflow: hidden; }
+.conn-logo-raster img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.conn-title, .conn-recommended-head { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; }
+.conn-view-seg { margin-bottom: 10px; }
+.conn-url-chip { background: var(--well); border-radius: 999px; color: var(--text-3); font-size: 0.6875rem; padding: 4px 8px; }
+.hint-link { color: var(--ember-deep); font-size: 0.8125rem; font-weight: 700; text-decoration: none; }
+.hint-link:hover { color: var(--ember-press); text-decoration: underline; }
 .seg { background: var(--bg); border-radius: 12px; box-shadow: inset 0 0 0 1.5px rgba(59, 50, 32, 0.12); display: inline-flex; overflow: hidden; }
 .seg button {
   appearance: none;
@@ -1053,6 +1076,8 @@ details[open].advanced summary::before {
   // shown on Cloudflare and hidden on Node (the inline script has no target check
   // of its own — this is interpolated as a literal boolean at render time).
   var IS_CLOUDFLARE = ${isCloudflare};
+  var CONNECTOR_PRESETS = ${JSON.stringify(CONNECTOR_PRESETS).replace(/</g, '\\u003c')};
+  var CONNECTOR_LOGOS = ${JSON.stringify(CONNECTOR_LOGOS).replace(/</g, '\\u003c')};
   var state = {
     agents: [],
     assignments: [],
@@ -1118,6 +1143,7 @@ details[open].advanced summary::before {
     // discoveredTools), lifecycleStatus, statusText, lastCheckedAt, sources
     // (secret presence from a prior save: {bearer, headers}), error }.
     connectionEditor: null,
+    connectorGallerySearch: "",
     // Index of the connection pending removal (its confirm modal is open), or
     // null. The DELETE of its secrets is issued on the next profile save.
     connectionRemove: null,
@@ -1301,6 +1327,7 @@ details[open].advanced summary::before {
     state.skillEditor = null;
     state.skillImport = null;
     state.connectionEditor = null;
+    state.connectorGallerySearch = "";
     state.connectionRemove = null;
     state.modelPickerOpen = false;
     state.modelPickerFilter = "";
@@ -2205,6 +2232,59 @@ details[open].advanced summary::before {
     try { return new URL(url).host; } catch (_) { return String(url || ""); }
   }
 
+  function presetById(id) {
+    return (CONNECTOR_PRESETS || []).find(function (preset) { return preset.id === id; });
+  }
+
+  function connectorMonogram(name) {
+    var words = String(name || "").match(/[A-Za-z0-9]+/g) || [];
+    if (!words.length) return "?";
+    if (words.length > 1) return (words[0].charAt(0) + words[1].charAt(0)).toUpperCase();
+    return words[0].slice(0, 2).toUpperCase();
+  }
+
+  function connectorLogoHtml(preset) {
+    var logo = (CONNECTOR_LOGOS || {})[preset.id];
+    if (logo && logo.raster) {
+      return '<span class="conn-logo conn-logo-raster">' + logo.svg + '</span>';
+    }
+    if (logo && logo.full) {
+      return '<span class="conn-logo conn-logo-img conn-logo-full">' + logo.svg + '</span>';
+    }
+    if (logo) {
+      return '<span class="conn-logo conn-logo-img"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" style="color:' + esc(preset.accent) + '">' + logo.svg + '</svg></span>';
+    }
+    return '<span class="conn-logo conn-logo-mono" style="background:' + esc(preset.accent) + '">' + esc(connectorMonogram(preset.name)) + '</span>';
+  }
+
+  function connectorGalleryHtml() {
+    var q = String(state.connectorGallerySearch || "").trim().toLowerCase();
+    var shown = (CONNECTOR_PRESETS || []).filter(function (preset) {
+      return !q || preset.name.toLowerCase().indexOf(q) >= 0;
+    }).slice().sort(function (a, b) {
+      var an = a.name.toLowerCase();
+      var bn = b.name.toLowerCase();
+      return an < bn ? -1 : an > bn ? 1 : 0;
+    });
+    var rows = shown.map(function (preset) {
+      return '<div class="gallery-row">' + connectorLogoHtml(preset) +
+        '<span class="gallery-row-name">' + esc(preset.name) + '</span>' +
+        '<span class="gallery-row-spacer"></span>' +
+        '<button type="button" class="btn btn-soft btn-sm" data-action="conn-preset" data-preset="' + esc(preset.id) + '">Connect</button></div>';
+    }).join("");
+    var list = shown.length
+      ? '<div class="gallery-list">' + rows + '</div>'
+      : '<div class="gallery-empty">No connectors match &ldquo;' + esc(state.connectorGallerySearch) + '&rdquo;.</div>';
+    var custom = '<div class="gallery-row">' +
+      '<span class="conn-logo conn-logo-mono" style="background:var(--ember)">+</span>' +
+      '<span class="gallery-row-name">Custom connection</span>' +
+      '<span class="gallery-row-spacer"></span>' +
+      '<button type="button" class="btn btn-soft btn-sm" data-action="conn-custom">Connect</button></div>';
+    return '<input class="input" id="conn-gallery-search-input" type="text" autocomplete="off" placeholder="Search connectors" value="' + esc(state.connectorGallerySearch || "") + '" data-action="conn-gallery-search" aria-label="Search connectors">' +
+      '<div class="gallery-head"><span>Available</span><span class="gallery-head-count">' + shown.length + '</span></div>' +
+      list + custom;
+  }
+
   function connectionStatusPill(conn) {
     if (conn.lifecycleStatus === "ready") {
       var n = (conn.allowedTools || []).length;
@@ -2270,9 +2350,51 @@ details[open].advanced summary::before {
       '<div><button type="button" class="btn btn-ghost btn-sm" data-action="conn-header-add">Add header</button></div></div>';
   }
 
-  function connectionEditorFormHtml(editor) {
+  function connectionEditorCompletionHtml(editor) {
     var isNew = editor.index === null || editor.index === undefined;
     var testDisabled = !String(editor.url || "").trim();
+    var toolsHtml = connectionToolsHtml(editor);
+    var testError = editor.testError ? '<p class="field-error">' + esc(editor.testError) + '</p>' : "";
+    var testLabel = editor.testing ? "Testing&hellip;" : (editor.lifecycleStatus === "ready" ? "Re-test connection" : "Test connection");
+    return '<div><button type="button" class="btn btn-soft btn-sm" data-action="conn-test"' + (testDisabled ? " disabled" : "") + '>' + testLabel + '</button>' + testError + '</div>' +
+      toolsHtml +
+      (editor.error ? '<p class="field-error">' + esc(editor.error) + '</p>' : "") +
+      '<div class="skill-form-actions">' +
+      '<button type="button" class="btn btn-ghost btn-sm" data-action="conn-cancel">Cancel</button>' +
+      '<button type="button" class="btn btn-primary btn-sm" data-action="conn-save-row">' + (isNew ? "Add connection" : "Save connection") + '</button></div>';
+  }
+
+  function connectionRecommendedBodyHtml(editor) {
+    var preset = editor.preset;
+    var bearerStored = editor.sources && editor.sources.bearer && editor.sources.bearer !== "missing";
+    var tokenHtml = "";
+    if (preset.auth.kind === "none") {
+      tokenHtml = '<p class="hint">No token needed.</p>';
+    } else if (preset.auth.kind === "bearer") {
+      var bearerPlaceholder = bearerStored ? "\\u2022\\u2022\\u2022\\u2022 stored" : preset.auth.placeholder;
+      tokenHtml = '<div class="field"><label class="field-label">API key</label>' +
+        '<input class="input mono" type="password" autocomplete="off" value="' + esc(editor.bearerToken || "") + '" placeholder="' + esc(bearerPlaceholder) + '" data-action="conn-field-bearer"></div>';
+    } else {
+      var headerName = preset.auth.headerName;
+      var headerSources = (editor.sources && editor.sources.headers) || {};
+      var headerStored = headerSources[headerName] && headerSources[headerName] !== "missing";
+      var headerPlaceholder = headerStored ? "\\u2022\\u2022\\u2022\\u2022 stored" : preset.auth.placeholder;
+      tokenHtml = '<div class="field"><label class="field-label">API key</label>' +
+        '<input class="input mono" type="password" autocomplete="off" value="' + esc((editor.headerValues || [])[0] || "") + '" placeholder="' + esc(headerPlaceholder) + '" data-action="conn-header-value" data-index="0"></div>';
+    }
+    var docsHtml = preset.tokenDocsHint ? '<p class="hint">' + esc(preset.tokenDocsHint) + '</p>' : "";
+    if (preset.tokenDocsUrl) {
+      docsHtml += '<a class="hint-link" href="' + esc(preset.tokenDocsUrl) + '" target="_blank" rel="noopener noreferrer">Where do I find this?</a>';
+    }
+    var notesHtml = preset.notes ? '<p class="hint">' + esc(preset.notes) + '</p>' : "";
+    return '<div class="conn-recommended-head">' +
+      connectorLogoHtml(preset) +
+      '<span class="field-label">' + esc(preset.name) + '</span>' +
+      '<span class="conn-url-chip mono">' + esc(connectionHost(editor.url)) + '</span></div>' +
+      tokenHtml + docsHtml + notesHtml + connectionEditorCompletionHtml(editor);
+  }
+
+  function connectionEditorFormHtml(editor) {
     var bearerStored = editor.sources && editor.sources.bearer && editor.sources.bearer !== "missing";
     var bearerPlaceholder = bearerStored ? "\\u2022\\u2022\\u2022\\u2022 stored" : "Paste token \\u2014 stored, never returned by the API";
     var authHtml = '<div class="field"><label class="field-label" for="conn-auth">Authentication</label>' +
@@ -2284,10 +2406,13 @@ details[open].advanced summary::before {
       authHtml += '<input class="input mono" type="password" autocomplete="off" style="margin-top:8px;" value="' + esc(editor.bearerToken || "") + '" placeholder="' + bearerPlaceholder + '" aria-label="Bearer token" data-action="conn-field-bearer">';
     }
     authHtml += "</div>";
-    var toolsHtml = connectionToolsHtml(editor);
-    var testError = editor.testError ? '<p class="field-error">' + esc(editor.testError) + '</p>' : "";
-    var testLabel = editor.testing ? "Testing&hellip;" : (editor.lifecycleStatus === "ready" ? "Re-test connection" : "Test connection");
-    return '<div class="skill-form">' +
+    var viewToggle = editor.preset ? '<div class="seg conn-view-seg" role="group" aria-label="Setup mode">' +
+      '<button type="button" class="' + (editor.view === "recommended" ? "on" : "") + '" data-action="conn-view" data-view="recommended">Recommended</button>' +
+      '<button type="button" class="' + (editor.view !== "recommended" ? "on" : "") + '" data-action="conn-view" data-view="advanced">Advanced</button></div>' : "";
+    if (editor.preset && editor.view === "recommended") {
+      return '<div class="skill-form">' + viewToggle + connectionRecommendedBodyHtml(editor) + '</div>';
+    }
+    return '<div class="skill-form">' + viewToggle +
       '<div class="field"><label class="field-label" for="conn-name">Name</label>' +
       '<input class="input" id="conn-name" type="text" value="' + esc(editor.displayName) + '" placeholder="Linear" data-action="conn-field-name"></div>' +
       '<div class="field"><label class="field-label" for="conn-url">Server URL</label>' +
@@ -2296,12 +2421,7 @@ details[open].advanced summary::before {
       '<div class="field"><label class="field-label">Transport</label>' + transportSegmentHtml(editor.transport) + '</div>' +
       authHtml +
       connectionHeadersHtml(editor) +
-      '<div><button type="button" class="btn btn-soft btn-sm" data-action="conn-test"' + (testDisabled ? " disabled" : "") + '>' + testLabel + '</button>' + testError + '</div>' +
-      toolsHtml +
-      (editor.error ? '<p class="field-error">' + esc(editor.error) + '</p>' : "") +
-      '<div class="skill-form-actions">' +
-      '<button type="button" class="btn btn-ghost btn-sm" data-action="conn-cancel">Cancel</button>' +
-      '<button type="button" class="btn btn-primary btn-sm" data-action="conn-save-row">' + (isNew ? "Add connection" : "Save connection") + '</button></div></div>';
+      connectionEditorCompletionHtml(editor) + '</div>';
   }
 
   // Client-side validation mirroring the server valibot schema so an inline error
@@ -2331,8 +2451,12 @@ details[open].advanced summary::before {
     var rows = servers.map(function (conn, index) {
       if (editor && editor.index === index) return connectionEditorFormHtml(editor);
       var transportLabel = conn.transport === "sse" ? "SSE" : "Streamable HTTP";
+      var connPreset = conn.presetId ? presetById(conn.presetId) : null;
+      var nameHtml = connPreset
+        ? '<span class="conn-title">' + connectorLogoHtml(connPreset) + '<span class="sk-name" style="font-family:inherit;">' + esc(conn.displayName) + '</span></span>'
+        : '<span class="sk-name" style="font-family:inherit;">' + esc(conn.displayName) + '</span>';
       return '<div class="skill-row conn-row">' +
-        '<div class="sk-body"><span class="sk-name" style="font-family:inherit;">' + esc(conn.displayName) + '</span>' +
+        '<div class="sk-body">' + nameHtml +
         '<span class="conn-host">' + esc(connectionHost(conn.url)) + '</span>' +
         '<span class="conn-meta"><span class="badge-src">' + transportLabel + '</span>' + connectionStatusPill(conn) + '</span></div>' +
         '<span class="toggle"><span class="thumb"></span><input type="checkbox" data-action="conn-toggle" data-index="' + index + '" ' + (conn.enabled ? "checked" : "") + ' aria-label="Connection enabled"></span>' +
@@ -2341,15 +2465,10 @@ details[open].advanced summary::before {
     }).join("");
     var list = rows ? '<div class="skill-list">' + rows + '</div>' : "";
     var newForm = (editor && (editor.index === null || editor.index === undefined)) ? '<div class="skill-list">' + connectionEditorFormHtml(editor) + '</div>' : "";
-    var addButton = editor ? "" :
-      '<div class="skill-actions"><button type="button" class="btn btn-soft btn-sm i-lead" data-action="conn-new">' +
-      '<svg class="ic" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><path d="M8.75 3.75a.75.75 0 0 0-1.5 0v3.5h-3.5a.75.75 0 0 0 0 1.5h3.5v3.5a.75.75 0 0 0 1.5 0v-3.5h3.5a.75.75 0 0 0 0-1.5h-3.5v-3.5Z"/></svg>Add connection</button></div>';
+    var gallery = editor ? "" : connectorGalleryHtml();
     var hint = 'Remote MCP servers this profile can call.';
     var security = '<p class="conn-security">Your profile stores connection policy and tool approvals only &mdash; tokens live in the settings store and are never returned by the API.</p>';
-    var body = list + newForm + addButton;
-    if (!list && !newForm) {
-      body = '<div class="empty"><p class="field-label">No connections yet</p><p class="hint">Add a remote MCP server by URL to give this profile extra tools.</p></div>' + addButton;
-    }
+    var body = list + newForm + gallery;
     return '<p class="hint ptab-hint">' + hint + '</p>' + body + security;
   }
 
@@ -3654,17 +3773,31 @@ details[open].advanced summary::before {
     // Connections (remote MCP servers) editor: open blank / open seeded / remove
     // (confirm) / test / save / cancel. Each open captures the current draft off
     // the form first so unrelated typed text is not lost.
-    if (action === "conn-new") {
+    if (action === "conn-custom") {
       collectProfileDraft();
-      state.skillEditor = null; state.skillImport = null;
+      state.connectorGallerySearch = "";
       state.connectionEditor = newConnectionEditor();
+      render();
+    }
+    if (action === "conn-preset") {
+      var connPresetId = target.getAttribute("data-preset");
+      var selectedPreset = presetById(connPresetId);
+      if (selectedPreset) {
+        collectProfileDraft();
+        state.connectorGallerySearch = "";
+        state.connectionEditor = editorFromPreset(selectedPreset);
+        render();
+      }
+    }
+    if (action === "conn-view" && state.connectionEditor) {
+      state.connectionEditor.view = target.getAttribute("data-view") === "advanced" ? "advanced" : "recommended";
       render();
     }
     if (action === "conn-edit") {
       collectProfileDraft();
       var connEditIndex = Number(target.getAttribute("data-index"));
       var connEditServer = (state.profileDraft.mcpServers || [])[connEditIndex];
-      if (connEditServer) { state.connectionEditor = editorFromConnection(connEditIndex, connEditServer); render(); }
+      if (connEditServer) { state.connectorGallerySearch = ""; state.connectionEditor = editorFromConnection(connEditIndex, connEditServer); render(); }
     }
     if (action === "conn-cancel") { state.connectionEditor = null; render(); }
     if (action === "conn-remove") {
@@ -3737,6 +3870,19 @@ details[open].advanced summary::before {
     // results container to keep the input focused.
     if (action === "prov-key-input") { provUiFor(target.getAttribute("data-provider")).key = target.value; }
     if (action === "fav-search") { updateFavSearch(target.getAttribute("data-provider"), target.value); }
+    if (action === "conn-gallery-search") {
+      var caret = null;
+      try { caret = target.selectionStart; } catch (error) { caret = null; }
+      state.connectorGallerySearch = target.value;
+      render();
+      var gallerySearchInput = document.getElementById("conn-gallery-search-input");
+      if (gallerySearchInput && gallerySearchInput.focus) {
+        gallerySearchInput.focus();
+        if (caret != null && gallerySearchInput.setSelectionRange) {
+          try { gallerySearchInput.setSelectionRange(caret, caret); } catch (error) { /* ignore */ }
+        }
+      }
+    }
     // Profile form fields: mirror keystrokes into the draft (so a pick-model /
     // tool-toggle re-render keeps typed text) and mark the edit save bar dirty
     // without a full re-render, preserving focus.
@@ -4117,6 +4263,7 @@ details[open].advanced summary::before {
   function newConnectionEditor() {
     return {
       index: null,
+      preset: null,
       id: "",
       displayName: "",
       url: "",
@@ -4140,6 +4287,25 @@ details[open].advanced summary::before {
       sources: { bearer: "missing", headers: {} },
       error: ""
     };
+  }
+
+  function editorFromPreset(preset) {
+    var authMode = preset.auth.kind === "bearer" ? "bearer" : "none";
+    var headerNames = preset.auth.kind === "header" ? [preset.auth.headerName] : [];
+    var headerValues = preset.auth.kind === "header" ? [""] : [];
+    return Object.assign(newConnectionEditor(), {
+      index: null,
+      preset: preset,
+      presetId: preset.id,
+      view: "recommended",
+      displayName: preset.name,
+      url: preset.url,
+      transport: preset.transport,
+      id: preset.id,
+      authMode: authMode,
+      headerNames: headerNames,
+      headerValues: headerValues
+    });
   }
 
   // Seed an editor from an existing connection (POLICY only — secrets never live
@@ -4170,6 +4336,11 @@ details[open].advanced summary::before {
     var headerSources = {};
     editor.headerNames.forEach(function (name) { headerSources[name] = "stored"; });
     editor.sources = { bearer: conn.authMode === "bearer" ? "stored" : "missing", headers: headerSources };
+    editor.presetId = conn.presetId;
+    if (conn.presetId) {
+      editor.preset = presetById(conn.presetId) || null;
+      if (editor.preset) editor.view = "recommended";
+    }
     return editor;
   }
 
@@ -4185,6 +4356,17 @@ details[open].advanced summary::before {
   // Build the { id, url, transport, authMode, bearerToken?, headers? } body for
   // the test endpoint from the open editor. Only NON-EMPTY typed secrets are
   // included — an empty box means "use the stored/env value" server-side.
+  function presetHeaderPrefix(editor, headerName) {
+    var preset = editor && editor.preset;
+    if (preset && preset.auth && preset.auth.kind === "header" && preset.auth.valuePrefix && preset.auth.headerName === headerName) return preset.auth.valuePrefix;
+    return "";
+  }
+
+  function applyHeaderPrefix(prefix, value) {
+    if (!prefix || !value) return value;
+    return value.indexOf(prefix) === 0 ? value : prefix + value;
+  }
+
   function connectionTestBody(editor) {
     var id = editor.id || connectionSlug(editor.displayName);
     var body = {
@@ -4205,7 +4387,7 @@ details[open].advanced summary::before {
       var trimmedName = String(name || "").trim();
       var value = values[i];
       if (trimmedName) headerNames.push(trimmedName);
-      if (trimmedName && value) { headers[trimmedName] = value; hasHeader = true; }
+      if (trimmedName && value) { headers[trimmedName] = applyHeaderPrefix(presetHeaderPrefix(editor, trimmedName), value); hasHeader = true; }
     });
     if (hasHeader) body.headers = headers;
     // Always send the header NAMES so the server can back an un-retyped header
@@ -4305,6 +4487,7 @@ details[open].advanced summary::before {
       allowedTools: allowed
     };
     if (editor.lastCheckedAt) conn.lastCheckedAt = editor.lastCheckedAt;
+    if (editor.presetId) conn.presetId = editor.presetId;
     return conn;
   }
 
@@ -4343,7 +4526,7 @@ details[open].advanced summary::before {
     names.forEach(function (name, i) {
       var trimmedName = String(name || "").trim();
       var value = values[i];
-      if (trimmedName && value) headers[trimmedName] = value;
+      if (trimmedName && value) headers[trimmedName] = applyHeaderPrefix(presetHeaderPrefix(editor, trimmedName), value);
     });
     if (Object.keys(headers).length) entry.headers = headers;
     pending[id] = entry;
@@ -4501,6 +4684,7 @@ details[open].advanced summary::before {
     state.skillEditor = null;
     state.skillImport = null;
     state.connectionEditor = null;
+    state.connectorGallerySearch = "";
     state.connectionRemove = null;
     state.profileError = "";
     state.profileDraft = null;
@@ -4597,6 +4781,7 @@ details[open].advanced summary::before {
     state.skillEditor = null;
     state.skillImport = null;
     state.connectionEditor = null;
+    state.connectorGallerySearch = "";
     state.connectionRemove = null;
     render();
   }

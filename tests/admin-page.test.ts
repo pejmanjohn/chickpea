@@ -200,6 +200,8 @@ function runAdminPageHarness(
   mcpTestPosts: Array<Record<string, unknown>>;
   mcpSecretPuts: Array<{ agentId: string; id: string; body: Record<string, unknown> }>;
   mcpSecretDeletes: Array<{ agentId: string; id: string; body: Record<string, unknown> }>;
+  gallerySearchFocusCalls(): number;
+  gallerySearchSelections: Array<[number, number]>;
   resolveOpsEffective(): void;
 } {
   const app: FakeElement = { innerHTML: '' };
@@ -218,6 +220,8 @@ function runAdminPageHarness(
   const mcpTestPosts: Array<Record<string, unknown>> = [];
   const mcpSecretPuts: Array<{ agentId: string; id: string; body: Record<string, unknown> }> = [];
   const mcpSecretDeletes: Array<{ agentId: string; id: string; body: Record<string, unknown> }> = [];
+  let gallerySearchFocusCalls = 0;
+  const gallerySearchSelections: Array<[number, number]> = [];
   const mcpTestResult = options.mcpTestResult;
   let assignments = options.assignments ?? defaultAssignments();
   const slackConnection = options.slackConnection;
@@ -270,6 +274,16 @@ function runAdminPageHarness(
       // tracked fake element so a keystroke's filtered output is observable.
       if (id.startsWith('fav-results-')) {
         return (favContainers[id] ??= { innerHTML: '' });
+      }
+      if (id === 'conn-gallery-search-input') {
+        return {
+          focus() {
+            gallerySearchFocusCalls += 1;
+          },
+          setSelectionRange(start: number, end: number) {
+            gallerySearchSelections.push([start, end]);
+          },
+        };
       }
       return null;
     },
@@ -604,6 +618,7 @@ function runAdminPageHarness(
           return this.fields[name] ?? null;
         }
       },
+      URL,
       URLSearchParams,
     },
     { filename: 'admin-page-inline.js' },
@@ -626,6 +641,8 @@ function runAdminPageHarness(
     mcpTestPosts,
     mcpSecretPuts,
     mcpSecretDeletes,
+    gallerySearchFocusCalls: () => gallerySearchFocusCalls,
+    gallerySearchSelections,
     resolveOpsEffective() {
       assert.ok(resolveOpsEffective, 'expected C_OPS effective-config request to be pending');
       resolveOpsEffective();
@@ -1390,7 +1407,187 @@ function connectionsAgent(overrides: Record<string, unknown> = {}): Record<strin
   };
 }
 
-test('the Connections section renders empty, with the STDIO-greyed form, exact security copy, and trust-gated Test', async () => {
+test('the inline script embeds the connector preset catalog and brand logos', () => {
+  const script = inlineScript();
+
+  assert.match(script, /CONNECTOR_PRESETS/);
+  assert.match(script, /CONNECTOR_LOGOS/);
+  assert.match(script, /mcp\.linear\.app/);
+  assert.match(script, /M2\.886 4\.18/);
+});
+
+test('the searchable Connections gallery is immediate, renders brand logos, and opens the Recommended editor', async () => {
+  const harness = runAdminPageHarness({ agents: [connectionsAgent()] });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  assert.ok(click && input);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+
+  const gallery = harness.app.innerHTML;
+  assert.match(gallery, /data-action="conn-gallery-search"/);
+  assert.equal(
+    (gallery.match(/data-action="conn-preset" data-preset="[^"]+">Connect<\/button>/g) ?? []).length,
+    20,
+  );
+  assert.match(gallery, /<span>Available<\/span><span class="gallery-head-count">20<\/span>/);
+  assert.doesNotMatch(gallery, /data-preset="github"/);
+  assert.doesNotMatch(gallery, /data-preset="context7"/);
+  assert.doesNotMatch(gallery, /data-preset="deepwiki"/);
+  assert.doesNotMatch(gallery, /data-action="conn-new"/);
+  assert.doesNotMatch(gallery, /data-action="conn-gallery-cancel"/);
+
+  const ahrefsIndex = gallery.indexOf('data-preset="ahrefs"');
+  const airtableIndex = gallery.indexOf('data-preset="airtable"');
+  const cloudflareBindingsIndex = gallery.indexOf('data-preset="cloudflare-bindings"');
+  const stripeIndex = gallery.indexOf('data-preset="stripe"');
+  assert.ok(
+    ahrefsIndex >= 0 &&
+      ahrefsIndex < airtableIndex &&
+      airtableIndex < cloudflareBindingsIndex &&
+      cloudflareBindingsIndex < stripeIndex,
+  );
+
+  const ahrefsRow = gallery.match(
+    /<div class="gallery-row"><span class="conn-logo conn-logo-img conn-logo-full"><svg(?:(?!<\/div>)[\s\S])*?data-preset="ahrefs">Connect<\/button><\/div>/,
+  )?.[0];
+  assert.ok(ahrefsRow);
+  assert.match(ahrefsRow, /conn-logo-full"><svg/);
+
+  const incidentIoRow = gallery.match(
+    /<div class="gallery-row"><span class="conn-logo conn-logo-raster"><img src="data:image\/png;base64,[^"]+" alt=""><\/span>(?:(?!<\/div>)[\s\S])*?data-preset="incident-io">Connect<\/button><\/div>/,
+  )?.[0];
+  assert.ok(incidentIoRow);
+  assert.match(incidentIoRow, /conn-logo-raster"><img src="data:image\/png;base64,/);
+
+  const linearRow = gallery.match(
+    /<div class="gallery-row"><span class="conn-logo conn-logo-img"><svg[\s\S]*?data-preset="linear">Connect<\/button><\/div>/,
+  )?.[0];
+  assert.ok(linearRow);
+  assert.match(
+    linearRow,
+    /<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" style="color:#5E6AD2"><path/,
+  );
+  assert.match(linearRow, /<span class="gallery-row-name">Linear<\/span>/);
+
+  const mondayRow = gallery.match(
+    /<div class="gallery-row"><span class="conn-logo conn-logo-img conn-logo-full"><svg[\s\S]*?data-preset="monday">Connect<\/button><\/div>/,
+  )?.[0];
+  assert.ok(mondayRow);
+  assert.match(mondayRow, /<svg viewBox="0 0 64 64"/);
+  assert.match(mondayRow, /fill="#ff3d57"/);
+
+  const exaRow = gallery.match(
+    /<div class="gallery-row"><span class="conn-logo conn-logo-raster"><img src="data:image\/png;base64,[^"]+" alt=""><\/span>[\s\S]*?data-preset="exa">Connect<\/button><\/div>/,
+  )?.[0];
+  assert.ok(exaRow);
+  assert.match(exaRow, /<img src="data:image\/png;base64,[^"]+" alt="">/);
+  assert.doesNotMatch(exaRow, /conn-logo-mono/);
+  assert.match(
+    gallery,
+    /<span class="gallery-row-name">Custom connection<\/span>[\s\S]*?data-action="conn-custom">Connect<\/button>/,
+  );
+
+  input({
+    target: Object.assign(inputTarget({ 'data-action': 'conn-gallery-search' }, 'monday'), {
+      selectionStart: 6,
+    }),
+  });
+  const filteredGallery = harness.app.innerHTML;
+  assert.equal((filteredGallery.match(/data-action="conn-preset"/g) ?? []).length, 1);
+  assert.match(filteredGallery, /data-preset="monday">Connect<\/button>/);
+  assert.match(filteredGallery, /<span class="gallery-row-name">Monday\.com<\/span>/);
+  assert.doesNotMatch(filteredGallery, /data-preset="linear"/);
+  assert.match(filteredGallery, /<span>Available<\/span><span class="gallery-head-count">1<\/span>/);
+  assert.equal(harness.gallerySearchFocusCalls(), 1);
+  assert.deepEqual(harness.gallerySearchSelections, [[6, 6]]);
+
+  input({ target: inputTarget({ 'data-action': 'conn-gallery-search' }, '') });
+  click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'linear' }) });
+  const recommended = harness.app.innerHTML;
+  assert.match(recommended, /<div class="conn-recommended-head"><span class="conn-logo conn-logo-img"><svg/);
+  assert.match(recommended, /data-action="conn-view" data-view="recommended"/);
+  assert.match(recommended, /data-action="conn-view" data-view="advanced"/);
+  assert.match(recommended, /<span class="conn-url-chip mono">mcp\.linear\.app<\/span>/);
+  assert.match(recommended, /placeholder="lin_api_[^"]*"[^>]*data-action="conn-field-bearer"/);
+  assert.doesNotMatch(recommended, /data-action="conn-field-url"/);
+  const docsAnchor = recommended.match(
+    /<a class="hint-link" href="https:\/\/linear\.app\/docs\/mcp"[^>]*>Where do I find this\?<\/a>/,
+  )?.[0];
+  assert.ok(docsAnchor);
+  assert.match(docsAnchor, /target="_blank"/);
+  assert.match(docsAnchor, /rel="[^"]*noopener[^"]*"/);
+
+  click({ target: actionTarget({ 'data-action': 'conn-view', 'data-view': 'advanced' }) });
+  assert.match(harness.app.innerHTML, /id="conn-url"[^>]*data-action="conn-field-url"/);
+  assert.match(harness.app.innerHTML, /id="conn-name"[^>]*data-action="conn-field-name"/);
+});
+
+test('the Sentry preset keeps its header auth and applies the same idempotent prefix to test and save', async () => {
+  const harness = runAdminPageHarness({ agents: [connectionsAgent()] });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  assert.ok(click && input);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'sentry' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-view', 'data-view': 'advanced' }) });
+
+  assert.match(harness.app.innerHTML, /<option value="none" selected>None<\/option>/);
+  assert.match(harness.app.innerHTML, /value="Authorization"[^>]*data-action="conn-header-name"/);
+
+  input({ target: inputTarget({ 'data-action': 'conn-header-value', 'data-index': '0' }, 'sentry-user-token') });
+  click({ target: actionTarget({ 'data-action': 'conn-test' }) });
+  await flushAsync();
+  assert.equal(
+    (harness.mcpTestPosts[0]?.headers as Record<string, string>).Authorization,
+    'Sentry-Bearer sentry-user-token',
+  );
+
+  input({
+    target: inputTarget(
+      { 'data-action': 'conn-header-value', 'data-index': '0' },
+      'Sentry-Bearer sentry-user-token',
+    ),
+  });
+  click({ target: actionTarget({ 'data-action': 'conn-test' }) });
+  await flushAsync();
+  assert.equal(
+    (harness.mcpTestPosts[1]?.headers as Record<string, string>).Authorization,
+    'Sentry-Bearer sentry-user-token',
+  );
+
+  click({ target: actionTarget({ 'data-action': 'conn-save-row' }) });
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+  assert.equal(
+    (harness.mcpSecretPuts[0]?.body.headers as Record<string, string>).Authorization,
+    'Sentry-Bearer sentry-user-token',
+  );
+});
+
+test('a preset connection carries presetId in the profile save body', async () => {
+  const harness = runAdminPageHarness({ agents: [connectionsAgent()] });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'linear' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-save-row' }) });
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+
+  const servers = harness.agentPatchBodies[0]?.body.mcpServers as Array<Record<string, unknown>>;
+  assert.equal(servers[0]?.presetId, 'linear');
+});
+
+test('the Connections section renders its gallery, with the STDIO-greyed form, exact security copy, and trust-gated Test', async () => {
   const harness = runAdminPageHarness({ agents: [connectionsAgent()] });
   await flushAsync();
 
@@ -1401,17 +1598,18 @@ test('the Connections section renders empty, with the STDIO-greyed form, exact s
 
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
 
-  // The Connections capability tab renders, its panel empty at first, with the
+  // The Connections capability tab renders its gallery with the
   // tokens-by-reference note.
   assert.match(harness.app.innerHTML, /data-action="profile-tab" data-tab="connections"/);
-  assert.match(harness.app.innerHTML, /No connections yet/);
+  assert.match(harness.app.innerHTML, /data-action="conn-gallery-search"/);
+  assert.doesNotMatch(harness.app.innerHTML, /No connections yet/);
   assert.match(
     harness.app.innerHTML,
     /Your profile stores connection policy and tool approvals only &mdash; tokens live in the settings store and are never returned by the API\./,
   );
 
   // Open the add form — Name + URL + transport control appear.
-  click({ target: actionTarget({ 'data-action': 'conn-new' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-custom' }) });
   assert.match(harness.app.innerHTML, /data-action="conn-field-name"/);
   assert.match(harness.app.innerHTML, /data-action="conn-field-url"/);
 
@@ -1440,7 +1638,7 @@ test('testing a connection renders discovered-tool checkboxes all checked and ca
   assert.ok(click && input && change);
 
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
-  click({ target: actionTarget({ 'data-action': 'conn-new' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-custom' }) });
 
   input({ target: inputTarget({ 'data-action': 'conn-field-name' }, 'Linear') });
   input({ target: inputTarget({ 'data-action': 'conn-field-url' }, 'https://mcp.example.com/mcp') });
@@ -1519,7 +1717,7 @@ test('creating a profile writes connection secrets under the generated profile i
   input({ target: inputTarget({ 'data-action': 'profile-name' }, 'Support Profile') });
   input({ target: inputTarget({ 'data-action': 'profile-instructions' }, 'Help teammates.') });
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
-  click({ target: actionTarget({ 'data-action': 'conn-new' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-custom' }) });
   input({ target: inputTarget({ 'data-action': 'conn-field-name' }, 'Linear') });
   input({ target: inputTarget({ 'data-action': 'conn-field-url' }, 'https://mcp.example.com/mcp') });
   change({
@@ -1677,7 +1875,7 @@ test('a failed test marks the connection failed with the safe status text and no
   assert.ok(click && input && change);
 
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
-  click({ target: actionTarget({ 'data-action': 'conn-new' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-custom' }) });
   input({ target: inputTarget({ 'data-action': 'conn-field-name' }, 'Linear') });
   input({ target: inputTarget({ 'data-action': 'conn-field-url' }, 'https://mcp.example.com/mcp') });
   click({ target: actionTarget({ 'data-action': 'conn-test' }) });
@@ -1734,9 +1932,10 @@ test('removing a connection confirms in a modal and DELETEs its secrets on save'
   assert.match(harness.app.innerHTML, /data-action="conn-remove-confirm"/);
   assert.match(harness.app.innerHTML, /data-action="conn-remove-cancel"/);
 
-  // Confirm — the row is gone; empty state returns.
+  // Confirm — the row is gone and the gallery remains available.
   click({ target: actionTarget({ 'data-action': 'conn-remove-confirm' }) });
-  assert.match(harness.app.innerHTML, /No connections yet/);
+  assert.match(harness.app.innerHTML, /data-action="conn-gallery-search"/);
+  assert.doesNotMatch(harness.app.innerHTML, /No connections yet/);
 
   // Save — the PATCH body has an empty mcpServers AND the secrets DELETE fires
   // with the connection's header names.
@@ -1761,7 +1960,7 @@ test('saving with a filled-but-not-added connection editor commits it, not drops
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
 
   // Open the editor and fill it — but do NOT click "Add connection".
-  click({ target: actionTarget({ 'data-action': 'conn-new' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-custom' }) });
   input({ target: inputTarget({ 'data-action': 'conn-field-name' }, 'Deepwiki') });
   input({ target: inputTarget({ 'data-action': 'conn-field-url' }, 'https://mcp.deepwiki.com/mcp') });
 
@@ -1803,7 +2002,7 @@ test('a duplicate connection name and a non-https URL are rejected inline before
   assert.ok(click && input);
 
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
-  click({ target: actionTarget({ 'data-action': 'conn-new' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-custom' }) });
 
   // A non-https URL is rejected inline.
   input({ target: inputTarget({ 'data-action': 'conn-field-name' }, 'Other') });

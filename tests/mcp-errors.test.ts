@@ -16,6 +16,21 @@ const CASES: { input: unknown; code: McpErrorCode }[] = [
   { input: new Error('connect timeout after 8000ms'), code: 'timeout' },
   { input: new Error('HTTP 401 Unauthorized'), code: 'unauthorized' },
   { input: new Error('server said 401'), code: 'unauthorized' },
+  {
+    input: Object.assign(
+      new Error('Streamable HTTP error: Error POSTing to endpoint: {"error":"invalid_token"}'),
+      { code: 401 },
+    ),
+    code: 'unauthorized',
+  },
+  {
+    input: Object.assign(new Error('bad request: missing required Authorization header'), {
+      code: 403,
+    }),
+    code: 'unauthorized',
+  },
+  { input: Object.assign(new Error('not found'), { code: 404 }), code: 'mcp_connection_failed' },
+  { input: Object.assign(new Error('fetch failed'), { code: undefined }), code: 'network' },
   { input: new McpBlockedUrlError('Private and internal IP addresses are not allowed.'), code: 'blocked_url' },
   { input: new Error('failed to discover tools'), code: 'discovery_failed' },
   { input: new Error('weird ECONNRESET blob'), code: 'mcp_connection_failed' },

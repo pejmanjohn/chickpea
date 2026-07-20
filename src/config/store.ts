@@ -428,13 +428,21 @@ export class SqliteConfigStore implements ConfigStore {
   }
 }
 
+// Only UNIQUE/PRIMARY KEY violations mean "this agent id is taken". Mapping the
+// whole SQLITE_CONSTRAINT family here once turned a NOT NULL violation (stale
+// dev schema) into a misleading agent_exists 409 — any other constraint error
+// must surface as a real failure, not a duplicate id.
 function isConstraintViolation(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
   const errcode = (err as { errcode?: number }).errcode;
   if (typeof errcode === 'number') {
-    return (errcode & 0xff) === 19; // SQLITE_CONSTRAINT family
+    // SQLITE_CONSTRAINT_PRIMARYKEY (1555) / SQLITE_CONSTRAINT_UNIQUE (2067)
+    return errcode === 1555 || errcode === 2067;
   }
-  return err.message.includes('constraint failed'); // fallback if errcode absent
+  return (
+    err.message.includes('UNIQUE constraint failed') ||
+    err.message.includes('PRIMARY KEY constraint failed')
+  );
 }
 
 function rowToAgent(row: AgentRow): CustomAgentConfig {

@@ -170,6 +170,7 @@ const mcpServerSchema = v.pipe(
       v.maxLength(50),
     ),
     lastCheckedAt: v.optional(v.number()),
+    presetId: v.optional(v.pipe(v.string(), v.regex(/^[a-z0-9][a-z0-9-]{0,63}$/), v.maxLength(64))),
   }),
   v.check((s) => validateMcpUrl(s.url).ok, 'URL not allowed'),
 );
@@ -1392,6 +1393,7 @@ function toMcpServers(
     })),
     allowedTools: server.allowedTools,
     ...(server.lastCheckedAt !== undefined ? { lastCheckedAt: server.lastCheckedAt } : {}),
+    ...(server.presetId !== undefined ? { presetId: server.presetId } : {}),
   }));
 }
 
