@@ -1170,6 +1170,10 @@ details[open].advanced summary::before {
     settings: null,
     settingsLoaded: false,
     settingsError: "",
+    egress: null,
+    egressLoaded: false,
+    egressError: "",
+    egressSaving: false,
     provUi: {},
     favUi: {},
     // null = favorites not yet fetched (picker/Settings load them lazily). The
@@ -1190,6 +1194,7 @@ details[open].advanced summary::before {
     modelPickerFilter: "",
     providerModelsError: {}
   };
+  var egressDraft = { mode: "allowlist", domains: [""] };
 
   // Inline Heroicons (micro, 16px) — solid unless noted. Colour inherits from
   // the parent via currentColor; never override fill in CSS.
@@ -2856,23 +2861,53 @@ details[open].advanced summary::before {
   function settingsMainHtml() {
     var head = '<div style="display:flex; flex-direction:column; gap:6px;">' +
       '<h1 class="page-title">Settings</h1>' +
-      '<p class="hint">Where Chickpea gets its model keys, and which models show up when you pin one to a profile.</p></div>';
+      '<p class="hint">Configure model providers and outbound internet access for the sandbox.</p></div>';
+    var providerSection;
     if (state.settingsError) {
-      return head + '<div class="empty"><p class="field-label">Settings failed to load</p><p class="error">' + esc(state.settingsError) + '</p></div>';
+      providerSection = '<section class="section"><div class="section-head"><div><h2 class="section-title">Model providers</h2></div></div><p class="field-error">' + esc(state.settingsError) + '</p></section>';
+    } else if (!state.settingsLoaded || !state.settings) {
+      providerSection = '<section class="section"><div class="section-head"><div><h2 class="section-title">Model providers</h2></div></div><p class="hint">Loading providers&hellip;</p></section>';
+    } else {
+      var providers = (state.settings.providers || []).filter(function (provider) {
+        // Workers AI is binding-only — shown on Cloudflare, hidden on Node.
+        return provider.id !== "workers-ai" || IS_CLOUDFLARE;
+      });
+      var rows = providers.map(providerRowHtml).join("");
+      providerSection = '<section class="section"><div class="section-head"><div><h2 class="section-title">Model providers</h2>' +
+        '<p class="hint">A key lets Chickpea run that provider\\'s models. Environment variables always win over keys stored here &mdash; same rule as the Slack connection. Validating a key makes one live call to the provider\\'s models endpoint, which also loads its model list.</p></div></div>' +
+        rows +
+        '<p class="hint">More providers appear here as this install registers them in <span class="mono" style="color:var(--text-2);">src/app.ts</span>.</p></section>';
     }
-    if (!state.settingsLoaded || !state.settings) {
-      return head + '<div class="empty"><p class="field-label">Loading providers&hellip;</p><p class="hint">Reading provider key status.</p></div>';
+    return head + providerSection + egressSectionHtml();
+  }
+
+  function egressSectionHtml() {
+    var head = '<div class="section-head"><div><h2 class="section-title">Outbound access</h2>' +
+      '<p class="hint">Controls the internet access available to sandbox <span class="mono">curl</span>. MCP connectors are separate and always work. Private and internal addresses are always blocked. <b>Allowlist</b> permits only the listed hosts; <b>Open</b> permits the whole internet; <b>Off</b> disables outbound access.</p></div></div>';
+    if (!state.egressLoaded) {
+      return '<section class="section">' + head + '<p class="hint">Loading outbound policy&hellip;</p></section>';
     }
-    var providers = (state.settings.providers || []).filter(function (provider) {
-      // Workers AI is binding-only — shown on Cloudflare, hidden on Node.
-      return provider.id !== "workers-ai" || IS_CLOUDFLARE;
-    });
-    var rows = providers.map(providerRowHtml).join("");
-    return head +
-      '<section class="section"><div class="section-head"><div><h2 class="section-title">Model providers</h2>' +
-      '<p class="hint">A key lets Chickpea run that provider\\'s models. Environment variables always win over keys stored here &mdash; same rule as the Slack connection. Validating a key makes one live call to the provider\\'s models endpoint, which also loads its model list.</p></div></div>' +
-      rows +
-      '<p class="hint">More providers appear here as this install registers them in <span class="mono" style="color:var(--text-2);">src/app.ts</span>.</p></section>';
+    var mode = egressDraft.mode;
+    var disabled = state.egressSaving ? " disabled" : "";
+    var segment = '<div class="seg" role="group" aria-label="Outbound access mode">' +
+      '<button type="button" class="' + (mode === "allowlist" ? "on" : "") + '" data-action="egress-mode" data-mode="allowlist"' + disabled + '>Allowlist</button>' +
+      '<button type="button" class="' + (mode === "open" ? "on" : "") + '" data-action="egress-mode" data-mode="open"' + disabled + '>Open</button>' +
+      '<button type="button" class="' + (mode === "off" ? "on" : "") + '" data-action="egress-mode" data-mode="off"' + disabled + '>Off</button></div>';
+    var domains = "";
+    if (mode === "allowlist") {
+      var rows = egressDraft.domains.map(function (domain, index) {
+        return '<div class="conn-header-row">' +
+          '<input class="input" type="text" value="' + esc(domain) + '" placeholder="api.example.com" aria-label="Allowed host ' + (index + 1) + '" data-action="egress-domain-input" data-index="' + index + '"' + disabled + '>' +
+          '<button type="button" class="btn btn-ghost btn-sm" data-action="egress-domain-remove" data-index="' + index + '" aria-label="Remove allowed host"' + disabled + '>&times;</button></div>';
+      }).join("");
+      domains = '<div class="field"><label class="field-label">Allowed hosts</label>' + rows +
+        '<button type="button" class="btn btn-ghost btn-sm" data-action="egress-domain-add"' + disabled + '>' + icon("plus") + 'Add domain</button></div>';
+    }
+    return '<section class="section">' + head +
+      '<div class="field"><label class="field-label">Mode</label>' + segment + '</div>' +
+      domains +
+      (state.egressError ? '<p class="field-error">' + esc(state.egressError) + '</p>' : "") +
+      '<div><button type="button" class="btn btn-primary" data-action="egress-save"' + (state.egressSaving ? " disabled" : "") + '>' + (state.egressSaving ? "Saving&hellip;" : "Save") + '</button></div></section>';
   }
 
   function providerRowHtml(summary) {
@@ -3108,8 +3143,10 @@ details[open].advanced summary::before {
     state.view = "settings";
     state.profileScreen = "list";
     state.disableConfirm = false;
+    state.egressLoaded = false;
     render();
     loadSettings().then(render);
+    loadEgress().then(render);
   }
 
   function loadSettings() {
@@ -3129,6 +3166,43 @@ details[open].advanced summary::before {
     }).catch(function (error) {
       state.settingsError = error.message;
       state.settingsLoaded = true;
+    });
+  }
+
+  function seedEgressDraft(policy) {
+    var domains = (policy.domains || []).slice();
+    if (policy.mode === "allowlist" && domains.length === 0) domains.push("");
+    egressDraft = { mode: policy.mode, domains: domains };
+  }
+
+  function loadEgress() {
+    state.egressError = "";
+    return api("/admin/api/egress").then(function (body) {
+      state.egress = body.policy;
+      seedEgressDraft(body.policy);
+      state.egressLoaded = true;
+    }).catch(function (error) {
+      state.egressError = (error && (error.serverMessage || error.message)) || "Could not load outbound access.";
+      state.egressLoaded = true;
+    });
+  }
+
+  function saveEgress() {
+    if (state.egressSaving) return;
+    var domains = egressDraft.domains.map(function (domain) { return domain.trim(); }).filter(Boolean);
+    state.egressSaving = true;
+    state.egressError = "";
+    render();
+    postJson("/admin/api/egress", "PUT", { mode: egressDraft.mode, domains: domains }).then(function (body) {
+      state.egress = body.policy;
+      seedEgressDraft(body.policy);
+      state.egressSaving = false;
+      state.egressError = "";
+      render();
+    }).catch(function (error) {
+      state.egressSaving = false;
+      state.egressError = (error && (error.serverMessage || error.message)) || "Could not save outbound access.";
+      render();
     });
   }
 
@@ -3702,6 +3776,23 @@ details[open].advanced summary::before {
     // Settings (model-providers) is a separate destination that lands with its
     // own build; the affordance is present per the approved model-field design.
     if (action === "open-settings") { openSettings(); }
+    if (state.egressSaving && action.indexOf("egress-") === 0) return;
+    if (action === "egress-mode") {
+      egressDraft.mode = target.getAttribute("data-mode") || "allowlist";
+      if (egressDraft.mode === "allowlist" && egressDraft.domains.length === 0) egressDraft.domains.push("");
+      state.egressError = "";
+      render();
+    }
+    if (action === "egress-domain-add") {
+      if (egressDraft.domains.length < 100) egressDraft.domains.push("");
+      render();
+    }
+    if (action === "egress-domain-remove") {
+      var egressRemoveIndex = Number(target.getAttribute("data-index"));
+      if (egressRemoveIndex >= 0 && egressRemoveIndex < egressDraft.domains.length) egressDraft.domains.splice(egressRemoveIndex, 1);
+      render();
+    }
+    if (action === "egress-save") { saveEgress(); }
     if (action === "prov-add-key") { openProviderPaste(target.getAttribute("data-provider"), "add"); }
     if (action === "prov-change-key") { openProviderPaste(target.getAttribute("data-provider"), "change"); }
     if (action === "prov-cancel-key") { closeProviderPaste(target.getAttribute("data-provider")); }
@@ -3869,6 +3960,10 @@ details[open].advanced summary::before {
     // spinner) never wipes it; the favorites search re-renders only its own
     // results container to keep the input focused.
     if (action === "prov-key-input") { provUiFor(target.getAttribute("data-provider")).key = target.value; }
+    if (action === "egress-domain-input") {
+      var egressInputIndex = Number(target.getAttribute("data-index"));
+      if (!state.egressSaving && egressInputIndex >= 0 && egressInputIndex < egressDraft.domains.length) egressDraft.domains[egressInputIndex] = target.value;
+    }
     if (action === "fav-search") { updateFavSearch(target.getAttribute("data-provider"), target.value); }
     if (action === "conn-gallery-search") {
       var caret = null;

@@ -22,6 +22,11 @@ import {
   NoAssignmentError,
   UnknownAgentError,
 } from '../config/errors.ts';
+import {
+  EGRESS_SETTING_KEY,
+  parseEgressPolicy,
+  type EgressPolicy,
+} from '../config/egress.ts';
 import { classifyMcpError, McpBlockedUrlError, mcpDebugText, safeMcpFailureText } from '../config/mcp-errors.ts';
 import {
   buildMcpRequestHeaders,
@@ -257,6 +262,19 @@ const assignmentSchema = v.object({
 const slackConnectionSchema = v.object({
   botToken: nonEmptyString,
   signingSecret: nonEmptyString,
+});
+
+const egressDomain = v.pipe(
+  v.string(),
+  v.trim(),
+  v.minLength(1),
+  v.maxLength(253),
+  v.check((domain) => validateMcpUrl(egressDomainUrl(domain)).ok, 'Domain not allowed'),
+);
+
+const egressPolicySchema = v.object({
+  mode: v.picklist(['allowlist', 'open', 'off']),
+  domains: v.pipe(v.array(egressDomain), v.maxLength(100)),
 });
 
 export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
@@ -513,6 +531,24 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       provider: id,
       favorites: await putProviderFavorites(id, favorites, settings(c)),
     });
+  });
+
+  app.get('/admin/api/egress', async (c) => {
+    const raw = await settings(c).getSetting(EGRESS_SETTING_KEY);
+    return c.json({ policy: parseEgressPolicy(raw) });
+  });
+
+  app.put('/admin/api/egress', async (c) => {
+    const parsed = v.safeParse(egressPolicySchema, await readJson(c.req));
+    if (!parsed.success) {
+      return invalidRequest(c);
+    }
+    const policy: EgressPolicy = {
+      mode: parsed.output.mode,
+      domains: [...new Set(parsed.output.domains.map(normalizeEgressDomain))],
+    };
+    await settings(c).setSetting(EGRESS_SETTING_KEY, JSON.stringify(policy));
+    return c.json({ policy });
   });
 
   app.post('/admin/api/agents', async (c) => {
@@ -1568,6 +1604,21 @@ function providerFavoritesFromBody(body: unknown): string[] | undefined {
   }
   const favorites = raw.filter((value): value is string => typeof value === 'string');
   return favorites.length === raw.length ? favorites : undefined;
+}
+
+function egressDomainUrl(domain: string): string {
+  const withoutScheme = domain.replace(/^[a-z][a-z\d+.-]*:\/\//i, '');
+  return `https://${withoutScheme}`;
+}
+
+function normalizeEgressDomain(domain: string): string {
+  const result = validateMcpUrl(egressDomainUrl(domain));
+  if (!result.ok) {
+    // The schema runs the same guard first, so reaching this branch would mean
+    // validation behavior changed between parsing and normalization.
+    throw new Error('Validated egress domain became invalid');
+  }
+  return new URL(result.url).hostname.toLowerCase();
 }
 
 async function countPinnedProfiles(configStore: ConfigStore, provider: string): Promise<number> {

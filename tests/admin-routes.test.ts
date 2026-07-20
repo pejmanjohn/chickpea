@@ -5,6 +5,7 @@ import { Hono } from 'hono';
 
 import { createAdminRoutes } from '../src/admin/routes.ts';
 import flueApp from '../src/app.ts';
+import { DEFAULT_EGRESS_POLICY } from '../src/config/egress.ts';
 import { mcpSecretCleanupMarkerKey } from '../src/config/mcp-secrets.ts';
 import type { McpConnectInput, McpDiscoveryResult } from '../src/config/mcp-test.ts';
 import { SqliteSettingsStore, type SettingsStore } from '../src/config/settings-store.ts';
@@ -335,6 +336,74 @@ test('admin API validates request bodies with valibot', async () => {
     assert.equal(response.status, 400);
     assert.deepEqual(await response.json(), { error: 'invalid_request' });
   } finally {
+    store.close();
+  }
+});
+
+test('admin egress API defaults when unset and persists a valid allowlist policy', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    const app = appWithAdminOptions(store, { settings });
+
+    const initial = await app.request('/admin/api/egress', {
+      headers: auth(ADMIN_TOKEN),
+    });
+    assert.equal(initial.status, 200);
+    assert.deepEqual(await initial.json(), { policy: DEFAULT_EGRESS_POLICY });
+
+    const saved = await app.request('/admin/api/egress', {
+      method: 'PUT',
+      headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        mode: 'allowlist',
+        domains: ['api.github.com', ' https://API.GITHUB.COM/path '],
+      }),
+    });
+    assert.equal(saved.status, 200);
+    assert.deepEqual(await saved.json(), {
+      policy: { mode: 'allowlist', domains: ['api.github.com'] },
+    });
+
+    const reflected = await app.request('/admin/api/egress', {
+      headers: auth(ADMIN_TOKEN),
+    });
+    assert.equal(reflected.status, 200);
+    assert.deepEqual(await reflected.json(), {
+      policy: { mode: 'allowlist', domains: ['api.github.com'] },
+    });
+  } finally {
+    settings.close();
+    store.close();
+  }
+});
+
+test('admin egress API rejects invalid modes, private hosts, and oversized allowlists', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    const app = appWithAdminOptions(store, { settings });
+    const invalidPolicies = [
+      { mode: 'somewhere', domains: [] },
+      { mode: 'allowlist', domains: ['10.0.0.1'] },
+      { mode: 'allowlist', domains: ['localhost'] },
+      {
+        mode: 'allowlist',
+        domains: Array.from({ length: 101 }, (_, index) => `api-${index}.example.com`),
+      },
+    ];
+
+    for (const policy of invalidPolicies) {
+      const response = await app.request('/admin/api/egress', {
+        method: 'PUT',
+        headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+        body: JSON.stringify(policy),
+      });
+      assert.equal(response.status, 400, JSON.stringify(policy));
+      assert.deepEqual(await response.json(), { error: 'invalid_request' });
+    }
+  } finally {
+    settings.close();
     store.close();
   }
 });

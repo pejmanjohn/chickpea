@@ -156,6 +156,10 @@ type ModelProviderFixture = {
   source: string;
   suggestions: string[];
 };
+type EgressPolicyFixture = {
+  mode: 'allowlist' | 'open' | 'off';
+  domains: string[];
+};
 
 function runAdminPageHarness(
   options: {
@@ -175,6 +179,8 @@ function runAdminPageHarness(
     anthropicModels?: Array<{ id: string }>;
     openaiModels?: Array<{ id: string }>;
     providerKeyReject?: { status: number; detail: string };
+    providerSettingsError?: { status: number; error: string };
+    egressPolicy?: EgressPolicyFixture;
     modelProviders?: ModelProviderFixture[];
     attachSelectionValue?: string;
     effectiveError?: { status: number; error: string; message?: string };
@@ -194,6 +200,7 @@ function runAdminPageHarness(
   providerKeyPosts: Array<{ id: string; key: string }>;
   providerKeyDeletes: string[];
   favoritesPuts: Array<{ id: string; favorites: string[] }>;
+  egressPuts: EgressPolicyFixture[];
   agentPatchBodies: Array<{ id: string; body: Record<string, unknown> }>;
   agentPostBodies: Array<Record<string, unknown>>;
   skillResolvePosts: Array<{ source: string }>;
@@ -214,6 +221,7 @@ function runAdminPageHarness(
   const providerKeyPosts: Array<{ id: string; key: string }> = [];
   const providerKeyDeletes: string[] = [];
   const favoritesPuts: Array<{ id: string; favorites: string[] }> = [];
+  const egressPuts: EgressPolicyFixture[] = [];
   const agentPatchBodies: Array<{ id: string; body: Record<string, unknown> }> = [];
   const agentPostBodies: Array<Record<string, unknown>> = [];
   const skillResolvePosts: Array<{ source: string }> = [];
@@ -233,6 +241,7 @@ function runAdminPageHarness(
   // (the request init) and would otherwise shadow these harness fixtures.
   const agentsFixture = options.agents;
   const providerKeyReject = options.providerKeyReject;
+  const providerSettingsError = options.providerSettingsError;
   const modelProviders = options.modelProviders;
   const effectiveError = options.effectiveError;
   const agentWriteError = options.agentWriteError;
@@ -249,6 +258,10 @@ function runAdminPageHarness(
       { id: 'openrouter', status: 'env', modelCount: null },
       { id: 'workers-ai', status: options.cloudflare ? 'env' : 'missing', modelCount: null },
     ];
+  let egressPolicy: EgressPolicyFixture = options.egressPolicy ?? {
+    mode: 'allowlist',
+    domains: [],
+  };
   const favoritesState: Record<string, string[]> = {
     openrouter: options.openrouterFavorites ?? ['anthropic/claude-sonnet-4', 'openai/gpt-4.1'],
     'workers-ai': options.workersAiFavorites ?? ['@cf/zai-org/glm-5.2', '@cf/moonshotai/kimi-k2.6'],
@@ -491,7 +504,22 @@ function runAdminPageHarness(
       return Promise.resolve(jsonResponse({ providers: modelProviders ?? [] }));
     }
     if (path === '/admin/api/providers') {
+      if (providerSettingsError) {
+        return Promise.resolve(
+          jsonResponse({ error: providerSettingsError.error }, providerSettingsError.status),
+        );
+      }
       return Promise.resolve(jsonResponse({ providers: providerState.map((p) => ({ ...p })) }));
+    }
+    if (path === '/admin/api/egress') {
+      if (method === 'PUT') {
+        const body = JSON.parse(options?.body ?? '{}') as EgressPolicyFixture;
+        egressPuts.push({ mode: body.mode, domains: [...body.domains] });
+        egressPolicy = { mode: body.mode, domains: [...body.domains] };
+      }
+      return Promise.resolve(
+        jsonResponse({ policy: { mode: egressPolicy.mode, domains: [...egressPolicy.domains] } }),
+      );
     }
     const favMatch = path.match(/^\/admin\/api\/providers\/([^/]+)\/favorites$/);
     if (favMatch) {
@@ -635,6 +663,7 @@ function runAdminPageHarness(
     providerKeyPosts,
     providerKeyDeletes,
     favoritesPuts,
+    egressPuts,
     agentPatchBodies,
     agentPostBodies,
     skillResolvePosts,
@@ -2569,6 +2598,67 @@ test('Settings renders the three key-provider rows and hides Workers AI on the N
   assert.doesNotMatch(html, /data-action="prov-remove" data-provider="openrouter"/);
   // Workers AI is binding-only: absent on Node.
   assert.doesNotMatch(html, /<span class="prov-name">Workers AI<\/span>/);
+});
+
+test('Settings renders the outbound-access mode control and allowlist domain input', async () => {
+  const harness = runAdminPageHarness();
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+
+  click({ target: actionTarget({ 'data-action': 'open-settings' }) });
+  await flushAsync();
+
+  const html = harness.app.innerHTML;
+  assert.match(html, /<h2 class="section-title">Outbound access<\/h2>/);
+  assert.match(html, /class="seg"/);
+  assert.match(html, /data-action="egress-mode" data-mode="allowlist"/);
+  assert.match(html, /data-action="egress-mode" data-mode="open"/);
+  assert.match(html, /data-action="egress-mode" data-mode="off"/);
+  assert.match(html, /placeholder="api\.example\.com"[^>]*data-action="egress-domain-input"/);
+});
+
+test('Settings keeps outbound access available when model providers fail to load', async () => {
+  const harness = runAdminPageHarness({
+    providerSettingsError: { status: 500, error: 'provider_settings_failed' },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+
+  click({ target: actionTarget({ 'data-action': 'open-settings' }) });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /provider_settings_failed/);
+  assert.match(harness.app.innerHTML, /<h2 class="section-title">Outbound access<\/h2>/);
+  assert.match(harness.app.innerHTML, /data-action="egress-save"/);
+});
+
+test('Settings adds an outbound domain and saves the expected egress policy', async () => {
+  const harness = runAdminPageHarness();
+  await flushAsync();
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  assert.ok(click && input);
+
+  click({ target: actionTarget({ 'data-action': 'open-settings' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'egress-domain-add' }) });
+  input({
+    target: inputTarget(
+      { 'data-action': 'egress-domain-input', 'data-index': '1' },
+      ' api.github.com ',
+    ),
+  });
+  click({ target: actionTarget({ 'data-action': 'egress-save' }) });
+  assert.match(harness.app.innerHTML, /data-action="egress-save" disabled>Saving&hellip;<\/button>/);
+  assert.match(harness.app.innerHTML, /data-action="egress-mode" data-mode="allowlist" disabled/);
+  assert.match(harness.app.innerHTML, /data-action="egress-domain-input" data-index="0" disabled/);
+  await flushAsync();
+
+  assert.deepEqual(harness.egressPuts, [
+    { mode: 'allowlist', domains: ['api.github.com'] },
+  ]);
 });
 
 test('Settings validates a pasted key and collapses the row to a stored status', async () => {
