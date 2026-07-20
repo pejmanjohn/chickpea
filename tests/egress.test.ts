@@ -290,6 +290,34 @@ test('createMethodEnforcingFetch delegates URLs that match no prefix', async () 
   assert.deepEqual(calls, [{ url: expected.url, options }]);
 });
 
+test('createMethodEnforcingFetch matches prefixes on path-segment boundaries, not raw string prefix', async () => {
+  const calls: string[] = [];
+  const delegate: SecureFetch = async (url, options) => {
+    calls.push((options?.method ?? 'GET') + ' ' + url);
+    return fetchResult(url);
+  };
+  // A connector governs /v1 (GET, DELETE); the whole host is also allowlisted
+  // read-only (GET, HEAD) — longest-prefix-first so /v1 is checked before the host.
+  const enforcingFetch = createMethodEnforcingFetch(delegate, [
+    { prefix: 'https://api.example.com/v1', methods: new Set(['GET', 'DELETE']) },
+    { prefix: 'https://api.example.com', methods: new Set(['GET', 'HEAD']) },
+  ]);
+
+  // Under the connector prefix: DELETE is allowed and reaches the delegate.
+  await enforcingFetch('https://api.example.com/v1/tasks', { method: 'DELETE' });
+  assert.deepEqual(calls, ['DELETE https://api.example.com/v1/tasks']);
+
+  // Sibling path /v10 is NOT under /v1 (segment boundary) — it falls to the
+  // read-only host entry, so DELETE must be blocked, not leaked from /v1.
+  await assert.rejects(
+    enforcingFetch('https://api.example.com/v10/x', { method: 'DELETE' }),
+    (err: Error) => err.name === 'MethodNotAllowedError',
+  );
+  // A GET on the same sibling path is fine (host allows GET/HEAD).
+  await enforcingFetch('https://api.example.com/v10/x', { method: 'GET' });
+  assert.deepEqual(calls.length, 2);
+});
+
 test('just-bash exposes its generated secure fetch on Bash instances', () => {
   const instance = new Bash({
     fs: new InMemoryFs(),

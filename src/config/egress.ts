@@ -124,13 +124,33 @@ export function buildEgressPlan(
   };
 }
 
+// Match a request URL against a method-map prefix using the SAME semantics as
+// just-bash's allow-list: exact origin, then path-segment boundaries — NOT a
+// raw string prefix. Without this a connector prefix `/v1` would wrongly match
+// `/v10` (a sibling path served by a broader allow-list entry), leaking the
+// connector's methods onto a path it does not govern.
+function matchesEgressPrefix(url: string, prefix: string): boolean {
+  let target: URL;
+  let base: URL;
+  try {
+    target = new URL(url);
+    base = new URL(prefix);
+  } catch {
+    return false;
+  }
+  if (target.origin !== base.origin) return false;
+  const basePath = base.pathname.replace(/\/+$/, '');
+  if (basePath === '') return true; // whole-origin entry allows any path
+  return target.pathname === basePath || target.pathname.startsWith(basePath + '/');
+}
+
 export function createMethodEnforcingFetch(
   delegate: SecureFetch,
   methodMap: EgressMethodEntry[],
 ): SecureFetch {
   return async (url, options) => {
     const method = (options?.method || 'GET').toUpperCase();
-    const match = methodMap.find((entry) => url.startsWith(entry.prefix));
+    const match = methodMap.find((entry) => matchesEgressPrefix(url, entry.prefix));
     if (match && !match.methods.has(method)) {
       const error = new Error(
         "HTTP method '" +
