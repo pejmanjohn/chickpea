@@ -9,6 +9,14 @@ export interface EgressPolicy {
   domains: string[];
 }
 
+export interface ResolvedApiConnection {
+  allowedHosts: string[];
+  pathPrefixes: string[];
+  headerName: string;
+  headerValue: string;
+  allowedMethods: string[];
+}
+
 export const DEFAULT_EGRESS_POLICY: EgressPolicy = {
   mode: 'allowlist',
   domains: [],
@@ -54,9 +62,21 @@ export async function resolveEgressPolicy(env?: PlatformEnv): Promise<EgressPoli
 export function buildEgressNetworkConfig(
   policy: EgressPolicy,
   opts: { cloudflare: boolean },
+  connectors: ResolvedApiConnection[] = [],
 ): NetworkConfig {
+  const activeConnectors = connectors.filter((connector) => connector.headerValue);
+  const allowedMethods = [
+    ...new Set([
+      'GET',
+      'HEAD',
+      'POST',
+      ...connectors.flatMap((connector) => connector.allowedMethods),
+    ]),
+  ] as NonNullable<NetworkConfig['allowedMethods']>;
   const network: NetworkConfig = {
-    allowedMethods: ['GET', 'HEAD', 'POST'],
+    // just-bash enforces methods globally as a union, not per connection.
+    // Precise per-connection methods need a follow-up SecureFetch wrapper.
+    allowedMethods,
     denyPrivateRanges: true,
   };
 
@@ -67,19 +87,31 @@ export function buildEgressNetworkConfig(
 
   if (policy.mode === 'open') {
     network.dangerouslyAllowFullInternetAccess = true;
-    return network;
+  } else {
+    network.allowedUrlPrefixes =
+      policy.mode === 'off'
+        ? []
+        : [
+            ...new Set(
+              policy.domains
+                .map(normalizeDomain)
+                .filter((domain): domain is string => domain !== undefined),
+            ),
+          ];
   }
 
-  network.allowedUrlPrefixes =
-    policy.mode === 'off'
-      ? []
-      : [
-          ...new Set(
-            policy.domains
-              .map(normalizeDomain)
-              .filter((domain): domain is string => domain !== undefined),
-          ),
-        ];
+  for (const connector of activeConnectors) {
+    for (const host of connector.allowedHosts) {
+      for (const prefix of connector.pathPrefixes.length > 0 ? connector.pathPrefixes : ['']) {
+        network.allowedUrlPrefixes ??= [];
+        network.allowedUrlPrefixes.push({
+          url: 'https://' + host + prefix,
+          transform: [{ headers: { [connector.headerName]: connector.headerValue } }],
+        });
+      }
+    }
+  }
+
   return network;
 }
 

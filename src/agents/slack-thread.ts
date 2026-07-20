@@ -1,7 +1,12 @@
 import { bash, defineAgent, type AgentRouteHandler } from '@flue/runtime';
 import { Bash, InMemoryFs } from 'just-bash';
 
-import { buildEgressNetworkConfig, resolveEgressPolicy } from '../config/egress.ts';
+import { resolveConnectorCredential } from '../config/connector-secrets.ts';
+import {
+  buildEgressNetworkConfig,
+  resolveEgressPolicy,
+  type ResolvedApiConnection,
+} from '../config/egress.ts';
 import { resolveEffectiveSlackConfig } from '../config/effective-config.ts';
 import { resolveProfileMcpTools } from '../config/profile-mcp.ts';
 import { resolveProfileSkills } from '../config/profile-skills.ts';
@@ -69,9 +74,35 @@ export default defineAgent(async ({ id }) => {
   });
 
   const egressPolicy = await resolveEgressPolicy(env);
-  const egressNetwork = buildEgressNetworkConfig(egressPolicy, {
-    cloudflare: isCloudflareTarget(),
-  });
+  // API connection policy inherits the agent snapshot contract, while its
+  // credential resolves live every turn. Missing credentials degrade by
+  // skipping that connection rather than aborting the turn.
+  const resolvedConnectors = (
+    await Promise.all(
+      (config.agent.apiConnections ?? [])
+        .filter((connection) => connection.enabled)
+        .map(async (connection): Promise<ResolvedApiConnection | undefined> => {
+          const credential = await resolveConnectorCredential(
+            { agentId: config.agent.id, connectionId: connection.id },
+            env,
+          );
+          if (!credential) return undefined;
+
+          return {
+            allowedHosts: connection.allowedHosts,
+            pathPrefixes: connection.pathPrefixes,
+            headerName: connection.headerName,
+            headerValue: (connection.headerValuePrefix ?? '') + credential,
+            allowedMethods: connection.allowedMethods,
+          };
+        }),
+    )
+  ).filter((connection): connection is ResolvedApiConnection => connection !== undefined);
+  const egressNetwork = buildEgressNetworkConfig(
+    egressPolicy,
+    { cloudflare: isCloudflareTarget() },
+    resolvedConnectors,
+  );
 
   return {
     model: config.model,
