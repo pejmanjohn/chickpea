@@ -1,5 +1,7 @@
-import { defineAgent, type AgentRouteHandler } from '@flue/runtime';
+import { bash, defineAgent, type AgentRouteHandler } from '@flue/runtime';
+import { Bash, InMemoryFs } from 'just-bash';
 
+import { buildEgressNetworkConfig, resolveEgressPolicy } from '../config/egress.ts';
 import { resolveEffectiveSlackConfig } from '../config/effective-config.ts';
 import { resolveProfileMcpTools } from '../config/profile-mcp.ts';
 import { resolveProfileSkills } from '../config/profile-skills.ts';
@@ -66,10 +68,16 @@ export default defineAgent(async ({ id }) => {
     existingToolNames: skills.map((s) => s.name),
   });
 
+  const egressPolicy = await resolveEgressPolicy(env);
+  const egressNetwork = buildEgressNetworkConfig(egressPolicy, {
+    cloudflare: isCloudflareTarget(),
+  });
+
   return {
     model: config.model,
     instructions: config.instructions,
     tools: mcpTools,
+    sandbox: bash(() => new Bash({ fs: new InMemoryFs(), network: egressNetwork })),
     ...(skills.length > 0 ? { skills } : {}),
   };
 });
