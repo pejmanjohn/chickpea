@@ -274,7 +274,7 @@ test('createMethodEnforcingFetch delegates allowed methods and returns the resul
   assert.deepEqual(calls, [{ url: expected.url, options }]);
 });
 
-test('createMethodEnforcingFetch delegates URLs that match no prefix', async () => {
+test('createMethodEnforcingFetch delegates base-method URLs that match no prefix', async () => {
   const calls: Array<{ url: string; options: Parameters<SecureFetch>[1] }> = [];
   const expected = fetchResult('https://not-allowlisted.example/resource');
   const delegate: SecureFetch = async (url, options) => {
@@ -285,7 +285,10 @@ test('createMethodEnforcingFetch delegates URLs that match no prefix', async () 
     { prefix: 'https://api.linear.app/v1', methods: new Set(['GET']) },
   ]);
 
-  const options = { method: 'DELETE' };
+  // A base method on an unmatched URL passes to the delegate (which enforces the
+  // allow-list). Non-base methods on unmatched URLs are covered by the
+  // open-mode base-set test above.
+  const options = { method: 'GET' };
   assert.equal(await enforcingFetch(expected.url, options), expected);
   assert.deepEqual(calls, [{ url: expected.url, options }]);
 });
@@ -316,6 +319,33 @@ test('createMethodEnforcingFetch matches prefixes on path-segment boundaries, no
   // A GET on the same sibling path is fine (host allows GET/HEAD).
   await enforcingFetch('https://api.example.com/v10/x', { method: 'GET' });
   assert.deepEqual(calls.length, 2);
+});
+
+test('createMethodEnforcingFetch holds unmatched (open-mode) hosts to the base method set', async () => {
+  const calls: string[] = [];
+  const delegate: SecureFetch = async (url, options) => {
+    calls.push((options?.method ?? 'GET') + ' ' + url);
+    return fetchResult(url);
+  };
+  // A connector permits DELETE on its own host; no entry covers arbitrary hosts.
+  const enforcingFetch = createMethodEnforcingFetch(delegate, [
+    { prefix: 'https://api.asana.com', methods: new Set(['GET', 'DELETE']) },
+  ]);
+
+  // Connector host keeps its DELETE.
+  await enforcingFetch('https://api.asana.com/tasks', { method: 'DELETE' });
+  // An arbitrary host (only reachable in open mode) does NOT inherit the
+  // connector's DELETE — it is held to the base set.
+  await assert.rejects(
+    enforcingFetch('https://evil.example.com/wipe', { method: 'DELETE' }),
+    (err: Error) => err.name === 'MethodNotAllowedError',
+  );
+  // Base methods still work on arbitrary hosts.
+  await enforcingFetch('https://evil.example.com/x', { method: 'GET' });
+  assert.deepEqual(calls, [
+    'DELETE https://api.asana.com/tasks',
+    'GET https://evil.example.com/x',
+  ]);
 });
 
 test('just-bash exposes its generated secure fetch on Bash instances', () => {

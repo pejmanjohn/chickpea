@@ -46,6 +46,11 @@ export interface EgressMethodEntry {
   methods: Set<string>;
 }
 
+// The methods permitted for any host NOT governed by a specific connection —
+// operator "Domains" and, in `open` mode, arbitrary internet hosts. A connector
+// requesting a broader method must not widen this baseline for unrelated hosts.
+export const BASE_EGRESS_METHODS = ['GET', 'HEAD', 'POST'] as const;
+
 const dnsCache = new Map<string, Promise<DnsResult[]>>();
 
 export function parseEgressPolicy(raw: string | undefined): EgressPolicy {
@@ -86,9 +91,7 @@ export function buildEgressPlan(
   const entries = buildEgressEntries(policy, connectors);
   const allowedMethods = [
     ...new Set([
-      'GET',
-      'HEAD',
-      'POST',
+      ...BASE_EGRESS_METHODS,
       ...connectors.flatMap((connector) => connector.allowedMethods),
     ]),
   ] as NonNullable<NetworkConfig['allowedMethods']>;
@@ -148,15 +151,20 @@ export function createMethodEnforcingFetch(
   delegate: SecureFetch,
   methodMap: EgressMethodEntry[],
 ): SecureFetch {
+  const baseMethods = new Set<string>(BASE_EGRESS_METHODS);
   return async (url, options) => {
     const method = (options?.method || 'GET').toUpperCase();
     const match = methodMap.find((entry) => matchesEgressPrefix(url, entry.prefix));
-    if (match && !match.methods.has(method)) {
+    // A URL matching no connector/domain prefix (only reachable in `open` mode)
+    // is held to the read/create baseline — a connector's extra methods never
+    // widen access to unrelated internet hosts.
+    const allowed = match ? match.methods : baseMethods;
+    if (!allowed.has(method)) {
       const error = new Error(
         "HTTP method '" +
           method +
           "' not allowed. Allowed methods: " +
-          [...match.methods].join(', '),
+          [...allowed].join(', '),
       );
       error.name = 'MethodNotAllowedError';
       throw error;
