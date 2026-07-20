@@ -31,6 +31,7 @@ function agent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig {
     enabled: true,
     skills: [],
     mcpServers: [],
+    apiConnections: [],
     ...overrides,
   };
 }
@@ -338,7 +339,7 @@ test('SqliteConfigStore migrates the legacy v1 default-models column without los
       .all() as Array<{ id: string }>;
     migratedDb.close();
 
-    assert.equal(version.value, '2');
+    assert.equal(version.value, '3');
     assert.equal(
       agentColumns.some(({ name }) => name === 'default_models_json'),
       false,
@@ -371,7 +372,7 @@ test('fresh databases start at the clean current config schema', () => {
       .all('config_assignments') as Array<{ name: string }>;
     db.close();
 
-    assert.equal(version.value, '2');
+    assert.equal(version.value, '3');
     assert.deepEqual(
       agentColumns.map(({ name }) => name),
       [
@@ -382,6 +383,7 @@ test('fresh databases start at the clean current config schema', () => {
         'model',
         'skills_json',
         'mcp_servers_json',
+        'api_connections_json',
       ],
     );
     assert.deepEqual(
@@ -550,6 +552,7 @@ test('a disabled assignment at the winning specificity turns the channel off ins
         enabled: true,
         skills: [],
         mcpServers: [],
+        apiConnections: [],
       },
     ],
     assignments: [

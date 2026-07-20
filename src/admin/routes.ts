@@ -191,6 +191,65 @@ const mcpServersSchema = v.pipe(
   ),
 );
 
+function isAllowedConnectorHost(host: string): boolean {
+  const hasWildcard = host.startsWith('*.');
+  if (host.includes('*') && !hasWildcard) return false;
+  const hostname = hasWildcard ? host.slice(2) : host;
+  if (!hostname || hostname.includes('*')) return false;
+
+  const result = validateMcpUrl(`https://${hostname}`);
+  if (!result.ok) return false;
+
+  // `allowedHosts` stores hosts, not URLs. Keep the SSRF validation above as
+  // the security boundary, then reject values that smuggle in URL components.
+  const url = new URL(result.url);
+  return (
+    url.hostname.toLowerCase() === hostname.toLowerCase() &&
+    url.port === '' &&
+    url.pathname === '/' &&
+    url.search === ''
+  );
+}
+
+const connectorHost = v.pipe(
+  v.string(),
+  v.trim(),
+  v.minLength(1),
+  v.maxLength(253),
+  v.check(isAllowedConnectorHost, 'Host not allowed'),
+);
+
+const apiConnectionSchema = v.pipe(
+  v.object({
+    id: v.pipe(v.string(), v.regex(/^[a-z0-9][a-z0-9-]{0,63}$/)),
+    displayName: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(80)),
+    allowedHosts: v.pipe(v.array(connectorHost), v.maxLength(20)),
+    pathPrefixes: v.pipe(
+      v.array(v.pipe(v.string(), v.trim(), v.regex(/^\/[^\s]*$/), v.maxLength(512))),
+      v.maxLength(20),
+    ),
+    headerName: v.pipe(v.string(), v.trim(), v.regex(/^[A-Za-z0-9-]{1,128}$/)),
+    headerValuePrefix: v.optional(v.pipe(v.string(), v.maxLength(64))),
+    allowedMethods: v.pipe(
+      v.array(v.picklist(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'])),
+      v.minLength(1),
+    ),
+    enabled: v.boolean(),
+    presetId: v.optional(v.pipe(v.string(), v.regex(/^[a-z0-9][a-z0-9-]{0,63}$/), v.maxLength(64))),
+  }),
+  v.check((connection) => connection.allowedHosts.length > 0, 'allowed hosts must not be empty'),
+);
+
+const apiConnectionsSchema = v.pipe(
+  v.array(apiConnectionSchema),
+  v.maxLength(50),
+  v.check(
+    (connections) =>
+      new Set(connections.map((connection) => connection.id)).size === connections.length,
+    'connection ids must be unique',
+  ),
+);
+
 const agentSchema = v.object({
   id: agentIdSchema,
   name: nonEmptyString,
@@ -199,6 +258,7 @@ const agentSchema = v.object({
   model: v.optional(modelSpecifier),
   skills: v.optional(skillsSchema, []),
   mcpServers: v.optional(mcpServersSchema, []),
+  apiConnections: v.optional(apiConnectionsSchema, []),
 });
 
 const agentPatchSchema = v.partial(
@@ -209,6 +269,7 @@ const agentPatchSchema = v.partial(
     model: v.nullable(modelSpecifier),
     skills: skillsSchema,
     mcpServers: mcpServersSchema,
+    apiConnections: apiConnectionsSchema,
   }),
 );
 
@@ -1402,6 +1463,7 @@ function toAgentConfig(input: v.InferOutput<typeof agentSchema>): CustomAgentCon
     ...(input.model !== undefined ? { model: input.model } : {}),
     skills: input.skills,
     mcpServers: toMcpServers(input.mcpServers),
+    apiConnections: toApiConnections(input.apiConnections),
   };
 }
 
@@ -1433,6 +1495,24 @@ function toMcpServers(
   }));
 }
 
+function toApiConnections(
+  connections: v.InferOutput<typeof apiConnectionsSchema>,
+): CustomAgentConfig['apiConnections'] {
+  return connections.map((connection) => ({
+    id: connection.id,
+    displayName: connection.displayName,
+    allowedHosts: connection.allowedHosts,
+    pathPrefixes: connection.pathPrefixes,
+    headerName: connection.headerName,
+    ...(connection.headerValuePrefix !== undefined
+      ? { headerValuePrefix: connection.headerValuePrefix }
+      : {}),
+    allowedMethods: connection.allowedMethods,
+    enabled: connection.enabled,
+    ...(connection.presetId !== undefined ? { presetId: connection.presetId } : {}),
+  }));
+}
+
 type AgentPatch = Partial<Omit<CustomAgentConfig, 'id' | 'model'>> & { model?: string | null };
 
 function toAgentPatch(input: v.InferOutput<typeof agentPatchSchema>): AgentPatch {
@@ -1443,6 +1523,9 @@ function toAgentPatch(input: v.InferOutput<typeof agentPatchSchema>): AgentPatch
   if (input.model !== undefined) patch.model = input.model;
   if (input.skills !== undefined) patch.skills = input.skills;
   if (input.mcpServers !== undefined) patch.mcpServers = toMcpServers(input.mcpServers);
+  if (input.apiConnections !== undefined) {
+    patch.apiConnections = toApiConnections(input.apiConnections);
+  }
   return patch;
 }
 

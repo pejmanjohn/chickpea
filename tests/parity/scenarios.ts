@@ -55,6 +55,7 @@ const RELEASE_SCRIBE_PROFILE: CustomAgentConfig = {
   model: PARITY_MODEL,
   skills: [],
   mcpServers: [],
+  apiConnections: [],
 };
 
 const EXEC_BRIEF_PROFILE: CustomAgentConfig = {
@@ -72,6 +73,7 @@ const EXEC_BRIEF_PROFILE: CustomAgentConfig = {
   model: PARITY_MODEL,
   skills: [],
   mcpServers: [],
+  apiConnections: [],
 };
 
 export interface Scenario {
@@ -656,6 +658,7 @@ export const scenarios: Scenario[] = [
             model: 'local-stub/agent-pinned',
             skills: [],
             mcpServers: [],
+            apiConnections: [],
           },
         ],
         assignments: [
@@ -698,6 +701,7 @@ export const scenarios: Scenario[] = [
             model: PARITY_MODEL,
             skills: [],
             mcpServers: [],
+            apiConnections: [],
           },
         ],
         assignments: [
@@ -767,6 +771,7 @@ export const scenarios: Scenario[] = [
             enabled: true,
             skills: [],
             mcpServers: [],
+            apiConnections: [],
           },
         ],
         assignments: [
@@ -977,6 +982,7 @@ export const scenarios: Scenario[] = [
             model: PARITY_MODEL,
             skills: [],
             mcpServers: [],
+            apiConnections: [],
           },
         ],
         assignments: [
@@ -1178,6 +1184,7 @@ export const scenarios: Scenario[] = [
             model: 'local-stub/snapshot-profile',
             skills: [],
             mcpServers: [],
+            apiConnections: [],
           },
         ],
         // The '*,*' direct-message default answers DMs.
@@ -1347,6 +1354,7 @@ function snapshotScenarioConfig(agentId: string): ScenarioLaneConfig {
           model: 'local-stub/snapshot-profile',
           skills: [],
           mcpServers: [],
+          apiConnections: [],
         },
       ],
       assignments: [

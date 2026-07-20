@@ -27,6 +27,7 @@ export function createSeededAgents(
     ...(target === 'cloudflare' ? { model: SEED_CLOUDFLARE_MODEL_PIN } : {}),
     skills: [],
     mcpServers: [],
+    apiConnections: [],
   };
   return [defaultAgent];
 }

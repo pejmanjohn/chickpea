@@ -26,6 +26,7 @@ interface AgentRow {
   model: string | null;
   skills_json: string;
   mcp_servers_json: string;
+  api_connections_json?: string | null;
 }
 
 interface AssignmentRow {
@@ -129,7 +130,7 @@ export class ConfigStoreLogic {
     this.db.run(
       `UPDATE config_agents
        SET name = ?, instructions = ?, enabled = ?, model = ?,
-           skills_json = ?, mcp_servers_json = ?
+           skills_json = ?, mcp_servers_json = ?, api_connections_json = ?
        WHERE id = ?`,
       next.name,
       next.instructions,
@@ -137,6 +138,7 @@ export class ConfigStoreLogic {
       model,
       JSON.stringify(next.skills),
       JSON.stringify(next.mcpServers),
+      JSON.stringify(next.apiConnections),
       agentId,
     );
     return this.getAgent(agentId);
@@ -279,8 +281,8 @@ export class ConfigStoreLogic {
     return this.db.run(
       `INSERT INTO config_agents (
         id, name, instructions, enabled, model,
-        skills_json, mcp_servers_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        skills_json, mcp_servers_json, api_connections_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       agent.id,
       agent.name,
       agent.instructions,
@@ -288,12 +290,12 @@ export class ConfigStoreLogic {
       agent.model ?? null,
       JSON.stringify(agent.skills ?? []),
       JSON.stringify(agent.mcpServers ?? []),
+      JSON.stringify(agent.apiConnections ?? []),
     );
   }
 
-  // Fresh databases start from the clean v1 schema. Migration v2 is a narrow
-  // compatibility bridge for databases created by the pre-release v1 schema,
-  // which still included the removed default_models_json column.
+  // Fresh databases start from the clean v1 schema. Migration v2 bridges the
+  // pre-release default_models_json column; v3 adds API connection policy.
   private runMigrations(): void {
     const MIGRATIONS: Array<{ version: number; up: (db: StateDb) => void }> = [
       {
@@ -333,6 +335,19 @@ export class ConfigStoreLogic {
             .some((column) => column.name === 'default_models_json');
           if (hasLegacyDefaultModels) {
             db.exec('ALTER TABLE config_agents DROP COLUMN default_models_json');
+          }
+        },
+      },
+      {
+        version: 3,
+        up: (db) => {
+          const hasApiConnections = db
+            .all('PRAGMA table_info(config_agents)')
+            .some((column) => column.name === 'api_connections_json');
+          if (!hasApiConnections) {
+            db.exec(
+              "ALTER TABLE config_agents ADD COLUMN api_connections_json TEXT NOT NULL DEFAULT '[]'",
+            );
           }
         },
       },
@@ -454,7 +469,17 @@ function rowToAgent(row: AgentRow): CustomAgentConfig {
     ...(row.model ? { model: row.model } : {}),
     skills: JSON.parse(row.skills_json) as CustomAgentConfig['skills'],
     mcpServers: JSON.parse(row.mcp_servers_json) as CustomAgentConfig['mcpServers'],
+    apiConnections: parseApiConnections(row.api_connections_json),
   };
+}
+
+function parseApiConnections(raw: string | null | undefined): CustomAgentConfig['apiConnections'] {
+  try {
+    const parsed: unknown = JSON.parse(raw ?? '[]');
+    return Array.isArray(parsed) ? (parsed as CustomAgentConfig['apiConnections']) : [];
+  } catch {
+    return [];
+  }
 }
 
 function rowToAssignment(row: AssignmentRow): ChannelAssignment {

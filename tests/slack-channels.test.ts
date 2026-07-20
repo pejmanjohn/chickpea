@@ -45,6 +45,7 @@ function agent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig {
     model: 'local-stub/channels',
     skills: [],
     mcpServers: [],
+    apiConnections: [],
     ...overrides,
   };
 }

@@ -10,7 +10,11 @@ import { mcpSecretCleanupMarkerKey } from '../src/config/mcp-secrets.ts';
 import type { McpConnectInput, McpDiscoveryResult } from '../src/config/mcp-test.ts';
 import { SqliteSettingsStore, type SettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore, type ConfigStore } from '../src/config/store.ts';
-import type { CustomAgentConfig, McpConnectionConfig } from '../src/config/types.ts';
+import type {
+  ApiConnectionConfig,
+  CustomAgentConfig,
+  McpConnectionConfig,
+} from '../src/config/types.ts';
 import { withEnv } from './helpers/env.ts';
 
 const ADMIN_TOKEN = 'admin-secret-token';
@@ -67,6 +71,21 @@ function mcpServer(overrides: Partial<McpConnectionConfig> = {}): McpConnectionC
   };
 }
 
+function apiConnection(overrides: Partial<ApiConnectionConfig> = {}): ApiConnectionConfig {
+  return {
+    id: 'linear-api',
+    displayName: 'Linear API',
+    allowedHosts: ['api.linear.app'],
+    pathPrefixes: ['/v1'],
+    headerName: 'Authorization',
+    headerValuePrefix: 'Bearer ',
+    allowedMethods: ['GET', 'POST'],
+    enabled: true,
+    presetId: 'linear-api',
+    ...overrides,
+  };
+}
+
 function auth(token: string): HeadersInit {
   return { authorization: `Bearer ${token}` };
 }
@@ -80,6 +99,7 @@ function agent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig {
     model: 'local-stub/admin-agent',
     skills: [],
     mcpServers: [],
+    apiConnections: [],
     ...overrides,
   };
 }
@@ -571,6 +591,7 @@ test('admin API rejects patches that leave an agent without a resolvable model',
           enabled: true,
           skills: [],
           mcpServers: [],
+          apiConnections: [],
         };
         await store.createAgent(unpinnedAgent);
 
@@ -931,6 +952,79 @@ test('admin API maps an assignment to a missing agent to a stable unknown_agent 
 
     assert.equal(response.status, 404);
     assert.deepEqual(await response.json(), { error: 'unknown_agent' });
+  } finally {
+    store.close();
+  }
+});
+
+// --- API Connections -----------------------------------------------------------
+
+test('admin API accepts valid apiConnections, including wildcard hosts, and round-trips every field', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  try {
+    const app = appWithAdmin(store);
+    const connection = apiConnection({
+      allowedHosts: ['api.linear.app', '*.example.com'],
+    });
+    const createdAgent = agent({ id: 'agent_api_connection', apiConnections: [connection] });
+
+    const create = await app.request('/admin/api/agents', {
+      method: 'POST',
+      headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+      body: JSON.stringify(createdAgent),
+    });
+    assert.equal(create.status, 201);
+    assert.deepEqual(await create.json(), { agent: createdAgent });
+
+    const patched = [
+      apiConnection({
+        displayName: 'Linear API v2',
+        allowedHosts: ['*.example.com'],
+        pathPrefixes: ['/v2/issues'],
+        headerName: 'X-Api-Key',
+        headerValuePrefix: 'token ',
+        allowedMethods: ['HEAD', 'PUT', 'PATCH', 'DELETE'],
+        enabled: false,
+        presetId: 'linear-api-v2',
+      }),
+    ];
+    const patch = await app.request('/admin/api/agents/agent_api_connection', {
+      method: 'PATCH',
+      headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+      body: JSON.stringify({ apiConnections: patched }),
+    });
+    assert.equal(patch.status, 200);
+    const body = (await patch.json()) as { agent: CustomAgentConfig };
+    assert.deepEqual(body.agent.apiConnections, patched);
+  } finally {
+    store.close();
+  }
+});
+
+test('admin API rejects invalid apiConnection hosts, methods, and header names', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  try {
+    const app = appWithAdmin(store);
+    const post = (id: string, connections: unknown) =>
+      app.request('/admin/api/agents', {
+        method: 'POST',
+        headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+        body: JSON.stringify(
+          agent({ id, apiConnections: connections as ApiConnectionConfig[] }),
+        ),
+      });
+
+    const cases: Array<[string, ApiConnectionConfig]> = [
+      ['private_host', apiConnection({ allowedHosts: ['10.0.0.1'] })],
+      ['localhost', apiConnection({ allowedHosts: ['localhost'] })],
+      ['empty_hosts', apiConnection({ allowedHosts: [] })],
+      ['bad_method', apiConnection({ allowedMethods: ['TRACE'] })],
+      ['bad_header', apiConnection({ headerName: 'Authorization:' })],
+    ];
+    for (const [id, connection] of cases) {
+      const response = await post(`agent_api_${id}`, [connection]);
+      assert.equal(response.status, 400, id);
+    }
   } finally {
     store.close();
   }

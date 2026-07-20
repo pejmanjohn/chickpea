@@ -31,6 +31,7 @@ function agent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig {
     model: 'local-stub/snapshot-unit',
     skills: [],
     mcpServers: [],
+    apiConnections: [],
     ...overrides,
   };
 }

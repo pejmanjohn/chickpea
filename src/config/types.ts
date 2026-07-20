@@ -51,6 +51,24 @@ export interface McpConnectionConfig {
   presetId?: string;
 }
 
+/**
+ * A profile-attached API credential-connection policy. This record contains
+ * allowlisted request metadata only — the credential value lives in the
+ * settings store by reference and never touches this row, snapshots, or API
+ * responses.
+ */
+export interface ApiConnectionConfig {
+  id: string;
+  displayName: string;
+  allowedHosts: string[];
+  pathPrefixes: string[];
+  headerName: string;
+  headerValuePrefix?: string;
+  allowedMethods: string[];
+  enabled: boolean;
+  presetId?: string;
+}
+
 export interface CustomAgentConfig {
   id: string;
   name: string;
@@ -59,6 +77,7 @@ export interface CustomAgentConfig {
   model?: string;
   skills: SkillConfig[];
   mcpServers: McpConnectionConfig[];
+  apiConnections: ApiConnectionConfig[];
 }
 
 export interface ChannelAssignment {
