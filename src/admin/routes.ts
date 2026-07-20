@@ -249,6 +249,53 @@ const apiConnectionSchema = v.pipe(
   v.check((connection) => connection.allowedHosts.length > 0, 'allowed hosts must not be empty'),
 );
 
+// just-bash applies EVERY allow-list transform whose prefix matches a request,
+// so two connections that cover an overlapping URL space would inject both
+// credentials into one request (or silently overwrite when the header names
+// match), leaking one connection's secret to the other's endpoint. Reject
+// overlapping scopes at the write boundary — the only place connection scopes
+// are ever set — so each connection governs a distinct URL space.
+type ConnectionScope = { allowedHosts: string[]; pathPrefixes: string[]; enabled: boolean };
+
+function normalizePathPrefix(prefix: string): string {
+  return prefix.replace(/\/+$/, '');
+}
+
+// Two path prefixes overlap when they are equal or one is a segment-ancestor of
+// the other (`/v1` vs `/v1/tasks`, but NOT `/v1` vs `/v10`). An empty prefix
+// list means "whole host", which overlaps every path.
+function pathPrefixesOverlap(left: string[], right: string[]): boolean {
+  if (left.length === 0 || right.length === 0) return true;
+  return left.some((rawLeft) =>
+    right.some((rawRight) => {
+      const a = normalizePathPrefix(rawLeft);
+      const b = normalizePathPrefix(rawRight);
+      if (a === b) return true;
+      const [shorter, longer] = a.length <= b.length ? [a, b] : [b, a];
+      return shorter === '' || longer.startsWith(shorter + '/');
+    }),
+  );
+}
+
+function connectionsOverlap(left: ConnectionScope, right: ConnectionScope): boolean {
+  if (!left.enabled || !right.enabled) return false;
+  const rightHosts = new Set(right.allowedHosts.map((host) => host.toLowerCase()));
+  const sharesHost = left.allowedHosts.some((host) => rightHosts.has(host.toLowerCase()));
+  return sharesHost && pathPrefixesOverlap(left.pathPrefixes, right.pathPrefixes);
+}
+
+function hasOverlappingConnections(connections: ConnectionScope[]): boolean {
+  for (let i = 0; i < connections.length; i += 1) {
+    const left = connections[i];
+    if (left === undefined) continue;
+    for (let j = i + 1; j < connections.length; j += 1) {
+      const right = connections[j];
+      if (right !== undefined && connectionsOverlap(left, right)) return true;
+    }
+  }
+  return false;
+}
+
 const apiConnectionsSchema = v.pipe(
   v.array(apiConnectionSchema),
   v.maxLength(50),
@@ -256,6 +303,10 @@ const apiConnectionsSchema = v.pipe(
     (connections) =>
       new Set(connections.map((connection) => connection.id)).size === connections.length,
     'connection ids must be unique',
+  ),
+  v.check(
+    (connections) => !hasOverlappingConnections(connections),
+    'enabled connections must not cover overlapping URLs; narrow their hosts or path prefixes so each connection governs a distinct URL space',
   ),
 );
 

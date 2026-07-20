@@ -365,6 +365,116 @@ test('admin API validates request bodies with valibot', async () => {
   }
 });
 
+test('admin API rejects enabled connections whose URL scopes overlap', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  try {
+    const app = appWithAdmin(store);
+
+    // Both cover api.github.com and one path is a segment-ancestor of the other,
+    // so a request under /repos/issues would match both and merge both secrets.
+    const overlapping = agent({
+      apiConnections: [
+        apiConnection({
+          id: 'gh-broad',
+          displayName: 'GitHub broad',
+          allowedHosts: ['api.github.com'],
+          pathPrefixes: ['/repos'],
+        }),
+        apiConnection({
+          id: 'gh-narrow',
+          displayName: 'GitHub narrow',
+          allowedHosts: ['api.github.com'],
+          pathPrefixes: ['/repos/issues'],
+        }),
+      ],
+    });
+
+    const response = await app.request('/admin/api/agents', {
+      method: 'POST',
+      headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+      body: JSON.stringify(overlapping),
+    });
+
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), { error: 'invalid_request' });
+  } finally {
+    store.close();
+  }
+});
+
+test('admin API accepts same-host connections with disjoint path scopes', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  try {
+    const app = appWithAdmin(store);
+
+    // Sibling prefixes (`/repos` vs `/repos-archive`, `/orgs`) never both match a
+    // single request, so each connection governs a distinct URL space.
+    const distinct = agent({
+      apiConnections: [
+        apiConnection({
+          id: 'gh-repos',
+          displayName: 'GitHub repos',
+          allowedHosts: ['api.github.com'],
+          pathPrefixes: ['/repos', '/repos-archive'],
+        }),
+        apiConnection({
+          id: 'gh-orgs',
+          displayName: 'GitHub orgs',
+          allowedHosts: ['api.github.com'],
+          pathPrefixes: ['/orgs'],
+        }),
+      ],
+    });
+
+    const response = await app.request('/admin/api/agents', {
+      method: 'POST',
+      headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+      body: JSON.stringify(distinct),
+    });
+
+    assert.equal(response.status, 201);
+  } finally {
+    store.close();
+  }
+});
+
+test('admin API exempts a disabled connection from the overlap check', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  try {
+    const app = appWithAdmin(store);
+
+    // A disabled connection is never injected, so overlapping with it is allowed.
+    const withDisabledOverlap = agent({
+      apiConnections: [
+        apiConnection({
+          id: 'gh-active',
+          displayName: 'GitHub active',
+          allowedHosts: ['api.github.com'],
+          pathPrefixes: ['/repos'],
+          enabled: true,
+        }),
+        apiConnection({
+          id: 'gh-parked',
+          displayName: 'GitHub parked',
+          allowedHosts: ['api.github.com'],
+          pathPrefixes: ['/repos'],
+          enabled: false,
+        }),
+      ],
+    });
+
+    const response = await app.request('/admin/api/agents', {
+      method: 'POST',
+      headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+      body: JSON.stringify(withDisabledOverlap),
+    });
+
+    assert.equal(response.status, 201);
+  } finally {
+    store.close();
+  }
+});
+
 test('admin egress API defaults when unset and persists a valid allowlist policy', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   const settings = new SqliteSettingsStore(':memory:');
