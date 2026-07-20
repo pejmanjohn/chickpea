@@ -23,6 +23,8 @@ export class McpBlockedUrlError extends Error {
 export function classifyMcpError(err: unknown): McpErrorCode {
   const message = (err instanceof Error ? err.message : String(err)).toLowerCase();
   if (message.includes('blocked url')) return 'blocked_url';
+  const code = (err as { code?: unknown } | null | undefined)?.code;
+  if (typeof code === 'number' && (code === 401 || code === 403)) return 'unauthorized';
   if (message.includes('unauthorized') || message.includes('401')) return 'unauthorized';
   if (message.includes('timed') || message.includes('timeout')) return 'timeout';
   if (message.includes('failed to fetch') || message.includes('fetch failed') || message.includes('network')) {
