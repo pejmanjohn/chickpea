@@ -185,6 +185,10 @@ function runAdminPageHarness(
     attachSelectionValue?: string;
     effectiveError?: { status: number; error: string; message?: string };
     agentWriteError?: { status: number; error: string; message?: string };
+    mcpSecretPutFailures?: number;
+    mcpSecretDeleteFailures?: number;
+    apiConnectionSecretPutFailures?: number;
+    apiConnectionSecretDeleteFailures?: number;
     skillResolution?: Record<string, unknown>;
     skillResolveError?: { status: number; error: string; message?: string };
     mcpTestResult?: { ok: true; tools: Array<{ name: string; title?: string; description?: string }> } | { ok: false; code: string; message: string };
@@ -249,6 +253,10 @@ function runAdminPageHarness(
   const modelProviders = options.modelProviders;
   const effectiveError = options.effectiveError;
   const agentWriteError = options.agentWriteError;
+  let mcpSecretPutFailures = options.mcpSecretPutFailures ?? 0;
+  let mcpSecretDeleteFailures = options.mcpSecretDeleteFailures ?? 0;
+  let apiConnectionSecretPutFailures = options.apiConnectionSecretPutFailures ?? 0;
+  let apiConnectionSecretDeleteFailures = options.apiConnectionSecretDeleteFailures ?? 0;
   const skillResolveError = options.skillResolveError;
   const skillResolution = options.skillResolution;
   let resolveOpsEffective: (() => void) | undefined;
@@ -412,6 +420,10 @@ function runAdminPageHarness(
       const body = JSON.parse(options?.body ?? '{}') as Record<string, unknown>;
       if (method === 'PUT') {
         mcpSecretPuts.push({ agentId, id, body });
+        if (mcpSecretPutFailures > 0) {
+          mcpSecretPutFailures -= 1;
+          return Promise.resolve(jsonResponse({ error: 'secret_store_unavailable' }, 503));
+        }
         const headerNames = (body.headerNames as string[]) ?? [];
         const headers: Record<string, string> = {};
         headerNames.forEach((name) => {
@@ -422,6 +434,10 @@ function runAdminPageHarness(
       }
       if (method === 'DELETE') {
         mcpSecretDeletes.push({ agentId, id, body });
+        if (mcpSecretDeleteFailures > 0) {
+          mcpSecretDeleteFailures -= 1;
+          return Promise.resolve(jsonResponse({ error: 'secret_store_unavailable' }, 503));
+        }
         return Promise.resolve(jsonResponse({ ok: true }));
       }
     }
@@ -434,10 +450,18 @@ function runAdminPageHarness(
       const body = JSON.parse(options?.body ?? '{}') as Record<string, unknown>;
       if (method === 'PUT') {
         apiConnectionSecretPuts.push({ agentId, id, body });
+        if (apiConnectionSecretPutFailures > 0) {
+          apiConnectionSecretPutFailures -= 1;
+          return Promise.resolve(jsonResponse({ error: 'secret_store_unavailable' }, 503));
+        }
         return Promise.resolve(jsonResponse({ source: 'stored' }));
       }
       if (method === 'DELETE') {
         apiConnectionSecretDeletes.push({ agentId, id, body });
+        if (apiConnectionSecretDeleteFailures > 0) {
+          apiConnectionSecretDeleteFailures -= 1;
+          return Promise.resolve(jsonResponse({ error: 'secret_store_unavailable' }, 503));
+        }
         return Promise.resolve(jsonResponse({ source: 'missing' }));
       }
     }
@@ -1533,6 +1557,56 @@ test('the Connections tab adds an API connection policy and stores its credentia
       body: { credential: 'rest-secret-token' },
     },
   ]);
+  assert.doesNotMatch(harness.app.innerHTML, /Profile saved, but a credential could not be/);
+
+  // A successful flush clears the pending value, so another profile save does
+  // not write the credential again.
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+  assert.equal(harness.apiConnectionSecretPuts.length, 1);
+});
+
+test('a failed API credential PUT stays pending, surfaces an error, and retries on Save', async () => {
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    apiConnectionSecretPutFailures: 1,
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  assert.ok(click && input);
+
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'apiconn-new' }) });
+  input({ target: inputTarget({ 'data-action': 'apiconn-field-name' }, 'Issue API') });
+  input({ target: inputTarget({ 'data-action': 'apiconn-host-input', 'data-index': '0' }, 'api.example.com') });
+  input({ target: inputTarget({ 'data-action': 'apiconn-field-header-name' }, 'Authorization') });
+  input({ target: inputTarget({ 'data-action': 'apiconn-field-credential' }, 'retry-rest-secret') });
+  click({ target: actionTarget({ 'data-action': 'apiconn-save-row' }) });
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+
+  assert.equal(harness.apiConnectionSecretPuts.length, 1);
+  assert.match(
+    harness.app.innerHTML,
+    /Profile saved, but a credential could not be stored — open the connection and Save again\./,
+  );
+
+  // The persisted policy must not make the failed write look stored.
+  click({ target: actionTarget({ 'data-action': 'apiconn-edit', 'data-index': '0' }) });
+  assert.doesNotMatch(harness.app.innerHTML, /placeholder="•••• stored"[^>]*data-action="apiconn-field-credential"/);
+  click({ target: actionTarget({ 'data-action': 'apiconn-cancel' }) });
+
+  // The next Save retries the retained write. This attempt succeeds and clears
+  // it, so a third Save is silent and does not issue another PUT.
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+  assert.equal(harness.apiConnectionSecretPuts.length, 2);
+  assert.doesNotMatch(harness.app.innerHTML, /Profile saved, but a credential could not be/);
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+  assert.equal(harness.apiConnectionSecretPuts.length, 2);
 });
 
 test('editing a saved API connection shows a stored write-only credential placeholder', async () => {
@@ -1611,6 +1685,33 @@ test('removing an API connection confirms and deletes its credential after the p
   assert.deepEqual(harness.apiConnectionSecretDeletes, [
     { agentId: 'agent_conn', id: 'issue-api', body: {} },
   ]);
+});
+
+test('a failed API credential DELETE stays pending, surfaces an error, and retries on Save', async () => {
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent({ apiConnections: [apiConnectionFixture()] })],
+    apiConnectionSecretDeleteFailures: 1,
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'apiconn-remove', 'data-index': '0' }) });
+  click({ target: actionTarget({ 'data-action': 'apiconn-remove-confirm' }) });
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+
+  assert.equal(harness.apiConnectionSecretDeletes.length, 1);
+  assert.match(harness.app.innerHTML, /Profile saved, but a credential could not be removed — Save again to retry\./);
+
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+  assert.equal(harness.apiConnectionSecretDeletes.length, 2);
+  assert.doesNotMatch(harness.app.innerHTML, /Profile saved, but a credential could not be/);
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+  assert.equal(harness.apiConnectionSecretDeletes.length, 2);
 });
 
 test('the inline script embeds the connector preset catalog and brand logos', () => {
@@ -1908,6 +2009,59 @@ test('testing a connection renders discovered-tool checkboxes all checked and ca
   assert.equal(harness.mcpSecretPuts[0]?.agentId, 'agent_conn');
   assert.equal(harness.mcpSecretPuts[0]?.id, 'linear');
   assert.equal((harness.mcpSecretPuts[0]?.body as Record<string, unknown>).bearerToken, 'sk-secret-token');
+  assert.doesNotMatch(harness.app.innerHTML, /Profile saved, but a credential could not be/);
+
+  // Successful secret writes are removed from the retry queue.
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+  assert.equal(harness.mcpSecretPuts.length, 1);
+});
+
+test('a failed MCP credential PUT stays pending, surfaces an error, and retries on Save', async () => {
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    mcpSecretPutFailures: 1,
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  const change = harness.listeners.change;
+  assert.ok(click && input && change);
+
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-custom' }) });
+  input({ target: inputTarget({ 'data-action': 'conn-field-name' }, 'Linear') });
+  input({ target: inputTarget({ 'data-action': 'conn-field-url' }, 'https://mcp.example.com/mcp') });
+  change({
+    target: {
+      value: 'bearer',
+      closest: () => null,
+      getAttribute: (name: string) => (name === 'data-action' ? 'conn-auth' : null),
+    } as unknown as FakeTarget,
+  });
+  input({ target: inputTarget({ 'data-action': 'conn-field-bearer' }, 'retry-mcp-secret') });
+  click({ target: actionTarget({ 'data-action': 'conn-save-row' }) });
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+
+  assert.equal(harness.mcpSecretPuts.length, 1);
+  assert.match(
+    harness.app.innerHTML,
+    /Profile saved, but a credential could not be stored — open the connection and Save again\./,
+  );
+
+  click({ target: actionTarget({ 'data-action': 'conn-edit', 'data-index': '0' }) });
+  assert.doesNotMatch(harness.app.innerHTML, /placeholder="•••• stored"[^>]*data-action="conn-field-bearer"/);
+  click({ target: actionTarget({ 'data-action': 'conn-cancel' }) });
+
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+  assert.equal(harness.mcpSecretPuts.length, 2);
+  assert.doesNotMatch(harness.app.innerHTML, /Profile saved, but a credential could not be/);
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+  assert.equal(harness.mcpSecretPuts.length, 2);
 });
 
 test('creating a profile writes connection secrets under the generated profile id', async () => {
@@ -2152,6 +2306,51 @@ test('removing a connection confirms in a modal and DELETEs its secrets on save'
   assert.equal(harness.mcpSecretDeletes[0]?.agentId, 'agent_conn');
   assert.equal(harness.mcpSecretDeletes[0]?.id, 'linear');
   assert.deepEqual((harness.mcpSecretDeletes[0]?.body as Record<string, unknown>).headerNames, ['X-Api-Key']);
+});
+
+test('a failed MCP credential DELETE stays pending, surfaces an error, and retries on Save', async () => {
+  const harness = runAdminPageHarness({
+    agents: [
+      connectionsAgent({
+        mcpServers: [
+          {
+            id: 'linear',
+            displayName: 'Linear',
+            url: 'https://mcp.example.com/mcp',
+            transport: 'streamable-http',
+            authMode: 'bearer',
+            headerNames: ['X-Api-Key'],
+            enabled: true,
+            lifecycleStatus: 'ready',
+            statusText: '',
+            discoveredTools: [],
+            allowedTools: [],
+          },
+        ],
+      }),
+    ],
+    mcpSecretDeleteFailures: 1,
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-remove', 'data-index': '0' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-remove-confirm' }) });
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+
+  assert.equal(harness.mcpSecretDeletes.length, 1);
+  assert.match(harness.app.innerHTML, /Profile saved, but a credential could not be removed — Save again to retry\./);
+
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+  assert.equal(harness.mcpSecretDeletes.length, 2);
+  assert.doesNotMatch(harness.app.innerHTML, /Profile saved, but a credential could not be/);
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+  assert.equal(harness.mcpSecretDeletes.length, 2);
 });
 
 test('saving with a filled-but-not-added connection editor commits it, not drops it', async () => {

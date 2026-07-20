@@ -1137,8 +1137,8 @@ details[open].advanced summary::before {
     // Inline Connections (remote MCP server) editor on the profile edit page.
     // null when closed; when open it is a working copy of one connection plus
     // TRANSIENT secrets (bearerToken + headerValues) that live ONLY here and are
-    // PUT to the settings store on save, then cleared — they never enter the
-    // profile PATCH body. { index: <number|null for new>, id, displayName, url,
+    // PUT to the settings store on save, then cleared after success — they never
+    // enter the profile PATCH body. { index: <number|null for new>, id, displayName, url,
     // transport, authMode, headerNames, headerValues, bearerToken,
     // enabled, testing, testError, discoveredTools, checked (bool[] parallel to
     // discoveredTools), lifecycleStatus, statusText, lastCheckedAt, sources
@@ -3580,6 +3580,8 @@ details[open].advanced summary::before {
       // New profiles carry no Connections either; the array is what the API persists.
       mcpServers: [],
       apiConnections: [],
+      pendingSecrets: {},
+      removedConnections: [],
       pendingApiSecrets: {},
       removedApiConnections: []
     };
@@ -3601,6 +3603,8 @@ details[open].advanced summary::before {
       // editor never mutates the shared state.agents entry.
       mcpServers: (agent.mcpServers || []).map(cloneConnection),
       apiConnections: (agent.apiConnections || []).map(cloneApiConnection),
+      pendingSecrets: {},
+      removedConnections: [],
       pendingApiSecrets: {},
       removedApiConnections: []
     };
@@ -4656,9 +4660,14 @@ details[open].advanced summary::before {
     });
     var approved = conn.allowedTools || [];
     editor.checked = editor.discoveredTools.map(function (tool) { return approved.indexOf(tool.name) >= 0; });
+    var pending = state.profileDraft && state.profileDraft.pendingSecrets && state.profileDraft.pendingSecrets[conn.id];
+    var pendingHeaders = (pending && pending.headers) || {};
     var headerSources = {};
-    editor.headerNames.forEach(function (name) { headerSources[name] = "stored"; });
-    editor.sources = { bearer: conn.authMode === "bearer" ? "stored" : "missing", headers: headerSources };
+    editor.headerNames.forEach(function (name) {
+      headerSources[name] = Object.prototype.hasOwnProperty.call(pendingHeaders, name) ? "missing" : "stored";
+    });
+    var bearerSource = conn.authMode === "bearer" && !(pending && pending.bearerToken !== undefined) ? "stored" : "missing";
+    editor.sources = { bearer: bearerSource, headers: headerSources };
     editor.presetId = conn.presetId;
     if (conn.presetId) {
       editor.preset = presetById(conn.presetId) || null;
@@ -4899,12 +4908,40 @@ details[open].advanced summary::before {
     return true;
   }
 
-  // After the profile PATCH succeeds, PUT any staged secrets and DELETE the
-  // secrets of removed connections, then clear the transient state. Runs
-  // fire-and-forget: a secret write failure must not block the saved profile.
-  function flushConnectionSecrets(draft, agentId) {
+  async function settleSecretOperations(operations, pending, removed, succeededPending, skippedRemoved) {
+    var succeededRemoved = {};
+    var settled = await Promise.allSettled(operations.map(function (operation) { return operation.request; }));
+    var failed = [];
+    settled.forEach(function (result, index) {
+      var operation = operations[index];
+      if (result.status === "fulfilled") {
+        if (operation.kind === "pending") succeededPending[operation.id] = true;
+        else succeededRemoved[operation.index] = true;
+      } else {
+        failed.push({ id: operation.id, op: operation.op });
+      }
+    });
+    Object.keys(succeededPending).forEach(function (id) { delete pending[id]; });
+    var retainedRemoved = removed.filter(function (entry, index) {
+      if (succeededRemoved[index]) return false;
+      // A same-id DELETE was intentionally skipped in favor of the PUT. Once
+      // that PUT succeeds, the stale removal is complete too; if it failed,
+      // retain both entries so the same safe ordering is retried.
+      if (skippedRemoved[index] && succeededPending[entry.id]) return false;
+      return true;
+    });
+    return { failed: failed, removed: retainedRemoved };
+  }
+
+  // After the profile PATCH succeeds, concurrently PUT staged secrets and
+  // DELETE removed connections. Successful operations leave the transient
+  // queue; failures stay staged so the next profile save can retry them.
+  async function flushConnectionSecrets(draft, agentId) {
     var pending = (draft && draft.pendingSecrets) || {};
     var removed = (draft && draft.removedConnections) || [];
+    var operations = [];
+    var succeededPending = {};
+    var skippedRemoved = {};
     // A same-slug remove + re-add in one save stages BOTH a DELETE and a PUT for
     // that id. Skip the DELETE when a value-bearing PUT is pending for the same
     // id, so an out-of-order DELETE can't clobber the just-stored secret. (Any
@@ -4914,9 +4951,15 @@ details[open].advanced summary::before {
       var e = pending[id];
       return !!e && (e.bearerToken !== undefined || e.headers !== undefined);
     }
-    removed.forEach(function (entry) {
-      if (pendingHasValue(entry.id)) return;
-      postJson("/admin/api/agents/" + encodeURIComponent(agentId) + "/mcp/secrets/" + encodeURIComponent(entry.id), "DELETE", { headerNames: entry.headerNames || [] }).catch(function () {});
+    removed.forEach(function (entry, index) {
+      if (pendingHasValue(entry.id)) { skippedRemoved[index] = true; return; }
+      operations.push({
+        id: entry.id,
+        op: "delete",
+        kind: "removed",
+        index: index,
+        request: postJson("/admin/api/agents/" + encodeURIComponent(agentId) + "/mcp/secrets/" + encodeURIComponent(entry.id), "DELETE", { headerNames: entry.headerNames || [] })
+      });
     });
     Object.keys(pending).forEach(function (id) {
       var entry = pending[id];
@@ -4927,11 +4970,21 @@ details[open].advanced summary::before {
       if (entry.clearBearer) body.clearBearer = true;
       // Round-trip when there is a value to store OR an orphan to clean up.
       if (body.bearerToken !== undefined || body.headers !== undefined || body.removeHeaderNames !== undefined || body.clearBearer !== undefined) {
-        postJson("/admin/api/agents/" + encodeURIComponent(agentId) + "/mcp/secrets/" + encodeURIComponent(id), "PUT", body).catch(function () {});
+        operations.push({
+          id: id,
+          op: "put",
+          kind: "pending",
+          request: postJson("/admin/api/agents/" + encodeURIComponent(agentId) + "/mcp/secrets/" + encodeURIComponent(id), "PUT", body)
+        });
+      } else {
+        // A policy-only edit can create an empty pending entry. It has no
+        // credential operation to retry, so treat it as already complete.
+        succeededPending[id] = true;
       }
     });
-    // Clear the transient secret state — typed values never survive a save.
-    if (draft) { draft.pendingSecrets = {}; draft.removedConnections = []; }
+    var result = await settleSecretOperations(operations, pending, removed, succeededPending, skippedRemoved);
+    if (draft) { draft.pendingSecrets = pending; draft.removedConnections = result.removed; }
+    return { failed: result.failed };
   }
 
   /* ---- Credentialed REST API connection editor --------------------------- */
@@ -4967,9 +5020,10 @@ details[open].advanced summary::before {
     editor.methodChecked = API_CONNECTION_METHODS.map(function (method) { return allowedMethods.indexOf(method) >= 0; });
     editor.enabled = !!conn.enabled;
     editor.presetId = conn.presetId;
-    // Credentials are write-only. As with saved MCP auth policy, an existing
-    // connection is the only client-side signal available for the stored badge.
-    editor.sources = { credential: "stored" };
+    // Credentials are write-only. A persisted policy implies a stored value
+    // unless this draft still carries a failed write for the same connection.
+    var pending = state.profileDraft && state.profileDraft.pendingApiSecrets && state.profileDraft.pendingApiSecrets[conn.id];
+    editor.sources = { credential: pending && pending.credential !== undefined ? "missing" : "stored" };
     return editor;
   }
 
@@ -5043,23 +5097,41 @@ details[open].advanced summary::before {
     return true;
   }
 
-  function flushApiConnectionSecrets(draft, agentId) {
+  async function flushApiConnectionSecrets(draft, agentId) {
     var pending = (draft && draft.pendingApiSecrets) || {};
     var removed = (draft && draft.removedApiConnections) || [];
+    var operations = [];
+    var succeededPending = {};
+    var skippedRemoved = {};
     function pendingHasValue(id) {
       return !!pending[id] && pending[id].credential !== undefined;
     }
-    removed.forEach(function (entry) {
-      if (pendingHasValue(entry.id)) return;
-      postJson("/admin/api/agents/" + encodeURIComponent(agentId) + "/api-connections/secrets/" + encodeURIComponent(entry.id), "DELETE", {}).catch(function () {});
+    removed.forEach(function (entry, index) {
+      if (pendingHasValue(entry.id)) { skippedRemoved[index] = true; return; }
+      operations.push({
+        id: entry.id,
+        op: "delete",
+        kind: "removed",
+        index: index,
+        request: postJson("/admin/api/agents/" + encodeURIComponent(agentId) + "/api-connections/secrets/" + encodeURIComponent(entry.id), "DELETE", {})
+      });
     });
     Object.keys(pending).forEach(function (id) {
       var entry = pending[id];
       if (entry.credential !== undefined) {
-        postJson("/admin/api/agents/" + encodeURIComponent(agentId) + "/api-connections/secrets/" + encodeURIComponent(id), "PUT", { credential: entry.credential }).catch(function () {});
+        operations.push({
+          id: id,
+          op: "put",
+          kind: "pending",
+          request: postJson("/admin/api/agents/" + encodeURIComponent(agentId) + "/api-connections/secrets/" + encodeURIComponent(id), "PUT", { credential: entry.credential })
+        });
+      } else {
+        succeededPending[id] = true;
       }
     });
-    if (draft) { draft.pendingApiSecrets = {}; draft.removedApiConnections = []; }
+    var result = await settleSecretOperations(operations, pending, removed, succeededPending, skippedRemoved);
+    if (draft) { draft.pendingApiSecrets = pending; draft.removedApiConnections = result.removed; }
+    return { failed: result.failed };
   }
 
   // POST the raw pasted source to the resolve endpoint and, on success, open the
@@ -5200,16 +5272,25 @@ details[open].advanced summary::before {
       request = postJson("/admin/api/agents", "POST", body);
     }
     var secretAgentId = isEdit ? draft.id : body.id;
-    request.then(function () {
+    request.then(async function () {
       state.profileError = "";
       state.profileDirty = false;
       state.disableConfirm = false;
-      // Persist secrets by reference and clear the transient state — typed tokens
-      // never survive a save. Fire-and-forget: a secret write failure must not
-      // block the saved profile.
-      flushConnectionSecrets(secretsDraft, secretAgentId);
-      flushApiConnectionSecrets(secretsDraft, secretAgentId);
-      if (isEdit) {
+      // The profile policy is already saved. Persist both kinds of credentials
+      // concurrently, retaining only failed operations for an explicit retry.
+      var secretResults = await Promise.all([
+        flushConnectionSecrets(secretsDraft, secretAgentId),
+        flushApiConnectionSecrets(secretsDraft, secretAgentId)
+      ]);
+      var secretFailures = secretResults[0].failed.concat(secretResults[1].failed);
+      var secretsFailed = secretFailures.length > 0;
+      if (isEdit || secretsFailed) {
+        // A failed create becomes an edit of the policy that did persist. Keep
+        // that screen open so its pending write-only value remains retryable.
+        if (!isEdit) {
+          state.profileScreen = "edit";
+          state.editingAgentId = secretAgentId;
+        }
         // Stay on the editor; re-clone the draft from the refreshed agent so the
         // form reflects exactly what persisted (and the save bar re-disables).
         // If a leave was requested (Save changes in the guard modal), carry it
@@ -5217,6 +5298,21 @@ details[open].advanced summary::before {
         return refreshData().then(function () {
           var saved = agentById(state.editingAgentId);
           if (saved) state.profileDraft = cloneAgent(saved);
+          if (secretsFailed && state.profileDraft) {
+            // refreshData re-clones policy from the server; restore only the
+            // operations the flushes deliberately retained for retry.
+            state.profileDraft.pendingSecrets = secretsDraft.pendingSecrets || {};
+            state.profileDraft.removedConnections = secretsDraft.removedConnections || [];
+            state.profileDraft.pendingApiSecrets = secretsDraft.pendingApiSecrets || {};
+            state.profileDraft.removedApiConnections = secretsDraft.removedApiConnections || [];
+            var putFailed = secretFailures.some(function (failure) { return failure.op === "put"; });
+            state.profileError = putFailed
+              ? "Profile saved, but a credential could not be stored — open the connection and Save again."
+              : "Profile saved, but a credential could not be removed — Save again to retry.";
+            state.profileDirty = true;
+            render();
+            return;
+          }
           if (onSaved) { onSaved(); } else { render(); }
         });
       }
