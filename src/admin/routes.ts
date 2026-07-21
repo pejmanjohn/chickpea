@@ -517,7 +517,16 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
 
   app.get('/admin', (c) => c.html(renderAdminPage()));
 
-  app.get('/admin/api/agents', async (c) => c.json({ agents: await store(c).listAgents() }));
+  app.get('/admin/api/agents', async (c) => {
+    const platformEnv = c.env as PlatformEnv | undefined;
+    const settingsStore = settings(c);
+    const agents = await Promise.all(
+      (await store(c).listAgents()).map((agent) =>
+        withApiConnectionSources(agent, platformEnv, settingsStore),
+      ),
+    );
+    return c.json({ agents });
+  });
 
   // The profile picker's single source of provider groups + suggestions. Anthropic
   // and OpenAI keep their small dynamic catalogs; OpenRouter and the keyless
@@ -1050,7 +1059,14 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
 
   app.get('/admin/api/agents/:id', async (c) => {
     try {
-      return c.json({ agent: await store(c).getAgent(c.req.param('id')) });
+      const agent = await store(c).getAgent(c.req.param('id'));
+      return c.json({
+        agent: await withApiConnectionSources(
+          agent,
+          c.env as PlatformEnv | undefined,
+          settings(c),
+        ),
+      });
     } catch (err) {
       if (err instanceof UnknownAgentError) {
         return c.json({ error: 'not_found' }, 404);
@@ -1705,6 +1721,31 @@ function toMcpServers(
     ...(server.lastCheckedAt !== undefined ? { lastCheckedAt: server.lastCheckedAt } : {}),
     ...(server.presetId !== undefined ? { presetId: server.presetId } : {}),
   }));
+}
+
+// Credentials are write-only, so the admin UI cannot see the value — but it must
+// know whether one exists. Resolve each connection's real source (stored / env /
+// missing) so the editor shows the truth instead of assuming a persisted policy
+// carries a usable credential (turn-time resolution silently skips a connection
+// whose credential is absent).
+async function withApiConnectionSources(
+  agent: CustomAgentConfig,
+  platformEnv: PlatformEnv | undefined,
+  settingsStore: SettingsStore,
+): Promise<CustomAgentConfig> {
+  if (agent.apiConnections.length === 0) return agent;
+  const apiConnections = await Promise.all(
+    agent.apiConnections.map(async (connection) => ({
+      ...connection,
+      credentialSource: await describeConnectorCredentialSource(
+        agent.id,
+        connection.id,
+        platformEnv,
+        settingsStore,
+      ),
+    })),
+  );
+  return { ...agent, apiConnections };
 }
 
 function toApiConnections(

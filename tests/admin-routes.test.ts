@@ -1230,6 +1230,42 @@ test('API connection secret PUT stores a write-only credential and keeps blank v
   }
 });
 
+test('agent GET reports each API connection credential source, not a blanket "stored"', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    await store.createAgent(
+      agent({ id: 'agent_connector', apiConnections: [apiConnection({ id: 'linear-api' })] }),
+    );
+    const app = appWithAdminOptions(store, { settings });
+    const readSource = async () => {
+      const res = await app.request('/admin/api/agents/agent_connector', {
+        headers: auth(ADMIN_TOKEN),
+      });
+      assert.equal(res.status, 200);
+      const body = (await res.json()) as {
+        agent: { apiConnections: Array<{ id: string; credentialSource?: string }> };
+      };
+      return body.agent.apiConnections[0]?.credentialSource;
+    };
+
+    // A persisted connection with no stored secret must NOT claim "stored" —
+    // turn-time resolution would skip it, so the editor has to show the truth.
+    assert.equal(await readSource(), 'missing');
+
+    await app.request('/admin/api/agents/agent_connector/api-connections/secrets/linear-api', {
+      method: 'PUT',
+      headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+      body: JSON.stringify({ credential: 'super-secret-credential' }),
+    });
+
+    assert.equal(await readSource(), 'stored');
+  } finally {
+    settings.close();
+    store.close();
+  }
+});
+
 test('API connection secret PUT rejects a connection outside the profile', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   const settings = new SqliteSettingsStore(':memory:');

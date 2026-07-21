@@ -1493,6 +1493,9 @@ function apiConnectionFixture(overrides: Record<string, unknown> = {}): Record<s
     headerValuePrefix: 'Bearer ',
     allowedMethods: ['GET', 'POST'],
     enabled: true,
+    // The agent GET resolves the real write-only credential source; a saved
+    // connection with a stored secret reports "stored".
+    credentialSource: 'stored',
     ...overrides,
   };
 }
@@ -1629,6 +1632,30 @@ test('editing a saved API connection shows a stored write-only credential placeh
     harness.app.innerHTML,
     /placeholder="•••• stored"[^>]*data-action="apiconn-field-credential"/,
   );
+});
+
+test('editing a saved API connection with no stored credential does not claim "stored"', async () => {
+  const harness = runAdminPageHarness({
+    agents: [
+      connectionsAgent({
+        // A persisted connection whose credential is absent (deleted, or created
+        // via the API without one) — the server reports "missing".
+        apiConnections: [apiConnectionFixture({ credentialSource: 'missing' })],
+      }),
+    ],
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  click({ target: actionTarget({ 'data-action': 'apiconn-edit', 'data-index': '0' }) });
+
+  // The editor prompts to paste a credential rather than showing the stored
+  // placeholder, so the missing-credential state is not hidden.
+  assert.doesNotMatch(harness.app.innerHTML, /placeholder="•••• stored"/);
+  assert.match(harness.app.innerHTML, /placeholder="Paste credential/);
 });
 
 test('the API connection editor enforces its required policy fields', async () => {

@@ -3648,6 +3648,9 @@ details[open].advanced summary::before {
     };
     if (conn.headerValuePrefix !== undefined) copy.headerValuePrefix = conn.headerValuePrefix;
     if (conn.presetId !== undefined) copy.presetId = conn.presetId;
+    // Server-resolved write-only credential source (stored/env/missing); carried
+    // through so the editor reflects the real state, not a persisted-policy guess.
+    if (conn.credentialSource !== undefined) copy.credentialSource = conn.credentialSource;
     return copy;
   }
 
@@ -5020,10 +5023,14 @@ details[open].advanced summary::before {
     editor.methodChecked = API_CONNECTION_METHODS.map(function (method) { return allowedMethods.indexOf(method) >= 0; });
     editor.enabled = !!conn.enabled;
     editor.presetId = conn.presetId;
-    // Credentials are write-only. A persisted policy implies a stored value
-    // unless this draft still carries a failed write for the same connection.
+    // Credentials are write-only, so trust the server's resolved source
+    // (stored/env/missing) rather than assuming a persisted policy has a value.
+    // A draft that still carries an unsaved write for this connection overrides
+    // it to "missing" until that write persists.
     var pending = state.profileDraft && state.profileDraft.pendingApiSecrets && state.profileDraft.pendingApiSecrets[conn.id];
-    editor.sources = { credential: pending && pending.credential !== undefined ? "missing" : "stored" };
+    editor.sources = {
+      credential: pending && pending.credential !== undefined ? "missing" : (conn.credentialSource || "missing")
+    };
     return editor;
   }
 
