@@ -5,7 +5,7 @@ import { Bash, InMemoryFs, type SecureFetch } from 'just-bash';
 import {
   buildEgressPlan,
   buildEgressNetworkConfig,
-  createMethodEnforcingFetch,
+  createScopedFetch,
   DEFAULT_EGRESS_POLICY,
   parseEgressPolicy,
   type ResolvedApiConnection,
@@ -202,180 +202,187 @@ test('buildEgressNetworkConfig skips connector entries with empty credentials', 
   assert.deepEqual(network.allowedMethods, ['GET', 'HEAD', 'POST', 'DELETE']);
 });
 
-test('buildEgressPlan derives per-prefix methods and sorts longest prefixes first', () => {
-  const { methodMap } = buildEgressPlan(
-    {
-      mode: 'allowlist',
-      domains: ['api.linear.app'],
-    },
-    { cloudflare: false },
-    [
-      {
-        ...LINEAR_CONNECTION,
-        pathPrefixes: ['/v1/issues'],
-        allowedMethods: ['GET', 'DELETE'],
-      },
-    ],
-  );
-
-  assert.deepEqual(
-    methodMap.map(({ prefix, methods }) => ({ prefix, methods: [...methods] })),
-    [
-      {
-        prefix: 'https://api.linear.app/v1/issues',
-        methods: ['GET', 'DELETE'],
-      },
-      {
-        prefix: 'https://api.linear.app',
-        methods: ['GET', 'HEAD'],
-      },
-    ],
-  );
-});
-
-test('buildEgressPlan merges a domain and a whole-host connector into one prefix', () => {
-  // A `Domains` entry and a whole-host connection on the same origin produce the
-  // SAME prefix. Without merging, `find` would return the domain's GET/HEAD and
-  // shadow the connector's POST/DELETE, making the connection partially unusable.
-  const { methodMap } = buildEgressPlan(
+test('buildEgressPlan builds an isolated per-connector scope', () => {
+  const { scopes, baseNetwork, baseMethods } = buildEgressPlan(
     { mode: 'allowlist', domains: ['api.linear.app'] },
     { cloudflare: false },
-    [{ ...LINEAR_CONNECTION, pathPrefixes: [], allowedMethods: ['GET', 'POST', 'DELETE'] }],
+    [{ ...LINEAR_CONNECTION, pathPrefixes: ['/v1/issues'], allowedMethods: ['GET', 'DELETE'] }],
   );
 
-  assert.deepEqual(
-    methodMap.map(({ prefix, methods }) => ({ prefix, methods: [...methods].sort() })),
-    [{ prefix: 'https://api.linear.app', methods: ['DELETE', 'GET', 'HEAD', 'POST'] }],
-  );
+  // One scope for the connector: its prefixes, its methods, and a network whose
+  // allow-list is ONLY the connector's own host (with the credential transform) —
+  // no domains, no full internet — so a redirect cannot escape to another host.
+  assert.equal(scopes.length, 1);
+  const [scope] = scopes;
+  assert.ok(scope);
+  assert.deepEqual(scope.prefixes, ['https://api.linear.app/v1/issues']);
+  assert.deepEqual([...scope.methods].sort(), ['DELETE', 'GET']);
+  assert.deepEqual(scope.network.allowedUrlPrefixes, [
+    connectorUrl('https://api.linear.app/v1/issues'),
+  ]);
+  assert.deepEqual(scope.network.allowedMethods, ['GET', 'DELETE']);
+  assert.equal(scope.network.dangerouslyAllowFullInternetAccess, undefined);
+  assert.equal(scope.network.denyPrivateRanges, true);
+
+  // The operator domain rides the base network at the GET/HEAD baseline, with no
+  // credential transform attached.
+  assert.deepEqual([...baseMethods].sort(), ['GET', 'HEAD']);
+  assert.deepEqual(baseNetwork.allowedUrlPrefixes, ['https://api.linear.app']);
+  assert.deepEqual(baseNetwork.allowedMethods, ['GET', 'HEAD']);
 });
 
-test('buildEgressPlan keeps a fail-closed fallback network at the baseline methods', () => {
-  const { network, fallbackNetwork } = buildEgressPlan(
+test('buildEgressPlan keeps connector scopes off the open internet and fails closed on fallback', () => {
+  const { scopes, baseNetwork, baseMethods, fallbackNetwork } = buildEgressPlan(
     { mode: 'open', domains: [] },
     { cloudflare: false },
     [{ ...LINEAR_CONNECTION, allowedMethods: ['GET', 'DELETE'] }],
   );
 
-  // The delegate network carries the union so the wrapper can scope per-prefix.
-  assert.deepEqual(network.allowedMethods, ['GET', 'HEAD', 'POST', 'DELETE']);
-  // The fallback (no wrapper) must NOT grant connector write methods globally.
+  // Open mode: the base network reaches the whole internet at the create/read
+  // baseline (GET/HEAD/POST).
+  assert.equal(baseNetwork.dangerouslyAllowFullInternetAccess, true);
+  assert.deepEqual([...baseMethods].sort(), ['GET', 'HEAD', 'POST']);
+
+  // The connector scope is NOT open-internet — only its own host, its methods.
+  assert.equal(scopes.length, 1);
+  const [scope] = scopes;
+  assert.ok(scope);
+  assert.equal(scope.network.dangerouslyAllowFullInternetAccess, undefined);
+  assert.deepEqual(scope.network.allowedMethods, ['GET', 'DELETE']);
+
+  // Fallback (only if just-bash stops exposing secureFetch): every prefix but
+  // capped at the baseline methods, so connector writes are never global.
   assert.deepEqual(fallbackNetwork.allowedMethods, ['GET', 'HEAD', 'POST']);
-  // Both still describe the same reachability (open mode here).
   assert.equal(fallbackNetwork.dangerouslyAllowFullInternetAccess, true);
 });
 
-test('createMethodEnforcingFetch rejects disallowed methods before delegating', async () => {
+test('createScopedFetch rejects a method the matched scope does not allow', async () => {
   const calls: Array<{ url: string; options: Parameters<SecureFetch>[1] }> = [];
   const delegate: SecureFetch = async (url, options) => {
     calls.push({ url, options });
     return fetchResult(url);
   };
-  const enforcingFetch = createMethodEnforcingFetch(delegate, [
-    { prefix: 'https://api.linear.app/v1', methods: new Set(['GET', 'POST']) },
-  ]);
+  const scopedFetch = createScopedFetch({
+    scopes: [
+      { prefixes: ['https://api.linear.app/v1'], methods: new Set(['GET', 'POST']), delegate },
+    ],
+    baseDelegate: delegate,
+    baseMethods: new Set(['GET', 'HEAD']),
+  });
 
   await assert.rejects(
-    enforcingFetch('https://api.linear.app/v1/issues/123', { method: 'DELETE' }),
+    scopedFetch('https://api.linear.app/v1/issues/123', { method: 'DELETE' }),
     (error: unknown) => {
       assert.ok(error instanceof Error);
       assert.equal(error.name, 'MethodNotAllowedError');
-      assert.equal(
-        error.message,
-        "HTTP method 'DELETE' not allowed. Allowed methods: GET, POST",
-      );
+      assert.equal(error.message, "HTTP method 'DELETE' not allowed. Allowed methods: GET, POST");
       return true;
     },
   );
   assert.deepEqual(calls, []);
 });
 
-test('createMethodEnforcingFetch delegates allowed methods and returns the result', async () => {
+test('createScopedFetch delegates an allowed method and returns the result', async () => {
   const calls: Array<{ url: string; options: Parameters<SecureFetch>[1] }> = [];
   const expected = fetchResult('https://api.linear.app/v1/issues');
   const delegate: SecureFetch = async (url, options) => {
     calls.push({ url, options });
     return expected;
   };
-  const enforcingFetch = createMethodEnforcingFetch(delegate, [
-    { prefix: 'https://api.linear.app/v1', methods: new Set(['GET']) },
-  ]);
+  const scopedFetch = createScopedFetch({
+    scopes: [{ prefixes: ['https://api.linear.app/v1'], methods: new Set(['GET']), delegate }],
+    baseDelegate: delegate,
+    baseMethods: new Set(['GET', 'HEAD']),
+  });
 
   const options = { method: 'get' };
-  assert.equal(await enforcingFetch(expected.url, options), expected);
+  assert.equal(await scopedFetch(expected.url, options), expected);
   assert.deepEqual(calls, [{ url: expected.url, options }]);
 });
 
-test('createMethodEnforcingFetch delegates base-method URLs that match no prefix', async () => {
-  const calls: Array<{ url: string; options: Parameters<SecureFetch>[1] }> = [];
-  const expected = fetchResult('https://not-allowlisted.example/resource');
-  const delegate: SecureFetch = async (url, options) => {
-    calls.push({ url, options });
-    return expected;
+test('createScopedFetch routes each host to its own scope delegate', async () => {
+  // The isolation that closes the redirect method-bypass: a request to one
+  // connector's host is handled ONLY by that connector's delegate (whose network
+  // allow-lists just its own hosts), never another scope's or the base delegate's.
+  const hitAsana: string[] = [];
+  const hitGithub: string[] = [];
+  const hitBase: string[] = [];
+  const record = (into: string[]): SecureFetch => async (url, options) => {
+    into.push((options?.method ?? 'GET') + ' ' + url);
+    return fetchResult(url);
   };
-  const enforcingFetch = createMethodEnforcingFetch(delegate, [
-    { prefix: 'https://api.linear.app/v1', methods: new Set(['GET']) },
-  ]);
+  const scopedFetch = createScopedFetch({
+    scopes: [
+      { prefixes: ['https://api.asana.com'], methods: new Set(['GET', 'DELETE']), delegate: record(hitAsana) },
+      { prefixes: ['https://api.github.com'], methods: new Set(['GET']), delegate: record(hitGithub) },
+    ],
+    baseDelegate: record(hitBase),
+    baseMethods: new Set(['GET', 'HEAD']),
+  });
 
-  // A base method on an unmatched URL passes to the delegate (which enforces the
-  // allow-list). Non-base methods on unmatched URLs are covered by the
-  // open-mode base-set test above.
-  const options = { method: 'GET' };
-  assert.equal(await enforcingFetch(expected.url, options), expected);
-  assert.deepEqual(calls, [{ url: expected.url, options }]);
+  await scopedFetch('https://api.asana.com/tasks', { method: 'DELETE' });
+  await scopedFetch('https://api.github.com/repos', { method: 'GET' });
+  await scopedFetch('https://example.com/x', { method: 'GET' });
+
+  assert.deepEqual(hitAsana, ['DELETE https://api.asana.com/tasks']);
+  assert.deepEqual(hitGithub, ['GET https://api.github.com/repos']);
+  assert.deepEqual(hitBase, ['GET https://example.com/x']);
 });
 
-test('createMethodEnforcingFetch matches prefixes on path-segment boundaries, not raw string prefix', async () => {
+test('createScopedFetch matches prefixes on path-segment boundaries, longest first', async () => {
   const calls: string[] = [];
   const delegate: SecureFetch = async (url, options) => {
     calls.push((options?.method ?? 'GET') + ' ' + url);
     return fetchResult(url);
   };
-  // A connector governs /v1 (GET, DELETE); the whole host is also allowlisted
-  // read-only (GET, HEAD) — longest-prefix-first so /v1 is checked before the host.
-  const enforcingFetch = createMethodEnforcingFetch(delegate, [
-    { prefix: 'https://api.example.com/v1', methods: new Set(['GET', 'DELETE']) },
-    { prefix: 'https://api.example.com', methods: new Set(['GET', 'HEAD']) },
-  ]);
+  const scopedFetch = createScopedFetch({
+    scopes: [
+      { prefixes: ['https://api.example.com/v1'], methods: new Set(['GET', 'DELETE']), delegate },
+      { prefixes: ['https://api.example.com'], methods: new Set(['GET', 'HEAD']), delegate },
+    ],
+    baseDelegate: delegate,
+    baseMethods: new Set(['GET', 'HEAD']),
+  });
 
-  // Under the connector prefix: DELETE is allowed and reaches the delegate.
-  await enforcingFetch('https://api.example.com/v1/tasks', { method: 'DELETE' });
-  assert.deepEqual(calls, ['DELETE https://api.example.com/v1/tasks']);
-
-  // Sibling path /v10 is NOT under /v1 (segment boundary) — it falls to the
-  // read-only host entry, so DELETE must be blocked, not leaked from /v1.
+  // Under /v1: DELETE allowed. Sibling /v10 is NOT under /v1 (segment boundary),
+  // so it falls to the read-only host scope and DELETE is blocked, not leaked.
+  await scopedFetch('https://api.example.com/v1/tasks', { method: 'DELETE' });
   await assert.rejects(
-    enforcingFetch('https://api.example.com/v10/x', { method: 'DELETE' }),
+    scopedFetch('https://api.example.com/v10/x', { method: 'DELETE' }),
     (err: Error) => err.name === 'MethodNotAllowedError',
   );
-  // A GET on the same sibling path is fine (host allows GET/HEAD).
-  await enforcingFetch('https://api.example.com/v10/x', { method: 'GET' });
-  assert.deepEqual(calls.length, 2);
+  await scopedFetch('https://api.example.com/v10/x', { method: 'GET' });
+  assert.deepEqual(calls, [
+    'DELETE https://api.example.com/v1/tasks',
+    'GET https://api.example.com/v10/x',
+  ]);
 });
 
-test('createMethodEnforcingFetch holds unmatched (open-mode) hosts to the base method set', async () => {
+test('createScopedFetch holds unmatched (open-mode) hosts to the base method set', async () => {
   const calls: string[] = [];
   const delegate: SecureFetch = async (url, options) => {
     calls.push((options?.method ?? 'GET') + ' ' + url);
     return fetchResult(url);
   };
-  // A connector permits DELETE on its own host; no entry covers arbitrary hosts.
-  const enforcingFetch = createMethodEnforcingFetch(delegate, [
-    { prefix: 'https://api.asana.com', methods: new Set(['GET', 'DELETE']) },
-  ]);
+  const scopedFetch = createScopedFetch({
+    scopes: [
+      { prefixes: ['https://api.asana.com'], methods: new Set(['GET', 'DELETE']), delegate },
+    ],
+    baseDelegate: delegate,
+    baseMethods: new Set(['GET', 'HEAD', 'POST']),
+  });
 
-  // Connector host keeps its DELETE.
-  await enforcingFetch('https://api.asana.com/tasks', { method: 'DELETE' });
-  // An arbitrary host (only reachable in open mode) does NOT inherit the
-  // connector's DELETE — it is held to the base set.
+  // Connector host keeps its DELETE; an arbitrary open-mode host does not inherit
+  // it and is held to the base set (POST allowed, DELETE not).
+  await scopedFetch('https://api.asana.com/tasks', { method: 'DELETE' });
   await assert.rejects(
-    enforcingFetch('https://evil.example.com/wipe', { method: 'DELETE' }),
+    scopedFetch('https://evil.example.com/wipe', { method: 'DELETE' }),
     (err: Error) => err.name === 'MethodNotAllowedError',
   );
-  // Base methods still work on arbitrary hosts.
-  await enforcingFetch('https://evil.example.com/x', { method: 'GET' });
+  await scopedFetch('https://evil.example.com/x', { method: 'POST' });
   assert.deepEqual(calls, [
     'DELETE https://api.asana.com/tasks',
-    'GET https://evil.example.com/x',
+    'POST https://evil.example.com/x',
   ]);
 });
 

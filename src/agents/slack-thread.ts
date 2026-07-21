@@ -1,12 +1,13 @@
 import { bash, defineAgent, type AgentRouteHandler } from '@flue/runtime';
-import { Bash, InMemoryFs, type SecureFetch } from 'just-bash';
+import { Bash, InMemoryFs, type NetworkConfig, type SecureFetch } from 'just-bash';
 
 import { resolveConnectorCredential } from '../config/connector-secrets.ts';
 import {
   buildEgressPlan,
-  createMethodEnforcingFetch,
+  createScopedFetch,
   resolveEgressPolicy,
   type ResolvedApiConnection,
+  type ScopedDelegate,
 } from '../config/egress.ts';
 import { resolveEffectiveSlackConfig } from '../config/effective-config.ts';
 import { resolveProfileMcpTools } from '../config/profile-mcp.ts';
@@ -99,24 +100,40 @@ export default defineAgent(async ({ id }) => {
         }),
     )
   ).filter((connection): connection is ResolvedApiConnection => connection !== undefined);
-  const { network, fallbackNetwork, methodMap } = buildEgressPlan(
+  const { scopes, baseNetwork, baseMethods, fallbackNetwork } = buildEgressPlan(
     egressPolicy,
     { cloudflare: isCloudflareTarget() },
     resolvedConnectors,
   );
+  const secureFetchOf = (network: NetworkConfig): SecureFetch | undefined =>
+    (
+      new Bash({ fs: new InMemoryFs(), network }) as unknown as {
+        secureFetch?: SecureFetch;
+      }
+    ).secureFetch;
   let sandbox;
-  const delegate = (
-    new Bash({ fs: new InMemoryFs(), network }) as unknown as {
-      secureFetch?: SecureFetch;
-    }
-  ).secureFetch;
-  if (typeof delegate === 'function') {
-    const enforcingFetch = createMethodEnforcingFetch(delegate, methodMap);
-    sandbox = bash(() => new Bash({ fs: new InMemoryFs(), fetch: enforcingFetch }));
+  const baseDelegate = secureFetchOf(baseNetwork);
+  const scopeDelegates = scopes.map((scope) => ({
+    prefixes: scope.prefixes,
+    methods: scope.methods,
+    delegate: secureFetchOf(scope.network),
+  }));
+  if (
+    typeof baseDelegate === 'function' &&
+    scopeDelegates.every((scope) => typeof scope.delegate === 'function')
+  ) {
+    // Each connector rides its own secure-fetch scoped to just its hosts and
+    // methods, so a redirect off a connector host cannot carry an elevated
+    // method to any other allow-listed host.
+    const scopedFetch = createScopedFetch({
+      scopes: scopeDelegates as ScopedDelegate[],
+      baseDelegate,
+      baseMethods,
+    });
+    sandbox = bash(() => new Bash({ fs: new InMemoryFs(), fetch: scopedFetch }));
   } else {
-    // just-bash internal changed; fall back to the supported network path. Use
-    // the fail-closed fallback network (baseline methods only) so connector
-    // write methods are not granted globally without the per-connection wrapper.
+    // just-bash stopped exposing secureFetch; fall back to the supported network
+    // path at the fail-closed baseline (connector write methods not granted).
     sandbox = bash(() => new Bash({ fs: new InMemoryFs(), network: fallbackNetwork }));
   }
 

@@ -35,15 +35,43 @@ interface DnsResponse {
 
 type DnsResult = { address: string; family: number };
 
-interface EgressEntry {
+interface PrefixEntry {
   url: string;
   transform?: [{ headers: Record<string, string> }];
+}
+
+interface ConnectorScopeSpec {
+  entries: PrefixEntry[];
   methods: string[];
 }
 
-export interface EgressMethodEntry {
-  prefix: string;
+// A per-connector egress scope: a network whose allow-list contains ONLY this
+// connector's own hosts (with its credential transform) and whose methods are
+// exactly this connector's. Each scope becomes its own secure-fetch delegate, so
+// a redirect off a connector host cannot reach — or carry an elevated method to —
+// any host outside the connector's own allow-list.
+export interface EgressScope {
+  prefixes: string[];
   methods: Set<string>;
+  network: NetworkConfig;
+}
+
+export interface EgressPlan {
+  scopes: EgressScope[];
+  // Requests matching no connector scope (operator "Domains" and, in open mode,
+  // arbitrary hosts) go through this network at the baseline method set.
+  baseNetwork: NetworkConfig;
+  baseMethods: Set<string>;
+  // A single fail-closed network used only if just-bash stops exposing its
+  // secureFetch property: every prefix (credentials still inject) but capped at
+  // the baseline methods, so connector write methods are never granted globally.
+  fallbackNetwork: NetworkConfig;
+}
+
+export interface ScopedDelegate {
+  prefixes: string[];
+  methods: Set<string>;
+  delegate: SecureFetch;
 }
 
 // The methods permitted for any host NOT governed by a specific connection —
@@ -75,78 +103,99 @@ export async function resolveEgressPolicy(env?: PlatformEnv): Promise<EgressPoli
   return parseEgressPolicy(await getSettingsStore(env).getSetting(EGRESS_SETTING_KEY));
 }
 
+// The combined network: every allow-listed prefix (domains + all connector
+// transforms) under one global method set. Used for the descriptive whole-policy
+// view and, at the baseline method set, for the fail-closed fallback network.
+function buildCombinedNetwork(
+  entries: PrefixEntry[],
+  policy: EgressPolicy,
+  opts: { cloudflare: boolean },
+  methods: readonly string[],
+): NetworkConfig {
+  const network: NetworkConfig = {
+    allowedMethods: [...methods] as NonNullable<NetworkConfig['allowedMethods']>,
+    denyPrivateRanges: true,
+  };
+  if (opts.cloudflare) {
+    // just-bash marks _dnsResolve @internal, so this hook carries rename risk.
+    network._dnsResolve = dohResolve;
+  }
+  if (policy.mode === 'open') {
+    network.dangerouslyAllowFullInternetAccess = true;
+  } else {
+    network.allowedUrlPrefixes = [];
+  }
+  if (entries.length > 0) {
+    network.allowedUrlPrefixes = entries.map(({ url, transform }) =>
+      transform === undefined ? url : { url, transform },
+    );
+  }
+  return network;
+}
+
+function unionMethods(connectors: ResolvedApiConnection[]): string[] {
+  return [
+    ...new Set([...BASE_EGRESS_METHODS, ...connectors.flatMap((c) => c.allowedMethods)]),
+  ];
+}
+
 export function buildEgressNetworkConfig(
   policy: EgressPolicy,
   opts: { cloudflare: boolean },
   connectors: ResolvedApiConnection[] = [],
 ): NetworkConfig {
-  return buildEgressPlan(policy, opts, connectors).network;
+  const entries = [
+    ...buildDomainEntries(policy),
+    ...buildConnectorScopeSpecs(connectors).flatMap((spec) => spec.entries),
+  ];
+  return buildCombinedNetwork(entries, policy, opts, unionMethods(connectors));
 }
 
 export function buildEgressPlan(
   policy: EgressPolicy,
   opts: { cloudflare: boolean },
   connectors: ResolvedApiConnection[] = [],
-): { network: NetworkConfig; fallbackNetwork: NetworkConfig; methodMap: EgressMethodEntry[] } {
-  const entries = buildEgressEntries(policy, connectors);
-  const unionMethods = [
-    ...new Set([
-      ...BASE_EGRESS_METHODS,
-      ...connectors.flatMap((connector) => connector.allowedMethods),
-    ]),
-  ] as NonNullable<NetworkConfig['allowedMethods']>;
+): EgressPlan {
+  const domainEntries = buildDomainEntries(policy);
+  const connectorSpecs = buildConnectorScopeSpecs(connectors);
 
-  const buildNetwork = (
-    allowedMethods: NonNullable<NetworkConfig['allowedMethods']>,
-  ): NetworkConfig => {
-    const network: NetworkConfig = { allowedMethods, denyPrivateRanges: true };
-    if (opts.cloudflare) {
-      // just-bash marks _dnsResolve @internal, so this hook carries rename risk.
-      network._dnsResolve = dohResolve;
-    }
-    if (policy.mode === 'open') {
-      network.dangerouslyAllowFullInternetAccess = true;
-    } else {
-      network.allowedUrlPrefixes = [];
-    }
-    if (entries.length > 0) {
-      network.allowedUrlPrefixes = entries.map(({ url, transform }) =>
-        transform === undefined ? url : { url, transform },
-      );
-    }
-    return network;
+  // Operator domains keep the GET/HEAD baseline; open mode reaches arbitrary
+  // hosts at the read/create baseline. Connector hosts are handled by their own
+  // scopes, so neither the base nor the open path grants connector write methods.
+  const baseMethods = new Set<string>(policy.mode === 'open' ? BASE_EGRESS_METHODS : ['GET', 'HEAD']);
+  const baseNetwork = buildCombinedNetwork(domainEntries, policy, opts, [...baseMethods]);
+
+  const scopes: EgressScope[] = connectorSpecs.map((spec) => ({
+    prefixes: spec.entries.map((entry) => entry.url),
+    methods: new Set(spec.methods),
+    // A scope network is never open-internet: its allow-list is exactly this
+    // connector's hosts, so a redirect target outside them is refused by
+    // just-bash's own allow-list re-check on each redirect hop.
+    network: buildScopeNetwork(spec, opts),
+  }));
+
+  const fallbackNetwork = buildCombinedNetwork(
+    [...domainEntries, ...connectorSpecs.flatMap((spec) => spec.entries)],
+    policy,
+    opts,
+    [...BASE_EGRESS_METHODS],
+  );
+
+  return { scopes, baseNetwork, baseMethods, fallbackNetwork };
+}
+
+function buildScopeNetwork(spec: ConnectorScopeSpec, opts: { cloudflare: boolean }): NetworkConfig {
+  const network: NetworkConfig = {
+    allowedMethods: [...new Set(spec.methods)] as NonNullable<NetworkConfig['allowedMethods']>,
+    denyPrivateRanges: true,
+    allowedUrlPrefixes: spec.entries.map(({ url, transform }) =>
+      transform === undefined ? url : { url, transform },
+    ),
   };
-
-  // just-bash enforces `allowedMethods` GLOBALLY, so the delegate network must
-  // permit the union of every connector method — the per-connection wrapper then
-  // narrows each request back down to its prefix's methods. The fallback network
-  // (used when that wrapper is unavailable) stays fail-closed at the baseline:
-  // connector-specific write methods are never granted globally without the
-  // wrapper to scope them.
-  const network = buildNetwork(unionMethods);
-  const fallbackNetwork = buildNetwork([...BASE_EGRESS_METHODS]);
-
-  // Merge entries sharing an exact prefix — e.g. an operator "Domains" entry and
-  // a whole-host connection on the same origin — so the connector's authorized
-  // methods are not shadowed by the domain entry's GET/HEAD baseline (`find`
-  // would otherwise return whichever equal-length prefix sorted first).
-  const methodsByPrefix = new Map<string, Set<string>>();
-  for (const { url, methods } of entries) {
-    const existing = methodsByPrefix.get(url);
-    if (existing) {
-      for (const method of methods) existing.add(method);
-    } else {
-      methodsByPrefix.set(url, new Set(methods));
-    }
+  if (opts.cloudflare) {
+    network._dnsResolve = dohResolve;
   }
-
-  return {
-    network,
-    fallbackNetwork,
-    methodMap: [...methodsByPrefix]
-      .map(([prefix, methods]) => ({ prefix, methods }))
-      .sort((left, right) => right.prefix.length - left.prefix.length),
-  };
+  return network;
 }
 
 // Match a request URL against a method-map prefix using the SAME semantics as
@@ -169,61 +218,67 @@ function matchesEgressPrefix(url: string, prefix: string): boolean {
   return target.pathname === basePath || target.pathname.startsWith(basePath + '/');
 }
 
-export function createMethodEnforcingFetch(
-  delegate: SecureFetch,
-  methodMap: EgressMethodEntry[],
-): SecureFetch {
-  const baseMethods = new Set<string>(BASE_EGRESS_METHODS);
+// Route each request to the delegate that owns its URL: a connector scope (whose
+// own secure-fetch enforces that connector's hosts and methods, including across
+// redirects) when a prefix matches, otherwise the base delegate at the baseline
+// method set. A connector's write methods can therefore only ever reach that
+// connector's own hosts.
+export function createScopedFetch(params: {
+  scopes: ScopedDelegate[];
+  baseDelegate: SecureFetch;
+  baseMethods: Set<string>;
+}): SecureFetch {
+  const routes = params.scopes
+    .flatMap((scope) =>
+      scope.prefixes.map((prefix) => ({
+        prefix,
+        methods: scope.methods,
+        delegate: scope.delegate,
+      })),
+    )
+    .sort((left, right) => right.prefix.length - left.prefix.length);
+
   return async (url, options) => {
     const method = (options?.method || 'GET').toUpperCase();
-    const match = methodMap.find((entry) => matchesEgressPrefix(url, entry.prefix));
-    // A URL matching no connector/domain prefix (only reachable in `open` mode)
-    // is held to the read/create baseline — a connector's extra methods never
-    // widen access to unrelated internet hosts.
-    const allowed = match ? match.methods : baseMethods;
+    const route = routes.find((entry) => matchesEgressPrefix(url, entry.prefix));
+    const allowed = route ? route.methods : params.baseMethods;
     if (!allowed.has(method)) {
       const error = new Error(
-        "HTTP method '" +
-          method +
-          "' not allowed. Allowed methods: " +
-          [...allowed].join(', '),
+        "HTTP method '" + method + "' not allowed. Allowed methods: " + [...allowed].join(', '),
       );
       error.name = 'MethodNotAllowedError';
       throw error;
     }
-    return delegate(url, options);
+    return (route ? route.delegate : params.baseDelegate)(url, options);
   };
 }
 
-function buildEgressEntries(
-  policy: EgressPolicy,
-  connectors: ResolvedApiConnection[],
-): EgressEntry[] {
-  const entries: EgressEntry[] = [];
-
-  if (policy.mode === 'allowlist') {
-    for (const url of new Set(
+function buildDomainEntries(policy: EgressPolicy): PrefixEntry[] {
+  if (policy.mode !== 'allowlist') return [];
+  return [
+    ...new Set(
       policy.domains
         .map(normalizeDomain)
         .filter((domain): domain is string => domain !== undefined),
-    )) {
-      entries.push({ url, methods: ['GET', 'HEAD'] });
-    }
-  }
+    ),
+  ].map((url) => ({ url }));
+}
 
-  for (const connector of connectors.filter((candidate) => candidate.headerValue)) {
-    for (const host of connector.allowedHosts) {
-      for (const prefix of connector.pathPrefixes.length > 0 ? connector.pathPrefixes : ['']) {
-        entries.push({
+function buildConnectorScopeSpecs(connectors: ResolvedApiConnection[]): ConnectorScopeSpec[] {
+  return connectors
+    .filter((connector) => connector.headerValue)
+    .map((connector) => {
+      const prefixes = connector.pathPrefixes.length > 0 ? connector.pathPrefixes : [''];
+      const entries: PrefixEntry[] = connector.allowedHosts.flatMap((host) =>
+        prefixes.map((prefix) => ({
           url: 'https://' + host + prefix,
-          transform: [{ headers: { [connector.headerName]: connector.headerValue } }],
-          methods: connector.allowedMethods,
-        });
-      }
-    }
-  }
-
-  return entries;
+          transform: [{ headers: { [connector.headerName]: connector.headerValue } }] as [
+            { headers: Record<string, string> },
+          ],
+        })),
+      );
+      return { entries, methods: connector.allowedMethods };
+    });
 }
 
 function isEgressPolicyShape(value: unknown): value is EgressPolicy {

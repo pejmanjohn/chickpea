@@ -95,6 +95,10 @@ export function computeSnapshotHash(config: EffectiveSlackConfig): string {
         // MCP connections ride inside the frozen agent too (policy only — no
         // secrets); include them so drift checks notice a connection edit.
         mcpServers: config.agent.mcpServers,
+        // API connections are frozen into the snapshot as well (hosts, methods,
+        // and credential-injection policy — no secret values); include them so a
+        // drift check notices an API-connection edit vs. a live thread.
+        apiConnections: config.agent.apiConnections,
       }),
     )
     .digest('hex');
