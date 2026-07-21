@@ -234,7 +234,11 @@ const apiConnectionSchema = v.pipe(
     displayName: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(80)),
     allowedHosts: v.pipe(v.array(connectorHost), v.maxLength(20)),
     pathPrefixes: v.pipe(
-      v.array(v.pipe(v.string(), v.trim(), v.regex(/^\/[^\s]*$/), v.maxLength(512))),
+      // Path-only: a `?query` or `#fragment` is silently dropped by both
+      // matchesEgressPrefix and just-bash, which would broaden credential
+      // injection and permitted methods to the whole path. Reject them here, as
+      // the egress-domain validation already rejects smuggled URL components.
+      v.array(v.pipe(v.string(), v.trim(), v.regex(/^\/[^\s?#]*$/), v.maxLength(512))),
       v.maxLength(20),
     ),
     headerName: v.pipe(v.string(), v.trim(), v.regex(/^[A-Za-z0-9-]{1,128}$/)),

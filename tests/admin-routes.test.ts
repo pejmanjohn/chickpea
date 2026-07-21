@@ -402,6 +402,27 @@ test('admin API rejects enabled connections whose URL scopes overlap', async () 
   }
 });
 
+test('admin API rejects connector path prefixes carrying a query or fragment', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  try {
+    const app = appWithAdmin(store);
+
+    for (const pathPrefix of ['/v1?tenant=a', '/v1#section']) {
+      const response = await app.request('/admin/api/agents', {
+        method: 'POST',
+        headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+        body: JSON.stringify(
+          agent({ apiConnections: [apiConnection({ pathPrefixes: [pathPrefix] })] }),
+        ),
+      });
+      assert.equal(response.status, 400, pathPrefix);
+      assert.deepEqual(await response.json(), { error: 'invalid_request' });
+    }
+  } finally {
+    store.close();
+  }
+});
+
 test('admin API accepts same-host connections with disjoint path scopes', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   try {
