@@ -271,7 +271,11 @@ function buildConnectorScopeSpecs(connectors: ResolvedApiConnection[]): Connecto
       const prefixes = connector.pathPrefixes.length > 0 ? connector.pathPrefixes : [''];
       const entries: PrefixEntry[] = connector.allowedHosts.flatMap((host) =>
         prefixes.map((prefix) => ({
-          url: 'https://' + host + prefix,
+          // Strip trailing slashes so routing (matchesEgressPrefix, which
+          // normalizes) and enforcement (just-bash's raw allow-list entry) use
+          // identical prefix semantics — otherwise `/v1/` would route into a
+          // scope whose network rejects the very same URL.
+          url: 'https://' + host + prefix.replace(/\/+$/, ''),
           transform: [{ headers: { [connector.headerName]: connector.headerValue } }] as [
             { headers: Record<string, string> },
           ],

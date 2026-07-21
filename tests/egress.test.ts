@@ -231,6 +231,25 @@ test('buildEgressPlan builds an isolated per-connector scope', () => {
   assert.deepEqual(baseNetwork.allowedMethods, ['GET', 'HEAD']);
 });
 
+test('buildEgressPlan normalizes trailing-slash prefixes so routing and enforcement agree', () => {
+  const { scopes } = buildEgressPlan(
+    { mode: 'off', domains: [] },
+    { cloudflare: false },
+    [{ ...LINEAR_CONNECTION, pathPrefixes: ['/v1/'], allowedMethods: ['GET', 'DELETE'] }],
+  );
+
+  assert.equal(scopes.length, 1);
+  const [scope] = scopes;
+  assert.ok(scope);
+  // The route prefix and the network allow-list entry must be the SAME
+  // normalized string, or a request to /v1/... would route into a scope whose
+  // just-bash network then rejects it.
+  assert.deepEqual(scope.prefixes, ['https://api.linear.app/v1']);
+  assert.deepEqual(scope.network.allowedUrlPrefixes, [
+    connectorUrl('https://api.linear.app/v1'),
+  ]);
+});
+
 test('buildEgressPlan keeps connector scopes off the open internet and fails closed on fallback', () => {
   const { scopes, baseNetwork, baseMethods, fallbackNetwork } = buildEgressPlan(
     { mode: 'open', domains: [] },
