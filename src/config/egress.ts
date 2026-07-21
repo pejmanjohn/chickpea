@@ -87,42 +87,64 @@ export function buildEgressPlan(
   policy: EgressPolicy,
   opts: { cloudflare: boolean },
   connectors: ResolvedApiConnection[] = [],
-): { network: NetworkConfig; methodMap: EgressMethodEntry[] } {
+): { network: NetworkConfig; fallbackNetwork: NetworkConfig; methodMap: EgressMethodEntry[] } {
   const entries = buildEgressEntries(policy, connectors);
-  const allowedMethods = [
+  const unionMethods = [
     ...new Set([
       ...BASE_EGRESS_METHODS,
       ...connectors.flatMap((connector) => connector.allowedMethods),
     ]),
   ] as NonNullable<NetworkConfig['allowedMethods']>;
-  const network: NetworkConfig = {
-    // This global union remains the graceful fallback when just-bash's
-    // unsupported secureFetch property is unavailable.
-    allowedMethods,
-    denyPrivateRanges: true,
+
+  const buildNetwork = (
+    allowedMethods: NonNullable<NetworkConfig['allowedMethods']>,
+  ): NetworkConfig => {
+    const network: NetworkConfig = { allowedMethods, denyPrivateRanges: true };
+    if (opts.cloudflare) {
+      // just-bash marks _dnsResolve @internal, so this hook carries rename risk.
+      network._dnsResolve = dohResolve;
+    }
+    if (policy.mode === 'open') {
+      network.dangerouslyAllowFullInternetAccess = true;
+    } else {
+      network.allowedUrlPrefixes = [];
+    }
+    if (entries.length > 0) {
+      network.allowedUrlPrefixes = entries.map(({ url, transform }) =>
+        transform === undefined ? url : { url, transform },
+      );
+    }
+    return network;
   };
 
-  if (opts.cloudflare) {
-    // just-bash marks _dnsResolve @internal, so this hook carries rename risk.
-    network._dnsResolve = dohResolve;
-  }
+  // just-bash enforces `allowedMethods` GLOBALLY, so the delegate network must
+  // permit the union of every connector method — the per-connection wrapper then
+  // narrows each request back down to its prefix's methods. The fallback network
+  // (used when that wrapper is unavailable) stays fail-closed at the baseline:
+  // connector-specific write methods are never granted globally without the
+  // wrapper to scope them.
+  const network = buildNetwork(unionMethods);
+  const fallbackNetwork = buildNetwork([...BASE_EGRESS_METHODS]);
 
-  if (policy.mode === 'open') {
-    network.dangerouslyAllowFullInternetAccess = true;
-  } else {
-    network.allowedUrlPrefixes = [];
-  }
-
-  if (entries.length > 0) {
-    network.allowedUrlPrefixes = entries.map(({ url, transform }) =>
-      transform === undefined ? url : { url, transform },
-    );
+  // Merge entries sharing an exact prefix — e.g. an operator "Domains" entry and
+  // a whole-host connection on the same origin — so the connector's authorized
+  // methods are not shadowed by the domain entry's GET/HEAD baseline (`find`
+  // would otherwise return whichever equal-length prefix sorted first).
+  const methodsByPrefix = new Map<string, Set<string>>();
+  for (const { url, methods } of entries) {
+    const existing = methodsByPrefix.get(url);
+    if (existing) {
+      for (const method of methods) existing.add(method);
+    } else {
+      methodsByPrefix.set(url, new Set(methods));
+    }
   }
 
   return {
     network,
-    methodMap: entries
-      .map(({ url, methods }) => ({ prefix: url, methods: new Set(methods) }))
+    fallbackNetwork,
+    methodMap: [...methodsByPrefix]
+      .map(([prefix, methods]) => ({ prefix, methods }))
       .sort((left, right) => right.prefix.length - left.prefix.length),
   };
 }

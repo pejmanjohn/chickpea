@@ -233,6 +233,37 @@ test('buildEgressPlan derives per-prefix methods and sorts longest prefixes firs
   );
 });
 
+test('buildEgressPlan merges a domain and a whole-host connector into one prefix', () => {
+  // A `Domains` entry and a whole-host connection on the same origin produce the
+  // SAME prefix. Without merging, `find` would return the domain's GET/HEAD and
+  // shadow the connector's POST/DELETE, making the connection partially unusable.
+  const { methodMap } = buildEgressPlan(
+    { mode: 'allowlist', domains: ['api.linear.app'] },
+    { cloudflare: false },
+    [{ ...LINEAR_CONNECTION, pathPrefixes: [], allowedMethods: ['GET', 'POST', 'DELETE'] }],
+  );
+
+  assert.deepEqual(
+    methodMap.map(({ prefix, methods }) => ({ prefix, methods: [...methods].sort() })),
+    [{ prefix: 'https://api.linear.app', methods: ['DELETE', 'GET', 'HEAD', 'POST'] }],
+  );
+});
+
+test('buildEgressPlan keeps a fail-closed fallback network at the baseline methods', () => {
+  const { network, fallbackNetwork } = buildEgressPlan(
+    { mode: 'open', domains: [] },
+    { cloudflare: false },
+    [{ ...LINEAR_CONNECTION, allowedMethods: ['GET', 'DELETE'] }],
+  );
+
+  // The delegate network carries the union so the wrapper can scope per-prefix.
+  assert.deepEqual(network.allowedMethods, ['GET', 'HEAD', 'POST', 'DELETE']);
+  // The fallback (no wrapper) must NOT grant connector write methods globally.
+  assert.deepEqual(fallbackNetwork.allowedMethods, ['GET', 'HEAD', 'POST']);
+  // Both still describe the same reachability (open mode here).
+  assert.equal(fallbackNetwork.dangerouslyAllowFullInternetAccess, true);
+});
+
 test('createMethodEnforcingFetch rejects disallowed methods before delegating', async () => {
   const calls: Array<{ url: string; options: Parameters<SecureFetch>[1] }> = [];
   const delegate: SecureFetch = async (url, options) => {

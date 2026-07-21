@@ -99,7 +99,7 @@ export default defineAgent(async ({ id }) => {
         }),
     )
   ).filter((connection): connection is ResolvedApiConnection => connection !== undefined);
-  const { network, methodMap } = buildEgressPlan(
+  const { network, fallbackNetwork, methodMap } = buildEgressPlan(
     egressPolicy,
     { cloudflare: isCloudflareTarget() },
     resolvedConnectors,
@@ -114,9 +114,10 @@ export default defineAgent(async ({ id }) => {
     const enforcingFetch = createMethodEnforcingFetch(delegate, methodMap);
     sandbox = bash(() => new Bash({ fs: new InMemoryFs(), fetch: enforcingFetch }));
   } else {
-    // just-bash internal changed; retain its global method, URL, transform,
-    // and private-range enforcement through the supported network path.
-    sandbox = bash(() => new Bash({ fs: new InMemoryFs(), network }));
+    // just-bash internal changed; fall back to the supported network path. Use
+    // the fail-closed fallback network (baseline methods only) so connector
+    // write methods are not granted globally without the per-connection wrapper.
+    sandbox = bash(() => new Bash({ fs: new InMemoryFs(), network: fallbackNetwork }));
   }
 
   return {
