@@ -1,18 +1,42 @@
-export interface ConnectorPreset {
+export type ConnectorCategory = 'project' | 'dev' | 'data' | 'search' | 'docs' | 'business';
+
+interface ConnectorPresetCommon {
   id: string; // also seeds the connection id; MUST match /^[a-z0-9][a-z0-9-]{0,63}$/
   name: string;
-  category: 'project' | 'dev' | 'data' | 'search' | 'docs' | 'business';
+  category: ConnectorCategory;
   accent: string; // hex color for the monogram chip, e.g. '#5E6AD2'
+  tokenDocsUrl?: string;
+  tokenDocsHint?: string;
+  notes?: string;
+}
+
+interface McpPresetLane {
   url: string;
   transport: 'streamable-http';
   auth:
     | { kind: 'none' }
     | { kind: 'bearer'; placeholder: string }
     | { kind: 'header'; headerName: string; valuePrefix?: string; placeholder: string };
-  tokenDocsUrl?: string;
-  tokenDocsHint?: string;
-  notes?: string;
 }
+
+interface ApiPresetLane {
+  api: {
+    hosts: string[];
+    hostTemplate?: boolean;
+    pathPrefixes?: string[];
+    headerName: string;
+    valuePrefix?: string;
+    methods: string[];
+    placeholder: string;
+  };
+}
+
+export type ConnectorPreset = ConnectorPresetCommon &
+  (
+    | McpPresetLane
+    | (ApiPresetLane & { url?: never; transport?: never; auth?: never })
+    | (McpPresetLane & ApiPresetLane)
+  );
 
 export const CONNECTOR_PRESETS: ConnectorPreset[] = [
   {
@@ -250,7 +274,64 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
     tokenDocsHint: 'LunarCrush → Developers → API authentication',
     notes: 'API key requires a LunarCrush subscription.',
   },
+  {
+    id: 'github',
+    name: 'GitHub',
+    category: 'dev',
+    accent: '#181717',
+    api: {
+      hosts: ['api.github.com'],
+      pathPrefixes: [],
+      headerName: 'Authorization',
+      valuePrefix: 'Bearer ',
+      methods: ['GET', 'POST'],
+      placeholder: 'GitHub PAT (ghp_… or fine-grained)',
+    },
+    tokenDocsUrl: 'https://github.com/settings/tokens',
+    tokenDocsHint: 'GitHub → Settings → Developer settings → Personal access tokens',
+  },
+  {
+    id: 'asana',
+    name: 'Asana',
+    category: 'project',
+    accent: '#F06A6A',
+    api: {
+      hosts: ['app.asana.com'],
+      pathPrefixes: ['/api/1.0'],
+      headerName: 'Authorization',
+      valuePrefix: 'Bearer ',
+      methods: ['GET', 'POST', 'PUT'],
+      placeholder: 'Asana personal access token',
+    },
+    tokenDocsUrl: 'https://app.asana.com/0/my-apps',
+    tokenDocsHint: 'Asana → Settings → Apps → Developer apps → Personal access tokens',
+  },
+  {
+    id: 'zendesk',
+    name: 'Zendesk',
+    category: 'business',
+    accent: '#03363D',
+    api: {
+      hosts: ['your-subdomain.zendesk.com'],
+      hostTemplate: true,
+      pathPrefixes: ['/api/v2'],
+      headerName: 'Authorization',
+      valuePrefix: 'Basic ',
+      methods: ['GET', 'POST', 'PUT'],
+      placeholder: 'base64 of email/token:api_token',
+    },
+    tokenDocsUrl: 'https://support.zendesk.com/hc/en-us/articles/4408889192858',
+    tokenDocsHint:
+      'Admin Center → Apps and integrations → APIs → Zendesk API → add an API token; credential = base64("<email>/token:<api_token>")',
+  },
 ];
+
+export function presetLanes(preset: ConnectorPreset): { mcp: boolean; api: boolean } {
+  return {
+    mcp: 'url' in preset && typeof preset.url === 'string',
+    api: 'api' in preset && preset.api !== undefined,
+  };
+}
 
 export function getConnectorPreset(id: string): ConnectorPreset | undefined {
   return CONNECTOR_PRESETS.find((preset) => preset.id === id);

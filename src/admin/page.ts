@@ -994,6 +994,7 @@ details[open].advanced summary::before {
 .gallery-row + .gallery-row { box-shadow: inset 0 1px 0 var(--line); }
 .gallery-row:hover { background: var(--well); }
 .gallery-row-name { font-weight: 600; }
+.gallery-lane { background: rgba(59, 50, 32, 0.08); border-radius: 999px; color: var(--text-3); font-size: 0.625rem; font-weight: 700; letter-spacing: 0.05em; padding: 3px 7px; white-space: nowrap; }
 .gallery-row-spacer { margin-left: auto; }
 .gallery-empty { color: var(--text-3); font-size: 0.8125rem; padding: 14px 4px; }
 .conn-logo { align-items: center; border-radius: 8px; display: inline-flex; flex: none; height: 30px; justify-content: center; width: 30px; }
@@ -1039,6 +1040,7 @@ details[open].advanced summary::before {
 .conn-header-row { display: flex; flex-wrap: wrap; gap: 8px; }
 .conn-header-row .input { flex: 1; min-width: 140px; }
 .conn-security { color: var(--text-3); font-size: 0.78125rem; text-wrap: pretty; }
+.conn-template-hint { color: var(--danger); font-weight: 700; }
 @media (max-width: 720px) {
   .skill-row.conn-row { align-items: stretch; flex-direction: column; }
 }
@@ -2249,6 +2251,13 @@ details[open].advanced summary::before {
     return (CONNECTOR_PRESETS || []).find(function (preset) { return preset.id === id; });
   }
 
+  function presetLanes(preset) {
+    return {
+      mcp: !!preset && typeof preset.url === "string",
+      api: !!preset && !!preset.api
+    };
+  }
+
   function connectorMonogram(name) {
     var words = String(name || "").match(/[A-Za-z0-9]+/g) || [];
     if (!words.length) return "?";
@@ -2280,8 +2289,11 @@ details[open].advanced summary::before {
       return an < bn ? -1 : an > bn ? 1 : 0;
     });
     var rows = shown.map(function (preset) {
+      var lanes = presetLanes(preset);
+      var laneLabel = [lanes.mcp ? "MCP" : "", lanes.api ? "API" : ""].filter(function (label) { return !!label; }).join(" ");
       return '<div class="gallery-row">' + connectorLogoHtml(preset) +
         '<span class="gallery-row-name">' + esc(preset.name) + '</span>' +
+        '<span class="gallery-lane">' + laneLabel + '</span>' +
         '<span class="gallery-row-spacer"></span>' +
         '<button type="button" class="btn btn-soft btn-sm" data-action="conn-preset" data-preset="' + esc(preset.id) + '">Connect</button></div>';
     }).join("");
@@ -2478,8 +2490,8 @@ details[open].advanced summary::before {
     }).join("");
     var list = rows ? '<div class="skill-list">' + rows + '</div>' : "";
     var newForm = (editor && (editor.index === null || editor.index === undefined)) ? '<div class="skill-list">' + connectionEditorFormHtml(editor) + '</div>' : "";
-    var gallery = editor ? "" : connectorGalleryHtml();
-    var hint = 'Remote MCP servers this profile can call.';
+    var gallery = editor || state.apiConnectionEditor ? "" : connectorGalleryHtml();
+    var hint = 'MCP servers and REST APIs this profile can call.';
     var security = '<p class="conn-security">Your profile stores connection policy and tool approvals only &mdash; tokens live in the settings store and are never returned by the API.</p>';
     var body = list + newForm + gallery;
     return '<p class="hint ptab-hint">' + hint + '</p>' + body + security + apiConnectionsPanelHtml(draft);
@@ -2502,8 +2514,12 @@ details[open].advanced summary::before {
         '<input class="input mono" type="text" value="' + esc(host) + '" placeholder="api.example.com" aria-label="Allowed host" data-action="apiconn-host-input" data-index="' + index + '">' +
         '<button type="button" class="x-btn" data-action="apiconn-host-remove" data-index="' + index + '" aria-label="Remove allowed host">&times;</button></div>';
     }).join("");
+    var templateHint = editor.hostTemplate
+      ? '<p class="hint conn-template-hint">Replace &ldquo;your-subdomain&rdquo; with your Zendesk subdomain before saving.</p>'
+      : "";
     return '<div class="field"><label class="field-label">Allowed hosts</label>' + rows +
       '<p class="hint">Exact hostnames only (no wildcards).</p>' +
+      templateHint +
       '<div><button type="button" class="btn btn-ghost btn-sm" data-action="apiconn-host-add">Add host</button></div></div>';
   }
 
@@ -2521,8 +2537,12 @@ details[open].advanced summary::before {
   function apiConnectionEditorFormHtml(editor) {
     var isNew = editor.index === null || editor.index === undefined;
     var credentialStored = editor.sources && editor.sources.credential && editor.sources.credential !== "missing";
-    var credentialPlaceholder = credentialStored ? "\\u2022\\u2022\\u2022\\u2022 stored" : "Paste credential \\u2014 stored, never returned by the API";
+    var credentialPlaceholder = credentialStored ? "\\u2022\\u2022\\u2022\\u2022 stored" : (editor.credentialPlaceholder || "Paste credential \\u2014 stored, never returned by the API");
     var credentialHint = credentialStored ? '<p class="hint">Leave blank to keep the stored credential.</p>' : "";
+    var tokenDocs = editor.tokenDocsHint ? '<p class="hint">' + esc(editor.tokenDocsHint) + '</p>' : "";
+    if (editor.tokenDocsUrl) {
+      tokenDocs += '<a class="hint-link" href="' + esc(editor.tokenDocsUrl) + '" target="_blank" rel="noopener noreferrer">Where do I find this?</a>';
+    }
     return '<div class="skill-form">' +
       '<div class="field"><label class="field-label" for="apiconn-name">Name</label>' +
       '<input class="input" id="apiconn-name" type="text" value="' + esc(editor.displayName) + '" placeholder="Issue tracker API" data-action="apiconn-field-name"></div>' +
@@ -2534,7 +2554,7 @@ details[open].advanced summary::before {
       '<p class="hint">The credential is appended to the prefix.</p></div></div>' +
       apiConnectionMethodsHtml(editor) +
       '<div class="field"><label class="field-label" for="apiconn-credential">Credential</label>' +
-      '<input class="input mono" id="apiconn-credential" type="password" autocomplete="off" value="' + esc(editor.credential || "") + '" placeholder="' + credentialPlaceholder + '" data-action="apiconn-field-credential">' + credentialHint + '</div>' +
+      '<input class="input mono" id="apiconn-credential" type="password" autocomplete="off" value="' + esc(editor.credential || "") + '" placeholder="' + esc(credentialPlaceholder) + '" data-action="apiconn-field-credential">' + credentialHint + tokenDocs + '</div>' +
       (editor.error ? '<p class="field-error">' + esc(editor.error) + '</p>' : "") +
       '<div class="skill-form-actions">' +
       '<button type="button" class="btn btn-ghost btn-sm" data-action="apiconn-cancel">Cancel</button>' +
@@ -2582,6 +2602,10 @@ details[open].advanced summary::before {
     if (duplicate) return "Another API connection already uses that name.";
     var hosts = (editor.allowedHosts || []).map(function (host) { return String(host || "").trim(); }).filter(function (host) { return !!host; });
     if (!hosts.length) return "Add at least one allowed host.";
+    var templateHost = String(editor.hostTemplateHost || "").toLowerCase();
+    if (editor.hostTemplate && templateHost && hosts.some(function (host) { return host.toLowerCase() === templateHost; })) {
+      return 'Replace "your-subdomain" with your Zendesk subdomain before saving.';
+    }
     var headerName = String(editor.headerName || "").trim();
     if (!/^[A-Za-z0-9-]{1,128}$/.test(headerName)) return "Header name may contain only letters, digits, and hyphens.";
     var hasMethod = (editor.methodChecked || []).some(function (checked) { return checked === true; });
@@ -4032,8 +4056,16 @@ details[open].advanced summary::before {
       if (selectedPreset) {
         collectProfileDraft();
         state.connectorGallerySearch = "";
-        state.connectionEditor = editorFromPreset(selectedPreset);
-        render();
+        var selectedPresetLanes = presetLanes(selectedPreset);
+        if (selectedPresetLanes.api && !selectedPresetLanes.mcp) {
+          state.connectionEditor = null;
+          state.apiConnectionEditor = apiEditorFromPreset(selectedPreset);
+          render();
+        } else if (selectedPresetLanes.mcp) {
+          state.apiConnectionEditor = null;
+          state.connectionEditor = editorFromPreset(selectedPreset);
+          render();
+        }
       }
     }
     if (action === "conn-view" && state.connectionEditor) {
@@ -5004,10 +5036,34 @@ details[open].advanced summary::before {
       headerValuePrefix: "",
       methodChecked: API_CONNECTION_METHODS.map(function (method) { return defaults[method] === true; }),
       credential: "",
+      credentialPlaceholder: "",
+      tokenDocsUrl: "",
+      tokenDocsHint: "",
+      hostTemplate: false,
+      hostTemplateHost: "",
       enabled: true,
       sources: { credential: "missing" },
       error: ""
     };
+  }
+
+  function apiEditorFromPreset(preset) {
+    var api = preset.api;
+    return Object.assign(newApiConnectionEditor(), {
+      displayName: preset.name,
+      id: preset.id,
+      presetId: preset.id,
+      allowedHosts: (api.hosts || []).slice(),
+      pathPrefixes: (api.pathPrefixes || []).slice(),
+      headerName: api.headerName,
+      headerValuePrefix: api.valuePrefix || "",
+      methodChecked: API_CONNECTION_METHODS.map(function (method) { return (api.methods || []).indexOf(method) >= 0; }),
+      credentialPlaceholder: api.placeholder,
+      tokenDocsUrl: preset.tokenDocsUrl || "",
+      tokenDocsHint: preset.tokenDocsHint || "",
+      hostTemplate: api.hostTemplate === true,
+      hostTemplateHost: api.hostTemplate && api.hosts && api.hosts.length ? api.hosts[0] : ""
+    });
   }
 
   function editorFromApiConnection(index, conn) {

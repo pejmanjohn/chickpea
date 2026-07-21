@@ -3,6 +3,7 @@ import vm from 'node:vm';
 import { test } from 'node:test';
 
 import { renderAdminPage } from '../src/admin/page.ts';
+import { connectorSkillsForConnections } from '../src/config/connector-skills.ts';
 import { seededAgents, seededAssignments } from '../src/config/seed.ts';
 
 interface FakeResponse {
@@ -873,7 +874,8 @@ test('New profile opens a blank create screen and validation gates save', async 
   await flushAsync();
 
   const click = harness.listeners.click;
-  assert.ok(click);
+  const input = harness.listeners.input;
+  assert.ok(click && input);
   // A previous editor tab must not leak into the create flow.
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_release' }) });
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
@@ -1764,10 +1766,10 @@ test('the searchable Connections gallery is immediate, renders brand logos, and 
   assert.match(gallery, /data-action="conn-gallery-search"/);
   assert.equal(
     (gallery.match(/data-action="conn-preset" data-preset="[^"]+">Connect<\/button>/g) ?? []).length,
-    20,
+    23,
   );
-  assert.match(gallery, /<span>Available<\/span><span class="gallery-head-count">20<\/span>/);
-  assert.doesNotMatch(gallery, /data-preset="github"/);
+  assert.match(gallery, /<span>Available<\/span><span class="gallery-head-count">23<\/span>/);
+  assert.match(gallery, /data-preset="github"/);
   assert.doesNotMatch(gallery, /data-preset="context7"/);
   assert.doesNotMatch(gallery, /data-preset="deepwiki"/);
   assert.doesNotMatch(gallery, /data-action="conn-new"/);
@@ -1805,6 +1807,15 @@ test('the searchable Connections gallery is immediate, renders brand logos, and 
     /<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" style="color:#5E6AD2"><path/,
   );
   assert.match(linearRow, /<span class="gallery-row-name">Linear<\/span>/);
+  assert.match(linearRow, /<span class="gallery-lane">MCP<\/span>/);
+
+  for (const id of ['github', 'asana', 'zendesk']) {
+    const apiRow = gallery.match(
+      new RegExp('<div class="gallery-row">(?:(?!<\\/div>)[\\s\\S])*?data-preset="' + id + '">Connect<\\/button><\\/div>'),
+    )?.[0];
+    assert.ok(apiRow, `${id} row should render`);
+    assert.match(apiRow, /<span class="gallery-lane">API<\/span>/);
+  }
 
   const mondayRow = gallery.match(
     /<div class="gallery-row"><span class="conn-logo conn-logo-img conn-logo-full"><svg[\s\S]*?data-preset="monday">Connect<\/button><\/div>/,
@@ -1825,18 +1836,19 @@ test('the searchable Connections gallery is immediate, renders brand logos, and 
   );
 
   input({
-    target: Object.assign(inputTarget({ 'data-action': 'conn-gallery-search' }, 'monday'), {
-      selectionStart: 6,
+    target: Object.assign(inputTarget({ 'data-action': 'conn-gallery-search' }, 'asana'), {
+      selectionStart: 5,
     }),
   });
   const filteredGallery = harness.app.innerHTML;
   assert.equal((filteredGallery.match(/data-action="conn-preset"/g) ?? []).length, 1);
-  assert.match(filteredGallery, /data-preset="monday">Connect<\/button>/);
-  assert.match(filteredGallery, /<span class="gallery-row-name">Monday\.com<\/span>/);
+  assert.match(filteredGallery, /data-preset="asana">Connect<\/button>/);
+  assert.match(filteredGallery, /<span class="gallery-row-name">Asana<\/span>/);
+  assert.match(filteredGallery, /<span class="gallery-lane">API<\/span>/);
   assert.doesNotMatch(filteredGallery, /data-preset="linear"/);
   assert.match(filteredGallery, /<span>Available<\/span><span class="gallery-head-count">1<\/span>/);
   assert.equal(harness.gallerySearchFocusCalls(), 1);
-  assert.deepEqual(harness.gallerySearchSelections, [[6, 6]]);
+  assert.deepEqual(harness.gallerySearchSelections, [[5, 5]]);
 
   input({ target: inputTarget({ 'data-action': 'conn-gallery-search' }, '') });
   click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'linear' }) });
@@ -1857,6 +1869,102 @@ test('the searchable Connections gallery is immediate, renders brand logos, and 
   click({ target: actionTarget({ 'data-action': 'conn-view', 'data-view': 'advanced' }) });
   assert.match(harness.app.innerHTML, /id="conn-url"[^>]*data-action="conn-field-url"/);
   assert.match(harness.app.innerHTML, /id="conn-name"[^>]*data-action="conn-field-name"/);
+});
+
+test('the Asana gallery preset opens and saves the API editor with an auto-attached skill', async () => {
+  const harness = runAdminPageHarness({ agents: [connectionsAgent()] });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'asana' }) });
+
+  const editor = harness.app.innerHTML;
+  assert.doesNotMatch(editor, /data-action="conn-field-url"/);
+  assert.doesNotMatch(editor, /data-action="conn-view"/);
+  assert.match(editor, /value="Asana"[^>]*data-action="apiconn-field-name"/);
+  assert.match(editor, /value="app\.asana\.com"[^>]*data-action="apiconn-host-input"/);
+  assert.match(editor, /value="\/api\/1\.0"[^>]*data-action="apiconn-path-input"/);
+  assert.match(editor, /value="Authorization"[^>]*data-action="apiconn-field-header-name"/);
+  assert.match(editor, /value="Bearer "[^>]*data-action="apiconn-field-header-prefix"/);
+  assert.match(editor, /data-index="0" checked aria-label="Allow GET"/);
+  assert.match(editor, /data-index="1"  aria-label="Allow HEAD"/);
+  assert.match(editor, /data-index="2" checked aria-label="Allow POST"/);
+  assert.match(editor, /data-index="3" checked aria-label="Allow PUT"/);
+  assert.match(editor, /data-index="4"  aria-label="Allow PATCH"/);
+  assert.match(editor, /data-index="5"  aria-label="Allow DELETE"/);
+  assert.match(editor, /placeholder="Asana personal access token"[^>]*data-action="apiconn-field-credential"/);
+  assert.match(editor, /Asana → Settings → Apps → Developer apps → Personal access tokens/);
+  assert.match(editor, /href="https:\/\/app\.asana\.com\/0\/my-apps"[^>]*>Where do I find this\?<\/a>/);
+
+  click({ target: actionTarget({ 'data-action': 'apiconn-save-row' }) });
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+
+  const apiConnections = harness.agentPatchBodies[0]?.body.apiConnections as Parameters<
+    typeof connectorSkillsForConnections
+  >[0];
+  assert.deepEqual(apiConnections, [
+    {
+      id: 'asana',
+      displayName: 'Asana',
+      allowedHosts: ['app.asana.com'],
+      pathPrefixes: ['/api/1.0'],
+      headerName: 'Authorization',
+      headerValuePrefix: 'Bearer ',
+      allowedMethods: ['GET', 'POST', 'PUT'],
+      enabled: true,
+      presetId: 'asana',
+    },
+  ]);
+  assert.deepEqual(
+    connectorSkillsForConnections(apiConnections).map((skill) => skill.name),
+    ['asana-api'],
+  );
+});
+
+test('the Zendesk gallery preset requires replacing its tenant host and shows setup help', async () => {
+  const harness = runAdminPageHarness({ agents: [connectionsAgent()] });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  assert.ok(click && input);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'zendesk' }) });
+
+  assert.match(
+    harness.app.innerHTML,
+    /value="your-subdomain\.zendesk\.com"[^>]*data-action="apiconn-host-input"/,
+  );
+  assert.match(harness.app.innerHTML, /Replace &ldquo;your-subdomain&rdquo; with your Zendesk subdomain before saving\./);
+  assert.match(harness.app.innerHTML, /placeholder="base64 of email\/token:api_token"/);
+  assert.match(harness.app.innerHTML, /value="Basic "[^>]*data-action="apiconn-field-header-prefix"/);
+
+  input({
+    target: inputTarget(
+      { 'data-action': 'apiconn-host-input', 'data-index': '0' },
+      'YOUR-SUBDOMAIN.ZENDESK.COM',
+    ),
+  });
+  click({ target: actionTarget({ 'data-action': 'apiconn-save-row' }) });
+  assert.match(
+    harness.app.innerHTML,
+    /<p class="field-error">Replace &quot;your-subdomain&quot; with your Zendesk subdomain before saving\.<\/p>/,
+  );
+
+  input({
+    target: inputTarget(
+      { 'data-action': 'apiconn-host-input', 'data-index': '0' },
+      'acme.zendesk.com',
+    ),
+  });
+  click({ target: actionTarget({ 'data-action': 'apiconn-save-row' }) });
+  assert.match(harness.app.innerHTML, /<span class="conn-host">acme\.zendesk\.com<\/span>/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="apiconn-field-name"/);
 });
 
 test('the Sentry preset keeps its header auth and applies the same idempotent prefix to test and save', async () => {
