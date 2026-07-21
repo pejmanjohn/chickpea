@@ -396,6 +396,12 @@ const egressDomain = v.pipe(
   v.minLength(1),
   v.maxLength(253),
   v.check((domain) => validateMcpUrl(egressDomainUrl(domain)).ok, 'Domain not allowed'),
+  // The egress allow-list is origin-scoped: `normalizeEgressDomain` keeps only
+  // the hostname. Reject entries carrying a path/port/query/fragment/userinfo
+  // rather than silently discarding them — otherwise `example.com/private`
+  // would quietly widen access to the entire `example.com` origin. Mirrors the
+  // bare-host rule already enforced for connector hosts.
+  v.check(isBareEgressHost, 'Domain must be a bare host with no path, port, query, or fragment'),
 );
 
 const egressPolicySchema = v.object({
@@ -1898,6 +1904,26 @@ function providerFavoritesFromBody(body: unknown): string[] | undefined {
 function egressDomainUrl(domain: string): string {
   const withoutScheme = domain.replace(/^[a-z][a-z\d+.-]*:\/\//i, '');
   return `https://${withoutScheme}`;
+}
+
+// An egress allow-list entry must resolve to a bare host: the stored policy only
+// keeps the hostname, so any path/port/query/fragment/userinfo the operator
+// typed would be silently dropped and broaden access to the whole origin.
+function isBareEgressHost(domain: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(egressDomainUrl(domain));
+  } catch {
+    return false; // the validateMcpUrl check reports the invalid-host case
+  }
+  return (
+    url.port === '' &&
+    url.username === '' &&
+    url.password === '' &&
+    url.pathname === '/' &&
+    url.search === '' &&
+    url.hash === ''
+  );
 }
 
 function normalizeEgressDomain(domain: string): string {

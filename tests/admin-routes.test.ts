@@ -491,8 +491,10 @@ test('admin egress API defaults when unset and persists a valid allowlist policy
       method: 'PUT',
       headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
       body: JSON.stringify({
+        // Exercises scheme stripping, case folding, whitespace trimming, and
+        // dedup. A path (`/path`) is rejected separately, not silently dropped.
         mode: 'allowlist',
-        domains: ['api.github.com', ' https://API.GITHUB.COM/path '],
+        domains: ['api.github.com', ' https://API.GITHUB.COM '],
       }),
     });
     assert.equal(saved.status, 200);
@@ -522,6 +524,11 @@ test('admin egress API rejects invalid modes, private hosts, and oversized allow
       { mode: 'somewhere', domains: [] },
       { mode: 'allowlist', domains: ['10.0.0.1'] },
       { mode: 'allowlist', domains: ['localhost'] },
+      // A path/port/query/fragment must be rejected, not silently widened to the
+      // whole origin.
+      { mode: 'allowlist', domains: ['example.com/private'] },
+      { mode: 'allowlist', domains: ['example.com:8443'] },
+      { mode: 'allowlist', domains: ['example.com?x=1'] },
       {
         mode: 'allowlist',
         domains: Array.from({ length: 101 }, (_, index) => `api-${index}.example.com`),
