@@ -1,0 +1,249 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+
+import { suppressProfileNamedConnectorSkills } from '../src/agents/slack-thread.ts';
+import { connectorSkillsForConnections } from '../src/config/connector-skills.ts';
+import { resolveProfileSkills } from '../src/config/profile-skills.ts';
+import type { SkillConfig } from '../src/config/types.ts';
+
+type ConnectorSkillScope = Parameters<typeof connectorSkillsForConnections>[0][number];
+
+function scope(
+  allowedHosts: string[],
+  overrides: Partial<ConnectorSkillScope> = {},
+): ConnectorSkillScope {
+  return {
+    allowedHosts,
+    pathPrefixes: [],
+    allowedMethods: ['GET'],
+    ...overrides,
+  };
+}
+
+test('matches supported API hosts case-insensitively and rejects lookalikes', () => {
+  const cases: Array<{ host: string; expectedNames: string[] }> = [
+    { host: 'api.github.com', expectedNames: ['github-api'] },
+    { host: 'API.GITHUB.COM', expectedNames: ['github-api'] },
+    { host: 'app.asana.com', expectedNames: ['asana-api'] },
+    { host: 'APP.ASANA.COM', expectedNames: ['asana-api'] },
+    { host: 'foo.zendesk.com', expectedNames: ['zendesk-api'] },
+    { host: 'Foo.Zendesk.Com', expectedNames: ['zendesk-api'] },
+    { host: 'zendesk.com', expectedNames: [] },
+    { host: 'zendesk.com.evil.com', expectedNames: [] },
+    { host: 'api.github.com.evil.com', expectedNames: [] },
+    { host: 'example.com', expectedNames: [] },
+  ];
+
+  for (const { host, expectedNames } of cases) {
+    assert.deepEqual(
+      connectorSkillsForConnections([scope([host])]).map((skill) => skill.name),
+      expectedNames,
+      host,
+    );
+  }
+});
+
+test('matches every supported kind represented in one connection', () => {
+  const skills = connectorSkillsForConnections([
+    scope(['api.github.com', 'app.asana.com', 'acme.zendesk.com']),
+  ]);
+
+  assert.deepEqual(
+    skills.map((skill) => skill.name),
+    ['github-api', 'asana-api', 'zendesk-api'],
+  );
+});
+
+test("each skill's connection context lists only hosts for that vendor", () => {
+  const skills = connectorSkillsForConnections([
+    scope(['api.github.com', 'acme.zendesk.com']),
+  ]);
+  const githubContext =
+    skills.find((skill) => skill.name === 'github-api')?.instructions.split('## Your connection')[1] ?? '';
+  const zendeskContext =
+    skills.find((skill) => skill.name === 'zendesk-api')?.instructions.split('## Your connection')[1] ?? '';
+
+  assert.match(githubContext, /api\.github\.com/);
+  assert.doesNotMatch(githubContext, /acme\.zendesk\.com/);
+  assert.match(zendeskContext, /acme\.zendesk\.com/);
+  assert.doesNotMatch(zendeskContext, /api\.github\.com/);
+});
+
+test('emits one skill per kind and keeps the first matching connection context', () => {
+  const skills = connectorSkillsForConnections([
+    scope(['api.github.com'], { pathPrefixes: ['/repos/first'] }),
+    scope(['API.GITHUB.COM'], { pathPrefixes: ['/repos/second'] }),
+  ]);
+
+  assert.equal(skills.length, 1);
+  assert.equal(skills[0]?.name, 'github-api');
+  assert.match(skills[0]?.instructions ?? '', /\/repos\/first/);
+  assert.doesNotMatch(skills[0]?.instructions ?? '', /\/repos\/second/);
+});
+
+test('ignores connections with no matching host without throwing', () => {
+  assert.doesNotThrow(() => connectorSkillsForConnections([scope([]), scope(['example.com'])]));
+  assert.deepEqual(connectorSkillsForConnections([scope([]), scope(['example.com'])]), []);
+});
+
+test('appends the connection hosts, path prefixes, and methods to each skill', () => {
+  const [scopedSkill] = connectorSkillsForConnections([
+    scope(['api.github.com', 'uploads.github.com'], {
+      pathPrefixes: ['/repos/acme/widgets', '/search'],
+      allowedMethods: ['GET', 'POST'],
+    }),
+  ]);
+  assert.match(scopedSkill?.instructions ?? '', /## Your connection/);
+  assert.match(scopedSkill?.instructions ?? '', /api\.github\.com/);
+  assert.doesNotMatch(scopedSkill?.instructions ?? '', /uploads\.github\.com/);
+  assert.match(scopedSkill?.instructions ?? '', /\/repos\/acme\/widgets/);
+  assert.match(scopedSkill?.instructions ?? '', /\/search/);
+  assert.match(scopedSkill?.instructions ?? '', /GET, POST/);
+
+  const [wholeHostSkill] = connectorSkillsForConnections([scope(['app.asana.com'])]);
+  assert.match(wholeHostSkill?.instructions ?? '', /whole host/i);
+});
+
+test('the scope type excludes credentials and nearby credential data never reaches skill text', () => {
+  const sentinel = 'SENTINEL-CREDENTIAL-MUST-NEVER-APPEAR';
+  const resolvedConnection = {
+    allowedHosts: ['api.github.com'],
+    pathPrefixes: ['/repos'],
+    allowedMethods: ['GET'],
+    headerValue: sentinel,
+  };
+  const { allowedHosts, pathPrefixes, allowedMethods } = resolvedConnection;
+  const skills = connectorSkillsForConnections([{ allowedHosts, pathPrefixes, allowedMethods }]);
+
+  assert.doesNotMatch(skills.map((skill) => skill.instructions).join('\n'), new RegExp(sentinel));
+
+  const credentialBearingScope: ConnectorSkillScope = {
+    allowedHosts: ['api.github.com'],
+    pathPrefixes: [],
+    allowedMethods: ['GET'],
+    // @ts-expect-error Connector skill builders must never accept credential-bearing fields.
+    headerValue: sentinel,
+  };
+  void credentialBearingScope;
+});
+
+test('connector names pass defineSkill and a profile-authored skill overrides a connector skill', () => {
+  const connectorSkills = connectorSkillsForConnections([
+    scope(['api.github.com']),
+    scope(['app.asana.com']),
+    scope(['acme.zendesk.com']),
+  ]);
+  const refs = resolveProfileSkills(connectorSkills);
+
+  assert.deepEqual(
+    refs.map((ref) => ref.name),
+    ['github-api', 'asana-api', 'zendesk-api'],
+  );
+
+  const profileOverride: SkillConfig = {
+    name: 'github-api',
+    description: 'Profile-authored GitHub instructions.',
+    instructions: '# Custom GitHub behavior',
+    enabled: true,
+  };
+  const overridden = resolveProfileSkills([
+    ...suppressProfileNamedConnectorSkills(connectorSkills, [profileOverride]),
+    profileOverride,
+  ]);
+  assert.equal(overridden.find((ref) => ref.name === 'github-api')?.description, profileOverride.description);
+});
+
+test('a disabled profile-authored skill suppresses the same-named connector skill', () => {
+  const connectorSkills = connectorSkillsForConnections([
+    scope(['api.github.com']),
+    scope(['app.asana.com']),
+  ]);
+  const profileSuppression: SkillConfig = {
+    name: 'github-api',
+    description: 'Disable the auto-attached GitHub skill.',
+    instructions: '# Disabled',
+    enabled: false,
+  };
+  const refs = resolveProfileSkills([
+    ...suppressProfileNamedConnectorSkills(connectorSkills, [profileSuppression]),
+    profileSuppression,
+  ]);
+
+  assert.equal(refs.some((ref) => ref.name === 'github-api'), false);
+  assert.equal(refs.some((ref) => ref.name === 'asana-api'), true);
+});
+
+test('each skill body is bounded, teaches automatic auth, and includes the required API guidance', () => {
+  const skills = connectorSkillsForConnections([
+    scope(['api.github.com'], { allowedMethods: ['GET', 'POST'] }),
+    scope(['app.asana.com'], { allowedMethods: ['GET', 'POST', 'PUT'] }),
+    scope(['acme.zendesk.com'], { allowedMethods: ['GET', 'POST', 'PUT'] }),
+  ]);
+  const expectations = new Map([
+    [
+      'github-api',
+      [
+        'https://api.github.com',
+        'application/vnd.github+json',
+        'X-GitHub-Api-Version: 2022-11-28',
+        '/issues',
+        '/comments',
+        '/contents/',
+        '/search/code',
+        '/actions/runs',
+        'Link',
+      ],
+    ],
+    [
+      'asana-api',
+      [
+        'https://app.asana.com/api/1.0',
+        '{"data": ...}',
+        'opt_fields',
+        '/users/me',
+        '/projects',
+        '/tasks',
+        '/stories',
+        '/tasks/search',
+        'offset',
+      ],
+    ],
+    [
+      'zendesk-api',
+      [
+        'https://<your-subdomain>.zendesk.com/api/v2',
+        '/users/me.json',
+        '/search.json',
+        '/tickets/',
+        'internal note',
+        'public reply',
+        'page[size]',
+        'links.next',
+      ],
+    ],
+  ]);
+
+  assert.equal(skills.length, 3);
+  for (const skill of skills) {
+    assert.ok(skill.instructions.length > 0, skill.name);
+    assert.ok(Buffer.byteLength(skill.instructions, 'utf8') <= 8 * 1024, skill.name);
+    assert.match(skill.instructions, /authentication is handled automatically/i, skill.name);
+    assert.doesNotMatch(skill.instructions, /Authorization\s*:/i, skill.name);
+    assert.doesNotMatch(skill.instructions, /\$(?:GITHUB|ASANA|ZENDESK)_TOKEN/i, skill.name);
+    for (const unsupportedFlag of ['--fail-with-body', '--get', '-G ', '--data-urlencode']) {
+      assert.ok(!skill.instructions.includes(unsupportedFlag), `${skill.name}: ${unsupportedFlag}`);
+    }
+    assert.ok(!skill.description.includes('\n'), skill.name);
+    const recipeCount = skill.instructions.match(/```bash\n\s*curl\b/g)?.length ?? 0;
+    assert.ok(recipeCount >= 6 && recipeCount <= 10, `${skill.name}: ${recipeCount} recipes`);
+    for (const expected of expectations.get(skill.name) ?? []) {
+      assert.ok(skill.instructions.includes(expected), `${skill.name}: ${expected}`);
+    }
+  }
+});
+
+test('Asana skill says advanced task search is unpaginated', () => {
+  const [asanaSkill] = connectorSkillsForConnections([scope(['app.asana.com'])]);
+
+  assert.match(asanaSkill?.instructions ?? '', /task search endpoint is unpaginated/i);
+});

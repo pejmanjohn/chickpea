@@ -2,6 +2,7 @@ import { bash, defineAgent, type AgentRouteHandler } from '@flue/runtime';
 import { Bash, InMemoryFs, type NetworkConfig, type SecureFetch } from 'just-bash';
 
 import { resolveConnectorCredential } from '../config/connector-secrets.ts';
+import { connectorSkillsForConnections } from '../config/connector-skills.ts';
 import {
   buildEgressPlan,
   createScopedFetch,
@@ -21,10 +22,21 @@ import {
   getConfigStore,
   type PlatformEnv,
 } from '../config/state-backend.ts';
+import type { SkillConfig } from '../config/types.ts';
 import { INTERNAL_AGENT_TOKEN_HEADER, isValidInternalAgentToken } from '../slack/internal-auth.ts';
 import { parseSlackThreadKey } from '../slack/thread-key.ts';
 
 export { resolveAgentModel } from '../config/model-policy.ts';
+
+export function suppressProfileNamedConnectorSkills(
+  connectorSkills: readonly SkillConfig[],
+  profileSkills: readonly SkillConfig[],
+): SkillConfig[] {
+  const profileSkillNames = new Set(profileSkills.map((skill) => skill.name));
+  // Any profile row owns its name even when disabled: a disabled row is the
+  // operator's off-switch for an otherwise auto-attached connector skill.
+  return connectorSkills.filter((skill) => !profileSkillNames.has(skill.name));
+}
 
 // Expose the agent over HTTP at `POST /agents/slack-thread/:id` so the Slack
 // channel can drive one durable turn via `?wait=result`. This endpoint is
@@ -59,22 +71,6 @@ export default defineAgent(async ({ id }) => {
       ? await resolve()
       : await getOrCreateSnapshot(getAgentSnapshotStore(env), id, resolve);
 
-  // Skills ride inside the resolved agent — frozen in the snapshot for channel
-  // threads, live-resolved for DMs — so they inherit the same freeze contract
-  // as instructions. resolveProfileSkills dedupes names and skips invalid rows.
-  const skills = resolveProfileSkills(config.agent.skills);
-
-  // MCP connection tools join at the same seam and inherit the same freeze
-  // contract (mcpServers frozen in the snapshot for channels, live for DMs;
-  // secrets always resolve live). The resolver degrades gracefully — a dead or
-  // slow server is skipped, never aborting the turn — and drops any tool whose
-  // name collides with a built-in or skill (a duplicate name kills the turn).
-  const mcpTools = await resolveProfileMcpTools(config.agent.mcpServers, {
-    agentId: config.agent.id,
-    env,
-    existingToolNames: skills.map((s) => s.name),
-  });
-
   const egressPolicy = await resolveEgressPolicy(env);
   // API connection policy inherits the agent snapshot contract, while its
   // credential resolves live every turn. Missing credentials degrade by
@@ -100,6 +96,35 @@ export default defineAgent(async ({ id }) => {
         }),
     )
   ).filter((connection): connection is ResolvedApiConnection => connection !== undefined);
+  // Project resolved connectors into credential-free scope before skill
+  // construction. Connector skills come first so the existing last-writer-wins
+  // dedupe lets a profile-authored skill deliberately override the built-in.
+  const connectorSkills = suppressProfileNamedConnectorSkills(
+    connectorSkillsForConnections(
+      resolvedConnectors.map(({ allowedHosts, pathPrefixes, allowedMethods }) => ({
+        allowedHosts,
+        pathPrefixes,
+        allowedMethods,
+      })),
+    ),
+    config.agent.skills,
+  );
+  // Skills ride inside the resolved agent — frozen in the snapshot for channel
+  // threads, live-resolved for DMs — so they inherit the same freeze contract
+  // as instructions. resolveProfileSkills dedupes names and skips invalid rows.
+  const skills = resolveProfileSkills([...connectorSkills, ...config.agent.skills]);
+
+  // MCP connection tools join at the same seam and inherit the same freeze
+  // contract (mcpServers frozen in the snapshot for channels, live for DMs;
+  // secrets always resolve live). The resolver degrades gracefully — a dead or
+  // slow server is skipped, never aborting the turn — and drops any tool whose
+  // name collides with a built-in or skill (a duplicate name kills the turn).
+  const mcpTools = await resolveProfileMcpTools(config.agent.mcpServers, {
+    agentId: config.agent.id,
+    env,
+    existingToolNames: skills.map((s) => s.name),
+  });
+
   const { scopes, baseNetwork, baseMethods, fallbackNetwork } = buildEgressPlan(
     egressPolicy,
     { cloudflare: isCloudflareTarget() },
