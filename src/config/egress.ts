@@ -79,8 +79,6 @@ export interface ScopedDelegate {
 // requesting a broader method must not widen this baseline for unrelated hosts.
 export const BASE_EGRESS_METHODS = ['GET', 'HEAD', 'POST'] as const;
 
-const dnsCache = new Map<string, Promise<DnsResult[]>>();
-
 export function parseEgressPolicy(raw: string | undefined): EgressPolicy {
   if (raw === undefined) return DEFAULT_EGRESS_POLICY;
 
@@ -309,14 +307,16 @@ function normalizeDomain(domain: string): string | undefined {
 }
 
 // A-records only for now; IPv6/AAAA rebinding is not covered and needs a follow-up.
+//
+// NOT cached: just-bash calls this to validate that a hostname resolves to a
+// public address, then fetches by hostname (it does not pin to the validated
+// address). Caching the first result would let a rebinding hostname — public at
+// first lookup, then repointed to a private/loopback address — keep passing the
+// denyPrivateRanges check indefinitely. Resolve fresh on every request so the
+// check reflects current DNS; the residual validate-vs-fetch window is a
+// just-bash limitation (no address pinning) tracked separately.
 function dohResolve(hostname: string): Promise<DnsResult[]> {
-  const cacheKey = hostname.toLowerCase();
-  const cached = dnsCache.get(cacheKey);
-  if (cached !== undefined) return cached;
-
-  const lookup = fetchDns(cacheKey);
-  dnsCache.set(cacheKey, lookup);
-  return lookup;
+  return fetchDns(hostname.toLowerCase());
 }
 
 async function fetchDns(hostname: string): Promise<DnsResult[]> {
