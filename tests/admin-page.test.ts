@@ -1502,6 +1502,171 @@ function apiConnectionFixture(overrides: Record<string, unknown> = {}): Record<s
   };
 }
 
+function mcpConnectionFixture(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: 'linear',
+    displayName: 'Linear',
+    url: 'https://mcp.linear.app/mcp',
+    transport: 'streamable-http',
+    authMode: 'bearer',
+    headerNames: [],
+    enabled: true,
+    allowedTools: ['list_issues'],
+    discoveredTools: [{ name: 'list_issues' }],
+    lifecycleStatus: 'ready',
+    statusText: '',
+    lastCheckedAt: null,
+    presetId: 'linear',
+    ...overrides,
+  };
+}
+
+test('Custom connection opens the MCP lane by default', async () => {
+  const harness = runAdminPageHarness({ agents: [connectionsAgent()] });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-custom' }) });
+
+  const editor = harness.app.innerHTML;
+  assert.match(editor, /class="on" data-action="custom-lane" data-lane="mcp">MCP<\/button>/);
+  assert.match(editor, /class="" data-action="custom-lane" data-lane="api">API<\/button>/);
+  assert.match(editor, /<label class="field-label" for="conn-url">Server URL<\/label>/);
+  assert.match(editor, /<label class="field-label">Transport<\/label>/);
+  assert.doesNotMatch(editor, /data-action="apiconn-host-input"/);
+  assert.doesNotMatch(editor, /data-action="apiconn-method-toggle"/);
+});
+
+test('the Custom connection lane tab switches between MCP and API forms', async () => {
+  const harness = runAdminPageHarness({ agents: [connectionsAgent()] });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-custom' }) });
+
+  click({ target: actionTarget({ 'data-action': 'custom-lane', 'data-lane': 'api' }) });
+  assert.match(harness.app.innerHTML, /class="on" data-action="custom-lane" data-lane="api">API<\/button>/);
+  assert.match(harness.app.innerHTML, /data-action="apiconn-host-input"/);
+  assert.match(harness.app.innerHTML, /data-action="apiconn-method-toggle"/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="conn-field-url"/);
+
+  click({ target: actionTarget({ 'data-action': 'custom-lane', 'data-lane': 'mcp' }) });
+  assert.match(harness.app.innerHTML, /class="on" data-action="custom-lane" data-lane="mcp">MCP<\/button>/);
+  assert.match(harness.app.innerHTML, /data-action="conn-field-url"/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="apiconn-host-input"/);
+});
+
+test('the Custom connection lane tab preserves MCP input while visiting API', async () => {
+  const harness = runAdminPageHarness({ agents: [connectionsAgent()] });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  assert.ok(click && input);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-custom' }) });
+
+  input({ target: inputTarget({ 'data-action': 'conn-field-name' }, 'Preserved MCP') });
+  click({ target: actionTarget({ 'data-action': 'custom-lane', 'data-lane': 'api' }) });
+  click({ target: actionTarget({ 'data-action': 'custom-lane', 'data-lane': 'mcp' }) });
+
+  assert.match(harness.app.innerHTML, /value="Preserved MCP"[^>]*data-action="conn-field-name"/);
+});
+
+test('the Connections panel has one custom create entry point and no separate API section', async () => {
+  const harness = runAdminPageHarness({ agents: [connectionsAgent()] });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+
+  const panel = harness.app.innerHTML;
+  assert.equal((panel.match(/data-action="conn-custom"/g) ?? []).length, 1);
+  assert.match(panel, /<span class="gallery-row-name">Custom connection<\/span>/);
+  assert.doesNotMatch(panel, /data-action="apiconn-new"/);
+  assert.doesNotMatch(panel, />API connections<\/h3>/);
+  assert.doesNotMatch(panel, />Add API connection<\/button>/);
+});
+
+test('saved MCP and API connections share one lane-badged list with matching inline editors', async () => {
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent({ mcpServers: [mcpConnectionFixture()], apiConnections: [apiConnectionFixture()] })],
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+
+  const panel = harness.app.innerHTML;
+  assert.equal((panel.match(/<div class="skill-list">/g) ?? []).length, 1);
+  const mcpEditIndex = panel.indexOf('data-action="conn-edit" data-index="0"');
+  const apiEditIndex = panel.indexOf('data-action="apiconn-edit" data-index="0"');
+  const mcpRowStart = panel.lastIndexOf('<div class="skill-row conn-row">', mcpEditIndex);
+  const apiRowStart = panel.lastIndexOf('<div class="skill-row conn-row">', apiEditIndex);
+  assert.ok(mcpRowStart >= 0 && mcpRowStart < apiRowStart && apiRowStart < apiEditIndex);
+  const mcpRow = panel.slice(mcpRowStart, apiRowStart);
+  const apiRow = panel.slice(apiRowStart, panel.indexOf('data-action="conn-gallery-search"', apiRowStart));
+  assert.match(mcpRow, /<span class="gallery-lane">MCP<\/span>/);
+  assert.match(apiRow, /<span class="gallery-lane">API<\/span>/);
+  assert.ok(mcpEditIndex < apiEditIndex);
+
+  click({ target: actionTarget({ 'data-action': 'apiconn-edit', 'data-index': '0' }) });
+  assert.match(harness.app.innerHTML, /value="Issue API"[^>]*data-action="apiconn-field-name"/);
+  assert.match(harness.app.innerHTML, /value="api\.example\.com"[^>]*data-action="apiconn-host-input"/);
+  click({ target: actionTarget({ 'data-action': 'apiconn-cancel' }) });
+
+  click({ target: actionTarget({ 'data-action': 'conn-edit', 'data-index': '0' }) });
+  assert.match(harness.app.innerHTML, /value="Linear"[^>]*data-action="conn-field-name"/);
+  assert.match(harness.app.innerHTML, /value="https:\/\/mcp\.linear\.app\/mcp"[^>]*data-action="conn-field-url"/);
+});
+
+test('canceling the custom API form clears custom mode and restores the gallery', async () => {
+  const harness = runAdminPageHarness({ agents: [connectionsAgent()] });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-custom' }) });
+  click({ target: actionTarget({ 'data-action': 'custom-lane', 'data-lane': 'api' }) });
+  click({ target: actionTarget({ 'data-action': 'apiconn-cancel' }) });
+
+  assert.match(harness.app.innerHTML, /data-action="conn-gallery-search"/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="custom-lane"/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="conn-field-url"/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="apiconn-host-input"/);
+});
+
+test('preset Connect keeps a fixed lane and the Recommended and Advanced setup toggle', async () => {
+  const harness = runAdminPageHarness({ agents: [connectionsAgent()] });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'asana' }) });
+
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="custom-lane"/);
+  assert.match(harness.app.innerHTML, /data-action="apiconn-view" data-view="recommended"/);
+  assert.match(harness.app.innerHTML, /data-action="apiconn-view" data-view="advanced"/);
+  click({ target: actionTarget({ 'data-action': 'apiconn-view', 'data-view': 'advanced' }) });
+  assert.match(harness.app.innerHTML, /data-action="apiconn-field-name"/);
+  assert.match(harness.app.innerHTML, /data-action="apiconn-host-input"/);
+});
+
 test('the Connections tab adds an API connection policy and stores its credential separately', async () => {
   const harness = runAdminPageHarness({ agents: [connectionsAgent()] });
   await flushAsync();
@@ -1514,13 +1679,8 @@ test('the Connections tab adds an API connection policy and stores its credentia
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
 
-  const panel = harness.app.innerHTML;
-  assert.match(panel, /<h3 class="section-title">API connections<\/h3>/);
-  assert.match(panel, /Give the agent a credential to call a REST API directly\./);
-  assert.match(panel, /data-action="apiconn-new"/);
-  assert.ok(panel.indexOf('data-action="conn-gallery-search"') < panel.indexOf('>API connections<'));
-
-  click({ target: actionTarget({ 'data-action': 'apiconn-new' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-custom' }) });
+  click({ target: actionTarget({ 'data-action': 'custom-lane', 'data-lane': 'api' }) });
   const editor = harness.app.innerHTML;
   assert.doesNotMatch(editor, /data-action="apiconn-view"/);
   assert.match(editor, /data-action="apiconn-field-name"/);
@@ -1584,7 +1744,8 @@ test('a failed API credential PUT stays pending, surfaces an error, and retries 
   assert.ok(click && input);
 
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
-  click({ target: actionTarget({ 'data-action': 'apiconn-new' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-custom' }) });
+  click({ target: actionTarget({ 'data-action': 'custom-lane', 'data-lane': 'api' }) });
   input({ target: inputTarget({ 'data-action': 'apiconn-field-name' }, 'Issue API') });
   input({ target: inputTarget({ 'data-action': 'apiconn-host-input', 'data-index': '0' }, 'api.example.com') });
   input({ target: inputTarget({ 'data-action': 'apiconn-field-header-name' }, 'Authorization') });
@@ -1683,7 +1844,8 @@ test('the API connection editor enforces its required policy fields', async () =
   assert.ok(click && input && change);
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
-  click({ target: actionTarget({ 'data-action': 'apiconn-new' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-custom' }) });
+  click({ target: actionTarget({ 'data-action': 'custom-lane', 'data-lane': 'api' }) });
 
   click({ target: actionTarget({ 'data-action': 'apiconn-save-row' }) });
   assert.match(harness.app.innerHTML, /Name is required\./);

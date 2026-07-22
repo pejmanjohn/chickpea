@@ -1150,6 +1150,9 @@ details[open].advanced summary::before {
     // written to the API-connection secret endpoint only after the profile
     // policy saves successfully.
     apiConnectionEditor: null,
+    // Non-null only while the gallery's single Custom connection flow is open.
+    // Both lane editors may coexist so tab switches preserve typed values.
+    customConnectionLane: null,
     connectorGallerySearch: "",
     // Index of the connection pending removal (its confirm modal is open), or
     // null. The DELETE of its secrets is issued on the next profile save.
@@ -1327,6 +1330,12 @@ details[open].advanced summary::before {
     return state.agents[0] || null;
   }
 
+  function clearCustomConnectionMode() {
+    state.connectionEditor = null;
+    state.apiConnectionEditor = null;
+    state.customConnectionLane = null;
+  }
+
   function resetProfileTransientState() {
     state.profileError = "";
     state.profileDirty = false;
@@ -1339,8 +1348,7 @@ details[open].advanced summary::before {
     state.attachNotice = "";
     state.skillEditor = null;
     state.skillImport = null;
-    state.connectionEditor = null;
-    state.apiConnectionEditor = null;
+    clearCustomConnectionMode();
     state.connectorGallerySearch = "";
     state.connectionRemove = null;
     state.apiConnectionRemove = null;
@@ -2472,8 +2480,10 @@ details[open].advanced summary::before {
 
   function connectionsPanelHtml(draft) {
     var servers = draft.mcpServers || [];
+    var apiConnections = draft.apiConnections || [];
     var editor = state.connectionEditor;
-    var rows = servers.map(function (conn, index) {
+    var apiEditor = state.apiConnectionEditor;
+    var mcpRows = servers.map(function (conn, index) {
       if (editor && editor.index === index) return connectionEditorFormHtml(editor);
       var transportLabel = conn.transport === "sse" ? "SSE" : "Streamable HTTP";
       var connPreset = conn.presetId ? presetById(conn.presetId) : null;
@@ -2482,19 +2492,46 @@ details[open].advanced summary::before {
         : '<span class="sk-name" style="font-family:inherit;">' + esc(conn.displayName) + '</span>';
       return '<div class="skill-row conn-row">' +
         '<div class="sk-body">' + nameHtml +
+        '<span class="gallery-lane">MCP</span>' +
         '<span class="conn-host">' + esc(connectionHost(conn.url)) + '</span>' +
         '<span class="conn-meta"><span class="badge-src">' + transportLabel + '</span>' + connectionStatusPill(conn) + '</span></div>' +
         '<span class="toggle"><span class="thumb"></span><input type="checkbox" data-action="conn-toggle" data-index="' + index + '" ' + (conn.enabled ? "checked" : "") + ' aria-label="Connection enabled"></span>' +
         '<button type="button" class="btn btn-ghost btn-sm" data-action="conn-edit" data-index="' + index + '">Edit</button>' +
         '<button type="button" class="x-btn" data-action="conn-remove" data-index="' + index + '" aria-label="Remove connection">&times;</button></div>';
     }).join("");
+    var apiRows = apiConnections.map(function (conn, index) {
+      if (apiEditor && apiEditor.index === index) return apiConnectionEditorFormHtml(apiEditor);
+      return '<div class="skill-row conn-row">' +
+        '<div class="sk-body"><span class="sk-name" style="font-family:inherit;">' + esc(conn.displayName) + '</span>' +
+        '<span class="gallery-lane">API</span>' +
+        '<span class="conn-host">' + esc(apiConnectionHostSummary(conn)) + '</span></div>' +
+        '<span class="toggle"><span class="thumb"></span><input type="checkbox" data-action="apiconn-toggle" data-index="' + index + '" ' + (conn.enabled ? "checked" : "") + ' aria-label="API connection enabled"></span>' +
+        '<button type="button" class="btn btn-ghost btn-sm" data-action="apiconn-edit" data-index="' + index + '">Edit</button>' +
+        '<button type="button" class="x-btn" data-action="apiconn-remove" data-index="' + index + '" aria-label="Remove API connection">&times;</button></div>';
+    }).join("");
+    var rows = mcpRows + apiRows;
     var list = rows ? '<div class="skill-list">' + rows + '</div>' : "";
-    var newForm = (editor && (editor.index === null || editor.index === undefined)) ? '<div class="skill-list">' + connectionEditorFormHtml(editor) + '</div>' : "";
-    var gallery = editor || state.apiConnectionEditor ? "" : connectorGalleryHtml();
+    var createForm = "";
+    if (state.customConnectionLane) {
+      var customEditorForm = state.customConnectionLane === "api"
+        ? apiConnectionEditorFormHtml(apiEditor)
+        : connectionEditorFormHtml(editor);
+      createForm = '<div class="skill-list">' + customConnectionLaneTabHtml() + customEditorForm + '</div>';
+    } else if (editor && (editor.index === null || editor.index === undefined) && editor.presetId) {
+      createForm = '<div class="skill-list">' + connectionEditorFormHtml(editor) + '</div>';
+    } else if (apiEditor && (apiEditor.index === null || apiEditor.index === undefined) && apiEditor.presetId) {
+      createForm = '<div class="skill-list">' + apiConnectionEditorFormHtml(apiEditor) + '</div>';
+    }
+    var gallery = editor || apiEditor || state.customConnectionLane ? "" : connectorGalleryHtml();
     var hint = 'MCP servers and REST APIs this profile can call.';
     var security = '<p class="conn-security">Your profile stores connection policy and tool approvals only &mdash; tokens live in the settings store and are never returned by the API.</p>';
-    var body = list + newForm + gallery;
-    return '<p class="hint ptab-hint">' + hint + '</p>' + body + security + apiConnectionsPanelHtml(draft);
+    return '<p class="hint ptab-hint">' + hint + '</p>' + list + createForm + gallery + security;
+  }
+
+  function customConnectionLaneTabHtml() {
+    return '<div class="seg conn-view-seg" role="group" aria-label="Connection type">' +
+      '<button type="button" class="' + (state.customConnectionLane === "mcp" ? "on" : "") + '" data-action="custom-lane" data-lane="mcp">MCP</button>' +
+      '<button type="button" class="' + (state.customConnectionLane === "api" ? "on" : "") + '" data-action="custom-lane" data-lane="api">API</button></div>';
   }
 
   function apiConnectionMethodsHtml(editor) {
@@ -2626,30 +2663,6 @@ details[open].advanced summary::before {
     if (!hosts.length) return "No hosts";
     if (hosts.length === 1) return hosts[0];
     return hosts[0] + " +" + (hosts.length - 1);
-  }
-
-  function apiConnectionsPanelHtml(draft) {
-    var connections = draft.apiConnections || [];
-    var editor = state.apiConnectionEditor;
-    var rows = connections.map(function (conn, index) {
-      if (editor && editor.index === index) return apiConnectionEditorFormHtml(editor);
-      return '<div class="skill-row conn-row">' +
-        '<div class="sk-body"><span class="sk-name" style="font-family:inherit;">' + esc(conn.displayName) + '</span>' +
-        '<span class="conn-host">' + esc(apiConnectionHostSummary(conn)) + '</span></div>' +
-        '<span class="toggle"><span class="thumb"></span><input type="checkbox" data-action="apiconn-toggle" data-index="' + index + '" ' + (conn.enabled ? "checked" : "") + ' aria-label="API connection enabled"></span>' +
-        '<button type="button" class="btn btn-ghost btn-sm" data-action="apiconn-edit" data-index="' + index + '">Edit</button>' +
-        '<button type="button" class="x-btn" data-action="apiconn-remove" data-index="' + index + '" aria-label="Remove API connection">&times;</button></div>';
-    }).join("");
-    var list = rows ? '<div class="skill-list">' + rows + '</div>' : "";
-    var newForm = editor && (editor.index === null || editor.index === undefined) ? apiConnectionEditorFormHtml(editor) : "";
-    var add = editor ? "" : '<div class="skill-actions"><button type="button" class="btn btn-soft btn-sm" data-action="apiconn-new">Add API connection</button></div>';
-    var empty = !connections.length && !editor
-      ? '<div class="empty"><p class="field-label">No API connections yet</p><p class="hint">Add one to give this profile scoped REST API access.</p></div>'
-      : "";
-    return '<div class="section api-connections-section">' +
-      '<div class="section-head"><div><h3 class="section-title">API connections</h3>' +
-      '<p class="hint">Give the agent a credential to call a REST API directly. It reaches only the hosts you list; the credential is injected server-side and never shown to the model.</p></div></div>' +
-      list + newForm + empty + add + '</div>';
   }
 
   function validateApiConnectionEditor(editor, connections) {
@@ -4106,8 +4119,17 @@ details[open].advanced summary::before {
     // the form first so unrelated typed text is not lost.
     if (action === "conn-custom") {
       collectProfileDraft();
+      state.customConnectionLane = "mcp";
       state.connectorGallerySearch = "";
       state.connectionEditor = newConnectionEditor();
+      state.apiConnectionEditor = null;
+      render();
+    }
+    if (action === "custom-lane" && state.customConnectionLane) {
+      var customLane = target.getAttribute("data-lane") === "api" ? "api" : "mcp";
+      state.customConnectionLane = customLane;
+      if (customLane === "mcp" && !state.connectionEditor) state.connectionEditor = newConnectionEditor();
+      if (customLane === "api" && !state.apiConnectionEditor) state.apiConnectionEditor = newApiConnectionEditor();
       render();
     }
     if (action === "conn-preset") {
@@ -4115,6 +4137,7 @@ details[open].advanced summary::before {
       var selectedPreset = presetById(connPresetId);
       if (selectedPreset) {
         collectProfileDraft();
+        state.customConnectionLane = null;
         state.connectorGallerySearch = "";
         var selectedPresetLanes = presetLanes(selectedPreset);
         if (selectedPresetLanes.api && !selectedPresetLanes.mcp) {
@@ -4136,9 +4159,22 @@ details[open].advanced summary::before {
       collectProfileDraft();
       var connEditIndex = Number(target.getAttribute("data-index"));
       var connEditServer = (state.profileDraft.mcpServers || [])[connEditIndex];
-      if (connEditServer) { state.connectorGallerySearch = ""; state.connectionEditor = editorFromConnection(connEditIndex, connEditServer); render(); }
+      if (connEditServer) {
+        state.customConnectionLane = null;
+        state.connectorGallerySearch = "";
+        state.apiConnectionEditor = null;
+        state.connectionEditor = editorFromConnection(connEditIndex, connEditServer);
+        render();
+      }
     }
-    if (action === "conn-cancel") { state.connectionEditor = null; render(); }
+    if (action === "conn-cancel") {
+      if (state.customConnectionLane) {
+        clearCustomConnectionMode();
+      } else {
+        state.connectionEditor = null;
+      }
+      render();
+    }
     if (action === "conn-remove") {
       collectProfileDraft();
       state.connectionRemove = Number(target.getAttribute("data-index"));
@@ -4156,7 +4192,8 @@ details[open].advanced summary::before {
         state.profileDraft.mcpServers = removeServers;
         // If the open editor pointed at a shifted index, just close it — simplest
         // correct behavior.
-        state.connectionEditor = null;
+        if (state.customConnectionLane) clearCustomConnectionMode();
+        else state.connectionEditor = null;
         markProfileDirty();
       }
       state.connectionRemove = null;
@@ -4184,13 +4221,8 @@ details[open].advanced summary::before {
     }
     if (action === "conn-test") { testConnection(); }
     if (action === "conn-save-row") { commitConnectionRow(); }
-    // Credentialed REST API connections use their own action namespace so the
-    // editor can coexist with the MCP gallery without sharing transient state.
-    if (action === "apiconn-new") {
-      collectProfileDraft();
-      state.apiConnectionEditor = newApiConnectionEditor();
-      render();
-    }
+    // Credentialed REST API connections keep their own action namespace even
+    // though their saved rows and custom-create flow now share this panel.
     if (action === "apiconn-view" && state.apiConnectionEditor) {
       state.apiConnectionEditor.view = target.getAttribute("data-view") === "advanced" ? "advanced" : "recommended";
       render();
@@ -4199,9 +4231,21 @@ details[open].advanced summary::before {
       collectProfileDraft();
       var apiConnEditIndex = Number(target.getAttribute("data-index"));
       var apiConnEditValue = (state.profileDraft.apiConnections || [])[apiConnEditIndex];
-      if (apiConnEditValue) { state.apiConnectionEditor = editorFromApiConnection(apiConnEditIndex, apiConnEditValue); render(); }
+      if (apiConnEditValue) {
+        state.customConnectionLane = null;
+        state.connectionEditor = null;
+        state.apiConnectionEditor = editorFromApiConnection(apiConnEditIndex, apiConnEditValue);
+        render();
+      }
     }
-    if (action === "apiconn-cancel") { state.apiConnectionEditor = null; render(); }
+    if (action === "apiconn-cancel") {
+      if (state.customConnectionLane) {
+        clearCustomConnectionMode();
+      } else {
+        state.apiConnectionEditor = null;
+      }
+      render();
+    }
     if (action === "apiconn-remove") {
       collectProfileDraft();
       state.apiConnectionRemove = Number(target.getAttribute("data-index"));
@@ -4215,7 +4259,8 @@ details[open].advanced summary::before {
         rememberRemovedApiConnection(apiConnRemoveValues[apiConnRemoveIndex]);
         apiConnRemoveValues.splice(apiConnRemoveIndex, 1);
         state.profileDraft.apiConnections = apiConnRemoveValues;
-        state.apiConnectionEditor = null;
+        if (state.customConnectionLane) clearCustomConnectionMode();
+        else state.apiConnectionEditor = null;
         markProfileDirty();
       }
       state.apiConnectionRemove = null;
@@ -4980,6 +5025,7 @@ details[open].advanced summary::before {
   function commitConnectionRow() {
     var editor = state.connectionEditor;
     if (!editor) return;
+    var customMode = state.customConnectionLane === "mcp";
     var servers = (state.profileDraft && state.profileDraft.mcpServers) || [];
     var validationError = validateConnectionEditor(editor, servers);
     if (validationError) { editor.error = validationError; render(); return; }
@@ -4989,7 +5035,8 @@ details[open].advanced summary::before {
     else { servers[editor.index] = conn; }
     state.profileDraft.mcpServers = servers;
     stagePendingSecrets(conn.id, editor, prior);
-    state.connectionEditor = null;
+    if (customMode) clearCustomConnectionMode();
+    else state.connectionEditor = null;
     markProfileDirty();
     render();
   }
@@ -4998,11 +5045,14 @@ details[open].advanced summary::before {
   // a typed connection is never silently dropped. Mirrors commitOpenSkillEditor:
   // returns false (and keeps the editor open with an inline error) if invalid.
   function commitOpenConnectionEditor() {
+    if (state.customConnectionLane === "api") return true;
     var editor = state.connectionEditor;
     if (!editor) return true;
+    var customMode = state.customConnectionLane === "mcp";
     // A completely empty editor is discarded silently.
     if (!String(editor.displayName || "").trim() && !String(editor.url || "").trim()) {
-      state.connectionEditor = null;
+      if (customMode) clearCustomConnectionMode();
+      else state.connectionEditor = null;
       return true;
     }
     var servers = (state.profileDraft && state.profileDraft.mcpServers) || [];
@@ -5014,7 +5064,8 @@ details[open].advanced summary::before {
     else { servers[editor.index] = conn; }
     state.profileDraft.mcpServers = servers;
     stagePendingSecrets(conn.id, editor, prior);
-    state.connectionEditor = null;
+    if (customMode) clearCustomConnectionMode();
+    else state.connectionEditor = null;
     return true;
   }
 
@@ -5212,6 +5263,7 @@ details[open].advanced summary::before {
   function commitApiConnectionRow() {
     var editor = state.apiConnectionEditor;
     if (!editor) return;
+    var customMode = state.customConnectionLane === "api";
     var connections = (state.profileDraft && state.profileDraft.apiConnections) || [];
     var validationError = validateApiConnectionEditor(editor, connections);
     if (validationError) { editor.error = validationError; render(); return; }
@@ -5220,18 +5272,25 @@ details[open].advanced summary::before {
     else connections[editor.index] = conn;
     state.profileDraft.apiConnections = connections;
     stagePendingApiSecret(conn.id, editor);
-    state.apiConnectionEditor = null;
+    if (customMode) clearCustomConnectionMode();
+    else state.apiConnectionEditor = null;
     markProfileDirty();
     render();
   }
 
   function commitOpenApiConnectionEditor() {
+    if (state.customConnectionLane === "mcp") return true;
     var editor = state.apiConnectionEditor;
     if (!editor) return true;
+    var customMode = state.customConnectionLane === "api";
     var hasTypedValue = String(editor.displayName || "").trim() ||
       (editor.allowedHosts || []).some(function (host) { return !!String(host || "").trim(); }) ||
       String(editor.headerName || "").trim() || String(editor.credential || "").trim();
-    if (!hasTypedValue) { state.apiConnectionEditor = null; return true; }
+    if (!hasTypedValue) {
+      if (customMode) clearCustomConnectionMode();
+      else state.apiConnectionEditor = null;
+      return true;
+    }
     var connections = (state.profileDraft && state.profileDraft.apiConnections) || [];
     var validationError = validateApiConnectionEditor(editor, connections);
     if (validationError) { editor.error = validationError; render(); return false; }
@@ -5240,7 +5299,8 @@ details[open].advanced summary::before {
     else connections[editor.index] = conn;
     state.profileDraft.apiConnections = connections;
     stagePendingApiSecret(conn.id, editor);
-    state.apiConnectionEditor = null;
+    if (customMode) clearCustomConnectionMode();
+    else state.apiConnectionEditor = null;
     return true;
   }
 
@@ -5353,8 +5413,7 @@ details[open].advanced summary::before {
     state.profileDirty = false;
     state.skillEditor = null;
     state.skillImport = null;
-    state.connectionEditor = null;
-    state.apiConnectionEditor = null;
+    clearCustomConnectionMode();
     state.connectorGallerySearch = "";
     state.connectionRemove = null;
     state.apiConnectionRemove = null;
@@ -5479,8 +5538,7 @@ details[open].advanced summary::before {
     state.disableConfirm = false;
     state.skillEditor = null;
     state.skillImport = null;
-    state.connectionEditor = null;
-    state.apiConnectionEditor = null;
+    clearCustomConnectionMode();
     state.connectorGallerySearch = "";
     state.connectionRemove = null;
     state.apiConnectionRemove = null;
