@@ -1597,6 +1597,31 @@ test('the Connections panel has one custom create entry point and no separate AP
   assert.doesNotMatch(panel, />Add API connection<\/button>/);
 });
 
+test('a connected preset drops out of the Available gallery until it is removed', async () => {
+  const harness = runAdminPageHarness({
+    agents: [
+      connectionsAgent({
+        apiConnections: [
+          apiConnectionFixture({ id: 'asana', presetId: 'asana', displayName: 'Asana', allowedHosts: ['app.asana.com'] }),
+        ],
+      }),
+    ],
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+
+  const panel = harness.app.innerHTML;
+  // Asana is already connected, so the gallery no longer offers it...
+  assert.doesNotMatch(panel, /data-action="conn-preset" data-preset="asana"/);
+  // ...other presets remain, and the Available count dropped from 23 to 22.
+  assert.match(panel, /data-action="conn-preset" data-preset="linear"/);
+  assert.match(panel, /<span class="gallery-head-count">22<\/span>/);
+});
+
 test('saved MCP and API connections share one lane-badged list with matching inline editors', async () => {
   const harness = runAdminPageHarness({
     agents: [connectionsAgent({ mcpServers: [mcpConnectionFixture()], apiConnections: [apiConnectionFixture()] })],

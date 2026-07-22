@@ -2288,8 +2288,16 @@ details[open].advanced summary::before {
   }
 
   function connectorGalleryHtml() {
+    // A preset already in use drops out of "Available" — its id seeds the
+    // connection id, and connection ids are unique, so a second Connect would
+    // fail on save anyway. Remove the existing connection to add it again.
+    var draft = state.profileDraft || {};
+    var connectedPresetIds = {};
+    (draft.mcpServers || []).forEach(function (conn) { if (conn.presetId) connectedPresetIds[conn.presetId] = true; });
+    (draft.apiConnections || []).forEach(function (conn) { if (conn.presetId) connectedPresetIds[conn.presetId] = true; });
     var q = String(state.connectorGallerySearch || "").trim().toLowerCase();
     var shown = (CONNECTOR_PRESETS || []).filter(function (preset) {
+      if (connectedPresetIds[preset.id]) return false;
       return !q || preset.name.toLowerCase().indexOf(q) >= 0;
     }).slice().sort(function (a, b) {
       var an = a.name.toLowerCase();
@@ -2307,7 +2315,9 @@ details[open].advanced summary::before {
     }).join("");
     var list = shown.length
       ? '<div class="gallery-list">' + rows + '</div>'
-      : '<div class="gallery-empty">No connectors match &ldquo;' + esc(state.connectorGallerySearch) + '&rdquo;.</div>';
+      : (q
+          ? '<div class="gallery-empty">No connectors match &ldquo;' + esc(state.connectorGallerySearch) + '&rdquo;.</div>'
+          : '<div class="gallery-empty">Every prepackaged connector is already added.</div>');
     var custom = '<div class="gallery-row">' +
       '<span class="conn-logo conn-logo-mono" style="background:var(--ember)">+</span>' +
       '<span class="gallery-row-name">Custom connection</span>' +
