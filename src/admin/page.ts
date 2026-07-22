@@ -3763,7 +3763,7 @@ details[open].advanced summary::before {
     var busy = state.githubBusy === "manifest";
     return '<div class="prov-body"><form data-action="github-manifest-form" style="display:flex; flex-direction:column; gap:12px;">' +
       '<div class="field"><label class="field-label" for="github-org">GitHub organization <span class="hint">(optional)</span></label>' +
-      '<input id="github-org" class="input mono" name="org" type="text" autocomplete="organization" placeholder="magoosh" value="' + esc(state.githubOrg) + '" data-action="github-org-input"' + (busy ? " disabled" : "") + '>' +
+      '<input id="github-org" class="input mono" name="org" type="text" autocomplete="organization" placeholder="your-org" value="' + esc(state.githubOrg) + '" data-action="github-org-input"' + (busy ? " disabled" : "") + '>' +
       '<p class="hint">Leave blank to create the app under your personal GitHub account.</p></div>' +
       githubErrorHtml() +
       '<div class="prov-actions" style="margin-left:0;"><button type="button" class="btn btn-ghost btn-sm" data-action="github-manifest-cancel"' + (busy ? " disabled" : "") + '>Cancel</button>' +

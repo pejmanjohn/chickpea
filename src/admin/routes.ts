@@ -882,13 +882,26 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const base = org
       ? `https://github.com/organizations/${org}/settings/apps/new`
       : 'https://github.com/settings/apps/new';
+    // GitHub validates the hook URL even when the hook is inactive and
+    // rejects anything not publicly reachable (localhost dev, tunnels aside).
+    // Webhooks are deferred anyway — only advertise one when the origin could
+    // actually receive it.
+    const originHost = new URL(origin).hostname;
+    const publicOrigin =
+      origin.startsWith('https://') &&
+      originHost !== 'localhost' &&
+      originHost !== '127.0.0.1' &&
+      originHost !== '::1' &&
+      !originHost.endsWith('.local');
     return c.json({
       target: `${base}?state=${setupState}`,
       manifest: {
         name: `chickpea-${suffix}`,
         url: origin,
         redirect_url: `${origin}/admin/api/github/setup/callback`,
-        hook_attributes: { active: false, url: `${origin}/github/webhook` },
+        ...(publicOrigin
+          ? { hook_attributes: { active: false, url: `${origin}/github/webhook` } }
+          : {}),
         public: false,
         default_permissions: {
           contents: 'write',

@@ -349,6 +349,36 @@ test('GitHub manifest route uses the resolved request origin and requested organ
   }
 });
 
+test('GitHub manifest omits the hook on non-public origins (localhost dev)', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    await withEnv({ SLACK_TAG_PUBLIC_URL: undefined }, async () => {
+      // GitHub validates the hook URL even when inactive and rejects anything
+      // not reachable over the public Internet — a localhost dev origin must
+      // not advertise one, or Create GitHub App fails with "Hook url is not
+      // supported". redirect_url may stay localhost (GitHub allows that).
+      for (const host of ['localhost:3583', '127.0.0.1:8787', 'chickpea.local']) {
+        const response = await adminApp(store, settings).request(
+          'http://internal.test/admin/api/github/manifest',
+          {
+            method: 'POST',
+            headers: { ...jsonHeaders(), 'x-forwarded-proto': 'http', 'x-forwarded-host': host },
+            body: JSON.stringify({}),
+          },
+        );
+        assert.equal(response.status, 200);
+        const body = (await response.json()) as { manifest: Record<string, unknown> };
+        assert.equal('hook_attributes' in body.manifest, false, host);
+        assert.equal(body.manifest.redirect_url, `http://${host}/admin/api/github/setup/callback`);
+      }
+    });
+  } finally {
+    store.close();
+    settings.close();
+  }
+});
+
 test('GitHub manifest callback stores a normalized private key and redirects to Settings', async () => {
   const { pkcs1 } = rsaKeys();
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
