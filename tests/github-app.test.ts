@@ -314,7 +314,17 @@ test('GitHub manifest route uses the resolved request origin and requested organ
           default_permissions: Record<string, string>;
         };
       };
-      assert.equal(body.target, 'https://github.com/organizations/magoosh/settings/apps/new');
+      const targetUrl = new URL(body.target);
+      assert.equal(
+        `${targetUrl.origin}${targetUrl.pathname}`,
+        'https://github.com/organizations/magoosh/settings/apps/new',
+      );
+      const setupState = targetUrl.searchParams.get('state') ?? '';
+      assert.match(setupState, /^[a-f0-9]{32}$/);
+      assert.match(
+        (await settings.getSetting('github.setup_state')) ?? '',
+        new RegExp(`^${setupState}:\\d+$`),
+      );
       assert.match(body.manifest.name, /^chickpea-[a-z0-9]{6}$/);
       assert.equal(body.manifest.url, 'https://chickpea.example.com');
       assert.equal(
@@ -358,13 +368,14 @@ test('GitHub manifest callback stores a normalized private key and redirects to 
     );
   };
   try {
+    await settings.setSetting('github.setup_state', `valid-state:${Date.now()}`);
     await withFetch(fetchImpl, async () => {
       const response = await adminApp(store, settings).request(
-        '/admin/api/github/setup/callback?code=setup-code',
+        '/admin/api/github/setup/callback?code=setup-code&state=valid-state',
         { headers: auth(), redirect: 'manual' },
       );
       assert.equal(response.status, 302);
-      assert.equal(response.headers.get('location'), '/admin#/settings');
+      assert.equal(response.headers.get('location'), '/admin/settings');
     });
     assert.equal(await settings.getSetting('github.app.id'), '12345');
     assert.equal(await settings.getSetting('github.app.slug'), 'chickpea-test');
@@ -373,6 +384,101 @@ test('GitHub manifest callback stores a normalized private key and redirects to 
       /^-----BEGIN PRIVATE KEY-----/,
     );
     assert.equal(await settings.getSetting('github.app.webhook_secret'), 'webhook-secret');
+    assert.equal(await settings.getSetting('github.setup_state'), undefined);
+  } finally {
+    store.close();
+    settings.close();
+  }
+});
+
+test('GitHub status isolates one failing installation instead of failing the endpoint', async () => {
+  const { pkcs8 } = rsaKeys();
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  await settings.setSetting('github.app.id', '12345');
+  await settings.setSetting('github.app.private_key', pkcs8);
+  const fetchImpl: typeof fetch = async (input) => {
+    const url = String(input);
+    if (url.includes('/app/installations?')) {
+      return Response.json([
+        { id: 41, account: { login: 'healthy', type: 'Organization' } },
+        { id: 42, account: { login: 'suspended', type: 'Organization' } },
+      ]);
+    }
+    if (url.includes('/app/installations/41/')) {
+      return Response.json({ token: 't-41', expires_at: '2026-07-22T20:00:00Z' });
+    }
+    if (url.includes('/app/installations/42/')) {
+      return new Response('suspended', { status: 403 });
+    }
+    if (url.includes('/installation/repositories')) {
+      return Response.json({ total_count: 1, repositories: [
+        { full_name: 'healthy/repo', private: false, default_branch: 'main' },
+      ] });
+    }
+    return new Response('unexpected request', { status: 500 });
+  };
+  try {
+    await withEnv(
+      { GITHUB_APP_ID: undefined, GITHUB_APP_PRIVATE_KEY: undefined, GITHUB_PAT: undefined },
+      () =>
+        withFetch(fetchImpl, async () => {
+          const response = await adminApp(store, settings).request('/admin/api/github/status', {
+            headers: auth(),
+          });
+          assert.equal(response.status, 200);
+          const body = (await response.json()) as {
+            installations: Array<{ id: number; repoCount: number | null }>;
+          };
+          assert.deepEqual(
+            body.installations.map(({ id, repoCount }) => ({ id, repoCount })),
+            [
+              { id: 41, repoCount: 1 },
+              { id: 42, repoCount: null },
+            ],
+          );
+        }),
+    );
+  } finally {
+    store.close();
+    settings.close();
+  }
+});
+
+test('GitHub manifest callback refuses missing, mismatched, stale, and replayed state', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  let exchanges = 0;
+  const fetchImpl: typeof fetch = async () => {
+    exchanges += 1;
+    return Response.json(
+      { id: 1, slug: 'x', pem: 'irrelevant', webhook_secret: 'irrelevant' },
+      { status: 201 },
+    );
+  };
+  const request = (query: string) =>
+    adminApp(store, settings).request(`/admin/api/github/setup/callback?${query}`, {
+      headers: auth(),
+      redirect: 'manual',
+    });
+  try {
+    await withFetch(fetchImpl, async () => {
+      // No state ever minted.
+      assert.equal((await request('code=c1&state=whatever')).status, 403);
+      // Mismatched state.
+      await settings.setSetting('github.setup_state', `expected:${Date.now()}`);
+      assert.equal((await request('code=c2&state=wrong')).status, 403);
+      // The mismatch consumed the stored state — a replay with the right value fails too.
+      assert.equal((await request('code=c3&state=expected')).status, 403);
+      // Stale state (minted 16 minutes ago).
+      await settings.setSetting(
+        'github.setup_state',
+        `stale-state:${Date.now() - 16 * 60 * 1_000}`,
+      );
+      assert.equal((await request('code=c4&state=stale-state')).status, 403);
+    });
+    assert.equal(exchanges, 0, 'no rejected callback may reach the code exchange');
+    assert.equal(await settings.getSetting('github.app.id'), undefined);
   } finally {
     store.close();
     settings.close();

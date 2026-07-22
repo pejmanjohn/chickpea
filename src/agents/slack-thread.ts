@@ -57,33 +57,48 @@ const REPOSITORY_PERMISSIONS = {
 export interface ResolvedRepositoryAccess {
   grants: RepositoryGrant[];
   connectors: ResolvedApiConnection[];
+  /**
+   * True whenever the profile has enabled grants, even if no credential
+   * resolved this turn. Grants make repository routing authoritative for the
+   * GitHub hosts: a mint failure must degrade to NO GitHub access, never fall
+   * open to a legacy broad connector.
+   */
+  governsGithubHosts: boolean;
 }
 
 /**
  * Resolve repository credentials live for one turn. Grants are policy and may
  * come from a frozen channel snapshot; tokens never join that snapshot or the
  * skill input and exist only in credential-bearing egress connector rows.
+ * Accepts undefined because snapshots persisted before repository grants
+ * existed rehydrate without the field.
  */
 export async function resolveRepositoryAccess(
-  repositories: readonly RepositoryGrant[],
+  repositories: readonly RepositoryGrant[] | undefined,
   env?: PlatformEnv,
 ): Promise<ResolvedRepositoryAccess> {
-  const enabled = repositories.filter((grant) => grant.enabled);
-  if (enabled.length === 0) return { grants: [], connectors: [] };
+  const enabled = (repositories ?? []).filter((grant) => grant.enabled);
+  const none = (governs: boolean): ResolvedRepositoryAccess => ({
+    grants: [],
+    connectors: [],
+    governsGithubHosts: governs,
+  });
+  if (enabled.length === 0) return none(false);
 
   let connection: GithubConnection;
   try {
     connection = await getGithubConnection(getSettingsStore(env));
   } catch {
     console.warn('[chickpea] GitHub repository access skipped for this turn');
-    return { grants: [], connectors: [] };
+    return none(true);
   }
 
-  if (connection.mode === 'none') return { grants: [], connectors: [] };
+  if (connection.mode === 'none') return none(true);
   if (connection.mode === 'pat') {
     return {
       grants: enabled,
       connectors: repositoryConnectors(connection.pat, enabled),
+      governsGithubHosts: true,
     };
   }
 
@@ -133,6 +148,7 @@ export async function resolveRepositoryAccess(
       (grant) => grant.installationId !== null && successful.has(grant.installationId),
     ),
     connectors: resolved.flatMap((entry) => entry?.connectors ?? []),
+    governsGithubHosts: true,
   };
 }
 
@@ -162,6 +178,7 @@ function repositoryConnectors(
       allowedHosts: ['api.github.com'],
       pathPrefixes: apiPrefixes,
       ...credential,
+      matchesRequest: (url: string) => !isDeniedRepositoryEndpoint(url),
     },
     {
       allowedHosts: ['github.com'],
@@ -188,6 +205,29 @@ function repositoryPrefixes(grants: readonly RepositoryGrant[], prefix: string):
   ].sort();
 }
 
+// The skill's denial prose (no workflow dispatch, no deployment approvals, no
+// enabling/disabling workflows) is not an enforcement boundary — the token
+// carries actions:write, so these endpoints must be refused at egress. The
+// deny is method-agnostic: every listed path is write-only or (for
+// pending_deployments) a niche read not worth an allow carve-out. Re-run and
+// cancel (`/rerun`, `/rerun-failed-jobs`, `/cancel`) stay allowed.
+const DENIED_REPOSITORY_ENDPOINTS = [
+  /^\/repos\/[^/]+\/[^/]+\/dispatches$/, // repository_dispatch
+  /^\/repos\/[^/]+\/[^/]+\/actions\/workflows\/[^/]+\/dispatches$/, // workflow_dispatch
+  /^\/repos\/[^/]+\/[^/]+\/actions\/workflows\/[^/]+\/(?:enable|disable)$/,
+  /^\/repos\/[^/]+\/[^/]+\/actions\/runs\/[^/]+\/(?:approve|pending_deployments)$/,
+];
+
+function isDeniedRepositoryEndpoint(url: string): boolean {
+  let pathname: string;
+  try {
+    pathname = new URL(url).pathname.replace(/\/+$/, '');
+  } catch {
+    return true;
+  }
+  return DENIED_REPOSITORY_ENDPOINTS.some((pattern) => pattern.test(pathname));
+}
+
 function matchesGrantedCodeSearch(url: string, grants: readonly RepositoryGrant[]): boolean {
   let query: string;
   try {
@@ -212,12 +252,16 @@ function matchesGrantedCodeSearch(url: string, grants: readonly RepositoryGrant[
  * Repository credentials are authoritative for GitHub while repository grants
  * are active. Remove those hosts from generic API connections so a narrower
  * legacy prefix cannot override the down-scoped installation-token route.
+ * Stripping keys off CONFIGURED grants (`governsGithubHosts`), not resolved
+ * connectors: a failed token mint must not fall open to a legacy broad
+ * GitHub connection.
  */
 export function mergeRepositoryAndApiConnectors(
   repositoryConnectors: readonly ResolvedApiConnection[],
   apiConnectors: readonly ResolvedApiConnection[],
+  governsGithubHosts = repositoryConnectors.length > 0,
 ): ResolvedApiConnection[] {
-  if (repositoryConnectors.length === 0) return [...apiConnectors];
+  if (!governsGithubHosts) return [...apiConnectors];
   const repositoryHosts = new Set(REPOSITORY_HOSTS);
   const remainingApiConnectors = apiConnectors.flatMap((connector) => {
     const allowedHosts = connector.allowedHosts.filter(
@@ -304,6 +348,7 @@ export default defineAgent(async ({ id }) => {
   const resolvedConnectors = mergeRepositoryAndApiConnectors(
     repositoryAccess.connectors,
     resolvedApiConnectors,
+    repositoryAccess.governsGithubHosts,
   );
   // Project resolved connectors into credential-free scope before skill
   // construction. Connector skills come first so the existing last-writer-wins

@@ -8,6 +8,9 @@ export const GITHUB_SETTING_KEYS = {
   privateKey: 'github.app.private_key',
   webhookSecret: 'github.app.webhook_secret',
   pat: 'github.pat',
+  // Single-use CSRF state for the manifest setup flow; listed here so a
+  // disconnect clears any half-finished setup handshake too.
+  setupState: 'github.setup_state',
 } as const;
 
 export type GithubConnection =
@@ -191,7 +194,11 @@ export async function listInstallationRepos(
   }
 
   const repositories: GithubRepository[] = [];
-  for (let offset = 0; offset < 3; offset += 1) {
+  // A filtered search must reach past the first pages: the q filter applies
+  // AFTER fetching, so a shallow cap would make repositories beyond it
+  // unfindable even by exact name. Unfiltered listings stay shallow.
+  const maxPages = opts.q?.trim() ? 10 : 3;
+  for (let offset = 0; offset < maxPages; offset += 1) {
     const page = firstPage + offset;
     const query = new URLSearchParams({ per_page: '100', page: String(page) });
     if (conn.mode === 'pat') {
@@ -358,7 +365,14 @@ async function githubFetch(
   init: RequestInit,
   fetchImpl: FetchImpl,
 ): Promise<Response> {
-  const response = await fetchImpl(url, init);
+  // Every GitHub call gets a deadline: a stalled response must not leave the
+  // admin status, picker, or setup callback pending indefinitely.
+  const signal =
+    init.signal ??
+    (typeof AbortSignal.timeout === 'function'
+      ? AbortSignal.timeout(INSTALLATION_TOKEN_REQUEST_TIMEOUT_MS)
+      : undefined);
+  const response = await fetchImpl(url, { ...init, ...(signal ? { signal } : {}) });
   if (!response.ok) {
     throw new Error(`GitHub API request failed with status ${response.status}`);
   }

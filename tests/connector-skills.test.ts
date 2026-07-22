@@ -246,7 +246,7 @@ test('repository grants attach the repositories skill and suppress generic githu
     '/git/commits',
     '/git/refs',
     '/actions/runs',
-    '/logs',
+    '/jobs',
     '/rerun',
   ]) {
     assert.ok(instructions.includes(expected), expected);

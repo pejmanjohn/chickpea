@@ -226,13 +226,13 @@ function repositoriesInstructions(grants: readonly RepositoryGrant[]): string {
       }),
     ]),
     '',
-    'List Actions runs, fetch a run log archive, or re-run a run:',
+    'List Actions runs, inspect a run through its jobs and step results, or re-run a run. (Log archive downloads redirect to an external storage host outside the repository network scope, so use the jobs endpoint — its step names, conclusions, and timings — to diagnose failures instead.)',
     githubScript([
       githubCommand(
         'https://api.github.com/repos/{owner}/{repo}/actions/runs?per_page=100&page=1',
       ),
       githubCommand(
-        'https://api.github.com/repos/{owner}/{repo}/actions/runs/{run_id}/logs',
+        'https://api.github.com/repos/{owner}/{repo}/actions/runs/{run_id}/jobs?per_page=100',
       ),
       githubCommand('https://api.github.com/repos/{owner}/{repo}/actions/runs/{run_id}/rerun', {
         method: 'POST',

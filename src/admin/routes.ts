@@ -810,12 +810,18 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const installations = await listInstallations(connection);
       const withCounts = await Promise.all(
         installations.map(async (installation) => {
-          const repositories = await listInstallationRepos(
-            connection,
-            installation.id,
-            { page: 1 },
-          );
-          return { ...installation, repoCount: repositories.totalCount };
+          // One suspended or stalling installation must not take down status
+          // for the healthy ones; the UI renders a null count as unavailable.
+          try {
+            const repositories = await listInstallationRepos(
+              connection,
+              installation.id,
+              { page: 1 },
+            );
+            return { ...installation, repoCount: repositories.totalCount };
+          } catch {
+            return { ...installation, repoCount: null };
+          }
         }),
       );
       return c.json({
@@ -837,10 +843,21 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const origin = requestOrigin(c);
     const suffix = randomUUID().replaceAll('-', '').slice(0, 6).toLowerCase();
     const org = parsed.output.org;
+    // Single-use CSRF state: GitHub echoes ?state= back to the callback, and
+    // the callback refuses any code that does not carry the state minted by
+    // this admin-authenticated request. Without it, an attacker could hand a
+    // logged-in admin a callback URL carrying a code for an attacker-owned
+    // App and silently overwrite this deployment's GitHub credentials.
+    const setupState = randomUUID().replaceAll('-', '');
+    await settings(c).setSetting(
+      GITHUB_SETTING_KEYS.setupState,
+      `${setupState}:${Date.now()}`,
+    );
+    const base = org
+      ? `https://github.com/organizations/${org}/settings/apps/new`
+      : 'https://github.com/settings/apps/new';
     return c.json({
-      target: org
-        ? `https://github.com/organizations/${org}/settings/apps/new`
-        : 'https://github.com/settings/apps/new',
+      target: `${base}?state=${setupState}`,
       manifest: {
         name: `chickpea-${suffix}`,
         url: origin,
@@ -864,6 +881,17 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return invalidRequest(c);
     }
     try {
+      // Consume the single-use setup state BEFORE exchanging the code: a
+      // mismatched or replayed callback must never reach the credential write.
+      const state = c.req.query('state')?.trim() ?? '';
+      const stored = await settings(c).getSetting(GITHUB_SETTING_KEYS.setupState);
+      await settings(c).applySettingsPatch({ delete: [GITHUB_SETTING_KEYS.setupState] });
+      const [storedState, mintedAtRaw] = (stored ?? '').split(':');
+      const mintedAt = Number(mintedAtRaw);
+      const fresh = Number.isFinite(mintedAt) && Date.now() - mintedAt < 15 * 60 * 1_000;
+      if (!state || !storedState || state !== storedState || !fresh) {
+        return c.json({ error: 'invalid_setup_state' }, 403);
+      }
       const conversion = await exchangeGithubAppManifest(parsed.output.code);
       await settings(c).applySettingsPatch({
         set: [
@@ -876,7 +904,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           { key: GITHUB_SETTING_KEYS.webhookSecret, value: conversion.webhookSecret },
         ],
       });
-      return c.redirect('/admin#/settings', 302);
+      // The SPA routes on pathname, not hash: /admin/settings lands on the
+      // Settings view where the installation next-step lives.
+      return c.redirect('/admin/settings', 302);
     } catch (err) {
       return internalError(c, err);
     }

@@ -545,7 +545,11 @@ test('PAT repository access uses the live PAT without minting and scopes both Gi
     );
 
     const absent = await resolveRepositoryAccess([]);
-    assert.deepEqual(absent, { grants: [], connectors: [] });
+    assert.deepEqual(absent, { grants: [], connectors: [], governsGithubHosts: false });
+    // Snapshots persisted before repository grants existed rehydrate without
+    // the field at all — the resolver must treat that exactly like [].
+    const legacy = await resolveRepositoryAccess(undefined);
+    assert.deepEqual(legacy, { grants: [], connectors: [], governsGithubHosts: false });
     assert.equal(
       buildEgressPlan({ mode: 'off', domains: [] }, { cloudflare: false }, absent.connectors)
         .scopes.length,
@@ -719,9 +723,22 @@ test('an App token mint failure logs and omits only that installation for the tu
 
         assert.deepEqual(access.grants, [kept]);
         assert.equal(access.connectors.length, 3);
+        assert.equal(access.governsGithubHosts, true);
         assert.equal(warnings.length, 1);
         assert.match(warnings[0] ?? '', /installation 50004 skipped/i);
         assert.doesNotMatch(warnings[0] ?? '', /successful-installation-token/);
+
+        // Even a full mint wipe-out keeps repository routing authoritative so
+        // the merge step still strips GitHub hosts from legacy connectors.
+        // Fresh installation ids avoid the warm token cache from above.
+        globalThis.fetch = async () => new Response('failed', { status: 500 });
+        const wipedOut = await resolveRepositoryAccess([
+          repositoryGrant({ id: 'cold-a', installationId: 60_001, fullName: 'Acme/ColdA' }),
+          repositoryGrant({ id: 'cold-b', installationId: 60_002, fullName: 'Acme/ColdB' }),
+        ]);
+        assert.deepEqual(wipedOut.grants, []);
+        assert.deepEqual(wipedOut.connectors, []);
+        assert.equal(wipedOut.governsGithubHosts, true);
       } finally {
         console.warn = previousWarn;
         globalThis.fetch = previousFetch;
@@ -751,6 +768,51 @@ test('repository access removes GitHub hosts from legacy connectors while preser
     [repositoryConnector, { ...legacyConnector, allowedHosts: ['api.example.com'] }],
   );
   assert.deepEqual(mergeRepositoryAndApiConnectors([], [legacyConnector]), [legacyConnector]);
+  // Fail closed: configured grants govern the GitHub hosts even when no
+  // repository connector resolved this turn (e.g. every token mint failed).
+  // The legacy broad connection must NOT regain GitHub access.
+  assert.deepEqual(mergeRepositoryAndApiConnectors([], [legacyConnector], true), [
+    { ...legacyConnector, allowedHosts: ['api.example.com'] },
+  ]);
+});
+
+test('the repos scope refuses denied Actions endpoints while keeping rerun and cancel', async () => {
+  const sentinel = 'deny-endpoint-pat';
+  await withGithubSettings({ [GITHUB_SETTING_KEYS.pat]: sentinel }, async () => {
+    const access = await resolveRepositoryAccess([
+      repositoryGrant({ installationId: null, fullName: 'Acme/Alpha' }),
+    ]);
+    const reposScope = access.connectors.find((connector) =>
+      connector.pathPrefixes.some((prefix) => prefix.startsWith('/repos/')),
+    );
+    assert.ok(reposScope?.matchesRequest, 'repos scope must carry an endpoint guard');
+    const guard = reposScope.matchesRequest;
+    const base = 'https://api.github.com/repos/Acme/Alpha';
+    for (const denied of [
+      `${base}/dispatches`, // repository_dispatch
+      `${base}/actions/workflows/ci.yml/dispatches`,
+      `${base}/actions/workflows/ci.yml/enable`,
+      `${base}/actions/workflows/ci.yml/disable`,
+      `${base}/actions/runs/7/approve`,
+      `${base}/actions/runs/7/pending_deployments`,
+      `${base}/actions/runs/7/pending_deployments/`, // trailing slash must not bypass
+      'not a url',
+    ]) {
+      assert.equal(guard(denied), false, denied);
+    }
+    for (const allowed of [
+      `${base}/actions/runs`,
+      `${base}/actions/runs/7/rerun`,
+      `${base}/actions/runs/7/rerun-failed-jobs`,
+      `${base}/actions/runs/7/cancel`,
+      `${base}/actions/runs/7/jobs`,
+      `${base}/contents/README.md`,
+      `${base}/pulls`,
+      `${base}/git/refs`,
+    ]) {
+      assert.equal(guard(allowed), true, allowed);
+    }
+  });
 });
 
 test('just-bash exposes its generated secure fetch on Bash instances', () => {
