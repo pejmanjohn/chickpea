@@ -3079,6 +3079,9 @@ details[open].advanced summary::before {
     var sourceHint = picker.installationId === null
       ? 'This token can access ' + totalCount + ' repositories. Type to search.'
       : 'This installation has ' + totalCount + ' repositories. Type to search.';
+    if (picker.truncated) {
+      sourceHint += ' Not every repository is shown — type more of a name to narrow the search.';
+    }
     var selectedNames = new Set(picker.selectedFullNames || []);
     var rows = (picker.repos || []).map(function (repo) {
       var checked = selectedNames.has(repo.fullName);
@@ -3124,13 +3127,35 @@ details[open].advanced summary::before {
           '<button type="button" class="x-btn" data-action="repo-remove" data-repository-id="' + esc(grant.id) + '" aria-label="Remove ' + esc(grant.fullName) + '">&times;</button></div>';
       }).join("");
     if (!rows) rows = '<p class="hint">No repositories selected for this account.</p>';
-    var source = group.installationId === null ? "pat" : String(group.installationId);
+    // A group's Manage target follows the ACTIVE connection mode, not the mode
+    // the grant was saved under: after a PAT→App switch (or back), the old
+    // source would hit the proxy's mode check and 400. A group with no valid
+    // target under the current mode keeps its rows but gets a hint instead of
+    // a dead Manage button.
+    var mode = state.githubStatus ? state.githubStatus.mode : "none";
+    var manage = "";
+    if (mode === "pat") {
+      manage = '<button type="button" class="btn btn-soft btn-sm" data-action="repo-manage" data-installation="pat" data-account="' + esc(group.accountLogin) + '">Manage</button>';
+    } else if (mode === "app") {
+      var installations = (state.githubStatus && state.githubStatus.installations) || [];
+      var target = null;
+      installations.forEach(function (installation) {
+        if (group.installationId !== null && installation.id === group.installationId) target = installation;
+      });
+      if (!target) {
+        installations.forEach(function (installation) {
+          if (!target && installation.accountLogin === group.accountLogin) target = installation;
+        });
+      }
+      manage = target
+        ? '<button type="button" class="btn btn-soft btn-sm" data-action="repo-manage" data-installation="' + esc(target.id) + '" data-account="' + esc(target.accountLogin) + '">Manage</button>'
+        : '<span class="hint">Install the GitHub App on ' + esc(group.accountLogin) + ' to manage these.</span>';
+    }
     var allToggle = group.installationId === null ? "" :
       '<label class="repo-all-label"><span class="toggle"><span class="thumb"></span><input type="checkbox" data-action="repo-all" data-installation="' + esc(group.installationId) + '" data-account="' + esc(group.accountLogin) + '" ' + (allRepositories ? "checked" : "") + ' aria-label="All repositories for ' + esc(group.accountLogin) + '"></span><span class="field-label">All repositories</span></label>';
     return '<details class="repo-group" open><summary><span class="repo-avatar">' + esc(String(group.accountLogin || "?").slice(0, 1)) + '</span>' +
       '<span class="repo-group-name">' + esc(group.accountLogin) + '</span><span class="repo-group-count">' + esc(selectionLabel) + '</span></summary>' +
-      '<div class="repo-group-body"><div class="repo-group-actions">' + allToggle +
-      '<button type="button" class="btn btn-soft btn-sm" data-action="repo-manage" data-installation="' + esc(source) + '" data-account="' + esc(group.accountLogin) + '">Manage</button></div>' +
+      '<div class="repo-group-body"><div class="repo-group-actions">' + allToggle + manage + '</div>' +
       (allRepositories ? rows : '<div class="repo-rows">' + rows + '</div>') + '</div></details>';
   }
 
@@ -4202,6 +4227,14 @@ details[open].advanced summary::before {
       if (state.repositoryPicker !== picker || picker.requestId !== requestId) return;
       picker.repos = (body && body.repos) || [];
       picker.totalCount = Number((body && body.totalCount) || 0);
+      picker.truncated = !!(body && body.truncated);
+      // Accumulate every name this picker session has confirmed the current
+      // connection can actually reach — Apply uses it to decide which adopted
+      // PAT-era selections may be restamped with the installation id.
+      picker.seenFullNames = picker.seenFullNames || {};
+      picker.repos.forEach(function (repo) {
+        if (repo && repo.fullName) picker.seenFullNames[repo.fullName] = true;
+      });
       picker.loading = false;
       picker.error = "";
       render();
@@ -4303,6 +4336,20 @@ details[open].advanced summary::before {
     });
     selected.forEach(function (fullName) {
       var prior = priorByName.get(fullName);
+      // An adopted PAT-era selection may only be restamped with the
+      // installation id once this picker session has SEEN the repo in the
+      // installation's own listing — otherwise the App may not have access
+      // and a silent restamp would persist a grant the token mint can never
+      // honor. Unconfirmed adoptees keep their original PAT-era grant.
+      if (
+        picker.installationId !== null &&
+        prior && prior.installationId === null &&
+        !(picker.seenFullNames && picker.seenFullNames[fullName])
+      ) {
+        usedIds.add(prior.id);
+        next.push(prior);
+        return;
+      }
       var accountLogin = picker.installationId === null ? repositoryOwner(fullName) : picker.accountLogin;
       var id = prior ? prior.id : uniqueRepositoryGrantId(fullName, picker.installationId, usedIds);
       usedIds.add(id);

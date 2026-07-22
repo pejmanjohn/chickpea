@@ -805,6 +805,59 @@ test('an App token mint failure logs and omits only that installation for the tu
   );
 });
 
+test('a stale grant is isolated per-repo instead of disabling its installation', async () => {
+  await withGithubSettings(
+    {
+      [GITHUB_SETTING_KEYS.appId]: 'salvage-app',
+      [GITHUB_SETTING_KEYS.privateKey]: APP_PRIVATE_KEY,
+    },
+    async () => {
+      const previousFetch = globalThis.fetch;
+      const previousWarn = console.warn;
+      const warnings: string[] = [];
+      console.warn = (...args: unknown[]) => warnings.push(args.map(String).join(' '));
+      // GitHub 422s any mint whose repository list names the deleted repo.
+      globalThis.fetch = async (_input, init) => {
+        const body = init?.body ? JSON.parse(String(init.body)) : {};
+        const repos: string[] = body.repositories ?? [];
+        if (repos.includes('Deleted')) {
+          return new Response('{"message":"Validation Failed"}', { status: 422 });
+        }
+        return Response.json({
+          token: `salvaged-${repos.join('+')}`,
+          expires_at: new Date(Date.now() + 60 * 60 * 1_000).toISOString(),
+        });
+      };
+      try {
+        const healthy = repositoryGrant({
+          id: 'healthy',
+          installationId: 70_001,
+          fullName: 'Acme/Healthy',
+        });
+        const stale = repositoryGrant({
+          id: 'stale',
+          installationId: 70_001,
+          fullName: 'Acme/Deleted',
+        });
+        const access = await resolveRepositoryAccess([healthy, stale]);
+
+        assert.deepEqual(access.grants, [healthy]);
+        assert.equal(access.governsGithubHosts, true);
+        const prefixes = access.connectors.flatMap((connector) => connector.pathPrefixes);
+        assert.ok(prefixes.includes('/repos/Acme/Healthy'), String(prefixes));
+        assert.ok(!prefixes.includes('/repos/Acme/Deleted'), String(prefixes));
+        assert.ok(
+          warnings.some((line) => /Acme\/Deleted skipped/.test(line)),
+          warnings.join('\n'),
+        );
+      } finally {
+        console.warn = previousWarn;
+        globalThis.fetch = previousFetch;
+      }
+    },
+  );
+});
+
 test('repository access removes GitHub hosts from legacy connectors while preserving others', () => {
   const repositoryConnector: ResolvedApiConnection = {
     allowedHosts: ['api.github.com'],

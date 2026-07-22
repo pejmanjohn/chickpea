@@ -38,6 +38,8 @@ export interface GithubRepository {
 export interface GithubRepositoryPage {
   repositories: GithubRepository[];
   totalCount: number;
+  /** True when the page cap stopped enumeration before the account's full repository list. */
+  truncated: boolean;
 }
 
 export interface GithubManifestConversion {
@@ -198,6 +200,7 @@ export async function listInstallationRepos(
   // AFTER fetching, so a shallow cap would make repositories beyond it
   // unfindable even by exact name. Unfiltered listings stay shallow.
   const maxPages = opts.q?.trim() ? 10 : 3;
+  let lastPageFull = false;
   for (let offset = 0; offset < maxPages; offset += 1) {
     const page = firstPage + offset;
     const query = new URLSearchParams({ per_page: '100', page: String(page) });
@@ -226,8 +229,12 @@ export async function listInstallationRepos(
       rawRepositories = raw;
     }
     repositories.push(...rawRepositories.map(parseRepository));
+    lastPageFull = rawRepositories.length >= 100;
     if (rawRepositories.length < 100) break;
-    if (appTotalCount !== undefined && repositories.length >= appTotalCount) break;
+    if (appTotalCount !== undefined && repositories.length >= appTotalCount) {
+      lastPageFull = false;
+      break;
+    }
   }
 
   const query = opts.q?.trim().toLowerCase();
@@ -236,6 +243,9 @@ export async function listInstallationRepos(
       ? repositories.filter((repository) => repository.fullName.toLowerCase().includes(query))
       : repositories,
     totalCount: appTotalCount ?? repositories.length,
+    // Callers surface this so a repo beyond the cap reads as "not shown",
+    // never as "does not exist".
+    truncated: lastPageFull,
   };
 }
 

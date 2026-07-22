@@ -976,7 +976,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           page: parsedQuery.output.page ?? 1,
         },
       );
-      return c.json({ repos: page.repositories, totalCount: page.totalCount });
+      return c.json({
+        repos: page.repositories,
+        totalCount: page.totalCount,
+        truncated: page.truncated,
+      });
     } catch (err) {
       return internalError(c, err);
     }

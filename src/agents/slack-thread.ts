@@ -127,6 +127,7 @@ export async function resolveRepositoryAccess(
         });
         return {
           installationId,
+          grants,
           connectors: repositoryConnectors(token, grants),
         };
       } catch {
@@ -136,17 +137,45 @@ export async function resolveRepositoryAccess(
         console.warn(
           `[chickpea] GitHub repository installation ${installationId} skipped for this turn`,
         );
-        return undefined;
       }
+      // GitHub 422s the WHOLE grouped mint when any listed repository was
+      // renamed, deleted, or removed from the installation — one stale grant
+      // must not disable its healthy siblings. Isolate by minting per repo
+      // (each result caches, so this costs one turn, not every turn). Bounded
+      // so an oversized grant list cannot fan out into an API storm.
+      if (allRepositories || grants.length < 2 || grants.length > 25) return undefined;
+      const salvaged = await Promise.all(
+        grants.map(async (grant) => {
+          try {
+            const { token } = await getCachedInstallationToken(connection, installationId, {
+              repositories: [grant.fullName.slice(grant.fullName.indexOf('/') + 1)],
+              permissions: REPOSITORY_PERMISSIONS,
+            });
+            return { grant, connectors: repositoryConnectors(token, [grant]) };
+          } catch {
+            console.warn(
+              `[chickpea] GitHub repository grant ${grant.fullName} skipped for this turn`,
+            );
+            return undefined;
+          }
+        }),
+      );
+      const kept = salvaged.filter(
+        (entry): entry is NonNullable<typeof entry> => entry !== undefined,
+      );
+      if (kept.length === 0) return undefined;
+      return {
+        installationId,
+        grants: kept.map((entry) => entry.grant),
+        connectors: kept.flatMap((entry) => entry.connectors),
+      };
     }),
   );
-  const successful = new Set(
-    resolved.flatMap((entry) => (entry ? [entry.installationId] : [])),
+  const grantedIds = new Set(
+    resolved.flatMap((entry) => (entry ? entry.grants.map((grant) => grant.id) : [])),
   );
   return {
-    grants: enabled.filter(
-      (grant) => grant.installationId !== null && successful.has(grant.installationId),
-    ),
+    grants: enabled.filter((grant) => grantedIds.has(grant.id)),
     connectors: resolved.flatMap((entry) => entry?.connectors ?? []),
     governsGithubHosts: true,
   };

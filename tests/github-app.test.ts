@@ -604,6 +604,7 @@ test('GitHub PAT repo proxy maps fields, filters by q, and never echoes the toke
         assert.deepEqual(await response.json(), {
           repos: [{ fullName: 'Acme/Alpha', private: true, defaultBranch: 'trunk' }],
           totalCount: 2,
+          truncated: false,
         });
       }),
     );
