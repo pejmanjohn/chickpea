@@ -799,8 +799,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   app.get('/admin/api/github/status', async (c) => {
     try {
       const connection = await getGithubConnection(settings(c));
+      // Profiles holding grants are reported up front so the UI can warn
+      // before a disconnect, not after (DELETE also reports, but too late).
+      const referencingProfiles = (await store(c).listAgents())
+        .filter((agent) => agent.repositories.length > 0)
+        .map(({ id, name }) => ({ id, name }));
       if (connection.mode !== 'app') {
-        return c.json({ mode: connection.mode });
+        return c.json({ mode: connection.mode, referencingProfiles });
       }
       const installations = await listInstallations(connection);
       const withCounts = await Promise.all(
@@ -817,6 +822,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         mode: 'app' as const,
         ...(connection.appSlug ? { appSlug: connection.appSlug } : {}),
         installations: withCounts,
+        referencingProfiles,
       });
     } catch (err) {
       return internalError(c, err);

@@ -317,6 +317,7 @@ test('GitHub status enumerates App installations and live repository counts', as
             installations: [
               { id: 42, accountLogin: 'magoosh', accountType: 'Organization', repoCount: 2 },
             ],
+            referencingProfiles: [],
           });
         }),
     );
