@@ -598,6 +598,18 @@ test('PAT repository access uses the live PAT without minting and scopes both Gi
       ],
     );
 
+    // An App-era allRepos grant meant "that installation's repos"; a PAT can
+    // reach more of the account, so PAT mode must not honor it.
+    const appAllRepos = await resolveRepositoryAccess([
+      repositoryGrant({
+        id: 'app-all',
+        installationId: 42,
+        fullName: '',
+        allRepos: true,
+      }),
+    ]);
+    assert.deepEqual(appAllRepos, { grants: [], connectors: [], governsGithubHosts: true });
+
     // A malformed persisted name (dot segment) must never become a URL
     // prefix — `Acme/..` would normalize into a match for EVERY repository.
     // The grant is dropped at runtime, but grants still govern the hosts.
@@ -858,6 +870,21 @@ test('a stale grant is isolated per-repo instead of disabling its installation',
           warnings.some((line) => /Acme\/Deleted skipped/.test(line)),
           warnings.join('\n'),
         );
+
+        // Salvage is for validation rejections only: an outage (5xx) must not
+        // amplify into one request per grant.
+        let outageMints = 0;
+        globalThis.fetch = async () => {
+          outageMints += 1;
+          return new Response('unavailable', { status: 503 });
+        };
+        const outage = await resolveRepositoryAccess([
+          repositoryGrant({ id: 'o-a', installationId: 71_001, fullName: 'Acme/OutA' }),
+          repositoryGrant({ id: 'o-b', installationId: 71_001, fullName: 'Acme/OutB' }),
+        ]);
+        assert.deepEqual(outage.grants, []);
+        assert.equal(outage.governsGithubHosts, true);
+        assert.equal(outageMints, 1, 'a 503 must trigger exactly one grouped mint');
       } finally {
         console.warn = previousWarn;
         globalThis.fetch = previousFetch;
@@ -915,6 +942,7 @@ test('the repos scope refuses denied Actions endpoints while keeping rerun and c
       `${base}/actions/runs/7/approve`,
       `${base}/actions/runs/7/pending_deployments`,
       `${base}/actions/runs/7/pending_deployments/`, // trailing slash must not bypass
+      `${base}/actions/runs/7/deployment_protection_rule`, // custom protection-rule approvals
       'not a url',
     ]) {
       assert.equal(guard(denied), false, denied);

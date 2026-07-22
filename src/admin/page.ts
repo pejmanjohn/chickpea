@@ -3831,11 +3831,20 @@ details[open].advanced summary::before {
   }
 
   function githubPatHtml() {
+    // An environment-managed token always overrides stored values, so a
+    // stored "replacement" would report success while changing nothing.
+    var envManaged = state.githubStatus && state.githubStatus.patSource === "env";
+    var provenance = envManaged
+      ? '<span class="badge badge-src">Environment</span><span class="hint">Set via GITHUB_PAT &mdash; manage it where the deployment&rsquo;s environment variables live.</span>'
+      : '<span class="hint">Write-only</span>';
+    var actions = envManaged
+      ? ""
+      : '<div class="prov-actions"><button type="button" class="btn btn-soft btn-sm" data-action="github-pat-open"' + (state.githubBusy ? " disabled" : "") + '>Replace token</button></div>';
     return '<div class="prov-row"><div class="prov-head"><div class="prov-id"><span class="prov-name">Fine-grained personal access token</span>' +
       '<span class="github-token-mask" aria-label="Configured write-only token">&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;</span></div>' +
-      '<div class="prov-status"><span class="badge badge-on"><span class="dot"></span>Configured</span><span class="hint">Write-only</span></div>' +
-      '<div class="prov-actions"><button type="button" class="btn btn-soft btn-sm" data-action="github-pat-open"' + (state.githubBusy ? " disabled" : "") + '>Replace token</button></div></div>' +
-      githubPatFormHtml() + '</div>' + githubDisconnectPanelHtml();
+      '<div class="prov-status"><span class="badge badge-on"><span class="dot"></span>Configured</span>' + provenance + '</div>' +
+      actions + '</div>' +
+      (envManaged ? "" : githubPatFormHtml()) + '</div>' + githubDisconnectPanelHtml();
   }
 
   function githubSectionHtml() {

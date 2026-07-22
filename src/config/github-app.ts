@@ -402,9 +402,21 @@ async function githubFetch(
       : undefined);
   const response = await fetchImpl(url, { ...init, ...(signal ? { signal } : {}) });
   if (!response.ok) {
-    throw new Error(`GitHub API request failed with status ${response.status}`);
+    const error: Error & { status?: number } = new Error(
+      `GitHub API request failed with status ${response.status}`,
+    );
+    // Carried so callers can distinguish a validation rejection (422 — e.g. a
+    // stale repository name) from outages they must not retry-amplify.
+    error.status = response.status;
+    throw error;
   }
   return response;
+}
+
+export function githubErrorStatus(error: unknown): number | undefined {
+  if (!(error instanceof Error)) return undefined;
+  const status = (error as Error & { status?: unknown }).status;
+  return typeof status === 'number' ? status : undefined;
 }
 
 function githubHeaders(authorization?: string, json = false): Headers {

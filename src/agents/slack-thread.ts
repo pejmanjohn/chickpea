@@ -15,6 +15,7 @@ import {
   getCachedInstallationToken,
   getGithubConnection,
   GITHUB_OWNER_PATTERN,
+  githubErrorStatus,
   isValidRepositoryFullName,
   type GithubConnection,
 } from '../config/github-app.ts';
@@ -110,9 +111,16 @@ export async function resolveRepositoryAccess(
 
   if (connection.mode === 'none') return none(true);
   if (connection.mode === 'pat') {
+    // An App-era allRepos grant meant "every repo in that INSTALLATION" — a
+    // PAT may reach far more of the account, so honoring it here would widen
+    // scope on a credential-mode switch. Explicit repo names keep an
+    // identical scope under either credential and stay honored; allRepos
+    // needs a PAT-native reselection.
+    const patGrants = enabled.filter((grant) => grant.allRepos !== true);
+    if (patGrants.length === 0) return none(true);
     return {
-      grants: enabled,
-      connectors: repositoryConnectors(connection.pat, enabled),
+      grants: patGrants,
+      connectors: repositoryConnectors(connection.pat, patGrants),
       governsGithubHosts: true,
     };
   }
@@ -145,13 +153,17 @@ export async function resolveRepositoryAccess(
           grants,
           connectors: repositoryConnectors(token, grants),
         };
-      } catch {
+      } catch (mintError) {
         // Deliberately omit the caught message: a hostile/custom fetch error can
         // echo request headers. The installation id is enough to diagnose which
         // capability degraded without risking JWT or installation-token logs.
         console.warn(
           `[chickpea] GitHub repository installation ${installationId} skipped for this turn`,
         );
+        // Salvage only a validation rejection (422 = some listed repository is
+        // stale). A timeout, auth failure, rate limit, or 5xx would turn one
+        // outage into a per-repo request storm for nothing.
+        if (githubErrorStatus(mintError) !== 422) return undefined;
       }
       // GitHub 422s the WHOLE grouped mint when any listed repository was
       // renamed, deleted, or removed from the installation — one stale grant
@@ -259,7 +271,7 @@ const DENIED_REPOSITORY_ENDPOINTS = [
   /^\/repos\/[^/]+\/[^/]+\/dispatches$/, // repository_dispatch
   /^\/repos\/[^/]+\/[^/]+\/actions\/workflows\/[^/]+\/dispatches$/, // workflow_dispatch
   /^\/repos\/[^/]+\/[^/]+\/actions\/workflows\/[^/]+\/(?:enable|disable)$/,
-  /^\/repos\/[^/]+\/[^/]+\/actions\/runs\/[^/]+\/(?:approve|pending_deployments)$/,
+  /^\/repos\/[^/]+\/[^/]+\/actions\/runs\/[^/]+\/(?:approve|pending_deployments|deployment_protection_rule)$/,
 ];
 
 function isDeniedRepositoryEndpoint(url: string): boolean {

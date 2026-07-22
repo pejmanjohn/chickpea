@@ -810,7 +810,15 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         .filter((agent) => agent.repositories.length > 0)
         .map(({ id, name }) => ({ id, name }));
       if (connection.mode !== 'app') {
-        return c.json({ mode: connection.mode, referencingProfiles });
+        return c.json({
+          mode: connection.mode,
+          // An environment-managed PAT always wins at resolution time, so the
+          // UI must not offer a stored "replacement" that would never apply.
+          ...(connection.mode === 'pat'
+            ? { patSource: process.env.GITHUB_PAT?.trim() ? 'env' : 'stored' }
+            : {}),
+          referencingProfiles,
+        });
       }
       // A revoked/rejected App key must still yield a recoverable status: the
       // operator needs the Disconnect and re-setup controls, not a 500+Retry.
