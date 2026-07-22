@@ -1522,6 +1522,7 @@ test('the Connections tab adds an API connection policy and stores its credentia
 
   click({ target: actionTarget({ 'data-action': 'apiconn-new' }) });
   const editor = harness.app.innerHTML;
+  assert.doesNotMatch(editor, /data-action="apiconn-view"/);
   assert.match(editor, /data-action="apiconn-field-name"/);
   assert.match(editor, /placeholder="api\.example\.com"[^>]*data-action="apiconn-host-input"/);
   assert.match(editor, /placeholder="\/v1"[^>]*data-action="apiconn-path-input"/);
@@ -1618,7 +1619,16 @@ test('editing a saved API connection shows a stored write-only credential placeh
   const harness = runAdminPageHarness({
     agents: [
       connectionsAgent({
-        apiConnections: [apiConnectionFixture()],
+        apiConnections: [
+          apiConnectionFixture({
+            id: 'asana',
+            displayName: 'Asana',
+            allowedHosts: ['app.asana.com'],
+            pathPrefixes: ['/api/1.0'],
+            allowedMethods: ['GET', 'POST', 'PUT'],
+            presetId: 'asana',
+          }),
+        ],
       }),
     ],
   });
@@ -1630,6 +1640,9 @@ test('editing a saved API connection shows a stored write-only credential placeh
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
   click({ target: actionTarget({ 'data-action': 'apiconn-edit', 'data-index': '0' }) });
 
+  assert.match(harness.app.innerHTML, /class="on" data-action="apiconn-view" data-view="recommended"/);
+  assert.match(harness.app.innerHTML, /<span class="conn-url-chip mono"[^>]*>app\.asana\.com<\/span>/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="apiconn-host-input"/);
   assert.match(
     harness.app.innerHTML,
     /placeholder="•••• stored"[^>]*data-action="apiconn-field-credential"/,
@@ -1814,6 +1827,8 @@ test('the searchable Connections gallery is immediate, renders brand logos, and 
       new RegExp('<div class="gallery-row">(?:(?!<\\/div>)[\\s\\S])*?data-preset="' + id + '">Connect<\\/button><\\/div>'),
     )?.[0];
     assert.ok(apiRow, `${id} row should render`);
+    assert.match(apiRow, /<span class="conn-logo conn-logo-img"><svg/);
+    assert.doesNotMatch(apiRow, /conn-logo-mono/);
     assert.match(apiRow, /<span class="gallery-lane">API<\/span>/);
   }
 
@@ -1871,7 +1886,7 @@ test('the searchable Connections gallery is immediate, renders brand logos, and 
   assert.match(harness.app.innerHTML, /id="conn-name"[^>]*data-action="conn-field-name"/);
 });
 
-test('the Asana gallery preset opens and saves the API editor with an auto-attached skill', async () => {
+test('the Asana gallery preset opens a compact Recommended API editor', async () => {
   const harness = runAdminPageHarness({ agents: [connectionsAgent()] });
   await flushAsync();
 
@@ -1881,23 +1896,51 @@ test('the Asana gallery preset opens and saves the API editor with an auto-attac
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
   click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'asana' }) });
 
-  const editor = harness.app.innerHTML;
-  assert.doesNotMatch(editor, /data-action="conn-field-url"/);
-  assert.doesNotMatch(editor, /data-action="conn-view"/);
-  assert.match(editor, /value="Asana"[^>]*data-action="apiconn-field-name"/);
-  assert.match(editor, /value="app\.asana\.com"[^>]*data-action="apiconn-host-input"/);
-  assert.match(editor, /value="\/api\/1\.0"[^>]*data-action="apiconn-path-input"/);
-  assert.match(editor, /value="Authorization"[^>]*data-action="apiconn-field-header-name"/);
-  assert.match(editor, /value="Bearer "[^>]*data-action="apiconn-field-header-prefix"/);
-  assert.match(editor, /data-index="0" checked aria-label="Allow GET"/);
-  assert.match(editor, /data-index="1"  aria-label="Allow HEAD"/);
-  assert.match(editor, /data-index="2" checked aria-label="Allow POST"/);
-  assert.match(editor, /data-index="3" checked aria-label="Allow PUT"/);
-  assert.match(editor, /data-index="4"  aria-label="Allow PATCH"/);
-  assert.match(editor, /data-index="5"  aria-label="Allow DELETE"/);
-  assert.match(editor, /placeholder="Asana personal access token"[^>]*data-action="apiconn-field-credential"/);
-  assert.match(editor, /Asana → Settings → Apps → Developer apps → Personal access tokens/);
-  assert.match(editor, /href="https:\/\/app\.asana\.com\/0\/my-apps"[^>]*>Where do I find this\?<\/a>/);
+  const recommended = harness.app.innerHTML;
+  assert.doesNotMatch(recommended, /data-action="conn-field-url"/);
+  assert.match(recommended, /data-action="apiconn-view" data-view="recommended"/);
+  assert.match(recommended, /data-action="apiconn-view" data-view="advanced"/);
+  assert.match(recommended, /<div class="conn-recommended-head"><span class="conn-logo conn-logo-img"><svg/);
+  assert.match(recommended, /<span class="field-label">Asana<\/span>/);
+  assert.match(recommended, /<span class="conn-url-chip mono"[^>]*>app\.asana\.com<\/span>/);
+  assert.equal((recommended.match(/data-action="apiconn-field-credential"/g) ?? []).length, 1);
+  assert.match(recommended, /<label class="field-label">API key<\/label>/);
+  assert.match(recommended, /placeholder="Asana personal access token"[^>]*data-action="apiconn-field-credential"/);
+  assert.match(recommended, /Asana → Settings → Apps → Developer apps → Personal access tokens/);
+  assert.match(recommended, /href="https:\/\/app\.asana\.com\/0\/my-apps"[^>]*>Where do I find this\?<\/a>/);
+  assert.doesNotMatch(recommended, /data-action="apiconn-field-name"/);
+  assert.doesNotMatch(recommended, /data-action="apiconn-host-input"/);
+  assert.doesNotMatch(recommended, /data-action="apiconn-path-input"/);
+  assert.doesNotMatch(recommended, /data-action="apiconn-field-header-name"/);
+  assert.doesNotMatch(recommended, /data-action="apiconn-method-toggle"/);
+});
+
+test('the Asana API editor keeps its credential and seeded policy in Advanced before saving', async () => {
+  const harness = runAdminPageHarness({ agents: [connectionsAgent()] });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  assert.ok(click && input);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'asana' }) });
+
+  input({ target: inputTarget({ 'data-action': 'apiconn-field-credential' }, 'asana-secret') });
+  click({ target: actionTarget({ 'data-action': 'apiconn-view', 'data-view': 'advanced' }) });
+  const advanced = harness.app.innerHTML;
+  assert.match(advanced, /value="Asana"[^>]*data-action="apiconn-field-name"/);
+  assert.match(advanced, /value="app\.asana\.com"[^>]*data-action="apiconn-host-input"/);
+  assert.match(advanced, /value="\/api\/1\.0"[^>]*data-action="apiconn-path-input"/);
+  assert.match(advanced, /value="Authorization"[^>]*data-action="apiconn-field-header-name"/);
+  assert.match(advanced, /value="Bearer "[^>]*data-action="apiconn-field-header-prefix"/);
+  assert.match(advanced, /data-index="0" checked aria-label="Allow GET"/);
+  assert.match(advanced, /data-index="1"  aria-label="Allow HEAD"/);
+  assert.match(advanced, /data-index="2" checked aria-label="Allow POST"/);
+  assert.match(advanced, /data-index="3" checked aria-label="Allow PUT"/);
+  assert.match(advanced, /data-index="4"  aria-label="Allow PATCH"/);
+  assert.match(advanced, /data-index="5"  aria-label="Allow DELETE"/);
+  assert.match(advanced, /value="asana-secret"[^>]*data-action="apiconn-field-credential"/);
 
   click({ target: actionTarget({ 'data-action': 'apiconn-save-row' }) });
   click({ target: actionTarget({ 'data-action': 'save-profile' }) });
@@ -1925,7 +1968,7 @@ test('the Asana gallery preset opens and saves the API editor with an auto-attac
   );
 });
 
-test('the Zendesk gallery preset requires replacing its tenant host and shows setup help', async () => {
+test('the Zendesk Recommended editor keeps the template guard when its subdomain is blank', async () => {
   const harness = runAdminPageHarness({ agents: [connectionsAgent()] });
   await flushAsync();
 
@@ -1936,35 +1979,44 @@ test('the Zendesk gallery preset requires replacing its tenant host and shows se
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
   click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'zendesk' }) });
 
+  const recommended = harness.app.innerHTML;
+  assert.match(recommended, /<span class="conn-url-chip mono"[^>]*>your-subdomain\.zendesk\.com<\/span>/);
+  assert.match(recommended, /<label class="field-label" for="apiconn-subdomain">Zendesk subdomain<\/label>/);
   assert.match(
-    harness.app.innerHTML,
-    /value="your-subdomain\.zendesk\.com"[^>]*data-action="apiconn-host-input"/,
+    recommended,
+    /id="apiconn-subdomain"[^>]*value=""[^>]*placeholder="your-subdomain"[^>]*data-action="apiconn-field-subdomain"/,
   );
-  assert.match(harness.app.innerHTML, /Replace &ldquo;your-subdomain&rdquo; with your Zendesk subdomain before saving\./);
-  assert.match(harness.app.innerHTML, /placeholder="base64 of email\/token:api_token"/);
-  assert.match(harness.app.innerHTML, /value="Basic "[^>]*data-action="apiconn-field-header-prefix"/);
+  assert.doesNotMatch(recommended, /data-action="apiconn-host-input"/);
+  assert.match(recommended, /placeholder="base64 of email\/token:api_token"/);
 
-  input({
-    target: inputTarget(
-      { 'data-action': 'apiconn-host-input', 'data-index': '0' },
-      'YOUR-SUBDOMAIN.ZENDESK.COM',
-    ),
-  });
   click({ target: actionTarget({ 'data-action': 'apiconn-save-row' }) });
   assert.match(
     harness.app.innerHTML,
     /<p class="field-error">Replace &quot;your-subdomain&quot; with your Zendesk subdomain before saving\.<\/p>/,
   );
+});
+
+test('the Zendesk Recommended subdomain resolves into the Advanced host and back to the host chip', async () => {
+  const harness = runAdminPageHarness({ agents: [connectionsAgent()] });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  assert.ok(click && input);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'zendesk' }) });
 
   input({
-    target: inputTarget(
-      { 'data-action': 'apiconn-host-input', 'data-index': '0' },
-      'acme.zendesk.com',
-    ),
+    target: inputTarget({ 'data-action': 'apiconn-field-subdomain' }, 'acme'),
   });
-  click({ target: actionTarget({ 'data-action': 'apiconn-save-row' }) });
-  assert.match(harness.app.innerHTML, /<span class="conn-host">acme\.zendesk\.com<\/span>/);
-  assert.doesNotMatch(harness.app.innerHTML, /data-action="apiconn-field-name"/);
+  click({ target: actionTarget({ 'data-action': 'apiconn-view', 'data-view': 'advanced' }) });
+  const advanced = harness.app.innerHTML;
+  assert.match(advanced, /value="acme\.zendesk\.com"[^>]*data-action="apiconn-host-input"/);
+  assert.match(advanced, /value="Basic "[^>]*data-action="apiconn-field-header-prefix"/);
+
+  click({ target: actionTarget({ 'data-action': 'apiconn-view', 'data-view': 'recommended' }) });
+  assert.match(harness.app.innerHTML, /<span class="conn-url-chip mono"[^>]*>acme\.zendesk\.com<\/span>/);
 });
 
 test('the Sentry preset keeps its header auth and applies the same idempotent prefix to test and save', async () => {

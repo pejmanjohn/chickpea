@@ -2534,8 +2534,41 @@ details[open].advanced summary::before {
       '<div><button type="button" class="btn btn-ghost btn-sm" data-action="apiconn-path-add">Add path prefix</button></div></div>';
   }
 
-  function apiConnectionEditorFormHtml(editor) {
+  function apiConnectionEditorCompletionHtml(editor) {
     var isNew = editor.index === null || editor.index === undefined;
+    return (editor.error ? '<p class="field-error">' + esc(editor.error) + '</p>' : "") +
+      '<div class="skill-form-actions">' +
+      '<button type="button" class="btn btn-ghost btn-sm" data-action="apiconn-cancel">Cancel</button>' +
+      '<button type="button" class="btn btn-primary btn-sm" data-action="apiconn-save-row">' + (isNew ? "Add connection" : "Save connection") + '</button></div>';
+  }
+
+  function apiConnectionHostTemplateParts(editor) {
+    var templateHost = String(editor.hostTemplateHost || "");
+    var marker = "your-subdomain";
+    var markerIndex = templateHost.toLowerCase().indexOf(marker);
+    if (markerIndex < 0) return { prefix: "", suffix: "", valid: false };
+    return {
+      prefix: templateHost.slice(0, markerIndex),
+      suffix: templateHost.slice(markerIndex + marker.length),
+      valid: true
+    };
+  }
+
+  function apiConnectionSubdomain(editor) {
+    var host = String((editor.allowedHosts || [])[0] || "");
+    var templateHost = String(editor.hostTemplateHost || "");
+    if (!host || host.toLowerCase() === templateHost.toLowerCase()) return "";
+    var parts = apiConnectionHostTemplateParts(editor);
+    if (!parts.valid) return "";
+    var lowerHost = host.toLowerCase();
+    var lowerPrefix = parts.prefix.toLowerCase();
+    var lowerSuffix = parts.suffix.toLowerCase();
+    if (lowerHost.slice(0, lowerPrefix.length) !== lowerPrefix) return "";
+    if (lowerSuffix && lowerHost.slice(-lowerSuffix.length) !== lowerSuffix) return "";
+    return host.slice(parts.prefix.length, lowerSuffix ? -parts.suffix.length : undefined);
+  }
+
+  function apiConnectionRecommendedBodyHtml(editor, preset) {
     var credentialStored = editor.sources && editor.sources.credential && editor.sources.credential !== "missing";
     var credentialPlaceholder = credentialStored ? "\\u2022\\u2022\\u2022\\u2022 stored" : (editor.credentialPlaceholder || "Paste credential \\u2014 stored, never returned by the API");
     var credentialHint = credentialStored ? '<p class="hint">Leave blank to keep the stored credential.</p>' : "";
@@ -2543,7 +2576,37 @@ details[open].advanced summary::before {
     if (editor.tokenDocsUrl) {
       tokenDocs += '<a class="hint-link" href="' + esc(editor.tokenDocsUrl) + '" target="_blank" rel="noopener noreferrer">Where do I find this?</a>';
     }
-    return '<div class="skill-form">' +
+    var host = String((editor.allowedHosts || [])[0] || "").trim() || String(editor.hostTemplateHost || "");
+    var subdomainHtml = editor.hostTemplate
+      ? '<div class="field"><label class="field-label" for="apiconn-subdomain">Zendesk subdomain</label>' +
+        '<input class="input mono" id="apiconn-subdomain" type="text" value="' + esc(apiConnectionSubdomain(editor)) + '" placeholder="your-subdomain" data-action="apiconn-field-subdomain"></div>'
+      : "";
+    return '<div class="conn-recommended-head">' +
+      connectorLogoHtml(preset) +
+      '<span class="field-label">' + esc(preset.name) + '</span>' +
+      '<span class="conn-url-chip mono" data-role="apiconn-host-chip">' + esc(host) + '</span></div>' +
+      subdomainHtml +
+      '<div class="field"><label class="field-label">API key</label>' +
+      '<input class="input mono" type="password" autocomplete="off" value="' + esc(editor.credential || "") + '" placeholder="' + esc(credentialPlaceholder) + '" data-action="apiconn-field-credential">' + credentialHint + tokenDocs + '</div>' +
+      apiConnectionEditorCompletionHtml(editor);
+  }
+
+  function apiConnectionEditorFormHtml(editor) {
+    var preset = editor.presetId ? presetById(editor.presetId) : null;
+    var credentialStored = editor.sources && editor.sources.credential && editor.sources.credential !== "missing";
+    var credentialPlaceholder = credentialStored ? "\\u2022\\u2022\\u2022\\u2022 stored" : (editor.credentialPlaceholder || "Paste credential \\u2014 stored, never returned by the API");
+    var credentialHint = credentialStored ? '<p class="hint">Leave blank to keep the stored credential.</p>' : "";
+    var tokenDocs = editor.tokenDocsHint ? '<p class="hint">' + esc(editor.tokenDocsHint) + '</p>' : "";
+    if (editor.tokenDocsUrl) {
+      tokenDocs += '<a class="hint-link" href="' + esc(editor.tokenDocsUrl) + '" target="_blank" rel="noopener noreferrer">Where do I find this?</a>';
+    }
+    var viewToggle = preset ? '<div class="seg conn-view-seg" role="group" aria-label="Setup mode">' +
+      '<button type="button" class="' + (editor.view === "recommended" ? "on" : "") + '" data-action="apiconn-view" data-view="recommended">Recommended</button>' +
+      '<button type="button" class="' + (editor.view !== "recommended" ? "on" : "") + '" data-action="apiconn-view" data-view="advanced">Advanced</button></div>' : "";
+    if (preset && editor.view === "recommended") {
+      return '<div class="skill-form">' + viewToggle + apiConnectionRecommendedBodyHtml(editor, preset) + '</div>';
+    }
+    return '<div class="skill-form">' + viewToggle +
       '<div class="field"><label class="field-label" for="apiconn-name">Name</label>' +
       '<input class="input" id="apiconn-name" type="text" value="' + esc(editor.displayName) + '" placeholder="Issue tracker API" data-action="apiconn-field-name"></div>' +
       apiConnectionHostsHtml(editor) + apiConnectionPathsHtml(editor) +
@@ -2555,10 +2618,7 @@ details[open].advanced summary::before {
       apiConnectionMethodsHtml(editor) +
       '<div class="field"><label class="field-label" for="apiconn-credential">Credential</label>' +
       '<input class="input mono" id="apiconn-credential" type="password" autocomplete="off" value="' + esc(editor.credential || "") + '" placeholder="' + esc(credentialPlaceholder) + '" data-action="apiconn-field-credential">' + credentialHint + tokenDocs + '</div>' +
-      (editor.error ? '<p class="field-error">' + esc(editor.error) + '</p>' : "") +
-      '<div class="skill-form-actions">' +
-      '<button type="button" class="btn btn-ghost btn-sm" data-action="apiconn-cancel">Cancel</button>' +
-      '<button type="button" class="btn btn-primary btn-sm" data-action="apiconn-save-row">' + (isNew ? "Add connection" : "Save connection") + '</button></div></div>';
+      apiConnectionEditorCompletionHtml(editor) + '</div>';
   }
 
   function apiConnectionHostSummary(conn) {
@@ -4131,6 +4191,10 @@ details[open].advanced summary::before {
       state.apiConnectionEditor = newApiConnectionEditor();
       render();
     }
+    if (action === "apiconn-view" && state.apiConnectionEditor) {
+      state.apiConnectionEditor.view = target.getAttribute("data-view") === "advanced" ? "advanced" : "recommended";
+      render();
+    }
     if (action === "apiconn-edit") {
       collectProfileDraft();
       var apiConnEditIndex = Number(target.getAttribute("data-index"));
@@ -4264,6 +4328,17 @@ details[open].advanced summary::before {
       if (state.apiConnectionEditor) {
         var apiConnEditor = state.apiConnectionEditor;
         if (action === "apiconn-field-name") { apiConnEditor.displayName = target.value; markProfileDirty(); }
+        if (action === "apiconn-field-subdomain") {
+          var apiConnSubdomain = String(target.value || "").trim();
+          var apiConnTemplateParts = apiConnectionHostTemplateParts(apiConnEditor);
+          var apiConnTemplateHost = String(apiConnEditor.hostTemplateHost || "");
+          apiConnEditor.allowedHosts = [apiConnSubdomain && apiConnTemplateParts.valid
+            ? apiConnTemplateParts.prefix + apiConnSubdomain + apiConnTemplateParts.suffix
+            : apiConnTemplateHost];
+          markProfileDirty();
+          var apiConnHostChip = document.querySelector('[data-role="apiconn-host-chip"]');
+          if (apiConnHostChip) apiConnHostChip.textContent = apiConnEditor.allowedHosts[0];
+        }
         if (action === "apiconn-host-input") { apiConnEditor.allowedHosts[Number(target.getAttribute("data-index"))] = target.value; markProfileDirty(); }
         if (action === "apiconn-path-input") { apiConnEditor.pathPrefixes[Number(target.getAttribute("data-index"))] = target.value; markProfileDirty(); }
         if (action === "apiconn-field-header-name") { apiConnEditor.headerName = target.value; markProfileDirty(); }
@@ -5047,22 +5122,29 @@ details[open].advanced summary::before {
     };
   }
 
-  function apiEditorFromPreset(preset) {
+  function apiEditorPresetMetadata(preset) {
     var api = preset.api;
-    return Object.assign(newApiConnectionEditor(), {
-      displayName: preset.name,
-      id: preset.id,
+    return {
       presetId: preset.id,
-      allowedHosts: (api.hosts || []).slice(),
-      pathPrefixes: (api.pathPrefixes || []).slice(),
-      headerName: api.headerName,
-      headerValuePrefix: api.valuePrefix || "",
-      methodChecked: API_CONNECTION_METHODS.map(function (method) { return (api.methods || []).indexOf(method) >= 0; }),
+      view: "recommended",
       credentialPlaceholder: api.placeholder,
       tokenDocsUrl: preset.tokenDocsUrl || "",
       tokenDocsHint: preset.tokenDocsHint || "",
       hostTemplate: api.hostTemplate === true,
       hostTemplateHost: api.hostTemplate && api.hosts && api.hosts.length ? api.hosts[0] : ""
+    };
+  }
+
+  function apiEditorFromPreset(preset) {
+    var api = preset.api;
+    return Object.assign(newApiConnectionEditor(), apiEditorPresetMetadata(preset), {
+      displayName: preset.name,
+      id: preset.id,
+      allowedHosts: (api.hosts || []).slice(),
+      pathPrefixes: (api.pathPrefixes || []).slice(),
+      headerName: api.headerName,
+      headerValuePrefix: api.valuePrefix || "",
+      methodChecked: API_CONNECTION_METHODS.map(function (method) { return (api.methods || []).indexOf(method) >= 0; })
     });
   }
 
@@ -5087,6 +5169,8 @@ details[open].advanced summary::before {
     editor.sources = {
       credential: pending && pending.credential !== undefined ? "missing" : (conn.credentialSource || "missing")
     };
+    var preset = conn.presetId ? presetById(conn.presetId) : null;
+    if (preset && preset.api) Object.assign(editor, apiEditorPresetMetadata(preset));
     return editor;
   }
 
