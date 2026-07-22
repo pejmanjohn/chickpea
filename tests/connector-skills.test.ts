@@ -2,7 +2,10 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { suppressProfileNamedConnectorSkills } from '../src/agents/slack-thread.ts';
-import { connectorSkillsForConnections } from '../src/config/connector-skills.ts';
+import {
+  connectorSkillsForConnections,
+  repositoriesSkillForGrants,
+} from '../src/config/connector-skills.ts';
 import { resolveProfileSkills } from '../src/config/profile-skills.ts';
 import type { SkillConfig } from '../src/config/types.ts';
 
@@ -171,6 +174,90 @@ test('a disabled profile-authored skill suppresses the same-named connector skil
 
   assert.equal(refs.some((ref) => ref.name === 'github-api'), false);
   assert.equal(refs.some((ref) => ref.name === 'asana-api'), true);
+});
+
+test('repository grants attach the repositories skill and suppress generic github-api guidance', () => {
+  const sentinel = 'SENTINEL-INSTALLATION-TOKEN-MUST-NEVER-APPEAR';
+  const grantsWithNearbySecret = [
+    {
+      id: 'repo-zeta',
+      installationId: 42,
+      accountLogin: 'Acme',
+      fullName: 'Acme/Zeta',
+      enabled: true,
+      nearbyToken: sentinel,
+    },
+    {
+      id: 'repo-alpha',
+      installationId: 42,
+      accountLogin: 'Acme',
+      fullName: 'Acme/Alpha',
+      enabled: true,
+    },
+    {
+      id: 'all-example',
+      installationId: 84,
+      accountLogin: 'ExampleOrg',
+      fullName: '',
+      allRepos: true,
+      enabled: true,
+    },
+    {
+      id: 'subsumed-by-all',
+      installationId: 84,
+      accountLogin: 'ExampleOrg',
+      fullName: 'ExampleOrg/AlreadyIncluded',
+      enabled: true,
+    },
+    {
+      id: 'disabled',
+      installationId: 42,
+      accountLogin: 'Acme',
+      fullName: 'Acme/Disabled',
+      enabled: false,
+    },
+  ];
+
+  const skills = connectorSkillsForConnections(
+    [scope(['api.github.com'], { allowedMethods: ['GET', 'POST', 'PATCH', 'PUT'] })],
+    grantsWithNearbySecret,
+  );
+
+  assert.deepEqual(skills.map((skill) => skill.name), ['repositories']);
+  const instructions = skills[0]?.instructions ?? '';
+  assert.match(instructions, /You have access to exactly these repositories/);
+  assert.match(instructions, /`Acme\/Alpha`/);
+  assert.match(instructions, /`Acme\/Zeta`/);
+  assert.match(instructions, /all repositories in `ExampleOrg`/);
+  assert.doesNotMatch(instructions, /ExampleOrg\/AlreadyIncluded/);
+  assert.doesNotMatch(instructions, /Acme\/Disabled/);
+  assert.doesNotMatch(instructions, new RegExp(sentinel));
+  assert.doesNotMatch(instructions, /Authorization\s*:/i);
+  assert.doesNotMatch(instructions, /\$GITHUB_TOKEN/i);
+  for (const expected of [
+    '/contents/',
+    '/search/code',
+    '/pulls',
+    '/issues',
+    '/branches',
+    '/compare/',
+    '/git/blobs',
+    '/git/trees',
+    '/git/commits',
+    '/git/refs',
+    '/actions/runs',
+    '/logs',
+    '/rerun',
+  ]) {
+    assert.ok(instructions.includes(expected), expected);
+  }
+  assert.match(instructions, /no workflow dispatch/i);
+  assert.match(instructions, /no deployment approvals/i);
+  assert.match(instructions, /no deletes/i);
+
+  const direct = repositoriesSkillForGrants(grantsWithNearbySecret);
+  assert.equal(direct?.name, 'repositories');
+  assert.ok(Buffer.byteLength(direct?.instructions ?? '', 'utf8') <= 8 * 1_024);
 });
 
 test('each skill body is bounded, teaches automatic auth, and includes the required API guidance', () => {

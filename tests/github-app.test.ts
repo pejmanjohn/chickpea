@@ -12,6 +12,7 @@ import { Hono } from 'hono';
 import { createAdminRoutes } from '../src/admin/routes.ts';
 import {
   createInstallationToken,
+  getCachedInstallationToken,
   GITHUB_API_BASE,
   mintAppJwt,
   normalizePrivateKeyPem,
@@ -171,6 +172,7 @@ test('createInstallationToken down-scopes repositories and permissions', async (
 
   assert.equal(request?.url, `${GITHUB_API_BASE}/app/installations/42/access_tokens`);
   assert.equal(request?.init?.method, 'POST');
+  assert.ok(request?.init?.signal, 'installation token mint must have a timeout signal');
   assert.deepEqual(JSON.parse(String(request?.init?.body)), {
     repositories: ['magoosh/chickpea', 'magoosh/api'],
     permissions: { contents: 'write', pull_requests: 'write' },
@@ -180,6 +182,109 @@ test('createInstallationToken down-scopes repositories and permissions', async (
     token: 'installation-token',
     expiresAt: '2026-07-21T20:00:00Z',
   });
+});
+
+test('getCachedInstallationToken caches by installation and sorted repository names', async () => {
+  const { pkcs8 } = rsaKeys();
+  const conn: GithubConnection = {
+    mode: 'app',
+    appId: 'cache-app',
+    privateKeyPem: pkcs8,
+  };
+  let requests = 0;
+  const fetchImpl: typeof fetch = async () => {
+    requests += 1;
+    return Response.json({
+      token: `cached-token-${requests}`,
+      expires_at: new Date(Date.now() + 60 * 60 * 1_000).toISOString(),
+    });
+  };
+
+  const first = await getCachedInstallationToken(
+    conn,
+    9_001,
+    { repositories: ['zeta', 'alpha'] },
+    fetchImpl,
+  );
+  const reordered = await getCachedInstallationToken(
+    conn,
+    9_001,
+    { repositories: ['alpha', 'zeta'] },
+    fetchImpl,
+  );
+  const narrower = await getCachedInstallationToken(
+    conn,
+    9_001,
+    { repositories: ['alpha'] },
+    fetchImpl,
+  );
+  const otherInstallation = await getCachedInstallationToken(
+    conn,
+    9_002,
+    { repositories: ['alpha', 'zeta'] },
+    fetchImpl,
+  );
+
+  assert.equal(requests, 3);
+  assert.equal(reordered.token, first.token);
+  assert.notEqual(narrower.token, first.token);
+  assert.notEqual(otherInstallation.token, first.token);
+});
+
+test('direct token mints do not populate the runtime repository-token cache', async () => {
+  const { pkcs8 } = rsaKeys();
+  const conn: GithubConnection = {
+    mode: 'app',
+    appId: 'cache-isolation-app',
+    privateKeyPem: pkcs8,
+  };
+  let requests = 0;
+  const fetchImpl: typeof fetch = async () => {
+    requests += 1;
+    return Response.json({
+      token: `isolated-token-${requests}`,
+      expires_at: new Date(Date.now() + 60 * 60 * 1_000).toISOString(),
+    });
+  };
+
+  const adminToken = await createInstallationToken(conn, 9_004, {}, fetchImpl);
+  const runtimeToken = await getCachedInstallationToken(conn, 9_004, {}, fetchImpl);
+
+  assert.equal(requests, 2);
+  assert.notEqual(runtimeToken.token, adminToken.token);
+});
+
+test('getCachedInstallationToken refreshes inside the five-minute early-expiry window', async () => {
+  const { pkcs8 } = rsaKeys();
+  const conn: GithubConnection = {
+    mode: 'app',
+    appId: 'early-expiry-app',
+    privateKeyPem: pkcs8,
+  };
+  let requests = 0;
+  const fetchImpl: typeof fetch = async () => {
+    requests += 1;
+    return Response.json({
+      token: `short-token-${requests}`,
+      expires_at: new Date(Date.now() + 4 * 60 * 1_000).toISOString(),
+    });
+  };
+
+  const first = await getCachedInstallationToken(
+    conn,
+    9_003,
+    { repositories: ['alpha'] },
+    fetchImpl,
+  );
+  const second = await getCachedInstallationToken(
+    conn,
+    9_003,
+    { repositories: ['alpha'] },
+    fetchImpl,
+  );
+
+  assert.equal(requests, 2);
+  assert.notEqual(second.token, first.token);
 });
 
 test('GitHub manifest route uses the resolved request origin and requested organization', async () => {

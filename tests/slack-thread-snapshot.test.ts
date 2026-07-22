@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { generateKeyPairSync } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -6,6 +7,8 @@ import { test } from 'node:test';
 
 import slackThreadAgent from '../src/agents/slack-thread.ts';
 import type { EffectiveSlackConfig } from '../src/config/effective-config.ts';
+import { GITHUB_SETTING_KEYS } from '../src/config/github-app.ts';
+import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import {
   getOrCreateSnapshot,
   snapshotFromEffectiveConfig,
@@ -132,6 +135,97 @@ test('agent snapshots freeze repository grants with the effective profile', () =
   const snapshot = snapshotFromEffectiveConfig(config, 1_000);
 
   assert.deepEqual(snapshot.repositories, repositories);
+});
+
+test('slack-thread uses frozen repository grants with a live token that stays out of model-visible surfaces', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'chickpea-repository-snapshot-'));
+  const dbPath = join(dir, 'state.db');
+  const threadKey = 'T_SNAPSHOT:C_SNAPSHOT:1782771902.000100';
+  const tokenSentinel = 'LIVE-INSTALLATION-TOKEN-MUST-STAY-AT-EGRESS';
+  const frozenGrant = {
+    id: 'repo-frozen',
+    installationId: 420_042,
+    accountLogin: 'Acme',
+    fullName: 'Acme/Frozen',
+    enabled: true,
+  };
+
+  try {
+    const seed = new SqliteConfigStore(dbPath, { agents: [], assignments: [] });
+    await seed.createAgent(agent({ repositories: [frozenGrant] }));
+    await seed.putAssignment(assignment());
+    seed.close();
+
+    await withEnv(
+      {
+        SLACK_STATE_DB_PATH: dbPath,
+        SLACK_TAG_MODEL: undefined,
+        ANTHROPIC_API_KEY: undefined,
+        CLOUDFLARE_API_TOKEN: undefined,
+        CLOUDFLARE_ACCOUNT_ID: undefined,
+        GITHUB_APP_ID: undefined,
+        GITHUB_APP_PRIVATE_KEY: undefined,
+        GITHUB_PAT: undefined,
+      },
+      async () => {
+        // Freeze the channel thread before GitHub credentials exist.
+        await slackThreadAgent.initialize({ id: threadKey, env: {} });
+
+        const editor = new SqliteConfigStore(dbPath, { agents: [], assignments: [] });
+        await editor.updateAgent(AGENT_ID, {
+          repositories: [
+            {
+              ...frozenGrant,
+              id: 'repo-edited',
+              fullName: 'Acme/EditedAfterSnapshot',
+            },
+          ],
+        });
+        editor.close();
+
+        const privateKey = String(
+          generateKeyPairSync('rsa', { modulusLength: 2_048 }).privateKey.export({
+            type: 'pkcs8',
+            format: 'pem',
+          }),
+        );
+        const settings = new SqliteSettingsStore(dbPath);
+        await settings.setSetting(GITHUB_SETTING_KEYS.appId, 'snapshot-live-app');
+        await settings.setSetting(GITHUB_SETTING_KEYS.privateKey, privateKey);
+        settings.close();
+
+        const previousFetch = globalThis.fetch;
+        let tokenRequestBody: Record<string, unknown> | undefined;
+        globalThis.fetch = async (input, init) => {
+          assert.match(String(input), /\/app\/installations\/420042\/access_tokens$/);
+          tokenRequestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+          return Response.json({
+            token: tokenSentinel,
+            expires_at: new Date(Date.now() + 60 * 60 * 1_000).toISOString(),
+          });
+        };
+        try {
+          const initialized = await slackThreadAgent.initialize({ id: threadKey, env: {} });
+          assert.deepEqual(tokenRequestBody?.repositories, ['Frozen']);
+          assert.equal(initialized.skills?.some((skill) => skill.name === 'repositories'), true);
+          assert.equal(initialized.skills?.some((skill) => skill.name === 'github-api'), false);
+          assert.doesNotMatch(String(initialized.instructions), new RegExp(tokenSentinel));
+          assert.doesNotMatch(JSON.stringify(initialized.skills), new RegExp(tokenSentinel));
+          assert.doesNotMatch(JSON.stringify(initialized), new RegExp(tokenSentinel));
+
+          const snapshots = new SqliteAgentSnapshotStore(dbPath);
+          const snapshot = await snapshots.get(threadKey);
+          snapshots.close();
+          assert.deepEqual(snapshot?.repositories, [frozenGrant]);
+          assert.doesNotMatch(JSON.stringify(snapshot), new RegExp(tokenSentinel));
+        } finally {
+          globalThis.fetch = previousFetch;
+        }
+      },
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('slack-thread freezes effective config per durable thread id', async () => {

@@ -46,6 +46,16 @@ export interface GithubManifestConversion {
 
 type FetchImpl = typeof fetch;
 
+interface CachedInstallationToken {
+  token: string;
+  expiresAt: string;
+  validUntilMs: number;
+}
+
+const INSTALLATION_TOKEN_EARLY_EXPIRY_MS = 5 * 60 * 1_000;
+const INSTALLATION_TOKEN_REQUEST_TIMEOUT_MS = 10_000;
+const installationTokenCache = new Map<string, CachedInstallationToken>();
+
 const GITHUB_HEADERS = {
   Accept: 'application/vnd.github+json',
   'X-GitHub-Api-Version': '2022-11-28',
@@ -235,6 +245,7 @@ export async function createInstallationToken(
       method: 'POST',
       headers: githubHeaders(`Bearer ${jwt}`, true),
       body: JSON.stringify(options),
+      signal: AbortSignal.timeout(INSTALLATION_TOKEN_REQUEST_TIMEOUT_MS),
     },
     fetchImpl,
   );
@@ -243,6 +254,40 @@ export async function createInstallationToken(
     throw new Error('GitHub installation token response was invalid');
   }
   return { token: raw.token, expiresAt: raw.expires_at };
+}
+
+/**
+ * Runtime-only token cache. Keeping it outside createInstallationToken avoids
+ * reusing an admin enumeration token (minted with different permissions) for
+ * an agent turn. Runtime callers always supply the fixed repository permission
+ * cap; the cache key intentionally follows GitHub's repository down-scope.
+ */
+export async function getCachedInstallationToken(
+  conn: GithubConnection,
+  installationId: number,
+  options: {
+    repositories?: string[];
+    permissions?: Record<string, string>;
+  },
+  fetchImpl: FetchImpl = fetch,
+): Promise<{ token: string; expiresAt: string }> {
+  const nowMs = Date.now();
+  for (const [key, entry] of installationTokenCache) {
+    if (nowMs >= entry.validUntilMs) installationTokenCache.delete(key);
+  }
+  const cacheKey = installationTokenCacheKey(installationId, options.repositories);
+  const cached = installationTokenCache.get(cacheKey);
+  if (cached) {
+    return { token: cached.token, expiresAt: cached.expiresAt };
+  }
+
+  const result = await createInstallationToken(conn, installationId, options, fetchImpl);
+  const expiresAtMs = Date.parse(result.expiresAt);
+  const validUntilMs = expiresAtMs - INSTALLATION_TOKEN_EARLY_EXPIRY_MS;
+  if (Number.isFinite(validUntilMs) && validUntilMs > Date.now()) {
+    installationTokenCache.set(cacheKey, { ...result, validUntilMs });
+  }
+  return result;
 }
 
 export async function exchangeGithubAppManifest(
@@ -280,6 +325,15 @@ function requireAppConnection(
     throw new Error('GitHub App is not configured');
   }
   return conn;
+}
+
+function installationTokenCacheKey(
+  installationId: number,
+  repositories: string[] | undefined,
+): string {
+  const repositorySet =
+    repositories === undefined ? '*' : [...new Set(repositories)].sort().join('\u0000');
+  return `${installationId}:${repositorySet}`;
 }
 
 async function currentAppJwt(

@@ -1,7 +1,15 @@
 import assert from 'node:assert/strict';
+import { generateKeyPairSync } from 'node:crypto';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 import { Bash, InMemoryFs, type SecureFetch } from 'just-bash';
 
+import {
+  mergeRepositoryAndApiConnectors,
+  resolveRepositoryAccess,
+} from '../src/agents/slack-thread.ts';
 import {
   buildEgressPlan,
   buildEgressNetworkConfig,
@@ -10,6 +18,10 @@ import {
   parseEgressPolicy,
   type ResolvedApiConnection,
 } from '../src/config/egress.ts';
+import { GITHUB_SETTING_KEYS } from '../src/config/github-app.ts';
+import { SqliteSettingsStore } from '../src/config/settings-store.ts';
+import type { RepositoryGrant } from '../src/config/types.ts';
+import { withEnv } from './helpers/env.ts';
 
 const LINEAR_CONNECTION: ResolvedApiConnection = {
   allowedHosts: ['api.linear.app'],
@@ -18,6 +30,50 @@ const LINEAR_CONNECTION: ResolvedApiConnection = {
   headerValue: 'Bearer TOK',
   allowedMethods: ['GET', 'POST'],
 };
+
+const APP_PRIVATE_KEY = String(
+  generateKeyPairSync('rsa', { modulusLength: 2_048 }).privateKey.export({
+    type: 'pkcs8',
+    format: 'pem',
+  }),
+);
+
+function repositoryGrant(overrides: Partial<RepositoryGrant> = {}): RepositoryGrant {
+  return {
+    id: 'repo-alpha',
+    installationId: 50_001,
+    accountLogin: 'Acme',
+    fullName: 'Acme/Alpha',
+    enabled: true,
+    ...overrides,
+  };
+}
+
+async function withGithubSettings<T>(
+  values: Partial<Record<(typeof GITHUB_SETTING_KEYS)[keyof typeof GITHUB_SETTING_KEYS], string>>,
+  run: () => Promise<T>,
+): Promise<T> {
+  const dir = mkdtempSync(join(tmpdir(), 'chickpea-repository-runtime-'));
+  const dbPath = join(dir, 'state.db');
+  const settings = new SqliteSettingsStore(dbPath);
+  try {
+    for (const [key, value] of Object.entries(values)) {
+      if (value !== undefined) await settings.setSetting(key, value);
+    }
+    return await withEnv(
+      {
+        SLACK_STATE_DB_PATH: dbPath,
+        GITHUB_APP_ID: undefined,
+        GITHUB_APP_PRIVATE_KEY: undefined,
+        GITHUB_PAT: undefined,
+      },
+      run,
+    );
+  } finally {
+    settings.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
 
 function connectorUrl(url: string) {
   return {
@@ -403,6 +459,298 @@ test('createScopedFetch holds unmatched (open-mode) hosts to the base method set
     'DELETE https://api.asana.com/tasks',
     'POST https://evil.example.com/x',
   ]);
+});
+
+test('PAT repository access uses the live PAT without minting and scopes both GitHub hosts', async () => {
+  const sentinel = 'github-pat-runtime-sentinel';
+  await withGithubSettings({ [GITHUB_SETTING_KEYS.pat]: sentinel }, async () => {
+    const enabledGrant = repositoryGrant({ installationId: null });
+    const access = await resolveRepositoryAccess([
+      enabledGrant,
+      repositoryGrant({
+        id: 'disabled',
+        fullName: 'Acme/Disabled',
+        installationId: null,
+        enabled: false,
+      }),
+    ]);
+
+    assert.deepEqual(access.grants, [enabledGrant]);
+    assert.equal(access.connectors.length, 3);
+    assert.deepEqual(
+      access.connectors.map(({ allowedHosts, pathPrefixes, headerName, headerValue, allowedMethods }) => ({
+        allowedHosts,
+        pathPrefixes,
+        headerName,
+        headerValue,
+        allowedMethods,
+      })),
+      [
+        {
+          allowedHosts: ['api.github.com'],
+          pathPrefixes: ['/repos/Acme/Alpha'],
+          headerName: 'Authorization',
+          headerValue: `Bearer ${sentinel}`,
+          allowedMethods: ['GET', 'POST', 'PATCH', 'PUT'],
+        },
+        {
+          allowedHosts: ['github.com'],
+          pathPrefixes: ['/Acme/Alpha', '/Acme/Alpha.git'],
+          headerName: 'Authorization',
+          headerValue: `Bearer ${sentinel}`,
+          allowedMethods: ['GET', 'POST', 'PATCH', 'PUT'],
+        },
+        {
+          allowedHosts: ['api.github.com'],
+          pathPrefixes: ['/search/code'],
+          headerName: 'Authorization',
+          headerValue: `Bearer ${sentinel}`,
+          allowedMethods: ['GET', 'POST', 'PATCH', 'PUT'],
+        },
+      ],
+    );
+
+    const plan = buildEgressPlan(
+      { mode: 'off', domains: [] },
+      { cloudflare: false },
+      access.connectors,
+    );
+    assert.equal(plan.scopes.length, 3);
+    assert.deepEqual(plan.scopes.flatMap((scope) => scope.prefixes), [
+      'https://api.github.com/repos/Acme/Alpha',
+      'https://github.com/Acme/Alpha',
+      'https://github.com/Acme/Alpha.git',
+      'https://api.github.com/search/code',
+    ]);
+    assert.deepEqual(
+      plan.scopes.flatMap((scope) => scope.network.allowedUrlPrefixes ?? []),
+      [
+        {
+          url: 'https://api.github.com/repos/Acme/Alpha',
+          transform: [{ headers: { Authorization: `Bearer ${sentinel}` } }],
+        },
+        {
+          url: 'https://github.com/Acme/Alpha',
+          transform: [{ headers: { Authorization: `Bearer ${sentinel}` } }],
+        },
+        {
+          url: 'https://github.com/Acme/Alpha.git',
+          transform: [{ headers: { Authorization: `Bearer ${sentinel}` } }],
+        },
+        {
+          url: 'https://api.github.com/search/code',
+          transform: [{ headers: { Authorization: `Bearer ${sentinel}` } }],
+        },
+      ],
+    );
+
+    const absent = await resolveRepositoryAccess([]);
+    assert.deepEqual(absent, { grants: [], connectors: [] });
+    assert.equal(
+      buildEgressPlan({ mode: 'off', domains: [] }, { cloudflare: false }, absent.connectors)
+        .scopes.length,
+      0,
+    );
+  });
+});
+
+test('App repository access groups grants, uses short sorted names, and caps permissions', async () => {
+  await withGithubSettings(
+    {
+      [GITHUB_SETTING_KEYS.appId]: 'runtime-app',
+      [GITHUB_SETTING_KEYS.privateKey]: APP_PRIVATE_KEY,
+    },
+    async () => {
+      const previousFetch = globalThis.fetch;
+      const requests: Array<{ installationId: number; body: Record<string, unknown> }> = [];
+      globalThis.fetch = async (input, init) => {
+        const match = String(input).match(/\/app\/installations\/(\d+)\/access_tokens$/);
+        assert.ok(match?.[1], String(input));
+        const installationId = Number(match[1]);
+        requests.push({
+          installationId,
+          body: JSON.parse(String(init?.body)) as Record<string, unknown>,
+        });
+        return Response.json({
+          token: `installation-token-${installationId}`,
+          expires_at: new Date(Date.now() + 60 * 60 * 1_000).toISOString(),
+        });
+      };
+      try {
+        const grants = [
+          repositoryGrant({ id: 'zeta', fullName: 'Acme/Zeta' }),
+          repositoryGrant({ id: 'alpha', fullName: 'Acme/Alpha' }),
+          repositoryGrant({
+            id: 'all-example',
+            installationId: 50_002,
+            accountLogin: 'ExampleOrg',
+            fullName: '',
+            allRepos: true,
+          }),
+          repositoryGrant({
+            id: 'explicit-ignored-by-all',
+            installationId: 50_002,
+            accountLogin: 'ExampleOrg',
+            fullName: 'ExampleOrg/One',
+          }),
+        ];
+
+        const access = await resolveRepositoryAccess(grants);
+
+        assert.deepEqual(access.grants, grants);
+        assert.deepEqual(
+          requests.sort((left, right) => left.installationId - right.installationId),
+          [
+            {
+              installationId: 50_001,
+              body: {
+                repositories: ['Alpha', 'Zeta'],
+                permissions: {
+                  contents: 'write',
+                  pull_requests: 'write',
+                  issues: 'write',
+                  metadata: 'read',
+                  actions: 'write',
+                },
+              },
+            },
+            {
+              installationId: 50_002,
+              body: {
+                permissions: {
+                  contents: 'write',
+                  pull_requests: 'write',
+                  issues: 'write',
+                  metadata: 'read',
+                  actions: 'write',
+                },
+              },
+            },
+          ],
+        );
+        assert.equal(access.connectors.length, 6);
+        assert.deepEqual(
+          access.connectors.map((connector) => connector.allowedHosts),
+          [
+            ['api.github.com'],
+            ['github.com'],
+            ['api.github.com'],
+            ['api.github.com'],
+            ['github.com'],
+            ['api.github.com'],
+          ],
+        );
+
+        const plan = buildEgressPlan(
+          { mode: 'off', domains: [] },
+          { cloudflare: false },
+          access.connectors,
+        );
+        const routed: string[] = [];
+        const scopedFetch = createScopedFetch({
+          scopes: plan.scopes.map((scope, index) => ({
+            prefixes: scope.prefixes,
+            methods: scope.methods,
+            ...(scope.matchesRequest ? { matchesRequest: scope.matchesRequest } : {}),
+            delegate: (async (url) => {
+              routed.push(`${access.connectors[index]?.headerValue}|${url}`);
+              return fetchResult(url);
+            }) as SecureFetch,
+          })),
+          baseDelegate: (async (url) => {
+            routed.push(`base|${url}`);
+            return fetchResult(url);
+          }) as SecureFetch,
+          baseMethods: new Set(['GET']),
+        });
+
+        await scopedFetch('https://api.github.com/repos/Acme/Alpha/contents/README.md');
+        await scopedFetch('https://github.com/Acme/Zeta.git/info/refs');
+        await scopedFetch(
+          'https://api.github.com/search/code?q=runtime%20repo%3AExampleOrg%2FOne',
+        );
+        await scopedFetch('https://api.github.com/repos/ExampleOrg/Two/pulls');
+        await scopedFetch('https://api.github.com/search/code?q=repo%3AUnlisted%2FRepo');
+
+        assert.deepEqual(routed, [
+          'Bearer installation-token-50001|https://api.github.com/repos/Acme/Alpha/contents/README.md',
+          'Bearer installation-token-50001|https://github.com/Acme/Zeta.git/info/refs',
+          'Bearer installation-token-50002|https://api.github.com/search/code?q=runtime%20repo%3AExampleOrg%2FOne',
+          'Bearer installation-token-50002|https://api.github.com/repos/ExampleOrg/Two/pulls',
+          'base|https://api.github.com/search/code?q=repo%3AUnlisted%2FRepo',
+        ]);
+      } finally {
+        globalThis.fetch = previousFetch;
+      }
+    },
+  );
+});
+
+test('an App token mint failure logs and omits only that installation for the turn', async () => {
+  await withGithubSettings(
+    {
+      [GITHUB_SETTING_KEYS.appId]: 'degrade-app',
+      [GITHUB_SETTING_KEYS.privateKey]: APP_PRIVATE_KEY,
+    },
+    async () => {
+      const previousFetch = globalThis.fetch;
+      const previousWarn = console.warn;
+      const warnings: string[] = [];
+      console.warn = (...args: unknown[]) => warnings.push(args.map(String).join(' '));
+      globalThis.fetch = async (input) =>
+        String(input).includes('/50004/')
+          ? new Response('failed', { status: 500 })
+          : Response.json({
+              token: 'successful-installation-token',
+              expires_at: new Date(Date.now() + 60 * 60 * 1_000).toISOString(),
+            });
+      try {
+        const kept = repositoryGrant({
+          id: 'kept',
+          installationId: 50_003,
+          fullName: 'Acme/Kept',
+        });
+        const skipped = repositoryGrant({
+          id: 'skipped',
+          installationId: 50_004,
+          fullName: 'Acme/Skipped',
+        });
+        const access = await resolveRepositoryAccess([kept, skipped]);
+
+        assert.deepEqual(access.grants, [kept]);
+        assert.equal(access.connectors.length, 3);
+        assert.equal(warnings.length, 1);
+        assert.match(warnings[0] ?? '', /installation 50004 skipped/i);
+        assert.doesNotMatch(warnings[0] ?? '', /successful-installation-token/);
+      } finally {
+        console.warn = previousWarn;
+        globalThis.fetch = previousFetch;
+      }
+    },
+  );
+});
+
+test('repository access removes GitHub hosts from legacy connectors while preserving others', () => {
+  const repositoryConnector: ResolvedApiConnection = {
+    allowedHosts: ['api.github.com'],
+    pathPrefixes: ['/repos/Acme/Alpha'],
+    headerName: 'Authorization',
+    headerValue: 'Bearer installation-token',
+    allowedMethods: ['GET'],
+  };
+  const legacyConnector: ResolvedApiConnection = {
+    allowedHosts: ['API.GITHUB.COM', 'github.com', 'api.example.com'],
+    pathPrefixes: ['/repos'],
+    headerName: 'Authorization',
+    headerValue: 'Bearer broad-pat',
+    allowedMethods: ['GET', 'POST'],
+  };
+
+  assert.deepEqual(
+    mergeRepositoryAndApiConnectors([repositoryConnector], [legacyConnector]),
+    [repositoryConnector, { ...legacyConnector, allowedHosts: ['api.example.com'] }],
+  );
+  assert.deepEqual(mergeRepositoryAndApiConnectors([], [legacyConnector]), [legacyConnector]);
 });
 
 test('just-bash exposes its generated secure fetch on Bash instances', () => {

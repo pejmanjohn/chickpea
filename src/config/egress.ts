@@ -15,6 +15,8 @@ export interface ResolvedApiConnection {
   headerName: string;
   headerValue: string;
   allowedMethods: string[];
+  /** Optional credential-free routing guard for scopes that share a URL path. */
+  matchesRequest?: (url: string) => boolean;
 }
 
 export const DEFAULT_EGRESS_POLICY: EgressPolicy = {
@@ -43,6 +45,7 @@ interface PrefixEntry {
 interface ConnectorScopeSpec {
   entries: PrefixEntry[];
   methods: string[];
+  matchesRequest?: (url: string) => boolean;
 }
 
 // A per-connector egress scope: a network whose allow-list contains ONLY this
@@ -54,6 +57,7 @@ export interface EgressScope {
   prefixes: string[];
   methods: Set<string>;
   network: NetworkConfig;
+  matchesRequest?: (url: string) => boolean;
 }
 
 export interface EgressPlan {
@@ -72,6 +76,7 @@ export interface ScopedDelegate {
   prefixes: string[];
   methods: Set<string>;
   delegate: SecureFetch;
+  matchesRequest?: (url: string) => boolean;
 }
 
 // The methods permitted for any host NOT governed by a specific connection —
@@ -166,6 +171,7 @@ export function buildEgressPlan(
   const scopes: EgressScope[] = connectorSpecs.map((spec) => ({
     prefixes: spec.entries.map((entry) => entry.url),
     methods: new Set(spec.methods),
+    ...(spec.matchesRequest ? { matchesRequest: spec.matchesRequest } : {}),
     // A scope network is never open-internet: its allow-list is exactly this
     // connector's hosts, so a redirect target outside them is refused by
     // just-bash's own allow-list re-check on each redirect hop.
@@ -232,13 +238,18 @@ export function createScopedFetch(params: {
         prefix,
         methods: scope.methods,
         delegate: scope.delegate,
+        matchesRequest: scope.matchesRequest,
       })),
     )
     .sort((left, right) => right.prefix.length - left.prefix.length);
 
   return async (url, options) => {
     const method = (options?.method || 'GET').toUpperCase();
-    const route = routes.find((entry) => matchesEgressPrefix(url, entry.prefix));
+    const route = routes.find(
+      (entry) =>
+        matchesEgressPrefix(url, entry.prefix) &&
+        (entry.matchesRequest === undefined || entry.matchesRequest(url)),
+    );
     const allowed = route ? route.methods : params.baseMethods;
     if (!allowed.has(method)) {
       const error = new Error(
@@ -279,7 +290,11 @@ function buildConnectorScopeSpecs(connectors: ResolvedApiConnection[]): Connecto
           ],
         })),
       );
-      return { entries, methods: connector.allowedMethods };
+      return {
+        entries,
+        methods: connector.allowedMethods,
+        ...(connector.matchesRequest ? { matchesRequest: connector.matchesRequest } : {}),
+      };
     });
 }
 

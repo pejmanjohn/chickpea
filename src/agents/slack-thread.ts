@@ -11,6 +11,11 @@ import {
   type ScopedDelegate,
 } from '../config/egress.ts';
 import { resolveEffectiveSlackConfig } from '../config/effective-config.ts';
+import {
+  getCachedInstallationToken,
+  getGithubConnection,
+  type GithubConnection,
+} from '../config/github-app.ts';
 import { resolveProfileMcpTools } from '../config/profile-mcp.ts';
 import { resolveProfileSkills } from '../config/profile-skills.ts';
 import { applyResolvedProviderKeys } from '../config/provider-keys.ts';
@@ -20,9 +25,10 @@ import { getOrCreateSnapshot } from '../config/snapshot-store.ts';
 import {
   getAgentSnapshotStore,
   getConfigStore,
+  getSettingsStore,
   type PlatformEnv,
 } from '../config/state-backend.ts';
-import type { SkillConfig } from '../config/types.ts';
+import type { ApiConnectionConfig, RepositoryGrant, SkillConfig } from '../config/types.ts';
 import { INTERNAL_AGENT_TOKEN_HEADER, isValidInternalAgentToken } from '../slack/internal-auth.ts';
 import { parseSlackThreadKey } from '../slack/thread-key.ts';
 
@@ -36,6 +42,219 @@ export function suppressProfileNamedConnectorSkills(
   // Any profile row owns its name even when disabled: a disabled row is the
   // operator's off-switch for an otherwise auto-attached connector skill.
   return connectorSkills.filter((skill) => !profileSkillNames.has(skill.name));
+}
+
+const REPOSITORY_HOSTS = ['api.github.com', 'github.com'];
+const REPOSITORY_METHODS = ['GET', 'POST', 'PATCH', 'PUT'];
+const REPOSITORY_PERMISSIONS = {
+  contents: 'write',
+  pull_requests: 'write',
+  issues: 'write',
+  metadata: 'read',
+  actions: 'write',
+} as const;
+
+export interface ResolvedRepositoryAccess {
+  grants: RepositoryGrant[];
+  connectors: ResolvedApiConnection[];
+}
+
+/**
+ * Resolve repository credentials live for one turn. Grants are policy and may
+ * come from a frozen channel snapshot; tokens never join that snapshot or the
+ * skill input and exist only in credential-bearing egress connector rows.
+ */
+export async function resolveRepositoryAccess(
+  repositories: readonly RepositoryGrant[],
+  env?: PlatformEnv,
+): Promise<ResolvedRepositoryAccess> {
+  const enabled = repositories.filter((grant) => grant.enabled);
+  if (enabled.length === 0) return { grants: [], connectors: [] };
+
+  let connection: GithubConnection;
+  try {
+    connection = await getGithubConnection(getSettingsStore(env));
+  } catch {
+    console.warn('[chickpea] GitHub repository access skipped for this turn');
+    return { grants: [], connectors: [] };
+  }
+
+  if (connection.mode === 'none') return { grants: [], connectors: [] };
+  if (connection.mode === 'pat') {
+    return {
+      grants: enabled,
+      connectors: repositoryConnectors(connection.pat, enabled),
+    };
+  }
+
+  const byInstallation = new Map<number, RepositoryGrant[]>();
+  for (const grant of enabled) {
+    if (grant.installationId === null) continue;
+    const grouped = byInstallation.get(grant.installationId) ?? [];
+    grouped.push(grant);
+    byInstallation.set(grant.installationId, grouped);
+  }
+
+  const resolved = await Promise.all(
+    [...byInstallation].map(async ([installationId, grants]) => {
+      const allRepositories = grants.some((grant) => grant.allRepos === true);
+      const repositoryNames = allRepositories
+        ? undefined
+        : [
+            ...new Set(
+              grants.map((grant) => grant.fullName.slice(grant.fullName.indexOf('/') + 1)),
+            ),
+          ].sort();
+      try {
+        const { token } = await getCachedInstallationToken(connection, installationId, {
+          ...(repositoryNames ? { repositories: repositoryNames } : {}),
+          permissions: REPOSITORY_PERMISSIONS,
+        });
+        return {
+          installationId,
+          connectors: repositoryConnectors(token, grants),
+        };
+      } catch {
+        // Deliberately omit the caught message: a hostile/custom fetch error can
+        // echo request headers. The installation id is enough to diagnose which
+        // capability degraded without risking JWT or installation-token logs.
+        console.warn(
+          `[chickpea] GitHub repository installation ${installationId} skipped for this turn`,
+        );
+        return undefined;
+      }
+    }),
+  );
+  const successful = new Set(
+    resolved.flatMap((entry) => (entry ? [entry.installationId] : [])),
+  );
+  return {
+    grants: enabled.filter(
+      (grant) => grant.installationId !== null && successful.has(grant.installationId),
+    ),
+    connectors: resolved.flatMap((entry) => entry?.connectors ?? []),
+  };
+}
+
+function repositoryConnectors(
+  token: string,
+  grants: readonly RepositoryGrant[],
+): ResolvedApiConnection[] {
+  const apiPrefixes = repositoryPrefixes(grants, '/repos/');
+  const gitPrefixes = [
+    ...new Set(
+      grants.flatMap((grant) =>
+        grant.allRepos === true
+          ? [`/${grant.accountLogin}`]
+          : grant.fullName
+            ? [`/${grant.fullName}`, `/${grant.fullName}.git`]
+            : [],
+      ),
+    ),
+  ].sort();
+  const credential = {
+    headerName: 'Authorization',
+    headerValue: `Bearer ${token}`,
+    allowedMethods: [...REPOSITORY_METHODS],
+  };
+  return [
+    {
+      allowedHosts: ['api.github.com'],
+      pathPrefixes: apiPrefixes,
+      ...credential,
+    },
+    {
+      allowedHosts: ['github.com'],
+      pathPrefixes: gitPrefixes,
+      ...credential,
+    },
+    {
+      allowedHosts: ['api.github.com'],
+      pathPrefixes: ['/search/code'],
+      ...credential,
+      matchesRequest: (url: string) => matchesGrantedCodeSearch(url, grants),
+    },
+  ].filter((connector) => connector.pathPrefixes.length > 0);
+}
+
+function repositoryPrefixes(grants: readonly RepositoryGrant[], prefix: string): string[] {
+  return [
+    ...new Set(
+      grants.flatMap((grant) => {
+        const repository = grant.allRepos === true ? grant.accountLogin : grant.fullName;
+        return repository ? [`${prefix}${repository}`] : [];
+      }),
+    ),
+  ].sort();
+}
+
+function matchesGrantedCodeSearch(url: string, grants: readonly RepositoryGrant[]): boolean {
+  let query: string;
+  try {
+    query = new URL(url).searchParams.get('q') ?? '';
+  } catch {
+    return false;
+  }
+  const repositories = [...query.matchAll(/(?:^|\s)repo:([^\s]+)/gi)].flatMap((match) =>
+    match[1] ? [match[1].toLowerCase()] : [],
+  );
+  if (repositories.length === 0) return false;
+  return repositories.every((repository) =>
+    grants.some((grant) =>
+      grant.allRepos === true
+        ? repository.startsWith(`${grant.accountLogin.toLowerCase()}/`)
+        : repository === grant.fullName.toLowerCase(),
+    ),
+  );
+}
+
+/**
+ * Repository credentials are authoritative for GitHub while repository grants
+ * are active. Remove those hosts from generic API connections so a narrower
+ * legacy prefix cannot override the down-scoped installation-token route.
+ */
+export function mergeRepositoryAndApiConnectors(
+  repositoryConnectors: readonly ResolvedApiConnection[],
+  apiConnectors: readonly ResolvedApiConnection[],
+): ResolvedApiConnection[] {
+  if (repositoryConnectors.length === 0) return [...apiConnectors];
+  const repositoryHosts = new Set(REPOSITORY_HOSTS);
+  const remainingApiConnectors = apiConnectors.flatMap((connector) => {
+    const allowedHosts = connector.allowedHosts.filter(
+      (host) => !repositoryHosts.has(host.toLowerCase()),
+    );
+    return allowedHosts.length > 0 ? [{ ...connector, allowedHosts }] : [];
+  });
+  return [...repositoryConnectors, ...remainingApiConnectors];
+}
+
+async function resolveApiConnectionsForTurn(
+  agentId: string,
+  connections: readonly ApiConnectionConfig[],
+  env?: PlatformEnv,
+): Promise<ResolvedApiConnection[]> {
+  const resolved = await Promise.all(
+    connections
+      .filter((connection) => connection.enabled)
+      .map(async (connection): Promise<ResolvedApiConnection | undefined> => {
+        const credential = await resolveConnectorCredential(
+          { agentId, connectionId: connection.id },
+          env,
+        );
+        if (!credential) return undefined;
+
+        return {
+          allowedHosts: connection.allowedHosts,
+          pathPrefixes: connection.pathPrefixes,
+          headerName: connection.headerName,
+          headerValue: (connection.headerValuePrefix ?? '') + credential,
+          allowedMethods: connection.allowedMethods,
+        };
+      }),
+  );
+  return resolved.filter(
+    (connection): connection is ResolvedApiConnection => connection !== undefined,
+  );
 }
 
 // Expose the agent over HTTP at `POST /agents/slack-thread/:id` so the Slack
@@ -71,31 +290,21 @@ export default defineAgent(async ({ id }) => {
       ? await resolve()
       : await getOrCreateSnapshot(getAgentSnapshotStore(env), id, resolve);
 
-  const egressPolicy = await resolveEgressPolicy(env);
   // API connection policy inherits the agent snapshot contract, while its
   // credential resolves live every turn. Missing credentials degrade by
   // skipping that connection rather than aborting the turn.
-  const resolvedConnectors = (
-    await Promise.all(
-      (config.agent.apiConnections ?? [])
-        .filter((connection) => connection.enabled)
-        .map(async (connection): Promise<ResolvedApiConnection | undefined> => {
-          const credential = await resolveConnectorCredential(
-            { agentId: config.agent.id, connectionId: connection.id },
-            env,
-          );
-          if (!credential) return undefined;
-
-          return {
-            allowedHosts: connection.allowedHosts,
-            pathPrefixes: connection.pathPrefixes,
-            headerName: connection.headerName,
-            headerValue: (connection.headerValuePrefix ?? '') + credential,
-            allowedMethods: connection.allowedMethods,
-          };
-        }),
-    )
-  ).filter((connection): connection is ResolvedApiConnection => connection !== undefined);
+  const [egressPolicy, repositoryAccess, resolvedApiConnectors] = await Promise.all([
+    resolveEgressPolicy(env),
+    resolveRepositoryAccess(config.agent.repositories, env),
+    resolveApiConnectionsForTurn(config.agent.id, config.agent.apiConnections ?? [], env),
+  ]);
+  // Repository credentials take precedence over legacy/custom GitHub
+  // connections. Down-scoped installation tokens are authoritative whenever
+  // grants are active, including for narrower legacy path prefixes.
+  const resolvedConnectors = mergeRepositoryAndApiConnectors(
+    repositoryAccess.connectors,
+    resolvedApiConnectors,
+  );
   // Project resolved connectors into credential-free scope before skill
   // construction. Connector skills come first so the existing last-writer-wins
   // dedupe lets a profile-authored skill deliberately override the built-in.
@@ -106,6 +315,7 @@ export default defineAgent(async ({ id }) => {
         pathPrefixes,
         allowedMethods,
       })),
+      repositoryAccess.grants,
     ),
     config.agent.skills,
   );
@@ -142,6 +352,7 @@ export default defineAgent(async ({ id }) => {
     prefixes: scope.prefixes,
     methods: scope.methods,
     delegate: secureFetchOf(scope.network),
+    ...(scope.matchesRequest ? { matchesRequest: scope.matchesRequest } : {}),
   }));
   if (
     typeof baseDelegate === 'function' &&
