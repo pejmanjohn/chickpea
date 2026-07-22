@@ -445,6 +445,38 @@ test('GitHub status isolates one failing installation instead of failing the end
   }
 });
 
+test('GitHub status stays recoverable when the App key is rejected outright', async () => {
+  const { pkcs8 } = rsaKeys();
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  await settings.setSetting('github.app.id', '12345');
+  await settings.setSetting('github.app.slug', 'chickpea-test');
+  await settings.setSetting('github.app.private_key', pkcs8);
+  const fetchImpl: typeof fetch = async () => new Response('bad credentials', { status: 401 });
+  try {
+    await withEnv(
+      { GITHUB_APP_ID: undefined, GITHUB_APP_PRIVATE_KEY: undefined, GITHUB_PAT: undefined },
+      () =>
+        withFetch(fetchImpl, async () => {
+          const response = await adminApp(store, settings).request('/admin/api/github/status', {
+            headers: auth(),
+          });
+          assert.equal(response.status, 200);
+          assert.deepEqual(await response.json(), {
+            mode: 'app',
+            appSlug: 'chickpea-test',
+            installations: [],
+            installationsUnavailable: true,
+            referencingProfiles: [],
+          });
+        }),
+    );
+  } finally {
+    store.close();
+    settings.close();
+  }
+});
+
 test('GitHub manifest callback refuses missing, mismatched, stale, and replayed state', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   const settings = new SqliteSettingsStore(':memory:');

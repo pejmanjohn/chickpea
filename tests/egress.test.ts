@@ -433,6 +433,60 @@ test('createScopedFetch matches prefixes on path-segment boundaries, longest fir
   ]);
 });
 
+test('createScopedFetch fails closed when a scope guard rejects a matching URL', async () => {
+  const scopeCalls: string[] = [];
+  const baseCalls: string[] = [];
+  const scopeDelegate: SecureFetch = async (url) => {
+    scopeCalls.push(String(url));
+    return fetchResult(url);
+  };
+  const baseDelegate: SecureFetch = async (url) => {
+    baseCalls.push(String(url));
+    return fetchResult(url);
+  };
+  const scopedFetch = createScopedFetch({
+    scopes: [
+      {
+        prefixes: ['https://api.github.com/repos/Acme/Alpha'],
+        methods: new Set(['GET', 'POST']),
+        delegate: scopeDelegate,
+        matchesRequest: (url) => !url.includes('/dispatches'),
+      },
+    ],
+    baseDelegate,
+    baseMethods: new Set(['GET', 'HEAD', 'POST']),
+  });
+
+  await scopedFetch('https://api.github.com/repos/Acme/Alpha/pulls', { method: 'POST' });
+  // A guard rejection is a policy denial: it must throw, never retry the same
+  // URL through the base delegate (where operator Domains could admit it).
+  await assert.rejects(
+    scopedFetch('https://api.github.com/repos/Acme/Alpha/dispatches', { method: 'POST' }),
+    (err: Error) => err.name === 'BlockedUrlError',
+  );
+  assert.deepEqual(scopeCalls, ['https://api.github.com/repos/Acme/Alpha/pulls']);
+  assert.deepEqual(baseCalls, []);
+});
+
+test('guarded scopes are excluded from the fallback network allow-list', async () => {
+  const sentinel = 'fallback-exclusion-pat';
+  await withGithubSettings({ [GITHUB_SETTING_KEYS.pat]: sentinel }, async () => {
+    const access = await resolveRepositoryAccess([
+      repositoryGrant({ installationId: null, fullName: 'Acme/Alpha' }),
+    ]);
+    const plan = buildEgressPlan({ mode: 'off', domains: [] }, { cloudflare: false }, access.connectors);
+    const fallbackUrls = (plan.fallbackNetwork.allowedUrlPrefixes ?? []).map((entry) =>
+      typeof entry === 'string' ? entry : entry.url,
+    );
+    // The guarded scopes (/repos and /search/code carry URL predicates) must
+    // not contribute prefix+transform entries a flat allow-list cannot guard.
+    assert.ok(!fallbackUrls.some((url) => url.includes('/repos/')), String(fallbackUrls));
+    assert.ok(!fallbackUrls.some((url) => url.includes('/search/code')), String(fallbackUrls));
+    // The unguarded github.com git scope stays available in fallback mode.
+    assert.ok(fallbackUrls.includes('https://github.com/Acme/Alpha'), String(fallbackUrls));
+  });
+});
+
 test('createScopedFetch holds unmatched (open-mode) hosts to the base method set', async () => {
   const calls: string[] = [];
   const delegate: SecureFetch = async (url, options) => {
@@ -674,14 +728,18 @@ test('App repository access groups grants, uses short sorted names, and caps per
           'https://api.github.com/search/code?q=runtime%20repo%3AExampleOrg%2FOne',
         );
         await scopedFetch('https://api.github.com/repos/ExampleOrg/Two/pulls');
-        await scopedFetch('https://api.github.com/search/code?q=repo%3AUnlisted%2FRepo');
+        // A search outside every grant is a policy denial: it must be blocked
+        // outright, never retried through the base delegate (fail closed).
+        await assert.rejects(
+          scopedFetch('https://api.github.com/search/code?q=repo%3AUnlisted%2FRepo'),
+          (err: Error) => err.name === 'BlockedUrlError',
+        );
 
         assert.deepEqual(routed, [
           'Bearer installation-token-50001|https://api.github.com/repos/Acme/Alpha/contents/README.md',
           'Bearer installation-token-50001|https://github.com/Acme/Zeta.git/info/refs',
           'Bearer installation-token-50002|https://api.github.com/search/code?q=runtime%20repo%3AExampleOrg%2FOne',
           'Bearer installation-token-50002|https://api.github.com/repos/ExampleOrg/Two/pulls',
-          'base|https://api.github.com/search/code?q=repo%3AUnlisted%2FRepo',
         ]);
       } finally {
         globalThis.fetch = previousFetch;

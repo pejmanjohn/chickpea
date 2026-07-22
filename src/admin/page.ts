@@ -3042,7 +3042,16 @@ details[open].advanced summary::before {
   }
 
   function repositoryGrantMatchesPicker(grant, picker) {
-    if (picker.installationId !== null) return grant.installationId === picker.installationId;
+    if (picker.installationId !== null) {
+      if (grant.installationId === picker.installationId) return true;
+      // Grants saved under PAT auth carry no installation id. When the same
+      // account is later managed through an App installation, adopt them so a
+      // Manage → Apply pass rewrites them with the installation id instead of
+      // stranding them (PAT-era grants are skipped by App-mode runtime).
+      return grant.installationId === null &&
+        grant.allRepos !== true &&
+        repositoryOwner(grant.fullName) === picker.accountLogin;
+    }
     if (grant.installationId !== null) return false;
     return !picker.patOwner || repositoryOwner(grant.fullName) === picker.patOwner;
   }
@@ -3787,7 +3796,9 @@ details[open].advanced summary::before {
       '<div class="kv"><dt>Installations</dt><dd>' + installations.length + '</dd></div></div>' +
       (installations.length
         ? '<div class="github-installations">' + installationRows + '</div>'
-        : '<div class="empty"><p class="field-label">No installations found</p><p class="hint">Install the app on a personal account or organization, then refresh.</p></div>') +
+        : status.installationsUnavailable
+          ? '<div class="empty"><p class="field-error" role="alert">GitHub rejected the stored App credentials, so installations cannot be listed.</p><p class="hint">Refresh to retry, or disconnect below and set the app up again.</p></div>'
+          : '<div class="empty"><p class="field-label">No installations found</p><p class="hint">Install the app on a personal account or organization, then refresh.</p></div>') +
       '<div class="action-well">' + installAction +
       '<button type="button" class="btn btn-ghost btn-sm i-lead" data-action="github-refresh"' + (state.githubBusy ? " disabled" : "") + '>' + (state.githubBusy === "refresh" ? '<span class="spinner"></span>Refreshing&hellip;' : icon("arrow-path") + 'Refresh') + '</button>' +
       (state.githubError ? '<span class="inline-status error" role="alert">' + esc(state.githubError) + '</span>' : "") + '</div>' +
@@ -4210,6 +4221,7 @@ details[open].advanced summary::before {
     var selected = Array.from(new Set((state.profileDraft.repositories || []).filter(function (grant) {
       return grant.enabled && grant.allRepos !== true && repositoryGrantMatchesPicker(grant, {
         installationId: installationId,
+        accountLogin: accountLogin,
         patOwner: patOwner
       });
     }).map(function (grant) { return grant.fullName; })));
@@ -4277,7 +4289,9 @@ details[open].advanced summary::before {
     if (selected.length > 200) return;
     var current = draft.repositories || [];
     var sameSource = function (grant) {
-      return repositoryGrantMatchesPicker(grant, picker);
+      // The All-repositories toggle owns allRepos rows; Manage → Apply must
+      // never silently replace one with an explicit (possibly empty) list.
+      return grant.allRepos !== true && repositoryGrantMatchesPicker(grant, picker);
     };
     var retained = current.filter(function (grant) { return !sameSource(grant); });
     if (retained.length + selected.length > 200) return;

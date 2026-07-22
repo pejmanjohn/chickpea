@@ -178,8 +178,17 @@ export function buildEgressPlan(
     network: buildScopeNetwork(spec, opts),
   }));
 
+  // Guarded scopes (per-request URL predicates) cannot be represented in a
+  // flat prefix allow-list: including their entries would carry the credential
+  // transform onto URLs the guard exists to deny. They drop out of the
+  // fallback entirely — fail closed if just-bash ever loses secureFetch.
   const fallbackNetwork = buildCombinedNetwork(
-    [...domainEntries, ...connectorSpecs.flatMap((spec) => spec.entries)],
+    [
+      ...domainEntries,
+      ...connectorSpecs
+        .filter((spec) => spec.matchesRequest === undefined)
+        .flatMap((spec) => spec.entries),
+    ],
     policy,
     opts,
     [...BASE_EGRESS_METHODS],
@@ -245,11 +254,20 @@ export function createScopedFetch(params: {
 
   return async (url, options) => {
     const method = (options?.method || 'GET').toUpperCase();
-    const route = routes.find(
-      (entry) =>
-        matchesEgressPrefix(url, entry.prefix) &&
-        (entry.matchesRequest === undefined || entry.matchesRequest(url)),
+    // Several scopes can share a prefix (one guarded /search/code scope per
+    // installation), so a guard rejection falls through to the NEXT matching
+    // scope — but never past the matching set to the base delegate: base
+    // rules (or operator Domains) could readmit a URL the guards exist to
+    // deny. All matches rejected → policy denial, fail closed.
+    const matching = routes.filter((entry) => matchesEgressPrefix(url, entry.prefix));
+    const route = matching.find(
+      (entry) => entry.matchesRequest === undefined || entry.matchesRequest(url),
     );
+    if (route === undefined && matching.length > 0) {
+      const error = new Error('URL blocked by connection policy: ' + url);
+      error.name = 'BlockedUrlError';
+      throw error;
+    }
     const allowed = route ? route.methods : params.baseMethods;
     if (!allowed.has(method)) {
       const error = new Error(

@@ -807,7 +807,20 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       if (connection.mode !== 'app') {
         return c.json({ mode: connection.mode, referencingProfiles });
       }
-      const installations = await listInstallations(connection);
+      // A revoked/rejected App key must still yield a recoverable status: the
+      // operator needs the Disconnect and re-setup controls, not a 500+Retry.
+      let installations: Awaited<ReturnType<typeof listInstallations>>;
+      try {
+        installations = await listInstallations(connection);
+      } catch {
+        return c.json({
+          mode: 'app' as const,
+          ...(connection.appSlug ? { appSlug: connection.appSlug } : {}),
+          installations: [],
+          installationsUnavailable: true,
+          referencingProfiles,
+        });
+      }
       const withCounts = await Promise.all(
         installations.map(async (installation) => {
           // One suspended or stalling installation must not take down status
