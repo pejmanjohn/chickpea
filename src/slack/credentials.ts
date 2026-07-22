@@ -1,7 +1,11 @@
 import { createHash } from 'node:crypto';
 
 import type { SettingsStore } from '../config/settings-store.ts';
-import { getSettingsStore, type PlatformEnv } from '../config/state-backend.ts';
+import {
+  getSettingsStore,
+  isCloudflareTarget,
+  type PlatformEnv,
+} from '../config/state-backend.ts';
 
 /**
  * Slack credential resolution: environment first, then the operator settings
@@ -13,14 +17,18 @@ import { getSettingsStore, type PlatformEnv } from '../config/state-backend.ts';
  * channel construction like a module-scope `process.env.SLACK_SIGNING_SECRET!`
  * read would.
  *
- * The stored triple is cached for ~60s per isolate: the events hot path must
- * not pay a settings read (a Durable Object round-trip on Cloudflare) per
- * event, while a wizard save still propagates quickly to other isolates and
- * IMMEDIATELY in its own (the save primes this cache).
+ * The stored triple is cached for ~60s per isolate. Node can reuse it directly;
+ * Cloudflare first compares a revision in the strongly-consistent state
+ * Durable Object, so a disconnect/rotation committed by another Worker isolate
+ * fences the stale entry immediately while keeping cache hits to one small RPC.
  */
 
 /** Settings-store keys the wizard writes. One place, both sides agree. */
 export const SLACK_SETTING_KEYS = {
+  // Generation for optimistic connection updates and cross-isolate cache
+  // fencing. Disconnect keeps a fresh tombstone value instead of deleting it,
+  // so an auth.test that started earlier cannot recreate the connection.
+  connectionRevision: 'slack.connectionRevision',
   botToken: 'slack.botToken',
   signingSecret: 'slack.signingSecret',
   botUserId: 'slack.botUserId',
@@ -76,7 +84,22 @@ interface StoredSlackCredentials {
   botUserId: string | undefined;
 }
 
-let storedCache: { expiresAt: number; values: StoredSlackCredentials } | undefined;
+type SlackConnectionRevision = string | null;
+
+let storedCache:
+  | {
+      expiresAt: number;
+      revision: SlackConnectionRevision;
+      values: StoredSlackCredentials;
+    }
+  | undefined;
+
+const STORED_CREDENTIAL_SNAPSHOT_KEYS = [
+  SLACK_SETTING_KEYS.connectionRevision,
+  SLACK_SETTING_KEYS.botToken,
+  SLACK_SETTING_KEYS.signingSecret,
+  SLACK_SETTING_KEYS.botUserId,
+] as const;
 
 // An empty-string token/secret is never a usable credential — treat it as
 // unset so a blank .env line does not shadow a wizard-stored value.
@@ -108,22 +131,31 @@ async function readStoredCredentials(
   store?: SettingsStore,
 ): Promise<StoredSlackCredentials> {
   const now = Date.now();
-  if (!store && storedCache && storedCache.expiresAt > now) {
+  const cloudflareCache = !store && isCloudflareTarget();
+  if (!store && !cloudflareCache && storedCache && storedCache.expiresAt > now) {
     return storedCache.values;
   }
   const settings = store ?? getSettingsStore(env);
-  const [botToken, signingSecret, botUserId] = await Promise.all([
-    settings.getSetting(SLACK_SETTING_KEYS.botToken),
-    settings.getSetting(SLACK_SETTING_KEYS.signingSecret),
-    settings.getSetting(SLACK_SETTING_KEYS.botUserId),
-  ]);
+  if (cloudflareCache && storedCache && storedCache.expiresAt > now) {
+    const revision = (await settings.getSetting(SLACK_SETTING_KEYS.connectionRevision)) ?? null;
+    if (storedCache.revision === revision) {
+      return storedCache.values;
+    }
+  }
+  const [revision, botToken, signingSecret, botUserId] = await settings.getSettings(
+    STORED_CREDENTIAL_SNAPSHOT_KEYS,
+  );
   const values: StoredSlackCredentials = {
     botToken: nonEmpty(botToken),
     signingSecret: nonEmpty(signingSecret),
     botUserId: nonEmpty(botUserId),
   };
   if (!store) {
-    storedCache = { expiresAt: now + STORED_CACHE_TTL_MS, values };
+    storedCache = {
+      expiresAt: now + STORED_CACHE_TTL_MS,
+      revision: revision ?? null,
+      values,
+    };
   }
   return values;
 }
@@ -179,13 +211,23 @@ export async function describeSlackCredentialSources(
  * wizard save resolves them immediately — the very next signed event must
  * verify with the stored secret, not wait out a stale-cache TTL.
  */
-export function primeStoredSlackCredentials(values: StoredSlackCredentials): void {
-  storedCache = { expiresAt: Date.now() + STORED_CACHE_TTL_MS, values };
+export function primeStoredSlackCredentials(
+  values: StoredSlackCredentials,
+  revision: SlackConnectionRevision = null,
+): void {
+  storedCache = { expiresAt: Date.now() + STORED_CACHE_TTL_MS, revision, values };
 }
 
 /** Drop the cached stored triple (tests; never needed in production flow). */
 export function invalidateStoredSlackCredentials(): void {
   storedCache = undefined;
+}
+
+/** Clone-safe revision value used by connection compare-and-swap writes. */
+export async function readSlackConnectionRevision(
+  store: SettingsStore,
+): Promise<SlackConnectionRevision> {
+  return (await store.getSetting(SLACK_SETTING_KEYS.connectionRevision)) ?? null;
 }
 
 // --- Public URL resolution (env > stored) -----------------------------------
@@ -438,9 +480,9 @@ export async function readStoredSlackTeamInfo(
   store?: SettingsStore,
 ): Promise<SlackTeamInfo> {
   const settings = store ?? getSettingsStore(env);
-  const [teamId, teamName] = await Promise.all([
-    settings.getSetting(SLACK_SETTING_KEYS.teamId),
-    settings.getSetting(SLACK_SETTING_KEYS.teamName),
+  const [teamId, teamName] = await settings.getSettings([
+    SLACK_SETTING_KEYS.teamId,
+    SLACK_SETTING_KEYS.teamName,
   ]);
   return { teamId: nonEmpty(teamId), teamName: nonEmpty(teamName) };
 }
@@ -463,21 +505,28 @@ export async function resolveSlackTeamInfo(
   store?: SettingsStore,
 ): Promise<SlackTeamInfo> {
   const settings = store ?? getSettingsStore(env);
-  const stored = await readStoredSlackTeamInfo(env, settings);
-  const { botToken } = await resolveSlackCredentials(env, settings);
+  const [revision, storedTeamId, storedTeamName, storedFingerprint, storedBotToken] =
+    await settings.getSettings([
+      SLACK_SETTING_KEYS.connectionRevision,
+      SLACK_SETTING_KEYS.teamId,
+      SLACK_SETTING_KEYS.teamName,
+      SLACK_SETTING_KEYS.teamTokenFingerprint,
+      SLACK_SETTING_KEYS.botToken,
+    ]);
+  const expectedRevision = revision ?? null;
+  const stored = {
+    teamId: nonEmpty(storedTeamId),
+    teamName: nonEmpty(storedTeamName),
+  };
+  const botToken = envCredentials().botToken ?? nonEmpty(storedBotToken);
   if (!botToken) {
     // Display-only contexts (no token resolvable): the stored identity is the
     // best available answer, and no validation path runs without a token.
     return stored;
   }
   const fingerprint = slackTokenFingerprint(botToken);
-  if (stored.teamId) {
-    const storedFingerprint = nonEmpty(
-      await settings.getSetting(SLACK_SETTING_KEYS.teamTokenFingerprint),
-    );
-    if (storedFingerprint === fingerprint) {
-      return stored;
-    }
+  if (stored.teamId && nonEmpty(storedFingerprint) === fingerprint) {
+    return stored;
   }
   let auth: SlackAuthTestResult;
   try {
@@ -488,10 +537,21 @@ export async function resolveSlackTeamInfo(
   if (!auth.ok || !auth.teamId) {
     return { teamId: undefined, teamName: undefined };
   }
-  await settings.setSetting(SLACK_SETTING_KEYS.teamId, auth.teamId);
-  if (auth.teamName) {
-    await settings.setSetting(SLACK_SETTING_KEYS.teamName, auth.teamName);
-  }
-  await settings.setSetting(SLACK_SETTING_KEYS.teamTokenFingerprint, fingerprint);
-  return { teamId: auth.teamId, teamName: auth.teamName };
+  const applied = await settings.applySettingsPatch({
+    expected: {
+      key: SLACK_SETTING_KEYS.connectionRevision,
+      value: expectedRevision,
+    },
+    set: [
+      { key: SLACK_SETTING_KEYS.teamId, value: auth.teamId },
+      { key: SLACK_SETTING_KEYS.teamTokenFingerprint, value: fingerprint },
+      ...(auth.teamName
+        ? [{ key: SLACK_SETTING_KEYS.teamName, value: auth.teamName }]
+        : []),
+    ],
+    delete: auth.teamName ? [] : [SLACK_SETTING_KEYS.teamName],
+  });
+  return applied
+    ? { teamId: auth.teamId, teamName: auth.teamName }
+    : { teamId: undefined, teamName: undefined };
 }

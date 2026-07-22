@@ -172,7 +172,9 @@ test('staged connector cleanup survives partial failure and finishes on retry', 
   let failGithubDelete = true;
   const flakyStore: SettingsStore = {
     getSetting: (key) => persisted.getSetting(key),
+    getSettings: (keys) => persisted.getSettings(keys),
     setSetting: (key, value) => persisted.setSetting(key, value),
+    applySettingsPatch: (patch) => persisted.applySettingsPatch(patch),
     mergeSettingStringSet: (key, values) => persisted.mergeSettingStringSet(key, values),
     deleteSetting: async (key) => {
       if (failGithubDelete && key === githubKey) {

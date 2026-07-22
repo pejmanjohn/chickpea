@@ -1,4 +1,5 @@
 import type { AssignmentLookupOptions } from './resolver.ts';
+import type { SettingsPatch } from './settings-store.ts';
 import type { ConfigAgentPatch } from './store.ts';
 import type { AgentSnapshot, ChannelAssignment, CustomAgentConfig, ResolvedAssignment } from './types.ts';
 import type { NormalizedSlackTurn } from '../slack/types.ts';
@@ -105,8 +106,10 @@ export interface TagStateRpc {
   threadHas(key: string): Promise<StateRpcResult<boolean>>;
   // -- operator settings ---------------------------------------------------
   settingGet(key: string): Promise<StateRpcResult<string | null>>;
+  settingGetMany(keys: readonly string[]): Promise<StateRpcResult<(string | null)[]>>;
   settingSet(key: string, value: string): Promise<StateRpcResult<null>>;
   settingDelete(key: string): Promise<StateRpcResult<null>>;
+  settingApplyPatch(patch: SettingsPatch): Promise<StateRpcResult<boolean>>;
   settingMergeStringSet(
     key: string,
     values: readonly string[],

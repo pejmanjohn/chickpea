@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { test } from 'node:test';
 
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
+import { openStateDb } from '../src/state/node-state-db.ts';
 
 test('SqliteSettingsStore round-trips set, overwrite, and delete', async () => {
   const store = new SqliteSettingsStore(':memory:');
@@ -48,6 +49,101 @@ test('mergeSettingStringSet preserves every member across concurrent callers', a
     );
   } finally {
     store.close();
+  }
+});
+
+test('applySettingsPatch compares a revision and changes related settings as one unit', async () => {
+  const store = new SqliteSettingsStore(':memory:');
+  try {
+    await store.setSetting('connection.revision', 'revision-1');
+    await store.setSetting('connection.token', 'token-1');
+    await store.setSetting('connection.staleMetadata', 'remove-me');
+
+    const stale = await store.applySettingsPatch({
+      expected: { key: 'connection.revision', value: 'revision-0' },
+      set: [
+        { key: 'connection.revision', value: 'revision-2' },
+        { key: 'connection.token', value: 'token-2' },
+      ],
+      delete: ['connection.staleMetadata'],
+    });
+    assert.equal(stale, false);
+    assert.deepEqual(
+      await store.getSettings([
+        'connection.revision',
+        'connection.token',
+        'connection.staleMetadata',
+        'connection.missing',
+      ]),
+      ['revision-1', 'token-1', 'remove-me', undefined],
+    );
+
+    const applied = await store.applySettingsPatch({
+      expected: { key: 'connection.revision', value: 'revision-1' },
+      set: [
+        { key: 'connection.revision', value: 'revision-2' },
+        { key: 'connection.token', value: 'token-2' },
+      ],
+      delete: ['connection.staleMetadata'],
+    });
+    assert.equal(applied, true);
+    assert.deepEqual(
+      await store.getSettings([
+        'connection.revision',
+        'connection.token',
+        'connection.staleMetadata',
+      ]),
+      ['revision-2', 'token-2', undefined],
+    );
+  } finally {
+    store.close();
+  }
+});
+
+test('applySettingsPatch rolls every write back when one setting fails', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'chickpea-settings-patch-'));
+  const path = join(dir, 'state.db');
+  const store = new SqliteSettingsStore(path);
+  try {
+    await store.setSetting('connection.revision', 'revision-1');
+    await store.setSetting('connection.token', 'token-1');
+    await store.setSetting('connection.secret', 'secret-1');
+    await store.setSetting('connection.team', 'Old Team');
+
+    const triggerDb = openStateDb(path);
+    triggerDb.exec(
+      `CREATE TRIGGER block_secret_rotation
+       BEFORE UPDATE OF value ON app_settings
+       WHEN OLD.key = 'connection.secret'
+       BEGIN SELECT RAISE(ABORT, 'blocked rotation'); END`,
+    );
+    triggerDb.close();
+
+    await assert.rejects(
+      () =>
+        store.applySettingsPatch({
+          expected: { key: 'connection.revision', value: 'revision-1' },
+          set: [
+            { key: 'connection.token', value: 'token-2' },
+            { key: 'connection.secret', value: 'secret-2' },
+            { key: 'connection.revision', value: 'revision-2' },
+          ],
+          delete: ['connection.team'],
+        }),
+      /blocked rotation/,
+    );
+    assert.deepEqual(
+      await store.getSettings([
+        'connection.revision',
+        'connection.token',
+        'connection.secret',
+        'connection.team',
+      ]),
+      ['revision-1', 'token-1', 'secret-1', 'Old Team'],
+    );
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 

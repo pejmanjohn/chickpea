@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import { Hono, type Context, type Next } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
@@ -86,10 +86,17 @@ import {
 } from '../config/state-backend.ts';
 import type { ConfigStore } from '../config/store.ts';
 import type { ChannelAssignment, CustomAgentConfig } from '../config/types.ts';
+import {
+  envManagedSlackBehaviorKeys,
+  resolveSlackBehaviorSettings,
+  saveSlackBehaviorSettings,
+  type SlackBehaviorPatch,
+} from '../slack/behavior-settings.ts';
 import { listSlackChannels, SlackChannelsError } from '../slack/channels.ts';
 import {
   describeSlackCredentialSources,
   primeStoredSlackCredentials,
+  readSlackConnectionRevision,
   readStoredSlackTeamInfo,
   resolveSlackCredentials,
   resolveSlackTeamInfo,
@@ -413,6 +420,16 @@ const egressPolicySchema = v.object({
   domains: v.pipe(v.array(egressDomain), v.maxLength(100)),
 });
 
+const slackBehaviorPatchSchema = v.pipe(
+  v.partial(
+    v.strictObject({
+      allowDms: v.boolean(),
+      unassignedHint: v.boolean(),
+      welcomeOnJoin: v.boolean(),
+    }),
+  ),
+  v.check((patch) => Object.keys(patch).length > 0),
+);
 export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   const app = new Hono();
   const tokenFromOptions = Object.hasOwn(options, 'adminToken');
@@ -515,7 +532,16 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     // Opportunistically pin the resolved origin so the Slack "Configure" deep
     // link works even on a button deploy that never set SLACK_TAG_PUBLIC_URL,
     // and even when creds arrived via env. No-op on the steady state.
-    await persistRequestOrigin(c, settingsStore);
+    // The observational connection test must mutate NOTHING, and disconnect
+    // promises to preserve the already-stored public URL, so those two
+    // lifecycle operations deliberately skip the opportunistic write.
+    const slackConnectionTest =
+      c.req.method === 'POST' && c.req.path === '/admin/api/slack-connection/test';
+    const slackDisconnect =
+      c.req.method === 'DELETE' && c.req.path === '/admin/api/slack-connection';
+    if (!slackConnectionTest && !slackDisconnect) {
+      await persistRequestOrigin(c, settingsStore);
+    }
     return next();
   });
 
@@ -1453,6 +1479,14 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (!botToken || !signingSecret) {
       return invalidRequest(c);
     }
+    let settingsStore: SettingsStore;
+    let expectedRevision: string | null;
+    try {
+      settingsStore = settings(c);
+      expectedRevision = await readSlackConnectionRevision(settingsStore);
+    } catch (err) {
+      return internalError(c, err);
+    }
     let auth;
     try {
       auth = await slackAuthTest(botToken);
@@ -1472,26 +1506,53 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       );
     }
     try {
-      const settingsStore = settings(c);
-      await settingsStore.setSetting(SLACK_SETTING_KEYS.botToken, botToken);
-      await settingsStore.setSetting(SLACK_SETTING_KEYS.signingSecret, signingSecret);
-      if (auth.botUserId) {
-        await settingsStore.setSetting(SLACK_SETTING_KEYS.botUserId, auth.botUserId);
-      }
+      const nextRevision = randomUUID();
+      const writes = [
+        { key: SLACK_SETTING_KEYS.connectionRevision, value: nextRevision },
+        { key: SLACK_SETTING_KEYS.botToken, value: botToken },
+        { key: SLACK_SETTING_KEYS.signingSecret, value: signingSecret },
+        ...(auth.botUserId
+          ? [{ key: SLACK_SETTING_KEYS.botUserId, value: auth.botUserId }]
+          : []),
+        ...(auth.teamId
+          ? [
+              { key: SLACK_SETTING_KEYS.teamId, value: auth.teamId },
+              {
+                key: SLACK_SETTING_KEYS.teamTokenFingerprint,
+                value: slackTokenFingerprint(botToken),
+              },
+            ]
+          : []),
+        ...(auth.teamName
+          ? [{ key: SLACK_SETTING_KEYS.teamName, value: auth.teamName }]
+          : []),
+      ];
+      const deletes = [
+        ...(auth.botUserId ? [] : [SLACK_SETTING_KEYS.botUserId]),
+        ...(auth.teamId
+          ? []
+          : [SLACK_SETTING_KEYS.teamId, SLACK_SETTING_KEYS.teamTokenFingerprint]),
+        ...(auth.teamName ? [] : [SLACK_SETTING_KEYS.teamName]),
+      ];
       // Persist the connected workspace identity from the same auth.test: the
       // admin names the workspace, and the assignment PUT rejects channels from
       // any OTHER workspace against this stored team id.
-      if (auth.teamId) {
-        await settingsStore.setSetting(SLACK_SETTING_KEYS.teamId, auth.teamId);
-        // Bind the team identity to the token that earned it: a later env
-        // token pointing elsewhere must invalidate this id, not inherit it.
-        await settingsStore.setSetting(
-          SLACK_SETTING_KEYS.teamTokenFingerprint,
-          slackTokenFingerprint(botToken),
+      const applied = await settingsStore.applySettingsPatch({
+        expected: {
+          key: SLACK_SETTING_KEYS.connectionRevision,
+          value: expectedRevision,
+        },
+        set: writes,
+        delete: deletes,
+      });
+      if (!applied) {
+        return c.json(
+          {
+            error: 'slack_connection_changed',
+            message: 'Slack connection changed while credentials were being validated. Try again.',
+          },
+          409,
         );
-      }
-      if (auth.teamName) {
-        await settingsStore.setSetting(SLACK_SETTING_KEYS.teamName, auth.teamName);
       }
       // Prime the resolver cache in THIS isolate so the very next signed
       // event verifies with the just-stored secret instead of waiting out
@@ -1500,7 +1561,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         botToken,
         signingSecret,
         botUserId: auth.botUserId,
-      });
+      }, nextRevision);
       return c.json({
         ok: true,
         ...(auth.teamId ? { teamId: auth.teamId } : {}),
@@ -1509,6 +1570,151 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         ...(auth.botUserId ? { botUserId: auth.botUserId } : {}),
         note: 'Signing secret saved; Slack proves it on the first signed event.',
       });
+    } catch (err) {
+      return internalError(c, err);
+    }
+  });
+
+  // Re-check the CURRENT effective bot token without changing any stored
+  // identity. This is deliberately separate from the paste-back wizard:
+  // operators can diagnose an existing install without silently backfilling
+  // metadata or rotating credentials.
+  app.post('/admin/api/slack-connection/test', async (c) => {
+    let botToken: string | undefined;
+    try {
+      botToken = (
+        await resolveSlackCredentials(
+          c.env as PlatformEnv | undefined,
+          settings(c),
+        )
+      ).botToken;
+    } catch (err) {
+      return internalError(c, err);
+    }
+    if (!botToken) {
+      return c.json({ error: 'slack_not_configured' }, 409);
+    }
+
+    let auth;
+    try {
+      auth = await slackAuthTest(botToken);
+    } catch (err) {
+      console.error(
+        '[chickpea] connection auth.test unreachable:',
+        err instanceof Error ? err.message : String(err),
+      );
+      return c.json({ error: 'slack_unreachable' }, 502);
+    }
+    if (!auth.ok) {
+      return c.json(
+        { error: 'slack_auth_failed', ...(auth.error ? { detail: auth.error } : {}) },
+        422,
+      );
+    }
+    return c.json({
+      ok: true,
+      teamId: auth.teamId ?? null,
+      teamName: auth.teamName ?? null,
+      botName: auth.botName ?? null,
+      botUserId: auth.botUserId ?? null,
+    });
+  });
+
+  // Disconnect is a LOCAL credential removal, not a Slack uninstall/revoke.
+  // Environment-managed credentials cannot be removed from a browser, and a
+  // partial stored install is treated as read-only rather than implying the
+  // app has been fully disconnected.
+  app.delete('/admin/api/slack-connection', async (c) => {
+    try {
+      const settingsStore = settings(c);
+      const expectedRevision = await readSlackConnectionRevision(settingsStore);
+      const sources = await describeSlackCredentialSources(
+        c.env as PlatformEnv | undefined,
+        settingsStore,
+      );
+      if (sources.botToken !== 'stored' || sources.signingSecret !== 'stored') {
+        return c.json({ error: 'slack_connection_read_only' }, 409);
+      }
+
+      const nextRevision = randomUUID();
+      const applied = await settingsStore.applySettingsPatch({
+        expected: {
+          key: SLACK_SETTING_KEYS.connectionRevision,
+          value: expectedRevision,
+        },
+        set: [{ key: SLACK_SETTING_KEYS.connectionRevision, value: nextRevision }],
+        delete: [
+          SLACK_SETTING_KEYS.botToken,
+          SLACK_SETTING_KEYS.signingSecret,
+          SLACK_SETTING_KEYS.botUserId,
+          SLACK_SETTING_KEYS.teamId,
+          SLACK_SETTING_KEYS.teamName,
+          SLACK_SETTING_KEYS.teamTokenFingerprint,
+        ],
+      });
+      if (!applied) {
+        return c.json(
+          {
+            error: 'slack_connection_changed',
+            message: 'Slack connection changed before it could be disconnected. Try again.',
+          },
+          409,
+        );
+      }
+      // Replace (rather than merely invalidate) this isolate's credential
+      // cache so the next event fails closed immediately without a store read.
+      primeStoredSlackCredentials({
+        botToken: undefined,
+        signingSecret: undefined,
+        botUserId: undefined,
+      }, nextRevision);
+      return c.json({
+        ok: true,
+        connected: false,
+        slackAppUninstalled: false,
+        slackAppRevoked: false,
+        configurationPreserved: true,
+        message:
+          'Disconnected Chickpea locally. The Slack app was not uninstalled or revoked, and profiles, channel assignments, transcripts, and the public URL were preserved.',
+      });
+    } catch (err) {
+      return internalError(c, err);
+    }
+  });
+
+  app.get('/admin/api/slack-behavior', async (c) => {
+    try {
+      return c.json(
+        await resolveSlackBehaviorSettings(
+          c.env as PlatformEnv | undefined,
+          settings(c),
+        ),
+      );
+    } catch (err) {
+      return internalError(c, err);
+    }
+  });
+
+  app.put('/admin/api/slack-behavior', async (c) => {
+    const body = await readJson(c.req);
+    const parsed = v.safeParse(slackBehaviorPatchSchema, body);
+    if (!parsed.success) {
+      return invalidRequest(c);
+    }
+    const patch = parsed.output as SlackBehaviorPatch;
+    const readOnly = envManagedSlackBehaviorKeys(patch);
+    if (readOnly.length > 0) {
+      return c.json({ error: 'slack_setting_read_only', settings: readOnly }, 409);
+    }
+    try {
+      const settingsStore = settings(c);
+      await saveSlackBehaviorSettings(settingsStore, patch);
+      return c.json(
+        await resolveSlackBehaviorSettings(
+          c.env as PlatformEnv | undefined,
+          settingsStore,
+        ),
+      );
     } catch (err) {
       return internalError(c, err);
     }

@@ -1316,6 +1316,78 @@ export const scenarios: Scenario[] = [
       assert.equal(instance.backend.providerCalls().length, 2);
     },
   },
+  {
+    id: 'S40',
+    title: 'stored Slack behavior settings gate DMs, unassigned hints, and join welcomes',
+    config: demoChannelConfig(),
+    async run(instance) {
+      const saved = await instance.adminRequest('/admin/api/slack-behavior', {
+        method: 'PUT',
+        body: JSON.stringify({
+          allowDms: false,
+          unassignedHint: false,
+          welcomeOnJoin: false,
+        }),
+      });
+      assert.equal(saved.status, 200, JSON.stringify(saved.body));
+
+      const dm = await instance.postEvent(
+        dmMessage({
+          event_id: 'Ev_S40_DM',
+          event: { ts: '1782772000.000100', event_ts: '1782772000.000100' },
+        }),
+      );
+      assert.equal(dm.status, 200, JSON.stringify(dm.body));
+      await instance.quiesce();
+      assert.equal(instance.backend.wireLog.length, 0, 'stored allowDms=false must silence DMs');
+
+      const unassigned = await instance.postEvent(
+        appMention({
+          event_id: 'Ev_S40_UNASSIGNED',
+          event: {
+            channel: 'C_UNASSIGNED',
+            ts: '1782772001.000100',
+            event_ts: '1782772001.000100',
+          },
+        }),
+      );
+      assert.equal(unassigned.status, 200, JSON.stringify(unassigned.body));
+      await instance.quiesce();
+      assert.equal(
+        instance.backend.wireLog.length,
+        0,
+        'stored unassignedHint=false must keep an unassigned mention fully silent',
+      );
+
+      const joined = await instance.postEvent(
+        memberJoinedChannel({
+          event_id: 'Ev_S40_JOIN',
+          event: {
+            user: 'U_BOT',
+            channel: 'C_EXEC',
+            event_ts: '1782772002.000100',
+          },
+        }),
+      );
+      assert.equal(joined.status, 200, JSON.stringify(joined.body));
+      await instance.quiesce();
+      assert.equal(
+        instance.backend.wireLog.length,
+        0,
+        'stored welcomeOnJoin=false must suppress the assigned-channel welcome',
+      );
+
+      const channel = await instance.postEvent(
+        appMention({
+          event_id: 'Ev_S40_CHANNEL',
+          event: { ts: '1782772003.000100', event_ts: '1782772003.000100' },
+        }),
+      );
+      assert.equal(channel.status, 200, JSON.stringify(channel.body));
+      await instance.quiesce();
+      assert.equal(instance.backend.finals().length, 1, 'assigned channel turns still run');
+    },
+  },
 ];
 
 /**

@@ -15,7 +15,7 @@ import {
 import { resolveAssignment, surfaceForChannelId } from './config/resolver.ts';
 import { slackThreadKey } from './slack/thread-key.ts';
 import type { AssignmentLookupOptions } from './config/resolver.ts';
-import type { SettingsStore } from './config/settings-store.ts';
+import type { SettingsPatch, SettingsStore } from './config/settings-store.ts';
 import { SettingsStoreLogic } from './config/settings-store.ts';
 import { SnapshotStoreLogic } from './config/snapshot-store.ts';
 import type { StateRpcResult, TagStateRpc, TurnJob } from './config/state-rpc.ts';
@@ -262,6 +262,10 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     return this.call((stores) => stores.settings.getSetting(key) ?? null);
   }
 
+  async settingGetMany(keys: readonly string[]): Promise<StateRpcResult<(string | null)[]>> {
+    return this.call((stores) => stores.settings.getSettings(keys).map((value) => value ?? null));
+  }
+
   async settingSet(key: string, value: string): Promise<StateRpcResult<null>> {
     return this.call((stores) => {
       stores.settings.setSetting(key, value);
@@ -274,6 +278,10 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       stores.settings.deleteSetting(key);
       return null;
     });
+  }
+
+  async settingApplyPatch(patch: SettingsPatch): Promise<StateRpcResult<boolean>> {
+    return this.call((stores) => stores.settings.applySettingsPatch(patch));
   }
 
   async settingMergeStringSet(
@@ -457,8 +465,10 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
   private async resolveAlarmClient(stores: TagStateStores): Promise<WebClient> {
     const localSettings: SettingsStore = {
       getSetting: async (key) => stores.settings.getSetting(key),
+      getSettings: async (keys) => stores.settings.getSettings(keys),
       setSetting: async (key, value) => stores.settings.setSetting(key, value),
       deleteSetting: async (key) => stores.settings.deleteSetting(key),
+      applySettingsPatch: async (patch) => stores.settings.applySettingsPatch(patch),
       mergeSettingStringSet: async (key, values) =>
         stores.settings.mergeSettingStringSet(key, values),
     };

@@ -3,6 +3,8 @@ import { CONNECTOR_LOGOS } from '../config/connector-logos.ts';
 import { CONNECTOR_PRESETS } from '../config/presets.ts';
 
 const ADMIN_FAVICON = `<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='8 9 32 32'%3E%3Ccircle cx='24' cy='25' r='15.5' fill='%23E3AC45'/%3E%3Ccircle cx='17' cy='17.5' r='4.2' fill='%23F4D084'/%3E%3Ccircle cx='18.5' cy='24' r='1.9' fill='%233B3220'/%3E%3Ccircle cx='29.5' cy='24' r='1.9' fill='%233B3220'/%3E%3Cpath d='M19 29 Q24 32.5 29 29' fill='none' stroke='%233B3220' stroke-width='1.8' stroke-linecap='round'/%3E%3Ccircle cx='15.5' cy='28.5' r='2' fill='%23DC8A4F' opacity='0.4'/%3E%3Ccircle cx='32.5' cy='28.5' r='2' fill='%23DC8A4F' opacity='0.4'/%3E%3C/svg%3E">`;
+const SLACK_LOGO_DATA_URL =
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAAA/CAMAAABnwz74AAAAn1BMVEX///+j3++a2+rw5M3n2tOk0K7L3L54xrXI0sftyHSPxZqLwZSp07HI6/RkzOpz0uyJ09tmtHlirnNwtH59z+ZZyOpdrXFbqm1dsnOPxppNxej23qjupqThYIDldY3yr7rodJPx0Ibz0YreSW3dO2XjMV7kVnv43qzzyXbvuE/ttUXyyHfjNmPjKVrbJVXwsTvusj3aG1DbLFLhH1PvscJL5pvlAAAAAXRSTlMAQObYZgAABDtJREFUSMe9lw1vokAQhvkQVsFCEUFbRVBEQUWl9v//tpuZ3QU8bW97l9ybaAI4z843UdOeSTdAendtDizLGtiaonSdIYAN5Y2R7TjMdZyxIuDF8FD+q7zhsmACCl01wnDqRREhXqX9JI4n8Ww2USNMo0gAvNch2ccxegCEwDUVMmBEkhD5L5o2tlg8D8AHAMwchUTqfhQJROQZNgACHsCPAcgAwNAhQDxDF5QAxj1gDACKABkqAE2nInQhOAFo8gOAZvh3HlhBIBCqgDfm9T0QACCoAjAP0+nUgC/jrQOgD6qAvsZWOBGEvwZ0Hrj/Aph8DdC/0O+ALonmeDx+M+Vg6FNMehR1Q8THear3AZMewHVcFrqOZQr76F0q6nVh5BEBhknYI4BMYD/MQYFr0Xi39tG9wAlca48Al83JHggI0L0HU+lC5Bsm9sGE1gEAZrgPbAdMA/jM5yEzNZ1Fz+17rRz3AablzmVrBY6lDYwo+haA44ze0z5wTRkSKgwB8PI9wETALIbDSU8ANL0U8KPePUoihBtz+8DhgDDkpeUAn6+vR/P3d6yCbmHS+UoMGVUlZGHI0A/Xxq3LvD4ASwIfqqvPsMy2C/kWDoxFWUMeAeOdyHzqvN7JBHn3xHObcQLkHAALCiFgjLmunAV6k5GmrXx/yuRzeLO5ILKHMuKFA+oNFkQyBOEXXQ6H+os+7J6PRvB+tEfixyO41OjrOw21/ytzuVyaZjvg2jJJlnfPzQXIvFPv8WiVZlmWghJ+YwWX2aoNMllvnmidyMdplm9BeV5k/N4qL0DbneDty+pwqB51PCbCfou/L06nekd3VkVd10VRn3MOPFYX0BV1aMUR+DzJ8uJEJ54KAqxOaA6AuqHrdXW4cKMegOwP1RoykeyKFoAnJjtuD4QmX0HnYQAPElGUezAQDqDwxCSXgKLZpuYXACIcDuVGS7PWvKj7gHNRfOQc8JQADAIMskIeWNxagMgCepCUPN5WkJCrJAAgWW0loOY5yG91TWUoaulBHyAKcqHEUg52wgWwx+5K8kYS6lNqYxWqPgId4IDLpTpiFdIcCfWt2KXUF9sOkCNAEEQl5fmo6rgQnXQ6QRtlqSYAzRn18SEA2roUgF4rgQdVuRCjkHymaZaI1n4C0OzNppTqhmG/6E9bO1w9wFkCNPOpnk82AhoOaFrAT9TzoAPgOvg7AHeT9oEqoQWcOWCxL49i/uW++QMg/w2wkW1QlUqEFiBCSEo5vNC5KmEAAM1rBJw6wAEBlRrgXNcIgO4WgIvYAIdqo/CPRQLqFnDhk0cAhb5IdgRAUQiLEidYbEUlD7LzTQLyzwSrcJGEaj36M0DLtjdOaM601vcQw5UvIaUq4HuhaW44EGLA9yXN8fVaKXbjKNuhB9tM9k3KF7OqPRA+6d2YtH23WMIiWC+UOplkDkB3P98PBs+P/wV/Ze9+4cPjFgAAAABJRU5ErkJggg==';
 
 export function renderAdminPage(): string {
   // Target-aware chrome: the header chip and the provider-hint copy differ
@@ -212,9 +214,10 @@ button, input, textarea, select { font: inherit; }
   overflow-wrap: anywhere;
   padding: 2px 8px;
 }
-/* Cap the whole shell (topbar + card together) so the cream card doesn't track
-   ultra-wide viewports; the tan canvas absorbs the extra width on both sides. */
-.frame { display: flex; flex-direction: column; margin: 0 auto; max-width: 1080px; min-height: 100dvh; width: 100%; }
+/* Keep the channel hierarchy and settings surface together at desktop sizes.
+   The selected Channels-hub layout is intentionally broad; inner profile and
+   settings content still keeps its own narrower reading measure. */
+.frame { display: flex; flex-direction: column; margin: 0 auto; max-width: 1420px; min-height: 100dvh; width: 100%; }
 .topbar {
   align-items: center;
   border-bottom: 0;
@@ -275,9 +278,30 @@ button, input, textarea, select { font: inherit; }
   flex-direction: column;
   gap: 2px;
   padding: 14px 10px;
-  width: 248px;
+  flex-shrink: 0;
+  width: clamp(248px, 22vw, 314px);
 }
 .rail-head { align-items: center; display: flex; justify-content: space-between; padding: 0 10px 10px; }
+.platform-row {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 12px;
+  color: var(--text);
+  cursor: pointer;
+  display: flex;
+  font-size: 0.8125rem;
+  font-weight: 700;
+  gap: 8px;
+  padding: 8px 10px;
+  text-align: left;
+  width: 100%;
+}
+.platform-row:hover { background: #f6eedc; }
+.platform-row.active { background: var(--ember-tint); }
+.platform-logo { flex-shrink: 0; height: 20px; object-fit: contain; width: 20px; }
+.slack-logo-image { background: url("${SLACK_LOGO_DATA_URL}") center / contain no-repeat; display: inline-block; }
+.platform-row .platform-status { color: var(--ok); font-size: 0.6875rem; font-weight: 700; margin-left: auto; }
 .ws-row {
   align-items: center;
   color: var(--text);
@@ -334,7 +358,68 @@ button, input, textarea, select { font: inherit; }
   overflow-y: auto;
   padding: 48px 32px 48px;
 }
+.main:has(.slack-overview) { padding-top: 32px; }
 .main-inner { display: flex; flex-direction: column; gap: 26px; margin: 0 auto; max-width: 760px; }
+.slack-overview { gap: 22px; max-width: 990px; }
+.slack-head { align-items: center; display: flex; gap: 16px; }
+.slack-logo-large { flex-shrink: 0; height: 48px; object-fit: contain; width: 48px; }
+.workspace-card {
+  align-items: center;
+  background: var(--bg);
+  border-radius: 16px;
+  box-shadow: inset 0 0 0 1.5px var(--line-strong);
+  display: grid;
+  gap: 14px;
+  grid-template-columns: minmax(180px, 1.4fr) auto minmax(118px, auto) minmax(190px, 1fr);
+  padding: 12px 14px;
+}
+.workspace-ident { align-items: center; display: flex; gap: 11px; min-width: 0; }
+.workspace-card .badge { justify-self: start; }
+.workspace-icon {
+  align-items: center;
+  background: var(--bg);
+  border-radius: 12px;
+  box-shadow: inset 0 0 0 1.5px var(--line-strong);
+  color: var(--text-2);
+  display: inline-flex;
+  flex-shrink: 0;
+  height: 42px;
+  justify-content: center;
+  width: 42px;
+}
+.workspace-icon .ic { height: 22px; width: 22px; }
+.workspace-name { color: var(--text); font-size: 0.9375rem; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-meta { color: var(--text-3); font-size: 0.75rem; overflow-wrap: anywhere; }
+.behavior-list { background: var(--well); border-radius: 16px; overflow: hidden; }
+.behavior-row { align-items: center; display: flex; gap: 18px; padding: 13px 16px; }
+.behavior-row + .behavior-row { border-top: 1.5px solid var(--bg); }
+.behavior-copy { display: flex; flex: 1; flex-direction: column; gap: 2px; min-width: 0; }
+.behavior-title { color: var(--text); font-size: 0.8125rem; font-weight: 700; }
+.behavior-state { color: var(--text-3); font-size: 0.75rem; min-width: 22px; text-align: right; }
+.action-well {
+  align-items: center;
+  background: var(--well);
+  border-radius: 14px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+  padding: 10px 12px;
+}
+.action-well .slack-console-link { margin-left: auto; }
+.danger-panel {
+  align-items: center;
+  background: var(--danger-well);
+  border-radius: 14px;
+  display: flex;
+  gap: 16px;
+  padding: 14px 16px;
+}
+.danger-copy { display: flex; flex: 1; flex-direction: column; gap: 3px; min-width: 0; }
+.danger-title { color: var(--danger); font-size: 0.8125rem; font-weight: 700; }
+.inline-status { color: var(--text-3); font-size: 0.75rem; width: 100%; }
+.inline-status.ok { color: var(--ok); font-weight: 700; }
+.inline-status.error { color: var(--danger); font-weight: 700; }
+.slack-overview-foot { align-items: center; display: flex; flex-wrap: wrap; gap: 12px; }
 .main-head { align-items: flex-start; display: flex; gap: 12px; justify-content: space-between; }
 .section { border-top: 1.5px dashed rgba(59, 50, 32, 0.15); display: flex; flex-direction: column; gap: 13px; padding-top: 18px; }
 .section:first-child { border-top: 0; padding-top: 0; }
@@ -715,6 +800,11 @@ details[open].advanced summary::before {
   .btn { font-size: 0.875rem; padding: 9px 15px; }
   .btn-sm { font-size: 0.8125rem; padding: 6px 12px; }
   .main-head, .section-head, .bundle-row, .save-bar { align-items: stretch; flex-direction: column; }
+  .workspace-card { align-items: flex-start; grid-template-columns: 1fr; }
+  .behavior-row { align-items: flex-start; }
+  .behavior-row .toggle { margin-left: auto; }
+  .action-well, .danger-panel, .slack-overview-foot { align-items: stretch; flex-direction: column; }
+  .action-well .slack-console-link { margin-left: 0; }
   .bundle-row .b-name { max-width: 100%; }
   .save-note { margin-right: 0; }
   .save-bar-sticky { padding: 13px 20px calc(13px + env(safe-area-inset-bottom, 0px)); }
@@ -1059,14 +1149,14 @@ details[open].advanced summary::before {
       <span class="chip">${targetChip}</span>
     </div>
     <div class="actions">
-      <a class="btn btn-ghost" href="https://api.slack.com/apps" target="_blank" rel="noopener noreferrer">Open Slack console &nearr;</a>
+      <button type="button" class="btn btn-soft" disabled>Channels</button>
       <button type="button" class="btn btn-soft" disabled>Profiles</button>
       <button type="button" class="btn btn-soft" disabled>Settings</button>
     </div>
   </header>
   <div class="body">
     <nav class="rail" aria-label="Channels">
-      <div class="rail-head"><span class="section-eyebrow">Slack channels</span><span class="hint">&hellip;</span></div>
+      <div class="rail-head"><span class="section-eyebrow">Channels</span></div>
       <div class="ws-row"><svg class="ic" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><path d="M4.22 6.22a.75.75 0 0 1 1.06 0L8 8.94l2.72-2.72a.75.75 0 1 1 1.06 1.06l-3.25 3.25a.75.75 0 0 1-1.06 0L4.22 7.28a.75.75 0 0 1 0-1.06Z"/></svg>Workspace</div>
     </nav>
     <main class="main"><div class="main-inner"><div class="empty"><h1 class="page-title">Loading admin...</h1><p class="hint">Reading local configuration.</p></div></div></main>
@@ -1104,10 +1194,11 @@ details[open].advanced summary::before {
     channelDraft: { enabled: true, channelPromptAddendum: "" },
     dirty: false,
     saveError: "",
-    // Master-detail Profiles destination (replaces the retired profile modal):
-    // "channels" is the default channel view; "profiles" swaps the main panel to
-    // the overview/create/edit screens driven by profileScreen.
+    // Channels is the default destination. channelScreen distinguishes the
+    // platform overview from a concrete Slack-channel detail without muddling
+    // the reusable Profiles destination into the platform hierarchy.
     view: "channels",
+    channelScreen: "overview",
     profileScreen: "list",
     profileDirty: false,
     disableConfirm: false,
@@ -1173,6 +1264,22 @@ details[open].advanced summary::before {
     // drives the dismissable success toast in the connected funnel.
     slackToast: null,
     slackToastDismissed: false,
+    // Post-onboarding Slack management state. The behavior payload comes from
+    // /admin/api/slack-behavior as { value, source } entries so env-managed
+    // toggles stay visibly read-only instead of pretending a stored write won.
+    slackBehavior: null,
+    slackBehaviorError: "",
+    slackBehaviorBusy: "",
+    // One lock covers every Slack connection operation. The legacy per-action
+    // booleans below still drive their specific labels, while this value keeps
+    // test, credential replacement, disconnect, and navigation from racing.
+    slackConnectionBusy: "",
+    slackTestBusy: false,
+    slackTestStatus: null,
+    slackUpdateOpen: false,
+    slackDisconnectConfirm: false,
+    slackDisconnectBusy: false,
+    slackDisconnectError: "",
     // Settings (model-providers) destination. state.settings holds the last
     // /admin/api/providers payload; provUi/favUi carry the per-provider paste,
     // remove-confirmation, and favorites-search UI state; favorites and
@@ -1393,8 +1500,8 @@ details[open].advanced summary::before {
       if (state.profileScreen === "edit" && state.editingAgentId) return "/admin/profiles/" + encodeURIComponent(state.editingAgentId);
       return "/admin/profiles";
     }
-    if (state.active) return "/admin/channels/" + encodeURIComponent(state.active.workspaceId) + "/" + encodeURIComponent(state.active.channelId);
-    return "/admin";
+    if (state.channelScreen === "detail" && state.active) return "/admin/channels/" + encodeURIComponent(state.active.workspaceId) + "/" + encodeURIComponent(state.active.channelId);
+    return "/admin/channels";
   }
 
   function syncUrl(replace) {
@@ -1427,12 +1534,14 @@ details[open].advanced summary::before {
     }
     if (parts[1] === "channels" && parts[2] && parts[3]) {
       state.view = "channels";
+      state.channelScreen = "detail";
       state.profileScreen = "list";
       selectActive(parts[2], parts[3]);
       render();
       return;
     }
     state.view = "channels";
+    state.channelScreen = "overview";
     state.profileScreen = "list";
     state.disableConfirm = false;
     render();
@@ -1440,7 +1549,21 @@ details[open].advanced summary::before {
 
   function render() {
     var app = document.getElementById("app");
-    app.innerHTML = topbarHtml() + '<div class="body">' + railHtml() + mainHtml() + "</div>" + leavePromptModalHtml() + connectionRemoveModalHtml() + apiConnectionRemoveModalHtml();
+    app.innerHTML = topbarHtml() + '<div class="body">' + railHtml() + mainHtml() + "</div>" + leavePromptModalHtml() + connectionRemoveModalHtml() + apiConnectionRemoveModalHtml() + slackDisconnectModalHtml();
+    // The disconnect confirmation is a true modal: keep the rest of the app
+    // out of the focus and accessibility trees until it is resolved.
+    if (state.slackDisconnectConfirm) {
+      [document.querySelector(".topbar"), document.querySelector(".body")].forEach(function (region) {
+        if (!region) return;
+        region.inert = true;
+        if (region.setAttribute) region.setAttribute("aria-hidden", "true");
+      });
+      // Any background request can replace the page while the modal is open.
+      // Re-home focus after every render so it never falls back to <body>.
+      if (state.slackDisconnectBusy) focusSlackDisconnectDialog();
+      else if (state.slackDisconnectError) focusSlackLiveRegion("slack-disconnect-error");
+      else focusSlackDisconnectAction("slack-disconnect-cancel");
+    }
     syncUrl();
   }
 
@@ -1473,14 +1596,12 @@ details[open].advanced summary::before {
     var connectedBadge = isSlackConnected()
       ? '<span class="badge badge-on"><span class="dot"></span>Connected</span>'
       : "";
-    // The brand doubles as a home affordance back to the channel view — the one
-    // reliable exit from the Profiles destination when the channel rail is empty
-    // (e.g. a not-yet-connected install with no channels to click back to).
+    // The brand doubles as a home affordance back to the Channels overview.
     return '<header class="topbar">' +
       '<div class="brand"><button type="button" class="brand-home" data-action="go-home" aria-label="Home"><span class="avatar">T<svg class="pea" viewBox="0 0 48 48" aria-hidden="true" focusable="false"><circle cx="24" cy="25" r="15.5" fill="#E3AC45"></circle><circle cx="17" cy="17.5" r="4.2" fill="#F4D084"></circle><g class="pea-eyes"><circle class="pea-eye" cx="18.5" cy="24" r="1.9" fill="#3B3220"></circle><circle class="pea-eye" cx="29.5" cy="24" r="1.9" fill="#3B3220"></circle></g><g class="pea-lids"><path d="M16.4 24.2 Q18.5 22 20.6 24.2" fill="none" stroke="#3B3220" stroke-width="1.8" stroke-linecap="round"></path><path d="M27.4 24.2 Q29.5 22 31.6 24.2" fill="none" stroke="#3B3220" stroke-width="1.8" stroke-linecap="round"></path></g><path class="pea-smile" d="M19 29 Q24 32.5 29 29" fill="none" stroke="#3B3220" stroke-width="1.8" stroke-linecap="round"></path><path class="pea-grin" d="M18.5 28.5 Q24 35.5 29.5 28.5 Z" fill="#3B3220"></path><circle class="pea-blush" cx="15.5" cy="28.5" r="2" fill="#DC8A4F"></circle><circle class="pea-blush" cx="32.5" cy="28.5" r="2" fill="#DC8A4F"></circle></svg></span><span class="brand-name">Chickpea</span></button><span class="chip">${targetChip}</span></div>' +
       '<details class="topbar-menu"><summary aria-label="Menu">' + icon("bars-3") + '</summary></details>' +
       '<div class="actions actions-list">' + connectedBadge +
-      '<a class="btn btn-ghost" href="https://api.slack.com/apps" target="_blank" rel="noopener noreferrer">Open Slack console &nearr;</a>' +
+      '<button type="button" class="btn btn-soft' + (state.view === "channels" ? " nav-active" : "") + '" data-action="open-channels">Channels</button>' +
       '<button type="button" class="btn btn-soft' + (state.view === "profiles" ? " nav-active" : "") + '" data-action="open-profiles">Profiles</button>' +
       '<button type="button" class="btn btn-soft' + (state.view === "settings" ? " nav-active" : "") + '" data-action="open-settings">Settings</button></div>' +
       "</header>";
@@ -1509,7 +1630,10 @@ details[open].advanced summary::before {
       group.assignments.push(assignment);
     });
     var html = '<nav class="rail" aria-label="Channels">' +
-      '<div class="rail-head"><span class="section-eyebrow">Slack channels</span><span class="hint" style="font-size:0.6875rem;">' + channels.length + '</span></div>';
+      '<div class="rail-head"><span class="section-eyebrow">Channels</span></div>' +
+      '<button type="button" class="platform-row' + (state.view === "channels" && state.channelScreen === "overview" ? " active" : "") + '" data-action="open-channels">' +
+      '<span class="platform-logo slack-logo-image" aria-hidden="true"></span>Slack' +
+      (isSlackConnected() ? '<span class="platform-status">Connected</span>' : '') + '</button>';
     if (channels.length === 0) {
       html += '<div class="ws-row">' + icon("chevron-down") + esc(railGroupLabel(connectedTeamId())) + '</div>' +
         '<div class="empty" style="margin:8px 0 8px 12px; padding:12px;"><p class="hint" style="margin:0;">No channels yet</p></div>';
@@ -1517,7 +1641,7 @@ details[open].advanced summary::before {
       groups.forEach(function (group) {
         html += '<div class="ws-row">' + icon("chevron-down") + esc(railGroupLabel(group.workspaceId)) + '</div>';
         group.assignments.forEach(function (assignment) {
-          var active = state.active && state.active.workspaceId === assignment.workspaceId && state.active.channelId === assignment.channelId;
+          var active = state.channelScreen === "detail" && state.active && state.active.workspaceId === assignment.workspaceId && state.active.channelId === assignment.channelId;
           var railAgent = agentById(assignment.agentId);
           html += '<button type="button" class="chan-item' + (active ? " active" : "") + '" data-action="select-channel" data-workspace="' + esc(assignment.workspaceId) + '" data-channel="' + esc(assignment.channelId) + '">' +
             '<span class="chan-name">' + esc(channelLabel(assignment)) + '</span>' +
@@ -1530,7 +1654,7 @@ details[open].advanced summary::before {
     // in the transient null-connection state (a failed connection fetch).
     var addDisabled = !isSlackConnected();
     html += '<button type="button" class="rail-add" data-action="toggle-add-channel"' +
-      (addDisabled ? ' disabled title="Connect Slack first"' : '') + '>' + icon("plus") + 'Add channel</button>';
+      (addDisabled ? ' disabled title="Connect Slack first"' : '') + '>' + icon("plus") + 'Add Slack channel</button>';
     if (addDisabled) {
       html += '<p class="hint" style="margin-left:12px; padding:0 10px;">Connect Slack first</p>';
     }
@@ -1549,6 +1673,9 @@ details[open].advanced summary::before {
     // "Manage providers" affordance, connected or not.
     if (state.view === "settings") {
       return '<main class="main"><div class="main-inner">' + settingsMainHtml() + '</div></main>';
+    }
+    if (state.channelScreen === "overview") {
+      return '<main class="main"><div class="main-inner slack-overview">' + slackOverviewHtml() + '</div></main>';
     }
     // Not connected → the main panel is ONLY the Connect stepper. Nothing can
     // answer until there are live wire credentials, so no channel chrome shows.
@@ -1593,6 +1720,161 @@ details[open].advanced summary::before {
       saveBarHtml() +
       slackBottom +
       '</div></main>';
+  }
+
+  // ---- Channels > Slack overview ------------------------------------------
+
+  function slackConnectionMutable() {
+    var credentials = state.slack && state.slack.credentials;
+    return !!credentials && credentials.botToken === "stored" && credentials.signingSecret === "stored";
+  }
+
+  function connectedAssignmentCount() {
+    var teamId = connectedTeamId();
+    var channels = concreteAssignments();
+    return teamId
+      ? channels.filter(function (assignment) { return assignment.workspaceId === teamId; }).length
+      : channels.length;
+  }
+
+  function slackCredentialSummary() {
+    var credentials = state.slack && state.slack.credentials;
+    if (!credentials) return "Credential status unavailable";
+    var sources = [credentials.botToken, credentials.signingSecret];
+    if (sources.every(function (source) { return source === "env"; })) return "Credentials managed by environment";
+    if (sources.some(function (source) { return source === "env"; })) return "Credentials partly managed by environment";
+    return "Credentials stored in Chickpea";
+  }
+
+  function slackBehaviorRowHtml(key, title, description) {
+    var entry = state.slackBehavior && state.slackBehavior[key];
+    var value = entry ? !!entry.value : true;
+    var envManaged = !!entry && entry.source === "env";
+    var busy = state.slackBehaviorBusy === key;
+    // Serialize writes: each response is a complete settings snapshot, so a
+    // second overlapping update could otherwise let an older response win.
+    var disabled = !entry || envManaged || !!state.slackBehaviorBusy;
+    var sourceNote = envManaged ? " Managed by the environment." : "";
+    return '<div class="behavior-row"><div class="behavior-copy">' +
+      '<span class="behavior-title">' + esc(title) + '</span>' +
+      '<span class="hint">' + esc(description + sourceNote) + '</span></div>' +
+      '<span class="behavior-state">' + (busy ? "Saving" : value ? "On" : "Off") + '</span>' +
+      '<span class="toggle"><span class="thumb"></span><input type="checkbox" data-action="slack-behavior" data-setting="' + esc(key) + '" ' +
+      (value ? "checked " : "") + (disabled ? "disabled " : "") + 'aria-label="' + esc(title) + '"></span></div>';
+  }
+
+  function slackBehaviorHtml() {
+    if (!state.slackBehavior) {
+      if (state.slackBehaviorBusy) {
+        return '<div class="empty"><p class="field-label">Loading Slack behavior&hellip;</p></div>';
+      }
+      return '<div class="empty"><p class="field-label">Slack behavior could not load</p>' +
+        '<p class="error" role="alert">' + esc(state.slackBehaviorError || "Reload the settings to try again.") + '</p>' +
+        '<button type="button" class="btn btn-soft btn-sm" data-action="slack-behavior-retry">Retry</button></div>';
+    }
+    return '<div class="behavior-list">' +
+      slackBehaviorRowHtml("allowDms", "Allow direct messages", "Chickpea answers Slack DMs with the install\'s Default profile and provider budget.") +
+      slackBehaviorRowHtml("unassignedHint", "Help people configure unassigned channels", "When someone mentions @Tag in an unassigned channel, Chickpea privately shares setup steps.") +
+      slackBehaviorRowHtml("welcomeOnJoin", "Post a welcome when @Tag joins an assigned channel", "Chickpea starts the conversation with a short welcome message.") +
+      '</div>' +
+      (state.slackBehaviorError
+        ? '<div class="inline-status error" role="alert">' + esc(state.slackBehaviorError) +
+          ' <button type="button" class="link-btn" data-action="slack-behavior-retry">Retry</button></div>'
+        : '');
+  }
+
+  function slackConnectionStatusHtml() {
+    var status = state.slackTestStatus;
+    if (!status) return "";
+    return '<p class="inline-status ' + (status.ok ? "ok" : "error") + '" role="status" aria-live="polite">' + esc(status.message) + '</p>';
+  }
+
+  function slackUpdateCredentialsHtml() {
+    if (!state.slackUpdateOpen) return "";
+    var saveButton = state.slackBusy
+      ? '<button type="submit" class="btn btn-primary" disabled><span class="spinner"></span>Validating&hellip;</button>'
+      : '<button type="submit" class="btn btn-primary">Validate &amp; update</button>';
+    return '<div class="empty" style="gap:14px;">' +
+      '<div class="section-head"><div><p class="field-label">Update Slack credentials</p>' +
+      '<p class="hint">Rotate this workspace&rsquo;s credentials, or switch to another workspace. Existing profiles and channel mappings stay saved.</p></div>' +
+      '<button type="button" class="btn btn-ghost btn-sm" data-action="slack-update-close"' + (state.slackConnectionBusy ? " disabled" : "") + '>Cancel</button></div>' +
+      '<form data-action="slack-connect-form" style="display:flex; flex-direction:column; gap:12px;">' +
+      '<div class="form-grid"><div class="field"><label class="field-label" for="slack-update-bot-token">Bot User OAuth Token</label>' +
+      '<input id="slack-update-bot-token" class="input mono" name="botToken" type="password" autocomplete="off" placeholder="xoxb-&hellip;" value="' + esc(state.slackDraft.botToken) + '" data-action="slack-bot-token"' + (state.slackConnectionBusy ? " disabled" : "") + '></div>' +
+      '<div class="field"><label class="field-label" for="slack-update-signing-secret">Signing Secret</label>' +
+      '<input id="slack-update-signing-secret" class="input mono" name="signingSecret" type="password" autocomplete="off" placeholder="Signing secret" value="' + esc(state.slackDraft.signingSecret) + '" data-action="slack-signing-secret"' + (state.slackConnectionBusy ? " disabled" : "") + '></div></div>' +
+      '<div class="save-bar" style="justify-content:flex-start;">' + saveButton +
+      (state.slackError ? '<span class="field-error" role="alert" aria-live="assertive" tabindex="-1" data-role="slack-connection-error">' + esc(state.slackError) + '</span>' : "") + '</div></form></div>';
+  }
+
+  function slackOverviewHtml() {
+    var head = '<div class="slack-head"><span class="slack-logo-large slack-logo-image" role="img" aria-label="Slack"></span>' +
+      '<div><h1 class="page-title" style="font-size:1.75rem;">Slack</h1><p class="hint">Manage where Chickpea answers in Slack.</p></div></div>';
+    if (!state.slack) {
+      return head + '<div class="empty"><p class="field-label">Slack settings are unavailable</p><p class="hint">Reload the page to try the connection again.</p></div>';
+    }
+    if (!isSlackConnected()) {
+      return head + slackStepperHtml();
+    }
+    if (state.addChannelOpen) {
+      return head + addChannelPanelHtml();
+    }
+    var count = connectedAssignmentCount();
+    var mutable = slackConnectionMutable();
+    var workspace = '<section class="section"><div class="section-head"><h2 class="section-title">Connected workspace</h2></div>' +
+      '<div class="workspace-card"><div class="workspace-ident"><span class="workspace-icon"><span class="platform-logo slack-logo-image" aria-hidden="true"></span></span>' +
+      '<div style="min-width:0;"><div class="workspace-name">' + esc(connectedTeamName()) + '</div><div class="workspace-meta mono">Team ID ' + esc(connectedTeamId() || "Unknown") + '</div></div></div>' +
+      '<span class="badge badge-on"><span class="dot"></span>Connected</span>' +
+      '<span class="hint">' + esc(count + " assigned " + (count === 1 ? "channel" : "channels")) + '</span>' +
+      '<span class="hint">' + esc(slackCredentialSummary()) + '</span></div></section>';
+    var behavior = '<section class="section"><div class="section-head"><div><h2 class="section-title">Slack behavior</h2>' +
+      '<p class="hint">Control how Chickpea behaves across this Slack workspace.</p></div></div>' + slackBehaviorHtml() + '</section>';
+    var connectionBusy = !!state.slackConnectionBusy;
+    var testButton = state.slackTestBusy
+      ? '<button type="button" class="btn btn-soft i-lead" disabled><span class="spinner"></span>Testing&hellip;</button>'
+      : '<button type="button" class="btn btn-soft i-lead" data-action="slack-test"' + (connectionBusy ? " disabled" : "") + '>' + icon("arrow-path") + 'Test connection</button>';
+    var updateButton = '<button type="button" class="btn btn-soft i-lead" data-action="slack-update-open"' +
+      (mutable && !connectionBusy ? "" : ' disabled' + (!mutable ? ' title="Credentials managed by the environment"' : "")) + '>' + icon("pencil") + 'Update credentials</button>';
+    var connection = '<section class="section"><div class="section-head"><div><h2 class="section-title">Connection</h2>' +
+      '<p class="hint">Manage this Slack workspace connection.</p></div></div>' +
+      '<div class="action-well">' + testButton + updateButton +
+      '<a class="btn btn-ghost slack-console-link" href="https://api.slack.com/apps" target="_blank" rel="noopener noreferrer">Open Slack console &nearr;</a>' +
+      slackConnectionStatusHtml() + '</div>' + slackUpdateCredentialsHtml() +
+      '<div class="danger-panel"><div class="danger-copy"><span class="danger-title">Disconnect this workspace</span>' +
+      '<span class="hint">Stops Chickpea from answering. Profiles and channel configuration stay saved so you can reconnect later. This does not uninstall the Slack app.</span>' +
+      (!mutable ? '<span class="hint">This connection is managed by the environment and is read-only here.</span>' : "") +
+      (state.slackDisconnectError ? '<span class="inline-status error">' + esc(state.slackDisconnectError) + '</span>' : "") + '</div>' +
+      '<button type="button" class="btn btn-danger" data-action="slack-disconnect-open"' + (mutable && !connectionBusy ? "" : " disabled") + '>Disconnect</button></div></section>';
+    var foot = '<div class="slack-overview-foot"><button type="button" class="btn btn-primary i-lead" data-action="toggle-add-channel">' + icon("plus") + 'Add Slack channel</button>' +
+      '<span class="hint">Choose a channel where Chickpea should answer.</span></div>';
+    return head + successToastHtml() + workspace + behavior + connection + foot;
+  }
+
+  function slackDisconnectModalHtml() {
+    if (!state.slackDisconnectConfirm) return "";
+    var button = state.slackDisconnectBusy
+      ? '<button type="button" class="btn btn-danger" disabled><span class="spinner"></span>Disconnecting&hellip;</button>'
+      : '<button type="button" class="btn btn-danger" data-action="slack-disconnect-confirm">Disconnect workspace</button>';
+    return '<div class="modal-backdrop"><div class="modal-card" role="dialog" aria-modal="true" aria-label="Disconnect Slack workspace" tabindex="-1" data-role="slack-disconnect-dialog">' +
+      '<h2 class="modal-title">Disconnect ' + esc(connectedTeamName()) + '?</h2>' +
+      '<p class="modal-body">Chickpea will stop answering in Slack. Profiles and channel mappings stay saved. The Slack app itself remains installed until you remove it in Slack.</p>' +
+      (state.slackDisconnectError ? '<p class="error" style="margin-top:10px;" role="alert" aria-live="assertive" tabindex="-1" data-role="slack-disconnect-error">' + esc(state.slackDisconnectError) + '</p>' : "") +
+      '<div class="modal-foot"><button type="button" class="btn btn-ghost" data-action="slack-disconnect-cancel"' + (state.slackDisconnectBusy ? " disabled" : "") + '>Keep connected</button><span class="spacer"></span>' + button + '</div></div></div>';
+  }
+
+  function focusSlackDisconnectAction(action) {
+    var control = document.querySelector('[data-action="' + action + '"]');
+    if (control && control.focus) control.focus();
+  }
+
+  function focusSlackDisconnectDialog() {
+    var dialog = document.querySelector('[data-role="slack-disconnect-dialog"]');
+    if (dialog && dialog.focus) dialog.focus();
+  }
+
+  function focusSlackLiveRegion(role) {
+    var region = document.querySelector('[data-role="' + role + '"]');
+    if (region && region.focus) region.focus();
   }
 
   // ---- Connected funnel (card 04) ------------------------------------------
@@ -1811,7 +2093,7 @@ details[open].advanced summary::before {
       ? '<button type="submit" class="btn btn-primary" disabled><span class="spinner"></span>Validating&hellip;</button>'
       : '<button type="submit" class="btn btn-primary">Validate &amp; save</button>';
     var validateTail = state.slackError
-      ? '<span class="field-error">' + esc(state.slackError) + '</span>'
+      ? '<span class="field-error" role="alert" aria-live="assertive" tabindex="-1" data-role="slack-connection-error">' + esc(state.slackError) + '</span>'
       : (state.slackBusy ? "" : '<span class="hint">The token is checked live against Slack before anything is saved. The signing secret is verified on the first real Slack event.</span>');
     return '<div class="step-block">' +
       '<span class="step-num active">2</span>' +
@@ -1850,6 +2132,7 @@ details[open].advanced summary::before {
   }
 
   function submitSlackConnection(formData) {
+    if (state.slackConnectionBusy) return;
     // Submitting the paste form means step 2 is the active surface — pin it so a
     // validation error renders against the fields (not a collapsed step).
     state.slackStep = 2;
@@ -1860,9 +2143,11 @@ details[open].advanced summary::before {
     if (!signingSecret) { state.slackError = "Signing secret is required."; render(); return; }
     state.slackError = "";
     state.slackBusy = true;
+    state.slackConnectionBusy = "update";
     render();
     postJson("/admin/api/slack-connection", "POST", { botToken: botToken, signingSecret: signingSecret }).then(function (result) {
       state.slackBusy = false;
+      state.slackConnectionBusy = "";
       state.slackDraft = { botToken: "", signingSecret: "" };
       // The connected funnel's success toast is driven off the POST result
       // (team + botName): the follow-up GET reports connected but not botName,
@@ -1870,11 +2155,14 @@ details[open].advanced summary::before {
       state.slackToast = { team: (result && result.team) || "", botName: (result && result.botName) || "" };
       state.slackToastDismissed = false;
       state.slackStep = 1;
+      state.slackUpdateOpen = false;
       return refreshData();
     }).catch(function (error) {
       state.slackBusy = false;
-      state.slackError = slackErrorText(error.message, error.detail);
+      state.slackConnectionBusy = "";
+      state.slackError = error.serverMessage || slackErrorText(error.message, error.detail);
       render();
+      focusSlackLiveRegion("slack-connection-error");
     });
   }
 
@@ -3837,6 +4125,7 @@ details[open].advanced summary::before {
   }
 
   function selectActive(workspaceId, channelId) {
+    state.channelScreen = "detail";
     state.active = { workspaceId: workspaceId, channelId: channelId };
     var assignment = activeAssignment();
     state.channelDraft = channelDraftFrom(assignment);
@@ -3858,16 +4147,20 @@ details[open].advanced summary::before {
       api("/admin/api/models"),
       // Resilient on purpose: the connection card is auxiliary — if this
       // endpoint fails, the rest of the admin page must still render.
-      api("/admin/api/slack-connection").catch(function () { return null; })
+      api("/admin/api/slack-connection").catch(function () { return null; }),
+      api("/admin/api/slack-behavior").then(function (body) {
+        return { body: body, error: "" };
+      }).catch(function (error) {
+        return { body: null, error: error.serverMessage || error.message || "Could not load Slack behavior." };
+      })
     ]).then(function (parts) {
       state.agents = parts[0].agents || [];
       state.assignments = parts[1].assignments || [];
       state.models = parts[2];
       state.slack = parts[3];
-      var channels = concreteAssignments();
-      if (!state.active && channels[0]) {
-        state.active = { workspaceId: channels[0].workspaceId, channelId: channels[0].channelId };
-      }
+      state.slackBehavior = parts[4].body;
+      state.slackBehaviorError = parts[4].error;
+      state.slackBehaviorBusy = "";
       if (state.active) {
         var assignment = activeAssignment();
         if (assignment) {
@@ -3973,6 +4266,34 @@ details[open].advanced summary::before {
     if (!target) return;
     var action = target.getAttribute("data-action");
 
+    // While the Slack disconnect dialog is open, its two buttons are the only
+    // actionable controls. The background is inert too, but this guard keeps
+    // synthetic/programmatic clicks from bypassing the modal contract.
+    if (state.slackDisconnectConfirm) {
+      if (action === "slack-disconnect-cancel") {
+        if (state.slackDisconnectBusy) return;
+        state.slackDisconnectConfirm = false;
+        state.slackDisconnectError = "";
+        render();
+        focusSlackDisconnectAction("slack-disconnect-open");
+      } else if (action === "slack-disconnect-confirm") {
+        disconnectSlack();
+      }
+      return;
+    }
+
+    // A credential replacement is a short, atomic transition. Do not let a
+    // navigation or second connection action make it look canceled while the
+    // POST is still live. Read-only connection tests may finish in the
+    // background, but they cannot overlap another connection operation.
+    if (state.slackConnectionBusy === "update") return;
+    if (state.slackConnectionBusy && (
+      action === "slack-test" ||
+      action === "slack-update-open" ||
+      action === "slack-update-close" ||
+      action === "slack-disconnect-open"
+    )) return;
+
     // Unsaved-changes guard. The modal's own buttons resolve it; while it is
     // open, no other click acts; and an attempt to leave a dirty editor opens
     // it instead of navigating.
@@ -3991,20 +4312,32 @@ details[open].advanced summary::before {
       return;
     }
 
+    // Channels is the platform overview. Concrete rows remain detail screens
+    // underneath it; the brand and top-level Channels button always return here.
+    if (action === "open-channels") { openChannels(); }
     // Profiles is now a main-panel destination — open lands on the overview,
     // or (with a data-agent) directly on that profile's edit detail (the
     // channel-page Profile row's Edit affordance).
     if (action === "open-profiles") { enterProfiles(target.getAttribute("data-agent")); }
-    // Brand-as-home: the reliable exit back to the channel view from Profiles.
-    if (action === "go-home") { state.view = "channels"; state.profileScreen = "list"; state.disableConfirm = false; render(); }
+    // Brand-as-home: the reliable exit back to the Channels overview.
+    if (action === "go-home") { openChannels(); }
     // Stepper: mark step 1 done and reveal step 2. Not preventing default lets
     // the Create anchor still open Slack in a new tab.
     if (action === "advance-slack-step") { state.slackStep = 2; render(); }
     if (action === "dismiss-slack-toast") { state.slackToastDismissed = true; render(); }
-    if (action === "select-channel") { state.view = "channels"; selectActive(target.getAttribute("data-workspace"), target.getAttribute("data-channel")); render(); }
+    if (action === "select-channel") { state.view = "channels"; state.channelScreen = "detail"; selectActive(target.getAttribute("data-workspace"), target.getAttribute("data-channel")); render(); }
     if (action === "toggle-add-channel") { openAddChannel(); }
     if (action === "cancel-add-channel") { state.addChannelOpen = false; state.addChannelManual = false; state.addChannelError = ""; state.addChannelAgentId = ""; render(); }
     if (action === "refresh-channels") { loadSlackChannels(true); }
+    if (action === "slack-behavior-retry") { loadSlackBehavior(); }
+    if (action === "slack-test") { testSlackConnection(); }
+    if (action === "slack-update-open" && slackConnectionMutable()) { state.slackUpdateOpen = true; state.slackError = ""; render(); }
+    if (action === "slack-update-close" && !state.slackConnectionBusy) { state.slackUpdateOpen = false; state.slackDraft = { botToken: "", signingSecret: "" }; state.slackError = ""; render(); }
+    if (action === "slack-disconnect-open" && slackConnectionMutable()) {
+      state.slackDisconnectConfirm = true;
+      state.slackDisconnectError = "";
+      render();
+    }
     if (action === "toggle-manual-channel") { state.addChannelManual = !state.addChannelManual; state.addChannelError = ""; render(); }
     if (action === "toggle-swap") { state.swapOpen = !state.swapOpen; render(); }
     if (action === "attach-selected-profile") { attachSelectedProfile(); }
@@ -4073,7 +4406,7 @@ details[open].advanced summary::before {
     if (action === "discard-profile") { discardProfile(); }
     if (action === "delete-profile") { deleteProfile(); }
     if (action === "detach-channel") { detachProfileChannel(target.getAttribute("data-workspace"), target.getAttribute("data-channel")); }
-    if (action === "open-channel-from-profile") { state.view = "channels"; state.profileScreen = "list"; selectActive(target.getAttribute("data-workspace"), target.getAttribute("data-channel")); render(); }
+    if (action === "open-channel-from-profile") { state.view = "channels"; state.channelScreen = "detail"; state.profileScreen = "list"; selectActive(target.getAttribute("data-workspace"), target.getAttribute("data-channel")); render(); }
     if (action === "disable-keep") { state.disableConfirm = false; render(); }
     if (action === "disable-confirm") { if (state.profileDraft) state.profileDraft.enabled = false; state.disableConfirm = false; state.profileDirty = true; render(); }
     // Custom-skills editor: open blank / open seeded / remove / save / cancel.
@@ -4411,6 +4744,9 @@ details[open].advanced summary::before {
       state.dirty = true;
       render();
     }
+    if (action === "slack-behavior") {
+      saveSlackBehavior(target.getAttribute("data-setting"), !!target.checked);
+    }
     // Remember the picked channel so a Refresh / re-render keeps the selection.
     if (action === "select-channel-option") { state.addChannelSelected = target.value; }
     if (action === "attach-channel-option") { state.attachChannelSelected = target.value; }
@@ -4513,6 +4849,37 @@ details[open].advanced summary::before {
   }
 
   document.addEventListener("keydown", function (event) {
+    if (state.slackDisconnectConfirm && event.key === "Tab") {
+      event.preventDefault();
+      if (state.slackDisconnectBusy) {
+        focusSlackDisconnectDialog();
+        return;
+      }
+      var cancelDisconnect = document.querySelector('[data-action="slack-disconnect-cancel"]');
+      var confirmDisconnect = document.querySelector('[data-action="slack-disconnect-confirm"]');
+      if (!cancelDisconnect || !confirmDisconnect) {
+        focusSlackDisconnectDialog();
+        return;
+      }
+      var activeDisconnect = document.activeElement;
+      var nextDisconnect = event.shiftKey
+        ? (activeDisconnect === cancelDisconnect ? confirmDisconnect : cancelDisconnect)
+        : (activeDisconnect === confirmDisconnect ? cancelDisconnect : confirmDisconnect);
+      if (nextDisconnect.focus) nextDisconnect.focus();
+      return;
+    }
+    if (state.slackDisconnectConfirm && (event.key === "Escape" || event.key === "Esc")) {
+      event.preventDefault();
+      if (state.slackDisconnectBusy) {
+        focusSlackDisconnectDialog();
+        return;
+      }
+      state.slackDisconnectConfirm = false;
+      state.slackDisconnectError = "";
+      render();
+      focusSlackDisconnectAction("slack-disconnect-open");
+      return;
+    }
     if (state.profileRenaming) {
       if (event.key === "Enter") { event.preventDefault(); closeProfileRename(false); return; }
       if (event.key === "Escape" || event.key === "Esc") { closeProfileRename(true); return; }
@@ -4544,7 +4911,11 @@ details[open].advanced summary::before {
   // in the unit-test VM context, so registration is skipped there.
   if (typeof window !== "undefined" && window.addEventListener) {
     window.addEventListener("beforeunload", function (event) {
-      if (state.profileScreen === "edit" && state.profileDirty) {
+      if (
+        (state.profileScreen === "edit" && state.profileDirty) ||
+        state.slackConnectionBusy === "update" ||
+        state.slackConnectionBusy === "disconnect"
+      ) {
         event.preventDefault();
         event.returnValue = "";
       }
@@ -4555,6 +4926,18 @@ details[open].advanced summary::before {
     window.addEventListener("popstate", function () {
       if (!canNavigate || !routeReady) return;
       var targetPath = location.pathname;
+      if (state.slackConnectionBusy === "update" || state.slackConnectionBusy === "disconnect") {
+        history.pushState(null, "", canonicalPath());
+        if (state.slackConnectionBusy === "disconnect") focusSlackDisconnectDialog();
+        return;
+      }
+      // A non-busy disconnect confirmation is not a route. Close it before
+      // applying Back/Forward so the old dialog cannot survive over a new page
+      // or try to restore focus to a control that no longer exists.
+      if (state.slackDisconnectConfirm) {
+        state.slackDisconnectConfirm = false;
+        state.slackDisconnectError = "";
+      }
       if (state.profileScreen === "edit" && state.profileDirty && targetPath !== canonicalPath()) {
         history.pushState(null, "", canonicalPath());
         state.leavePrompt = { action: "route", path: targetPath };
@@ -4584,13 +4967,113 @@ details[open].advanced summary::before {
     render();
   }
 
+  function openChannels() {
+    state.view = "channels";
+    state.channelScreen = "overview";
+    state.profileScreen = "list";
+    state.disableConfirm = false;
+    state.addChannelOpen = false;
+    state.slackUpdateOpen = false;
+    state.slackDisconnectConfirm = false;
+    if (isSlackConnected()) {
+      if (!state.slackBehavior) loadSlackBehavior();
+      if (!state.slackChannels && !state.slackChannelsLoading) loadSlackChannels(false);
+    }
+    render();
+  }
+
   function openAddChannel(agentId) {
     state.view = "channels";
+    state.channelScreen = "overview";
     state.addChannelOpen = true;
     state.addChannelError = "";
     state.addChannelInvite = "";
     state.addChannelAgentId = agentId || "";
     if (!ensureSlackChannelsLoaded()) render();
+  }
+
+  function loadSlackBehavior() {
+    if (state.slackBehaviorBusy) return Promise.resolve(null);
+    state.slackBehaviorBusy = "load";
+    state.slackBehaviorError = "";
+    render();
+    return api("/admin/api/slack-behavior").then(function (body) {
+      state.slackBehavior = body;
+      state.slackBehaviorBusy = "";
+      render();
+      return body;
+    }).catch(function (error) {
+      state.slackBehaviorError = error.serverMessage || error.message || "Could not load Slack behavior.";
+      state.slackBehaviorBusy = "";
+      render();
+      return null;
+    });
+  }
+
+  function saveSlackBehavior(key, value) {
+    if (!key || state.slackBehaviorBusy || !state.slackBehavior || !state.slackBehavior[key]) return;
+    var prior = state.slackBehavior[key].value;
+    state.slackBehavior[key].value = value;
+    state.slackBehaviorBusy = key;
+    state.slackBehaviorError = "";
+    render();
+    var body = {};
+    body[key] = value;
+    postJson("/admin/api/slack-behavior", "PUT", body).then(function (result) {
+      state.slackBehavior = result;
+      state.slackBehaviorBusy = "";
+      render();
+    }).catch(function (error) {
+      state.slackBehavior[key].value = prior;
+      state.slackBehaviorBusy = "";
+      state.slackBehaviorError = error.serverMessage || error.message || "Could not save Slack behavior.";
+      render();
+    });
+  }
+
+  function testSlackConnection() {
+    if (state.slackConnectionBusy) return;
+    state.slackConnectionBusy = "test";
+    state.slackTestBusy = true;
+    state.slackTestStatus = null;
+    render();
+    postJson("/admin/api/slack-connection/test", "POST", {}).then(function (result) {
+      state.slackTestBusy = false;
+      state.slackConnectionBusy = "";
+      var team = (result && (result.teamName || result.teamId)) || connectedTeamName();
+      state.slackTestStatus = { ok: true, message: "Connection healthy" + (team ? " · " + team : "") };
+      render();
+    }).catch(function (error) {
+      state.slackTestBusy = false;
+      state.slackConnectionBusy = "";
+      state.slackTestStatus = { ok: false, message: slackErrorText(error.message, error.detail) };
+      render();
+    });
+  }
+
+  function disconnectSlack() {
+    if (state.slackConnectionBusy) return;
+    state.slackConnectionBusy = "disconnect";
+    state.slackDisconnectBusy = true;
+    state.slackDisconnectError = "";
+    render();
+    api("/admin/api/slack-connection", { method: "DELETE" }).then(function () {
+      state.slackDisconnectBusy = false;
+      state.slackConnectionBusy = "";
+      state.slackDisconnectConfirm = false;
+      state.slackDisconnectError = "";
+      state.slackTestStatus = null;
+      state.slackBehavior = null;
+      state.slackChannels = null;
+      state.active = null;
+      state.channelScreen = "overview";
+      return refreshData();
+    }).catch(function (error) {
+      state.slackDisconnectBusy = false;
+      state.slackConnectionBusy = "";
+      state.slackDisconnectError = error.serverMessage || error.message || "Could not disconnect Slack.";
+      render();
+    });
   }
 
   function openProfileAttachPicker() {
@@ -4687,6 +5170,7 @@ details[open].advanced summary::before {
       state.addChannelAgentId = "";
       state.channelFormDraft.channelId = "";
       state.active = { workspaceId: workspaceId, channelId: channelId };
+      state.channelScreen = "detail";
       // Slack's authoritative name (server override) becomes the display label.
       var savedLabel = normalizeChannelLabel((result && result.assignment && result.assignment.channelLabel) || label || channelId);
       state.addChannelInvite = result && result.isMember === false
@@ -5411,7 +5895,7 @@ details[open].advanced summary::before {
   // The four ways to leave the profile editor: the top-nav Profiles/Settings,
   // the brand-home logo, and the "<- Profiles" back link.
   function isEditLeaveAction(action) {
-    return action === "open-profiles" || action === "open-settings" ||
+    return action === "open-channels" || action === "open-profiles" || action === "open-settings" ||
       action === "go-home" || action === "profiles-back";
   }
 
@@ -5438,10 +5922,8 @@ details[open].advanced summary::before {
       applyRoute(pending.path);
     } else if (action === "open-settings") {
       openSettings();
-    } else if (action === "go-home") {
-      state.view = "channels";
-      state.profileScreen = "list";
-      render();
+    } else if (action === "go-home" || action === "open-channels") {
+      openChannels();
     } else {
       state.view = "profiles";
       state.profileScreen = "list";
@@ -5615,8 +6097,8 @@ details[open].advanced summary::before {
 
   // Boot: capture the deep link BEFORE the first data render (which would
   // otherwise sync the URL to the default state), apply it once data is
-  // loaded, then turn URL sync on with a replace so landing on /admin doesn't
-  // add a history entry for the auto-selected channel.
+  // loaded, then turn URL sync on with a replace so landing on /admin becomes
+  // the canonical Channels overview without adding a history entry.
   var initialRoute = canNavigate ? location.pathname : "/admin";
   refreshData().then(function () {
     if (initialRoute !== "/admin") applyRoute(initialRoute);
