@@ -15,6 +15,14 @@ interface FakeElement {
   innerHTML: string;
 }
 
+interface FakeRegion {
+  inert: boolean;
+  attributes: Record<string, string>;
+  setAttribute(name: string, value: string): void;
+  getAttribute(name: string): string | null;
+  hasAttribute(name: string): boolean;
+}
+
 interface FakeTarget {
   closest(selector: string): FakeTarget | null;
   getAttribute(name: string): string | null;
@@ -24,7 +32,7 @@ interface FakeSubmitTarget extends FakeTarget {
   __formData: Record<string, string>;
 }
 
-type Listener = (event: { target: FakeTarget; preventDefault?(): void }) => void;
+type Listener = (event: { target: FakeTarget; key?: string; shiftKey?: boolean; preventDefault?(): void }) => void;
 type AssignmentFixture = {
   workspaceId: string;
   channelId: string;
@@ -47,6 +55,12 @@ type SlackChannelsFixture = {
   teamId: string;
   teamName: string;
   truncated?: boolean;
+};
+type SlackBehaviorEntry = { value: boolean; source: 'env' | 'stored' | 'default' };
+type SlackBehaviorFixture = {
+  allowDms: SlackBehaviorEntry;
+  unassignedHint: SlackBehaviorEntry;
+  welcomeOnJoin: SlackBehaviorEntry;
 };
 
 const releaseAgent = {
@@ -160,7 +174,14 @@ type ModelProviderFixture = {
 function runAdminPageHarness(
   options: {
     assignments?: AssignmentFixture[];
-    slackConnection?: SlackConnectionFixture;
+    slackConnection?: SlackConnectionFixture | null;
+    slackBehavior?: SlackBehaviorFixture;
+    slackBehaviorGetFailures?: number;
+    slackBehaviorPutError?: { status: number; error: string; message?: string };
+    slackTestError?: { status: number; error: string; detail?: string };
+    slackPostError?: { status: number; error: string; detail?: string; message?: string };
+    slackDisconnectError?: { status: number; error: string };
+    initialPath?: string;
     slackChannels?: SlackChannelsFixture;
     slackChannelFailures?: number;
     putIsMember?: boolean;
@@ -190,6 +211,17 @@ function runAdminPageHarness(
   listeners: Record<string, Listener>;
   putAssignments: unknown[];
   slackPosts: unknown[];
+  slackBehaviorPuts: Array<Record<string, boolean>>;
+  slackBehaviorGets(): number;
+  slackTestCalls(): number;
+  slackDisconnectCalls(): number;
+  topbarRegion: FakeRegion;
+  bodyRegion: FakeRegion;
+  focusedAction(): string | null;
+  locationPath(): string;
+  popstate(path: string): void;
+  historyPushes: string[];
+  historyReplaces: string[];
   channelListCalls: string[];
   providerKeyPosts: Array<{ id: string; key: string }>;
   providerKeyDeletes: string[];
@@ -204,12 +236,62 @@ function runAdminPageHarness(
   gallerySearchSelections: Array<[number, number]>;
   resolveOpsEffective(): void;
 } {
-  const app: FakeElement = { innerHTML: '' };
+  const makeRegion = (): FakeRegion => ({
+    inert: false,
+    attributes: {},
+    setAttribute(name: string, value: string) {
+      this.attributes[name] = value;
+    },
+    getAttribute(name: string) {
+      return this.attributes[name] ?? null;
+    },
+    hasAttribute(name: string) {
+      return Object.hasOwn(this.attributes, name);
+    },
+  });
+  const resetRegion = (region: FakeRegion) => {
+    region.inert = false;
+    region.attributes = {};
+  };
+  const topbarRegion = makeRegion();
+  const bodyRegion = makeRegion();
+  let appHtml = '';
+  let focusedAction: string | null = null;
+  let activeElement: { focus(): void } | null = null;
+  const focusElements: Record<string, { focus(): void }> = {};
+  const focusElement = (name: string) => {
+    if (!focusElements[name]) {
+      const element = {
+        focus() {
+          focusedAction = name;
+          activeElement = element;
+        },
+      };
+      focusElements[name] = element;
+    }
+    return focusElements[name];
+  };
+  const app: FakeElement = {
+    get innerHTML() {
+      return appHtml;
+    },
+    set innerHTML(value: string) {
+      appHtml = value;
+      focusedAction = null;
+      activeElement = null;
+      resetRegion(topbarRegion);
+      resetRegion(bodyRegion);
+    },
+  };
   const modalRoot: FakeElement = { innerHTML: '' };
   const favContainers: Record<string, FakeElement> = {};
   const listeners: Record<string, Listener> = {};
   const putAssignments: unknown[] = [];
   const slackPosts: unknown[] = [];
+  const slackBehaviorPuts: Array<Record<string, boolean>> = [];
+  let slackBehaviorGets = 0;
+  let slackTestCalls = 0;
+  let slackDisconnectCalls = 0;
   const channelListCalls: string[] = [];
   const providerKeyPosts: Array<{ id: string; key: string }> = [];
   const providerKeyDeletes: string[] = [];
@@ -224,7 +306,14 @@ function runAdminPageHarness(
   const gallerySearchSelections: Array<[number, number]> = [];
   const mcpTestResult = options.mcpTestResult;
   let assignments = options.assignments ?? defaultAssignments();
-  const slackConnection = options.slackConnection;
+  const slackConnection = options.slackConnection === undefined ? connectedSlackFixture() : options.slackConnection;
+  let slackBehavior: SlackBehaviorFixture = options.slackBehavior ?? {
+    allowDms: { value: true, source: 'default' },
+    unassignedHint: { value: true, source: 'default' },
+    welcomeOnJoin: { value: true, source: 'default' },
+  };
+  let slackBehaviorGetFailures = options.slackBehaviorGetFailures ?? 0;
+  const slackBehaviorPutError = options.slackBehaviorPutError;
   const slackChannels = options.slackChannels;
   const putIsMember = options.putIsMember;
   const putAssignmentError = options.putAssignmentError;
@@ -233,12 +322,34 @@ function runAdminPageHarness(
   // (the request init) and would otherwise shadow these harness fixtures.
   const agentsFixture = options.agents;
   const providerKeyReject = options.providerKeyReject;
+  const slackTestError = options.slackTestError;
+  const slackPostError = options.slackPostError;
+  const slackDisconnectError = options.slackDisconnectError;
   const modelProviders = options.modelProviders;
   const effectiveError = options.effectiveError;
   const agentWriteError = options.agentWriteError;
   const skillResolveError = options.skillResolveError;
   const skillResolution = options.skillResolution;
   let resolveOpsEffective: (() => void) | undefined;
+  const location = { pathname: options.initialPath ?? '/admin' };
+  const historyPushes: string[] = [];
+  const historyReplaces: string[] = [];
+  const history = {
+    pushState(_state: unknown, _title: string, path: string) {
+      location.pathname = String(path);
+      historyPushes.push(location.pathname);
+    },
+    replaceState(_state: unknown, _title: string, path: string) {
+      location.pathname = String(path);
+      historyReplaces.push(location.pathname);
+    },
+  };
+  const windowListeners: Record<string, (event: Record<string, unknown>) => void> = {};
+  const window = {
+    addEventListener(type: string, listener: (event: Record<string, unknown>) => void) {
+      windowListeners[type] = listener;
+    },
+  };
 
   // Mutable provider state so a POST/DELETE key flips the /admin/api/providers
   // status the next loadSettings() reads (mirrors the real endpoint).
@@ -267,6 +378,9 @@ function runAdminPageHarness(
   };
 
   const document = {
+    get activeElement() {
+      return activeElement;
+    },
     getElementById(id: string) {
       if (id === 'app') return app;
       if (id === 'modal-root') return modalRoot;
@@ -288,6 +402,16 @@ function runAdminPageHarness(
       return null;
     },
     querySelector(selector: string) {
+      if (selector === '.topbar') return topbarRegion;
+      if (selector === '.body') return bodyRegion;
+      const slackFocusRole = selector.match(/^\[data-role="(slack-(?:disconnect-dialog|connection-error|disconnect-error))"\]$/)?.[1];
+      if (slackFocusRole && appHtml.includes(`data-role="${slackFocusRole}"`)) {
+        return focusElement(slackFocusRole);
+      }
+      const slackFocusAction = selector.match(/^\[data-action="(slack-disconnect-(?:cancel|open|confirm))"\]$/)?.[1];
+      if (slackFocusAction && appHtml.includes(`data-action="${slackFocusAction}"`)) {
+        return focusElement(slackFocusAction);
+      }
       if (selector === '[data-role="attach-channel"]' && options.attachSelectionValue !== undefined) {
         return { value: options.attachSelectionValue };
       }
@@ -546,8 +670,65 @@ function runAdminPageHarness(
         jsonResponse({ ok: true, provider: { id, status: 'stored', modelCount: 2 }, models: [{ id: 'm1' }, { id: 'm2' }] }),
       );
     }
+    if (path === '/admin/api/slack-behavior' && method === 'PUT') {
+      const body = JSON.parse(options?.body ?? '{}') as Record<string, boolean>;
+      slackBehaviorPuts.push(body);
+      if (slackBehaviorPutError) {
+        return Promise.resolve(
+          jsonResponse(
+            {
+              error: slackBehaviorPutError.error,
+              ...(slackBehaviorPutError.message ? { message: slackBehaviorPutError.message } : {}),
+            },
+            slackBehaviorPutError.status,
+          ),
+        );
+      }
+      slackBehavior = {
+        ...slackBehavior,
+        ...Object.fromEntries(
+          Object.entries(body).map(([key, value]) => [key, { value, source: 'stored' as const }]),
+        ),
+      };
+      return Promise.resolve(jsonResponse(slackBehavior));
+    }
+    if (path === '/admin/api/slack-behavior') {
+      slackBehaviorGets += 1;
+      if (slackBehaviorGetFailures > 0) {
+        slackBehaviorGetFailures -= 1;
+        return Promise.resolve(
+          jsonResponse({ error: 'slack_behavior_unavailable', message: 'Behavior service unavailable.' }, 503),
+        );
+      }
+      return Promise.resolve(jsonResponse(slackBehavior));
+    }
+    if (path === '/admin/api/slack-connection/test' && method === 'POST') {
+      slackTestCalls += 1;
+      if (slackTestError) {
+        return Promise.resolve(jsonResponse(slackTestError, slackTestError.status));
+      }
+      return Promise.resolve(
+        jsonResponse({ ok: true, teamId: 'T_DESIGN', teamName: 'Acme Inc', botName: 'tag', botUserId: 'U_BOT' }),
+      );
+    }
+    if (path === '/admin/api/slack-connection' && method === 'DELETE') {
+      slackDisconnectCalls += 1;
+      if (slackDisconnectError) {
+        return Promise.resolve(jsonResponse(slackDisconnectError, slackDisconnectError.status));
+      }
+      if (slackConnection) {
+        slackConnection.connected = false;
+        slackConnection.credentials = { botToken: 'missing', signingSecret: 'missing', botUserId: 'missing' };
+      }
+      return Promise.resolve(
+        jsonResponse({ ok: true, connected: false, slackAppUninstalled: false, configurationPreserved: true }),
+      );
+    }
     if (path === '/admin/api/slack-connection' && method === 'POST') {
       slackPosts.push(JSON.parse(options?.body ?? '{}'));
+      if (slackPostError) {
+        return Promise.resolve(jsonResponse(slackPostError, slackPostError.status));
+      }
       // A successful save flips the fixture to connected/stored, exactly like
       // the real endpoint's follow-up GET would report.
       if (slackConnection) {
@@ -620,6 +801,9 @@ function runAdminPageHarness(
       },
       URL,
       URLSearchParams,
+      window,
+      history,
+      location,
     },
     { filename: 'admin-page-inline.js' },
   );
@@ -631,6 +815,20 @@ function runAdminPageHarness(
     listeners,
     putAssignments,
     slackPosts,
+    slackBehaviorPuts,
+    slackBehaviorGets: () => slackBehaviorGets,
+    slackTestCalls: () => slackTestCalls,
+    slackDisconnectCalls: () => slackDisconnectCalls,
+    topbarRegion,
+    bodyRegion,
+    focusedAction: () => focusedAction,
+    locationPath: () => location.pathname,
+    popstate(path: string) {
+      location.pathname = path;
+      windowListeners.popstate?.({});
+    },
+    historyPushes,
+    historyReplaces,
     channelListCalls,
     providerKeyPosts,
     providerKeyDeletes,
@@ -718,23 +916,416 @@ function channelsFixture(
   };
 }
 
-test('Open Slack console uses a safe new tab from first paint through client renders', async () => {
+test('Open Slack console is scoped to Slack settings and uses a safe new tab', async () => {
   const firstPaint = renderAdminPage().split('<script>')[0] ?? '';
   const harness = runAdminPageHarness();
   await flushAsync();
 
-  [firstPaint, harness.app.innerHTML].forEach((html) => {
-    const anchor = html.match(/<a\b[^>]*href="https:\/\/api\.slack\.com\/apps"[^>]*>Open Slack console &nearr;<\/a>/)?.[0];
-    assert.ok(anchor, 'expected the Slack console anchor');
-    assert.match(anchor, /\btarget="_blank"/);
-    const rel = anchor.match(/\brel="([^"]+)"/)?.[1]?.split(/\s+/) ?? [];
-    assert.ok(rel.includes('noopener'));
-    assert.ok(rel.includes('noreferrer'));
+  assert.doesNotMatch(firstPaint, /Open Slack console/);
+  const header = harness.app.innerHTML.match(/<header class="topbar">[\s\S]*?<\/header>/)?.[0] ?? '';
+  assert.doesNotMatch(header, /Open Slack console/);
+  const anchor = harness.app.innerHTML.match(/<a\b[^>]*href="https:\/\/api\.slack\.com\/apps"[^>]*>Open Slack console &nearr;<\/a>/)?.[0];
+  assert.ok(anchor, 'expected the Slack console anchor inside Slack settings');
+  assert.match(anchor, /\btarget="_blank"/);
+  const rel = anchor.match(/\brel="([^"]+)"/)?.[1]?.split(/\s+/) ?? [];
+  assert.ok(rel.includes('noopener'));
+  assert.ok(rel.includes('noreferrer'));
+});
+
+test('Channels opens a Slack overview with an uncounted platform rail and explicit workspace count', async () => {
+  const harness = runAdminPageHarness();
+  await flushAsync();
+
+  const html = harness.app.innerHTML;
+  assert.equal(harness.locationPath(), '/admin/channels');
+  assert.deepEqual(harness.historyReplaces, ['/admin/channels']);
+  assert.match(html, /class="btn btn-soft nav-active" data-action="open-channels">Channels<\/button>/);
+  assert.match(html, /<div class="rail-head"><span class="section-eyebrow">Channels<\/span><\/div>/);
+  assert.doesNotMatch(html, /<div class="rail-head">[\s\S]*?<span class="hint"[^>]*>\d+<\/span>/);
+  assert.match(html, /class="platform-row active" data-action="open-channels"/);
+  assert.match(html, /<h1 class="page-title"[^>]*>Slack<\/h1>/);
+  assert.match(html, /2 assigned channels/);
+  assert.match(html, /Add Slack channel/);
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({
+    target: actionTarget({
+      'data-action': 'select-channel',
+      'data-workspace': 'T_DESIGN',
+      'data-channel': 'C0EXR3L9T',
+    }),
   });
+  await flushAsync();
+  assert.equal(harness.locationPath(), '/admin/channels/T_DESIGN/C0EXR3L9T');
+  assert.match(harness.app.innerHTML, /<h1 class="page-title mono-title">#eng-releases<\/h1>/);
+  assert.match(harness.app.innerHTML, /class="chan-item active"/);
+  assert.doesNotMatch(harness.app.innerHTML, /class="platform-row active"/);
+
+  click({ target: actionTarget({ 'data-action': 'open-channels' }) });
+  assert.equal(harness.locationPath(), '/admin/channels');
+  assert.match(harness.app.innerHTML, /<h1 class="page-title"[^>]*>Slack<\/h1>/);
+  assert.match(harness.app.innerHTML, /class="platform-row active"/);
+  assert.doesNotMatch(harness.app.innerHTML, /class="chan-item active"/);
+});
+
+test('Channels deep links and popstate keep the route and selected screen in sync', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/channels/T_DESIGN/C0EXR3L9T',
+  });
+  await flushAsync();
+
+  assert.equal(harness.locationPath(), '/admin/channels/T_DESIGN/C0EXR3L9T');
+  assert.match(harness.app.innerHTML, /<h1 class="page-title mono-title">#eng-releases<\/h1>/);
+  assert.match(harness.app.innerHTML, /class="chan-item active"/);
+
+  harness.popstate('/admin/channels');
+  assert.equal(harness.locationPath(), '/admin/channels');
+  assert.match(harness.app.innerHTML, /<h1 class="page-title"[^>]*>Slack<\/h1>/);
+  assert.doesNotMatch(harness.app.innerHTML, /class="chan-item active"/);
+
+  harness.popstate('/admin/profiles');
+  assert.equal(harness.locationPath(), '/admin/profiles');
+  assert.match(harness.app.innerHTML, /<h1 class="page-title">Profiles<\/h1>/);
+});
+
+test('Slack overview controls save behavior, test the connection, update credentials, and confirm disconnect', async () => {
+  const harness = runAdminPageHarness();
+  await flushAsync();
+
+  const change = harness.listeners.change;
+  const click = harness.listeners.click;
+  const submit = harness.listeners.submit;
+  assert.ok(change && click && submit);
+
+  change({
+    target: {
+      checked: false,
+      closest: () => null,
+      getAttribute(name: string) {
+        if (name === 'data-action') return 'slack-behavior';
+        if (name === 'data-setting') return 'allowDms';
+        return null;
+      },
+    } as unknown as FakeTarget,
+  });
+  await flushAsync();
+  assert.deepEqual(harness.slackBehaviorPuts, [{ allowDms: false }]);
+  assert.match(harness.app.innerHTML, /Allow direct messages[\s\S]*?<span class="behavior-state">Off<\/span>/);
+
+  click({ target: actionTarget({ 'data-action': 'slack-test' }) });
+  await flushAsync();
+  assert.equal(harness.slackTestCalls(), 1);
+  assert.match(harness.app.innerHTML, /Connection healthy · Acme Inc/);
+
+  click({ target: actionTarget({ 'data-action': 'slack-update-open' }) });
+  assert.match(harness.app.innerHTML, /Update Slack credentials/);
+  assert.match(harness.app.innerHTML, /<label class="field-label" for="slack-update-bot-token">Bot User OAuth Token<\/label>/);
+  assert.match(harness.app.innerHTML, /<input id="slack-update-bot-token"/);
+  assert.match(harness.app.innerHTML, /<label class="field-label" for="slack-update-signing-secret">Signing Secret<\/label>/);
+  assert.match(harness.app.innerHTML, /<input id="slack-update-signing-secret"/);
+  submit({
+    target: submitTarget(
+      { 'data-action': 'slack-connect-form' },
+      { botToken: 'xoxb-rotated', signingSecret: 'rotated-secret' },
+    ),
+    preventDefault() {},
+  });
+  assert.match(harness.app.innerHTML, /Validating&hellip;/);
+  assert.match(harness.app.innerHTML, /data-action="slack-update-close" disabled/);
+  assert.match(harness.app.innerHTML, /data-action="slack-disconnect-open" disabled/);
+  assert.match(harness.app.innerHTML, /data-action="slack-test" disabled/);
+  click({ target: actionTarget({ 'data-action': 'slack-disconnect-open' }) });
+  click({ target: actionTarget({ 'data-action': 'slack-update-close' }) });
+  click({ target: actionTarget({ 'data-action': 'open-profiles' }) });
+  assert.match(harness.app.innerHTML, /Update Slack credentials/);
+  assert.doesNotMatch(harness.app.innerHTML, /Disconnect Acme Inc\?/);
+  assert.doesNotMatch(harness.app.innerHTML, /<h1 class="page-title">Profiles<\/h1>/);
+  assert.equal(harness.slackDisconnectCalls(), 0);
+  await flushAsync();
+  assert.deepEqual(harness.slackPosts, [{ botToken: 'xoxb-rotated', signingSecret: 'rotated-secret' }]);
+  assert.doesNotMatch(harness.app.innerHTML, /Update Slack credentials/);
+
+  click({ target: actionTarget({ 'data-action': 'slack-disconnect-open' }) });
+  assert.match(harness.app.innerHTML, /Disconnect Acme Inc\?/);
+  assert.match(harness.app.innerHTML, /does not uninstall the Slack app/i);
+  click({ target: actionTarget({ 'data-action': 'slack-disconnect-confirm' }) });
+  await flushAsync();
+  assert.equal(harness.slackDisconnectCalls(), 1);
+  assert.match(harness.app.innerHTML, /Connect Slack/);
+});
+
+test('Slack behavior load and save failures stay honest and recoverable', async () => {
+  const loadHarness = runAdminPageHarness({ slackBehaviorGetFailures: 1 });
+  await flushAsync();
+  assert.match(loadHarness.app.innerHTML, /Slack behavior could not load/);
+  assert.match(loadHarness.app.innerHTML, /Behavior service unavailable\./);
+  assert.match(loadHarness.app.innerHTML, /data-action="slack-behavior-retry"/);
+  assert.doesNotMatch(loadHarness.app.innerHTML, /class="behavior-state">On/);
+
+  const loadClick = loadHarness.listeners.click;
+  assert.ok(loadClick);
+  loadClick({ target: actionTarget({ 'data-action': 'slack-behavior-retry' }) });
+  await flushAsync();
+  assert.equal(loadHarness.slackBehaviorGets(), 2);
+  assert.match(loadHarness.app.innerHTML, /Allow direct messages/);
+  assert.match(loadHarness.app.innerHTML, /class="behavior-state">On/);
+
+  const saveHarness = runAdminPageHarness({
+    slackBehaviorPutError: {
+      status: 503,
+      error: 'slack_behavior_unavailable',
+      message: 'Could not save that Slack setting.',
+    },
+  });
+  await flushAsync();
+  const saveChange = saveHarness.listeners.change;
+  assert.ok(saveChange);
+  saveChange({
+    target: {
+      checked: false,
+      closest: () => null,
+      getAttribute(name: string) {
+        if (name === 'data-action') return 'slack-behavior';
+        if (name === 'data-setting') return 'allowDms';
+        return null;
+      },
+    } as unknown as FakeTarget,
+  });
+  await flushAsync();
+  assert.match(saveHarness.app.innerHTML, /Allow direct messages/);
+  assert.match(saveHarness.app.innerHTML, /class="behavior-state">On/);
+  assert.match(saveHarness.app.innerHTML, /Could not save that Slack setting\./);
+  assert.match(saveHarness.app.innerHTML, /data-action="slack-behavior-retry"/);
+});
+
+test('Slack behavior writes serialize and environment-managed settings stay read-only', async () => {
+  const harness = runAdminPageHarness({
+    slackBehavior: {
+      allowDms: { value: false, source: 'env' },
+      unassignedHint: { value: true, source: 'default' },
+      welcomeOnJoin: { value: true, source: 'default' },
+    },
+  });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /Allow direct messages[\s\S]*?Managed by the environment\./);
+  assert.match(harness.app.innerHTML, /data-setting="allowDms"[^>]*disabled/);
+
+  const change = harness.listeners.change;
+  assert.ok(change);
+  const behaviorTarget = (setting: string, checked: boolean) => ({
+    checked,
+    closest: () => null,
+    getAttribute(name: string) {
+      if (name === 'data-action') return 'slack-behavior';
+      if (name === 'data-setting') return setting;
+      return null;
+    },
+  }) as unknown as FakeTarget;
+  change({ target: behaviorTarget('unassignedHint', false) });
+  change({ target: behaviorTarget('welcomeOnJoin', false) });
+  await flushAsync();
+  assert.deepEqual(harness.slackBehaviorPuts, [{ unassignedHint: false }]);
+});
+
+test('Slack credential update failures announce the error, restore focus, and release the operation lock', async () => {
+  const harness = runAdminPageHarness({
+    slackPostError: { status: 422, error: 'slack_auth_failed', detail: 'invalid_auth' },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  const submit = harness.listeners.submit;
+  assert.ok(click && submit);
+
+  click({ target: actionTarget({ 'data-action': 'slack-update-open' }) });
+  submit({
+    target: submitTarget(
+      { 'data-action': 'slack-connect-form' },
+      { botToken: 'xoxb-invalid', signingSecret: 'secret' },
+    ),
+    preventDefault() {},
+  });
+  assert.match(harness.app.innerHTML, /Validating&hellip;/);
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /role="alert" aria-live="assertive"[^>]*data-role="slack-connection-error"/);
+  assert.match(harness.app.innerHTML, /Slack rejected the bot token/);
+  assert.equal(harness.focusedAction(), 'slack-connection-error');
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="slack-update-close" disabled/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="slack-disconnect-open" disabled/);
+});
+
+test('Slack credential update conflicts show the server guidance instead of a machine code', async () => {
+  const harness = runAdminPageHarness({
+    slackPostError: {
+      status: 409,
+      error: 'slack_connection_changed',
+      message: 'Slack connection changed while credentials were being validated. Try again.',
+    },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  const submit = harness.listeners.submit;
+  assert.ok(click && submit);
+
+  click({ target: actionTarget({ 'data-action': 'slack-update-open' }) });
+  submit({
+    target: submitTarget(
+      { 'data-action': 'slack-connect-form' },
+      { botToken: 'xoxb-new', signingSecret: 'secret-new' },
+    ),
+    preventDefault() {},
+  });
+  await flushAsync();
+
+  assert.match(
+    harness.app.innerHTML,
+    /Slack connection changed while credentials were being validated\. Try again\./,
+  );
+  assert.doesNotMatch(harness.app.innerHTML, />slack_connection_changed</);
+});
+
+test('Slack connection failures stay visible and the disconnect dialog gates background actions', async () => {
+  const harness = runAdminPageHarness({
+    slackTestError: { status: 422, error: 'slack_auth_failed', detail: 'invalid_auth' },
+    slackDisconnectError: { status: 500, error: 'internal_error' },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  const keydown = harness.listeners.keydown;
+  assert.ok(click && keydown);
+
+  click({ target: actionTarget({ 'data-action': 'slack-test' }) });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /role="status" aria-live="polite"/);
+  assert.match(
+    harness.app.innerHTML,
+    /Slack rejected the bot token \(auth\.test failed: invalid_auth\)/,
+  );
+
+  click({ target: actionTarget({ 'data-action': 'slack-disconnect-open' }) });
+  assert.match(harness.app.innerHTML, /Disconnect Acme Inc\?/);
+  assert.equal(harness.topbarRegion.inert, true);
+  assert.equal(harness.bodyRegion.inert, true);
+  assert.equal(harness.topbarRegion.getAttribute('aria-hidden'), 'true');
+  assert.equal(harness.bodyRegion.getAttribute('aria-hidden'), 'true');
+  assert.equal(harness.focusedAction(), 'slack-disconnect-cancel');
+  let tabPrevented = false;
+  keydown({
+    key: 'Tab',
+    shiftKey: true,
+    target: actionTarget({}),
+    preventDefault() { tabPrevented = true; },
+  });
+  assert.equal(tabPrevented, true);
+  assert.equal(harness.focusedAction(), 'slack-disconnect-confirm');
+  tabPrevented = false;
+  keydown({
+    key: 'Tab',
+    target: actionTarget({}),
+    preventDefault() { tabPrevented = true; },
+  });
+  assert.equal(tabPrevented, true);
+  assert.equal(harness.focusedAction(), 'slack-disconnect-cancel');
+  click({ target: actionTarget({ 'data-action': 'open-profiles' }) });
+  assert.match(harness.app.innerHTML, /Disconnect Acme Inc\?/);
+  assert.doesNotMatch(harness.app.innerHTML, /<h1 class="page-title">Profiles<\/h1>/);
+
+  let prevented = false;
+  keydown({
+    key: 'Escape',
+    target: actionTarget({}),
+    preventDefault() { prevented = true; },
+  });
+  assert.equal(prevented, true);
+  assert.doesNotMatch(harness.app.innerHTML, /Disconnect Acme Inc\?/);
+  assert.equal(harness.topbarRegion.inert, false);
+  assert.equal(harness.bodyRegion.inert, false);
+  assert.equal(harness.focusedAction(), 'slack-disconnect-open');
+
+  click({ target: actionTarget({ 'data-action': 'slack-disconnect-open' }) });
+  harness.popstate('/admin/profiles');
+  assert.doesNotMatch(harness.app.innerHTML, /Disconnect Acme Inc\?/);
+  assert.match(harness.app.innerHTML, /<h1 class="page-title">Profiles<\/h1>/);
+  assert.equal(harness.topbarRegion.inert, false);
+  assert.equal(harness.focusedAction(), null);
+
+  click({ target: actionTarget({ 'data-action': 'open-channels' }) });
+  click({ target: actionTarget({ 'data-action': 'slack-disconnect-open' }) });
+  click({ target: actionTarget({ 'data-action': 'slack-disconnect-confirm' }) });
+  assert.match(harness.app.innerHTML, /Disconnecting&hellip;/);
+  assert.match(harness.app.innerHTML, /data-action="slack-disconnect-cancel" disabled/);
+  assert.equal(harness.focusedAction(), 'slack-disconnect-dialog');
+  tabPrevented = false;
+  keydown({
+    key: 'Tab',
+    target: actionTarget({}),
+    preventDefault() { tabPrevented = true; },
+  });
+  assert.equal(tabPrevented, true);
+  assert.equal(harness.focusedAction(), 'slack-disconnect-dialog');
+  harness.popstate('/admin/profiles');
+  assert.equal(harness.locationPath(), '/admin/channels');
+  assert.match(harness.app.innerHTML, /Disconnect Acme Inc\?/);
+  click({ target: actionTarget({ 'data-action': 'slack-disconnect-cancel' }) });
+  assert.match(harness.app.innerHTML, /Disconnect Acme Inc\?/);
+  prevented = false;
+  keydown({
+    key: 'Escape',
+    target: actionTarget({}),
+    preventDefault() { prevented = true; },
+  });
+  assert.equal(prevented, true);
+  assert.match(harness.app.innerHTML, /Disconnect Acme Inc\?/);
+  assert.equal(harness.focusedAction(), 'slack-disconnect-dialog');
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /Disconnect Acme Inc\?/);
+  assert.match(harness.app.innerHTML, /internal_error/);
+  assert.match(harness.app.innerHTML, /role="alert" aria-live="assertive"[^>]*data-role="slack-disconnect-error"/);
+  assert.equal(harness.focusedAction(), 'slack-disconnect-error');
+});
+
+test('Slack disconnect dialog retains focus across unrelated async re-renders', async () => {
+  const harness = runAdminPageHarness();
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+
+  // Leave an effective-config request pending, then return to the Slack
+  // overview and open the modal before that background request resolves.
+  click({
+    target: actionTarget({
+      'data-action': 'select-channel',
+      'data-workspace': 'T_DESIGN',
+      'data-channel': 'C_OPS',
+    }),
+  });
+  click({ target: actionTarget({ 'data-action': 'open-channels' }) });
+  click({ target: actionTarget({ 'data-action': 'slack-disconnect-open' }) });
+  assert.equal(harness.focusedAction(), 'slack-disconnect-cancel');
+
+  harness.resolveOpsEffective();
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /Disconnect Acme Inc\?/);
+  assert.equal(harness.topbarRegion.inert, true);
+  assert.equal(harness.bodyRegion.inert, true);
+  assert.equal(harness.focusedAction(), 'slack-disconnect-cancel');
 });
 
 test('admin page renders channel labels, profile secondary text, and singular channel counts', async () => {
   const harness = runAdminPageHarness();
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({
+    target: actionTarget({
+      'data-action': 'select-channel',
+      'data-workspace': 'T_DESIGN',
+      'data-channel': 'C0EXR3L9T',
+    }),
+  });
   await flushAsync();
 
   assert.match(harness.app.innerHTML, /<span class="chan-name">#eng-releases<\/span>/);
@@ -744,8 +1335,6 @@ test('admin page renders channel labels, profile secondary text, and singular ch
   assert.match(harness.app.innerHTML, /<h1 class="page-title mono-title">#eng-releases<\/h1>/);
   assert.match(harness.app.innerHTML, /used in 1 channel/);
 
-  const click = harness.listeners.click;
-  assert.ok(click);
   // Profiles is now a main-panel destination (the modal was retired): opening it
   // swaps the main panel to the overview, and each card carries its usage meta.
   click({ target: actionTarget({ 'data-action': 'open-profiles' }) });
@@ -1004,7 +1593,7 @@ test('Add to channels can refresh an already-loaded workspace catalog', async ()
 });
 
 test('Add to channels explains the disconnected state without requesting a catalog', async () => {
-  const harness = runAdminPageHarness();
+  const harness = runAdminPageHarness({ slackConnection: disconnectedSlackFixture() });
   await openReleaseAttachPicker(harness);
 
   assert.match(harness.app.innerHTML, /Connect Slack first to list workspace channels\./);
@@ -2226,6 +2815,17 @@ test('profile save and access summary render server model-resolution messages', 
   });
   await flushAsync();
 
+  const accessClick = accessHarness.listeners.click;
+  assert.ok(accessClick);
+  accessClick({
+    target: actionTarget({
+      'data-action': 'select-channel',
+      'data-workspace': 'T_DESIGN',
+      'data-channel': 'C0EXR3L9T',
+    }),
+  });
+  await flushAsync();
+
   assert.match(accessHarness.app.innerHTML, /<p class="field-label">Configuration issue<\/p>/);
   assert.match(accessHarness.app.innerHTML, /No model pinned for agent agent_no_model/);
   assert.doesNotMatch(accessHarness.app.innerHTML, /<p class="field-label">No enabled profile<\/p>/);
@@ -2256,6 +2856,7 @@ test('selecting a channel re-renders after effective config finishes resolving',
 
 test('channel rail groups concrete assignments under their own workspace headers', async () => {
   const harness = runAdminPageHarness({
+    slackConnection: null,
     assignments: [
       ...defaultAssignments(),
       {
@@ -2435,7 +3036,7 @@ test('admin page renders the first-run Connect stepper when credentials are miss
   assert.match(harness.app.innerHTML, /first real Slack event/);
 });
 
-test('connected + zero channels shows the funnel with credentials demoted to a disclosure', async () => {
+test('connected + zero channels shows the Slack overview with explicit workspace management', async () => {
   const harness = runAdminPageHarness({
     assignments: [],
     slackConnection: {
@@ -2447,21 +3048,22 @@ test('connected + zero channels shows the funnel with credentials demoted to a d
   });
   await flushAsync();
 
-  // The funnel is the focus; the header chip flips to Connected and credential
-  // provenance is demoted to a collapsed "Connection details" disclosure.
-  assert.match(harness.app.innerHTML, /Choose where Chickpea answers/);
+  // Post-onboarding Slack management remains reachable even before a channel is assigned.
+  assert.match(harness.app.innerHTML, /<h1 class="page-title"[^>]*>Slack<\/h1>/);
   assert.match(harness.app.innerHTML, /Connected/);
-  assert.match(harness.app.innerHTML, /Connection details/);
+  assert.match(harness.app.innerHTML, /0 assigned channels/);
+  assert.match(harness.app.innerHTML, /Credentials managed by environment/);
+  assert.match(harness.app.innerHTML, /Add Slack channel/);
   assert.doesNotMatch(harness.app.innerHTML, /name="botToken"/);
   assert.doesNotMatch(harness.app.innerHTML, /Connect Slack/);
 });
 
 test('admin page omits the connection card when the endpoint fails (resilience)', async () => {
-  const harness = runAdminPageHarness({ assignments: [] });
+  const harness = runAdminPageHarness({ assignments: [], slackConnection: null });
   await flushAsync();
 
   // Everything else still renders...
-  assert.match(harness.app.innerHTML, /No channels yet/);
+  assert.match(harness.app.innerHTML, /Slack settings are unavailable/);
   // ...but no wizard card is painted from a failed connection fetch: neither the
   // paste form nor either connection-card heading appears.
   assert.doesNotMatch(harness.app.innerHTML, /name="botToken"/);

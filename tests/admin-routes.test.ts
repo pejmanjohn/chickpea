@@ -229,6 +229,10 @@ test('client-routed admin paths serve the SPA page and POST login keeps a safe d
     assert.equal(page.status, 200);
     assert.match(await page.text(), /Chickpea/);
 
+    const channelsHub = await app.request('/admin/channels', { headers: auth(ADMIN_TOKEN) });
+    assert.equal(channelsHub.status, 200);
+    assert.match(await channelsHub.text(), /Chickpea/);
+
     // A body-authenticated login can return to the same client-routed path.
     const login = await app.request('/admin/login', {
       method: 'POST',
@@ -1484,7 +1488,9 @@ test('agent deletion keeps a durable cleanup marker when secret deletion fails a
   let failSecretDeletion = true;
   const settings: SettingsStore = {
     getSetting: (key) => persistedSettings.getSetting(key),
+    getSettings: (keys) => persistedSettings.getSettings(keys),
     setSetting: (key, value) => persistedSettings.setSetting(key, value),
+    applySettingsPatch: (patch) => persistedSettings.applySettingsPatch(patch),
     mergeSettingStringSet: (key, values) =>
       persistedSettings.mergeSettingStringSet(key, values),
     deleteSetting: async (key) => {

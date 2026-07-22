@@ -11,16 +11,36 @@ import type { StateDb } from '../state/state-db.ts';
  */
 export interface SettingsStore {
   getSetting(key: string): Promise<string | undefined>;
+  /** Read related values from one coherent SQLite snapshot, in key order. */
+  getSettings(keys: readonly string[]): Promise<(string | undefined)[]>;
   setSetting(key: string, value: string): Promise<void>;
   deleteSetting(key: string): Promise<void>;
+  /** Atomically compare one setting, then apply all writes/deletes on match. */
+  applySettingsPatch(patch: SettingsPatch): Promise<boolean>;
   /** Atomically union string members into a JSON-array setting. */
   mergeSettingStringSet(key: string, values: readonly string[]): Promise<string[]>;
   /** Node backend only (closes the SQLite handle); absent on RPC proxies. */
   close?(): void;
 }
 
+export interface SettingWrite {
+  key: string;
+  value: string;
+}
+
+export interface SettingsPatch {
+  /** `null` is the clone-safe sentinel for an absent setting. */
+  expected?: { key: string; value: string | null };
+  set?: readonly SettingWrite[];
+  delete?: readonly string[];
+}
+
 interface SettingRow {
   value: string;
+}
+
+interface SettingKeyValueRow extends SettingRow {
+  key: string;
 }
 
 /**
@@ -49,6 +69,18 @@ export class SettingsStoreLogic {
     return row?.value;
   }
 
+  getSettings(keys: readonly string[]): (string | undefined)[] {
+    if (keys.length === 0) return [];
+    const uniqueKeys = [...new Set(keys)];
+    const placeholders = uniqueKeys.map(() => '?').join(', ');
+    const rows = this.db.all(
+      `SELECT key, value FROM app_settings WHERE key IN (${placeholders})`,
+      ...uniqueKeys,
+    ) as unknown as SettingKeyValueRow[];
+    const byKey = new Map(rows.map((row) => [row.key, row.value]));
+    return keys.map((key) => byKey.get(key));
+  }
+
   setSetting(key: string, value: string): void {
     this.db.run(
       `INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)
@@ -61,6 +93,39 @@ export class SettingsStoreLogic {
 
   deleteSetting(key: string): void {
     this.db.run('DELETE FROM app_settings WHERE key = ?', key);
+  }
+
+  applySettingsPatch(patch: SettingsPatch): boolean {
+    const writes = [...(patch.set ?? [])];
+    const writeKeys = new Set<string>();
+    for (const write of writes) {
+      if (writeKeys.has(write.key)) {
+        throw new Error(`Settings patch writes duplicate key: ${write.key}`);
+      }
+      writeKeys.add(write.key);
+    }
+    const deletes = [...new Set(patch.delete ?? [])];
+    for (const key of deletes) {
+      if (writeKeys.has(key)) {
+        throw new Error(`Settings patch both writes and deletes key: ${key}`);
+      }
+    }
+
+    return this.db.transaction(() => {
+      if (patch.expected) {
+        const current = this.getSetting(patch.expected.key) ?? null;
+        if (current !== patch.expected.value) {
+          return false;
+        }
+      }
+      for (const key of deletes) {
+        this.deleteSetting(key);
+      }
+      for (const { key, value } of writes) {
+        this.setSetting(key, value);
+      }
+      return true;
+    });
   }
 
   mergeSettingStringSet(key: string, values: readonly string[]): string[] {
@@ -92,12 +157,20 @@ export class SqliteSettingsStore implements SettingsStore {
     return this.logic.getSetting(key);
   }
 
+  async getSettings(keys: readonly string[]): Promise<(string | undefined)[]> {
+    return this.logic.getSettings(keys);
+  }
+
   async setSetting(key: string, value: string): Promise<void> {
     this.logic.setSetting(key, value);
   }
 
   async deleteSetting(key: string): Promise<void> {
     this.logic.deleteSetting(key);
+  }
+
+  async applySettingsPatch(patch: SettingsPatch): Promise<boolean> {
+    return this.logic.applySettingsPatch(patch);
   }
 
   async mergeSettingStringSet(key: string, values: readonly string[]): Promise<string[]> {

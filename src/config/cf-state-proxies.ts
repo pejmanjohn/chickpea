@@ -1,6 +1,6 @@
 import { AgentExistsError, AgentStillAssignedError, UnknownAgentError } from './errors.ts';
 import type { AssignmentLookupOptions } from './resolver.ts';
-import type { SettingsStore } from './settings-store.ts';
+import type { SettingsPatch, SettingsStore } from './settings-store.ts';
 import type { AgentSnapshotStore } from './snapshot-store.ts';
 import type { StateRpcResult, TagStateRpc } from './state-rpc.ts';
 import type { ConfigAgentPatch, ConfigStore } from './store.ts';
@@ -139,12 +139,20 @@ export class CfSettingsStore implements SettingsStore {
     return orUndefined(unwrap(await this.stub.settingGet(key)));
   }
 
+  async getSettings(keys: readonly string[]): Promise<(string | undefined)[]> {
+    return unwrap(await this.stub.settingGetMany(keys)).map(orUndefined);
+  }
+
   async setSetting(key: string, value: string): Promise<void> {
     unwrap(await this.stub.settingSet(key, value));
   }
 
   async deleteSetting(key: string): Promise<void> {
     unwrap(await this.stub.settingDelete(key));
+  }
+
+  async applySettingsPatch(patch: SettingsPatch): Promise<boolean> {
+    return unwrap(await this.stub.settingApplyPatch(patch));
   }
 
   async mergeSettingStringSet(key: string, values: readonly string[]): Promise<string[]> {

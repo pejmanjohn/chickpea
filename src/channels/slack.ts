@@ -13,13 +13,22 @@ import { getOrCreateSnapshot } from '../config/snapshot-store.ts';
 import { resolveStores, type AppStores, type PlatformEnv } from '../config/state-backend.ts';
 import { tagStateStub, type TurnJob } from '../config/state-rpc.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
+import { resolveSlackBehaviorSettings } from '../slack/behavior-settings.ts';
 import type { SlackClaimStore } from '../slack/claim-store.ts';
-import { resolveSlackCredentials, resolveSlackPublicUrl } from '../slack/credentials.ts';
+import {
+  resolveSlackCredentials,
+  resolveSlackPublicUrl,
+  slackAuthTest,
+} from '../slack/credentials.ts';
 import {
   renderChannelOnboarding,
   renderUnassignedChannelHint,
 } from '../slack/message-format.ts';
-import { getClient, runTurn, sanitizeError } from '../slack/run-turn.ts';
+import {
+  getClient,
+  runTurn,
+  sanitizeError,
+} from '../slack/run-turn.ts';
 import { slackThreadKey } from '../slack/thread-key.ts';
 import { normalizeSlackTurn } from '../slack/turn-normalization.ts';
 import {
@@ -58,28 +67,42 @@ function detach(
 // "explicitly empty = no bot user id, do not probe" knob, S14); otherwise
 // resolve once via auth.test() and cache. On auth.test failure leave it
 // undefined so message-family events fail closed in normalization.
-let probedBotUserId: string | undefined;
-let botUserIdProbed = false;
-async function resolveBotUserId(env: PlatformEnv | undefined): Promise<string | undefined> {
-  const { botUserId } = await resolveSlackCredentials(env);
+let probedBotIdentity:
+  | { botToken: string | undefined; botUserId: string | undefined }
+  | undefined;
+
+export function invalidateSlackBotUserIdCache(): void {
+  probedBotIdentity = undefined;
+}
+
+export async function resolveBotUserId(
+  env: PlatformEnv | undefined,
+): Promise<string | undefined> {
+  const { botToken, botUserId } = await resolveSlackCredentials(env);
   if (botUserId !== undefined) {
     return botUserId === '' ? undefined : botUserId;
   }
-  if (botUserIdProbed) {
-    return probedBotUserId;
+  if (probedBotIdentity && probedBotIdentity.botToken === botToken) {
+    return probedBotIdentity.botUserId;
+  }
+  if (!botToken) {
+    return undefined;
   }
   try {
-    const auth = await (await getClient(env)).auth.test();
-    probedBotUserId = typeof auth.user_id === 'string' ? auth.user_id : undefined;
+    const auth = await slackAuthTest(botToken);
+    if (!auth.ok) {
+      return undefined;
+    }
+    const probedBotUserId = auth.botUserId;
     // Latch only on a successful call: a definitive answer (including "no
     // user_id") is cached, but a transient auth.test failure must not pin
     // the probe result to undefined for the process lifetime — the next
     // event retries.
-    botUserIdProbed = true;
+    probedBotIdentity = { botToken, botUserId: probedBotUserId };
+    return probedBotUserId;
   } catch {
-    probedBotUserId = undefined;
+    return undefined;
   }
-  return probedBotUserId;
 }
 
 /**
@@ -197,8 +220,15 @@ const handleSlackEvents: NonNullable<SlackChannelOptions['events']> = async ({ c
   // threads stay continuable); on Cloudflare they proxy the state Durable
   // Object, which is why the handler threads `c.env` through.
   const stores = resolveStores(platformEnv);
+  // Runtime behavior follows the same env > stored > default contract the
+  // admin exposes. Resolve against THIS request's settings store so Node and
+  // Cloudflare (Durable Object-backed) observe the same saved switches.
+  const behavior = await resolveSlackBehaviorSettings(platformEnv, stores.settings);
 
   if (eventType === 'member_joined_channel') {
+    if (!behavior.welcomeOnJoin.value) {
+      return;
+    }
     await handleMemberJoinedChannel(payload as unknown as SlackEventFixture, stores, platformEnv);
     return;
   }
@@ -224,11 +254,11 @@ const handleSlackEvents: NonNullable<SlackChannelOptions['events']> = async ({ c
   }
 
   // c2. Direct messages / App Home are a separate surface, on by default.
-  //     When SLACK_TAG_ALLOW_DMS is turned off, the bot is reachable only in
-  //     channels (an org-wide direct-message opt-out). Checked before any
-  //     claim so a disabled DM stays fully silent.
+  //     When the resolved allow-DMs setting is off (env or admin-stored), the
+  //     bot is reachable only in channels. Checked before any claim so a
+  //     disabled DM stays fully silent.
   const surface = turnSurface(turn);
-  if (surface === 'direct' && !directMessagesEnabled()) {
+  if (surface === 'direct' && !behavior.allowDms.value) {
     return;
   }
 
@@ -291,7 +321,13 @@ const handleSlackEvents: NonNullable<SlackChannelOptions['events']> = async ({ c
       if (err instanceof NoAssignmentError) {
         detach(
           c,
-          postUnassignedChannelHint(turn, surface, state, platformEnv).catch((hintErr) => {
+          postUnassignedChannelHint(
+            turn,
+            surface,
+            behavior.unassignedHint.value,
+            state,
+            platformEnv,
+          ).catch((hintErr) => {
             console.error('[chickpea] unassigned-channel hint failed:', sanitizeError(hintErr));
           }),
         );
@@ -425,21 +461,6 @@ function turnSurface(turn: NormalizedSlackTurn): AssignmentSurface {
   return 'channel';
 }
 
-// Direct messages / App Home are on by default; SLACK_TAG_ALLOW_DMS=false (or
-// 0/off/no) turns them off so the bot is reachable only in channels.
-function envFlagDefaultOn(name: string): boolean {
-  const raw = process.env[name]?.trim().toLowerCase();
-  return !(raw === 'false' || raw === '0' || raw === 'off' || raw === 'no');
-}
-
-function directMessagesEnabled(): boolean {
-  return envFlagDefaultOn('SLACK_TAG_ALLOW_DMS');
-}
-
-function unassignedChannelHintEnabled(): boolean {
-  return envFlagDefaultOn('SLACK_TAG_UNASSIGNED_HINT');
-}
-
 // Fail-closed feedback: an EXPLICIT mention in a channel with no enabled
 // assignment posts an ephemeral hint to the mentioner only — the channel gets
 // nothing and ambient messages get nothing. A claim on the channel rate-limits
@@ -450,6 +471,7 @@ function unassignedChannelHintEnabled(): boolean {
 async function postUnassignedChannelHint(
   turn: NormalizedSlackTurn,
   surface: AssignmentSurface,
+  enabled: boolean,
   state: SlackClaimStore,
   platformEnv: PlatformEnv | undefined,
 ): Promise<void> {
@@ -464,7 +486,7 @@ async function postUnassignedChannelHint(
     if (!turn.channelId.startsWith('C')) {
       return;
     }
-    if (!unassignedChannelHintEnabled()) {
+    if (!enabled) {
       return;
     }
     const botUserId = await resolveBotUserId(platformEnv);
