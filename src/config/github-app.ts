@@ -173,7 +173,14 @@ export async function listInstallationRepos(
     if (installationId === null || !Number.isSafeInteger(installationId) || installationId < 1) {
       throw new Error('Invalid GitHub installation id');
     }
-    const { token } = await createInstallationToken(conn, installationId, {}, fetchImpl);
+    // Listing needs only repository metadata — never mint a broader token for
+    // an admin-console enumeration than the endpoint requires.
+    const { token } = await createInstallationToken(
+      conn,
+      installationId,
+      { permissions: { metadata: 'read' } },
+      fetchImpl,
+    );
     authorization = `Bearer ${token}`;
     path = '/installation/repositories';
   } else if (conn.mode === 'pat') {
