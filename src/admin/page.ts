@@ -706,6 +706,12 @@ details[open].advanced summary::before {
 .prov-body .input { background: var(--bg); }
 .paste-row { display: flex; flex-wrap: wrap; gap: 9px; }
 .paste-row .input { flex: 1; min-width: 220px; }
+.github-installations { display: flex; flex-direction: column; gap: 10px; }
+.github-installations .prov-row + .prov-row { margin-top: 0; }
+.github-installation-copy { display: flex; flex: 1; flex-direction: column; gap: 2px; min-width: 0; }
+.github-installation-name { color: var(--text); font-family: var(--mono); font-size: 0.8125rem; font-weight: 700; overflow-wrap: anywhere; }
+.github-installation-meta { align-items: center; display: flex; flex-wrap: wrap; gap: 7px; }
+.github-token-mask { color: var(--text-2); font-family: var(--mono); font-size: 0.8125rem; letter-spacing: 0.08em; }
 .fav-sub { color: var(--text-3); font-size: 0.65625rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
 .fav-list { display: flex; flex-direction: column; gap: 6px; }
 .fav-row { align-items: center; background: var(--bg); border-radius: 13px; border-top: 0; box-shadow: 0 1.5px 0 rgba(59, 50, 32, 0.08); display: flex; gap: 10px; padding: 8px 12px; }
@@ -1288,6 +1294,20 @@ details[open].advanced summary::before {
     settings: null,
     settingsLoaded: false,
     settingsError: "",
+    // App-level GitHub credentials and installations. Secrets never enter this
+    // object: status is write-only metadata plus profile references for the
+    // pre-disconnect warning.
+    githubStatus: null,
+    githubStatusLoaded: false,
+    githubStatusRequestId: 0,
+    githubError: "",
+    githubBusy: "",
+    githubManifestOpen: false,
+    githubOrg: "",
+    githubPatOpen: false,
+    githubPatDraft: "",
+    githubDisconnectConfirm: false,
+    githubDisconnectError: "",
     egress: null,
     egressLoaded: false,
     egressError: "",
@@ -1549,7 +1569,7 @@ details[open].advanced summary::before {
 
   function render() {
     var app = document.getElementById("app");
-    app.innerHTML = topbarHtml() + '<div class="body">' + railHtml() + mainHtml() + "</div>" + leavePromptModalHtml() + connectionRemoveModalHtml() + apiConnectionRemoveModalHtml() + slackDisconnectModalHtml();
+    app.innerHTML = topbarHtml() + '<div class="body">' + railHtml() + mainHtml() + "</div>" + leavePromptModalHtml() + connectionRemoveModalHtml() + apiConnectionRemoveModalHtml() + slackDisconnectModalHtml() + githubDisconnectModalHtml();
     // The disconnect confirmation is a true modal: keep the rest of the app
     // out of the focus and accessibility trees until it is resolved.
     if (state.slackDisconnectConfirm) {
@@ -1563,6 +1583,16 @@ details[open].advanced summary::before {
       if (state.slackDisconnectBusy) focusSlackDisconnectDialog();
       else if (state.slackDisconnectError) focusSlackLiveRegion("slack-disconnect-error");
       else focusSlackDisconnectAction("slack-disconnect-cancel");
+    }
+    if (state.githubDisconnectConfirm) {
+      [document.querySelector(".topbar"), document.querySelector(".body")].forEach(function (region) {
+        if (!region) return;
+        region.inert = true;
+        if (region.setAttribute) region.setAttribute("aria-hidden", "true");
+      });
+      if (state.githubBusy === "disconnect") focusGithubDisconnectDialog();
+      else if (state.githubDisconnectError) focusSlackLiveRegion("github-disconnect-error");
+      else focusSlackDisconnectAction("github-disconnect-cancel");
     }
     syncUrl();
   }
@@ -1862,6 +1892,28 @@ details[open].advanced summary::before {
       '<div class="modal-foot"><button type="button" class="btn btn-ghost" data-action="slack-disconnect-cancel"' + (state.slackDisconnectBusy ? " disabled" : "") + '>Keep connected</button><span class="spacer"></span>' + button + '</div></div></div>';
   }
 
+  function githubDisconnectModalHtml() {
+    if (!state.githubDisconnectConfirm) return "";
+    var status = state.githubStatus || { mode: "none", referencingProfiles: [] };
+    var profiles = status.referencingProfiles || [];
+    var names = joinNames(profiles.map(function (profile) {
+      return '<span class="mono" style="color:var(--text);">' + esc(profile.name) + '</span>';
+    }));
+    var profileWarning = profiles.length
+      ? '<b style="font-weight:500; color:var(--text);">' + profiles.length + ' profile' + (profiles.length === 1 ? "" : "s") + '</b> ' + (profiles.length === 1 ? "references" : "reference") + ' GitHub repositories &mdash; ' + names + '. Those repository selections stay saved, but cannot be used until GitHub is reconnected.'
+      : 'No profiles currently reference GitHub repositories.';
+    var connectionName = status.mode === "app" ? "GitHub App" : "personal access token";
+    var appNote = status.mode === "app" ? ' The GitHub App remains installed on GitHub until you remove it there.' : "";
+    var button = state.githubBusy === "disconnect"
+      ? '<button type="button" class="btn btn-danger" disabled><span class="spinner"></span>Disconnecting&hellip;</button>'
+      : '<button type="button" class="btn btn-danger" data-action="github-disconnect-confirm">Disconnect GitHub</button>';
+    return '<div class="modal-backdrop"><div class="modal-card" role="dialog" aria-modal="true" aria-label="Disconnect GitHub" tabindex="-1" data-role="github-disconnect-dialog">' +
+      '<h2 class="modal-title">Disconnect GitHub?</h2>' +
+      '<p class="modal-body">Chickpea will remove the stored ' + connectionName + ' credentials. Environment-configured credentials, if present, remain active. ' + profileWarning + appNote + '</p>' +
+      (state.githubDisconnectError ? '<p class="error" style="margin-top:10px;" role="alert" aria-live="assertive" tabindex="-1" data-role="github-disconnect-error">' + esc(state.githubDisconnectError) + '</p>' : "") +
+      '<div class="modal-foot"><button type="button" class="btn btn-ghost" data-action="github-disconnect-cancel"' + (state.githubBusy === "disconnect" ? " disabled" : "") + '>Keep connected</button><span class="spacer"></span>' + button + '</div></div></div>';
+  }
+
   function focusSlackDisconnectAction(action) {
     var control = document.querySelector('[data-action="' + action + '"]');
     if (control && control.focus) control.focus();
@@ -1869,6 +1921,11 @@ details[open].advanced summary::before {
 
   function focusSlackDisconnectDialog() {
     var dialog = document.querySelector('[data-role="slack-disconnect-dialog"]');
+    if (dialog && dialog.focus) dialog.focus();
+  }
+
+  function focusGithubDisconnectDialog() {
+    var dialog = document.querySelector('[data-role="github-disconnect-dialog"]');
     if (dialog && dialog.focus) dialog.focus();
   }
 
@@ -3381,10 +3438,115 @@ details[open].advanced summary::before {
     return summary && summary.modelCount != null ? summary.modelCount : null;
   }
 
+  function githubErrorHtml() {
+    return state.githubError
+      ? '<p class="field-error" role="alert">' + esc(state.githubError) + '</p>'
+      : "";
+  }
+
+  function githubManifestFormHtml() {
+    if (!state.githubManifestOpen) return "";
+    var busy = state.githubBusy === "manifest";
+    return '<div class="prov-body"><form data-action="github-manifest-form" style="display:flex; flex-direction:column; gap:12px;">' +
+      '<div class="field"><label class="field-label" for="github-org">GitHub organization <span class="hint">(optional)</span></label>' +
+      '<input id="github-org" class="input mono" name="org" type="text" autocomplete="organization" placeholder="magoosh" value="' + esc(state.githubOrg) + '" data-action="github-org-input"' + (busy ? " disabled" : "") + '>' +
+      '<p class="hint">Leave blank to create the app under your personal GitHub account.</p></div>' +
+      githubErrorHtml() +
+      '<div class="prov-actions" style="margin-left:0;"><button type="button" class="btn btn-ghost btn-sm" data-action="github-manifest-cancel"' + (busy ? " disabled" : "") + '>Cancel</button>' +
+      (busy
+        ? '<button type="submit" class="btn btn-primary btn-sm" disabled><span class="spinner"></span>Preparing GitHub&hellip;</button>'
+        : '<button type="submit" class="btn btn-primary btn-sm">Continue to GitHub &nearr;</button>') + '</div></form></div>';
+  }
+
+  function githubPatFormHtml() {
+    if (!state.githubPatOpen) return "";
+    var busy = state.githubBusy === "pat";
+    return '<div class="prov-body"><form data-action="github-pat-form" style="display:flex; flex-direction:column; gap:12px;">' +
+      '<div class="field"><label class="field-label" for="github-pat">Fine-grained personal access token</label>' +
+      '<input id="github-pat" class="input mono" name="token" type="password" autocomplete="off" placeholder="github_pat_&hellip;" value="' + esc(state.githubPatDraft) + '" data-action="github-pat-input"' + (busy ? " disabled" : "") + '>' +
+      '<p class="hint">The token is write-only: Chickpea stores it, but never sends it back to this page.</p></div>' +
+      githubErrorHtml() +
+      '<div class="prov-actions" style="margin-left:0;"><button type="button" class="btn btn-ghost btn-sm" data-action="github-pat-cancel"' + (busy ? " disabled" : "") + '>Cancel</button>' +
+      (busy
+        ? '<button type="submit" class="btn btn-primary btn-sm" disabled><span class="spinner"></span>Saving&hellip;</button>'
+        : '<button type="submit" class="btn btn-primary btn-sm">Save token</button>') + '</div></form></div>';
+  }
+
+  function githubDisconnectPanelHtml() {
+    return '<div class="danger-panel"><div class="danger-copy"><span class="danger-title">Disconnect GitHub</span>' +
+      '<span class="hint">Removes stored GitHub credentials from Chickpea. Environment-configured credentials stay active, and repository selections on profiles stay saved.</span></div>' +
+      '<button type="button" class="btn btn-danger" data-action="github-disconnect-open"' + (state.githubBusy ? " disabled" : "") + '>Disconnect</button></div>';
+  }
+
+  function githubNoneHtml() {
+    var manifestBody = githubManifestFormHtml();
+    var patBody = githubPatFormHtml();
+    return '<div class="prov-row"><div class="prov-head"><div class="prov-id"><span class="prov-name">GitHub App</span>' +
+      '<span class="prov-sub">Recommended &middot; scoped installations and short-lived access tokens</span></div>' +
+      '<div class="prov-actions"><button type="button" class="btn btn-primary btn-sm" data-action="github-manifest-open"' + (state.githubBusy ? " disabled" : "") + '>Create GitHub App</button></div></div>' + manifestBody + '</div>' +
+      '<div class="prov-row"><div class="prov-head"><div class="prov-id"><span class="prov-name">Personal access token</span>' +
+      '<span class="prov-sub">Quick start &middot; use a fine-grained token you manage</span></div>' +
+      '<div class="prov-actions"><button type="button" class="btn btn-soft btn-sm" data-action="github-pat-open"' + (state.githubBusy ? " disabled" : "") + '>Use a personal access token</button></div></div>' + patBody + '</div>';
+  }
+
+  function githubAppHtml(status) {
+    var installations = status.installations || [];
+    var installationRows = installations.map(function (installation) {
+      var repoCount = installation.repoCount == null ? null : Number(installation.repoCount);
+      var repoLabel = repoCount == null ? "Repository count unavailable" : repoCount + " repositor" + (repoCount === 1 ? "y" : "ies");
+      return '<div class="prov-row"><div class="prov-head"><div class="github-installation-copy">' +
+        '<span class="github-installation-name">' + esc(installation.accountLogin) + '</span>' +
+        '<span class="github-installation-meta"><span class="badge badge-off">' + esc(installation.accountType) + '</span><span class="hint">' + esc(repoLabel) + '</span></span></div>' +
+        '<span class="badge badge-on"><span class="dot"></span>Connected</span></div></div>';
+    }).join("");
+    var slug = status.appSlug || "";
+    var installAction = slug
+      ? '<a class="btn btn-soft btn-sm" href="https://github.com/apps/' + esc(encodeURIComponent(slug)) + '/installations/new" target="_blank" rel="noopener noreferrer">Install on another account &nearr;</a>'
+      : '<span class="hint">The app slug is unavailable, so another installation cannot be opened from here.</span>';
+    return '<div class="well"><div class="kv"><dt>App slug</dt><dd>' + (slug ? '<span class="mono">' + esc(slug) + '</span>' : '<span class="hint">Unavailable</span>') + '</dd></div>' +
+      '<div class="kv"><dt>Installations</dt><dd>' + installations.length + '</dd></div></div>' +
+      (installations.length
+        ? '<div class="github-installations">' + installationRows + '</div>'
+        : '<div class="empty"><p class="field-label">No installations found</p><p class="hint">Install the app on a personal account or organization, then refresh.</p></div>') +
+      '<div class="action-well">' + installAction +
+      '<button type="button" class="btn btn-ghost btn-sm i-lead" data-action="github-refresh"' + (state.githubBusy ? " disabled" : "") + '>' + (state.githubBusy === "refresh" ? '<span class="spinner"></span>Refreshing&hellip;' : icon("arrow-path") + 'Refresh') + '</button>' +
+      (state.githubError ? '<span class="inline-status error" role="alert">' + esc(state.githubError) + '</span>' : "") + '</div>' +
+      githubDisconnectPanelHtml();
+  }
+
+  function githubPatHtml() {
+    return '<div class="prov-row"><div class="prov-head"><div class="prov-id"><span class="prov-name">Fine-grained personal access token</span>' +
+      '<span class="github-token-mask" aria-label="Configured write-only token">&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;</span></div>' +
+      '<div class="prov-status"><span class="badge badge-on"><span class="dot"></span>Configured</span><span class="hint">Write-only</span></div>' +
+      '<div class="prov-actions"><button type="button" class="btn btn-soft btn-sm" data-action="github-pat-open"' + (state.githubBusy ? " disabled" : "") + '>Replace token</button></div></div>' +
+      githubPatFormHtml() + '</div>' + githubDisconnectPanelHtml();
+  }
+
+  function githubSectionHtml() {
+    var status = state.githubStatus;
+    var badge = status && status.mode !== "none"
+      ? '<span class="badge badge-on"><span class="dot"></span>Connected</span>'
+      : '<span class="badge badge-off"><span class="dot"></span>Not connected</span>';
+    var head = '<div class="section-head"><div><h2 class="section-title">GitHub</h2>' +
+      '<p class="hint">Connect GitHub once, then grant repository access per profile.</p></div>' + badge + '</div>';
+    if (!state.githubStatusLoaded) {
+      return '<section class="section" id="github-settings">' + head + '<p class="hint">Loading GitHub settings&hellip;</p></section>';
+    }
+    if (!status) {
+      return '<section class="section" id="github-settings">' + head + githubErrorHtml() +
+        '<div><button type="button" class="btn btn-soft btn-sm i-lead" data-action="github-refresh">' + icon("arrow-path") + 'Retry</button></div></section>';
+    }
+    var body;
+    if (status.mode === "app") body = githubAppHtml(status);
+    else if (status.mode === "pat") body = githubPatHtml();
+    else body = githubNoneHtml();
+    return '<section class="section" id="github-settings">' + head + body + '</section>';
+  }
+
   function settingsMainHtml() {
     var head = '<div style="display:flex; flex-direction:column; gap:6px;">' +
       '<h1 class="page-title">Settings</h1>' +
-      '<p class="hint">Configure model providers and outbound internet access for the sandbox.</p></div>';
+      '<p class="hint">Configure GitHub, model providers, and outbound internet access for the sandbox.</p></div>';
     var providerSection;
     if (state.settingsError) {
       providerSection = '<section class="section"><div class="section-head"><div><h2 class="section-title">Model providers</h2></div></div><p class="field-error">' + esc(state.settingsError) + '</p></section>';
@@ -3401,7 +3563,7 @@ details[open].advanced summary::before {
         rows +
         '<p class="hint">More providers appear here as this install registers them in <span class="mono" style="color:var(--text-2);">src/app.ts</span>.</p></section>';
     }
-    return head + providerSection + egressSectionHtml();
+    return head + githubSectionHtml() + providerSection + egressSectionHtml();
   }
 
   function egressSectionHtml() {
@@ -3666,10 +3828,126 @@ details[open].advanced summary::before {
     state.view = "settings";
     state.profileScreen = "list";
     state.disableConfirm = false;
+    state.githubStatus = null;
+    state.githubStatusLoaded = false;
+    state.githubError = "";
     state.egressLoaded = false;
     render();
     loadSettings().then(render);
+    loadGithubStatus().then(render);
     loadEgress().then(render);
+  }
+
+  function loadGithubStatus() {
+    var requestId = ++state.githubStatusRequestId;
+    state.githubError = "";
+    return api("/admin/api/github/status").then(function (body) {
+      if (requestId !== state.githubStatusRequestId) return;
+      state.githubStatus = body;
+      state.githubStatusLoaded = true;
+      state.githubBusy = "";
+    }).catch(function (error) {
+      if (requestId !== state.githubStatusRequestId) return;
+      state.githubStatusLoaded = true;
+      state.githubBusy = "";
+      state.githubError = (error && (error.serverMessage || error.message)) || "Could not load GitHub settings.";
+    });
+  }
+
+  function refreshGithubStatus() {
+    if (state.githubBusy) return;
+    state.githubBusy = "refresh";
+    state.githubError = "";
+    render();
+    loadGithubStatus().then(render);
+  }
+
+  function submitGithubManifest(formData) {
+    if (state.githubBusy) return;
+    var org = String(formData.get("org") || "").trim();
+    var targetName = "chickpea-github-manifest-" + Date.now();
+    var manifestWindow = null;
+    if (typeof window !== "undefined" && typeof window.open === "function") {
+      manifestWindow = window.open("", targetName);
+      if (manifestWindow) manifestWindow.opener = null;
+    }
+    state.githubOrg = org;
+    state.githubBusy = "manifest";
+    state.githubError = "";
+    render();
+    postJson("/admin/api/github/manifest", "POST", org ? { org: org } : {}).then(function (body) {
+      if (!body || typeof body.target !== "string" || !body.manifest) throw new Error("GitHub manifest response was invalid.");
+      var form = document.createElement("form");
+      form.method = "post";
+      form.action = body.target;
+      form.target = manifestWindow ? targetName : "_blank";
+      form.style.display = "none";
+      var input = document.createElement("input");
+      input.type = "hidden";
+      input.name = "manifest";
+      input.value = JSON.stringify(body.manifest);
+      form.appendChild(input);
+      (document.body || document.documentElement).appendChild(form);
+      form.submit();
+      if (form.remove) form.remove();
+      state.githubBusy = "";
+      state.githubManifestOpen = false;
+      state.githubError = "";
+      render();
+    }).catch(function (error) {
+      if (manifestWindow && typeof manifestWindow.close === "function") manifestWindow.close();
+      state.githubBusy = "";
+      state.githubError = (error && (error.serverMessage || error.message)) || "Could not start GitHub App setup.";
+      render();
+    });
+  }
+
+  function saveGithubPat(formData) {
+    if (state.githubBusy) return;
+    var token = String(formData.get("token") || "").trim();
+    if (!token) {
+      state.githubError = "Paste a fine-grained personal access token.";
+      render();
+      return;
+    }
+    state.githubStatusRequestId += 1;
+    state.githubBusy = "pat";
+    state.githubError = "";
+    render();
+    postJson("/admin/api/github/pat", "PUT", { token: token }).then(function () {
+      state.githubBusy = "";
+      state.githubPatDraft = "";
+      state.githubPatOpen = false;
+      return loadGithubStatus();
+    }).then(render).catch(function (error) {
+      state.githubBusy = "";
+      state.githubError = (error && (error.serverMessage || error.message)) || "Could not save the GitHub token.";
+      render();
+    });
+  }
+
+  function disconnectGithub() {
+    if (state.githubBusy) return;
+    state.githubStatusRequestId += 1;
+    state.githubBusy = "disconnect";
+    state.githubDisconnectError = "";
+    render();
+    api("/admin/api/github", { method: "DELETE" }).then(function () {
+      state.githubBusy = "";
+      state.githubDisconnectConfirm = false;
+      state.githubDisconnectError = "";
+      state.githubManifestOpen = false;
+      state.githubPatOpen = false;
+      state.githubPatDraft = "";
+      state.githubStatus = null;
+      state.githubStatusLoaded = false;
+      render();
+      return loadGithubStatus().then(render);
+    }).catch(function (error) {
+      state.githubBusy = "";
+      state.githubDisconnectError = (error && (error.serverMessage || error.message)) || "Could not disconnect GitHub.";
+      render();
+    });
   }
 
   function loadSettings() {
@@ -4282,6 +4560,24 @@ details[open].advanced summary::before {
       return;
     }
 
+    if (state.githubDisconnectConfirm) {
+      if (action === "github-disconnect-cancel") {
+        if (state.githubBusy === "disconnect") return;
+        state.githubDisconnectConfirm = false;
+        state.githubDisconnectError = "";
+        render();
+        focusSlackDisconnectAction("github-disconnect-open");
+      } else if (action === "github-disconnect-confirm") {
+        disconnectGithub();
+      }
+      return;
+    }
+
+    // PAT writes and disconnects are short, atomic transitions. Match the
+    // Slack credential lock: do not let navigation or another action make the
+    // operation appear canceled while its request is still live.
+    if (state.githubBusy === "pat" || state.githubBusy === "disconnect") return;
+
     // A credential replacement is a short, atomic transition. Do not let a
     // navigation or second connection action make it look canceled while the
     // POST is still live. Read-only connection tests may finish in the
@@ -4372,6 +4668,36 @@ details[open].advanced summary::before {
     // Settings (model-providers) is a separate destination that lands with its
     // own build; the affordance is present per the approved model-field design.
     if (action === "open-settings") { openSettings(); }
+    if (state.githubBusy && action.indexOf("github-") === 0) return;
+    if (action === "github-manifest-open") {
+      state.githubManifestOpen = true;
+      state.githubPatOpen = false;
+      state.githubError = "";
+      render();
+    }
+    if (action === "github-manifest-cancel") {
+      state.githubManifestOpen = false;
+      state.githubError = "";
+      render();
+    }
+    if (action === "github-pat-open") {
+      state.githubPatOpen = true;
+      state.githubManifestOpen = false;
+      state.githubError = "";
+      render();
+    }
+    if (action === "github-pat-cancel") {
+      state.githubPatOpen = false;
+      state.githubPatDraft = "";
+      state.githubError = "";
+      render();
+    }
+    if (action === "github-refresh") { refreshGithubStatus(); }
+    if (action === "github-disconnect-open" && state.githubStatus && state.githubStatus.mode !== "none") {
+      state.githubDisconnectConfirm = true;
+      state.githubDisconnectError = "";
+      render();
+    }
     if (state.egressSaving && action.indexOf("egress-") === 0) return;
     if (action === "egress-mode") {
       egressDraft.mode = target.getAttribute("data-mode") || "allowlist";
@@ -4654,6 +4980,8 @@ details[open].advanced summary::before {
     // spinner) never wipes it; the favorites search re-renders only its own
     // results container to keep the input focused.
     if (action === "prov-key-input") { provUiFor(target.getAttribute("data-provider")).key = target.value; }
+    if (action === "github-org-input") { state.githubOrg = target.value; }
+    if (action === "github-pat-input") { state.githubPatDraft = target.value; }
     if (action === "egress-domain-input") {
       var egressInputIndex = Number(target.getAttribute("data-index"));
       if (!state.egressSaving && egressInputIndex >= 0 && egressInputIndex < egressDraft.domains.length) egressDraft.domains[egressInputIndex] = target.value;
@@ -4832,6 +5160,8 @@ details[open].advanced summary::before {
     event.preventDefault();
     if (action === "add-channel-form") addChannel(new FormData(form));
     if (action === "slack-connect-form") submitSlackConnection(new FormData(form));
+    if (action === "github-manifest-form") submitGithubManifest(new FormData(form));
+    if (action === "github-pat-form") saveGithubPat(new FormData(form));
   });
 
   // Escape dismisses the open Model combobox (F6) without picking a model.
@@ -4849,6 +5179,37 @@ details[open].advanced summary::before {
   }
 
   document.addEventListener("keydown", function (event) {
+    if (state.githubDisconnectConfirm && event.key === "Tab") {
+      event.preventDefault();
+      if (state.githubBusy === "disconnect") {
+        focusGithubDisconnectDialog();
+        return;
+      }
+      var cancelGithubDisconnect = document.querySelector('[data-action="github-disconnect-cancel"]');
+      var confirmGithubDisconnect = document.querySelector('[data-action="github-disconnect-confirm"]');
+      if (!cancelGithubDisconnect || !confirmGithubDisconnect) {
+        focusGithubDisconnectDialog();
+        return;
+      }
+      var activeGithubDisconnect = document.activeElement;
+      var nextGithubDisconnect = event.shiftKey
+        ? (activeGithubDisconnect === cancelGithubDisconnect ? confirmGithubDisconnect : cancelGithubDisconnect)
+        : (activeGithubDisconnect === confirmGithubDisconnect ? cancelGithubDisconnect : confirmGithubDisconnect);
+      if (nextGithubDisconnect.focus) nextGithubDisconnect.focus();
+      return;
+    }
+    if (state.githubDisconnectConfirm && (event.key === "Escape" || event.key === "Esc")) {
+      event.preventDefault();
+      if (state.githubBusy === "disconnect") {
+        focusGithubDisconnectDialog();
+        return;
+      }
+      state.githubDisconnectConfirm = false;
+      state.githubDisconnectError = "";
+      render();
+      focusSlackDisconnectAction("github-disconnect-open");
+      return;
+    }
     if (state.slackDisconnectConfirm && event.key === "Tab") {
       event.preventDefault();
       if (state.slackDisconnectBusy) {
@@ -4914,7 +5275,9 @@ details[open].advanced summary::before {
       if (
         (state.profileScreen === "edit" && state.profileDirty) ||
         state.slackConnectionBusy === "update" ||
-        state.slackConnectionBusy === "disconnect"
+        state.slackConnectionBusy === "disconnect" ||
+        state.githubBusy === "pat" ||
+        state.githubBusy === "disconnect"
       ) {
         event.preventDefault();
         event.returnValue = "";
@@ -4931,12 +5294,21 @@ details[open].advanced summary::before {
         if (state.slackConnectionBusy === "disconnect") focusSlackDisconnectDialog();
         return;
       }
+      if (state.githubBusy === "pat" || state.githubBusy === "disconnect") {
+        history.pushState(null, "", canonicalPath());
+        if (state.githubBusy === "disconnect") focusGithubDisconnectDialog();
+        return;
+      }
       // A non-busy disconnect confirmation is not a route. Close it before
       // applying Back/Forward so the old dialog cannot survive over a new page
       // or try to restore focus to a control that no longer exists.
       if (state.slackDisconnectConfirm) {
         state.slackDisconnectConfirm = false;
         state.slackDisconnectError = "";
+      }
+      if (state.githubDisconnectConfirm) {
+        state.githubDisconnectConfirm = false;
+        state.githubDisconnectError = "";
       }
       if (state.profileScreen === "edit" && state.profileDirty && targetPath !== canonicalPath()) {
         history.pushState(null, "", canonicalPath());
