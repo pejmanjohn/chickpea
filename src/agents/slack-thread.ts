@@ -14,6 +14,8 @@ import { resolveEffectiveSlackConfig } from '../config/effective-config.ts';
 import {
   getCachedInstallationToken,
   getGithubConnection,
+  GITHUB_OWNER_PATTERN,
+  isValidRepositoryFullName,
   type GithubConnection,
 } from '../config/github-app.ts';
 import { resolveProfileMcpTools } from '../config/profile-mcp.ts';
@@ -77,13 +79,26 @@ export async function resolveRepositoryAccess(
   repositories: readonly RepositoryGrant[] | undefined,
   env?: PlatformEnv,
 ): Promise<ResolvedRepositoryAccess> {
-  const enabled = (repositories ?? []).filter((grant) => grant.enabled);
+  const configured = (repositories ?? []).filter((grant) => grant.enabled);
+  // Defense in depth against rows persisted before (or around) schema
+  // validation: a malformed name would become an egress URL prefix, where a
+  // dot segment normalizes into a broader match than the grant. Dropped
+  // grants still count as configured — they must fail closed, not fall open
+  // to a legacy connector.
+  const enabled = configured.filter(
+    (grant) =>
+      GITHUB_OWNER_PATTERN.test(grant.accountLogin) &&
+      (grant.allRepos === true
+        ? grant.fullName === ''
+        : isValidRepositoryFullName(grant.fullName)),
+  );
   const none = (governs: boolean): ResolvedRepositoryAccess => ({
     grants: [],
     connectors: [],
     governsGithubHosts: governs,
   });
-  if (enabled.length === 0) return none(false);
+  if (configured.length === 0) return none(false);
+  if (enabled.length === 0) return none(true);
 
   let connection: GithubConnection;
   try {
@@ -260,7 +275,13 @@ function isDeniedRepositoryEndpoint(url: string): boolean {
 function matchesGrantedCodeSearch(url: string, grants: readonly RepositoryGrant[]): boolean {
   let query: string;
   try {
-    query = new URL(url).searchParams.get('q') ?? '';
+    // Validate exactly what GitHub will evaluate: with duplicate q params,
+    // `.get()` reads the first while GitHub honors another — an attacker
+    // could pass a granted-repo q for the guard and an ungranted one for the
+    // API. One q, or no credential.
+    const values = new URL(url).searchParams.getAll('q');
+    if (values.length !== 1 || values[0] === undefined) return false;
+    query = values[0];
   } catch {
     return false;
   }

@@ -38,7 +38,9 @@ import {
 import {
   exchangeGithubAppManifest,
   getGithubConnection,
+  GITHUB_OWNER_PATTERN,
   GITHUB_SETTING_KEYS,
+  isValidRepositoryFullName,
   listInstallationRepos,
   listInstallations,
   normalizePrivateKeyPem,
@@ -333,7 +335,10 @@ const repositoryGrantSchema = v.pipe(
   v.object({
     id: v.pipe(v.string(), v.regex(AGENT_ID_PATTERN)),
     installationId: v.nullable(v.pipe(v.number(), v.integer(), v.minValue(1))),
-    accountLogin: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(100)),
+    // Owner/repo names become egress URL prefixes — the strict patterns
+    // exclude dot segments and metacharacters that URL normalization could
+    // collapse into a broader prefix (see github-app.ts).
+    accountLogin: v.pipe(v.string(), v.trim(), v.regex(GITHUB_OWNER_PATTERN)),
     fullName: v.pipe(v.string(), v.trim(), v.maxLength(201)),
     allRepos: v.optional(v.boolean()),
     enabled: v.boolean(),
@@ -342,7 +347,7 @@ const repositoryGrantSchema = v.pipe(
     (grant) =>
       grant.allRepos === true
         ? grant.installationId !== null && grant.fullName === ''
-        : /^[^/\s]+\/[^/\s]+$/.test(grant.fullName),
+        : isValidRepositoryFullName(grant.fullName),
     'repository grant must name one repository or one whole installation',
   ),
 );

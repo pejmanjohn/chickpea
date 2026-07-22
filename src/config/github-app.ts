@@ -2,6 +2,24 @@ import type { SettingsStore } from './settings-store.ts';
 
 export const GITHUB_API_BASE = 'https://api.github.com';
 
+// Strict owner/repo shapes. These feed URL prefixes in the egress allow-list,
+// so anything URL-normalization could collapse (dot segments) or reinterpret
+// (metacharacters) must be impossible: `Acme/..` would otherwise normalize
+// `https://api.github.com/repos/Acme/..` down to `/repos` and match EVERY
+// repository. GitHub logins are alphanumeric+hyphen; repo names allow
+// [A-Za-z0-9._-] but never `.` or `..` alone.
+export const GITHUB_OWNER_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})?$/;
+export const GITHUB_REPO_NAME_PATTERN = /^(?!\.\.?$)[A-Za-z0-9._-]{1,100}$/;
+
+export function isValidRepositoryFullName(fullName: string): boolean {
+  const slash = fullName.indexOf('/');
+  if (slash <= 0 || slash !== fullName.lastIndexOf('/')) return false;
+  return (
+    GITHUB_OWNER_PATTERN.test(fullName.slice(0, slash)) &&
+    GITHUB_REPO_NAME_PATTERN.test(fullName.slice(slash + 1))
+  );
+}
+
 export const GITHUB_SETTING_KEYS = {
   appId: 'github.app.id',
   appSlug: 'github.app.slug',

@@ -598,6 +598,14 @@ test('PAT repository access uses the live PAT without minting and scopes both Gi
       ],
     );
 
+    // A malformed persisted name (dot segment) must never become a URL
+    // prefix — `Acme/..` would normalize into a match for EVERY repository.
+    // The grant is dropped at runtime, but grants still govern the hosts.
+    const malformed = await resolveRepositoryAccess([
+      repositoryGrant({ id: 'dotdot', installationId: null, fullName: 'Acme/..' }),
+    ]);
+    assert.deepEqual(malformed, { grants: [], connectors: [], governsGithubHosts: true });
+
     const absent = await resolveRepositoryAccess([]);
     assert.deepEqual(absent, { grants: [], connectors: [], governsGithubHosts: false });
     // Snapshots persisted before repository grants existed rehydrate without
@@ -923,6 +931,21 @@ test('the repos scope refuses denied Actions endpoints while keeping rerun and c
     ]) {
       assert.equal(guard(allowed), true, allowed);
     }
+
+    const searchScope = access.connectors.find((connector) =>
+      connector.pathPrefixes.includes('/search/code'),
+    );
+    assert.ok(searchScope?.matchesRequest, 'search scope must carry a query guard');
+    const searchGuard = searchScope.matchesRequest;
+    const granted = 'https://api.github.com/search/code?q=secret+repo%3AAcme%2FAlpha';
+    assert.equal(searchGuard(granted), true);
+    // Duplicate q params must be rejected outright: the guard validates one
+    // value while GitHub may evaluate another.
+    assert.equal(
+      searchGuard(`${granted}&q=secret+repo%3AAcme%2FPrivate`),
+      false,
+      'duplicate q must not pass the code-search guard',
+    );
   });
 });
 
