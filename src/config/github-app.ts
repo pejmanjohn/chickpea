@@ -147,7 +147,11 @@ export async function getGithubConnection(settings: SettingsStore): Promise<Gith
       mode: 'app',
       appId,
       ...(appSlug ? { appSlug } : {}),
-      privateKeyPem: normalizePrivateKeyPem(privateKey),
+      // Deliberately NOT normalized here: connection discovery backs the
+      // status route, and a malformed stored key must yield a recoverable
+      // "installations unavailable" state, not a 500 that hides the
+      // disconnect controls. mintAppJwt normalizes (and throws) at use time.
+      privateKeyPem: privateKey,
     };
   }
   const pat = nonEmpty(process.env.GITHUB_PAT) ?? nonEmpty(storedPat);

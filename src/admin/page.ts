@@ -6929,6 +6929,11 @@ details[open].advanced summary::before {
     if (!commitOpenApiConnectionEditor()) { showProfileTab("connections"); return; }
     if (!draft.name) { state.profileError = "Name is required."; render(); return; }
     if (!draft.instructions) { state.profileError = "Profile instructions are required."; state.profileTab = "instructions"; render(); return; }
+    // An open repository picker holds checkbox changes the user has made but
+    // not yet Applied; saving must not silently serialize the stale grant
+    // list. Committing equals clicking Apply — which is what the checked
+    // boxes said the user wants.
+    if (state.repositoryPicker) applyRepositoryPicker();
     var body = {
       name: draft.name,
       instructions: draft.instructions,

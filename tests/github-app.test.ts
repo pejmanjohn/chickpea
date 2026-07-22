@@ -445,6 +445,35 @@ test('GitHub status isolates one failing installation instead of failing the end
   }
 });
 
+test('GitHub status stays recoverable when the stored App key is malformed', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  await settings.setSetting('github.app.id', '12345');
+  await settings.setSetting('github.app.slug', 'chickpea-test');
+  await settings.setSetting('github.app.private_key', 'not a pem at all');
+  const fetchImpl: typeof fetch = async () => new Response('unreachable', { status: 500 });
+  try {
+    await withEnv(
+      { GITHUB_APP_ID: undefined, GITHUB_APP_PRIVATE_KEY: undefined, GITHUB_PAT: undefined },
+      () =>
+        withFetch(fetchImpl, async () => {
+          const response = await adminApp(store, settings).request('/admin/api/github/status', {
+            headers: auth(),
+          });
+          // A garbage key must not 500 the status route: the operator needs
+          // the disconnect/replace controls to recover.
+          assert.equal(response.status, 200);
+          const body = (await response.json()) as { mode: string; installationsUnavailable?: boolean };
+          assert.equal(body.mode, 'app');
+          assert.equal(body.installationsUnavailable, true);
+        }),
+    );
+  } finally {
+    store.close();
+    settings.close();
+  }
+});
+
 test('GitHub status stays recoverable when the App key is rejected outright', async () => {
   const { pkcs8 } = rsaKeys();
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
