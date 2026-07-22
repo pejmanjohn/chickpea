@@ -2956,6 +2956,11 @@ details[open].advanced summary::before {
     return "";
   }
 
+  function legacyGithubConnectionNoticeHtml(conn) {
+    if (!conn || conn.presetId !== "github") return "";
+    return '<span class="conn-meta">GitHub now lives in the <button type="button" class="link-btn" data-action="profile-tab" data-tab="repositories">Repositories tab</button></span>';
+  }
+
   function connectionsPanelHtml(draft) {
     var servers = draft.mcpServers || [];
     var apiConnections = draft.apiConnections || [];
@@ -2972,7 +2977,8 @@ details[open].advanced summary::before {
         '<div class="sk-body">' + nameHtml +
         '<span class="gallery-lane">MCP</span>' +
         '<span class="conn-host">' + esc(connectionHost(conn.url)) + '</span>' +
-        '<span class="conn-meta"><span class="badge-src">' + transportLabel + '</span>' + connectionStatusPill(conn) + '</span></div>' +
+        '<span class="conn-meta"><span class="badge-src">' + transportLabel + '</span>' + connectionStatusPill(conn) + '</span>' +
+        legacyGithubConnectionNoticeHtml(conn) + '</div>' +
         '<span class="toggle"><span class="thumb"></span><input type="checkbox" data-action="conn-toggle" data-index="' + index + '" ' + (conn.enabled ? "checked" : "") + ' aria-label="Connection enabled"></span>' +
         '<button type="button" class="btn btn-ghost btn-sm" data-action="conn-edit" data-index="' + index + '">Edit</button>' +
         '<button type="button" class="x-btn" data-action="conn-remove" data-index="' + index + '" aria-label="Remove connection">&times;</button></div>';
@@ -2982,7 +2988,8 @@ details[open].advanced summary::before {
       return '<div class="skill-row conn-row">' +
         '<div class="sk-body"><span class="sk-name" style="font-family:inherit;">' + esc(conn.displayName) + '</span>' +
         '<span class="gallery-lane">API</span>' +
-        '<span class="conn-host">' + esc(apiConnectionHostSummary(conn)) + '</span></div>' +
+        '<span class="conn-host">' + esc(apiConnectionHostSummary(conn)) + '</span>' +
+        legacyGithubConnectionNoticeHtml(conn) + '</div>' +
         '<span class="toggle"><span class="thumb"></span><input type="checkbox" data-action="apiconn-toggle" data-index="' + index + '" ' + (conn.enabled ? "checked" : "") + ' aria-label="API connection enabled"></span>' +
         '<button type="button" class="btn btn-ghost btn-sm" data-action="apiconn-edit" data-index="' + index + '">Edit</button>' +
         '<button type="button" class="x-btn" data-action="apiconn-remove" data-index="' + index + '" aria-label="Remove API connection">&times;</button></div>';

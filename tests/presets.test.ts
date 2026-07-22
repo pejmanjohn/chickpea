@@ -9,7 +9,7 @@ import {
   type ConnectorPreset,
 } from '../src/config/presets.ts';
 
-const API_PRESET_IDS = new Set(['github', 'asana', 'zendesk']);
+const API_PRESET_IDS = new Set(['asana', 'zendesk']);
 const API_METHODS = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE']);
 
 function isAllowedConnectorHost(host: string): boolean {
@@ -104,23 +104,7 @@ test('preset lanes classify the existing MCP catalog, the API additions, and bot
   assert.deepEqual(presetLanes(both), { mcp: true, api: true });
 });
 
-test('the GitHub, Asana, and Zendesk API presets keep their locked shapes', () => {
-  assert.deepEqual(getConnectorPreset('github'), {
-    id: 'github',
-    name: 'GitHub',
-    category: 'dev',
-    accent: '#181717',
-    api: {
-      hosts: ['api.github.com'],
-      pathPrefixes: [],
-      headerName: 'Authorization',
-      valuePrefix: 'Bearer ',
-      methods: ['GET', 'POST'],
-      placeholder: 'GitHub PAT (ghp_… or fine-grained)',
-    },
-    tokenDocsUrl: 'https://github.com/settings/tokens',
-    tokenDocsHint: 'GitHub → Settings → Developer settings → Personal access tokens',
-  });
+test('the Asana and Zendesk API presets keep their locked shapes', () => {
   assert.deepEqual(getConnectorPreset('asana'), {
     id: 'asana',
     name: 'Asana',
@@ -159,5 +143,6 @@ test('the GitHub, Asana, and Zendesk API presets keep their locked shapes', () =
 
 test('getConnectorPreset looks up known ids', () => {
   assert.equal(getConnectorPreset('linear'), CONNECTOR_PRESETS[0]);
+  assert.equal(getConnectorPreset('github'), undefined);
   assert.equal(getConnectorPreset('unknown'), undefined);
 });

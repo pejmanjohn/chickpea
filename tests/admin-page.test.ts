@@ -2206,9 +2206,9 @@ test('a connected preset drops out of the Available gallery until it is removed'
   const panel = harness.app.innerHTML;
   // Asana is already connected, so the gallery no longer offers it...
   assert.doesNotMatch(panel, /data-action="conn-preset" data-preset="asana"/);
-  // ...other presets remain, and the Available count dropped from 23 to 22.
+  // ...other presets remain, and the Available count dropped from 22 to 21.
   assert.match(panel, /data-action="conn-preset" data-preset="linear"/);
-  assert.match(panel, /<span class="gallery-head-count">22<\/span>/);
+  assert.match(panel, /<span class="gallery-head-count">21<\/span>/);
 });
 
 test('saved MCP and API connections share one lane-badged list with matching inline editors', async () => {
@@ -2555,10 +2555,10 @@ test('the searchable Connections gallery is immediate, renders brand logos, and 
   assert.match(gallery, /data-action="conn-gallery-search"/);
   assert.equal(
     (gallery.match(/data-action="conn-preset" data-preset="[^"]+">Connect<\/button>/g) ?? []).length,
-    23,
+    22,
   );
-  assert.match(gallery, /<span>Available<\/span><span class="gallery-head-count">23<\/span>/);
-  assert.match(gallery, /data-preset="github"/);
+  assert.match(gallery, /<span>Available<\/span><span class="gallery-head-count">22<\/span>/);
+  assert.doesNotMatch(gallery, /data-preset="github"/);
   assert.doesNotMatch(gallery, /data-preset="context7"/);
   assert.doesNotMatch(gallery, /data-preset="deepwiki"/);
   assert.doesNotMatch(gallery, /data-action="conn-new"/);
@@ -2598,7 +2598,7 @@ test('the searchable Connections gallery is immediate, renders brand logos, and 
   assert.match(linearRow, /<span class="gallery-row-name">Linear<\/span>/);
   assert.match(linearRow, /<span class="gallery-lane">MCP<\/span>/);
 
-  for (const id of ['github', 'asana', 'zendesk']) {
+  for (const id of ['asana', 'zendesk']) {
     const apiRow = gallery.match(
       new RegExp('<div class="gallery-row">(?:(?!<\\/div>)[\\s\\S])*?data-preset="' + id + '">Connect<\\/button><\\/div>'),
     )?.[0];
@@ -2660,6 +2660,42 @@ test('the searchable Connections gallery is immediate, renders brand logos, and 
   click({ target: actionTarget({ 'data-action': 'conn-view', 'data-view': 'advanced' }) });
   assert.match(harness.app.innerHTML, /id="conn-url"[^>]*data-action="conn-field-url"/);
   assert.match(harness.app.innerHTML, /id="conn-name"[^>]*data-action="conn-field-name"/);
+});
+
+test('saved GitHub connections keep their controls and link to the Repositories tab', async () => {
+  const harness = runAdminPageHarness({
+    agents: [
+      connectionsAgent({
+        apiConnections: [
+          apiConnectionFixture({
+            id: 'github',
+            displayName: 'GitHub',
+            allowedHosts: ['api.github.com'],
+            pathPrefixes: [],
+            presetId: 'github',
+          }),
+        ],
+      }),
+    ],
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+
+  assert.match(
+    harness.app.innerHTML,
+    /GitHub now lives in the <button[^>]*data-action="profile-tab" data-tab="repositories">Repositories tab<\/button>/,
+  );
+  assert.match(harness.app.innerHTML, /data-action="apiconn-toggle" data-index="0"/);
+  assert.match(harness.app.innerHTML, /data-action="apiconn-edit" data-index="0"/);
+  assert.match(harness.app.innerHTML, /data-action="apiconn-remove" data-index="0"/);
+
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'repositories' }) });
+  assert.match(harness.app.innerHTML, /id="ptab-repositories" class="ptab on"/);
+  assert.doesNotMatch(harness.app.innerHTML, /id="ptab-panel-repositories"[^>]* hidden/);
 });
 
 test('the Asana gallery preset opens a compact Recommended API editor', async () => {
