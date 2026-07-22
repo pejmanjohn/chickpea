@@ -35,6 +35,14 @@ import {
   parseEgressPolicy,
   type EgressPolicy,
 } from '../config/egress.ts';
+import {
+  exchangeGithubAppManifest,
+  getGithubConnection,
+  GITHUB_SETTING_KEYS,
+  listInstallationRepos,
+  listInstallations,
+  normalizePrivateKeyPem,
+} from '../config/github-app.ts';
 import { classifyMcpError, McpBlockedUrlError, mcpDebugText, safeMcpFailureText } from '../config/mcp-errors.ts';
 import {
   buildMcpRequestHeaders,
@@ -321,6 +329,34 @@ const apiConnectionsSchema = v.pipe(
   ),
 );
 
+const repositoryGrantSchema = v.pipe(
+  v.object({
+    id: v.pipe(v.string(), v.regex(AGENT_ID_PATTERN)),
+    installationId: v.nullable(v.pipe(v.number(), v.integer(), v.minValue(1))),
+    accountLogin: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(100)),
+    fullName: v.pipe(v.string(), v.trim(), v.maxLength(201)),
+    allRepos: v.optional(v.boolean()),
+    enabled: v.boolean(),
+  }),
+  v.check(
+    (grant) =>
+      grant.allRepos === true
+        ? grant.installationId !== null && grant.fullName === ''
+        : /^[^/\s]+\/[^/\s]+$/.test(grant.fullName),
+    'repository grant must name one repository or one whole installation',
+  ),
+);
+
+const repositoriesSchema = v.pipe(
+  v.array(repositoryGrantSchema),
+  v.maxLength(200),
+  v.check(
+    (repositories) =>
+      new Set(repositories.map((repository) => repository.id)).size === repositories.length,
+    'repository grant ids must be unique',
+  ),
+);
+
 const agentSchema = v.object({
   id: agentIdSchema,
   name: nonEmptyString,
@@ -330,6 +366,7 @@ const agentSchema = v.object({
   skills: v.optional(skillsSchema, []),
   mcpServers: v.optional(mcpServersSchema, []),
   apiConnections: v.optional(apiConnectionsSchema, []),
+  repositories: v.optional(repositoriesSchema, []),
 });
 
 const agentPatchSchema = v.partial(
@@ -341,8 +378,45 @@ const agentPatchSchema = v.partial(
     skills: skillsSchema,
     mcpServers: mcpServersSchema,
     apiConnections: apiConnectionsSchema,
+    repositories: repositoriesSchema,
   }),
 );
+
+const githubOrgSchema = v.pipe(
+  v.string(),
+  v.trim(),
+  v.regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/),
+  v.maxLength(39),
+);
+const githubManifestSchema = v.object({ org: v.optional(githubOrgSchema) });
+const githubPatSchema = v.object({
+  token: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(4_096)),
+});
+const githubCallbackSchema = v.object({
+  code: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(1_024)),
+});
+const githubInstallationIdSchema = v.union([
+  v.literal('pat'),
+  v.pipe(
+    v.string(),
+    v.regex(/^[1-9]\d*$/),
+    v.transform(Number),
+    v.integer(),
+    v.maxValue(Number.MAX_SAFE_INTEGER),
+  ),
+]);
+const githubReposQuerySchema = v.object({
+  q: v.optional(v.pipe(v.string(), v.trim(), v.maxLength(256))),
+  page: v.optional(
+    v.pipe(
+      v.string(),
+      v.regex(/^[1-9]\d*$/),
+      v.transform(Number),
+      v.integer(),
+      v.maxValue(Number.MAX_SAFE_INTEGER),
+    ),
+  ),
+});
 
 // Test-connection payload: the UNSAVED form. Secrets are transient (never
 // persisted here) and merged over stored/env at handler time.
@@ -722,6 +796,143 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     return c.json({ policy });
   });
 
+  app.get('/admin/api/github/status', async (c) => {
+    try {
+      const connection = await getGithubConnection(settings(c));
+      if (connection.mode !== 'app') {
+        return c.json({ mode: connection.mode });
+      }
+      const installations = await listInstallations(connection);
+      const withCounts = await Promise.all(
+        installations.map(async (installation) => {
+          const repositories = await listInstallationRepos(
+            connection,
+            installation.id,
+            { page: 1 },
+          );
+          return { ...installation, repoCount: repositories.totalCount };
+        }),
+      );
+      return c.json({
+        mode: 'app' as const,
+        ...(connection.appSlug ? { appSlug: connection.appSlug } : {}),
+        installations: withCounts,
+      });
+    } catch (err) {
+      return internalError(c, err);
+    }
+  });
+
+  app.post('/admin/api/github/manifest', async (c) => {
+    const parsed = v.safeParse(githubManifestSchema, await readJson(c.req));
+    if (!parsed.success) {
+      return invalidRequest(c);
+    }
+    const origin = requestOrigin(c);
+    const suffix = randomUUID().replaceAll('-', '').slice(0, 6).toLowerCase();
+    const org = parsed.output.org;
+    return c.json({
+      target: org
+        ? `https://github.com/organizations/${org}/settings/apps/new`
+        : 'https://github.com/settings/apps/new',
+      manifest: {
+        name: `chickpea-${suffix}`,
+        url: origin,
+        redirect_url: `${origin}/admin/api/github/setup/callback`,
+        hook_attributes: { active: false, url: `${origin}/github/webhook` },
+        public: false,
+        default_permissions: {
+          contents: 'write',
+          pull_requests: 'write',
+          issues: 'write',
+          metadata: 'read',
+          actions: 'write',
+        },
+      },
+    });
+  });
+
+  app.get('/admin/api/github/setup/callback', async (c) => {
+    const parsed = v.safeParse(githubCallbackSchema, { code: c.req.query('code') });
+    if (!parsed.success) {
+      return invalidRequest(c);
+    }
+    try {
+      const conversion = await exchangeGithubAppManifest(parsed.output.code);
+      await settings(c).applySettingsPatch({
+        set: [
+          { key: GITHUB_SETTING_KEYS.appId, value: String(conversion.id) },
+          { key: GITHUB_SETTING_KEYS.appSlug, value: conversion.slug },
+          {
+            key: GITHUB_SETTING_KEYS.privateKey,
+            value: normalizePrivateKeyPem(conversion.privateKeyPem),
+          },
+          { key: GITHUB_SETTING_KEYS.webhookSecret, value: conversion.webhookSecret },
+        ],
+      });
+      return c.redirect('/admin#/settings', 302);
+    } catch (err) {
+      return internalError(c, err);
+    }
+  });
+
+  app.put('/admin/api/github/pat', async (c) => {
+    const parsed = v.safeParse(githubPatSchema, await readJson(c.req));
+    if (!parsed.success) {
+      return invalidRequest(c);
+    }
+    try {
+      await settings(c).setSetting(GITHUB_SETTING_KEYS.pat, parsed.output.token);
+      return c.json({ ok: true });
+    } catch (err) {
+      return internalError(c, err);
+    }
+  });
+
+  app.delete('/admin/api/github', async (c) => {
+    try {
+      const referencingProfiles = (await store(c).listAgents())
+        .filter((agent) => agent.repositories.length > 0)
+        .map(({ id, name }) => ({ id, name }));
+      await settings(c).applySettingsPatch({ delete: Object.values(GITHUB_SETTING_KEYS) });
+      return c.json({ ok: true, referencingProfiles });
+    } catch (err) {
+      return internalError(c, err);
+    }
+  });
+
+  app.get('/admin/api/github/installations/:id/repos', async (c) => {
+    const parsedId = v.safeParse(githubInstallationIdSchema, c.req.param('id'));
+    const parsedQuery = v.safeParse(githubReposQuerySchema, {
+      q: c.req.query('q'),
+      page: c.req.query('page'),
+    });
+    if (!parsedId.success || !parsedQuery.success) {
+      return invalidRequest(c);
+    }
+    try {
+      const connection = await getGithubConnection(settings(c));
+      if (connection.mode === 'none') {
+        return c.json({ error: 'github_not_configured' }, 409);
+      }
+      const patRequest = parsedId.output === 'pat';
+      if ((connection.mode === 'pat') !== patRequest) {
+        return invalidRequest(c);
+      }
+      const page = await listInstallationRepos(
+        connection,
+        patRequest ? null : parsedId.output,
+        {
+          q: parsedQuery.output.q ?? '',
+          page: parsedQuery.output.page ?? 1,
+        },
+      );
+      return c.json({ repos: page.repositories, totalCount: page.totalCount });
+    } catch (err) {
+      return internalError(c, err);
+    }
+  });
+
   app.post('/admin/api/agents', async (c) => {
     const body = await readJson(c.req);
     const parsed = v.safeParse(agentSchema, body);
@@ -763,7 +974,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (!source) {
       return c.json({ error: 'unrecognized_source' }, 400);
     }
-    const token = process.env.GITHUB_TOKEN?.trim() || undefined;
+    const githubConnection = await getGithubConnection(settings(c));
+    const token =
+      process.env.GITHUB_TOKEN?.trim() ||
+      (githubConnection.mode === 'pat' ? githubConnection.pat : undefined);
     try {
       const resolution = await resolveSkillSource(source, fetch, token);
       return c.json({ resolution });
@@ -1902,6 +2116,7 @@ function toAgentConfig(input: v.InferOutput<typeof agentSchema>): CustomAgentCon
     skills: input.skills,
     mcpServers: toMcpServers(input.mcpServers),
     apiConnections: toApiConnections(input.apiConnections),
+    repositories: toRepositories(input.repositories),
   };
 }
 
@@ -1976,6 +2191,19 @@ function toApiConnections(
   }));
 }
 
+function toRepositories(
+  repositories: v.InferOutput<typeof repositoriesSchema>,
+): CustomAgentConfig['repositories'] {
+  return repositories.map((repository) => ({
+    id: repository.id,
+    installationId: repository.installationId,
+    accountLogin: repository.accountLogin,
+    fullName: repository.fullName,
+    ...(repository.allRepos !== undefined ? { allRepos: repository.allRepos } : {}),
+    enabled: repository.enabled,
+  }));
+}
+
 type AgentPatch = Partial<Omit<CustomAgentConfig, 'id' | 'model'>> & { model?: string | null };
 
 function toAgentPatch(input: v.InferOutput<typeof agentPatchSchema>): AgentPatch {
@@ -1988,6 +2216,9 @@ function toAgentPatch(input: v.InferOutput<typeof agentPatchSchema>): AgentPatch
   if (input.mcpServers !== undefined) patch.mcpServers = toMcpServers(input.mcpServers);
   if (input.apiConnections !== undefined) {
     patch.apiConnections = toApiConnections(input.apiConnections);
+  }
+  if (input.repositories !== undefined) {
+    patch.repositories = toRepositories(input.repositories);
   }
   return patch;
 }

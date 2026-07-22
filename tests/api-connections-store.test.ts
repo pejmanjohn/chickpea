@@ -33,6 +33,7 @@ function agent(apiConnections: ApiConnectionConfig[]): CustomAgentConfig {
     skills: [],
     mcpServers: [],
     apiConnections,
+    repositories: [],
   };
 }
 

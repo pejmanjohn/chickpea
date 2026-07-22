@@ -69,6 +69,15 @@ export interface ApiConnectionConfig {
   presetId?: string;
 }
 
+export interface RepositoryGrant {
+  id: string;
+  installationId: number | null;
+  accountLogin: string;
+  fullName: string;
+  allRepos?: boolean;
+  enabled: boolean;
+}
+
 export interface CustomAgentConfig {
   id: string;
   name: string;
@@ -78,6 +87,7 @@ export interface CustomAgentConfig {
   skills: SkillConfig[];
   mcpServers: McpConnectionConfig[];
   apiConnections: ApiConnectionConfig[];
+  repositories: RepositoryGrant[];
 }
 
 export interface ChannelAssignment {
@@ -113,6 +123,7 @@ export interface AgentSnapshot extends ResolvedAssignment {
   model: string;
   providerId: string;
   instructions: string;
+  repositories: RepositoryGrant[];
   snapshotHash: string;
   createdAt: number;
 }

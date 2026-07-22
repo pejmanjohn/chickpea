@@ -27,6 +27,7 @@ interface AgentRow {
   skills_json: string;
   mcp_servers_json: string;
   api_connections_json?: string | null;
+  repositories_json?: string | null;
 }
 
 interface AssignmentRow {
@@ -130,7 +131,7 @@ export class ConfigStoreLogic {
     this.db.run(
       `UPDATE config_agents
        SET name = ?, instructions = ?, enabled = ?, model = ?,
-           skills_json = ?, mcp_servers_json = ?, api_connections_json = ?
+           skills_json = ?, mcp_servers_json = ?, api_connections_json = ?, repositories_json = ?
        WHERE id = ?`,
       next.name,
       next.instructions,
@@ -139,6 +140,7 @@ export class ConfigStoreLogic {
       JSON.stringify(next.skills),
       JSON.stringify(next.mcpServers),
       JSON.stringify(next.apiConnections),
+      JSON.stringify(next.repositories),
       agentId,
     );
     return this.getAgent(agentId);
@@ -281,8 +283,8 @@ export class ConfigStoreLogic {
     return this.db.run(
       `INSERT INTO config_agents (
         id, name, instructions, enabled, model,
-        skills_json, mcp_servers_json, api_connections_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        skills_json, mcp_servers_json, api_connections_json, repositories_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       agent.id,
       agent.name,
       agent.instructions,
@@ -291,11 +293,13 @@ export class ConfigStoreLogic {
       JSON.stringify(agent.skills ?? []),
       JSON.stringify(agent.mcpServers ?? []),
       JSON.stringify(agent.apiConnections ?? []),
+      JSON.stringify(agent.repositories ?? []),
     );
   }
 
   // Fresh databases start from the clean v1 schema. Migration v2 bridges the
-  // pre-release default_models_json column; v3 adds API connection policy.
+  // pre-release default_models_json column; v3 adds API connection policy;
+  // v4 adds per-profile repository grants.
   private runMigrations(): void {
     const MIGRATIONS: Array<{ version: number; up: (db: StateDb) => void }> = [
       {
@@ -347,6 +351,19 @@ export class ConfigStoreLogic {
           if (!hasApiConnections) {
             db.exec(
               "ALTER TABLE config_agents ADD COLUMN api_connections_json TEXT NOT NULL DEFAULT '[]'",
+            );
+          }
+        },
+      },
+      {
+        version: 4,
+        up: (db) => {
+          const hasRepositories = db
+            .all('PRAGMA table_info(config_agents)')
+            .some((column) => column.name === 'repositories_json');
+          if (!hasRepositories) {
+            db.exec(
+              "ALTER TABLE config_agents ADD COLUMN repositories_json TEXT NOT NULL DEFAULT '[]'",
             );
           }
         },
@@ -470,6 +487,7 @@ function rowToAgent(row: AgentRow): CustomAgentConfig {
     skills: JSON.parse(row.skills_json) as CustomAgentConfig['skills'],
     mcpServers: JSON.parse(row.mcp_servers_json) as CustomAgentConfig['mcpServers'],
     apiConnections: parseApiConnections(row.api_connections_json),
+    repositories: parseRepositories(row.repositories_json),
   };
 }
 
@@ -477,6 +495,15 @@ function parseApiConnections(raw: string | null | undefined): CustomAgentConfig[
   try {
     const parsed: unknown = JSON.parse(raw ?? '[]');
     return Array.isArray(parsed) ? (parsed as CustomAgentConfig['apiConnections']) : [];
+  } catch {
+    return [];
+  }
+}
+
+function parseRepositories(raw: string | null | undefined): CustomAgentConfig['repositories'] {
+  try {
+    const parsed: unknown = JSON.parse(raw ?? '[]');
+    return Array.isArray(parsed) ? (parsed as CustomAgentConfig['repositories']) : [];
   } catch {
     return [];
   }

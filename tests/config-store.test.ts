@@ -32,6 +32,7 @@ function agent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig {
     skills: [],
     mcpServers: [],
     apiConnections: [],
+    repositories: [],
     ...overrides,
   };
 }
@@ -152,6 +153,52 @@ test('SqliteConfigStore round-trips non-empty mcpServers through create and upda
   const updated = await store.updateAgent(withServers.id, { mcpServers: nextServers });
   assert.deepEqual(updated.mcpServers, nextServers);
   assert.deepEqual((await store.getAgent(withServers.id)).mcpServers, nextServers);
+
+  store.close();
+});
+
+test('SqliteConfigStore round-trips repository grants through create and update', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const withRepositories = agent({
+    repositories: [
+      {
+        id: 'repo-magoosh-main',
+        installationId: 42,
+        accountLogin: 'magoosh',
+        fullName: 'magoosh/magoosh',
+        enabled: true,
+      },
+      {
+        id: 'repo-personal-all',
+        installationId: 84,
+        accountLogin: 'pejman',
+        fullName: '',
+        allRepos: true,
+        enabled: false,
+      },
+    ],
+  });
+
+  await store.createAgent(withRepositories);
+  assert.deepEqual(
+    (await store.getAgent(withRepositories.id)).repositories,
+    withRepositories.repositories,
+  );
+
+  const nextRepositories = [
+    {
+      id: 'repo-magoosh-api',
+      installationId: 42,
+      accountLogin: 'magoosh',
+      fullName: 'magoosh/api',
+      enabled: true,
+    },
+  ];
+  const updated = await store.updateAgent(withRepositories.id, {
+    repositories: nextRepositories,
+  });
+  assert.deepEqual(updated.repositories, nextRepositories);
+  assert.deepEqual((await store.getAgent(withRepositories.id)).repositories, nextRepositories);
 
   store.close();
 });
@@ -339,7 +386,7 @@ test('SqliteConfigStore migrates the legacy v1 default-models column without los
       .all() as Array<{ id: string }>;
     migratedDb.close();
 
-    assert.equal(version.value, '3');
+    assert.equal(version.value, '4');
     assert.equal(
       agentColumns.some(({ name }) => name === 'default_models_json'),
       false,
@@ -372,7 +419,7 @@ test('fresh databases start at the clean current config schema', () => {
       .all('config_assignments') as Array<{ name: string }>;
     db.close();
 
-    assert.equal(version.value, '3');
+    assert.equal(version.value, '4');
     assert.deepEqual(
       agentColumns.map(({ name }) => name),
       [
@@ -384,6 +431,7 @@ test('fresh databases start at the clean current config schema', () => {
         'skills_json',
         'mcp_servers_json',
         'api_connections_json',
+        'repositories_json',
       ],
     );
     assert.deepEqual(
@@ -553,6 +601,7 @@ test('a disabled assignment at the winning specificity turns the channel off ins
         skills: [],
         mcpServers: [],
         apiConnections: [],
+        repositories: [],
       },
     ],
     assignments: [

@@ -72,6 +72,7 @@ function providerSettingsAgent(id: string, model: string) {
     skills: [],
     mcpServers: [],
     apiConnections: [],
+    repositories: [],
   };
 }
 

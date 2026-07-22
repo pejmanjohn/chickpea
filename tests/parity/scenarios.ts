@@ -56,6 +56,7 @@ const RELEASE_SCRIBE_PROFILE: CustomAgentConfig = {
   skills: [],
   mcpServers: [],
   apiConnections: [],
+  repositories: [],
 };
 
 const EXEC_BRIEF_PROFILE: CustomAgentConfig = {
@@ -74,6 +75,7 @@ const EXEC_BRIEF_PROFILE: CustomAgentConfig = {
   skills: [],
   mcpServers: [],
   apiConnections: [],
+  repositories: [],
 };
 
 export interface Scenario {
@@ -659,6 +661,7 @@ export const scenarios: Scenario[] = [
             skills: [],
             mcpServers: [],
             apiConnections: [],
+            repositories: [],
           },
         ],
         assignments: [
@@ -702,6 +705,7 @@ export const scenarios: Scenario[] = [
             skills: [],
             mcpServers: [],
             apiConnections: [],
+            repositories: [],
           },
         ],
         assignments: [
@@ -772,6 +776,7 @@ export const scenarios: Scenario[] = [
             skills: [],
             mcpServers: [],
             apiConnections: [],
+            repositories: [],
           },
         ],
         assignments: [
@@ -983,6 +988,7 @@ export const scenarios: Scenario[] = [
             skills: [],
             mcpServers: [],
             apiConnections: [],
+            repositories: [],
           },
         ],
         assignments: [
@@ -1185,6 +1191,7 @@ export const scenarios: Scenario[] = [
             skills: [],
             mcpServers: [],
             apiConnections: [],
+            repositories: [],
           },
         ],
         // The '*,*' direct-message default answers DMs.
@@ -1427,6 +1434,7 @@ function snapshotScenarioConfig(agentId: string): ScenarioLaneConfig {
           skills: [],
           mcpServers: [],
           apiConnections: [],
+          repositories: [],
         },
       ],
       assignments: [

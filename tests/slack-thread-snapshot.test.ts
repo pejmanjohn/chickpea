@@ -32,6 +32,7 @@ function agent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig {
     skills: [],
     mcpServers: [],
     apiConnections: [],
+    repositories: [],
     ...overrides,
   };
 }
@@ -113,6 +114,24 @@ test('putIfAbsent is write-once: a losing writer gets the PERSISTED row back', a
     loser.close();
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('agent snapshots freeze repository grants with the effective profile', () => {
+  const repositories = [
+    {
+      id: 'repo-snapshot',
+      installationId: 42,
+      accountLogin: 'magoosh',
+      fullName: 'magoosh/chickpea',
+      enabled: true,
+    },
+  ];
+  const config = effConfig('C_REPOSITORIES');
+  config.agent = agent({ repositories });
+
+  const snapshot = snapshotFromEffectiveConfig(config, 1_000);
+
+  assert.deepEqual(snapshot.repositories, repositories);
 });
 
 test('slack-thread freezes effective config per durable thread id', async () => {
