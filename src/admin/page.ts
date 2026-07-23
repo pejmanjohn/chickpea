@@ -532,6 +532,26 @@ details[open].advanced summary::before {
   z-index: 20;
 }
 .save-bar-sticky.is-clean { display: none; }
+/* One-shot entrance: slide up + a warm pulse so going dirty is impossible to
+   miss (and re-cued on picker Apply, where edits read as already committed). */
+.save-bar-sticky.cue { animation: save-bar-cue 1.4s ease; }
+.save-bar-sticky.cue [data-action="save-profile"] { animation: save-btn-cue 1.4s ease; }
+@keyframes save-bar-cue {
+  0% { box-shadow: 0 -8px 24px rgba(59, 50, 32, 0.14); transform: translateY(100%); }
+  16% { transform: translateY(0); }
+  38% { box-shadow: 0 -8px 34px rgba(221, 160, 51, 0.6); }
+  100% { box-shadow: 0 -8px 24px rgba(59, 50, 32, 0.14); transform: translateY(0); }
+}
+@keyframes save-btn-cue {
+  0%, 32% { transform: scale(1); }
+  46% { transform: scale(1.07); }
+  62% { transform: scale(1); }
+  76% { transform: scale(1.05); }
+  100% { transform: scale(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .save-bar-sticky.cue, .save-bar-sticky.cue [data-action="save-profile"] { animation: none; }
+}
 .save-bar-inner { align-items: center; display: flex; gap: 10px; margin: 0 auto; max-width: 760px; }
 .save-bar-inner .save-note { margin-right: auto; }
 .modal-backdrop {
@@ -3468,7 +3488,7 @@ details[open].advanced summary::before {
       profileTabsHtml(draft) +
       usedInHtml(draft) +
       profileFooterHtml(draft) +
-      '<div class="save-bar-sticky' + (state.profileDirty ? "" : " is-clean") + '">' +
+      '<div class="save-bar-sticky' + (state.profileDirty ? "" : " is-clean") + (saveBarCueActive() ? " cue" : "") + '">' +
       '<div class="save-bar-inner">' +
       '<p class="save-note">&#9679; Unsaved changes &mdash; applies to new threads</p>' + profileGenericErrorHtml() +
       '<button type="button" class="btn btn-ghost" data-action="discard-profile">Discard</button>' +
@@ -4391,6 +4411,9 @@ details[open].advanced summary::before {
     resetRepositoryTransientState();
     markProfileDirty();
     render();
+    // Apply reads as a commit but only edits the draft — pulse the save bar
+    // every time, even when the draft was already dirty.
+    cueSaveBar();
   }
 
   function removeRepositoryGrant(id) {
@@ -4961,6 +4984,7 @@ details[open].advanced summary::before {
   // state is synced directly. On the create screen there is no Discard and the
   // primary button always stays enabled.
   function markProfileDirty() {
+    var wasDirty = state.profileDirty;
     state.profileDirty = true;
     var discard = document.querySelector('[data-action="discard-profile"]');
     if (discard) discard.disabled = false;
@@ -4972,7 +4996,35 @@ details[open].advanced summary::before {
       // whose querySelector stub has no classList, from throwing.
       var stickyBar = document.querySelector(".save-bar-sticky");
       if (stickyBar && stickyBar.classList) { stickyBar.classList.remove("is-clean"); }
+      // Announce the bar the moment editing starts; already-dirty keystrokes
+      // stay quiet so typing doesn't strobe.
+      if (!wasDirty) cueSaveBar();
     }
+  }
+
+  function saveBarCueActive() {
+    return !!state.saveBarCueAt && Date.now() - state.saveBarCueAt < 1500;
+  }
+
+  // Draw the eye to the pinned save bar: mark the cue in state (so a render
+  // inside the same interaction keeps it) and animate the live element for
+  // no-render paths. The class is removed directly afterwards — never via a
+  // render, which would drop focus.
+  function cueSaveBar() {
+    state.saveBarCueAt = Date.now();
+    var bar = document.querySelector(".save-bar-sticky");
+    if (bar && bar.classList) {
+      bar.classList.remove("cue");
+      void bar.offsetWidth;
+      bar.classList.add("cue");
+    }
+    // The fake-DOM test harness has no timers; the cue then simply expires
+    // via saveBarCueAt on the next render instead.
+    if (typeof setTimeout !== "function") return;
+    setTimeout(function () {
+      var current = document.querySelector(".save-bar-sticky");
+      if (current && current.classList) current.classList.remove("cue");
+    }, 1600);
   }
 
   // The dirty -> enabled rule for the save bar lives in saveBarHtml; this
