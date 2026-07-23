@@ -532,6 +532,26 @@ details[open].advanced summary::before {
   z-index: 20;
 }
 .save-bar-sticky.is-clean { display: none; }
+/* One-shot entrance: slide up + a warm pulse so going dirty is impossible to
+   miss (and re-cued on picker Apply, where edits read as already committed). */
+.save-bar-sticky.cue { animation: save-bar-cue 1.4s ease; }
+.save-bar-sticky.cue [data-action="save-profile"] { animation: save-btn-cue 1.4s ease; }
+@keyframes save-bar-cue {
+  0% { box-shadow: 0 -8px 24px rgba(59, 50, 32, 0.14); transform: translateY(100%); }
+  16% { transform: translateY(0); }
+  38% { box-shadow: 0 -8px 34px rgba(221, 160, 51, 0.6); }
+  100% { box-shadow: 0 -8px 24px rgba(59, 50, 32, 0.14); transform: translateY(0); }
+}
+@keyframes save-btn-cue {
+  0%, 32% { transform: scale(1); }
+  46% { transform: scale(1.07); }
+  62% { transform: scale(1); }
+  76% { transform: scale(1.05); }
+  100% { transform: scale(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .save-bar-sticky.cue, .save-bar-sticky.cue [data-action="save-profile"] { animation: none; }
+}
 .save-bar-inner { align-items: center; display: flex; gap: 10px; margin: 0 auto; max-width: 760px; }
 .save-bar-inner .save-note { margin-right: auto; }
 .modal-backdrop {
@@ -706,6 +726,12 @@ details[open].advanced summary::before {
 .prov-body .input { background: var(--bg); }
 .paste-row { display: flex; flex-wrap: wrap; gap: 9px; }
 .paste-row .input { flex: 1; min-width: 220px; }
+.github-installations { display: flex; flex-direction: column; gap: 10px; }
+.github-installations .prov-row + .prov-row { margin-top: 0; }
+.github-installation-copy { display: flex; flex: 1; flex-direction: column; gap: 2px; min-width: 0; }
+.github-installation-name { color: var(--text); font-family: var(--mono); font-size: 0.8125rem; font-weight: 700; overflow-wrap: anywhere; }
+.github-installation-meta { align-items: center; display: flex; flex-wrap: wrap; gap: 7px; }
+.github-token-mask { color: var(--text-2); font-family: var(--mono); font-size: 0.8125rem; letter-spacing: 0.08em; }
 .fav-sub { color: var(--text-3); font-size: 0.65625rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
 .fav-list { display: flex; flex-direction: column; gap: 6px; }
 .fav-row { align-items: center; background: var(--bg); border-radius: 13px; border-top: 0; box-shadow: 0 1.5px 0 rgba(59, 50, 32, 0.08); display: flex; gap: 10px; padding: 8px 12px; }
@@ -991,7 +1017,7 @@ details[open].advanced summary::before {
 .rename-btn:focus-visible { outline: 2px solid var(--ember-press); outline-offset: 2px; }
 .page-title-input { font-family: var(--display); font-size: 1.25rem; font-weight: 700; max-width: 32ch; }
 
-/* ---- profile capability tabs (Instructions / Skills / Connections) ----
+/* ---- profile capability tabs (Instructions / Skills / Connections / Repositories) ----
    "Ringed tray": the tab bar and its visible panel read as ONE cream container
    outlined by a 1.5px ring, with a dashed seam under the tabs. The active tab
    is a solid cocoa pill (same idiom as the topbar's active nav). Pills INSIDE
@@ -1058,6 +1084,110 @@ details[open].advanced summary::before {
 .ptab-panel .skill-row, .ptab-panel .conn-tool { background: var(--well); box-shadow: none; }
 .ptab-panel .skill-form { background: var(--well); }
 .ptab-panel .skill-form .conn-tool, .ptab-panel .skill-form .import-row { background: var(--bg); box-shadow: 0 1.5px 0 rgba(59, 50, 32, 0.08); }
+
+/* ---- profile repositories ---------------------------------------------- */
+.repo-panel-head, .repo-group-actions, .repo-picker-foot, .repo-footer, .repo-account-choice {
+  align-items: center;
+  display: flex;
+  gap: 9px;
+}
+.repo-panel-head { justify-content: space-between; }
+.repo-groups { display: flex; flex-direction: column; gap: 10px; }
+.repo-group {
+  background: var(--well);
+  border-radius: 14px;
+  padding: 0 14px;
+}
+.repo-group > summary {
+  align-items: center;
+  color: var(--text);
+  cursor: pointer;
+  display: flex;
+  gap: 9px;
+  list-style: none;
+  min-height: 50px;
+}
+.repo-group > summary::-webkit-details-marker { display: none; }
+.repo-group > summary::after {
+  color: var(--text-3);
+  content: "›";
+  font-size: 1.15rem;
+  margin-left: auto;
+  transform: rotate(90deg);
+}
+.repo-group:not([open]) > summary::after { transform: rotate(0deg); }
+.repo-avatar {
+  align-items: center;
+  background: var(--text);
+  border-radius: 8px;
+  color: #f6edda;
+  display: inline-flex;
+  flex-shrink: 0;
+  font-family: var(--display);
+  font-size: 0.75rem;
+  font-weight: 700;
+  height: 26px;
+  justify-content: center;
+  text-transform: uppercase;
+  width: 26px;
+}
+.repo-group-name { font-size: 0.8125rem; font-weight: 700; }
+.repo-group-count { color: var(--text-3); font-size: 0.71875rem; }
+.repo-group-body { border-top: 1.5px solid var(--bg); display: flex; flex-direction: column; gap: 10px; padding: 12px 0 14px; }
+.repo-group-actions { flex-wrap: wrap; }
+.repo-all-label { align-items: center; display: flex; gap: 9px; margin-right: auto; }
+.repo-rows { display: flex; flex-direction: column; gap: 6px; }
+.repo-row {
+  align-items: center;
+  background: var(--bg);
+  border-radius: 11px;
+  display: flex;
+  gap: 9px;
+  min-height: 40px;
+  padding: 7px 9px 7px 11px;
+}
+.repo-row .ic { color: var(--text-3); flex-shrink: 0; }
+.repo-name { color: var(--text); font-size: 0.75rem; min-width: 0; overflow-wrap: anywhere; }
+.repo-account-choices { background: var(--well); border-radius: 14px; display: flex; flex-direction: column; gap: 7px; padding: 10px; }
+.repo-account-choice { background: var(--bg); border-radius: 11px; justify-content: flex-start; width: 100%; }
+.repo-picker-host { position: relative; }
+.repo-picker {
+  background: var(--bg);
+  border: 1.5px solid rgba(59, 50, 32, 0.14);
+  border-radius: 16px;
+  box-shadow: 0 18px 42px rgba(59, 50, 32, 0.2);
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+  margin-left: auto;
+  max-width: 520px;
+  padding: 14px;
+  width: 100%;
+}
+.repo-picker-title { color: var(--text); font-size: 0.875rem; font-weight: 700; }
+.repo-picker-list { display: flex; flex-direction: column; gap: 5px; max-height: 280px; overflow-y: auto; }
+.repo-picker-row {
+  align-items: center;
+  background: var(--well);
+  border-radius: 10px;
+  cursor: pointer;
+  display: flex;
+  gap: 9px;
+  min-height: 39px;
+  padding: 7px 10px;
+}
+.repo-picker-row:hover { background: #f3ead5; }
+.repo-picker-row input { accent-color: var(--ember-press); flex-shrink: 0; }
+.repo-picker-row .repo-name { flex: 1; }
+.repo-picker-foot { border-top: 1.5px solid var(--well); padding-top: 11px; }
+.repo-footer { border-top: 1.5px dashed rgba(59, 50, 32, 0.13); flex-wrap: wrap; margin-top: 2px; padding-top: 12px; }
+.repo-footer .hint { margin-right: auto; }
+@media (max-width: 720px) {
+  .repo-panel-head, .repo-picker-foot, .repo-footer { align-items: stretch; flex-direction: column; }
+  .repo-panel-head .btn, .repo-picker-foot .btn, .repo-footer .btn { width: 100%; }
+  .repo-all-label { margin-right: 0; }
+  .repo-group-actions { align-items: stretch; flex-direction: column; }
+}
 
 /* ---- profile connections (remote MCP servers) ---- */
 .conn-host { color: var(--text-3); font-family: var(--mono); font-size: 0.71875rem; overflow-wrap: anywhere; }
@@ -1288,6 +1418,25 @@ details[open].advanced summary::before {
     settings: null,
     settingsLoaded: false,
     settingsError: "",
+    // App-level GitHub credentials and installations. Secrets never enter this
+    // object: status is write-only metadata plus profile references for the
+    // pre-disconnect warning.
+    githubStatus: null,
+    githubStatusLoaded: false,
+    githubStatusRequestId: 0,
+    githubError: "",
+    githubBusy: "",
+    githubManifestOpen: false,
+    githubOrg: "",
+    githubPatOpen: false,
+    githubPatDraft: "",
+    githubDisconnectConfirm: false,
+    githubDisconnectError: "",
+    // Profile-local repository selection UI. The picker is a working selection
+    // only; Apply writes grants into profileDraft and the existing profile Save
+    // action remains the sole persistence path.
+    repositoryPicker: null,
+    repositoryAddOpen: false,
     egress: null,
     egressLoaded: false,
     egressError: "",
@@ -1313,6 +1462,7 @@ details[open].advanced summary::before {
     providerModelsError: {}
   };
   var egressDraft = { mode: "allowlist", domains: [""] };
+  var repositorySearchTimer = null;
 
   // Inline Heroicons (micro, 16px) — solid unless noted. Colour inherits from
   // the parent via currentColor; never override fill in CSS.
@@ -1324,6 +1474,7 @@ details[open].advanced summary::before {
       plus: "M8.75 3.75a.75.75 0 0 0-1.5 0v3.5h-3.5a.75.75 0 0 0 0 1.5h3.5v3.5a.75.75 0 0 0 1.5 0v-3.5h3.5a.75.75 0 0 0 0-1.5h-3.5v-3.5Z",
       pencil: "M13.488 2.513a1.75 1.75 0 0 0-2.475 0L6.75 6.774a2.75 2.75 0 0 0-.596.892l-.848 2.047a.75.75 0 0 0 .98.98l2.047-.848a2.75 2.75 0 0 0 .892-.596l4.263-4.262a1.75 1.75 0 0 0 0-2.474Z",
       "lock-closed": "M8 1a3.5 3.5 0 0 0-3.5 3.5V7A1.5 1.5 0 0 0 3 8.5v5A1.5 1.5 0 0 0 4.5 15h7a1.5 1.5 0 0 0 1.5-1.5v-5A1.5 1.5 0 0 0 11.5 7V4.5A3.5 3.5 0 0 0 8 1Zm2 6V4.5a2 2 0 1 0-4 0V7h4Z",
+      repository: "M3 1.5A1.5 1.5 0 0 0 1.5 3v9.25A2.25 2.25 0 0 0 3.75 14.5H14a.75.75 0 0 0 .75-.75V3A1.5 1.5 0 0 0 13.25 1.5H3Zm0 1.5h10.25v8.5H3.75c-.263 0-.516.045-.75.128V3Zm.75 2.25A.75.75 0 0 1 6.5 4.5h4a.75.75 0 0 1 0 1.5h-4a.75.75 0 0 1-.75-.75Z",
       "arrow-path": "M13.836 2.477a.75.75 0 0 1 .75.75v3.182a.75.75 0 0 1-.75.75h-3.182a.75.75 0 0 1 0-1.5h1.37l-.84-.841a4.5 4.5 0 0 0-7.08.932.75.75 0 0 1-1.3-.75 6 6 0 0 1 9.44-1.242l.842.84V3.227a.75.75 0 0 1 .75-.75Zm-.911 7.5A.75.75 0 0 1 13.2 11a6 6 0 0 1-9.44 1.241l-.84-.84v1.372a.75.75 0 0 1-1.5 0V9.591a.75.75 0 0 1 .75-.75H5.35a.75.75 0 0 1 0 1.5H3.98l.841.84a4.5 4.5 0 0 0 7.08-.932.75.75 0 0 1 1.025-.272Z",
       "exclamation-triangle": "M6.701 2.25c.577-1 2.02-1 2.598 0l5.196 9a1.5 1.5 0 0 1-1.299 2.25H2.804a1.5 1.5 0 0 1-1.299-2.25l5.196-9ZM8 5a.75.75 0 0 1 .75.75v2.5a.75.75 0 0 1-1.5 0v-2.5A.75.75 0 0 1 8 5Zm0 6a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z",
       "bars-3": "M2 4.75A.75.75 0 0 1 2.75 4h10.5a.75.75 0 0 1 0 1.5H2.75A.75.75 0 0 1 2 4.75Zm0 3.5A.75.75 0 0 1 2.75 7.5h10.5a.75.75 0 0 1 0 1.5H2.75A.75.75 0 0 1 2 8.25Zm0 3.5a.75.75 0 0 1 .75-.75h10.5a.75.75 0 0 1 0 1.5H2.75a.75.75 0 0 1-.75-.75Z"
@@ -1443,6 +1594,13 @@ details[open].advanced summary::before {
     state.customConnectionLane = null;
   }
 
+  function resetRepositoryTransientState() {
+    if (repositorySearchTimer && typeof clearTimeout === "function") clearTimeout(repositorySearchTimer);
+    repositorySearchTimer = null;
+    state.repositoryPicker = null;
+    state.repositoryAddOpen = false;
+  }
+
   function resetProfileTransientState() {
     state.profileError = "";
     state.profileDirty = false;
@@ -1459,6 +1617,7 @@ details[open].advanced summary::before {
     state.connectorGallerySearch = "";
     state.connectionRemove = null;
     state.apiConnectionRemove = null;
+    resetRepositoryTransientState();
     state.modelPickerOpen = false;
     state.modelPickerFilter = "";
   }
@@ -1549,7 +1708,7 @@ details[open].advanced summary::before {
 
   function render() {
     var app = document.getElementById("app");
-    app.innerHTML = topbarHtml() + '<div class="body">' + railHtml() + mainHtml() + "</div>" + leavePromptModalHtml() + connectionRemoveModalHtml() + apiConnectionRemoveModalHtml() + slackDisconnectModalHtml();
+    app.innerHTML = topbarHtml() + '<div class="body">' + railHtml() + mainHtml() + "</div>" + leavePromptModalHtml() + connectionRemoveModalHtml() + apiConnectionRemoveModalHtml() + slackDisconnectModalHtml() + githubDisconnectModalHtml();
     // The disconnect confirmation is a true modal: keep the rest of the app
     // out of the focus and accessibility trees until it is resolved.
     if (state.slackDisconnectConfirm) {
@@ -1563,6 +1722,16 @@ details[open].advanced summary::before {
       if (state.slackDisconnectBusy) focusSlackDisconnectDialog();
       else if (state.slackDisconnectError) focusSlackLiveRegion("slack-disconnect-error");
       else focusSlackDisconnectAction("slack-disconnect-cancel");
+    }
+    if (state.githubDisconnectConfirm) {
+      [document.querySelector(".topbar"), document.querySelector(".body")].forEach(function (region) {
+        if (!region) return;
+        region.inert = true;
+        if (region.setAttribute) region.setAttribute("aria-hidden", "true");
+      });
+      if (state.githubBusy === "disconnect") focusGithubDisconnectDialog();
+      else if (state.githubDisconnectError) focusSlackLiveRegion("github-disconnect-error");
+      else focusSlackDisconnectAction("github-disconnect-cancel");
     }
     syncUrl();
   }
@@ -1862,6 +2031,28 @@ details[open].advanced summary::before {
       '<div class="modal-foot"><button type="button" class="btn btn-ghost" data-action="slack-disconnect-cancel"' + (state.slackDisconnectBusy ? " disabled" : "") + '>Keep connected</button><span class="spacer"></span>' + button + '</div></div></div>';
   }
 
+  function githubDisconnectModalHtml() {
+    if (!state.githubDisconnectConfirm) return "";
+    var status = state.githubStatus || { mode: "none", referencingProfiles: [] };
+    var profiles = status.referencingProfiles || [];
+    var names = joinNames(profiles.map(function (profile) {
+      return '<span class="mono" style="color:var(--text);">' + esc(profile.name) + '</span>';
+    }));
+    var profileWarning = profiles.length
+      ? '<b style="font-weight:500; color:var(--text);">' + profiles.length + ' profile' + (profiles.length === 1 ? "" : "s") + '</b> ' + (profiles.length === 1 ? "references" : "reference") + ' GitHub repositories &mdash; ' + names + '. Those repository selections stay saved, but cannot be used until GitHub is reconnected.'
+      : 'No profiles currently reference GitHub repositories.';
+    var connectionName = status.mode === "app" ? "GitHub App" : "personal access token";
+    var appNote = status.mode === "app" ? ' The GitHub App remains installed on GitHub until you remove it there.' : "";
+    var button = state.githubBusy === "disconnect"
+      ? '<button type="button" class="btn btn-danger" disabled><span class="spinner"></span>Disconnecting&hellip;</button>'
+      : '<button type="button" class="btn btn-danger" data-action="github-disconnect-confirm">Disconnect GitHub</button>';
+    return '<div class="modal-backdrop"><div class="modal-card" role="dialog" aria-modal="true" aria-label="Disconnect GitHub" tabindex="-1" data-role="github-disconnect-dialog">' +
+      '<h2 class="modal-title">Disconnect GitHub?</h2>' +
+      '<p class="modal-body">Chickpea will remove the stored ' + connectionName + ' credentials. Environment-configured credentials, if present, remain active. ' + profileWarning + appNote + '</p>' +
+      (state.githubDisconnectError ? '<p class="error" style="margin-top:10px;" role="alert" aria-live="assertive" tabindex="-1" data-role="github-disconnect-error">' + esc(state.githubDisconnectError) + '</p>' : "") +
+      '<div class="modal-foot"><button type="button" class="btn btn-ghost" data-action="github-disconnect-cancel"' + (state.githubBusy === "disconnect" ? " disabled" : "") + '>Keep connected</button><span class="spacer"></span>' + button + '</div></div></div>';
+  }
+
   function focusSlackDisconnectAction(action) {
     var control = document.querySelector('[data-action="' + action + '"]');
     if (control && control.focus) control.focus();
@@ -1869,6 +2060,11 @@ details[open].advanced summary::before {
 
   function focusSlackDisconnectDialog() {
     var dialog = document.querySelector('[data-role="slack-disconnect-dialog"]');
+    if (dialog && dialog.focus) dialog.focus();
+  }
+
+  function focusGithubDisconnectDialog() {
+    var dialog = document.querySelector('[data-role="github-disconnect-dialog"]');
     if (dialog && dialog.focus) dialog.focus();
   }
 
@@ -2439,9 +2635,9 @@ details[open].advanced summary::before {
       skillImportPickerHtml(imp) + "</div>";
   }
 
-  // ---- Capability tabs (Instructions / Skills / Connections) ---------------
+  // ---- Capability tabs (Instructions / Skills / Connections / Repositories) -
 
-  // One panel is visible at a time; the other two stay MOUNTED but [hidden] so
+  // One panel is visible at a time; the other three stay MOUNTED but [hidden] so
   // their form fields survive re-renders and collectProfileDraft() keeps
   // reading p-instr regardless of the active tab. The same tray serves create
   // and edit so every profile capability is reachable before the first save.
@@ -2453,12 +2649,15 @@ details[open].advanced summary::before {
     var attention = {
       instructions: false,
       skills: !!(state.skillEditor || state.skillImport),
-      connections: !!(state.connectionEditor || state.apiConnectionEditor)
+      connections: !!(state.connectionEditor || state.apiConnectionEditor),
+      repositories: !!(state.repositoryPicker || state.repositoryAddOpen)
     };
+    var repositoryCount = enabledRepositoryGrants(draft).length;
     var tabs = [
       { id: "instructions", label: "Instructions", count: 0 },
       { id: "skills", label: "Skills", count: (draft.skills || []).length },
-      { id: "connections", label: "Connections", count: (draft.mcpServers || []).length + (draft.apiConnections || []).length }
+      { id: "connections", label: "Connections", count: (draft.mcpServers || []).length + (draft.apiConnections || []).length },
+      { id: "repositories", label: "Repositories", count: repositoryCount }
     ];
     var bar = tabs.map(function (tab) {
       var on = tab.id === active;
@@ -2475,6 +2674,7 @@ details[open].advanced summary::before {
       panel("instructions", instructionsPanelHtml(draft, state.profileScreen === "create")) +
       panel("skills", skillsPanelHtml(draft)) +
       panel("connections", connectionsPanelHtml(draft)) +
+      panel("repositories", repositoriesPanelHtml(draft)) +
       '</div>' +
       '</section>';
   }
@@ -2776,6 +2976,11 @@ details[open].advanced summary::before {
     return "";
   }
 
+  function legacyGithubConnectionNoticeHtml(conn) {
+    if (!conn || conn.presetId !== "github") return "";
+    return '<span class="conn-meta">GitHub now lives in the <button type="button" class="link-btn" data-action="profile-tab" data-tab="repositories">Repositories tab</button></span>';
+  }
+
   function connectionsPanelHtml(draft) {
     var servers = draft.mcpServers || [];
     var apiConnections = draft.apiConnections || [];
@@ -2792,7 +2997,8 @@ details[open].advanced summary::before {
         '<div class="sk-body">' + nameHtml +
         '<span class="gallery-lane">MCP</span>' +
         '<span class="conn-host">' + esc(connectionHost(conn.url)) + '</span>' +
-        '<span class="conn-meta"><span class="badge-src">' + transportLabel + '</span>' + connectionStatusPill(conn) + '</span></div>' +
+        '<span class="conn-meta"><span class="badge-src">' + transportLabel + '</span>' + connectionStatusPill(conn) + '</span>' +
+        legacyGithubConnectionNoticeHtml(conn) + '</div>' +
         '<span class="toggle"><span class="thumb"></span><input type="checkbox" data-action="conn-toggle" data-index="' + index + '" ' + (conn.enabled ? "checked" : "") + ' aria-label="Connection enabled"></span>' +
         '<button type="button" class="btn btn-ghost btn-sm" data-action="conn-edit" data-index="' + index + '">Edit</button>' +
         '<button type="button" class="x-btn" data-action="conn-remove" data-index="' + index + '" aria-label="Remove connection">&times;</button></div>';
@@ -2802,7 +3008,8 @@ details[open].advanced summary::before {
       return '<div class="skill-row conn-row">' +
         '<div class="sk-body"><span class="sk-name" style="font-family:inherit;">' + esc(conn.displayName) + '</span>' +
         '<span class="gallery-lane">API</span>' +
-        '<span class="conn-host">' + esc(apiConnectionHostSummary(conn)) + '</span></div>' +
+        '<span class="conn-host">' + esc(apiConnectionHostSummary(conn)) + '</span>' +
+        legacyGithubConnectionNoticeHtml(conn) + '</div>' +
         '<span class="toggle"><span class="thumb"></span><input type="checkbox" data-action="apiconn-toggle" data-index="' + index + '" ' + (conn.enabled ? "checked" : "") + ' aria-label="API connection enabled"></span>' +
         '<button type="button" class="btn btn-ghost btn-sm" data-action="apiconn-edit" data-index="' + index + '">Edit</button>' +
         '<button type="button" class="x-btn" data-action="apiconn-remove" data-index="' + index + '" aria-label="Remove API connection">&times;</button></div>';
@@ -2824,6 +3031,203 @@ details[open].advanced summary::before {
     var hint = 'MCP servers and REST APIs this profile can call.';
     var security = '<p class="conn-security">Your profile stores connection policy and tool approvals only &mdash; tokens live in the settings store and are never returned by the API.</p>';
     return '<p class="hint ptab-hint">' + hint + '</p>' + list + createForm + gallery + security;
+  }
+
+  function repositoryOwner(fullName) {
+    var slash = String(fullName || "").indexOf("/");
+    return slash > 0 ? String(fullName).slice(0, slash) : "";
+  }
+
+  function enabledRepositoryGrants(draft) {
+    return (draft.repositories || []).filter(function (grant) { return grant && grant.enabled; });
+  }
+
+  function repositoryGroups(draft) {
+    var groups = new Map();
+    enabledRepositoryGrants(draft).forEach(function (grant) {
+      var accountLogin = grant.installationId === null
+        ? (repositoryOwner(grant.fullName) || grant.accountLogin)
+        : grant.accountLogin;
+      var key = grant.installationId === null ? "pat:" + accountLogin : "app:" + grant.installationId;
+      var group = groups.get(key);
+      if (!group) {
+        group = { installationId: grant.installationId, accountLogin: accountLogin, grants: [] };
+        groups.set(key, group);
+      }
+      group.grants.push(grant);
+    });
+    return Array.from(groups.values()).sort(function (left, right) {
+      return String(left.accountLogin).localeCompare(String(right.accountLogin));
+    });
+  }
+
+  function repositoryGrantMatchesPicker(grant, picker) {
+    if (picker.installationId !== null) {
+      if (grant.installationId === picker.installationId) return true;
+      // Grants saved under PAT auth carry no installation id. When the same
+      // account is later managed through an App installation, adopt them so a
+      // Manage → Apply pass rewrites them with the installation id instead of
+      // stranding them (PAT-era grants are skipped by App-mode runtime).
+      return grant.installationId === null &&
+        grant.allRepos !== true &&
+        repositoryOwner(grant.fullName) === picker.accountLogin;
+    }
+    if (grant.installationId !== null) return false;
+    return !picker.patOwner || repositoryOwner(grant.fullName) === picker.patOwner;
+  }
+
+  function repositoryAccountChoicesHtml(status) {
+    if (!state.repositoryAddOpen || !status || status.mode !== "app") return "";
+    var installations = status.installations || [];
+    var choices = installations.map(function (installation) {
+      var count = installation.repoCount == null ? "Repository count unavailable" : installation.repoCount + " repositories";
+      return '<button type="button" class="btn btn-ghost repo-account-choice" data-action="repo-manage" data-installation="' + esc(installation.id) + '" data-account="' + esc(installation.accountLogin) + '">' +
+        '<span class="repo-avatar">' + esc(String(installation.accountLogin || "?").slice(0, 1)) + '</span>' +
+        '<span style="display:flex; flex-direction:column; align-items:flex-start;"><span class="field-label">' + esc(installation.accountLogin) + '</span><span class="hint">' + esc(count) + '</span></span></button>';
+    }).join("");
+    if (!choices) {
+      choices = '<p class="hint">No GitHub App installations are available yet. Install the app on an account or organization, then refresh.</p>';
+    }
+    return '<div class="repo-account-choices"><span class="tiny-label">Choose an account or organization</span>' + choices +
+      '<div><button type="button" class="btn btn-ghost btn-sm" data-action="repo-add-cancel">Cancel</button></div></div>';
+  }
+
+  // Redraw the open picker in place, preserving the repo list's scroll
+  // position (a full render() rebuilds the page and resets it to the top).
+  // Falls back to a full render when the picker host isn't in the DOM.
+  function rerenderRepositoryPicker() {
+    var host = document.querySelector(".repo-picker-host");
+    if (!host || !state.repositoryPicker) { render(); return; }
+    var listBefore = host.querySelector(".repo-picker-list");
+    var scrollTop = listBefore ? listBefore.scrollTop : 0;
+    host.innerHTML = repositoryPickerHtml();
+    var listAfter = host.querySelector(".repo-picker-list");
+    if (listAfter) listAfter.scrollTop = scrollTop;
+  }
+
+  function repositoryPickerHtml() {
+    var picker = state.repositoryPicker;
+    if (!picker) return "";
+    var totalCount = Number(picker.totalCount || 0);
+    var sourceHint = picker.installationId === null
+      ? 'This token can access ' + totalCount + ' repositories. Type to search.'
+      : 'This installation has ' + totalCount + ' repositories. Type to search.';
+    if (picker.truncated) {
+      sourceHint += ' Not every repository is shown — type more of a name to narrow the search.';
+    }
+    var selectedNames = new Set(picker.selectedFullNames || []);
+    var rows = (picker.repos || []).map(function (repo) {
+      var checked = selectedNames.has(repo.fullName);
+      return '<label class="repo-picker-row"><input type="checkbox" data-action="repo-select" data-repo="' + esc(repo.fullName) + '" ' + (checked ? "checked" : "") + '>' +
+        icon("repository") + '<span class="repo-name mono">' + esc(repo.fullName) + '</span>' +
+        (repo.private ? '<span class="badge badge-off">Private</span>' : "") + '</label>';
+    }).join("");
+    var list;
+    if (picker.loading) {
+      list = '<div class="empty"><p class="hint"><span class="spinner"></span> Loading repositories&hellip;</p></div>';
+    } else if (picker.error) {
+      list = '<div class="empty"><p class="field-error" role="alert">' + esc(picker.error) + '</p><button type="button" class="btn btn-soft btn-sm" data-action="repo-picker-retry">Retry</button></div>';
+    } else if (!rows) {
+      list = '<div class="empty"><p class="hint">No repositories match this search.</p></div>';
+    } else {
+      list = '<div class="repo-picker-list">' + rows + '</div>';
+    }
+    var selectedCount = (picker.selectedFullNames || []).length;
+    var retainedCount = state.profileDraft ? (state.profileDraft.repositories || []).filter(function (grant) {
+      return !repositoryGrantMatchesPicker(grant, picker);
+    }).length : 0;
+    var exceedsLimit = retainedCount + selectedCount > 200;
+    return '<div class="repo-picker" role="dialog" aria-label="Manage repositories for ' + esc(picker.accountLogin) + '">' +
+      '<div><p class="repo-picker-title">Manage ' + esc(picker.accountLogin) + '</p><p class="hint">' + esc(sourceHint) + '</p></div>' +
+      '<input class="input mono" id="repo-picker-search" type="search" value="' + esc(picker.query) + '" placeholder="Search repositories" data-action="repo-search" autocomplete="off">' +
+      list +
+      '<div class="repo-picker-foot"><span class="hint">' + selectedCount + ' repo' + (selectedCount === 1 ? "" : "s") + ' selected</span><span class="spacer"></span>' +
+      '<button type="button" class="btn btn-ghost btn-sm" data-action="repo-picker-cancel">Cancel</button>' +
+      '<button type="button" class="btn btn-primary btn-sm" data-action="repo-picker-apply"' + (exceedsLimit ? " disabled" : "") + '>Apply</button></div>' +
+      (exceedsLimit ? '<p class="field-error">A profile can select at most 200 repository grants.</p>' : "") + '</div>';
+  }
+
+  function repositoryGroupHtml(group) {
+    var allRepositories = group.grants.some(function (grant) { return grant.allRepos === true; });
+    var explicit = group.grants.filter(function (grant) { return grant.allRepos !== true; });
+    var selectionLabel = allRepositories
+      ? "All repositories"
+      : explicit.length + " repositor" + (explicit.length === 1 ? "y" : "ies");
+    var rows = allRepositories
+      ? '<p class="hint">Every repository in this installation is available to this profile.</p>'
+      : explicit.map(function (grant) {
+        return '<div class="repo-row">' + icon("repository") + '<span class="repo-name mono">' + esc(grant.fullName) + '</span><span class="spacer"></span>' +
+          '<button type="button" class="x-btn" data-action="repo-remove" data-repository-id="' + esc(grant.id) + '" aria-label="Remove ' + esc(grant.fullName) + '">&times;</button></div>';
+      }).join("");
+    if (!rows) rows = '<p class="hint">No repositories selected for this account.</p>';
+    // A group's Manage target follows the ACTIVE connection mode, not the mode
+    // the grant was saved under: after a PAT→App switch (or back), the old
+    // source would hit the proxy's mode check and 400. A group with no valid
+    // target under the current mode keeps its rows but gets a hint instead of
+    // a dead Manage button.
+    var mode = state.githubStatus ? state.githubStatus.mode : "none";
+    var manage = "";
+    if (mode === "pat") {
+      manage = '<button type="button" class="btn btn-soft btn-sm" data-action="repo-manage" data-installation="pat" data-account="' + esc(group.accountLogin) + '">Manage</button>';
+    } else if (mode === "app") {
+      var installations = (state.githubStatus && state.githubStatus.installations) || [];
+      var target = null;
+      installations.forEach(function (installation) {
+        if (group.installationId !== null && installation.id === group.installationId) target = installation;
+      });
+      if (!target) {
+        installations.forEach(function (installation) {
+          if (!target && installation.accountLogin === group.accountLogin) target = installation;
+        });
+      }
+      manage = target
+        ? '<button type="button" class="btn btn-soft btn-sm" data-action="repo-manage" data-installation="' + esc(target.id) + '" data-account="' + esc(target.accountLogin) + '">Manage</button>'
+        : '<span class="hint">Install the GitHub App on ' + esc(group.accountLogin) + ' to manage these.</span>';
+    }
+    var allToggle = group.installationId === null ? "" :
+      '<label class="repo-all-label"><span class="toggle"><span class="thumb"></span><input type="checkbox" data-action="repo-all" data-installation="' + esc(group.installationId) + '" data-account="' + esc(group.accountLogin) + '" ' + (allRepositories ? "checked" : "") + ' aria-label="All repositories for ' + esc(group.accountLogin) + '"></span><span class="field-label">All repositories</span></label>';
+    return '<details class="repo-group" open><summary><span class="repo-avatar">' + esc(String(group.accountLogin || "?").slice(0, 1)) + '</span>' +
+      '<span class="repo-group-name">' + esc(group.accountLogin) + '</span><span class="repo-group-count">' + esc(selectionLabel) + '</span></summary>' +
+      '<div class="repo-group-body"><div class="repo-group-actions">' + allToggle + manage + '</div>' +
+      (allRepositories ? rows : '<div class="repo-rows">' + rows + '</div>') + '</div></details>';
+  }
+
+  function repositoryFooterHtml(status) {
+    if (!status || status.mode !== "app") return "";
+    var addAccount = status.appSlug
+      ? '<a class="btn btn-ghost btn-sm" href="https://github.com/apps/' + esc(encodeURIComponent(status.appSlug)) + '/installations/new" target="_blank" rel="noopener noreferrer">+ Add a GitHub account or org</a>'
+      : '<button type="button" class="btn btn-ghost btn-sm" data-action="open-settings" data-section="github-settings">+ Add a GitHub account or org</button>';
+    return '<div class="repo-footer">' + addAccount + '<span class="hint">Return here and refresh after installing.</span>' +
+      '<button type="button" class="btn btn-soft btn-sm i-lead" data-action="github-refresh">' + icon("arrow-path") + 'Refresh</button></div>';
+  }
+
+  function repositoriesPanelHtml(draft) {
+    if (!state.githubStatusLoaded) {
+      return '<p class="hint ptab-hint">Repositories this profile can work with.</p><div class="empty"><p class="hint">Loading GitHub connection&hellip;</p></div>';
+    }
+    var status = state.githubStatus;
+    if (!status) {
+      return '<p class="hint ptab-hint">Repositories this profile can work with.</p><div class="empty"><p class="field-error" role="alert">' + esc(state.githubError || "Could not load GitHub settings.") + '</p>' +
+        '<button type="button" class="btn btn-soft btn-sm" data-action="github-refresh">Retry</button></div>';
+    }
+    if (status.mode === "none") {
+      return '<p class="hint ptab-hint">Repositories this profile can work with.</p><div class="empty"><p class="field-label">Connect GitHub to give this profile access to repositories.</p>' +
+        '<button type="button" class="btn btn-primary" data-action="open-settings" data-section="github-settings">Connect GitHub</button></div>';
+    }
+    var groups = repositoryGroups(draft);
+    var selectedCount = enabledRepositoryGrants(draft).length;
+    var content;
+    if (!selectedCount) {
+      content = '<div class="empty"><p class="field-label">No repositories selected</p><p class="hint">Choose the repositories this profile can read and change.</p>' +
+        '<button type="button" class="btn btn-primary" data-action="repo-add">Add repositories</button></div>';
+    } else {
+      content = '<div class="repo-panel-head"><p class="hint ptab-hint">Repositories this profile can work with.</p>' +
+        '<button type="button" class="btn btn-soft btn-sm" data-action="repo-add">Add repositories</button></div>' +
+        '<div class="repo-groups">' + groups.map(repositoryGroupHtml).join("") + '</div>';
+    }
+    return content + repositoryAccountChoicesHtml(status) +
+      (state.repositoryPicker ? '<div class="repo-picker-host">' + repositoryPickerHtml() + '</div>' : "") +
+      repositoryFooterHtml(status);
   }
 
   function customConnectionLaneTabHtml() {
@@ -3084,7 +3488,7 @@ details[open].advanced summary::before {
       profileTabsHtml(draft) +
       usedInHtml(draft) +
       profileFooterHtml(draft) +
-      '<div class="save-bar-sticky' + (state.profileDirty ? "" : " is-clean") + '">' +
+      '<div class="save-bar-sticky' + (state.profileDirty ? "" : " is-clean") + (saveBarCueActive() ? " cue" : "") + '">' +
       '<div class="save-bar-inner">' +
       '<p class="save-note">&#9679; Unsaved changes &mdash; applies to new threads</p>' + profileGenericErrorHtml() +
       '<button type="button" class="btn btn-ghost" data-action="discard-profile">Discard</button>' +
@@ -3381,10 +3785,130 @@ details[open].advanced summary::before {
     return summary && summary.modelCount != null ? summary.modelCount : null;
   }
 
+  function githubErrorHtml() {
+    return state.githubError
+      ? '<p class="field-error" role="alert">' + esc(state.githubError) + '</p>'
+      : "";
+  }
+
+  function githubManifestFormHtml() {
+    if (!state.githubManifestOpen) return "";
+    var busy = state.githubBusy === "manifest";
+    return '<div class="prov-body"><form data-action="github-manifest-form" style="display:flex; flex-direction:column; gap:12px;">' +
+      '<div class="field"><label class="field-label" for="github-org">GitHub organization <span class="hint">(optional)</span></label>' +
+      '<input id="github-org" class="input mono" name="org" type="text" autocomplete="organization" placeholder="your-org" value="' + esc(state.githubOrg) + '" data-action="github-org-input"' + (busy ? " disabled" : "") + '>' +
+      '<p class="hint">Leave blank to create the app under your personal GitHub account.</p></div>' +
+      githubErrorHtml() +
+      '<div class="prov-actions" style="margin-left:0;"><button type="button" class="btn btn-ghost btn-sm" data-action="github-manifest-cancel"' + (busy ? " disabled" : "") + '>Cancel</button>' +
+      (busy
+        ? '<button type="submit" class="btn btn-primary btn-sm" disabled><span class="spinner"></span>Preparing GitHub&hellip;</button>'
+        : '<button type="submit" class="btn btn-primary btn-sm">Continue to GitHub &nearr;</button>') + '</div></form></div>';
+  }
+
+  function githubPatFormHtml() {
+    if (!state.githubPatOpen) return "";
+    var busy = state.githubBusy === "pat";
+    return '<div class="prov-body"><form data-action="github-pat-form" style="display:flex; flex-direction:column; gap:12px;">' +
+      '<div class="field"><label class="field-label" for="github-pat">Fine-grained personal access token</label>' +
+      '<input id="github-pat" class="input mono" name="token" type="password" autocomplete="off" placeholder="github_pat_&hellip;" value="' + esc(state.githubPatDraft) + '" data-action="github-pat-input"' + (busy ? " disabled" : "") + '>' +
+      '<p class="hint">The token is write-only: Chickpea stores it, but never sends it back to this page.</p></div>' +
+      githubErrorHtml() +
+      '<div class="prov-actions" style="margin-left:0;"><button type="button" class="btn btn-ghost btn-sm" data-action="github-pat-cancel"' + (busy ? " disabled" : "") + '>Cancel</button>' +
+      (busy
+        ? '<button type="submit" class="btn btn-primary btn-sm" disabled><span class="spinner"></span>Saving&hellip;</button>'
+        : '<button type="submit" class="btn btn-primary btn-sm">Save token</button>') + '</div></form></div>';
+  }
+
+  function githubDisconnectPanelHtml() {
+    return '<div class="danger-panel"><div class="danger-copy"><span class="danger-title">Disconnect GitHub</span>' +
+      '<span class="hint">Removes stored GitHub credentials from Chickpea. Environment-configured credentials stay active, and repository selections on profiles stay saved.</span></div>' +
+      '<button type="button" class="btn btn-danger" data-action="github-disconnect-open"' + (state.githubBusy ? " disabled" : "") + '>Disconnect</button></div>';
+  }
+
+  function githubNoneHtml() {
+    var manifestBody = githubManifestFormHtml();
+    var patBody = githubPatFormHtml();
+    return '<div class="prov-row"><div class="prov-head"><div class="prov-id"><span class="prov-name">GitHub App</span>' +
+      '<span class="prov-sub">Recommended &middot; scoped installations and short-lived access tokens</span></div>' +
+      '<div class="prov-actions"><button type="button" class="btn btn-primary btn-sm" data-action="github-manifest-open"' + (state.githubBusy ? " disabled" : "") + '>Create GitHub App</button></div></div>' + manifestBody + '</div>' +
+      '<div class="prov-row"><div class="prov-head"><div class="prov-id"><span class="prov-name">Personal access token</span>' +
+      '<span class="prov-sub">Quick start &middot; use a fine-grained token you manage</span></div>' +
+      '<div class="prov-actions"><button type="button" class="btn btn-soft btn-sm" data-action="github-pat-open"' + (state.githubBusy ? " disabled" : "") + '>Use a personal access token</button></div></div>' + patBody + '</div>';
+  }
+
+  function githubAppHtml(status) {
+    var installations = status.installations || [];
+    var installationRows = installations.map(function (installation) {
+      var repoCount = installation.repoCount == null ? null : Number(installation.repoCount);
+      var repoLabel = repoCount == null ? "Repository count unavailable" : repoCount + " repositor" + (repoCount === 1 ? "y" : "ies");
+      return '<div class="prov-row"><div class="prov-head"><div class="github-installation-copy">' +
+        '<span class="github-installation-name">' + esc(installation.accountLogin) + '</span>' +
+        '<span class="github-installation-meta"><span class="badge badge-off">' + esc(installation.accountType) + '</span><span class="hint">' + esc(repoLabel) + '</span></span></div>' +
+        '<span class="badge badge-on"><span class="dot"></span>Connected</span></div></div>';
+    }).join("");
+    var slug = status.appSlug || "";
+    var none = !installations.length;
+    // With zero installations the install step IS the next action, so the
+    // button leads (primary) and drops the confusing "another".
+    var installAction = slug
+      ? '<a class="btn ' + (none ? "btn-primary" : "btn-soft") + ' btn-sm" href="https://github.com/apps/' + esc(encodeURIComponent(slug)) + '/installations/new" target="_blank" rel="noopener noreferrer">' + (none ? "Add repository access" : "Install on another account") + ' &nearr;</a>'
+      : '<span class="hint">The app slug is unavailable, so the install page cannot be opened from here.</span>';
+    return '<div class="well"><div class="kv"><dt>App slug</dt><dd>' + (slug ? '<span class="mono">' + esc(slug) + '</span>' : '<span class="hint">Unavailable</span>') + '</dd></div>' +
+      '<div class="kv"><dt>Accounts with access</dt><dd>' + installations.length + '</dd></div>' +
+      '<p class="hint" style="margin:6px 0 0;">The app is registered on GitHub. To let it reach any repositories, add it to your GitHub account or an org and choose which repos it can use &mdash; each account you add shows up below.</p></div>' +
+      (installations.length
+        ? '<div class="github-installations">' + installationRows + '</div>'
+        : status.installationsUnavailable
+          ? '<div class="empty"><p class="field-error" role="alert">GitHub rejected the stored App credentials, so accounts cannot be listed.</p><p class="hint">Refresh to retry, or disconnect below and set the app up again.</p></div>'
+          : '<div class="empty"><p class="field-label">No repository access yet</p><p class="hint">Add the app to your GitHub account or an organization and pick the repos it can use, then refresh.</p></div>') +
+      '<div class="action-well">' + installAction +
+      '<button type="button" class="btn btn-ghost btn-sm i-lead" data-action="github-refresh"' + (state.githubBusy ? " disabled" : "") + '>' + (state.githubBusy === "refresh" ? '<span class="spinner"></span>Refreshing&hellip;' : icon("arrow-path") + 'Refresh') + '</button>' +
+      (state.githubError ? '<span class="inline-status error" role="alert">' + esc(state.githubError) + '</span>' : "") + '</div>' +
+      githubDisconnectPanelHtml();
+  }
+
+  function githubPatHtml() {
+    // An environment-managed token always overrides stored values, so a
+    // stored "replacement" would report success while changing nothing.
+    var envManaged = state.githubStatus && state.githubStatus.patSource === "env";
+    var provenance = envManaged
+      ? '<span class="badge badge-src">Environment</span><span class="hint">Set via GITHUB_PAT &mdash; manage it where the deployment&rsquo;s environment variables live.</span>'
+      : '<span class="hint">Write-only</span>';
+    var actions = envManaged
+      ? ""
+      : '<div class="prov-actions"><button type="button" class="btn btn-soft btn-sm" data-action="github-pat-open"' + (state.githubBusy ? " disabled" : "") + '>Replace token</button></div>';
+    return '<div class="prov-row"><div class="prov-head"><div class="prov-id"><span class="prov-name">Fine-grained personal access token</span>' +
+      '<span class="github-token-mask" aria-label="Configured write-only token">&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;</span></div>' +
+      '<div class="prov-status"><span class="badge badge-on"><span class="dot"></span>Configured</span>' + provenance + '</div>' +
+      actions + '</div>' +
+      (envManaged ? "" : githubPatFormHtml()) + '</div>' + githubDisconnectPanelHtml();
+  }
+
+  function githubSectionHtml() {
+    var status = state.githubStatus;
+    var badge = status && status.mode !== "none"
+      ? '<span class="badge badge-on"><span class="dot"></span>Connected</span>'
+      : '<span class="badge badge-off"><span class="dot"></span>Not connected</span>';
+    var head = '<div class="section-head"><div><h2 class="section-title">GitHub</h2>' +
+      '<p class="hint">Connect GitHub once, then grant repository access per profile.</p></div>' + badge + '</div>';
+    if (!state.githubStatusLoaded) {
+      return '<section class="section" id="github-settings">' + head + '<p class="hint">Loading GitHub settings&hellip;</p></section>';
+    }
+    if (!status) {
+      return '<section class="section" id="github-settings">' + head + githubErrorHtml() +
+        '<div><button type="button" class="btn btn-soft btn-sm i-lead" data-action="github-refresh">' + icon("arrow-path") + 'Retry</button></div></section>';
+    }
+    var body;
+    if (status.mode === "app") body = githubAppHtml(status);
+    else if (status.mode === "pat") body = githubPatHtml();
+    else body = githubNoneHtml();
+    return '<section class="section" id="github-settings">' + head + body + '</section>';
+  }
+
   function settingsMainHtml() {
     var head = '<div style="display:flex; flex-direction:column; gap:6px;">' +
       '<h1 class="page-title">Settings</h1>' +
-      '<p class="hint">Configure model providers and outbound internet access for the sandbox.</p></div>';
+      '<p class="hint">Configure GitHub, model providers, and outbound internet access for the sandbox.</p></div>';
     var providerSection;
     if (state.settingsError) {
       providerSection = '<section class="section"><div class="section-head"><div><h2 class="section-title">Model providers</h2></div></div><p class="field-error">' + esc(state.settingsError) + '</p></section>';
@@ -3401,7 +3925,7 @@ details[open].advanced summary::before {
         rows +
         '<p class="hint">More providers appear here as this install registers them in <span class="mono" style="color:var(--text-2);">src/app.ts</span>.</p></section>';
     }
-    return head + providerSection + egressSectionHtml();
+    return head + githubSectionHtml() + providerSection + egressSectionHtml();
   }
 
   function egressSectionHtml() {
@@ -3662,14 +4186,364 @@ details[open].advanced summary::before {
 
   // ---- Settings: data loading + actions ------------------------------------
 
-  function openSettings() {
+  function openSettings(sectionId) {
     state.view = "settings";
     state.profileScreen = "list";
     state.disableConfirm = false;
+    state.githubStatus = null;
+    state.githubStatusLoaded = false;
+    state.githubError = "";
     state.egressLoaded = false;
     render();
+    if (sectionId) {
+      var section = document.getElementById(sectionId);
+      if (section && section.scrollIntoView) section.scrollIntoView({ block: "start" });
+    }
     loadSettings().then(render);
+    loadGithubStatus().then(render);
     loadEgress().then(render);
+  }
+
+  function loadGithubStatus() {
+    var requestId = ++state.githubStatusRequestId;
+    state.githubError = "";
+    return api("/admin/api/github/status").then(function (body) {
+      if (requestId !== state.githubStatusRequestId) return;
+      state.githubStatus = body;
+      state.githubStatusLoaded = true;
+      state.githubBusy = "";
+    }).catch(function (error) {
+      if (requestId !== state.githubStatusRequestId) return;
+      state.githubStatusLoaded = true;
+      state.githubBusy = "";
+      state.githubError = (error && (error.serverMessage || error.message)) || "Could not load GitHub settings.";
+    });
+  }
+
+  function repositoryGrantHash(value) {
+    var hash = 2166136261;
+    var input = String(value || "");
+    for (var index = 0; index < input.length; index += 1) {
+      hash ^= input.charCodeAt(index);
+      hash += (hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24);
+    }
+    return (hash >>> 0).toString(36);
+  }
+
+  function uniqueRepositoryGrantId(fullName, installationId, usedIds) {
+    var source = installationId === null ? "pat" : String(installationId);
+    var slug = String(fullName || "all").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 80) || "repository";
+    var base = "repo_" + source + "_" + slug + "_" + repositoryGrantHash(source + ":" + fullName);
+    var candidate = base.slice(0, 128);
+    var suffix = 2;
+    while (usedIds.has(candidate)) {
+      var ending = "_" + suffix;
+      candidate = base.slice(0, 128 - ending.length) + ending;
+      suffix += 1;
+    }
+    return candidate;
+  }
+
+  function focusRepositorySearch() {
+    if (state.profileTab !== "repositories") return;
+    var input = document.getElementById("repo-picker-search");
+    if (!input || !input.focus) return;
+    input.focus();
+    if (input.setSelectionRange) {
+      var end = String(input.value || "").length;
+      try { input.setSelectionRange(end, end); } catch (error) { /* ignore */ }
+    }
+  }
+
+  function loadRepositoryPickerRepos() {
+    var picker = state.repositoryPicker;
+    if (!picker) return Promise.resolve();
+    var requestId = (picker.requestId || 0) + 1;
+    picker.requestId = requestId;
+    picker.loading = true;
+    picker.error = "";
+    render();
+    focusRepositorySearch();
+    var source = picker.installationId === null ? "pat" : String(picker.installationId);
+    var serverQuery = picker.patOwner
+      ? picker.patOwner + "/" + (picker.query || "")
+      : (picker.query || "");
+    var path = "/admin/api/github/installations/" + encodeURIComponent(source) + "/repos?q=" + encodeURIComponent(serverQuery) + "&page=1";
+    return api(path).then(function (body) {
+      if (state.repositoryPicker !== picker || picker.requestId !== requestId) return;
+      picker.repos = (body && body.repos) || [];
+      picker.totalCount = Number((body && body.totalCount) || 0);
+      picker.truncated = !!(body && body.truncated);
+      // Accumulate every name this picker session has confirmed the current
+      // connection can actually reach — Apply uses it to decide which adopted
+      // PAT-era selections may be restamped with the installation id.
+      picker.seenFullNames = picker.seenFullNames || {};
+      picker.repos.forEach(function (repo) {
+        if (repo && repo.fullName) picker.seenFullNames[repo.fullName] = true;
+      });
+      picker.loading = false;
+      picker.error = "";
+      render();
+      focusRepositorySearch();
+    }).catch(function (error) {
+      if (state.repositoryPicker !== picker || picker.requestId !== requestId) return;
+      picker.loading = false;
+      picker.error = (error && (error.serverMessage || error.message)) || "Could not load repositories.";
+      render();
+      focusRepositorySearch();
+    });
+  }
+
+  function openRepositoryPicker(installationId, accountLogin) {
+    if (!state.profileDraft) return;
+    var patOwner = installationId === null && accountLogin !== "Personal access token" ? accountLogin : "";
+    var selected = Array.from(new Set((state.profileDraft.repositories || []).filter(function (grant) {
+      return grant.enabled && grant.allRepos !== true && repositoryGrantMatchesPicker(grant, {
+        installationId: installationId,
+        accountLogin: accountLogin,
+        patOwner: patOwner
+      });
+    }).map(function (grant) { return grant.fullName; })));
+    resetRepositoryTransientState();
+    state.repositoryPicker = {
+      installationId: installationId,
+      accountLogin: installationId === null ? (patOwner || "Personal access token") : accountLogin,
+      patOwner: patOwner,
+      query: "",
+      repos: [],
+      totalCount: 0,
+      selectedFullNames: selected,
+      loading: true,
+      error: "",
+      requestId: 0
+    };
+    loadRepositoryPickerRepos();
+  }
+
+  function openRepositoryAdd() {
+    var status = state.githubStatus;
+    if (!status || status.mode === "none") return;
+    if (status.mode === "pat") {
+      openRepositoryPicker(null, "Personal access token");
+      return;
+    }
+    var installations = status.installations || [];
+    if (installations.length === 1) {
+      openRepositoryPicker(Number(installations[0].id), installations[0].accountLogin);
+      return;
+    }
+    resetRepositoryTransientState();
+    state.repositoryAddOpen = true;
+    render();
+  }
+
+  function closeRepositoryPicker() {
+    resetRepositoryTransientState();
+    render();
+  }
+
+  function scheduleRepositorySearch(query) {
+    var picker = state.repositoryPicker;
+    if (!picker) return;
+    picker.query = query;
+    // Invalidate the currently running query immediately. Otherwise its
+    // response can land during this query's debounce window and briefly show
+    // results for the previous text beneath the new input value.
+    picker.requestId = (picker.requestId || 0) + 1;
+    if (repositorySearchTimer && typeof clearTimeout === "function") clearTimeout(repositorySearchTimer);
+    repositorySearchTimer = null;
+    var run = function () {
+      repositorySearchTimer = null;
+      if (state.repositoryPicker === picker) loadRepositoryPickerRepos();
+    };
+    if (typeof setTimeout === "function") repositorySearchTimer = setTimeout(run, 250);
+    else run();
+  }
+
+  function applyRepositoryPicker() {
+    var picker = state.repositoryPicker;
+    var draft = state.profileDraft;
+    if (!picker || !draft) return;
+    var selected = Array.from(new Set(picker.selectedFullNames || []));
+    if (selected.length > 200) return;
+    var current = draft.repositories || [];
+    var sameSource = function (grant) {
+      // The All-repositories toggle owns allRepos rows; Manage → Apply must
+      // never silently replace one with an explicit (possibly empty) list.
+      return grant.allRepos !== true && repositoryGrantMatchesPicker(grant, picker);
+    };
+    var retained = current.filter(function (grant) { return !sameSource(grant); });
+    if (retained.length + selected.length > 200) return;
+    var next = retained.slice();
+    var usedIds = new Set(next.map(function (grant) { return grant.id; }));
+    var priorByName = new Map();
+    current.forEach(function (grant) {
+      if (sameSource(grant) && grant.allRepos !== true) priorByName.set(grant.fullName, grant);
+    });
+    selected.forEach(function (fullName) {
+      var prior = priorByName.get(fullName);
+      // An adopted PAT-era selection may only be restamped with the
+      // installation id once this picker session has SEEN the repo in the
+      // installation's own listing — otherwise the App may not have access
+      // and a silent restamp would persist a grant the token mint can never
+      // honor. Unconfirmed adoptees keep their original PAT-era grant.
+      if (
+        picker.installationId !== null &&
+        prior && prior.installationId === null &&
+        !(picker.seenFullNames && picker.seenFullNames[fullName])
+      ) {
+        usedIds.add(prior.id);
+        next.push(prior);
+        return;
+      }
+      var accountLogin = picker.installationId === null ? repositoryOwner(fullName) : picker.accountLogin;
+      var id = prior ? prior.id : uniqueRepositoryGrantId(fullName, picker.installationId, usedIds);
+      usedIds.add(id);
+      next.push({
+        id: id,
+        installationId: picker.installationId,
+        accountLogin: accountLogin,
+        fullName: fullName,
+        enabled: true
+      });
+    });
+    draft.repositories = next;
+    resetRepositoryTransientState();
+    markProfileDirty();
+    render();
+    // Apply reads as a commit but only edits the draft — pulse the save bar
+    // every time, even when the draft was already dirty.
+    cueSaveBar();
+  }
+
+  function removeRepositoryGrant(id) {
+    if (!state.profileDraft) return;
+    var repositories = state.profileDraft.repositories || [];
+    var next = repositories.filter(function (grant) { return grant.id !== id; });
+    if (next.length === repositories.length) return;
+    state.profileDraft.repositories = next;
+    markProfileDirty();
+    render();
+  }
+
+  function toggleAllRepositories(installationId, accountLogin, checked) {
+    if (!state.profileDraft || !Number.isInteger(installationId) || installationId < 1) return;
+    var current = state.profileDraft.repositories || [];
+    if (checked) {
+      var retained = current.filter(function (grant) { return grant.installationId !== installationId; });
+      var usedIds = new Set(retained.map(function (grant) { return grant.id; }));
+      retained.push({
+        id: uniqueRepositoryGrantId("all", installationId, usedIds),
+        installationId: installationId,
+        accountLogin: accountLogin,
+        fullName: "",
+        allRepos: true,
+        enabled: true
+      });
+      state.profileDraft.repositories = retained;
+    } else {
+      state.profileDraft.repositories = current.filter(function (grant) {
+        return !(grant.installationId === installationId && grant.allRepos === true);
+      });
+    }
+    markProfileDirty();
+    render();
+  }
+
+  function refreshGithubStatus() {
+    if (state.githubBusy) return;
+    state.githubBusy = "refresh";
+    state.githubError = "";
+    render();
+    loadGithubStatus().then(render);
+  }
+
+  function submitGithubManifest(formData) {
+    if (state.githubBusy) return;
+    var org = String(formData.get("org") || "").trim();
+    var targetName = "chickpea-github-manifest-" + Date.now();
+    var manifestWindow = null;
+    if (typeof window !== "undefined" && typeof window.open === "function") {
+      manifestWindow = window.open("", targetName);
+      if (manifestWindow) manifestWindow.opener = null;
+    }
+    state.githubOrg = org;
+    state.githubBusy = "manifest";
+    state.githubError = "";
+    render();
+    postJson("/admin/api/github/manifest", "POST", org ? { org: org } : {}).then(function (body) {
+      if (!body || typeof body.target !== "string" || !body.manifest) throw new Error("GitHub manifest response was invalid.");
+      var form = document.createElement("form");
+      form.method = "post";
+      form.action = body.target;
+      form.target = manifestWindow ? targetName : "_blank";
+      form.style.display = "none";
+      var input = document.createElement("input");
+      input.type = "hidden";
+      input.name = "manifest";
+      input.value = JSON.stringify(body.manifest);
+      form.appendChild(input);
+      (document.body || document.documentElement).appendChild(form);
+      form.submit();
+      if (form.remove) form.remove();
+      state.githubBusy = "";
+      state.githubManifestOpen = false;
+      state.githubError = "";
+      render();
+    }).catch(function (error) {
+      if (manifestWindow && typeof manifestWindow.close === "function") manifestWindow.close();
+      state.githubBusy = "";
+      state.githubError = (error && (error.serverMessage || error.message)) || "Could not start GitHub App setup.";
+      render();
+    });
+  }
+
+  function saveGithubPat(formData) {
+    if (state.githubBusy) return;
+    var token = String(formData.get("token") || "").trim();
+    if (!token) {
+      state.githubError = "Paste a fine-grained personal access token.";
+      render();
+      return;
+    }
+    state.githubStatusRequestId += 1;
+    state.githubBusy = "pat";
+    state.githubError = "";
+    render();
+    postJson("/admin/api/github/pat", "PUT", { token: token }).then(function () {
+      state.githubBusy = "";
+      state.githubPatDraft = "";
+      state.githubPatOpen = false;
+      return loadGithubStatus();
+    }).then(render).catch(function (error) {
+      state.githubBusy = "";
+      state.githubError = (error && (error.serverMessage || error.message)) || "Could not save the GitHub token.";
+      render();
+    });
+  }
+
+  function disconnectGithub() {
+    if (state.githubBusy) return;
+    state.githubStatusRequestId += 1;
+    state.githubBusy = "disconnect";
+    state.githubDisconnectError = "";
+    render();
+    api("/admin/api/github", { method: "DELETE" }).then(function () {
+      state.githubBusy = "";
+      state.githubDisconnectConfirm = false;
+      state.githubDisconnectError = "";
+      state.githubManifestOpen = false;
+      state.githubPatOpen = false;
+      state.githubPatDraft = "";
+      state.githubStatus = null;
+      state.githubStatusLoaded = false;
+      render();
+      return loadGithubStatus().then(render);
+    }).catch(function (error) {
+      state.githubBusy = "";
+      state.githubDisconnectError = (error && (error.serverMessage || error.message)) || "Could not disconnect GitHub.";
+      render();
+    });
   }
 
   function loadSettings() {
@@ -3975,6 +4849,7 @@ details[open].advanced summary::before {
       // New profiles carry no Connections either; the array is what the API persists.
       mcpServers: [],
       apiConnections: [],
+      repositories: [],
       pendingSecrets: {},
       removedConnections: [],
       pendingApiSecrets: {},
@@ -3998,6 +4873,17 @@ details[open].advanced summary::before {
       // editor never mutates the shared state.agents entry.
       mcpServers: (agent.mcpServers || []).map(cloneConnection),
       apiConnections: (agent.apiConnections || []).map(cloneApiConnection),
+      repositories: (agent.repositories || []).map(function (grant) {
+        var copy = {
+          id: grant.id,
+          installationId: grant.installationId,
+          accountLogin: grant.accountLogin,
+          fullName: grant.fullName,
+          enabled: !!grant.enabled
+        };
+        if (grant.allRepos !== undefined) copy.allRepos = grant.allRepos;
+        return copy;
+      }),
       pendingSecrets: {},
       removedConnections: [],
       pendingApiSecrets: {},
@@ -4071,9 +4957,14 @@ details[open].advanced summary::before {
   // Bring a capability tab into view after a validation failure elsewhere on
   // the page, so the inline error is never hidden behind an inactive tab.
   function showProfileTab(tab) {
-    if (state.profileTab === tab) return;
-    state.profileTab = tab;
-    render();
+    var changed = state.profileTab !== tab;
+    if (changed) {
+      state.profileTab = tab;
+      render();
+    }
+    if (changed && tab === "repositories" && !state.githubStatusLoaded) {
+      loadGithubStatus().then(render);
+    }
   }
 
   function collectProfileDraft() {
@@ -4093,6 +4984,7 @@ details[open].advanced summary::before {
   // state is synced directly. On the create screen there is no Discard and the
   // primary button always stays enabled.
   function markProfileDirty() {
+    var wasDirty = state.profileDirty;
     state.profileDirty = true;
     var discard = document.querySelector('[data-action="discard-profile"]');
     if (discard) discard.disabled = false;
@@ -4104,7 +4996,35 @@ details[open].advanced summary::before {
       // whose querySelector stub has no classList, from throwing.
       var stickyBar = document.querySelector(".save-bar-sticky");
       if (stickyBar && stickyBar.classList) { stickyBar.classList.remove("is-clean"); }
+      // Announce the bar the moment editing starts; already-dirty keystrokes
+      // stay quiet so typing doesn't strobe.
+      if (!wasDirty) cueSaveBar();
     }
+  }
+
+  function saveBarCueActive() {
+    return !!state.saveBarCueAt && Date.now() - state.saveBarCueAt < 1500;
+  }
+
+  // Draw the eye to the pinned save bar: mark the cue in state (so a render
+  // inside the same interaction keeps it) and animate the live element for
+  // no-render paths. The class is removed directly afterwards — never via a
+  // render, which would drop focus.
+  function cueSaveBar() {
+    state.saveBarCueAt = Date.now();
+    var bar = document.querySelector(".save-bar-sticky");
+    if (bar && bar.classList) {
+      bar.classList.remove("cue");
+      void bar.offsetWidth;
+      bar.classList.add("cue");
+    }
+    // The fake-DOM test harness has no timers; the cue then simply expires
+    // via saveBarCueAt on the next render instead.
+    if (typeof setTimeout !== "function") return;
+    setTimeout(function () {
+      var current = document.querySelector(".save-bar-sticky");
+      if (current && current.classList) current.classList.remove("cue");
+    }, 1600);
   }
 
   // The dirty -> enabled rule for the save bar lives in saveBarHtml; this
@@ -4282,6 +5202,24 @@ details[open].advanced summary::before {
       return;
     }
 
+    if (state.githubDisconnectConfirm) {
+      if (action === "github-disconnect-cancel") {
+        if (state.githubBusy === "disconnect") return;
+        state.githubDisconnectConfirm = false;
+        state.githubDisconnectError = "";
+        render();
+        focusSlackDisconnectAction("github-disconnect-open");
+      } else if (action === "github-disconnect-confirm") {
+        disconnectGithub();
+      }
+      return;
+    }
+
+    // PAT writes and disconnects are short, atomic transitions. Match the
+    // Slack credential lock: do not let navigation or another action make the
+    // operation appear canceled while its request is still live.
+    if (state.githubBusy === "pat" || state.githubBusy === "disconnect") return;
+
     // A credential replacement is a short, atomic transition. Do not let a
     // navigation or second connection action make it look canceled while the
     // POST is still live. Read-only connection tests may finish in the
@@ -4307,7 +5245,11 @@ details[open].advanced summary::before {
     }
     if (state.leavePrompt) { return; }
     if (state.profileScreen === "edit" && state.profileDirty && isEditLeaveAction(action)) {
-      state.leavePrompt = { action: action, agent: (target.getAttribute("data-agent") || "") };
+      state.leavePrompt = {
+        action: action,
+        agent: (target.getAttribute("data-agent") || ""),
+        section: (target.getAttribute("data-section") || "")
+      };
       render();
       return;
     }
@@ -4355,6 +5297,21 @@ details[open].advanced summary::before {
     if (action === "profile-tab" && state.profileDraft) {
       showProfileTab(target.getAttribute("data-tab") || "instructions");
     }
+    if (action === "repo-add") { openRepositoryAdd(); }
+    if (action === "repo-add-cancel") { closeRepositoryPicker(); }
+    if (action === "repo-manage") {
+      var repoInstallation = target.getAttribute("data-installation");
+      var repoAccount = target.getAttribute("data-account") || "GitHub";
+      if (repoInstallation === "pat") openRepositoryPicker(null, repoAccount);
+      else {
+        var repoInstallationId = Number(repoInstallation);
+        if (Number.isInteger(repoInstallationId) && repoInstallationId > 0) openRepositoryPicker(repoInstallationId, repoAccount);
+      }
+    }
+    if (action === "repo-remove") { removeRepositoryGrant(target.getAttribute("data-repository-id") || ""); }
+    if (action === "repo-picker-cancel") { closeRepositoryPicker(); }
+    if (action === "repo-picker-retry") { loadRepositoryPickerRepos(); }
+    if (action === "repo-picker-apply") { applyRepositoryPicker(); }
     // Inline title rename: open the input seeded with the current name, focused
     // and selected. Commit is Enter/blur; Escape reverts to prev.
     if (action === "profile-rename" && state.profileDraft) {
@@ -4371,7 +5328,37 @@ details[open].advanced summary::before {
     if (action === "cancel-create") { state.profileScreen = "list"; state.profileDraft = null; resetProfileTransientState(); render(); }
     // Settings (model-providers) is a separate destination that lands with its
     // own build; the affordance is present per the approved model-field design.
-    if (action === "open-settings") { openSettings(); }
+    if (action === "open-settings") { openSettings(target.getAttribute("data-section") || ""); }
+    if (state.githubBusy && action.indexOf("github-") === 0) return;
+    if (action === "github-manifest-open") {
+      state.githubManifestOpen = true;
+      state.githubPatOpen = false;
+      state.githubError = "";
+      render();
+    }
+    if (action === "github-manifest-cancel") {
+      state.githubManifestOpen = false;
+      state.githubError = "";
+      render();
+    }
+    if (action === "github-pat-open") {
+      state.githubPatOpen = true;
+      state.githubManifestOpen = false;
+      state.githubError = "";
+      render();
+    }
+    if (action === "github-pat-cancel") {
+      state.githubPatOpen = false;
+      state.githubPatDraft = "";
+      state.githubError = "";
+      render();
+    }
+    if (action === "github-refresh") { refreshGithubStatus(); }
+    if (action === "github-disconnect-open" && state.githubStatus && state.githubStatus.mode !== "none") {
+      state.githubDisconnectConfirm = true;
+      state.githubDisconnectError = "";
+      render();
+    }
     if (state.egressSaving && action.indexOf("egress-") === 0) return;
     if (action === "egress-mode") {
       egressDraft.mode = target.getAttribute("data-mode") || "allowlist";
@@ -4654,6 +5641,9 @@ details[open].advanced summary::before {
     // spinner) never wipes it; the favorites search re-renders only its own
     // results container to keep the input focused.
     if (action === "prov-key-input") { provUiFor(target.getAttribute("data-provider")).key = target.value; }
+    if (action === "github-org-input") { state.githubOrg = target.value; }
+    if (action === "github-pat-input") { state.githubPatDraft = target.value; }
+    if (action === "repo-search") { scheduleRepositorySearch(target.value); }
     if (action === "egress-domain-input") {
       var egressInputIndex = Number(target.getAttribute("data-index"));
       if (!state.egressSaving && egressInputIndex >= 0 && egressInputIndex < egressDraft.domains.length) egressDraft.domains[egressInputIndex] = target.value;
@@ -4813,6 +5803,25 @@ details[open].advanced summary::before {
       markProfileDirty();
       render();
     }
+    if (action === "repo-select" && state.repositoryPicker) {
+      var repoFullName = target.getAttribute("data-repo") || "";
+      var repoSelected = state.repositoryPicker.selectedFullNames || [];
+      var repoSelectedIndex = repoSelected.indexOf(repoFullName);
+      if (target.checked && repoSelectedIndex < 0) repoSelected.push(repoFullName);
+      if (!target.checked && repoSelectedIndex >= 0) repoSelected.splice(repoSelectedIndex, 1);
+      state.repositoryPicker.selectedFullNames = repoSelected;
+      // A full render() would rebuild the page and throw away the picker
+      // list's scroll position — the selection would jump out of view on
+      // every click. Redraw only the picker, keeping the list where it was.
+      rerenderRepositoryPicker();
+    }
+    if (action === "repo-all" && state.profileDraft) {
+      toggleAllRepositories(
+        Number(target.getAttribute("data-installation")),
+        target.getAttribute("data-account") || "GitHub",
+        !!target.checked
+      );
+    }
   });
 
   // Blur commits the inline title rename (same as Enter). focusout bubbles;
@@ -4832,6 +5841,8 @@ details[open].advanced summary::before {
     event.preventDefault();
     if (action === "add-channel-form") addChannel(new FormData(form));
     if (action === "slack-connect-form") submitSlackConnection(new FormData(form));
+    if (action === "github-manifest-form") submitGithubManifest(new FormData(form));
+    if (action === "github-pat-form") saveGithubPat(new FormData(form));
   });
 
   // Escape dismisses the open Model combobox (F6) without picking a model.
@@ -4849,6 +5860,37 @@ details[open].advanced summary::before {
   }
 
   document.addEventListener("keydown", function (event) {
+    if (state.githubDisconnectConfirm && event.key === "Tab") {
+      event.preventDefault();
+      if (state.githubBusy === "disconnect") {
+        focusGithubDisconnectDialog();
+        return;
+      }
+      var cancelGithubDisconnect = document.querySelector('[data-action="github-disconnect-cancel"]');
+      var confirmGithubDisconnect = document.querySelector('[data-action="github-disconnect-confirm"]');
+      if (!cancelGithubDisconnect || !confirmGithubDisconnect) {
+        focusGithubDisconnectDialog();
+        return;
+      }
+      var activeGithubDisconnect = document.activeElement;
+      var nextGithubDisconnect = event.shiftKey
+        ? (activeGithubDisconnect === cancelGithubDisconnect ? confirmGithubDisconnect : cancelGithubDisconnect)
+        : (activeGithubDisconnect === confirmGithubDisconnect ? cancelGithubDisconnect : confirmGithubDisconnect);
+      if (nextGithubDisconnect.focus) nextGithubDisconnect.focus();
+      return;
+    }
+    if (state.githubDisconnectConfirm && (event.key === "Escape" || event.key === "Esc")) {
+      event.preventDefault();
+      if (state.githubBusy === "disconnect") {
+        focusGithubDisconnectDialog();
+        return;
+      }
+      state.githubDisconnectConfirm = false;
+      state.githubDisconnectError = "";
+      render();
+      focusSlackDisconnectAction("github-disconnect-open");
+      return;
+    }
     if (state.slackDisconnectConfirm && event.key === "Tab") {
       event.preventDefault();
       if (state.slackDisconnectBusy) {
@@ -4886,6 +5928,7 @@ details[open].advanced summary::before {
     }
     if (event.key === "Escape" || event.key === "Esc") {
       if (state.leavePrompt) { state.leavePrompt = null; render(); return; }
+      if (state.repositoryPicker || state.repositoryAddOpen) { closeRepositoryPicker(); return; }
       if (state.modelPickerOpen) { closeModelPicker(); }
     }
     // ARIA tabs keyboard contract for the capability tab bar: Left/Right (and
@@ -4894,7 +5937,7 @@ details[open].advanced summary::before {
     var tabButton = event.target && event.target.closest && event.target.closest(".ptab");
     if (tabButton && (event.key === "ArrowLeft" || event.key === "ArrowRight" || event.key === "Home" || event.key === "End")) {
       event.preventDefault();
-      var order = ["instructions", "skills", "connections"];
+      var order = ["instructions", "skills", "connections", "repositories"];
       var current = order.indexOf(state.profileTab || "instructions");
       var next =
         event.key === "ArrowLeft" ? (current + order.length - 1) % order.length :
@@ -4914,7 +5957,9 @@ details[open].advanced summary::before {
       if (
         (state.profileScreen === "edit" && state.profileDirty) ||
         state.slackConnectionBusy === "update" ||
-        state.slackConnectionBusy === "disconnect"
+        state.slackConnectionBusy === "disconnect" ||
+        state.githubBusy === "pat" ||
+        state.githubBusy === "disconnect"
       ) {
         event.preventDefault();
         event.returnValue = "";
@@ -4931,12 +5976,21 @@ details[open].advanced summary::before {
         if (state.slackConnectionBusy === "disconnect") focusSlackDisconnectDialog();
         return;
       }
+      if (state.githubBusy === "pat" || state.githubBusy === "disconnect") {
+        history.pushState(null, "", canonicalPath());
+        if (state.githubBusy === "disconnect") focusGithubDisconnectDialog();
+        return;
+      }
       // A non-busy disconnect confirmation is not a route. Close it before
       // applying Back/Forward so the old dialog cannot survive over a new page
       // or try to restore focus to a control that no longer exists.
       if (state.slackDisconnectConfirm) {
         state.slackDisconnectConfirm = false;
         state.slackDisconnectError = "";
+      }
+      if (state.githubDisconnectConfirm) {
+        state.githubDisconnectConfirm = false;
+        state.githubDisconnectError = "";
       }
       if (state.profileScreen === "edit" && state.profileDirty && targetPath !== canonicalPath()) {
         history.pushState(null, "", canonicalPath());
@@ -5911,6 +6965,7 @@ details[open].advanced summary::before {
     state.connectorGallerySearch = "";
     state.connectionRemove = null;
     state.apiConnectionRemove = null;
+    resetRepositoryTransientState();
     state.profileError = "";
     state.profileDraft = null;
     state.editingAgentId = null;
@@ -5921,7 +6976,7 @@ details[open].advanced summary::before {
       // parked while the guard asked; carry it out now.
       applyRoute(pending.path);
     } else if (action === "open-settings") {
-      openSettings();
+      openSettings((pending && pending.section) || "");
     } else if (action === "go-home" || action === "open-channels") {
       openChannels();
     } else {
@@ -5946,6 +7001,11 @@ details[open].advanced summary::before {
     if (!commitOpenApiConnectionEditor()) { showProfileTab("connections"); return; }
     if (!draft.name) { state.profileError = "Name is required."; render(); return; }
     if (!draft.instructions) { state.profileError = "Profile instructions are required."; state.profileTab = "instructions"; render(); return; }
+    // An open repository picker holds checkbox changes the user has made but
+    // not yet Applied; saving must not silently serialize the stale grant
+    // list. Committing equals clicking Apply — which is what the checked
+    // boxes said the user wants.
+    if (state.repositoryPicker) applyRepositoryPicker();
     var body = {
       name: draft.name,
       instructions: draft.instructions,
@@ -5954,7 +7014,8 @@ details[open].advanced summary::before {
       // POLICY ONLY. connectionFromEditor / cloneConnection strip secrets by
       // construction — no token or header VALUE is ever in this array.
       mcpServers: draft.mcpServers || [],
-      apiConnections: draft.apiConnections || []
+      apiConnections: draft.apiConnections || [],
+      repositories: draft.repositories || []
     };
     var isEdit = !!draft.id;
     // Capture the draft carrying the transient secrets + removals BEFORE the
@@ -6034,6 +7095,7 @@ details[open].advanced summary::before {
     state.connectorGallerySearch = "";
     state.connectionRemove = null;
     state.apiConnectionRemove = null;
+    resetRepositoryTransientState();
     render();
   }
 

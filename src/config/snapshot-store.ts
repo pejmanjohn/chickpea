@@ -157,6 +157,7 @@ export function snapshotFromEffectiveConfig(
     model: config.model,
     providerId: config.provider,
     instructions: config.instructions,
+    repositories: config.agent.repositories,
     snapshotHash: computeSnapshotHash(config),
     createdAt,
   };

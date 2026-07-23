@@ -28,6 +28,7 @@ export function createSeededAgents(
     skills: [],
     mcpServers: [],
     apiConnections: [],
+    repositories: [],
   };
   return [defaultAgent];
 }

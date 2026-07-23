@@ -1,7 +1,15 @@
 import assert from 'node:assert/strict';
+import { generateKeyPairSync } from 'node:crypto';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 import { Bash, InMemoryFs, type SecureFetch } from 'just-bash';
 
+import {
+  mergeRepositoryAndApiConnectors,
+  resolveRepositoryAccess,
+} from '../src/agents/slack-thread.ts';
 import {
   buildEgressPlan,
   buildEgressNetworkConfig,
@@ -10,6 +18,10 @@ import {
   parseEgressPolicy,
   type ResolvedApiConnection,
 } from '../src/config/egress.ts';
+import { GITHUB_SETTING_KEYS } from '../src/config/github-app.ts';
+import { SqliteSettingsStore } from '../src/config/settings-store.ts';
+import type { RepositoryGrant } from '../src/config/types.ts';
+import { withEnv } from './helpers/env.ts';
 
 const LINEAR_CONNECTION: ResolvedApiConnection = {
   allowedHosts: ['api.linear.app'],
@@ -18,6 +30,50 @@ const LINEAR_CONNECTION: ResolvedApiConnection = {
   headerValue: 'Bearer TOK',
   allowedMethods: ['GET', 'POST'],
 };
+
+const APP_PRIVATE_KEY = String(
+  generateKeyPairSync('rsa', { modulusLength: 2_048 }).privateKey.export({
+    type: 'pkcs8',
+    format: 'pem',
+  }),
+);
+
+function repositoryGrant(overrides: Partial<RepositoryGrant> = {}): RepositoryGrant {
+  return {
+    id: 'repo-alpha',
+    installationId: 50_001,
+    accountLogin: 'Acme',
+    fullName: 'Acme/Alpha',
+    enabled: true,
+    ...overrides,
+  };
+}
+
+async function withGithubSettings<T>(
+  values: Partial<Record<(typeof GITHUB_SETTING_KEYS)[keyof typeof GITHUB_SETTING_KEYS], string>>,
+  run: () => Promise<T>,
+): Promise<T> {
+  const dir = mkdtempSync(join(tmpdir(), 'chickpea-repository-runtime-'));
+  const dbPath = join(dir, 'state.db');
+  const settings = new SqliteSettingsStore(dbPath);
+  try {
+    for (const [key, value] of Object.entries(values)) {
+      if (value !== undefined) await settings.setSetting(key, value);
+    }
+    return await withEnv(
+      {
+        SLACK_STATE_DB_PATH: dbPath,
+        GITHUB_APP_ID: undefined,
+        GITHUB_APP_PRIVATE_KEY: undefined,
+        GITHUB_PAT: undefined,
+      },
+      run,
+    );
+  } finally {
+    settings.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
 
 function connectorUrl(url: string) {
   return {
@@ -377,6 +433,60 @@ test('createScopedFetch matches prefixes on path-segment boundaries, longest fir
   ]);
 });
 
+test('createScopedFetch fails closed when a scope guard rejects a matching URL', async () => {
+  const scopeCalls: string[] = [];
+  const baseCalls: string[] = [];
+  const scopeDelegate: SecureFetch = async (url) => {
+    scopeCalls.push(String(url));
+    return fetchResult(url);
+  };
+  const baseDelegate: SecureFetch = async (url) => {
+    baseCalls.push(String(url));
+    return fetchResult(url);
+  };
+  const scopedFetch = createScopedFetch({
+    scopes: [
+      {
+        prefixes: ['https://api.github.com/repos/Acme/Alpha'],
+        methods: new Set(['GET', 'POST']),
+        delegate: scopeDelegate,
+        matchesRequest: (url) => !url.includes('/dispatches'),
+      },
+    ],
+    baseDelegate,
+    baseMethods: new Set(['GET', 'HEAD', 'POST']),
+  });
+
+  await scopedFetch('https://api.github.com/repos/Acme/Alpha/pulls', { method: 'POST' });
+  // A guard rejection is a policy denial: it must throw, never retry the same
+  // URL through the base delegate (where operator Domains could admit it).
+  await assert.rejects(
+    scopedFetch('https://api.github.com/repos/Acme/Alpha/dispatches', { method: 'POST' }),
+    (err: Error) => err.name === 'BlockedUrlError',
+  );
+  assert.deepEqual(scopeCalls, ['https://api.github.com/repos/Acme/Alpha/pulls']);
+  assert.deepEqual(baseCalls, []);
+});
+
+test('guarded scopes are excluded from the fallback network allow-list', async () => {
+  const sentinel = 'fallback-exclusion-pat';
+  await withGithubSettings({ [GITHUB_SETTING_KEYS.pat]: sentinel }, async () => {
+    const access = await resolveRepositoryAccess([
+      repositoryGrant({ installationId: null, fullName: 'Acme/Alpha' }),
+    ]);
+    const plan = buildEgressPlan({ mode: 'off', domains: [] }, { cloudflare: false }, access.connectors);
+    const fallbackUrls = (plan.fallbackNetwork.allowedUrlPrefixes ?? []).map((entry) =>
+      typeof entry === 'string' ? entry : entry.url,
+    );
+    // The guarded scopes (/repos and /search/code carry URL predicates) must
+    // not contribute prefix+transform entries a flat allow-list cannot guard.
+    assert.ok(!fallbackUrls.some((url) => url.includes('/repos/')), String(fallbackUrls));
+    assert.ok(!fallbackUrls.some((url) => url.includes('/search/code')), String(fallbackUrls));
+    // The unguarded github.com git scope stays available in fallback mode.
+    assert.ok(fallbackUrls.includes('https://github.com/Acme/Alpha'), String(fallbackUrls));
+  });
+});
+
 test('createScopedFetch holds unmatched (open-mode) hosts to the base method set', async () => {
   const calls: string[] = [];
   const delegate: SecureFetch = async (url, options) => {
@@ -403,6 +513,468 @@ test('createScopedFetch holds unmatched (open-mode) hosts to the base method set
     'DELETE https://api.asana.com/tasks',
     'POST https://evil.example.com/x',
   ]);
+});
+
+test('PAT repository access uses the live PAT without minting and scopes both GitHub hosts', async () => {
+  const sentinel = 'github-pat-runtime-sentinel';
+  await withGithubSettings({ [GITHUB_SETTING_KEYS.pat]: sentinel }, async () => {
+    const enabledGrant = repositoryGrant({ installationId: null });
+    const access = await resolveRepositoryAccess([
+      enabledGrant,
+      repositoryGrant({
+        id: 'disabled',
+        fullName: 'Acme/Disabled',
+        installationId: null,
+        enabled: false,
+      }),
+    ]);
+
+    assert.deepEqual(access.grants, [enabledGrant]);
+    assert.equal(access.connectors.length, 3);
+    assert.deepEqual(
+      access.connectors.map(({ allowedHosts, pathPrefixes, headerName, headerValue, allowedMethods }) => ({
+        allowedHosts,
+        pathPrefixes,
+        headerName,
+        headerValue,
+        allowedMethods,
+      })),
+      [
+        {
+          allowedHosts: ['api.github.com'],
+          pathPrefixes: ['/repos/Acme/Alpha'],
+          headerName: 'Authorization',
+          headerValue: `Bearer ${sentinel}`,
+          allowedMethods: ['GET', 'POST', 'PATCH', 'PUT'],
+        },
+        {
+          allowedHosts: ['github.com'],
+          pathPrefixes: ['/Acme/Alpha', '/Acme/Alpha.git'],
+          headerName: 'Authorization',
+          headerValue: `Bearer ${sentinel}`,
+          allowedMethods: ['GET', 'POST', 'PATCH', 'PUT'],
+        },
+        {
+          allowedHosts: ['api.github.com'],
+          pathPrefixes: ['/search/code'],
+          headerName: 'Authorization',
+          headerValue: `Bearer ${sentinel}`,
+          allowedMethods: ['GET', 'POST', 'PATCH', 'PUT'],
+        },
+      ],
+    );
+
+    const plan = buildEgressPlan(
+      { mode: 'off', domains: [] },
+      { cloudflare: false },
+      access.connectors,
+    );
+    assert.equal(plan.scopes.length, 3);
+    assert.deepEqual(plan.scopes.flatMap((scope) => scope.prefixes), [
+      'https://api.github.com/repos/Acme/Alpha',
+      'https://github.com/Acme/Alpha',
+      'https://github.com/Acme/Alpha.git',
+      'https://api.github.com/search/code',
+    ]);
+    assert.deepEqual(
+      plan.scopes.flatMap((scope) => scope.network.allowedUrlPrefixes ?? []),
+      [
+        {
+          url: 'https://api.github.com/repos/Acme/Alpha',
+          transform: [{ headers: { Authorization: `Bearer ${sentinel}` } }],
+        },
+        {
+          url: 'https://github.com/Acme/Alpha',
+          transform: [{ headers: { Authorization: `Bearer ${sentinel}` } }],
+        },
+        {
+          url: 'https://github.com/Acme/Alpha.git',
+          transform: [{ headers: { Authorization: `Bearer ${sentinel}` } }],
+        },
+        {
+          url: 'https://api.github.com/search/code',
+          transform: [{ headers: { Authorization: `Bearer ${sentinel}` } }],
+        },
+      ],
+    );
+
+    // An App-era allRepos grant meant "that installation's repos"; a PAT can
+    // reach more of the account, so PAT mode must not honor it.
+    const appAllRepos = await resolveRepositoryAccess([
+      repositoryGrant({
+        id: 'app-all',
+        installationId: 42,
+        fullName: '',
+        allRepos: true,
+      }),
+    ]);
+    assert.deepEqual(appAllRepos, { grants: [], connectors: [], governsGithubHosts: true });
+
+    // A malformed persisted name (dot segment) must never become a URL
+    // prefix — `Acme/..` would normalize into a match for EVERY repository.
+    // The grant is dropped at runtime, but grants still govern the hosts.
+    const malformed = await resolveRepositoryAccess([
+      repositoryGrant({ id: 'dotdot', installationId: null, fullName: 'Acme/..' }),
+    ]);
+    assert.deepEqual(malformed, { grants: [], connectors: [], governsGithubHosts: true });
+
+    const absent = await resolveRepositoryAccess([]);
+    assert.deepEqual(absent, { grants: [], connectors: [], governsGithubHosts: false });
+    // Snapshots persisted before repository grants existed rehydrate without
+    // the field at all — the resolver must treat that exactly like [].
+    const legacy = await resolveRepositoryAccess(undefined);
+    assert.deepEqual(legacy, { grants: [], connectors: [], governsGithubHosts: false });
+    assert.equal(
+      buildEgressPlan({ mode: 'off', domains: [] }, { cloudflare: false }, absent.connectors)
+        .scopes.length,
+      0,
+    );
+  });
+});
+
+test('App repository access groups grants, uses short sorted names, and caps permissions', async () => {
+  await withGithubSettings(
+    {
+      [GITHUB_SETTING_KEYS.appId]: 'runtime-app',
+      [GITHUB_SETTING_KEYS.privateKey]: APP_PRIVATE_KEY,
+    },
+    async () => {
+      const previousFetch = globalThis.fetch;
+      const requests: Array<{ installationId: number; body: Record<string, unknown> }> = [];
+      globalThis.fetch = async (input, init) => {
+        const match = String(input).match(/\/app\/installations\/(\d+)\/access_tokens$/);
+        assert.ok(match?.[1], String(input));
+        const installationId = Number(match[1]);
+        requests.push({
+          installationId,
+          body: JSON.parse(String(init?.body)) as Record<string, unknown>,
+        });
+        return Response.json({
+          token: `installation-token-${installationId}`,
+          expires_at: new Date(Date.now() + 60 * 60 * 1_000).toISOString(),
+        });
+      };
+      try {
+        const grants = [
+          repositoryGrant({ id: 'zeta', fullName: 'Acme/Zeta' }),
+          repositoryGrant({ id: 'alpha', fullName: 'Acme/Alpha' }),
+          repositoryGrant({
+            id: 'all-example',
+            installationId: 50_002,
+            accountLogin: 'ExampleOrg',
+            fullName: '',
+            allRepos: true,
+          }),
+          repositoryGrant({
+            id: 'explicit-ignored-by-all',
+            installationId: 50_002,
+            accountLogin: 'ExampleOrg',
+            fullName: 'ExampleOrg/One',
+          }),
+        ];
+
+        const access = await resolveRepositoryAccess(grants);
+
+        assert.deepEqual(access.grants, grants);
+        assert.deepEqual(
+          requests.sort((left, right) => left.installationId - right.installationId),
+          [
+            {
+              installationId: 50_001,
+              body: {
+                repositories: ['Alpha', 'Zeta'],
+                permissions: {
+                  contents: 'write',
+                  pull_requests: 'write',
+                  issues: 'write',
+                  metadata: 'read',
+                  actions: 'write',
+                },
+              },
+            },
+            {
+              installationId: 50_002,
+              body: {
+                permissions: {
+                  contents: 'write',
+                  pull_requests: 'write',
+                  issues: 'write',
+                  metadata: 'read',
+                  actions: 'write',
+                },
+              },
+            },
+          ],
+        );
+        assert.equal(access.connectors.length, 6);
+        assert.deepEqual(
+          access.connectors.map((connector) => connector.allowedHosts),
+          [
+            ['api.github.com'],
+            ['github.com'],
+            ['api.github.com'],
+            ['api.github.com'],
+            ['github.com'],
+            ['api.github.com'],
+          ],
+        );
+
+        const plan = buildEgressPlan(
+          { mode: 'off', domains: [] },
+          { cloudflare: false },
+          access.connectors,
+        );
+        const routed: string[] = [];
+        const scopedFetch = createScopedFetch({
+          scopes: plan.scopes.map((scope, index) => ({
+            prefixes: scope.prefixes,
+            methods: scope.methods,
+            ...(scope.matchesRequest ? { matchesRequest: scope.matchesRequest } : {}),
+            delegate: (async (url) => {
+              routed.push(`${access.connectors[index]?.headerValue}|${url}`);
+              return fetchResult(url);
+            }) as SecureFetch,
+          })),
+          baseDelegate: (async (url) => {
+            routed.push(`base|${url}`);
+            return fetchResult(url);
+          }) as SecureFetch,
+          baseMethods: new Set(['GET']),
+        });
+
+        await scopedFetch('https://api.github.com/repos/Acme/Alpha/contents/README.md');
+        await scopedFetch('https://github.com/Acme/Zeta.git/info/refs');
+        await scopedFetch(
+          'https://api.github.com/search/code?q=runtime%20repo%3AExampleOrg%2FOne',
+        );
+        await scopedFetch('https://api.github.com/repos/ExampleOrg/Two/pulls');
+        // A search outside every grant is a policy denial: it must be blocked
+        // outright, never retried through the base delegate (fail closed).
+        await assert.rejects(
+          scopedFetch('https://api.github.com/search/code?q=repo%3AUnlisted%2FRepo'),
+          (err: Error) => err.name === 'BlockedUrlError',
+        );
+
+        assert.deepEqual(routed, [
+          'Bearer installation-token-50001|https://api.github.com/repos/Acme/Alpha/contents/README.md',
+          'Bearer installation-token-50001|https://github.com/Acme/Zeta.git/info/refs',
+          'Bearer installation-token-50002|https://api.github.com/search/code?q=runtime%20repo%3AExampleOrg%2FOne',
+          'Bearer installation-token-50002|https://api.github.com/repos/ExampleOrg/Two/pulls',
+        ]);
+      } finally {
+        globalThis.fetch = previousFetch;
+      }
+    },
+  );
+});
+
+test('an App token mint failure logs and omits only that installation for the turn', async () => {
+  await withGithubSettings(
+    {
+      [GITHUB_SETTING_KEYS.appId]: 'degrade-app',
+      [GITHUB_SETTING_KEYS.privateKey]: APP_PRIVATE_KEY,
+    },
+    async () => {
+      const previousFetch = globalThis.fetch;
+      const previousWarn = console.warn;
+      const warnings: string[] = [];
+      console.warn = (...args: unknown[]) => warnings.push(args.map(String).join(' '));
+      globalThis.fetch = async (input) =>
+        String(input).includes('/50004/')
+          ? new Response('failed', { status: 500 })
+          : Response.json({
+              token: 'successful-installation-token',
+              expires_at: new Date(Date.now() + 60 * 60 * 1_000).toISOString(),
+            });
+      try {
+        const kept = repositoryGrant({
+          id: 'kept',
+          installationId: 50_003,
+          fullName: 'Acme/Kept',
+        });
+        const skipped = repositoryGrant({
+          id: 'skipped',
+          installationId: 50_004,
+          fullName: 'Acme/Skipped',
+        });
+        const access = await resolveRepositoryAccess([kept, skipped]);
+
+        assert.deepEqual(access.grants, [kept]);
+        assert.equal(access.connectors.length, 3);
+        assert.equal(access.governsGithubHosts, true);
+        assert.equal(warnings.length, 1);
+        assert.match(warnings[0] ?? '', /installation 50004 skipped/i);
+        assert.doesNotMatch(warnings[0] ?? '', /successful-installation-token/);
+
+        // Even a full mint wipe-out keeps repository routing authoritative so
+        // the merge step still strips GitHub hosts from legacy connectors.
+        // Fresh installation ids avoid the warm token cache from above.
+        globalThis.fetch = async () => new Response('failed', { status: 500 });
+        const wipedOut = await resolveRepositoryAccess([
+          repositoryGrant({ id: 'cold-a', installationId: 60_001, fullName: 'Acme/ColdA' }),
+          repositoryGrant({ id: 'cold-b', installationId: 60_002, fullName: 'Acme/ColdB' }),
+        ]);
+        assert.deepEqual(wipedOut.grants, []);
+        assert.deepEqual(wipedOut.connectors, []);
+        assert.equal(wipedOut.governsGithubHosts, true);
+      } finally {
+        console.warn = previousWarn;
+        globalThis.fetch = previousFetch;
+      }
+    },
+  );
+});
+
+test('a stale grant is isolated per-repo instead of disabling its installation', async () => {
+  await withGithubSettings(
+    {
+      [GITHUB_SETTING_KEYS.appId]: 'salvage-app',
+      [GITHUB_SETTING_KEYS.privateKey]: APP_PRIVATE_KEY,
+    },
+    async () => {
+      const previousFetch = globalThis.fetch;
+      const previousWarn = console.warn;
+      const warnings: string[] = [];
+      console.warn = (...args: unknown[]) => warnings.push(args.map(String).join(' '));
+      // GitHub 422s any mint whose repository list names the deleted repo.
+      globalThis.fetch = async (_input, init) => {
+        const body = init?.body ? JSON.parse(String(init.body)) : {};
+        const repos: string[] = body.repositories ?? [];
+        if (repos.includes('Deleted')) {
+          return new Response('{"message":"Validation Failed"}', { status: 422 });
+        }
+        return Response.json({
+          token: `salvaged-${repos.join('+')}`,
+          expires_at: new Date(Date.now() + 60 * 60 * 1_000).toISOString(),
+        });
+      };
+      try {
+        const healthy = repositoryGrant({
+          id: 'healthy',
+          installationId: 70_001,
+          fullName: 'Acme/Healthy',
+        });
+        const stale = repositoryGrant({
+          id: 'stale',
+          installationId: 70_001,
+          fullName: 'Acme/Deleted',
+        });
+        const access = await resolveRepositoryAccess([healthy, stale]);
+
+        assert.deepEqual(access.grants, [healthy]);
+        assert.equal(access.governsGithubHosts, true);
+        const prefixes = access.connectors.flatMap((connector) => connector.pathPrefixes);
+        assert.ok(prefixes.includes('/repos/Acme/Healthy'), String(prefixes));
+        assert.ok(!prefixes.includes('/repos/Acme/Deleted'), String(prefixes));
+        assert.ok(
+          warnings.some((line) => /Acme\/Deleted skipped/.test(line)),
+          warnings.join('\n'),
+        );
+
+        // Salvage is for validation rejections only: an outage (5xx) must not
+        // amplify into one request per grant.
+        let outageMints = 0;
+        globalThis.fetch = async () => {
+          outageMints += 1;
+          return new Response('unavailable', { status: 503 });
+        };
+        const outage = await resolveRepositoryAccess([
+          repositoryGrant({ id: 'o-a', installationId: 71_001, fullName: 'Acme/OutA' }),
+          repositoryGrant({ id: 'o-b', installationId: 71_001, fullName: 'Acme/OutB' }),
+        ]);
+        assert.deepEqual(outage.grants, []);
+        assert.equal(outage.governsGithubHosts, true);
+        assert.equal(outageMints, 1, 'a 503 must trigger exactly one grouped mint');
+      } finally {
+        console.warn = previousWarn;
+        globalThis.fetch = previousFetch;
+      }
+    },
+  );
+});
+
+test('repository access removes GitHub hosts from legacy connectors while preserving others', () => {
+  const repositoryConnector: ResolvedApiConnection = {
+    allowedHosts: ['api.github.com'],
+    pathPrefixes: ['/repos/Acme/Alpha'],
+    headerName: 'Authorization',
+    headerValue: 'Bearer installation-token',
+    allowedMethods: ['GET'],
+  };
+  const legacyConnector: ResolvedApiConnection = {
+    allowedHosts: ['API.GITHUB.COM', 'github.com', 'api.example.com'],
+    pathPrefixes: ['/repos'],
+    headerName: 'Authorization',
+    headerValue: 'Bearer broad-pat',
+    allowedMethods: ['GET', 'POST'],
+  };
+
+  assert.deepEqual(
+    mergeRepositoryAndApiConnectors([repositoryConnector], [legacyConnector]),
+    [repositoryConnector, { ...legacyConnector, allowedHosts: ['api.example.com'] }],
+  );
+  assert.deepEqual(mergeRepositoryAndApiConnectors([], [legacyConnector]), [legacyConnector]);
+  // Fail closed: configured grants govern the GitHub hosts even when no
+  // repository connector resolved this turn (e.g. every token mint failed).
+  // The legacy broad connection must NOT regain GitHub access.
+  assert.deepEqual(mergeRepositoryAndApiConnectors([], [legacyConnector], true), [
+    { ...legacyConnector, allowedHosts: ['api.example.com'] },
+  ]);
+});
+
+test('the repos scope refuses denied Actions endpoints while keeping rerun and cancel', async () => {
+  const sentinel = 'deny-endpoint-pat';
+  await withGithubSettings({ [GITHUB_SETTING_KEYS.pat]: sentinel }, async () => {
+    const access = await resolveRepositoryAccess([
+      repositoryGrant({ installationId: null, fullName: 'Acme/Alpha' }),
+    ]);
+    const reposScope = access.connectors.find((connector) =>
+      connector.pathPrefixes.some((prefix) => prefix.startsWith('/repos/')),
+    );
+    assert.ok(reposScope?.matchesRequest, 'repos scope must carry an endpoint guard');
+    const guard = reposScope.matchesRequest;
+    const base = 'https://api.github.com/repos/Acme/Alpha';
+    for (const denied of [
+      `${base}/dispatches`, // repository_dispatch
+      `${base}/actions/workflows/ci.yml/dispatches`,
+      `${base}/actions/workflows/ci.yml/enable`,
+      `${base}/actions/workflows/ci.yml/disable`,
+      `${base}/actions/runs/7/approve`,
+      `${base}/actions/runs/7/pending_deployments`,
+      `${base}/actions/runs/7/pending_deployments/`, // trailing slash must not bypass
+      `${base}/actions/runs/7/deployment_protection_rule`, // custom protection-rule approvals
+      'not a url',
+    ]) {
+      assert.equal(guard(denied), false, denied);
+    }
+    for (const allowed of [
+      `${base}/actions/runs`,
+      `${base}/actions/runs/7/rerun`,
+      `${base}/actions/runs/7/rerun-failed-jobs`,
+      `${base}/actions/runs/7/cancel`,
+      `${base}/actions/runs/7/jobs`,
+      `${base}/contents/README.md`,
+      `${base}/pulls`,
+      `${base}/git/refs`,
+    ]) {
+      assert.equal(guard(allowed), true, allowed);
+    }
+
+    const searchScope = access.connectors.find((connector) =>
+      connector.pathPrefixes.includes('/search/code'),
+    );
+    assert.ok(searchScope?.matchesRequest, 'search scope must carry a query guard');
+    const searchGuard = searchScope.matchesRequest;
+    const granted = 'https://api.github.com/search/code?q=secret+repo%3AAcme%2FAlpha';
+    assert.equal(searchGuard(granted), true);
+    // Duplicate q params must be rejected outright: the guard validates one
+    // value while GitHub may evaluate another.
+    assert.equal(
+      searchGuard(`${granted}&q=secret+repo%3AAcme%2FPrivate`),
+      false,
+      'duplicate q must not pass the code-search guard',
+    );
+  });
 });
 
 test('just-bash exposes its generated secure fetch on Bash instances', () => {

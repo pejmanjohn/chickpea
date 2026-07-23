@@ -275,22 +275,6 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
     notes: 'API key requires a LunarCrush subscription.',
   },
   {
-    id: 'github',
-    name: 'GitHub',
-    category: 'dev',
-    accent: '#181717',
-    api: {
-      hosts: ['api.github.com'],
-      pathPrefixes: [],
-      headerName: 'Authorization',
-      valuePrefix: 'Bearer ',
-      methods: ['GET', 'POST'],
-      placeholder: 'GitHub PAT (ghp_… or fine-grained)',
-    },
-    tokenDocsUrl: 'https://github.com/settings/tokens',
-    tokenDocsHint: 'GitHub → Settings → Developer settings → Personal access tokens',
-  },
-  {
     id: 'asana',
     name: 'Asana',
     category: 'project',

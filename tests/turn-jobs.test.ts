@@ -15,6 +15,7 @@ const AGENT: CustomAgentConfig = {
   skills: [],
   mcpServers: [],
   apiConnections: [],
+  repositories: [],
 };
 
 function turn(overrides: Partial<NormalizedSlackTurn> = {}): NormalizedSlackTurn {

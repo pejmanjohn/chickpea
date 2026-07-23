@@ -99,6 +99,9 @@ export function computeSnapshotHash(config: EffectiveSlackConfig): string {
         // and credential-injection policy — no secret values); include them so a
         // drift check notices an API-connection edit vs. a live thread.
         apiConnections: config.agent.apiConnections,
+        // Repository grants freeze like the rest of the capability policy
+        // (grant list only — installation tokens are always minted live).
+        repositories: config.agent.repositories,
       }),
     )
     .digest('hex');

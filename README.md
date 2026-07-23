@@ -59,6 +59,10 @@ The first DM answers with **zero model keys** on a fresh Cloudflare deploy: the 
 - The first-run Slack connection wizard described above, with live `auth.test` validation and per-credential provenance (environment / stored / missing).
 - Every edit applies to new threads without a restart.
 
+### Repositories
+
+Connect GitHub once in Settings through the recommended GitHub App manifest flow, or use a fine-grained personal access token for a quick start. Then pick exactly which repositories each profile can use from its Repositories tab. With a GitHub App, Chickpea mints down-scoped, short-lived tokens per turn and injects them only at the sandbox egress boundary; credentials never enter agent instructions or the sandbox environment.
+
 ### Privacy and fail-closed guarantees
 
 - Channels are fail-closed, public and private alike: the bot answers only where a profile is explicitly assigned. Being invited to a channel does nothing by itself.

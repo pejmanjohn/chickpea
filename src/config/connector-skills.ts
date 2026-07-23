@@ -1,4 +1,4 @@
-import type { SkillConfig } from './types.ts';
+import type { RepositoryGrant, SkillConfig } from './types.ts';
 
 interface ConnectorSkillScope {
   allowedHosts: string[];
@@ -6,7 +6,7 @@ interface ConnectorSkillScope {
   allowedMethods: string[];
 }
 
-type ConnectorSkillKind = 'github-api' | 'asana-api' | 'zendesk-api';
+type ConnectorSkillKind = 'github-api' | 'asana-api' | 'zendesk-api' | 'repositories';
 
 interface ConnectorSkillDefinition {
   name: ConnectorSkillKind;
@@ -94,6 +94,158 @@ const GITHUB_INSTRUCTIONS = [
   '',
   ERROR_AND_RESTRICTION_GUIDANCE,
 ].join('\n');
+
+const REPOSITORY_RESTRICTIONS = [
+  '## Safety boundaries',
+  '',
+  '- No workflow dispatch: do not call workflow-dispatch endpoints.',
+  '- No deployment approvals: do not approve, reject, or otherwise act on deployments.',
+  '- No deletes: do not use DELETE endpoints or delete repositories, refs, branches, releases, issues, comments, or files.',
+  '- Stay inside the granted repository list. Do not probe other repositories or use another GitHub host to work around the grants.',
+].join('\n');
+
+function repositoriesInstructions(grants: readonly RepositoryGrant[]): string {
+  const allRepositoryAccounts = new Set(
+    grants.flatMap((grant) =>
+      grant.allRepos === true ? [grant.accountLogin.toLowerCase()] : [],
+    ),
+  );
+  const grantLines = [
+    ...new Set(
+      grants
+        .filter(
+          (grant) =>
+            grant.allRepos === true ||
+            !allRepositoryAccounts.has(grant.accountLogin.toLowerCase()),
+        )
+        .map((grant) =>
+          grant.allRepos === true
+            ? `- all repositories in \`${grant.accountLogin}\``
+            : `- \`${grant.fullName}\``,
+        ),
+    ),
+  ].sort();
+
+  return [
+    '# Repositories',
+    '',
+    'You have access to exactly these repositories:',
+    ...grantLines,
+    '',
+    'Use only `https://api.github.com` for REST operations. `https://github.com` is also available for Git-over-HTTPS. Allowed methods are GET, POST, PATCH, and PUT.',
+    '',
+    AUTOMATIC_AUTH,
+    '',
+    'Use the repository names above literally in place of `{owner}/{repo}`. Keep the recommended media type and API-version headers in every REST request.',
+    '',
+    '## Recipes',
+    '',
+    'Read file or directory contents at a branch, tag, or commit:',
+    githubCurl([
+      '  "https://api.github.com/repos/{owner}/{repo}/contents/{path}?ref={branch-or-sha}"',
+    ]),
+    '',
+    'Search code inside one granted repository:',
+    githubCurl([
+      '  "https://api.github.com/search/code?q={search%20term}%20repo:{owner}/{repo}&per_page=100"',
+    ]),
+    '',
+    'List pull requests:',
+    githubCurl([
+      '  "https://api.github.com/repos/{owner}/{repo}/pulls?state=open&per_page=100&page=1"',
+    ]),
+    '',
+    'Read a pull request, its reviews, and review comments:',
+    githubScript([
+      githubCommand('https://api.github.com/repos/{owner}/{repo}/pulls/{pull_number}'),
+      githubCommand(
+        'https://api.github.com/repos/{owner}/{repo}/pulls/{pull_number}/reviews?per_page=100&page=1',
+      ),
+      githubCommand(
+        'https://api.github.com/repos/{owner}/{repo}/pulls/{pull_number}/comments?per_page=100&page=1',
+      ),
+    ]),
+    '',
+    'Create a pull request:',
+    githubCurl([
+      '  --request POST \\',
+      "  -H 'Content-Type: application/json' \\",
+      "  --data '{\"title\":\"PR title\",\"body\":\"PR details\",\"head\":\"feature-branch\",\"base\":\"main\"}' \\",
+      '  "https://api.github.com/repos/{owner}/{repo}/pulls"',
+    ]),
+    '',
+    'List or read issues, and create an issue:',
+    githubScript([
+      githubCommand(
+        'https://api.github.com/repos/{owner}/{repo}/issues?state=open&per_page=100&page=1',
+      ),
+      githubCommand('https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}'),
+      githubCommand('https://api.github.com/repos/{owner}/{repo}/issues', {
+        method: 'POST',
+        data: '{"title":"Issue title","body":"Issue details"}',
+      }),
+    ]),
+    '',
+    'List branches and create a branch from an existing commit SHA:',
+    githubScript([
+      githubCommand(
+        'https://api.github.com/repos/{owner}/{repo}/branches?per_page=100&page=1',
+      ),
+      githubCommand('https://api.github.com/repos/{owner}/{repo}/git/refs', {
+        method: 'POST',
+        data: '{"ref":"refs/heads/feature-branch","sha":"{base_commit_sha}"}',
+      }),
+    ]),
+    '',
+    'Compare two refs:',
+    githubCurl([
+      '  "https://api.github.com/repos/{owner}/{repo}/compare/{base}...{head}"',
+    ]),
+    '',
+    'Create a commit with the Git Data API: resolve the branch and base tree, create blobs, create a tree, create a commit, then move the branch ref:',
+    githubScript([
+      githubCommand('https://api.github.com/repos/{owner}/{repo}/git/ref/heads/{branch}'),
+      githubCommand(
+        'https://api.github.com/repos/{owner}/{repo}/git/commits/{base_commit_sha}',
+      ),
+      githubCommand('https://api.github.com/repos/{owner}/{repo}/git/blobs', {
+        method: 'POST',
+        data: '{"content":"new file contents","encoding":"utf-8"}',
+      }),
+      githubCommand('https://api.github.com/repos/{owner}/{repo}/git/trees', {
+        method: 'POST',
+        data: '{"base_tree":"{base_tree_sha}","tree":[{"path":"path/to/file","mode":"100644","type":"blob","sha":"{blob_sha}"}]}',
+      }),
+      githubCommand('https://api.github.com/repos/{owner}/{repo}/git/commits', {
+        method: 'POST',
+        data: '{"message":"Commit message","tree":"{tree_sha}","parents":["{base_commit_sha}"]}',
+      }),
+      githubCommand('https://api.github.com/repos/{owner}/{repo}/git/refs/heads/{branch}', {
+        method: 'PATCH',
+        data: '{"sha":"{commit_sha}","force":false}',
+      }),
+    ]),
+    '',
+    'List Actions runs, inspect a run through its jobs and step results, or re-run a run. (Log archive downloads redirect to an external storage host outside the repository network scope, so use the jobs endpoint — its step names, conclusions, and timings — to diagnose failures instead.)',
+    githubScript([
+      githubCommand(
+        'https://api.github.com/repos/{owner}/{repo}/actions/runs?per_page=100&page=1',
+      ),
+      githubCommand(
+        'https://api.github.com/repos/{owner}/{repo}/actions/runs/{run_id}/jobs?per_page=100',
+      ),
+      githubCommand('https://api.github.com/repos/{owner}/{repo}/actions/runs/{run_id}/rerun', {
+        method: 'POST',
+      }),
+    ]),
+    '',
+    '## Pagination and errors',
+    '',
+    'Use `per_page=100` and follow the HTTP `Link` header. API errors arrive as JSON; a 401 or 403 means the live GitHub connection needs attention in **Settings → GitHub**. Never ask the user to paste a token into chat. If a method or URL is blocked, explain the repository policy restriction and do not work around it.',
+    '',
+    REPOSITORY_RESTRICTIONS,
+  ].join('\n');
+}
 
 const ASANA_INSTRUCTIONS = [
   '# Asana API',
@@ -261,7 +413,10 @@ const CONNECTOR_SKILLS: ConnectorSkillDefinition[] = [
  * a security boundary: credential-bearing ResolvedApiConnection rows must be
  * explicitly projected before they can reach instruction text.
  */
-export function connectorSkillsForConnections(scopes: ConnectorSkillScope[]): SkillConfig[] {
+export function connectorSkillsForConnections(
+  scopes: ConnectorSkillScope[],
+  repositoryGrants: readonly RepositoryGrant[] = [],
+): SkillConfig[] {
   const skills: SkillConfig[] = [];
   const attached = new Set<ConnectorSkillKind>();
 
@@ -281,7 +436,27 @@ export function connectorSkillsForConnections(scopes: ConnectorSkillScope[]): Sk
     }
   }
 
-  return skills;
+  const repositoriesSkill = repositoriesSkillForGrants(repositoryGrants);
+  return repositoriesSkill
+    ? [...skills.filter((skill) => skill.name !== 'github-api'), repositoriesSkill]
+    : skills;
+}
+
+/**
+ * Build repository guidance from policy-only grants. The narrow input excludes
+ * installation tokens, so credentials cannot enter skill text by construction.
+ */
+export function repositoriesSkillForGrants(
+  grants: readonly RepositoryGrant[],
+): SkillConfig | undefined {
+  const enabled = grants.filter((grant) => grant.enabled);
+  if (enabled.length === 0) return undefined;
+  return {
+    name: 'repositories',
+    description: 'Read and update only the GitHub repositories granted to this profile.',
+    instructions: repositoriesInstructions(enabled),
+    enabled: true,
+  };
 }
 
 function githubCurl(lines: string[]): string {
@@ -297,6 +472,24 @@ function githubCurl(lines: string[]): string {
 
 function apiCurl(lines: string[]): string {
   return ['```bash', 'curl -sS \\', ...lines, '```'].join('\n');
+}
+
+function githubScript(lines: string[]): string {
+  return ['```bash', ...lines, '```'].join('\n');
+}
+
+function githubCommand(
+  url: string,
+  options: { method?: 'POST' | 'PATCH'; data?: string } = {},
+): string {
+  return [
+    'curl -sS',
+    ...(options.method ? [`--request ${options.method}`] : []),
+    "-H 'Accept: application/vnd.github+json'",
+    "-H 'X-GitHub-Api-Version: 2022-11-28'",
+    ...(options.data ? ["-H 'Content-Type: application/json'", `--data '${options.data}'`] : []),
+    `"${url}"`,
+  ].join(' ');
 }
 
 function connectionContext(

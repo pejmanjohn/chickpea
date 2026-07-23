@@ -105,6 +105,7 @@ function agent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig {
     skills: [],
     mcpServers: [],
     apiConnections: [],
+    repositories: [],
     ...overrides,
   };
 }
@@ -739,6 +740,7 @@ test('admin API rejects patches that leave an agent without a resolvable model',
           skills: [],
           mcpServers: [],
           apiConnections: [],
+          repositories: [],
         };
         await store.createAgent(unpinnedAgent);
 

@@ -46,6 +46,7 @@ function agent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig {
     skills: [],
     mcpServers: [],
     apiConnections: [],
+    repositories: [],
     ...overrides,
   };
 }
