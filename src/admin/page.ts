@@ -3814,16 +3814,20 @@ details[open].advanced summary::before {
         '<span class="badge badge-on"><span class="dot"></span>Connected</span></div></div>';
     }).join("");
     var slug = status.appSlug || "";
+    var none = !installations.length;
+    // With zero installations the install step IS the next action, so the
+    // button leads (primary) and drops the confusing "another".
     var installAction = slug
-      ? '<a class="btn btn-soft btn-sm" href="https://github.com/apps/' + esc(encodeURIComponent(slug)) + '/installations/new" target="_blank" rel="noopener noreferrer">Install on another account &nearr;</a>'
-      : '<span class="hint">The app slug is unavailable, so another installation cannot be opened from here.</span>';
+      ? '<a class="btn ' + (none ? "btn-primary" : "btn-soft") + ' btn-sm" href="https://github.com/apps/' + esc(encodeURIComponent(slug)) + '/installations/new" target="_blank" rel="noopener noreferrer">' + (none ? "Add repository access" : "Install on another account") + ' &nearr;</a>'
+      : '<span class="hint">The app slug is unavailable, so the install page cannot be opened from here.</span>';
     return '<div class="well"><div class="kv"><dt>App slug</dt><dd>' + (slug ? '<span class="mono">' + esc(slug) + '</span>' : '<span class="hint">Unavailable</span>') + '</dd></div>' +
-      '<div class="kv"><dt>Installations</dt><dd>' + installations.length + '</dd></div></div>' +
+      '<div class="kv"><dt>Accounts with access</dt><dd>' + installations.length + '</dd></div>' +
+      '<p class="hint" style="margin:6px 0 0;">The app is registered on GitHub. To let it reach any repositories, add it to your GitHub account or an org and choose which repos it can use &mdash; each account you add shows up below.</p></div>' +
       (installations.length
         ? '<div class="github-installations">' + installationRows + '</div>'
         : status.installationsUnavailable
-          ? '<div class="empty"><p class="field-error" role="alert">GitHub rejected the stored App credentials, so installations cannot be listed.</p><p class="hint">Refresh to retry, or disconnect below and set the app up again.</p></div>'
-          : '<div class="empty"><p class="field-label">No installations found</p><p class="hint">Install the app on a personal account or organization, then refresh.</p></div>') +
+          ? '<div class="empty"><p class="field-error" role="alert">GitHub rejected the stored App credentials, so accounts cannot be listed.</p><p class="hint">Refresh to retry, or disconnect below and set the app up again.</p></div>'
+          : '<div class="empty"><p class="field-label">No repository access yet</p><p class="hint">Add the app to your GitHub account or an organization and pick the repos it can use, then refresh.</p></div>') +
       '<div class="action-well">' + installAction +
       '<button type="button" class="btn btn-ghost btn-sm i-lead" data-action="github-refresh"' + (state.githubBusy ? " disabled" : "") + '>' + (state.githubBusy === "refresh" ? '<span class="spinner"></span>Refreshing&hellip;' : icon("arrow-path") + 'Refresh') + '</button>' +
       (state.githubError ? '<span class="inline-status error" role="alert">' + esc(state.githubError) + '</span>' : "") + '</div>' +
