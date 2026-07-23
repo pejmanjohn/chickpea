@@ -3072,6 +3072,19 @@ details[open].advanced summary::before {
       '<div><button type="button" class="btn btn-ghost btn-sm" data-action="repo-add-cancel">Cancel</button></div></div>';
   }
 
+  // Redraw the open picker in place, preserving the repo list's scroll
+  // position (a full render() rebuilds the page and resets it to the top).
+  // Falls back to a full render when the picker host isn't in the DOM.
+  function rerenderRepositoryPicker() {
+    var host = document.querySelector(".repo-picker-host");
+    if (!host || !state.repositoryPicker) { render(); return; }
+    var listBefore = host.querySelector(".repo-picker-list");
+    var scrollTop = listBefore ? listBefore.scrollTop : 0;
+    host.innerHTML = repositoryPickerHtml();
+    var listAfter = host.querySelector(".repo-picker-list");
+    if (listAfter) listAfter.scrollTop = scrollTop;
+  }
+
   function repositoryPickerHtml() {
     var picker = state.repositoryPicker;
     if (!picker) return "";
@@ -5745,7 +5758,10 @@ details[open].advanced summary::before {
       if (target.checked && repoSelectedIndex < 0) repoSelected.push(repoFullName);
       if (!target.checked && repoSelectedIndex >= 0) repoSelected.splice(repoSelectedIndex, 1);
       state.repositoryPicker.selectedFullNames = repoSelected;
-      render();
+      // A full render() would rebuild the page and throw away the picker
+      // list's scroll position — the selection would jump out of view on
+      // every click. Redraw only the picker, keeping the list where it was.
+      rerenderRepositoryPicker();
     }
     if (action === "repo-all" && state.profileDraft) {
       toggleAllRepositories(
