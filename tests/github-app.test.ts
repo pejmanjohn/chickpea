@@ -331,6 +331,7 @@ test('GitHub manifest route uses the resolved request origin and requested organ
         body.manifest.redirect_url,
         'https://chickpea.example.com/admin/api/github/setup/callback',
       );
+      assert.equal(body.manifest.setup_url, 'https://chickpea.example.com/admin/settings');
       assert.deepEqual(body.manifest.hook_attributes, {
         active: false,
         url: 'https://chickpea.example.com/github/webhook',
@@ -405,7 +406,10 @@ test('GitHub manifest callback stores a normalized private key and redirects to 
         { headers: auth(), redirect: 'manual' },
       );
       assert.equal(response.status, 302);
-      assert.equal(response.headers.get('location'), '/admin/settings');
+      assert.equal(
+        response.headers.get('location'),
+        'https://github.com/apps/chickpea-test/installations/new',
+      );
     });
     assert.equal(await settings.getSetting('github.app.id'), '12345');
     assert.equal(await settings.getSetting('github.app.slug'), 'chickpea-test');
@@ -443,7 +447,10 @@ test('GitHub manifest callback succeeds when the App has no webhook secret', asy
         { headers: auth(), redirect: 'manual' },
       );
       assert.equal(response.status, 302);
-      assert.equal(response.headers.get('location'), '/admin/settings');
+      assert.equal(
+        response.headers.get('location'),
+        'https://github.com/apps/chickpea-dev/installations/new',
+      );
     });
     assert.equal(await settings.getSetting('github.app.id'), '777');
     assert.equal(await settings.getSetting('github.app.slug'), 'chickpea-dev');

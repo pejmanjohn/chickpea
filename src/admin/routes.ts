@@ -899,6 +899,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         name: `chickpea-${suffix}`,
         url: origin,
         redirect_url: `${origin}/admin/api/github/setup/callback`,
+        // After the user finishes installing the app (picking repos), GitHub
+        // returns them here — closing the create→install→back loop without a
+        // manual "now go refresh Settings" step.
+        setup_url: `${origin}/admin/settings`,
         ...(publicOrigin
           ? { hook_attributes: { active: false, url: `${origin}/github/webhook` } }
           : {}),
@@ -949,9 +953,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         // new App has none so stale state can't linger.
         ...(conversion.webhookSecret ? {} : { delete: [GITHUB_SETTING_KEYS.webhookSecret] }),
       });
-      // The SPA routes on pathname, not hash: /admin/settings lands on the
-      // Settings view where the installation next-step lives.
-      return c.redirect('/admin/settings', 302);
+      // A registered app is useless until it's installed somewhere, so send
+      // the operator straight to GitHub's install page — one continuous flow:
+      // create → (this callback) → pick repos → setup_url back to Settings.
+      return c.redirect(
+        `https://github.com/apps/${encodeURIComponent(conversion.slug)}/installations/new`,
+        302,
+      );
     } catch (err) {
       return internalError(c, err);
     }
