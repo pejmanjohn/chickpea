@@ -940,8 +940,14 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
             key: GITHUB_SETTING_KEYS.privateKey,
             value: normalizePrivateKeyPem(conversion.privateKeyPem),
           },
-          { key: GITHUB_SETTING_KEYS.webhookSecret, value: conversion.webhookSecret },
+          // Apps created without a webhook (localhost dev) return no secret.
+          ...(conversion.webhookSecret
+            ? [{ key: GITHUB_SETTING_KEYS.webhookSecret, value: conversion.webhookSecret }]
+            : []),
         ],
+        // A prior install may have left a webhook secret; clear it when the
+        // new App has none so stale state can't linger.
+        ...(conversion.webhookSecret ? {} : { delete: [GITHUB_SETTING_KEYS.webhookSecret] }),
       });
       // The SPA routes on pathname, not hash: /admin/settings lands on the
       // Settings view where the installation next-step lives.

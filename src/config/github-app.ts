@@ -64,7 +64,9 @@ export interface GithubManifestConversion {
   id: number;
   slug: string;
   privateKeyPem: string;
-  webhookSecret: string;
+  // Absent when the created App has no webhook (e.g. a localhost dev install
+  // whose manifest omitted hook_attributes). GitHub returns null in that case.
+  webhookSecret?: string;
 }
 
 type FetchImpl = typeof fetch;
@@ -351,16 +353,17 @@ export async function exchangeGithubAppManifest(
     typeof raw.id !== 'number' ||
     !Number.isSafeInteger(raw.id) ||
     typeof raw.slug !== 'string' ||
-    typeof raw.pem !== 'string' ||
-    typeof raw.webhook_secret !== 'string'
+    typeof raw.pem !== 'string'
   ) {
     throw new Error('GitHub App manifest conversion response was invalid');
   }
+  // webhook_secret is null when the App has no webhook (localhost dev). Only
+  // carry it through when GitHub actually returned one.
   return {
     id: raw.id,
     slug: raw.slug,
     privateKeyPem: raw.pem,
-    webhookSecret: raw.webhook_secret,
+    ...(typeof raw.webhook_secret === 'string' ? { webhookSecret: raw.webhook_secret } : {}),
   };
 }
 

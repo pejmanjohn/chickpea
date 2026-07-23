@@ -421,6 +421,43 @@ test('GitHub manifest callback stores a normalized private key and redirects to 
   }
 });
 
+test('GitHub manifest callback succeeds when the App has no webhook secret', async () => {
+  const { pkcs1 } = rsaKeys();
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  // A localhost dev install omits hook_attributes, so GitHub creates an App
+  // with no webhook and returns webhook_secret: null. The callback must still
+  // store the credentials and redirect, not 500 with internal_error.
+  const fetchImpl: typeof fetch = async () =>
+    new Response(
+      JSON.stringify({ id: 777, slug: 'chickpea-dev', pem: pkcs1, webhook_secret: null }),
+      { status: 201, headers: { 'content-type': 'application/json' } },
+    );
+  try {
+    // A stale secret from a prior install must be cleared, not left dangling.
+    await settings.setSetting('github.app.webhook_secret', 'stale-secret');
+    await settings.setSetting('github.setup_state', `valid-state:${Date.now()}`);
+    await withFetch(fetchImpl, async () => {
+      const response = await adminApp(store, settings).request(
+        '/admin/api/github/setup/callback?code=setup-code&state=valid-state',
+        { headers: auth(), redirect: 'manual' },
+      );
+      assert.equal(response.status, 302);
+      assert.equal(response.headers.get('location'), '/admin/settings');
+    });
+    assert.equal(await settings.getSetting('github.app.id'), '777');
+    assert.equal(await settings.getSetting('github.app.slug'), 'chickpea-dev');
+    assert.match(
+      (await settings.getSetting('github.app.private_key')) ?? '',
+      /^-----BEGIN PRIVATE KEY-----/,
+    );
+    assert.equal(await settings.getSetting('github.app.webhook_secret'), undefined);
+  } finally {
+    store.close();
+    settings.close();
+  }
+});
+
 test('GitHub status isolates one failing installation instead of failing the endpoint', async () => {
   const { pkcs8 } = rsaKeys();
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
