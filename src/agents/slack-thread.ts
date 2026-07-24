@@ -14,9 +14,7 @@ import { resolveEffectiveSlackConfig } from '../config/effective-config.ts';
 import {
   getCachedInstallationToken,
   getGithubConnection,
-  GITHUB_OWNER_PATTERN,
   githubErrorStatus,
-  isValidRepositoryFullName,
   type GithubConnection,
 } from '../config/github-app.ts';
 import { resolveProfileMcpTools } from '../config/profile-mcp.ts';
@@ -32,6 +30,13 @@ import {
   type PlatformEnv,
 } from '../config/state-backend.ts';
 import type { ApiConnectionConfig, RepositoryGrant, SkillConfig } from '../config/types.ts';
+import {
+  isDeniedRepositoryEndpoint,
+  matchesGrantedCodeSearch,
+  REPOSITORY_METHODS,
+  REPOSITORY_PERMISSIONS,
+  validEnabledRepositoryGrants,
+} from '../sandbox/egress-handler.ts';
 import { INTERNAL_AGENT_TOKEN_HEADER, isValidInternalAgentToken } from '../slack/internal-auth.ts';
 import { parseSlackThreadKey } from '../slack/thread-key.ts';
 
@@ -48,14 +53,6 @@ export function suppressProfileNamedConnectorSkills(
 }
 
 const REPOSITORY_HOSTS = ['api.github.com', 'github.com'];
-const REPOSITORY_METHODS = ['GET', 'POST', 'PATCH', 'PUT'];
-const REPOSITORY_PERMISSIONS = {
-  contents: 'write',
-  pull_requests: 'write',
-  issues: 'write',
-  metadata: 'read',
-  actions: 'write',
-} as const;
 
 export interface ResolvedRepositoryAccess {
   grants: RepositoryGrant[];
@@ -86,13 +83,7 @@ export async function resolveRepositoryAccess(
   // dot segment normalizes into a broader match than the grant. Dropped
   // grants still count as configured — they must fail closed, not fall open
   // to a legacy connector.
-  const enabled = configured.filter(
-    (grant) =>
-      GITHUB_OWNER_PATTERN.test(grant.accountLogin) &&
-      (grant.allRepos === true
-        ? grant.fullName === ''
-        : isValidRepositoryFullName(grant.fullName)),
-  );
+  const enabled = validEnabledRepositoryGrants(configured);
   const none = (governs: boolean): ResolvedRepositoryAccess => ({
     grants: [],
     connectors: [],
@@ -259,55 +250,6 @@ function repositoryPrefixes(grants: readonly RepositoryGrant[], prefix: string):
       }),
     ),
   ].sort();
-}
-
-// The skill's denial prose (no workflow dispatch, no deployment approvals, no
-// enabling/disabling workflows) is not an enforcement boundary — the token
-// carries actions:write, so these endpoints must be refused at egress. The
-// deny is method-agnostic: every listed path is write-only or (for
-// pending_deployments) a niche read not worth an allow carve-out. Re-run and
-// cancel (`/rerun`, `/rerun-failed-jobs`, `/cancel`) stay allowed.
-const DENIED_REPOSITORY_ENDPOINTS = [
-  /^\/repos\/[^/]+\/[^/]+\/dispatches$/, // repository_dispatch
-  /^\/repos\/[^/]+\/[^/]+\/actions\/workflows\/[^/]+\/dispatches$/, // workflow_dispatch
-  /^\/repos\/[^/]+\/[^/]+\/actions\/workflows\/[^/]+\/(?:enable|disable)$/,
-  /^\/repos\/[^/]+\/[^/]+\/actions\/runs\/[^/]+\/(?:approve|pending_deployments|deployment_protection_rule)$/,
-];
-
-function isDeniedRepositoryEndpoint(url: string): boolean {
-  let pathname: string;
-  try {
-    pathname = new URL(url).pathname.replace(/\/+$/, '');
-  } catch {
-    return true;
-  }
-  return DENIED_REPOSITORY_ENDPOINTS.some((pattern) => pattern.test(pathname));
-}
-
-function matchesGrantedCodeSearch(url: string, grants: readonly RepositoryGrant[]): boolean {
-  let query: string;
-  try {
-    // Validate exactly what GitHub will evaluate: with duplicate q params,
-    // `.get()` reads the first while GitHub honors another — an attacker
-    // could pass a granted-repo q for the guard and an ungranted one for the
-    // API. One q, or no credential.
-    const values = new URL(url).searchParams.getAll('q');
-    if (values.length !== 1 || values[0] === undefined) return false;
-    query = values[0];
-  } catch {
-    return false;
-  }
-  const repositories = [...query.matchAll(/(?:^|\s)repo:([^\s]+)/gi)].flatMap((match) =>
-    match[1] ? [match[1].toLowerCase()] : [],
-  );
-  if (repositories.length === 0) return false;
-  return repositories.every((repository) =>
-    grants.some((grant) =>
-      grant.allRepos === true
-        ? repository.startsWith(`${grant.accountLogin.toLowerCase()}/`)
-        : repository === grant.fullName.toLowerCase(),
-    ),
-  );
 }
 
 /**

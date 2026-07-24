@@ -4,6 +4,7 @@ import {
   type DurableObjectState,
   type DurableObjectStorage,
 } from 'cloudflare:workers';
+import { Sandbox as CloudflareSandbox } from '@cloudflare/sandbox';
 import type { WebClient } from '@slack/web-api';
 
 import {
@@ -12,16 +13,37 @@ import {
   NoAssignmentError,
   UnknownAgentError,
 } from './config/errors.ts';
+import {
+  getCachedInstallationToken,
+  getGithubConnection,
+} from './config/github-app.ts';
 import { resolveAssignment, surfaceForChannelId } from './config/resolver.ts';
 import { slackThreadKey } from './slack/thread-key.ts';
 import type { AssignmentLookupOptions } from './config/resolver.ts';
+import {
+  parseSandboxAllowedHosts,
+  SANDBOX_PACKAGE_REGISTRY_HOSTS,
+  SANDBOX_SETTING_KEYS,
+} from './config/sandbox-settings.ts';
 import type { SettingsPatch, SettingsStore } from './config/settings-store.ts';
 import { SettingsStoreLogic } from './config/settings-store.ts';
 import { SnapshotStoreLogic } from './config/snapshot-store.ts';
 import type { StateRpcResult, TagStateRpc, TurnJob } from './config/state-rpc.ts';
 import type { PlatformEnv } from './config/state-backend.ts';
+import { getSettingsStore } from './config/state-backend.ts';
 import { ConfigStoreLogic, type ConfigAgentPatch } from './config/store.ts';
-import type { AgentSnapshot, ChannelAssignment, CustomAgentConfig } from './config/types.ts';
+import type {
+  AgentSnapshot,
+  ChannelAssignment,
+  CustomAgentConfig,
+  RepositoryGrant,
+} from './config/types.ts';
+import {
+  decideSandboxEgress,
+  REPOSITORY_PERMISSIONS,
+  resolveRepositoryInstallationScope,
+  validEnabledRepositoryGrants,
+} from './sandbox/egress-handler.ts';
 import { SlackStateLogic } from './slack/claim-store.ts';
 import { resolveSlackCredentials } from './slack/credentials.ts';
 import { toolStatus } from './slack/replies.ts';
@@ -41,6 +63,175 @@ import { registerCloudflareBindingProvider } from './cloudflare-provider.ts';
 // calls env.AI directly, without the default payload-logging AI Gateway.
 // Importable `env` is Cloudflare's ambient binding object; no I/O runs here.
 registerCloudflareBindingProvider(env.AI);
+
+export { ContainerProxy } from '@cloudflare/sandbox';
+
+type SandboxOutboundContext = {
+  containerId: string;
+};
+
+type SandboxOutboundHandler = (
+  request: Request,
+  env: unknown,
+  ctx: SandboxOutboundContext,
+) => Promise<Response> | Response;
+
+interface SandboxPolicyStorage {
+  get<T>(key: string): Promise<T | undefined>;
+  put<T>(key: string, value: T): Promise<void>;
+}
+
+interface SandboxNamespace {
+  idFromString(id: string): unknown;
+  get(id: unknown): Pick<Sandbox, 'getEgressGrants'>;
+}
+
+type SandboxWorkerEnv = PlatformEnv & {
+  SANDBOX: SandboxNamespace;
+};
+
+const SANDBOX_EGRESS_GRANTS_STORAGE_KEY = 'chickpea.sandbox.egress-grants.v1';
+const SANDBOX_BLOCKED_STATUS = 520;
+
+/**
+ * Cloudflare's Sandbox SDK routes intercepted container HTTPS through these
+ * Worker-side handlers. Profile grants are persisted as policy only; the
+ * credential is minted after each request passes the pure policy decision and
+ * is attached only to the Worker-side forwarded Request.
+ */
+export class Sandbox extends CloudflareSandbox<SandboxWorkerEnv> {
+  interceptHttps = true;
+
+  async configureEgress(grants: readonly RepositoryGrant[]): Promise<void> {
+    const policy = validEnabledRepositoryGrants(grants).map(copyRepositoryGrant);
+    await this.policyStorage().put(SANDBOX_EGRESS_GRANTS_STORAGE_KEY, policy);
+  }
+
+  async getEgressGrants(): Promise<RepositoryGrant[]> {
+    const stored =
+      (await this.policyStorage().get<RepositoryGrant[]>(SANDBOX_EGRESS_GRANTS_STORAGE_KEY)) ??
+      [];
+    return validEnabledRepositoryGrants(stored).map(copyRepositoryGrant);
+  }
+
+  private policyStorage(): SandboxPolicyStorage {
+    return this.ctx.storage as unknown as SandboxPolicyStorage;
+  }
+}
+
+// Assign through the SDK's inherited static setters so the handler registries
+// are populated even when the Worker build preserves native class fields.
+Sandbox.outboundByHost = {
+  'github.com': githubSandboxOutbound,
+  'api.github.com': githubSandboxOutbound,
+  ...Object.fromEntries(
+    SANDBOX_PACKAGE_REGISTRY_HOSTS.map((host) => [host, packageRegistrySandboxOutbound]),
+  ),
+} satisfies Record<string, SandboxOutboundHandler>;
+Sandbox.outbound = denySandboxOutbound;
+
+async function githubSandboxOutbound(
+  request: Request,
+  rawEnv: unknown,
+  ctx: SandboxOutboundContext,
+): Promise<Response> {
+  try {
+    const workerEnv = sandboxWorkerEnv(rawEnv);
+    const grants = await sandboxStub(workerEnv, ctx.containerId).getEgressGrants();
+    const decision = decideSandboxEgress({
+      url: request.url,
+      method: request.method,
+      grants,
+      allowedHosts: [],
+    });
+    if (!decision.allowed || decision.kind !== 'github') {
+      return denySandboxOutbound();
+    }
+
+    const installation = resolveRepositoryInstallationScope(grants, decision.repositories);
+    if (!installation) return denySandboxOutbound();
+
+    const settings = getSettingsStore(workerEnv);
+    const connection = await getGithubConnection(settings);
+    if (connection.mode !== 'app') return denySandboxOutbound();
+    const { token } = await getCachedInstallationToken(connection, installation.id, {
+      repositories: installation.repositories,
+      permissions: REPOSITORY_PERMISSIONS,
+    });
+
+    const headers = new Headers(request.headers);
+    headers.set('Authorization', `Bearer ${token}`);
+    return fetch(new Request(request, { headers, redirect: 'manual' }));
+  } catch {
+    // Authentication/configuration errors are deliberately indistinguishable
+    // from policy denials at the container boundary and never log token-bearing
+    // request material.
+    return denySandboxOutbound();
+  }
+}
+
+async function packageRegistrySandboxOutbound(
+  request: Request,
+  rawEnv: unknown,
+): Promise<Response> {
+  try {
+    const workerEnv = sandboxWorkerEnv(rawEnv);
+    const rawAllowedHosts = await getSettingsStore(workerEnv).getSetting(
+      SANDBOX_SETTING_KEYS.allowedHosts,
+    );
+    const decision = decideSandboxEgress({
+      url: request.url,
+      method: request.method,
+      grants: [],
+      allowedHosts: parseSandboxAllowedHosts(rawAllowedHosts),
+    });
+    if (!decision.allowed || decision.kind !== 'package-registry') {
+      return denySandboxOutbound();
+    }
+    // Manual redirects force every new origin back through interception,
+    // where it is evaluated independently against the host allowlist.
+    return fetch(new Request(request, { redirect: 'manual' }));
+  } catch {
+    return denySandboxOutbound();
+  }
+}
+
+function sandboxWorkerEnv(value: unknown): SandboxWorkerEnv {
+  if (typeof value !== 'object' || value === null) {
+    throw new Error('Sandbox Worker environment is unavailable');
+  }
+  const workerEnv = value as Partial<SandboxWorkerEnv>;
+  if (
+    !workerEnv.SANDBOX ||
+    typeof workerEnv.SANDBOX.idFromString !== 'function' ||
+    typeof workerEnv.SANDBOX.get !== 'function'
+  ) {
+    throw new Error('SANDBOX Durable Object binding is unavailable');
+  }
+  return workerEnv as SandboxWorkerEnv;
+}
+
+function sandboxStub(
+  workerEnv: SandboxWorkerEnv,
+  containerId: string,
+): Pick<Sandbox, 'getEgressGrants'> {
+  return workerEnv.SANDBOX.get(workerEnv.SANDBOX.idFromString(containerId));
+}
+
+function copyRepositoryGrant(grant: RepositoryGrant): RepositoryGrant {
+  return {
+    id: grant.id,
+    installationId: grant.installationId,
+    accountLogin: grant.accountLogin,
+    fullName: grant.fullName,
+    ...(grant.allRepos === undefined ? {} : { allRepos: grant.allRepos }),
+    enabled: grant.enabled,
+  };
+}
+
+function denySandboxOutbound(): Response {
+  return new Response('Origin is disallowed', { status: SANDBOX_BLOCKED_STATUS });
+}
 
 // Backoff before the alarm re-fires for a job whose attempt failed but is not
 // yet at the cap. A short delay (matching the DO alarm base retry) is enough:
