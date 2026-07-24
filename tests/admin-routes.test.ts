@@ -1628,6 +1628,8 @@ test('admin sandbox settings are auth-gated and round-trip install-level control
       headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
       body: JSON.stringify({
         enabled: true,
+        // A legacy caller may still send this field, but it is no longer part
+        // of the PUT contract and cannot alter the deploy-time value.
         instanceType: 'standard-2',
         allowedHosts: ['registry.npmjs.org', 'files.pythonhosted.org', 'registry.npmjs.org'],
         local: true,
@@ -1637,7 +1639,7 @@ test('admin sandbox settings are auth-gated and round-trip install-level control
     assert.equal(saved.status, 200);
     const savedBody = {
       enabled: true,
-      instanceType: 'standard-2',
+      instanceType: 'standard-1',
       allowedHosts: ['registry.npmjs.org', 'files.pythonhosted.org'],
       monthlySessionCap: 450,
       monthlySessionCapConfigured: true,

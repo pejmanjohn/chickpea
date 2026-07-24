@@ -1,34 +1,26 @@
-export const SANDBOX_TURN_ID_HEADER = 'x-chickpea-sandbox-turn-id';
-export const SLACK_ARTIFACT_THREAD_TS_HEADER = 'x-chickpea-slack-artifact-thread-ts';
-
-interface ActiveSandboxTurn {
-  turnId: string;
-  artifactThreadTs?: string;
+/**
+ * Cross-isolate turn state lives in the Sandbox Durable Object, never in a
+ * module global. The caller prepares the exact Slack job id before forwarding
+ * to Flue; the agent DO reads it back when it configures the sandbox.
+ */
+export interface SandboxTurnContext {
+  prepareTurn(turnId: string): Promise<void>;
+  getTurnId(): Promise<string | undefined>;
 }
 
-const activeTurns = new Map<string, ActiveSandboxTurn>();
-
-export function setActiveSandboxTurn(
-  threadId: string,
+export async function prepareSandboxTurn(
+  sandbox: Pick<SandboxTurnContext, 'prepareTurn'>,
   turnId: string,
-  artifactThreadTs?: string,
-): void {
-  activeTurns.set(threadId, {
-    turnId,
-    ...(artifactThreadTs === undefined ? {} : { artifactThreadTs }),
-  });
+): Promise<void> {
+  await sandbox.prepareTurn(turnId);
 }
 
-export function clearActiveSandboxTurn(threadId: string, turnId: string): void {
-  if (activeTurns.get(threadId)?.turnId === turnId) {
-    activeTurns.delete(threadId);
+export async function requireSandboxTurnId(
+  sandbox: Pick<SandboxTurnContext, 'getTurnId'>,
+): Promise<string> {
+  const turnId = await sandbox.getTurnId();
+  if (!turnId) {
+    throw new Error('Sandbox turn context was not prepared before agent dispatch');
   }
-}
-
-export function activeSandboxTurnId(threadId: string): string | undefined {
-  return activeTurns.get(threadId)?.turnId;
-}
-
-export function activeSlackArtifactThreadTs(threadId: string): string | undefined {
-  return activeTurns.get(threadId)?.artifactThreadTs;
+  return turnId;
 }

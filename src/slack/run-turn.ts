@@ -167,7 +167,6 @@ export async function runTurn(
           prompt,
           platformEnv,
           options.turnId ?? `msg:${turn.channelId}:${turn.messageTs}`,
-          turn.threadTs,
         );
       } catch (err) {
         console.error('[chickpea] provider call failed:', sanitizeError(err));

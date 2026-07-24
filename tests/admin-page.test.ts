@@ -251,7 +251,6 @@ function runAdminPageHarness(
   egressPuts: EgressPolicyFixture[];
   sandboxPuts: Array<{
     enabled: boolean;
-    instanceType: string;
     allowedHosts: string[];
     local: boolean;
     monthlySessionCap: number;
@@ -331,7 +330,6 @@ function runAdminPageHarness(
   const egressPuts: EgressPolicyFixture[] = [];
   const sandboxPuts: Array<{
     enabled: boolean;
-    instanceType: string;
     allowedHosts: string[];
     local: boolean;
     monthlySessionCap: number;
@@ -731,14 +729,12 @@ function runAdminPageHarness(
       if (method === 'PUT') {
         const body = JSON.parse(options?.body ?? '{}') as {
           enabled: boolean;
-          instanceType: string;
           allowedHosts: string[];
           local: boolean;
           monthlySessionCap: number;
         };
         sandboxPuts.push({
           enabled: body.enabled,
-          instanceType: body.instanceType,
           allowedHosts: [...body.allowedHosts],
           local: body.local,
           monthlySessionCap: body.monthlySessionCap,
@@ -746,7 +742,6 @@ function runAdminPageHarness(
         sandboxStatus = {
           ...sandboxStatus,
           enabled: body.enabled,
-          instanceType: body.instanceType,
           allowedHosts: [...body.allowedHosts],
           monthlySessionCap: body.monthlySessionCap,
           monthlySessionCapConfigured: true,
@@ -4053,7 +4048,10 @@ test('Settings renders the off-by-default Coding sandbox card with cost and coll
   assert.match(html, /data-action="sandbox-enabled"/);
   assert.doesNotMatch(html, /data-action="sandbox-enabled" checked/);
   assert.match(html, /<details class="advanced"><summary>Advanced<\/summary>/);
-  assert.match(html, /data-action="sandbox-instance"/);
+  assert.match(html, /id="sandbox-instance-type" value="standard-1" readonly/);
+  assert.match(html, /wrangler\.jsonc/);
+  assert.match(html, /containers\[\]\.instance_type/);
+  assert.doesNotMatch(html, /data-action="sandbox-instance"/);
   assert.match(html, /data-action="sandbox-host" data-host="registry\.npmjs\.org"/);
   assert.doesNotMatch(html, /data-action="sandbox-local"/);
   assert.doesNotMatch(html, /data-action="profile-sandbox"/);
@@ -4089,12 +4087,6 @@ test('Settings saves Node local sandbox controls as one install-level update', a
   });
   change({
     target: changedTarget(
-      { 'data-action': 'sandbox-instance' },
-      { value: 'standard-2' },
-    ),
-  });
-  change({
-    target: changedTarget(
       { 'data-action': 'sandbox-host', 'data-host': 'pypi.org' },
       { checked: false },
     ),
@@ -4105,7 +4097,6 @@ test('Settings saves Node local sandbox controls as one install-level update', a
   assert.deepEqual(harness.sandboxPuts, [
     {
       enabled: true,
-      instanceType: 'standard-2',
       allowedHosts: ['registry.npmjs.org', 'files.pythonhosted.org'],
       local: true,
       monthlySessionCap: 200,

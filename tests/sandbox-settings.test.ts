@@ -11,7 +11,6 @@ import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 test('sandbox install-level settings keys round-trip without a profile key', async () => {
   assert.deepEqual(SANDBOX_SETTING_KEYS, {
     enabled: 'sandbox.enabled',
-    instanceType: 'sandbox.instanceType',
     allowedHosts: 'sandbox.allowedHosts',
     local: 'sandbox.local',
     monthlySessionCap: 'sandbox.monthlySessionCap',
@@ -24,7 +23,9 @@ test('sandbox install-level settings keys round-trip without a profile key', asy
   const store = new SqliteSettingsStore(':memory:');
   try {
     await store.setSetting(SANDBOX_SETTING_KEYS.enabled, 'true');
-    await store.setSetting(SANDBOX_SETTING_KEYS.instanceType, 'standard-1');
+    // Legacy runtime-editable values are ignored: container size is declared
+    // in wrangler.jsonc and only changes on deployment.
+    await store.setSetting('sandbox.instanceType', 'standard-4');
     await store.setSetting(
       SANDBOX_SETTING_KEYS.allowedHosts,
       JSON.stringify(['registry.npmjs.org', 'files.pythonhosted.org']),
@@ -34,7 +35,6 @@ test('sandbox install-level settings keys round-trip without a profile key', asy
 
     assert.deepEqual(await store.getSettings(Object.values(SANDBOX_SETTING_KEYS)), [
       'true',
-      'standard-1',
       '["registry.npmjs.org","files.pythonhosted.org"]',
       'true',
       '350',

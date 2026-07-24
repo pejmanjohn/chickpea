@@ -2,10 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import type { RepositoryGrant } from '../src/config/types.ts';
-import {
-  applySandboxSessionCap,
-  selectSandbox,
-} from '../src/sandbox/select.ts';
+import { selectSandbox } from '../src/sandbox/select.ts';
 
 function grant(overrides: Partial<RepositoryGrant> = {}): RepositoryGrant {
   return {
@@ -87,11 +84,4 @@ test('Node selects local only behind both install-level opt-ins', () => {
     }),
     'bash',
   );
-});
-
-test('a reached monthly cap declines before the Cloudflare sandbox is selected', () => {
-  assert.equal(applySandboxSessionCap('cloudflare', false), 'bash');
-  assert.equal(applySandboxSessionCap('cloudflare', true), 'cloudflare');
-  assert.equal(applySandboxSessionCap('cloudflare', undefined), 'cloudflare');
-  assert.equal(applySandboxSessionCap('local', false), 'local');
 });

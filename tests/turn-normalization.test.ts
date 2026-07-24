@@ -2,7 +2,11 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { computeHistoryWindow } from '../src/slack/thread-context.ts';
-import { slackThreadKey } from '../src/slack/thread-key.ts';
+import {
+  parseSlackThreadKey,
+  slackArtifactThreadTs,
+  slackThreadKey,
+} from '../src/slack/thread-key.ts';
 import { normalizeSlackTurn } from '../src/slack/turn-normalization.ts';
 import {
   appHomeMessage,
@@ -79,6 +83,12 @@ test('Slack turn normalization classifies mentions, thread replies, DMs, and ign
   const unsupportedGroupDm = normalizeSlackTurn(groupDm, options);
   assert.ok(unsupportedGroupDm.status === 'ignored');
   assert.equal(unsupportedGroupDm.reason, 'unsupported_channel_type');
+});
+
+test('artifact routing derives the Slack thread timestamp from the durable agent id', () => {
+  const id = 'T_DEMO:C_EXEC:1782770400.000100';
+  assert.equal(parseSlackThreadKey(id).threadTs, '1782770400.000100');
+  assert.equal(slackArtifactThreadTs(id), '1782770400.000100');
 });
 
 test('natural-language channel history windows do not match adjacent words', () => {

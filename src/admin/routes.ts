@@ -88,7 +88,6 @@ import {
 import { knownProviderIds, listRuntimeModelProviders } from '../config/providers.ts';
 import {
   resolveSandboxSettings,
-  SANDBOX_INSTANCE_TYPES,
   SANDBOX_PACKAGE_REGISTRY_HOSTS,
   SANDBOX_SETTING_KEYS,
 } from '../config/sandbox-settings.ts';
@@ -507,7 +506,6 @@ const egressPolicySchema = v.object({
 
 const sandboxSettingsSchema = v.object({
   enabled: v.boolean(),
-  instanceType: v.picklist(SANDBOX_INSTANCE_TYPES),
   allowedHosts: v.array(v.picklist(SANDBOX_PACKAGE_REGISTRY_HOSTS)),
   local: v.boolean(),
   monthlySessionCap: v.pipe(v.number(), v.integer(), v.minValue(0), v.maxValue(100_000)),
@@ -845,7 +843,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     await settings(c).applySettingsPatch({
       set: [
         { key: SANDBOX_SETTING_KEYS.enabled, value: String(sandbox.enabled) },
-        { key: SANDBOX_SETTING_KEYS.instanceType, value: sandbox.instanceType },
         {
           key: SANDBOX_SETTING_KEYS.allowedHosts,
           value: JSON.stringify([...new Set(sandbox.allowedHosts)]),

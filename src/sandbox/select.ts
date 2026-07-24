@@ -23,11 +23,3 @@ export function selectSandbox(input: SandboxSelectionInput): SandboxSelection {
     ? 'cloudflare'
     : 'bash';
 }
-
-/** A declined Cloudflare reservation falls back before getSandbox is called. */
-export function applySandboxSessionCap(
-  selection: SandboxSelection,
-  sessionAllowed: boolean | undefined,
-): SandboxSelection {
-  return selection === 'cloudflare' && sessionAllowed === false ? 'bash' : selection;
-}

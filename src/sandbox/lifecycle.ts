@@ -11,6 +11,8 @@ interface ActivatableSandbox {
   exists(path: string): Promise<unknown>;
 }
 
+type SandboxActivation = () => Promise<unknown>;
+
 const SANDBOX_OPERATION_METHODS = new Set([
   'exec',
   'readFile',
@@ -28,10 +30,15 @@ const SANDBOX_OPERATION_METHODS = new Set([
 export function serializeSandboxActivation<T extends ActivatableSandbox>(
   sandbox: T,
   readyPath = '/workspace',
+  beforeActivate?: SandboxActivation,
 ): T {
   let activation: Promise<unknown> | undefined;
   const ensureActive = (): Promise<unknown> => {
-    activation ??= sandbox.exists(readyPath).catch((err) => {
+    activation ??= (
+      beforeActivate
+        ? beforeActivate().then(() => sandbox.exists(readyPath))
+        : sandbox.exists(readyPath)
+    ).catch((err) => {
       activation = undefined;
       throw err;
     });
@@ -58,8 +65,8 @@ export function serializeSandboxActivation<T extends ActivatableSandbox>(
 
 /**
  * One in-flight provider setup per thread prevents concurrent requests from
- * racing the Sandbox SDK's create path. The active handle is also the
- * turn-completion teardown seam used by the agent route middleware.
+ * racing the Sandbox SDK's create path. Active handles stay reusable in this
+ * isolate; container lifetime is bounded by keepAlive:false + sleepAfter.
  */
 export class SandboxLifecycleRegistry<T extends DestroyableSandbox> {
   private readonly creating = new Map<string, Promise<T>>();
@@ -84,6 +91,28 @@ export class SandboxLifecycleRegistry<T extends DestroyableSandbox> {
       });
     this.creating.set(threadId, pending);
     return pending;
+  }
+
+  /**
+   * Reuse the per-thread stub while applying turn-scoped configuration on
+   * every acquisition. The Sandbox DO can outlive both this agent request and
+   * the Worker isolate, so policy must never be treated as create-only state.
+   */
+  async acquire(
+    threadId: string,
+    factory: () => Promise<T>,
+    configure: (sandbox: T) => Promise<void>,
+  ): Promise<T> {
+    const sandbox = await this.create(threadId, factory);
+    try {
+      await configure(sandbox);
+      return sandbox;
+    } catch (err) {
+      // This registry lives in the agent DO isolate. Invalidating here is a
+      // same-isolate cleanup; sleepAfter remains the cross-isolate bound.
+      await this.destroy(threadId);
+      throw err;
+    }
   }
 
   async destroy(threadId: string): Promise<boolean> {

@@ -1471,7 +1471,6 @@ details[open].advanced summary::before {
   var egressDraft = { mode: "allowlist", domains: [""] };
   var sandboxDraft = {
     enabled: false,
-    instanceType: "standard-1",
     allowedHosts: ["registry.npmjs.org", "pypi.org", "files.pythonhosted.org"],
     local: false,
     monthlySessionCap: 200
@@ -3943,9 +3942,6 @@ details[open].advanced summary::before {
         '<input type="checkbox" data-action="sandbox-host" data-host="' + esc(host) + '" ' + (checked ? "checked " : "") + disabled + ' aria-label="Allow ' + esc(host) + '"></span>' +
         '<span class="tool-body"><span class="tool-name">' + esc(host) + '</span></span></label>';
     }).join("");
-    var instanceOptions = ["standard-1", "standard-2", "standard-3", "standard-4"].map(function (instanceType) {
-      return '<option value="' + instanceType + '"' + (sandboxDraft.instanceType === instanceType ? " selected" : "") + '>' + instanceType + '</option>';
-    }).join("");
     var localRow = status.target === "node"
       ? '<div class="bundle-row"><div class="danger-copy"><span class="field-label">Use this machine for local workspaces</span>' +
         '<span class="hint">Explicit Node-only opt-in. Model-directed commands run on this host, rooted under <span class="mono">tmp/sandbox-workspaces</span>.</span></div>' +
@@ -3964,8 +3960,8 @@ details[open].advanced summary::before {
       paidNote +
       '<details class="advanced"><summary>Advanced</summary><div class="adv-rows">' +
       '<div class="field"><label class="field-label" for="sandbox-instance-type">Instance type</label>' +
-      '<span class="select-wrap"><select class="input mono" id="sandbox-instance-type" data-action="sandbox-instance"' + disabled + '>' + instanceOptions + '</select>' + icon("chevron-down", "select-caret") + '</span>' +
-      '<p class="hint">Screenshots require <span class="mono">standard-1</span> or larger.</p></div>' +
+      '<input class="input mono" id="sandbox-instance-type" value="standard-1" readonly aria-readonly="true">' +
+      '<p class="hint">Fixed at deploy time. To change it, edit <span class="mono">wrangler.jsonc</span> <span class="mono">containers[].instance_type</span> and redeploy.</p></div>' +
       '<div class="field" style="margin-top:14px;"><label class="field-label" for="sandbox-monthly-cap">Monthly session cap</label>' +
       '<input class="input mono" id="sandbox-monthly-cap" type="number" min="0" max="100000" step="1" value="' + esc(String(sandboxDraft.monthlySessionCap)) + '" data-action="sandbox-monthly-cap"' + disabled + '>' +
       '<p class="hint">New coding sessions decline cleanly at this UTC-month limit. Set to <span class="mono">0</span> for no cap.</p></div>' +
@@ -4660,7 +4656,6 @@ details[open].advanced summary::before {
   function seedSandboxDraft(status) {
     sandboxDraft = {
       enabled: !!status.enabled,
-      instanceType: status.instanceType || "standard-1",
       allowedHosts: (status.allowedHosts || []).slice(),
       local: !!status.localEnabled,
       monthlySessionCap: status.monthlySessionCapConfigured === false
@@ -4689,7 +4684,6 @@ details[open].advanced summary::before {
     render();
     postJson("/admin/api/sandbox/status", "PUT", {
       enabled: sandboxDraft.enabled,
-      instanceType: sandboxDraft.instanceType,
       allowedHosts: sandboxDraft.allowedHosts.slice(),
       local: sandboxDraft.local,
       monthlySessionCap: sandboxDraft.monthlySessionCap
@@ -5861,11 +5855,6 @@ details[open].advanced summary::before {
     }
     if (action === "sandbox-local" && !state.sandboxSaving) {
       sandboxDraft.local = !!target.checked;
-      state.sandboxError = "";
-      render();
-    }
-    if (action === "sandbox-instance" && !state.sandboxSaving) {
-      sandboxDraft.instanceType = target.value || "standard-1";
       state.sandboxError = "";
       render();
     }

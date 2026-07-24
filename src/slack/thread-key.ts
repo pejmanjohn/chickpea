@@ -15,3 +15,7 @@ export function parseSlackThreadKey(threadKey: string): {
   }
   return { workspaceId, channelId, threadTs };
 }
+
+export function slackArtifactThreadTs(threadKey: string): string {
+  return parseSlackThreadKey(threadKey).threadTs;
+}

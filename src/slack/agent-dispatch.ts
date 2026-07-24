@@ -3,10 +3,9 @@ import type { Hono } from 'hono';
 
 import { getInternalAgentToken, INTERNAL_AGENT_TOKEN_HEADER } from './internal-auth.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
-import {
-  SANDBOX_TURN_ID_HEADER,
-  SLACK_ARTIFACT_THREAD_TS_HEADER,
-} from '../sandbox/turn-context.ts';
+import { isCloudflareTarget } from '../config/runtime-target.ts';
+import { CLOUDFLARE_SANDBOX_OPTIONS } from '../sandbox/lifecycle.ts';
+import { prepareSandboxTurn, type SandboxTurnContext } from '../sandbox/turn-context.ts';
 
 /**
  * In-process dispatch to the durable slack-thread agent.
@@ -49,8 +48,8 @@ export async function promptSlackThreadAgent(
   message: string,
   env: PlatformEnv | undefined,
   turnId: string,
-  artifactThreadTs: string,
 ): Promise<string> {
+  await prepareCloudflareSandboxTurn(env, conversationKey, turnId);
   const path = `/agents/slack-thread/${encodeURIComponent(conversationKey)}?wait=result`;
   const response = await getRouter().request(
     path,
@@ -59,8 +58,6 @@ export async function promptSlackThreadAgent(
       headers: {
         'content-type': 'application/json',
         [INTERNAL_AGENT_TOKEN_HEADER]: getInternalAgentToken(),
-        [SANDBOX_TURN_ID_HEADER]: turnId,
-        [SLACK_ARTIFACT_THREAD_TS_HEADER]: artifactThreadTs,
       },
       body: JSON.stringify({ message }),
     },
@@ -86,4 +83,23 @@ function extractResultText(result: unknown): string {
     if (typeof record.data === 'string') return record.data;
   }
   return '';
+}
+
+async function prepareCloudflareSandboxTurn(
+  env: PlatformEnv | undefined,
+  conversationKey: string,
+  turnId: string,
+): Promise<void> {
+  if (!isCloudflareTarget()) return;
+  const binding = env?.SANDBOX ?? env?.Sandbox;
+  if (!binding) {
+    throw new Error('SANDBOX Durable Object binding is unavailable');
+  }
+  const { getSandbox } = await import('@cloudflare/sandbox');
+  const sandbox = getSandbox(
+    binding as Parameters<typeof getSandbox>[0],
+    conversationKey,
+    CLOUDFLARE_SANDBOX_OPTIONS,
+  ) as ReturnType<typeof getSandbox> & SandboxTurnContext;
+  await prepareSandboxTurn(sandbox, turnId);
 }

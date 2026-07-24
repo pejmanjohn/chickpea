@@ -100,7 +100,11 @@ interface SandboxNamespace {
   idFromString(id: string): unknown;
   get(id: unknown): Pick<
     Sandbox,
-    'getEgressGrants' | 'getTurnId' | 'getTurnProgress' | 'recordPullRequestProgress'
+    | 'getEgressGrants'
+    | 'getTurnId'
+    | 'getTurnProgress'
+    | 'prepareTurn'
+    | 'recordPullRequestProgress'
   >;
 }
 
@@ -122,14 +126,23 @@ const SANDBOX_BLOCKED_STATUS = 520;
 export class Sandbox extends CloudflareSandbox<SandboxWorkerEnv> {
   interceptHttps = true;
 
-  async configureEgress(grants: readonly RepositoryGrant[], turnId: string): Promise<void> {
-    const policy = validEnabledRepositoryGrants(grants).map(copyRepositoryGrant);
+  async prepareTurn(turnId: string): Promise<void> {
     const previousTurnId = await this.getTurnId();
-    await this.policyStorage().put(SANDBOX_EGRESS_GRANTS_STORAGE_KEY, policy);
+    // Revoke the prior turn's policy before the agent DO resolves current
+    // grants. A sleeping-but-not-yet-destroyed container may still have a
+    // background process, so there must be no stale-policy window between the
+    // caller preparing this turn and the agent reconfiguring it.
+    await this.policyStorage().put<RepositoryGrant[]>(SANDBOX_EGRESS_GRANTS_STORAGE_KEY, []);
     await this.policyStorage().put(SANDBOX_TURN_ID_STORAGE_KEY, turnId);
     if (previousTurnId !== turnId) {
       await this.policyStorage().put<TurnProgress>(SANDBOX_TURN_PROGRESS_STORAGE_KEY, {});
     }
+  }
+
+  async configureEgress(grants: readonly RepositoryGrant[], turnId: string): Promise<void> {
+    const policy = validEnabledRepositoryGrants(grants).map(copyRepositoryGrant);
+    await this.prepareTurn(turnId);
+    await this.policyStorage().put(SANDBOX_EGRESS_GRANTS_STORAGE_KEY, policy);
   }
 
   async getEgressGrants(): Promise<RepositoryGrant[]> {
@@ -194,19 +207,30 @@ async function githubSandboxOutbound(
       return denySandboxOutbound();
     }
 
-    const installation = resolveRepositoryInstallationScope(grants, decision.repositories);
-    if (!installation) return denySandboxOutbound();
-
+    // The decision already restricted this request to the profile's granted
+    // repositories; the credential below only authenticates an already-allowed
+    // request. App mode mints a per-repo down-scoped installation token; PAT
+    // mode injects the operator's fine-grained token (itself repo-scoped at
+    // creation). Both keep the credential out of the container.
     const settings = getSettingsStore(workerEnv);
     const connection = await getGithubConnection(settings);
-    if (connection.mode !== 'app') return denySandboxOutbound();
-    const { token } = await getCachedInstallationToken(connection, installation.id, {
-      repositories: installation.repositories,
-      permissions: REPOSITORY_PERMISSIONS,
-    });
+    let credential: string;
+    if (connection.mode === 'app') {
+      const installation = resolveRepositoryInstallationScope(grants, decision.repositories);
+      if (!installation) return denySandboxOutbound();
+      const { token } = await getCachedInstallationToken(connection, installation.id, {
+        repositories: installation.repositories,
+        permissions: REPOSITORY_PERMISSIONS,
+      });
+      credential = token;
+    } else if (connection.mode === 'pat') {
+      credential = connection.pat;
+    } else {
+      return denySandboxOutbound();
+    }
 
     const headers = new Headers(request.headers);
-    headers.set('Authorization', `Bearer ${token}`);
+    headers.set('Authorization', `Bearer ${credential}`);
     const response = await fetch(new Request(request, { headers, redirect: 'manual' }));
     await recordPullRequestProgress(request, response, stub);
     return response;

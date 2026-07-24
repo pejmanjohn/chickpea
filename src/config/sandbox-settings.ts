@@ -3,7 +3,6 @@ import { parseMonthlySessionCap } from '../sandbox/session-cap.ts';
 
 export const SANDBOX_SETTING_KEYS = {
   enabled: 'sandbox.enabled',
-  instanceType: 'sandbox.instanceType',
   allowedHosts: 'sandbox.allowedHosts',
   local: 'sandbox.local',
   monthlySessionCap: 'sandbox.monthlySessionCap',
@@ -15,14 +14,8 @@ export const SANDBOX_PACKAGE_REGISTRY_HOSTS = [
   'files.pythonhosted.org',
 ] as const;
 
-export const SANDBOX_INSTANCE_TYPES = [
-  'standard-1',
-  'standard-2',
-  'standard-3',
-  'standard-4',
-] as const;
-
-export type SandboxInstanceType = (typeof SANDBOX_INSTANCE_TYPES)[number];
+export const SANDBOX_INSTANCE_TYPE = 'standard-1' as const;
+export type SandboxInstanceType = typeof SANDBOX_INSTANCE_TYPE;
 
 export interface SandboxSettings {
   enabled: boolean;
@@ -35,7 +28,7 @@ export interface SandboxSettings {
 
 export const DEFAULT_SANDBOX_SETTINGS: Readonly<SandboxSettings> = {
   enabled: false,
-  instanceType: 'standard-1',
+  instanceType: SANDBOX_INSTANCE_TYPE,
   allowedHosts: [...SANDBOX_PACKAGE_REGISTRY_HOSTS],
   localEnabled: false,
   monthlySessionCap: 0,
@@ -43,22 +36,18 @@ export const DEFAULT_SANDBOX_SETTINGS: Readonly<SandboxSettings> = {
 };
 
 const SUPPORTED_PACKAGE_REGISTRY_HOSTS = new Set<string>(SANDBOX_PACKAGE_REGISTRY_HOSTS);
-const SUPPORTED_INSTANCE_TYPES = new Set<string>(SANDBOX_INSTANCE_TYPES);
 
 export async function resolveSandboxSettings(store: SettingsStore): Promise<SandboxSettings> {
-  const [enabled, instanceType, allowedHosts, localEnabled, monthlySessionCap] =
+  const [enabled, allowedHosts, localEnabled, monthlySessionCap] =
     await store.getSettings([
       SANDBOX_SETTING_KEYS.enabled,
-      SANDBOX_SETTING_KEYS.instanceType,
       SANDBOX_SETTING_KEYS.allowedHosts,
       SANDBOX_SETTING_KEYS.local,
       SANDBOX_SETTING_KEYS.monthlySessionCap,
     ]);
   return {
     enabled: enabled === 'true',
-    instanceType: SUPPORTED_INSTANCE_TYPES.has(instanceType ?? '')
-      ? (instanceType as SandboxInstanceType)
-      : DEFAULT_SANDBOX_SETTINGS.instanceType,
+    instanceType: SANDBOX_INSTANCE_TYPE,
     allowedHosts: parseSandboxAllowedHosts(allowedHosts),
     localEnabled: localEnabled === 'true',
     monthlySessionCap: parseMonthlySessionCap(monthlySessionCap),
