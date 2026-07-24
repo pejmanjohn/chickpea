@@ -56,17 +56,22 @@ import {
 } from '../sandbox/select.ts';
 import { reserveMonthlySandboxSession } from '../sandbox/session-cap.ts';
 import {
+  activeSlackArtifactThreadTs,
   activeSandboxTurnId,
   clearActiveSandboxTurn,
   SANDBOX_TURN_ID_HEADER,
   setActiveSandboxTurn,
+  SLACK_ARTIFACT_THREAD_TS_HEADER,
 } from '../sandbox/turn-context.ts';
+import { createWorkspaceArtifactCapability } from '../sandbox/artifact-tool.ts';
 import {
   WORKSPACE_SESSION_CAP_DECLINE,
   workspaceSkillForSandbox,
 } from '../sandbox/workspace-skill.ts';
 import { INTERNAL_AGENT_TOKEN_HEADER, isValidInternalAgentToken } from '../slack/internal-auth.ts';
 import { parseSlackThreadKey } from '../slack/thread-key.ts';
+import { getClient } from '../slack/run-turn.ts';
+import { WebClientPresenter } from '../slack/web-client-presenter.ts';
 
 export { resolveAgentModel } from '../config/model-policy.ts';
 
@@ -349,8 +354,9 @@ export const route: AgentRouteHandler = async (c, next) => {
   }
   const threadId = c.req.param('id');
   const turnId = c.req.header(SANDBOX_TURN_ID_HEADER);
+  const artifactThreadTs = c.req.header(SLACK_ARTIFACT_THREAD_TS_HEADER);
   if (threadId && turnId) {
-    setActiveSandboxTurn(threadId, turnId);
+    setActiveSandboxTurn(threadId, turnId, artifactThreadTs);
   }
   try {
     return await next();
@@ -400,6 +406,7 @@ export default defineAgent(async ({ id }) => {
     repositoryGrants: repositoryAccess.grants,
   });
   const turnId = activeSandboxTurnId(id) ?? id;
+  const artifactThreadTs = activeSlackArtifactThreadTs(id);
   const sessionReservation =
     requestedSandboxSelection === 'cloudflare'
       ? await reserveMonthlySandboxSession({
@@ -495,7 +502,7 @@ export default defineAgent(async ({ id }) => {
     // path at the fail-closed baseline (connector write methods not granted).
     virtualSandbox = bash(() => new Bash({ fs: new InMemoryFs(), network: fallbackNetwork }));
   }
-  const sandbox = await resolveAgentSandbox({
+  let sandbox = await resolveAgentSandbox({
     selection: sandboxSelection,
     fallback: virtualSandbox,
     env,
@@ -503,11 +510,36 @@ export default defineAgent(async ({ id }) => {
     turnId,
     grants: repositoryAccess.grants,
   });
+  let tools = mcpTools;
+  if (sandboxSelection !== 'bash' && artifactThreadTs) {
+    let presenter: Promise<WebClientPresenter> | undefined;
+    const artifactCapability = createWorkspaceArtifactCapability({
+      sandbox,
+      selection: sandboxSelection,
+      channel: channelId,
+      threadTs: artifactThreadTs,
+      postArtifact: async (input) => {
+        presenter ??= getClient(env).then(
+          (client) =>
+            new WebClientPresenter(client, {
+              channelId,
+              threadTs: artifactThreadTs,
+              agentName: config.agent.name,
+              agentId: config.agent.id,
+              workspaceId,
+            }),
+        );
+        return (await presenter).postArtifact(input);
+      },
+    });
+    sandbox = artifactCapability.sandbox;
+    tools = [...mcpTools, artifactCapability.tool];
+  }
 
   return {
     model: config.model,
     instructions: config.instructions,
-    tools: mcpTools,
+    tools,
     sandbox,
     ...(skills.length > 0 ? { skills } : {}),
   };

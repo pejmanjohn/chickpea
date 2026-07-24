@@ -39,7 +39,12 @@ prefers that; everything else is clicking.
 
 4. **Install it.** Left sidebar → **OAuth & Permissions** → **Install to
    Workspace** → **Allow**. Only now does the **Bot User OAuth Token**
-   appear at the top of that same page. It starts with `xoxb-`. Copy it.
+   appear at the top of that same page. It starts with `xoxb-`. Copy it. The
+   manifest includes the `files:write` bot scope so coding-workspace screenshots
+   and artifacts can be attached to the thread. For an app created from an
+   older manifest, add that scope and reinstall the app; without it Chickpea
+   keeps the verification result but describes the artifact instead of
+   attaching it.
 
 5. **Copy the signing secret.** Left sidebar → **Basic Information** →
    **App Credentials** → **Signing Secret** → **Show** → copy.

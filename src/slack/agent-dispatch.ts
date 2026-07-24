@@ -3,7 +3,10 @@ import type { Hono } from 'hono';
 
 import { getInternalAgentToken, INTERNAL_AGENT_TOKEN_HEADER } from './internal-auth.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
-import { SANDBOX_TURN_ID_HEADER } from '../sandbox/turn-context.ts';
+import {
+  SANDBOX_TURN_ID_HEADER,
+  SLACK_ARTIFACT_THREAD_TS_HEADER,
+} from '../sandbox/turn-context.ts';
 
 /**
  * In-process dispatch to the durable slack-thread agent.
@@ -46,6 +49,7 @@ export async function promptSlackThreadAgent(
   message: string,
   env: PlatformEnv | undefined,
   turnId: string,
+  artifactThreadTs: string,
 ): Promise<string> {
   const path = `/agents/slack-thread/${encodeURIComponent(conversationKey)}?wait=result`;
   const response = await getRouter().request(
@@ -56,6 +60,7 @@ export async function promptSlackThreadAgent(
         'content-type': 'application/json',
         [INTERNAL_AGENT_TOKEN_HEADER]: getInternalAgentToken(),
         [SANDBOX_TURN_ID_HEADER]: turnId,
+        [SLACK_ARTIFACT_THREAD_TS_HEADER]: artifactThreadTs,
       },
       body: JSON.stringify({ message }),
     },

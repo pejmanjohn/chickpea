@@ -26,6 +26,16 @@ test('workspace skill teaches the coding loop without embedding credentials', ()
     'Commit and push the branch early',
     'Open the pull request through the normal GitHub API recipe',
     'five-minute sleep wipes it',
+    'require("playwright")',
+    '--no-sandbox',
+    '/workspace/screenshot.png',
+    'post_artifact',
+    'npm run dev',
+    'curl --fail',
+    '127.0.0.1',
+    'kill "$(cat dev-server.pid)"',
+    'Do not use `exposePort`',
+    'public port exposure',
     'workflow dispatch',
     'deployment approval',
   ]) {
@@ -36,6 +46,7 @@ test('workspace skill teaches the coding loop without embedding credentials', ()
   assert.doesNotMatch(instructions, /\bBearer\s+\S+/i);
   assert.doesNotMatch(instructions, /\$GITHUB_TOKEN/i);
   assert.doesNotMatch(instructions, /https:\/\/[^/\s]+@github\.com/i);
+  assert.doesNotMatch(instructions, /\b(?:xox[baprs]-|gh[opsu]_|sk-[A-Za-z0-9])/i);
 });
 
 test('workspace skill gives a clear decline signal when the monthly cap is reached', () => {

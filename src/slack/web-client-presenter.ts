@@ -28,6 +28,18 @@ export interface SlackPresenterTarget {
   workspaceId?: string;
 }
 
+export interface SlackArtifactInput {
+  channel: string;
+  threadTs: string;
+  bytes: Uint8Array;
+  filename: string;
+  title?: string;
+}
+
+export type SlackArtifactResult =
+  | { uploaded: true }
+  | { uploaded: false; reason: 'missing-scope' };
+
 /**
  * Slack presentation over a `@slack/web-api` WebClient. This is the sole Slack
  * presentation path and owns the complete fallback ordering.
@@ -100,6 +112,29 @@ export class WebClientPresenter {
   }
 
   /**
+   * Attach a workspace artifact to its bound Slack thread. Slack's v2 upload
+   * helper performs the external-upload sequence over the same patched fetch
+   * used by the rest of this client.
+   */
+  async postArtifact(input: SlackArtifactInput): Promise<SlackArtifactResult> {
+    try {
+      await this.client.files.uploadV2({
+        channel_id: input.channel,
+        thread_ts: input.threadTs,
+        file: Buffer.from(input.bytes.buffer, input.bytes.byteOffset, input.bytes.byteLength),
+        filename: input.filename,
+        ...(input.title === undefined ? {} : { title: input.title }),
+      });
+      return { uploaded: true };
+    } catch (err) {
+      if (isMissingFilesScopeError(err)) {
+        return { uploaded: false, reason: 'missing-scope' };
+      }
+      throw err;
+    }
+  }
+
+  /**
    * Deliver the final answer. Streams when possible; otherwise falls back to a
    * single markdown/plain chat.postMessage. A stopStream failure is swallowed so
    * the final is never duplicated (S18). Throws only when BOTH the stream and
@@ -148,4 +183,12 @@ export class WebClientPresenter {
       publicUrl: this.target.publicUrl,
     };
   }
+}
+
+function isMissingFilesScopeError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const data = (err as { data?: unknown }).data;
+  if (!data || typeof data !== 'object') return false;
+  const error = (data as { error?: unknown }).error;
+  return error === 'missing_scope' || error === 'not_allowed_token_type';
 }
