@@ -38,6 +38,7 @@ import {
 import {
   exchangeGithubAppManifest,
   getGithubConnection,
+  isGithubAppManagedHost,
   GITHUB_OWNER_PATTERN,
   GITHUB_SETTING_KEYS,
   isValidRepositoryFullName,
@@ -250,11 +251,21 @@ const connectorHost = v.pipe(
   v.check(isAllowedConnectorHost, 'Host not allowed'),
 );
 
+const GITHUB_API_CONNECTION_ERROR =
+  'GitHub is managed by the GitHub App integration; connect it in Settings → GitHub';
+
 const apiConnectionSchema = v.pipe(
   v.object({
     id: v.pipe(v.string(), v.regex(/^[a-z0-9][a-z0-9-]{0,63}$/)),
     displayName: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(80)),
-    allowedHosts: v.pipe(v.array(connectorHost), v.maxLength(20)),
+    allowedHosts: v.pipe(
+      v.array(connectorHost),
+      v.maxLength(20),
+      v.check(
+        (hosts) => hosts.every((host) => !isGithubAppManagedHost(host)),
+        GITHUB_API_CONNECTION_ERROR,
+      ),
+    ),
     pathPrefixes: v.pipe(
       // Path-only: a `?query` or `#fragment` is silently dropped by both
       // matchesEgressPrefix and just-bash, which would broaden credential
@@ -1065,7 +1076,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const body = await readJson(c.req);
     const parsed = v.safeParse(agentSchema, body);
     if (!parsed.success) {
-      return invalidRequest(c);
+      return invalidRequest(c, githubApiConnectionValidationMessage(parsed.issues));
     }
     const agent = toAgentConfig(parsed.output);
     const modelError = modelResolutionError(agent);
@@ -1448,7 +1459,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const body = await readJson(c.req);
     const parsed = v.safeParse(agentPatchSchema, body);
     if (!parsed.success) {
-      return invalidRequest(c);
+      return invalidRequest(c, githubApiConnectionValidationMessage(parsed.issues));
     }
     try {
       const configStore = store(c);
@@ -2434,8 +2445,24 @@ function assignmentKey(c: { req: { query(name: string): string | undefined } }):
   return { workspaceId, channelId };
 }
 
-function invalidRequest(c: { json(body: { error: string }, status: 400): Response }): Response {
-  return c.json({ error: 'invalid_request' }, 400);
+function githubApiConnectionValidationMessage(
+  issues: readonly { message: string }[],
+): string | undefined {
+  return issues.some((issue) => issue.message === GITHUB_API_CONNECTION_ERROR)
+    ? GITHUB_API_CONNECTION_ERROR
+    : undefined;
+}
+
+function invalidRequest(
+  c: { json(body: { error: string; message?: string }, status: 400): Response },
+  message?: string,
+): Response {
+  return c.json(
+    message
+      ? { error: 'invalid_request', message }
+      : { error: 'invalid_request' },
+    400,
+  );
 }
 
 // Free text accepts any provider/model specifier (locked model-picker

@@ -20,6 +20,7 @@ import {
   getCachedInstallationToken,
   getGithubConnection,
   githubErrorStatus,
+  isGithubAppManagedHost,
   type GithubConnection,
 } from '../config/github-app.ts';
 import { resolveProfileMcpTools } from '../config/profile-mcp.ts';
@@ -90,8 +91,6 @@ export function suppressProfileNamedConnectorSkills(
   // operator's off-switch for an otherwise auto-attached connector skill.
   return connectorSkills.filter((skill) => !profileSkillNames.has(skill.name));
 }
-
-const REPOSITORY_HOSTS = ['api.github.com', 'github.com'];
 
 export interface ResolvedRepositoryAccess {
   grants: RepositoryGrant[];
@@ -306,23 +305,18 @@ function repositoryPrefixes(grants: readonly RepositoryGrant[], prefix: string):
 }
 
 /**
- * Repository credentials are authoritative for GitHub while repository grants
- * are active. Remove those hosts from generic API connections so a narrower
- * legacy prefix cannot override the down-scoped installation-token route.
- * Stripping keys off CONFIGURED grants (`governsGithubHosts`), not resolved
- * connectors: a failed token mint must not fall open to a legacy broad
- * GitHub connection.
+ * GitHub hosts are reserved for the dedicated App integration. Always remove
+ * them from generic API connections, including already-saved rows and profiles
+ * with zero repository grants, so a pasted bearer credential can never create
+ * an unscoped GitHub route. Repository connectors are the sole GitHub source.
  */
 export function mergeRepositoryAndApiConnectors(
   repositoryConnectors: readonly ResolvedApiConnection[],
   apiConnectors: readonly ResolvedApiConnection[],
-  governsGithubHosts = repositoryConnectors.length > 0,
 ): ResolvedApiConnection[] {
-  if (!governsGithubHosts) return [...apiConnectors];
-  const repositoryHosts = new Set(REPOSITORY_HOSTS);
   const remainingApiConnectors = apiConnectors.flatMap((connector) => {
     const allowedHosts = connector.allowedHosts.filter(
-      (host) => !repositoryHosts.has(host.toLowerCase()),
+      (host) => !isGithubAppManagedHost(host),
     );
     return allowedHosts.length > 0 ? [{ ...connector, allowedHosts }] : [];
   });
@@ -446,7 +440,6 @@ export default defineAgent(async ({ id }) => {
   const resolvedConnectors = mergeRepositoryAndApiConnectors(
     repositoryAccess.connectors,
     resolvedApiConnectors,
-    repositoryAccess.governsGithubHosts,
   );
   // Project resolved connectors into credential-free scope before skill
   // construction. Connector skills come first so the existing last-writer-wins

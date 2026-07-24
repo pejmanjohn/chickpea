@@ -4067,6 +4067,15 @@ test('Settings saves Node local sandbox controls as one install-level update', a
   click({ target: actionTarget({ 'data-action': 'open-settings' }) });
   await flushAsync();
 
+  assert.match(
+    harness.app.innerHTML,
+    /Trusted single-operator installs only\. Model-directed commands use this host filesystem and its git\/SSH credentials/,
+  );
+  assert.match(
+    harness.app.innerHTML,
+    /A connected GitHub App and an enabled repository grant are still required\./,
+  );
+
   const changedTarget = (
     attributes: Record<string, string>,
     values: { checked?: boolean; value?: string },

@@ -1,6 +1,13 @@
 import type { SettingsStore } from './settings-store.ts';
 
 export const GITHUB_API_BASE = 'https://api.github.com';
+export const GITHUB_APP_MANAGED_HOSTS = ['api.github.com', 'github.com'] as const;
+
+const GITHUB_APP_MANAGED_HOST_SET = new Set<string>(GITHUB_APP_MANAGED_HOSTS);
+
+export function isGithubAppManagedHost(host: string): boolean {
+  return GITHUB_APP_MANAGED_HOST_SET.has(host.trim().toLowerCase().replace(/\.+$/, ''));
+}
 
 // Strict owner/repo shapes. These feed URL prefixes in the egress allow-list,
 // so anything URL-normalization could collapse (dot segments) or reinterpret

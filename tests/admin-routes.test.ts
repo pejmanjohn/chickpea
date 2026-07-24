@@ -375,20 +375,20 @@ test('admin API rejects enabled connections whose URL scopes overlap', async () 
   try {
     const app = appWithAdmin(store);
 
-    // Both cover api.github.com and one path is a segment-ancestor of the other,
+    // Both cover api.example.com and one path is a segment-ancestor of the other,
     // so a request under /repos/issues would match both and merge both secrets.
     const overlapping = agent({
       apiConnections: [
         apiConnection({
           id: 'gh-broad',
           displayName: 'GitHub broad',
-          allowedHosts: ['api.github.com'],
+          allowedHosts: ['api.example.com'],
           pathPrefixes: ['/repos'],
         }),
         apiConnection({
           id: 'gh-narrow',
           displayName: 'GitHub narrow',
-          allowedHosts: ['api.github.com'],
+          allowedHosts: ['api.example.com'],
           pathPrefixes: ['/repos/issues'],
         }),
       ],
@@ -440,13 +440,13 @@ test('admin API accepts same-host connections with disjoint path scopes', async 
         apiConnection({
           id: 'gh-repos',
           displayName: 'GitHub repos',
-          allowedHosts: ['api.github.com'],
+          allowedHosts: ['api.example.com'],
           pathPrefixes: ['/repos', '/repos-archive'],
         }),
         apiConnection({
           id: 'gh-orgs',
           displayName: 'GitHub orgs',
-          allowedHosts: ['api.github.com'],
+          allowedHosts: ['api.example.com'],
           pathPrefixes: ['/orgs'],
         }),
       ],
@@ -475,14 +475,14 @@ test('admin API exempts a disabled connection from the overlap check', async () 
         apiConnection({
           id: 'gh-active',
           displayName: 'GitHub active',
-          allowedHosts: ['api.github.com'],
+          allowedHosts: ['api.example.com'],
           pathPrefixes: ['/repos'],
           enabled: true,
         }),
         apiConnection({
           id: 'gh-parked',
           displayName: 'GitHub parked',
-          allowedHosts: ['api.github.com'],
+          allowedHosts: ['api.example.com'],
           pathPrefixes: ['/repos'],
           enabled: false,
         }),
@@ -1126,7 +1126,7 @@ test('admin API accepts exact apiConnection hosts and round-trips every field', 
     const patched = [
       apiConnection({
         displayName: 'Linear API v2',
-        allowedHosts: ['api.github.com'],
+        allowedHosts: ['api.example.com'],
         pathPrefixes: ['/v2/issues'],
         headerName: 'X-Api-Key',
         headerValuePrefix: 'token ',
@@ -1172,6 +1172,19 @@ test('admin API rejects invalid apiConnection hosts, methods, and header names',
     for (const [id, connection] of cases) {
       const response = await post(`agent_api_${id}`, [connection]);
       assert.equal(response.status, 400, id);
+    }
+
+    for (const host of ['github.com', 'API.GITHUB.COM', 'api.github.com.']) {
+      const response = await post(
+        `agent_api_reserved_github_${host.replaceAll('.', '_').toLowerCase()}`,
+        [apiConnection({ allowedHosts: [host] })],
+      );
+      assert.equal(response.status, 400, host);
+      assert.deepEqual(await response.json(), {
+        error: 'invalid_request',
+        message:
+          'GitHub is managed by the GitHub App integration; connect it in Settings → GitHub',
+      });
     }
   } finally {
     store.close();

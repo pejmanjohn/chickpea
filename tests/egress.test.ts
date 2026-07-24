@@ -819,7 +819,7 @@ test('a stale grant is isolated per-repo instead of disabling its installation',
   );
 });
 
-test('repository access removes GitHub hosts from legacy connectors while preserving others', () => {
+test('the GitHub App integration always reserves GitHub hosts from custom connectors', () => {
   const repositoryConnector: ResolvedApiConnection = {
     allowedHosts: ['api.github.com'],
     pathPrefixes: ['/repos/Acme/Alpha'],
@@ -839,13 +839,21 @@ test('repository access removes GitHub hosts from legacy connectors while preser
     mergeRepositoryAndApiConnectors([repositoryConnector], [legacyConnector]),
     [repositoryConnector, { ...legacyConnector, allowedHosts: ['api.example.com'] }],
   );
-  assert.deepEqual(mergeRepositoryAndApiConnectors([], [legacyConnector]), [legacyConnector]);
-  // Fail closed: configured grants govern the GitHub hosts even when no
-  // repository connector resolved this turn (e.g. every token mint failed).
-  // The legacy broad connection must NOT regain GitHub access.
-  assert.deepEqual(mergeRepositoryAndApiConnectors([], [legacyConnector], true), [
+  const withoutGrants = mergeRepositoryAndApiConnectors([], [legacyConnector]);
+  assert.deepEqual(withoutGrants, [
     { ...legacyConnector, allowedHosts: ['api.example.com'] },
   ]);
+
+  // An already-saved GitHub-only custom connector with zero grants contributes
+  // no credential-bearing egress scope or transform.
+  const githubOnly = { ...legacyConnector, allowedHosts: ['api.github.com'] };
+  const plan = buildEgressPlan(
+    { mode: 'off', domains: [] },
+    { cloudflare: false },
+    mergeRepositoryAndApiConnectors([], [githubOnly]),
+  );
+  assert.deepEqual(plan.scopes, []);
+  assert.deepEqual(plan.baseNetwork.allowedUrlPrefixes, []);
 });
 
 test('the repos scope refuses denied Actions endpoints while keeping rerun and cancel', async () => {

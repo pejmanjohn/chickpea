@@ -68,7 +68,7 @@ test('Cloudflare selects its Flue sandbox only when the tier and a valid grant a
   }
 });
 
-test('Node selects local only behind both install-level opt-ins', () => {
+test('Node selects local only with both opt-ins, an App connection, and a valid grant', () => {
   assert.equal(
     selectSandbox({
       target: 'node',
@@ -76,6 +76,26 @@ test('Node selects local only behind both install-level opt-ins', () => {
       localEnabled: true,
       appConnected: false,
       repositoryGrants: [],
+    }),
+    'bash',
+  );
+  assert.equal(
+    selectSandbox({
+      target: 'node',
+      enabled: true,
+      localEnabled: true,
+      appConnected: true,
+      repositoryGrants: [],
+    }),
+    'bash',
+  );
+  assert.equal(
+    selectSandbox({
+      target: 'node',
+      enabled: true,
+      localEnabled: true,
+      appConnected: true,
+      repositoryGrants: [grant()],
     }),
     'local',
   );

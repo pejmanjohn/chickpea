@@ -3893,7 +3893,7 @@ details[open].advanced summary::before {
     }).join("");
     var localRow = status.target === "node"
       ? '<div class="bundle-row"><div class="danger-copy"><span class="field-label">Use this machine for local workspaces</span>' +
-        '<span class="hint">Explicit Node-only opt-in. Model-directed commands run on this host, rooted under <span class="mono">tmp/sandbox-workspaces</span>.</span></div>' +
+        '<span class="hint">Trusted single-operator installs only. Model-directed commands use this host filesystem and its git/SSH credentials, rooted under <span class="mono">tmp/sandbox-workspaces</span>. A connected GitHub App and an enabled repository grant are still required.</span></div>' +
         '<label class="toggle"><span class="thumb"></span><input type="checkbox" data-action="sandbox-local" ' + (sandboxDraft.local ? "checked " : "") + disabled + ' aria-label="Use local coding workspaces"></label></div>'
       : "";
     var paidNote = status.workersPaidNote
