@@ -16,6 +16,11 @@ before step 2; it is the one choice that cannot be corrected later without
 reinstalling. Let your human paste secrets if your environment's policy
 prefers that; everything else is clicking.
 
+**GitHub features are configured separately:** repository access and the
+coding sandbox both require the GitHub App created from Chickpea's Settings
+page. Finish Slack setup here, then use **Settings → GitHub → Create GitHub
+App** before adding repositories to a profile.
+
 ## Steps
 
 1. **Open the manifest link.** In `/admin` (sign in with the

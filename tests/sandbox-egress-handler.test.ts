@@ -1,12 +1,18 @@
 import assert from 'node:assert/strict';
+import { generateKeyPairSync } from 'node:crypto';
 import { test } from 'node:test';
 
 import {
+  getCachedInstallationToken,
+  type GithubConnection,
+} from '../src/config/github-app.ts';
+import type { RepositoryGrant } from '../src/config/types.ts';
+import {
   decideSandboxEgress,
+  REPOSITORY_PERMISSIONS,
   resolveRepositoryInstallationScope,
   type SandboxEgressDecision,
 } from '../src/sandbox/egress-handler.ts';
-import type { RepositoryGrant } from '../src/config/types.ts';
 
 function repositoryGrant(overrides: Partial<RepositoryGrant> = {}): RepositoryGrant {
   return {
@@ -131,7 +137,9 @@ test('sandbox GitHub compare egress confines cross-fork owners to the grant scop
 
   for (const range of [
     'main...dev',
+    'main...feature%2Fhardening',
     'main...acme:feature',
+    'main...Acme%2FBeta%3Afeature%2Fhardening',
     'Acme:main..ACME:feature',
   ]) {
     assert.deepEqual(
@@ -149,8 +157,10 @@ test('sandbox GitHub compare egress confines cross-fork owners to the grant scop
   }
 
   for (const range of [
+    'main...Other:secret',
     'main...OtherOwner:branch',
     'main...OtherOwner%3Abranch',
+    'base...Other%2FRepo%3Aref',
     'main%2E%2E%2EOtherOwner%3Abranch',
     'Acme:main...OtherOwner:branch',
     'main....dev',
@@ -276,7 +286,7 @@ test('sandbox code search rejects GitHub query grammar that can widen repository
   );
 });
 
-test('sandbox token scope stays within one installation and names exact repositories', () => {
+test('sandbox token scope stays within one installation and only names explicit repositories', () => {
   const grants = [
     repositoryGrant(),
     repositoryGrant({
@@ -298,12 +308,75 @@ test('sandbox token scope stays within one installation and names exact reposito
   });
   assert.deepEqual(resolveRepositoryInstallationScope(grants, ['Other/Private']), {
     id: 60_001,
-    repositories: ['Private'],
   });
   assert.equal(
     resolveRepositoryInstallationScope(grants, ['Acme/Alpha', 'Other/Private']),
     undefined,
   );
+});
+
+test('many allRepos paths share exactly one installation-wide token mint', async () => {
+  const privateKeyPem = String(
+    generateKeyPairSync('rsa', { modulusLength: 2_048 }).privateKey.export({
+      type: 'pkcs8',
+      format: 'pem',
+    }),
+  );
+  const connection: GithubConnection = {
+    mode: 'app',
+    appId: 'all-repos-collapse-app',
+    privateKeyPem,
+  };
+  const grants = [
+    repositoryGrant({
+      id: 'all-acme',
+      installationId: 80_001,
+      fullName: '',
+      allRepos: true,
+    }),
+    repositoryGrant({
+      id: 'explicit-alpha',
+      installationId: 80_001,
+      fullName: 'Acme/Alpha',
+    }),
+  ];
+  let mints = 0;
+  const fetchImpl: typeof fetch = async (_input, init) => {
+    mints += 1;
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    assert.equal(body.repositories, undefined);
+    return Response.json({
+      token: 'installation-wide-token',
+      expires_at: new Date(Date.now() + 60 * 60 * 1_000).toISOString(),
+    });
+  };
+
+  const tokens = await Promise.all(
+    Array.from({ length: 32 }, async (_, index) => {
+      const repositoryName = index === 0 ? 'Alpha' : `Probe${index}`;
+      const decision = decideSandboxEgress({
+        url: `https://api.github.com/repos/Acme/${repositoryName}/contents/README.md`,
+        method: 'GET',
+        grants,
+        allowedHosts: [],
+      });
+      const scope = resolveRepositoryInstallationScope(
+        grants,
+        allowedRepositories(decision),
+      );
+      assert.ok(scope);
+      assert.deepEqual(scope, { id: 80_001 });
+      return getCachedInstallationToken(
+        connection,
+        scope.id,
+        { permissions: REPOSITORY_PERMISSIONS },
+        fetchImpl,
+      );
+    }),
+  );
+
+  assert.equal(mints, 1);
+  assert.deepEqual(new Set(tokens.map(({ token }) => token)), new Set(['installation-wide-token']));
 });
 
 test('sandbox package egress is limited to operator-enabled supported registries', () => {

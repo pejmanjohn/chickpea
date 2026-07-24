@@ -61,7 +61,7 @@ The first DM answers with **zero model keys** on a fresh Cloudflare deploy: the 
 
 ### Repositories
 
-Connect GitHub once in Settings through the recommended GitHub App manifest flow, or use a fine-grained personal access token for a quick start. Then pick exactly which repositories each profile can use from its Repositories tab. With a GitHub App, Chickpea mints down-scoped, short-lived tokens per turn and injects them only at the sandbox egress boundary; credentials never enter agent instructions or the sandbox environment.
+Connect GitHub once in Settings through the GitHub App manifest flow, the only supported authentication path for repository access and the coding sandbox. Then pick exactly which repositories each profile can use from its Repositories tab. Chickpea mints down-scoped, short-lived App installation tokens per turn and injects them only at the sandbox egress boundary; credentials never enter agent instructions or the sandbox environment.
 
 ### Privacy and fail-closed guarantees
 

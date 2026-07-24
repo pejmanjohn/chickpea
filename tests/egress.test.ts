@@ -65,7 +65,6 @@ async function withGithubSettings<T>(
         SLACK_STATE_DB_PATH: dbPath,
         GITHUB_APP_ID: undefined,
         GITHUB_APP_PRIVATE_KEY: undefined,
-        GITHUB_PAT: undefined,
       },
       run,
     );
@@ -469,22 +468,39 @@ test('createScopedFetch fails closed when a scope guard rejects a matching URL',
 });
 
 test('guarded scopes are excluded from the fallback network allow-list', async () => {
-  const sentinel = 'fallback-exclusion-pat';
-  await withGithubSettings({ [GITHUB_SETTING_KEYS.pat]: sentinel }, async () => {
-    const access = await resolveRepositoryAccess([
-      repositoryGrant({ installationId: null, fullName: 'Acme/Alpha' }),
-    ]);
-    const plan = buildEgressPlan({ mode: 'off', domains: [] }, { cloudflare: false }, access.connectors);
-    const fallbackUrls = (plan.fallbackNetwork.allowedUrlPrefixes ?? []).map((entry) =>
-      typeof entry === 'string' ? entry : entry.url,
-    );
-    // The guarded scopes (/repos and /search/code carry URL predicates) must
-    // not contribute prefix+transform entries a flat allow-list cannot guard.
-    assert.ok(!fallbackUrls.some((url) => url.includes('/repos/')), String(fallbackUrls));
-    assert.ok(!fallbackUrls.some((url) => url.includes('/search/code')), String(fallbackUrls));
-    // The unguarded github.com git scope stays available in fallback mode.
-    assert.ok(fallbackUrls.includes('https://github.com/Acme/Alpha'), String(fallbackUrls));
-  });
+  await withGithubSettings(
+    {
+      [GITHUB_SETTING_KEYS.appId]: 'fallback-exclusion-app',
+      [GITHUB_SETTING_KEYS.privateKey]: APP_PRIVATE_KEY,
+    },
+    async () => {
+      const previousFetch = globalThis.fetch;
+      globalThis.fetch = async () =>
+        Response.json({
+          token: 'fallback-exclusion-token',
+          expires_at: new Date(Date.now() + 60 * 60 * 1_000).toISOString(),
+        });
+      try {
+        const access = await resolveRepositoryAccess([repositoryGrant()]);
+        const plan = buildEgressPlan(
+          { mode: 'off', domains: [] },
+          { cloudflare: false },
+          access.connectors,
+        );
+        const fallbackUrls = (plan.fallbackNetwork.allowedUrlPrefixes ?? []).map((entry) =>
+          typeof entry === 'string' ? entry : entry.url,
+        );
+        // The guarded scopes (/repos and /search/code carry URL predicates) must
+        // not contribute prefix+transform entries a flat allow-list cannot guard.
+        assert.ok(!fallbackUrls.some((url) => url.includes('/repos/')), String(fallbackUrls));
+        assert.ok(!fallbackUrls.some((url) => url.includes('/search/code')), String(fallbackUrls));
+        // The unguarded github.com git scope stays available in fallback mode.
+        assert.ok(fallbackUrls.includes('https://github.com/Acme/Alpha'), String(fallbackUrls));
+      } finally {
+        globalThis.fetch = previousFetch;
+      }
+    },
+  );
 });
 
 test('createScopedFetch holds unmatched (open-mode) hosts to the base method set', async () => {
@@ -515,100 +531,10 @@ test('createScopedFetch holds unmatched (open-mode) hosts to the base method set
   ]);
 });
 
-test('PAT repository access uses the live PAT without minting and scopes both GitHub hosts', async () => {
-  const sentinel = 'github-pat-runtime-sentinel';
-  await withGithubSettings({ [GITHUB_SETTING_KEYS.pat]: sentinel }, async () => {
-    const enabledGrant = repositoryGrant({ installationId: null });
-    const access = await resolveRepositoryAccess([
-      enabledGrant,
-      repositoryGrant({
-        id: 'disabled',
-        fullName: 'Acme/Disabled',
-        installationId: null,
-        enabled: false,
-      }),
-    ]);
-
-    assert.deepEqual(access.grants, [enabledGrant]);
-    assert.equal(access.connectors.length, 3);
-    assert.deepEqual(
-      access.connectors.map(({ allowedHosts, pathPrefixes, headerName, headerValue, allowedMethods }) => ({
-        allowedHosts,
-        pathPrefixes,
-        headerName,
-        headerValue,
-        allowedMethods,
-      })),
-      [
-        {
-          allowedHosts: ['api.github.com'],
-          pathPrefixes: ['/repos/Acme/Alpha'],
-          headerName: 'Authorization',
-          headerValue: `Bearer ${sentinel}`,
-          allowedMethods: ['GET', 'POST', 'PATCH', 'PUT'],
-        },
-        {
-          allowedHosts: ['github.com'],
-          pathPrefixes: ['/Acme/Alpha', '/Acme/Alpha.git'],
-          headerName: 'Authorization',
-          headerValue: `Bearer ${sentinel}`,
-          allowedMethods: ['GET', 'POST', 'PATCH', 'PUT'],
-        },
-        {
-          allowedHosts: ['api.github.com'],
-          pathPrefixes: ['/search/code'],
-          headerName: 'Authorization',
-          headerValue: `Bearer ${sentinel}`,
-          allowedMethods: ['GET', 'POST', 'PATCH', 'PUT'],
-        },
-      ],
-    );
-
-    const plan = buildEgressPlan(
-      { mode: 'off', domains: [] },
-      { cloudflare: false },
-      access.connectors,
-    );
-    assert.equal(plan.scopes.length, 3);
-    assert.deepEqual(plan.scopes.flatMap((scope) => scope.prefixes), [
-      'https://api.github.com/repos/Acme/Alpha',
-      'https://github.com/Acme/Alpha',
-      'https://github.com/Acme/Alpha.git',
-      'https://api.github.com/search/code',
-    ]);
-    assert.deepEqual(
-      plan.scopes.flatMap((scope) => scope.network.allowedUrlPrefixes ?? []),
-      [
-        {
-          url: 'https://api.github.com/repos/Acme/Alpha',
-          transform: [{ headers: { Authorization: `Bearer ${sentinel}` } }],
-        },
-        {
-          url: 'https://github.com/Acme/Alpha',
-          transform: [{ headers: { Authorization: `Bearer ${sentinel}` } }],
-        },
-        {
-          url: 'https://github.com/Acme/Alpha.git',
-          transform: [{ headers: { Authorization: `Bearer ${sentinel}` } }],
-        },
-        {
-          url: 'https://api.github.com/search/code',
-          transform: [{ headers: { Authorization: `Bearer ${sentinel}` } }],
-        },
-      ],
-    );
-
-    // An App-era allRepos grant meant "that installation's repos"; a PAT can
-    // reach more of the account, so PAT mode must not honor it.
-    const appAllRepos = await resolveRepositoryAccess([
-      repositoryGrant({
-        id: 'app-all',
-        installationId: 42,
-        fullName: '',
-        allRepos: true,
-      }),
-    ]);
-    assert.deepEqual(appAllRepos, { grants: [], connectors: [], governsGithubHosts: true });
+test('repository access fails closed without a GitHub App and rejects malformed legacy grants', async () => {
+  await withGithubSettings({}, async () => {
+    const disconnected = await resolveRepositoryAccess([repositoryGrant()]);
+    assert.deepEqual(disconnected, { grants: [], connectors: [], governsGithubHosts: true });
 
     // A malformed persisted name (dot segment) must never become a URL
     // prefix — `Acme/..` would normalize into a match for EVERY repository.
@@ -905,7 +831,7 @@ test('repository access removes GitHub hosts from legacy connectors while preser
     allowedHosts: ['API.GITHUB.COM', 'github.com', 'api.example.com'],
     pathPrefixes: ['/repos'],
     headerName: 'Authorization',
-    headerValue: 'Bearer broad-pat',
+    headerValue: 'Bearer broad-token',
     allowedMethods: ['GET', 'POST'],
   };
 
@@ -923,11 +849,18 @@ test('repository access removes GitHub hosts from legacy connectors while preser
 });
 
 test('the repos scope refuses denied Actions endpoints while keeping rerun and cancel', async () => {
-  const sentinel = 'deny-endpoint-pat';
-  await withGithubSettings({ [GITHUB_SETTING_KEYS.pat]: sentinel }, async () => {
-    const access = await resolveRepositoryAccess([
-      repositoryGrant({ installationId: null, fullName: 'Acme/Alpha' }),
-    ]);
+  await withGithubSettings({
+    [GITHUB_SETTING_KEYS.appId]: 'endpoint-guard-app',
+    [GITHUB_SETTING_KEYS.privateKey]: APP_PRIVATE_KEY,
+  }, async () => {
+    const previousFetch = globalThis.fetch;
+    globalThis.fetch = async () =>
+      Response.json({
+        token: 'endpoint-guard-token',
+        expires_at: new Date(Date.now() + 60 * 60 * 1_000).toISOString(),
+      });
+    try {
+    const access = await resolveRepositoryAccess([repositoryGrant()]);
     const reposScope = access.connectors.find((connector) =>
       connector.pathPrefixes.some((prefix) => prefix.startsWith('/repos/')),
     );
@@ -974,6 +907,9 @@ test('the repos scope refuses denied Actions endpoints while keeping rerun and c
       false,
       'duplicate q must not pass the code-search guard',
     );
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
   });
 });
 

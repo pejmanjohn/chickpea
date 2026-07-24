@@ -13,6 +13,7 @@ import { createAdminRoutes } from '../src/admin/routes.ts';
 import {
   createInstallationToken,
   getCachedInstallationToken,
+  getGithubConnection,
   GITHUB_API_BASE,
   mintAppJwt,
   normalizePrivateKeyPem,
@@ -276,38 +277,19 @@ test('getCachedInstallationToken isolates recreated Apps with the same installat
   assert.equal(newTokenCached.token, newToken.token);
 });
 
-test('getCachedInstallationToken never returns an App token to PAT mode', async () => {
-  const { pkcs8 } = rsaKeys();
-  const app: GithubConnection = {
-    mode: 'app',
-    appId: 'mode-isolation-app',
-    privateKeyPem: pkcs8,
-  };
-  let requests = 0;
-  const fetchImpl: typeof fetch = async () => {
-    requests += 1;
-    return Response.json({
-      token: 'app-only-token',
-      expires_at: new Date(Date.now() + 60 * 60 * 1_000).toISOString(),
-    });
-  };
-
-  await getCachedInstallationToken(
-    app,
-    9_102,
-    { repositories: ['alpha'] },
-    fetchImpl,
-  );
-  await assert.rejects(
-    getCachedInstallationToken(
-      { mode: 'pat', pat: 'github-pat' },
-      9_102,
-      { repositories: ['alpha'] },
-      fetchImpl,
-    ),
-    /GitHub App is not configured/,
-  );
-  assert.equal(requests, 1);
+test('getGithubConnection ignores a legacy stored github.pat value', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    await settings.setSetting('github.pat', 'legacy-value');
+    await withEnv(
+      { GITHUB_APP_ID: undefined, GITHUB_APP_PRIVATE_KEY: undefined },
+      async () => {
+        assert.deepEqual(await getGithubConnection(settings), { mode: 'none' });
+      },
+    );
+  } finally {
+    settings.close();
+  }
 });
 
 test('direct token mints do not populate the runtime repository-token cache', async () => {
@@ -573,7 +555,7 @@ test('GitHub status isolates one failing installation instead of failing the end
   };
   try {
     await withEnv(
-      { GITHUB_APP_ID: undefined, GITHUB_APP_PRIVATE_KEY: undefined, GITHUB_PAT: undefined },
+      { GITHUB_APP_ID: undefined, GITHUB_APP_PRIVATE_KEY: undefined },
       () =>
         withFetch(fetchImpl, async () => {
           const response = await adminApp(store, settings).request('/admin/api/github/status', {
@@ -607,7 +589,7 @@ test('GitHub status stays recoverable when the stored App key is malformed', asy
   const fetchImpl: typeof fetch = async () => new Response('unreachable', { status: 500 });
   try {
     await withEnv(
-      { GITHUB_APP_ID: undefined, GITHUB_APP_PRIVATE_KEY: undefined, GITHUB_PAT: undefined },
+      { GITHUB_APP_ID: undefined, GITHUB_APP_PRIVATE_KEY: undefined },
       () =>
         withFetch(fetchImpl, async () => {
           const response = await adminApp(store, settings).request('/admin/api/github/status', {
@@ -637,7 +619,7 @@ test('GitHub status stays recoverable when the App key is rejected outright', as
   const fetchImpl: typeof fetch = async () => new Response('bad credentials', { status: 401 });
   try {
     await withEnv(
-      { GITHUB_APP_ID: undefined, GITHUB_APP_PRIVATE_KEY: undefined, GITHUB_PAT: undefined },
+      { GITHUB_APP_ID: undefined, GITHUB_APP_PRIVATE_KEY: undefined },
       () =>
         withFetch(fetchImpl, async () => {
           const response = await adminApp(store, settings).request('/admin/api/github/status', {
@@ -729,7 +711,7 @@ test('GitHub status enumerates App installations and live repository counts', as
   };
   try {
     await withEnv(
-      { GITHUB_APP_ID: undefined, GITHUB_APP_PRIVATE_KEY: undefined, GITHUB_PAT: undefined },
+      { GITHUB_APP_ID: undefined, GITHUB_APP_PRIVATE_KEY: undefined },
       () =>
         withFetch(fetchImpl, async () => {
           const response = await adminApp(store, settings).request('/admin/api/github/status', {
@@ -752,34 +734,42 @@ test('GitHub status enumerates App installations and live repository counts', as
   }
 });
 
-test('GitHub PAT repo proxy maps fields, filters by q, and never echoes the token', async () => {
+test('GitHub App repo proxy maps fields and filters by q', async () => {
+  const { pkcs8 } = rsaKeys();
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const app = adminApp(store, settings);
   const fetchImpl: typeof fetch = async (input, init) => {
+    const url = String(input);
+    if (url === `${GITHUB_API_BASE}/app/installations/42/access_tokens`) {
+      assert.deepEqual(JSON.parse(String(init?.body)), {
+        permissions: { metadata: 'read' },
+      });
+      return Response.json({
+        token: 'installation-token',
+        expires_at: new Date(Date.now() + 60 * 60 * 1_000).toISOString(),
+      });
+    }
     assert.equal(
-      String(input),
-      `${GITHUB_API_BASE}/user/repos?per_page=100&page=2&affiliation=owner%2Ccollaborator%2Corganization_member`,
+      url,
+      `${GITHUB_API_BASE}/installation/repositories?per_page=100&page=2`,
     );
-    assert.equal(new Headers(init?.headers).get('authorization'), 'Bearer github-pat-secret');
-    return Response.json([
-      { full_name: 'Acme/Alpha', private: true, default_branch: 'trunk' },
-      { full_name: 'Acme/Beta', private: false, default_branch: 'main' },
-    ]);
+    assert.equal(new Headers(init?.headers).get('authorization'), 'Bearer installation-token');
+    return Response.json({
+      total_count: 2,
+      repositories: [
+        { full_name: 'Acme/Alpha', private: true, default_branch: 'trunk' },
+        { full_name: 'Acme/Beta', private: false, default_branch: 'main' },
+      ],
+    });
   };
   try {
-    const put = await app.request('/admin/api/github/pat', {
-      method: 'PUT',
-      headers: jsonHeaders(),
-      body: JSON.stringify({ token: 'github-pat-secret' }),
-    });
-    assert.equal(put.status, 200);
-    assert.doesNotMatch(await put.text(), /github-pat-secret/);
-
-    await withEnv({ GITHUB_PAT: undefined }, () =>
+    await settings.setSetting('github.app.id', '12345');
+    await settings.setSetting('github.app.private_key', pkcs8);
+    await withEnv({ GITHUB_APP_ID: undefined, GITHUB_APP_PRIVATE_KEY: undefined }, () =>
       withFetch(fetchImpl, async () => {
         const response = await app.request(
-          '/admin/api/github/installations/pat/repos?q=alpha&page=2',
+          '/admin/api/github/installations/42/repos?q=alpha&page=2',
           { headers: auth() },
         );
         assert.equal(response.status, 200);
@@ -796,24 +786,25 @@ test('GitHub PAT repo proxy maps fields, filters by q, and never echoes the toke
   }
 });
 
-test('GitHub status, PAT, and disconnect routes are admin-auth gated', async () => {
+test('GitHub status and disconnect routes are admin-auth gated and the legacy write route is absent', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const app = adminApp(store, settings);
   try {
     const responses = await Promise.all([
       app.request('/admin/api/github/status'),
-      app.request('/admin/api/github/pat', {
-        method: 'PUT',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ token: 'must-not-store' }),
-      }),
       app.request('/admin/api/github', { method: 'DELETE' }),
     ]);
     assert.deepEqual(
       responses.map((response) => response.status),
-      [401, 401, 401],
+      [401, 401],
     );
+    const removedRoute = await app.request('/admin/api/github/pat', {
+      method: 'PUT',
+      headers: jsonHeaders(),
+      body: JSON.stringify({ token: 'must-not-store' }),
+    });
+    assert.equal(removedRoute.status, 404);
     assert.equal(await settings.getSetting('github.pat'), undefined);
   } finally {
     store.close();

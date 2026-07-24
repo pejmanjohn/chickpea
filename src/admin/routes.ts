@@ -399,22 +399,17 @@ const githubOrgSchema = v.pipe(
   v.maxLength(39),
 );
 const githubManifestSchema = v.object({ org: v.optional(githubOrgSchema) });
-const githubPatSchema = v.object({
-  token: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(4_096)),
-});
 const githubCallbackSchema = v.object({
   code: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(1_024)),
 });
-const githubInstallationIdSchema = v.union([
-  v.literal('pat'),
-  v.pipe(
-    v.string(),
-    v.regex(/^[1-9]\d*$/),
-    v.transform(Number),
-    v.integer(),
-    v.maxValue(Number.MAX_SAFE_INTEGER),
-  ),
-]);
+const githubInstallationIdSchema = v.pipe(
+  v.string(),
+  v.regex(/^[1-9]\d*$/),
+  v.transform(Number),
+  v.integer(),
+  v.maxValue(Number.MAX_SAFE_INTEGER),
+);
+const LEGACY_GITHUB_PAT_SETTING_KEY = 'github.pat';
 const githubReposQuerySchema = v.object({
   q: v.optional(v.pipe(v.string(), v.trim(), v.maxLength(256))),
   page: v.optional(
@@ -868,11 +863,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       if (connection.mode !== 'app') {
         return c.json({
           mode: connection.mode,
-          // An environment-managed PAT always wins at resolution time, so the
-          // UI must not offer a stored "replacement" that would never apply.
-          ...(connection.mode === 'pat'
-            ? { patSource: process.env.GITHUB_PAT?.trim() ? 'env' : 'stored' }
-            : {}),
           referencingProfiles,
         });
       }
@@ -1021,25 +1011,18 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
   });
 
-  app.put('/admin/api/github/pat', async (c) => {
-    const parsed = v.safeParse(githubPatSchema, await readJson(c.req));
-    if (!parsed.success) {
-      return invalidRequest(c);
-    }
-    try {
-      await settings(c).setSetting(GITHUB_SETTING_KEYS.pat, parsed.output.token);
-      return c.json({ ok: true });
-    } catch (err) {
-      return internalError(c, err);
-    }
-  });
-
   app.delete('/admin/api/github', async (c) => {
     try {
       const referencingProfiles = (await store(c).listAgents())
         .filter((agent) => agent.repositories.length > 0)
         .map(({ id, name }) => ({ id, name }));
-      await settings(c).applySettingsPatch({ delete: Object.values(GITHUB_SETTING_KEYS) });
+      await settings(c).applySettingsPatch({
+        delete: [
+          ...Object.values(GITHUB_SETTING_KEYS),
+          // Cleanup only: older installs may still have this now-ignored key.
+          LEGACY_GITHUB_PAT_SETTING_KEY,
+        ],
+      });
       return c.json({ ok: true, referencingProfiles });
     } catch (err) {
       return internalError(c, err);
@@ -1057,16 +1040,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
     try {
       const connection = await getGithubConnection(settings(c));
-      if (connection.mode === 'none') {
+      if (connection.mode !== 'app') {
         return c.json({ error: 'github_not_configured' }, 409);
-      }
-      const patRequest = parsedId.output === 'pat';
-      if ((connection.mode === 'pat') !== patRequest) {
-        return invalidRequest(c);
       }
       const page = await listInstallationRepos(
         connection,
-        patRequest ? null : parsedId.output,
+        parsedId.output,
         {
           q: parsedQuery.output.q ?? '',
           page: parsedQuery.output.page ?? 1,
@@ -1123,10 +1102,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (!source) {
       return c.json({ error: 'unrecognized_source' }, 400);
     }
-    const githubConnection = await getGithubConnection(settings(c));
-    const token =
-      process.env.GITHUB_TOKEN?.trim() ||
-      (githubConnection.mode === 'pat' ? githubConnection.pat : undefined);
+    const token = process.env.GITHUB_TOKEN?.trim();
     try {
       const resolution = await resolveSkillSource(source, fetch, token);
       return c.json({ resolution });

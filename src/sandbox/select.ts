@@ -7,6 +7,7 @@ export interface SandboxSelectionInput {
   target: 'cloudflare' | 'node';
   enabled: boolean;
   localEnabled: boolean;
+  appConnected: boolean;
   repositoryGrants: readonly RepositoryGrant[];
 }
 
@@ -19,7 +20,8 @@ export function selectSandbox(input: SandboxSelectionInput): SandboxSelection {
   if (input.target === 'node') {
     return input.localEnabled ? 'local' : 'bash';
   }
-  return validEnabledRepositoryGrants(input.repositoryGrants).length > 0
+  return input.appConnected &&
+    validEnabledRepositoryGrants(input.repositoryGrants).length > 0
     ? 'cloudflare'
     : 'bash';
 }

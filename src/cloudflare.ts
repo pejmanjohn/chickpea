@@ -186,8 +186,8 @@ async function githubSandboxOutbound(
     const policy = await stub.getEgressPolicy();
     if (!policy.mode) return denySandboxOutbound();
 
-    // Credential-free preflight: bind the stored policy's own mode before
-    // loading any PAT/private key. PAT policy never carries App-wide grants.
+    // Credential-free preflight: validate the stored App-bound policy before
+    // loading the private key.
     const preflightGrants = sandboxEgressGrantsForMode(policy, policy.mode);
     if (!preflightGrants) return denySandboxOutbound();
     const preflightDecision = decideSandboxEgress({
@@ -201,13 +201,11 @@ async function githubSandboxOutbound(
     }
 
     // Resolve the credential only after the preflight decision, then bind the
-    // stored policy to the current mode. A mode switch invalidates the running
-    // container until a fresh turn reconfigures it. The second decision makes
-    // the PAT allRepos filter explicit against the live connection mode before
-    // any credential is minted or attached.
+    // stored policy to the current mode. Disconnecting the App invalidates the
+    // running container until a fresh turn reconfigures it.
     const settings = getSettingsStore(workerEnv);
     const connection = await getGithubConnection(settings);
-    if (connection.mode === 'none') return denySandboxOutbound();
+    if (connection.mode !== 'app') return denySandboxOutbound();
     const grants = sandboxEgressGrantsForMode(policy, connection.mode);
     if (!grants) return denySandboxOutbound();
     const decision = decideSandboxEgress({
@@ -220,20 +218,18 @@ async function githubSandboxOutbound(
       return denySandboxOutbound();
     }
 
-    let credential: string;
-    if (connection.mode === 'app') {
-      const installation = resolveRepositoryInstallationScope(grants, decision.repositories);
-      if (!installation) return denySandboxOutbound();
-      const { token } = await getCachedInstallationToken(connection, installation.id, {
-        repositories: installation.repositories,
+    const installation = resolveRepositoryInstallationScope(grants, decision.repositories);
+    if (!installation) return denySandboxOutbound();
+    const { token: credential } = await getCachedInstallationToken(
+      connection,
+      installation.id,
+      {
+        ...(installation.repositories
+          ? { repositories: installation.repositories }
+          : {}),
         permissions: REPOSITORY_PERMISSIONS,
-      });
-      credential = token;
-    } else if (connection.mode === 'pat') {
-      credential = connection.pat;
-    } else {
-      return denySandboxOutbound();
-    }
+      },
+    );
 
     // Bind this request's decision to the turn captured before policy loading.
     // A reconfiguration during credential resolution must be decided again by

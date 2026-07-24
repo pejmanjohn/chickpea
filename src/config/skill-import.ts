@@ -177,8 +177,8 @@ interface GitTreeEntry {
 
 /**
  * Resolve a parsed source into importable skill candidates. Costs
- * 2 + min(N, MAX_SCANNED_SKILLS) subrequests. `token` (a GitHub PAT) is
- * optional; when present it raises rate limits and reaches private repos.
+ * 2 + min(N, MAX_SCANNED_SKILLS) subrequests. `token` is the optional
+ * `GITHUB_TOKEN` used for higher rate limits and private-repository reads.
  */
 export async function resolveSkillSource(
   parsed: ParsedSkillSource,

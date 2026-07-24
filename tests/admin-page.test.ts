@@ -4131,6 +4131,20 @@ test('Repositories tab explains grants-implied sandbox availability without a pr
   assert.doesNotMatch(harness.app.innerHTML, /data-action="profile-sandbox"/);
 });
 
+test('GitHub settings exposes only the required GitHub App authentication path', () => {
+  const html = renderAdminPage();
+
+  assert.match(
+    html,
+    /Required for repository access and the coding sandbox/,
+  );
+  assert.match(html, /Create GitHub App/);
+  assert.doesNotMatch(
+    html,
+    /Use a personal access token|github-pat|GITHUB_PAT|patSource|\/admin\/api\/github\/pat/,
+  );
+});
+
 test('Settings renders the three key-provider rows and hides Workers AI on the Node target', async () => {
   const harness = runAdminPageHarness();
   await flushAsync();

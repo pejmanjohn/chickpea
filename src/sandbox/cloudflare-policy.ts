@@ -9,7 +9,7 @@ const SANDBOX_EGRESS_POLICY_STORAGE_KEY = 'chickpea.sandbox.egress-policy.v2';
 const SANDBOX_TURN_ID_STORAGE_KEY = 'chickpea.sandbox.turn-id.v1';
 const SANDBOX_TURN_PROGRESS_STORAGE_KEY = 'chickpea.sandbox.turn-progress.v1';
 
-export type SandboxCredentialMode = 'app' | 'pat';
+export type SandboxCredentialMode = 'app';
 
 export interface SandboxEgressPolicy {
   grants: RepositoryGrant[];
@@ -101,29 +101,19 @@ export class SandboxPolicyState {
   }
 }
 
-/**
- * Bind policy to the live credential mode and mirror the worker-side PAT rule:
- * App-wide installation grants never authorize a PAT request.
- */
+/** Bind stored policy to the sole supported live credential mode. */
 export function sandboxEgressGrantsForMode(
   policy: SandboxEgressPolicy,
-  currentMode: SandboxCredentialMode,
+  currentMode: SandboxCredentialMode | 'none',
 ): RepositoryGrant[] | undefined {
   if (policy.mode !== currentMode) return undefined;
-  const grants = validEnabledRepositoryGrants(policy.grants);
-  return currentMode === 'pat'
-    ? grants.filter((grant) => grant.allRepos !== true)
-    : grants;
+  return validEnabledRepositoryGrants(policy.grants);
 }
 
 function isSandboxEgressPolicy(value: unknown): value is SandboxEgressPolicy {
   if (typeof value !== 'object' || value === null) return false;
   const candidate = value as Partial<SandboxEgressPolicy>;
-  if (
-    candidate.mode !== null &&
-    candidate.mode !== 'app' &&
-    candidate.mode !== 'pat'
-  ) {
+  if (candidate.mode !== null && candidate.mode !== 'app') {
     return false;
   }
   return (

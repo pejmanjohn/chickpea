@@ -101,31 +101,35 @@ export function matchesGrantedCodeSearch(
 export function resolveRepositoryInstallationScope(
   grants: readonly RepositoryGrant[],
   repositories: readonly string[],
-): { id: number; repositories: string[] } | undefined {
+): { id: number; repositories?: string[] } | undefined {
   const enabled = validEnabledRepositoryGrants(grants);
   const installationIds = new Set<number>();
   const repositoryNames: string[] = [];
+  let installationWide = false;
   for (const repository of repositories) {
     const grant =
-      enabled.find(
-        (candidate) =>
-          candidate.allRepos !== true &&
-          candidate.installationId !== null &&
-          repositoryGrantMatches(candidate, repository),
-      ) ??
       enabled.find(
         (candidate) =>
           candidate.allRepos === true &&
           candidate.installationId !== null &&
           repositoryGrantMatches(candidate, repository),
+      ) ??
+      enabled.find(
+        (candidate) =>
+          candidate.allRepos !== true &&
+          candidate.installationId !== null &&
+          repositoryGrantMatches(candidate, repository),
       );
     if (!grant || grant.installationId === null) return undefined;
     installationIds.add(grant.installationId);
+    if (grant.allRepos === true) installationWide = true;
     repositoryNames.push(repository.slice(repository.indexOf('/') + 1));
   }
   const [id] = installationIds;
   if (id === undefined || installationIds.size !== 1) return undefined;
-  return { id, repositories: [...new Set(repositoryNames)].sort() };
+  return installationWide
+    ? { id }
+    : { id, repositories: [...new Set(repositoryNames)].sort() };
 }
 
 export function decideSandboxEgress(input: SandboxEgressInput): SandboxEgressDecision {
@@ -237,8 +241,6 @@ function isDeniedCrossRepositoryCompare(
   } catch {
     return true;
   }
-  if (basehead.includes('/')) return true;
-
   const separators = [...basehead.matchAll(/\.{2,}/g)];
   const separator = separators[0];
   if (
@@ -264,9 +266,14 @@ function isDeniedCrossRepositoryCompare(
     if (colon === 0 || colon !== ref.lastIndexOf(':') || colon === ref.length - 1) {
       return true;
     }
-    const owner = ref.slice(0, colon);
+    const repositoryPrefix = ref.slice(0, colon);
+    const slash = repositoryPrefix.indexOf('/');
+    const owner =
+      slash === -1 ? repositoryPrefix : repositoryPrefix.slice(0, slash);
     if (
-      !GITHUB_OWNER_PATTERN.test(owner) ||
+      (slash === -1
+        ? !GITHUB_OWNER_PATTERN.test(repositoryPrefix)
+        : !isValidRepositoryFullName(repositoryPrefix)) ||
       owner.toLowerCase() !== grantedOwner.toLowerCase()
     ) {
       return true;

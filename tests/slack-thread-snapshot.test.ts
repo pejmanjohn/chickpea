@@ -220,7 +220,6 @@ test('slack-thread uses frozen repository grants with a live token that stays ou
         CLOUDFLARE_ACCOUNT_ID: undefined,
         GITHUB_APP_ID: undefined,
         GITHUB_APP_PRIVATE_KEY: undefined,
-        GITHUB_PAT: undefined,
       },
       async () => {
         // Freeze the channel thread before GitHub credentials exist.

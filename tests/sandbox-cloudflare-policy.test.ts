@@ -40,11 +40,11 @@ const PULL_REQUEST: TurnPullRequestProgress = {
   branch: 'chickpea/fix-42',
 };
 
-test('stored PAT policy filters App-wide grants before the egress decision', async () => {
+test('stored App policy preserves installation-wide grants for egress decisions', async () => {
   const state = new SandboxPolicyState(new MemoryPolicyStorage());
   await state.configureEgress(
     {
-      mode: 'pat',
+      mode: 'app',
       grants: [
         grant(),
         grant({
@@ -54,34 +54,34 @@ test('stored PAT policy filters App-wide grants before the egress decision', asy
         }),
       ],
     },
-    'turn-pat',
+    'turn-app-wide',
   );
 
   const policy = await state.getEgressPolicy();
-  const patGrants = sandboxEgressGrantsForMode(policy, 'pat');
-  assert.ok(patGrants);
-  assert.deepEqual(patGrants, [grant()]);
+  const appGrants = sandboxEgressGrantsForMode(policy, 'app');
+  assert.ok(appGrants);
+  assert.equal(appGrants.length, 2);
   assert.equal(
     decideSandboxEgress({
       url: 'https://api.github.com/repos/Acme/Beta/pulls',
       method: 'POST',
-      grants: patGrants,
-      allowedHosts: [],
-    }).allowed,
-    false,
-  );
-  assert.equal(
-    decideSandboxEgress({
-      url: 'https://api.github.com/repos/Acme/Alpha/pulls',
-      method: 'POST',
-      grants: patGrants,
+      grants: appGrants,
       allowedHosts: [],
     }).allowed,
     true,
   );
+  assert.equal(
+    decideSandboxEgress({
+      url: 'https://api.github.com/repos/Other/Beta/pulls',
+      method: 'POST',
+      grants: appGrants,
+      allowedHosts: [],
+    }).allowed,
+    false,
+  );
 });
 
-test('stored egress policy rejects a different live credential mode', async () => {
+test('stored egress policy denies a disconnected live credential mode', async () => {
   const state = new SandboxPolicyState(new MemoryPolicyStorage());
   await state.configureEgress(
     { mode: 'app', grants: [grant()] },
@@ -89,8 +89,22 @@ test('stored egress policy rejects a different live credential mode', async () =
   );
 
   const policy = await state.getEgressPolicy();
-  assert.equal(sandboxEgressGrantsForMode(policy, 'pat'), undefined);
+  assert.equal(sandboxEgressGrantsForMode(policy, 'none'), undefined);
   assert.deepEqual(sandboxEgressGrantsForMode(policy, 'app'), [grant()]);
+});
+
+test('legacy stored non-App policy is rejected fail closed', async () => {
+  const storage = new MemoryPolicyStorage();
+  await storage.put('chickpea.sandbox.egress-policy.v2', {
+    mode: 'pat',
+    grants: [grant()],
+  });
+  const state = new SandboxPolicyState(storage);
+
+  assert.deepEqual(await state.getEgressPolicy(), {
+    mode: null,
+    grants: [],
+  });
 });
 
 test('pull request progress rejects a stale captured turn id', async () => {

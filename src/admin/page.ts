@@ -731,7 +731,6 @@ details[open].advanced summary::before {
 .github-installation-copy { display: flex; flex: 1; flex-direction: column; gap: 2px; min-width: 0; }
 .github-installation-name { color: var(--text); font-family: var(--mono); font-size: 0.8125rem; font-weight: 700; overflow-wrap: anywhere; }
 .github-installation-meta { align-items: center; display: flex; flex-wrap: wrap; gap: 7px; }
-.github-token-mask { color: var(--text-2); font-family: var(--mono); font-size: 0.8125rem; letter-spacing: 0.08em; }
 .fav-sub { color: var(--text-3); font-size: 0.65625rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
 .fav-list { display: flex; flex-direction: column; gap: 6px; }
 .fav-row { align-items: center; background: var(--bg); border-radius: 13px; border-top: 0; box-shadow: 0 1.5px 0 rgba(59, 50, 32, 0.08); display: flex; gap: 10px; padding: 8px 12px; }
@@ -1428,8 +1427,6 @@ details[open].advanced summary::before {
     githubBusy: "",
     githubManifestOpen: false,
     githubOrg: "",
-    githubPatOpen: false,
-    githubPatDraft: "",
     githubDisconnectConfirm: false,
     githubDisconnectError: "",
     // Install-level coding sandbox. This is deliberately separate from profile
@@ -2054,14 +2051,13 @@ details[open].advanced summary::before {
     var profileWarning = profiles.length
       ? '<b style="font-weight:500; color:var(--text);">' + profiles.length + ' profile' + (profiles.length === 1 ? "" : "s") + '</b> ' + (profiles.length === 1 ? "references" : "reference") + ' GitHub repositories &mdash; ' + names + '. Those repository selections stay saved, but cannot be used until GitHub is reconnected.'
       : 'No profiles currently reference GitHub repositories.';
-    var connectionName = status.mode === "app" ? "GitHub App" : "personal access token";
-    var appNote = status.mode === "app" ? ' The GitHub App remains installed on GitHub until you remove it there.' : "";
+    var appNote = ' The GitHub App remains installed on GitHub until you remove it there.';
     var button = state.githubBusy === "disconnect"
       ? '<button type="button" class="btn btn-danger" disabled><span class="spinner"></span>Disconnecting&hellip;</button>'
       : '<button type="button" class="btn btn-danger" data-action="github-disconnect-confirm">Disconnect GitHub</button>';
     return '<div class="modal-backdrop"><div class="modal-card" role="dialog" aria-modal="true" aria-label="Disconnect GitHub" tabindex="-1" data-role="github-disconnect-dialog">' +
       '<h2 class="modal-title">Disconnect GitHub?</h2>' +
-      '<p class="modal-body">Chickpea will remove the stored ' + connectionName + ' credentials. Environment-configured credentials, if present, remain active. ' + profileWarning + appNote + '</p>' +
+      '<p class="modal-body">Chickpea will remove the stored GitHub App credentials. Environment-configured App credentials, if present, remain active. ' + profileWarning + appNote + '</p>' +
       (state.githubDisconnectError ? '<p class="error" style="margin-top:10px;" role="alert" aria-live="assertive" tabindex="-1" data-role="github-disconnect-error">' + esc(state.githubDisconnectError) + '</p>' : "") +
       '<div class="modal-foot"><button type="button" class="btn btn-ghost" data-action="github-disconnect-cancel"' + (state.githubBusy === "disconnect" ? " disabled" : "") + '>Keep connected</button><span class="spacer"></span>' + button + '</div></div></div>';
   }
@@ -3061,7 +3057,7 @@ details[open].advanced summary::before {
       var accountLogin = grant.installationId === null
         ? (repositoryOwner(grant.fullName) || grant.accountLogin)
         : grant.accountLogin;
-      var key = grant.installationId === null ? "pat:" + accountLogin : "app:" + grant.installationId;
+      var key = grant.installationId === null ? "legacy:" + accountLogin : "app:" + grant.installationId;
       var group = groups.get(key);
       if (!group) {
         group = { installationId: grant.installationId, accountLogin: accountLogin, grants: [] };
@@ -3075,18 +3071,13 @@ details[open].advanced summary::before {
   }
 
   function repositoryGrantMatchesPicker(grant, picker) {
-    if (picker.installationId !== null) {
-      if (grant.installationId === picker.installationId) return true;
-      // Grants saved under PAT auth carry no installation id. When the same
-      // account is later managed through an App installation, adopt them so a
-      // Manage → Apply pass rewrites them with the installation id instead of
-      // stranding them (PAT-era grants are skipped by App-mode runtime).
-      return grant.installationId === null &&
-        grant.allRepos !== true &&
-        repositoryOwner(grant.fullName) === picker.accountLogin;
-    }
-    if (grant.installationId !== null) return false;
-    return !picker.patOwner || repositoryOwner(grant.fullName) === picker.patOwner;
+    if (grant.installationId === picker.installationId) return true;
+    // Older grants may carry no installation id. Once the same account is
+    // managed through an App installation, adopt those explicit rows so an
+    // Apply pass can bind them to the installation after verifying access.
+    return grant.installationId === null &&
+      grant.allRepos !== true &&
+      repositoryOwner(grant.fullName) === picker.accountLogin;
   }
 
   function repositoryAccountChoicesHtml(status) {
@@ -3122,9 +3113,7 @@ details[open].advanced summary::before {
     var picker = state.repositoryPicker;
     if (!picker) return "";
     var totalCount = Number(picker.totalCount || 0);
-    var sourceHint = picker.installationId === null
-      ? 'This token can access ' + totalCount + ' repositories. Type to search.'
-      : 'This installation has ' + totalCount + ' repositories. Type to search.';
+    var sourceHint = 'This installation has ' + totalCount + ' repositories. Type to search.';
     if (picker.truncated) {
       sourceHint += ' Not every repository is shown — type more of a name to narrow the search.';
     }
@@ -3173,16 +3162,12 @@ details[open].advanced summary::before {
           '<button type="button" class="x-btn" data-action="repo-remove" data-repository-id="' + esc(grant.id) + '" aria-label="Remove ' + esc(grant.fullName) + '">&times;</button></div>';
       }).join("");
     if (!rows) rows = '<p class="hint">No repositories selected for this account.</p>';
-    // A group's Manage target follows the ACTIVE connection mode, not the mode
-    // the grant was saved under: after a PAT→App switch (or back), the old
-    // source would hit the proxy's mode check and 400. A group with no valid
-    // target under the current mode keeps its rows but gets a hint instead of
-    // a dead Manage button.
+    // Older grants without an installation id can be adopted by a matching
+    // App account. A group with no valid target keeps its rows but gets a hint
+    // instead of a dead Manage button.
     var mode = state.githubStatus ? state.githubStatus.mode : "none";
     var manage = "";
-    if (mode === "pat") {
-      manage = '<button type="button" class="btn btn-soft btn-sm" data-action="repo-manage" data-installation="pat" data-account="' + esc(group.accountLogin) + '">Manage</button>';
-    } else if (mode === "app") {
+    if (mode === "app") {
       var installations = (state.githubStatus && state.githubStatus.installations) || [];
       var target = null;
       installations.forEach(function (installation) {
@@ -3224,7 +3209,7 @@ details[open].advanced summary::before {
       return capabilityHint + '<div class="empty"><p class="field-error" role="alert">' + esc(state.githubError || "Could not load GitHub settings.") + '</p>' +
         '<button type="button" class="btn btn-soft btn-sm" data-action="github-refresh">Retry</button></div>';
     }
-    if (status.mode === "none") {
+    if (status.mode !== "app") {
       return capabilityHint + '<div class="empty"><p class="field-label">Connect GitHub to give this profile access to repositories.</p>' +
         '<button type="button" class="btn btn-primary" data-action="open-settings" data-section="github-settings">Connect GitHub</button></div>';
     }
@@ -3819,35 +3804,17 @@ details[open].advanced summary::before {
         : '<button type="submit" class="btn btn-primary btn-sm">Continue to GitHub &nearr;</button>') + '</div></form></div>';
   }
 
-  function githubPatFormHtml() {
-    if (!state.githubPatOpen) return "";
-    var busy = state.githubBusy === "pat";
-    return '<div class="prov-body"><form data-action="github-pat-form" style="display:flex; flex-direction:column; gap:12px;">' +
-      '<div class="field"><label class="field-label" for="github-pat">Fine-grained personal access token</label>' +
-      '<input id="github-pat" class="input mono" name="token" type="password" autocomplete="off" placeholder="github_pat_&hellip;" value="' + esc(state.githubPatDraft) + '" data-action="github-pat-input"' + (busy ? " disabled" : "") + '>' +
-      '<p class="hint">The token is write-only: Chickpea stores it, but never sends it back to this page.</p></div>' +
-      githubErrorHtml() +
-      '<div class="prov-actions" style="margin-left:0;"><button type="button" class="btn btn-ghost btn-sm" data-action="github-pat-cancel"' + (busy ? " disabled" : "") + '>Cancel</button>' +
-      (busy
-        ? '<button type="submit" class="btn btn-primary btn-sm" disabled><span class="spinner"></span>Saving&hellip;</button>'
-        : '<button type="submit" class="btn btn-primary btn-sm">Save token</button>') + '</div></form></div>';
-  }
-
   function githubDisconnectPanelHtml() {
     return '<div class="danger-panel"><div class="danger-copy"><span class="danger-title">Disconnect GitHub</span>' +
-      '<span class="hint">Removes stored GitHub credentials from Chickpea. Environment-configured credentials stay active, and repository selections on profiles stay saved.</span></div>' +
+      '<span class="hint">Removes stored GitHub App credentials from Chickpea. Environment-configured App credentials stay active, and repository selections on profiles stay saved.</span></div>' +
       '<button type="button" class="btn btn-danger" data-action="github-disconnect-open"' + (state.githubBusy ? " disabled" : "") + '>Disconnect</button></div>';
   }
 
   function githubNoneHtml() {
     var manifestBody = githubManifestFormHtml();
-    var patBody = githubPatFormHtml();
     return '<div class="prov-row"><div class="prov-head"><div class="prov-id"><span class="prov-name">GitHub App</span>' +
-      '<span class="prov-sub">Recommended &middot; scoped installations and short-lived access tokens</span></div>' +
-      '<div class="prov-actions"><button type="button" class="btn btn-primary btn-sm" data-action="github-manifest-open"' + (state.githubBusy ? " disabled" : "") + '>Create GitHub App</button></div></div>' + manifestBody + '</div>' +
-      '<div class="prov-row"><div class="prov-head"><div class="prov-id"><span class="prov-name">Personal access token</span>' +
-      '<span class="prov-sub">Quick start &middot; use a fine-grained token you manage</span></div>' +
-      '<div class="prov-actions"><button type="button" class="btn btn-soft btn-sm" data-action="github-pat-open"' + (state.githubBusy ? " disabled" : "") + '>Use a personal access token</button></div></div>' + patBody + '</div>';
+      '<span class="prov-sub">Required for repository access and the coding sandbox &middot; scoped installations and short-lived tokens</span></div>' +
+      '<div class="prov-actions"><button type="button" class="btn btn-primary btn-sm" data-action="github-manifest-open"' + (state.githubBusy ? " disabled" : "") + '>Create GitHub App</button></div></div>' + manifestBody + '</div>';
   }
 
   function githubAppHtml(status) {
@@ -3881,26 +3848,9 @@ details[open].advanced summary::before {
       githubDisconnectPanelHtml();
   }
 
-  function githubPatHtml() {
-    // An environment-managed token always overrides stored values, so a
-    // stored "replacement" would report success while changing nothing.
-    var envManaged = state.githubStatus && state.githubStatus.patSource === "env";
-    var provenance = envManaged
-      ? '<span class="badge badge-src">Environment</span><span class="hint">Set via GITHUB_PAT &mdash; manage it where the deployment&rsquo;s environment variables live.</span>'
-      : '<span class="hint">Write-only</span>';
-    var actions = envManaged
-      ? ""
-      : '<div class="prov-actions"><button type="button" class="btn btn-soft btn-sm" data-action="github-pat-open"' + (state.githubBusy ? " disabled" : "") + '>Replace token</button></div>';
-    return '<div class="prov-row"><div class="prov-head"><div class="prov-id"><span class="prov-name">Fine-grained personal access token</span>' +
-      '<span class="github-token-mask" aria-label="Configured write-only token">&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;</span></div>' +
-      '<div class="prov-status"><span class="badge badge-on"><span class="dot"></span>Configured</span>' + provenance + '</div>' +
-      actions + '</div>' +
-      (envManaged ? "" : githubPatFormHtml()) + '</div>' + githubDisconnectPanelHtml();
-  }
-
   function githubSectionHtml() {
     var status = state.githubStatus;
-    var badge = status && status.mode !== "none"
+    var badge = status && status.mode === "app"
       ? '<span class="badge badge-on"><span class="dot"></span>Connected</span>'
       : '<span class="badge badge-off"><span class="dot"></span>Not connected</span>';
     var head = '<div class="section-head"><div><h2 class="section-title">GitHub</h2>' +
@@ -3914,7 +3864,6 @@ details[open].advanced summary::before {
     }
     var body;
     if (status.mode === "app") body = githubAppHtml(status);
-    else if (status.mode === "pat") body = githubPatHtml();
     else body = githubNoneHtml();
     return '<section class="section" id="github-settings">' + head + body + '</section>';
   }
@@ -4300,7 +4249,7 @@ details[open].advanced summary::before {
   }
 
   function uniqueRepositoryGrantId(fullName, installationId, usedIds) {
-    var source = installationId === null ? "pat" : String(installationId);
+    var source = String(installationId);
     var slug = String(fullName || "all").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 80) || "repository";
     var base = "repo_" + source + "_" + slug + "_" + repositoryGrantHash(source + ":" + fullName);
     var candidate = base.slice(0, 128);
@@ -4333,19 +4282,15 @@ details[open].advanced summary::before {
     picker.error = "";
     render();
     focusRepositorySearch();
-    var source = picker.installationId === null ? "pat" : String(picker.installationId);
-    var serverQuery = picker.patOwner
-      ? picker.patOwner + "/" + (picker.query || "")
-      : (picker.query || "");
-    var path = "/admin/api/github/installations/" + encodeURIComponent(source) + "/repos?q=" + encodeURIComponent(serverQuery) + "&page=1";
+    var source = String(picker.installationId);
+    var path = "/admin/api/github/installations/" + encodeURIComponent(source) + "/repos?q=" + encodeURIComponent(picker.query || "") + "&page=1";
     return api(path).then(function (body) {
       if (state.repositoryPicker !== picker || picker.requestId !== requestId) return;
       picker.repos = (body && body.repos) || [];
       picker.totalCount = Number((body && body.totalCount) || 0);
       picker.truncated = !!(body && body.truncated);
       // Accumulate every name this picker session has confirmed the current
-      // connection can actually reach — Apply uses it to decide which adopted
-      // PAT-era selections may be restamped with the installation id.
+      // App installation can reach before adopting an older unbound grant.
       picker.seenFullNames = picker.seenFullNames || {};
       picker.repos.forEach(function (repo) {
         if (repo && repo.fullName) picker.seenFullNames[repo.fullName] = true;
@@ -4365,19 +4310,16 @@ details[open].advanced summary::before {
 
   function openRepositoryPicker(installationId, accountLogin) {
     if (!state.profileDraft) return;
-    var patOwner = installationId === null && accountLogin !== "Personal access token" ? accountLogin : "";
     var selected = Array.from(new Set((state.profileDraft.repositories || []).filter(function (grant) {
       return grant.enabled && grant.allRepos !== true && repositoryGrantMatchesPicker(grant, {
         installationId: installationId,
-        accountLogin: accountLogin,
-        patOwner: patOwner
+        accountLogin: accountLogin
       });
     }).map(function (grant) { return grant.fullName; })));
     resetRepositoryTransientState();
     state.repositoryPicker = {
       installationId: installationId,
-      accountLogin: installationId === null ? (patOwner || "Personal access token") : accountLogin,
-      patOwner: patOwner,
+      accountLogin: accountLogin,
       query: "",
       repos: [],
       totalCount: 0,
@@ -4391,11 +4333,7 @@ details[open].advanced summary::before {
 
   function openRepositoryAdd() {
     var status = state.githubStatus;
-    if (!status || status.mode === "none") return;
-    if (status.mode === "pat") {
-      openRepositoryPicker(null, "Personal access token");
-      return;
-    }
+    if (!status || status.mode !== "app") return;
     var installations = status.installations || [];
     if (installations.length === 1) {
       openRepositoryPicker(Number(installations[0].id), installations[0].accountLogin);
@@ -4451,11 +4389,9 @@ details[open].advanced summary::before {
     });
     selected.forEach(function (fullName) {
       var prior = priorByName.get(fullName);
-      // An adopted PAT-era selection may only be restamped with the
-      // installation id once this picker session has SEEN the repo in the
-      // installation's own listing — otherwise the App may not have access
-      // and a silent restamp would persist a grant the token mint can never
-      // honor. Unconfirmed adoptees keep their original PAT-era grant.
+      // An older unbound selection may only be bound to the installation once
+      // this picker session has SEEN the repo in its listing. Otherwise the App
+      // may not have access, so the unconfirmed row keeps its prior shape.
       if (
         picker.installationId !== null &&
         prior && prior.installationId === null &&
@@ -4465,7 +4401,7 @@ details[open].advanced summary::before {
         next.push(prior);
         return;
       }
-      var accountLogin = picker.installationId === null ? repositoryOwner(fullName) : picker.accountLogin;
+      var accountLogin = picker.accountLogin;
       var id = prior ? prior.id : uniqueRepositoryGrantId(fullName, picker.installationId, usedIds);
       usedIds.add(id);
       next.push({
@@ -4567,30 +4503,6 @@ details[open].advanced summary::before {
     });
   }
 
-  function saveGithubPat(formData) {
-    if (state.githubBusy) return;
-    var token = String(formData.get("token") || "").trim();
-    if (!token) {
-      state.githubError = "Paste a fine-grained personal access token.";
-      render();
-      return;
-    }
-    state.githubStatusRequestId += 1;
-    state.githubBusy = "pat";
-    state.githubError = "";
-    render();
-    postJson("/admin/api/github/pat", "PUT", { token: token }).then(function () {
-      state.githubBusy = "";
-      state.githubPatDraft = "";
-      state.githubPatOpen = false;
-      return loadGithubStatus();
-    }).then(render).catch(function (error) {
-      state.githubBusy = "";
-      state.githubError = (error && (error.serverMessage || error.message)) || "Could not save the GitHub token.";
-      render();
-    });
-  }
-
   function disconnectGithub() {
     if (state.githubBusy) return;
     state.githubStatusRequestId += 1;
@@ -4602,8 +4514,6 @@ details[open].advanced summary::before {
       state.githubDisconnectConfirm = false;
       state.githubDisconnectError = "";
       state.githubManifestOpen = false;
-      state.githubPatOpen = false;
-      state.githubPatDraft = "";
       state.githubStatus = null;
       state.githubStatusLoaded = false;
       render();
@@ -5331,10 +5241,9 @@ details[open].advanced summary::before {
       return;
     }
 
-    // PAT writes and disconnects are short, atomic transitions. Match the
-    // Slack credential lock: do not let navigation or another action make the
-    // operation appear canceled while its request is still live.
-    if (state.githubBusy === "pat" || state.githubBusy === "disconnect") return;
+    // Disconnect is an atomic transition. Do not let navigation or another
+    // action make the operation appear canceled while its request is live.
+    if (state.githubBusy === "disconnect") return;
 
     // A credential replacement is a short, atomic transition. Do not let a
     // navigation or second connection action make it look canceled while the
@@ -5418,11 +5327,8 @@ details[open].advanced summary::before {
     if (action === "repo-manage") {
       var repoInstallation = target.getAttribute("data-installation");
       var repoAccount = target.getAttribute("data-account") || "GitHub";
-      if (repoInstallation === "pat") openRepositoryPicker(null, repoAccount);
-      else {
-        var repoInstallationId = Number(repoInstallation);
-        if (Number.isInteger(repoInstallationId) && repoInstallationId > 0) openRepositoryPicker(repoInstallationId, repoAccount);
-      }
+      var repoInstallationId = Number(repoInstallation);
+      if (Number.isInteger(repoInstallationId) && repoInstallationId > 0) openRepositoryPicker(repoInstallationId, repoAccount);
     }
     if (action === "repo-remove") { removeRepositoryGrant(target.getAttribute("data-repository-id") || ""); }
     if (action === "repo-picker-cancel") { closeRepositoryPicker(); }
@@ -5448,7 +5354,6 @@ details[open].advanced summary::before {
     if (state.githubBusy && action.indexOf("github-") === 0) return;
     if (action === "github-manifest-open") {
       state.githubManifestOpen = true;
-      state.githubPatOpen = false;
       state.githubError = "";
       render();
     }
@@ -5457,20 +5362,8 @@ details[open].advanced summary::before {
       state.githubError = "";
       render();
     }
-    if (action === "github-pat-open") {
-      state.githubPatOpen = true;
-      state.githubManifestOpen = false;
-      state.githubError = "";
-      render();
-    }
-    if (action === "github-pat-cancel") {
-      state.githubPatOpen = false;
-      state.githubPatDraft = "";
-      state.githubError = "";
-      render();
-    }
     if (action === "github-refresh") { refreshGithubStatus(); }
-    if (action === "github-disconnect-open" && state.githubStatus && state.githubStatus.mode !== "none") {
+    if (action === "github-disconnect-open" && state.githubStatus && state.githubStatus.mode === "app") {
       state.githubDisconnectConfirm = true;
       state.githubDisconnectError = "";
       render();
@@ -5761,7 +5654,6 @@ details[open].advanced summary::before {
     // results container to keep the input focused.
     if (action === "prov-key-input") { provUiFor(target.getAttribute("data-provider")).key = target.value; }
     if (action === "github-org-input") { state.githubOrg = target.value; }
-    if (action === "github-pat-input") { state.githubPatDraft = target.value; }
     if (action === "repo-search") { scheduleRepositorySearch(target.value); }
     if (action === "egress-domain-input") {
       var egressInputIndex = Number(target.getAttribute("data-index"));
@@ -5986,7 +5878,6 @@ details[open].advanced summary::before {
     if (action === "add-channel-form") addChannel(new FormData(form));
     if (action === "slack-connect-form") submitSlackConnection(new FormData(form));
     if (action === "github-manifest-form") submitGithubManifest(new FormData(form));
-    if (action === "github-pat-form") saveGithubPat(new FormData(form));
   });
 
   // Escape dismisses the open Model combobox (F6) without picking a model.
@@ -6102,7 +5993,6 @@ details[open].advanced summary::before {
         (state.profileScreen === "edit" && state.profileDirty) ||
         state.slackConnectionBusy === "update" ||
         state.slackConnectionBusy === "disconnect" ||
-        state.githubBusy === "pat" ||
         state.githubBusy === "disconnect"
       ) {
         event.preventDefault();
@@ -6120,7 +6010,7 @@ details[open].advanced summary::before {
         if (state.slackConnectionBusy === "disconnect") focusSlackDisconnectDialog();
         return;
       }
-      if (state.githubBusy === "pat" || state.githubBusy === "disconnect") {
+      if (state.githubBusy === "disconnect") {
         history.pushState(null, "", canonicalPath());
         if (state.githubBusy === "disconnect") focusGithubDisconnectDialog();
         return;

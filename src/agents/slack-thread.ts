@@ -167,21 +167,6 @@ export async function resolveRepositoryAccess(
   }
 
   if (connection.mode === 'none') return none(true);
-  if (connection.mode === 'pat') {
-    // An App-era allRepos grant meant "every repo in that INSTALLATION" — a
-    // PAT may reach far more of the account, so honoring it here would widen
-    // scope on a credential-mode switch. Explicit repo names keep an
-    // identical scope under either credential and stay honored; allRepos
-    // needs a PAT-native reselection.
-    const patGrants = enabled.filter((grant) => grant.allRepos !== true);
-    if (patGrants.length === 0) return none(true);
-    return {
-      grants: patGrants,
-      connectors: repositoryConnectors(connection.pat, patGrants),
-      credentialMode: 'pat',
-      governsGithubHosts: true,
-    };
-  }
 
   const byInstallation = new Map<number, RepositoryGrant[]>();
   for (const grant of enabled) {
@@ -429,17 +414,28 @@ export default defineAgent(async ({ id }) => {
   // API connection policy inherits the agent snapshot contract, while its
   // credential resolves live every turn. Missing credentials degrade by
   // skipping that connection rather than aborting the turn.
-  const [egressPolicy, repositoryAccess, resolvedApiConnectors, sandboxSettings] =
+  const [
+    egressPolicy,
+    repositoryAccess,
+    resolvedApiConnectors,
+    sandboxSettings,
+    githubAppConnected,
+  ] =
     await Promise.all([
       resolveEgressPolicy(env),
       resolveRepositoryAccess(repositoryGrants, env),
       resolveApiConnectionsForTurn(config.agent.id, config.agent.apiConnections ?? [], env),
       resolveSandboxSettings(settingsStore),
+      getGithubConnection(settingsStore).then(
+        (connection) => connection.mode === 'app',
+        () => false,
+      ),
     ]);
   const sandboxSelection = selectSandbox({
     target: isCloudflareTarget() ? 'cloudflare' : 'node',
     enabled: sandboxSettings.enabled,
     localEnabled: sandboxSettings.localEnabled,
+    appConnected: githubAppConnected,
     repositoryGrants: repositoryAccess.grants,
   });
   const workspaceSkill = workspaceSkillForSandbox(sandboxSelection);
