@@ -73,13 +73,14 @@ observe((event) => {
   if (event.type !== 'tool_start' || typeof event.instanceId !== 'string') {
     return;
   }
-  if (setObservedSlackStatus(event.instanceId, toolStatus(event.toolName))) {
+  const status = toolStatus(event.toolName, event.args);
+  if (setObservedSlackStatus(event.instanceId, status)) {
     return;
   }
   // Local miss: on Cloudflare this subscriber also runs inside the agent DO
-  // isolate, where the turn's registry lives elsewhere — relay the tool name
-  // to the state DO (no-op on node / outside a DO handler).
-  void relayObservedToolStatus(event.instanceId, event.toolName);
+  // isolate, where the turn's registry lives elsewhere. Relay only the safe,
+  // fixed-vocabulary status text — never the raw tool arguments or command.
+  void relayObservedToolStatus(event.instanceId, status.text);
 });
 
 const app = new Hono();

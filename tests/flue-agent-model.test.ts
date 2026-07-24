@@ -14,7 +14,10 @@ import { resolveModel } from '@flue/runtime/internal';
 
 import { WORKERS_AI_CONTEXT_WINDOW_FLOOR } from '../src/app.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
-import slackThreadAgent, { resolveAgentModel } from '../src/agents/slack-thread.ts';
+import slackThreadAgent, {
+  resolveAgentModel,
+  thinkingLevelForModel,
+} from '../src/agents/slack-thread.ts';
 import { demoExecChannelAssignment, seededAgents } from '../src/config/seed.ts';
 import type { CustomAgentConfig } from '../src/config/types.ts';
 import { withEnv } from './helpers/env.ts';
@@ -150,6 +153,12 @@ test('model policy warns once per unbounded Workers AI binding model', () => {
 
   assert.equal(warnings.length, 1);
   assert.match(warnings[0] ?? '', /contextWindow 0.*auto-compaction is disabled.*grow unbounded/);
+});
+
+test('the keyless GLM default uses low reasoning effort without changing other models', () => {
+  assert.equal(thinkingLevelForModel('cloudflare/@cf/zai-org/glm-5.2'), 'low');
+  assert.equal(thinkingLevelForModel('cloudflare/@cf/openai/gpt-oss-120b'), undefined);
+  assert.equal(thinkingLevelForModel('anthropic/claude-sonnet-4-6'), undefined);
 });
 
 test('slack-thread initializes from the SQLite config store for the current state DB path', async () => {

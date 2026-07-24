@@ -86,3 +86,38 @@ test('postArtifact rethrows unrelated Slack upload failures', async () => {
     (err) => err === failure,
   );
 });
+
+test('deliverFinal sanitizes emphasized URLs before streaming them to Slack', async () => {
+  const calls: unknown[] = [];
+  const presenter = new WebClientPresenter(
+    {
+      chat: {
+        async startStream(input: unknown) {
+          calls.push(input);
+          return { ok: true, ts: '1782770400.000300' };
+        },
+        async stopStream() {
+          return { ok: true };
+        },
+      },
+    } as unknown as WebClient,
+    {
+      channelId: 'C_BOUND',
+      threadTs: '1782770400.000100',
+      userId: 'U_REQUESTER',
+      workspaceId: 'T_WORKSPACE',
+      agentName: 'Test agent',
+      agentId: 'agent_test',
+    },
+  );
+
+  await presenter.deliverFinal(
+    'Done: **https://github.com/pejmanjohn/skillet/pull/4**',
+    'markdown',
+  );
+
+  assert.equal(
+    (calls[0] as { markdown_text?: string }).markdown_text,
+    'Done: https://github.com/pejmanjohn/skillet/pull/4',
+  );
+});

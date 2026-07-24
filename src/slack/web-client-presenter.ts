@@ -4,6 +4,7 @@ import {
   appendSlackReplyFooter,
   renderSlackMessage,
   renderSlackReplyFooterBlock,
+  sanitizeSlackMarkdownLinks,
   type SlackReplyFormat,
   type SlackReplyFooter,
 } from './message-format.ts';
@@ -142,6 +143,7 @@ export class WebClientPresenter {
    */
   async deliverFinal(text: string, format: SlackReplyFormat): Promise<void> {
     const footer = this.replyFooter();
+    const displayText = format === 'markdown' ? sanitizeSlackMarkdownLinks(text) : text;
 
     if (this.target.userId && this.target.workspaceId) {
       try {
@@ -150,7 +152,7 @@ export class WebClientPresenter {
           thread_ts: this.target.threadTs,
           recipient_user_id: this.target.userId,
           recipient_team_id: this.target.workspaceId,
-          markdown_text: text,
+          markdown_text: displayText,
         });
         try {
           await this.client.chat.stopStream({
@@ -167,7 +169,7 @@ export class WebClientPresenter {
       }
     }
 
-    const rendered = appendSlackReplyFooter(renderSlackMessage(text, format), footer);
+    const rendered = appendSlackReplyFooter(renderSlackMessage(displayText, format), footer);
     await this.client.chat.postMessage({
       channel: this.target.channelId,
       thread_ts: this.target.threadTs,

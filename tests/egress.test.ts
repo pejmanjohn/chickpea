@@ -683,7 +683,7 @@ test('App repository access groups grants, uses short sorted names, and caps per
 
         assert.deepEqual(routed, [
           'Bearer installation-token-50001|https://api.github.com/repos/Acme/Alpha/contents/README.md',
-          'Bearer installation-token-50001|https://github.com/Acme/Zeta.git/info/refs',
+          `Basic ${btoa('x-access-token:installation-token-50001')}|https://github.com/Acme/Zeta.git/info/refs`,
           'Bearer installation-token-50002|https://api.github.com/search/code?q=runtime%20repo%3AExampleOrg%2FOne',
           'Bearer installation-token-50002|https://api.github.com/repos/ExampleOrg/Two/pulls',
         ]);

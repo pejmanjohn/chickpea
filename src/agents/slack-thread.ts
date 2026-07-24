@@ -44,6 +44,9 @@ import {
   REPOSITORY_PERMISSIONS,
   validEnabledRepositoryGrants,
 } from '../sandbox/egress-handler.ts';
+import { githubAuthorizationHeader } from '../sandbox/github-auth.ts';
+
+const KEYLESS_WORKERS_AI_DEFAULT_MODEL = 'cloudflare/@cf/zai-org/glm-5.2';
 import type {
   SandboxCredentialMode,
   SandboxEgressPolicyInput,
@@ -267,27 +270,27 @@ function repositoryConnectors(
       ),
     ),
   ].sort();
-  const credential = {
+  const credential = (url: string) => ({
     headerName: 'Authorization',
-    headerValue: `Bearer ${token}`,
+    headerValue: githubAuthorizationHeader(url, token),
     allowedMethods: [...REPOSITORY_METHODS],
-  };
+  });
   return [
     {
       allowedHosts: ['api.github.com'],
       pathPrefixes: apiPrefixes,
-      ...credential,
+      ...credential('https://api.github.com'),
       matchesRequest: (url: string) => !isDeniedRepositoryEndpoint(url),
     },
     {
       allowedHosts: ['github.com'],
       pathPrefixes: gitPrefixes,
-      ...credential,
+      ...credential('https://github.com'),
     },
     {
       allowedHosts: ['api.github.com'],
       pathPrefixes: ['/search/code'],
-      ...credential,
+      ...credential('https://api.github.com'),
       matchesRequest: (url: string) => matchesGrantedCodeSearch(url, grants),
     },
   ].filter((connector) => connector.pathPrefixes.length > 0);
@@ -547,14 +550,24 @@ export default defineAgent(async ({ id }) => {
     tools = [...mcpTools, artifactCapability.tool];
   }
 
+  const thinkingLevel = thinkingLevelForModel(config.model);
   return {
     model: config.model,
+    // Flue defaults reasoning-capable models to medium effort. The keyless
+    // GLM-5.2 binding repeatedly reaches Workers AI's response deadline before
+    // its first tool call at that setting, so keep this one default responsive
+    // while leaving every operator-selected model's reasoning policy alone.
+    ...(thinkingLevel ? { thinkingLevel } : {}),
     instructions: config.instructions,
     tools,
     sandbox,
     ...(skills.length > 0 ? { skills } : {}),
   };
 });
+
+export function thinkingLevelForModel(model: string): 'low' | undefined {
+  return model === KEYLESS_WORKERS_AI_DEFAULT_MODEL ? 'low' : undefined;
+}
 
 interface AgentSandboxOptions {
   selection: SandboxSelection;

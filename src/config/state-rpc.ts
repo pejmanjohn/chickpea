@@ -139,7 +139,7 @@ export interface TagStateRpc {
    * registry living in this DO's isolate (where the alarm runs the turn).
    * Best-effort: a miss (turn already closed) is a success, never an error.
    */
-  observedToolStatus(instanceId: string, toolName: string): Promise<StateRpcResult<null>>;
+  observedToolStatus(instanceId: string, statusText: string): Promise<StateRpcResult<null>>;
 }
 
 /**

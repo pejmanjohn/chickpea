@@ -48,6 +48,7 @@ import {
   REPOSITORY_PERMISSIONS,
   resolveRepositoryInstallationScope,
 } from './sandbox/egress-handler.ts';
+import { githubAuthorizationHeader } from './sandbox/github-auth.ts';
 import {
   SandboxPolicyState,
   sandboxEgressGrantsForMode,
@@ -62,7 +63,6 @@ import {
 } from './sandbox/progress.ts';
 import { SlackStateLogic } from './slack/claim-store.ts';
 import { resolveSlackCredentials } from './slack/credentials.ts';
-import { toolStatus } from './slack/replies.ts';
 import { setObservedSlackStatus } from './slack/status-registry.ts';
 import {
   createSlackWebClient,
@@ -236,7 +236,7 @@ async function githubSandboxOutbound(
     // the next request, never forwarded under this turn's stale policy.
     if ((await stub.getTurnId()) !== capturedTurnId) return denySandboxOutbound();
     const headers = new Headers(request.headers);
-    headers.set('Authorization', `Bearer ${credential}`);
+    headers.set('Authorization', githubAuthorizationHeader(request.url, credential));
     const response = await fetch(new Request(request, { headers, redirect: 'manual' }));
     await recordPullRequestProgress(request, response, stub, capturedTurnId);
     return response;
@@ -601,8 +601,8 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
    * registered the live turn's status presenter. A registry miss just means
    * the turn already finished — still a success by contract.
    */
-  async observedToolStatus(instanceId: string, toolName: string): Promise<StateRpcResult<null>> {
-    setObservedSlackStatus(instanceId, toolStatus(toolName));
+  async observedToolStatus(instanceId: string, statusText: string): Promise<StateRpcResult<null>> {
+    setObservedSlackStatus(instanceId, { text: statusText });
     return { ok: true, value: null };
   }
 
