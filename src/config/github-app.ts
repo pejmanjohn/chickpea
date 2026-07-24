@@ -319,17 +319,24 @@ export async function getCachedInstallationToken(
   },
   fetchImpl: FetchImpl = fetch,
 ): Promise<{ token: string; expiresAt: string }> {
+  // Resolve the mode before consulting the cache so a PAT-mode turn can
+  // never read a token minted for an App-mode turn.
+  const app = requireAppConnection(conn);
   const nowMs = Date.now();
   for (const [key, entry] of installationTokenCache) {
     if (nowMs >= entry.validUntilMs) installationTokenCache.delete(key);
   }
-  const cacheKey = installationTokenCacheKey(installationId, options.repositories);
+  const cacheKey = installationTokenCacheKey(
+    app.appId,
+    installationId,
+    options.repositories,
+  );
   const cached = installationTokenCache.get(cacheKey);
   if (cached) {
     return { token: cached.token, expiresAt: cached.expiresAt };
   }
 
-  const result = await createInstallationToken(conn, installationId, options, fetchImpl);
+  const result = await createInstallationToken(app, installationId, options, fetchImpl);
   const expiresAtMs = Date.parse(result.expiresAt);
   const validUntilMs = expiresAtMs - INSTALLATION_TOKEN_EARLY_EXPIRY_MS;
   if (Number.isFinite(validUntilMs) && validUntilMs > Date.now()) {
@@ -377,12 +384,13 @@ function requireAppConnection(
 }
 
 function installationTokenCacheKey(
+  appId: string,
   installationId: number,
   repositories: string[] | undefined,
 ): string {
   const repositorySet =
-    repositories === undefined ? '*' : [...new Set(repositories)].sort().join('\u0000');
-  return `${installationId}:${repositorySet}`;
+    repositories === undefined ? null : [...new Set(repositories)].sort();
+  return JSON.stringify(['app', appId, installationId, repositorySet]);
 }
 
 async function currentAppJwt(

@@ -231,6 +231,85 @@ test('getCachedInstallationToken caches by installation and sorted repository na
   assert.notEqual(otherInstallation.token, first.token);
 });
 
+test('getCachedInstallationToken isolates recreated Apps with the same installation and repositories', async () => {
+  const { pkcs8 } = rsaKeys();
+  const firstApp: GithubConnection = {
+    mode: 'app',
+    appId: 'old-app',
+    privateKeyPem: pkcs8,
+  };
+  const recreatedApp: GithubConnection = {
+    mode: 'app',
+    appId: 'new-app',
+    privateKeyPem: pkcs8,
+  };
+  let requests = 0;
+  const fetchImpl: typeof fetch = async () => {
+    requests += 1;
+    return Response.json({
+      token: `app-identity-token-${requests}`,
+      expires_at: new Date(Date.now() + 60 * 60 * 1_000).toISOString(),
+    });
+  };
+
+  const oldToken = await getCachedInstallationToken(
+    firstApp,
+    9_101,
+    { repositories: ['alpha', 'zeta'] },
+    fetchImpl,
+  );
+  const newToken = await getCachedInstallationToken(
+    recreatedApp,
+    9_101,
+    { repositories: ['zeta', 'alpha'] },
+    fetchImpl,
+  );
+  const newTokenCached = await getCachedInstallationToken(
+    recreatedApp,
+    9_101,
+    { repositories: ['alpha', 'zeta'] },
+    fetchImpl,
+  );
+
+  assert.equal(requests, 2);
+  assert.notEqual(newToken.token, oldToken.token);
+  assert.equal(newTokenCached.token, newToken.token);
+});
+
+test('getCachedInstallationToken never returns an App token to PAT mode', async () => {
+  const { pkcs8 } = rsaKeys();
+  const app: GithubConnection = {
+    mode: 'app',
+    appId: 'mode-isolation-app',
+    privateKeyPem: pkcs8,
+  };
+  let requests = 0;
+  const fetchImpl: typeof fetch = async () => {
+    requests += 1;
+    return Response.json({
+      token: 'app-only-token',
+      expires_at: new Date(Date.now() + 60 * 60 * 1_000).toISOString(),
+    });
+  };
+
+  await getCachedInstallationToken(
+    app,
+    9_102,
+    { repositories: ['alpha'] },
+    fetchImpl,
+  );
+  await assert.rejects(
+    getCachedInstallationToken(
+      { mode: 'pat', pat: 'github-pat' },
+      9_102,
+      { repositories: ['alpha'] },
+      fetchImpl,
+    ),
+    /GitHub App is not configured/,
+  );
+  assert.equal(requests, 1);
+});
+
 test('direct token mints do not populate the runtime repository-token cache', async () => {
   const { pkcs8 } = rsaKeys();
   const conn: GithubConnection = {

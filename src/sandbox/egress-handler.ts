@@ -180,9 +180,11 @@ export function decideSandboxEgress(input: SandboxEgressInput): SandboxEgressDec
     return denied('endpoint-denied', [repository]);
   }
   const canonical = canonicalGrantedRepository(repository, grants);
-  return canonical
-    ? { allowed: true, kind: 'github', repositories: [canonical] }
-    : denied('repository-denied', [repository]);
+  if (!canonical) return denied('repository-denied', [repository]);
+  if (isDeniedCrossRepositoryCompare(url, canonical, grants)) {
+    return denied('endpoint-denied', [canonical]);
+  }
+  return { allowed: true, kind: 'github', repositories: [canonical] };
 }
 
 function denied(
@@ -205,6 +207,87 @@ function canonicalGrantedRepository(
   return grants.some((grant) => repositoryGrantMatches(grant, repository))
     ? repository
     : undefined;
+}
+
+function isDeniedCrossRepositoryCompare(
+  url: URL,
+  repository: string,
+  grants: readonly RepositoryGrant[],
+): boolean {
+  const segments = url.pathname.replace(/\/+$/, '').split('/');
+  const rawEndpoint = segments[4];
+  if (rawEndpoint === undefined) return false;
+
+  let endpoint: string;
+  try {
+    endpoint = decodeURIComponent(rawEndpoint);
+  } catch {
+    return true;
+  }
+  if (endpoint !== 'compare') return false;
+
+  // A compare basehead is exactly one path segment containing two refs
+  // separated by `..` or `...`. Git refs cannot contain `..`, so any other
+  // run of dots or number of separators is ambiguous and must fail closed.
+  const rawBasehead = segments[5];
+  if (segments.length !== 6 || rawBasehead === undefined) return true;
+  let basehead: string;
+  try {
+    basehead = decodeURIComponent(rawBasehead);
+  } catch {
+    return true;
+  }
+  if (basehead.includes('/')) return true;
+
+  const separators = [...basehead.matchAll(/\.{2,}/g)];
+  const separator = separators[0];
+  if (
+    separators.length !== 1 ||
+    separator === undefined ||
+    (separator[0] !== '..' && separator[0] !== '...')
+  ) {
+    return true;
+  }
+  const separatorIndex = separator.index;
+  if (separatorIndex === undefined) return true;
+  const refs = [
+    basehead.slice(0, separatorIndex),
+    basehead.slice(separatorIndex + separator[0].length),
+  ];
+  if (refs.some((ref) => ref.length === 0)) return true;
+
+  const grantedOwner = grantedOwnerForRepository(repository, grants);
+  if (!grantedOwner) return true;
+  for (const ref of refs) {
+    const colon = ref.indexOf(':');
+    if (colon === -1) continue;
+    if (colon === 0 || colon !== ref.lastIndexOf(':') || colon === ref.length - 1) {
+      return true;
+    }
+    const owner = ref.slice(0, colon);
+    if (
+      !GITHUB_OWNER_PATTERN.test(owner) ||
+      owner.toLowerCase() !== grantedOwner.toLowerCase()
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function grantedOwnerForRepository(
+  repository: string,
+  grants: readonly RepositoryGrant[],
+): string | undefined {
+  const exact = grants.find(
+    (grant) =>
+      grant.allRepos !== true &&
+      grant.fullName.toLowerCase() === repository.toLowerCase(),
+  );
+  if (exact) return exact.fullName.slice(0, exact.fullName.indexOf('/'));
+  return grants.find(
+    (grant) => grant.allRepos === true && repositoryGrantMatches(grant, repository),
+  )?.accountLogin;
 }
 
 function apiRepositoryFromPath(pathname: string): string | undefined {

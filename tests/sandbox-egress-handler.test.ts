@@ -125,6 +125,76 @@ test('sandbox GitHub egress denies protected Actions endpoints but keeps reruns'
   }
 });
 
+test('sandbox GitHub compare egress confines cross-fork owners to the grant scope', () => {
+  const grants = [repositoryGrant()];
+  const base = 'https://api.github.com/repos/Acme/Alpha/compare';
+
+  for (const range of [
+    'main...dev',
+    'main...acme:feature',
+    'Acme:main..ACME:feature',
+  ]) {
+    assert.deepEqual(
+      allowedRepositories(
+        decideSandboxEgress({
+          url: `${base}/${range}`,
+          method: 'GET',
+          grants,
+          allowedHosts: [],
+        }),
+      ),
+      ['Acme/Alpha'],
+      range,
+    );
+  }
+
+  for (const range of [
+    'main...OtherOwner:branch',
+    'main...OtherOwner%3Abranch',
+    'main%2E%2E%2EOtherOwner%3Abranch',
+    'Acme:main...OtherOwner:branch',
+    'main....dev',
+    'main...OtherOwner%ZZbranch',
+  ]) {
+    assert.equal(
+      decideSandboxEgress({
+        url: `${base}/${range}`,
+        method: 'GET',
+        grants,
+        allowedHosts: [],
+      }).allowed,
+      false,
+      range,
+    );
+  }
+
+  const accountWide = [
+    repositoryGrant({
+      id: 'all-acme',
+      fullName: '',
+      allRepos: true,
+    }),
+  ];
+  assert.equal(
+    decideSandboxEgress({
+      url: 'https://api.github.com/repos/acme/Beta/compare/main...AcMe:feature',
+      method: 'GET',
+      grants: accountWide,
+      allowedHosts: [],
+    }).allowed,
+    true,
+  );
+  assert.equal(
+    decideSandboxEgress({
+      url: 'https://api.github.com/repos/acme/Beta/compare/main...Other:feature',
+      method: 'GET',
+      grants: accountWide,
+      allowedHosts: [],
+    }).allowed,
+    false,
+  );
+});
+
 test('sandbox code search requires one q parameter and only granted repo qualifiers', () => {
   const grants = [repositoryGrant()];
   const granted = 'https://api.github.com/search/code?q=secret+repo%3AAcme%2FAlpha';

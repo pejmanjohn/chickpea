@@ -64,7 +64,11 @@ export function createWorkspaceArtifactCapability(
       if (stat.size > MAX_ARTIFACT_BYTES) {
         throw new Error('artifact exceeds the 8 MB upload limit');
       }
-      const bytes = await sessionEnv.readFileBuffer(path);
+      const bytes = await readFrozenWorkspaceArtifact(
+        sessionEnv,
+        path,
+        options.selection,
+      );
       return options.postArtifact({
         channel: options.channel,
         threadTs: options.threadTs,
@@ -76,6 +80,67 @@ export function createWorkspaceArtifactCapability(
   });
 
   return { sandbox, tool };
+}
+
+async function readFrozenWorkspaceArtifact(
+  sessionEnv: SessionEnv,
+  sourcePath: string,
+  selection: Exclude<SandboxSelection, 'bash'>,
+): Promise<Uint8Array> {
+  const tempPath = randomWorkspaceArtifactPath(selection);
+  try {
+    // The model controls sourcePath and can mutate it after the fast pre-stat.
+    // Copy at most the cap into a new trusted-name file, then inspect and read
+    // only that frozen object. Noclobber keeps the random path new even in the
+    // vanishingly unlikely event of a collision.
+    const copy = await sessionEnv.exec(
+      `umask 077; set -C; head -c ${MAX_ARTIFACT_BYTES} -- ${shellQuote(sourcePath)} > ${shellQuote(tempPath)}`,
+      { timeoutMs: 30_000 },
+    );
+    if (copy.exitCode !== 0) {
+      throw new Error('artifact could not be copied for upload');
+    }
+
+    const stat = await sessionEnv.stat(tempPath);
+    if (!stat.isFile) {
+      throw new Error('artifact copy must identify a file');
+    }
+    if (
+      typeof stat.size !== 'number' ||
+      !Number.isSafeInteger(stat.size) ||
+      stat.size < 0
+    ) {
+      throw new Error('artifact copy size is unavailable');
+    }
+    if (stat.size > MAX_ARTIFACT_BYTES) {
+      throw new Error('artifact exceeds the 8 MB upload limit');
+    }
+
+    const bytes = await sessionEnv.readFileBuffer(tempPath);
+    if (bytes.byteLength > MAX_ARTIFACT_BYTES) {
+      throw new Error('artifact exceeds the 8 MB upload limit');
+    }
+    return bytes;
+  } finally {
+    await sessionEnv.rm(tempPath, { force: true }).catch(() => {});
+  }
+}
+
+function randomWorkspaceArtifactPath(
+  selection: Exclude<SandboxSelection, 'bash'>,
+): string {
+  const random = globalThis.crypto.getRandomValues(new Uint8Array(16));
+  const hex = [...random]
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
+  return workspaceArtifactPath(
+    `/workspace/.chickpea-artifact-${hex}.tmp`,
+    selection,
+  );
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
 function workspaceArtifactPath(
