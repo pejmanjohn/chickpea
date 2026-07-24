@@ -86,6 +86,12 @@ import {
   type AdminProviderId,
 } from '../config/provider-models.ts';
 import { knownProviderIds, listRuntimeModelProviders } from '../config/providers.ts';
+import {
+  resolveSandboxSettings,
+  SANDBOX_INSTANCE_TYPES,
+  SANDBOX_PACKAGE_REGISTRY_HOSTS,
+  SANDBOX_SETTING_KEYS,
+} from '../config/sandbox-settings.ts';
 import { parseSkillSource, resolveSkillSource, SkillImportError } from '../config/skill-import.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import {
@@ -499,6 +505,28 @@ const egressPolicySchema = v.object({
   domains: v.pipe(v.array(egressDomain), v.maxLength(100)),
 });
 
+const sandboxSettingsSchema = v.object({
+  enabled: v.boolean(),
+  instanceType: v.picklist(SANDBOX_INSTANCE_TYPES),
+  allowedHosts: v.array(v.picklist(SANDBOX_PACKAGE_REGISTRY_HOSTS)),
+  local: v.boolean(),
+});
+
+async function sandboxStatus(store: SettingsStore) {
+  const resolved = await resolveSandboxSettings(store);
+  const cloudflare = isCloudflareTarget();
+  return {
+    enabled: resolved.enabled,
+    instanceType: resolved.instanceType,
+    allowedHosts: resolved.allowedHosts,
+    target: cloudflare ? ('cloudflare' as const) : ('node' as const),
+    workersPaidNote: cloudflare
+      ? 'Requires Workers Paid. Real containers run on your Cloudflare account; a typical session costs about 1 cent.'
+      : null,
+    localEnabled: resolved.localEnabled,
+  };
+}
+
 const slackBehaviorPatchSchema = v.pipe(
   v.partial(
     v.strictObject({
@@ -799,6 +827,30 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     };
     await settings(c).setSetting(EGRESS_SETTING_KEY, JSON.stringify(policy));
     return c.json({ policy });
+  });
+
+  app.get('/admin/api/sandbox/status', async (c) => {
+    return c.json(await sandboxStatus(settings(c)));
+  });
+
+  app.put('/admin/api/sandbox/status', async (c) => {
+    const parsed = v.safeParse(sandboxSettingsSchema, await readJson(c.req));
+    if (!parsed.success) {
+      return invalidRequest(c);
+    }
+    const sandbox = parsed.output;
+    await settings(c).applySettingsPatch({
+      set: [
+        { key: SANDBOX_SETTING_KEYS.enabled, value: String(sandbox.enabled) },
+        { key: SANDBOX_SETTING_KEYS.instanceType, value: sandbox.instanceType },
+        {
+          key: SANDBOX_SETTING_KEYS.allowedHosts,
+          value: JSON.stringify([...new Set(sandbox.allowedHosts)]),
+        },
+        { key: SANDBOX_SETTING_KEYS.local, value: String(sandbox.local) },
+      ],
+    });
+    return c.json(await sandboxStatus(settings(c)));
   });
 
   app.get('/admin/api/github/status', async (c) => {

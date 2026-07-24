@@ -175,6 +175,14 @@ type EgressPolicyFixture = {
   mode: 'allowlist' | 'open' | 'off';
   domains: string[];
 };
+type SandboxStatusFixture = {
+  enabled: boolean;
+  instanceType: string;
+  allowedHosts: string[];
+  target: 'cloudflare' | 'node';
+  workersPaidNote: string | null;
+  localEnabled: boolean;
+};
 
 function runAdminPageHarness(
   options: {
@@ -203,6 +211,7 @@ function runAdminPageHarness(
     providerKeyReject?: { status: number; detail: string };
     providerSettingsError?: { status: number; error: string };
     egressPolicy?: EgressPolicyFixture;
+    sandboxStatus?: SandboxStatusFixture;
     modelProviders?: ModelProviderFixture[];
     attachSelectionValue?: string;
     effectiveError?: { status: number; error: string; message?: string };
@@ -238,6 +247,12 @@ function runAdminPageHarness(
   providerKeyDeletes: string[];
   favoritesPuts: Array<{ id: string; favorites: string[] }>;
   egressPuts: EgressPolicyFixture[];
+  sandboxPuts: Array<{
+    enabled: boolean;
+    instanceType: string;
+    allowedHosts: string[];
+    local: boolean;
+  }>;
   agentPatchBodies: Array<{ id: string; body: Record<string, unknown> }>;
   agentPostBodies: Array<Record<string, unknown>>;
   skillResolvePosts: Array<{ source: string }>;
@@ -311,6 +326,12 @@ function runAdminPageHarness(
   const providerKeyDeletes: string[] = [];
   const favoritesPuts: Array<{ id: string; favorites: string[] }> = [];
   const egressPuts: EgressPolicyFixture[] = [];
+  const sandboxPuts: Array<{
+    enabled: boolean;
+    instanceType: string;
+    allowedHosts: string[];
+    local: boolean;
+  }> = [];
   const agentPatchBodies: Array<{ id: string; body: Record<string, unknown> }> = [];
   const agentPostBodies: Array<Record<string, unknown>> = [];
   const skillResolvePosts: Array<{ source: string }> = [];
@@ -385,6 +406,16 @@ function runAdminPageHarness(
   let egressPolicy: EgressPolicyFixture = options.egressPolicy ?? {
     mode: 'allowlist',
     domains: [],
+  };
+  let sandboxStatus: SandboxStatusFixture = options.sandboxStatus ?? {
+    enabled: false,
+    instanceType: 'standard-1',
+    allowedHosts: ['registry.npmjs.org', 'pypi.org', 'files.pythonhosted.org'],
+    target: options.cloudflare ? 'cloudflare' : 'node',
+    workersPaidNote: options.cloudflare
+      ? 'Requires Workers Paid. Real containers run on your Cloudflare account; a typical session costs about 1 cent.'
+      : null,
+    localEnabled: false,
   };
   const favoritesState: Record<string, string[]> = {
     openrouter: options.openrouterFavorites ?? ['anthropic/claude-sonnet-4', 'openai/gpt-4.1'],
@@ -690,6 +721,35 @@ function runAdminPageHarness(
         jsonResponse({ policy: { mode: egressPolicy.mode, domains: [...egressPolicy.domains] } }),
       );
     }
+    if (path === '/admin/api/sandbox/status') {
+      if (method === 'PUT') {
+        const body = JSON.parse(options?.body ?? '{}') as {
+          enabled: boolean;
+          instanceType: string;
+          allowedHosts: string[];
+          local: boolean;
+        };
+        sandboxPuts.push({
+          enabled: body.enabled,
+          instanceType: body.instanceType,
+          allowedHosts: [...body.allowedHosts],
+          local: body.local,
+        });
+        sandboxStatus = {
+          ...sandboxStatus,
+          enabled: body.enabled,
+          instanceType: body.instanceType,
+          allowedHosts: [...body.allowedHosts],
+          localEnabled: body.local,
+        };
+      }
+      return Promise.resolve(
+        jsonResponse({
+          ...sandboxStatus,
+          allowedHosts: [...sandboxStatus.allowedHosts],
+        }),
+      );
+    }
     const favMatch = path.match(/^\/admin\/api\/providers\/([^/]+)\/favorites$/);
     if (favMatch) {
       const id = favMatch[1] as string;
@@ -907,6 +967,7 @@ function runAdminPageHarness(
     providerKeyDeletes,
     favoritesPuts,
     egressPuts,
+    sandboxPuts,
     agentPatchBodies,
     agentPostBodies,
     skillResolvePosts,
@@ -3962,6 +4023,110 @@ test('admin topbar exposes a Settings destination that lands on the model-provid
   assert.match(harness.app.innerHTML, /<h2 class="section-title">Model providers<\/h2>/);
   // The active-state styling is the soft ember tint (.nav-active), no weight change.
   assert.match(harness.app.innerHTML, /class="btn btn-soft nav-active" data-action="open-settings">Settings<\/button>/);
+});
+
+test('Settings renders the off-by-default Coding sandbox card with cost and collapsed advanced controls', async () => {
+  const harness = runAdminPageHarness({ cloudflare: true });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+
+  click({ target: actionTarget({ 'data-action': 'open-settings' }) });
+  await flushAsync();
+
+  const html = harness.app.innerHTML;
+  assert.match(html, /<h2 class="section-title">Coding sandbox<\/h2>/);
+  assert.match(
+    html,
+    /real containers on your Cloudflare account; requires Workers Paid; ~1 cent\/session/,
+  );
+  assert.match(html, /data-action="sandbox-enabled"/);
+  assert.doesNotMatch(html, /data-action="sandbox-enabled" checked/);
+  assert.match(html, /<details class="advanced"><summary>Advanced<\/summary>/);
+  assert.match(html, /data-action="sandbox-instance"/);
+  assert.match(html, /data-action="sandbox-host" data-host="registry\.npmjs\.org"/);
+  assert.doesNotMatch(html, /data-action="sandbox-local"/);
+  assert.doesNotMatch(html, /data-action="profile-sandbox"/);
+});
+
+test('Settings saves Node local sandbox controls as one install-level update', async () => {
+  const harness = runAdminPageHarness();
+  await flushAsync();
+  const click = harness.listeners.click;
+  const change = harness.listeners.change;
+  assert.ok(click && change);
+
+  click({ target: actionTarget({ 'data-action': 'open-settings' }) });
+  await flushAsync();
+
+  const changedTarget = (
+    attributes: Record<string, string>,
+    values: { checked?: boolean; value?: string },
+  ) =>
+    ({
+      ...values,
+      closest: () => null,
+      getAttribute(name: string) {
+        return attributes[name] ?? null;
+      },
+    }) as unknown as FakeTarget;
+
+  change({
+    target: changedTarget({ 'data-action': 'sandbox-enabled' }, { checked: true }),
+  });
+  change({
+    target: changedTarget({ 'data-action': 'sandbox-local' }, { checked: true }),
+  });
+  change({
+    target: changedTarget(
+      { 'data-action': 'sandbox-instance' },
+      { value: 'standard-2' },
+    ),
+  });
+  change({
+    target: changedTarget(
+      { 'data-action': 'sandbox-host', 'data-host': 'pypi.org' },
+      { checked: false },
+    ),
+  });
+  click({ target: actionTarget({ 'data-action': 'sandbox-save' }) });
+  await flushAsync();
+
+  assert.deepEqual(harness.sandboxPuts, [
+    {
+      enabled: true,
+      instanceType: 'standard-2',
+      allowedHosts: ['registry.npmjs.org', 'files.pythonhosted.org'],
+      local: true,
+    },
+  ]);
+});
+
+test('Repositories tab explains grants-implied sandbox availability without a profile toggle', async () => {
+  const harness = runAdminPageHarness();
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+
+  click({
+    target: actionTarget({
+      'data-action': 'edit-profile',
+      'data-agent': 'agent_release',
+    }),
+  });
+  click({
+    target: actionTarget({
+      'data-action': 'profile-tab',
+      'data-tab': 'repositories',
+    }),
+  });
+  await flushAsync();
+
+  assert.match(
+    harness.app.innerHTML,
+    /Coding runs in a sandbox when this profile has enabled repository grants and the install-wide tier is on\./,
+  );
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="profile-sandbox"/);
 });
 
 test('Settings renders the three key-provider rows and hides Workers AI on the Node target', async () => {

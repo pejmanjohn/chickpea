@@ -1432,6 +1432,13 @@ details[open].advanced summary::before {
     githubPatDraft: "",
     githubDisconnectConfirm: false,
     githubDisconnectError: "",
+    // Install-level coding sandbox. This is deliberately separate from profile
+    // state: enabled repository grants imply availability, with no per-profile
+    // sandbox switch.
+    sandboxStatus: null,
+    sandboxLoaded: false,
+    sandboxError: "",
+    sandboxSaving: false,
     // Profile-local repository selection UI. The picker is a working selection
     // only; Apply writes grants into profileDraft and the existing profile Save
     // action remains the sole persistence path.
@@ -1462,6 +1469,12 @@ details[open].advanced summary::before {
     providerModelsError: {}
   };
   var egressDraft = { mode: "allowlist", domains: [""] };
+  var sandboxDraft = {
+    enabled: false,
+    instanceType: "standard-1",
+    allowedHosts: ["registry.npmjs.org", "pypi.org", "files.pythonhosted.org"],
+    local: false
+  };
   var repositorySearchTimer = null;
 
   // Inline Heroicons (micro, 16px) — solid unless noted. Colour inherits from
@@ -3202,16 +3215,17 @@ details[open].advanced summary::before {
   }
 
   function repositoriesPanelHtml(draft) {
+    var capabilityHint = '<p class="hint ptab-hint">Coding runs in a sandbox when this profile has enabled repository grants and the install-wide tier is on.</p>';
     if (!state.githubStatusLoaded) {
-      return '<p class="hint ptab-hint">Repositories this profile can work with.</p><div class="empty"><p class="hint">Loading GitHub connection&hellip;</p></div>';
+      return capabilityHint + '<div class="empty"><p class="hint">Loading GitHub connection&hellip;</p></div>';
     }
     var status = state.githubStatus;
     if (!status) {
-      return '<p class="hint ptab-hint">Repositories this profile can work with.</p><div class="empty"><p class="field-error" role="alert">' + esc(state.githubError || "Could not load GitHub settings.") + '</p>' +
+      return capabilityHint + '<div class="empty"><p class="field-error" role="alert">' + esc(state.githubError || "Could not load GitHub settings.") + '</p>' +
         '<button type="button" class="btn btn-soft btn-sm" data-action="github-refresh">Retry</button></div>';
     }
     if (status.mode === "none") {
-      return '<p class="hint ptab-hint">Repositories this profile can work with.</p><div class="empty"><p class="field-label">Connect GitHub to give this profile access to repositories.</p>' +
+      return capabilityHint + '<div class="empty"><p class="field-label">Connect GitHub to give this profile access to repositories.</p>' +
         '<button type="button" class="btn btn-primary" data-action="open-settings" data-section="github-settings">Connect GitHub</button></div>';
     }
     var groups = repositoryGroups(draft);
@@ -3225,7 +3239,7 @@ details[open].advanced summary::before {
         '<button type="button" class="btn btn-soft btn-sm" data-action="repo-add">Add repositories</button></div>' +
         '<div class="repo-groups">' + groups.map(repositoryGroupHtml).join("") + '</div>';
     }
-    return content + repositoryAccountChoicesHtml(status) +
+    return capabilityHint + content + repositoryAccountChoicesHtml(status) +
       (state.repositoryPicker ? '<div class="repo-picker-host">' + repositoryPickerHtml() + '</div>' : "") +
       repositoryFooterHtml(status);
   }
@@ -3905,6 +3919,59 @@ details[open].advanced summary::before {
     return '<section class="section" id="github-settings">' + head + body + '</section>';
   }
 
+  function sandboxSectionHtml() {
+    var status = state.sandboxStatus;
+    var badge = status && status.enabled
+      ? '<span class="badge badge-on"><span class="dot"></span>On</span>'
+      : '<span class="badge badge-off"><span class="dot"></span>Off</span>';
+    var head = '<div class="section-head"><div><h2 class="section-title">Coding sandbox</h2>' +
+      '<p class="hint">Makes a full coding workspace available when a profile has enabled repository grants. The model decides whether a task needs it.</p></div>' + badge + '</div>';
+    if (!state.sandboxLoaded) {
+      return '<section class="section" id="sandbox-settings">' + head + '<p class="hint">Loading sandbox settings&hellip;</p></section>';
+    }
+    if (!status) {
+      return '<section class="section" id="sandbox-settings">' + head +
+        '<p class="field-error" role="alert">' + esc(state.sandboxError || "Could not load sandbox settings.") + '</p>' +
+        '<div><button type="button" class="btn btn-soft btn-sm i-lead" data-action="sandbox-refresh">' + icon("arrow-path") + 'Retry</button></div></section>';
+    }
+    var disabled = state.sandboxSaving ? " disabled" : "";
+    var hostOptions = ["registry.npmjs.org", "pypi.org", "files.pythonhosted.org"];
+    var hostRows = hostOptions.map(function (host) {
+      var checked = sandboxDraft.allowedHosts.indexOf(host) >= 0;
+      return '<label class="conn-tool"><span class="import-check' + (checked ? " on" : "") + '">' +
+        '<input type="checkbox" data-action="sandbox-host" data-host="' + esc(host) + '" ' + (checked ? "checked " : "") + disabled + ' aria-label="Allow ' + esc(host) + '"></span>' +
+        '<span class="tool-body"><span class="tool-name">' + esc(host) + '</span></span></label>';
+    }).join("");
+    var instanceOptions = ["standard-1", "standard-2", "standard-3", "standard-4"].map(function (instanceType) {
+      return '<option value="' + instanceType + '"' + (sandboxDraft.instanceType === instanceType ? " selected" : "") + '>' + instanceType + '</option>';
+    }).join("");
+    var localRow = status.target === "node"
+      ? '<div class="bundle-row"><div class="danger-copy"><span class="field-label">Use this machine for local workspaces</span>' +
+        '<span class="hint">Explicit Node-only opt-in. Model-directed commands run on this host, rooted under <span class="mono">tmp/sandbox-workspaces</span>.</span></div>' +
+        '<label class="toggle"><span class="thumb"></span><input type="checkbox" data-action="sandbox-local" ' + (sandboxDraft.local ? "checked " : "") + disabled + ' aria-label="Use local coding workspaces"></label></div>'
+      : "";
+    var paidNote = status.workersPaidNote
+      ? '<p class="hint">' + esc(status.workersPaidNote) + '</p>'
+      : "";
+    var enableNote = status.target === "cloudflare"
+      ? 'Runs coding tasks in real containers on your Cloudflare account; requires Workers Paid; ~1 cent/session.'
+      : 'Turns on the install-wide coding tier. Local execution remains off until you explicitly enable it under Advanced.';
+    return '<section class="section" id="sandbox-settings">' + head +
+      '<div class="bundle-row"><div class="danger-copy"><span class="field-label">Enable coding sandbox</span>' +
+      '<span class="hint">' + enableNote + '</span></div>' +
+      '<label class="toggle"><span class="thumb"></span><input type="checkbox" data-action="sandbox-enabled" ' + (sandboxDraft.enabled ? "checked " : "") + disabled + ' aria-label="Enable coding sandbox"></label></div>' +
+      paidNote +
+      '<details class="advanced"><summary>Advanced</summary><div class="adv-rows">' +
+      '<div class="field"><label class="field-label" for="sandbox-instance-type">Instance type</label>' +
+      '<span class="select-wrap"><select class="input mono" id="sandbox-instance-type" data-action="sandbox-instance"' + disabled + '>' + instanceOptions + '</select>' + icon("chevron-down", "select-caret") + '</span>' +
+      '<p class="hint">Screenshots require <span class="mono">standard-1</span> or larger.</p></div>' +
+      '<div class="field" style="margin-top:14px;"><span class="field-label">Package registry access</span>' +
+      '<p class="hint">GitHub access comes from profile repository grants. These are the only optional package hosts.</p>' + hostRows + '</div>' +
+      localRow + '</div></details>' +
+      (state.sandboxError ? '<p class="field-error" role="alert">' + esc(state.sandboxError) + '</p>' : "") +
+      '<div><button type="button" class="btn btn-primary" data-action="sandbox-save"' + disabled + '>' + (state.sandboxSaving ? "Saving&hellip;" : "Save") + '</button></div></section>';
+  }
+
   function settingsMainHtml() {
     var head = '<div style="display:flex; flex-direction:column; gap:6px;">' +
       '<h1 class="page-title">Settings</h1>' +
@@ -3925,7 +3992,7 @@ details[open].advanced summary::before {
         rows +
         '<p class="hint">More providers appear here as this install registers them in <span class="mono" style="color:var(--text-2);">src/app.ts</span>.</p></section>';
     }
-    return head + githubSectionHtml() + providerSection + egressSectionHtml();
+    return head + githubSectionHtml() + sandboxSectionHtml() + providerSection + egressSectionHtml();
   }
 
   function egressSectionHtml() {
@@ -4194,6 +4261,7 @@ details[open].advanced summary::before {
     state.githubStatusLoaded = false;
     state.githubError = "";
     state.egressLoaded = false;
+    state.sandboxLoaded = false;
     render();
     if (sectionId) {
       var section = document.getElementById(sectionId);
@@ -4202,6 +4270,7 @@ details[open].advanced summary::before {
     loadSettings().then(render);
     loadGithubStatus().then(render);
     loadEgress().then(render);
+    loadSandboxStatus().then(render);
   }
 
   function loadGithubStatus() {
@@ -4581,6 +4650,51 @@ details[open].advanced summary::before {
     }).catch(function (error) {
       state.egressError = (error && (error.serverMessage || error.message)) || "Could not load outbound access.";
       state.egressLoaded = true;
+    });
+  }
+
+  function seedSandboxDraft(status) {
+    sandboxDraft = {
+      enabled: !!status.enabled,
+      instanceType: status.instanceType || "standard-1",
+      allowedHosts: (status.allowedHosts || []).slice(),
+      local: !!status.localEnabled
+    };
+  }
+
+  function loadSandboxStatus() {
+    state.sandboxError = "";
+    return api("/admin/api/sandbox/status").then(function (body) {
+      state.sandboxStatus = body;
+      seedSandboxDraft(body);
+      state.sandboxLoaded = true;
+    }).catch(function (error) {
+      state.sandboxStatus = null;
+      state.sandboxError = (error && (error.serverMessage || error.message)) || "Could not load sandbox settings.";
+      state.sandboxLoaded = true;
+    });
+  }
+
+  function saveSandbox() {
+    if (state.sandboxSaving) return;
+    state.sandboxSaving = true;
+    state.sandboxError = "";
+    render();
+    postJson("/admin/api/sandbox/status", "PUT", {
+      enabled: sandboxDraft.enabled,
+      instanceType: sandboxDraft.instanceType,
+      allowedHosts: sandboxDraft.allowedHosts.slice(),
+      local: sandboxDraft.local
+    }).then(function (body) {
+      state.sandboxStatus = body;
+      seedSandboxDraft(body);
+      state.sandboxSaving = false;
+      state.sandboxError = "";
+      render();
+    }).catch(function (error) {
+      state.sandboxSaving = false;
+      state.sandboxError = (error && (error.serverMessage || error.message)) || "Could not save sandbox settings.";
+      render();
     });
   }
 
@@ -5359,6 +5473,9 @@ details[open].advanced summary::before {
       state.githubDisconnectError = "";
       render();
     }
+    if (state.sandboxSaving && action.indexOf("sandbox-") === 0) return;
+    if (action === "sandbox-refresh") { loadSandboxStatus().then(render); }
+    if (action === "sandbox-save") { saveSandbox(); }
     if (state.egressSaving && action.indexOf("egress-") === 0) return;
     if (action === "egress-mode") {
       egressDraft.mode = target.getAttribute("data-mode") || "allowlist";
@@ -5729,6 +5846,29 @@ details[open].advanced summary::before {
   document.addEventListener("change", function (event) {
     var target = event.target;
     var action = target.getAttribute && target.getAttribute("data-action");
+    if (action === "sandbox-enabled" && !state.sandboxSaving) {
+      sandboxDraft.enabled = !!target.checked;
+      state.sandboxError = "";
+      render();
+    }
+    if (action === "sandbox-local" && !state.sandboxSaving) {
+      sandboxDraft.local = !!target.checked;
+      state.sandboxError = "";
+      render();
+    }
+    if (action === "sandbox-instance" && !state.sandboxSaving) {
+      sandboxDraft.instanceType = target.value || "standard-1";
+      state.sandboxError = "";
+      render();
+    }
+    if (action === "sandbox-host" && !state.sandboxSaving) {
+      var sandboxHost = target.getAttribute("data-host") || "";
+      var sandboxHostIndex = sandboxDraft.allowedHosts.indexOf(sandboxHost);
+      if (target.checked && sandboxHostIndex < 0) sandboxDraft.allowedHosts.push(sandboxHost);
+      if (!target.checked && sandboxHostIndex >= 0) sandboxDraft.allowedHosts.splice(sandboxHostIndex, 1);
+      state.sandboxError = "";
+      render();
+    }
     if (action === "channel-enabled") {
       state.channelDraft.enabled = target.checked;
       state.dirty = true;

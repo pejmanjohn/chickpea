@@ -3,6 +3,7 @@ import { test } from 'node:test';
 
 import {
   parseSandboxAllowedHosts,
+  resolveSandboxSettings,
   SANDBOX_SETTING_KEYS,
 } from '../src/config/sandbox-settings.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
@@ -12,6 +13,7 @@ test('sandbox install-level settings keys round-trip without a profile key', asy
     enabled: 'sandbox.enabled',
     instanceType: 'sandbox.instanceType',
     allowedHosts: 'sandbox.allowedHosts',
+    local: 'sandbox.local',
   });
   assert.equal(
     Object.values(SANDBOX_SETTING_KEYS).some((key) => key.includes('profile')),
@@ -26,12 +28,20 @@ test('sandbox install-level settings keys round-trip without a profile key', asy
       SANDBOX_SETTING_KEYS.allowedHosts,
       JSON.stringify(['registry.npmjs.org', 'files.pythonhosted.org']),
     );
+    await store.setSetting(SANDBOX_SETTING_KEYS.local, 'true');
 
     assert.deepEqual(await store.getSettings(Object.values(SANDBOX_SETTING_KEYS)), [
       'true',
       'standard-1',
       '["registry.npmjs.org","files.pythonhosted.org"]',
+      'true',
     ]);
+    assert.deepEqual(await resolveSandboxSettings(store), {
+      enabled: true,
+      instanceType: 'standard-1',
+      allowedHosts: ['registry.npmjs.org', 'files.pythonhosted.org'],
+      localEnabled: true,
+    });
   } finally {
     store.close();
   }

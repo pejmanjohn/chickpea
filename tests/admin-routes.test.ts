@@ -1598,6 +1598,61 @@ test('profile-scoped MCP test classifies a hung connection as timeout (HTTP 200,
   }
 });
 
+test('admin sandbox settings are auth-gated and round-trip install-level controls', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    const app = appWithAdminOptions(store, { settings });
+
+    const unauthorized = await app.request('/admin/api/sandbox/status');
+    assert.equal(unauthorized.status, 401);
+    assert.deepEqual(await unauthorized.json(), { error: 'unauthorized' });
+
+    const initial = await app.request('/admin/api/sandbox/status', {
+      headers: auth(ADMIN_TOKEN),
+    });
+    assert.equal(initial.status, 200);
+    assert.deepEqual(await initial.json(), {
+      enabled: false,
+      instanceType: 'standard-1',
+      allowedHosts: ['registry.npmjs.org', 'pypi.org', 'files.pythonhosted.org'],
+      target: 'node',
+      workersPaidNote: null,
+      localEnabled: false,
+    });
+
+    const saved = await app.request('/admin/api/sandbox/status', {
+      method: 'PUT',
+      headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        enabled: true,
+        instanceType: 'standard-2',
+        allowedHosts: ['registry.npmjs.org', 'files.pythonhosted.org', 'registry.npmjs.org'],
+        local: true,
+      }),
+    });
+    assert.equal(saved.status, 200);
+    const savedBody = {
+      enabled: true,
+      instanceType: 'standard-2',
+      allowedHosts: ['registry.npmjs.org', 'files.pythonhosted.org'],
+      target: 'node',
+      workersPaidNote: null,
+      localEnabled: true,
+    };
+    assert.deepEqual(await saved.json(), savedBody);
+
+    const reflected = await app.request('/admin/api/sandbox/status', {
+      headers: auth(ADMIN_TOKEN),
+    });
+    assert.equal(reflected.status, 200);
+    assert.deepEqual(await reflected.json(), savedBody);
+  } finally {
+    settings.close();
+    store.close();
+  }
+});
+
 test('profile-scoped MCP test classifies a 401 as unauthorized (HTTP 200)', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   try {

@@ -1,4 +1,9 @@
-import { bash, defineAgent, type AgentRouteHandler } from '@flue/runtime';
+import {
+  bash,
+  defineAgent,
+  type AgentRouteHandler,
+  type SandboxFactory,
+} from '@flue/runtime';
 import { Bash, InMemoryFs, type NetworkConfig, type SecureFetch } from 'just-bash';
 
 import { resolveConnectorCredential } from '../config/connector-secrets.ts';
@@ -20,6 +25,7 @@ import {
 import { resolveProfileMcpTools } from '../config/profile-mcp.ts';
 import { resolveProfileSkills } from '../config/profile-skills.ts';
 import { applyResolvedProviderKeys } from '../config/provider-keys.ts';
+import { resolveSandboxSettings } from '../config/sandbox-settings.ts';
 import { surfaceForChannelId } from '../config/resolver.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import { getOrCreateSnapshot } from '../config/snapshot-store.ts';
@@ -37,6 +43,7 @@ import {
   REPOSITORY_PERMISSIONS,
   validEnabledRepositoryGrants,
 } from '../sandbox/egress-handler.ts';
+import { selectSandbox, type SandboxSelection } from '../sandbox/select.ts';
 import { INTERNAL_AGENT_TOKEN_HEADER, isValidInternalAgentToken } from '../slack/internal-auth.ts';
 import { parseSlackThreadKey } from '../slack/thread-key.ts';
 
@@ -341,11 +348,13 @@ export default defineAgent(async ({ id }) => {
   // API connection policy inherits the agent snapshot contract, while its
   // credential resolves live every turn. Missing credentials degrade by
   // skipping that connection rather than aborting the turn.
-  const [egressPolicy, repositoryAccess, resolvedApiConnectors] = await Promise.all([
-    resolveEgressPolicy(env),
-    resolveRepositoryAccess(config.agent.repositories, env),
-    resolveApiConnectionsForTurn(config.agent.id, config.agent.apiConnections ?? [], env),
-  ]);
+  const [egressPolicy, repositoryAccess, resolvedApiConnectors, sandboxSettings] =
+    await Promise.all([
+      resolveEgressPolicy(env),
+      resolveRepositoryAccess(config.agent.repositories, env),
+      resolveApiConnectionsForTurn(config.agent.id, config.agent.apiConnections ?? [], env),
+      resolveSandboxSettings(getSettingsStore(env)),
+    ]);
   // Repository credentials take precedence over legacy/custom GitHub
   // connections. Down-scoped installation tokens are authoritative whenever
   // grants are active, including for narrower legacy path prefixes.
@@ -395,7 +404,7 @@ export default defineAgent(async ({ id }) => {
         secureFetch?: SecureFetch;
       }
     ).secureFetch;
-  let sandbox;
+  let virtualSandbox: SandboxFactory;
   const baseDelegate = secureFetchOf(baseNetwork);
   const scopeDelegates = scopes.map((scope) => ({
     prefixes: scope.prefixes,
@@ -415,12 +424,25 @@ export default defineAgent(async ({ id }) => {
       baseDelegate,
       baseMethods,
     });
-    sandbox = bash(() => new Bash({ fs: new InMemoryFs(), fetch: scopedFetch }));
+    virtualSandbox = bash(() => new Bash({ fs: new InMemoryFs(), fetch: scopedFetch }));
   } else {
     // just-bash stopped exposing secureFetch; fall back to the supported network
     // path at the fail-closed baseline (connector write methods not granted).
-    sandbox = bash(() => new Bash({ fs: new InMemoryFs(), network: fallbackNetwork }));
+    virtualSandbox = bash(() => new Bash({ fs: new InMemoryFs(), network: fallbackNetwork }));
   }
+  const sandboxSelection = selectSandbox({
+    target: isCloudflareTarget() ? 'cloudflare' : 'node',
+    enabled: sandboxSettings.enabled,
+    localEnabled: sandboxSettings.localEnabled,
+    repositoryGrants: repositoryAccess.grants,
+  });
+  const sandbox = await resolveAgentSandbox({
+    selection: sandboxSelection,
+    fallback: virtualSandbox,
+    env,
+    id,
+    grants: repositoryAccess.grants,
+  });
 
   return {
     model: config.model,
@@ -430,6 +452,58 @@ export default defineAgent(async ({ id }) => {
     ...(skills.length > 0 ? { skills } : {}),
   };
 });
+
+interface AgentSandboxOptions {
+  selection: SandboxSelection;
+  fallback: SandboxFactory;
+  env: PlatformEnv | undefined;
+  id: string;
+  grants: readonly RepositoryGrant[];
+}
+
+async function resolveAgentSandbox(options: AgentSandboxOptions): Promise<SandboxFactory> {
+  if (options.selection === 'bash') return options.fallback;
+
+  if (options.selection === 'local') {
+    const [{ local }, { mkdir }, { resolve }] = await Promise.all([
+      import('@flue/runtime/node'),
+      import('node:fs/promises'),
+      import('node:path'),
+    ]);
+    const cwd = resolve(
+      process.cwd(),
+      'tmp',
+      'sandbox-workspaces',
+      encodeURIComponent(options.id),
+    );
+    await mkdir(cwd, { recursive: true });
+    return local({ cwd });
+  }
+
+  // Both Workers-only modules stay below the runtime target gate. getSandbox
+  // mints a lazy DO stub; configureEgress persists policy without booting the
+  // container, whose first exec remains the creation boundary.
+  if (!isCloudflareTarget()) return options.fallback;
+  const [{ cloudflareSandbox }, { getSandbox }] = await Promise.all([
+    import('@flue/runtime/cloudflare'),
+    import('@cloudflare/sandbox'),
+  ]);
+  const binding = options.env?.SANDBOX ?? options.env?.Sandbox;
+  if (!binding) {
+    throw new Error('SANDBOX Durable Object binding is unavailable');
+  }
+  const sandbox = getSandbox(
+    binding as Parameters<typeof getSandbox>[0],
+    options.id,
+    { keepAlive: false, sleepAfter: '5m' },
+  );
+  await (
+    sandbox as typeof sandbox & {
+      configureEgress(grants: readonly RepositoryGrant[]): Promise<void>;
+    }
+  ).configureEgress(validEnabledRepositoryGrants(options.grants));
+  return cloudflareSandbox(sandbox, { cwd: '/workspace' });
+}
 
 /**
  * The platform env the store factories need on Cloudflare (the TAG_STATE
