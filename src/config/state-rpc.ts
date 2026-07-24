@@ -61,6 +61,17 @@ export interface TurnJob {
   assignment: ResolvedAssignment;
 }
 
+export interface TurnPullRequestProgress {
+  number: number;
+  url: string;
+  repository: string;
+  branch?: string;
+}
+
+export interface TurnProgress {
+  pullRequest?: TurnPullRequestProgress;
+}
+
 /**
  * Flat RPC surface of the state Durable Object stub: all four store domains
  * (config, snapshots, slack claims/threads, settings), one method per

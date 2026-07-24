@@ -1473,7 +1473,8 @@ details[open].advanced summary::before {
     enabled: false,
     instanceType: "standard-1",
     allowedHosts: ["registry.npmjs.org", "pypi.org", "files.pythonhosted.org"],
-    local: false
+    local: false,
+    monthlySessionCap: 200
   };
   var repositorySearchTimer = null;
 
@@ -3965,6 +3966,9 @@ details[open].advanced summary::before {
       '<div class="field"><label class="field-label" for="sandbox-instance-type">Instance type</label>' +
       '<span class="select-wrap"><select class="input mono" id="sandbox-instance-type" data-action="sandbox-instance"' + disabled + '>' + instanceOptions + '</select>' + icon("chevron-down", "select-caret") + '</span>' +
       '<p class="hint">Screenshots require <span class="mono">standard-1</span> or larger.</p></div>' +
+      '<div class="field" style="margin-top:14px;"><label class="field-label" for="sandbox-monthly-cap">Monthly session cap</label>' +
+      '<input class="input mono" id="sandbox-monthly-cap" type="number" min="0" max="100000" step="1" value="' + esc(String(sandboxDraft.monthlySessionCap)) + '" data-action="sandbox-monthly-cap"' + disabled + '>' +
+      '<p class="hint">New coding sessions decline cleanly at this UTC-month limit. Set to <span class="mono">0</span> for no cap.</p></div>' +
       '<div class="field" style="margin-top:14px;"><span class="field-label">Package registry access</span>' +
       '<p class="hint">GitHub access comes from profile repository grants. These are the only optional package hosts.</p>' + hostRows + '</div>' +
       localRow + '</div></details>' +
@@ -4658,7 +4662,10 @@ details[open].advanced summary::before {
       enabled: !!status.enabled,
       instanceType: status.instanceType || "standard-1",
       allowedHosts: (status.allowedHosts || []).slice(),
-      local: !!status.localEnabled
+      local: !!status.localEnabled,
+      monthlySessionCap: status.monthlySessionCapConfigured === false
+        ? 200
+        : (Number.isSafeInteger(status.monthlySessionCap) ? status.monthlySessionCap : 200)
     };
   }
 
@@ -4684,7 +4691,8 @@ details[open].advanced summary::before {
       enabled: sandboxDraft.enabled,
       instanceType: sandboxDraft.instanceType,
       allowedHosts: sandboxDraft.allowedHosts.slice(),
-      local: sandboxDraft.local
+      local: sandboxDraft.local,
+      monthlySessionCap: sandboxDraft.monthlySessionCap
     }).then(function (body) {
       state.sandboxStatus = body;
       seedSandboxDraft(body);
@@ -5860,6 +5868,13 @@ details[open].advanced summary::before {
       sandboxDraft.instanceType = target.value || "standard-1";
       state.sandboxError = "";
       render();
+    }
+    if (action === "sandbox-monthly-cap" && !state.sandboxSaving) {
+      var monthlySessionCap = Number(target.value);
+      sandboxDraft.monthlySessionCap = Number.isSafeInteger(monthlySessionCap) && monthlySessionCap >= 0
+        ? Math.min(monthlySessionCap, 100000)
+        : 200;
+      state.sandboxError = "";
     }
     if (action === "sandbox-host" && !state.sandboxSaving) {
       var sandboxHost = target.getAttribute("data-host") || "";

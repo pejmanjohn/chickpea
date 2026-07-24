@@ -1,10 +1,12 @@
 import type { SettingsStore } from './settings-store.ts';
+import { parseMonthlySessionCap } from '../sandbox/session-cap.ts';
 
 export const SANDBOX_SETTING_KEYS = {
   enabled: 'sandbox.enabled',
   instanceType: 'sandbox.instanceType',
   allowedHosts: 'sandbox.allowedHosts',
   local: 'sandbox.local',
+  monthlySessionCap: 'sandbox.monthlySessionCap',
 } as const;
 
 export const SANDBOX_PACKAGE_REGISTRY_HOSTS = [
@@ -27,6 +29,8 @@ export interface SandboxSettings {
   instanceType: SandboxInstanceType;
   allowedHosts: string[];
   localEnabled: boolean;
+  monthlySessionCap: number;
+  monthlySessionCapConfigured: boolean;
 }
 
 export const DEFAULT_SANDBOX_SETTINGS: Readonly<SandboxSettings> = {
@@ -34,18 +38,22 @@ export const DEFAULT_SANDBOX_SETTINGS: Readonly<SandboxSettings> = {
   instanceType: 'standard-1',
   allowedHosts: [...SANDBOX_PACKAGE_REGISTRY_HOSTS],
   localEnabled: false,
+  monthlySessionCap: 0,
+  monthlySessionCapConfigured: false,
 };
 
 const SUPPORTED_PACKAGE_REGISTRY_HOSTS = new Set<string>(SANDBOX_PACKAGE_REGISTRY_HOSTS);
 const SUPPORTED_INSTANCE_TYPES = new Set<string>(SANDBOX_INSTANCE_TYPES);
 
 export async function resolveSandboxSettings(store: SettingsStore): Promise<SandboxSettings> {
-  const [enabled, instanceType, allowedHosts, localEnabled] = await store.getSettings([
-    SANDBOX_SETTING_KEYS.enabled,
-    SANDBOX_SETTING_KEYS.instanceType,
-    SANDBOX_SETTING_KEYS.allowedHosts,
-    SANDBOX_SETTING_KEYS.local,
-  ]);
+  const [enabled, instanceType, allowedHosts, localEnabled, monthlySessionCap] =
+    await store.getSettings([
+      SANDBOX_SETTING_KEYS.enabled,
+      SANDBOX_SETTING_KEYS.instanceType,
+      SANDBOX_SETTING_KEYS.allowedHosts,
+      SANDBOX_SETTING_KEYS.local,
+      SANDBOX_SETTING_KEYS.monthlySessionCap,
+    ]);
   return {
     enabled: enabled === 'true',
     instanceType: SUPPORTED_INSTANCE_TYPES.has(instanceType ?? '')
@@ -53,6 +61,8 @@ export async function resolveSandboxSettings(store: SettingsStore): Promise<Sand
       : DEFAULT_SANDBOX_SETTINGS.instanceType,
     allowedHosts: parseSandboxAllowedHosts(allowedHosts),
     localEnabled: localEnabled === 'true',
+    monthlySessionCap: parseMonthlySessionCap(monthlySessionCap),
+    monthlySessionCapConfigured: monthlySessionCap !== undefined,
   };
 }
 

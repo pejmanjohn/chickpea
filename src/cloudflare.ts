@@ -4,7 +4,7 @@ import {
   type DurableObjectState,
   type DurableObjectStorage,
 } from 'cloudflare:workers';
-import { Sandbox as CloudflareSandbox } from '@cloudflare/sandbox';
+import { getSandbox, Sandbox as CloudflareSandbox } from '@cloudflare/sandbox';
 import type { WebClient } from '@slack/web-api';
 
 import {
@@ -28,7 +28,13 @@ import {
 import type { SettingsPatch, SettingsStore } from './config/settings-store.ts';
 import { SettingsStoreLogic } from './config/settings-store.ts';
 import { SnapshotStoreLogic } from './config/snapshot-store.ts';
-import type { StateRpcResult, TagStateRpc, TurnJob } from './config/state-rpc.ts';
+import type {
+  StateRpcResult,
+  TagStateRpc,
+  TurnJob,
+  TurnProgress,
+  TurnPullRequestProgress,
+} from './config/state-rpc.ts';
 import type { PlatformEnv } from './config/state-backend.ts';
 import { getSettingsStore } from './config/state-backend.ts';
 import { ConfigStoreLogic, type ConfigAgentPatch } from './config/store.ts';
@@ -44,6 +50,11 @@ import {
   resolveRepositoryInstallationScope,
   validEnabledRepositoryGrants,
 } from './sandbox/egress-handler.ts';
+import { CLOUDFLARE_SANDBOX_OPTIONS } from './sandbox/lifecycle.ts';
+import {
+  isGithubPullRequestCreateResponse,
+  pullRequestProgressFromGithubResponse,
+} from './sandbox/progress.ts';
 import { SlackStateLogic } from './slack/claim-store.ts';
 import { resolveSlackCredentials } from './slack/credentials.ts';
 import { toolStatus } from './slack/replies.ts';
@@ -54,7 +65,11 @@ import {
   runTurn,
   sanitizeError,
 } from './slack/run-turn.ts';
-import { MAX_TURN_ATTEMPTS, TurnJobStoreLogic } from './slack/turn-jobs.ts';
+import {
+  MAX_TURN_ATTEMPTS,
+  replayTextForTurnProgress,
+  TurnJobStoreLogic,
+} from './slack/turn-jobs.ts';
 import type { SqlParam, StateDb } from './state/state-db.ts';
 import { registerCloudflareBindingProvider } from './cloudflare-provider.ts';
 
@@ -83,7 +98,10 @@ interface SandboxPolicyStorage {
 
 interface SandboxNamespace {
   idFromString(id: string): unknown;
-  get(id: unknown): Pick<Sandbox, 'getEgressGrants'>;
+  get(id: unknown): Pick<
+    Sandbox,
+    'getEgressGrants' | 'getTurnId' | 'getTurnProgress' | 'recordPullRequestProgress'
+  >;
 }
 
 type SandboxWorkerEnv = PlatformEnv & {
@@ -91,6 +109,8 @@ type SandboxWorkerEnv = PlatformEnv & {
 };
 
 const SANDBOX_EGRESS_GRANTS_STORAGE_KEY = 'chickpea.sandbox.egress-grants.v1';
+const SANDBOX_TURN_ID_STORAGE_KEY = 'chickpea.sandbox.turn-id.v1';
+const SANDBOX_TURN_PROGRESS_STORAGE_KEY = 'chickpea.sandbox.turn-progress.v1';
 const SANDBOX_BLOCKED_STATUS = 520;
 
 /**
@@ -102,9 +122,14 @@ const SANDBOX_BLOCKED_STATUS = 520;
 export class Sandbox extends CloudflareSandbox<SandboxWorkerEnv> {
   interceptHttps = true;
 
-  async configureEgress(grants: readonly RepositoryGrant[]): Promise<void> {
+  async configureEgress(grants: readonly RepositoryGrant[], turnId: string): Promise<void> {
     const policy = validEnabledRepositoryGrants(grants).map(copyRepositoryGrant);
+    const previousTurnId = await this.getTurnId();
     await this.policyStorage().put(SANDBOX_EGRESS_GRANTS_STORAGE_KEY, policy);
+    await this.policyStorage().put(SANDBOX_TURN_ID_STORAGE_KEY, turnId);
+    if (previousTurnId !== turnId) {
+      await this.policyStorage().put<TurnProgress>(SANDBOX_TURN_PROGRESS_STORAGE_KEY, {});
+    }
   }
 
   async getEgressGrants(): Promise<RepositoryGrant[]> {
@@ -112,6 +137,26 @@ export class Sandbox extends CloudflareSandbox<SandboxWorkerEnv> {
       (await this.policyStorage().get<RepositoryGrant[]>(SANDBOX_EGRESS_GRANTS_STORAGE_KEY)) ??
       [];
     return validEnabledRepositoryGrants(stored).map(copyRepositoryGrant);
+  }
+
+  async getTurnId(): Promise<string | undefined> {
+    return this.policyStorage().get<string>(SANDBOX_TURN_ID_STORAGE_KEY);
+  }
+
+  async getTurnProgress(): Promise<TurnProgress> {
+    return (
+      (await this.policyStorage().get<TurnProgress>(SANDBOX_TURN_PROGRESS_STORAGE_KEY)) ?? {}
+    );
+  }
+
+  async recordPullRequestProgress(
+    pullRequest: TurnPullRequestProgress,
+  ): Promise<TurnProgress> {
+    const current = await this.getTurnProgress();
+    if (current.pullRequest) return current;
+    const progress: TurnProgress = { ...current, pullRequest };
+    await this.policyStorage().put(SANDBOX_TURN_PROGRESS_STORAGE_KEY, progress);
+    return progress;
   }
 
   private policyStorage(): SandboxPolicyStorage {
@@ -137,7 +182,8 @@ async function githubSandboxOutbound(
 ): Promise<Response> {
   try {
     const workerEnv = sandboxWorkerEnv(rawEnv);
-    const grants = await sandboxStub(workerEnv, ctx.containerId).getEgressGrants();
+    const stub = sandboxStub(workerEnv, ctx.containerId);
+    const grants = await stub.getEgressGrants();
     const decision = decideSandboxEgress({
       url: request.url,
       method: request.method,
@@ -161,7 +207,9 @@ async function githubSandboxOutbound(
 
     const headers = new Headers(request.headers);
     headers.set('Authorization', `Bearer ${token}`);
-    return fetch(new Request(request, { headers, redirect: 'manual' }));
+    const response = await fetch(new Request(request, { headers, redirect: 'manual' }));
+    await recordPullRequestProgress(request, response, stub);
+    return response;
   } catch {
     // Authentication/configuration errors are deliberately indistinguishable
     // from policy denials at the container boundary and never log token-bearing
@@ -214,8 +262,37 @@ function sandboxWorkerEnv(value: unknown): SandboxWorkerEnv {
 function sandboxStub(
   workerEnv: SandboxWorkerEnv,
   containerId: string,
-): Pick<Sandbox, 'getEgressGrants'> {
+): Pick<
+  Sandbox,
+  'getEgressGrants' | 'getTurnId' | 'getTurnProgress' | 'recordPullRequestProgress'
+> {
   return workerEnv.SANDBOX.get(workerEnv.SANDBOX.idFromString(containerId));
+}
+
+async function recordPullRequestProgress(
+  request: Request,
+  response: Response,
+  stub: Pick<Sandbox, 'getTurnId' | 'recordPullRequestProgress'>,
+): Promise<void> {
+  if (!isGithubPullRequestCreateResponse(request.url, request.method, response.status)) {
+    return;
+  }
+  const turnId = await stub.getTurnId();
+  if (!turnId) return;
+
+  try {
+    const pullRequest = pullRequestProgressFromGithubResponse({
+      requestUrl: request.url,
+      requestMethod: request.method,
+      responseStatus: response.status,
+      responseBody: await response.clone().json(),
+    });
+    if (!pullRequest) return;
+    await stub.recordPullRequestProgress(pullRequest);
+  } catch {
+    // Progress recording is best-effort and must never turn a successful,
+    // policy-approved GitHub operation into a failed sandbox request.
+  }
 }
 
 function copyRepositoryGrant(grant: RepositoryGrant): RepositoryGrant {
@@ -575,7 +652,41 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       // then re-fires with the count already committed, bounding retries.
       stores.turnJobs.recordAttempt(job.id, attempt);
       try {
-        await runTurn(job.turn, job.assignment, this.env as PlatformEnv, { client });
+        const persistSandboxProgress = async (): Promise<string | undefined> => {
+          try {
+            const binding =
+              (this.env as PlatformEnv).SANDBOX ?? (this.env as PlatformEnv).Sandbox;
+            if (!binding) return undefined;
+            const sandbox = getSandbox(
+              binding as Parameters<typeof getSandbox>[0],
+              slackThreadKey(job.turn),
+              CLOUDFLARE_SANDBOX_OPTIONS,
+            ) as ReturnType<typeof getSandbox> & {
+              getTurnId(): Promise<string | undefined>;
+              getTurnProgress(): Promise<TurnProgress>;
+            };
+            if ((await sandbox.getTurnId()) !== job.id) {
+              return undefined;
+            }
+            const progress = await sandbox.getTurnProgress();
+            if (progress.pullRequest) {
+              stores.turnJobs.recordPullRequest(job.id, progress.pullRequest);
+            }
+            return replayTextForTurnProgress(progress);
+          } catch {
+            // Retry protection is best-effort on the read path. The sandbox DO
+            // retains the marker, so a later alarm can try again.
+            return undefined;
+          }
+        };
+        const replayText =
+          replayTextForTurnProgress(job.progress) ?? (await persistSandboxProgress());
+        await runTurn(job.turn, job.assignment, this.env as PlatformEnv, {
+          client,
+          turnId: job.id,
+          ...(replayText === undefined ? {} : { replayText }),
+          beforeDelivery: persistSandboxProgress,
+        });
         // Delivered (a real final, or the sanitized provider-failure final that
         // runTurn posts on a provider error): tombstone so no later scan
         // re-delivers it. Claims stay held — a completed turn never re-runs.

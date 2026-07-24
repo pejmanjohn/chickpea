@@ -43,11 +43,34 @@ import {
   REPOSITORY_PERMISSIONS,
   validEnabledRepositoryGrants,
 } from '../sandbox/egress-handler.ts';
-import { selectSandbox, type SandboxSelection } from '../sandbox/select.ts';
+import {
+  CLOUDFLARE_SANDBOX_OPTIONS,
+  SandboxLifecycleRegistry,
+  serializeSandboxActivation,
+  type DestroyableSandbox,
+} from '../sandbox/lifecycle.ts';
+import {
+  applySandboxSessionCap,
+  selectSandbox,
+  type SandboxSelection,
+} from '../sandbox/select.ts';
+import { reserveMonthlySandboxSession } from '../sandbox/session-cap.ts';
+import {
+  activeSandboxTurnId,
+  clearActiveSandboxTurn,
+  SANDBOX_TURN_ID_HEADER,
+  setActiveSandboxTurn,
+} from '../sandbox/turn-context.ts';
+import {
+  WORKSPACE_SESSION_CAP_DECLINE,
+  workspaceSkillForSandbox,
+} from '../sandbox/workspace-skill.ts';
 import { INTERNAL_AGENT_TOKEN_HEADER, isValidInternalAgentToken } from '../slack/internal-auth.ts';
 import { parseSlackThreadKey } from '../slack/thread-key.ts';
 
 export { resolveAgentModel } from '../config/model-policy.ts';
+
+const cloudflareSandboxLifecycle = new SandboxLifecycleRegistry<DestroyableSandbox>();
 
 export function suppressProfileNamedConnectorSkills(
   connectorSkills: readonly SkillConfig[],
@@ -324,13 +347,28 @@ export const route: AgentRouteHandler = async (c, next) => {
   if (!isValidInternalAgentToken(token)) {
     return c.json({ error: 'unauthorized' }, 401);
   }
-  return next();
+  const threadId = c.req.param('id');
+  const turnId = c.req.header(SANDBOX_TURN_ID_HEADER);
+  if (threadId && turnId) {
+    setActiveSandboxTurn(threadId, turnId);
+  }
+  try {
+    return await next();
+  } finally {
+    if (threadId && turnId) {
+      clearActiveSandboxTurn(threadId, turnId);
+    }
+    if (threadId && c.req.method === 'POST' && isCloudflareTarget()) {
+      await cloudflareSandboxLifecycle.destroy(threadId);
+    }
+  }
 };
 
 export default defineAgent(async ({ id }) => {
   const env = await resolveAgentPlatformEnv();
   await applyResolvedProviderKeys(env);
   const store = getConfigStore(env);
+  const settingsStore = getSettingsStore(env);
   const stores = { agents: store, assignments: store };
   const { workspaceId, channelId } = parseSlackThreadKey(id);
   const resolve = () => resolveEffectiveSlackConfig(workspaceId, channelId, stores);
@@ -353,8 +391,32 @@ export default defineAgent(async ({ id }) => {
       resolveEgressPolicy(env),
       resolveRepositoryAccess(config.agent.repositories, env),
       resolveApiConnectionsForTurn(config.agent.id, config.agent.apiConnections ?? [], env),
-      resolveSandboxSettings(getSettingsStore(env)),
+      resolveSandboxSettings(settingsStore),
     ]);
+  const requestedSandboxSelection = selectSandbox({
+    target: isCloudflareTarget() ? 'cloudflare' : 'node',
+    enabled: sandboxSettings.enabled,
+    localEnabled: sandboxSettings.localEnabled,
+    repositoryGrants: repositoryAccess.grants,
+  });
+  const turnId = activeSandboxTurnId(id) ?? id;
+  const sessionReservation =
+    requestedSandboxSelection === 'cloudflare'
+      ? await reserveMonthlySandboxSession({
+          store: settingsStore,
+          cap: sandboxSettings.monthlySessionCap,
+          reservationId: turnId,
+        })
+      : undefined;
+  const sandboxSelection = applySandboxSessionCap(
+    requestedSandboxSelection,
+    sessionReservation?.allowed,
+  );
+  const workspaceSkill = workspaceSkillForSandbox(
+    requestedSandboxSelection,
+    sessionReservation?.allowed === false ? WORKSPACE_SESSION_CAP_DECLINE : undefined,
+  );
+
   // Repository credentials take precedence over legacy/custom GitHub
   // connections. Down-scoped installation tokens are authoritative whenever
   // grants are active, including for narrower legacy path prefixes.
@@ -377,10 +439,13 @@ export default defineAgent(async ({ id }) => {
     ),
     config.agent.skills,
   );
-  // Skills ride inside the resolved agent — frozen in the snapshot for channel
-  // threads, live-resolved for DMs — so they inherit the same freeze contract
-  // as instructions. resolveProfileSkills dedupes names and skips invalid rows.
-  const skills = resolveProfileSkills([...connectorSkills, ...config.agent.skills]);
+  // The install/runtime-derived workspace judge comes last so a stored
+  // same-named profile row cannot hide a live security or cap signal.
+  const skills = resolveProfileSkills([
+    ...connectorSkills,
+    ...config.agent.skills,
+    ...(workspaceSkill ? [workspaceSkill] : []),
+  ]);
 
   // MCP connection tools join at the same seam and inherit the same freeze
   // contract (mcpServers frozen in the snapshot for channels, live for DMs;
@@ -430,17 +495,12 @@ export default defineAgent(async ({ id }) => {
     // path at the fail-closed baseline (connector write methods not granted).
     virtualSandbox = bash(() => new Bash({ fs: new InMemoryFs(), network: fallbackNetwork }));
   }
-  const sandboxSelection = selectSandbox({
-    target: isCloudflareTarget() ? 'cloudflare' : 'node',
-    enabled: sandboxSettings.enabled,
-    localEnabled: sandboxSettings.localEnabled,
-    repositoryGrants: repositoryAccess.grants,
-  });
   const sandbox = await resolveAgentSandbox({
     selection: sandboxSelection,
     fallback: virtualSandbox,
     env,
     id,
+    turnId,
     grants: repositoryAccess.grants,
   });
 
@@ -458,6 +518,7 @@ interface AgentSandboxOptions {
   fallback: SandboxFactory;
   env: PlatformEnv | undefined;
   id: string;
+  turnId: string;
   grants: readonly RepositoryGrant[];
 }
 
@@ -492,17 +553,31 @@ async function resolveAgentSandbox(options: AgentSandboxOptions): Promise<Sandbo
   if (!binding) {
     throw new Error('SANDBOX Durable Object binding is unavailable');
   }
-  const sandbox = getSandbox(
-    binding as Parameters<typeof getSandbox>[0],
-    options.id,
-    { keepAlive: false, sleepAfter: '5m' },
-  );
-  await (
-    sandbox as typeof sandbox & {
-      configureEgress(grants: readonly RepositoryGrant[]): Promise<void>;
+  const sandbox = await cloudflareSandboxLifecycle.create(options.id, async () => {
+    const candidate = getSandbox(
+      binding as Parameters<typeof getSandbox>[0],
+      options.id,
+      CLOUDFLARE_SANDBOX_OPTIONS,
+    );
+    try {
+      await (
+        candidate as typeof candidate & {
+          configureEgress(
+            grants: readonly RepositoryGrant[],
+            turnId: string,
+          ): Promise<void>;
+        }
+      ).configureEgress(validEnabledRepositoryGrants(options.grants), options.turnId);
+      return candidate;
+    } catch (err) {
+      await candidate.destroy().catch(() => undefined);
+      throw err;
     }
-  ).configureEgress(validEnabledRepositoryGrants(options.grants));
-  return cloudflareSandbox(sandbox, { cwd: '/workspace' });
+  });
+  const serialized = serializeSandboxActivation(
+    sandbox as unknown as Parameters<typeof cloudflareSandbox>[0],
+  );
+  return cloudflareSandbox(serialized, { cwd: '/workspace' });
 }
 
 /**

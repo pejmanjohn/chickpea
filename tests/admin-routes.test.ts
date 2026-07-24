@@ -1616,6 +1616,8 @@ test('admin sandbox settings are auth-gated and round-trip install-level control
       enabled: false,
       instanceType: 'standard-1',
       allowedHosts: ['registry.npmjs.org', 'pypi.org', 'files.pythonhosted.org'],
+      monthlySessionCap: 0,
+      monthlySessionCapConfigured: false,
       target: 'node',
       workersPaidNote: null,
       localEnabled: false,
@@ -1629,6 +1631,7 @@ test('admin sandbox settings are auth-gated and round-trip install-level control
         instanceType: 'standard-2',
         allowedHosts: ['registry.npmjs.org', 'files.pythonhosted.org', 'registry.npmjs.org'],
         local: true,
+        monthlySessionCap: 450,
       }),
     });
     assert.equal(saved.status, 200);
@@ -1636,6 +1639,8 @@ test('admin sandbox settings are auth-gated and round-trip install-level control
       enabled: true,
       instanceType: 'standard-2',
       allowedHosts: ['registry.npmjs.org', 'files.pythonhosted.org'],
+      monthlySessionCap: 450,
+      monthlySessionCapConfigured: true,
       target: 'node',
       workersPaidNote: null,
       localEnabled: true,

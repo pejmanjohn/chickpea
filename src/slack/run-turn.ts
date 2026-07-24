@@ -83,6 +83,12 @@ export interface RunTurnOptions {
    * the DO never has to RPC into itself to resolve the bot token.
    */
   client?: WebClient;
+  /** Durable turn key forwarded to the sandbox for cap/idempotency state. */
+  turnId?: string;
+  /** Recorded result from an earlier attempt; skips the agent entirely. */
+  replayText?: string;
+  /** Persist sandbox side effects before the final Slack delivery can fail. */
+  beforeDelivery?: () => Promise<string | undefined>;
 }
 
 /**
@@ -152,14 +158,29 @@ export async function runTurn(
       await statusTurn.setStatus(modelStatus(resolvedModel));
     }
     let text: string;
-    try {
-      text = await promptSlackThreadAgent(conversationKey, prompt, platformEnv);
-    } catch (err) {
-      console.error('[chickpea] provider call failed:', sanitizeError(err));
-      await statusTurn.drain();
-      await presenter.deliverFinal(PROVIDER_FAILURE_TEXT, 'plain_text');
-      return;
+    if (options.replayText !== undefined) {
+      text = options.replayText;
+    } else {
+      try {
+        text = await promptSlackThreadAgent(
+          conversationKey,
+          prompt,
+          platformEnv,
+          options.turnId ?? `msg:${turn.channelId}:${turn.messageTs}`,
+        );
+      } catch (err) {
+        console.error('[chickpea] provider call failed:', sanitizeError(err));
+        const recoveredText = await options.beforeDelivery?.();
+        await statusTurn.drain();
+        if (recoveredText) {
+          await presenter.deliverFinal(recoveredText, 'markdown');
+          return;
+        }
+        await presenter.deliverFinal(PROVIDER_FAILURE_TEXT, 'plain_text');
+        return;
+      }
     }
+    await options.beforeDelivery?.();
     await statusTurn.drain();
     await presenter.deliverFinal(text, 'markdown');
   } finally {

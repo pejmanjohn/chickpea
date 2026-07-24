@@ -179,6 +179,8 @@ type SandboxStatusFixture = {
   enabled: boolean;
   instanceType: string;
   allowedHosts: string[];
+  monthlySessionCap: number;
+  monthlySessionCapConfigured: boolean;
   target: 'cloudflare' | 'node';
   workersPaidNote: string | null;
   localEnabled: boolean;
@@ -252,6 +254,7 @@ function runAdminPageHarness(
     instanceType: string;
     allowedHosts: string[];
     local: boolean;
+    monthlySessionCap: number;
   }>;
   agentPatchBodies: Array<{ id: string; body: Record<string, unknown> }>;
   agentPostBodies: Array<Record<string, unknown>>;
@@ -331,6 +334,7 @@ function runAdminPageHarness(
     instanceType: string;
     allowedHosts: string[];
     local: boolean;
+    monthlySessionCap: number;
   }> = [];
   const agentPatchBodies: Array<{ id: string; body: Record<string, unknown> }> = [];
   const agentPostBodies: Array<Record<string, unknown>> = [];
@@ -411,6 +415,8 @@ function runAdminPageHarness(
     enabled: false,
     instanceType: 'standard-1',
     allowedHosts: ['registry.npmjs.org', 'pypi.org', 'files.pythonhosted.org'],
+    monthlySessionCap: 0,
+    monthlySessionCapConfigured: false,
     target: options.cloudflare ? 'cloudflare' : 'node',
     workersPaidNote: options.cloudflare
       ? 'Requires Workers Paid. Real containers run on your Cloudflare account; a typical session costs about 1 cent.'
@@ -728,18 +734,22 @@ function runAdminPageHarness(
           instanceType: string;
           allowedHosts: string[];
           local: boolean;
+          monthlySessionCap: number;
         };
         sandboxPuts.push({
           enabled: body.enabled,
           instanceType: body.instanceType,
           allowedHosts: [...body.allowedHosts],
           local: body.local,
+          monthlySessionCap: body.monthlySessionCap,
         });
         sandboxStatus = {
           ...sandboxStatus,
           enabled: body.enabled,
           instanceType: body.instanceType,
           allowedHosts: [...body.allowedHosts],
+          monthlySessionCap: body.monthlySessionCap,
+          monthlySessionCapConfigured: true,
           localEnabled: body.local,
         };
       }
@@ -4098,6 +4108,7 @@ test('Settings saves Node local sandbox controls as one install-level update', a
       instanceType: 'standard-2',
       allowedHosts: ['registry.npmjs.org', 'files.pythonhosted.org'],
       local: true,
+      monthlySessionCap: 200,
     },
   ]);
 });

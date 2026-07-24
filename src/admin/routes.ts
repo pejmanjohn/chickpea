@@ -510,6 +510,7 @@ const sandboxSettingsSchema = v.object({
   instanceType: v.picklist(SANDBOX_INSTANCE_TYPES),
   allowedHosts: v.array(v.picklist(SANDBOX_PACKAGE_REGISTRY_HOSTS)),
   local: v.boolean(),
+  monthlySessionCap: v.pipe(v.number(), v.integer(), v.minValue(0), v.maxValue(100_000)),
 });
 
 async function sandboxStatus(store: SettingsStore) {
@@ -519,6 +520,8 @@ async function sandboxStatus(store: SettingsStore) {
     enabled: resolved.enabled,
     instanceType: resolved.instanceType,
     allowedHosts: resolved.allowedHosts,
+    monthlySessionCap: resolved.monthlySessionCap,
+    monthlySessionCapConfigured: resolved.monthlySessionCapConfigured,
     target: cloudflare ? ('cloudflare' as const) : ('node' as const),
     workersPaidNote: cloudflare
       ? 'Requires Workers Paid. Real containers run on your Cloudflare account; a typical session costs about 1 cent.'
@@ -848,6 +851,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           value: JSON.stringify([...new Set(sandbox.allowedHosts)]),
         },
         { key: SANDBOX_SETTING_KEYS.local, value: String(sandbox.local) },
+        {
+          key: SANDBOX_SETTING_KEYS.monthlySessionCap,
+          value: String(sandbox.monthlySessionCap),
+        },
       ],
     });
     return c.json(await sandboxStatus(settings(c)));
