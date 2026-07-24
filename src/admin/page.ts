@@ -1469,7 +1469,6 @@ details[open].advanced summary::before {
   var sandboxDraft = {
     enabled: false,
     allowedHosts: ["registry.npmjs.org", "pypi.org", "files.pythonhosted.org"],
-    local: false,
     monthlySessionCap: 200
   };
   var repositorySearchTimer = null;
@@ -3891,17 +3890,12 @@ details[open].advanced summary::before {
         '<input type="checkbox" data-action="sandbox-host" data-host="' + esc(host) + '" ' + (checked ? "checked " : "") + disabled + ' aria-label="Allow ' + esc(host) + '"></span>' +
         '<span class="tool-body"><span class="tool-name">' + esc(host) + '</span></span></label>';
     }).join("");
-    var localRow = status.target === "node"
-      ? '<div class="bundle-row"><div class="danger-copy"><span class="field-label">Use this machine for local workspaces</span>' +
-        '<span class="hint">Trusted single-operator installs only. Model-directed commands use this host filesystem and its git/SSH credentials, rooted under <span class="mono">tmp/sandbox-workspaces</span>. A connected GitHub App and an enabled repository grant are still required.</span></div>' +
-        '<label class="toggle"><span class="thumb"></span><input type="checkbox" data-action="sandbox-local" ' + (sandboxDraft.local ? "checked " : "") + disabled + ' aria-label="Use local coding workspaces"></label></div>'
-      : "";
     var paidNote = status.workersPaidNote
       ? '<p class="hint">' + esc(status.workersPaidNote) + '</p>'
       : "";
     var enableNote = status.target === "cloudflare"
       ? 'Runs coding tasks in real containers on your Cloudflare account; requires Workers Paid; ~1 cent/session.'
-      : 'Turns on the install-wide coding tier. Local execution remains off until you explicitly enable it under Advanced.';
+      : 'The coding sandbox requires Cloudflare Workers. Node and other non-Cloudflare installs keep the standard in-memory bash sandbox.';
     return '<section class="section" id="sandbox-settings">' + head +
       '<div class="bundle-row"><div class="danger-copy"><span class="field-label">Enable coding sandbox</span>' +
       '<span class="hint">' + enableNote + '</span></div>' +
@@ -3916,7 +3910,7 @@ details[open].advanced summary::before {
       '<p class="hint">New coding sessions decline cleanly at this UTC-month limit. Set to <span class="mono">0</span> for no cap.</p></div>' +
       '<div class="field" style="margin-top:14px;"><span class="field-label">Package registry access</span>' +
       '<p class="hint">GitHub access comes from profile repository grants. These are the only optional package hosts.</p>' + hostRows + '</div>' +
-      localRow + '</div></details>' +
+      '</div></details>' +
       (state.sandboxError ? '<p class="field-error" role="alert">' + esc(state.sandboxError) + '</p>' : "") +
       '<div><button type="button" class="btn btn-primary" data-action="sandbox-save"' + disabled + '>' + (state.sandboxSaving ? "Saving&hellip;" : "Save") + '</button></div></section>';
   }
@@ -4567,7 +4561,6 @@ details[open].advanced summary::before {
     sandboxDraft = {
       enabled: !!status.enabled,
       allowedHosts: (status.allowedHosts || []).slice(),
-      local: !!status.localEnabled,
       monthlySessionCap: status.monthlySessionCapConfigured === false
         ? 200
         : (Number.isSafeInteger(status.monthlySessionCap) ? status.monthlySessionCap : 200)
@@ -4595,7 +4588,6 @@ details[open].advanced summary::before {
     postJson("/admin/api/sandbox/status", "PUT", {
       enabled: sandboxDraft.enabled,
       allowedHosts: sandboxDraft.allowedHosts.slice(),
-      local: sandboxDraft.local,
       monthlySessionCap: sandboxDraft.monthlySessionCap
     }).then(function (body) {
       state.sandboxStatus = body;
@@ -5742,11 +5734,6 @@ details[open].advanced summary::before {
     var action = target.getAttribute && target.getAttribute("data-action");
     if (action === "sandbox-enabled" && !state.sandboxSaving) {
       sandboxDraft.enabled = !!target.checked;
-      state.sandboxError = "";
-      render();
-    }
-    if (action === "sandbox-local" && !state.sandboxSaving) {
-      sandboxDraft.local = !!target.checked;
       state.sandboxError = "";
       render();
     }

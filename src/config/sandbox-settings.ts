@@ -4,7 +4,6 @@ import { parseMonthlySessionCap } from '../sandbox/session-cap.ts';
 export const SANDBOX_SETTING_KEYS = {
   enabled: 'sandbox.enabled',
   allowedHosts: 'sandbox.allowedHosts',
-  local: 'sandbox.local',
   monthlySessionCap: 'sandbox.monthlySessionCap',
 } as const;
 
@@ -21,7 +20,6 @@ export interface SandboxSettings {
   enabled: boolean;
   instanceType: SandboxInstanceType;
   allowedHosts: string[];
-  localEnabled: boolean;
   monthlySessionCap: number;
   monthlySessionCapConfigured: boolean;
 }
@@ -30,7 +28,6 @@ export const DEFAULT_SANDBOX_SETTINGS: Readonly<SandboxSettings> = {
   enabled: false,
   instanceType: SANDBOX_INSTANCE_TYPE,
   allowedHosts: [...SANDBOX_PACKAGE_REGISTRY_HOSTS],
-  localEnabled: false,
   monthlySessionCap: 0,
   monthlySessionCapConfigured: false,
 };
@@ -38,18 +35,15 @@ export const DEFAULT_SANDBOX_SETTINGS: Readonly<SandboxSettings> = {
 const SUPPORTED_PACKAGE_REGISTRY_HOSTS = new Set<string>(SANDBOX_PACKAGE_REGISTRY_HOSTS);
 
 export async function resolveSandboxSettings(store: SettingsStore): Promise<SandboxSettings> {
-  const [enabled, allowedHosts, localEnabled, monthlySessionCap] =
-    await store.getSettings([
-      SANDBOX_SETTING_KEYS.enabled,
-      SANDBOX_SETTING_KEYS.allowedHosts,
-      SANDBOX_SETTING_KEYS.local,
-      SANDBOX_SETTING_KEYS.monthlySessionCap,
-    ]);
+  const [enabled, allowedHosts, monthlySessionCap] = await store.getSettings([
+    SANDBOX_SETTING_KEYS.enabled,
+    SANDBOX_SETTING_KEYS.allowedHosts,
+    SANDBOX_SETTING_KEYS.monthlySessionCap,
+  ]);
   return {
     enabled: enabled === 'true',
     instanceType: SANDBOX_INSTANCE_TYPE,
     allowedHosts: parseSandboxAllowedHosts(allowedHosts),
-    localEnabled: localEnabled === 'true',
     monthlySessionCap: parseMonthlySessionCap(monthlySessionCap),
     monthlySessionCapConfigured: monthlySessionCap !== undefined,
   };

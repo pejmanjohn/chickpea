@@ -9,7 +9,6 @@ import {
 test('workspace judge attaches only for a selected full workspace tier', () => {
   assert.equal(workspaceSkillForSandbox('bash'), undefined);
   assert.equal(workspaceSkillForSandbox('cloudflare')?.name, 'workspace');
-  assert.equal(workspaceSkillForSandbox('local')?.name, 'workspace');
 });
 
 test('workspace skill teaches the coding loop without embedding credentials', () => {

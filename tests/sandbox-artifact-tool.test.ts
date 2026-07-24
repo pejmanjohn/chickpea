@@ -1,11 +1,7 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { test } from 'node:test';
 
 import type { SandboxFactory, SessionEnv } from '@flue/runtime';
-import { local } from '@flue/runtime/node';
 
 import {
   createWorkspaceArtifactCapability,
@@ -72,7 +68,6 @@ test('workspace artifact tool reads through SessionEnv and binds the Slack desti
   };
   const capability = createWorkspaceArtifactCapability({
     sandbox: base,
-    selection: 'cloudflare',
     channel: 'C_BOUND',
     threadTs: '1782770400.000100',
     async postArtifact(input) {
@@ -128,7 +123,6 @@ test('workspace artifact tool rejects over-cap files without reading or posting 
   };
   const capability = createWorkspaceArtifactCapability({
     sandbox: base,
-    selection: 'cloudflare',
     channel: 'C_BOUND',
     threadTs: '1782770400.000100',
     async postArtifact(input) {
@@ -154,58 +148,42 @@ test('workspace artifact tool rejects over-cap files without reading or posting 
 });
 
 test('workspace artifact copy-freeze bounds a source that grows after the pre-stat', async () => {
-  const workspace = await mkdtemp(join(tmpdir(), 'chickpea-artifact-'));
-  try {
-    await writeFile(
-      join(workspace, 'racing.bin'),
-      new Uint8Array(MAX_ARTIFACT_BYTES + 1),
-    );
-    const base = local({ cwd: workspace });
-    const sandbox: SandboxFactory = {
-      async createSessionEnv(createOptions) {
-        const session = await base.createSessionEnv(createOptions);
-        let sourceStats = 0;
-        return {
-          ...session,
-          async stat(path) {
-            if (path === 'racing.bin' && sourceStats++ === 0) {
-              return { isFile: true, isDirectory: false, size: 1 };
-            }
-            return session.stat(path);
-          },
-        };
-      },
-    };
-    let uploadedBytes = -1;
-    const capability = createWorkspaceArtifactCapability({
-      sandbox,
-      selection: 'local',
-      channel: 'C_BOUND',
-      threadTs: '1782770400.000100',
-      async postArtifact(input) {
-        uploadedBytes = input.bytes.byteLength;
-        return { uploaded: true };
-      },
-    });
+  const readPaths: string[] = [];
+  const statPaths: string[] = [];
+  const execCommands: string[] = [];
+  const removedPaths: string[] = [];
+  const base: SandboxFactory = {
+    async createSessionEnv() {
+      return fakeSessionEnv(readPaths, statPaths, 1, {
+        execCommands,
+        removedPaths,
+        readBytes: new Uint8Array(MAX_ARTIFACT_BYTES),
+      });
+    },
+  };
+  let uploadedBytes = -1;
+  const capability = createWorkspaceArtifactCapability({
+    sandbox: base,
+    channel: 'C_BOUND',
+    threadTs: '1782770400.000100',
+    async postArtifact(input) {
+      uploadedBytes = input.bytes.byteLength;
+      return { uploaded: true };
+    },
+  });
 
-    await capability.sandbox.createSessionEnv({ id: 'thread-race' });
-    await capability.tool.run({
-      input: {
-        path: '/workspace/racing.bin',
-        filename: 'racing.bin',
-      },
-    });
+  await capability.sandbox.createSessionEnv({ id: 'thread-race' });
+  await capability.tool.run({
+    input: {
+      path: '/workspace/racing.bin',
+      filename: 'racing.bin',
+    },
+  });
 
-    assert.equal(uploadedBytes, MAX_ARTIFACT_BYTES);
-    assert.deepEqual(
-      (await readdir(workspace)).filter((name) =>
-        name.startsWith('.chickpea-artifact-'),
-      ),
-      [],
-    );
-  } finally {
-    await rm(workspace, { recursive: true, force: true });
-  }
+  assert.equal(uploadedBytes, MAX_ARTIFACT_BYTES);
+  assert.equal(execCommands.length, 1);
+  assert.match(execCommands[0] ?? '', new RegExp(`head -c ${MAX_ARTIFACT_BYTES}`));
+  assert.deepEqual(removedPaths, readPaths);
 });
 
 test('workspace artifact tool rejects post-read oversize bytes and cleans up', async () => {
@@ -223,7 +201,6 @@ test('workspace artifact tool rejects post-read oversize bytes and cleans up', a
   };
   const capability = createWorkspaceArtifactCapability({
     sandbox: base,
-    selection: 'cloudflare',
     channel: 'C_BOUND',
     threadTs: '1782770400.000100',
     async postArtifact(input) {
@@ -258,7 +235,6 @@ test('workspace artifact temp name is random and independent of model input', as
   };
   const capability = createWorkspaceArtifactCapability({
     sandbox: base,
-    selection: 'cloudflare',
     channel: 'C_BOUND',
     threadTs: '1782770400.000100',
     async postArtifact() {
@@ -289,7 +265,7 @@ test('workspace artifact temp name is random and independent of model input', as
   assert.equal(frozenPath.includes('model-controlled'), false);
 });
 
-test('workspace artifact tool maps the logical root locally and rejects paths outside it', async () => {
+test('workspace artifact tool keeps the container root and rejects paths outside it', async () => {
   const readPaths: string[] = [];
   const base: SandboxFactory = {
     async createSessionEnv() {
@@ -298,7 +274,6 @@ test('workspace artifact tool maps the logical root locally and rejects paths ou
   };
   const capability = createWorkspaceArtifactCapability({
     sandbox: base,
-    selection: 'local',
     channel: 'C_BOUND',
     threadTs: '1782770400.000100',
     async postArtifact() {
@@ -319,7 +294,7 @@ test('workspace artifact tool maps the logical root locally and rejects paths ou
   assert.equal(readPaths.length, 1);
   assert.match(
     readPaths[0] ?? '',
-    /^\.chickpea-artifact-[a-f0-9]{32}\.tmp$/,
+    /^\/workspace\/\.chickpea-artifact-[a-f0-9]{32}\.tmp$/,
   );
 
   await assert.rejects(

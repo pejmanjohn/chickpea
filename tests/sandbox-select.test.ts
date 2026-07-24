@@ -20,7 +20,6 @@ test('Cloudflare selects its Flue sandbox only when the tier and a valid grant a
     selectSandbox({
       target: 'cloudflare',
       enabled: true,
-      localEnabled: false,
       appConnected: true,
       repositoryGrants: [grant()],
     }),
@@ -31,35 +30,30 @@ test('Cloudflare selects its Flue sandbox only when the tier and a valid grant a
     {
       target: 'cloudflare' as const,
       enabled: false,
-      localEnabled: false,
       appConnected: true,
       repositoryGrants: [grant()],
     },
     {
       target: 'cloudflare' as const,
       enabled: true,
-      localEnabled: false,
       appConnected: true,
       repositoryGrants: [],
     },
     {
       target: 'cloudflare' as const,
       enabled: true,
-      localEnabled: false,
       appConnected: true,
       repositoryGrants: [grant({ enabled: false })],
     },
     {
       target: 'cloudflare' as const,
       enabled: true,
-      localEnabled: false,
       appConnected: true,
       repositoryGrants: [grant({ fullName: '../broader-scope' })],
     },
     {
       target: 'cloudflare' as const,
       enabled: true,
-      localEnabled: false,
       appConnected: false,
       repositoryGrants: [grant()],
     },
@@ -68,55 +62,18 @@ test('Cloudflare selects its Flue sandbox only when the tier and a valid grant a
   }
 });
 
-test('Node selects local only with both opt-ins, an App connection, and a valid grant', () => {
-  assert.equal(
-    selectSandbox({
-      target: 'node',
-      enabled: true,
-      localEnabled: true,
-      appConnected: false,
-      repositoryGrants: [],
-    }),
-    'bash',
-  );
-  assert.equal(
-    selectSandbox({
-      target: 'node',
-      enabled: true,
-      localEnabled: true,
-      appConnected: true,
-      repositoryGrants: [],
-    }),
-    'bash',
-  );
-  assert.equal(
-    selectSandbox({
-      target: 'node',
-      enabled: true,
-      localEnabled: true,
-      appConnected: true,
-      repositoryGrants: [grant()],
-    }),
-    'local',
-  );
-  assert.equal(
-    selectSandbox({
-      target: 'node',
-      enabled: true,
-      localEnabled: false,
-      appConnected: true,
-      repositoryGrants: [grant()],
-    }),
-    'bash',
-  );
-  assert.equal(
-    selectSandbox({
-      target: 'node',
-      enabled: false,
-      localEnabled: true,
-      appConnected: true,
-      repositoryGrants: [grant()],
-    }),
-    'bash',
-  );
+test('Node always selects the in-memory bash sandbox', () => {
+  for (const enabled of [false, true]) {
+    for (const appConnected of [false, true]) {
+      assert.equal(
+        selectSandbox({
+          target: 'node',
+          enabled,
+          appConnected,
+          repositoryGrants: [grant()],
+        }),
+        'bash',
+      );
+    }
+  }
 });

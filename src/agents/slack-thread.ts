@@ -428,7 +428,6 @@ export default defineAgent(async ({ id }) => {
   const sandboxSelection = selectSandbox({
     target: isCloudflareTarget() ? 'cloudflare' : 'node',
     enabled: sandboxSettings.enabled,
-    localEnabled: sandboxSettings.localEnabled,
     appConnected: githubAppConnected,
     repositoryGrants: repositoryAccess.grants,
   });
@@ -528,7 +527,6 @@ export default defineAgent(async ({ id }) => {
     let presenter: Promise<WebClientPresenter> | undefined;
     const artifactCapability = createWorkspaceArtifactCapability({
       sandbox,
-      selection: sandboxSelection,
       channel: channelId,
       threadTs: artifactThreadTs,
       postArtifact: async (input) => {
@@ -571,22 +569,6 @@ interface AgentSandboxOptions {
 
 async function resolveAgentSandbox(options: AgentSandboxOptions): Promise<SandboxFactory> {
   if (options.selection === 'bash') return options.fallback;
-
-  if (options.selection === 'local') {
-    const [{ local }, { mkdir }, { resolve }] = await Promise.all([
-      import('@flue/runtime/node'),
-      import('node:fs/promises'),
-      import('node:path'),
-    ]);
-    const cwd = resolve(
-      process.cwd(),
-      'tmp',
-      'sandbox-workspaces',
-      encodeURIComponent(options.id),
-    );
-    await mkdir(cwd, { recursive: true });
-    return local({ cwd });
-  }
 
   // Both Workers-only modules stay below the runtime target gate. getSandbox
   // mints a lazy DO stub; configureEgress persists policy without booting the

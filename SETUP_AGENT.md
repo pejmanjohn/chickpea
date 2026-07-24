@@ -19,7 +19,10 @@ prefers that; everything else is clicking.
 **GitHub features are configured separately:** repository access and the
 coding sandbox both require the GitHub App created from Chickpea's Settings
 page. Finish Slack setup here, then use **Settings → GitHub → Create GitHub
-App** before adding repositories to a profile.
+App** before adding repositories to a profile. The container coding sandbox
+requires Cloudflare Workers. Node and other non-Cloudflare installs use the
+standard in-memory bash sandbox, without host filesystem or host git/SSH
+credential access.
 
 ## Steps
 

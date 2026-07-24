@@ -61,7 +61,7 @@ The first DM answers with **zero model keys** on a fresh Cloudflare deploy: the 
 
 ### Repositories
 
-Connect GitHub once in Settings through the GitHub App manifest flow, the only supported authentication path for repository access and the coding sandbox. Then pick exactly which repositories each profile can use from its Repositories tab. Chickpea mints down-scoped, short-lived App installation tokens per turn and injects them only at the sandbox egress boundary; credentials never enter agent instructions or the sandbox environment.
+Connect GitHub once in Settings through the GitHub App manifest flow, the only supported authentication path for repository access and the coding sandbox. Then pick exactly which repositories each profile can use from its Repositories tab. On Cloudflare Workers, Chickpea mints down-scoped, short-lived App installation tokens per turn and injects them only at the coding sandbox egress boundary; credentials never enter agent instructions or the sandbox environment. The container coding tier requires Cloudflare Workers. Node and other non-Cloudflare installs keep the standard in-memory bash sandbox, with no host filesystem or host git/SSH credential access.
 
 ### Privacy and fail-closed guarantees
 
@@ -179,7 +179,7 @@ If neither exists, initialization fails with an error that tells the operator to
 - **The public v1 schema is a clean baseline.** Pre-open-source migration history was consolidated because there are no supported legacy upgrade targets; do not point v1 at a private/pre-release database expecting it to migrate. Migrations introduced after the public v1 baseline are append-only so supported public installs can carry state across later re-deploys.
 - **Durability is single-host.** Dedupe, runtime config, thread registry, and snapshots are restart-durable — on one Durable Object or one SQLite file. Multi-instance deployments would need a shared store first.
 - **No state backup/export on Cloudflare yet**, and the debug story is `wrangler tail`.
-- **Node-local coding is trusted-operator-only.** The `local()` workspace uses the host filesystem and the process user's git/SSH credentials; it is not an isolation or egress boundary. It remains off by default and requires the coding tier, the explicit local opt-in, a connected GitHub App, and at least one valid enabled repository grant.
+- **The container coding sandbox is Cloudflare-only.** Node and other non-Cloudflare installs use the standard in-memory bash sandbox, not the container coding tier, and Chickpea never gives that sandbox the host filesystem or host git/SSH credentials.
 - **Remote MCP URLs are trusted operator configuration in v1.** Connections can be created only through token-gated `/admin`; Chickpea requires HTTPS and rejects literal local/private addresses at save, test, and turn time. It does not resolve and pin DNS before connecting, so an operator-approved hostname could still rebind to an internal address on the Node lane. Do not expose connection authoring to untrusted users, and use MCP endpoints you trust. Cloudflare Workers cannot directly reach localhost or RFC1918 networks, which narrows this risk there; DNS pinning is required before connection presets or broader connection authoring ship.
 
 ## Where this is heading

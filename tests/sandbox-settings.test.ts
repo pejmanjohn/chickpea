@@ -12,7 +12,6 @@ test('sandbox install-level settings keys round-trip without a profile key', asy
   assert.deepEqual(SANDBOX_SETTING_KEYS, {
     enabled: 'sandbox.enabled',
     allowedHosts: 'sandbox.allowedHosts',
-    local: 'sandbox.local',
     monthlySessionCap: 'sandbox.monthlySessionCap',
   });
   assert.equal(
@@ -30,20 +29,17 @@ test('sandbox install-level settings keys round-trip without a profile key', asy
       SANDBOX_SETTING_KEYS.allowedHosts,
       JSON.stringify(['registry.npmjs.org', 'files.pythonhosted.org']),
     );
-    await store.setSetting(SANDBOX_SETTING_KEYS.local, 'true');
     await store.setSetting(SANDBOX_SETTING_KEYS.monthlySessionCap, '350');
 
     assert.deepEqual(await store.getSettings(Object.values(SANDBOX_SETTING_KEYS)), [
       'true',
       '["registry.npmjs.org","files.pythonhosted.org"]',
-      'true',
       '350',
     ]);
     assert.deepEqual(await resolveSandboxSettings(store), {
       enabled: true,
       instanceType: 'standard-1',
       allowedHosts: ['registry.npmjs.org', 'files.pythonhosted.org'],
-      localEnabled: true,
       monthlySessionCap: 350,
       monthlySessionCapConfigured: true,
     });

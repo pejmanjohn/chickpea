@@ -513,7 +513,6 @@ const egressPolicySchema = v.object({
 const sandboxSettingsSchema = v.object({
   enabled: v.boolean(),
   allowedHosts: v.array(v.picklist(SANDBOX_PACKAGE_REGISTRY_HOSTS)),
-  local: v.boolean(),
   monthlySessionCap: v.pipe(v.number(), v.integer(), v.minValue(0), v.maxValue(100_000)),
 });
 
@@ -530,7 +529,6 @@ async function sandboxStatus(store: SettingsStore) {
     workersPaidNote: cloudflare
       ? 'Requires Workers Paid. Real containers run on your Cloudflare account; a typical session costs about 1 cent.'
       : null,
-    localEnabled: resolved.localEnabled,
   };
 }
 
@@ -853,7 +851,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           key: SANDBOX_SETTING_KEYS.allowedHosts,
           value: JSON.stringify([...new Set(sandbox.allowedHosts)]),
         },
-        { key: SANDBOX_SETTING_KEYS.local, value: String(sandbox.local) },
         {
           key: SANDBOX_SETTING_KEYS.monthlySessionCap,
           value: String(sandbox.monthlySessionCap),

@@ -183,7 +183,6 @@ type SandboxStatusFixture = {
   monthlySessionCapConfigured: boolean;
   target: 'cloudflare' | 'node';
   workersPaidNote: string | null;
-  localEnabled: boolean;
 };
 
 function runAdminPageHarness(
@@ -252,7 +251,6 @@ function runAdminPageHarness(
   sandboxPuts: Array<{
     enabled: boolean;
     allowedHosts: string[];
-    local: boolean;
     monthlySessionCap: number;
   }>;
   agentPatchBodies: Array<{ id: string; body: Record<string, unknown> }>;
@@ -331,7 +329,6 @@ function runAdminPageHarness(
   const sandboxPuts: Array<{
     enabled: boolean;
     allowedHosts: string[];
-    local: boolean;
     monthlySessionCap: number;
   }> = [];
   const agentPatchBodies: Array<{ id: string; body: Record<string, unknown> }> = [];
@@ -419,7 +416,6 @@ function runAdminPageHarness(
     workersPaidNote: options.cloudflare
       ? 'Requires Workers Paid. Real containers run on your Cloudflare account; a typical session costs about 1 cent.'
       : null,
-    localEnabled: false,
   };
   const favoritesState: Record<string, string[]> = {
     openrouter: options.openrouterFavorites ?? ['anthropic/claude-sonnet-4', 'openai/gpt-4.1'],
@@ -730,13 +726,11 @@ function runAdminPageHarness(
         const body = JSON.parse(options?.body ?? '{}') as {
           enabled: boolean;
           allowedHosts: string[];
-          local: boolean;
           monthlySessionCap: number;
         };
         sandboxPuts.push({
           enabled: body.enabled,
           allowedHosts: [...body.allowedHosts],
-          local: body.local,
           monthlySessionCap: body.monthlySessionCap,
         });
         sandboxStatus = {
@@ -745,7 +739,6 @@ function runAdminPageHarness(
           allowedHosts: [...body.allowedHosts],
           monthlySessionCap: body.monthlySessionCap,
           monthlySessionCapConfigured: true,
-          localEnabled: body.local,
         };
       }
       return Promise.resolve(
@@ -4065,7 +4058,7 @@ test('Settings renders the off-by-default Coding sandbox card with cost and coll
   assert.doesNotMatch(html, /data-action="profile-sandbox"/);
 });
 
-test('Settings saves Node local sandbox controls as one install-level update', async () => {
+test('Settings explains the Cloudflare-only coding tier and saves install-level controls', async () => {
   const harness = runAdminPageHarness();
   await flushAsync();
   const click = harness.listeners.click;
@@ -4077,12 +4070,9 @@ test('Settings saves Node local sandbox controls as one install-level update', a
 
   assert.match(
     harness.app.innerHTML,
-    /Trusted single-operator installs only\. Model-directed commands use this host filesystem and its git\/SSH credentials/,
+    /The coding sandbox requires Cloudflare Workers\. Node and other non-Cloudflare installs keep the standard in-memory bash sandbox\./,
   );
-  assert.match(
-    harness.app.innerHTML,
-    /A connected GitHub App and an enabled repository grant are still required\./,
-  );
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="sandbox-local"/);
 
   const changedTarget = (
     attributes: Record<string, string>,
@@ -4100,9 +4090,6 @@ test('Settings saves Node local sandbox controls as one install-level update', a
     target: changedTarget({ 'data-action': 'sandbox-enabled' }, { checked: true }),
   });
   change({
-    target: changedTarget({ 'data-action': 'sandbox-local' }, { checked: true }),
-  });
-  change({
     target: changedTarget(
       { 'data-action': 'sandbox-host', 'data-host': 'pypi.org' },
       { checked: false },
@@ -4115,7 +4102,6 @@ test('Settings saves Node local sandbox controls as one install-level update', a
     {
       enabled: true,
       allowedHosts: ['registry.npmjs.org', 'files.pythonhosted.org'],
-      local: true,
       monthlySessionCap: 200,
     },
   ]);

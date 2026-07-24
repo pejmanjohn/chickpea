@@ -1633,7 +1633,6 @@ test('admin sandbox settings are auth-gated and round-trip install-level control
       monthlySessionCapConfigured: false,
       target: 'node',
       workersPaidNote: null,
-      localEnabled: false,
     });
 
     const saved = await app.request('/admin/api/sandbox/status', {
@@ -1645,7 +1644,6 @@ test('admin sandbox settings are auth-gated and round-trip install-level control
         // of the PUT contract and cannot alter the deploy-time value.
         instanceType: 'standard-2',
         allowedHosts: ['registry.npmjs.org', 'files.pythonhosted.org', 'registry.npmjs.org'],
-        local: true,
         monthlySessionCap: 450,
       }),
     });
@@ -1658,7 +1656,6 @@ test('admin sandbox settings are auth-gated and round-trip install-level control
       monthlySessionCapConfigured: true,
       target: 'node',
       workersPaidNote: null,
-      localEnabled: true,
     };
     assert.deepEqual(await saved.json(), savedBody);
 
