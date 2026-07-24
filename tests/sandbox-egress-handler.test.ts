@@ -169,6 +169,43 @@ test('sandbox code search requires one q parameter and only granted repo qualifi
   );
 });
 
+test('sandbox code search rejects GitHub query grammar that can widen repository scope', () => {
+  const grants = [repositoryGrant()];
+  const deniedQueries = [
+    'needle repo:Acme/Alpha OR needle org:Other',
+    '(repo:Other/Private OR repo:Acme/Alpha)',
+    'needle repo:Acme/Alpha AND path:src',
+    'needle repo:Acme/Alpha NOT language:markdown',
+    'needle repo:Acme/Alpha user:Other',
+    'needle repo:Acme/Alpha in:path',
+    '(needle repo:Acme/Alpha)',
+  ];
+
+  for (const query of deniedQueries) {
+    const decision = decideSandboxEgress({
+      url: `https://api.github.com/search/code?q=${encodeURIComponent(query)}`,
+      method: 'GET',
+      grants,
+      allowedHosts: [],
+    });
+    assert.equal(decision.allowed, false, query);
+  }
+
+  assert.deepEqual(
+    allowedRepositories(
+      decideSandboxEgress({
+        url: `https://api.github.com/search/code?q=${encodeURIComponent(
+          'needle exact phrase repo:Acme/Alpha',
+        )}`,
+        method: 'GET',
+        grants,
+        allowedHosts: [],
+      }),
+    ),
+    ['Acme/Alpha'],
+  );
+});
+
 test('sandbox token scope stays within one installation and names exact repositories', () => {
   const grants = [
     repositoryGrant(),

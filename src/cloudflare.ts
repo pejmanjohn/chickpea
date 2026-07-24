@@ -42,14 +42,19 @@ import type {
   AgentSnapshot,
   ChannelAssignment,
   CustomAgentConfig,
-  RepositoryGrant,
 } from './config/types.ts';
 import {
   decideSandboxEgress,
   REPOSITORY_PERMISSIONS,
   resolveRepositoryInstallationScope,
-  validEnabledRepositoryGrants,
 } from './sandbox/egress-handler.ts';
+import {
+  SandboxPolicyState,
+  sandboxEgressGrantsForMode,
+  type SandboxEgressPolicy,
+  type SandboxEgressPolicyInput,
+  type SandboxPolicyStorage,
+} from './sandbox/cloudflare-policy.ts';
 import { CLOUDFLARE_SANDBOX_OPTIONS } from './sandbox/lifecycle.ts';
 import {
   isGithubPullRequestCreateResponse,
@@ -91,16 +96,11 @@ type SandboxOutboundHandler = (
   ctx: SandboxOutboundContext,
 ) => Promise<Response> | Response;
 
-interface SandboxPolicyStorage {
-  get<T>(key: string): Promise<T | undefined>;
-  put<T>(key: string, value: T): Promise<void>;
-}
-
 interface SandboxNamespace {
   idFromString(id: string): unknown;
   get(id: unknown): Pick<
     Sandbox,
-    | 'getEgressGrants'
+    | 'getEgressPolicy'
     | 'getTurnId'
     | 'getTurnProgress'
     | 'prepareTurn'
@@ -112,9 +112,6 @@ type SandboxWorkerEnv = PlatformEnv & {
   SANDBOX: SandboxNamespace;
 };
 
-const SANDBOX_EGRESS_GRANTS_STORAGE_KEY = 'chickpea.sandbox.egress-grants.v1';
-const SANDBOX_TURN_ID_STORAGE_KEY = 'chickpea.sandbox.turn-id.v1';
-const SANDBOX_TURN_PROGRESS_STORAGE_KEY = 'chickpea.sandbox.turn-progress.v1';
 const SANDBOX_BLOCKED_STATUS = 520;
 
 /**
@@ -127,53 +124,41 @@ export class Sandbox extends CloudflareSandbox<SandboxWorkerEnv> {
   interceptHttps = true;
 
   async prepareTurn(turnId: string): Promise<void> {
-    const previousTurnId = await this.getTurnId();
-    // Revoke the prior turn's policy before the agent DO resolves current
-    // grants. A sleeping-but-not-yet-destroyed container may still have a
-    // background process, so there must be no stale-policy window between the
-    // caller preparing this turn and the agent reconfiguring it.
-    await this.policyStorage().put<RepositoryGrant[]>(SANDBOX_EGRESS_GRANTS_STORAGE_KEY, []);
-    await this.policyStorage().put(SANDBOX_TURN_ID_STORAGE_KEY, turnId);
-    if (previousTurnId !== turnId) {
-      await this.policyStorage().put<TurnProgress>(SANDBOX_TURN_PROGRESS_STORAGE_KEY, {});
-    }
+    await this.policyState().prepareTurn(turnId);
   }
 
-  async configureEgress(grants: readonly RepositoryGrant[], turnId: string): Promise<void> {
-    const policy = validEnabledRepositoryGrants(grants).map(copyRepositoryGrant);
-    await this.prepareTurn(turnId);
-    await this.policyStorage().put(SANDBOX_EGRESS_GRANTS_STORAGE_KEY, policy);
+  async configureEgress(
+    input: SandboxEgressPolicyInput,
+    turnId: string,
+  ): Promise<void> {
+    await this.policyState().configureEgress(input, turnId);
   }
 
-  async getEgressGrants(): Promise<RepositoryGrant[]> {
-    const stored =
-      (await this.policyStorage().get<RepositoryGrant[]>(SANDBOX_EGRESS_GRANTS_STORAGE_KEY)) ??
-      [];
-    return validEnabledRepositoryGrants(stored).map(copyRepositoryGrant);
+  async getEgressPolicy(): Promise<SandboxEgressPolicy> {
+    return this.policyState().getEgressPolicy();
   }
 
   async getTurnId(): Promise<string | undefined> {
-    return this.policyStorage().get<string>(SANDBOX_TURN_ID_STORAGE_KEY);
+    return this.policyState().getTurnId();
   }
 
   async getTurnProgress(): Promise<TurnProgress> {
-    return (
-      (await this.policyStorage().get<TurnProgress>(SANDBOX_TURN_PROGRESS_STORAGE_KEY)) ?? {}
-    );
+    return this.policyState().getTurnProgress();
   }
 
   async recordPullRequestProgress(
     pullRequest: TurnPullRequestProgress,
-  ): Promise<TurnProgress> {
-    const current = await this.getTurnProgress();
-    if (current.pullRequest) return current;
-    const progress: TurnProgress = { ...current, pullRequest };
-    await this.policyStorage().put(SANDBOX_TURN_PROGRESS_STORAGE_KEY, progress);
-    return progress;
+    capturedTurnId: string,
+  ): Promise<boolean> {
+    return this.policyState().recordPullRequestProgress(pullRequest, capturedTurnId);
   }
 
   private policyStorage(): SandboxPolicyStorage {
     return this.ctx.storage as unknown as SandboxPolicyStorage;
+  }
+
+  private policyState(): SandboxPolicyState {
+    return new SandboxPolicyState(this.policyStorage());
   }
 }
 
@@ -196,7 +181,35 @@ async function githubSandboxOutbound(
   try {
     const workerEnv = sandboxWorkerEnv(rawEnv);
     const stub = sandboxStub(workerEnv, ctx.containerId);
-    const grants = await stub.getEgressGrants();
+    const capturedTurnId = await stub.getTurnId();
+    if (!capturedTurnId) return denySandboxOutbound();
+    const policy = await stub.getEgressPolicy();
+    if (!policy.mode) return denySandboxOutbound();
+
+    // Credential-free preflight: bind the stored policy's own mode before
+    // loading any PAT/private key. PAT policy never carries App-wide grants.
+    const preflightGrants = sandboxEgressGrantsForMode(policy, policy.mode);
+    if (!preflightGrants) return denySandboxOutbound();
+    const preflightDecision = decideSandboxEgress({
+      url: request.url,
+      method: request.method,
+      grants: preflightGrants,
+      allowedHosts: [],
+    });
+    if (!preflightDecision.allowed || preflightDecision.kind !== 'github') {
+      return denySandboxOutbound();
+    }
+
+    // Resolve the credential only after the preflight decision, then bind the
+    // stored policy to the current mode. A mode switch invalidates the running
+    // container until a fresh turn reconfigures it. The second decision makes
+    // the PAT allRepos filter explicit against the live connection mode before
+    // any credential is minted or attached.
+    const settings = getSettingsStore(workerEnv);
+    const connection = await getGithubConnection(settings);
+    if (connection.mode === 'none') return denySandboxOutbound();
+    const grants = sandboxEgressGrantsForMode(policy, connection.mode);
+    if (!grants) return denySandboxOutbound();
     const decision = decideSandboxEgress({
       url: request.url,
       method: request.method,
@@ -207,13 +220,6 @@ async function githubSandboxOutbound(
       return denySandboxOutbound();
     }
 
-    // The decision already restricted this request to the profile's granted
-    // repositories; the credential below only authenticates an already-allowed
-    // request. App mode mints a per-repo down-scoped installation token; PAT
-    // mode injects the operator's fine-grained token (itself repo-scoped at
-    // creation). Both keep the credential out of the container.
-    const settings = getSettingsStore(workerEnv);
-    const connection = await getGithubConnection(settings);
     let credential: string;
     if (connection.mode === 'app') {
       const installation = resolveRepositoryInstallationScope(grants, decision.repositories);
@@ -229,10 +235,14 @@ async function githubSandboxOutbound(
       return denySandboxOutbound();
     }
 
+    // Bind this request's decision to the turn captured before policy loading.
+    // A reconfiguration during credential resolution must be decided again by
+    // the next request, never forwarded under this turn's stale policy.
+    if ((await stub.getTurnId()) !== capturedTurnId) return denySandboxOutbound();
     const headers = new Headers(request.headers);
     headers.set('Authorization', `Bearer ${credential}`);
     const response = await fetch(new Request(request, { headers, redirect: 'manual' }));
-    await recordPullRequestProgress(request, response, stub);
+    await recordPullRequestProgress(request, response, stub, capturedTurnId);
     return response;
   } catch {
     // Authentication/configuration errors are deliberately indistinguishable
@@ -288,7 +298,7 @@ function sandboxStub(
   containerId: string,
 ): Pick<
   Sandbox,
-  'getEgressGrants' | 'getTurnId' | 'getTurnProgress' | 'recordPullRequestProgress'
+  'getEgressPolicy' | 'getTurnId' | 'getTurnProgress' | 'recordPullRequestProgress'
 > {
   return workerEnv.SANDBOX.get(workerEnv.SANDBOX.idFromString(containerId));
 }
@@ -296,13 +306,12 @@ function sandboxStub(
 async function recordPullRequestProgress(
   request: Request,
   response: Response,
-  stub: Pick<Sandbox, 'getTurnId' | 'recordPullRequestProgress'>,
+  stub: Pick<Sandbox, 'recordPullRequestProgress'>,
+  capturedTurnId: string,
 ): Promise<void> {
   if (!isGithubPullRequestCreateResponse(request.url, request.method, response.status)) {
     return;
   }
-  const turnId = await stub.getTurnId();
-  if (!turnId) return;
 
   try {
     const pullRequest = pullRequestProgressFromGithubResponse({
@@ -312,22 +321,11 @@ async function recordPullRequestProgress(
       responseBody: await response.clone().json(),
     });
     if (!pullRequest) return;
-    await stub.recordPullRequestProgress(pullRequest);
+    await stub.recordPullRequestProgress(pullRequest, capturedTurnId);
   } catch {
     // Progress recording is best-effort and must never turn a successful,
     // policy-approved GitHub operation into a failed sandbox request.
   }
-}
-
-function copyRepositoryGrant(grant: RepositoryGrant): RepositoryGrant {
-  return {
-    id: grant.id,
-    installationId: grant.installationId,
-    accountLogin: grant.accountLogin,
-    fullName: grant.fullName,
-    ...(grant.allRepos === undefined ? {} : { allRepos: grant.allRepos }),
-    enabled: grant.enabled,
-  };
 }
 
 function denySandboxOutbound(): Response {

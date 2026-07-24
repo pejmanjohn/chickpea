@@ -3,9 +3,16 @@ import { test } from 'node:test';
 
 import type { SandboxFactory, SessionEnv } from '@flue/runtime';
 
-import { createWorkspaceArtifactCapability } from '../src/sandbox/artifact-tool.ts';
+import {
+  createWorkspaceArtifactCapability,
+  MAX_ARTIFACT_BYTES,
+} from '../src/sandbox/artifact-tool.ts';
 
-function fakeSessionEnv(readPaths: string[]): SessionEnv {
+function fakeSessionEnv(
+  readPaths: string[],
+  statPaths: string[] = [],
+  size = 3,
+): SessionEnv {
   return {
     cwd: '/workspace',
     resolvePath(path) {
@@ -22,8 +29,9 @@ function fakeSessionEnv(readPaths: string[]): SessionEnv {
       return new Uint8Array([1, 2, 3]);
     },
     async writeFile() {},
-    async stat() {
-      return { isFile: true, isDirectory: false };
+    async stat(path) {
+      statPaths.push(path);
+      return { isFile: true, isDirectory: false, size };
     },
     async readdir() {
       return [];
@@ -38,10 +46,11 @@ function fakeSessionEnv(readPaths: string[]): SessionEnv {
 
 test('workspace artifact tool reads through SessionEnv and binds the Slack destination', async () => {
   const readPaths: string[] = [];
+  const statPaths: string[] = [];
   const uploads: unknown[] = [];
   const base: SandboxFactory = {
     async createSessionEnv() {
-      return fakeSessionEnv(readPaths);
+      return fakeSessionEnv(readPaths, statPaths);
     },
   };
   const capability = createWorkspaceArtifactCapability({
@@ -65,6 +74,7 @@ test('workspace artifact tool reads through SessionEnv and binds the Slack desti
   });
 
   assert.deepEqual(result, { uploaded: true });
+  assert.deepEqual(statPaths, ['/workspace/proof.png']);
   assert.deepEqual(readPaths, ['/workspace/proof.png']);
   assert.deepEqual(uploads, [
     {
@@ -75,6 +85,42 @@ test('workspace artifact tool reads through SessionEnv and binds the Slack desti
       title: 'Proof',
     },
   ]);
+});
+
+test('workspace artifact tool rejects over-cap files without reading or posting them', async () => {
+  const readPaths: string[] = [];
+  const statPaths: string[] = [];
+  const uploads: unknown[] = [];
+  const base: SandboxFactory = {
+    async createSessionEnv() {
+      return fakeSessionEnv(readPaths, statPaths, MAX_ARTIFACT_BYTES + 1);
+    },
+  };
+  const capability = createWorkspaceArtifactCapability({
+    sandbox: base,
+    selection: 'cloudflare',
+    channel: 'C_BOUND',
+    threadTs: '1782770400.000100',
+    async postArtifact(input) {
+      uploads.push(input);
+      return { uploaded: true };
+    },
+  });
+
+  await capability.sandbox.createSessionEnv({ id: 'thread-1' });
+  await assert.rejects(
+    async () =>
+      capability.tool.run({
+        input: {
+          path: '/workspace/oversized.zip',
+          filename: 'oversized.zip',
+        },
+      }),
+    /artifact exceeds the 8 MB upload limit/,
+  );
+  assert.deepEqual(statPaths, ['/workspace/oversized.zip']);
+  assert.deepEqual(readPaths, []);
+  assert.deepEqual(uploads, []);
 });
 
 test('workspace artifact tool maps the logical root locally and rejects paths outside it', async () => {

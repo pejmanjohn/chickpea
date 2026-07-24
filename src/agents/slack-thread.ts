@@ -43,6 +43,10 @@ import {
   REPOSITORY_PERMISSIONS,
   validEnabledRepositoryGrants,
 } from '../sandbox/egress-handler.ts';
+import type {
+  SandboxCredentialMode,
+  SandboxEgressPolicyInput,
+} from '../sandbox/cloudflare-policy.ts';
 import {
   CLOUDFLARE_SANDBOX_OPTIONS,
   SandboxLifecycleRegistry,
@@ -69,7 +73,7 @@ export { resolveAgentModel } from '../config/model-policy.ts';
 
 interface ConfigurableCloudflareSandbox extends DestroyableSandbox, SandboxTurnContext {
   configureEgress(
-    grants: readonly RepositoryGrant[],
+    input: SandboxEgressPolicyInput,
     turnId: string,
   ): Promise<void>;
 }
@@ -92,6 +96,7 @@ const REPOSITORY_HOSTS = ['api.github.com', 'github.com'];
 export interface ResolvedRepositoryAccess {
   grants: RepositoryGrant[];
   connectors: ResolvedApiConnection[];
+  credentialMode?: SandboxCredentialMode;
   /**
    * True whenever the profile has enabled grants, even if no credential
    * resolved this turn. Grants make repository routing authoritative for the
@@ -99,6 +104,32 @@ export interface ResolvedRepositoryAccess {
    * open to a legacy broad connector.
    */
   governsGithubHosts: boolean;
+}
+
+/**
+ * Preserve a channel thread's frozen repository ceiling while applying live
+ * revocations. The frozen row remains authoritative for additions; the live
+ * row is authoritative for removals. A matching id is the primary identity,
+ * with scope equality required so editing an id onto another repository also
+ * revokes the old scope. Legacy/recreated rows can fall back to the immutable
+ * repository + installation pair.
+ */
+export function intersectFrozenRepositoryGrants(
+  frozen: readonly RepositoryGrant[] | undefined,
+  live: readonly RepositoryGrant[] | undefined,
+): RepositoryGrant[] {
+  const liveEnabled = (live ?? []).filter((grant) => grant.enabled);
+  const sameScope = (left: RepositoryGrant, right: RepositoryGrant): boolean =>
+    left.installationId === right.installationId &&
+    left.fullName.toLowerCase() === right.fullName.toLowerCase() &&
+    left.allRepos === right.allRepos;
+
+  return (frozen ?? []).filter((grant) => {
+    if (!grant.enabled) return false;
+    const idMatch = liveEnabled.find((candidate) => candidate.id === grant.id);
+    if (idMatch) return sameScope(grant, idMatch);
+    return liveEnabled.some((candidate) => sameScope(grant, candidate));
+  });
 }
 
 /**
@@ -147,6 +178,7 @@ export async function resolveRepositoryAccess(
     return {
       grants: patGrants,
       connectors: repositoryConnectors(connection.pat, patGrants),
+      credentialMode: 'pat',
       governsGithubHosts: true,
     };
   }
@@ -230,6 +262,7 @@ export async function resolveRepositoryAccess(
   return {
     grants: enabled.filter((grant) => grantedIds.has(grant.id)),
     connectors: resolved.flatMap((entry) => entry?.connectors ?? []),
+    credentialMode: 'app',
     governsGithubHosts: true,
   };
 }
@@ -370,10 +403,28 @@ export default defineAgent(async ({ id }) => {
   // (DMs, App Home) are one continuous session, not a discrete thread, so they
   // resolve the current config every turn instead of freezing — admin edits to
   // the DM profile reach existing DM users.
-  const config =
-    surfaceForChannelId(channelId) === 'direct'
-      ? await resolve()
-      : await getOrCreateSnapshot(getAgentSnapshotStore(env), id, resolve);
+  const isDirect = surfaceForChannelId(channelId) === 'direct';
+  const config = isDirect
+    ? await resolve()
+    : await getOrCreateSnapshot(getAgentSnapshotStore(env), id, resolve);
+
+  // A channel snapshot is a ceiling, not a revocation lease. Intersect its
+  // frozen grants with the current profile once, before repository access
+  // produces either worker-side connectors or Sandbox DO policy. A missing
+  // live profile fails closed. Direct conversations already resolved the live
+  // profile above and need no second lookup.
+  let repositoryGrants = config.agent.repositories;
+  if (!isDirect) {
+    try {
+      const liveAgent = await store.getAgent(config.agent.id);
+      repositoryGrants = intersectFrozenRepositoryGrants(
+        config.agent.repositories,
+        liveAgent.repositories,
+      );
+    } catch {
+      repositoryGrants = [];
+    }
+  }
 
   // API connection policy inherits the agent snapshot contract, while its
   // credential resolves live every turn. Missing credentials degrade by
@@ -381,7 +432,7 @@ export default defineAgent(async ({ id }) => {
   const [egressPolicy, repositoryAccess, resolvedApiConnectors, sandboxSettings] =
     await Promise.all([
       resolveEgressPolicy(env),
-      resolveRepositoryAccess(config.agent.repositories, env),
+      resolveRepositoryAccess(repositoryGrants, env),
       resolveApiConnectionsForTurn(config.agent.id, config.agent.apiConnections ?? [], env),
       resolveSandboxSettings(settingsStore),
     ]);
@@ -477,6 +528,9 @@ export default defineAgent(async ({ id }) => {
     env,
     id,
     grants: repositoryAccess.grants,
+    ...(repositoryAccess.credentialMode
+      ? { credentialMode: repositoryAccess.credentialMode }
+      : {}),
     settingsStore,
     monthlySessionCap: sandboxSettings.monthlySessionCap,
   });
@@ -521,6 +575,7 @@ interface AgentSandboxOptions {
   env: PlatformEnv | undefined;
   id: string;
   grants: readonly RepositoryGrant[];
+  credentialMode?: SandboxCredentialMode;
   settingsStore: ReturnType<typeof getSettingsStore>;
   monthlySessionCap: number;
 }
@@ -567,7 +622,16 @@ async function resolveAgentSandbox(options: AgentSandboxOptions): Promise<Sandbo
       ) as ReturnType<typeof getSandbox> & ConfigurableCloudflareSandbox,
     async (candidate) => {
       turnId = await requireSandboxTurnId(candidate);
-      await candidate.configureEgress(validEnabledRepositoryGrants(options.grants), turnId);
+      if (!options.credentialMode) {
+        throw new Error('Sandbox repository credential mode is unavailable');
+      }
+      await candidate.configureEgress(
+        {
+          grants: validEnabledRepositoryGrants(options.grants),
+          mode: options.credentialMode,
+        },
+        turnId,
+      );
     },
   );
   const serialized = serializeSandboxActivation(

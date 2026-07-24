@@ -251,10 +251,26 @@ function codeSearchRepositories(url: string): string[] | undefined {
   } catch {
     return undefined;
   }
-  const qualifiers = [...query.matchAll(/(?:^|\s)repo:([^\s]+)/gi)].flatMap((match) =>
-    match[1] ? [match[1]] : [],
+  const repositoryQualifierPattern = /(?:^|\s)repo:([^\s]+)/gi;
+  const qualifiers = [...query.matchAll(repositoryQualifierPattern)].flatMap(
+    (match) => (match[1] ? [match[1]] : []),
   );
   if (!qualifiers.every(isValidRepositoryFullName)) return undefined;
+
+  // GitHub's search grammar can combine an allowed repo qualifier with a
+  // wider branch (`OR org:Other`, parentheses, exclusions, etc.). Remove only
+  // the repository qualifiers we understand, then reject every remaining
+  // grammar construct that can change scope. Plain search terms are the sole
+  // accepted remainder.
+  const remainder = query.replace(repositoryQualifierPattern, ' ');
+  if (
+    /\w+:/.test(remainder) ||
+    /[()]/.test(remainder) ||
+    /\b(?:OR|AND|NOT)\b/i.test(remainder)
+  ) {
+    return undefined;
+  }
+
   const repositories = qualifiers;
   return repositories.length > 0 ? [...new Set(repositories)] : undefined;
 }

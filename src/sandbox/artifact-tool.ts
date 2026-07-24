@@ -7,6 +7,8 @@ import type {
   SlackArtifactResult,
 } from '../slack/web-client-presenter.ts';
 
+export const MAX_ARTIFACT_BYTES = 8 * 1024 * 1024;
+
 interface WorkspaceArtifactCapabilityOptions {
   sandbox: SandboxFactory;
   selection: Exclude<SandboxSelection, 'bash'>;
@@ -48,6 +50,20 @@ export function createWorkspaceArtifactCapability(
         throw new Error('workspace is not initialized');
       }
       const path = workspaceArtifactPath(input.path, options.selection);
+      const stat = await sessionEnv.stat(path);
+      if (!stat.isFile) {
+        throw new Error('artifact path must identify a file');
+      }
+      if (
+        typeof stat.size !== 'number' ||
+        !Number.isSafeInteger(stat.size) ||
+        stat.size < 0
+      ) {
+        throw new Error('artifact size is unavailable');
+      }
+      if (stat.size > MAX_ARTIFACT_BYTES) {
+        throw new Error('artifact exceeds the 8 MB upload limit');
+      }
       const bytes = await sessionEnv.readFileBuffer(path);
       return options.postArtifact({
         channel: options.channel,
