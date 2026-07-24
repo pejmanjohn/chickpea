@@ -44,7 +44,7 @@ test('workspace skill teaches the coding loop without embedding credentials', ()
 
   assert.doesNotMatch(instructions, /Authorization\s*:/i);
   assert.doesNotMatch(instructions, /\bBearer\s+\S+/i);
-  assert.doesNotMatch(instructions, /\$GITHUB_TOKEN/i);
+  assert.doesNotMatch(instructions, /\$GITHUB_[A-Z_]*TOKEN/i);
   assert.doesNotMatch(instructions, /https:\/\/[^/\s]+@github\.com/i);
   assert.doesNotMatch(instructions, /\b(?:xox[baprs]-|gh[opsu]_|sk-[A-Za-z0-9])/i);
 });

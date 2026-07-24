@@ -52,7 +52,7 @@ The first DM answers with **zero model keys** on a fresh Cloudflare deploy: the 
 
 - A single self-contained admin page, gated by `TAG_ADMIN_TOKEN` — `Authorization: Bearer` for API callers or a POST-only token form that sets an HttpOnly session cookie.
 - Reusable profiles: name, model, instructions, enabled skills, remote MCP connections with per-tool approvals, and an enable toggle. Disabling a profile blocks DMs and new channel threads; existing channel threads keep the frozen profile snapshot they started with.
-- GitHub and skills.sh imports copy `SKILL.md` instructions only. Scripts and assets are not copied or executed; repository scans inspect at most 40 skills, so use `owner/repo@skill` to select one in a larger repository. An optional `GITHUB_TOKEN` raises GitHub API limits and permits private-repository reads.
+- GitHub and skills.sh imports support public repositories only and copy `SKILL.md` instructions without authentication. Scripts and assets are not copied or executed; repository scans inspect at most 40 skills, so use `owner/repo@skill` to select one in a larger repository. Private repository access is governed separately by the GitHub App integration and profile grants.
 - Per-channel assignments: add a channel by workspace + channel ID, enable/disable it, swap the attached profile, or detach it. Per-channel instructions append to the profile's instructions in that channel only.
 - Model pinning: a combobox showing concrete models grouped by the providers this install actually has configured. Any free-text `provider/model` specifier is accepted; unknown providers get a warning.
 - A read-only Access summary showing exactly what a new thread will use — profile, model, provider, enabled skills, approved MCP connections and tools, the layered instruction stack, and a config snapshot hash — resolved by the same code path the Slack agent uses.
@@ -157,7 +157,6 @@ It calls `auth.test` and `users.info`, compares the display name to the manifest
 | `ANTHROPIC_API_URL` / `OPENAI_API_URL` / `OPENROUTER_API_URL` | optional | Override the vendor API roots used by `/admin` key validation and model discovery. These are catalog/validation endpoints, distinct from runtime inference overrides such as `ANTHROPIC_BASE_URL`. |
 | `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_WORKERS_AI_BASE_URL` | optional | Enable the REST `cloudflare-workers-ai` provider; the base URL controls runtime inference. Not required for the keyless `cloudflare` binding provider on Cloudflare. |
 | `CLOUDFLARE_API_URL` | optional | Override the Cloudflare API root used by `/admin` Workers AI model discovery. |
-| `GITHUB_TOKEN` | optional | Raises rate limits and permits private-repository reads for `/admin` skill imports. It is sent only to GitHub's API and raw-content hosts. |
 
 `.env.example` lists the offline-safe defaults for the Node lane.
 

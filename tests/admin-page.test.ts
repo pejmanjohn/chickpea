@@ -2013,7 +2013,12 @@ test('an import error is surfaced in the panel and dedupes a same-named skill on
         skills: [{ name: 'release-notes', description: 'Old copy.', instructions: 'Old body.', enabled: false }],
       },
     ],
-    skillResolveError: { status: 502, error: 'rate_limited', message: 'GitHub rate limit hit. Add a GITHUB_TOKEN or try later.' },
+    skillResolveError: {
+      status: 502,
+      error: 'public_only',
+      message:
+        'Only public repositories can be imported; the GitHub App integration governs private repository access',
+    },
   });
   await flushAsync();
 
@@ -2028,7 +2033,10 @@ test('an import error is surfaced in the panel and dedupes a same-named skill on
   input({ target: inputTarget({ 'data-action': 'import-source' }, 'acme/skills') });
   click({ target: actionTarget({ 'data-action': 'import-find' }) });
   await flushAsync();
-  assert.match(harness.app.innerHTML, /GitHub rate limit hit\. Add a GITHUB_TOKEN or try later\./);
+  assert.match(
+    harness.app.innerHTML,
+    /Only public repositories can be imported; the GitHub App integration governs private repository access/,
+  );
   assert.match(harness.app.innerHTML, /data-action="import-source"/);
 });
 

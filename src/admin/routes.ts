@@ -1113,9 +1113,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (!source) {
       return c.json({ error: 'unrecognized_source' }, 400);
     }
-    const token = process.env.GITHUB_TOKEN?.trim();
     try {
-      const resolution = await resolveSkillSource(source, fetch, token);
+      const resolution = await resolveSkillSource(source, fetch);
       return c.json({ resolution });
     } catch (err) {
       if (err instanceof SkillImportError) {
