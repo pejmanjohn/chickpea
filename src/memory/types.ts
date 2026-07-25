@@ -5,6 +5,11 @@ export const MEMORY_SETTING_KEY = 'memory.enabled';
 export const MEMORY_ACTOR_RATE_LIMIT = 30;
 export const MEMORY_CHANNEL_RATE_LIMIT = 120;
 export const MEMORY_REVISION_CONTENT_LIMIT = 50;
+export const MEMORY_SOURCE_ENTRY_LIMIT = 64;
+export const MEMORY_PUBLIC_ENTRY_LIMIT = 512;
+export const MEMORY_PRIVATE_ENTRY_LIMIT = 128;
+export const MEMORY_PUBLIC_BYTES_LIMIT = 1_048_576;
+export const MEMORY_PRIVATE_BYTES_LIMIT = 262_144;
 export const MEMORY_RETENTION_MS = 365 * 24 * 60 * 60 * 1_000;
 export const MEMORY_RATE_WINDOW_MS = 60 * 60 * 1_000;
 
@@ -76,6 +81,8 @@ export interface CreateMemoryEntryInput {
   workspaceId: string;
   sourceChannelId: string;
   slug: string;
+  /** Stable normalized seed used to bind idempotent create replays. */
+  slugSeed?: string;
   description: string;
   type: MemoryEntryType;
   body: string;
@@ -110,6 +117,43 @@ export interface ForgetMemoryEntryInput {
   actorClass: MemoryActorClass;
   sourceEventId?: string;
   reasonCode?: string;
+  idempotencyKey: string;
+  confirmationTokenHash?: string;
+}
+
+export interface CreateForgetChallengeInput {
+  challengeId: string;
+  tokenHash: string;
+  actorId: string;
+  storeId: string;
+  entryId: string;
+  expectedVersion: number;
+  expiresAt: number;
+}
+
+export interface TransitionMemoryEntryInput {
+  entryId: string;
+  expectedVersion: number;
+  transition: 'expire' | 'restore';
+  actorId: string;
+  actorClass: MemoryActorClass;
+  sourceEventId?: string;
+  reasonCode?: string;
+  idempotencyKey: string;
+}
+
+export interface MergeMemoryEntriesInput {
+  replacement: CreateMemoryEntryInput;
+  sources: Array<{ entryId: string; expectedVersion: number }>;
+}
+
+export interface RecordMemoryReviewInput {
+  entryId: string;
+  expectedVersion: number;
+  action: 'requested' | 'resolved';
+  resolution?: 'confirmed' | 'corrected' | 'expired';
+  actorId: string;
+  actorClass: MemoryActorClass;
   idempotencyKey: string;
 }
 
@@ -206,6 +250,16 @@ export class MemoryVersionConflictError extends MemoryStateError {
   }
 }
 
+export class MemoryRateLimitError extends MemoryStateError {
+  override readonly name = 'MemoryRateLimitError';
+
+  constructor(readonly retryAt: number) {
+    super('memory_rate_limited', 'Too many memory changes; try again later.', {
+      retryAt: String(retryAt),
+    });
+  }
+}
+
 export type MemoryRpcRequest =
   | { kind: 'ensure_public_store'; workspaceId: string }
   | { kind: 'ensure_private_store'; workspaceId: string; channelId: string; generation: number }
@@ -215,6 +269,10 @@ export type MemoryRpcRequest =
   | { kind: 'list_entries'; filter: MemoryEntryFilter }
   | { kind: 'update_entry'; input: UpdateMemoryEntryInput }
   | { kind: 'forget_entry'; input: ForgetMemoryEntryInput }
+  | { kind: 'transition_entry'; input: TransitionMemoryEntryInput }
+  | { kind: 'merge_entries'; input: MergeMemoryEntriesInput }
+  | { kind: 'record_review'; input: RecordMemoryReviewInput }
+  | { kind: 'create_forget_challenge'; input: CreateForgetChallengeInput }
   | { kind: 'list_revisions'; entryId: string }
   | { kind: 'list_audit_events'; filter: AuditEventFilter }
   | { kind: 'get_mutation_counts'; workspaceId: string; channelId: string; actorId: string }
@@ -226,6 +284,7 @@ export type MemoryRpcRequest =
   | { kind: 'set_memory_enabled'; input: SetMemoryEnabledInput };
 
 export type MemoryRpcResponse =
+  | { kind: 'ok' }
   | { kind: 'store'; store: MemoryStoreDescriptor | null }
   | { kind: 'entry'; entry: MemoryEntry | null }
   | { kind: 'entries'; entries: MemoryEntry[] }
@@ -250,6 +309,10 @@ export interface MemoryStateStore {
   listEntries(filter?: MemoryEntryFilter): Promise<MemoryEntry[]>;
   updateEntry(input: UpdateMemoryEntryInput): Promise<MemoryEntry>;
   forgetEntry(input: ForgetMemoryEntryInput): Promise<MemoryEntry>;
+  transitionEntry(input: TransitionMemoryEntryInput): Promise<MemoryEntry>;
+  mergeEntries(input: MergeMemoryEntriesInput): Promise<MemoryEntry>;
+  recordReview(input: RecordMemoryReviewInput): Promise<void>;
+  createForgetChallenge(input: CreateForgetChallengeInput): Promise<void>;
   listRevisions(entryId: string): Promise<MemoryRevision[]>;
   listAuditEvents(filter?: AuditEventFilter): Promise<AuditEvent[]>;
   getMutationCounts(

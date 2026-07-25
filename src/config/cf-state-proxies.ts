@@ -10,11 +10,13 @@ import {
   MemoryStateError,
   MemoryVersionConflictError,
   type CreateMemoryEntryInput,
+  type CreateForgetChallengeInput,
   type ForgetMemoryEntryInput,
   type MemoryConversationContext,
   type MemoryChannelScopeState,
   type MemoryEntry,
   type MemoryEntryFilter,
+  type MergeMemoryEntriesInput,
   type MemoryMutationCounts,
   type MemoryRevision,
   type MemoryRpcRequest,
@@ -22,8 +24,10 @@ import {
   type MemoryStateStore,
   type MemoryStoreDescriptor,
   type ObserveMemoryChannelScopeInput,
+  type RecordMemoryReviewInput,
   type ResolveMemoryConversationContextInput,
   type SetMemoryEnabledInput,
+  type TransitionMemoryEntryInput,
   type UpdateMemoryEntryInput,
 } from '../memory/types.ts';
 import type { AuditEvent, AuditEventFilter } from '../audit/types.ts';
@@ -245,6 +249,24 @@ export class CfMemoryStateStore implements MemoryStateStore {
 
   async forgetEntry(input: ForgetMemoryEntryInput): Promise<MemoryEntry> {
     return this.requiredEntry(await this.execute({ kind: 'forget_entry', input }));
+  }
+
+  async transitionEntry(input: TransitionMemoryEntryInput): Promise<MemoryEntry> {
+    return this.requiredEntry(await this.execute({ kind: 'transition_entry', input }));
+  }
+
+  async mergeEntries(input: MergeMemoryEntriesInput): Promise<MemoryEntry> {
+    return this.requiredEntry(await this.execute({ kind: 'merge_entries', input }));
+  }
+
+  async recordReview(input: RecordMemoryReviewInput): Promise<void> {
+    const response = await this.execute({ kind: 'record_review', input });
+    if (response.kind !== 'ok') throw unexpectedMemoryResponse();
+  }
+
+  async createForgetChallenge(input: CreateForgetChallengeInput): Promise<void> {
+    const response = await this.execute({ kind: 'create_forget_challenge', input });
+    if (response.kind !== 'ok') throw unexpectedMemoryResponse();
   }
 
   async listRevisions(entryId: string): Promise<MemoryRevision[]> {

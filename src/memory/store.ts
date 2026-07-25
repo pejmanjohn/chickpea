@@ -6,17 +6,27 @@ import { openStateDb, resolveStateDbPath, type NodeStateDb } from '../state/node
 import type { SqlParam, StateDb } from '../state/state-db.ts';
 import {
   MEMORY_RATE_WINDOW_MS,
+  MEMORY_ACTOR_RATE_LIMIT,
+  MEMORY_CHANNEL_RATE_LIMIT,
+  MEMORY_PRIVATE_BYTES_LIMIT,
+  MEMORY_PRIVATE_ENTRY_LIMIT,
+  MEMORY_PUBLIC_BYTES_LIMIT,
+  MEMORY_PUBLIC_ENTRY_LIMIT,
+  MEMORY_SOURCE_ENTRY_LIMIT,
   MEMORY_RETENTION_MS,
   MEMORY_SCHEMA_VERSION,
   MEMORY_SETTING_KEY,
   MemoryStateError,
+  MemoryRateLimitError,
   MemoryVersionConflictError,
   type CreateMemoryEntryInput,
+  type CreateForgetChallengeInput,
   type ForgetMemoryEntryInput,
   type MemoryConversationContext,
   type MemoryChannelScopeState,
   type MemoryEntry,
   type MemoryEntryFilter,
+  type MergeMemoryEntriesInput,
   type MemoryMutationCounts,
   type MemoryRevision,
   type MemoryRpcRequest,
@@ -24,8 +34,10 @@ import {
   type MemoryStateStore,
   type MemoryStoreDescriptor,
   type ObserveMemoryChannelScopeInput,
+  type RecordMemoryReviewInput,
   type ResolveMemoryConversationContextInput,
   type SetMemoryEnabledInput,
+  type TransitionMemoryEntryInput,
   type UpdateMemoryEntryInput,
 } from './types.ts';
 
@@ -160,6 +172,16 @@ export class MemoryStoreLogic {
         return { kind: 'entry', entry: this.updateEntry(request.input) };
       case 'forget_entry':
         return { kind: 'entry', entry: this.forgetEntry(request.input) };
+      case 'transition_entry':
+        return { kind: 'entry', entry: this.transitionEntry(request.input) };
+      case 'merge_entries':
+        return { kind: 'entry', entry: this.mergeEntries(request.input) };
+      case 'record_review':
+        this.recordReview(request.input);
+        return { kind: 'ok' };
+      case 'create_forget_challenge':
+        this.createForgetChallenge(request.input);
+        return { kind: 'ok' };
       case 'list_revisions':
         return { kind: 'revisions', revisions: this.listRevisions(request.entryId) };
       case 'list_audit_events':
@@ -245,12 +267,15 @@ export class MemoryStoreLogic {
     return this.db.transaction(() => {
       const secondReplay = this.entryForReplay(input.idempotencyKey);
       if (secondReplay) return secondReplay;
-      this.incrementMutationCounts(
-        input.workspaceId,
-        input.sourceChannelId,
-        input.actorId,
-        at,
-      );
+      this.enforceCreateQuota(store, input.sourceChannelId, input.description, input.body);
+      if (input.actorClass !== 'operator') {
+        this.incrementMutationCounts(
+          input.workspaceId,
+          input.sourceChannelId,
+          input.actorId,
+          at,
+        );
+      }
       try {
         this.db.run(
           `INSERT INTO memory_entries (
@@ -300,7 +325,7 @@ export class MemoryStoreLogic {
         createdAt: at,
         beforeHash: null,
         afterHash: hash,
-        reasonCode: null,
+        reasonCode: `slug_seed:${input.slugSeed ?? input.slug}`,
         idempotencyKey: input.idempotencyKey,
       });
       this.audit.append({
@@ -370,12 +395,15 @@ export class MemoryStoreLogic {
       this.assertMutableVersion(current, input.expectedVersion);
       const nextHash = contentHash(input.description, input.body);
       const nextVersion = current.version + 1;
-      this.incrementMutationCounts(
-        current.workspaceId,
-        current.sourceChannelId,
-        input.actorId,
-        at,
-      );
+      this.enforceUpdateQuota(current, input.description, input.body);
+      if (input.actorClass !== 'operator') {
+        this.incrementMutationCounts(
+          current.workspaceId,
+          current.sourceChannelId,
+          input.actorId,
+          at,
+        );
+      }
       this.db.run(
         `UPDATE memory_entries SET
           description = ?, type = ?, body = ?, version = ?,
@@ -447,12 +475,17 @@ export class MemoryStoreLogic {
       const current = requiredEntry(this.getEntry(input.entryId), input.entryId);
       this.assertMutableVersion(current, input.expectedVersion);
       const nextVersion = current.version + 1;
-      this.incrementMutationCounts(
-        current.workspaceId,
-        current.sourceChannelId,
-        input.actorId,
-        at,
-      );
+      if (input.confirmationTokenHash) {
+        this.consumeForgetChallenge(current, input, input.confirmationTokenHash, at);
+      }
+      if (input.actorClass !== 'operator') {
+        this.incrementMutationCounts(
+          current.workspaceId,
+          current.sourceChannelId,
+          input.actorId,
+          at,
+        );
+      }
       this.db.run(
         `UPDATE memory_entries SET
           description = '', body = '', status = 'forgotten', version = ?,
@@ -517,6 +550,285 @@ export class MemoryStoreLogic {
     });
   }
 
+  transitionEntry(input: TransitionMemoryEntryInput): MemoryEntry {
+    const replay = this.entryForReplay(input.idempotencyKey);
+    if (replay) return replay;
+    const at = this.now();
+    return this.db.transaction(() => {
+      const secondReplay = this.entryForReplay(input.idempotencyKey);
+      if (secondReplay) return secondReplay;
+      const current = requiredEntry(this.getEntry(input.entryId), input.entryId);
+      this.assertMutableVersion(current, input.expectedVersion);
+      const nextStatus = input.transition === 'expire' ? 'expired' : 'active';
+      if (
+        (input.transition === 'expire' && current.status === 'expired') ||
+        (input.transition === 'restore' && current.status !== 'expired')
+      ) {
+        throw new MemoryStateError(
+          'memory_invalid_transition',
+          `Memory entry cannot be ${input.transition}d from its current state.`,
+        );
+      }
+      if (input.transition === 'restore') {
+        const store = requiredStore(this.getStore(current.storeId), current.storeId);
+        this.enforceCreateQuota(store, current.sourceChannelId, current.description, current.body);
+      }
+      if (input.actorClass !== 'operator') {
+        this.incrementMutationCounts(
+          current.workspaceId,
+          current.sourceChannelId,
+          input.actorId,
+          at,
+        );
+      }
+      const nextVersion = current.version + 1;
+      this.db.run(
+        `UPDATE memory_entries SET status = ?, version = ?, last_editor_actor_id = ?,
+           actor_class = ?, source_event_id = ?, modified_at = ?, expires_at = ?
+         WHERE entry_id = ?`,
+        nextStatus,
+        nextVersion,
+        input.actorId,
+        input.actorClass,
+        input.sourceEventId ?? current.sourceEventId,
+        at,
+        input.transition === 'expire' ? at : null,
+        current.entryId,
+      );
+      this.insertRevision({
+        entryId: current.entryId,
+        version: nextVersion,
+        operation: input.transition,
+        description: current.description,
+        body: current.body,
+        type: current.type,
+        actorId: input.actorId,
+        actorClass: input.actorClass,
+        sourceEventId: input.sourceEventId ?? current.sourceEventId,
+        sourceThreadTs: current.sourceThreadTs,
+        sourceMessageTs: current.sourceMessageTs,
+        createdAt: at,
+        beforeHash: current.contentHash,
+        afterHash: current.contentHash,
+        reasonCode: input.reasonCode ?? `explicit_${input.transition}`,
+        idempotencyKey: input.idempotencyKey,
+      });
+      this.audit.append({
+        eventId: auditId(input.idempotencyKey),
+        domain: 'memory',
+        eventType: `memory.${input.transition}d`,
+        outcome: 'success',
+        actorClass: input.actorClass,
+        actorId: input.actorId,
+        workspaceId: current.workspaceId,
+        channelId: current.sourceChannelId,
+        storeId: current.storeId,
+        subjectId: current.entryId,
+        subjectVersion: nextVersion,
+        createdAt: at,
+        reasonCode: input.reasonCode ?? `explicit_${input.transition}`,
+        beforeHash: current.contentHash,
+        afterHash: current.contentHash,
+        idempotencyKey: input.idempotencyKey,
+      });
+      this.trimRevisionContent(current.entryId);
+      return requiredEntry(this.getEntry(current.entryId), current.entryId);
+    });
+  }
+
+  mergeEntries(input: MergeMemoryEntriesInput): MemoryEntry {
+    const replay = this.entryForReplay(input.replacement.idempotencyKey);
+    if (replay) return replay;
+    if (input.sources.length < 2 || new Set(input.sources.map((source) => source.entryId)).size !== input.sources.length) {
+      throw new MemoryStateError(
+        'memory_invalid_merge',
+        'A merge requires at least two distinct memory entries.',
+      );
+    }
+    const at = this.now();
+    return this.db.transaction(() => {
+      const secondReplay = this.entryForReplay(input.replacement.idempotencyKey);
+      if (secondReplay) return secondReplay;
+      const store = requiredStore(
+        this.getStore(input.replacement.storeId),
+        input.replacement.storeId,
+      );
+      if (
+        store.lifecycle !== 'active' ||
+        store.workspaceId !== input.replacement.workspaceId
+      ) {
+        throw new MemoryStateError('memory_store_sealed', 'Memory store is unavailable.');
+      }
+      const sources = input.sources.map((source) => {
+        const entry = requiredEntry(this.getEntry(source.entryId), source.entryId);
+        this.assertMutableVersion(entry, source.expectedVersion);
+        if (
+          entry.storeId !== input.replacement.storeId ||
+          entry.sourceChannelId !== input.replacement.sourceChannelId ||
+          (entry.status !== 'active' && entry.status !== 'stale')
+        ) {
+          throw new MemoryStateError(
+            'memory_invalid_merge',
+            'Merged memories must be active entries from the same source partition.',
+          );
+        }
+        return entry;
+      });
+      if (input.replacement.actorClass !== 'operator') {
+        this.incrementMutationCounts(
+          input.replacement.workspaceId,
+          input.replacement.sourceChannelId,
+          input.replacement.actorId,
+          at,
+        );
+      }
+      for (const source of sources) {
+        const nextVersion = source.version + 1;
+        this.db.run(
+          `UPDATE memory_entries SET status = 'superseded', version = ?,
+             last_editor_actor_id = ?, actor_class = ?, source_event_id = ?,
+             modified_at = ?, superseding_entry_id = ? WHERE entry_id = ?`,
+          nextVersion,
+          input.replacement.actorId,
+          input.replacement.actorClass,
+          input.replacement.sourceEventId ?? source.sourceEventId,
+          at,
+          input.replacement.entryId,
+          source.entryId,
+        );
+        this.insertRevision({
+          entryId: source.entryId,
+          version: nextVersion,
+          operation: 'merge',
+          description: source.description,
+          body: source.body,
+          type: source.type,
+          actorId: input.replacement.actorId,
+          actorClass: input.replacement.actorClass,
+          sourceEventId: input.replacement.sourceEventId ?? source.sourceEventId,
+          sourceThreadTs: input.replacement.sourceThreadTs ?? source.sourceThreadTs,
+          sourceMessageTs: input.replacement.sourceMessageTs ?? source.sourceMessageTs,
+          createdAt: at,
+          beforeHash: source.contentHash,
+          afterHash: source.contentHash,
+          reasonCode: `superseded_by:${input.replacement.entryId}`,
+          idempotencyKey: `${input.replacement.idempotencyKey}:source:${source.entryId}`,
+        });
+      }
+      this.enforceCreateQuota(
+        store,
+        input.replacement.sourceChannelId,
+        input.replacement.description,
+        input.replacement.body,
+      );
+      const hash = contentHash(input.replacement.description, input.replacement.body);
+      try {
+        this.db.run(
+          `INSERT INTO memory_entries (
+            entry_id, store_id, workspace_id, source_channel_id, slug,
+            description, type, body, status, version, creator_actor_id,
+            last_editor_actor_id, actor_class, source_event_id,
+            source_thread_ts, source_message_ts, created_at, modified_at,
+            expires_at, content_hash, superseding_entry_id
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+          input.replacement.entryId,
+          input.replacement.storeId,
+          input.replacement.workspaceId,
+          input.replacement.sourceChannelId,
+          input.replacement.slug,
+          input.replacement.description,
+          input.replacement.type,
+          input.replacement.body,
+          input.replacement.actorId,
+          input.replacement.actorId,
+          input.replacement.actorClass,
+          input.replacement.sourceEventId ?? null,
+          input.replacement.sourceThreadTs ?? null,
+          input.replacement.sourceMessageTs ?? null,
+          at,
+          at,
+          input.replacement.expiresAt ?? null,
+          hash,
+        );
+      } catch (error) {
+        if (isConstraintViolation(error)) {
+          throw new MemoryStateError('memory_slug_conflict', 'Memory name is already in use.');
+        }
+        throw error;
+      }
+      this.insertRevision({
+        entryId: input.replacement.entryId,
+        version: 1,
+        operation: 'merge',
+        description: input.replacement.description,
+        body: input.replacement.body,
+        type: input.replacement.type,
+        actorId: input.replacement.actorId,
+        actorClass: input.replacement.actorClass,
+        sourceEventId: input.replacement.sourceEventId ?? null,
+        sourceThreadTs: input.replacement.sourceThreadTs ?? null,
+        sourceMessageTs: input.replacement.sourceMessageTs ?? null,
+        createdAt: at,
+        beforeHash: null,
+        afterHash: hash,
+        reasonCode: 'merge_replacement',
+        idempotencyKey: input.replacement.idempotencyKey,
+      });
+      this.audit.append({
+        eventId: auditId(input.replacement.idempotencyKey),
+        domain: 'memory',
+        eventType: 'memory.merged',
+        outcome: 'success',
+        actorClass: input.replacement.actorClass,
+        actorId: input.replacement.actorId,
+        workspaceId: input.replacement.workspaceId,
+        channelId: input.replacement.sourceChannelId,
+        storeId: input.replacement.storeId,
+        subjectId: input.replacement.entryId,
+        subjectVersion: 1,
+        createdAt: at,
+        afterHash: hash,
+        metadataJson: JSON.stringify({ sourceEntryIds: sources.map((source) => source.entryId) }),
+        idempotencyKey: input.replacement.idempotencyKey,
+      });
+      for (const source of sources) this.trimRevisionContent(source.entryId);
+      return requiredEntry(
+        this.getEntry(input.replacement.entryId),
+        input.replacement.entryId,
+      );
+    });
+  }
+
+  recordReview(input: RecordMemoryReviewInput): void {
+    if (this.audit.findByIdempotencyKey(input.idempotencyKey)) return;
+    const entry = requiredEntry(this.getEntry(input.entryId), input.entryId);
+    if (entry.version !== input.expectedVersion) {
+      throw new MemoryVersionConflictError(entry.entryId, entry.version);
+    }
+    if (input.action === 'resolved' && !input.resolution) {
+      throw new MemoryStateError(
+        'memory_invalid_review',
+        'A resolved review requires an outcome.',
+      );
+    }
+    this.audit.append({
+      eventId: auditId(input.idempotencyKey),
+      domain: 'memory',
+      eventType: `memory.review_${input.action}`,
+      outcome: input.action === 'requested' ? 'requested' : 'success',
+      actorClass: input.actorClass,
+      actorId: input.actorId,
+      workspaceId: entry.workspaceId,
+      channelId: entry.sourceChannelId,
+      storeId: entry.storeId,
+      subjectId: entry.entryId,
+      subjectVersion: entry.version,
+      createdAt: this.now(),
+      metadataJson: JSON.stringify(input.resolution ? { resolution: input.resolution } : {}),
+      idempotencyKey: input.idempotencyKey,
+    });
+  }
+
   listRevisions(entryId: string): MemoryRevision[] {
     return this.db
       .all(
@@ -525,6 +837,27 @@ export class MemoryStoreLogic {
         entryId,
       )
       .map((row) => rowToRevision(row as unknown as RevisionRow));
+  }
+
+  createForgetChallenge(input: CreateForgetChallengeInput): void {
+    const entry = requiredEntry(this.getEntry(input.entryId), input.entryId);
+    this.assertMutableVersion(entry, input.expectedVersion);
+    if (entry.storeId !== input.storeId) {
+      throw new MemoryStateError('memory_confirmation_invalid', 'Forget confirmation is invalid.');
+    }
+    this.db.run(
+      `INSERT INTO memory_forget_challenges (
+        challenge_id, token_hash, actor_id, store_id, entry_id,
+        expected_version, expires_at, consumed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)`,
+      input.challengeId,
+      input.tokenHash,
+      input.actorId,
+      input.storeId,
+      input.entryId,
+      input.expectedVersion,
+      input.expiresAt,
+    );
   }
 
   listAuditEvents(filter: AuditEventFilter = {}): AuditEvent[] {
@@ -755,6 +1088,10 @@ export class MemoryStoreLogic {
   }
 
   private initializeSchema(): void {
+    // SQLite otherwise may retain overwritten memory text on freelist pages.
+    // Unsupported targets may ignore this pragma, but both shipped state
+    // backends use SQLite semantics and must erase forgotten content eagerly.
+    this.db.exec('PRAGMA secure_delete = ON');
     this.db.exec(
       `CREATE TABLE IF NOT EXISTS memory_meta (
         key TEXT PRIMARY KEY,
@@ -842,6 +1179,18 @@ export class MemoryStoreLogic {
         reason_code TEXT,
         idempotency_key TEXT NOT NULL UNIQUE,
         PRIMARY KEY (entry_id, version)
+      )`,
+    );
+    this.db.exec(
+      `CREATE TABLE IF NOT EXISTS memory_forget_challenges (
+        challenge_id TEXT PRIMARY KEY,
+        token_hash TEXT NOT NULL UNIQUE,
+        actor_id TEXT NOT NULL,
+        store_id TEXT NOT NULL,
+        entry_id TEXT NOT NULL,
+        expected_version INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        consumed_at INTEGER
       )`,
     );
     this.db.exec(
@@ -975,7 +1324,91 @@ export class MemoryStoreLogic {
         window,
         at,
       );
+      const count = this.mutationCount(workspaceId, channelId, subject, window);
+      const limit = subject === CHANNEL_RATE_ACTOR ? MEMORY_CHANNEL_RATE_LIMIT : MEMORY_ACTOR_RATE_LIMIT;
+      if (count > limit) {
+        throw new MemoryRateLimitError(window + MEMORY_RATE_WINDOW_MS);
+      }
     }
+  }
+
+  private consumeForgetChallenge(
+    entry: MemoryEntry,
+    input: ForgetMemoryEntryInput,
+    tokenHash: string,
+    at: number,
+  ): void {
+    const row = this.db.get(
+      `SELECT actor_id, store_id, entry_id, expected_version, expires_at, consumed_at
+       FROM memory_forget_challenges WHERE token_hash = ?`,
+      tokenHash,
+    );
+    if (!row || row.consumed_at !== null) {
+      throw new MemoryStateError('memory_confirmation_invalid', 'Forget confirmation is invalid.');
+    }
+    if (
+      row.actor_id !== input.actorId ||
+      row.store_id !== entry.storeId ||
+      row.entry_id !== entry.entryId ||
+      row.expected_version !== input.expectedVersion
+    ) {
+      throw new MemoryStateError('memory_confirmation_invalid', 'Forget confirmation is invalid.');
+    }
+    if (typeof row.expires_at !== 'number' || row.expires_at < at) {
+      throw new MemoryStateError('memory_confirmation_expired', 'Forget confirmation expired.');
+    }
+    this.db.run(
+      `UPDATE memory_forget_challenges SET consumed_at = ?
+       WHERE token_hash = ? AND consumed_at IS NULL`,
+      at,
+      tokenHash,
+    );
+  }
+
+  private enforceCreateQuota(
+    store: MemoryStoreDescriptor,
+    sourceChannelId: string,
+    description: string,
+    body: string,
+  ): void {
+    const sourceCount = Number(
+      this.db.get(
+        `SELECT COUNT(*) AS count FROM memory_entries
+         WHERE store_id = ? AND source_channel_id = ? AND status IN ('active', 'stale')`,
+        store.storeId,
+        sourceChannelId,
+      )?.count ?? 0,
+    );
+    if (sourceCount >= MEMORY_SOURCE_ENTRY_LIMIT) {
+      throw new MemoryStateError('memory_source_quota', 'This channel memory is full.');
+    }
+    const totals = this.liveStoreTotals(store.storeId);
+    const entryLimit = store.visibility === 'public' ? MEMORY_PUBLIC_ENTRY_LIMIT : MEMORY_PRIVATE_ENTRY_LIMIT;
+    const byteLimit = store.visibility === 'public' ? MEMORY_PUBLIC_BYTES_LIMIT : MEMORY_PRIVATE_BYTES_LIMIT;
+    if (totals.count >= entryLimit || totals.bytes + contentBytes(description, body) > byteLimit) {
+      throw new MemoryStateError('memory_store_quota', 'This memory store is full.');
+    }
+  }
+
+  private enforceUpdateQuota(entry: MemoryEntry, description: string, body: string): void {
+    const store = this.getStore(entry.storeId);
+    if (!store) throw new MemoryStateError('memory_store_not_found', 'Memory store is unavailable.');
+    const totals = this.liveStoreTotals(entry.storeId);
+    const byteLimit = store.visibility === 'public' ? MEMORY_PUBLIC_BYTES_LIMIT : MEMORY_PRIVATE_BYTES_LIMIT;
+    const nextBytes = totals.bytes - contentBytes(entry.description, entry.body) + contentBytes(description, body);
+    if (nextBytes > byteLimit) {
+      throw new MemoryStateError('memory_store_quota', 'This memory store is full.');
+    }
+  }
+
+  private liveStoreTotals(storeId: string): { count: number; bytes: number } {
+    const row = this.db.get(
+      `SELECT COUNT(*) AS count,
+              COALESCE(SUM(length(CAST(description AS BLOB)) + length(CAST(body AS BLOB))), 0) AS bytes
+       FROM memory_entries WHERE store_id = ? AND status IN ('active', 'stale')`,
+      storeId,
+    );
+    return { count: Number(row?.count ?? 0), bytes: Number(row?.bytes ?? 0) };
   }
 
   private mutationCount(
@@ -1067,6 +1500,22 @@ export class SqliteMemoryStateStore implements MemoryStateStore {
     return this.logic.forgetEntry(input);
   }
 
+  async transitionEntry(input: TransitionMemoryEntryInput): Promise<MemoryEntry> {
+    return this.logic.transitionEntry(input);
+  }
+
+  async mergeEntries(input: MergeMemoryEntriesInput): Promise<MemoryEntry> {
+    return this.logic.mergeEntries(input);
+  }
+
+  async recordReview(input: RecordMemoryReviewInput): Promise<void> {
+    this.logic.recordReview(input);
+  }
+
+  async createForgetChallenge(input: CreateForgetChallengeInput): Promise<void> {
+    this.logic.createForgetChallenge(input);
+  }
+
   async listRevisions(entryId: string): Promise<MemoryRevision[]> {
     return this.logic.listRevisions(entryId);
   }
@@ -1135,6 +1584,10 @@ function contentHash(description: string, body: string): string {
   return createHash('sha256').update(`${description}\n\u0000${body}`).digest('hex');
 }
 
+function contentBytes(description: string, body: string): number {
+  return Buffer.byteLength(description, 'utf8') + Buffer.byteLength(body, 'utf8');
+}
+
 function auditId(idempotencyKey: string): string {
   return `audit_${createHash('sha256').update(idempotencyKey).digest('hex').slice(0, 32)}`;
 }
@@ -1150,6 +1603,18 @@ function requiredEntry(entry: MemoryEntry | undefined, entryId: string): MemoryE
     });
   }
   return entry;
+}
+
+function requiredStore(
+  store: MemoryStoreDescriptor | undefined,
+  storeId: string,
+): MemoryStoreDescriptor {
+  if (!store) {
+    throw new MemoryStateError('memory_store_not_found', 'Memory store was not found.', {
+      storeId,
+    });
+  }
+  return store;
 }
 
 function isConstraintViolation(error: unknown): boolean {

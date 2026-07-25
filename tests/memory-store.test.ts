@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -152,6 +153,20 @@ test('updates require the expected version and forgetting scrubs all recoverable
       ),
     );
     db.close();
+
+    const raw = readFileSync(path).toString('latin1');
+    for (const secret of [
+      'Use the release checklist before merging.',
+      'Run the release checklist and smoke tests.',
+      createHash('sha256')
+        .update('How releases are prepared.\n\u0000Use the release checklist before merging.')
+        .digest('hex'),
+      createHash('sha256')
+        .update('Updated release guidance.\n\u0000Run the release checklist and smoke tests.')
+        .digest('hex'),
+    ]) {
+      assert.equal(raw.includes(secret), false);
+    }
   } finally {
     store.close();
     rmSync(dir, { recursive: true, force: true });

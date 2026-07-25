@@ -68,6 +68,8 @@ export type MemoryScopeDecision =
       transitionVersion: number;
     };
 
+export type EnabledMemoryScope = Extract<MemoryScopeDecision, { enabled: true }>;
+
 export async function resolveMemoryScope(
   input: ResolveMemoryScopeInput,
   deps: { slack: MemoryScopeSlack; state: MemoryStateStore },
