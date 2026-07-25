@@ -14,6 +14,7 @@ import {
   type CreateMemoryEntryInput,
   type ForgetMemoryEntryInput,
   type MemoryConversationContext,
+  type MemoryChannelScopeState,
   type MemoryEntry,
   type MemoryEntryFilter,
   type MemoryMutationCounts,
@@ -22,6 +23,7 @@ import {
   type MemoryRpcResponse,
   type MemoryStateStore,
   type MemoryStoreDescriptor,
+  type ObserveMemoryChannelScopeInput,
   type ResolveMemoryConversationContextInput,
   type SetMemoryEnabledInput,
   type UpdateMemoryEntryInput,
@@ -99,6 +101,21 @@ interface CountRow {
   count: number;
 }
 
+interface ScopeRow {
+  workspace_id: string;
+  channel_id: string;
+  privacy: MemoryStoreDescriptor['visibility'];
+  lifecycle: MemoryChannelScopeState['lifecycle'];
+  private_generation: number;
+  current_display_name: string;
+  last_public_display_name: string | null;
+  first_observed_at: number;
+  last_observed_at: number;
+  last_verified_at: number;
+  visibility_barrier_at: number | null;
+  transition_version: number;
+}
+
 const CHANNEL_RATE_ACTOR = '*channel*';
 
 /**
@@ -160,6 +177,13 @@ export class MemoryStoreLogic {
         return {
           kind: 'conversation_context',
           context: this.resolveConversationContext(request.input),
+        };
+      case 'observe_channel_scope':
+        return { kind: 'channel_scope', state: this.observeChannelScope(request.input) };
+      case 'get_channel_scope':
+        return {
+          kind: 'channel_scope',
+          state: this.getChannelScope(request.workspaceId, request.channelId) ?? null,
         };
       case 'cleanup_retention':
         return { kind: 'cleanup', ...this.cleanupRetention() };
@@ -578,6 +602,105 @@ export class MemoryStoreLogic {
     });
   }
 
+  observeChannelScope(input: ObserveMemoryChannelScopeInput): MemoryChannelScopeState {
+    return this.db.transaction(() => {
+      this.ensurePublicStore(input.workspaceId);
+      const current = this.getChannelScope(input.workspaceId, input.channelId);
+      let privateGeneration = current?.privateGeneration ?? 0;
+      let visibilityBarrierAt = current?.visibilityBarrierAt ?? null;
+      let lastPublicDisplayName = current?.lastPublicDisplayName ?? null;
+      let transitionVersion = current?.transitionVersion ?? 0;
+
+      if (!current) {
+        transitionVersion = 1;
+        if (input.privacy === 'private') {
+          privateGeneration = 1;
+          this.ensurePrivateStore(input.workspaceId, input.channelId, privateGeneration);
+        } else {
+          lastPublicDisplayName = input.displayName;
+        }
+        this.db.run(
+          `INSERT INTO memory_scope_state (
+            workspace_id, channel_id, privacy, lifecycle, private_generation,
+            current_display_name, last_public_display_name, first_observed_at,
+            last_observed_at, last_verified_at, visibility_barrier_at,
+            transition_version
+          ) VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?)`,
+          input.workspaceId,
+          input.channelId,
+          input.privacy,
+          privateGeneration,
+          input.displayName,
+          lastPublicDisplayName,
+          input.observedAt,
+          input.observedAt,
+          input.observedAt,
+          visibilityBarrierAt,
+          transitionVersion,
+        );
+      } else {
+        const changed = current.privacy !== input.privacy;
+        if (changed) {
+          transitionVersion += 1;
+          if (current.privacy === 'private' && input.privacy === 'public') {
+            const oldStoreId = privateStoreId(
+              input.workspaceId,
+              input.channelId,
+              current.privateGeneration,
+            );
+            this.db.run(
+              `UPDATE memory_stores SET lifecycle = 'sealed', sealed_at = ?,
+                 sealed_reason = 'private_to_public'
+               WHERE store_id = ?`,
+              input.observedAt,
+              oldStoreId,
+            );
+            visibilityBarrierAt = input.observedAt;
+            lastPublicDisplayName = input.displayName;
+          } else if (current.privacy === 'public' && input.privacy === 'private') {
+            privateGeneration = Math.max(current.privateGeneration + 1, 1);
+            this.ensurePrivateStore(input.workspaceId, input.channelId, privateGeneration);
+          }
+        } else if (input.privacy === 'public') {
+          lastPublicDisplayName = input.displayName;
+        }
+        this.db.run(
+          `UPDATE memory_scope_state SET
+            privacy = ?, lifecycle = 'active', private_generation = ?,
+            current_display_name = ?, last_public_display_name = ?,
+            last_observed_at = ?, last_verified_at = ?,
+            visibility_barrier_at = ?, transition_version = ?
+           WHERE workspace_id = ? AND channel_id = ?`,
+          input.privacy,
+          privateGeneration,
+          input.displayName,
+          lastPublicDisplayName,
+          input.observedAt,
+          input.observedAt,
+          visibilityBarrierAt,
+          transitionVersion,
+          input.workspaceId,
+          input.channelId,
+        );
+      }
+      const next = this.getChannelScope(input.workspaceId, input.channelId);
+      if (!next) throw new Error('Memory channel scope was not readable after observation');
+      return next;
+    });
+  }
+
+  getChannelScope(
+    workspaceId: string,
+    channelId: string,
+  ): MemoryChannelScopeState | undefined {
+    const row = this.db.get(
+      `SELECT * FROM memory_scope_state WHERE workspace_id = ? AND channel_id = ?`,
+      workspaceId,
+      channelId,
+    );
+    return row ? rowToScope(row as unknown as ScopeRow) : undefined;
+  }
+
   cleanupRetention(): {
     actorIdsCleared: number;
     rateWindowsDeleted: number;
@@ -636,6 +759,23 @@ export class MemoryStoreLogic {
       `CREATE TABLE IF NOT EXISTS memory_meta (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
+      )`,
+    );
+    this.db.exec(
+      `CREATE TABLE IF NOT EXISTS memory_scope_state (
+        workspace_id TEXT NOT NULL,
+        channel_id TEXT NOT NULL,
+        privacy TEXT NOT NULL,
+        lifecycle TEXT NOT NULL,
+        private_generation INTEGER NOT NULL,
+        current_display_name TEXT NOT NULL,
+        last_public_display_name TEXT,
+        first_observed_at INTEGER NOT NULL,
+        last_observed_at INTEGER NOT NULL,
+        last_verified_at INTEGER NOT NULL,
+        visibility_barrier_at INTEGER,
+        transition_version INTEGER NOT NULL,
+        PRIMARY KEY (workspace_id, channel_id)
       )`,
     );
     this.db.exec(
@@ -949,6 +1089,19 @@ export class SqliteMemoryStateStore implements MemoryStateStore {
     return this.logic.resolveConversationContext(input);
   }
 
+  async observeChannelScope(
+    input: ObserveMemoryChannelScopeInput,
+  ): Promise<MemoryChannelScopeState> {
+    return this.logic.observeChannelScope(input);
+  }
+
+  async getChannelScope(
+    workspaceId: string,
+    channelId: string,
+  ): Promise<MemoryChannelScopeState | undefined> {
+    return this.logic.getChannelScope(workspaceId, channelId);
+  }
+
   async cleanupRetention(): Promise<{
     actorIdsCleared: number;
     rateWindowsDeleted: number;
@@ -1076,5 +1229,26 @@ function rowToContext(row: ContextRow): MemoryConversationContext {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     expiresAt: row.expires_at,
+  };
+}
+
+function rowToScope(row: ScopeRow): MemoryChannelScopeState {
+  return {
+    workspaceId: row.workspace_id,
+    channelId: row.channel_id,
+    privacy: row.privacy,
+    lifecycle: row.lifecycle,
+    privateGeneration: row.private_generation,
+    privateStoreId:
+      row.privacy === 'private'
+        ? privateStoreId(row.workspace_id, row.channel_id, row.private_generation)
+        : null,
+    currentDisplayName: row.current_display_name,
+    lastPublicDisplayName: row.last_public_display_name,
+    firstObservedAt: row.first_observed_at,
+    lastObservedAt: row.last_observed_at,
+    lastVerifiedAt: row.last_verified_at,
+    visibilityBarrierAt: row.visibility_barrier_at,
+    transitionVersion: row.transition_version,
   };
 }

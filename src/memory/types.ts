@@ -145,6 +145,30 @@ export interface MemoryMutationCounts {
   windowStartedAt: number;
 }
 
+export interface ObserveMemoryChannelScopeInput {
+  workspaceId: string;
+  channelId: string;
+  privacy: MemoryVisibility;
+  displayName: string;
+  observedAt: number;
+}
+
+export interface MemoryChannelScopeState {
+  workspaceId: string;
+  channelId: string;
+  privacy: MemoryVisibility;
+  lifecycle: 'active' | 'retained';
+  privateGeneration: number;
+  privateStoreId: string | null;
+  currentDisplayName: string;
+  lastPublicDisplayName: string | null;
+  firstObservedAt: number;
+  lastObservedAt: number;
+  lastVerifiedAt: number;
+  visibilityBarrierAt: number | null;
+  transitionVersion: number;
+}
+
 export interface SetMemoryEnabledInput {
   enabled: boolean;
   actorId: string;
@@ -195,6 +219,8 @@ export type MemoryRpcRequest =
   | { kind: 'list_audit_events'; filter: AuditEventFilter }
   | { kind: 'get_mutation_counts'; workspaceId: string; channelId: string; actorId: string }
   | { kind: 'resolve_conversation_context'; input: ResolveMemoryConversationContextInput }
+  | { kind: 'observe_channel_scope'; input: ObserveMemoryChannelScopeInput }
+  | { kind: 'get_channel_scope'; workspaceId: string; channelId: string }
   | { kind: 'cleanup_retention' }
   | { kind: 'get_memory_enabled' }
   | { kind: 'set_memory_enabled'; input: SetMemoryEnabledInput };
@@ -207,6 +233,7 @@ export type MemoryRpcResponse =
   | { kind: 'audit_events'; events: AuditEvent[] }
   | { kind: 'mutation_counts'; counts: MemoryMutationCounts }
   | { kind: 'conversation_context'; context: MemoryConversationContext }
+  | { kind: 'channel_scope'; state: MemoryChannelScopeState | null }
   | { kind: 'cleanup'; actorIdsCleared: number; rateWindowsDeleted: number; contextsDeleted: number }
   | { kind: 'memory_enabled'; enabled: boolean };
 
@@ -233,6 +260,11 @@ export interface MemoryStateStore {
   resolveConversationContext(
     input: ResolveMemoryConversationContextInput,
   ): Promise<MemoryConversationContext>;
+  observeChannelScope(input: ObserveMemoryChannelScopeInput): Promise<MemoryChannelScopeState>;
+  getChannelScope(
+    workspaceId: string,
+    channelId: string,
+  ): Promise<MemoryChannelScopeState | undefined>;
   cleanupRetention(): Promise<{
     actorIdsCleared: number;
     rateWindowsDeleted: number;

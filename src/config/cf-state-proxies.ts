@@ -12,6 +12,7 @@ import {
   type CreateMemoryEntryInput,
   type ForgetMemoryEntryInput,
   type MemoryConversationContext,
+  type MemoryChannelScopeState,
   type MemoryEntry,
   type MemoryEntryFilter,
   type MemoryMutationCounts,
@@ -20,6 +21,7 @@ import {
   type MemoryRpcResponse,
   type MemoryStateStore,
   type MemoryStoreDescriptor,
+  type ObserveMemoryChannelScopeInput,
   type ResolveMemoryConversationContextInput,
   type SetMemoryEnabledInput,
   type UpdateMemoryEntryInput,
@@ -278,6 +280,25 @@ export class CfMemoryStateStore implements MemoryStateStore {
     const response = await this.execute({ kind: 'resolve_conversation_context', input });
     if (response.kind !== 'conversation_context') throw unexpectedMemoryResponse();
     return response.context;
+  }
+
+  async observeChannelScope(
+    input: ObserveMemoryChannelScopeInput,
+  ): Promise<MemoryChannelScopeState> {
+    const response = await this.execute({ kind: 'observe_channel_scope', input });
+    if (response.kind !== 'channel_scope' || !response.state) {
+      throw unexpectedMemoryResponse();
+    }
+    return response.state;
+  }
+
+  async getChannelScope(
+    workspaceId: string,
+    channelId: string,
+  ): Promise<MemoryChannelScopeState | undefined> {
+    const response = await this.execute({ kind: 'get_channel_scope', workspaceId, channelId });
+    if (response.kind !== 'channel_scope') throw unexpectedMemoryResponse();
+    return orUndefined(response.state);
   }
 
   async cleanupRetention(): Promise<{

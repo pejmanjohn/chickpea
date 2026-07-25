@@ -339,6 +339,31 @@ export interface SlackChannelSummary {
   isMember: boolean;
 }
 
+export interface SlackConversationFacts {
+  id: string;
+  name: string;
+  private: boolean;
+  archived: boolean;
+  frozen: boolean;
+  shared: boolean;
+  externallyShared: boolean;
+  organizationShared: boolean;
+  pendingShared: boolean;
+  member: boolean;
+  teamId: string | undefined;
+}
+
+export interface SlackUserFacts {
+  id: string;
+  teamId: string | undefined;
+  deleted: boolean;
+  bot: boolean;
+  appUser: boolean;
+  restricted: boolean;
+  ultraRestricted: boolean;
+  stranger: boolean;
+}
+
 /** Map a raw Slack conversation object to the admin summary shape. */
 function toChannelSummary(raw: unknown): SlackChannelSummary | null {
   if (!raw || typeof raw !== 'object') return null;
@@ -349,6 +374,46 @@ function toChannelSummary(raw: unknown): SlackChannelSummary | null {
     name: typeof channel.name === 'string' ? channel.name : '',
     isPrivate: channel.is_private === true,
     isMember: channel.is_member === true,
+  };
+}
+
+function toConversationFacts(raw: unknown): SlackConversationFacts | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const channel = raw as Record<string, unknown>;
+  if (typeof channel.id !== 'string') return null;
+  return {
+    id: channel.id,
+    name: typeof channel.name === 'string' ? channel.name : '',
+    private: channel.is_private === true,
+    archived: channel.is_archived === true,
+    frozen: channel.is_frozen === true,
+    shared: channel.is_shared === true,
+    externallyShared: channel.is_ext_shared === true,
+    organizationShared: channel.is_org_shared === true,
+    pendingShared: Array.isArray(channel.pending_shared) && channel.pending_shared.length > 0,
+    member: channel.is_member === true,
+    teamId:
+      typeof channel.context_team_id === 'string'
+        ? channel.context_team_id
+        : typeof channel.team_id === 'string'
+          ? channel.team_id
+          : undefined,
+  };
+}
+
+function toUserFacts(raw: unknown): SlackUserFacts | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const user = raw as Record<string, unknown>;
+  if (typeof user.id !== 'string') return null;
+  return {
+    id: user.id,
+    teamId: typeof user.team_id === 'string' ? user.team_id : undefined,
+    deleted: user.deleted === true,
+    bot: user.is_bot === true,
+    appUser: user.is_app_user === true,
+    restricted: user.is_restricted === true,
+    ultraRestricted: user.is_ultra_restricted === true,
+    stranger: user.is_stranger === true,
   };
 }
 
@@ -406,6 +471,8 @@ export interface SlackConversationsInfoResult {
   ok: boolean;
   error: string | undefined;
   channel: SlackChannelSummary | undefined;
+  facts: SlackConversationFacts | undefined;
+  retryAfterMs: number | undefined;
 }
 
 /**
@@ -430,7 +497,116 @@ export async function slackConversationsInfo(
     ok: body.ok === true,
     error: typeof body.error === 'string' ? body.error : undefined,
     channel: toChannelSummary(body.channel) ?? undefined,
+    facts: toConversationFacts(body.channel) ?? undefined,
+    retryAfterMs: retryAfterMs(response),
   };
+}
+
+export interface SlackUsersInfoResult {
+  ok: boolean;
+  error: string | undefined;
+  user: SlackUserFacts | undefined;
+  retryAfterMs: number | undefined;
+}
+
+export async function slackUsersInfo(
+  botToken: string,
+  userId: string,
+): Promise<SlackUsersInfoResult> {
+  const response = await fetch(`${slackApiBase()}/users.info`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${botToken}`,
+      'content-type': 'application/x-www-form-urlencoded',
+    },
+    body: new URLSearchParams({ user: userId }).toString(),
+  });
+  const body = (await response.json()) as Record<string, unknown>;
+  return {
+    ok: body.ok === true,
+    error: typeof body.error === 'string' ? body.error : undefined,
+    user: toUserFacts(body.user) ?? undefined,
+    retryAfterMs: retryAfterMs(response),
+  };
+}
+
+export interface SlackUsersListPage {
+  ok: boolean;
+  error: string | undefined;
+  users: SlackUserFacts[];
+  nextCursor: string | undefined;
+  retryAfterMs: number | undefined;
+}
+
+export async function slackUsersList(
+  botToken: string,
+  options: { cursor?: string; limit?: number } = {},
+): Promise<SlackUsersListPage> {
+  const params = new URLSearchParams({ limit: String(options.limit ?? 200) });
+  if (options.cursor) params.set('cursor', options.cursor);
+  const response = await fetch(`${slackApiBase()}/users.list`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${botToken}`,
+      'content-type': 'application/x-www-form-urlencoded',
+    },
+    body: params.toString(),
+  });
+  const body = (await response.json()) as Record<string, unknown>;
+  const rawUsers = Array.isArray(body.members) ? body.members : [];
+  return {
+    ok: body.ok === true,
+    error: typeof body.error === 'string' ? body.error : undefined,
+    users: rawUsers.map(toUserFacts).filter((user): user is SlackUserFacts => user !== null),
+    nextCursor: readNextCursor(body),
+    retryAfterMs: retryAfterMs(response),
+  };
+}
+
+export interface SlackConversationsMembersPage {
+  ok: boolean;
+  error: string | undefined;
+  memberIds: string[];
+  nextCursor: string | undefined;
+  retryAfterMs: number | undefined;
+}
+
+export async function slackConversationsMembers(
+  botToken: string,
+  channelId: string,
+  options: { cursor?: string; limit?: number } = {},
+): Promise<SlackConversationsMembersPage> {
+  const params = new URLSearchParams({
+    channel: channelId,
+    limit: String(options.limit ?? 200),
+  });
+  if (options.cursor) params.set('cursor', options.cursor);
+  const response = await fetch(`${slackApiBase()}/conversations.members`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${botToken}`,
+      'content-type': 'application/x-www-form-urlencoded',
+    },
+    body: params.toString(),
+  });
+  const body = (await response.json()) as Record<string, unknown>;
+  const members = Array.isArray(body.members)
+    ? body.members.filter((id): id is string => typeof id === 'string')
+    : [];
+  return {
+    ok: body.ok === true,
+    error: typeof body.error === 'string' ? body.error : undefined,
+    memberIds: members,
+    nextCursor: readNextCursor(body),
+    retryAfterMs: retryAfterMs(response),
+  };
+}
+
+function retryAfterMs(response: Response): number | undefined {
+  const raw = response.headers.get('retry-after');
+  if (!raw) return undefined;
+  const seconds = Number(raw);
+  return Number.isFinite(seconds) && seconds >= 0 ? seconds * 1_000 : undefined;
 }
 
 export interface SlackConversationsJoinResult {
