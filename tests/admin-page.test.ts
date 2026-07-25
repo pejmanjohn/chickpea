@@ -226,6 +226,7 @@ function runAdminPageHarness(
     mcpTestResult?: { ok: true; tools: Array<{ name: string; title?: string; description?: string }> } | { ok: false; code: string; message: string };
     oauthStartResult?: { authorizationUrl: string };
     oauthStartError?: { status: number; error: string; message?: string };
+    deferAgentPatch?: boolean;
     initialSearch?: string;
   } = {},
 ): {
@@ -269,6 +270,7 @@ function runAdminPageHarness(
   gallerySearchFocusCalls(): number;
   gallerySearchSelections: Array<[number, number]>;
   resolveOpsEffective(): void;
+  resolveAgentPatch(): void;
 } {
   const makeRegion = (): FakeRegion => ({
     inert: false,
@@ -385,7 +387,9 @@ function runAdminPageHarness(
   const skillResolution = options.skillResolution;
   const oauthStartResult = options.oauthStartResult;
   const oauthStartError = options.oauthStartError;
+  const deferAgentPatch = options.deferAgentPatch === true;
   let resolveOpsEffective: (() => void) | undefined;
+  let resolveAgentPatch: (() => void) | undefined;
   const location = {
     pathname: options.initialPath ?? '/admin',
     search: options.initialSearch ?? '',
@@ -676,10 +680,19 @@ function runAdminPageHarness(
         );
       }
       const existing = agentsList.find((agent) => agent.id === id);
-      if (existing) {
-        Object.assign(existing, body, { id });
+      const completePatch = () => {
+        if (existing) Object.assign(existing, body, { id });
+        return jsonResponse({ agent: { id, ...body } });
+      };
+      if (deferAgentPatch) {
+        return new Promise((resolve) => {
+          resolveAgentPatch = () => {
+            resolveAgentPatch = undefined;
+            resolve(completePatch());
+          };
+        });
       }
-      return Promise.resolve(jsonResponse({ agent: { id, ...body } }));
+      return Promise.resolve(completePatch());
     }
     if (path === '/admin/api/assignments' && method === 'PUT') {
       const body = JSON.parse(options?.body ?? '{}') as AssignmentFixture;
@@ -1019,6 +1032,10 @@ function runAdminPageHarness(
     resolveOpsEffective() {
       assert.ok(resolveOpsEffective, 'expected C_OPS effective-config request to be pending');
       resolveOpsEffective();
+    },
+    resolveAgentPatch() {
+      assert.ok(resolveAgentPatch, 'expected agent PATCH request to be pending');
+      resolveAgentPatch();
     },
   };
 }
@@ -2359,6 +2376,35 @@ test('saved MCP and API connections share one lane-badged list with matching inl
   assert.match(harness.app.innerHTML, /value="https:\/\/mcp\.linear\.app\/mcp"[^>]*data-action="conn-field-url"/);
 });
 
+test('a saved bearer Linear connection stays Advanced after the catalog upgrades to OAuth', async () => {
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent({ mcpServers: [mcpConnectionFixture()] })],
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-edit', 'data-index': '0' }) });
+
+  const editor = harness.app.innerHTML;
+  assert.match(editor, /value="https:\/\/mcp\.linear\.app\/mcp"[^>]*data-action="conn-field-url"/);
+  assert.match(editor, /<option value="bearer" selected>Bearer token<\/option>/);
+  assert.match(editor, /placeholder="•••• stored"[^>]*data-action="conn-field-bearer"/);
+  assert.doesNotMatch(editor, /data-action="conn-oauth-start"/);
+  assert.doesNotMatch(editor, /data-action="conn-view"/);
+
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+
+  const saved = (harness.agentPatchBodies[0]?.body.mcpServers as Array<Record<string, unknown>>)[0];
+  assert.equal(saved?.url, 'https://mcp.linear.app/mcp');
+  assert.equal(saved?.authMode, 'bearer');
+  assert.equal(saved?.presetId, 'linear');
+  assert.deepEqual(harness.mcpSecretPuts, []);
+});
+
 test('canceling the custom API form clears custom mode and restores the gallery', async () => {
   const harness = runAdminPageHarness({ agents: [connectionsAgent()] });
   await flushAsync();
@@ -2770,7 +2816,9 @@ test('the searchable Connections gallery is immediate, renders brand logos, and 
   assert.match(recommended, /data-action="conn-view" data-view="recommended"/);
   assert.match(recommended, /data-action="conn-view" data-view="advanced"/);
   assert.match(recommended, /<span class="conn-url-chip mono">mcp\.linear\.app<\/span>/);
-  assert.match(recommended, /placeholder="lin_api_[^"]*"[^>]*data-action="conn-field-bearer"/);
+  assert.match(recommended, /Sign in to Linear and choose the workspace Chickpea should access\.<\/p>/);
+  assert.match(recommended, /data-action="conn-oauth-start"[^>]*>[\s\S]*?<span>Sign into Linear<\/span>/);
+  assert.doesNotMatch(recommended, /data-action="conn-field-bearer"/);
   assert.doesNotMatch(recommended, /data-action="conn-field-url"/);
   const docsAnchor = recommended.match(
     /<a class="hint-link" href="https:\/\/linear\.app\/docs\/mcp"[^>]*>Where do I find this\?<\/a>/,
@@ -2780,7 +2828,10 @@ test('the searchable Connections gallery is immediate, renders brand logos, and 
   assert.match(docsAnchor, /rel="[^"]*noopener[^"]*"/);
 
   click({ target: actionTarget({ 'data-action': 'conn-view', 'data-view': 'advanced' }) });
-  assert.match(harness.app.innerHTML, /id="conn-url"[^>]*data-action="conn-field-url"/);
+  assert.match(
+    harness.app.innerHTML,
+    /id="conn-url"[^>]*value="https:\/\/mcp\.linear\.app\/mcp\/readonly"[^>]*data-action="conn-field-url"/,
+  );
   assert.match(harness.app.innerHTML, /id="conn-name"[^>]*data-action="conn-field-name"/);
 });
 
@@ -3006,13 +3057,63 @@ test('a preset connection carries presetId in the profile save body', async () =
   assert.ok(click);
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
-  click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'linear' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'cloudflare-docs' }) });
   click({ target: actionTarget({ 'data-action': 'conn-save-row' }) });
   click({ target: actionTarget({ 'data-action': 'save-profile' }) });
   await flushAsync();
 
   const servers = harness.agentPatchBodies[0]?.body.mcpServers as Array<Record<string, unknown>>;
-  assert.equal(servers[0]?.presetId, 'linear');
+  assert.equal(servers[0]?.presetId, 'cloudflare-docs');
+});
+
+test('the Linear preset saves read-only OAuth policy and requests only the read scope', async () => {
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    deferAgentPatch: true,
+    oauthStartResult: {
+      authorizationUrl: 'https://linear.example/authorize?state=opaque-state',
+    },
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'linear' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-oauth-start' }) });
+  await flushAsync();
+
+  assert.equal(harness.agentPatchBodies.length, 1);
+  assert.deepEqual(harness.oauthStartPosts, []);
+  assert.deepEqual(harness.assignedUrls, []);
+
+  harness.resolveAgentPatch();
+  await flushAsync();
+
+  const servers = harness.agentPatchBodies[0]?.body.mcpServers as Array<Record<string, unknown>>;
+  assert.deepEqual(servers, [
+    {
+      id: 'linear',
+      displayName: 'Linear',
+      url: 'https://mcp.linear.app/mcp/readonly',
+      transport: 'streamable-http',
+      authMode: 'oauth',
+      headerNames: [],
+      enabled: true,
+      lifecycleStatus: 'pending',
+      statusText: '',
+      discoveredTools: [],
+      allowedTools: [],
+      presetId: 'linear',
+    },
+  ]);
+  assert.deepEqual(harness.oauthStartPosts, [
+    { agentId: 'agent_conn', connectionId: 'linear', body: { scope: 'read' } },
+  ]);
+  assert.deepEqual(harness.assignedUrls, [
+    'https://linear.example/authorize?state=opaque-state',
+  ]);
 });
 
 test('the keyless Cloudflare Docs recommended editor shows its token note once', async () => {
@@ -3417,6 +3518,7 @@ test('an existing OAuth connection renders honestly and stages token cleanup whe
   assert.ok(click && change);
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
   click({ target: actionTarget({ 'data-action': 'conn-edit', 'data-index': '0' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-view', 'data-view': 'advanced' }) });
 
   assert.match(
     harness.app.innerHTML,

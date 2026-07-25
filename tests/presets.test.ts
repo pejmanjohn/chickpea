@@ -120,6 +120,22 @@ test('the Notion MCP preset keeps the official OAuth-only hosted-server shape', 
   });
 });
 
+test('the Linear MCP preset uses its server-enforced read-only OAuth endpoint', () => {
+  assert.deepEqual(getConnectorPreset('linear'), {
+    id: 'linear',
+    name: 'Linear',
+    category: 'project',
+    accent: '#5E6AD2',
+    url: 'https://mcp.linear.app/mcp/readonly',
+    transport: 'streamable-http',
+    auth: { kind: 'oauth', scope: 'read' },
+    tokenDocsUrl: 'https://linear.app/docs/mcp',
+    tokenDocsHint: 'Sign in to Linear and choose the workspace Chickpea should access.',
+    notes:
+      'Chickpea uses Linear\'s server-enforced read-only MCP endpoint and requests only the read scope.',
+  });
+});
+
 test('the Asana and Zendesk API presets keep their locked shapes', () => {
   assert.deepEqual(getConnectorPreset('asana'), {
     id: 'asana',

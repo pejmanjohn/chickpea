@@ -6566,12 +6566,12 @@ details[open].advanced summary::before {
     editor.presetId = conn.presetId;
     if (conn.presetId) {
       var matchedPreset = presetById(conn.presetId) || null;
-      // Legacy rows may carry oauth against a preset that still describes a
-      // token flow. Keep those in Advanced; only a catalog-declared OAuth
-      // preset gets the guided reconnect ceremony.
-      editor.preset = conn.authMode === "oauth" && matchedPreset && matchedPreset.auth.kind !== "oauth"
-        ? null
-        : matchedPreset;
+      // A preset can be upgraded between token and OAuth setup over time.
+      // Keep saved rows on their original auth boundary in Advanced so a
+      // catalog update never silently reinterprets stored credentials.
+      var presetUsesOAuth = !!matchedPreset && matchedPreset.auth.kind === "oauth";
+      var connectionUsesOAuth = conn.authMode === "oauth";
+      editor.preset = matchedPreset && presetUsesOAuth === connectionUsesOAuth ? matchedPreset : null;
       if (editor.preset) editor.view = "recommended";
     }
     return editor;
@@ -6732,6 +6732,10 @@ details[open].advanced summary::before {
     var validationError = validateConnectionEditor(editor, servers);
     if (validationError) { editor.error = validationError; render(); return; }
     var connectionId = editor.id || connectionSlug(editor.displayName);
+    var oauthScope = editor.preset && editor.preset.auth && editor.preset.auth.kind === "oauth"
+      ? String(editor.preset.auth.scope || "").trim()
+      : "";
+    var oauthStartBody = oauthScope ? { scope: oauthScope } : {};
     editor.oauthStarting = true;
     editor.oauthError = "";
     editor.error = "";
@@ -6741,7 +6745,7 @@ details[open].advanced summary::before {
       postJson(
         "/admin/api/agents/" + encodeURIComponent(agentId) + "/mcp/oauth/" + encodeURIComponent(connectionId) + "/start",
         "POST",
-        {}
+        oauthStartBody
       ).then(function (body) {
         var authorizationUrl;
         try {

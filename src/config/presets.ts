@@ -15,7 +15,7 @@ interface McpPresetLane {
   transport: 'streamable-http';
   auth:
     | { kind: 'none' }
-    | { kind: 'oauth' }
+    | { kind: 'oauth'; scope?: string }
     | { kind: 'bearer'; placeholder: string }
     | { kind: 'header'; headerName: string; valuePrefix?: string; placeholder: string };
 }
@@ -45,11 +45,13 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
     name: 'Linear',
     category: 'project',
     accent: '#5E6AD2',
-    url: 'https://mcp.linear.app/mcp',
+    url: 'https://mcp.linear.app/mcp/readonly',
     transport: 'streamable-http',
-    auth: { kind: 'bearer', placeholder: 'lin_api_…' },
+    auth: { kind: 'oauth', scope: 'read' },
     tokenDocsUrl: 'https://linear.app/docs/mcp',
-    tokenDocsHint: 'Linear → Settings → Account → Security & Access → Personal API keys',
+    tokenDocsHint: 'Sign in to Linear and choose the workspace Chickpea should access.',
+    notes:
+      'Chickpea uses Linear\'s server-enforced read-only MCP endpoint and requests only the read scope.',
   },
   {
     id: 'notion',
