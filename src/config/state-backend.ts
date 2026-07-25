@@ -1,6 +1,7 @@
 import {
   CfAgentSnapshotStore,
   CfConfigStore,
+  CfMemoryStateStore,
   CfSettingsStore,
   CfSlackStateStore,
 } from './cf-state-proxies.ts';
@@ -11,6 +12,8 @@ import { tagStateStub } from './state-rpc.ts';
 import { SqliteConfigStore, type ConfigStore } from './store.ts';
 import { SqliteSlackStateStore, type SlackStateStore } from '../slack/claim-store.ts';
 import { resolveStateDbPath } from '../state/node-state-db.ts';
+import { SqliteMemoryStateStore } from '../memory/store.ts';
+import type { MemoryStateStore } from '../memory/types.ts';
 
 export { isCloudflareTarget } from './runtime-target.ts';
 
@@ -38,6 +41,7 @@ export interface AppStores {
   snapshots: AgentSnapshotStore;
   slackState: SlackStateStore;
   settings: SettingsStore;
+  memory: MemoryStateStore;
 }
 
 // Node singletons, cached by resolved DB path exactly like the pre-refactor
@@ -52,6 +56,7 @@ let cachedConfigStore: CachedStore<SqliteConfigStore> | undefined;
 let cachedSnapshotStore: CachedStore<SqliteAgentSnapshotStore> | undefined;
 let cachedSlackStateStore: CachedStore<SqliteSlackStateStore> | undefined;
 let cachedSettingsStore: CachedStore<SqliteSettingsStore> | undefined;
+let cachedMemoryStore: CachedStore<SqliteMemoryStateStore> | undefined;
 
 function nodeCached<T extends { close(): void }>(
   cached: CachedStore<T> | undefined,
@@ -109,6 +114,17 @@ export function getSettingsStore(env?: PlatformEnv): SettingsStore {
   return cachedSettingsStore.store;
 }
 
+export function getMemoryStateStore(env?: PlatformEnv): MemoryStateStore {
+  if (isCloudflareTarget()) {
+    return new CfMemoryStateStore(tagStateStub(env));
+  }
+  cachedMemoryStore = nodeCached(
+    cachedMemoryStore,
+    (path) => new SqliteMemoryStateStore(path),
+  );
+  return cachedMemoryStore.store;
+}
+
 /**
  * Resolve every store a request handler needs in one call. Handlers pass their
  * platform env through (`c.env` in routes); on Node it is ignored.
@@ -119,5 +135,6 @@ export function resolveStores(env?: PlatformEnv): AppStores {
     snapshots: getAgentSnapshotStore(env),
     slackState: getSlackStateStore(env),
     settings: getSettingsStore(env),
+    memory: getMemoryStateStore(env),
   };
 }

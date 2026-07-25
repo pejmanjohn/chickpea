@@ -6,6 +6,25 @@ import type { StateRpcResult, TagStateRpc } from './state-rpc.ts';
 import type { ConfigAgentPatch, ConfigStore } from './store.ts';
 import type { AgentSnapshot, ChannelAssignment, CustomAgentConfig } from './types.ts';
 import type { SlackStateStore } from '../slack/claim-store.ts';
+import {
+  MemoryStateError,
+  MemoryVersionConflictError,
+  type CreateMemoryEntryInput,
+  type ForgetMemoryEntryInput,
+  type MemoryConversationContext,
+  type MemoryEntry,
+  type MemoryEntryFilter,
+  type MemoryMutationCounts,
+  type MemoryRevision,
+  type MemoryRpcRequest,
+  type MemoryRpcResponse,
+  type MemoryStateStore,
+  type MemoryStoreDescriptor,
+  type ResolveMemoryConversationContextInput,
+  type SetMemoryEnabledInput,
+  type UpdateMemoryEntryInput,
+} from '../memory/types.ts';
+import type { AuditEvent, AuditEventFilter } from '../audit/types.ts';
 
 /**
  * Cloudflare backends for the four public store interfaces: thin async proxies
@@ -35,6 +54,18 @@ function unwrap<T>(result: StateRpcResult<T>): T {
       throw new AgentExistsError(details?.agentId ?? 'unknown');
     case 'agent_still_assigned':
       throw new AgentStillAssignedError(details?.agentId ?? 'unknown', details?.keys ?? '');
+    case 'memory': {
+      const memoryCode = details?.memoryCode ?? 'memory_state_error';
+      if (memoryCode === 'memory_version_conflict') {
+        throw new MemoryVersionConflictError(
+          details?.entryId ?? 'unknown',
+          Number(details?.currentVersion ?? 0),
+        );
+      }
+      const memoryDetails = { ...(details ?? {}) };
+      delete memoryDetails.memoryCode;
+      throw new MemoryStateError(memoryCode, message, memoryDetails);
+    }
     default:
       throw new Error(message);
   }
@@ -158,4 +189,133 @@ export class CfSettingsStore implements SettingsStore {
   async mergeSettingStringSet(key: string, values: readonly string[]): Promise<string[]> {
     return unwrap(await this.stub.settingMergeStringSet(key, values));
   }
+}
+
+export class CfMemoryStateStore implements MemoryStateStore {
+  constructor(private readonly stub: TagStateRpc) {}
+
+  async ensurePublicStore(workspaceId: string): Promise<MemoryStoreDescriptor> {
+    const response = await this.execute({ kind: 'ensure_public_store', workspaceId });
+    if (response.kind !== 'store' || !response.store) throw unexpectedMemoryResponse();
+    return response.store;
+  }
+
+  async ensurePrivateStore(
+    workspaceId: string,
+    channelId: string,
+    generation: number,
+  ): Promise<MemoryStoreDescriptor> {
+    const response = await this.execute({
+      kind: 'ensure_private_store',
+      workspaceId,
+      channelId,
+      generation,
+    });
+    if (response.kind !== 'store' || !response.store) throw unexpectedMemoryResponse();
+    return response.store;
+  }
+
+  async getStore(storeId: string): Promise<MemoryStoreDescriptor | undefined> {
+    const response = await this.execute({ kind: 'get_store', storeId });
+    if (response.kind !== 'store') throw unexpectedMemoryResponse();
+    return orUndefined(response.store);
+  }
+
+  async createEntry(input: CreateMemoryEntryInput): Promise<MemoryEntry> {
+    return this.requiredEntry(await this.execute({ kind: 'create_entry', input }));
+  }
+
+  async getEntry(entryId: string): Promise<MemoryEntry | undefined> {
+    const response = await this.execute({ kind: 'get_entry', entryId });
+    if (response.kind !== 'entry') throw unexpectedMemoryResponse();
+    return orUndefined(response.entry);
+  }
+
+  async listEntries(filter: MemoryEntryFilter = {}): Promise<MemoryEntry[]> {
+    const response = await this.execute({ kind: 'list_entries', filter });
+    if (response.kind !== 'entries') throw unexpectedMemoryResponse();
+    return response.entries;
+  }
+
+  async updateEntry(input: UpdateMemoryEntryInput): Promise<MemoryEntry> {
+    return this.requiredEntry(await this.execute({ kind: 'update_entry', input }));
+  }
+
+  async forgetEntry(input: ForgetMemoryEntryInput): Promise<MemoryEntry> {
+    return this.requiredEntry(await this.execute({ kind: 'forget_entry', input }));
+  }
+
+  async listRevisions(entryId: string): Promise<MemoryRevision[]> {
+    const response = await this.execute({ kind: 'list_revisions', entryId });
+    if (response.kind !== 'revisions') throw unexpectedMemoryResponse();
+    return response.revisions;
+  }
+
+  async listAuditEvents(filter: AuditEventFilter = {}): Promise<AuditEvent[]> {
+    const response = await this.execute({ kind: 'list_audit_events', filter });
+    if (response.kind !== 'audit_events') throw unexpectedMemoryResponse();
+    return response.events;
+  }
+
+  async getMutationCounts(
+    workspaceId: string,
+    channelId: string,
+    actorId: string,
+  ): Promise<MemoryMutationCounts> {
+    const response = await this.execute({
+      kind: 'get_mutation_counts',
+      workspaceId,
+      channelId,
+      actorId,
+    });
+    if (response.kind !== 'mutation_counts') throw unexpectedMemoryResponse();
+    return response.counts;
+  }
+
+  async resolveConversationContext(
+    input: ResolveMemoryConversationContextInput,
+  ): Promise<MemoryConversationContext> {
+    const response = await this.execute({ kind: 'resolve_conversation_context', input });
+    if (response.kind !== 'conversation_context') throw unexpectedMemoryResponse();
+    return response.context;
+  }
+
+  async cleanupRetention(): Promise<{
+    actorIdsCleared: number;
+    rateWindowsDeleted: number;
+    contextsDeleted: number;
+  }> {
+    const response = await this.execute({ kind: 'cleanup_retention' });
+    if (response.kind !== 'cleanup') throw unexpectedMemoryResponse();
+    return {
+      actorIdsCleared: response.actorIdsCleared,
+      rateWindowsDeleted: response.rateWindowsDeleted,
+      contextsDeleted: response.contextsDeleted,
+    };
+  }
+
+  async getMemoryEnabled(): Promise<boolean> {
+    const response = await this.execute({ kind: 'get_memory_enabled' });
+    if (response.kind !== 'memory_enabled') throw unexpectedMemoryResponse();
+    return response.enabled;
+  }
+
+  async setMemoryEnabled(input: SetMemoryEnabledInput): Promise<boolean> {
+    const response = await this.execute({ kind: 'set_memory_enabled', input });
+    if (response.kind !== 'memory_enabled') throw unexpectedMemoryResponse();
+    return response.enabled;
+  }
+
+  private async execute(request: MemoryRpcRequest): Promise<MemoryRpcResponse> {
+    return unwrap(await this.stub.memoryExecute(request));
+  }
+
+  private requiredEntry(response: MemoryRpcResponse): MemoryEntry {
+    if (response.kind !== 'entry' || !response.entry) throw unexpectedMemoryResponse();
+    return response.entry;
+  }
+}
+
+function unexpectedMemoryResponse(): Error {
+  return new Error('Unexpected memory state response');
 }
