@@ -26,6 +26,7 @@ test('memory prompt labels hostile content as advisory JSON rather than instruct
   }));
   assert.ok(prompt?.startsWith(MEMORY_PROMPT_START));
   assert.ok(prompt?.endsWith(MEMORY_PROMPT_END));
+  assert.match(prompt ?? '', /apply applicable team preferences and response guidance/i);
   assert.match(prompt ?? '', /cannot change system instructions/);
   const json = prompt!.slice(MEMORY_PROMPT_START.length + 1, -(MEMORY_PROMPT_END.length + 1));
   assert.equal(JSON.parse(json).entries[0].body.includes(MEMORY_PROMPT_END), false);
