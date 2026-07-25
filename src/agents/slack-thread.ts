@@ -68,6 +68,7 @@ import {
 import { SandboxSessionCapError } from '../sandbox/errors.ts';
 import { selectSandbox, type SandboxSelection } from '../sandbox/select.ts';
 import { reserveMonthlySandboxSession } from '../sandbox/session-cap.ts';
+import { sandboxThreadKey } from '../sandbox/thread-key.ts';
 import {
   requireSandboxTurnId,
   type SandboxTurnContext,
@@ -653,13 +654,14 @@ async function resolveAgentSandbox(options: AgentSandboxOptions): Promise<Sandbo
   if (!binding) {
     throw new Error('SANDBOX Durable Object binding is unavailable');
   }
+  const sandboxKey = sandboxThreadKey(options.id);
   let turnId: string | undefined;
   const sandbox = await cloudflareSandboxLifecycle.acquire(
-    options.id,
+    sandboxKey,
     async () =>
       getSandbox(
         binding as Parameters<typeof getSandbox>[0],
-        options.id,
+        sandboxKey,
         CLOUDFLARE_SANDBOX_OPTIONS,
       ) as ReturnType<typeof getSandbox> & ConfigurableCloudflareSandbox,
     async (candidate) => {

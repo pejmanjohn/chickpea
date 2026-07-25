@@ -3,6 +3,7 @@ import { test } from 'node:test';
 
 import { SqliteMemoryStateStore } from '../src/memory/store.ts';
 import { assembleSlackPrompt } from '../src/slack/web-client-context.ts';
+import { sandboxThreadKey } from '../src/sandbox/thread-key.ts';
 import {
   baseSlackThreadKey,
   memoryEpochThreadKey,
@@ -34,6 +35,11 @@ test('selection changes rotate agent transcripts while operational parsing stays
     assert.equal(memoryEpochThreadKey('T:C:100.1', first.epoch), 'T:C:100.1:memory-e1');
     assert.equal(memoryEpochThreadKey('T:C:100.1', rotated.epoch), 'T:C:100.1:memory-e2');
     assert.equal(baseSlackThreadKey('T:C:100.1:memory-e2'), 'T:C:100.1');
+    assert.equal(
+      sandboxThreadKey('T:C:100.1:memory-e2'),
+      'T:C:100.1',
+      'memory transcript epochs must share the prepared base-thread sandbox',
+    );
     assert.deepEqual(parseSlackThreadKey('T:C:100.1:memory-e2'), {
       workspaceId: 'T', channelId: 'C', threadTs: '100.1',
     });
