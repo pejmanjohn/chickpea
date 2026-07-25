@@ -237,7 +237,7 @@ function normalizeMessageText(text: string): string {
   return text.replace(/\r\n?/g, '\n').trim() || '(empty reply)';
 }
 
-function escapeSlackControlCharacters(text: string): string {
+export function escapeSlackControlCharacters(text: string): string {
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 

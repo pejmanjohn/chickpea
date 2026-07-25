@@ -3,6 +3,7 @@ import type { WebClient } from '@slack/web-api';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import { getMemoryStateStore } from '../config/state-backend.ts';
 import { resolveSlackCredentials } from '../slack/credentials.ts';
+import { escapeSlackControlCharacters } from '../slack/message-format.ts';
 import type { WebClientPresenter } from '../slack/web-client-presenter.ts';
 import { memoryEpochThreadKey, memoryQuarantineThreadKey, slackThreadKey } from '../slack/thread-key.ts';
 import type { NormalizedSlackTurn } from '../slack/types.ts';
@@ -167,13 +168,13 @@ async function executeMemoryCommand(
       (entry) => entry.sourceChannelId === runtime.scope.sourceChannelId,
     );
     if (entries.length === 0) {
-      return `No ${scopeLabel(runtime.scope)} entries are saved for #${safeSlackText(runtime.scope.displayName)}.`;
+      return `No ${scopeLabel(runtime.scope)} entries are saved for #${escapeSlackControlCharacters(runtime.scope.displayName)}.`;
     }
     return [
-      `Saved ${scopeLabel(runtime.scope)} entries for #${safeSlackText(runtime.scope.displayName)}:`,
+      `Saved ${scopeLabel(runtime.scope)} entries for #${escapeSlackControlCharacters(runtime.scope.displayName)}:`,
       ...entries.map(
         (entry) =>
-          `- \`${entry.slug}\` (v${entry.version}, ${entry.type}) — ${safeSlackText(entry.description)}`,
+          `- \`${entry.slug}\` (v${entry.version}, ${entry.type}) — ${escapeSlackControlCharacters(entry.description)}`,
       ),
     ].join('\n');
   }
@@ -183,9 +184,9 @@ async function executeMemoryCommand(
       `### ${entry.slug}`,
       `Type: ${entry.type} · Version: ${entry.version} · ${scopeLabel(runtime.scope)}`,
       '',
-      safeSlackText(entry.description),
+      escapeSlackControlCharacters(entry.description),
       '',
-      safeSlackText(entry.body),
+      escapeSlackControlCharacters(entry.body),
     ].join('\n');
   }
 
@@ -384,7 +385,7 @@ async function memoryFooterItems(
     crossChannel.map(async ({ entry }) => {
       const source = await state.getChannelScope(entry.workspaceId, entry.sourceChannelId);
       const label = source?.lastPublicDisplayName ?? source?.currentDisplayName ?? 'channel';
-      return `Memory supplied: ${entry.slug} (#${safeSlackText(label)}, ${entry.sourceChannelId})`;
+      return `Memory supplied: ${entry.slug} (#${escapeSlackControlCharacters(label)}, ${entry.sourceChannelId})`;
     }),
   );
 }
@@ -411,10 +412,6 @@ function memoryFree(conversationKey: string): PreparedMemoryTurn {
 
 function scopeLabel(scope: EnabledMemoryScope): string {
   return scope.privacy === 'private' ? 'private channel memory' : 'workspace memory';
-}
-
-function safeSlackText(value: string): string {
-  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 function memoryErrorCode(error: unknown): string {
