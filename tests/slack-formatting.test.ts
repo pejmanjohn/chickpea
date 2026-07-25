@@ -139,6 +139,15 @@ test('reply footers render profile, model, and optional configure link', () => {
   );
 });
 
+test('reply footers disclose cross-channel memory as supplied advisory context', () => {
+  const block = renderSlackReplyFooterBlock({
+    profileName: 'Chickpea', agentId: 'agent',
+    memoryItems: ['Memory supplied: release-checklist (#product, C123)'],
+  });
+  assert.match(block.elements[0]!.text, /Memory supplied: release-checklist/);
+  assert.doesNotMatch(block.elements[0]!.text, /Memory used/);
+});
+
 test('buildSlackAdminUrl only links http(s) bases without userinfo', () => {
   assert.equal(buildSlackAdminUrl('https://demo.example', { agentId: 'a' }), 'https://demo.example/admin?agent=a');
   assert.equal(buildSlackAdminUrl('http://localhost:8789', { agentId: 'a' }), 'http://localhost:8789/admin?agent=a');

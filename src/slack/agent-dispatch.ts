@@ -7,6 +7,7 @@ import { isCloudflareTarget } from '../config/runtime-target.ts';
 import { cloudflareSandboxOptionVariants } from '../sandbox/lifecycle.ts';
 import { prepareSandboxTurn, type SandboxTurnContext } from '../sandbox/turn-context.ts';
 import { activityStatusTraceHeaders } from './activity-publisher.ts';
+import { baseSlackThreadKey } from './thread-key.ts';
 
 export type AgentPromptFailureKind =
   | 'agent'
@@ -178,11 +179,12 @@ async function prepareCloudflareSandboxTurn(
     throw new Error('SANDBOX Durable Object binding is unavailable');
   }
   const { getSandbox } = await import('@cloudflare/sandbox');
+  const sandboxKey = baseSlackThreadKey(conversationKey);
   const preparations = await Promise.allSettled(
-    cloudflareSandboxOptionVariants(conversationKey).map(async (options) => {
+    cloudflareSandboxOptionVariants(sandboxKey).map(async (options) => {
       const sandbox = getSandbox(
         binding as Parameters<typeof getSandbox>[0],
-        conversationKey,
+        sandboxKey,
         options,
       ) as ReturnType<typeof getSandbox> & SandboxTurnContext;
       await prepareSandboxTurn(sandbox, turnId);
@@ -208,11 +210,12 @@ export async function releaseCloudflareSandboxTurn(
 
   try {
     const { getSandbox } = await import('@cloudflare/sandbox');
+    const sandboxKey = baseSlackThreadKey(conversationKey);
     const teardowns = await Promise.allSettled(
-      cloudflareSandboxOptionVariants(conversationKey).map(async (options) => {
+      cloudflareSandboxOptionVariants(sandboxKey).map(async (options) => {
         const sandbox = getSandbox(
           binding as Parameters<typeof getSandbox>[0],
-          conversationKey,
+          sandboxKey,
           options,
         ) as ReturnType<typeof getSandbox> & { destroy(): Promise<void> };
         // Await the provider operation itself. A local Promise.race timeout

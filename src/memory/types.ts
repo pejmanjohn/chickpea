@@ -131,6 +131,13 @@ export interface CreateForgetChallengeInput {
   expiresAt: number;
 }
 
+export interface MemoryForgetChallenge {
+  storeId: string;
+  entryId: string;
+  expectedVersion: number;
+  expiresAt: number;
+}
+
 export interface TransitionMemoryEntryInput {
   entryId: string;
   expectedVersion: number;
@@ -152,6 +159,7 @@ export interface RecordMemoryReviewInput {
   expectedVersion: number;
   action: 'requested' | 'resolved';
   resolution?: 'confirmed' | 'corrected' | 'expired';
+  reasonCode?: 'stale' | 'incorrect' | 'unsafe' | 'unclear';
   actorId: string;
   actorClass: MemoryActorClass;
   idempotencyKey: string;
@@ -181,6 +189,8 @@ export interface MemoryConversationContext {
   createdAt: number;
   updatedAt: number;
   expiresAt: number;
+  /** True only when the caller must seed a newly rotated agent transcript. */
+  inject: boolean;
 }
 
 export interface MemoryMutationCounts {
@@ -273,6 +283,7 @@ export type MemoryRpcRequest =
   | { kind: 'merge_entries'; input: MergeMemoryEntriesInput }
   | { kind: 'record_review'; input: RecordMemoryReviewInput }
   | { kind: 'create_forget_challenge'; input: CreateForgetChallengeInput }
+  | { kind: 'get_forget_challenge'; tokenHash: string; actorId: string }
   | { kind: 'list_revisions'; entryId: string }
   | { kind: 'list_audit_events'; filter: AuditEventFilter }
   | { kind: 'get_mutation_counts'; workspaceId: string; channelId: string; actorId: string }
@@ -293,6 +304,7 @@ export type MemoryRpcResponse =
   | { kind: 'mutation_counts'; counts: MemoryMutationCounts }
   | { kind: 'conversation_context'; context: MemoryConversationContext }
   | { kind: 'channel_scope'; state: MemoryChannelScopeState | null }
+  | { kind: 'forget_challenge'; challenge: MemoryForgetChallenge | null }
   | { kind: 'cleanup'; actorIdsCleared: number; rateWindowsDeleted: number; contextsDeleted: number }
   | { kind: 'memory_enabled'; enabled: boolean };
 
@@ -313,6 +325,10 @@ export interface MemoryStateStore {
   mergeEntries(input: MergeMemoryEntriesInput): Promise<MemoryEntry>;
   recordReview(input: RecordMemoryReviewInput): Promise<void>;
   createForgetChallenge(input: CreateForgetChallengeInput): Promise<void>;
+  getForgetChallenge(
+    tokenHash: string,
+    actorId: string,
+  ): Promise<MemoryForgetChallenge | undefined>;
   listRevisions(entryId: string): Promise<MemoryRevision[]>;
   listAuditEvents(filter?: AuditEventFilter): Promise<AuditEvent[]>;
   getMutationCounts(

@@ -49,6 +49,7 @@ export interface SlackReplyFooter {
   modelLabel?: string | undefined;
   agentId: string;
   publicUrl?: string | undefined;
+  memoryItems?: readonly string[] | undefined;
 }
 
 export function renderSlackMessage(text: string, format: SlackReplyFormat): RenderedSlackMessage {
@@ -123,6 +124,9 @@ export function renderSlackReplyFooterBlock(footer: SlackReplyFooter): SlackCont
     segments.push(escapeSlackControlCharacters(footer.modelLabel));
   }
   segments.push(renderSlackConfigureLink(footer.publicUrl, { agentId: footer.agentId }));
+  for (const item of footer.memoryItems ?? []) {
+    segments.push(escapeSlackControlCharacters(item));
+  }
   return {
     type: 'context',
     elements: [{ type: 'mrkdwn', text: segments.join(' | ') }],

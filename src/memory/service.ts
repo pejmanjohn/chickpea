@@ -204,6 +204,53 @@ export class MemoryService {
     return { entry };
   }
 
+  async confirmForget(input: {
+    scope: EnabledMemoryScope;
+    actorId: string;
+    actorClass?: MemoryActorClass;
+    eventId: string;
+    confirmationToken: string;
+    idempotencyKey: string;
+  }): Promise<MemoryMutationResult> {
+    const confirmationTokenHash = tokenHash(input.confirmationToken);
+    const challenge = await this.state.getForgetChallenge(
+      confirmationTokenHash,
+      input.actorId,
+    );
+    if (!challenge) {
+      throw new MemoryStateError('memory_confirmation_invalid', 'Forget confirmation is invalid.');
+    }
+    if (challenge.expiresAt < this.now()) {
+      throw new MemoryStateError('memory_confirmation_expired', 'Forget confirmation expired.');
+    }
+    const entry = await this.state.getEntry(challenge.entryId);
+    const allowedStores = new Set([
+      input.scope.writeStoreId,
+      ...input.scope.reads
+        .filter((read) => read.sourceChannelId === input.scope.sourceChannelId)
+        .map((read) => read.storeId),
+    ]);
+    if (
+      !entry ||
+      !allowedStores.has(challenge.storeId) ||
+      entry.storeId !== challenge.storeId ||
+      entry.sourceChannelId !== input.scope.sourceChannelId
+    ) {
+      throw new MemoryStateError('memory_confirmation_invalid', 'Forget confirmation is invalid.');
+    }
+    const forgotten = await this.state.forgetEntry({
+      entryId: challenge.entryId,
+      expectedVersion: challenge.expectedVersion,
+      actorId: input.actorId,
+      actorClass: input.actorClass ?? 'member',
+      sourceEventId: input.eventId,
+      reasonCode: 'explicit_forget',
+      idempotencyKey: input.idempotencyKey,
+      confirmationTokenHash,
+    });
+    return { entry: forgotten };
+  }
+
   async merge(input: MergeMemoryInput): Promise<MemoryMutationResult> {
     if (input.targets.length < 2) {
       throw new MemoryStateError(
@@ -303,6 +350,40 @@ export class MemoryService {
     });
   }
 
+  async reportReview(input: {
+    scope: EnabledMemoryScope;
+    qualifiedTarget: string;
+    expectedVersion: number;
+    reason: 'stale' | 'incorrect' | 'unsafe' | 'unclear';
+    actorId: string;
+    idempotencyKey: string;
+  }): Promise<void> {
+    const [sourceChannelId, slug, extra] = input.qualifiedTarget.split('/');
+    if (!sourceChannelId || !slug || extra) {
+      throw new MemoryStateError(
+        'memory_target_invalid',
+        'Review reports require <source-channel-id>/<slug>.',
+      );
+    }
+    const entry = (await this.list({ scope: input.scope })).find(
+      (candidate) =>
+        candidate.sourceChannelId.toLowerCase() === sourceChannelId.toLowerCase() &&
+        candidate.slug === slug,
+    );
+    if (!entry) {
+      throw new MemoryStateError('memory_entry_not_found', 'Memory entry was not found.');
+    }
+    await this.state.recordReview({
+      entryId: entry.entryId,
+      expectedVersion: input.expectedVersion,
+      action: 'requested',
+      reasonCode: input.reason,
+      actorId: input.actorId,
+      actorClass: 'member',
+      idempotencyKey: input.idempotencyKey,
+    });
+  }
+
   private async transition(
     input: Omit<MemoryMutationContext, 'messageTs' | 'threadTs'> & {
       target: string;
@@ -341,6 +422,27 @@ export class MemoryService {
     scope: EnabledMemoryScope,
     target: string,
   ): Promise<MemoryEntry> {
+    if (target.startsWith('public/')) {
+      if (scope.privacy !== 'private') {
+        throw new MemoryStateError(
+          'memory_target_invalid',
+          'The public/ qualifier is available only after a channel becomes private.',
+        );
+      }
+      const slug = target.slice('public/'.length);
+      const entries = await Promise.all(
+        scope.reads
+          .filter((read) => read.storeId !== scope.writeStoreId)
+          .map((read) =>
+            this.state.listEntries({
+              storeId: read.storeId,
+              sourceChannelId: scope.sourceChannelId,
+              statuses: READABLE_STATUSES,
+            }),
+          ),
+      );
+      return resolveTarget(entries.flat(), slug);
+    }
     try {
       return await this.resolveWritableTarget(scope, target);
     } catch (error) {

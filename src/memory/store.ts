@@ -26,6 +26,7 @@ import {
   type MemoryChannelScopeState,
   type MemoryEntry,
   type MemoryEntryFilter,
+  type MemoryForgetChallenge,
   type MergeMemoryEntriesInput,
   type MemoryMutationCounts,
   type MemoryRevision,
@@ -182,6 +183,11 @@ export class MemoryStoreLogic {
       case 'create_forget_challenge':
         this.createForgetChallenge(request.input);
         return { kind: 'ok' };
+      case 'get_forget_challenge':
+        return {
+          kind: 'forget_challenge',
+          challenge: this.getForgetChallenge(request.tokenHash, request.actorId) ?? null,
+        };
       case 'list_revisions':
         return { kind: 'revisions', revisions: this.listRevisions(request.entryId) };
       case 'list_audit_events':
@@ -824,6 +830,7 @@ export class MemoryStoreLogic {
       subjectId: entry.entryId,
       subjectVersion: entry.version,
       createdAt: this.now(),
+      reasonCode: input.reasonCode ?? null,
       metadataJson: JSON.stringify(input.resolution ? { resolution: input.resolution } : {}),
       idempotencyKey: input.idempotencyKey,
     });
@@ -860,6 +867,25 @@ export class MemoryStoreLogic {
     );
   }
 
+  getForgetChallenge(
+    tokenHash: string,
+    actorId: string,
+  ): MemoryForgetChallenge | undefined {
+    const row = this.db.get(
+      `SELECT store_id, entry_id, expected_version, expires_at, consumed_at
+       FROM memory_forget_challenges WHERE token_hash = ? AND actor_id = ?`,
+      tokenHash,
+      actorId,
+    );
+    if (!row || row.consumed_at !== null) return undefined;
+    return {
+      storeId: String(row.store_id),
+      entryId: String(row.entry_id),
+      expectedVersion: Number(row.expected_version),
+      expiresAt: Number(row.expires_at),
+    };
+  }
+
   listAuditEvents(filter: AuditEventFilter = {}): AuditEvent[] {
     return this.audit.list(filter);
   }
@@ -887,12 +913,14 @@ export class MemoryStoreLogic {
     const selectedJson = JSON.stringify(input.selected);
     const barrier = input.visibilityBarrierAt ?? null;
     return this.db.transaction(() => {
+      let inject = false;
       const row = this.db.get(
         `SELECT * FROM memory_conversation_contexts
          WHERE base_conversation_key = ?`,
         input.baseConversationKey,
       ) as unknown as ContextRow | undefined;
       if (!row) {
+        inject = true;
         this.db.run(
           `INSERT INTO memory_conversation_contexts (
             base_conversation_key, epoch, scope_signature,
@@ -914,6 +942,7 @@ export class MemoryStoreLogic {
           row.selection_fingerprint === input.selectionFingerprint &&
           row.selected_json === selectedJson &&
           row.visibility_barrier_at === barrier;
+        inject = !unchanged;
         this.db.run(
           `UPDATE memory_conversation_contexts SET
             epoch = ?, scope_signature = ?, selection_fingerprint = ?,
@@ -931,7 +960,7 @@ export class MemoryStoreLogic {
           input.baseConversationKey,
         );
       }
-      return this.getConversationContext(input.baseConversationKey);
+      return { ...this.getConversationContext(input.baseConversationKey), inject };
     });
   }
 
@@ -1516,6 +1545,13 @@ export class SqliteMemoryStateStore implements MemoryStateStore {
     this.logic.createForgetChallenge(input);
   }
 
+  async getForgetChallenge(
+    tokenHash: string,
+    actorId: string,
+  ): Promise<MemoryForgetChallenge | undefined> {
+    return this.logic.getForgetChallenge(tokenHash, actorId);
+  }
+
   async listRevisions(entryId: string): Promise<MemoryRevision[]> {
     return this.logic.listRevisions(entryId);
   }
@@ -1694,6 +1730,7 @@ function rowToContext(row: ContextRow): MemoryConversationContext {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     expiresAt: row.expires_at,
+    inject: false,
   };
 }
 

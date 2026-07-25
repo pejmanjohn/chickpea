@@ -4,6 +4,8 @@ import { resolveAgentModel } from '../config/model-policy.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
+import { parseMemoryCommand } from '../memory/commands.ts';
+import { handleMemoryCommand, prepareMemoryTurn } from '../memory/runtime.ts';
 import {
   AgentPromptFailure,
   promptSlackThreadAgent,
@@ -129,6 +131,10 @@ export async function runTurn(
   // pinned): on a button deploy nobody sets the env var, so without the stored
   // fallback the footer's "Configure" link would be dead.
   const publicUrl = await resolveSlackPublicUrl(platformEnv);
+  const memoryCommand = parseMemoryCommand(turn.text);
+  const preparedMemory = memoryCommand
+    ? undefined
+    : await prepareMemoryTurn({ turn, platformEnv, client });
   const presenter = new WebClientPresenter(client, {
     channelId: turn.channelId,
     threadTs: turn.threadTs,
@@ -138,8 +144,9 @@ export async function runTurn(
     publicUrl,
     userId: turn.userId,
     workspaceId: turn.workspaceId,
+    ...(preparedMemory ? { memoryFooterItems: preparedMemory.footerItems } : {}),
   });
-  const conversationKey = slackThreadKey(turn);
+  const conversationKey = preparedMemory?.conversationKey ?? slackThreadKey(turn);
   const statusGeneration = options.turnId ?? `msg:${turn.channelId}:${turn.messageTs}`;
   const statusTurn = registerSlackStatusTurn(conversationKey, presenter, {
     generation: statusGeneration,
@@ -158,15 +165,28 @@ export async function runTurn(
   // 1. Visible work: set status; if it is rejected, post a durable progress
   //    placeholder so the user still sees work in-flight before the final.
   try {
+    if (memoryCommand) {
+      const handled = await handleMemoryCommand({ turn, platformEnv, client, presenter });
+      if (handled) {
+        await options.onDelivered?.();
+        return;
+      }
+    }
     const statusSet = await statusTurn.setStatus(readingThreadStatus());
     if (!statusSet) {
       await presenter.postProgress(`${assignment.agent.name} is reading the thread.`);
     }
 
     // 2. Hydrate bounded context (degrades to current-message-only on failure).
-    const context = await hydrateSlackContextViaWebClient(client, turn);
+    const hydratedContext = await hydrateSlackContextViaWebClient(client, turn);
+    const context = applyVisibilityBarrier(
+      hydratedContext,
+      preparedMemory?.visibilityBarrierAt ?? null,
+    );
     await statusTurn.setStatus(hydratedContextStatus(context));
-    const prompt = assembleSlackPrompt(turn, context);
+    const prompt = assembleSlackPrompt(turn, context, {
+      ...(preparedMemory?.promptBlock ? { memoryBlock: preparedMemory.promptBlock } : {}),
+    });
 
     // 3 + 4. Prompt the durable agent, then deliver the final — with clearStatus
     //    in a finally so a status that was actually set is cleared even if
@@ -207,6 +227,9 @@ export async function runTurn(
         return;
       }
     }
+    if (preparedMemory && !(await preparedMemory.validateLease())) {
+      text = MEMORY_CHANGED_RETRY_TEXT;
+    }
     await options.beforeDelivery?.();
     await closeAndDrainStatus();
     await presenter.deliverFinal(text, 'markdown');
@@ -224,6 +247,9 @@ export async function runTurn(
     }
   }
 }
+
+export const MEMORY_CHANGED_RETRY_TEXT =
+  'Channel memory or Slack access changed while I was answering, so I discarded the draft. Please retry so I can use current information.';
 
 export function agentFailureText(err: unknown): string {
   if (!(err instanceof AgentPromptFailure)) return AGENT_FAILURE_TEXT;
@@ -284,6 +310,21 @@ function hydratedContextStatus(context: SlackTurnContext): SlackStatusUpdate {
 function modelStatus(modelId: string): SlackStatusUpdate {
   return {
     text: `is using ${modelId}`,
+  };
+}
+
+function applyVisibilityBarrier(
+  context: SlackTurnContext,
+  barrierAt: number | null,
+): SlackTurnContext {
+  if (barrierAt === null) return context;
+  return {
+    ...context,
+    messages: context.messages.filter((message) => {
+      if (message.isTrigger) return true;
+      const seconds = Number(message.ts.split('.')[0]);
+      return Number.isFinite(seconds) && seconds * 1_000 >= barrierAt;
+    }),
   };
 }
 

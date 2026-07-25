@@ -1,0 +1,128 @@
+export type MemoryReportReason = 'stale' | 'incorrect' | 'unsafe' | 'unclear';
+
+export type MemoryCommand =
+  | { kind: 'list' }
+  | { kind: 'help' }
+  | { kind: 'show'; target: string }
+  | { kind: 'remember'; name: string; description: string; body: string }
+  | { kind: 'update'; target: string; description: string; body: string }
+  | {
+      kind: 'merge';
+      targets: string[];
+      name: string;
+      description: string;
+      body: string;
+    }
+  | { kind: 'forget_request'; target: string }
+  | { kind: 'forget_confirm'; token: string }
+  | { kind: 'report'; target: string; reason: MemoryReportReason }
+  | { kind: 'invalid'; hint: string };
+
+const TARGET = '[a-z0-9][a-z0-9/-]{0,128}';
+const DASH = '\\s+(?:—|-)\\s+';
+
+export function parseMemoryCommand(rawText: string): MemoryCommand | undefined {
+  const text = stripLeadingMentions(rawText).trim().replace(/\r\n?/g, '\n');
+  if (!text) return undefined;
+
+  if (/^!memory(?:\s+list)?\s*$/i.test(text) || /^what do you remember about this channel\??$/i.test(text)) {
+    return { kind: 'list' };
+  }
+  if (/^!memory\s+help\s*$/i.test(text)) return { kind: 'help' };
+
+  let match = text.match(new RegExp(`^!memory\\s+show\\s+(${TARGET})\\s*$`, 'i'));
+  if (match) return { kind: 'show', target: match[1]!.toLowerCase() };
+
+  match = text.match(new RegExp(`^!remember\\s+(.+?)${DASH}([^\\n]+)(?:\\n([\\s\\S]+))?$`, 'i'));
+  if (!match) {
+    match = text.match(/^remember for this channel:\s*(.+?)\s+(?:—|-)\s+([^\n]+)(?:\n([\s\S]+))?$/i);
+  }
+  if (match) {
+    return contentCommand('remember', match[1]!, match[2]!, match[3]);
+  }
+
+  match = text.match(
+    new RegExp(`^!memory\\s+update\\s+(${TARGET})${DASH}([^\\n]+)(?:\\n([\\s\\S]+))?$`, 'i'),
+  );
+  if (!match) {
+    match = text.match(
+      new RegExp(`^update memory\\s+[\u0060]?(${TARGET})[\u0060]?:\\s*([^\\n]+)(?:\\n([\\s\\S]+))?$`, 'i'),
+    );
+  }
+  if (match) {
+    const description = match[2]!.trim();
+    return {
+      kind: 'update',
+      target: match[1]!.toLowerCase(),
+      description,
+      body: match[3]?.trim() || description,
+    };
+  }
+
+  match = text.match(
+    /^!memory\s+merge\s+(.+?)\s+as\s+(.+?)\s+(?:—|-)\s+([^\n]+)\n([\s\S]+)$/i,
+  );
+  if (match) {
+    const targets = match[1]!
+      .trim()
+      .split(/\s+/)
+      .map((target) => target.toLowerCase());
+    if (targets.length < 2 || targets.some((target) => !new RegExp(`^${TARGET}$`).test(target))) {
+      return invalid('Use `!memory merge <slug-a> <slug-b> as <new-name> — <description>` followed by a body.');
+    }
+    return {
+      kind: 'merge',
+      targets,
+      name: match[2]!.trim(),
+      description: match[3]!.trim(),
+      body: match[4]!.trim(),
+    };
+  }
+
+  match = text.match(/^!forget\s+confirm\s+([A-Za-z0-9._-]{4,512})\s*$/i);
+  if (match) return { kind: 'forget_confirm', token: match[1]! };
+  match = text.match(new RegExp(`^!forget\\s+(${TARGET})\\s*$`, 'i'));
+  if (!match) {
+    match = text.match(new RegExp(`^forget memory\\s+[\u0060]?(${TARGET})[\u0060]?\\.?$`, 'i'));
+  }
+  if (match) return { kind: 'forget_request', target: match[1]!.toLowerCase() };
+
+  match = text.match(
+    new RegExp(`^!memory\\s+report\\s+(${TARGET})\\s+(stale|incorrect|unsafe|unclear)\\s*$`, 'i'),
+  );
+  if (match) {
+    return {
+      kind: 'report',
+      target: match[1]!.toLowerCase(),
+      reason: match[2]!.toLowerCase() as MemoryReportReason,
+    };
+  }
+
+  if (/^!(?:memory|remember|forget)\b/i.test(text) || /^(?:remember for this channel|update memory|forget memory)\b/i.test(text)) {
+    return invalid('Use `!memory help` to see the exact memory commands.');
+  }
+  return undefined;
+}
+
+function stripLeadingMentions(text: string): string {
+  return text.replace(/^\s*(?:<@[^>\s]+>\s*)+/i, '');
+}
+
+function contentCommand(
+  kind: 'remember',
+  name: string,
+  descriptionInput: string,
+  bodyInput: string | undefined,
+): MemoryCommand {
+  const description = descriptionInput.trim();
+  return {
+    kind,
+    name: name.trim(),
+    description,
+    body: bodyInput?.trim() || description,
+  };
+}
+
+function invalid(hint: string): MemoryCommand {
+  return { kind: 'invalid', hint };
+}

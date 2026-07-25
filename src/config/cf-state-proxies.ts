@@ -16,6 +16,7 @@ import {
   type MemoryChannelScopeState,
   type MemoryEntry,
   type MemoryEntryFilter,
+  type MemoryForgetChallenge,
   type MergeMemoryEntriesInput,
   type MemoryMutationCounts,
   type MemoryRevision,
@@ -267,6 +268,15 @@ export class CfMemoryStateStore implements MemoryStateStore {
   async createForgetChallenge(input: CreateForgetChallengeInput): Promise<void> {
     const response = await this.execute({ kind: 'create_forget_challenge', input });
     if (response.kind !== 'ok') throw unexpectedMemoryResponse();
+  }
+
+  async getForgetChallenge(
+    tokenHash: string,
+    actorId: string,
+  ): Promise<MemoryForgetChallenge | undefined> {
+    const response = await this.execute({ kind: 'get_forget_challenge', tokenHash, actorId });
+    if (response.kind !== 'forget_challenge') throw unexpectedMemoryResponse();
+    return orUndefined(response.challenge);
   }
 
   async listRevisions(entryId: string): Promise<MemoryRevision[]> {
