@@ -235,6 +235,7 @@ test('repository grants attach the repositories skill and suppress generic githu
   assert.doesNotMatch(instructions, /Authorization\s*:/i);
   assert.doesNotMatch(instructions, /\$GITHUB_[A-Z_]*TOKEN/i);
   for (const expected of [
+    '/repos/{owner}/{repo}',
     '/contents/',
     '/search/code',
     '/pulls',

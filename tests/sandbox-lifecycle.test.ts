@@ -4,8 +4,13 @@ import { test } from 'node:test';
 import {
   CLOUDFLARE_SANDBOX_OPTIONS,
   SandboxLifecycleRegistry,
+  cloudflareSandboxOptionVariants,
   serializeSandboxActivation,
 } from '../src/sandbox/lifecycle.ts';
+import {
+  SandboxSessionCapError,
+  SandboxUnavailableError,
+} from '../src/sandbox/errors.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { reserveMonthlySandboxSession } from '../src/sandbox/session-cap.ts';
 import {
@@ -17,7 +22,18 @@ test('Cloudflare sandbox guardrail options pin sleep and prohibit keep-alive', (
   assert.deepEqual(CLOUDFLARE_SANDBOX_OPTIONS, {
     keepAlive: false,
     sleepAfter: '5m',
+    normalizeId: false,
   });
+});
+
+test('uppercase thread ids bridge legacy and normalized Sandbox identities during rollout', () => {
+  assert.deepEqual(cloudflareSandboxOptionVariants('T_WORKSPACE:C_CHANNEL:123.456'), [
+    CLOUDFLARE_SANDBOX_OPTIONS,
+    { ...CLOUDFLARE_SANDBOX_OPTIONS, normalizeId: true },
+  ]);
+  assert.deepEqual(cloudflareSandboxOptionVariants('already-lowercase'), [
+    CLOUDFLARE_SANDBOX_OPTIONS,
+  ]);
 });
 
 test('sandbox creation is serialized per thread and same-isolate cleanup destroys once', async () => {
@@ -114,6 +130,64 @@ test('the first concurrent sandbox operations share one activation probe', async
     'exec:npm test',
     'read:/workspace/package.json',
   ]);
+});
+
+test('sandbox readiness failures become public-safe infrastructure errors', async () => {
+  const secret = 'control-plane-secret-do-not-leak';
+  const sandbox = serializeSandboxActivation({
+    async exists() {
+      throw new Error(`Maximum number of running container instances exceeded: ${secret}`);
+    },
+    async exec(command: string) {
+      return command;
+    },
+  });
+
+  await assert.rejects(
+    sandbox.exec('npm test'),
+    (err) =>
+      err instanceof SandboxUnavailableError &&
+      err.type === 'sandbox_unavailable' &&
+      !err.message.includes(secret),
+  );
+});
+
+test('sandbox infrastructure failures after activation keep their safe category', async () => {
+  const sandbox = serializeSandboxActivation({
+    async exists() {
+      return { exists: true };
+    },
+    async exec(_command: string) {
+      throw Object.assign(new Error('internal placement detail'), {
+        code: 'CONTAINER_UNAVAILABLE',
+      });
+    },
+  });
+
+  await assert.rejects(
+    sandbox.exec('npm test'),
+    (err) => err instanceof SandboxUnavailableError,
+  );
+});
+
+test('deliberate public-safe sandbox refusals pass through activation unchanged', async () => {
+  const refusal = new SandboxSessionCapError();
+  const sandbox = serializeSandboxActivation(
+    {
+      async exists() {
+        return { exists: true };
+      },
+      async exec(command: string) {
+        return command;
+      },
+    },
+    '/workspace',
+    async () => {
+      throw refusal;
+    },
+  );
+
+  await assert.rejects(sandbox.exec('npm test'), (err) => err === refusal);
 });
 
 test('monthly cap is reserved once at first activation, not sandbox construction', async () => {

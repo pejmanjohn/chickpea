@@ -165,7 +165,7 @@ test('createInstallationToken down-scopes repositories and permissions', async (
     conn,
     42,
     {
-      repositories: ['magoosh/chickpea', 'magoosh/api'],
+      repositories: ['acme/chickpea', 'acme/api'],
       permissions: { contents: 'write', pull_requests: 'write' },
     },
     fetchImpl,
@@ -175,7 +175,7 @@ test('createInstallationToken down-scopes repositories and permissions', async (
   assert.equal(request?.init?.method, 'POST');
   assert.ok(request?.init?.signal, 'installation token mint must have a timeout signal');
   assert.deepEqual(JSON.parse(String(request?.init?.body)), {
-    repositories: ['magoosh/chickpea', 'magoosh/api'],
+    repositories: ['acme/chickpea', 'acme/api'],
     permissions: { contents: 'write', pull_requests: 'write' },
   });
   assert.match(new Headers(request?.init?.headers).get('authorization') ?? '', /^Bearer /);
@@ -362,7 +362,7 @@ test('GitHub manifest route uses the resolved request origin and requested organ
             'x-forwarded-proto': 'https',
             'x-forwarded-host': 'chickpea.example.com',
           },
-          body: JSON.stringify({ org: 'magoosh' }),
+          body: JSON.stringify({ org: 'acme' }),
         },
       );
       assert.equal(response.status, 200);
@@ -378,7 +378,7 @@ test('GitHub manifest route uses the resolved request origin and requested organ
       const targetUrl = new URL(body.target);
       assert.equal(
         `${targetUrl.origin}${targetUrl.pathname}`,
-        'https://github.com/organizations/magoosh/settings/apps/new',
+        'https://github.com/organizations/acme/settings/apps/new',
       );
       const setupState = targetUrl.searchParams.get('state') ?? '';
       assert.match(setupState, /^[a-f0-9]{32}$/);
@@ -692,7 +692,7 @@ test('GitHub status enumerates App installations and live repository counts', as
     const url = String(input);
     if (url === `${GITHUB_API_BASE}/app/installations?per_page=100&page=1`) {
       return Response.json([
-        { id: 42, account: { login: 'magoosh', type: 'Organization' } },
+        { id: 42, account: { login: 'acme', type: 'Organization' } },
       ]);
     }
     if (url === `${GITHUB_API_BASE}/app/installations/42/access_tokens`) {
@@ -702,8 +702,8 @@ test('GitHub status enumerates App installations and live repository counts', as
       return Response.json({
         total_count: 2,
         repositories: [
-          { full_name: 'magoosh/chickpea', private: false, default_branch: 'main' },
-          { full_name: 'magoosh/api', private: true, default_branch: 'main' },
+          { full_name: 'acme/chickpea', private: false, default_branch: 'main' },
+          { full_name: 'acme/api', private: true, default_branch: 'main' },
         ],
       });
     }
@@ -722,7 +722,7 @@ test('GitHub status enumerates App installations and live repository counts', as
             mode: 'app',
             appSlug: 'chickpea-test',
             installations: [
-              { id: 42, accountLogin: 'magoosh', accountType: 'Organization', repoCount: 2 },
+              { id: 42, accountLogin: 'acme', accountType: 'Organization', repoCount: 2 },
             ],
             referencingProfiles: [],
           });

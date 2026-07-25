@@ -1,7 +1,16 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { validateMcpUrl } from '../src/config/mcp-url.ts';
+import {
+  createMcpGuardedFetch,
+  nodePinnedFetch,
+  validateMcpUrl,
+  type McpAddressResolver,
+} from '../src/config/mcp-url.ts';
+
+function resolved(address: string): Awaited<ReturnType<McpAddressResolver>> {
+  return [{ address, family: address.includes(':') ? 6 : 4 }];
+}
 
 test('accepts ordinary https MCP URLs', () => {
   for (const input of [
@@ -132,4 +141,233 @@ test('rejects private and reserved IPv6 literals', () => {
     assert.equal(result.ok, false, input + ' should be rejected');
     if (!result.ok) assert.match(result.reason, /private|internal|ip/i);
   }
+});
+
+test('guarded fetch rejects private and reserved Node DNS answers before network I/O', async () => {
+  for (const address of [
+    '127.0.0.1',
+    '169.254.169.254',
+    '192.0.2.1',
+    '224.0.0.1',
+    '::1',
+    'fc00::1',
+    '2001:db8::1',
+  ]) {
+    let fetched = false;
+    const guarded = createMcpGuardedFetch({
+      cloudflare: false,
+      resolveAddresses: async () => resolved(address),
+      pinnedFetch: async () => {
+        fetched = true;
+        return new Response('unexpected');
+      },
+    });
+
+    await assert.rejects(guarded('https://mcp.example.com/mcp'), /blocked url/i, address);
+    assert.equal(fetched, false, address + ' must be blocked before fetch');
+  }
+});
+
+test('guarded fetch rejects a mixed public and private Node DNS answer set', async () => {
+  let fetched = false;
+  const guarded = createMcpGuardedFetch({
+    cloudflare: false,
+    resolveAddresses: async () => [
+      { address: '93.184.216.34', family: 4 },
+      { address: '127.0.0.1', family: 4 },
+    ],
+    pinnedFetch: async () => {
+      fetched = true;
+      return new Response('unexpected');
+    },
+  });
+
+  await assert.rejects(guarded('https://mcp.example.com/mcp'), /blocked url/i);
+  assert.equal(fetched, false, 'one private answer must reject the entire DNS set');
+});
+
+test('production Node transport pins HTTPS lookup to the validated address set', async () => {
+  const addresses = resolved('93.184.216.34');
+  let requestOptions: import('node:https').RequestOptions | undefined;
+  const stopBeforeNetwork = new Error('captured HTTPS options');
+  const requestHttps = ((_url: unknown, options: import('node:https').RequestOptions) => {
+    requestOptions = options;
+    throw stopBeforeNetwork;
+  }) as typeof import('node:https').request;
+
+  await assert.rejects(
+    nodePinnedFetch(new Request('https://mcp.example.com/mcp'), addresses, requestHttps),
+    stopBeforeNetwork,
+  );
+  assert.equal(requestOptions?.agent, false, 'a global socket must never bypass pinned lookup');
+  assert.equal(typeof requestOptions?.lookup, 'function');
+  const lookup = requestOptions?.lookup;
+  assert.ok(lookup);
+
+  const runLookup = (options: Record<string, unknown>) =>
+    new Promise<{ address: unknown; family: number | undefined }>((resolve, reject) => {
+      Reflect.apply(lookup, undefined, [
+        'mcp.example.com',
+        options,
+        (error: NodeJS.ErrnoException | null, address: unknown, family?: number) => {
+          if (error) reject(error);
+          else resolve({ address, family });
+        },
+      ]);
+    });
+
+  assert.deepEqual(await runLookup({ family: 0, all: false }), {
+    address: '93.184.216.34',
+    family: 4,
+  });
+  assert.deepEqual(await runLookup({ family: 0, all: true }), {
+    address: addresses,
+    family: undefined,
+  });
+  await assert.rejects(runLookup({ family: 6, all: false }), {
+    code: 'EAI_ADDRFAMILY',
+  });
+});
+
+test('guarded fetch allows public Node DNS answers', async () => {
+  let fetchedUrl = '';
+  const guarded = createMcpGuardedFetch({
+    cloudflare: false,
+    resolveAddresses: async () => resolved('93.184.216.34'),
+    pinnedFetch: async (request, addresses) => {
+      fetchedUrl = request.url;
+      assert.equal(request.redirect, 'manual');
+      assert.deepEqual(addresses, resolved('93.184.216.34'));
+      return new Response('ok');
+    },
+  });
+
+  const response = await guarded('https://mcp.example.com/mcp');
+  assert.equal(response.status, 200);
+  assert.equal(fetchedUrl, 'https://mcp.example.com/mcp');
+});
+
+test('guarded fetch skips Node DNS APIs on Cloudflare while keeping URL guards', async () => {
+  let resolverCalled = false;
+  const guarded = createMcpGuardedFetch({
+    cloudflare: true,
+    resolveAddresses: async () => {
+      resolverCalled = true;
+      return resolved('127.0.0.1');
+    },
+    fetch: async () => new Response('ok'),
+  });
+
+  assert.equal((await guarded('https://mcp.example.com/mcp')).status, 200);
+  assert.equal(resolverCalled, false, 'the Workers path must not invoke node:dns');
+  await assert.rejects(guarded('https://127.0.0.1/mcp'), /blocked url/i);
+});
+
+test('guarded fetch follows and revalidates bounded same-origin redirects', async () => {
+  const fetched: string[] = [];
+  let resolutions = 0;
+  const guarded = createMcpGuardedFetch({
+    cloudflare: false,
+    resolveAddresses: async () => {
+      resolutions += 1;
+      return resolved('93.184.216.34');
+    },
+    pinnedFetch: async (request) => {
+      fetched.push(request.url);
+      if (fetched.length === 1) {
+        return new Response(null, { status: 307, headers: { location: '/mcp/v2' } });
+      }
+      return new Response('ok');
+    },
+  });
+
+  assert.equal((await guarded('https://mcp.example.com/mcp')).status, 200);
+  assert.deepEqual(fetched, [
+    'https://mcp.example.com/mcp',
+    'https://mcp.example.com/mcp/v2',
+  ]);
+  assert.equal(resolutions, 2, 'every redirect destination must be resolved again');
+});
+
+test('guarded fetch blocks a redirect when the same hostname resolves private on the next hop', async () => {
+  let resolutions = 0;
+  let fetches = 0;
+  const guarded = createMcpGuardedFetch({
+    cloudflare: false,
+    resolveAddresses: async () => {
+      resolutions += 1;
+      return resolved(resolutions === 1 ? '93.184.216.34' : '127.0.0.1');
+    },
+    pinnedFetch: async () => {
+      fetches += 1;
+      return new Response(null, { status: 307, headers: { location: '/private' } });
+    },
+  });
+
+  await assert.rejects(guarded('https://mcp.example.com/mcp'), /blocked url/i);
+  assert.equal(fetches, 1, 'the private redirect destination must not be fetched');
+});
+
+test('guarded fetch rejects cross-origin redirects before arbitrary credential headers can move', async () => {
+  const seen: Request[] = [];
+  const guarded = createMcpGuardedFetch({
+    cloudflare: false,
+    resolveAddresses: async () => resolved('93.184.216.34'),
+    pinnedFetch: async (request) => {
+      seen.push(request);
+      return new Response(null, {
+        status: 307,
+        headers: { location: 'https://other.example.net/mcp' },
+      });
+    },
+  });
+
+  await assert.rejects(
+    guarded('https://mcp.example.com/mcp', {
+      headers: { authorization: 'Bearer secret', 'x-custom-token': 'also-secret' },
+    }),
+    /blocked url.*cross-origin redirect/i,
+  );
+  assert.equal(seen.length, 1, 'the redirected origin must never receive a request');
+  assert.equal(seen[0]?.headers.get('authorization'), 'Bearer secret');
+});
+
+test('guarded fetch pins all transport requests to the configured MCP origin', async () => {
+  let fetched = false;
+  const guarded = createMcpGuardedFetch({
+    cloudflare: false,
+    allowedOrigin: 'https://mcp.example.com',
+    resolveAddresses: async () => resolved('93.184.216.34'),
+    pinnedFetch: async () => {
+      fetched = true;
+      return new Response('unexpected');
+    },
+  });
+
+  await assert.rejects(
+    guarded('https://other.example.net/mcp', {
+      headers: { 'x-custom-token': 'secret' },
+    }),
+    /blocked url.*outside the configured origin/i,
+  );
+  assert.equal(fetched, false, 'alternate transport endpoints must not receive credentials');
+});
+
+test('guarded fetch caps same-origin redirect chains', async () => {
+  let fetches = 0;
+  const guarded = createMcpGuardedFetch({
+    cloudflare: false,
+    maxRedirects: 1,
+    resolveAddresses: async () => resolved('93.184.216.34'),
+    pinnedFetch: async () => {
+      fetches += 1;
+      return new Response(null, {
+        status: 307,
+        headers: { location: '/redirect-' + fetches },
+      });
+    },
+  });
+
+  await assert.rejects(guarded('https://mcp.example.com/mcp'), /too many redirects/i);
+  assert.equal(fetches, 2, 'one redirect is followed, the next is rejected');
 });

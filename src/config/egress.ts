@@ -216,7 +216,7 @@ function buildScopeNetwork(spec: ConnectorScopeSpec, opts: { cloudflare: boolean
 // raw string prefix. Without this a connector prefix `/v1` would wrongly match
 // `/v10` (a sibling path served by a broader allow-list entry), leaking the
 // connector's methods onto a path it does not govern.
-function matchesEgressPrefix(url: string, prefix: string): boolean {
+export function matchesEgressPrefix(url: string, prefix: string): boolean {
   let target: URL;
   let base: URL;
   try {

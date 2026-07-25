@@ -108,11 +108,25 @@ function verifyBuildArtifacts() {
     doBindings.some((b) => String(b.class_name ?? '').startsWith('Flue')),
     'built wrangler.json carries the Flue agent DO bindings',
   );
+  check(
+    doBindings.some((b) => b.name === 'SANDBOX' && b.class_name === 'Sandbox'),
+    'built wrangler.json carries the Sandbox DO binding',
+  );
   const tags = (config.migrations ?? []).map((m) => m.tag);
   check(
-    tags.includes('v1') && tags.includes('v2'),
-    'built wrangler.json migrations include v1 and v2',
+    tags.includes('v1') && tags.includes('v2') && tags.includes('v3'),
+    'built wrangler.json migrations include v1 through v3',
     tags.join(','),
+  );
+  const sandboxContainer = (config.containers ?? []).find(
+    (container) => container.class_name === 'Sandbox',
+  );
+  check(
+    sandboxContainer?.instance_type === 'standard-1' && sandboxContainer?.max_instances === 25,
+    'built wrangler.json keeps the bounded multi-thread Sandbox capacity',
+    sandboxContainer
+      ? `${sandboxContainer.instance_type} / ${sandboxContainer.max_instances} max instances`
+      : 'missing',
   );
   const redirect = join(REPO_ROOT, '.wrangler', 'deploy', 'config.json');
   const redirectBody = existsSync(redirect) ? readFileSync(redirect, 'utf8') : '';
@@ -548,9 +562,10 @@ async function main() {
     );
     const connectedAdmin = await renderAdminWithWorkerdState(baseUrl);
     check(
-      connectedAdmin.html.includes('Choose where Chickpea answers') &&
+      connectedAdmin.html.includes('Connected workspace') &&
+        connectedAdmin.html.includes('Manage where Chickpea answers in Slack.') &&
         connectedAdmin.html.includes('data-action="toggle-add-channel"'),
-      'post-wizard admin render shows the connected channel funnel',
+      'post-wizard admin render shows the connected Slack overview',
     );
     check(
       connectedAdmin.html.length > 0 &&

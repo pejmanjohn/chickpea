@@ -4932,6 +4932,7 @@ details[open].advanced summary::before {
       allowedTools: (conn.allowedTools || []).slice()
     };
     if (conn.lastCheckedAt !== undefined) copy.lastCheckedAt = conn.lastCheckedAt;
+    if (conn.presetId !== undefined) copy.presetId = conn.presetId;
     return copy;
   }
 

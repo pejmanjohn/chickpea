@@ -1,12 +1,12 @@
 **Comparison Target**
 
-- Source visual truth: `/Users/pejman/.codex/generated_images/019f8135-412e-7c42-94d1-a1d699774411/exec-66d324f6-b558-4a2b-81e5-8e76137e6651.png`
+- Source visual truth: local reference image used during QA (not included in the repository)
 - Browser-rendered implementation: `http://localhost:3583/admin/channels`
 - Implementation screenshot: `/private/tmp/chickpea-channels-desktop-final-3.jpg`
 - Mobile screenshot: `/private/tmp/chickpea-channels-mobile-final.jpg`
 - Desktop viewport: `1487x1058`
 - Mobile viewport: `390x844`
-- State: signed-in local Node admin, Slack connected to the seeded Magoosh workspace with three assigned channels, Slack behavior settings enabled
+- State: signed-in local Node admin, Slack connected to the seeded Acme workspace with three assigned channels, Slack behavior settings enabled
 
 **Full-view Comparison Evidence**
 

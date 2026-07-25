@@ -45,7 +45,11 @@
       "class_name": "Sandbox",
       "image": "./Dockerfile",
       "instance_type": "standard-1",
-      "max_instances": 1
+      // Each Slack thread still receives its own Sandbox Durable Object and
+      // container. This is only the deployment-wide concurrency ceiling; one
+      // would make unrelated threads block each other. Immediate teardown,
+      // the idle fallback, and the monthly session cap remain the spend bounds.
+      "max_instances": 25
     }
   ]
 }

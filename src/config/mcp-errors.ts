@@ -34,7 +34,14 @@ export function classifyMcpError(err: unknown): McpErrorCode {
   // tools collide after name sanitization — a server-side naming problem that
   // must not be reported as a bad URL.
   if (message.includes('duplicate tool name')) return 'tool_name_collision';
-  if (message.includes('discover')) return 'discovery_failed';
+  if (
+    message.includes('discover') ||
+    message.includes('compiling schema') ||
+    message.includes('invalid schema') ||
+    message.includes('output schema')
+  ) {
+    return 'discovery_failed';
+  }
   return 'mcp_connection_failed';
 }
 
@@ -57,16 +64,58 @@ export function safeMcpFailureText(err: unknown): string {
   }
 }
 
-/**
- * Operator-log companion to safeMcpFailureText: the classified code plus a
- * bounded, whitespace-collapsed slice of the raw message. Logs only — never
- * the DB, API responses, or the admin UI. Without this, a live connect
- * failure is undebuggable even with observability on (learned on deepwiki:
- * the safe sentence said "check the URL" while the URL was fine).
+/** Operator-log context retained for call-site compatibility only. Sensitive
+ * values are deliberately never interpolated into the resulting diagnostic.
  */
-export function mcpDebugText(err: unknown): string {
-  const raw = (err instanceof Error ? err.message : String(err))
-    .replace(/\s+/g, ' ')
-    .slice(0, 200);
-  return classifyMcpError(err) + ': ' + raw;
+export interface McpDebugRedactionContext {
+  /** The configured endpoint; accepted so callers do not need a second API. */
+  url?: string;
+  /** Outbound auth/header values; accepted but never inspected or logged. */
+  headers?: Readonly<Record<string, string>>;
+}
+
+/**
+ * Operator-log companion to safeMcpFailureText. Remote MCP servers control
+ * response bodies, JSON-RPC messages/data, tool metadata, schemas, cursors,
+ * headers, and sometimes capability-bearing URLs. Scrubbing arbitrary prose is
+ * not a stable security boundary, so this formatter uses a local allowlist:
+ * fixed diagnostic markers and numeric protocol/status codes only. Every other
+ * detail is discarded rather than copied into observability logs.
+ */
+export function mcpDebugText(
+  err: unknown,
+  _context: McpDebugRedactionContext = {},
+): string {
+  const classification = classifyMcpError(err);
+  const message = err instanceof Error ? err.message : String(err);
+  const numericCode = (err as { code?: unknown } | null | undefined)?.code;
+  const remoteMcpCode =
+    err instanceof Error &&
+    err.name === 'McpError' &&
+    typeof numericCode === 'number'
+      ? numericCode
+      : undefined;
+  if (remoteMcpCode !== undefined) {
+    return `${classification}: MCP error ${remoteMcpCode}: [remote detail redacted]`;
+  }
+
+  if (
+    typeof numericCode === 'number' &&
+    Number.isInteger(numericCode) &&
+    numericCode >= 100 &&
+    numericCode <= 599
+  ) {
+    return `${classification}: HTTP ${numericCode}`;
+  }
+  const sseStatus = /Error POSTing to endpoint \(HTTP (\d{3})\):/iu.exec(message)?.[1];
+  if (sseStatus !== undefined) {
+    return `${classification}: HTTP ${sseStatus}`;
+  }
+  if (/Code generation from strings disallowed/iu.test(message)) {
+    return `${classification}: Code generation from strings disallowed`;
+  }
+  if (classification === 'discovery_failed') {
+    return `${classification}: tool discovery or schema validation failed`;
+  }
+  return `${classification}: [redacted]`;
 }

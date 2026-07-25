@@ -1,7 +1,8 @@
 import type { ChannelAssignment, CustomAgentConfig } from './types.ts';
 import { isCloudflareTarget } from './runtime-target.ts';
 
-export const SEED_CLOUDFLARE_MODEL_PIN = 'cloudflare/@cf/zai-org/glm-5.2';
+export const SEED_CLOUDFLARE_MODEL_ID = '@cf/zai-org/glm-5.2';
+export const SEED_CLOUDFLARE_MODEL_PIN = `cloudflare/${SEED_CLOUDFLARE_MODEL_ID}`;
 
 export type SeedTarget = 'cloudflare' | 'node';
 

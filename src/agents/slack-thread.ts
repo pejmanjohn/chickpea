@@ -6,6 +6,11 @@ import {
 } from '@flue/runtime';
 import { Bash, InMemoryFs, type NetworkConfig, type SecureFetch } from 'just-bash';
 
+import {
+  connectingActivityStatus,
+  registerActivityContext,
+  type ApiConnectionActivity,
+} from '../activity/status.ts';
 import { resolveConnectorCredential } from '../config/connector-secrets.ts';
 import { connectorSkillsForConnections } from '../config/connector-skills.ts';
 import {
@@ -23,10 +28,14 @@ import {
   isGithubAppManagedHost,
   type GithubConnection,
 } from '../config/github-app.ts';
-import { resolveProfileMcpTools } from '../config/profile-mcp.ts';
+import {
+  isProfileMcpServerEligible,
+  resolveProfileMcpTools,
+} from '../config/profile-mcp.ts';
 import { resolveProfileSkills } from '../config/profile-skills.ts';
 import { applyResolvedProviderKeys } from '../config/provider-keys.ts';
 import { resolveSandboxSettings } from '../config/sandbox-settings.ts';
+import { SEED_CLOUDFLARE_MODEL_PIN } from '../config/seed.ts';
 import { surfaceForChannelId } from '../config/resolver.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import { getOrCreateSnapshot } from '../config/snapshot-store.ts';
@@ -46,7 +55,6 @@ import {
 } from '../sandbox/egress-handler.ts';
 import { githubAuthorizationHeader } from '../sandbox/github-auth.ts';
 
-const KEYLESS_WORKERS_AI_DEFAULT_MODEL = 'cloudflare/@cf/zai-org/glm-5.2';
 import type {
   SandboxCredentialMode,
   SandboxEgressPolicyInput,
@@ -57,6 +65,7 @@ import {
   serializeSandboxActivation,
   type DestroyableSandbox,
 } from '../sandbox/lifecycle.ts';
+import { SandboxSessionCapError } from '../sandbox/errors.ts';
 import { selectSandbox, type SandboxSelection } from '../sandbox/select.ts';
 import { reserveMonthlySandboxSession } from '../sandbox/session-cap.ts';
 import {
@@ -64,11 +73,9 @@ import {
   type SandboxTurnContext,
 } from '../sandbox/turn-context.ts';
 import { createWorkspaceArtifactCapability } from '../sandbox/artifact-tool.ts';
-import {
-  WORKSPACE_SESSION_CAP_DECLINE,
-  workspaceSkillForSandbox,
-} from '../sandbox/workspace-skill.ts';
+import { workspaceSkillForSandbox } from '../sandbox/workspace-skill.ts';
 import { INTERNAL_AGENT_TOKEN_HEADER, isValidInternalAgentToken } from '../slack/internal-auth.ts';
+import { publishActivityStatus } from '../slack/activity-publisher.ts';
 import { parseSlackThreadKey, slackArtifactThreadTs } from '../slack/thread-key.ts';
 import { getClient } from '../slack/run-turn.ts';
 import { WebClientPresenter } from '../slack/web-client-presenter.ts';
@@ -106,6 +113,11 @@ export interface ResolvedRepositoryAccess {
    * open to a legacy broad connector.
    */
   governsGithubHosts: boolean;
+}
+
+interface ResolvedApiConnectionForTurn {
+  connector: ResolvedApiConnection;
+  displayName: string;
 }
 
 /**
@@ -318,23 +330,30 @@ export function mergeRepositoryAndApiConnectors(
   apiConnectors: readonly ResolvedApiConnection[],
 ): ResolvedApiConnection[] {
   const remainingApiConnectors = apiConnectors.flatMap((connector) => {
-    const allowedHosts = connector.allowedHosts.filter(
-      (host) => !isGithubAppManagedHost(host),
-    );
-    return allowedHosts.length > 0 ? [{ ...connector, allowedHosts }] : [];
+    const withoutGithub = withoutGithubManagedHosts(connector);
+    return withoutGithub ? [withoutGithub] : [];
   });
   return [...repositoryConnectors, ...remainingApiConnectors];
+}
+
+function withoutGithubManagedHosts(
+  connector: ResolvedApiConnection,
+): ResolvedApiConnection | undefined {
+  const allowedHosts = connector.allowedHosts.filter(
+    (host) => !isGithubAppManagedHost(host),
+  );
+  return allowedHosts.length > 0 ? { ...connector, allowedHosts } : undefined;
 }
 
 async function resolveApiConnectionsForTurn(
   agentId: string,
   connections: readonly ApiConnectionConfig[],
   env?: PlatformEnv,
-): Promise<ResolvedApiConnection[]> {
+): Promise<ResolvedApiConnectionForTurn[]> {
   const resolved = await Promise.all(
     connections
       .filter((connection) => connection.enabled)
-      .map(async (connection): Promise<ResolvedApiConnection | undefined> => {
+      .map(async (connection): Promise<ResolvedApiConnectionForTurn | undefined> => {
         const credential = await resolveConnectorCredential(
           { agentId, connectionId: connection.id },
           env,
@@ -342,16 +361,19 @@ async function resolveApiConnectionsForTurn(
         if (!credential) return undefined;
 
         return {
-          allowedHosts: connection.allowedHosts,
-          pathPrefixes: connection.pathPrefixes,
-          headerName: connection.headerName,
-          headerValue: (connection.headerValuePrefix ?? '') + credential,
-          allowedMethods: connection.allowedMethods,
+          connector: {
+            allowedHosts: connection.allowedHosts,
+            pathPrefixes: connection.pathPrefixes,
+            headerName: connection.headerName,
+            headerValue: (connection.headerValuePrefix ?? '') + credential,
+            allowedMethods: connection.allowedMethods,
+          },
+          displayName: connection.displayName,
         };
       }),
   );
   return resolved.filter(
-    (connection): connection is ResolvedApiConnection => connection !== undefined,
+    (connection): connection is ResolvedApiConnectionForTurn => connection !== undefined,
   );
 }
 
@@ -414,7 +436,7 @@ export default defineAgent(async ({ id }) => {
   const [
     egressPolicy,
     repositoryAccess,
-    resolvedApiConnectors,
+    resolvedApiConnections,
     sandboxSettings,
     githubAppConnected,
   ] =
@@ -441,7 +463,7 @@ export default defineAgent(async ({ id }) => {
   // grants are active, including for narrower legacy path prefixes.
   const resolvedConnectors = mergeRepositoryAndApiConnectors(
     repositoryAccess.connectors,
-    resolvedApiConnectors,
+    resolvedApiConnections.map(({ connector }) => connector),
   );
   // Project resolved connectors into credential-free scope before skill
   // construction. Connector skills come first so the existing last-writer-wins
@@ -465,6 +487,39 @@ export default defineAgent(async ({ id }) => {
     ...(workspaceSkill ? [workspaceSkill] : []),
   ]);
 
+  const apiConnectionActivities: ApiConnectionActivity[] = [
+    ...repositoryAccess.connectors.map(({ allowedHosts, pathPrefixes, allowedMethods, matchesRequest }) => ({
+      displayName: 'GitHub repositories',
+      allowedHosts,
+      pathPrefixes,
+      allowedMethods,
+      ...(matchesRequest ? { matchesRequest } : {}),
+    })),
+    ...resolvedApiConnections.flatMap(({ connector, displayName }) => {
+      const withoutGithub = withoutGithubManagedHosts(connector);
+      return withoutGithub
+        ? [
+            {
+              displayName,
+              allowedHosts: withoutGithub.allowedHosts,
+              pathPrefixes: withoutGithub.pathPrefixes,
+              allowedMethods: withoutGithub.allowedMethods,
+              ...(withoutGithub.matchesRequest
+                ? { matchesRequest: withoutGithub.matchesRequest }
+                : {}),
+            },
+          ]
+        : [];
+    }),
+  ];
+  registerActivityContext(id, {
+    skills: skills.map((skill) => ({ name: skill.name })),
+    mcpConnections: (config.agent.mcpServers ?? [])
+      .filter(isProfileMcpServerEligible)
+      .map(({ id: connectionId, displayName }) => ({ id: connectionId, displayName })),
+    apiConnections: apiConnectionActivities,
+  });
+
   // MCP connection tools join at the same seam and inherit the same freeze
   // contract (mcpServers frozen in the snapshot for channels, live for DMs;
   // secrets always resolve live). The resolver degrades gracefully — a dead or
@@ -474,6 +529,9 @@ export default defineAgent(async ({ id }) => {
     agentId: config.agent.id,
     env,
     existingToolNames: skills.map((s) => s.name),
+    onConnectionStart: ({ displayName }) => {
+      publishActivityStatus(id, connectingActivityStatus(displayName), env);
+    },
   });
 
   const { scopes, baseNetwork, baseMethods, fallbackNetwork } = buildEgressPlan(
@@ -554,9 +612,9 @@ export default defineAgent(async ({ id }) => {
   return {
     model: config.model,
     // Flue defaults reasoning-capable models to medium effort. The keyless
-    // GLM-5.2 binding repeatedly reaches Workers AI's response deadline before
-    // its first tool call at that setting, so keep this one default responsive
-    // while leaving every operator-selected model's reasoning policy alone.
+    // GLM-5.2 binding can reach Workers AI's response deadline before its first
+    // tool call even at low effort, so disable extra reasoning only for this
+    // exact binding-backed model specifier. Other models keep Flue's policy.
     ...(thinkingLevel ? { thinkingLevel } : {}),
     instructions: config.instructions,
     tools,
@@ -565,8 +623,8 @@ export default defineAgent(async ({ id }) => {
   };
 });
 
-export function thinkingLevelForModel(model: string): 'low' | undefined {
-  return model === KEYLESS_WORKERS_AI_DEFAULT_MODEL ? 'low' : undefined;
+export function thinkingLevelForModel(model: string): 'off' | undefined {
+  return model === SEED_CLOUDFLARE_MODEL_PIN ? 'off' : undefined;
 }
 
 interface AgentSandboxOptions {
@@ -631,7 +689,7 @@ async function resolveAgentSandbox(options: AgentSandboxOptions): Promise<Sandbo
         reservationId: turnId,
       });
       if (!reservation.allowed) {
-        throw new Error(WORKSPACE_SESSION_CAP_DECLINE);
+        throw new SandboxSessionCapError();
       }
     },
   );

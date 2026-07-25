@@ -32,6 +32,7 @@ import {
 
 const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const FLUE_BIN = join(REPO_ROOT, 'node_modules', '.bin', 'flue');
+const FLUE_RUNTIME_PATCH = join(REPO_ROOT, 'scripts', 'patch-flue-runtime.mjs');
 const DIST_NODE_DIR = join(REPO_ROOT, 'dist-node');
 const SERVER_ENTRY = join(DIST_NODE_DIR, 'server.mjs');
 const EVENTS_PATH = '/channels/slack/events';
@@ -207,6 +208,10 @@ function ensureBuilt(nodeBin: string): Promise<void> {
 
 /** `flue build --target node --output dist-node`, run once via `nodeBin`. */
 function buildNodeTarget(nodeBin: string): Promise<void> {
+  execFileSync(nodeBin, [FLUE_RUNTIME_PATCH], {
+    cwd: REPO_ROOT,
+    stdio: 'inherit',
+  });
   return new Promise((resolve, reject) => {
     const child = spawn(FLUE_BIN, ['build', '--target', 'node', '--output', 'dist-node'], {
       cwd: REPO_ROOT,

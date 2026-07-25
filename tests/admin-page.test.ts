@@ -2257,6 +2257,7 @@ test('a connected preset drops out of the Available gallery until it is removed'
   const harness = runAdminPageHarness({
     agents: [
       connectionsAgent({
+        mcpServers: [mcpConnectionFixture()],
         apiConnections: [
           apiConnectionFixture({ id: 'asana', presetId: 'asana', displayName: 'Asana', allowedHosts: ['app.asana.com'] }),
         ],
@@ -2271,16 +2272,22 @@ test('a connected preset drops out of the Available gallery until it is removed'
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
 
   const panel = harness.app.innerHTML;
-  // Asana is already connected, so the gallery no longer offers it...
+  // Linear and Asana are already connected, so the gallery no longer offers them...
+  assert.doesNotMatch(panel, /data-action="conn-preset" data-preset="linear"/);
   assert.doesNotMatch(panel, /data-action="conn-preset" data-preset="asana"/);
-  // ...other presets remain, and the Available count dropped from 22 to 21.
-  assert.match(panel, /data-action="conn-preset" data-preset="linear"/);
-  assert.match(panel, /<span class="gallery-head-count">21<\/span>/);
+  // ...other presets remain, and the Available count dropped from 22 to 20.
+  assert.match(panel, /data-action="conn-preset" data-preset="airtable"/);
+  assert.match(panel, /<span class="gallery-head-count">20<\/span>/);
 });
 
 test('saved MCP and API connections share one lane-badged list with matching inline editors', async () => {
   const harness = runAdminPageHarness({
-    agents: [connectionsAgent({ mcpServers: [mcpConnectionFixture()], apiConnections: [apiConnectionFixture()] })],
+    agents: [
+      connectionsAgent({
+        mcpServers: [mcpConnectionFixture({ presetId: undefined })],
+        apiConnections: [apiConnectionFixture()],
+      }),
+    ],
   });
   await flushAsync();
 
@@ -2958,6 +2965,21 @@ test('a preset connection carries presetId in the profile save body', async () =
 
   const servers = harness.agentPatchBodies[0]?.body.mcpServers as Array<Record<string, unknown>>;
   assert.equal(servers[0]?.presetId, 'linear');
+});
+
+test('the keyless Cloudflare Docs recommended editor shows its token note once', async () => {
+  const harness = runAdminPageHarness({ agents: [connectionsAgent()] });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'cloudflare-docs' }) });
+
+  assert.equal((harness.app.innerHTML.match(/No token needed\./g) ?? []).length, 1);
+  click({ target: actionTarget({ 'data-action': 'conn-view', 'data-view': 'advanced' }) });
+  assert.match(harness.app.innerHTML, /<option value="none" selected>None<\/option>/);
 });
 
 test('the Connections section renders its gallery, with the STDIO-greyed form, exact security copy, and trust-gated Test', async () => {

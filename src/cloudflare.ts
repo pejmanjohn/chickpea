@@ -56,7 +56,7 @@ import {
   type SandboxEgressPolicyInput,
   type SandboxPolicyStorage,
 } from './sandbox/cloudflare-policy.ts';
-import { CLOUDFLARE_SANDBOX_OPTIONS } from './sandbox/lifecycle.ts';
+import { cloudflareSandboxOptionVariants } from './sandbox/lifecycle.ts';
 import {
   isGithubPullRequestCreateResponse,
   pullRequestProgressFromGithubResponse,
@@ -66,7 +66,7 @@ import { resolveSlackCredentials } from './slack/credentials.ts';
 import { setObservedSlackStatus } from './slack/status-registry.ts';
 import {
   createSlackWebClient,
-  deliverProviderFailureFinal,
+  deliverAgentFailureFinal,
   runTurn,
   sanitizeError,
 } from './slack/run-turn.ts';
@@ -334,6 +334,13 @@ function denySandboxOutbound(): Response {
 // would likely re-fail; a couple of seconds lets a transient Slack blip clear.
 const RELAY_RETRY_BACKOFF_MS = 2_000;
 
+// A tiny first-fire window lets Slack events from the same burst land in the
+// queue before the alarm snapshots it. The alarm already fans independent
+// conversations out concurrently; without this window, the first event can
+// start a long turn milliseconds before its neighbors enqueue and serialize
+// the whole burst behind it.
+const RELAY_BATCH_WINDOW_MS = 250;
+
 /**
  * Cloudflare entrypoint. Named exports of this file become top-level Worker
  * exports on the CF target (the node target never imports it), so this is the
@@ -586,23 +593,31 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     });
     // Arm the alarm only after the row is written, and AWAIT it: the job + the
     // armed alarm must both be durable before this RPC resolves, because the
-    // events handler acks Slack the instant it does. `setAlarm(now)` fires the
-    // handler as soon as the platform can. Re-arming for an already-queued
-    // (duplicate) job is harmless.
+    // events handler acks Slack the instant it does. A small, non-sliding batch
+    // window lets near-simultaneous independent threads reach the existing
+    // bounded fan-out. Never move an already-armed alarm later.
     if (result.ok) {
-      await this.ctx.storage.setAlarm(Date.now());
+      const alarm = await this.ctx.storage.getAlarm();
+      if (alarm === null) {
+        await this.ctx.storage.setAlarm(Date.now() + RELAY_BATCH_WINDOW_MS);
+      }
     }
     return result;
   }
 
   /**
-   * Cross-isolate tool narration (see src/slack/status-relay.ts): the agent DO
-   * observes its own tool_start events and relays them here, where the alarm
-   * registered the live turn's status presenter. A registry miss just means
-   * the turn already finished — still a success by contract.
+   * Cross-isolate activity narration (see src/slack/status-relay.ts): the agent
+   * DO observes safe lifecycle/tool summaries and relays them here, where the alarm
+   * registered the live turn's status presenter. A registry miss, closed sink,
+   * stale generation, or ambiguous duplicate match is intentionally a no-op —
+   * still a success by contract.
    */
-  async observedToolStatus(instanceId: string, statusText: string): Promise<StateRpcResult<null>> {
-    setObservedSlackStatus(instanceId, { text: statusText });
+  async observedStatus(
+    instanceId: string,
+    generation: string,
+    statusText: string,
+  ): Promise<StateRpcResult<null>> {
+    setObservedSlackStatus(instanceId, generation, { text: statusText });
     return { ok: true, value: null };
   }
 
@@ -666,36 +681,41 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         }
       }
       const attempt = job.attempts + 1;
+      let delivered = false;
       // Advance the attempt count before running the turn: a crash mid-turn
       // then re-fires with the count already committed, bounding retries.
       stores.turnJobs.recordAttempt(job.id, attempt);
       try {
         const persistSandboxProgress = async (): Promise<string | undefined> => {
-          try {
-            const binding =
-              (this.env as PlatformEnv).SANDBOX ?? (this.env as PlatformEnv).Sandbox;
-            if (!binding) return undefined;
-            const sandbox = getSandbox(
-              binding as Parameters<typeof getSandbox>[0],
-              slackThreadKey(job.turn),
-              CLOUDFLARE_SANDBOX_OPTIONS,
-            ) as ReturnType<typeof getSandbox> & {
-              getTurnId(): Promise<string | undefined>;
-              getTurnProgress(): Promise<TurnProgress>;
-            };
-            if ((await sandbox.getTurnId()) !== job.id) {
-              return undefined;
+          const binding =
+            (this.env as PlatformEnv).SANDBOX ?? (this.env as PlatformEnv).Sandbox;
+          if (!binding) return undefined;
+          const conversationKey = slackThreadKey(job.turn);
+          for (const options of cloudflareSandboxOptionVariants(conversationKey)) {
+            try {
+              const sandbox = getSandbox(
+                binding as Parameters<typeof getSandbox>[0],
+                conversationKey,
+                options,
+              ) as ReturnType<typeof getSandbox> & {
+                getTurnId(): Promise<string | undefined>;
+                getTurnProgress(): Promise<TurnProgress>;
+              };
+              if ((await sandbox.getTurnId()) !== job.id) continue;
+              const progress = await sandbox.getTurnProgress();
+              if (progress.pullRequest) {
+                stores.turnJobs.recordPullRequest(job.id, progress.pullRequest);
+              }
+              const replayText = replayTextForTurnProgress(progress);
+              if (replayText !== undefined) return replayText;
+            } catch {
+              // One identity can be unavailable during a rolling deploy. Keep
+              // checking the bridge identity before degrading recovery.
             }
-            const progress = await sandbox.getTurnProgress();
-            if (progress.pullRequest) {
-              stores.turnJobs.recordPullRequest(job.id, progress.pullRequest);
-            }
-            return replayTextForTurnProgress(progress);
-          } catch {
-            // Retry protection is best-effort on the read path. The sandbox DO
-            // retains the marker, so a later alarm can try again.
-            return undefined;
           }
+          // Retry protection is best-effort on the read path. Either Sandbox
+          // identity retains its marker, so a later alarm can try again.
+          return undefined;
         };
         const replayText =
           replayTextForTurnProgress(job.progress) ?? (await persistSandboxProgress());
@@ -704,12 +724,24 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           turnId: job.id,
           ...(replayText === undefined ? {} : { replayText }),
           beforeDelivery: persistSandboxProgress,
+          // Record terminal delivery before runTurn's post-delivery Sandbox
+          // teardown. A hung control-plane destroy must never leave an
+          // already-posted Slack final eligible for relay retry.
+          onDelivered: () => {
+            stores.turnJobs.markDelivered(job.id);
+            delivered = true;
+          },
         });
-        // Delivered (a real final, or the sanitized provider-failure final that
-        // runTurn posts on a provider error): tombstone so no later scan
-        // re-delivers it. Claims stay held — a completed turn never re-runs.
-        stores.turnJobs.markDelivered(job.id);
+        // Delivery was tombstoned at the exact presentation boundary above.
+        // Claims stay held — a completed turn never re-runs.
       } catch (err) {
+        // Any failure after the terminal presentation boundary is cleanup,
+        // not a failed turn. The durable tombstone prevents a duplicate final;
+        // keep the claims held and let a later thread turn start normally.
+        if (delivered) {
+          console.warn('[chickpea] post-delivery cleanup did not complete');
+          return;
+        }
         console.error(
           `[chickpea] relay turn attempt ${attempt} failed:`,
           sanitizeError(err),
@@ -719,7 +751,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           // silent, then release the claims (parity with the node .catch's
           // "failed delivery frees the claim") and tombstone so no further
           // attempt runs.
-          await deliverProviderFailureFinal(
+          await deliverAgentFailureFinal(
             job.turn,
             job.assignment,
             client,

@@ -1701,6 +1701,50 @@ test('profile-scoped MCP test classifies a 401 as unauthorized (HTTP 200)', asyn
   }
 });
 
+test('profile-scoped MCP test redacts configured query and header credentials from logs', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const warnings: string[] = [];
+  const previousWarn = console.warn;
+  console.warn = (...args: unknown[]) => warnings.push(args.map(String).join(' '));
+  try {
+    const app = appWithAdminOptions(store, {
+      discoverMcp: async (input) => {
+        throw new Error(
+          'upstream echoed ' +
+            input.url +
+            ' ' +
+            input.headers.Authorization +
+            ' ' +
+            input.headers['X-Custom-Credential'],
+        );
+      },
+    });
+
+    const response = await app.request('/admin/api/agents/agent_test/mcp/test', {
+      method: 'POST',
+      headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        id: 'linear-mcp',
+        url: 'https://mcp.linear.app/mcp?access_token=query-secret',
+        transport: 'streamable-http',
+        authMode: 'bearer',
+        bearerToken: 'bearer-secret',
+        headers: { 'X-Custom-Credential': 'custom-secret' },
+      }),
+    });
+
+    assert.equal(response.status, 200);
+    assert.equal(((await response.json()) as { ok: boolean }).ok, false);
+  } finally {
+    console.warn = previousWarn;
+    store.close();
+  }
+
+  const logged = warnings.join('\n');
+  assert.ok(logged.includes('[redacted]'));
+  assert.doesNotMatch(logged, /query-secret|bearer-secret|custom-secret/);
+});
+
 test('profile-scoped MCP test returns ok:false blocked_url without connecting to a private target', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   try {

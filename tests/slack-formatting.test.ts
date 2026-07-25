@@ -55,7 +55,7 @@ test('standard Markdown final replies render as Slack markdown blocks', () => {
 });
 
 test('strong emphasis cannot leak a trailing asterisk into an auto-linked URL', () => {
-  const url = 'https://github.com/pejmanjohn/skillet/pull/4';
+  const url = 'https://github.com/octo-org/example-site/pull/4';
   const markdown = `Done: **\ud83d\udd17 ${url}**`;
 
   assert.equal(sanitizeSlackMarkdownLinks(markdown), `Done: \ud83d\udd17 ${url}`);
@@ -213,17 +213,17 @@ test('status updates use factual text and derive loading copy from the same fact
   ]);
 });
 
-test('toolStatus names the MCP connection instead of the raw mcp__ identifier', () => {
+test('toolStatus hides raw MCP identifiers when no registered activity context is available', () => {
   assert.deepEqual(toolStatus('mcp__context7__resolve-library-id'), {
-    text: 'is calling context7: resolve-library-id',
+    text: 'is using a connection',
   });
-  // Builtin (non-MCP) tools keep the plain form.
+  // A known builtin gets descriptive fixed copy rather than its identifier.
   assert.deepEqual(toolStatus('lookup_thread_history'), {
-    text: 'is running lookup_thread_history',
+    text: 'is checking thread history',
   });
   // A malformed mcp__ name (no second separator) falls back rather than
   // rendering an empty server or tool segment.
-  assert.deepEqual(toolStatus('mcp__broken'), { text: 'is running mcp__broken' });
+  assert.deepEqual(toolStatus('mcp__broken'), { text: 'is using a connection' });
 });
 
 test('bash tool status describes the workspace stage without exposing command text', () => {

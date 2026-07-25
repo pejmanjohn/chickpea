@@ -112,12 +112,12 @@ test('deliverFinal sanitizes emphasized URLs before streaming them to Slack', as
   );
 
   await presenter.deliverFinal(
-    'Done: **https://github.com/pejmanjohn/skillet/pull/4**',
+    'Done: **https://github.com/octo-org/example-site/pull/4**',
     'markdown',
   );
 
   assert.equal(
     (calls[0] as { markdown_text?: string }).markdown_text,
-    'Done: https://github.com/pejmanjohn/skillet/pull/4',
+    'Done: https://github.com/octo-org/example-site/pull/4',
   );
 });

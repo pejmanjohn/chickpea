@@ -24,8 +24,8 @@ import type { NormalizedSlackTurn } from './types.ts';
  *     app_mention + message fan-out for one mention enqueues at most once.
  *   - A `delivered` tombstone excludes a completed job from any later alarm
  *     scan (`WHERE delivered = 0`), the guard against a redundant re-delivery.
- *   - A bounded attempt counter caps retries; the alarm posts the sanitized
- *     provider-failure final and releases the claims on the terminal attempt.
+ *   - A bounded attempt counter caps retries; the alarm posts a sanitized
+ *     generic failure final and releases the claims on the terminal attempt.
  *   - Rows purge on the claim TTL horizon (past it a Slack redelivery can no
  *     longer arrive, so the tombstone is dead weight — the same horizon the
  *     claims table uses).

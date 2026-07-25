@@ -1179,7 +1179,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       // Classify first — err.message may carry raw internals and must never be
       // returned to the client. The log line keeps the bounded debug text so a
       // failing Test connection is diagnosable from observability.
-      console.warn('[chickpea] MCP test failed (' + input.id + '): ' + mcpDebugText(err));
+      console.warn(
+        '[chickpea] MCP test failed (' +
+          input.id +
+          '): ' +
+          mcpDebugText(err, { url: validated.url, headers }),
+      );
       return c.json({ ok: false, code: classifyMcpError(err), message: safeMcpFailureText(err) });
     }
   });

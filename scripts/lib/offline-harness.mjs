@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url';
 
 export const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const FLUE_BIN = join(REPO_ROOT, 'node_modules', '.bin', 'flue');
+const FLUE_RUNTIME_PATCH = join(REPO_ROOT, 'scripts', 'patch-flue-runtime.mjs');
 export const NET_GUARD = join(REPO_ROOT, 'scripts', 'net-guard.mjs');
 export const SIGNING_SECRET = 'test-signing-secret';
 export const EVENTS_PATH = '/channels/slack/events';
@@ -69,6 +70,10 @@ export function assertNodeVersion() {
 /** `flue build --target node --output <outputDir>`; resolves to the server entry.
  * Defaults to `dist/` (git-ignored, the canonical `flue:build` output). */
 export function buildNodeServer(outputDir = 'dist') {
+  execFileSync(process.execPath, [FLUE_RUNTIME_PATCH], {
+    cwd: REPO_ROOT,
+    stdio: 'inherit',
+  });
   return new Promise((resolve, reject) => {
     const child = spawn(FLUE_BIN, ['build', '--target', 'node', '--output', outputDir], {
       cwd: REPO_ROOT,

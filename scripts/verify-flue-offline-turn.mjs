@@ -18,8 +18,9 @@
  *      the stub reply marker
  *   4. status rejected         -> a durable plain progress post precedes the
  *      final, final still delivered, no status retry storm
- *   5. provider 500            -> ONE sanitized final (verbatim failure text, no
- *      raw provider error marker), status cleared
+ *   5. provider 500            -> ONE generic sanitized agent final (the Flue
+ *      HTTP boundary deliberately renders unknown upstream failures opaque),
+ *      no raw provider error marker, status cleared
  *   6. NET_GUARD_LOG empty     -> zero external traffic across all scenarios
  *   7. direct POST to the internal agent endpoint without the internal token
  *      -> 401 (the agent route is not reachable unauthenticated)
@@ -49,11 +50,12 @@ import {
 const EXEC_CHANNEL = 'C_EXEC';
 const ROOT_THREAD_TS = '1782770400.000100';
 
-// Intentionally an INDEPENDENT oracle: this copy of the sanitized provider-
-// failure final is kept local (not imported from src) so the check catches a
-// drift in the app's own PROVIDER_FAILURE_TEXT rather than moving in lockstep.
-const PROVIDER_FAILURE_TEXT =
-  'I reached the Slack thread, but the model provider call failed before completion. I did not expose provider error details in Slack.';
+// Intentionally an INDEPENDENT oracle: the provider's raw error is opaque at
+// Flue's HTTP boundary, so Slack must receive the generic agent copy rather
+// than guessing that an opaque operation failure came from the provider. Keep
+// the text local (not imported from src) so the proof catches presentation drift.
+const AGENT_FAILURE_TEXT =
+  'I reached the Slack thread, but the agent run failed before completion. I did not expose internal error details in Slack.';
 
 // Load the TypeScript fake backend through tsx's runtime loader.
 const { FakeSlackBackend, STUB_REPLY_MARKER, RAW_PROVIDER_ERROR_MARKER, isMarkdownPost } =
@@ -218,7 +220,7 @@ try {
     );
   }
 
-  // Check 5: provider 500 still delivers one sanitized final and clears status.
+  // Check 5: provider 500 still delivers one generic sanitized final and clears status.
   // Flue retries the 5xx a few times before failing, so allow a generous poll.
   {
     backend.reset();
@@ -234,15 +236,16 @@ try {
     const passed =
       finals.length === 1 &&
       final !== undefined &&
-      final.text.includes(PROVIDER_FAILURE_TEXT) &&
+      final.text.includes(AGENT_FAILURE_TEXT) &&
       !final.text.includes(RAW_PROVIDER_ERROR_MARKER) &&
       lastStatus !== undefined &&
       String(lastStatus.body.status) === '';
     record(
-      'provider 500 -> one sanitized final, status cleared, no raw error leak',
+      'provider 500 -> one generic sanitized final, status cleared, no raw error leak',
       passed,
-      `finals=${finals.length} sanitized=${final?.text.includes(PROVIDER_FAILURE_TEXT)} ` +
-        `rawLeak=${final?.text.includes(RAW_PROVIDER_ERROR_MARKER)} lastStatus="${String(lastStatus?.body.status)}"`,
+      `finals=${finals.length} sanitized=${final?.text.includes(AGENT_FAILURE_TEXT)} ` +
+        `rawLeak=${final?.text.includes(RAW_PROVIDER_ERROR_MARKER)} lastStatus="${String(lastStatus?.body.status)}" ` +
+        `finalText=${JSON.stringify(final?.text)}`,
     );
   }
 

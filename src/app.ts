@@ -1,12 +1,14 @@
-import { observe, registerProvider } from '@flue/runtime';
+import { instrument, registerProvider } from '@flue/runtime';
 import { flue } from '@flue/runtime/routing';
 import { Hono } from 'hono';
 
 import { createAdminRoutes } from './admin/routes.ts';
+import { activityStatusForObservation } from './activity/status.ts';
 import { recordRegisteredProvider } from './config/providers.ts';
-import { toolStatus } from './slack/replies.ts';
-import { setObservedSlackStatus } from './slack/status-registry.ts';
-import { relayObservedToolStatus } from './slack/status-relay.ts';
+import {
+  activityStatusGenerationInterceptor,
+  publishActivityStatus,
+} from './slack/activity-publisher.ts';
 
 // Provider registrations run at module scope so they are in place before any
 // agent resolves its model. On the Cloudflare target the seeded Workers AI
@@ -63,24 +65,21 @@ if (process.env.LOCAL_STUB_URL) {
   recordRegisteredProvider('local-stub');
 }
 
-// Bridge Flue's tool-start events to the per-turn Slack status line. The status
-// registry keys turns by the durable agent id, so its Map lookup is the sole,
-// authoritative "is this one of my Slack turns?" filter — no need to re-parse
-// the id as a thread key here (that re-encoded the same coupling and paid a
-// throw on every non-Slack agent's tool call). All status wording lives in the
-// builder layer (toolStatus), keeping this composition root free of copy.
-observe((event) => {
-  if (event.type !== 'tool_start' || typeof event.instanceId !== 'string') {
-    return;
-  }
-  const status = toolStatus(event.toolName, event.args);
-  if (setObservedSlackStatus(event.instanceId, status)) {
-    return;
-  }
-  // Local miss: on Cloudflare this subscriber also runs inside the agent DO
-  // isolate, where the turn's registry lives elsewhere. Relay only the safe,
-  // fixed-vocabulary status text — never the raw tool arguments or command.
-  void relayObservedToolStatus(event.instanceId, status.text);
+// Flue persists trace carriers across its durable submission boundary even
+// though recovered execution receives a synthetic Request. Restore the Slack
+// turn generation around the complete agent execution, then bridge only safe,
+// bounded activity summaries to the per-turn status line.
+instrument({
+  key: Symbol.for('chickpea.activity-status-generation'),
+  interceptor: activityStatusGenerationInterceptor,
+  observe(event, context) {
+    if (context.agentName !== 'slack-thread') return;
+    const status = activityStatusForObservation(event);
+    if (status && typeof event.instanceId === 'string') {
+      publishActivityStatus(event.instanceId, status, context.env);
+    }
+  },
+  dispose() {},
 });
 
 const app = new Hono();

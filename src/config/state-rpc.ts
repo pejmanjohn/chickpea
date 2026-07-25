@@ -133,13 +133,19 @@ export interface TagStateRpc {
    * invocation's fate. Idempotent by `job.id` (a duplicate enqueue is ignored).
    */
   enqueueTurn(job: TurnJob): Promise<StateRpcResult<null>>;
-  // -- status relay (Cloudflare cross-isolate tool narration) ---------------
+  // -- status relay (Cloudflare cross-isolate activity narration) -----------
   /**
-   * Forward a tool-start observed inside the agent DO isolate to the status
-   * registry living in this DO's isolate (where the alarm runs the turn).
-   * Best-effort: a miss (turn already closed) is a success, never an error.
+   * Forward safe activity observed inside the agent DO isolate to the status
+   * registry living in this DO's isolate (where the alarm runs the turn). The
+   * opaque generation fences delayed RPCs from later turns on the same thread.
+   * Best-effort: a miss/closed turn or ambiguous concurrent-turn match is a
+   * success, never an error. Only sanitized status text crosses this seam.
    */
-  observedToolStatus(instanceId: string, statusText: string): Promise<StateRpcResult<null>>;
+  observedStatus(
+    instanceId: string,
+    generation: string,
+    statusText: string,
+  ): Promise<StateRpcResult<null>>;
 }
 
 /**

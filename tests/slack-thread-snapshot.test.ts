@@ -126,8 +126,8 @@ test('agent snapshots freeze repository grants with the effective profile', () =
     {
       id: 'repo-snapshot',
       installationId: 42,
-      accountLogin: 'magoosh',
-      fullName: 'magoosh/chickpea',
+      accountLogin: 'acme',
+      fullName: 'acme/chickpea',
       enabled: true,
     },
   ];

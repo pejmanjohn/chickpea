@@ -18,6 +18,17 @@ import {
 export const PROVIDER_FAILURE_TEXT =
   'I reached the Slack thread, but the model provider call failed before completion. I did not expose provider error details in Slack.';
 
+/** Static workspace failures disclose the affected surface, never SDK details. */
+export const SANDBOX_FAILURE_TEXT =
+  'I reached the Slack thread, but the coding workspace was temporarily unavailable before completion. I did not expose internal error details in Slack. Please retry in a moment.';
+
+export const SANDBOX_SESSION_CAP_FAILURE_TEXT =
+  "I couldn't open a coding workspace because this installation's monthly sandbox session limit has been reached. An administrator can review it in Settings.";
+
+/** Unknown failures must not be misattributed to the model provider. */
+export const AGENT_FAILURE_TEXT =
+  'I reached the Slack thread, but the agent run failed before completion. I did not expose internal error details in Slack.';
+
 export interface SlackPresenterTarget {
   channelId: string;
   threadTs: string;

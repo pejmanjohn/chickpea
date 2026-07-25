@@ -18,7 +18,7 @@ import {
 } from './fake-slack.ts';
 import type { ParityException } from './exceptions.ts';
 import type { Lane, LaneInstance, ScenarioLaneConfig } from './lane.ts';
-import { PROVIDER_FAILURE_TEXT } from '../../src/slack/web-client-presenter.ts';
+import { AGENT_FAILURE_TEXT } from '../../src/slack/web-client-presenter.ts';
 import { slackFallbackTextLimit } from '../../src/slack/message-format.ts';
 import type { SlackEventFixture } from '../../src/slack/types.ts';
 import {
@@ -422,6 +422,7 @@ export const scenarios: Scenario[] = [
           .every((entry) => !String(entry.body.status).includes(RAW_PROVIDER_ERROR_MARKER)),
         'raw provider error must not leak to status text',
       );
+      assert.equal(final.text, AGENT_FAILURE_TEXT);
 
       const lastStatus = instance.backend.statusCalls().at(-1);
       assert.ok(lastStatus);
@@ -797,7 +798,7 @@ export const scenarios: Scenario[] = [
       assert.equal(finals.length, 1, 'an unresolvable model must still deliver one final, not silence');
       const [final] = finals;
       assert.ok(final);
-      assert.equal(final.text, PROVIDER_FAILURE_TEXT);
+      assert.equal(final.text, AGENT_FAILURE_TEXT);
     },
   },
   {
@@ -846,7 +847,7 @@ export const scenarios: Scenario[] = [
   },
   {
     id: 'S30',
-    title: 'reply footer appears on streamed fallback and provider-failure finals',
+    title: 'reply footer appears on streamed fallback and sanitized failure finals',
     config: demoChannelConfig({
       env: { SLACK_TAG_PUBLIC_URL: 'https://demo.example' },
     }),
@@ -913,7 +914,7 @@ export const scenarios: Scenario[] = [
         modelLabel: 'local-stub/parity-stub-1',
         configureUrl: 'https://demo.example/admin?agent=agent_default',
       });
-      assert.equal(instance.backend.finals().at(-1)?.text, PROVIDER_FAILURE_TEXT);
+      assert.equal(instance.backend.finals().at(-1)?.text, AGENT_FAILURE_TEXT);
     },
   },
   {

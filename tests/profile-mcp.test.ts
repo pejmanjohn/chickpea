@@ -81,13 +81,18 @@ test('skips servers that are disabled, not ready, or have an empty allowlist', a
     server({ id: 'empty', allowedTools: [] }),
   ];
   const { fn, connected } = stubConnect({});
+  const starts: string[] = [];
   const tools = await resolveProfileMcpTools(servers, {
     agentId: 'agent_test',
     env: noSecretsEnv,
     existingToolNames: [],
     connect: fn,
+    onConnectionStart(connection) {
+      starts.push(connection.id);
+    },
   });
   assert.deepEqual(connected, [], 'no filtered server should be connected');
+  assert.deepEqual(starts, [], 'no filtered server should report a connection start');
   assert.deepEqual(tools, []);
 });
 
@@ -120,6 +125,27 @@ test('exposes only approved tools, keeping the mcp__<id>__ prefix on returned na
     tools.map((t) => t.name),
     ['mcp__srv__search'],
   );
+});
+
+test('reports connection start with policy-only identity before opening the server', async () => {
+  const conn = fakeConnection([tool('mcp__srv__search')]);
+  const starts: Array<{ id: string; displayName: string }> = [];
+  const connect = async (): Promise<McpServerConnection> => {
+    assert.deepEqual(starts, [{ id: 'srv', displayName: 'Docs search' }]);
+    return conn;
+  };
+
+  await resolveProfileMcpTools([server({ displayName: 'Docs search' })], {
+    agentId: 'agent_test',
+    env: noSecretsEnv,
+    existingToolNames: [],
+    connect,
+    onConnectionStart(connection) {
+      starts.push(connection);
+    },
+  });
+
+  assert.deepEqual(starts, [{ id: 'srv', displayName: 'Docs search' }]);
 });
 
 // --- (d) approved-but-vanished tool is simply absent, no error ------------
@@ -215,6 +241,59 @@ test('a server that rejects on connect degrades gracefully (returns nothing, no 
     tools.map((t) => t.name),
     ['mcp__good__ok'],
   );
+});
+
+test('turn-time MCP failure logs redact configured query and header credentials', async () => {
+  const warnings: string[] = [];
+  const previousWarn = console.warn;
+  console.warn = (...args: unknown[]) => warnings.push(args.map(String).join(' '));
+  try {
+    await withEnv(
+      {
+        MCP_AGENT_AGENT_5FTEST_CONNECTION_SRV_BEARER: 'bearer-secret',
+        MCP_AGENT_AGENT_5FTEST_CONNECTION_SRV_HEADER_X_2DCUSTOM_2DCREDENTIAL:
+          'custom-secret',
+      },
+      async () => {
+        const connect = async (
+          _name: string,
+          options: McpServerOptions,
+        ): Promise<McpServerConnection> => {
+          const headers = new Headers(options.headers);
+          throw new Error(
+            'upstream echoed ' +
+              options.url +
+              ' ' +
+              headers.get('Authorization') +
+              ' ' +
+              headers.get('X-Custom-Credential'),
+          );
+        };
+        const tools = await resolveProfileMcpTools(
+          [
+            server({
+              url: 'https://mcp.example.com/mcp?access_token=query-secret',
+              authMode: 'bearer',
+              headerNames: ['X-Custom-Credential'],
+            }),
+          ],
+          {
+            agentId: 'agent_test',
+            env: noSecretsEnv,
+            existingToolNames: [],
+            connect,
+          },
+        );
+        assert.deepEqual(tools, []);
+      },
+    );
+  } finally {
+    console.warn = previousWarn;
+  }
+
+  const logged = warnings.join('\n');
+  assert.ok(logged.includes('[redacted]'));
+  assert.doesNotMatch(logged, /query-secret|bearer-secret|custom-secret/);
 });
 
 // --- (e) collision with existingToolNames dropped -------------------------

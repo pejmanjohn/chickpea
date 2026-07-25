@@ -1,7 +1,30 @@
+import { FlueError } from '@flue/runtime';
+
+import { SandboxUnavailableError } from './errors.ts';
+
 export const CLOUDFLARE_SANDBOX_OPTIONS = {
   keepAlive: false,
   sleepAfter: '5m',
+  // This participates in the Durable Object identity. Keep the legacy value
+  // explicit so an SDK default change cannot strand a thread's persisted retry
+  // markers. Normalizing existing ids requires a deliberate state migration.
+  normalizeId: false,
 } as const;
+
+// Rolling Worker deployments can briefly run an older Agent DO isolate beside
+// a newer State DO isolate. The previous live revision normalized ids, so keep
+// a rollout bridge that prepares/reconciles both identities for uppercase Slack
+// keys. Only the agent isolate handling the turn activates a container.
+const CLOUDFLARE_SANDBOX_NORMALIZED_COMPAT_OPTIONS = {
+  ...CLOUDFLARE_SANDBOX_OPTIONS,
+  normalizeId: true,
+} as const;
+
+export function cloudflareSandboxOptionVariants(id: string) {
+  return /[A-Z]/.test(id)
+    ? [CLOUDFLARE_SANDBOX_OPTIONS, CLOUDFLARE_SANDBOX_NORMALIZED_COMPAT_OPTIONS]
+    : [CLOUDFLARE_SANDBOX_OPTIONS];
+}
 
 export interface DestroyableSandbox {
   destroy(): Promise<void>;
@@ -40,7 +63,12 @@ export function serializeSandboxActivation<T extends ActivatableSandbox>(
         : sandbox.exists(readyPath)
     ).catch((err) => {
       activation = undefined;
-      throw err;
+      // Preserve deliberate, public-safe refusals (for example the monthly
+      // session cap). Everything else at the readiness boundary is sandbox
+      // infrastructure, not a model-provider failure. The original error is
+      // retained only as the server-side cause.
+      if (err instanceof FlueError) throw err;
+      throw new SandboxUnavailableError(err);
     });
     return activation;
   };
@@ -57,10 +85,34 @@ export function serializeSandboxActivation<T extends ActivatableSandbox>(
       }
       return async (...args: unknown[]) => {
         await ensureActive();
-        return Reflect.apply(value, target, args);
+        try {
+          return await Reflect.apply(value, target, args);
+        } catch (err) {
+          if (err instanceof FlueError || !isSandboxInfrastructureFailure(err)) {
+            throw err;
+          }
+          throw new SandboxUnavailableError(err);
+        }
       };
     },
   });
+}
+
+function isSandboxInfrastructureFailure(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const record = err as { code?: unknown; name?: unknown; message?: unknown };
+  const code = typeof record.code === 'string' ? record.code.toUpperCase() : '';
+  const name = typeof record.name === 'string' ? record.name : '';
+  const message = typeof record.message === 'string' ? record.message.toLowerCase() : '';
+  return (
+    code === 'CONTAINER_UNAVAILABLE' ||
+    code === 'RPC_TRANSPORT_ERROR' ||
+    code === 'OPERATION_INTERRUPTED' ||
+    name === 'ContainerUnavailableError' ||
+    name === 'RPCTransportError' ||
+    message.includes('maximum number of running container instances') ||
+    message.includes('container was unavailable')
+  );
 }
 
 /**
