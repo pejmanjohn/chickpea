@@ -96,15 +96,12 @@ import { parseSkillSource, resolveSkillSource, SkillImportError } from '../confi
 import type { SettingsStore } from '../config/settings-store.ts';
 import {
   getConfigStore,
-  getMemoryStateStore,
   getSettingsStore,
   isCloudflareTarget,
   type PlatformEnv,
 } from '../config/state-backend.ts';
 import type { ConfigStore } from '../config/store.ts';
 import type { ChannelAssignment, CustomAgentConfig } from '../config/types.ts';
-import { resolveMemorySetting } from '../memory/settings.ts';
-import type { MemoryStateStore } from '../memory/types.ts';
 import {
   envManagedSlackBehaviorKeys,
   resolveSlackBehaviorSettings,
@@ -136,8 +133,6 @@ interface AdminRoutesOptions {
   store?: ConfigStore | undefined;
   // Same seam for the Slack-connection wizard's settings persistence.
   settings?: SettingsStore | undefined;
-  // Same seam for install-level memory enablement and future memory admin APIs.
-  memory?: MemoryStateStore | undefined;
   adminToken?: string | undefined;
   knownProviders?: ReadonlySet<string> | undefined;
   // Injection seam for the MCP test-connection route, mirroring how the skills
@@ -521,10 +516,6 @@ const sandboxSettingsSchema = v.object({
   monthlySessionCap: v.pipe(v.number(), v.integer(), v.minValue(0), v.maxValue(100_000)),
 });
 
-const memorySettingsSchema = v.strictObject({
-  enabled: v.boolean(),
-});
-
 async function sandboxStatus(store: SettingsStore) {
   const resolved = await resolveSandboxSettings(store);
   const cloudflare = isCloudflareTarget();
@@ -557,12 +548,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   const store = (c: Context) => options.store ?? getConfigStore(c.env as PlatformEnv | undefined);
   const settings = (c: Context) =>
     options.settings ?? getSettingsStore(c.env as PlatformEnv | undefined);
-  const memory = (c: Context) =>
-    options.memory ?? getMemoryStateStore(c.env as PlatformEnv | undefined);
-  const memoryEnvironment = (c: Context): Record<string, string | undefined> =>
-    isCloudflareTarget()
-      ? (c.env as Record<string, string | undefined>)
-      : process.env;
   const adminToken = () =>
     tokenFromOptions ? options.adminToken : process.env.TAG_ADMIN_TOKEN;
   const modelProviders = () =>
@@ -876,24 +861,14 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   });
 
   app.get('/admin/api/memory/settings', async (c) => {
-    return c.json(await resolveMemorySetting(memory(c), memoryEnvironment(c)));
+    return c.json({ enabled: true, alwaysOn: true });
   });
 
   app.put('/admin/api/memory/settings', async (c) => {
-    const parsed = v.safeParse(memorySettingsSchema, await readJson(c.req));
-    if (!parsed.success) {
-      return invalidRequest(c);
-    }
-    const current = await resolveMemorySetting(memory(c), memoryEnvironment(c));
-    if (current.managedByEnvironment) {
-      return c.json({ error: 'memory_setting_managed_by_environment', ...current }, 409);
-    }
-    await memory(c).setMemoryEnabled({
-      enabled: parsed.output.enabled,
-      actorId: 'admin',
-      idempotencyKey: `memory:admin:setting:${randomUUID()}`,
-    });
-    return c.json(await resolveMemorySetting(memory(c), memoryEnvironment(c)));
+    return c.json(
+      { error: 'memory_always_enabled', enabled: true, alwaysOn: true },
+      409,
+    );
   });
 
   app.get('/admin/api/github/status', async (c) => {

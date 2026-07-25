@@ -20,8 +20,6 @@ import type {
   CustomAgentConfig,
   McpConnectionConfig,
 } from '../src/config/types.ts';
-import { SqliteMemoryStateStore } from '../src/memory/store.ts';
-import type { MemoryStateStore } from '../src/memory/types.ts';
 import { withEnv } from './helpers/env.ts';
 
 const ADMIN_TOKEN = 'admin-secret-token';
@@ -29,7 +27,6 @@ const ADMIN_TOKEN = 'admin-secret-token';
 interface AdminHarnessOptions {
   adminToken?: string | undefined;
   settings?: SettingsStore;
-  memory?: MemoryStateStore;
   discoverMcp?: (input: McpConnectInput) => Promise<McpDiscoveryResult>;
 }
 
@@ -54,7 +51,6 @@ function appWithAdminOptions(store: ConfigStore, options: AdminHarnessOptions = 
     createAdminRoutes({
       store,
       settings,
-      ...(options.memory ? { memory: options.memory } : {}),
       adminToken: token,
       knownProviders: new Set(['local-stub']),
       ...(options.discoverMcp ? { discoverMcp: options.discoverMcp } : {}),
@@ -1674,11 +1670,10 @@ test('admin sandbox settings are auth-gated and round-trip install-level control
   }
 });
 
-test('admin memory settings are auth-gated, default off, writable, and env-honest', async () => {
+test('admin memory status is auth-gated, always on, and cannot be disabled', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
-  const memory = new SqliteMemoryStateStore(':memory:');
   try {
-    const app = appWithAdminOptions(store, { memory });
+    const app = appWithAdminOptions(store);
 
     const unauthorized = await app.request('/admin/api/memory/settings');
     assert.equal(unauthorized.status, 401);
@@ -1687,37 +1682,32 @@ test('admin memory settings are auth-gated, default off, writable, and env-hones
       headers: auth(ADMIN_TOKEN),
     });
     assert.deepEqual(await initial.json(), {
-      enabled: false,
-      managedByEnvironment: false,
+      enabled: true,
+      alwaysOn: true,
     });
 
-    const saved = await app.request('/admin/api/memory/settings', {
+    const rejected = await app.request('/admin/api/memory/settings', {
       method: 'PUT',
       headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
-      body: JSON.stringify({ enabled: true }),
+      body: JSON.stringify({ enabled: false }),
     });
-    assert.equal(saved.status, 200);
-    assert.deepEqual(await saved.json(), {
+    assert.equal(rejected.status, 409);
+    assert.deepEqual(await rejected.json(), {
+      error: 'memory_always_enabled',
       enabled: true,
-      managedByEnvironment: false,
+      alwaysOn: true,
     });
-    assert.equal(await memory.getMemoryEnabled(), true);
-
     await withEnv({ SLACK_TAG_MEMORY_ENABLED: 'false' }, async () => {
-      const managed = await app.request('/admin/api/memory/settings', {
-        method: 'PUT',
-        headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
-        body: JSON.stringify({ enabled: true }),
+      const status = await app.request('/admin/api/memory/settings', {
+        headers: auth(ADMIN_TOKEN),
       });
-      assert.equal(managed.status, 409);
-      assert.deepEqual(await managed.json(), {
-        error: 'memory_setting_managed_by_environment',
-        enabled: false,
-        managedByEnvironment: true,
+      assert.equal(status.status, 200);
+      assert.deepEqual(await status.json(), {
+        enabled: true,
+        alwaysOn: true,
       });
     });
   } finally {
-    memory.close();
     store.close();
   }
 });

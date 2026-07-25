@@ -23,7 +23,7 @@ const baseTurn: NormalizedSlackTurn = {
   contextMode: 'channel_history',
 };
 
-test('Slack commands persist memory and ordinary turns rotate bounded memory epochs', async () => {
+test('Slack commands persist memory even when a legacy disable override remains', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'chickpea-memory-runtime-'));
   const previous = snapshotEnvironment();
   const originalFetch = globalThis.fetch;
@@ -33,7 +33,7 @@ test('Slack commands persist memory and ordinary turns rotate bounded memory epo
     process.env.SLACK_BOT_TOKEN = 'xoxb-test-not-a-real-token';
     process.env.SLACK_SIGNING_SECRET = 'test-signing-secret';
     process.env.SLACK_BOT_USER_ID = 'U_BOT';
-    process.env.SLACK_TAG_MEMORY_ENABLED = 'true';
+    process.env.SLACK_TAG_MEMORY_ENABLED = 'false';
     globalThis.fetch = fakeSlackFetch;
     const client = {} as WebClient;
     const presenter = {

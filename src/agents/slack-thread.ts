@@ -77,7 +77,11 @@ import { createWorkspaceArtifactCapability } from '../sandbox/artifact-tool.ts';
 import { workspaceSkillForSandbox } from '../sandbox/workspace-skill.ts';
 import { INTERNAL_AGENT_TOKEN_HEADER, isValidInternalAgentToken } from '../slack/internal-auth.ts';
 import { publishActivityStatus } from '../slack/activity-publisher.ts';
-import { parseSlackThreadKey, slackArtifactThreadTs } from '../slack/thread-key.ts';
+import {
+  baseSlackThreadKey,
+  parseSlackThreadKey,
+  slackArtifactThreadTs,
+} from '../slack/thread-key.ts';
 import { getClient } from '../slack/run-turn.ts';
 import { WebClientPresenter } from '../slack/web-client-presenter.ts';
 
@@ -411,7 +415,11 @@ export default defineAgent(async ({ id }) => {
   const isDirect = surfaceForChannelId(channelId) === 'direct';
   const config = isDirect
     ? await resolve()
-    : await getOrCreateSnapshot(getAgentSnapshotStore(env), id, resolve);
+    : await getOrCreateSnapshot(
+        getAgentSnapshotStore(env),
+        baseSlackThreadKey(id),
+        resolve,
+      );
 
   // A channel snapshot is a ceiling, not a revocation lease. Intersect its
   // frozen grants with the current profile once, before repository access

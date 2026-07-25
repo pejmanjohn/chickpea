@@ -225,26 +225,3 @@ test('conversation contexts rotate monotonically only when the selection contrac
     store.close();
   }
 });
-
-test('stored memory enablement defaults off and emits exactly one content-free audit event', async () => {
-  const store = new SqliteMemoryStateStore(':memory:', () => createdAt);
-  try {
-    assert.equal(await store.getMemoryEnabled(), false);
-    await store.setMemoryEnabled({
-      enabled: true,
-      actorId: 'admin',
-      idempotencyKey: 'memory:admin:setting:1',
-    });
-    await store.setMemoryEnabled({
-      enabled: true,
-      actorId: 'admin',
-      idempotencyKey: 'memory:admin:setting:1',
-    });
-    assert.equal(await store.getMemoryEnabled(), true);
-    const events = await store.listAuditEvents({ eventType: 'memory.setting_changed' });
-    assert.equal(events.length, 1);
-    assert.equal(events[0]?.metadataJson, '{"enabled":true}');
-  } finally {
-    store.close();
-  }
-});

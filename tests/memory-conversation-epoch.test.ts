@@ -36,6 +36,11 @@ test('selection changes rotate agent transcripts while operational parsing stays
     assert.equal(memoryEpochThreadKey('T:C:100.1', rotated.epoch), 'T:C:100.1:memory-e2');
     assert.equal(baseSlackThreadKey('T:C:100.1:memory-e2'), 'T:C:100.1');
     assert.equal(
+      baseSlackThreadKey('T:C:100.1:memory-e2'),
+      baseSlackThreadKey('T:C:100.1:memory-e1'),
+      'memory transcript epochs must share the frozen profile snapshot key',
+    );
+    assert.equal(
       sandboxThreadKey('T:C:100.1:memory-e2'),
       'T:C:100.1',
       'memory transcript epochs must share the prepared base-thread sandbox',

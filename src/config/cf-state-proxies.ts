@@ -27,7 +27,6 @@ import {
   type ObserveMemoryChannelScopeInput,
   type RecordMemoryReviewInput,
   type ResolveMemoryConversationContextInput,
-  type SetMemoryEnabledInput,
   type TransitionMemoryEntryInput,
   type UpdateMemoryEntryInput,
 } from '../memory/types.ts';
@@ -345,18 +344,6 @@ export class CfMemoryStateStore implements MemoryStateStore {
       rateWindowsDeleted: response.rateWindowsDeleted,
       contextsDeleted: response.contextsDeleted,
     };
-  }
-
-  async getMemoryEnabled(): Promise<boolean> {
-    const response = await this.execute({ kind: 'get_memory_enabled' });
-    if (response.kind !== 'memory_enabled') throw unexpectedMemoryResponse();
-    return response.enabled;
-  }
-
-  async setMemoryEnabled(input: SetMemoryEnabledInput): Promise<boolean> {
-    const response = await this.execute({ kind: 'set_memory_enabled', input });
-    if (response.kind !== 'memory_enabled') throw unexpectedMemoryResponse();
-    return response.enabled;
   }
 
   private async execute(request: MemoryRpcRequest): Promise<MemoryRpcResponse> {

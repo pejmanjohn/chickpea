@@ -13,16 +13,22 @@ test('Cloudflare memory proxy forwards clone-safe requests and returns typed val
       return {
         ok: true,
         value: {
-          kind: 'memory_enabled',
-          enabled: false,
+          kind: 'cleanup',
+          actorIdsCleared: 1,
+          rateWindowsDeleted: 2,
+          contextsDeleted: 3,
         },
       };
     },
   } as unknown as TagStateRpc;
 
   const store = new CfMemoryStateStore(stub);
-  assert.equal(await store.getMemoryEnabled(), false);
-  assert.deepEqual(calls, [{ kind: 'get_memory_enabled' }]);
+  assert.deepEqual(await store.cleanupRetention(), {
+    actorIdsCleared: 1,
+    rateWindowsDeleted: 2,
+    contextsDeleted: 3,
+  });
+  assert.deepEqual(calls, [{ kind: 'cleanup_retention' }]);
 });
 
 test('Cloudflare memory proxy preserves typed memory conflict errors', async () => {

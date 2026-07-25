@@ -17,7 +17,6 @@ import {
 } from './scope.ts';
 import { selectMemoryEntries, type MemorySelection } from './selector.ts';
 import { MemoryService } from './service.ts';
-import { resolveMemorySetting } from './settings.ts';
 import { MemoryStateError, type MemoryEntry, type MemoryStateStore } from './types.ts';
 
 const MEMORY_CONTEXT_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
@@ -58,14 +57,8 @@ export async function handleMemoryCommand(input: {
   let responseFormat: 'markdown' | 'plain_text' = 'markdown';
   try {
     const state = getMemoryStateStore(input.platformEnv);
-    const setting = await resolveMemorySetting(state, memoryEnvironment(input.platformEnv));
-    if (!setting.enabled) {
-      responseText = 'Channel memory is not enabled for this Chickpea installation.';
-      responseFormat = 'plain_text';
-    } else {
-      const runtime = await resolveRuntime(input.turn, input.platformEnv, input.client, state);
-      responseText = await executeMemoryCommand(command, input.turn, runtime);
-    }
+    const runtime = await resolveRuntime(input.turn, input.platformEnv, input.client, state);
+    responseText = await executeMemoryCommand(command, input.turn, runtime);
   } catch (error) {
     responseText = memoryErrorText(error);
     responseFormat = 'plain_text';
@@ -85,8 +78,7 @@ export async function prepareMemoryTurn(input: {
   const baseKey = slackThreadKey(input.turn);
   try {
     const state = getMemoryStateStore(input.platformEnv);
-    const setting = await resolveMemorySetting(state, memoryEnvironment(input.platformEnv));
-    if (!setting.enabled || input.turn.source === 'dm_message') return memoryFree(baseKey);
+    if (input.turn.source === 'dm_message') return memoryFree(baseKey);
     const runtime = await resolveRuntime(input.turn, input.platformEnv, input.client, state);
     const entries = await runtime.service.list({ scope: runtime.scope });
     const selection = selectMemoryEntries({
@@ -414,14 +406,6 @@ function memoryFree(conversationKey: string): PreparedMemoryTurn {
     footerItems: [],
     visibilityBarrierAt: null,
     validateLease: async () => true,
-  };
-}
-
-function memoryEnvironment(env: PlatformEnv | undefined): Record<string, string | undefined> {
-  const raw = env?.SLACK_TAG_MEMORY_ENABLED;
-  return {
-    ...process.env,
-    ...(typeof raw === 'string' ? { SLACK_TAG_MEMORY_ENABLED: raw } : {}),
   };
 }
 

@@ -15,7 +15,6 @@ import {
   MEMORY_SOURCE_ENTRY_LIMIT,
   MEMORY_RETENTION_MS,
   MEMORY_SCHEMA_VERSION,
-  MEMORY_SETTING_KEY,
   MemoryStateError,
   MemoryRateLimitError,
   MemoryVersionConflictError,
@@ -37,7 +36,6 @@ import {
   type ObserveMemoryChannelScopeInput,
   type RecordMemoryReviewInput,
   type ResolveMemoryConversationContextInput,
-  type SetMemoryEnabledInput,
   type TransitionMemoryEntryInput,
   type UpdateMemoryEntryInput,
 } from './types.ts';
@@ -215,13 +213,6 @@ export class MemoryStoreLogic {
         };
       case 'cleanup_retention':
         return { kind: 'cleanup', ...this.cleanupRetention() };
-      case 'get_memory_enabled':
-        return { kind: 'memory_enabled', enabled: this.getMemoryEnabled() };
-      case 'set_memory_enabled':
-        return {
-          kind: 'memory_enabled',
-          enabled: this.setMemoryEnabled(request.input),
-        };
     }
   }
 
@@ -1082,40 +1073,6 @@ export class MemoryStoreLogic {
     }));
   }
 
-  getMemoryEnabled(): boolean {
-    const row = this.db.get('SELECT value FROM app_settings WHERE key = ?', MEMORY_SETTING_KEY);
-    return row?.value === 'true';
-  }
-
-  setMemoryEnabled(input: SetMemoryEnabledInput): boolean {
-    const replay = this.audit.findByIdempotencyKey(input.idempotencyKey);
-    if (replay) return this.getMemoryEnabled();
-    const at = this.now();
-    return this.db.transaction(() => {
-      const secondReplay = this.audit.findByIdempotencyKey(input.idempotencyKey);
-      if (secondReplay) return this.getMemoryEnabled();
-      this.db.run(
-        `INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
-        MEMORY_SETTING_KEY,
-        input.enabled ? 'true' : 'false',
-        at,
-      );
-      this.audit.append({
-        eventId: auditId(input.idempotencyKey),
-        domain: 'memory',
-        eventType: 'memory.setting_changed',
-        outcome: 'success',
-        actorClass: 'operator',
-        actorId: input.actorId,
-        createdAt: at,
-        metadataJson: JSON.stringify({ enabled: input.enabled }),
-        idempotencyKey: input.idempotencyKey,
-      });
-      return input.enabled;
-    });
-  }
-
   private initializeSchema(): void {
     this.db.exec(
       `CREATE TABLE IF NOT EXISTS memory_meta (
@@ -1595,13 +1552,6 @@ export class SqliteMemoryStateStore implements MemoryStateStore {
     return this.logic.cleanupRetention();
   }
 
-  async getMemoryEnabled(): Promise<boolean> {
-    return this.logic.getMemoryEnabled();
-  }
-
-  async setMemoryEnabled(input: SetMemoryEnabledInput): Promise<boolean> {
-    return this.logic.setMemoryEnabled(input);
-  }
 }
 
 export function publicStoreId(workspaceId: string): string {

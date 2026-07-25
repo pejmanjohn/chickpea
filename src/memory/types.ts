@@ -1,7 +1,6 @@
 import type { AuditEvent, AuditEventFilter } from '../audit/types.ts';
 
 export const MEMORY_SCHEMA_VERSION = 1;
-export const MEMORY_SETTING_KEY = 'memory.enabled';
 export const MEMORY_ACTOR_RATE_LIMIT = 30;
 export const MEMORY_CHANNEL_RATE_LIMIT = 120;
 export const MEMORY_REVISION_CONTENT_LIMIT = 50;
@@ -223,12 +222,6 @@ export interface MemoryChannelScopeState {
   transitionVersion: number;
 }
 
-export interface SetMemoryEnabledInput {
-  enabled: boolean;
-  actorId: string;
-  idempotencyKey: string;
-}
-
 export interface MemoryEntryFilter {
   storeId?: string;
   workspaceId?: string;
@@ -290,9 +283,7 @@ export type MemoryRpcRequest =
   | { kind: 'resolve_conversation_context'; input: ResolveMemoryConversationContextInput }
   | { kind: 'observe_channel_scope'; input: ObserveMemoryChannelScopeInput }
   | { kind: 'get_channel_scope'; workspaceId: string; channelId: string }
-  | { kind: 'cleanup_retention' }
-  | { kind: 'get_memory_enabled' }
-  | { kind: 'set_memory_enabled'; input: SetMemoryEnabledInput };
+  | { kind: 'cleanup_retention' };
 
 export type MemoryRpcResponse =
   | { kind: 'ok' }
@@ -305,8 +296,7 @@ export type MemoryRpcResponse =
   | { kind: 'conversation_context'; context: MemoryConversationContext }
   | { kind: 'channel_scope'; state: MemoryChannelScopeState | null }
   | { kind: 'forget_challenge'; challenge: MemoryForgetChallenge | null }
-  | { kind: 'cleanup'; actorIdsCleared: number; rateWindowsDeleted: number; contextsDeleted: number }
-  | { kind: 'memory_enabled'; enabled: boolean };
+  | { kind: 'cleanup'; actorIdsCleared: number; rateWindowsDeleted: number; contextsDeleted: number };
 
 export interface MemoryStateStore {
   ensurePublicStore(workspaceId: string): Promise<MemoryStoreDescriptor>;
@@ -349,7 +339,5 @@ export interface MemoryStateStore {
     rateWindowsDeleted: number;
     contextsDeleted: number;
   }>;
-  getMemoryEnabled(): Promise<boolean>;
-  setMemoryEnabled(input: SetMemoryEnabledInput): Promise<boolean>;
   close?(): void;
 }
