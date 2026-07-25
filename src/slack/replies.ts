@@ -1,20 +1,12 @@
-export interface SlackStatusUpdate {
-  text: string;
-}
+import { toolActivityStatus, type ActivityStatus } from '../activity/status.ts';
 
-// Status vocabulary for the observe() tool bridge lives here (not in app.ts, which
-// is route composition). MCP tools arrive as Flue's `mcp__<server>__<tool>` —
-// render them as "is calling <server>: <tool>" so the status line names the
-// connection a human recognizes. Tool NAMES only; arguments never reach here.
-export function toolStatus(toolName: string): SlackStatusUpdate {
-  if (toolName.startsWith('mcp__')) {
-    const rest = toolName.slice(5);
-    const sep = rest.indexOf('__');
-    if (sep > 0) {
-      return { text: `is calling ${rest.slice(0, sep)}: ${rest.slice(sep + 2)}` };
-    }
-  }
-  return { text: `is running ${toolName}` };
+export type SlackStatusUpdate = ActivityStatus;
+
+// Slack rendering stays here while activity semantics live in the shared
+// activity layer. The compatibility helper has no profile context, so MCP
+// identifiers remain generic and bash arguments reduce to fixed safe stages.
+export function toolStatus(toolName: string, args?: unknown): SlackStatusUpdate {
+  return toolActivityStatus(toolName, args);
 }
 
 const FALLBACK_STATUS_TEXT = 'is working on the request';
@@ -24,8 +16,7 @@ export function slackStatusText(stage: SlackStatusUpdate): string {
 }
 
 export function slackLoadingMessages(stage: SlackStatusUpdate): string[] {
-  // The loading phrase is derived from the same event-derived status text
-  // (e.g. "is running mcp__search__query" -> "Running mcp__search__query").
+  // The loading phrase is derived from the same event-derived status text.
   return [statusToLoadingMessage(slackStatusText(stage))];
 }
 

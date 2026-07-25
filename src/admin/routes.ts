@@ -38,6 +38,7 @@ import {
 import {
   exchangeGithubAppManifest,
   getGithubConnection,
+  isGithubAppManagedHost,
   GITHUB_OWNER_PATTERN,
   GITHUB_SETTING_KEYS,
   isValidRepositoryFullName,
@@ -86,6 +87,11 @@ import {
   type AdminProviderId,
 } from '../config/provider-models.ts';
 import { knownProviderIds, listRuntimeModelProviders } from '../config/providers.ts';
+import {
+  resolveSandboxSettings,
+  SANDBOX_PACKAGE_REGISTRY_HOSTS,
+  SANDBOX_SETTING_KEYS,
+} from '../config/sandbox-settings.ts';
 import { parseSkillSource, resolveSkillSource, SkillImportError } from '../config/skill-import.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import {
@@ -245,11 +251,21 @@ const connectorHost = v.pipe(
   v.check(isAllowedConnectorHost, 'Host not allowed'),
 );
 
+const GITHUB_API_CONNECTION_ERROR =
+  'GitHub is managed by the GitHub App integration; connect it in Settings → GitHub';
+
 const apiConnectionSchema = v.pipe(
   v.object({
     id: v.pipe(v.string(), v.regex(/^[a-z0-9][a-z0-9-]{0,63}$/)),
     displayName: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(80)),
-    allowedHosts: v.pipe(v.array(connectorHost), v.maxLength(20)),
+    allowedHosts: v.pipe(
+      v.array(connectorHost),
+      v.maxLength(20),
+      v.check(
+        (hosts) => hosts.every((host) => !isGithubAppManagedHost(host)),
+        GITHUB_API_CONNECTION_ERROR,
+      ),
+    ),
     pathPrefixes: v.pipe(
       // Path-only: a `?query` or `#fragment` is silently dropped by both
       // matchesEgressPrefix and just-bash, which would broaden credential
@@ -394,22 +410,17 @@ const githubOrgSchema = v.pipe(
   v.maxLength(39),
 );
 const githubManifestSchema = v.object({ org: v.optional(githubOrgSchema) });
-const githubPatSchema = v.object({
-  token: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(4_096)),
-});
 const githubCallbackSchema = v.object({
   code: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(1_024)),
 });
-const githubInstallationIdSchema = v.union([
-  v.literal('pat'),
-  v.pipe(
-    v.string(),
-    v.regex(/^[1-9]\d*$/),
-    v.transform(Number),
-    v.integer(),
-    v.maxValue(Number.MAX_SAFE_INTEGER),
-  ),
-]);
+const githubInstallationIdSchema = v.pipe(
+  v.string(),
+  v.regex(/^[1-9]\d*$/),
+  v.transform(Number),
+  v.integer(),
+  v.maxValue(Number.MAX_SAFE_INTEGER),
+);
+const LEGACY_GITHUB_PAT_SETTING_KEY = 'github.pat';
 const githubReposQuerySchema = v.object({
   q: v.optional(v.pipe(v.string(), v.trim(), v.maxLength(256))),
   page: v.optional(
@@ -498,6 +509,28 @@ const egressPolicySchema = v.object({
   mode: v.picklist(['allowlist', 'open', 'off']),
   domains: v.pipe(v.array(egressDomain), v.maxLength(100)),
 });
+
+const sandboxSettingsSchema = v.object({
+  enabled: v.boolean(),
+  allowedHosts: v.array(v.picklist(SANDBOX_PACKAGE_REGISTRY_HOSTS)),
+  monthlySessionCap: v.pipe(v.number(), v.integer(), v.minValue(0), v.maxValue(100_000)),
+});
+
+async function sandboxStatus(store: SettingsStore) {
+  const resolved = await resolveSandboxSettings(store);
+  const cloudflare = isCloudflareTarget();
+  return {
+    enabled: resolved.enabled,
+    instanceType: resolved.instanceType,
+    allowedHosts: resolved.allowedHosts,
+    monthlySessionCap: resolved.monthlySessionCap,
+    monthlySessionCapConfigured: resolved.monthlySessionCapConfigured,
+    target: cloudflare ? ('cloudflare' as const) : ('node' as const),
+    workersPaidNote: cloudflare
+      ? 'Requires Workers Paid. Real containers run on your Cloudflare account; a typical session costs about 1 cent.'
+      : null,
+  };
+}
 
 const slackBehaviorPatchSchema = v.pipe(
   v.partial(
@@ -801,6 +834,32 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     return c.json({ policy });
   });
 
+  app.get('/admin/api/sandbox/status', async (c) => {
+    return c.json(await sandboxStatus(settings(c)));
+  });
+
+  app.put('/admin/api/sandbox/status', async (c) => {
+    const parsed = v.safeParse(sandboxSettingsSchema, await readJson(c.req));
+    if (!parsed.success) {
+      return invalidRequest(c);
+    }
+    const sandbox = parsed.output;
+    await settings(c).applySettingsPatch({
+      set: [
+        { key: SANDBOX_SETTING_KEYS.enabled, value: String(sandbox.enabled) },
+        {
+          key: SANDBOX_SETTING_KEYS.allowedHosts,
+          value: JSON.stringify([...new Set(sandbox.allowedHosts)]),
+        },
+        {
+          key: SANDBOX_SETTING_KEYS.monthlySessionCap,
+          value: String(sandbox.monthlySessionCap),
+        },
+      ],
+    });
+    return c.json(await sandboxStatus(settings(c)));
+  });
+
   app.get('/admin/api/github/status', async (c) => {
     try {
       const connection = await getGithubConnection(settings(c));
@@ -812,11 +871,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       if (connection.mode !== 'app') {
         return c.json({
           mode: connection.mode,
-          // An environment-managed PAT always wins at resolution time, so the
-          // UI must not offer a stored "replacement" that would never apply.
-          ...(connection.mode === 'pat'
-            ? { patSource: process.env.GITHUB_PAT?.trim() ? 'env' : 'stored' }
-            : {}),
           referencingProfiles,
         });
       }
@@ -965,25 +1019,18 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
   });
 
-  app.put('/admin/api/github/pat', async (c) => {
-    const parsed = v.safeParse(githubPatSchema, await readJson(c.req));
-    if (!parsed.success) {
-      return invalidRequest(c);
-    }
-    try {
-      await settings(c).setSetting(GITHUB_SETTING_KEYS.pat, parsed.output.token);
-      return c.json({ ok: true });
-    } catch (err) {
-      return internalError(c, err);
-    }
-  });
-
   app.delete('/admin/api/github', async (c) => {
     try {
       const referencingProfiles = (await store(c).listAgents())
         .filter((agent) => agent.repositories.length > 0)
         .map(({ id, name }) => ({ id, name }));
-      await settings(c).applySettingsPatch({ delete: Object.values(GITHUB_SETTING_KEYS) });
+      await settings(c).applySettingsPatch({
+        delete: [
+          ...Object.values(GITHUB_SETTING_KEYS),
+          // Cleanup only: older installs may still have this now-ignored key.
+          LEGACY_GITHUB_PAT_SETTING_KEY,
+        ],
+      });
       return c.json({ ok: true, referencingProfiles });
     } catch (err) {
       return internalError(c, err);
@@ -1001,16 +1048,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
     try {
       const connection = await getGithubConnection(settings(c));
-      if (connection.mode === 'none') {
+      if (connection.mode !== 'app') {
         return c.json({ error: 'github_not_configured' }, 409);
-      }
-      const patRequest = parsedId.output === 'pat';
-      if ((connection.mode === 'pat') !== patRequest) {
-        return invalidRequest(c);
       }
       const page = await listInstallationRepos(
         connection,
-        patRequest ? null : parsedId.output,
+        parsedId.output,
         {
           q: parsedQuery.output.q ?? '',
           page: parsedQuery.output.page ?? 1,
@@ -1030,7 +1073,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const body = await readJson(c.req);
     const parsed = v.safeParse(agentSchema, body);
     if (!parsed.success) {
-      return invalidRequest(c);
+      return invalidRequest(c, githubApiConnectionValidationMessage(parsed.issues));
     }
     const agent = toAgentConfig(parsed.output);
     const modelError = modelResolutionError(agent);
@@ -1067,12 +1110,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (!source) {
       return c.json({ error: 'unrecognized_source' }, 400);
     }
-    const githubConnection = await getGithubConnection(settings(c));
-    const token =
-      process.env.GITHUB_TOKEN?.trim() ||
-      (githubConnection.mode === 'pat' ? githubConnection.pat : undefined);
     try {
-      const resolution = await resolveSkillSource(source, fetch, token);
+      const resolution = await resolveSkillSource(source, fetch);
       return c.json({ resolution });
     } catch (err) {
       if (err instanceof SkillImportError) {
@@ -1140,7 +1179,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       // Classify first — err.message may carry raw internals and must never be
       // returned to the client. The log line keeps the bounded debug text so a
       // failing Test connection is diagnosable from observability.
-      console.warn('[chickpea] MCP test failed (' + input.id + '): ' + mcpDebugText(err));
+      console.warn(
+        '[chickpea] MCP test failed (' +
+          input.id +
+          '): ' +
+          mcpDebugText(err, { url: validated.url, headers }),
+      );
       return c.json({ ok: false, code: classifyMcpError(err), message: safeMcpFailureText(err) });
     }
   });
@@ -1416,7 +1460,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const body = await readJson(c.req);
     const parsed = v.safeParse(agentPatchSchema, body);
     if (!parsed.success) {
-      return invalidRequest(c);
+      return invalidRequest(c, githubApiConnectionValidationMessage(parsed.issues));
     }
     try {
       const configStore = store(c);
@@ -2402,8 +2446,24 @@ function assignmentKey(c: { req: { query(name: string): string | undefined } }):
   return { workspaceId, channelId };
 }
 
-function invalidRequest(c: { json(body: { error: string }, status: 400): Response }): Response {
-  return c.json({ error: 'invalid_request' }, 400);
+function githubApiConnectionValidationMessage(
+  issues: readonly { message: string }[],
+): string | undefined {
+  return issues.some((issue) => issue.message === GITHUB_API_CONNECTION_ERROR)
+    ? GITHUB_API_CONNECTION_ERROR
+    : undefined;
+}
+
+function invalidRequest(
+  c: { json(body: { error: string; message?: string }, status: 400): Response },
+  message?: string,
+): Response {
+  return c.json(
+    message
+      ? { error: 'invalid_request', message }
+      : { error: 'invalid_request' },
+    400,
+  );
 }
 
 // Free text accepts any provider/model specifier (locked model-picker

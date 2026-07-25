@@ -24,6 +24,18 @@ import { fileURLToPath } from 'node:url';
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const dbFile = path.join(projectRoot, 'src', 'db.ts');
+const validatorPatch = spawnSync(
+  process.execPath,
+  [path.join(projectRoot, 'scripts', 'patch-flue-runtime.mjs')],
+  { cwd: projectRoot, stdio: 'inherit' },
+);
+if (validatorPatch.error) {
+  console.error('[flue-build-cf]', validatorPatch.error);
+  process.exit(1);
+}
+if (validatorPatch.status !== 0) {
+  process.exit(validatorPatch.status ?? 1);
+}
 
 // Preserve the operator's local dev secrets across rebuilds. The flue build
 // wipes the output dir, which is where the documented `wrangler dev` loop keeps

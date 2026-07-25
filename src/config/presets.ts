@@ -87,7 +87,6 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
     url: 'https://docs.mcp.cloudflare.com/mcp',
     transport: 'streamable-http',
     auth: { kind: 'none' },
-    notes: 'No token needed.',
   },
   {
     id: 'cloudflare-bindings',

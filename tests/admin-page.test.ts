@@ -175,6 +175,15 @@ type EgressPolicyFixture = {
   mode: 'allowlist' | 'open' | 'off';
   domains: string[];
 };
+type SandboxStatusFixture = {
+  enabled: boolean;
+  instanceType: string;
+  allowedHosts: string[];
+  monthlySessionCap: number;
+  monthlySessionCapConfigured: boolean;
+  target: 'cloudflare' | 'node';
+  workersPaidNote: string | null;
+};
 
 function runAdminPageHarness(
   options: {
@@ -203,6 +212,7 @@ function runAdminPageHarness(
     providerKeyReject?: { status: number; detail: string };
     providerSettingsError?: { status: number; error: string };
     egressPolicy?: EgressPolicyFixture;
+    sandboxStatus?: SandboxStatusFixture;
     modelProviders?: ModelProviderFixture[];
     attachSelectionValue?: string;
     effectiveError?: { status: number; error: string; message?: string };
@@ -238,6 +248,11 @@ function runAdminPageHarness(
   providerKeyDeletes: string[];
   favoritesPuts: Array<{ id: string; favorites: string[] }>;
   egressPuts: EgressPolicyFixture[];
+  sandboxPuts: Array<{
+    enabled: boolean;
+    allowedHosts: string[];
+    monthlySessionCap: number;
+  }>;
   agentPatchBodies: Array<{ id: string; body: Record<string, unknown> }>;
   agentPostBodies: Array<Record<string, unknown>>;
   skillResolvePosts: Array<{ source: string }>;
@@ -311,6 +326,11 @@ function runAdminPageHarness(
   const providerKeyDeletes: string[] = [];
   const favoritesPuts: Array<{ id: string; favorites: string[] }> = [];
   const egressPuts: EgressPolicyFixture[] = [];
+  const sandboxPuts: Array<{
+    enabled: boolean;
+    allowedHosts: string[];
+    monthlySessionCap: number;
+  }> = [];
   const agentPatchBodies: Array<{ id: string; body: Record<string, unknown> }> = [];
   const agentPostBodies: Array<Record<string, unknown>> = [];
   const skillResolvePosts: Array<{ source: string }> = [];
@@ -385,6 +405,17 @@ function runAdminPageHarness(
   let egressPolicy: EgressPolicyFixture = options.egressPolicy ?? {
     mode: 'allowlist',
     domains: [],
+  };
+  let sandboxStatus: SandboxStatusFixture = options.sandboxStatus ?? {
+    enabled: false,
+    instanceType: 'standard-1',
+    allowedHosts: ['registry.npmjs.org', 'pypi.org', 'files.pythonhosted.org'],
+    monthlySessionCap: 0,
+    monthlySessionCapConfigured: false,
+    target: options.cloudflare ? 'cloudflare' : 'node',
+    workersPaidNote: options.cloudflare
+      ? 'Requires Workers Paid. Real containers run on your Cloudflare account; a typical session costs about 1 cent.'
+      : null,
   };
   const favoritesState: Record<string, string[]> = {
     openrouter: options.openrouterFavorites ?? ['anthropic/claude-sonnet-4', 'openai/gpt-4.1'],
@@ -690,6 +721,33 @@ function runAdminPageHarness(
         jsonResponse({ policy: { mode: egressPolicy.mode, domains: [...egressPolicy.domains] } }),
       );
     }
+    if (path === '/admin/api/sandbox/status') {
+      if (method === 'PUT') {
+        const body = JSON.parse(options?.body ?? '{}') as {
+          enabled: boolean;
+          allowedHosts: string[];
+          monthlySessionCap: number;
+        };
+        sandboxPuts.push({
+          enabled: body.enabled,
+          allowedHosts: [...body.allowedHosts],
+          monthlySessionCap: body.monthlySessionCap,
+        });
+        sandboxStatus = {
+          ...sandboxStatus,
+          enabled: body.enabled,
+          allowedHosts: [...body.allowedHosts],
+          monthlySessionCap: body.monthlySessionCap,
+          monthlySessionCapConfigured: true,
+        };
+      }
+      return Promise.resolve(
+        jsonResponse({
+          ...sandboxStatus,
+          allowedHosts: [...sandboxStatus.allowedHosts],
+        }),
+      );
+    }
     const favMatch = path.match(/^\/admin\/api\/providers\/([^/]+)\/favorites$/);
     if (favMatch) {
       const id = favMatch[1] as string;
@@ -907,6 +965,7 @@ function runAdminPageHarness(
     providerKeyDeletes,
     favoritesPuts,
     egressPuts,
+    sandboxPuts,
     agentPatchBodies,
     agentPostBodies,
     skillResolvePosts,
@@ -1947,7 +2006,12 @@ test('an import error is surfaced in the panel and dedupes a same-named skill on
         skills: [{ name: 'release-notes', description: 'Old copy.', instructions: 'Old body.', enabled: false }],
       },
     ],
-    skillResolveError: { status: 502, error: 'rate_limited', message: 'GitHub rate limit hit. Add a GITHUB_TOKEN or try later.' },
+    skillResolveError: {
+      status: 502,
+      error: 'public_only',
+      message:
+        'Only public repositories can be imported; the GitHub App integration governs private repository access',
+    },
   });
   await flushAsync();
 
@@ -1962,7 +2026,10 @@ test('an import error is surfaced in the panel and dedupes a same-named skill on
   input({ target: inputTarget({ 'data-action': 'import-source' }, 'acme/skills') });
   click({ target: actionTarget({ 'data-action': 'import-find' }) });
   await flushAsync();
-  assert.match(harness.app.innerHTML, /GitHub rate limit hit\. Add a GITHUB_TOKEN or try later\./);
+  assert.match(
+    harness.app.innerHTML,
+    /Only public repositories can be imported; the GitHub App integration governs private repository access/,
+  );
   assert.match(harness.app.innerHTML, /data-action="import-source"/);
 });
 
@@ -2190,6 +2257,7 @@ test('a connected preset drops out of the Available gallery until it is removed'
   const harness = runAdminPageHarness({
     agents: [
       connectionsAgent({
+        mcpServers: [mcpConnectionFixture()],
         apiConnections: [
           apiConnectionFixture({ id: 'asana', presetId: 'asana', displayName: 'Asana', allowedHosts: ['app.asana.com'] }),
         ],
@@ -2204,16 +2272,22 @@ test('a connected preset drops out of the Available gallery until it is removed'
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
 
   const panel = harness.app.innerHTML;
-  // Asana is already connected, so the gallery no longer offers it...
+  // Linear and Asana are already connected, so the gallery no longer offers them...
+  assert.doesNotMatch(panel, /data-action="conn-preset" data-preset="linear"/);
   assert.doesNotMatch(panel, /data-action="conn-preset" data-preset="asana"/);
-  // ...other presets remain, and the Available count dropped from 22 to 21.
-  assert.match(panel, /data-action="conn-preset" data-preset="linear"/);
-  assert.match(panel, /<span class="gallery-head-count">21<\/span>/);
+  // ...other presets remain, and the Available count dropped from 22 to 20.
+  assert.match(panel, /data-action="conn-preset" data-preset="airtable"/);
+  assert.match(panel, /<span class="gallery-head-count">20<\/span>/);
 });
 
 test('saved MCP and API connections share one lane-badged list with matching inline editors', async () => {
   const harness = runAdminPageHarness({
-    agents: [connectionsAgent({ mcpServers: [mcpConnectionFixture()], apiConnections: [apiConnectionFixture()] })],
+    agents: [
+      connectionsAgent({
+        mcpServers: [mcpConnectionFixture({ presetId: undefined })],
+        apiConnections: [apiConnectionFixture()],
+      }),
+    ],
   });
   await flushAsync();
 
@@ -2891,6 +2965,21 @@ test('a preset connection carries presetId in the profile save body', async () =
 
   const servers = harness.agentPatchBodies[0]?.body.mcpServers as Array<Record<string, unknown>>;
   assert.equal(servers[0]?.presetId, 'linear');
+});
+
+test('the keyless Cloudflare Docs recommended editor shows its token note once', async () => {
+  const harness = runAdminPageHarness({ agents: [connectionsAgent()] });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'cloudflare-docs' }) });
+
+  assert.equal((harness.app.innerHTML.match(/No token needed\./g) ?? []).length, 1);
+  click({ target: actionTarget({ 'data-action': 'conn-view', 'data-view': 'advanced' }) });
+  assert.match(harness.app.innerHTML, /<option value="none" selected>None<\/option>/);
 });
 
 test('the Connections section renders its gallery, with the STDIO-greyed form, exact security copy, and trust-gated Test', async () => {
@@ -3962,6 +4051,123 @@ test('admin topbar exposes a Settings destination that lands on the model-provid
   assert.match(harness.app.innerHTML, /<h2 class="section-title">Model providers<\/h2>/);
   // The active-state styling is the soft ember tint (.nav-active), no weight change.
   assert.match(harness.app.innerHTML, /class="btn btn-soft nav-active" data-action="open-settings">Settings<\/button>/);
+});
+
+test('Settings renders the off-by-default Coding sandbox card with cost and collapsed advanced controls', async () => {
+  const harness = runAdminPageHarness({ cloudflare: true });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+
+  click({ target: actionTarget({ 'data-action': 'open-settings' }) });
+  await flushAsync();
+
+  const html = harness.app.innerHTML;
+  assert.match(html, /<h2 class="section-title">Coding sandbox<\/h2>/);
+  assert.match(
+    html,
+    /real containers on your Cloudflare account; requires Workers Paid; ~1 cent\/session/,
+  );
+  assert.match(html, /data-action="sandbox-enabled"/);
+  assert.doesNotMatch(html, /data-action="sandbox-enabled" checked/);
+  assert.match(html, /<details class="advanced"><summary>Advanced<\/summary>/);
+  assert.match(html, /id="sandbox-instance-type" value="standard-1" readonly/);
+  assert.match(html, /wrangler\.jsonc/);
+  assert.match(html, /containers\[\]\.instance_type/);
+  assert.doesNotMatch(html, /data-action="sandbox-instance"/);
+  assert.match(html, /data-action="sandbox-host" data-host="registry\.npmjs\.org"/);
+  assert.doesNotMatch(html, /data-action="sandbox-local"/);
+  assert.doesNotMatch(html, /data-action="profile-sandbox"/);
+});
+
+test('Settings explains the Cloudflare-only coding tier and saves install-level controls', async () => {
+  const harness = runAdminPageHarness();
+  await flushAsync();
+  const click = harness.listeners.click;
+  const change = harness.listeners.change;
+  assert.ok(click && change);
+
+  click({ target: actionTarget({ 'data-action': 'open-settings' }) });
+  await flushAsync();
+
+  assert.match(
+    harness.app.innerHTML,
+    /The coding sandbox requires Cloudflare Workers\. Node and other non-Cloudflare installs keep the standard in-memory bash sandbox\./,
+  );
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="sandbox-local"/);
+
+  const changedTarget = (
+    attributes: Record<string, string>,
+    values: { checked?: boolean; value?: string },
+  ) =>
+    ({
+      ...values,
+      closest: () => null,
+      getAttribute(name: string) {
+        return attributes[name] ?? null;
+      },
+    }) as unknown as FakeTarget;
+
+  change({
+    target: changedTarget({ 'data-action': 'sandbox-enabled' }, { checked: true }),
+  });
+  change({
+    target: changedTarget(
+      { 'data-action': 'sandbox-host', 'data-host': 'pypi.org' },
+      { checked: false },
+    ),
+  });
+  click({ target: actionTarget({ 'data-action': 'sandbox-save' }) });
+  await flushAsync();
+
+  assert.deepEqual(harness.sandboxPuts, [
+    {
+      enabled: true,
+      allowedHosts: ['registry.npmjs.org', 'files.pythonhosted.org'],
+      monthlySessionCap: 200,
+    },
+  ]);
+});
+
+test('Repositories tab explains grants-implied sandbox availability without a profile toggle', async () => {
+  const harness = runAdminPageHarness();
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+
+  click({
+    target: actionTarget({
+      'data-action': 'edit-profile',
+      'data-agent': 'agent_release',
+    }),
+  });
+  click({
+    target: actionTarget({
+      'data-action': 'profile-tab',
+      'data-tab': 'repositories',
+    }),
+  });
+  await flushAsync();
+
+  assert.match(
+    harness.app.innerHTML,
+    /Coding runs in a sandbox when this profile has enabled repository grants and the install-wide tier is on\./,
+  );
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="profile-sandbox"/);
+});
+
+test('GitHub settings exposes only the required GitHub App authentication path', () => {
+  const html = renderAdminPage();
+
+  assert.match(
+    html,
+    /Required for repository access and the coding sandbox/,
+  );
+  assert.match(html, /Create GitHub App/);
+  assert.doesNotMatch(
+    html,
+    /Use a personal access token|github-pat|GITHUB_PAT|patSource|\/admin\/api\/github\/pat/,
+  );
 });
 
 test('Settings renders the three key-provider rows and hides Workers AI on the Node target', async () => {

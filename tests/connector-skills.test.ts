@@ -233,8 +233,9 @@ test('repository grants attach the repositories skill and suppress generic githu
   assert.doesNotMatch(instructions, /Acme\/Disabled/);
   assert.doesNotMatch(instructions, new RegExp(sentinel));
   assert.doesNotMatch(instructions, /Authorization\s*:/i);
-  assert.doesNotMatch(instructions, /\$GITHUB_TOKEN/i);
+  assert.doesNotMatch(instructions, /\$GITHUB_[A-Z_]*TOKEN/i);
   for (const expected of [
+    '/repos/{owner}/{repo}',
     '/contents/',
     '/search/code',
     '/pulls',

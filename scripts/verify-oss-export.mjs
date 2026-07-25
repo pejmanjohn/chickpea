@@ -17,6 +17,10 @@ const scratch = mkdtempSync(join(tmpdir(), 'chickpea-export-'));
 
 const term = (...parts) => parts.join('');
 const exportPath = (...parts) => posix.join(...parts);
+const localUserPathPattern = new RegExp(
+  term('\\/', 'users', '\\/', '[^\\/\\s]+', '\\/'),
+  'i',
+);
 
 const denyPatterns = [
   ['private source project', new RegExp(term('ski', 'llet'), 'i')],
@@ -26,9 +30,29 @@ const denyPatterns = [
   ['private workspace name', new RegExp(term('paper', 'plane'), 'i')],
   ['private company name', new RegExp(term('mag', 'oosh'), 'i')],
   ['private channel name', new RegExp(term('all-', 'paper', 'plane-', 'labs'), 'i')],
-  ['local user path', new RegExp(term('\\/', 'Users', '\\/'), 'i')],
+  // Require both a home-directory owner and a following path segment. This
+  // catches case-insensitive macOS paths while allowing API route terminals
+  // such as `/users/me` and `/users/me.json`.
+  ['local user path', localUserPathPattern],
   ['live rehearsal marker', new RegExp(term('can', 'ary'), 'i')],
 ];
+
+for (const value of [
+  term('/', 'Users', '/', 'alice', '/', 'code/project'),
+  term('/', 'users', '/', 'bob', '/', '.codex/state'),
+]) {
+  if (!localUserPathPattern.test(value)) {
+    throw new Error(`Local user path deny fixture did not match: ${value}`);
+  }
+}
+for (const value of [
+  term('/api/1.0/', 'users', '/', 'me'),
+  term('/api/v2/', 'users', '/', 'me.json'),
+]) {
+  if (localUserPathPattern.test(value)) {
+    throw new Error(`API route allow fixture matched local user path pattern: ${value}`);
+  }
+}
 
 // These paths are local agent/tool state or internal working material, not
 // public source. `.github/` and `design/` are deliberately absent: both are
@@ -305,6 +329,7 @@ function verifyNpmPackManifest() {
     'assets/chickpea-mark.svg',
     'scripts/deploy-with-epilogue.mjs',
     'scripts/flue-build-cf.mjs',
+    'scripts/patch-flue-runtime.mjs',
     'slack-app-manifest.json',
     'src/app.ts',
     'src/cloudflare.ts',

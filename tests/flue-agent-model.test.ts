@@ -14,7 +14,10 @@ import { resolveModel } from '@flue/runtime/internal';
 
 import { WORKERS_AI_CONTEXT_WINDOW_FLOOR } from '../src/app.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
-import slackThreadAgent, { resolveAgentModel } from '../src/agents/slack-thread.ts';
+import slackThreadAgent, {
+  resolveAgentModel,
+  thinkingLevelForModel,
+} from '../src/agents/slack-thread.ts';
 import { demoExecChannelAssignment, seededAgents } from '../src/config/seed.ts';
 import type { CustomAgentConfig } from '../src/config/types.ts';
 import { withEnv } from './helpers/env.ts';
@@ -150,6 +153,46 @@ test('model policy warns once per unbounded Workers AI binding model', () => {
 
   assert.equal(warnings.length, 1);
   assert.match(warnings[0] ?? '', /contextWindow 0.*auto-compaction is disabled.*grow unbounded/);
+});
+
+test('the keyless GLM default disables extra reasoning without changing other models', () => {
+  assert.equal(thinkingLevelForModel('cloudflare/@cf/zai-org/glm-5.2'), 'off');
+  assert.equal(
+    thinkingLevelForModel('cloudflare-workers-ai/@cf/zai-org/glm-5.2'),
+    undefined,
+  );
+  assert.equal(thinkingLevelForModel('cloudflare/@cf/openai/gpt-oss-120b'), undefined);
+  assert.equal(thinkingLevelForModel('anthropic/claude-sonnet-4-6'), undefined);
+});
+
+test('slack-thread wires the GLM binding override only into the exact model config', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'chickpea-thinking-policy-'));
+  const dbPath = join(dir, 'state.db');
+  const store = new SqliteConfigStore(dbPath, { agents: [], assignments: [] });
+  for (const [id, model, channelId] of [
+    ['agent_binding', 'cloudflare/@cf/zai-org/glm-5.2', 'C_BINDING'],
+    ['agent_rest', 'cloudflare-workers-ai/@cf/zai-org/glm-5.2', 'C_REST'],
+  ] as const) {
+    await store.createAgent(modelAgent({ id, model }));
+    await store.putAssignment({ workspaceId: 'T_POLICY', channelId, agentId: id, enabled: true });
+  }
+  store.close();
+
+  try {
+    const [bindingConfig, restConfig] = await withEnv(
+      { SLACK_STATE_DB_PATH: dbPath, SLACK_TAG_MODEL: undefined },
+      () =>
+        Promise.all([
+          slackThreadAgent.initialize({ id: 'T_POLICY:C_BINDING:1782770400.000100', env: {} }),
+          slackThreadAgent.initialize({ id: 'T_POLICY:C_REST:1782770400.000100', env: {} }),
+        ]),
+    );
+
+    assert.equal(bindingConfig.thinkingLevel, 'off');
+    assert.equal(restConfig.thinkingLevel, undefined);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('slack-thread initializes from the SQLite config store for the current state DB path', async () => {

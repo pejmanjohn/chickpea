@@ -66,9 +66,13 @@ test('sanitizeSkillName normalizes to the strict rule or empty', () => {
 });
 
 // A fetch mock: ordered [substring, response] pairs; first match wins.
-function mockFetch(routes: Array<[string, { status?: number; json?: unknown; text?: string }]>): typeof fetch {
-  return (async (input: unknown) => {
+function mockFetch(
+  routes: Array<[string, { status?: number; json?: unknown; text?: string }]>,
+  requests?: Array<{ url: string; init?: RequestInit }>,
+): typeof fetch {
+  return (async (input: unknown, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : String((input as { url: string }).url);
+    requests?.push({ url, ...(init ? { init } : {}) });
     for (const [needle, res] of routes) {
       if (url.includes(needle)) {
         const status = res.status ?? 200;
@@ -99,15 +103,20 @@ const TREE = {
 };
 
 test('resolveSkillSource resolves candidates, flags scripts, and skips test fixtures', async () => {
+  const requests: Array<{ url: string; init?: RequestInit }> = [];
   const fetchImpl = mockFetch([
     ['/git/trees/', { json: TREE }],
     ['/main/skills/foo/SKILL.md', { text: '---\nname: foo\ndescription: The foo skill.\n---\n# Foo body' }],
     ['/main/skills/bar/SKILL.md', { text: '---\nname: bar\ndescription: The bar skill.\n---\n# Bar body' }],
     ['api.github.com/repos/acme/skills', { json: { default_branch: 'main' } }],
-  ]);
+  ], requests);
 
   const result = await resolveSkillSource({ owner: 'acme', repo: 'skills' }, fetchImpl);
 
+  assert.equal(requests.length, 4);
+  for (const request of requests) {
+    assert.equal(new Headers(request.init?.headers).has('authorization'), false, request.url);
+  }
   assert.equal(result.ref, 'main');
   assert.equal(result.total, 2); // tests/fixtures/x is excluded from the count
   assert.equal(result.capped, false);
@@ -147,10 +156,16 @@ test('resolveSkillSource skips a skill missing a description', async () => {
   assert.equal(result.skipped, 1);
 });
 
-test('resolveSkillSource throws a typed error when the repo is missing', async () => {
-  const fetchImpl = mockFetch([['api.github.com/repos/acme/missing', { status: 404 }]]);
-  await assert.rejects(
-    () => resolveSkillSource({ owner: 'acme', repo: 'missing' }, fetchImpl),
-    (err: unknown) => err instanceof SkillImportError && err.code === 'not_found',
-  );
+test('resolveSkillSource explains that unauthenticated 403/404 repositories must be public', async () => {
+  for (const status of [403, 404]) {
+    const fetchImpl = mockFetch([['api.github.com/repos/acme/private', { status }]]);
+    await assert.rejects(
+      () => resolveSkillSource({ owner: 'acme', repo: 'private' }, fetchImpl),
+      (err: unknown) =>
+        err instanceof SkillImportError &&
+        err.code === 'public_only' &&
+        err.message ===
+          'Only public repositories can be imported; the GitHub App integration governs private repository access',
+    );
+  }
 });

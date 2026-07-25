@@ -4,7 +4,11 @@ import { resolveAgentModel } from '../config/model-policy.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
-import { promptSlackThreadAgent } from './agent-dispatch.ts';
+import {
+  AgentPromptFailure,
+  promptSlackThreadAgent,
+  releaseCloudflareSandboxTurn,
+} from './agent-dispatch.ts';
 import { resolveSlackCredentials, resolveSlackPublicUrl } from './credentials.ts';
 import type { SlackStatusUpdate } from './replies.ts';
 import { registerSlackStatusTurn } from './status-registry.ts';
@@ -15,7 +19,13 @@ import {
   assembleSlackPrompt,
   hydrateSlackContextViaWebClient,
 } from './web-client-context.ts';
-import { PROVIDER_FAILURE_TEXT, WebClientPresenter } from './web-client-presenter.ts';
+import {
+  AGENT_FAILURE_TEXT,
+  PROVIDER_FAILURE_TEXT,
+  SANDBOX_FAILURE_TEXT,
+  SANDBOX_SESSION_CAP_FAILURE_TEXT,
+  WebClientPresenter,
+} from './web-client-presenter.ts';
 
 /**
  * The turn lifecycle, factored out of the Slack channel so BOTH the node detach
@@ -83,6 +93,14 @@ export interface RunTurnOptions {
    * the DO never has to RPC into itself to resolve the bot token.
    */
   client?: WebClient;
+  /** Durable turn key forwarded to the sandbox for cap/idempotency state. */
+  turnId?: string;
+  /** Recorded result from an earlier attempt; skips the agent entirely. */
+  replayText?: string;
+  /** Persist sandbox side effects before the final Slack delivery can fail. */
+  beforeDelivery?: () => Promise<string | undefined>;
+  /** Persist terminal delivery before post-delivery workspace teardown begins. */
+  onDelivered?: () => void | Promise<void>;
 }
 
 /**
@@ -92,10 +110,10 @@ export interface RunTurnOptions {
  *   3. prompt the durable agent in-process (slack/agent-dispatch.ts) with the
  *      trigger text + hydrated (bot-filtered) context rows,
  *   4. stream the final (fallback to a markdown post), and clear status.
- * A provider failure is delivered as the sanitized static final (no provider
- * error text ever reaches Slack) and the turn still completes. `runTurn` throws
- * ONLY on a genuine delivery failure, so the caller (node .catch / relay alarm)
- * can release the claims for a retry.
+ * An agent/provider/workspace failure is delivered as category-specific static
+ * copy (no internal error text ever reaches Slack) and the turn still
+ * completes. `runTurn` throws ONLY on a genuine delivery failure, so the
+ * caller (node .catch / relay alarm) can release the claims for a retry.
  */
 export async function runTurn(
   turn: NormalizedSlackTurn,
@@ -122,7 +140,20 @@ export async function runTurn(
     workspaceId: turn.workspaceId,
   });
   const conversationKey = slackThreadKey(turn);
-  const statusTurn = registerSlackStatusTurn(conversationKey, presenter);
+  const statusGeneration = options.turnId ?? `msg:${turn.channelId}:${turn.messageTs}`;
+  const statusTurn = registerSlackStatusTurn(conversationKey, presenter, {
+    generation: statusGeneration,
+  });
+  const closeAndDrainStatus = async (): Promise<void> => {
+    // Close the sink first. Agent observations are relayed best-effort from a
+    // different Cloudflare isolate and may still arrive after ?wait=result
+    // resolves; removing this generation makes its late relays no-ops even if
+    // another turn has already registered under the same conversation key.
+    // drain() then waits only for the one Slack write already in flight and
+    // discards throttled/stale pending detail, so the final is not delayed.
+    statusTurn.close();
+    await statusTurn.drain();
+  };
 
   // 1. Visible work: set status; if it is rejected, post a durable progress
   //    placeholder so the user still sees work in-flight before the final.
@@ -141,44 +172,75 @@ export async function runTurn(
     //    in a finally so a status that was actually set is cleared even if
     //    delivery throws (old-lane parity: the clear happened in a finally; keeps
     //    S03/S15/S16 green). clearStatus is a no-op when no status was set. A
-    //    provider failure surfaces as a non-2xx ?wait=result envelope; we deliver
-    //    the sanitized static final (no provider error text ever reaches Slack).
+    //    failures surface as non-2xx ?wait=result envelopes; we deliver only
+    //    category-specific static copy (no envelope text reaches Slack).
     // The model status is cosmetic: resolving it must never abort the turn.
     // If the model is unresolvable (misconfig), skip the status and let the
     // durable agent's own resolution fail, so the prompt's catch below still
-    // delivers the sanitized provider-failure final (not silence + a Slack
+    // delivers a sanitized failure final (not silence + a Slack
     // retry loop from the claims being released on an uncaught throw).
     if (resolvedModel) {
       await statusTurn.setStatus(modelStatus(resolvedModel));
     }
     let text: string;
-    try {
-      text = await promptSlackThreadAgent(conversationKey, prompt, platformEnv);
-    } catch (err) {
-      console.error('[chickpea] provider call failed:', sanitizeError(err));
-      await statusTurn.drain();
-      await presenter.deliverFinal(PROVIDER_FAILURE_TEXT, 'plain_text');
-      return;
+    if (options.replayText !== undefined) {
+      text = options.replayText;
+    } else {
+      try {
+        text = await promptSlackThreadAgent(
+          conversationKey,
+          prompt,
+          platformEnv,
+          statusGeneration,
+        );
+      } catch (err) {
+        console.error('[chickpea] agent run failed:', sanitizeError(err));
+        const recoveredText = await options.beforeDelivery?.();
+        await closeAndDrainStatus();
+        if (recoveredText) {
+          await presenter.deliverFinal(recoveredText, 'markdown');
+          await options.onDelivered?.();
+          return;
+        }
+        await presenter.deliverFinal(agentFailureText(err), 'plain_text');
+        await options.onDelivered?.();
+        return;
+      }
     }
-    await statusTurn.drain();
+    await options.beforeDelivery?.();
+    await closeAndDrainStatus();
     await presenter.deliverFinal(text, 'markdown');
+    await options.onDelivered?.();
   } finally {
-    // Close the status registration BEFORE clearing: a late tool_start observed
-    // during the clear window is then a no-op instead of writing a fresh status
-    // the turn never clears.
-    statusTurn.close();
-    await presenter.clearStatus();
+    // Also covers failures before the ordinary delivery boundary (hydration,
+    // provider setup, or persistence). Idempotent after the success path.
+    try {
+      await closeAndDrainStatus();
+      await presenter.clearStatus();
+    } finally {
+      // The Sandbox DO lives in a different isolate from the agent factory;
+      // release it by its durable thread id at the actual end-of-turn seam.
+      await releaseCloudflareSandboxTurn(platformEnv, conversationKey);
+    }
   }
 }
 
+export function agentFailureText(err: unknown): string {
+  if (!(err instanceof AgentPromptFailure)) return AGENT_FAILURE_TEXT;
+  if (err.kind === 'provider') return PROVIDER_FAILURE_TEXT;
+  if (err.kind === 'sandbox') return SANDBOX_FAILURE_TEXT;
+  if (err.kind === 'sandbox-session-cap') return SANDBOX_SESSION_CAP_FAILURE_TEXT;
+  return AGENT_FAILURE_TEXT;
+}
+
 /**
- * Deliver ONLY the sanitized provider-failure final — the relay alarm's
+ * Deliver ONLY the sanitized generic failure final — the relay alarm's
  * last-ditch on the terminal attempt, when `runTurn` itself kept throwing (a
- * genuine delivery failure, not a provider failure, which runTurn already
- * surfaces as this same final and returns). Best-effort: the caller swallows
+ * genuine delivery failure, not an agent execution failure, which runTurn
+ * already surfaces as a categorized final and returns). Best-effort: the caller swallows
  * its errors (if Slack is the thing that is failing, this post fails too).
  */
-export async function deliverProviderFailureFinal(
+export async function deliverAgentFailureFinal(
   turn: NormalizedSlackTurn,
   assignment: ResolvedAssignment,
   client: WebClient,
@@ -196,7 +258,7 @@ export async function deliverProviderFailureFinal(
     userId: turn.userId,
     workspaceId: turn.workspaceId,
   });
-  await presenter.deliverFinal(PROVIDER_FAILURE_TEXT, 'plain_text');
+  await presenter.deliverFinal(AGENT_FAILURE_TEXT, 'plain_text');
 }
 
 function tryResolveAgentModel(agent: Parameters<typeof resolveAgentModel>[0]): string | undefined {

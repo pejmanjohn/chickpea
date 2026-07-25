@@ -375,20 +375,20 @@ test('admin API rejects enabled connections whose URL scopes overlap', async () 
   try {
     const app = appWithAdmin(store);
 
-    // Both cover api.github.com and one path is a segment-ancestor of the other,
+    // Both cover api.example.com and one path is a segment-ancestor of the other,
     // so a request under /repos/issues would match both and merge both secrets.
     const overlapping = agent({
       apiConnections: [
         apiConnection({
           id: 'gh-broad',
           displayName: 'GitHub broad',
-          allowedHosts: ['api.github.com'],
+          allowedHosts: ['api.example.com'],
           pathPrefixes: ['/repos'],
         }),
         apiConnection({
           id: 'gh-narrow',
           displayName: 'GitHub narrow',
-          allowedHosts: ['api.github.com'],
+          allowedHosts: ['api.example.com'],
           pathPrefixes: ['/repos/issues'],
         }),
       ],
@@ -440,13 +440,13 @@ test('admin API accepts same-host connections with disjoint path scopes', async 
         apiConnection({
           id: 'gh-repos',
           displayName: 'GitHub repos',
-          allowedHosts: ['api.github.com'],
+          allowedHosts: ['api.example.com'],
           pathPrefixes: ['/repos', '/repos-archive'],
         }),
         apiConnection({
           id: 'gh-orgs',
           displayName: 'GitHub orgs',
-          allowedHosts: ['api.github.com'],
+          allowedHosts: ['api.example.com'],
           pathPrefixes: ['/orgs'],
         }),
       ],
@@ -475,14 +475,14 @@ test('admin API exempts a disabled connection from the overlap check', async () 
         apiConnection({
           id: 'gh-active',
           displayName: 'GitHub active',
-          allowedHosts: ['api.github.com'],
+          allowedHosts: ['api.example.com'],
           pathPrefixes: ['/repos'],
           enabled: true,
         }),
         apiConnection({
           id: 'gh-parked',
           displayName: 'GitHub parked',
-          allowedHosts: ['api.github.com'],
+          allowedHosts: ['api.example.com'],
           pathPrefixes: ['/repos'],
           enabled: false,
         }),
@@ -1126,7 +1126,7 @@ test('admin API accepts exact apiConnection hosts and round-trips every field', 
     const patched = [
       apiConnection({
         displayName: 'Linear API v2',
-        allowedHosts: ['api.github.com'],
+        allowedHosts: ['api.example.com'],
         pathPrefixes: ['/v2/issues'],
         headerName: 'X-Api-Key',
         headerValuePrefix: 'token ',
@@ -1172,6 +1172,19 @@ test('admin API rejects invalid apiConnection hosts, methods, and header names',
     for (const [id, connection] of cases) {
       const response = await post(`agent_api_${id}`, [connection]);
       assert.equal(response.status, 400, id);
+    }
+
+    for (const host of ['github.com', 'API.GITHUB.COM', 'api.github.com.']) {
+      const response = await post(
+        `agent_api_reserved_github_${host.replaceAll('.', '_').toLowerCase()}`,
+        [apiConnection({ allowedHosts: [host] })],
+      );
+      assert.equal(response.status, 400, host);
+      assert.deepEqual(await response.json(), {
+        error: 'invalid_request',
+        message:
+          'GitHub is managed by the GitHub App integration; connect it in Settings → GitHub',
+      });
     }
   } finally {
     store.close();
@@ -1598,6 +1611,65 @@ test('profile-scoped MCP test classifies a hung connection as timeout (HTTP 200,
   }
 });
 
+test('admin sandbox settings are auth-gated and round-trip install-level controls', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    const app = appWithAdminOptions(store, { settings });
+
+    const unauthorized = await app.request('/admin/api/sandbox/status');
+    assert.equal(unauthorized.status, 401);
+    assert.deepEqual(await unauthorized.json(), { error: 'unauthorized' });
+
+    const initial = await app.request('/admin/api/sandbox/status', {
+      headers: auth(ADMIN_TOKEN),
+    });
+    assert.equal(initial.status, 200);
+    assert.deepEqual(await initial.json(), {
+      enabled: false,
+      instanceType: 'standard-1',
+      allowedHosts: ['registry.npmjs.org', 'pypi.org', 'files.pythonhosted.org'],
+      monthlySessionCap: 0,
+      monthlySessionCapConfigured: false,
+      target: 'node',
+      workersPaidNote: null,
+    });
+
+    const saved = await app.request('/admin/api/sandbox/status', {
+      method: 'PUT',
+      headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        enabled: true,
+        // A legacy caller may still send this field, but it is no longer part
+        // of the PUT contract and cannot alter the deploy-time value.
+        instanceType: 'standard-2',
+        allowedHosts: ['registry.npmjs.org', 'files.pythonhosted.org', 'registry.npmjs.org'],
+        monthlySessionCap: 450,
+      }),
+    });
+    assert.equal(saved.status, 200);
+    const savedBody = {
+      enabled: true,
+      instanceType: 'standard-1',
+      allowedHosts: ['registry.npmjs.org', 'files.pythonhosted.org'],
+      monthlySessionCap: 450,
+      monthlySessionCapConfigured: true,
+      target: 'node',
+      workersPaidNote: null,
+    };
+    assert.deepEqual(await saved.json(), savedBody);
+
+    const reflected = await app.request('/admin/api/sandbox/status', {
+      headers: auth(ADMIN_TOKEN),
+    });
+    assert.equal(reflected.status, 200);
+    assert.deepEqual(await reflected.json(), savedBody);
+  } finally {
+    settings.close();
+    store.close();
+  }
+});
+
 test('profile-scoped MCP test classifies a 401 as unauthorized (HTTP 200)', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   try {
@@ -1627,6 +1699,50 @@ test('profile-scoped MCP test classifies a 401 as unauthorized (HTTP 200)', asyn
   } finally {
     store.close();
   }
+});
+
+test('profile-scoped MCP test redacts configured query and header credentials from logs', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const warnings: string[] = [];
+  const previousWarn = console.warn;
+  console.warn = (...args: unknown[]) => warnings.push(args.map(String).join(' '));
+  try {
+    const app = appWithAdminOptions(store, {
+      discoverMcp: async (input) => {
+        throw new Error(
+          'upstream echoed ' +
+            input.url +
+            ' ' +
+            input.headers.Authorization +
+            ' ' +
+            input.headers['X-Custom-Credential'],
+        );
+      },
+    });
+
+    const response = await app.request('/admin/api/agents/agent_test/mcp/test', {
+      method: 'POST',
+      headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        id: 'linear-mcp',
+        url: 'https://mcp.linear.app/mcp?access_token=query-secret',
+        transport: 'streamable-http',
+        authMode: 'bearer',
+        bearerToken: 'bearer-secret',
+        headers: { 'X-Custom-Credential': 'custom-secret' },
+      }),
+    });
+
+    assert.equal(response.status, 200);
+    assert.equal(((await response.json()) as { ok: boolean }).ok, false);
+  } finally {
+    console.warn = previousWarn;
+    store.close();
+  }
+
+  const logged = warnings.join('\n');
+  assert.ok(logged.includes('[redacted]'));
+  assert.doesNotMatch(logged, /query-secret|bearer-secret|custom-secret/);
 });
 
 test('profile-scoped MCP test returns ok:false blocked_url without connecting to a private target', async () => {

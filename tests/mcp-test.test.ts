@@ -77,6 +77,7 @@ test('discoverMcpTools passes id as the server name and callTimeoutMs to connect
   assert.equal(calls[0]?.name, 'srv');
   assert.equal(calls[0]?.options.timeoutMs, 12_345);
   assert.equal(calls[0]?.options.transport, 'streamable-http');
+  assert.equal(typeof calls[0]?.options.fetch, 'function', 'every MCP connect gets guarded fetch');
 });
 
 test('discoverMcpTools defaults callTimeoutMs to 30000', async () => {
@@ -198,4 +199,41 @@ test('connectMcp rejects at the connect deadline when connect hangs', async () =
     (e: unknown) => e,
   );
   assert.equal(classifyMcpError(err), 'timeout');
+});
+
+test('connectMcp aborts in-flight guarded fetch work at the connect deadline', async () => {
+  let fetchAborted = false;
+  const createGuardedFetch = ({ signal }: { signal?: AbortSignal }): typeof fetch => {
+    assert.ok(signal, 'connect deadline signal must be supplied to guarded fetch');
+    return (async () => {
+      return new Promise<Response>((_resolve, reject) => {
+        const onAbort = () => {
+          fetchAborted = true;
+          reject(signal.reason);
+        };
+        if (signal.aborted) onAbort();
+        else signal.addEventListener('abort', onAbort, { once: true });
+      });
+    }) as typeof fetch;
+  };
+
+  const connect = async (
+    _name: string,
+    options: McpServerOptions,
+  ): Promise<McpServerConnection> => {
+    assert.ok(options.fetch, 'guarded fetch must be passed to Flue');
+    await options.fetch(options.url);
+    return fakeConnection([]);
+  };
+
+  const err = await connectMcp(
+    { ...baseInput, url: 'https://8.8.8.8/mcp', connectTimeoutMs: 25 },
+    connect,
+    createGuardedFetch,
+  ).then(
+    () => null,
+    (e: unknown) => e,
+  );
+  assert.equal(classifyMcpError(err), 'timeout');
+  assert.equal(fetchAborted, true, 'deadline must abort the underlying fetch');
 });

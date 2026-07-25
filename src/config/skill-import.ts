@@ -59,6 +59,8 @@ const MAX_INSTRUCTIONS = 100_000;
 const SKILL_NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const SKIP_DIR_RE = /(^|\/)(tests?|node_modules|\.git|dist|build|__pycache__|fixtures)(\/|$)/;
 const SCRIPT_EXT_RE = /\.(sh|py|js|mjs|cjs|ts|rb|bash|zsh)$/i;
+const PUBLIC_REPOSITORIES_ONLY =
+  'Only public repositories can be imported; the GitHub App integration governs private repository access';
 
 /**
  * Parse a pasted source into `{ owner, repo, ref?, skillFilter? }`, or null if
@@ -177,19 +179,17 @@ interface GitTreeEntry {
 
 /**
  * Resolve a parsed source into importable skill candidates. Costs
- * 2 + min(N, MAX_SCANNED_SKILLS) subrequests. `token` (a GitHub PAT) is
- * optional; when present it raises rate limits and reaches private repos.
+ * 2 + min(N, MAX_SCANNED_SKILLS) subrequests. Skill imports are deliberately
+ * unauthenticated and therefore limited to public repositories.
  */
 export async function resolveSkillSource(
   parsed: ParsedSkillSource,
   fetchImpl: typeof fetch,
-  token?: string,
 ): Promise<SkillResolution> {
   const { owner, repo } = parsed;
   const headers: Record<string, string> = {
     accept: 'application/vnd.github+json',
     'user-agent': 'chickpea-skill-import',
-    ...(token ? { authorization: `Bearer ${token}` } : {}),
   };
 
   const ref = parsed.ref ?? (await fetchDefaultBranch(owner, repo, fetchImpl, headers));
@@ -198,11 +198,8 @@ export async function resolveSkillSource(
     `https://api.github.com/repos/${owner}/${repo}/git/trees/${encodeURIComponent(ref)}?recursive=1`,
     { headers },
   );
-  if (treeRes.status === 404) {
-    throw new SkillImportError('not_found', `Could not read ${owner}/${repo} at ${ref}.`);
-  }
-  if (treeRes.status === 403) {
-    throw new SkillImportError('rate_limited', 'GitHub rate limit hit. Add a GITHUB_TOKEN or try later.');
+  if (treeRes.status === 403 || treeRes.status === 404) {
+    throw new SkillImportError('public_only', PUBLIC_REPOSITORIES_ONLY);
   }
   if (!treeRes.ok) {
     throw new SkillImportError('github_error', `GitHub returned ${treeRes.status} for ${owner}/${repo}.`);
@@ -226,7 +223,6 @@ export async function resolveSkillSource(
   for (const entry of scan) {
     const rawRes = await fetchImpl(
       `https://raw.githubusercontent.com/${owner}/${repo}/${encodeURIComponent(ref)}/${entry.path}`,
-      token ? { headers: { authorization: `Bearer ${token}` } } : undefined,
     );
     if (!rawRes.ok) {
       skipped += 1;
@@ -264,11 +260,8 @@ async function fetchDefaultBranch(
   headers: Record<string, string>,
 ): Promise<string> {
   const res = await fetchImpl(`https://api.github.com/repos/${owner}/${repo}`, { headers });
-  if (res.status === 404) {
-    throw new SkillImportError('not_found', `Repository ${owner}/${repo} was not found.`);
-  }
-  if (res.status === 403) {
-    throw new SkillImportError('rate_limited', 'GitHub rate limit hit. Add a GITHUB_TOKEN or try later.');
+  if (res.status === 403 || res.status === 404) {
+    throw new SkillImportError('public_only', PUBLIC_REPOSITORIES_ONLY);
   }
   if (!res.ok) {
     throw new SkillImportError('github_error', `GitHub returned ${res.status} for ${owner}/${repo}.`);

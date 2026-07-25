@@ -16,6 +16,14 @@ before step 2; it is the one choice that cannot be corrected later without
 reinstalling. Let your human paste secrets if your environment's policy
 prefers that; everything else is clicking.
 
+**GitHub features are configured separately:** repository access and the
+coding sandbox both require the GitHub App created from Chickpea's Settings
+page. Finish Slack setup here, then use **Settings → GitHub → Create GitHub
+App** before adding repositories to a profile. The container coding sandbox
+requires Cloudflare Workers. Node and other non-Cloudflare installs use the
+standard in-memory bash sandbox, without host filesystem or host git/SSH
+credential access.
+
 ## Steps
 
 1. **Open the manifest link.** In `/admin` (sign in with the
@@ -39,7 +47,12 @@ prefers that; everything else is clicking.
 
 4. **Install it.** Left sidebar → **OAuth & Permissions** → **Install to
    Workspace** → **Allow**. Only now does the **Bot User OAuth Token**
-   appear at the top of that same page. It starts with `xoxb-`. Copy it.
+   appear at the top of that same page. It starts with `xoxb-`. Copy it. The
+   manifest includes the `files:write` bot scope so coding-workspace screenshots
+   and artifacts can be attached to the thread. For an app created from an
+   older manifest, add that scope and reinstall the app; without it Chickpea
+   keeps the verification result but describes the artifact instead of
+   attaching it.
 
 5. **Copy the signing secret.** Left sidebar → **Basic Information** →
    **App Credentials** → **Signing Secret** → **Show** → copy.

@@ -53,14 +53,15 @@ export interface SlackReplyFooter {
 
 export function renderSlackMessage(text: string, format: SlackReplyFormat): RenderedSlackMessage {
   const normalized = normalizeMessageText(text);
+  const displayText = format === 'markdown' ? sanitizeSlackMarkdownLinks(normalized) : normalized;
 
   if (format === 'markdown') {
     return {
-      text: markdownFallbackText(normalized),
+      text: markdownFallbackText(displayText),
       blocks: [
         {
           type: 'markdown',
-          text: truncateText(normalized, slackMarkdownBlockTextLimit),
+          text: truncateText(displayText, slackMarkdownBlockTextLimit),
         },
       ],
     };
@@ -68,14 +69,28 @@ export function renderSlackMessage(text: string, format: SlackReplyFormat): Rend
 
   if (format === 'plain_text') {
     return {
-      text: truncateText(escapeSlackControlCharacters(normalized), slackFallbackTextLimit),
+      text: truncateText(escapeSlackControlCharacters(displayText), slackFallbackTextLimit),
       mrkdwn: false,
     };
   }
 
   return {
-    text: truncateText(normalized, slackFallbackTextLimit),
+    text: truncateText(displayText, slackFallbackTextLimit),
   };
+}
+
+// Slack's markdown renderer can treat the closing `*` in a strong span as part
+// of an auto-linked URL (`**https://example.test/4**` -> URL ending in `*`).
+// Drop only the unsafe outer emphasis while preserving ordinary bold text and
+// literal examples inside inline/fenced code.
+export function sanitizeSlackMarkdownLinks(markdown: string): string {
+  return markdown
+    .split(/(```[\s\S]*?```|`[^`\n]*`)/g)
+    .map((segment, index) => {
+      if (index % 2 === 1) return segment;
+      return segment.replace(/\*\*([^*\n]*https?:\/\/[^*\n]+)\*\*/g, '$1');
+    })
+    .join('');
 }
 
 export function appendSlackReplyFooter(

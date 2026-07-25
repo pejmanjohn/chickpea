@@ -1,6 +1,16 @@
-import { bash, defineAgent, type AgentRouteHandler } from '@flue/runtime';
+import {
+  bash,
+  defineAgent,
+  type AgentRouteHandler,
+  type SandboxFactory,
+} from '@flue/runtime';
 import { Bash, InMemoryFs, type NetworkConfig, type SecureFetch } from 'just-bash';
 
+import {
+  connectingActivityStatus,
+  registerActivityContext,
+  type ApiConnectionActivity,
+} from '../activity/status.ts';
 import { resolveConnectorCredential } from '../config/connector-secrets.ts';
 import { connectorSkillsForConnections } from '../config/connector-skills.ts';
 import {
@@ -14,14 +24,18 @@ import { resolveEffectiveSlackConfig } from '../config/effective-config.ts';
 import {
   getCachedInstallationToken,
   getGithubConnection,
-  GITHUB_OWNER_PATTERN,
   githubErrorStatus,
-  isValidRepositoryFullName,
+  isGithubAppManagedHost,
   type GithubConnection,
 } from '../config/github-app.ts';
-import { resolveProfileMcpTools } from '../config/profile-mcp.ts';
+import {
+  isProfileMcpServerEligible,
+  resolveProfileMcpTools,
+} from '../config/profile-mcp.ts';
 import { resolveProfileSkills } from '../config/profile-skills.ts';
 import { applyResolvedProviderKeys } from '../config/provider-keys.ts';
+import { resolveSandboxSettings } from '../config/sandbox-settings.ts';
+import { SEED_CLOUDFLARE_MODEL_PIN } from '../config/seed.ts';
 import { surfaceForChannelId } from '../config/resolver.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import { getOrCreateSnapshot } from '../config/snapshot-store.ts';
@@ -32,10 +46,51 @@ import {
   type PlatformEnv,
 } from '../config/state-backend.ts';
 import type { ApiConnectionConfig, RepositoryGrant, SkillConfig } from '../config/types.ts';
+import {
+  isDeniedRepositoryEndpoint,
+  matchesGrantedCodeSearch,
+  REPOSITORY_METHODS,
+  REPOSITORY_PERMISSIONS,
+  validEnabledRepositoryGrants,
+} from '../sandbox/egress-handler.ts';
+import { githubAuthorizationHeader } from '../sandbox/github-auth.ts';
+
+import type {
+  SandboxCredentialMode,
+  SandboxEgressPolicyInput,
+} from '../sandbox/cloudflare-policy.ts';
+import {
+  CLOUDFLARE_SANDBOX_OPTIONS,
+  SandboxLifecycleRegistry,
+  serializeSandboxActivation,
+  type DestroyableSandbox,
+} from '../sandbox/lifecycle.ts';
+import { SandboxSessionCapError } from '../sandbox/errors.ts';
+import { selectSandbox, type SandboxSelection } from '../sandbox/select.ts';
+import { reserveMonthlySandboxSession } from '../sandbox/session-cap.ts';
+import {
+  requireSandboxTurnId,
+  type SandboxTurnContext,
+} from '../sandbox/turn-context.ts';
+import { createWorkspaceArtifactCapability } from '../sandbox/artifact-tool.ts';
+import { workspaceSkillForSandbox } from '../sandbox/workspace-skill.ts';
 import { INTERNAL_AGENT_TOKEN_HEADER, isValidInternalAgentToken } from '../slack/internal-auth.ts';
-import { parseSlackThreadKey } from '../slack/thread-key.ts';
+import { publishActivityStatus } from '../slack/activity-publisher.ts';
+import { parseSlackThreadKey, slackArtifactThreadTs } from '../slack/thread-key.ts';
+import { getClient } from '../slack/run-turn.ts';
+import { WebClientPresenter } from '../slack/web-client-presenter.ts';
 
 export { resolveAgentModel } from '../config/model-policy.ts';
+
+interface ConfigurableCloudflareSandbox extends DestroyableSandbox, SandboxTurnContext {
+  configureEgress(
+    input: SandboxEgressPolicyInput,
+    turnId: string,
+  ): Promise<void>;
+}
+
+const cloudflareSandboxLifecycle =
+  new SandboxLifecycleRegistry<ConfigurableCloudflareSandbox>();
 
 export function suppressProfileNamedConnectorSkills(
   connectorSkills: readonly SkillConfig[],
@@ -47,19 +102,10 @@ export function suppressProfileNamedConnectorSkills(
   return connectorSkills.filter((skill) => !profileSkillNames.has(skill.name));
 }
 
-const REPOSITORY_HOSTS = ['api.github.com', 'github.com'];
-const REPOSITORY_METHODS = ['GET', 'POST', 'PATCH', 'PUT'];
-const REPOSITORY_PERMISSIONS = {
-  contents: 'write',
-  pull_requests: 'write',
-  issues: 'write',
-  metadata: 'read',
-  actions: 'write',
-} as const;
-
 export interface ResolvedRepositoryAccess {
   grants: RepositoryGrant[];
   connectors: ResolvedApiConnection[];
+  credentialMode?: SandboxCredentialMode;
   /**
    * True whenever the profile has enabled grants, even if no credential
    * resolved this turn. Grants make repository routing authoritative for the
@@ -67,6 +113,37 @@ export interface ResolvedRepositoryAccess {
    * open to a legacy broad connector.
    */
   governsGithubHosts: boolean;
+}
+
+interface ResolvedApiConnectionForTurn {
+  connector: ResolvedApiConnection;
+  displayName: string;
+}
+
+/**
+ * Preserve a channel thread's frozen repository ceiling while applying live
+ * revocations. The frozen row remains authoritative for additions; the live
+ * row is authoritative for removals. A matching id is the primary identity,
+ * with scope equality required so editing an id onto another repository also
+ * revokes the old scope. Legacy/recreated rows can fall back to the immutable
+ * repository + installation pair.
+ */
+export function intersectFrozenRepositoryGrants(
+  frozen: readonly RepositoryGrant[] | undefined,
+  live: readonly RepositoryGrant[] | undefined,
+): RepositoryGrant[] {
+  const liveEnabled = (live ?? []).filter((grant) => grant.enabled);
+  const sameScope = (left: RepositoryGrant, right: RepositoryGrant): boolean =>
+    left.installationId === right.installationId &&
+    left.fullName.toLowerCase() === right.fullName.toLowerCase() &&
+    left.allRepos === right.allRepos;
+
+  return (frozen ?? []).filter((grant) => {
+    if (!grant.enabled) return false;
+    const idMatch = liveEnabled.find((candidate) => candidate.id === grant.id);
+    if (idMatch) return sameScope(grant, idMatch);
+    return liveEnabled.some((candidate) => sameScope(grant, candidate));
+  });
 }
 
 /**
@@ -86,13 +163,7 @@ export async function resolveRepositoryAccess(
   // dot segment normalizes into a broader match than the grant. Dropped
   // grants still count as configured — they must fail closed, not fall open
   // to a legacy connector.
-  const enabled = configured.filter(
-    (grant) =>
-      GITHUB_OWNER_PATTERN.test(grant.accountLogin) &&
-      (grant.allRepos === true
-        ? grant.fullName === ''
-        : isValidRepositoryFullName(grant.fullName)),
-  );
+  const enabled = validEnabledRepositoryGrants(configured);
   const none = (governs: boolean): ResolvedRepositoryAccess => ({
     grants: [],
     connectors: [],
@@ -110,20 +181,6 @@ export async function resolveRepositoryAccess(
   }
 
   if (connection.mode === 'none') return none(true);
-  if (connection.mode === 'pat') {
-    // An App-era allRepos grant meant "every repo in that INSTALLATION" — a
-    // PAT may reach far more of the account, so honoring it here would widen
-    // scope on a credential-mode switch. Explicit repo names keep an
-    // identical scope under either credential and stay honored; allRepos
-    // needs a PAT-native reselection.
-    const patGrants = enabled.filter((grant) => grant.allRepos !== true);
-    if (patGrants.length === 0) return none(true);
-    return {
-      grants: patGrants,
-      connectors: repositoryConnectors(connection.pat, patGrants),
-      governsGithubHosts: true,
-    };
-  }
 
   const byInstallation = new Map<number, RepositoryGrant[]>();
   for (const grant of enabled) {
@@ -204,6 +261,7 @@ export async function resolveRepositoryAccess(
   return {
     grants: enabled.filter((grant) => grantedIds.has(grant.id)),
     connectors: resolved.flatMap((entry) => entry?.connectors ?? []),
+    credentialMode: 'app',
     governsGithubHosts: true,
   };
 }
@@ -224,27 +282,27 @@ function repositoryConnectors(
       ),
     ),
   ].sort();
-  const credential = {
+  const credential = (url: string) => ({
     headerName: 'Authorization',
-    headerValue: `Bearer ${token}`,
+    headerValue: githubAuthorizationHeader(url, token),
     allowedMethods: [...REPOSITORY_METHODS],
-  };
+  });
   return [
     {
       allowedHosts: ['api.github.com'],
       pathPrefixes: apiPrefixes,
-      ...credential,
+      ...credential('https://api.github.com'),
       matchesRequest: (url: string) => !isDeniedRepositoryEndpoint(url),
     },
     {
       allowedHosts: ['github.com'],
       pathPrefixes: gitPrefixes,
-      ...credential,
+      ...credential('https://github.com'),
     },
     {
       allowedHosts: ['api.github.com'],
       pathPrefixes: ['/search/code'],
-      ...credential,
+      ...credential('https://api.github.com'),
       matchesRequest: (url: string) => matchesGrantedCodeSearch(url, grants),
     },
   ].filter((connector) => connector.pathPrefixes.length > 0);
@@ -261,88 +319,41 @@ function repositoryPrefixes(grants: readonly RepositoryGrant[], prefix: string):
   ].sort();
 }
 
-// The skill's denial prose (no workflow dispatch, no deployment approvals, no
-// enabling/disabling workflows) is not an enforcement boundary — the token
-// carries actions:write, so these endpoints must be refused at egress. The
-// deny is method-agnostic: every listed path is write-only or (for
-// pending_deployments) a niche read not worth an allow carve-out. Re-run and
-// cancel (`/rerun`, `/rerun-failed-jobs`, `/cancel`) stay allowed.
-const DENIED_REPOSITORY_ENDPOINTS = [
-  /^\/repos\/[^/]+\/[^/]+\/dispatches$/, // repository_dispatch
-  /^\/repos\/[^/]+\/[^/]+\/actions\/workflows\/[^/]+\/dispatches$/, // workflow_dispatch
-  /^\/repos\/[^/]+\/[^/]+\/actions\/workflows\/[^/]+\/(?:enable|disable)$/,
-  /^\/repos\/[^/]+\/[^/]+\/actions\/runs\/[^/]+\/(?:approve|pending_deployments|deployment_protection_rule)$/,
-];
-
-function isDeniedRepositoryEndpoint(url: string): boolean {
-  let pathname: string;
-  try {
-    pathname = new URL(url).pathname.replace(/\/+$/, '');
-  } catch {
-    return true;
-  }
-  return DENIED_REPOSITORY_ENDPOINTS.some((pattern) => pattern.test(pathname));
-}
-
-function matchesGrantedCodeSearch(url: string, grants: readonly RepositoryGrant[]): boolean {
-  let query: string;
-  try {
-    // Validate exactly what GitHub will evaluate: with duplicate q params,
-    // `.get()` reads the first while GitHub honors another — an attacker
-    // could pass a granted-repo q for the guard and an ungranted one for the
-    // API. One q, or no credential.
-    const values = new URL(url).searchParams.getAll('q');
-    if (values.length !== 1 || values[0] === undefined) return false;
-    query = values[0];
-  } catch {
-    return false;
-  }
-  const repositories = [...query.matchAll(/(?:^|\s)repo:([^\s]+)/gi)].flatMap((match) =>
-    match[1] ? [match[1].toLowerCase()] : [],
-  );
-  if (repositories.length === 0) return false;
-  return repositories.every((repository) =>
-    grants.some((grant) =>
-      grant.allRepos === true
-        ? repository.startsWith(`${grant.accountLogin.toLowerCase()}/`)
-        : repository === grant.fullName.toLowerCase(),
-    ),
-  );
-}
-
 /**
- * Repository credentials are authoritative for GitHub while repository grants
- * are active. Remove those hosts from generic API connections so a narrower
- * legacy prefix cannot override the down-scoped installation-token route.
- * Stripping keys off CONFIGURED grants (`governsGithubHosts`), not resolved
- * connectors: a failed token mint must not fall open to a legacy broad
- * GitHub connection.
+ * GitHub hosts are reserved for the dedicated App integration. Always remove
+ * them from generic API connections, including already-saved rows and profiles
+ * with zero repository grants, so a pasted bearer credential can never create
+ * an unscoped GitHub route. Repository connectors are the sole GitHub source.
  */
 export function mergeRepositoryAndApiConnectors(
   repositoryConnectors: readonly ResolvedApiConnection[],
   apiConnectors: readonly ResolvedApiConnection[],
-  governsGithubHosts = repositoryConnectors.length > 0,
 ): ResolvedApiConnection[] {
-  if (!governsGithubHosts) return [...apiConnectors];
-  const repositoryHosts = new Set(REPOSITORY_HOSTS);
   const remainingApiConnectors = apiConnectors.flatMap((connector) => {
-    const allowedHosts = connector.allowedHosts.filter(
-      (host) => !repositoryHosts.has(host.toLowerCase()),
-    );
-    return allowedHosts.length > 0 ? [{ ...connector, allowedHosts }] : [];
+    const withoutGithub = withoutGithubManagedHosts(connector);
+    return withoutGithub ? [withoutGithub] : [];
   });
   return [...repositoryConnectors, ...remainingApiConnectors];
+}
+
+function withoutGithubManagedHosts(
+  connector: ResolvedApiConnection,
+): ResolvedApiConnection | undefined {
+  const allowedHosts = connector.allowedHosts.filter(
+    (host) => !isGithubAppManagedHost(host),
+  );
+  return allowedHosts.length > 0 ? { ...connector, allowedHosts } : undefined;
 }
 
 async function resolveApiConnectionsForTurn(
   agentId: string,
   connections: readonly ApiConnectionConfig[],
   env?: PlatformEnv,
-): Promise<ResolvedApiConnection[]> {
+): Promise<ResolvedApiConnectionForTurn[]> {
   const resolved = await Promise.all(
     connections
       .filter((connection) => connection.enabled)
-      .map(async (connection): Promise<ResolvedApiConnection | undefined> => {
+      .map(async (connection): Promise<ResolvedApiConnectionForTurn | undefined> => {
         const credential = await resolveConnectorCredential(
           { agentId, connectionId: connection.id },
           env,
@@ -350,16 +361,19 @@ async function resolveApiConnectionsForTurn(
         if (!credential) return undefined;
 
         return {
-          allowedHosts: connection.allowedHosts,
-          pathPrefixes: connection.pathPrefixes,
-          headerName: connection.headerName,
-          headerValue: (connection.headerValuePrefix ?? '') + credential,
-          allowedMethods: connection.allowedMethods,
+          connector: {
+            allowedHosts: connection.allowedHosts,
+            pathPrefixes: connection.pathPrefixes,
+            headerName: connection.headerName,
+            headerValue: (connection.headerValuePrefix ?? '') + credential,
+            allowedMethods: connection.allowedMethods,
+          },
+          displayName: connection.displayName,
         };
       }),
   );
   return resolved.filter(
-    (connection): connection is ResolvedApiConnection => connection !== undefined,
+    (connection): connection is ResolvedApiConnectionForTurn => connection !== undefined,
   );
 }
 
@@ -382,8 +396,10 @@ export default defineAgent(async ({ id }) => {
   const env = await resolveAgentPlatformEnv();
   await applyResolvedProviderKeys(env);
   const store = getConfigStore(env);
+  const settingsStore = getSettingsStore(env);
   const stores = { agents: store, assignments: store };
   const { workspaceId, channelId } = parseSlackThreadKey(id);
+  const artifactThreadTs = slackArtifactThreadTs(id);
   const resolve = () => resolveEffectiveSlackConfig(workspaceId, channelId, stores);
 
   // Channel threads are frozen (the channel handler wrote the snapshot at the
@@ -391,26 +407,63 @@ export default defineAgent(async ({ id }) => {
   // (DMs, App Home) are one continuous session, not a discrete thread, so they
   // resolve the current config every turn instead of freezing — admin edits to
   // the DM profile reach existing DM users.
-  const config =
-    surfaceForChannelId(channelId) === 'direct'
-      ? await resolve()
-      : await getOrCreateSnapshot(getAgentSnapshotStore(env), id, resolve);
+  const isDirect = surfaceForChannelId(channelId) === 'direct';
+  const config = isDirect
+    ? await resolve()
+    : await getOrCreateSnapshot(getAgentSnapshotStore(env), id, resolve);
+
+  // A channel snapshot is a ceiling, not a revocation lease. Intersect its
+  // frozen grants with the current profile once, before repository access
+  // produces either worker-side connectors or Sandbox DO policy. A missing
+  // live profile fails closed. Direct conversations already resolved the live
+  // profile above and need no second lookup.
+  let repositoryGrants = config.agent.repositories;
+  if (!isDirect) {
+    try {
+      const liveAgent = await store.getAgent(config.agent.id);
+      repositoryGrants = intersectFrozenRepositoryGrants(
+        config.agent.repositories,
+        liveAgent.repositories,
+      );
+    } catch {
+      repositoryGrants = [];
+    }
+  }
 
   // API connection policy inherits the agent snapshot contract, while its
   // credential resolves live every turn. Missing credentials degrade by
   // skipping that connection rather than aborting the turn.
-  const [egressPolicy, repositoryAccess, resolvedApiConnectors] = await Promise.all([
-    resolveEgressPolicy(env),
-    resolveRepositoryAccess(config.agent.repositories, env),
-    resolveApiConnectionsForTurn(config.agent.id, config.agent.apiConnections ?? [], env),
-  ]);
+  const [
+    egressPolicy,
+    repositoryAccess,
+    resolvedApiConnections,
+    sandboxSettings,
+    githubAppConnected,
+  ] =
+    await Promise.all([
+      resolveEgressPolicy(env),
+      resolveRepositoryAccess(repositoryGrants, env),
+      resolveApiConnectionsForTurn(config.agent.id, config.agent.apiConnections ?? [], env),
+      resolveSandboxSettings(settingsStore),
+      getGithubConnection(settingsStore).then(
+        (connection) => connection.mode === 'app',
+        () => false,
+      ),
+    ]);
+  const sandboxSelection = selectSandbox({
+    target: isCloudflareTarget() ? 'cloudflare' : 'node',
+    enabled: sandboxSettings.enabled,
+    appConnected: githubAppConnected,
+    repositoryGrants: repositoryAccess.grants,
+  });
+  const workspaceSkill = workspaceSkillForSandbox(sandboxSelection);
+
   // Repository credentials take precedence over legacy/custom GitHub
   // connections. Down-scoped installation tokens are authoritative whenever
   // grants are active, including for narrower legacy path prefixes.
   const resolvedConnectors = mergeRepositoryAndApiConnectors(
     repositoryAccess.connectors,
-    resolvedApiConnectors,
-    repositoryAccess.governsGithubHosts,
+    resolvedApiConnections.map(({ connector }) => connector),
   );
   // Project resolved connectors into credential-free scope before skill
   // construction. Connector skills come first so the existing last-writer-wins
@@ -426,10 +479,46 @@ export default defineAgent(async ({ id }) => {
     ),
     config.agent.skills,
   );
-  // Skills ride inside the resolved agent — frozen in the snapshot for channel
-  // threads, live-resolved for DMs — so they inherit the same freeze contract
-  // as instructions. resolveProfileSkills dedupes names and skips invalid rows.
-  const skills = resolveProfileSkills([...connectorSkills, ...config.agent.skills]);
+  // The install/runtime-derived workspace judge comes last so a stored
+  // same-named profile row cannot hide the live workspace security contract.
+  const skills = resolveProfileSkills([
+    ...connectorSkills,
+    ...config.agent.skills,
+    ...(workspaceSkill ? [workspaceSkill] : []),
+  ]);
+
+  const apiConnectionActivities: ApiConnectionActivity[] = [
+    ...repositoryAccess.connectors.map(({ allowedHosts, pathPrefixes, allowedMethods, matchesRequest }) => ({
+      displayName: 'GitHub repositories',
+      allowedHosts,
+      pathPrefixes,
+      allowedMethods,
+      ...(matchesRequest ? { matchesRequest } : {}),
+    })),
+    ...resolvedApiConnections.flatMap(({ connector, displayName }) => {
+      const withoutGithub = withoutGithubManagedHosts(connector);
+      return withoutGithub
+        ? [
+            {
+              displayName,
+              allowedHosts: withoutGithub.allowedHosts,
+              pathPrefixes: withoutGithub.pathPrefixes,
+              allowedMethods: withoutGithub.allowedMethods,
+              ...(withoutGithub.matchesRequest
+                ? { matchesRequest: withoutGithub.matchesRequest }
+                : {}),
+            },
+          ]
+        : [];
+    }),
+  ];
+  registerActivityContext(id, {
+    skills: skills.map((skill) => ({ name: skill.name })),
+    mcpConnections: (config.agent.mcpServers ?? [])
+      .filter(isProfileMcpServerEligible)
+      .map(({ id: connectionId, displayName }) => ({ id: connectionId, displayName })),
+    apiConnections: apiConnectionActivities,
+  });
 
   // MCP connection tools join at the same seam and inherit the same freeze
   // contract (mcpServers frozen in the snapshot for channels, live for DMs;
@@ -440,6 +529,9 @@ export default defineAgent(async ({ id }) => {
     agentId: config.agent.id,
     env,
     existingToolNames: skills.map((s) => s.name),
+    onConnectionStart: ({ displayName }) => {
+      publishActivityStatus(id, connectingActivityStatus(displayName), env);
+    },
   });
 
   const { scopes, baseNetwork, baseMethods, fallbackNetwork } = buildEgressPlan(
@@ -453,7 +545,7 @@ export default defineAgent(async ({ id }) => {
         secureFetch?: SecureFetch;
       }
     ).secureFetch;
-  let sandbox;
+  let virtualSandbox: SandboxFactory;
   const baseDelegate = secureFetchOf(baseNetwork);
   const scopeDelegates = scopes.map((scope) => ({
     prefixes: scope.prefixes,
@@ -473,21 +565,136 @@ export default defineAgent(async ({ id }) => {
       baseDelegate,
       baseMethods,
     });
-    sandbox = bash(() => new Bash({ fs: new InMemoryFs(), fetch: scopedFetch }));
+    virtualSandbox = bash(() => new Bash({ fs: new InMemoryFs(), fetch: scopedFetch }));
   } else {
     // just-bash stopped exposing secureFetch; fall back to the supported network
     // path at the fail-closed baseline (connector write methods not granted).
-    sandbox = bash(() => new Bash({ fs: new InMemoryFs(), network: fallbackNetwork }));
+    virtualSandbox = bash(() => new Bash({ fs: new InMemoryFs(), network: fallbackNetwork }));
+  }
+  let sandbox = await resolveAgentSandbox({
+    selection: sandboxSelection,
+    fallback: virtualSandbox,
+    env,
+    id,
+    grants: repositoryAccess.grants,
+    ...(repositoryAccess.credentialMode
+      ? { credentialMode: repositoryAccess.credentialMode }
+      : {}),
+    settingsStore,
+    monthlySessionCap: sandboxSettings.monthlySessionCap,
+  });
+  let tools = mcpTools;
+  if (sandboxSelection !== 'bash' && artifactThreadTs) {
+    let presenter: Promise<WebClientPresenter> | undefined;
+    const artifactCapability = createWorkspaceArtifactCapability({
+      sandbox,
+      channel: channelId,
+      threadTs: artifactThreadTs,
+      postArtifact: async (input) => {
+        presenter ??= getClient(env).then(
+          (client) =>
+            new WebClientPresenter(client, {
+              channelId,
+              threadTs: artifactThreadTs,
+              agentName: config.agent.name,
+              agentId: config.agent.id,
+              workspaceId,
+            }),
+        );
+        return (await presenter).postArtifact(input);
+      },
+    });
+    sandbox = artifactCapability.sandbox;
+    tools = [...mcpTools, artifactCapability.tool];
   }
 
+  const thinkingLevel = thinkingLevelForModel(config.model);
   return {
     model: config.model,
+    // Flue defaults reasoning-capable models to medium effort. The keyless
+    // GLM-5.2 binding can reach Workers AI's response deadline before its first
+    // tool call even at low effort, so disable extra reasoning only for this
+    // exact binding-backed model specifier. Other models keep Flue's policy.
+    ...(thinkingLevel ? { thinkingLevel } : {}),
     instructions: config.instructions,
-    tools: mcpTools,
+    tools,
     sandbox,
     ...(skills.length > 0 ? { skills } : {}),
   };
 });
+
+export function thinkingLevelForModel(model: string): 'off' | undefined {
+  return model === SEED_CLOUDFLARE_MODEL_PIN ? 'off' : undefined;
+}
+
+interface AgentSandboxOptions {
+  selection: SandboxSelection;
+  fallback: SandboxFactory;
+  env: PlatformEnv | undefined;
+  id: string;
+  grants: readonly RepositoryGrant[];
+  credentialMode?: SandboxCredentialMode;
+  settingsStore: ReturnType<typeof getSettingsStore>;
+  monthlySessionCap: number;
+}
+
+async function resolveAgentSandbox(options: AgentSandboxOptions): Promise<SandboxFactory> {
+  if (options.selection === 'bash') return options.fallback;
+
+  // Both Workers-only modules stay below the runtime target gate. getSandbox
+  // mints a lazy DO stub; configureEgress persists policy without booting the
+  // container, whose first exec remains the creation boundary.
+  if (!isCloudflareTarget()) return options.fallback;
+  const [{ cloudflareSandbox }, { getSandbox }] = await Promise.all([
+    import('@flue/runtime/cloudflare'),
+    import('@cloudflare/sandbox'),
+  ]);
+  const binding = options.env?.SANDBOX ?? options.env?.Sandbox;
+  if (!binding) {
+    throw new Error('SANDBOX Durable Object binding is unavailable');
+  }
+  let turnId: string | undefined;
+  const sandbox = await cloudflareSandboxLifecycle.acquire(
+    options.id,
+    async () =>
+      getSandbox(
+        binding as Parameters<typeof getSandbox>[0],
+        options.id,
+        CLOUDFLARE_SANDBOX_OPTIONS,
+      ) as ReturnType<typeof getSandbox> & ConfigurableCloudflareSandbox,
+    async (candidate) => {
+      turnId = await requireSandboxTurnId(candidate);
+      if (!options.credentialMode) {
+        throw new Error('Sandbox repository credential mode is unavailable');
+      }
+      await candidate.configureEgress(
+        {
+          grants: validEnabledRepositoryGrants(options.grants),
+          mode: options.credentialMode,
+        },
+        turnId,
+      );
+    },
+  );
+  const serialized = serializeSandboxActivation(
+    sandbox as unknown as Parameters<typeof cloudflareSandbox>[0],
+    '/workspace',
+    async () => {
+      if (!turnId) {
+        throw new Error('Sandbox turn context is unavailable at activation');
+      }
+      const reservation = await reserveMonthlySandboxSession({
+        store: options.settingsStore,
+        cap: options.monthlySessionCap,
+        reservationId: turnId,
+      });
+      if (!reservation.allowed) {
+        throw new SandboxSessionCapError();
+      }
+    },
+  );
+  return cloudflareSandbox(serialized, { cwd: '/workspace' });
+}
 
 /**
  * The platform env the store factories need on Cloudflare (the TAG_STATE

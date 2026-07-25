@@ -44,6 +44,12 @@ export interface ResolveProfileMcpToolsOptions {
   connect?: typeof connectMcpServer;
   /** Test seam — shortens the per-connect deadline; defaults to mcp-test's 8s. */
   connectTimeoutMs?: number;
+  /** Best-effort policy-only lifecycle hook; never receives headers or secrets. */
+  onConnectionStart?: (connection: { id: string; displayName: string }) => void;
+}
+
+export function isProfileMcpServerEligible(server: McpConnectionConfig): boolean {
+  return server.enabled && server.lifecycleStatus === 'ready' && server.allowedTools.length > 0;
 }
 
 export async function resolveProfileMcpTools(
@@ -57,9 +63,7 @@ export async function resolveProfileMcpTools(
   if (!servers || servers.length === 0) {
     return [];
   }
-  const eligible = servers.filter(
-    (s) => s.enabled && s.lifecycleStatus === 'ready' && s.allowedTools.length > 0,
-  );
+  const eligible = servers.filter(isProfileMcpServerEligible);
   if (eligible.length === 0) {
     return [];
   }
@@ -85,6 +89,7 @@ async function resolveOneServer(
   server: McpConnectionConfig,
   opts: ResolveProfileMcpToolsOptions,
 ): Promise<ToolDefinition[]> {
+  let debugHeaders: Readonly<Record<string, string>> = {};
   try {
     const secrets = await resolveMcpSecrets(
       { agentId: opts.agentId, connectionId: server.id },
@@ -92,6 +97,12 @@ async function resolveOneServer(
       opts.env,
     );
     const headers = buildMcpRequestHeaders(server.authMode, secrets);
+    debugHeaders = headers;
+    try {
+      opts.onConnectionStart?.({ id: server.id, displayName: server.displayName });
+    } catch {
+      // Status narration is cosmetic and must never block a connection.
+    }
     const connection = await connectMcp(
       {
         id: server.id,
@@ -117,7 +128,12 @@ async function resolveOneServer(
     // Graceful degrade: skip this server, never abort the turn. The DB and UI
     // only ever see the safe sentence; the log line carries the bounded debug
     // text so a live connect failure is actually diagnosable in observability.
-    console.warn('[chickpea] MCP connection ' + server.id + ' skipped: ' + mcpDebugText(err));
+    console.warn(
+      '[chickpea] MCP connection ' +
+        server.id +
+        ' skipped: ' +
+        mcpDebugText(err, { url: server.url, headers: debugHeaders }),
+    );
     return [];
   }
 }

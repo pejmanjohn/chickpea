@@ -5,7 +5,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
-import slackThreadAgent from '../src/agents/slack-thread.ts';
+import slackThreadAgent, {
+  intersectFrozenRepositoryGrants,
+} from '../src/agents/slack-thread.ts';
 import type { EffectiveSlackConfig } from '../src/config/effective-config.ts';
 import { GITHUB_SETTING_KEYS } from '../src/config/github-app.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
@@ -124,8 +126,8 @@ test('agent snapshots freeze repository grants with the effective profile', () =
     {
       id: 'repo-snapshot',
       installationId: 42,
-      accountLogin: 'magoosh',
-      fullName: 'magoosh/chickpea',
+      accountLogin: 'acme',
+      fullName: 'acme/chickpea',
       enabled: true,
     },
   ];
@@ -135,6 +137,59 @@ test('agent snapshots freeze repository grants with the effective profile', () =
   const snapshot = snapshotFromEffectiveConfig(config, 1_000);
 
   assert.deepEqual(snapshot.repositories, repositories);
+});
+
+test('frozen repository grant removed from the live profile is excluded', () => {
+  const frozen = {
+    id: 'repo-frozen',
+    installationId: 42,
+    accountLogin: 'Acme',
+    fullName: 'Acme/Frozen',
+    enabled: true,
+  };
+
+  assert.deepEqual(intersectFrozenRepositoryGrants([frozen], []), []);
+});
+
+test('frozen repository grant still present in the live profile is kept', () => {
+  const frozen = {
+    id: 'repo-frozen',
+    installationId: 42,
+    accountLogin: 'Acme',
+    fullName: 'Acme/Frozen',
+    enabled: true,
+  };
+
+  assert.deepEqual(intersectFrozenRepositoryGrants([frozen], [{ ...frozen }]), [frozen]);
+  assert.deepEqual(
+    intersectFrozenRepositoryGrants(
+      [frozen],
+      [{ ...frozen, id: 'repo-recreated' }],
+    ),
+    [frozen],
+  );
+});
+
+test('repository grant added only to the live profile does not join a frozen thread', () => {
+  const frozen = {
+    id: 'repo-frozen',
+    installationId: 42,
+    accountLogin: 'Acme',
+    fullName: 'Acme/Frozen',
+    enabled: true,
+  };
+  const liveOnly = {
+    id: 'repo-live-only',
+    installationId: 42,
+    accountLogin: 'Acme',
+    fullName: 'Acme/LiveOnly',
+    enabled: true,
+  };
+
+  assert.deepEqual(
+    intersectFrozenRepositoryGrants([frozen], [frozen, liveOnly]),
+    [frozen],
+  );
 });
 
 test('slack-thread uses frozen repository grants with a live token that stays out of model-visible surfaces', async () => {
@@ -165,7 +220,6 @@ test('slack-thread uses frozen repository grants with a live token that stays ou
         CLOUDFLARE_ACCOUNT_ID: undefined,
         GITHUB_APP_ID: undefined,
         GITHUB_APP_PRIVATE_KEY: undefined,
-        GITHUB_PAT: undefined,
       },
       async () => {
         // Freeze the channel thread before GitHub credentials exist.
@@ -174,6 +228,7 @@ test('slack-thread uses frozen repository grants with a live token that stays ou
         const editor = new SqliteConfigStore(dbPath, { agents: [], assignments: [] });
         await editor.updateAgent(AGENT_ID, {
           repositories: [
+            frozenGrant,
             {
               ...frozenGrant,
               id: 'repo-edited',

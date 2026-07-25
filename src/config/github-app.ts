@@ -1,6 +1,13 @@
 import type { SettingsStore } from './settings-store.ts';
 
 export const GITHUB_API_BASE = 'https://api.github.com';
+export const GITHUB_APP_MANAGED_HOSTS = ['api.github.com', 'github.com'] as const;
+
+const GITHUB_APP_MANAGED_HOST_SET = new Set<string>(GITHUB_APP_MANAGED_HOSTS);
+
+export function isGithubAppManagedHost(host: string): boolean {
+  return GITHUB_APP_MANAGED_HOST_SET.has(host.trim().toLowerCase().replace(/\.+$/, ''));
+}
 
 // Strict owner/repo shapes. These feed URL prefixes in the egress allow-list,
 // so anything URL-normalization could collapse (dot segments) or reinterpret
@@ -25,7 +32,6 @@ export const GITHUB_SETTING_KEYS = {
   appSlug: 'github.app.slug',
   privateKey: 'github.app.private_key',
   webhookSecret: 'github.app.webhook_secret',
-  pat: 'github.pat',
   // Single-use CSRF state for the manifest setup flow; listed here so a
   // disconnect clears any half-finished setup handshake too.
   setupState: 'github.setup_state',
@@ -33,7 +39,6 @@ export const GITHUB_SETTING_KEYS = {
 
 export type GithubConnection =
   | { mode: 'none' }
-  | { mode: 'pat'; pat: string }
   | {
       mode: 'app';
       appId: string;
@@ -80,6 +85,10 @@ interface CachedInstallationToken {
 const INSTALLATION_TOKEN_EARLY_EXPIRY_MS = 5 * 60 * 1_000;
 const INSTALLATION_TOKEN_REQUEST_TIMEOUT_MS = 10_000;
 const installationTokenCache = new Map<string, CachedInstallationToken>();
+const installationTokenInflight = new Map<
+  string,
+  Promise<{ token: string; expiresAt: string }>
+>();
 
 const GITHUB_HEADERS = {
   Accept: 'application/vnd.github+json',
@@ -134,11 +143,10 @@ export async function mintAppJwt(input: {
 }
 
 export async function getGithubConnection(settings: SettingsStore): Promise<GithubConnection> {
-  const [storedAppId, storedAppSlug, storedPrivateKey, storedPat] = await settings.getSettings([
+  const [storedAppId, storedAppSlug, storedPrivateKey] = await settings.getSettings([
     GITHUB_SETTING_KEYS.appId,
     GITHUB_SETTING_KEYS.appSlug,
     GITHUB_SETTING_KEYS.privateKey,
-    GITHUB_SETTING_KEYS.pat,
   ]);
   const appId = nonEmpty(process.env.GITHUB_APP_ID) ?? nonEmpty(storedAppId);
   const privateKey =
@@ -156,8 +164,7 @@ export async function getGithubConnection(settings: SettingsStore): Promise<Gith
       privateKeyPem: privateKey,
     };
   }
-  const pat = nonEmpty(process.env.GITHUB_PAT) ?? nonEmpty(storedPat);
-  return pat ? { mode: 'pat', pat } : { mode: 'none' };
+  return { mode: 'none' };
 }
 
 export async function listInstallations(
@@ -186,38 +193,27 @@ export async function listInstallations(
 
 export async function listInstallationRepos(
   conn: GithubConnection,
-  installationId: number | null,
+  installationId: number,
   opts: { q?: string; page?: number } = {},
   fetchImpl: FetchImpl = fetch,
 ): Promise<GithubRepositoryPage> {
+  const app = requireAppConnection(conn);
   const firstPage = opts.page ?? 1;
   if (!Number.isInteger(firstPage) || firstPage < 1) {
     throw new Error('Invalid GitHub repository page');
   }
-
-  let authorization: string;
-  let path: string;
-  let appTotalCount: number | undefined;
-  if (conn.mode === 'app') {
-    if (installationId === null || !Number.isSafeInteger(installationId) || installationId < 1) {
-      throw new Error('Invalid GitHub installation id');
-    }
-    // Listing needs only repository metadata — never mint a broader token for
-    // an admin-console enumeration than the endpoint requires.
-    const { token } = await createInstallationToken(
-      conn,
-      installationId,
-      { permissions: { metadata: 'read' } },
-      fetchImpl,
-    );
-    authorization = `Bearer ${token}`;
-    path = '/installation/repositories';
-  } else if (conn.mode === 'pat') {
-    authorization = `Bearer ${conn.pat}`;
-    path = '/user/repos';
-  } else {
-    throw new Error('GitHub is not configured');
+  if (!Number.isSafeInteger(installationId) || installationId < 1) {
+    throw new Error('Invalid GitHub installation id');
   }
+  let appTotalCount: number | undefined;
+  // Listing needs only repository metadata — never mint a broader token for
+  // an admin-console enumeration than the endpoint requires.
+  const { token } = await createInstallationToken(
+    app,
+    installationId,
+    { permissions: { metadata: 'read' } },
+    fetchImpl,
+  );
 
   const repositories: GithubRepository[] = [];
   // A filtered search must reach past the first pages: the q filter applies
@@ -228,29 +224,18 @@ export async function listInstallationRepos(
   for (let offset = 0; offset < maxPages; offset += 1) {
     const page = firstPage + offset;
     const query = new URLSearchParams({ per_page: '100', page: String(page) });
-    if (conn.mode === 'pat') {
-      query.set('affiliation', 'owner,collaborator,organization_member');
-    }
     const response = await githubFetch(
-      `${GITHUB_API_BASE}${path}?${query.toString()}`,
-      { headers: githubHeaders(authorization) },
+      `${GITHUB_API_BASE}/installation/repositories?${query.toString()}`,
+      { headers: githubHeaders(`Bearer ${token}`) },
       fetchImpl,
     );
     const raw: unknown = await response.json();
-    let rawRepositories: unknown[];
-    if (conn.mode === 'app') {
-      if (!isRecord(raw) || !Array.isArray(raw.repositories)) {
-        throw new Error('GitHub installation repositories response was invalid');
-      }
-      rawRepositories = raw.repositories;
-      if (typeof raw.total_count === 'number' && Number.isFinite(raw.total_count)) {
-        appTotalCount = raw.total_count;
-      }
-    } else {
-      if (!Array.isArray(raw)) {
-        throw new Error('GitHub user repositories response was invalid');
-      }
-      rawRepositories = raw;
+    if (!isRecord(raw) || !Array.isArray(raw.repositories)) {
+      throw new Error('GitHub installation repositories response was invalid');
+    }
+    const rawRepositories = raw.repositories;
+    if (typeof raw.total_count === 'number' && Number.isFinite(raw.total_count)) {
+      appTotalCount = raw.total_count;
     }
     repositories.push(...rawRepositories.map(parseRepository));
     lastPageFull = rawRepositories.length >= 100;
@@ -308,7 +293,8 @@ export async function createInstallationToken(
  * Runtime-only token cache. Keeping it outside createInstallationToken avoids
  * reusing an admin enumeration token (minted with different permissions) for
  * an agent turn. Runtime callers always supply the fixed repository permission
- * cap; the cache key intentionally follows GitHub's repository down-scope.
+ * cap; the cache key follows GitHub's repository down-scope, while an omitted
+ * repository set intentionally collapses all installation-wide requests.
  */
 export async function getCachedInstallationToken(
   conn: GithubConnection,
@@ -319,23 +305,41 @@ export async function getCachedInstallationToken(
   },
   fetchImpl: FetchImpl = fetch,
 ): Promise<{ token: string; expiresAt: string }> {
+  const app = requireAppConnection(conn);
   const nowMs = Date.now();
   for (const [key, entry] of installationTokenCache) {
     if (nowMs >= entry.validUntilMs) installationTokenCache.delete(key);
   }
-  const cacheKey = installationTokenCacheKey(installationId, options.repositories);
+  const cacheKey = installationTokenCacheKey(
+    app.appId,
+    installationId,
+    options.repositories,
+  );
   const cached = installationTokenCache.get(cacheKey);
   if (cached) {
     return { token: cached.token, expiresAt: cached.expiresAt };
   }
 
-  const result = await createInstallationToken(conn, installationId, options, fetchImpl);
-  const expiresAtMs = Date.parse(result.expiresAt);
-  const validUntilMs = expiresAtMs - INSTALLATION_TOKEN_EARLY_EXPIRY_MS;
-  if (Number.isFinite(validUntilMs) && validUntilMs > Date.now()) {
-    installationTokenCache.set(cacheKey, { ...result, validUntilMs });
+  const inflight = installationTokenInflight.get(cacheKey);
+  if (inflight) return inflight;
+
+  const mint = (async () => {
+    const result = await createInstallationToken(app, installationId, options, fetchImpl);
+    const expiresAtMs = Date.parse(result.expiresAt);
+    const validUntilMs = expiresAtMs - INSTALLATION_TOKEN_EARLY_EXPIRY_MS;
+    if (Number.isFinite(validUntilMs) && validUntilMs > Date.now()) {
+      installationTokenCache.set(cacheKey, { ...result, validUntilMs });
+    }
+    return result;
+  })();
+  installationTokenInflight.set(cacheKey, mint);
+  try {
+    return await mint;
+  } finally {
+    if (installationTokenInflight.get(cacheKey) === mint) {
+      installationTokenInflight.delete(cacheKey);
+    }
   }
-  return result;
 }
 
 export async function exchangeGithubAppManifest(
@@ -377,12 +381,13 @@ function requireAppConnection(
 }
 
 function installationTokenCacheKey(
+  appId: string,
   installationId: number,
   repositories: string[] | undefined,
 ): string {
   const repositorySet =
-    repositories === undefined ? '*' : [...new Set(repositories)].sort().join('\u0000');
-  return `${installationId}:${repositorySet}`;
+    repositories === undefined ? null : [...new Set(repositories)].sort();
+  return JSON.stringify(['app', appId, installationId, repositorySet]);
 }
 
 async function currentAppJwt(

@@ -140,6 +140,9 @@ function repositoriesInstructions(grants: readonly RepositoryGrant[]): string {
     '',
     '## Recipes',
     '',
+    'Get repository metadata:',
+    githubCurl(['  "https://api.github.com/repos/{owner}/{repo}"']),
+    '',
     'Read file or directory contents at a branch, tag, or commit:',
     githubCurl([
       '  "https://api.github.com/repos/{owner}/{repo}/contents/{path}?ref={branch-or-sha}"',

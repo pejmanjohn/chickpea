@@ -10,11 +10,18 @@
   "ai": {
     "binding": "AI"
   },
+  "vars": {
+    "SANDBOX_TRANSPORT": "rpc"
+  },
   // App-owned state Durable Object (src/cloudflare.ts): one singleton instance
   // hosts config agents/assignments, thread snapshots, claims, the thread
-  // registry, and operator settings on the Cloudflare target.
+  // registry, and operator settings on the Cloudflare target. SANDBOX is the
+  // Cloudflare Sandbox SDK's per-thread container Durable Object.
   "durable_objects": {
-    "bindings": [{ "name": "TAG_STATE", "class_name": "TagStateStore" }]
+    "bindings": [
+      { "name": "TAG_STATE", "class_name": "TagStateStore" },
+      { "name": "SANDBOX", "class_name": "Sandbox" }
+    ]
   },
   // Migrations are APPEND-ONLY: v1 (Flue's own DO classes) must never change,
   // or existing deployments lose their agent transcripts. New classes get a
@@ -27,6 +34,22 @@
     {
       "tag": "v2",
       "new_sqlite_classes": ["TagStateStore"]
+    },
+    {
+      "tag": "v3",
+      "new_sqlite_classes": ["Sandbox"]
+    }
+  ],
+  "containers": [
+    {
+      "class_name": "Sandbox",
+      "image": "./Dockerfile",
+      "instance_type": "standard-1",
+      // Each Slack thread still receives its own Sandbox Durable Object and
+      // container. This is only the deployment-wide concurrency ceiling; one
+      // would make unrelated threads block each other. Immediate teardown,
+      // the idle fallback, and the monthly session cap remain the spend bounds.
+      "max_instances": 25
     }
   ]
 }

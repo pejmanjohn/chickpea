@@ -1,7 +1,11 @@
 import { connectMcpServer, type McpServerConnection, type ToolDefinition } from '@flue/runtime';
 
 import { McpBlockedUrlError } from './mcp-errors.ts';
-import { validateMcpUrl } from './mcp-url.ts';
+import {
+  createMcpGuardedFetch,
+  validateMcpUrl,
+  type McpGuardedFetchOptions,
+} from './mcp-url.ts';
 
 /**
  * Shared connect + discover routine for MCP connections. Reused by the admin
@@ -69,6 +73,7 @@ export async function discoverMcpTools(
 export async function connectMcp(
   input: McpConnectInput,
   connect: typeof connectMcpServer = connectMcpServer,
+  createGuardedFetch: (options: McpGuardedFetchOptions) => typeof fetch = createMcpGuardedFetch,
 ): Promise<McpServerConnection> {
   const validated = validateMcpUrl(input.url);
   if (!validated.ok) {
@@ -76,21 +81,44 @@ export async function connectMcp(
   }
   const deadlineMs = input.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
   const callTimeoutMs = input.callTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS;
-  return raceDeadline(
-    connect(input.id, {
-      url: validated.url,
-      transport: input.transport,
-      headers: input.headers,
-      timeoutMs: callTimeoutMs,
+  const controller = new AbortController();
+  let timedOut = false;
+  const pending = connect(input.id, {
+    url: validated.url,
+    transport: input.transport,
+    headers: input.headers,
+    timeoutMs: callTimeoutMs,
+    fetch: createGuardedFetch({
+      allowedOrigin: new URL(validated.url).origin,
+      signal: controller.signal,
     }),
-    deadlineMs,
+  });
+  // A non-conforming connector may ignore the abort and resolve after our
+  // deadline. Reclaim that late connection instead of leaking it indefinitely.
+  void pending.then(
+    (connection) => {
+      if (timedOut) void connection.close().catch(() => undefined);
+    },
+    () => undefined,
   );
+  return raceDeadline(pending, deadlineMs, (timeoutError) => {
+    timedOut = true;
+    controller.abort(timeoutError);
+  });
 }
 
-function raceDeadline<T>(promise: Promise<T>, ms: number): Promise<T> {
+function raceDeadline<T>(
+  promise: Promise<T>,
+  ms: number,
+  onTimeout: (timeoutError: Error) => void,
+): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error('connect timeout after ' + ms + 'ms')), ms);
+    timer = setTimeout(() => {
+      const timeoutError = new Error('connect timeout after ' + ms + 'ms');
+      onTimeout(timeoutError);
+      reject(timeoutError);
+    }, ms);
   });
   return Promise.race([promise, deadline]).finally(() => {
     if (timer !== undefined) clearTimeout(timer);

@@ -9,6 +9,7 @@ import {
   renderUnassignedChannelHint,
   markdownFallbackText,
   renderSlackMessage,
+  sanitizeSlackMarkdownLinks,
   slackMarkdownBlockTextLimit,
 } from '../src/slack/message-format.ts';
 import {
@@ -51,6 +52,21 @@ test('standard Markdown final replies render as Slack markdown blocks', () => {
   assert.match(rendered.text, /Runbook \(https:\/\/example\.com\/runbook\)/);
   assert.doesNotMatch(rendered.text, /\*\*Bold lead\*\*/);
   assert.doesNotMatch(rendered.text, /```/);
+});
+
+test('strong emphasis cannot leak a trailing asterisk into an auto-linked URL', () => {
+  const url = 'https://github.com/octo-org/example-site/pull/4';
+  const markdown = `Done: **\ud83d\udd17 ${url}**`;
+
+  assert.equal(sanitizeSlackMarkdownLinks(markdown), `Done: \ud83d\udd17 ${url}`);
+  assert.deepEqual(renderSlackMessage(markdown, 'markdown').blocks, [
+    { type: 'markdown', text: `Done: \ud83d\udd17 ${url}` },
+  ]);
+  const [block] = renderSlackMessage(markdown, 'markdown').blocks ?? [];
+  assert.equal(block?.type, 'markdown');
+  assert.doesNotMatch(block?.type === 'markdown' ? block.text : '', /\/4\*/);
+
+  assert.equal(sanitizeSlackMarkdownLinks(`**bold** and \`${markdown}\``), `**bold** and \`${markdown}\``);
 });
 
 test('plain progress replies disable Slack markup parsing and escape control characters', () => {
@@ -197,17 +213,44 @@ test('status updates use factual text and derive loading copy from the same fact
   ]);
 });
 
-test('toolStatus names the MCP connection instead of the raw mcp__ identifier', () => {
+test('toolStatus hides raw MCP identifiers when no registered activity context is available', () => {
   assert.deepEqual(toolStatus('mcp__context7__resolve-library-id'), {
-    text: 'is calling context7: resolve-library-id',
+    text: 'is using a connection',
   });
-  // Builtin (non-MCP) tools keep the plain form.
+  // A known builtin gets descriptive fixed copy rather than its identifier.
   assert.deepEqual(toolStatus('lookup_thread_history'), {
-    text: 'is running lookup_thread_history',
+    text: 'is checking thread history',
   });
   // A malformed mcp__ name (no second separator) falls back rather than
   // rendering an empty server or tool segment.
-  assert.deepEqual(toolStatus('mcp__broken'), { text: 'is running mcp__broken' });
+  assert.deepEqual(toolStatus('mcp__broken'), { text: 'is using a connection' });
+});
+
+test('bash tool status describes the workspace stage without exposing command text', () => {
+  const examples = [
+    ['git clone https://github.com/Acme/Alpha.git', 'is cloning the repository'],
+    ['pnpm install --frozen-lockfile', 'is installing dependencies'],
+    ['pnpm test', 'is running the test suite'],
+    ['cat > src/example.test.ts <<EOF', 'is editing the code'],
+    ['git commit -m "test: add smoke coverage"', 'is committing the changes'],
+    ['git push origin chickpea/smoke-test', 'is pushing the branch'],
+    [
+      "curl -X POST https://api.github.com/repos/Acme/Alpha/pulls -d '{...}'",
+      'is opening the pull request',
+    ],
+    ['pnpm run dev', 'is starting the app'],
+    ['node capture-with-playwright.mjs screenshot.png', 'is capturing a screenshot'],
+    ['git status && find . -maxdepth 2 -type f', 'is inspecting the workspace'],
+  ] as const;
+
+  for (const [command, expected] of examples) {
+    assert.deepEqual(toolStatus('bash', { command }), { text: expected }, command);
+  }
+
+  const secret = 'ghs_do-not-leak-this-token';
+  const fallback = toolStatus('bash', { command: `custom-command --token ${secret}` });
+  assert.deepEqual(fallback, { text: 'is running a workspace command' });
+  assert.doesNotMatch(fallback.text, new RegExp(secret));
 });
 
 test('MCP tool status still respects Slack’s 50-character loading cap', () => {

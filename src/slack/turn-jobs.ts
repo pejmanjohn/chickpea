@@ -1,4 +1,8 @@
-import type { TurnJob } from '../config/state-rpc.ts';
+import type {
+  TurnJob,
+  TurnProgress,
+  TurnPullRequestProgress,
+} from '../config/state-rpc.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
 import type { StateDb } from '../state/state-db.ts';
 import { CLAIM_TTL_MS } from './claim-store.ts';
@@ -20,8 +24,8 @@ import type { NormalizedSlackTurn } from './types.ts';
  *     app_mention + message fan-out for one mention enqueues at most once.
  *   - A `delivered` tombstone excludes a completed job from any later alarm
  *     scan (`WHERE delivered = 0`), the guard against a redundant re-delivery.
- *   - A bounded attempt counter caps retries; the alarm posts the sanitized
- *     provider-failure final and releases the claims on the terminal attempt.
+ *   - A bounded attempt counter caps retries; the alarm posts a sanitized
+ *     generic failure final and releases the claims on the terminal attempt.
  *   - Rows purge on the claim TTL horizon (past it a Slack redelivery can no
  *     longer arrive, so the tombstone is dead weight — the same horizon the
  *     claims table uses).
@@ -44,6 +48,7 @@ export interface PendingTurnJob {
   assignment: ResolvedAssignment;
   /** Deliveries already attempted (0 before the alarm has ever run it). */
   attempts: number;
+  progress: TurnProgress;
 }
 
 interface TurnJobRow {
@@ -53,6 +58,7 @@ interface TurnJobRow {
   turn_json: string;
   assignment_json: string;
   attempts: number;
+  progress_json: string;
 }
 
 export class TurnJobStoreLogic {
@@ -70,9 +76,14 @@ export class TurnJobStoreLogic {
         attempts INTEGER NOT NULL DEFAULT 0,
         delivered INTEGER NOT NULL DEFAULT 0,
         status TEXT NOT NULL DEFAULT 'pending',
+        progress_json TEXT NOT NULL DEFAULT '{}',
         enqueued_at INTEGER NOT NULL
       )`,
     );
+    const columns = db.all('PRAGMA table_info(turn_jobs)');
+    if (!columns.some((column) => column.name === 'progress_json')) {
+      db.exec("ALTER TABLE turn_jobs ADD COLUMN progress_json TEXT NOT NULL DEFAULT '{}'");
+    }
   }
 
   /**
@@ -99,7 +110,7 @@ export class TurnJobStoreLogic {
   /** Undelivered jobs in enqueue order — the alarm's work list. */
   listPending(): PendingTurnJob[] {
     const rows = this.db.all(
-      `SELECT id, evt_key, msg_key, turn_json, assignment_json, attempts
+      `SELECT id, evt_key, msg_key, turn_json, assignment_json, attempts, progress_json
        FROM turn_jobs WHERE delivered = 0 ORDER BY enqueued_at`,
     ) as unknown as TurnJobRow[];
     return rows.map((row) => ({
@@ -109,12 +120,42 @@ export class TurnJobStoreLogic {
       turn: JSON.parse(row.turn_json) as NormalizedSlackTurn,
       assignment: JSON.parse(row.assignment_json) as ResolvedAssignment,
       attempts: Number(row.attempts),
+      progress: parseTurnProgress(row.progress_json),
     }));
   }
 
   /** Record that an attempt is being made (before running the turn). */
   recordAttempt(id: string, attempts: number): void {
     this.db.run('UPDATE turn_jobs SET attempts = ? WHERE id = ?', attempts, id);
+  }
+
+  getProgress(id: string): TurnProgress | undefined {
+    const row = this.db.get('SELECT progress_json FROM turn_jobs WHERE id = ?', id) as
+      | { progress_json: string }
+      | undefined;
+    return row ? parseTurnProgress(row.progress_json) : undefined;
+  }
+
+  /**
+   * Preserve the first successful PR marker. A retry or duplicate API response
+   * may report the same operation again, but it must never replace the durable
+   * result that the next alarm attempt will replay.
+   */
+  recordPullRequest(
+    id: string,
+    pullRequest: TurnPullRequestProgress,
+  ): TurnProgress | undefined {
+    return this.db.transaction(() => {
+      const current = this.getProgress(id);
+      if (!current || current.pullRequest) return current;
+      const progress: TurnProgress = { ...current, pullRequest };
+      this.db.run(
+        'UPDATE turn_jobs SET progress_json = ? WHERE id = ?',
+        JSON.stringify(progress),
+        id,
+      );
+      return progress;
+    });
   }
 
   /** Tombstone a delivered job so no later scan re-delivers it. */
@@ -130,4 +171,30 @@ export class TurnJobStoreLogic {
   private purgeExpired(): void {
     this.db.run('DELETE FROM turn_jobs WHERE enqueued_at < ?', this.now() - TURN_JOB_TTL_MS);
   }
+}
+
+export function replayTextForTurnProgress(progress: TurnProgress): string | undefined {
+  const pullRequest = progress.pullRequest;
+  if (!pullRequest) return undefined;
+  return `Pull request #${pullRequest.number} is already open: ${pullRequest.url}`;
+}
+
+function parseTurnProgress(raw: string): TurnProgress {
+  try {
+    const parsed = JSON.parse(raw) as TurnProgress;
+    const pullRequest = parsed?.pullRequest;
+    if (
+      pullRequest &&
+      Number.isSafeInteger(pullRequest.number) &&
+      pullRequest.number > 0 &&
+      typeof pullRequest.url === 'string' &&
+      typeof pullRequest.repository === 'string' &&
+      (pullRequest.branch === undefined || typeof pullRequest.branch === 'string')
+    ) {
+      return { pullRequest: { ...pullRequest } };
+    }
+  } catch {
+    // Malformed progress is treated as absent so it can never suppress work.
+  }
+  return {};
 }

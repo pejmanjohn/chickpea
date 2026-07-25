@@ -162,10 +162,10 @@ test('SqliteConfigStore round-trips repository grants through create and update'
   const withRepositories = agent({
     repositories: [
       {
-        id: 'repo-magoosh-main',
+        id: 'repo-acme-main',
         installationId: 42,
-        accountLogin: 'magoosh',
-        fullName: 'magoosh/magoosh',
+        accountLogin: 'acme',
+        fullName: 'acme/main-app',
         enabled: true,
       },
       {
@@ -187,10 +187,10 @@ test('SqliteConfigStore round-trips repository grants through create and update'
 
   const nextRepositories = [
     {
-      id: 'repo-magoosh-api',
+      id: 'repo-acme-api',
       installationId: 42,
-      accountLogin: 'magoosh',
-      fullName: 'magoosh/api',
+      accountLogin: 'acme',
+      fullName: 'acme/api',
       enabled: true,
     },
   ];

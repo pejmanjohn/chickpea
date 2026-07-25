@@ -4,6 +4,7 @@ import {
   type DurableObjectState,
   type DurableObjectStorage,
 } from 'cloudflare:workers';
+import { getSandbox, Sandbox as CloudflareSandbox } from '@cloudflare/sandbox';
 import type { WebClient } from '@slack/web-api';
 
 import {
@@ -12,27 +13,68 @@ import {
   NoAssignmentError,
   UnknownAgentError,
 } from './config/errors.ts';
+import {
+  getCachedInstallationToken,
+  getGithubConnection,
+} from './config/github-app.ts';
 import { resolveAssignment, surfaceForChannelId } from './config/resolver.ts';
 import { slackThreadKey } from './slack/thread-key.ts';
 import type { AssignmentLookupOptions } from './config/resolver.ts';
+import {
+  parseSandboxAllowedHosts,
+  SANDBOX_PACKAGE_REGISTRY_HOSTS,
+  SANDBOX_SETTING_KEYS,
+} from './config/sandbox-settings.ts';
 import type { SettingsPatch, SettingsStore } from './config/settings-store.ts';
 import { SettingsStoreLogic } from './config/settings-store.ts';
 import { SnapshotStoreLogic } from './config/snapshot-store.ts';
-import type { StateRpcResult, TagStateRpc, TurnJob } from './config/state-rpc.ts';
+import type {
+  StateRpcResult,
+  TagStateRpc,
+  TurnJob,
+  TurnProgress,
+  TurnPullRequestProgress,
+} from './config/state-rpc.ts';
 import type { PlatformEnv } from './config/state-backend.ts';
+import { getSettingsStore } from './config/state-backend.ts';
 import { ConfigStoreLogic, type ConfigAgentPatch } from './config/store.ts';
-import type { AgentSnapshot, ChannelAssignment, CustomAgentConfig } from './config/types.ts';
+import type {
+  AgentSnapshot,
+  ChannelAssignment,
+  CustomAgentConfig,
+} from './config/types.ts';
+import {
+  decideSandboxEgress,
+  REPOSITORY_PERMISSIONS,
+  resolveRepositoryInstallationScope,
+} from './sandbox/egress-handler.ts';
+import { githubAuthorizationHeader } from './sandbox/github-auth.ts';
+import {
+  SandboxPolicyState,
+  sandboxEgressGrantsForMode,
+  type SandboxEgressPolicy,
+  type SandboxEgressPolicyInput,
+  type SandboxPolicyStorage,
+} from './sandbox/cloudflare-policy.ts';
+import { cloudflareSandboxOptionVariants } from './sandbox/lifecycle.ts';
+import {
+  isGithubPullRequestCreateResponse,
+  pullRequestProgressFromGithubResponse,
+} from './sandbox/progress.ts';
 import { SlackStateLogic } from './slack/claim-store.ts';
 import { resolveSlackCredentials } from './slack/credentials.ts';
-import { toolStatus } from './slack/replies.ts';
 import { setObservedSlackStatus } from './slack/status-registry.ts';
 import {
   createSlackWebClient,
-  deliverProviderFailureFinal,
+  deliverAgentFailureFinal,
   runTurn,
   sanitizeError,
 } from './slack/run-turn.ts';
-import { MAX_TURN_ATTEMPTS, TurnJobStoreLogic } from './slack/turn-jobs.ts';
+import {
+  MAX_TURN_ATTEMPTS,
+  replayTextForTurnProgress,
+  TurnJobStoreLogic,
+} from './slack/turn-jobs.ts';
 import type { SqlParam, StateDb } from './state/state-db.ts';
 import { registerCloudflareBindingProvider } from './cloudflare-provider.ts';
 
@@ -42,11 +84,262 @@ import { registerCloudflareBindingProvider } from './cloudflare-provider.ts';
 // Importable `env` is Cloudflare's ambient binding object; no I/O runs here.
 registerCloudflareBindingProvider(env.AI);
 
+export { ContainerProxy } from '@cloudflare/sandbox';
+
+type SandboxOutboundContext = {
+  containerId: string;
+};
+
+type SandboxOutboundHandler = (
+  request: Request,
+  env: unknown,
+  ctx: SandboxOutboundContext,
+) => Promise<Response> | Response;
+
+interface SandboxNamespace {
+  idFromString(id: string): unknown;
+  get(id: unknown): Pick<
+    Sandbox,
+    | 'getEgressPolicy'
+    | 'getTurnId'
+    | 'getTurnProgress'
+    | 'prepareTurn'
+    | 'recordPullRequestProgress'
+  >;
+}
+
+type SandboxWorkerEnv = PlatformEnv & {
+  SANDBOX: SandboxNamespace;
+};
+
+const SANDBOX_BLOCKED_STATUS = 520;
+
+/**
+ * Cloudflare's Sandbox SDK routes intercepted container HTTPS through these
+ * Worker-side handlers. Profile grants are persisted as policy only; the
+ * credential is minted after each request passes the pure policy decision and
+ * is attached only to the Worker-side forwarded Request.
+ */
+export class Sandbox extends CloudflareSandbox<SandboxWorkerEnv> {
+  interceptHttps = true;
+
+  async prepareTurn(turnId: string): Promise<void> {
+    await this.policyState().prepareTurn(turnId);
+  }
+
+  async configureEgress(
+    input: SandboxEgressPolicyInput,
+    turnId: string,
+  ): Promise<void> {
+    await this.policyState().configureEgress(input, turnId);
+  }
+
+  async getEgressPolicy(): Promise<SandboxEgressPolicy> {
+    return this.policyState().getEgressPolicy();
+  }
+
+  async getTurnId(): Promise<string | undefined> {
+    return this.policyState().getTurnId();
+  }
+
+  async getTurnProgress(): Promise<TurnProgress> {
+    return this.policyState().getTurnProgress();
+  }
+
+  async recordPullRequestProgress(
+    pullRequest: TurnPullRequestProgress,
+    capturedTurnId: string,
+  ): Promise<boolean> {
+    return this.policyState().recordPullRequestProgress(pullRequest, capturedTurnId);
+  }
+
+  private policyStorage(): SandboxPolicyStorage {
+    return this.ctx.storage as unknown as SandboxPolicyStorage;
+  }
+
+  private policyState(): SandboxPolicyState {
+    return new SandboxPolicyState(this.policyStorage());
+  }
+}
+
+// Assign through the SDK's inherited static setters so the handler registries
+// are populated even when the Worker build preserves native class fields.
+Sandbox.outboundByHost = {
+  'github.com': githubSandboxOutbound,
+  'api.github.com': githubSandboxOutbound,
+  ...Object.fromEntries(
+    SANDBOX_PACKAGE_REGISTRY_HOSTS.map((host) => [host, packageRegistrySandboxOutbound]),
+  ),
+} satisfies Record<string, SandboxOutboundHandler>;
+Sandbox.outbound = denySandboxOutbound;
+
+async function githubSandboxOutbound(
+  request: Request,
+  rawEnv: unknown,
+  ctx: SandboxOutboundContext,
+): Promise<Response> {
+  try {
+    const workerEnv = sandboxWorkerEnv(rawEnv);
+    const stub = sandboxStub(workerEnv, ctx.containerId);
+    const capturedTurnId = await stub.getTurnId();
+    if (!capturedTurnId) return denySandboxOutbound();
+    const policy = await stub.getEgressPolicy();
+    if (!policy.mode) return denySandboxOutbound();
+
+    // Credential-free preflight: validate the stored App-bound policy before
+    // loading the private key.
+    const preflightGrants = sandboxEgressGrantsForMode(policy, policy.mode);
+    if (!preflightGrants) return denySandboxOutbound();
+    const preflightDecision = decideSandboxEgress({
+      url: request.url,
+      method: request.method,
+      grants: preflightGrants,
+      allowedHosts: [],
+    });
+    if (!preflightDecision.allowed || preflightDecision.kind !== 'github') {
+      return denySandboxOutbound();
+    }
+
+    // Resolve the credential only after the preflight decision, then bind the
+    // stored policy to the current mode. Disconnecting the App invalidates the
+    // running container until a fresh turn reconfigures it.
+    const settings = getSettingsStore(workerEnv);
+    const connection = await getGithubConnection(settings);
+    if (connection.mode !== 'app') return denySandboxOutbound();
+    const grants = sandboxEgressGrantsForMode(policy, connection.mode);
+    if (!grants) return denySandboxOutbound();
+    const decision = decideSandboxEgress({
+      url: request.url,
+      method: request.method,
+      grants,
+      allowedHosts: [],
+    });
+    if (!decision.allowed || decision.kind !== 'github') {
+      return denySandboxOutbound();
+    }
+
+    const installation = resolveRepositoryInstallationScope(grants, decision.repositories);
+    if (!installation) return denySandboxOutbound();
+    const { token: credential } = await getCachedInstallationToken(
+      connection,
+      installation.id,
+      {
+        ...(installation.repositories
+          ? { repositories: installation.repositories }
+          : {}),
+        permissions: REPOSITORY_PERMISSIONS,
+      },
+    );
+
+    // Bind this request's decision to the turn captured before policy loading.
+    // A reconfiguration during credential resolution must be decided again by
+    // the next request, never forwarded under this turn's stale policy.
+    if ((await stub.getTurnId()) !== capturedTurnId) return denySandboxOutbound();
+    const headers = new Headers(request.headers);
+    headers.set('Authorization', githubAuthorizationHeader(request.url, credential));
+    const response = await fetch(new Request(request, { headers, redirect: 'manual' }));
+    await recordPullRequestProgress(request, response, stub, capturedTurnId);
+    return response;
+  } catch {
+    // Authentication/configuration errors are deliberately indistinguishable
+    // from policy denials at the container boundary and never log token-bearing
+    // request material.
+    return denySandboxOutbound();
+  }
+}
+
+async function packageRegistrySandboxOutbound(
+  request: Request,
+  rawEnv: unknown,
+): Promise<Response> {
+  try {
+    const workerEnv = sandboxWorkerEnv(rawEnv);
+    const rawAllowedHosts = await getSettingsStore(workerEnv).getSetting(
+      SANDBOX_SETTING_KEYS.allowedHosts,
+    );
+    const decision = decideSandboxEgress({
+      url: request.url,
+      method: request.method,
+      grants: [],
+      allowedHosts: parseSandboxAllowedHosts(rawAllowedHosts),
+    });
+    if (!decision.allowed || decision.kind !== 'package-registry') {
+      return denySandboxOutbound();
+    }
+    // Manual redirects force every new origin back through interception,
+    // where it is evaluated independently against the host allowlist.
+    return fetch(new Request(request, { redirect: 'manual' }));
+  } catch {
+    return denySandboxOutbound();
+  }
+}
+
+function sandboxWorkerEnv(value: unknown): SandboxWorkerEnv {
+  if (typeof value !== 'object' || value === null) {
+    throw new Error('Sandbox Worker environment is unavailable');
+  }
+  const workerEnv = value as Partial<SandboxWorkerEnv>;
+  if (
+    !workerEnv.SANDBOX ||
+    typeof workerEnv.SANDBOX.idFromString !== 'function' ||
+    typeof workerEnv.SANDBOX.get !== 'function'
+  ) {
+    throw new Error('SANDBOX Durable Object binding is unavailable');
+  }
+  return workerEnv as SandboxWorkerEnv;
+}
+
+function sandboxStub(
+  workerEnv: SandboxWorkerEnv,
+  containerId: string,
+): Pick<
+  Sandbox,
+  'getEgressPolicy' | 'getTurnId' | 'getTurnProgress' | 'recordPullRequestProgress'
+> {
+  return workerEnv.SANDBOX.get(workerEnv.SANDBOX.idFromString(containerId));
+}
+
+async function recordPullRequestProgress(
+  request: Request,
+  response: Response,
+  stub: Pick<Sandbox, 'recordPullRequestProgress'>,
+  capturedTurnId: string,
+): Promise<void> {
+  if (!isGithubPullRequestCreateResponse(request.url, request.method, response.status)) {
+    return;
+  }
+
+  try {
+    const pullRequest = pullRequestProgressFromGithubResponse({
+      requestUrl: request.url,
+      requestMethod: request.method,
+      responseStatus: response.status,
+      responseBody: await response.clone().json(),
+    });
+    if (!pullRequest) return;
+    await stub.recordPullRequestProgress(pullRequest, capturedTurnId);
+  } catch {
+    // Progress recording is best-effort and must never turn a successful,
+    // policy-approved GitHub operation into a failed sandbox request.
+  }
+}
+
+function denySandboxOutbound(): Response {
+  return new Response('Origin is disallowed', { status: SANDBOX_BLOCKED_STATUS });
+}
+
 // Backoff before the alarm re-fires for a job whose attempt failed but is not
 // yet at the cap. A short delay (matching the DO alarm base retry) is enough:
 // the failure that got here is a genuine delivery error, so an immediate retry
 // would likely re-fail; a couple of seconds lets a transient Slack blip clear.
 const RELAY_RETRY_BACKOFF_MS = 2_000;
+
+// A tiny first-fire window lets Slack events from the same burst land in the
+// queue before the alarm snapshots it. The alarm already fans independent
+// conversations out concurrently; without this window, the first event can
+// start a long turn milliseconds before its neighbors enqueue and serialize
+// the whole burst behind it.
+const RELAY_BATCH_WINDOW_MS = 250;
 
 /**
  * Cloudflare entrypoint. Named exports of this file become top-level Worker
@@ -300,23 +593,31 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     });
     // Arm the alarm only after the row is written, and AWAIT it: the job + the
     // armed alarm must both be durable before this RPC resolves, because the
-    // events handler acks Slack the instant it does. `setAlarm(now)` fires the
-    // handler as soon as the platform can. Re-arming for an already-queued
-    // (duplicate) job is harmless.
+    // events handler acks Slack the instant it does. A small, non-sliding batch
+    // window lets near-simultaneous independent threads reach the existing
+    // bounded fan-out. Never move an already-armed alarm later.
     if (result.ok) {
-      await this.ctx.storage.setAlarm(Date.now());
+      const alarm = await this.ctx.storage.getAlarm();
+      if (alarm === null) {
+        await this.ctx.storage.setAlarm(Date.now() + RELAY_BATCH_WINDOW_MS);
+      }
     }
     return result;
   }
 
   /**
-   * Cross-isolate tool narration (see src/slack/status-relay.ts): the agent DO
-   * observes its own tool_start events and relays them here, where the alarm
-   * registered the live turn's status presenter. A registry miss just means
-   * the turn already finished — still a success by contract.
+   * Cross-isolate activity narration (see src/slack/status-relay.ts): the agent
+   * DO observes safe lifecycle/tool summaries and relays them here, where the alarm
+   * registered the live turn's status presenter. A registry miss, closed sink,
+   * stale generation, or ambiguous duplicate match is intentionally a no-op —
+   * still a success by contract.
    */
-  async observedToolStatus(instanceId: string, toolName: string): Promise<StateRpcResult<null>> {
-    setObservedSlackStatus(instanceId, toolStatus(toolName));
+  async observedStatus(
+    instanceId: string,
+    generation: string,
+    statusText: string,
+  ): Promise<StateRpcResult<null>> {
+    setObservedSlackStatus(instanceId, generation, { text: statusText });
     return { ok: true, value: null };
   }
 
@@ -380,16 +681,67 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         }
       }
       const attempt = job.attempts + 1;
+      let delivered = false;
       // Advance the attempt count before running the turn: a crash mid-turn
       // then re-fires with the count already committed, bounding retries.
       stores.turnJobs.recordAttempt(job.id, attempt);
       try {
-        await runTurn(job.turn, job.assignment, this.env as PlatformEnv, { client });
-        // Delivered (a real final, or the sanitized provider-failure final that
-        // runTurn posts on a provider error): tombstone so no later scan
-        // re-delivers it. Claims stay held — a completed turn never re-runs.
-        stores.turnJobs.markDelivered(job.id);
+        const persistSandboxProgress = async (): Promise<string | undefined> => {
+          const binding =
+            (this.env as PlatformEnv).SANDBOX ?? (this.env as PlatformEnv).Sandbox;
+          if (!binding) return undefined;
+          const conversationKey = slackThreadKey(job.turn);
+          for (const options of cloudflareSandboxOptionVariants(conversationKey)) {
+            try {
+              const sandbox = getSandbox(
+                binding as Parameters<typeof getSandbox>[0],
+                conversationKey,
+                options,
+              ) as ReturnType<typeof getSandbox> & {
+                getTurnId(): Promise<string | undefined>;
+                getTurnProgress(): Promise<TurnProgress>;
+              };
+              if ((await sandbox.getTurnId()) !== job.id) continue;
+              const progress = await sandbox.getTurnProgress();
+              if (progress.pullRequest) {
+                stores.turnJobs.recordPullRequest(job.id, progress.pullRequest);
+              }
+              const replayText = replayTextForTurnProgress(progress);
+              if (replayText !== undefined) return replayText;
+            } catch {
+              // One identity can be unavailable during a rolling deploy. Keep
+              // checking the bridge identity before degrading recovery.
+            }
+          }
+          // Retry protection is best-effort on the read path. Either Sandbox
+          // identity retains its marker, so a later alarm can try again.
+          return undefined;
+        };
+        const replayText =
+          replayTextForTurnProgress(job.progress) ?? (await persistSandboxProgress());
+        await runTurn(job.turn, job.assignment, this.env as PlatformEnv, {
+          client,
+          turnId: job.id,
+          ...(replayText === undefined ? {} : { replayText }),
+          beforeDelivery: persistSandboxProgress,
+          // Record terminal delivery before runTurn's post-delivery Sandbox
+          // teardown. A hung control-plane destroy must never leave an
+          // already-posted Slack final eligible for relay retry.
+          onDelivered: () => {
+            stores.turnJobs.markDelivered(job.id);
+            delivered = true;
+          },
+        });
+        // Delivery was tombstoned at the exact presentation boundary above.
+        // Claims stay held — a completed turn never re-runs.
       } catch (err) {
+        // Any failure after the terminal presentation boundary is cleanup,
+        // not a failed turn. The durable tombstone prevents a duplicate final;
+        // keep the claims held and let a later thread turn start normally.
+        if (delivered) {
+          console.warn('[chickpea] post-delivery cleanup did not complete');
+          return;
+        }
         console.error(
           `[chickpea] relay turn attempt ${attempt} failed:`,
           sanitizeError(err),
@@ -399,7 +751,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           // silent, then release the claims (parity with the node .catch's
           // "failed delivery frees the claim") and tombstone so no further
           // attempt runs.
-          await deliverProviderFailureFinal(
+          await deliverAgentFailureFinal(
             job.turn,
             job.assignment,
             client,
