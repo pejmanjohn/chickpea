@@ -8,6 +8,7 @@ import { test } from 'node:test';
 import { MemoryStoreLogic, SqliteMemoryStateStore } from '../src/memory/store.ts';
 import { MemoryVersionConflictError } from '../src/memory/types.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
+import type { StateDb } from '../src/state/state-db.ts';
 
 const createdAt = Date.UTC(2026, 6, 25, 12);
 
@@ -51,6 +52,25 @@ test('memory state initializes beside existing tables and creates a public store
   });
   assert.equal(db.get('SELECT id FROM existing_fixture')?.id, 'preserved');
   db.close();
+});
+
+test('target-neutral memory schema initialization does not depend on SQLite pragmas', () => {
+  const sqlite = openStateDb(':memory:');
+  const portableDb: StateDb = {
+    run: (sql, ...params) => sqlite.run(sql, ...params),
+    get: (sql, ...params) => sqlite.get(sql, ...params),
+    all: (sql, ...params) => sqlite.all(sql, ...params),
+    exec: (sql) => {
+      if (/^\s*PRAGMA\b/i.test(sql)) {
+        throw new Error('Cloudflare-compatible StateDb does not expose PRAGMA');
+      }
+      sqlite.exec(sql);
+    },
+    transaction: (fn) => sqlite.transaction(fn),
+  };
+
+  assert.doesNotThrow(() => new MemoryStoreLogic(portableDb, () => createdAt));
+  sqlite.close();
 });
 
 test('create is atomic, idempotent, audited, and does not double-count rate windows', async () => {

@@ -1117,10 +1117,6 @@ export class MemoryStoreLogic {
   }
 
   private initializeSchema(): void {
-    // SQLite otherwise may retain overwritten memory text on freelist pages.
-    // Unsupported targets may ignore this pragma, but both shipped state
-    // backends use SQLite semantics and must erase forgotten content eagerly.
-    this.db.exec('PRAGMA secure_delete = ON');
     this.db.exec(
       `CREATE TABLE IF NOT EXISTS memory_meta (
         key TEXT PRIMARY KEY,
@@ -1486,6 +1482,10 @@ export class SqliteMemoryStateStore implements MemoryStateStore {
 
   constructor(path: string = resolveStateDbPath(), now: () => number = Date.now) {
     this.db = openStateDb(path);
+    // SQLite otherwise may retain overwritten memory text on freelist pages.
+    // Keep this Node-only: Durable Object SQL deliberately exposes a smaller
+    // portable statement surface and must not depend on PRAGMA support.
+    this.db.exec('PRAGMA secure_delete = ON');
     this.logic = new MemoryStoreLogic(this.db, now);
   }
 

@@ -1436,6 +1436,12 @@ details[open].advanced summary::before {
     sandboxLoaded: false,
     sandboxError: "",
     sandboxSaving: false,
+    // Install-level channel memory. The API reports environment management so
+    // an override is visibly read-only instead of accepting a no-op toggle.
+    memoryStatus: null,
+    memoryLoaded: false,
+    memoryError: "",
+    memorySaving: false,
     // Profile-local repository selection UI. The picker is a working selection
     // only; Apply writes grants into profileDraft and the existing profile Save
     // action remains the sole persistence path.
@@ -1471,6 +1477,7 @@ details[open].advanced summary::before {
     allowedHosts: ["registry.npmjs.org", "pypi.org", "files.pythonhosted.org"],
     monthlySessionCap: 200
   };
+  var memoryDraft = { enabled: false };
   var repositorySearchTimer = null;
 
   // Inline Heroicons (micro, 16px) — solid unless noted. Colour inherits from
@@ -3915,6 +3922,34 @@ details[open].advanced summary::before {
       '<div><button type="button" class="btn btn-primary" data-action="sandbox-save"' + disabled + '>' + (state.sandboxSaving ? "Saving&hellip;" : "Save") + '</button></div></section>';
   }
 
+  function memorySectionHtml() {
+    var status = state.memoryStatus;
+    var badge = status && status.enabled
+      ? '<span class="badge badge-on"><span class="dot"></span>On</span>'
+      : '<span class="badge badge-off"><span class="dot"></span>Off</span>';
+    var head = '<div class="section-head"><div><h2 class="section-title">Channel memory</h2>' +
+      '<p class="hint">Lets channel members explicitly save, update, and forget shared guidance. Memory is advisory and never overrides live permissions or system settings.</p></div>' + badge + '</div>';
+    if (!state.memoryLoaded) {
+      return '<section class="section" id="memory-settings">' + head + '<p class="hint">Loading memory settings&hellip;</p></section>';
+    }
+    if (!status) {
+      return '<section class="section" id="memory-settings">' + head +
+        '<p class="field-error" role="alert">' + esc(state.memoryError || "Could not load memory settings.") + '</p>' +
+        '<div><button type="button" class="btn btn-soft btn-sm i-lead" data-action="memory-refresh">' + icon("arrow-path") + 'Retry</button></div></section>';
+    }
+    var disabled = state.memorySaving || status.managedByEnvironment ? " disabled" : "";
+    var managedNote = status.managedByEnvironment
+      ? '<p class="hint">Managed by <span class="mono">SLACK_TAG_MEMORY_ENABLED</span>. Change the deployment environment to update it.</p>'
+      : "";
+    return '<section class="section" id="memory-settings">' + head +
+      '<div class="bundle-row"><div class="danger-copy"><span class="field-label">Enable channel memory</span>' +
+      '<span class="hint">Off by default. Direct messages and automatic background memory creation remain disabled.</span></div>' +
+      '<label class="toggle"><span class="thumb"></span><input type="checkbox" data-action="memory-enabled" ' + (memoryDraft.enabled ? "checked " : "") + disabled + ' aria-label="Enable channel memory"></label></div>' +
+      managedNote +
+      (state.memoryError ? '<p class="field-error" role="alert">' + esc(state.memoryError) + '</p>' : "") +
+      (status.managedByEnvironment ? "" : '<div><button type="button" class="btn btn-primary" data-action="memory-save"' + disabled + '>' + (state.memorySaving ? "Saving&hellip;" : "Save") + '</button></div>') + '</section>';
+  }
+
   function settingsMainHtml() {
     var head = '<div style="display:flex; flex-direction:column; gap:6px;">' +
       '<h1 class="page-title">Settings</h1>' +
@@ -3935,7 +3970,7 @@ details[open].advanced summary::before {
         rows +
         '<p class="hint">More providers appear here as this install registers them in <span class="mono" style="color:var(--text-2);">src/app.ts</span>.</p></section>';
     }
-    return head + githubSectionHtml() + sandboxSectionHtml() + providerSection + egressSectionHtml();
+    return head + githubSectionHtml() + memorySectionHtml() + sandboxSectionHtml() + providerSection + egressSectionHtml();
   }
 
   function egressSectionHtml() {
@@ -4205,6 +4240,7 @@ details[open].advanced summary::before {
     state.githubError = "";
     state.egressLoaded = false;
     state.sandboxLoaded = false;
+    state.memoryLoaded = false;
     render();
     if (sectionId) {
       var section = document.getElementById(sectionId);
@@ -4214,6 +4250,7 @@ details[open].advanced summary::before {
     loadGithubStatus().then(render);
     loadEgress().then(render);
     loadSandboxStatus().then(render);
+    loadMemoryStatus().then(render);
   }
 
   function loadGithubStatus() {
@@ -4577,6 +4614,37 @@ details[open].advanced summary::before {
       state.sandboxStatus = null;
       state.sandboxError = (error && (error.serverMessage || error.message)) || "Could not load sandbox settings.";
       state.sandboxLoaded = true;
+    });
+  }
+
+  function loadMemoryStatus() {
+    state.memoryError = "";
+    return api("/admin/api/memory/settings").then(function (body) {
+      state.memoryStatus = body;
+      memoryDraft.enabled = !!body.enabled;
+      state.memoryLoaded = true;
+    }).catch(function (error) {
+      state.memoryStatus = null;
+      state.memoryError = (error && (error.serverMessage || error.message)) || "Could not load memory settings.";
+      state.memoryLoaded = true;
+    });
+  }
+
+  function saveMemory() {
+    if (state.memorySaving || (state.memoryStatus && state.memoryStatus.managedByEnvironment)) return;
+    state.memorySaving = true;
+    state.memoryError = "";
+    render();
+    postJson("/admin/api/memory/settings", "PUT", { enabled: memoryDraft.enabled }).then(function (body) {
+      state.memoryStatus = body;
+      memoryDraft.enabled = !!body.enabled;
+      state.memorySaving = false;
+      state.memoryError = "";
+      render();
+    }).catch(function (error) {
+      state.memorySaving = false;
+      state.memoryError = (error && (error.serverMessage || error.message)) || "Could not save memory settings.";
+      render();
     });
   }
 
@@ -5364,6 +5432,9 @@ details[open].advanced summary::before {
     if (state.sandboxSaving && action.indexOf("sandbox-") === 0) return;
     if (action === "sandbox-refresh") { loadSandboxStatus().then(render); }
     if (action === "sandbox-save") { saveSandbox(); }
+    if (state.memorySaving && action.indexOf("memory-") === 0) return;
+    if (action === "memory-refresh") { loadMemoryStatus().then(render); }
+    if (action === "memory-save") { saveMemory(); }
     if (state.egressSaving && action.indexOf("egress-") === 0) return;
     if (action === "egress-mode") {
       egressDraft.mode = target.getAttribute("data-mode") || "allowlist";
@@ -5736,6 +5807,11 @@ details[open].advanced summary::before {
     if (action === "sandbox-enabled" && !state.sandboxSaving) {
       sandboxDraft.enabled = !!target.checked;
       state.sandboxError = "";
+      render();
+    }
+    if (action === "memory-enabled" && !state.memorySaving && !(state.memoryStatus && state.memoryStatus.managedByEnvironment)) {
+      memoryDraft.enabled = !!target.checked;
+      state.memoryError = "";
       render();
     }
     if (action === "sandbox-monthly-cap" && !state.sandboxSaving) {

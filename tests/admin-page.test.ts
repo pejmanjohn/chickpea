@@ -184,6 +184,10 @@ type SandboxStatusFixture = {
   target: 'cloudflare' | 'node';
   workersPaidNote: string | null;
 };
+type MemoryStatusFixture = {
+  enabled: boolean;
+  managedByEnvironment: boolean;
+};
 
 function runAdminPageHarness(
   options: {
@@ -213,6 +217,7 @@ function runAdminPageHarness(
     providerSettingsError?: { status: number; error: string };
     egressPolicy?: EgressPolicyFixture;
     sandboxStatus?: SandboxStatusFixture;
+    memoryStatus?: MemoryStatusFixture;
     modelProviders?: ModelProviderFixture[];
     attachSelectionValue?: string;
     effectiveError?: { status: number; error: string; message?: string };
@@ -253,6 +258,7 @@ function runAdminPageHarness(
     allowedHosts: string[];
     monthlySessionCap: number;
   }>;
+  memoryPuts: Array<{ enabled: boolean }>;
   agentPatchBodies: Array<{ id: string; body: Record<string, unknown> }>;
   agentPostBodies: Array<Record<string, unknown>>;
   skillResolvePosts: Array<{ source: string }>;
@@ -331,6 +337,7 @@ function runAdminPageHarness(
     allowedHosts: string[];
     monthlySessionCap: number;
   }> = [];
+  const memoryPuts: Array<{ enabled: boolean }> = [];
   const agentPatchBodies: Array<{ id: string; body: Record<string, unknown> }> = [];
   const agentPostBodies: Array<Record<string, unknown>> = [];
   const skillResolvePosts: Array<{ source: string }> = [];
@@ -355,6 +362,10 @@ function runAdminPageHarness(
   const putIsMember = options.putIsMember;
   const putAssignmentError = options.putAssignmentError;
   let slackChannelFailures = options.slackChannelFailures ?? 0;
+  let memoryStatus: MemoryStatusFixture = options.memoryStatus ?? {
+    enabled: false,
+    managedByEnvironment: false,
+  };
   // Captured out here because the fetch parameter below is also named `options`
   // (the request init) and would otherwise shadow these harness fixtures.
   const agentsFixture = options.agents;
@@ -748,6 +759,14 @@ function runAdminPageHarness(
         }),
       );
     }
+    if (path === '/admin/api/memory/settings') {
+      if (method === 'PUT') {
+        const body = JSON.parse(options?.body ?? '{}') as { enabled: boolean };
+        memoryPuts.push({ enabled: body.enabled });
+        memoryStatus = { ...memoryStatus, enabled: body.enabled };
+      }
+      return Promise.resolve(jsonResponse({ ...memoryStatus }));
+    }
     const favMatch = path.match(/^\/admin\/api\/providers\/([^/]+)\/favorites$/);
     if (favMatch) {
       const id = favMatch[1] as string;
@@ -966,6 +985,7 @@ function runAdminPageHarness(
     favoritesPuts,
     egressPuts,
     sandboxPuts,
+    memoryPuts,
     agentPatchBodies,
     agentPostBodies,
     skillResolvePosts,
@@ -4127,6 +4147,50 @@ test('Settings explains the Cloudflare-only coding tier and saves install-level 
       monthlySessionCap: 200,
     },
   ]);
+});
+
+test('Settings exposes an honest off-by-default channel memory toggle and saves it', async () => {
+  const harness = runAdminPageHarness();
+  await flushAsync();
+  const click = harness.listeners.click;
+  const change = harness.listeners.change;
+  assert.ok(click && change);
+
+  click({ target: actionTarget({ 'data-action': 'open-settings' }) });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /<h2 class="section-title">Channel memory<\/h2>/);
+  assert.match(harness.app.innerHTML, /data-action="memory-enabled"/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="memory-enabled" checked/);
+
+  change({
+    target: {
+      checked: true,
+      getAttribute(name: string) {
+        return name === 'data-action' ? 'memory-enabled' : null;
+      },
+    } as unknown as FakeTarget,
+  });
+  click({ target: actionTarget({ 'data-action': 'memory-save' }) });
+  await flushAsync();
+
+  assert.deepEqual(harness.memoryPuts, [{ enabled: true }]);
+  assert.match(harness.app.innerHTML, /data-action="memory-enabled" checked/);
+});
+
+test('Settings renders environment-managed channel memory read-only', async () => {
+  const harness = runAdminPageHarness({
+    memoryStatus: { enabled: true, managedByEnvironment: true },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'open-settings' }) });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /data-action="memory-enabled" checked  disabled/);
+  assert.match(harness.app.innerHTML, /Managed by <span class="mono">SLACK_TAG_MEMORY_ENABLED<\/span>/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="memory-save"/);
 });
 
 test('Repositories tab explains grants-implied sandbox availability without a profile toggle', async () => {
