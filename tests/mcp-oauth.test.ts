@@ -1,0 +1,635 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+
+import type { OAuthClientMetadata } from '@modelcontextprotocol/sdk/shared/auth.js';
+
+import {
+  completeMcpOAuthAuthorization,
+  createMcpOAuthClientMetadata,
+  createMcpOAuthClientMetadataDocument,
+  McpOAuthError,
+  mcpOAuthSettingKeys,
+  resolveMcpOAuthAccessToken,
+  startMcpOAuthAuthorization,
+} from '../src/config/mcp-oauth.ts';
+import { SqliteSettingsStore } from '../src/config/settings-store.ts';
+
+const REF = { agentId: 'agent_test', connectionId: 'notion-mcp' };
+const SERVER_URL = 'https://mcp.example.test/mcp';
+const CALLBACK_URL = 'https://chickpea.example.test/oauth/callback';
+const METADATA_URL =
+  'https://chickpea.example.test/.well-known/oauth-client-metadata.json';
+
+interface FakeOAuthServerOptions {
+  clientSecret?: string;
+  cimd?: boolean;
+  initialExpiresIn?: number;
+  issuer?: string;
+  omitRefreshTokenOnRefresh?: boolean;
+  registrationDelayMs?: number;
+  refreshError?: string;
+}
+
+function fakeOAuthServer(options: FakeOAuthServerOptions = {}) {
+  const calls: Array<{ url: string; body?: URLSearchParams }> = [];
+  let registrations = 0;
+  let exchanges = 0;
+  let refreshes = 0;
+
+  const fetchFn: typeof fetch = async (input, init) => {
+    const request = new Request(input, init);
+    const url = request.url;
+    const rawBody =
+      request.method === 'GET' || request.method === 'HEAD'
+        ? ''
+        : await request.clone().text();
+    const body =
+      request.headers.get('content-type')?.includes('application/x-www-form-urlencoded')
+        ? new URLSearchParams(rawBody)
+        : undefined;
+    calls.push({ url, ...(body ? { body } : {}) });
+
+    if (
+      url ===
+      'https://mcp.example.test/.well-known/oauth-protected-resource/mcp'
+    ) {
+      return Response.json({
+        resource: SERVER_URL,
+        authorization_servers: ['https://auth.example.test'],
+        scopes_supported: ['read', 'write'],
+      });
+    }
+    if (
+      url ===
+      'https://auth.example.test/.well-known/oauth-authorization-server'
+    ) {
+      return Response.json({
+        issuer: options.issuer ?? 'https://auth.example.test',
+        authorization_endpoint: 'https://auth.example.test/authorize',
+        token_endpoint: 'https://auth.example.test/token',
+        registration_endpoint: 'https://auth.example.test/register',
+        response_types_supported: ['code'],
+        grant_types_supported: ['authorization_code', 'refresh_token'],
+        code_challenge_methods_supported: ['S256'],
+        token_endpoint_auth_methods_supported: ['none'],
+        client_id_metadata_document_supported: options.cimd ?? false,
+      });
+    }
+    if (url === 'https://auth.example.test/register') {
+      registrations += 1;
+      await new Promise((resolve) =>
+        setTimeout(resolve, options.registrationDelayMs ?? 10),
+      );
+      const metadata = JSON.parse(rawBody) as OAuthClientMetadata;
+      assert.deepEqual(metadata.redirect_uris, [CALLBACK_URL]);
+      return Response.json({
+        ...metadata,
+        client_id: 'registered-client',
+        ...(options.clientSecret
+          ? { client_secret: options.clientSecret }
+          : {}),
+      });
+    }
+    if (url === 'https://auth.example.test/token') {
+      const grantType = body?.get('grant_type');
+      if (grantType === 'authorization_code') {
+        exchanges += 1;
+        assert.equal(body?.get('code'), 'provider-code');
+        assert.equal(body?.get('redirect_uri'), CALLBACK_URL);
+        assert.ok(body?.get('code_verifier'));
+        assert.equal(body?.get('resource'), SERVER_URL);
+        return Response.json({
+          access_token: 'access-initial',
+          token_type: 'Bearer',
+          refresh_token: 'refresh-initial',
+          expires_in: options.initialExpiresIn ?? 3600,
+          scope: 'read',
+        });
+      }
+      if (grantType === 'refresh_token') {
+        refreshes += 1;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        if (options.refreshError) {
+          return Response.json(
+            {
+              error: options.refreshError,
+              error_description: 'refresh rejected',
+            },
+            { status: 400 },
+          );
+        }
+        assert.equal(body?.get('refresh_token'), 'refresh-initial');
+        assert.equal(body?.get('resource'), SERVER_URL);
+        return Response.json({
+          access_token: 'access-refreshed',
+          token_type: 'Bearer',
+          ...(options.omitRefreshTokenOnRefresh
+            ? {}
+            : { refresh_token: 'refresh-rotated' }),
+          expires_in: 3600,
+        });
+      }
+    }
+    throw new Error(`Unexpected OAuth request: ${url}`);
+  };
+
+  return {
+    fetchFn,
+    calls,
+    counts: {
+      get registrations() {
+        return registrations;
+      },
+      get exchanges() {
+        return exchanges;
+      },
+      get refreshes() {
+        return refreshes;
+      },
+    },
+  };
+}
+
+test('client metadata is a public-client CIMD document without secrets', () => {
+  const metadata = createMcpOAuthClientMetadata(CALLBACK_URL);
+
+  assert.deepEqual(metadata, {
+    redirect_uris: [CALLBACK_URL],
+    token_endpoint_auth_method: 'none',
+    grant_types: ['authorization_code', 'refresh_token'],
+    response_types: ['code'],
+    client_name: 'Chickpea',
+  });
+  assert.equal(JSON.stringify(metadata).includes('secret'), false);
+});
+
+test('CIMD document binds client_id to its exact HTTPS document URL', () => {
+  const document = createMcpOAuthClientMetadataDocument(METADATA_URL);
+
+  assert.equal(document.client_id, METADATA_URL);
+  assert.deepEqual(document.redirect_uris, [CALLBACK_URL]);
+  assert.equal(JSON.stringify(document).includes('secret'), false);
+  assert.throws(
+    () =>
+      createMcpOAuthClientMetadataDocument(
+        'https://chickpea.example.test/not-the-well-known-path',
+      ),
+    (error: unknown) =>
+      error instanceof McpOAuthError &&
+      error.code === 'oauth_discovery_failed',
+  );
+});
+
+test('DCR is registered once, pending state is single-use, and callback stores tokens', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const oauth = fakeOAuthServer();
+  let nonce = 0;
+  const dependencies = {
+    settings,
+    fetchFn: oauth.fetchFn,
+    randomId: () => `nonce-${++nonce}`,
+  };
+
+  try {
+    const [first, second] = await Promise.all([
+      startMcpOAuthAuthorization(
+        { ref: REF, serverUrl: SERVER_URL, callbackUrl: CALLBACK_URL, scope: 'read' },
+        dependencies,
+      ),
+      startMcpOAuthAuthorization(
+        { ref: REF, serverUrl: SERVER_URL, callbackUrl: CALLBACK_URL, scope: 'read' },
+        dependencies,
+      ),
+    ]);
+
+    assert.equal(oauth.counts.registrations, 1);
+    assert.equal(first.authorizationUrl.searchParams.get('client_id'), 'registered-client');
+    assert.equal(second.authorizationUrl.searchParams.get('client_id'), 'registered-client');
+    assert.equal(second.authorizationUrl.searchParams.get('resource'), SERVER_URL);
+    assert.equal(second.authorizationUrl.searchParams.get('code_challenge_method'), 'S256');
+    assert.notEqual(first.state, second.state);
+
+    const pendingRaw = await settings.getSetting(mcpOAuthSettingKeys(REF)[1]);
+    const currentState = (JSON.parse(pendingRaw!) as { state: string }).state;
+    const supersededState =
+      currentState === first.state ? second.state : first.state;
+    await assert.rejects(
+      completeMcpOAuthAuthorization(
+        { code: 'provider-code', state: supersededState },
+        dependencies,
+      ),
+      (error: unknown) =>
+        error instanceof McpOAuthError && error.code === 'invalid_state',
+    );
+
+    const result = await completeMcpOAuthAuthorization(
+      { code: 'provider-code', state: currentState },
+      dependencies,
+    );
+    assert.deepEqual(result, { ref: REF });
+    assert.equal(oauth.counts.exchanges, 1);
+
+    await assert.rejects(
+      completeMcpOAuthAuthorization(
+        { code: 'provider-code', state: currentState },
+        dependencies,
+      ),
+      (error: unknown) =>
+        error instanceof McpOAuthError && error.code === 'invalid_state',
+    );
+
+    assert.equal(
+      await resolveMcpOAuthAccessToken(
+        { ref: REF, serverUrl: SERVER_URL },
+        dependencies,
+      ),
+      'access-initial',
+    );
+    const rawSettings = await settings.getSettings(mcpOAuthSettingKeys(REF));
+    assert.equal(rawSettings.some((value) => value?.includes('access-initial')), true);
+    assert.equal(rawSettings.some((value) => value?.includes('refresh-initial')), true);
+  } finally {
+    settings.close();
+  }
+});
+
+test('concurrent starts wait for a slow DCR registration and still reuse one client', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const oauth = fakeOAuthServer({ registrationDelayMs: 600 });
+  let nonce = 0;
+  const dependencies = {
+    settings,
+    fetchFn: oauth.fetchFn,
+    randomId: () => `nonce-${++nonce}`,
+  };
+  try {
+    const results = await Promise.all([
+      startMcpOAuthAuthorization(
+        { ref: REF, serverUrl: SERVER_URL, callbackUrl: CALLBACK_URL },
+        dependencies,
+      ),
+      startMcpOAuthAuthorization(
+        { ref: REF, serverUrl: SERVER_URL, callbackUrl: CALLBACK_URL },
+        dependencies,
+      ),
+    ]);
+
+    assert.equal(results.length, 2);
+    assert.equal(oauth.counts.registrations, 1);
+  } finally {
+    settings.close();
+  }
+});
+
+test('DCR client secrets stay in settings and never enter the authorization result', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const oauth = fakeOAuthServer({ clientSecret: 'registered-secret' });
+  try {
+    const started = await startMcpOAuthAuthorization(
+      { ref: REF, serverUrl: SERVER_URL, callbackUrl: CALLBACK_URL },
+      { settings, fetchFn: oauth.fetchFn, randomId: () => 'nonce' },
+    );
+
+    assert.equal(JSON.stringify(started).includes('registered-secret'), false);
+    assert.match(
+      (await settings.getSetting(mcpOAuthSettingKeys(REF)[0])) ?? '',
+      /registered-secret/,
+    );
+  } finally {
+    settings.close();
+  }
+});
+
+test('authorization start removes its writes when the connection disappears in flight', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const oauth = fakeOAuthServer();
+  let validations = 0;
+  try {
+    await assert.rejects(
+      startMcpOAuthAuthorization(
+        { ref: REF, serverUrl: SERVER_URL, callbackUrl: CALLBACK_URL },
+        {
+          settings,
+          fetchFn: oauth.fetchFn,
+          randomId: () => 'nonce',
+          validateConnection: () => {
+            validations += 1;
+            return validations === 1;
+          },
+        },
+      ),
+      (error: unknown) =>
+        error instanceof McpOAuthError &&
+        error.code === 'connection_missing',
+    );
+    assert.deepEqual(
+      await settings.getSettings(mcpOAuthSettingKeys(REF)),
+      [undefined, undefined, undefined, undefined, undefined],
+    );
+  } finally {
+    settings.close();
+  }
+});
+
+test('expired OAuth state is consumed without attempting code exchange', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const oauth = fakeOAuthServer();
+  let now = 1_000_000;
+  const dependencies = {
+    settings,
+    fetchFn: oauth.fetchFn,
+    now: () => now,
+    randomId: () => 'nonce',
+  };
+  try {
+    const started = await startMcpOAuthAuthorization(
+      { ref: REF, serverUrl: SERVER_URL, callbackUrl: CALLBACK_URL },
+      dependencies,
+    );
+    now += 20 * 60_000;
+
+    await assert.rejects(
+      completeMcpOAuthAuthorization(
+        { code: 'provider-code', state: started.state },
+        dependencies,
+      ),
+      (error: unknown) =>
+        error instanceof McpOAuthError && error.code === 'invalid_state',
+    );
+    assert.equal(oauth.counts.exchanges, 0);
+    assert.equal(
+      await settings.getSetting(mcpOAuthSettingKeys(REF)[1]),
+      undefined,
+    );
+  } finally {
+    settings.close();
+  }
+});
+
+test('CIMD is used only when advertised and the client metadata URL is HTTPS', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const oauth = fakeOAuthServer({ cimd: true });
+  try {
+    const started = await startMcpOAuthAuthorization(
+      { ref: REF, serverUrl: SERVER_URL, callbackUrl: CALLBACK_URL },
+      { settings, fetchFn: oauth.fetchFn, randomId: () => 'nonce' },
+    );
+
+    assert.equal(oauth.counts.registrations, 0);
+    assert.equal(started.authorizationUrl.searchParams.get('client_id'), METADATA_URL);
+  } finally {
+    settings.close();
+  }
+});
+
+test('OAuth discovery rejects a private authorization server before fetching it', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const calls: string[] = [];
+  const fetchFn: typeof fetch = async (input) => {
+    const url = input instanceof Request ? input.url : String(input);
+    calls.push(url);
+    if (
+      url ===
+      'https://mcp.example.test/.well-known/oauth-protected-resource/mcp'
+    ) {
+      return Response.json({
+        resource: SERVER_URL,
+        authorization_servers: ['https://127.0.0.1/oauth'],
+      });
+    }
+    throw new Error(`private authorization server was fetched: ${url}`);
+  };
+  try {
+    await assert.rejects(
+      startMcpOAuthAuthorization(
+        { ref: REF, serverUrl: SERVER_URL, callbackUrl: CALLBACK_URL },
+        { settings, fetchFn, randomId: () => 'nonce' },
+      ),
+      (error: unknown) =>
+        error instanceof McpOAuthError &&
+        error.code === 'oauth_discovery_failed',
+    );
+    assert.deepEqual(calls, [
+      'https://mcp.example.test/.well-known/oauth-protected-resource/mcp',
+    ]);
+  } finally {
+    settings.close();
+  }
+});
+
+test('OAuth discovery rejects authorization metadata with a mismatched issuer', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const oauth = fakeOAuthServer({ issuer: 'https://other.example.test' });
+  try {
+    await assert.rejects(
+      startMcpOAuthAuthorization(
+        { ref: REF, serverUrl: SERVER_URL, callbackUrl: CALLBACK_URL },
+        { settings, fetchFn: oauth.fetchFn, randomId: () => 'nonce' },
+      ),
+      (error: unknown) =>
+        error instanceof McpOAuthError &&
+        error.code === 'oauth_discovery_failed',
+    );
+    assert.equal(oauth.counts.registrations, 0);
+  } finally {
+    settings.close();
+  }
+});
+
+test('expired tokens refresh once across concurrent callers and preserve rotation', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const oauth = fakeOAuthServer({ initialExpiresIn: 1 });
+  let now = 1_000_000;
+  const dependencies = {
+    settings,
+    fetchFn: oauth.fetchFn,
+    now: () => now,
+    randomId: (() => {
+      let nonce = 0;
+      return () => `nonce-${++nonce}`;
+    })(),
+  };
+
+  try {
+    const started = await startMcpOAuthAuthorization(
+      { ref: REF, serverUrl: SERVER_URL, callbackUrl: CALLBACK_URL },
+      dependencies,
+    );
+    await completeMcpOAuthAuthorization(
+      { code: 'provider-code', state: started.state },
+      dependencies,
+    );
+    now += 2_000;
+
+    const tokens = await Promise.all([
+      resolveMcpOAuthAccessToken({ ref: REF, serverUrl: SERVER_URL }, dependencies),
+      resolveMcpOAuthAccessToken({ ref: REF, serverUrl: SERVER_URL }, dependencies),
+    ]);
+
+    assert.deepEqual(tokens, ['access-refreshed', 'access-refreshed']);
+    assert.equal(oauth.counts.refreshes, 1);
+    const stored = (await settings.getSettings(mcpOAuthSettingKeys(REF))).join('\n');
+    assert.match(stored, /refresh-rotated/);
+    assert.doesNotMatch(stored, /"refresh_token":"refresh-initial"/);
+  } finally {
+    settings.close();
+  }
+});
+
+test('refresh preserves the prior refresh token and scope when the server omits both', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const oauth = fakeOAuthServer({
+    initialExpiresIn: 1,
+    omitRefreshTokenOnRefresh: true,
+  });
+  let now = 1_000_000;
+  const dependencies = {
+    settings,
+    fetchFn: oauth.fetchFn,
+    now: () => now,
+    randomId: () => 'nonce',
+  };
+
+  try {
+    const started = await startMcpOAuthAuthorization(
+      { ref: REF, serverUrl: SERVER_URL, callbackUrl: CALLBACK_URL },
+      dependencies,
+    );
+    await completeMcpOAuthAuthorization(
+      { code: 'provider-code', state: started.state },
+      dependencies,
+    );
+    now += 2_000;
+
+    assert.equal(
+      await resolveMcpOAuthAccessToken(
+        { ref: REF, serverUrl: SERVER_URL },
+        dependencies,
+      ),
+      'access-refreshed',
+    );
+    const stored = await settings.getSetting(mcpOAuthSettingKeys(REF)[2]);
+    assert.match(stored ?? '', /"refresh_token":"refresh-initial"/);
+    assert.match(stored ?? '', /"scope":"read"/);
+  } finally {
+    settings.close();
+  }
+});
+
+test('refresh removes every OAuth write when the connection disappears in flight', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const oauth = fakeOAuthServer({ initialExpiresIn: 1 });
+  let now = 1_000_000;
+  let refreshChecks: number | undefined;
+  const dependencies = {
+    settings,
+    fetchFn: oauth.fetchFn,
+    now: () => now,
+    randomId: () => 'nonce',
+    validateConnection: () =>
+      refreshChecks === undefined || refreshChecks++ < 2,
+  };
+
+  try {
+    const started = await startMcpOAuthAuthorization(
+      { ref: REF, serverUrl: SERVER_URL, callbackUrl: CALLBACK_URL },
+      dependencies,
+    );
+    await completeMcpOAuthAuthorization(
+      { code: 'provider-code', state: started.state },
+      dependencies,
+    );
+    now += 2_000;
+    refreshChecks = 0;
+
+    await assert.rejects(
+      resolveMcpOAuthAccessToken({ ref: REF, serverUrl: SERVER_URL }, dependencies),
+      (error: unknown) =>
+        error instanceof McpOAuthError && error.code === 'connection_missing',
+    );
+    assert.deepEqual(
+      await settings.getSettings(mcpOAuthSettingKeys(REF)),
+      [undefined, undefined, undefined, undefined, undefined],
+    );
+  } finally {
+    settings.close();
+  }
+});
+
+test('invalid_grant clears the unusable token bundle and requires reconnection', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const oauth = fakeOAuthServer({
+    initialExpiresIn: 1,
+    refreshError: 'invalid_grant',
+  });
+  let now = 1_000_000;
+  const dependencies = {
+    settings,
+    fetchFn: oauth.fetchFn,
+    now: () => now,
+    randomId: () => 'nonce',
+  };
+
+  try {
+    const started = await startMcpOAuthAuthorization(
+      { ref: REF, serverUrl: SERVER_URL, callbackUrl: CALLBACK_URL },
+      dependencies,
+    );
+    await completeMcpOAuthAuthorization(
+      { code: 'provider-code', state: started.state },
+      dependencies,
+    );
+    now += 2_000;
+
+    await assert.rejects(
+      resolveMcpOAuthAccessToken({ ref: REF, serverUrl: SERVER_URL }, dependencies),
+      (error: unknown) =>
+        error instanceof McpOAuthError &&
+        error.code === 'reauthorization_required',
+    );
+    assert.equal(
+      await settings.getSetting(mcpOAuthSettingKeys(REF)[2]!),
+      undefined,
+    );
+  } finally {
+    settings.close();
+  }
+});
+
+test('transient refresh failure preserves the existing token bundle for retry', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const oauth = fakeOAuthServer({
+    initialExpiresIn: 1,
+    refreshError: 'temporarily_unavailable',
+  });
+  let now = 1_000_000;
+  const dependencies = {
+    settings,
+    fetchFn: oauth.fetchFn,
+    now: () => now,
+    randomId: () => 'nonce',
+  };
+
+  try {
+    const started = await startMcpOAuthAuthorization(
+      { ref: REF, serverUrl: SERVER_URL, callbackUrl: CALLBACK_URL },
+      dependencies,
+    );
+    await completeMcpOAuthAuthorization(
+      { code: 'provider-code', state: started.state },
+      dependencies,
+    );
+    now += 2_000;
+    const tokenKey = mcpOAuthSettingKeys(REF)[2];
+    const before = await settings.getSetting(tokenKey);
+
+    await assert.rejects(
+      resolveMcpOAuthAccessToken({ ref: REF, serverUrl: SERVER_URL }, dependencies),
+      (error: unknown) =>
+        error instanceof McpOAuthError && error.code === 'oauth_unavailable',
+    );
+    assert.equal(await settings.getSetting(tokenKey), before);
+  } finally {
+    settings.close();
+  }
+});

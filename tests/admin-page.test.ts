@@ -224,6 +224,9 @@ function runAdminPageHarness(
     skillResolution?: Record<string, unknown>;
     skillResolveError?: { status: number; error: string; message?: string };
     mcpTestResult?: { ok: true; tools: Array<{ name: string; title?: string; description?: string }> } | { ok: false; code: string; message: string };
+    oauthStartResult?: { authorizationUrl: string };
+    oauthStartError?: { status: number; error: string; message?: string };
+    initialSearch?: string;
   } = {},
 ): {
   app: FakeElement;
@@ -257,6 +260,8 @@ function runAdminPageHarness(
   agentPostBodies: Array<Record<string, unknown>>;
   skillResolvePosts: Array<{ source: string }>;
   mcpTestPosts: Array<Record<string, unknown>>;
+  oauthStartPosts: Array<{ agentId: string; connectionId: string; body: Record<string, unknown> }>;
+  assignedUrls: string[];
   mcpSecretPuts: Array<{ agentId: string; id: string; body: Record<string, unknown> }>;
   mcpSecretDeletes: Array<{ agentId: string; id: string; body: Record<string, unknown> }>;
   apiConnectionSecretPuts: Array<{ agentId: string; id: string; body: Record<string, unknown> }>;
@@ -335,6 +340,12 @@ function runAdminPageHarness(
   const agentPostBodies: Array<Record<string, unknown>> = [];
   const skillResolvePosts: Array<{ source: string }> = [];
   const mcpTestPosts: Array<Record<string, unknown>> = [];
+  const oauthStartPosts: Array<{
+    agentId: string;
+    connectionId: string;
+    body: Record<string, unknown>;
+  }> = [];
+  const assignedUrls: string[] = [];
   const mcpSecretPuts: Array<{ agentId: string; id: string; body: Record<string, unknown> }> = [];
   const mcpSecretDeletes: Array<{ agentId: string; id: string; body: Record<string, unknown> }> = [];
   const apiConnectionSecretPuts: Array<{ agentId: string; id: string; body: Record<string, unknown> }> = [];
@@ -372,8 +383,16 @@ function runAdminPageHarness(
   let apiConnectionSecretDeleteFailures = options.apiConnectionSecretDeleteFailures ?? 0;
   const skillResolveError = options.skillResolveError;
   const skillResolution = options.skillResolution;
+  const oauthStartResult = options.oauthStartResult;
+  const oauthStartError = options.oauthStartError;
   let resolveOpsEffective: (() => void) | undefined;
-  const location = { pathname: options.initialPath ?? '/admin' };
+  const location = {
+    pathname: options.initialPath ?? '/admin',
+    search: options.initialSearch ?? '',
+    assign(url: string) {
+      assignedUrls.push(String(url));
+    },
+  };
   const historyPushes: string[] = [];
   const historyReplaces: string[] = [];
   const history = {
@@ -566,6 +585,25 @@ function runAdminPageHarness(
         };
       // The test endpoint always answers HTTP 200 — failures ride in the body.
       return Promise.resolve(jsonResponse(result));
+    }
+    const oauthStartMatch = path.match(
+      /^\/admin\/api\/agents\/([^/]+)\/mcp\/oauth\/([^/]+)\/start$/,
+    );
+    if (oauthStartMatch && method === 'POST') {
+      const agentId = decodeURIComponent(oauthStartMatch[1] as string);
+      const connectionId = decodeURIComponent(oauthStartMatch[2] as string);
+      const body = JSON.parse(options?.body ?? '{}') as Record<string, unknown>;
+      oauthStartPosts.push({ agentId, connectionId, body });
+      if (oauthStartError) {
+        return Promise.resolve(jsonResponse(oauthStartError, oauthStartError.status));
+      }
+      return Promise.resolve(
+        jsonResponse(
+          oauthStartResult ?? {
+            authorizationUrl: 'https://auth.notion.example/authorize?state=opaque',
+          },
+        ),
+      );
     }
     const mcpSecretsMatch = path.match(
       /^\/admin\/api\/agents\/([^/]+)\/mcp\/secrets\/([^/]+)$/,
@@ -970,6 +1008,8 @@ function runAdminPageHarness(
     agentPostBodies,
     skillResolvePosts,
     mcpTestPosts,
+    oauthStartPosts,
+    assignedUrls,
     mcpSecretPuts,
     mcpSecretDeletes,
     apiConnectionSecretPuts,
@@ -2275,9 +2315,9 @@ test('a connected preset drops out of the Available gallery until it is removed'
   // Linear and Asana are already connected, so the gallery no longer offers them...
   assert.doesNotMatch(panel, /data-action="conn-preset" data-preset="linear"/);
   assert.doesNotMatch(panel, /data-action="conn-preset" data-preset="asana"/);
-  // ...other presets remain, and the Available count dropped from 22 to 20.
+  // ...other presets remain, and the Available count dropped from 23 to 21.
   assert.match(panel, /data-action="conn-preset" data-preset="airtable"/);
-  assert.match(panel, /<span class="gallery-head-count">20<\/span>/);
+  assert.match(panel, /<span class="gallery-head-count">21<\/span>/);
 });
 
 test('saved MCP and API connections share one lane-badged list with matching inline editors', async () => {
@@ -2479,6 +2519,7 @@ test('editing a saved API connection shows a stored write-only credential placeh
           }),
         ],
       }),
+      connectionsAgent({ id: 'agent_other', name: 'Other Profile' }),
     ],
   });
   await flushAsync();
@@ -2612,6 +2653,7 @@ test('the inline script embeds the connector preset catalog and brand logos', ()
   assert.match(script, /CONNECTOR_PRESETS/);
   assert.match(script, /CONNECTOR_LOGOS/);
   assert.match(script, /mcp\.linear\.app/);
+  assert.match(script, /mcp\.notion\.com/);
   assert.match(script, /M2\.886 4\.18/);
 });
 
@@ -2629,9 +2671,9 @@ test('the searchable Connections gallery is immediate, renders brand logos, and 
   assert.match(gallery, /data-action="conn-gallery-search"/);
   assert.equal(
     (gallery.match(/data-action="conn-preset" data-preset="[^"]+">Connect<\/button>/g) ?? []).length,
-    22,
+    23,
   );
-  assert.match(gallery, /<span>Available<\/span><span class="gallery-head-count">22<\/span>/);
+  assert.match(gallery, /<span>Available<\/span><span class="gallery-head-count">23<\/span>/);
   assert.doesNotMatch(gallery, /data-preset="github"/);
   assert.doesNotMatch(gallery, /data-preset="context7"/);
   assert.doesNotMatch(gallery, /data-preset="deepwiki"/);
@@ -2671,6 +2713,12 @@ test('the searchable Connections gallery is immediate, renders brand logos, and 
   );
   assert.match(linearRow, /<span class="gallery-row-name">Linear<\/span>/);
   assert.match(linearRow, /<span class="gallery-lane">MCP<\/span>/);
+
+  const notionRow = gallery.match(
+    /<div class="gallery-row"><span class="conn-logo conn-logo-img conn-logo-full"><svg[^>]*aria-hidden="true"(?:(?!<\/div>)[\s\S])*?data-preset="notion">Connect<\/button><\/div>/,
+  )?.[0];
+  assert.ok(notionRow);
+  assert.doesNotMatch(notionRow, /conn-logo-mono|conn-logo-raster|data:image|>NO<\/span>/);
 
   for (const id of ['asana', 'zendesk']) {
     const apiRow = gallery.match(
@@ -2980,6 +3028,416 @@ test('the keyless Cloudflare Docs recommended editor shows its token note once',
   assert.equal((harness.app.innerHTML.match(/No token needed\./g) ?? []).length, 1);
   click({ target: actionTarget({ 'data-action': 'conn-view', 'data-view': 'advanced' }) });
   assert.match(harness.app.innerHTML, /<option value="none" selected>None<\/option>/);
+});
+
+test('the Notion preset saves OAuth policy before starting authorization and never puts credentials in client state', async () => {
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    oauthStartResult: {
+      authorizationUrl: 'https://auth.notion.example/authorize?state=opaque-state',
+    },
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'notion' }) });
+
+  assert.match(harness.app.innerHTML, /mcp\.notion\.com/);
+  assert.match(harness.app.innerHTML, /Sign in to Notion and choose the workspace access Chickpea should receive\.<\/p>/);
+  assert.match(
+    harness.app.innerHTML,
+    /<button[^>]*class="btn btn-primary btn-sm oauth-signin"[^>]*data-action="conn-oauth-start"[^>]*><span class="conn-logo conn-logo-img conn-logo-full"><svg[^>]*aria-hidden="true"[\s\S]*?<\/svg><\/span><span>Sign into Notion<\/span><\/button>/,
+  );
+  assert.doesNotMatch(harness.app.innerHTML, /When you continue|Save and connect Notion/);
+  assert.doesNotMatch(harness.app.innerHTML, />Add connection<\/button>/);
+  assert.equal((harness.app.innerHTML.match(/Sign in to Notion and choose the workspace access Chickpea should receive\./g) ?? []).length, 1);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="conn-field-bearer"/);
+  assert.match(harness.app.innerHTML, /data-action="conn-test" disabled/);
+
+  click({ target: actionTarget({ 'data-action': 'conn-oauth-start' }) });
+  await flushAsync();
+
+  assert.equal(harness.agentPatchBodies.length, 1);
+  const serializedPatch = JSON.stringify(harness.agentPatchBodies[0]?.body);
+  const servers = harness.agentPatchBodies[0]?.body.mcpServers as Array<Record<string, unknown>>;
+  assert.deepEqual(servers, [
+    {
+      id: 'notion',
+      displayName: 'Notion',
+      url: 'https://mcp.notion.com/mcp',
+      transport: 'streamable-http',
+      authMode: 'oauth',
+      headerNames: [],
+      enabled: true,
+      lifecycleStatus: 'pending',
+      statusText: '',
+      discoveredTools: [],
+      allowedTools: [],
+      presetId: 'notion',
+    },
+  ]);
+  assert.doesNotMatch(serializedPatch, /opaque-state|access_token|refresh_token|client_secret/);
+  assert.deepEqual(harness.oauthStartPosts, [
+    { agentId: 'agent_conn', connectionId: 'notion', body: {} },
+  ]);
+  assert.deepEqual(harness.assignedUrls, [
+    'https://auth.notion.example/authorize?state=opaque-state',
+  ]);
+});
+
+test('a Notion OAuth start failure keeps the saved connection recoverable in place', async () => {
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    oauthStartError: { status: 502, error: 'oauth_unavailable' },
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'notion' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-oauth-start' }) });
+  await flushAsync();
+
+  assert.equal(harness.agentPatchBodies.length, 1);
+  assert.equal(harness.oauthStartPosts.length, 1);
+  assert.deepEqual(harness.assignedUrls, []);
+  assert.match(harness.app.innerHTML, /Sign into Notion/);
+  assert.match(
+    harness.app.innerHTML,
+    /Notion OAuth could not be prepared\. Check that this install has a reachable callback URL, then try again\./,
+  );
+});
+
+test('an OAuth callback return opens the profile Connections tab with a status-only notice', async () => {
+  const harness = runAdminPageHarness({
+    agents: [
+      connectionsAgent({
+        mcpServers: [
+          mcpConnectionFixture({
+            id: 'notion',
+            displayName: 'Notion',
+            url: 'https://mcp.notion.com/mcp',
+            authMode: 'oauth',
+            presetId: 'notion',
+            lifecycleStatus: 'ready',
+            statusText: 'Connected · 2 tools',
+            discoveredTools: [
+              { name: 'notion-search', description: 'Search Notion.' },
+              { name: 'notion-fetch', description: 'Fetch from Notion.' },
+            ],
+            allowedTools: ['notion-search', 'notion-fetch'],
+            identity: {
+              workspaceName: "Pejman Pour-Moezzi's Notion",
+              accountName: 'Pejman Pour-Moezzi',
+            },
+          }),
+        ],
+      }),
+    ],
+    initialPath: '/admin/profiles/agent_conn',
+    initialSearch: '?oauth=connected&connection=notion',
+  });
+  await flushAsync();
+
+  assert.match(
+    harness.app.innerHTML,
+    /Connected to Pejman Pour-Moezzi&#39;s Notion/,
+  );
+  assert.match(harness.app.innerHTML, /Pejman Pour-Moezzi/);
+  assert.match(harness.app.innerHTML, /2 tools enabled/);
+  assert.equal((harness.app.innerHTML.match(/data-action="conn-tool-toggle"[^>]*checked/g) ?? []).length, 2);
+  assert.match(harness.app.innerHTML, /Tool access is already saved/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="conn-save-row"/);
+  assert.match(harness.app.innerHTML, /save-bar-sticky[^\"]*is-clean/);
+  assert.doesNotMatch(harness.app.innerHTML, /Test the connection to discover tools/);
+  assert.match(
+    harness.app.innerHTML,
+    /data-action="profile-tab" data-tab="connections"[^>]*>Connections<span class="ptab-count">1<\/span>/,
+  );
+  assert.match(harness.app.innerHTML, /id="ptab-panel-connections" role="tabpanel" aria-labelledby="ptab-connections">/);
+  assert.ok(harness.historyReplaces.includes('/admin/profiles/agent_conn'));
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'profiles-back' }) });
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_other' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  assert.doesNotMatch(harness.app.innerHTML, /Connected to Pejman/);
+});
+
+test('changing connected OAuth tool access saves immediately without dirtying the profile', async () => {
+  const harness = runAdminPageHarness({
+    agents: [
+      connectionsAgent({
+        mcpServers: [
+          mcpConnectionFixture({
+            id: 'notion',
+            displayName: 'Notion',
+            url: 'https://mcp.notion.com/mcp',
+            authMode: 'oauth',
+            presetId: 'notion',
+            discoveredTools: [
+              { name: 'notion-search', description: 'Search Notion.' },
+              { name: 'notion-fetch', description: 'Fetch from Notion.' },
+            ],
+            allowedTools: ['notion-search', 'notion-fetch'],
+          }),
+        ],
+      }),
+    ],
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  const change = harness.listeners.change;
+  assert.ok(click && change);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-edit', 'data-index': '0' }) });
+
+  assert.match(harness.app.innerHTML, /Tool access is already saved/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="conn-save-row"/);
+  assert.match(harness.app.innerHTML, /save-bar-sticky[^\"]*is-clean/);
+
+  change({ target: checkboxTarget({ 'data-action': 'conn-tool-toggle', 'data-index': '1' }, false) });
+  assert.match(harness.app.innerHTML, /data-action="conn-save-row"[^>]*>Save tool access<\/button>/);
+  assert.match(harness.app.innerHTML, /save-bar-sticky[^\"]*is-clean/);
+
+  click({ target: actionTarget({ 'data-action': 'conn-save-row' }) });
+  await flushAsync();
+
+  assert.equal(harness.agentPatchBodies.length, 1);
+  assert.deepEqual(Object.keys(harness.agentPatchBodies[0]?.body ?? {}), ['mcpServers']);
+  const servers = harness.agentPatchBodies[0]?.body.mcpServers as Array<Record<string, unknown>>;
+  assert.deepEqual(servers[0]?.allowedTools, ['notion-search']);
+  assert.match(harness.app.innerHTML, /Tool access is already saved/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="conn-save-row"/);
+  assert.match(harness.app.innerHTML, /save-bar-sticky[^\"]*is-clean/);
+
+  click({ target: actionTarget({ 'data-action': 'conn-cancel' }) });
+  assert.match(harness.app.innerHTML, /Connected &middot; 1 tool/);
+});
+
+test('saving OAuth tool access preserves an unrelated unsaved profile change', async () => {
+  const harness = runAdminPageHarness({
+    agents: [
+      connectionsAgent({
+        skills: [{ name: 'existing-skill', description: 'Existing.', instructions: 'Keep it.', enabled: true }],
+        mcpServers: [
+          mcpConnectionFixture({
+            id: 'notion',
+            displayName: 'Notion',
+            url: 'https://mcp.notion.com/mcp',
+            authMode: 'oauth',
+            presetId: 'notion',
+            discoveredTools: [{ name: 'notion-search' }, { name: 'notion-fetch' }],
+            allowedTools: ['notion-search', 'notion-fetch'],
+          }),
+        ],
+      }),
+    ],
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  const change = harness.listeners.change;
+  assert.ok(click && change);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'skills' }) });
+  change({ target: checkboxTarget({ 'data-action': 'skill-toggle', 'data-index': '0' }, false) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-edit', 'data-index': '0' }) });
+  change({ target: checkboxTarget({ 'data-action': 'conn-tool-toggle', 'data-index': '1' }, false) });
+  click({ target: actionTarget({ 'data-action': 'conn-save-row' }) });
+  await flushAsync();
+
+  assert.equal(harness.agentPatchBodies.length, 1);
+  assert.deepEqual(Object.keys(harness.agentPatchBodies[0]?.body ?? {}), ['mcpServers']);
+  assert.doesNotMatch(harness.app.innerHTML, /save-bar-sticky[^\"]*is-clean/);
+
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+  assert.equal(harness.agentPatchBodies.length, 2);
+  assert.equal((harness.agentPatchBodies[1]?.body.skills as Array<Record<string, unknown>>)[0]?.enabled, false);
+  assert.deepEqual(
+    (harness.agentPatchBodies[1]?.body.mcpServers as Array<Record<string, unknown>>)[0]?.allowedTools,
+    ['notion-search'],
+  );
+});
+
+test('disconnecting an OAuth connection clears its one-shot connected notice', async () => {
+  const harness = runAdminPageHarness({
+    agents: [
+      connectionsAgent({
+        mcpServers: [
+          mcpConnectionFixture({
+            id: 'notion',
+            displayName: 'Notion',
+            url: 'https://mcp.notion.com/mcp',
+            authMode: 'oauth',
+            presetId: 'notion',
+            lifecycleStatus: 'ready',
+            statusText: 'Connected · 2 tools',
+            discoveredTools: [
+              { name: 'notion-search', description: 'Search Notion.' },
+              { name: 'notion-fetch', description: 'Fetch from Notion.' },
+            ],
+            allowedTools: ['notion-search', 'notion-fetch'],
+          }),
+        ],
+      }),
+    ],
+    initialPath: '/admin/profiles/agent_conn',
+    initialSearch: '?oauth=connected&connection=notion',
+  });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /Connected to Notion\. 2 tools enabled\./);
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'conn-oauth-disconnect' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-remove-confirm' }) });
+
+  assert.doesNotMatch(harness.app.innerHTML, /Connected to Notion/);
+  assert.doesNotMatch(harness.app.innerHTML, /0 tools enabled/);
+});
+
+test('a connected OAuth account offers confirmed disconnect and clears its stored OAuth state on save', async () => {
+  const harness = runAdminPageHarness({
+    agents: [
+      connectionsAgent({
+        mcpServers: [
+          mcpConnectionFixture({
+            id: 'notion',
+            displayName: 'Notion',
+            url: 'https://mcp.notion.com/mcp',
+            authMode: 'oauth',
+            presetId: 'notion',
+            lifecycleStatus: 'ready',
+            statusText: 'Connected · 2 tools',
+            discoveredTools: [
+              { name: 'notion-search', description: 'Search Notion.' },
+              { name: 'notion-fetch', description: 'Fetch from Notion.' },
+            ],
+            allowedTools: ['notion-search', 'notion-fetch'],
+            identity: {
+              workspaceName: 'Example workspace',
+              accountName: 'Example admin',
+            },
+          }),
+        ],
+      }),
+    ],
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-edit', 'data-index': '0' }) });
+
+  assert.match(harness.app.innerHTML, /data-action="conn-oauth-start">Reconnect<\/button>/);
+  assert.match(harness.app.innerHTML, /data-action="conn-oauth-disconnect">Disconnect<\/button>/);
+
+  click({ target: actionTarget({ 'data-action': 'conn-oauth-disconnect' }) });
+  assert.match(harness.app.innerHTML, /Disconnect Notion\?/);
+  assert.match(
+    harness.app.innerHTML,
+    /stored OAuth tokens and client registration are deleted when you save/,
+  );
+  assert.match(harness.app.innerHTML, /data-action="conn-remove-confirm">Disconnect and remove<\/button>/);
+
+  click({ target: actionTarget({ 'data-action': 'conn-remove-confirm' }) });
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+
+  assert.deepEqual(harness.agentPatchBodies[0]?.body.mcpServers, []);
+  assert.deepEqual(harness.mcpSecretDeletes, [
+    { agentId: 'agent_conn', id: 'notion', body: { headerNames: [] } },
+  ]);
+  assert.doesNotMatch(JSON.stringify(harness.agentPatchBodies), /access_token|refresh_token|client_secret/);
+});
+
+test('an OAuth verification failure is explicit and offers verification retry without repeating consent', async () => {
+  const harness = runAdminPageHarness({
+    agents: [
+      connectionsAgent({
+        mcpServers: [
+          mcpConnectionFixture({
+            id: 'notion',
+            displayName: 'Notion',
+            url: 'https://mcp.notion.com/mcp',
+            authMode: 'oauth',
+            presetId: 'notion',
+            lifecycleStatus: 'failed',
+            statusText: 'The connection timed out before it was ready.',
+            discoveredTools: [],
+            allowedTools: [],
+          }),
+        ],
+      }),
+    ],
+    initialPath: '/admin/profiles/agent_conn',
+    initialSearch: '?oauth=verification_failed&connection=notion',
+  });
+  await flushAsync();
+
+  assert.match(
+    harness.app.innerHTML,
+    /Notion was authorized, but Chickpea could not verify the connection\./,
+  );
+  assert.match(harness.app.innerHTML, /role="alert"/);
+  assert.match(harness.app.innerHTML, /data-action="conn-test"[^>]*>Retry verification<\/button>/);
+  assert.doesNotMatch(harness.app.innerHTML, />Reconnect Notion<\/button>/);
+});
+
+test('an existing OAuth connection renders honestly and stages token cleanup when disabled', async () => {
+  const harness = runAdminPageHarness({
+    agents: [
+      connectionsAgent({
+        mcpServers: [
+          mcpConnectionFixture({
+            authMode: 'oauth',
+            presetId: 'linear',
+          }),
+        ],
+      }),
+    ],
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  const change = harness.listeners.change;
+  assert.ok(click && change);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-edit', 'data-index': '0' }) });
+
+  assert.match(
+    harness.app.innerHTML,
+    /<option value="oauth" selected disabled>OAuth \(configured separately\)<\/option>/,
+  );
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="conn-field-bearer"/);
+
+  change({
+    target: {
+      value: 'none',
+      closest: () => null,
+      getAttribute: (name: string) => (name === 'data-action' ? 'conn-auth' : null),
+    } as unknown as FakeTarget,
+  });
+  click({ target: actionTarget({ 'data-action': 'conn-save-row' }) });
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+
+  const servers = harness.agentPatchBodies[0]?.body.mcpServers as Array<Record<string, unknown>>;
+  assert.equal(servers[0]?.authMode, 'none');
+  assert.equal(harness.mcpSecretPuts[0]?.body.clearOAuth, true);
 });
 
 test('the Connections section renders its gallery, with the STDIO-greyed form, exact security copy, and trust-gated Test', async () => {

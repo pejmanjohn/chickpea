@@ -23,6 +23,12 @@ export interface McpConnectionToolInfo {
   description?: string;
 }
 
+/** Non-secret account labels returned by a provider identity probe. */
+export interface McpConnectionIdentity {
+  workspaceName?: string;
+  accountName?: string;
+}
+
 /**
  * A profile-attached remote MCP server ("Connection"): tools added by URL that
  * join the agent's toolset at the `slack-thread.ts` seam. This is POLICY ONLY —
@@ -36,7 +42,7 @@ export interface McpConnectionConfig {
   displayName: string;
   url: string;
   transport: 'streamable-http' | 'sse';
-  authMode: 'none' | 'bearer';
+  authMode: 'none' | 'bearer' | 'oauth';
   headerNames: string[];
   enabled: boolean;
   lifecycleStatus: 'pending' | 'ready' | 'failed';
@@ -44,6 +50,7 @@ export interface McpConnectionConfig {
   discoveredTools: McpConnectionToolInfo[];
   allowedTools: string[];
   lastCheckedAt?: number;
+  identity?: McpConnectionIdentity;
   /**
    * Policy-only back-reference to the connector-preset catalog used to create
    * this connection; enables badge rendering and "reset to preset".

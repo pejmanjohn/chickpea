@@ -75,7 +75,7 @@ test('connector preset catalog entries are valid', () => {
 
 test('preset lanes classify the existing MCP catalog, the API additions, and both', () => {
   const existingMcpPresets = CONNECTOR_PRESETS.filter((preset) => !API_PRESET_IDS.has(preset.id));
-  assert.equal(existingMcpPresets.length, 20);
+  assert.equal(existingMcpPresets.length, 21);
   for (const preset of existingMcpPresets) {
     assert.deepEqual(presetLanes(preset), { mcp: true, api: false }, preset.id);
   }
@@ -102,6 +102,22 @@ test('preset lanes classify the existing MCP catalog, the API additions, and bot
     },
   } satisfies ConnectorPreset;
   assert.deepEqual(presetLanes(both), { mcp: true, api: true });
+});
+
+test('the Notion MCP preset keeps the official OAuth-only hosted-server shape', () => {
+  assert.deepEqual(getConnectorPreset('notion'), {
+    id: 'notion',
+    name: 'Notion',
+    category: 'docs',
+    accent: '#000000',
+    url: 'https://mcp.notion.com/mcp',
+    transport: 'streamable-http',
+    auth: { kind: 'oauth' },
+    tokenDocsUrl: 'https://developers.notion.com/guides/mcp/build-mcp-client',
+    tokenDocsHint: 'Sign in to Notion and choose the workspace access Chickpea should receive.',
+    notes:
+      'Notion MCP requires user OAuth. Chickpea discovers Notion metadata, registers this self-hosted install when needed, and stores the resulting credentials outside the profile.',
+  });
 });
 
 test('the Asana and Zendesk API presets keep their locked shapes', () => {

@@ -15,6 +15,7 @@ interface McpPresetLane {
   transport: 'streamable-http';
   auth:
     | { kind: 'none' }
+    | { kind: 'oauth' }
     | { kind: 'bearer'; placeholder: string }
     | { kind: 'header'; headerName: string; valuePrefix?: string; placeholder: string };
 }
@@ -49,6 +50,19 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
     auth: { kind: 'bearer', placeholder: 'lin_api_…' },
     tokenDocsUrl: 'https://linear.app/docs/mcp',
     tokenDocsHint: 'Linear → Settings → Account → Security & Access → Personal API keys',
+  },
+  {
+    id: 'notion',
+    name: 'Notion',
+    category: 'docs',
+    accent: '#000000',
+    url: 'https://mcp.notion.com/mcp',
+    transport: 'streamable-http',
+    auth: { kind: 'oauth' },
+    tokenDocsUrl: 'https://developers.notion.com/guides/mcp/build-mcp-client',
+    tokenDocsHint: 'Sign in to Notion and choose the workspace access Chickpea should receive.',
+    notes:
+      'Notion MCP requires user OAuth. Chickpea discovers Notion metadata, registers this self-hosted install when needed, and stores the resulting credentials outside the profile.',
   },
   {
     id: 'sentry',

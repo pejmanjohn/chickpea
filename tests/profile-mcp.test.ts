@@ -197,6 +197,45 @@ test('runtime resolution uses the agent-scoped environment override for the same
   assert.deepEqual(seen, ['Bearer alpha-token', 'Bearer beta-token']);
 });
 
+test('runtime resolves OAuth at connection time and injects only the bearer header', async () => {
+  const seen: Array<{ ref: object; serverUrl: string; authorization: string }> = [];
+  const connect = async (_name: string, options: McpServerOptions): Promise<McpServerConnection> => {
+    seen[0]!.authorization =
+      new Headers(options.headers).get('Authorization') ?? '';
+    return fakeConnection([tool('mcp__srv__search')]);
+  };
+
+  const tools = await resolveProfileMcpTools(
+    [server({ authMode: 'oauth', allowedTools: ['search'] })],
+    {
+      agentId: 'agent_test',
+      env: noSecretsEnv,
+      existingToolNames: [],
+      connect,
+      resolveOAuthAccessToken: async (input) => {
+        seen.push({
+          ref: input.ref,
+          serverUrl: input.serverUrl,
+          authorization: '',
+        });
+        return 'oauth-access-token';
+      },
+    },
+  );
+
+  assert.deepEqual(
+    tools.map((tool) => tool.name),
+    ['mcp__srv__search'],
+  );
+  assert.deepEqual(seen, [
+    {
+      ref: { agentId: 'agent_test', connectionId: 'srv' },
+      serverUrl: 'https://mcp.example.com/mcp',
+      authorization: 'Bearer oauth-access-token',
+    },
+  ]);
+});
+
 // --- (b) graceful degrade: one dead server never kills the others ---------
 
 test('one server hanging past the connect deadline does not block the other', async () => {

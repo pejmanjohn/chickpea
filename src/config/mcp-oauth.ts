@@ -1,0 +1,880 @@
+import {
+  discoverAuthorizationServerMetadata,
+  discoverOAuthProtectedResourceMetadata,
+  exchangeAuthorization,
+  refreshAuthorization,
+  registerClient,
+  startAuthorization,
+} from '@modelcontextprotocol/sdk/client/auth.js';
+import { InvalidGrantError } from '@modelcontextprotocol/sdk/server/auth/errors.js';
+import {
+  checkResourceAllowed,
+  resourceUrlFromServerUrl,
+} from '@modelcontextprotocol/sdk/shared/auth-utils.js';
+import type {
+  AuthorizationServerMetadata,
+  OAuthClientInformationMixed,
+  OAuthClientMetadata,
+  OAuthProtectedResourceMetadata,
+  OAuthTokens,
+} from '@modelcontextprotocol/sdk/shared/auth.js';
+
+import { UnknownAgentError } from './errors.ts';
+import {
+  stageMcpSecretCleanup,
+  type McpSecretRef,
+} from './mcp-secrets.ts';
+import { createMcpGuardedFetch, validateMcpUrl } from './mcp-url.ts';
+import type { SettingsStore } from './settings-store.ts';
+import type { ConfigStore } from './store.ts';
+
+const PENDING_TTL_MS = 10 * 60_000;
+const LEASE_TTL_MS = 12_000;
+const LEASE_RETRY_MS = 25;
+const LEASE_ATTEMPTS = 360;
+const OAUTH_FETCH_TIMEOUT_MS = 8_000;
+const REFRESH_SKEW_MS = 60_000;
+const AGENT_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,127}$/;
+const CONNECTION_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
+
+type McpOAuthErrorCode =
+  | 'connection_missing'
+  | 'invalid_state'
+  | 'oauth_discovery_failed'
+  | 'oauth_storage_invalid'
+  | 'oauth_unavailable'
+  | 'reauthorization_required';
+
+export class McpOAuthError extends Error {
+  constructor(
+    readonly code: McpOAuthErrorCode,
+    message: string,
+    options?: ErrorOptions,
+  ) {
+    super(message, options);
+    this.name = 'McpOAuthError';
+  }
+}
+
+export interface McpOAuthDependencies {
+  settings: SettingsStore;
+  fetchFn?: typeof fetch;
+  now?: () => number;
+  randomId?: () => string;
+  sleep?: (ms: number) => Promise<void>;
+  validateConnection?: (
+    ref: McpSecretRef,
+    serverUrl: string,
+  ) => boolean | Promise<boolean>;
+}
+
+export interface StartMcpOAuthInput {
+  ref: McpSecretRef;
+  serverUrl: string;
+  callbackUrl: string;
+  scope?: string;
+}
+
+export interface CompleteMcpOAuthInput {
+  code: string;
+  state: string;
+}
+
+export interface ResolveMcpOAuthAccessInput {
+  ref: McpSecretRef;
+  serverUrl: string;
+}
+
+interface StoredClient {
+  authorizationServerUrl: string;
+  callbackUrl: string;
+  clientInformation: OAuthClientInformationMixed;
+  scope?: string;
+}
+
+interface PendingAuthorization {
+  state: string;
+  expiresAt: number;
+  serverUrl: string;
+  callbackUrl: string;
+  authorizationServerUrl: string;
+  metadata: AuthorizationServerMetadata;
+  resourceMetadata: OAuthProtectedResourceMetadata;
+  clientInformation: OAuthClientInformationMixed;
+}
+
+interface StoredTokenBundle {
+  serverUrl: string;
+  authorizationServerUrl: string;
+  metadata: AuthorizationServerMetadata;
+  resource: string;
+  clientInformation: OAuthClientInformationMixed;
+  tokens: OAuthTokens;
+  obtainedAt: number;
+}
+
+interface StoredLease {
+  owner: string;
+  expiresAt: number;
+}
+
+export function mcpOAuthSettingKeys(ref: McpSecretRef): [
+  client: string,
+  pending: string,
+  tokens: string,
+  registrationLease: string,
+  refreshLease: string,
+] {
+  const prefix = `mcp.${ref.agentId}.${ref.connectionId}.oauth`;
+  return [
+    `${prefix}.client`,
+    `${prefix}.pending`,
+    `${prefix}.tokens`,
+    `${prefix}.registration-lease`,
+    `${prefix}.refresh-lease`,
+  ];
+}
+
+export function createMcpOAuthClientMetadata(
+  callbackUrl: string,
+): OAuthClientMetadata {
+  validateCallbackUrl(callbackUrl);
+  return {
+    redirect_uris: [callbackUrl],
+    token_endpoint_auth_method: 'none',
+    grant_types: ['authorization_code', 'refresh_token'],
+    response_types: ['code'],
+    client_name: 'Chickpea',
+  };
+}
+
+export function createMcpOAuthClientMetadataDocument(
+  documentUrl: string,
+): OAuthClientMetadata & { client_id: string } {
+  const url = new URL(documentUrl);
+  if (
+    url.protocol !== 'https:' ||
+    url.pathname !== '/.well-known/oauth-client-metadata.json' ||
+    url.search !== '' ||
+    url.hash !== ''
+  ) {
+    throw new McpOAuthError(
+      'oauth_discovery_failed',
+      'OAuth client metadata document URL is invalid',
+    );
+  }
+  const callbackUrl = new URL('/oauth/callback', url).href;
+  return {
+    client_id: url.href,
+    ...createMcpOAuthClientMetadata(callbackUrl),
+  };
+}
+
+export async function isCurrentMcpOAuthConnection(
+  store: Pick<ConfigStore, 'getAgent'>,
+  ref: McpSecretRef,
+  serverUrl: string,
+): Promise<boolean> {
+  try {
+    const connection = (await store.getAgent(ref.agentId)).mcpServers.find(
+      (server) => server.id === ref.connectionId,
+    );
+    const validated = connection ? validateMcpUrl(connection.url) : undefined;
+    return (
+      connection?.authMode === 'oauth' &&
+      validated?.ok === true &&
+      validated.url === serverUrl
+    );
+  } catch (error) {
+    if (error instanceof UnknownAgentError) return false;
+    throw error;
+  }
+}
+
+export async function startMcpOAuthAuthorization(
+  input: StartMcpOAuthInput,
+  dependencies: McpOAuthDependencies,
+): Promise<{ authorizationUrl: URL; state: string }> {
+  validateRef(input.ref);
+  const serverUrl = normalizedServerUrl(input.serverUrl);
+  const callbackUrl = validateCallbackUrl(input.callbackUrl).href;
+  const settings = dependencies.settings;
+  const oauthKeys = mcpOAuthSettingKeys(input.ref);
+  const [, pendingKey] = oauthKeys;
+  await stageMcpSecretCleanup(
+    input.ref.agentId,
+    oauthKeys,
+    settings,
+  );
+
+  await requireCurrentConnection(input.ref, serverUrl, dependencies);
+
+  const fetchFn = guardedOAuthFetch(dependencies);
+  let resourceMetadata: OAuthProtectedResourceMetadata;
+  let metadata: AuthorizationServerMetadata | undefined;
+  let authorizationServerUrl: string;
+  try {
+    resourceMetadata = await discoverOAuthProtectedResourceMetadata(
+      serverUrl,
+      undefined,
+      fetchFn,
+    );
+    authorizationServerUrl = resourceMetadata.authorization_servers?.[0] ?? '';
+    if (!authorizationServerUrl) {
+      throw new Error('Protected Resource Metadata has no authorization server');
+    }
+    metadata = await discoverAuthorizationServerMetadata(authorizationServerUrl, {
+      fetchFn,
+    });
+  } catch (error) {
+    throw new McpOAuthError(
+      'oauth_discovery_failed',
+      'MCP OAuth metadata discovery failed',
+      { cause: error },
+    );
+  }
+  if (!metadata) {
+    throw new McpOAuthError(
+      'oauth_discovery_failed',
+      'Authorization Server Metadata is required',
+    );
+  }
+  validateAuthorizationServerMetadata(authorizationServerUrl, metadata);
+  if (
+    metadata.code_challenge_methods_supported &&
+    !metadata.code_challenge_methods_supported.includes('S256')
+  ) {
+    throw new McpOAuthError(
+      'oauth_discovery_failed',
+      'Authorization server does not advertise PKCE S256',
+    );
+  }
+
+  const requestedResource = resourceUrlFromServerUrl(serverUrl);
+  if (
+    !checkResourceAllowed({
+      requestedResource,
+      configuredResource: resourceMetadata.resource,
+    })
+  ) {
+    throw new McpOAuthError(
+      'oauth_discovery_failed',
+      'Protected resource metadata does not match the MCP server',
+    );
+  }
+  const resource = new URL(resourceMetadata.resource);
+  const clientInformation = await resolveClientInformation(
+    input.ref,
+    authorizationServerUrl,
+    callbackUrl,
+    metadata,
+    input.scope,
+    dependencies,
+  );
+  const state = encodeState(input.ref, randomId(dependencies));
+  const { authorizationUrl, codeVerifier } = await startAuthorization(
+    authorizationServerUrl,
+    {
+      metadata,
+      clientInformation,
+      redirectUrl: callbackUrl,
+      ...(input.scope ? { scope: input.scope } : {}),
+      state,
+      resource,
+    },
+  );
+  const pending: PendingAuthorization = {
+    state,
+    expiresAt: now(dependencies) + PENDING_TTL_MS,
+    serverUrl,
+    callbackUrl,
+    authorizationServerUrl,
+    metadata,
+    resourceMetadata,
+    clientInformation,
+  };
+  await settings.setSetting(
+    pendingKey,
+    JSON.stringify({ ...pending, codeVerifier }),
+  );
+  try {
+    await requireCurrentConnection(input.ref, serverUrl, dependencies);
+  } catch (error) {
+    await deleteMcpOAuthSettings(input.ref, settings);
+    throw error;
+  }
+  return { authorizationUrl, state };
+}
+
+export async function completeMcpOAuthAuthorization(
+  input: CompleteMcpOAuthInput,
+  dependencies: McpOAuthDependencies,
+): Promise<{ ref: McpSecretRef }> {
+  const { ref, pending } = await consumePendingAuthorization(
+    input.state,
+    dependencies,
+  );
+  const settings = dependencies.settings;
+  await requireCurrentConnection(ref, pending.serverUrl, dependencies);
+
+  let tokens: OAuthTokens;
+  try {
+    tokens = await exchangeAuthorization(pending.authorizationServerUrl, {
+      metadata: pending.metadata,
+      clientInformation: pending.clientInformation,
+      authorizationCode: input.code,
+      codeVerifier: pending.codeVerifier,
+      redirectUri: pending.callbackUrl,
+      resource: new URL(pending.resourceMetadata.resource),
+      fetchFn: guardedOAuthFetch(dependencies),
+    });
+  } catch (error) {
+    throw new McpOAuthError(
+      'oauth_unavailable',
+      'OAuth authorization-code exchange failed',
+      { cause: error },
+    );
+  }
+  assertBearerTokens(tokens);
+  const [, , tokenKey] = mcpOAuthSettingKeys(ref);
+  const bundle: StoredTokenBundle = {
+    serverUrl: pending.serverUrl,
+    authorizationServerUrl: pending.authorizationServerUrl,
+    metadata: pending.metadata,
+    resource: pending.resourceMetadata.resource,
+    clientInformation: pending.clientInformation,
+    tokens,
+    obtainedAt: now(dependencies),
+  };
+  await settings.setSetting(tokenKey, JSON.stringify(bundle));
+
+  try {
+    await requireCurrentConnection(ref, pending.serverUrl, dependencies);
+  } catch (error) {
+    await deleteMcpOAuthSettings(ref, settings);
+    throw error;
+  }
+  return { ref };
+}
+
+export async function cancelMcpOAuthAuthorization(
+  state: string,
+  dependencies: McpOAuthDependencies,
+): Promise<{ ref: McpSecretRef }> {
+  const { ref } = await consumePendingAuthorization(state, dependencies);
+  return { ref };
+}
+
+export async function resolveMcpOAuthAccessToken(
+  input: ResolveMcpOAuthAccessInput,
+  dependencies: McpOAuthDependencies,
+): Promise<string> {
+  validateRef(input.ref);
+  const serverUrl = normalizedServerUrl(input.serverUrl);
+  await requireCurrentConnection(input.ref, serverUrl, dependencies);
+  const [, , tokenKey, , refreshLeaseKey] = mcpOAuthSettingKeys(input.ref);
+  const raw = await dependencies.settings.getSetting(tokenKey);
+  if (!raw) {
+    throw new McpOAuthError(
+      'reauthorization_required',
+      'MCP OAuth connection is not authorized',
+    );
+  }
+  const initial = parseStoredTokenBundle(raw);
+  assertTokenResource(initial, serverUrl);
+  if (!tokenNeedsRefresh(initial, now(dependencies))) {
+    return initial.tokens.access_token;
+  }
+  if (!initial.tokens.refresh_token) {
+    throw new McpOAuthError(
+      'reauthorization_required',
+      'MCP OAuth access expired without a refresh token',
+    );
+  }
+
+  return withLease(
+    refreshLeaseKey,
+    dependencies,
+    async () => {
+      const currentRaw = await dependencies.settings.getSetting(tokenKey);
+      if (!currentRaw) {
+        throw new McpOAuthError(
+          'reauthorization_required',
+          'MCP OAuth connection is not authorized',
+        );
+      }
+      const current = parseStoredTokenBundle(currentRaw);
+      assertTokenResource(current, serverUrl);
+      await requireCurrentConnection(input.ref, serverUrl, dependencies);
+      if (!tokenNeedsRefresh(current, now(dependencies))) {
+        return current.tokens.access_token;
+      }
+      const refreshToken = current.tokens.refresh_token;
+      if (!refreshToken) {
+        throw new McpOAuthError(
+          'reauthorization_required',
+          'MCP OAuth access expired without a refresh token',
+        );
+      }
+
+      let tokens: OAuthTokens;
+      try {
+        tokens = await refreshAuthorization(current.authorizationServerUrl, {
+          metadata: current.metadata,
+          clientInformation: current.clientInformation,
+          refreshToken,
+          resource: new URL(current.resource),
+          fetchFn: guardedOAuthFetch(dependencies),
+        });
+      } catch (error) {
+        if (
+          error instanceof InvalidGrantError ||
+          (isRecord(error) && error.errorCode === 'invalid_grant')
+        ) {
+          await dependencies.settings.applySettingsPatch({
+            expected: { key: tokenKey, value: currentRaw },
+            delete: [tokenKey],
+          });
+          throw new McpOAuthError(
+            'reauthorization_required',
+            'MCP OAuth refresh was rejected',
+            { cause: error },
+          );
+        }
+        throw new McpOAuthError('oauth_unavailable', 'MCP OAuth refresh failed', {
+          cause: error,
+        });
+      }
+      assertBearerTokens(tokens);
+      // OAuth servers may rotate a refresh token, but they are allowed to omit
+      // one when the existing refresh token remains valid. Preserve the prior
+      // value (and unchanged scope metadata) so the next expiry can still
+      // refresh instead of forcing an unnecessary reconnect.
+      const refreshedTokens: OAuthTokens = {
+        ...tokens,
+        ...(tokens.refresh_token === undefined && current.tokens.refresh_token !== undefined
+          ? { refresh_token: current.tokens.refresh_token }
+          : {}),
+        ...(tokens.scope === undefined && current.tokens.scope !== undefined
+          ? { scope: current.tokens.scope }
+          : {}),
+      };
+      const refreshed: StoredTokenBundle = {
+        ...current,
+        tokens: refreshedTokens,
+        obtainedAt: now(dependencies),
+      };
+      const stored = await dependencies.settings.applySettingsPatch({
+        expected: { key: tokenKey, value: currentRaw },
+        set: [{ key: tokenKey, value: JSON.stringify(refreshed) }],
+      });
+      if (!stored) {
+        const winner = await dependencies.settings.getSetting(tokenKey);
+        if (!winner) {
+          throw new McpOAuthError(
+            'reauthorization_required',
+            'MCP OAuth connection is not authorized',
+          );
+        }
+        return parseStoredTokenBundle(winner).tokens.access_token;
+      }
+      try {
+        await requireCurrentConnection(input.ref, serverUrl, dependencies);
+      } catch (error) {
+        await deleteMcpOAuthSettings(input.ref, dependencies.settings);
+        throw error;
+      }
+      return refreshedTokens.access_token;
+    },
+  );
+}
+
+export async function deleteMcpOAuthSettings(
+  ref: McpSecretRef,
+  settings: SettingsStore,
+): Promise<void> {
+  await settings.applySettingsPatch({ delete: mcpOAuthSettingKeys(ref) });
+}
+
+async function resolveClientInformation(
+  ref: McpSecretRef,
+  authorizationServerUrl: string,
+  callbackUrl: string,
+  metadata: AuthorizationServerMetadata,
+  scope: string | undefined,
+  dependencies: McpOAuthDependencies,
+): Promise<OAuthClientInformationMixed> {
+  const [clientKey, , , registrationLeaseKey] = mcpOAuthSettingKeys(ref);
+  const clientMetadataUrl = new URL(
+    '/.well-known/oauth-client-metadata.json',
+    callbackUrl,
+  ).href;
+  if (
+    metadata.client_id_metadata_document_supported === true &&
+    new URL(clientMetadataUrl).protocol === 'https:'
+  ) {
+    const clientInformation = { client_id: clientMetadataUrl };
+    const record: StoredClient = {
+      authorizationServerUrl,
+      callbackUrl,
+      clientInformation,
+      ...(scope ? { scope } : {}),
+    };
+    await dependencies.settings.setSetting(clientKey, JSON.stringify(record));
+    return clientInformation;
+  }
+
+  return withLease(registrationLeaseKey, dependencies, async () => {
+    const raw = await dependencies.settings.getSetting(clientKey);
+    if (raw) {
+      const stored = parseStoredClient(raw);
+      if (
+        stored.authorizationServerUrl === authorizationServerUrl &&
+        stored.callbackUrl === callbackUrl &&
+        stored.scope === scope
+      ) {
+        return stored.clientInformation;
+      }
+    }
+    let clientInformation: OAuthClientInformationMixed;
+    try {
+      clientInformation = await registerClient(authorizationServerUrl, {
+        metadata,
+        clientMetadata: createMcpOAuthClientMetadata(callbackUrl),
+        ...(scope ? { scope } : {}),
+        fetchFn: guardedOAuthFetch(dependencies),
+      });
+    } catch (error) {
+      throw new McpOAuthError(
+        'oauth_unavailable',
+        'OAuth dynamic client registration failed',
+        { cause: error },
+      );
+    }
+    const record: StoredClient = {
+      authorizationServerUrl,
+      callbackUrl,
+      clientInformation,
+      ...(scope ? { scope } : {}),
+    };
+    await dependencies.settings.setSetting(clientKey, JSON.stringify(record));
+    return clientInformation;
+  });
+}
+
+async function consumePendingAuthorization(
+  state: string,
+  dependencies: McpOAuthDependencies,
+): Promise<{
+  ref: McpSecretRef;
+  pending: PendingAuthorization & { codeVerifier: string };
+}> {
+  const ref = decodeStateRef(state);
+  const settings = dependencies.settings;
+  const [, pendingKey] = mcpOAuthSettingKeys(ref);
+  const raw = await settings.getSetting(pendingKey);
+  if (!raw) {
+    throw new McpOAuthError('invalid_state', 'OAuth state is missing or already used');
+  }
+  const pending = parsePendingAuthorization(raw);
+  if (pending.state !== state) {
+    throw new McpOAuthError('invalid_state', 'OAuth state is invalid or expired');
+  }
+  if (pending.expiresAt <= now(dependencies)) {
+    await settings.applySettingsPatch({
+      expected: { key: pendingKey, value: raw },
+      delete: [pendingKey],
+    });
+    throw new McpOAuthError('invalid_state', 'OAuth state is invalid or expired');
+  }
+  const consumed = await settings.applySettingsPatch({
+    expected: { key: pendingKey, value: raw },
+    delete: [pendingKey],
+  });
+  if (!consumed) {
+    throw new McpOAuthError('invalid_state', 'OAuth state is missing or already used');
+  }
+  return { ref, pending };
+}
+
+async function withLease<T>(
+  key: string,
+  dependencies: McpOAuthDependencies,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const owner = randomId(dependencies);
+  const settings = dependencies.settings;
+  for (let attempt = 0; attempt < LEASE_ATTEMPTS; attempt += 1) {
+    const currentRaw = await settings.getSetting(key);
+    const current = currentRaw ? parseLease(currentRaw) : undefined;
+    if (!current || current.expiresAt <= now(dependencies)) {
+      const leaseRaw = JSON.stringify({
+        owner,
+        expiresAt: now(dependencies) + LEASE_TTL_MS,
+      } satisfies StoredLease);
+      const acquired = await settings.applySettingsPatch({
+        expected: { key, value: currentRaw ?? null },
+        set: [{ key, value: leaseRaw }],
+      });
+      if (acquired) {
+        try {
+          return await operation();
+        } finally {
+          await settings.applySettingsPatch({
+            expected: { key, value: leaseRaw },
+            delete: [key],
+          });
+        }
+      }
+    }
+    await (dependencies.sleep ?? defaultSleep)(LEASE_RETRY_MS);
+  }
+  throw new McpOAuthError('oauth_unavailable', 'OAuth operation is already in progress');
+}
+
+function tokenNeedsRefresh(bundle: StoredTokenBundle, currentTime: number): boolean {
+  if (bundle.tokens.expires_in === undefined) return false;
+  return (
+    bundle.obtainedAt + bundle.tokens.expires_in * 1_000 <=
+    currentTime + REFRESH_SKEW_MS
+  );
+}
+
+async function requireCurrentConnection(
+  ref: McpSecretRef,
+  serverUrl: string,
+  dependencies: McpOAuthDependencies,
+): Promise<void> {
+  if (
+    dependencies.validateConnection &&
+    !(await dependencies.validateConnection(ref, serverUrl))
+  ) {
+    throw new McpOAuthError('connection_missing', 'OAuth connection no longer exists');
+  }
+}
+
+function assertTokenResource(bundle: StoredTokenBundle, serverUrl: string): void {
+  if (bundle.serverUrl !== serverUrl) {
+    throw new McpOAuthError(
+      'reauthorization_required',
+      'MCP OAuth resource changed and must be reauthorized',
+    );
+  }
+}
+
+function assertBearerTokens(tokens: OAuthTokens): void {
+  if (tokens.token_type.toLowerCase() !== 'bearer') {
+    throw new McpOAuthError(
+      'oauth_unavailable',
+      'MCP OAuth server returned an unsupported token type',
+    );
+  }
+}
+
+function validateAuthorizationServerMetadata(
+  authorizationServerUrl: string,
+  metadata: AuthorizationServerMetadata,
+): void {
+  if (new URL(metadata.issuer).href !== new URL(authorizationServerUrl).href) {
+    throw new McpOAuthError(
+      'oauth_discovery_failed',
+      'Authorization server issuer does not match discovery',
+    );
+  }
+  const endpoints = [
+    metadata.authorization_endpoint,
+    metadata.token_endpoint,
+    metadata.registration_endpoint,
+  ].filter((value): value is string => value !== undefined);
+  if (endpoints.some((endpoint) => !validateMcpUrl(endpoint).ok)) {
+    throw new McpOAuthError(
+      'oauth_discovery_failed',
+      'Authorization server metadata contains a blocked endpoint',
+    );
+  }
+}
+
+function encodeState(ref: McpSecretRef, nonce: string): string {
+  const encoded = btoa(
+    JSON.stringify({ a: ref.agentId, c: ref.connectionId, n: nonce }),
+  );
+  return encoded.replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '');
+}
+
+/**
+ * Recover the status-only connection target from callback state after an OAuth
+ * completion error. This is routing metadata, not an authorization check; the
+ * callback must still let completeMcpOAuthAuthorization validate and consume
+ * state before using this fallback.
+ */
+export function mcpOAuthReturnRefFromState(state: string): McpSecretRef {
+  return decodeStateRef(state);
+}
+
+function decodeStateRef(state: string): McpSecretRef {
+  if (!state || state.length > 2_048 || !/^[A-Za-z0-9_-]+$/.test(state)) {
+    throw new McpOAuthError('invalid_state', 'OAuth state is malformed');
+  }
+  try {
+    const padded = state.replaceAll('-', '+').replaceAll('_', '/');
+    const decoded = JSON.parse(
+      atob(padded + '='.repeat((4 - (padded.length % 4)) % 4)),
+    ) as unknown;
+    if (
+      !isRecord(decoded) ||
+      typeof decoded.a !== 'string' ||
+      typeof decoded.c !== 'string' ||
+      typeof decoded.n !== 'string'
+    ) {
+      throw new Error('invalid state payload');
+    }
+    const ref = { agentId: decoded.a, connectionId: decoded.c };
+    validateRef(ref);
+    return ref;
+  } catch (error) {
+    if (error instanceof McpOAuthError) throw error;
+    throw new McpOAuthError('invalid_state', 'OAuth state is malformed', {
+      cause: error,
+    });
+  }
+}
+
+function parsePendingAuthorization(
+  raw: string,
+): PendingAuthorization & { codeVerifier: string } {
+  const value = parseStoredRecord(raw);
+  if (
+    typeof value.state !== 'string' ||
+    typeof value.expiresAt !== 'number' ||
+    typeof value.serverUrl !== 'string' ||
+    typeof value.callbackUrl !== 'string' ||
+    (value.scope !== undefined && typeof value.scope !== 'string') ||
+    typeof value.authorizationServerUrl !== 'string' ||
+    typeof value.codeVerifier !== 'string' ||
+    !isRecord(value.metadata) ||
+    !isRecord(value.resourceMetadata) ||
+    !isRecord(value.clientInformation)
+  ) {
+    throw invalidStorage();
+  }
+  return value as unknown as PendingAuthorization & { codeVerifier: string };
+}
+
+function parseStoredClient(raw: string): StoredClient {
+  const value = parseStoredRecord(raw);
+  if (
+    typeof value.authorizationServerUrl !== 'string' ||
+    typeof value.callbackUrl !== 'string' ||
+    !isRecord(value.clientInformation) ||
+    typeof value.clientInformation.client_id !== 'string'
+  ) {
+    throw invalidStorage();
+  }
+  return value as unknown as StoredClient;
+}
+
+function parseStoredTokenBundle(raw: string): StoredTokenBundle {
+  const value = parseStoredRecord(raw);
+  if (
+    typeof value.serverUrl !== 'string' ||
+    typeof value.authorizationServerUrl !== 'string' ||
+    typeof value.resource !== 'string' ||
+    typeof value.obtainedAt !== 'number' ||
+    !isRecord(value.metadata) ||
+    !isRecord(value.clientInformation) ||
+    !isRecord(value.tokens) ||
+    typeof value.tokens.access_token !== 'string' ||
+    typeof value.tokens.token_type !== 'string'
+  ) {
+    throw invalidStorage();
+  }
+  return value as unknown as StoredTokenBundle;
+}
+
+function parseLease(raw: string): StoredLease {
+  const value = parseStoredRecord(raw);
+  if (typeof value.owner !== 'string' || typeof value.expiresAt !== 'number') {
+    throw invalidStorage();
+  }
+  return { owner: value.owner, expiresAt: value.expiresAt };
+}
+
+function parseStoredRecord(raw: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!isRecord(parsed)) throw new Error('not an object');
+    return parsed;
+  } catch (error) {
+    throw invalidStorage(error);
+  }
+}
+
+function invalidStorage(cause?: unknown): McpOAuthError {
+  return new McpOAuthError(
+    'oauth_storage_invalid',
+    'Stored MCP OAuth state is invalid',
+    cause === undefined ? undefined : { cause },
+  );
+}
+
+function validateRef(ref: McpSecretRef): void {
+  if (
+    !AGENT_ID_PATTERN.test(ref.agentId) ||
+    !CONNECTION_ID_PATTERN.test(ref.connectionId)
+  ) {
+    throw new McpOAuthError('invalid_state', 'OAuth connection reference is invalid');
+  }
+}
+
+function normalizedServerUrl(value: string): string {
+  const validated = validateMcpUrl(value);
+  if (!validated.ok) {
+    throw new McpOAuthError(
+      'oauth_discovery_failed',
+      'MCP OAuth resource URL is blocked',
+    );
+  }
+  return validated.url;
+}
+
+function validateCallbackUrl(value: string): URL {
+  const url = new URL(value);
+  const loopback =
+    url.protocol === 'http:' &&
+    ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+  if (url.protocol !== 'https:' && !loopback) {
+    throw new McpOAuthError(
+      'oauth_discovery_failed',
+      'OAuth callback must use HTTPS or loopback HTTP',
+    );
+  }
+  return url;
+}
+
+function now(dependencies: McpOAuthDependencies): number {
+  return (dependencies.now ?? Date.now)();
+}
+
+function guardedOAuthFetch(dependencies: McpOAuthDependencies): typeof fetch {
+  return createMcpGuardedFetch(
+    dependencies.fetchFn
+      ? {
+          fetch: dependencies.fetchFn,
+          cloudflare: true,
+          signal: AbortSignal.timeout(OAUTH_FETCH_TIMEOUT_MS),
+        }
+      : { signal: AbortSignal.timeout(OAUTH_FETCH_TIMEOUT_MS) },
+  );
+}
+
+function randomId(dependencies: McpOAuthDependencies): string {
+  return (dependencies.randomId ?? (() => crypto.randomUUID()))();
+}
+
+function defaultSleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}

@@ -1223,6 +1223,17 @@ details[open].advanced summary::before {
 .conn-logo-raster { overflow: hidden; }
 .conn-logo-raster img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .conn-title, .conn-recommended-head { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; }
+.oauth-account { align-items: center; background: rgba(255,255,255,0.48); border: 1px solid var(--border); border-radius: 14px; display: flex; gap: 12px; justify-content: space-between; padding: 14px 16px; }
+.oauth-account-copy { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.oauth-account-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 12px; justify-content: flex-end; }
+.oauth-account-status { color: var(--ok); font-size: 0.8125rem; font-weight: 800; }
+.oauth-account-name { color: var(--text); font-size: 0.9375rem; font-weight: 750; overflow-wrap: anywhere; }
+.oauth-account-detail { color: var(--text-3); font-size: 0.78125rem; overflow-wrap: anywhere; }
+.oauth-signin { align-self: flex-start; }
+.oauth-signin .conn-logo { border-radius: 5px; height: 18px; width: 18px; }
+.oauth-return { border: 1px solid var(--border); border-left-width: 4px; border-radius: 12px; font-size: 0.875rem; font-weight: 650; line-height: 1.45; margin-bottom: 18px; padding: 12px 14px; }
+.oauth-return.ok { background: rgba(45, 125, 78, 0.08); border-left-color: var(--ok); color: var(--text); }
+.oauth-return.error { background: rgba(173, 54, 50, 0.08); border-left-color: var(--danger); color: var(--danger); }
 .conn-view-seg { margin-bottom: 10px; }
 .conn-url-chip { background: var(--well); border-radius: 999px; color: var(--text-3); font-size: 0.6875rem; padding: 4px 8px; }
 .hint-link { color: var(--ember-deep); font-size: 0.8125rem; font-weight: 700; text-decoration: none; }
@@ -1366,6 +1377,10 @@ details[open].advanced summary::before {
     // discoveredTools), lifecycleStatus, statusText, lastCheckedAt, sources
     // (secret presence from a prior save: {bearer, headers}), error }.
     connectionEditor: null,
+    // Status-only OAuth return state parsed from the callback redirect. No
+    // authorization code, token, verifier, client secret, or provider error is
+    // ever placed in the URL or this browser state.
+    oauthReturn: null,
     // Inline credentialed REST API editor. Its credential is transient and is
     // written to the API-connection secret endpoint only after the profile
     // policy saves successfully.
@@ -2835,6 +2850,28 @@ details[open].advanced summary::before {
     return '<span class="conn-pill conn-pill-off">Not tested</span>';
   }
 
+  function isPersistedReadyOAuthEditor(editor) {
+    return !!editor && editor.authMode === "oauth" && editor.lifecycleStatus === "ready" &&
+      editor.index !== null && editor.index !== undefined;
+  }
+
+  function selectedConnectionToolNames(editor) {
+    var checked = editor.checked || [];
+    return (editor.discoveredTools || []).filter(function (_tool, index) {
+      return checked[index] !== false;
+    }).map(function (tool) { return tool.name; });
+  }
+
+  function sameToolNames(left, right) {
+    if (left.length !== right.length) return false;
+    return left.every(function (name) { return right.indexOf(name) >= 0; });
+  }
+
+  function oauthToolAccessChanged(editor) {
+    if (!isPersistedReadyOAuthEditor(editor)) return false;
+    return !sameToolNames(selectedConnectionToolNames(editor), editor.savedAllowedTools || []);
+  }
+
   // The segmented transport control. STDIO is present but greyed (disabled) with
   // the "Not supported on Cloudflare Workers" title, per the locked decision.
   function transportSegmentHtml(active) {
@@ -2857,16 +2894,23 @@ details[open].advanced summary::before {
     var tools = editor.discoveredTools || [];
     if (!tools.length) return "";
     var checked = editor.checked || [];
+    var savedOAuth = isPersistedReadyOAuthEditor(editor);
+    var accessChanged = savedOAuth && oauthToolAccessChanged(editor);
     var rows = tools.map(function (tool, index) {
       var on = checked[index] !== false;
       var meta = tool.description ? '<span class="tool-desc">' + esc(tool.description) + '</span>' : "";
       return '<label class="conn-tool">' +
-        '<span class="import-check' + (on ? " on" : "") + '"><input type="checkbox" data-action="conn-tool-toggle" data-index="' + index + '" ' + (on ? "checked" : "") + ' aria-label="Allow ' + esc(tool.name) + '"></span>' +
+        '<span class="import-check' + (on ? " on" : "") + '"><input type="checkbox" data-action="conn-tool-toggle" data-index="' + index + '" ' + (on ? "checked" : "") + (editor.toolAccessSaving ? " disabled" : "") + ' aria-label="Allow ' + esc(tool.name) + '"></span>' +
         '<span class="tool-body"><span class="tool-name">' + esc(tool.name) + '</span>' + meta + '</span></label>';
     }).join("");
     var count = tools.length;
+    var hint = savedOAuth
+      ? (accessChanged
+        ? "Review your changes, then save tool access once."
+        : "Tool access is already saved. Uncheck any tools you don&rsquo;t want Chickpea to use.")
+      : "All checked by default. Uncheck write-capable tools you don&rsquo;t need.";
     return '<div class="field"><label class="field-label">Discovered tools &mdash; Connected &middot; ' + count + ' tool' + (count === 1 ? "" : "s") + '</label>' +
-      '<p class="hint">All checked by default. Uncheck write-capable tools you don&rsquo;t need.</p>' +
+      '<p class="hint">' + hint + '</p>' +
       '<div class="conn-tools">' + rows + '</div></div>';
   }
 
@@ -2891,16 +2935,46 @@ details[open].advanced summary::before {
 
   function connectionEditorCompletionHtml(editor) {
     var isNew = editor.index === null || editor.index === undefined;
-    var testDisabled = !String(editor.url || "").trim();
+    var savedOAuth = isPersistedReadyOAuthEditor(editor);
+    var accessChanged = savedOAuth && oauthToolAccessChanged(editor);
+    var testDisabled = !String(editor.url || "").trim() ||
+      (editor.authMode === "oauth" && isNew) || !!editor.oauthStarting;
     var toolsHtml = connectionToolsHtml(editor);
     var testError = editor.testError ? '<p class="field-error">' + esc(editor.testError) + '</p>' : "";
-    var testLabel = editor.testing ? "Testing&hellip;" : (editor.lifecycleStatus === "ready" ? "Re-test connection" : "Test connection");
+    var testLabel = editor.testing
+      ? "Testing&hellip;"
+      : (editor.authMode === "oauth" && editor.lifecycleStatus === "failed"
+        ? "Retry verification"
+        : (editor.lifecycleStatus === "ready" ? "Re-test connection" : "Test connection"));
+    var saveLabel = isNew
+      ? "Add connection"
+      : (savedOAuth ? (editor.toolAccessSaving ? "Saving&hellip;" : "Save tool access") : "Save connection");
+    var saveButton = (isNew && editor.authMode === "oauth") || (savedOAuth && !accessChanged)
+      ? ""
+      : '<button type="button" class="btn btn-primary btn-sm" data-action="conn-save-row"' + (editor.toolAccessSaving ? " disabled" : "") + '>' + saveLabel + '</button>';
+    var cancelLabel = savedOAuth && !accessChanged && !state.profileDirty ? "Done" : "Cancel";
     return '<div><button type="button" class="btn btn-soft btn-sm" data-action="conn-test"' + (testDisabled ? " disabled" : "") + '>' + testLabel + '</button>' + testError + '</div>' +
       toolsHtml +
+      (editor.toolAccessError ? '<p class="field-error" role="alert">' + esc(editor.toolAccessError) + '</p>' : "") +
       (editor.error ? '<p class="field-error">' + esc(editor.error) + '</p>' : "") +
       '<div class="skill-form-actions">' +
-      '<button type="button" class="btn btn-ghost btn-sm" data-action="conn-cancel">Cancel</button>' +
-      '<button type="button" class="btn btn-primary btn-sm" data-action="conn-save-row">' + (isNew ? "Add connection" : "Save connection") + '</button></div>';
+      '<button type="button" class="btn btn-ghost btn-sm" data-action="conn-cancel">' + cancelLabel + '</button>' +
+      saveButton + '</div>';
+  }
+
+  function oauthAccountHtml(editor) {
+    if (editor.authMode !== "oauth" || editor.lifecycleStatus !== "ready") return "";
+    var identity = editor.identity || {};
+    var workspaceName = identity.workspaceName || editor.displayName;
+    var account = identity.accountName
+      ? '<span class="oauth-account-detail">Connected as ' + esc(identity.accountName) + '</span>'
+      : '<span class="oauth-account-detail">OAuth verified</span>';
+    return '<div class="oauth-account" role="status">' +
+      '<div class="oauth-account-copy"><span class="oauth-account-status">Connected</span>' +
+      '<span class="oauth-account-name">' + esc(workspaceName) + '</span>' + account + '</div>' +
+      '<div class="oauth-account-actions">' +
+      '<button type="button" class="link-btn" data-action="conn-oauth-start">Reconnect</button>' +
+      '<button type="button" class="link-btn" data-action="conn-oauth-disconnect">Disconnect</button></div></div>';
   }
 
   function connectionRecommendedBodyHtml(editor) {
@@ -2913,15 +2987,26 @@ details[open].advanced summary::before {
       var bearerPlaceholder = bearerStored ? "\\u2022\\u2022\\u2022\\u2022 stored" : preset.auth.placeholder;
       tokenHtml = '<div class="field"><label class="field-label">API key</label>' +
         '<input class="input mono" type="password" autocomplete="off" value="' + esc(editor.bearerToken || "") + '" placeholder="' + esc(bearerPlaceholder) + '" data-action="conn-field-bearer"></div>';
-    } else {
+    } else if (preset.auth.kind === "header") {
       var headerName = preset.auth.headerName;
       var headerSources = (editor.sources && editor.sources.headers) || {};
       var headerStored = headerSources[headerName] && headerSources[headerName] !== "missing";
       var headerPlaceholder = headerStored ? "\\u2022\\u2022\\u2022\\u2022 stored" : preset.auth.placeholder;
       tokenHtml = '<div class="field"><label class="field-label">API key</label>' +
         '<input class="input mono" type="password" autocomplete="off" value="' + esc((editor.headerValues || [])[0] || "") + '" placeholder="' + esc(headerPlaceholder) + '" data-action="conn-header-value" data-index="0"></div>';
+    } else {
+      if (editor.lifecycleStatus === "ready") {
+        tokenHtml = oauthAccountHtml(editor);
+      } else {
+        var oauthLabel = editor.oauthStarting
+          ? "Opening " + esc(preset.name) + "&hellip;"
+          : "Sign into " + esc(preset.name);
+        tokenHtml = '<div class="field"><p class="hint">' + esc(preset.tokenDocsHint || "Sign in to Notion to choose access.") + '</p>' +
+          '<button type="button" class="btn btn-primary btn-sm oauth-signin" data-action="conn-oauth-start"' + (editor.oauthStarting ? " disabled" : "") + '>' + connectorLogoHtml(preset) + '<span>' + oauthLabel + '</span></button>' +
+          (editor.oauthError ? '<p class="field-error" role="alert">' + esc(editor.oauthError) + '</p>' : "") + '</div>';
+      }
     }
-    var docsHtml = preset.tokenDocsHint ? '<p class="hint">' + esc(preset.tokenDocsHint) + '</p>' : "";
+    var docsHtml = preset.auth.kind !== "oauth" && preset.tokenDocsHint ? '<p class="hint">' + esc(preset.tokenDocsHint) + '</p>' : "";
     if (preset.tokenDocsUrl) {
       docsHtml += '<a class="hint-link" href="' + esc(preset.tokenDocsUrl) + '" target="_blank" rel="noopener noreferrer">Where do I find this?</a>';
     }
@@ -2940,6 +3025,7 @@ details[open].advanced summary::before {
       '<div class="select-wrap"><select class="input" id="conn-auth" data-action="conn-auth">' +
       '<option value="none"' + (editor.authMode === "none" ? " selected" : "") + '>None</option>' +
       '<option value="bearer"' + (editor.authMode === "bearer" ? " selected" : "") + '>Bearer token</option>' +
+      (editor.authMode === "oauth" ? '<option value="oauth" selected disabled>OAuth (configured separately)</option>' : "") +
       '</select></div>';
     if (editor.authMode === "bearer") {
       authHtml += '<input class="input mono" type="password" autocomplete="off" style="margin-top:8px;" value="' + esc(editor.bearerToken || "") + '" placeholder="' + bearerPlaceholder + '" aria-label="Bearer token" data-action="conn-field-bearer">';
@@ -3038,7 +3124,50 @@ details[open].advanced summary::before {
     var gallery = editor || apiEditor || state.customConnectionLane ? "" : connectorGalleryHtml();
     var hint = 'MCP servers and REST APIs this profile can call.';
     var security = '<p class="conn-security">Your profile stores connection policy and tool approvals only &mdash; tokens live in the settings store and are never returned by the API.</p>';
-    return '<p class="hint ptab-hint">' + hint + '</p>' + list + createForm + gallery + security;
+    return oauthReturnNoticeHtml(draft) + '<p class="hint ptab-hint">' + hint + '</p>' + list + createForm + gallery + security;
+  }
+
+  function oauthReturnNoticeHtml(draft) {
+    var result = state.oauthReturn;
+    if (!result || result.agentId !== draft.id) return "";
+    var connection = (draft.mcpServers || []).find(function (entry) {
+      return entry.id === result.connectionId;
+    });
+    var presetId = connection && connection.presetId
+      ? connection.presetId
+      : result.connectionId;
+    var preset = presetById(presetId);
+    var name = connection ? connection.displayName : (preset ? preset.name : "The connection");
+    var message;
+    var statusClass = "ok";
+    var role = "status";
+    if (result.status === "connected") {
+      // A callback success is one-shot evidence about the connection row that
+      // returned. Never reinterpret it as success after that row is removed.
+      if (!connection) return "";
+      var identity = connection && connection.identity;
+      var targetName = identity && identity.workspaceName ? identity.workspaceName : name;
+      var toolCount = connection ? (connection.allowedTools || []).length : 0;
+      message = "Connected to " + targetName + ". " + toolCount + " tool" + (toolCount === 1 ? "" : "s") + " enabled.";
+    } else if (result.status === "cancelled") {
+      message = name + " authorization was cancelled. Your saved connection was not changed; you can try again when ready.";
+      statusClass = "error";
+      role = "alert";
+    } else if (result.status === "verification_failed") {
+      message = name + " was authorized, but Chickpea could not verify the connection. No tools were enabled. Retry verification below.";
+      statusClass = "error";
+      role = "alert";
+    } else {
+      var existingConnectionActive = connection &&
+        connection.lifecycleStatus === "ready" &&
+        (connection.allowedTools || []).length > 0;
+      message = existingConnectionActive
+        ? name + " reconnect failed. Your existing connection is still active."
+        : name + " authorization failed. No tools were enabled. Sign in again to retry.";
+      statusClass = "error";
+      role = "alert";
+    }
+    return '<div class="oauth-return ' + statusClass + '" role="' + role + '">' + esc(message) + '</div>';
   }
 
   function repositoryOwner(fullName) {
@@ -3394,13 +3523,18 @@ details[open].advanced summary::before {
     var servers = (draft && draft.mcpServers) || [];
     var conn = servers[state.connectionRemove];
     if (!conn) return "";
+    var isOAuth = conn.authMode === "oauth";
+    var title = isOAuth ? "Disconnect " + conn.displayName + "?" : "Remove " + conn.displayName + "?";
+    var body = isOAuth
+      ? "This disconnects the account and removes its tool approvals from this profile. Chickpea's stored OAuth tokens and client registration are deleted when you save."
+      : "This drops the connection and its tool approvals from this profile. Its stored token and header values are deleted when you save.";
     return '<div class="modal-backdrop">' +
-      '<div class="modal-card" role="dialog" aria-modal="true" aria-label="Remove connection">' +
-      '<h2 class="modal-title">Remove ' + esc(conn.displayName) + '?</h2>' +
-      '<p class="modal-body">This drops the connection and its tool approvals from this profile. Its stored token and header values are deleted when you save.</p>' +
+      '<div class="modal-card" role="dialog" aria-modal="true" aria-label="' + (isOAuth ? "Disconnect account" : "Remove connection") + '">' +
+      '<h2 class="modal-title">' + esc(title) + '</h2>' +
+      '<p class="modal-body">' + esc(body) + '</p>' +
       '<div class="modal-foot"><span class="spacer"></span>' +
       '<button type="button" class="btn btn-ghost" data-action="conn-remove-cancel">Cancel</button>' +
-      '<button type="button" class="btn btn-danger" data-action="conn-remove-confirm">Remove connection</button>' +
+      '<button type="button" class="btn btn-danger" data-action="conn-remove-confirm">' + (isOAuth ? "Disconnect and remove" : "Remove connection") + '</button>' +
       '</div></div></div>';
   }
 
@@ -4932,6 +5066,12 @@ details[open].advanced summary::before {
       allowedTools: (conn.allowedTools || []).slice()
     };
     if (conn.lastCheckedAt !== undefined) copy.lastCheckedAt = conn.lastCheckedAt;
+    if (conn.identity !== undefined) {
+      copy.identity = {
+        workspaceName: conn.identity.workspaceName,
+        accountName: conn.identity.accountName
+      };
+    }
     if (conn.presetId !== undefined) copy.presetId = conn.presetId;
     return copy;
   }
@@ -5515,6 +5655,14 @@ details[open].advanced summary::before {
       state.connectionRemove = Number(target.getAttribute("data-index"));
       render();
     }
+    if (action === "conn-oauth-disconnect" && state.connectionEditor) {
+      collectProfileDraft();
+      var oauthDisconnectIndex = state.connectionEditor.index;
+      if (oauthDisconnectIndex !== null && oauthDisconnectIndex !== undefined) {
+        state.connectionRemove = oauthDisconnectIndex;
+        render();
+      }
+    }
     if (action === "conn-remove-cancel") { state.connectionRemove = null; render(); }
     if (action === "conn-remove-confirm") {
       var removeConnIndex = state.connectionRemove;
@@ -5523,6 +5671,9 @@ details[open].advanced summary::before {
         // Record the id so its secrets are DELETEd on the next save, even though
         // the row is gone from the array now.
         rememberRemovedConnection(removeServers[removeConnIndex]);
+        if (state.oauthReturn && state.oauthReturn.connectionId === removeServers[removeConnIndex].id) {
+          state.oauthReturn = null;
+        }
         removeServers.splice(removeConnIndex, 1);
         state.profileDraft.mcpServers = removeServers;
         // If the open editor pointed at a shifted index, just close it — simplest
@@ -5554,8 +5705,12 @@ details[open].advanced summary::before {
       markProfileDirty();
       render();
     }
+    if (action === "conn-oauth-start") { startOAuthConnection(); }
     if (action === "conn-test") { testConnection(); }
-    if (action === "conn-save-row") { commitConnectionRow(); }
+    if (action === "conn-save-row") {
+      if (isPersistedReadyOAuthEditor(state.connectionEditor)) saveOAuthToolAccess();
+      else commitConnectionRow();
+    }
     // Credentialed REST API connections keep their own action namespace even
     // though their saved rows and custom-create flow now share this panel.
     if (action === "apiconn-view" && state.apiConnectionEditor) {
@@ -5796,8 +5951,9 @@ details[open].advanced summary::before {
       var connToggleServers = state.profileDraft.mcpServers || [];
       if (connToggleServers[connToggleIndex]) { connToggleServers[connToggleIndex].enabled = target.checked; state.profileDraft.mcpServers = connToggleServers; markProfileDirty(); render(); }
     }
-    // Connection auth mode select (None / Bearer). Re-render to show/hide the
-    // bearer paste field.
+    // Connection auth mode select. Advanced mode keeps an existing OAuth row
+    // visible as a read-only compatibility option; choosing another mode
+    // explicitly stages the OAuth credential cleanup on save.
     if (action === "conn-auth" && state.connectionEditor) {
       state.connectionEditor.authMode = target.value === "bearer" ? "bearer" : "none";
       markProfileDirty();
@@ -5810,7 +5966,8 @@ details[open].advanced summary::before {
       var connChecked = state.connectionEditor.checked || [];
       connChecked[connToolIndex] = target.checked;
       state.connectionEditor.checked = connChecked;
-      markProfileDirty();
+      state.connectionEditor.toolAccessError = "";
+      if (!isPersistedReadyOAuthEditor(state.connectionEditor)) markProfileDirty();
       render();
     }
     if (action === "apiconn-toggle" && state.profileDraft) {
@@ -6332,17 +6489,25 @@ details[open].advanced summary::before {
       lifecycleStatus: "pending",
       statusText: "",
       lastCheckedAt: null,
+      identity: null,
       // Secret presence is inferred from the persisted policy (secrets-by-
       // reference): a saved bearer connection means a token was stored, a saved
       // headerName means that header value was stored. A freshly typed value
       // overrides the placeholder. Blank for a new connection.
       sources: { bearer: "missing", headers: {} },
+      oauthStarting: false,
+      oauthError: "",
+      savedAllowedTools: [],
+      toolAccessSaving: false,
+      toolAccessError: "",
       error: ""
     };
   }
 
   function editorFromPreset(preset) {
-    var authMode = preset.auth.kind === "bearer" ? "bearer" : "none";
+    var authMode = preset.auth.kind === "bearer"
+      ? "bearer"
+      : (preset.auth.kind === "oauth" ? "oauth" : "none");
     var headerNames = preset.auth.kind === "header" ? [preset.auth.headerName] : [];
     var headerValues = preset.auth.kind === "header" ? [""] : [];
     return Object.assign(newConnectionEditor(), {
@@ -6377,6 +6542,10 @@ details[open].advanced summary::before {
     editor.lifecycleStatus = conn.lifecycleStatus || "pending";
     editor.statusText = conn.statusText || "";
     editor.lastCheckedAt = conn.lastCheckedAt !== undefined ? conn.lastCheckedAt : null;
+    editor.identity = conn.identity ? {
+      workspaceName: conn.identity.workspaceName,
+      accountName: conn.identity.accountName
+    } : null;
     editor.discoveredTools = (conn.discoveredTools || []).map(function (tool) {
       var t = { name: tool.name };
       if (tool.title !== undefined) t.title = tool.title;
@@ -6385,6 +6554,7 @@ details[open].advanced summary::before {
     });
     var approved = conn.allowedTools || [];
     editor.checked = editor.discoveredTools.map(function (tool) { return approved.indexOf(tool.name) >= 0; });
+    editor.savedAllowedTools = approved.slice();
     var pending = state.profileDraft && state.profileDraft.pendingSecrets && state.profileDraft.pendingSecrets[conn.id];
     var pendingHeaders = (pending && pending.headers) || {};
     var headerSources = {};
@@ -6395,7 +6565,13 @@ details[open].advanced summary::before {
     editor.sources = { bearer: bearerSource, headers: headerSources };
     editor.presetId = conn.presetId;
     if (conn.presetId) {
-      editor.preset = presetById(conn.presetId) || null;
+      var matchedPreset = presetById(conn.presetId) || null;
+      // Legacy rows may carry oauth against a preset that still describes a
+      // token flow. Keep those in Advanced; only a catalog-declared OAuth
+      // preset gets the guided reconnect ceremony.
+      editor.preset = conn.authMode === "oauth" && matchedPreset && matchedPreset.auth.kind !== "oauth"
+        ? null
+        : matchedPreset;
       if (editor.preset) editor.view = "recommended";
     }
     return editor;
@@ -6517,6 +6693,72 @@ details[open].advanced summary::before {
     });
   }
 
+  function oauthStartErrorText(error, connectionName) {
+    if (error && error.message === "oauth_unavailable") {
+      return connectionName + " OAuth could not be prepared. Check that this install has a reachable callback URL, then try again.";
+    }
+    return (error && (error.serverMessage || error.message)) || connectionName + " OAuth could not be started.";
+  }
+
+  function showOAuthStartError(connectionId, error) {
+    var draft = state.profileDraft;
+    var servers = (draft && draft.mcpServers) || [];
+    var index = servers.findIndex(function (connection) { return connection.id === connectionId; });
+    var connectionName = index >= 0
+      ? servers[index].displayName
+      : ((state.connectionEditor && state.connectionEditor.displayName) || "Connection");
+    var message = oauthStartErrorText(error, connectionName);
+    if (index >= 0) {
+      state.connectionEditor = editorFromConnection(index, servers[index]);
+      state.connectionEditor.oauthError = message;
+    } else if (state.connectionEditor) {
+      state.connectionEditor.oauthStarting = false;
+      state.connectionEditor.oauthError = message;
+    } else {
+      state.profileError = message;
+    }
+    state.profileTab = "connections";
+    render();
+  }
+
+  // OAuth start is deliberately operator-driven. Persist the profile policy
+  // first so the server can bind discovery/state/client registration to an
+  // existing connection, then navigate only to the HTTPS authorization URL it
+  // returns. The browser never receives credentials or the PKCE verifier.
+  function startOAuthConnection() {
+    var editor = state.connectionEditor;
+    if (!editor || editor.authMode !== "oauth" || editor.oauthStarting) return;
+    var servers = (state.profileDraft && state.profileDraft.mcpServers) || [];
+    var validationError = validateConnectionEditor(editor, servers);
+    if (validationError) { editor.error = validationError; render(); return; }
+    var connectionId = editor.id || connectionSlug(editor.displayName);
+    editor.oauthStarting = true;
+    editor.oauthError = "";
+    editor.error = "";
+    render();
+    saveProfile(function () {
+      var agentId = state.editingAgentId || connectionAgentId();
+      postJson(
+        "/admin/api/agents/" + encodeURIComponent(agentId) + "/mcp/oauth/" + encodeURIComponent(connectionId) + "/start",
+        "POST",
+        {}
+      ).then(function (body) {
+        var authorizationUrl;
+        try {
+          authorizationUrl = new URL(String(body && body.authorizationUrl || ""));
+        } catch (_) {
+          throw new Error("The OAuth provider returned an invalid authorization URL.");
+        }
+        if (authorizationUrl.protocol !== "https:") {
+          throw new Error("The OAuth provider returned an unsafe authorization URL.");
+        }
+        location.assign(authorizationUrl.href);
+      }).catch(function (error) {
+        showOAuthStartError(connectionId, error);
+      });
+    });
+  }
+
   // Turn an open editor into a saved connection POLICY entry (never a secret).
   // allowedTools is the currently-checked subset of discoveredTools.
   function connectionFromEditor(editor) {
@@ -6544,8 +6786,75 @@ details[open].advanced summary::before {
       allowedTools: allowed
     };
     if (editor.lastCheckedAt) conn.lastCheckedAt = editor.lastCheckedAt;
+    if (editor.identity) conn.identity = editor.identity;
     if (editor.presetId) conn.presetId = editor.presetId;
     return conn;
+  }
+
+  // A successful OAuth callback has already persisted every discovered tool.
+  // Later checkbox edits are therefore their own small policy operation: PATCH
+  // only mcpServers, keep the editor open, and leave the profile-level dirty bit
+  // untouched so unrelated draft changes still control the sticky save bar.
+  function saveOAuthToolAccess() {
+    var editor = state.connectionEditor;
+    var draft = collectProfileDraft();
+    if (!isPersistedReadyOAuthEditor(editor) || !draft || !draft.id ||
+        editor.toolAccessSaving || !oauthToolAccessChanged(editor)) return;
+    var savedAgent = agentById(draft.id);
+    var persistedServers = ((savedAgent && savedAgent.mcpServers) || draft.mcpServers || []).map(cloneConnection);
+    var persistedIndex = persistedServers.findIndex(function (connection) { return connection.id === editor.id; });
+    if (persistedIndex < 0) {
+      editor.toolAccessError = "This connection is no longer available. Reload the profile and try again.";
+      render();
+      return;
+    }
+
+    var fromEditor = connectionFromEditor(editor);
+    var updatedConnection = cloneConnection(persistedServers[persistedIndex]);
+    updatedConnection.discoveredTools = fromEditor.discoveredTools;
+    updatedConnection.allowedTools = fromEditor.allowedTools;
+    updatedConnection.lifecycleStatus = fromEditor.lifecycleStatus;
+    updatedConnection.statusText = fromEditor.statusText;
+    updatedConnection.lastCheckedAt = editor.lastCheckedAt;
+    persistedServers[persistedIndex] = updatedConnection;
+
+    var savedAllowedTools = updatedConnection.allowedTools.slice();
+    var connectionId = editor.id;
+    editor.toolAccessSaving = true;
+    editor.toolAccessError = "";
+    render();
+    postJson(
+      "/admin/api/agents/" + encodeURIComponent(draft.id),
+      "PATCH",
+      { mcpServers: persistedServers }
+    ).then(function () {
+      var agent = agentById(draft.id);
+      if (agent) agent.mcpServers = persistedServers.map(cloneConnection);
+      var draftIndex = (draft.mcpServers || []).findIndex(function (connection) { return connection.id === connectionId; });
+      if (draftIndex >= 0) {
+        var draftConnection = draft.mcpServers[draftIndex];
+        draftConnection.discoveredTools = updatedConnection.discoveredTools.map(function (tool) {
+          return Object.assign({}, tool);
+        });
+        draftConnection.allowedTools = savedAllowedTools.slice();
+        draftConnection.lifecycleStatus = updatedConnection.lifecycleStatus;
+        draftConnection.statusText = updatedConnection.statusText;
+        draftConnection.lastCheckedAt = updatedConnection.lastCheckedAt;
+      }
+      var current = state.connectionEditor;
+      if (current && current.id === connectionId) {
+        current.savedAllowedTools = savedAllowedTools.slice();
+        current.toolAccessSaving = false;
+        current.toolAccessError = "";
+      }
+      render();
+    }).catch(function (error) {
+      var current = state.connectionEditor;
+      if (!current || current.id !== connectionId) return;
+      current.toolAccessSaving = false;
+      current.toolAccessError = (error && (error.serverMessage || error.message)) || "Tool access could not be saved.";
+      render();
+    });
   }
 
   // Stage the transient secrets typed into an editor for the settings PUT that
@@ -6570,6 +6879,9 @@ details[open].advanced summary::before {
       }
       if (prior.authMode === "bearer" && editor.authMode !== "bearer") {
         entry.clearBearer = true;
+      }
+      if (prior.authMode === "oauth" && editor.authMode !== "oauth") {
+        entry.clearOAuth = true;
       }
     }
     if (editor.authMode === "bearer" && String(editor.bearerToken || "").trim()) {
@@ -6699,8 +7011,9 @@ details[open].advanced summary::before {
       if (entry.headers !== undefined) body.headers = entry.headers;
       if (entry.removeHeaderNames && entry.removeHeaderNames.length) body.removeHeaderNames = entry.removeHeaderNames;
       if (entry.clearBearer) body.clearBearer = true;
+      if (entry.clearOAuth) body.clearOAuth = true;
       // Round-trip when there is a value to store OR an orphan to clean up.
-      if (body.bearerToken !== undefined || body.headers !== undefined || body.removeHeaderNames !== undefined || body.clearBearer !== undefined) {
+      if (body.bearerToken !== undefined || body.headers !== undefined || body.removeHeaderNames !== undefined || body.clearBearer !== undefined || body.clearOAuth !== undefined) {
         operations.push({
           id: id,
           op: "put",
@@ -7098,6 +7411,15 @@ details[open].advanced summary::before {
         });
       }
       // Create → return to the overview so the new profile shows in the list.
+      if (onSaved) {
+        state.profileScreen = "edit";
+        state.editingAgentId = secretAgentId;
+        return refreshData().then(function () {
+          var created = agentById(secretAgentId);
+          if (created) state.profileDraft = cloneAgent(created);
+          onSaved();
+        });
+      }
       state.profileScreen = "list";
       state.profileDraft = null;
       state.editingAgentId = null;
@@ -7183,9 +7505,37 @@ details[open].advanced summary::before {
   // otherwise sync the URL to the default state), apply it once data is
   // loaded, then turn URL sync on with a replace so landing on /admin becomes
   // the canonical Channels overview without adding a history entry.
+  function oauthReturnFromSearch(search) {
+    if (!search) return null;
+    var params = new URLSearchParams(search);
+    var status = params.get("oauth");
+    var connectionId = params.get("connection");
+    if (["connected", "cancelled", "failed", "verification_failed"].indexOf(status) < 0) return null;
+    if (!connectionId || !/^[a-z0-9][a-z0-9-]{0,63}$/.test(connectionId)) return null;
+    return { status: status, connectionId: connectionId };
+  }
+
   var initialRoute = canNavigate ? location.pathname : "/admin";
+  state.oauthReturn = canNavigate ? oauthReturnFromSearch(location.search || "") : null;
   refreshData().then(function () {
     if (initialRoute !== "/admin") applyRoute(initialRoute);
+    if (state.oauthReturn && state.profileDraft && state.profileScreen === "edit") {
+      state.oauthReturn.agentId = state.profileDraft.id;
+      state.profileTab = "connections";
+      var returnedIndex = (state.profileDraft.mcpServers || []).findIndex(function (connection) {
+        return connection.id === state.oauthReturn.connectionId;
+      });
+      if (returnedIndex >= 0) {
+        state.connectionEditor = editorFromConnection(
+          returnedIndex,
+          state.profileDraft.mcpServers[returnedIndex]
+        );
+      }
+      render();
+      // The callback URL carries status and connection identity only, but it is
+      // one-shot UI state. Remove it so a refresh cannot replay a stale banner.
+      history.replaceState(null, "", location.pathname);
+    }
     routeReady = true;
     syncUrl(true);
   });

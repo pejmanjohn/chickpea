@@ -48,6 +48,26 @@ import {
 } from '../config/github-app.ts';
 import { classifyMcpError, McpBlockedUrlError, mcpDebugText, safeMcpFailureText } from '../config/mcp-errors.ts';
 import {
+  discoverMcpConnectionIdentity,
+  type McpIdentityInput,
+} from '../config/mcp-identity.ts';
+import {
+  cancelMcpOAuthAuthorization,
+  completeMcpOAuthAuthorization,
+  createMcpOAuthClientMetadataDocument,
+  deleteMcpOAuthSettings,
+  isCurrentMcpOAuthConnection,
+  McpOAuthError,
+  mcpOAuthReturnRefFromState,
+  mcpOAuthSettingKeys,
+  resolveMcpOAuthAccessToken,
+  startMcpOAuthAuthorization,
+  type CompleteMcpOAuthInput,
+  type McpOAuthDependencies,
+  type ResolveMcpOAuthAccessInput,
+  type StartMcpOAuthInput,
+} from '../config/mcp-oauth.ts';
+import {
   buildMcpRequestHeaders,
   deleteMcpSecrets,
   describeMcpSecretSources,
@@ -101,7 +121,12 @@ import {
   type PlatformEnv,
 } from '../config/state-backend.ts';
 import type { ConfigStore } from '../config/store.ts';
-import type { ChannelAssignment, CustomAgentConfig } from '../config/types.ts';
+import type {
+  ChannelAssignment,
+  CustomAgentConfig,
+  McpConnectionConfig,
+  McpConnectionIdentity,
+} from '../config/types.ts';
 import {
   envManagedSlackBehaviorKeys,
   resolveSlackBehaviorSettings,
@@ -139,6 +164,24 @@ interface AdminRoutesOptions {
   // resolve route takes a resolver: tests pass a mock so no real network
   // connect is attempted; production uses the shared discover routine.
   discoverMcp?: ((input: McpConnectInput) => Promise<McpDiscoveryResult>) | undefined;
+  startMcpOAuth?: ((
+    input: StartMcpOAuthInput,
+    dependencies: McpOAuthDependencies,
+  ) => ReturnType<typeof startMcpOAuthAuthorization>) | undefined;
+  completeMcpOAuth?: ((
+    input: CompleteMcpOAuthInput,
+    dependencies: McpOAuthDependencies,
+  ) => ReturnType<typeof completeMcpOAuthAuthorization>) | undefined;
+  cancelMcpOAuth?: ((
+    state: string,
+    dependencies: McpOAuthDependencies,
+  ) => ReturnType<typeof cancelMcpOAuthAuthorization>) | undefined;
+  resolveMcpOAuthToken?: ((
+    input: ResolveMcpOAuthAccessInput,
+    dependencies: McpOAuthDependencies,
+  ) => ReturnType<typeof resolveMcpOAuthAccessToken>) | undefined;
+  identifyMcp?: ((input: McpIdentityInput) => Promise<McpConnectionIdentity | undefined>) | undefined;
+  oauthFetch?: typeof fetch | undefined;
 }
 
 const ADMIN_COOKIE = 'flue_admin';
@@ -185,6 +228,11 @@ const mcpToolInfoSchema = v.object({
   description: v.optional(v.pipe(v.string(), v.trim(), v.maxLength(400))),
 });
 
+const mcpIdentitySchema = v.object({
+  workspaceName: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(160))),
+  accountName: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(160))),
+});
+
 // A profile Connection (remote MCP server) — POLICY ONLY. No token/header-value
 // fields exist by construction, so a secrets-shaped payload can never smuggle a
 // value into the profile row. The v.check runs the same SSRF guard as turn time,
@@ -195,7 +243,7 @@ const mcpServerSchema = v.pipe(
     displayName: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(80)),
     url: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(2048)),
     transport: v.picklist(['streamable-http', 'sse']),
-    authMode: v.picklist(['none', 'bearer']),
+    authMode: v.picklist(['none', 'bearer', 'oauth']),
     headerNames: v.array(v.pipe(v.string(), v.trim(), v.regex(/^[A-Za-z0-9-]{1,128}$/))),
     enabled: v.boolean(),
     lifecycleStatus: v.picklist(['pending', 'ready', 'failed']),
@@ -206,6 +254,7 @@ const mcpServerSchema = v.pipe(
       v.maxLength(50),
     ),
     lastCheckedAt: v.optional(v.number()),
+    identity: v.optional(mcpIdentitySchema),
     presetId: v.optional(v.pipe(v.string(), v.regex(/^[a-z0-9][a-z0-9-]{0,63}$/), v.maxLength(64))),
   }),
   v.check((s) => validateMcpUrl(s.url).ok, 'URL not allowed'),
@@ -440,7 +489,7 @@ const mcpTestSchema = v.object({
   id: v.pipe(v.string(), v.regex(MCP_CONNECTION_ID_PATTERN)),
   url: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(2048)),
   transport: v.picklist(['streamable-http', 'sse']),
-  authMode: v.picklist(['none', 'bearer']),
+  authMode: v.picklist(['none', 'bearer', 'oauth']),
   bearerToken: v.optional(v.string()),
   // KEYS validated like headerNames — a raw key with ':' or CR/LF would throw
   // deep inside new Headers() and read as a misleading connect failure.
@@ -466,6 +515,11 @@ const mcpSecretsPutSchema = v.object({
   // dead secrets behind under keys nothing references anymore.
   removeHeaderNames: v.optional(v.array(headerNameSchema)),
   clearBearer: v.optional(v.boolean()),
+  clearOAuth: v.optional(v.boolean()),
+});
+
+const mcpOAuthStartSchema = v.object({
+  scope: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(1024))),
 });
 
 const mcpSecretsDeleteSchema = v.object({
@@ -559,6 +613,19 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   // real network connect is attempted (same seam idea as the store/settings).
   const discoverMcp = (input: McpConnectInput): Promise<McpDiscoveryResult> =>
     (options.discoverMcp ?? discoverMcpTools)(input);
+  const startMcpOAuth = options.startMcpOAuth ?? startMcpOAuthAuthorization;
+  const completeMcpOAuth =
+    options.completeMcpOAuth ?? completeMcpOAuthAuthorization;
+  const cancelMcpOAuth = options.cancelMcpOAuth ?? cancelMcpOAuthAuthorization;
+  const resolveMcpOAuthToken =
+    options.resolveMcpOAuthToken ?? resolveMcpOAuthAccessToken;
+  const identifyMcp = options.identifyMcp ?? discoverMcpConnectionIdentity;
+  const oauthDependencies = (c: Context): McpOAuthDependencies => ({
+    settings: settings(c),
+    ...(options.oauthFetch ? { fetchFn: options.oauthFetch } : {}),
+    validateConnection: (ref, serverUrl) =>
+      isCurrentMcpOAuthConnection(store(c), ref, serverUrl),
+  });
   const adminLoginBodyLimit = bodyLimit({
     maxSize: MAX_ADMIN_LOGIN_BODY_BYTES,
     onError: (c) =>
@@ -625,6 +692,90 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     });
   };
 
+  // CIMD is fetched by the provider, not an administrator's browser. It is
+  // intentionally public and contains client policy only — never a client
+  // secret. The document's client_id is its exact HTTPS URL.
+  app.get('/.well-known/oauth-client-metadata.json', (c) => {
+    try {
+      const documentUrl =
+        `${requestOrigin(c)}/.well-known/oauth-client-metadata.json`;
+      return c.json(createMcpOAuthClientMetadataDocument(documentUrl));
+    } catch {
+      return c.notFound();
+    }
+  });
+
+  // The provider redirects here without an admin Authorization header. State is
+  // the authorization boundary: the OAuth module validates and atomically
+  // consumes it before exchange or cancellation. Neither codes nor error text
+  // are reflected into the redirect.
+  app.get('/oauth/callback', async (c) => {
+    c.header('Referrer-Policy', 'no-referrer');
+    c.header('Cache-Control', 'no-store');
+    const state = c.req.query('state');
+    const code = c.req.query('code');
+    const providerError = c.req.query('error');
+    if (
+      !state ||
+      state.length > 2_048 ||
+      (code !== undefined && code.length > 8_192) ||
+      (providerError !== undefined && providerError.length > 256) ||
+      (!code && !providerError) ||
+      (code && providerError)
+    ) {
+      return invalidRequest(c);
+    }
+    let ref: { agentId: string; connectionId: string };
+    try {
+      if (providerError) {
+        const cancelled = await cancelMcpOAuth(state, oauthDependencies(c));
+        const status = providerError === 'access_denied' ? 'cancelled' : 'failed';
+        return c.redirect(mcpOAuthAdminRedirect(status, cancelled.ref), 303);
+      }
+      ({ ref } = await completeMcpOAuth(
+        { code: code!, state },
+        oauthDependencies(c),
+      ));
+    } catch (error) {
+      if (error instanceof McpOAuthError && error.code === 'invalid_state') {
+        return invalidRequest(c);
+      }
+      console.error(
+        '[chickpea] MCP OAuth callback failed:',
+        error instanceof McpOAuthError ? error.code : 'internal_error',
+      );
+      try {
+        // This decoded ref selects only the admin status destination; it does
+        // not authorize or mutate anything. Malformed state falls through to
+        // the generic admin landing page.
+        return c.redirect(
+          mcpOAuthAdminRedirect('failed', mcpOAuthReturnRefFromState(state)),
+          303,
+        );
+      } catch {
+        // Keep malformed state out of the redirect path.
+      }
+      return c.redirect('/admin?oauth=failed', 303);
+    }
+    try {
+      await verifyAndStoreMcpOAuthConnection({
+        ref,
+        configStore: store(c),
+        discoverMcp,
+        identifyMcp,
+        resolveMcpOAuthToken,
+        oauthDependencies: oauthDependencies(c),
+      });
+      return c.redirect(mcpOAuthAdminRedirect('connected', ref), 303);
+    } catch (error) {
+      console.warn(
+        `[chickpea] MCP OAuth verification failed (${ref.connectionId}): ` +
+          mcpDebugText(error),
+      );
+      return c.redirect(mcpOAuthAdminRedirect('verification_failed', ref), 303);
+    }
+  });
+
   // The worker's root is not a product surface — send visitors to the admin
   // (the gate/login there handles auth). Bare 404 at `/` read as a broken
   // install during live testing.
@@ -655,6 +806,57 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       await persistRequestOrigin(c, settingsStore);
     }
     return next();
+  });
+
+  app.post('/admin/api/agents/:agentId/mcp/oauth/:connectionId/start', async (c) => {
+    c.header('Cache-Control', 'no-store');
+    const agentId = c.req.param('agentId');
+    const connectionId = c.req.param('connectionId');
+    if (!AGENT_ID_PATTERN.test(agentId) || !MCP_CONNECTION_ID_PATTERN.test(connectionId)) {
+      return invalidRequest(c);
+    }
+    const parsed = v.safeParse(mcpOAuthStartSchema, await readJson(c.req));
+    if (!parsed.success) {
+      return invalidRequest(c);
+    }
+    let connection: McpConnectionConfig | undefined;
+    try {
+      connection = (await store(c).getAgent(agentId)).mcpServers.find(
+        (server) => server.id === connectionId,
+      );
+    } catch (error) {
+      if (error instanceof UnknownAgentError) {
+        return c.json({ error: 'not_found' }, 404);
+      }
+      return internalError(c, error);
+    }
+    if (!connection) {
+      return c.json({ error: 'not_found' }, 404);
+    }
+    if (connection.authMode !== 'oauth') {
+      return c.json({ error: 'oauth_not_enabled' }, 409);
+    }
+    try {
+      const result = await startMcpOAuth(
+        {
+          ref: { agentId, connectionId },
+          serverUrl: connection.url,
+          callbackUrl: `${requestOrigin(c)}/oauth/callback`,
+          ...(parsed.output.scope ? { scope: parsed.output.scope } : {}),
+        },
+        oauthDependencies(c),
+      );
+      return c.json({ authorizationUrl: result.authorizationUrl.href });
+    } catch (error) {
+      if (error instanceof McpOAuthError && error.code === 'connection_missing') {
+        return c.json({ error: 'not_found' }, 404);
+      }
+      console.error(
+        '[chickpea] MCP OAuth start failed:',
+        error instanceof McpOAuthError ? error.code : 'internal_error',
+      );
+      return c.json({ error: 'oauth_unavailable' }, 502);
+    }
   });
 
   app.get('/admin', (c) => c.html(renderAdminPage()));
@@ -1165,6 +1367,28 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (input.bearerToken === undefined && resolved.bearer !== undefined) {
       merged.bearer = resolved.bearer;
     }
+    if (input.authMode === 'oauth') {
+      try {
+        merged.bearer = await resolveMcpOAuthToken(
+          {
+            ref: { agentId, connectionId: input.id },
+            serverUrl: validated.url,
+          },
+          oauthDependencies(c),
+        );
+      } catch (error) {
+        const needsAuthorization =
+          error instanceof McpOAuthError &&
+          error.code === 'reauthorization_required';
+        return c.json({
+          ok: false,
+          code: needsAuthorization ? 'unauthorized' : 'mcp_connection_failed',
+          message: needsAuthorization
+            ? 'This connection needs OAuth authorization.'
+            : 'The OAuth connection could not be prepared.',
+        });
+      }
+    }
     const headers = buildMcpRequestHeaders(input.authMode, merged);
 
     try {
@@ -1251,6 +1475,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     );
     if (input.clearBearer) {
       await settingsStore.deleteSetting(mcpBearerSettingKey(ref));
+    }
+    if (input.clearOAuth) {
+      await deleteMcpOAuthSettings(ref, settingsStore);
     }
     for (const name of input.removeHeaderNames ?? []) {
       await settingsStore.deleteSetting(mcpHeaderSettingKey(ref, name));
@@ -1429,12 +1656,15 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return invalidRequest(c);
     }
     const platformEnv = c.env as PlatformEnv | undefined;
+    const settingsStore = settings(c);
+    const ref = { agentId, connectionId };
     await deleteMcpSecrets(
-      { agentId, connectionId },
+      ref,
       parsed.output.headerNames,
       platformEnv,
-      settings(c),
+      settingsStore,
     );
+    await deleteMcpOAuthSettings(ref, settingsStore);
     return c.json({ ok: true });
   });
 
@@ -1535,6 +1765,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       secretKeys.add(mcpBearerSettingKey(ref));
       for (const name of server.headerNames) {
         secretKeys.add(mcpHeaderSettingKey(ref, name));
+      }
+      for (const key of mcpOAuthSettingKeys(ref)) {
+        secretKeys.add(key);
       }
     }
     try {
@@ -2083,6 +2316,123 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   return app;
 }
 
+function mcpOAuthAdminRedirect(
+  status: 'connected' | 'cancelled' | 'failed' | 'verification_failed',
+  ref: { agentId: string; connectionId: string },
+): string {
+  return (
+    `/admin/profiles/${encodeURIComponent(ref.agentId)}` +
+    `?oauth=${status}&connection=${encodeURIComponent(ref.connectionId)}`
+  );
+}
+
+interface VerifyMcpOAuthConnectionInput {
+  ref: { agentId: string; connectionId: string };
+  configStore: ConfigStore;
+  discoverMcp: (input: McpConnectInput) => Promise<McpDiscoveryResult>;
+  identifyMcp: (input: McpIdentityInput) => Promise<McpConnectionIdentity | undefined>;
+  resolveMcpOAuthToken: (
+    input: ResolveMcpOAuthAccessInput,
+    dependencies: McpOAuthDependencies,
+  ) => Promise<string>;
+  oauthDependencies: McpOAuthDependencies;
+}
+
+async function verifyAndStoreMcpOAuthConnection(
+  input: VerifyMcpOAuthConnectionInput,
+): Promise<void> {
+  const agent = await input.configStore.getAgent(input.ref.agentId);
+  const connection = agent.mcpServers.find(
+    (entry) => entry.id === input.ref.connectionId,
+  );
+  if (!connection || connection.authMode !== 'oauth') {
+    throw new McpOAuthError('connection_missing', 'OAuth connection no longer exists');
+  }
+  const validated = validateMcpUrl(connection.url);
+  if (!validated.ok) throw new McpBlockedUrlError(validated.reason);
+  const accessToken = await input.resolveMcpOAuthToken(
+    { ref: input.ref, serverUrl: validated.url },
+    input.oauthDependencies,
+  );
+  const headers = buildMcpRequestHeaders('oauth', {
+    bearer: accessToken,
+    headers: {},
+  });
+
+  try {
+    const discovery = await input.discoverMcp({
+      id: connection.id,
+      url: validated.url,
+      transport: connection.transport,
+      headers,
+    });
+    let identity: McpConnectionIdentity | undefined;
+    try {
+      identity = await input.identifyMcp({
+        id: connection.id,
+        url: validated.url,
+        transport: connection.transport,
+        headers,
+        ...(connection.presetId ? { presetId: connection.presetId } : {}),
+      });
+    } catch (error) {
+      console.warn(
+        `[chickpea] MCP identity probe failed (${connection.id}): ` +
+          mcpDebugText(error),
+      );
+    }
+    await replaceVerifiedMcpConnection(input.configStore, input.ref, connection, {
+      lifecycleStatus: 'ready',
+      statusText:
+        `Connected · ${discovery.tools.length} tool` +
+        (discovery.tools.length === 1 ? '' : 's'),
+      discoveredTools: discovery.tools,
+      allowedTools: discovery.tools.map((tool) => tool.name),
+      lastCheckedAt: Date.now(),
+      ...(identity ? { identity } : {}),
+    });
+  } catch (error) {
+    await replaceVerifiedMcpConnection(input.configStore, input.ref, connection, {
+      lifecycleStatus: 'failed',
+      statusText: safeMcpFailureText(error),
+      discoveredTools: [],
+      allowedTools: [],
+      lastCheckedAt: Date.now(),
+    }).catch(() => undefined);
+    throw error;
+  }
+}
+
+async function replaceVerifiedMcpConnection(
+  configStore: ConfigStore,
+  ref: { agentId: string; connectionId: string },
+  original: McpConnectionConfig,
+  result: Pick<
+    McpConnectionConfig,
+    | 'lifecycleStatus'
+    | 'statusText'
+    | 'discoveredTools'
+    | 'allowedTools'
+    | 'lastCheckedAt'
+  > & { identity?: McpConnectionIdentity },
+): Promise<void> {
+  const latest = await configStore.getAgent(ref.agentId);
+  const index = latest.mcpServers.findIndex(
+    (entry) =>
+      entry.id === ref.connectionId &&
+      entry.authMode === 'oauth' &&
+      entry.url === original.url,
+  );
+  if (index < 0) {
+    throw new McpOAuthError('connection_missing', 'OAuth connection no longer exists');
+  }
+  const current = latest.mcpServers[index]!;
+  const { identity: _priorIdentity, ...policy } = current;
+  const mcpServers = latest.mcpServers.slice();
+  mcpServers[index] = { ...policy, ...result };
+  await configStore.updateAgent(ref.agentId, { mcpServers });
+}
+
 // The origin Slack must call back into, resolved fail-closed against header
 // spoofing (the events URL this origin builds becomes a stored Slack config):
 //   1. SLACK_TAG_PUBLIC_URL, when set, is the operator's explicit pin and wins
@@ -2281,6 +2631,18 @@ function toMcpServers(
     })),
     allowedTools: server.allowedTools,
     ...(server.lastCheckedAt !== undefined ? { lastCheckedAt: server.lastCheckedAt } : {}),
+    ...(server.identity !== undefined
+      ? {
+          identity: {
+            ...(server.identity.workspaceName !== undefined
+              ? { workspaceName: server.identity.workspaceName }
+              : {}),
+            ...(server.identity.accountName !== undefined
+              ? { accountName: server.identity.accountName }
+              : {}),
+          },
+        }
+      : {}),
     ...(server.presetId !== undefined ? { presetId: server.presetId } : {}),
   }));
 }

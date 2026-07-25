@@ -1,10 +1,19 @@
 import type { ToolDefinition, connectMcpServer } from '@flue/runtime';
 
 import { mcpDebugText } from './mcp-errors.ts';
+import {
+  isCurrentMcpOAuthConnection,
+  resolveMcpOAuthAccessToken,
+  type ResolveMcpOAuthAccessInput,
+} from './mcp-oauth.ts';
 import { buildMcpRequestHeaders, resolveMcpSecrets } from './mcp-secrets.ts';
 import { connectMcp } from './mcp-test.ts';
 import { isCloudflareTarget } from './runtime-target.ts';
-import type { PlatformEnv } from './state-backend.ts';
+import {
+  getConfigStore,
+  getSettingsStore,
+  type PlatformEnv,
+} from './state-backend.ts';
 import type { McpConnectionConfig } from './types.ts';
 
 /**
@@ -44,6 +53,10 @@ export interface ResolveProfileMcpToolsOptions {
   connect?: typeof connectMcpServer;
   /** Test seam — shortens the per-connect deadline; defaults to mcp-test's 8s. */
   connectTimeoutMs?: number;
+  /** Test seam for OAuth token resolution; production resolves from settings. */
+  resolveOAuthAccessToken?: (
+    input: ResolveMcpOAuthAccessInput,
+  ) => Promise<string>;
   /** Best-effort policy-only lifecycle hook; never receives headers or secrets. */
   onConnectionStart?: (connection: { id: string; displayName: string }) => void;
 }
@@ -96,6 +109,24 @@ async function resolveOneServer(
       server.headerNames,
       opts.env,
     );
+    if (server.authMode === 'oauth') {
+      secrets.bearer = await (
+        opts.resolveOAuthAccessToken ??
+        ((input) =>
+          resolveMcpOAuthAccessToken(input, {
+            settings: getSettingsStore(opts.env),
+            validateConnection: (ref, serverUrl) =>
+              isCurrentMcpOAuthConnection(
+                getConfigStore(opts.env),
+                ref,
+                serverUrl,
+              ),
+          }))
+      )({
+        ref: { agentId: opts.agentId, connectionId: server.id },
+        serverUrl: server.url,
+      });
+    }
     const headers = buildMcpRequestHeaders(server.authMode, secrets);
     debugHeaders = headers;
     try {
