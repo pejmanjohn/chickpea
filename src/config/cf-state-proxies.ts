@@ -11,6 +11,7 @@ import {
   MemoryVersionConflictError,
   type CreateMemoryEntryInput,
   type CreateForgetChallengeInput,
+  type ConfirmMemoryConversationContextInput,
   type ForgetMemoryEntryInput,
   type MemoryConversationContext,
   type MemoryChannelScopeState,
@@ -311,6 +312,16 @@ export class CfMemoryStateStore implements MemoryStateStore {
     const response = await this.execute({ kind: 'resolve_conversation_context', input });
     if (response.kind !== 'conversation_context') throw unexpectedMemoryResponse();
     return response.context;
+  }
+
+  async confirmConversationContext(
+    input: ConfirmMemoryConversationContextInput,
+  ): Promise<boolean> {
+    const response = await this.execute({ kind: 'confirm_conversation_context', input });
+    if (response.kind !== 'conversation_context_confirmed') {
+      throw unexpectedMemoryResponse();
+    }
+    return response.confirmed;
   }
 
   async observeChannelScope(

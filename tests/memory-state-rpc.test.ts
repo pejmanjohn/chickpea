@@ -69,3 +69,21 @@ test('Cloudflare memory proxy preserves typed memory conflict errors', async () 
       error.currentVersion === 3,
   );
 });
+
+test('Cloudflare memory proxy confirms injected conversation epochs', async () => {
+  const calls: MemoryRpcRequest[] = [];
+  const stub = {
+    async memoryExecute(request: MemoryRpcRequest): Promise<StateRpcResult<MemoryRpcResponse>> {
+      calls.push(request);
+      return { ok: true, value: { kind: 'conversation_context_confirmed', confirmed: true } };
+    },
+  } as unknown as TagStateRpc;
+  const store = new CfMemoryStateStore(stub);
+  const input = {
+    baseConversationKey: 'T:C:1.0',
+    epoch: 2,
+    selectionFingerprint: 'fingerprint',
+  };
+  assert.equal(await store.confirmConversationContext(input), true);
+  assert.deepEqual(calls, [{ kind: 'confirm_conversation_context', input }]);
+});

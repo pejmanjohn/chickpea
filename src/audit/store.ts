@@ -110,6 +110,10 @@ export class AuditStoreLogic {
       clauses.push('event_type = ?');
       params.push(filter.eventType);
     }
+    if (filter.idempotencyKey) {
+      clauses.push('idempotency_key = ?');
+      params.push(filter.idempotencyKey);
+    }
     if (filter.subjectId) {
       clauses.push('subject_id = ?');
       params.push(filter.subjectId);

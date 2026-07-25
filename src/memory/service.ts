@@ -57,7 +57,7 @@ export interface ForgetMemoryInput extends MemoryMutationContext {
 
 export interface MergeMemoryInput extends MemoryMutationContext {
   workspaceId: string;
-  targets: Array<{ target: string; expectedVersion: number }>;
+  targets: Array<{ target: string; expectedVersion?: number }>;
   name: string;
   description: string;
   type: MemoryEntryType;
@@ -86,7 +86,7 @@ export class MemoryService {
   async remember(input: RememberMemoryInput): Promise<MemoryMutationResult> {
     const content = validateMemoryContent(input);
     const entryId = this.id('mem');
-    const baseSlug = slugifyMemoryName(input.name, entryId);
+    const baseSlug = slugifyMemoryName(input.name, stableSlugSeed(input.idempotencyKey));
     const slug = await this.availableSlug(
       input.scope.writeStoreId,
       input.scope.sourceChannelId,
@@ -212,6 +212,13 @@ export class MemoryService {
     confirmationToken: string;
     idempotencyKey: string;
   }): Promise<MemoryMutationResult> {
+    const replay = await this.replayedMutation(
+      input.scope,
+      input.actorId,
+      input.idempotencyKey,
+      'memory.forgotten',
+    );
+    if (replay) return { entry: replay };
     const confirmationTokenHash = tokenHash(input.confirmationToken);
     const challenge = await this.state.getForgetChallenge(
       confirmationTokenHash,
@@ -226,9 +233,7 @@ export class MemoryService {
     const entry = await this.state.getEntry(challenge.entryId);
     const allowedStores = new Set([
       input.scope.writeStoreId,
-      ...input.scope.reads
-        .filter((read) => read.sourceChannelId === input.scope.sourceChannelId)
-        .map((read) => read.storeId),
+      ...input.scope.reads.map((read) => read.storeId),
     ]);
     if (
       !entry ||
@@ -259,14 +264,35 @@ export class MemoryService {
       );
     }
     const content = validateMemoryContent(input);
+    const baseSlug = slugifyMemoryName(input.name, stableSlugSeed(input.idempotencyKey));
+    const replay = await this.replayedMutation(
+      input.scope,
+      input.actorId,
+      input.idempotencyKey,
+      'memory.merged',
+    );
+    if (replay) {
+      return {
+        entry: await this.replayBoundEntry(replay, input.idempotencyKey, {
+          storeId: input.scope.writeStoreId,
+          sourceChannelId: input.scope.sourceChannelId,
+          description: content.description,
+          type: content.type,
+          body: content.body,
+          slugSeed: baseSlug,
+        }),
+      };
+    }
     const sources = await Promise.all(
       input.targets.map(async (target) => {
         const entry = await this.resolveWritableTarget(input.scope, target.target);
-        return { entryId: entry.entryId, expectedVersion: target.expectedVersion };
+        return {
+          entryId: entry.entryId,
+          expectedVersion: target.expectedVersion ?? entry.version,
+        };
       }),
     );
     const entryId = this.id('mem');
-    const baseSlug = slugifyMemoryName(input.name, entryId);
     const slug = await this.availableSlug(
       input.scope.writeStoreId,
       input.scope.sourceChannelId,
@@ -539,6 +565,38 @@ export class MemoryService {
       status: receipt.operation === 'create' || receipt.operation === 'update' ? 'active' : entry.status,
     };
   }
+
+  private async replayedMutation(
+    scope: EnabledMemoryScope,
+    actorId: string,
+    idempotencyKey: string,
+    eventType: 'memory.forgotten' | 'memory.merged',
+  ): Promise<MemoryEntry | undefined> {
+    const [receipt] = await this.state.listAuditEvents({
+      domain: 'memory',
+      eventType,
+      idempotencyKey,
+      limit: 1,
+    });
+    if (!receipt) return undefined;
+    const allowedStores = new Set([scope.writeStoreId, ...scope.reads.map((read) => read.storeId)]);
+    const entry = receipt.subjectId ? await this.state.getEntry(receipt.subjectId) : undefined;
+    if (
+      receipt.actorId !== actorId ||
+      !receipt.storeId ||
+      !allowedStores.has(receipt.storeId) ||
+      receipt.channelId !== scope.sourceChannelId ||
+      !entry ||
+      entry.storeId !== receipt.storeId ||
+      entry.sourceChannelId !== scope.sourceChannelId
+    ) {
+      throw new MemoryStateError(
+        'memory_idempotency_mismatch',
+        'Idempotency key was already used for a different memory action.',
+      );
+    }
+    return entry;
+  }
 }
 
 function resolveTarget(entries: readonly MemoryEntry[], target: string): MemoryEntry {
@@ -565,4 +623,8 @@ function compareMemoryEntry(left: MemoryEntry, right: MemoryEntry): number {
 
 function tokenHash(token: string): string {
   return createHash('sha256').update(token).digest('hex');
+}
+
+function stableSlugSeed(idempotencyKey: string): string {
+  return createHash('sha256').update(idempotencyKey).digest('hex');
 }

@@ -218,6 +218,7 @@ export async function runTurn(
         const recoveredText = await options.beforeDelivery?.();
         await closeAndDrainStatus();
         if (recoveredText) {
+          await preparedMemory?.confirmInjection();
           await presenter.deliverFinal(recoveredText, 'markdown');
           await options.onDelivered?.();
           return;
@@ -227,10 +228,14 @@ export async function runTurn(
         return;
       }
     }
-    if (preparedMemory && !(await preparedMemory.validateLease())) {
-      text = MEMORY_CHANGED_RETRY_TEXT;
-    }
-    await options.beforeDelivery?.();
+    const recoveredText = await options.beforeDelivery?.();
+    const injectionConfirmed = await preparedMemory?.confirmInjection() ?? true;
+    const leaseValid = await preparedMemory?.validateLease() ?? true;
+    text = resolveMemoryDeliveryText(
+      text,
+      recoveredText,
+      injectionConfirmed && leaseValid,
+    );
     await closeAndDrainStatus();
     await presenter.deliverFinal(text, 'markdown');
     await options.onDelivered?.();
@@ -249,7 +254,16 @@ export async function runTurn(
 }
 
 export const MEMORY_CHANGED_RETRY_TEXT =
-  'Channel memory or Slack access changed while I was answering, so I discarded the draft. Please retry so I can use current information.';
+  'Channel memory or Slack access changed while I was answering, so I withheld the draft. Before trying again, check whether any requested external action already completed.';
+
+export function resolveMemoryDeliveryText(
+  draft: string,
+  recoveredText: string | undefined,
+  leaseValid: boolean,
+): string {
+  if (leaseValid) return draft;
+  return recoveredText || MEMORY_CHANGED_RETRY_TEXT;
+}
 
 export function agentFailureText(err: unknown): string {
   if (!(err instanceof AgentPromptFailure)) return AGENT_FAILURE_TEXT;

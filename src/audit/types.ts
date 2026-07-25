@@ -43,6 +43,7 @@ export interface AppendAuditEvent {
 export interface AuditEventFilter {
   domain?: AuditDomain;
   eventType?: string;
+  idempotencyKey?: string;
   subjectId?: string;
   storeId?: string;
   channelId?: string;

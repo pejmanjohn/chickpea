@@ -9,6 +9,10 @@ import type { WebClient } from '@slack/web-api';
 import { getMemoryStateStore } from '../src/config/state-backend.ts';
 import { handleMemoryCommand, prepareMemoryTurn } from '../src/memory/runtime.ts';
 import type { WebClientPresenter } from '../src/slack/web-client-presenter.ts';
+import {
+  MEMORY_CHANGED_RETRY_TEXT,
+  resolveMemoryDeliveryText,
+} from '../src/slack/run-turn.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 
 const baseTurn: NormalizedSlackTurn = {
@@ -57,6 +61,13 @@ test('Slack commands persist memory even when a legacy disable override remains'
     assert.match(first.conversationKey, /:memory-e1$/);
     assert.match(first.promptBlock ?? '', /answer-style/);
     assert.equal(await first.validateLease(), true);
+    const unconfirmedRetry = await prepareMemoryTurn({
+      turn: { ...queryTurn, eventId: 'E2-retry' },
+      platformEnv: undefined,
+      client,
+    });
+    assert.match(unconfirmedRetry.promptBlock ?? '', /answer-style/);
+    assert.equal(await first.confirmInjection(), true);
 
     const second = await prepareMemoryTurn({
       turn: { ...queryTurn, eventId: 'E3', messageTs: '1782770401.000100' },
@@ -92,6 +103,16 @@ test('Slack commands persist memory even when a legacy disable override remains'
     restoreEnvironment(previous);
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test('stale delivery leases preserve recovered side-effect receipts and never instruct blind retry', () => {
+  assert.equal(
+    resolveMemoryDeliveryText('draft', 'Created pull request #42.', false),
+    'Created pull request #42.',
+  );
+  assert.equal(resolveMemoryDeliveryText('draft', undefined, false), MEMORY_CHANGED_RETRY_TEXT);
+  assert.doesNotMatch(MEMORY_CHANGED_RETRY_TEXT, /please retry/i);
+  assert.equal(resolveMemoryDeliveryText('draft', 'receipt', true), 'draft');
 });
 
 async function fakeSlackFetch(input: string | URL | Request): Promise<Response> {

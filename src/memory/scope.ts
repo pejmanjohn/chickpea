@@ -64,6 +64,8 @@ export type MemoryScopeDecision =
       writeStoreId: string;
       sourceChannelId: string;
       displayName: string;
+      /** Complete membership snapshot used for a lightweight delivery lease. */
+      audienceMemberIds: string[] | null;
       visibilityBarrierAt: number | null;
       transitionVersion: number;
     };
@@ -92,6 +94,8 @@ export async function resolveMemoryScope(
     facts.externallyShared ||
     facts.organizationShared ||
     facts.pendingShared ||
+    facts.im ||
+    facts.mpim ||
     !facts.member
   ) {
     return disabled('unsupported_channel_scope');
@@ -102,6 +106,14 @@ export async function resolveMemoryScope(
     return disabled('ineligible_actor');
   }
 
+  const audience = await resolveAudience(
+    input.workspaceId,
+    input.channelId,
+    input.actorId,
+    input.botUserId,
+    deps.slack,
+  );
+  if (audience.actorIsMember === false) return disabled('ineligible_actor');
   const scopeState = await deps.state.observeChannelScope({
     workspaceId: input.workspaceId,
     channelId: input.channelId,
@@ -110,28 +122,23 @@ export async function resolveMemoryScope(
     observedAt: input.observedAt,
   });
   const publicId = publicStoreId(input.workspaceId);
-  const audience = await resolveAudience(
-    input.workspaceId,
-    input.channelId,
-    input.botUserId,
-    deps.slack,
-  );
 
   if (!facts.private) {
     return {
       enabled: true,
       reason: 'eligible',
       privacy: 'public',
-      workspaceRead: audience,
+      workspaceRead: audience.workspaceRead,
       reads: [
         {
           storeId: publicId,
-          sourceChannelId: audience ? null : input.channelId,
+          sourceChannelId: audience.workspaceRead ? null : input.channelId,
         },
       ],
       writeStoreId: publicId,
       sourceChannelId: input.channelId,
       displayName: facts.name,
+      audienceMemberIds: audience.memberIds,
       visibilityBarrierAt: scopeState.visibilityBarrierAt,
       transitionVersion: scopeState.transitionVersion,
     };
@@ -144,20 +151,67 @@ export async function resolveMemoryScope(
     enabled: true,
     reason: 'eligible',
     privacy: 'private',
-    workspaceRead: audience,
+    workspaceRead: audience.workspaceRead,
     reads: [
       { storeId: privateId, sourceChannelId: null },
       {
         storeId: publicId,
-        sourceChannelId: audience ? null : input.channelId,
+        sourceChannelId: audience.workspaceRead ? null : input.channelId,
       },
     ],
     writeStoreId: privateId,
     sourceChannelId: input.channelId,
     displayName: facts.name,
+    audienceMemberIds: audience.memberIds,
     visibilityBarrierAt: scopeState.visibilityBarrierAt,
     transitionVersion: scopeState.transitionVersion,
   };
+}
+
+export async function validateMemoryScopeLease(
+  input: ResolveMemoryScopeInput,
+  expected: EnabledMemoryScope,
+  slack: MemoryScopeSlack,
+): Promise<boolean> {
+  const [conversation, actor, members] = await Promise.all([
+    slack.conversation(input.channelId),
+    slack.user(input.actorId),
+    slack.members(input.channelId),
+  ]);
+  if (
+    !conversation.ok ||
+    !conversation.facts ||
+    !actor.ok ||
+    !actor.user ||
+    !members.ok
+  ) {
+    return false;
+  }
+  const facts = conversation.facts;
+  if (
+    facts.id !== input.channelId ||
+    (facts.teamId && facts.teamId !== input.workspaceId) ||
+    facts.archived ||
+    facts.frozen ||
+    facts.shared ||
+    facts.externallyShared ||
+    facts.organizationShared ||
+    facts.pendingShared ||
+    facts.im ||
+    facts.mpim ||
+    !facts.member ||
+    (facts.private ? 'private' : 'public') !== expected.privacy ||
+    classifyMemorySlackUser(actor.user, input.workspaceId, input.botUserId) !==
+      'eligible_human' ||
+    !members.ids.includes(input.actorId)
+  ) {
+    return false;
+  }
+  if (!expected.audienceMemberIds) {
+    return !expected.workspaceRead && members.ids.includes(input.actorId);
+  }
+  if (members.incomplete) return false;
+  return sameIds(expected.audienceMemberIds, members.ids);
 }
 
 export async function verifyMemoryMutationMembership(
@@ -166,7 +220,7 @@ export async function verifyMemoryMutationMembership(
   slack: MemoryScopeSlack,
 ): Promise<boolean> {
   const members = await slack.members(channelId);
-  return members.ok && !members.incomplete && members.ids.includes(actorId);
+  return members.ok && members.ids.includes(actorId);
 }
 
 export function createMemoryScopeSlack(botToken: string): MemoryScopeSlack {
@@ -239,16 +293,43 @@ export function createMemoryScopeSlack(botToken: string): MemoryScopeSlack {
 async function resolveAudience(
   workspaceId: string,
   channelId: string,
+  actorId: string,
   botUserId: string,
   slack: MemoryScopeSlack,
-): Promise<boolean> {
+): Promise<{
+  workspaceRead: boolean;
+  memberIds: string[] | null;
+  actorIsMember: boolean | null;
+}> {
   const [members, directory] = await Promise.all([slack.members(channelId), slack.users()]);
-  if (!members.ok || members.incomplete || !directory.ok || directory.incomplete) return false;
+  if (!members.ok) {
+    return { workspaceRead: false, memberIds: null, actorIsMember: null };
+  }
+  if (members.incomplete) {
+    return {
+      workspaceRead: false,
+      memberIds: null,
+      actorIsMember: members.ids.includes(actorId) ? true : null,
+    };
+  }
+  const memberIds = [...new Set(members.ids)].sort();
+  if (!memberIds.includes(actorId)) {
+    return { workspaceRead: false, memberIds, actorIsMember: false };
+  }
+  if (!directory.ok || directory.incomplete) {
+    return { workspaceRead: false, memberIds, actorIsMember: true };
+  }
   const byId = new Map(directory.users.map((user) => [user.id, user]));
-  return members.ids.every((id) => {
+  const workspaceRead = memberIds.every((id) => {
     const classification = classifyMemorySlackUser(byId.get(id), workspaceId, botUserId);
     return classification === 'eligible_human' || classification === 'chickpea_bot';
   });
+  return { workspaceRead, memberIds, actorIsMember: true };
+}
+
+function sameIds(left: readonly string[], right: readonly string[]): boolean {
+  const normalized = [...new Set(right)].sort();
+  return left.length === normalized.length && left.every((id, index) => id === normalized[index]);
 }
 
 function disabled(reason: Extract<MemoryScopeDecision, { enabled: false }>['reason']): MemoryScopeDecision {

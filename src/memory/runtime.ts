@@ -8,10 +8,11 @@ import type { WebClientPresenter } from '../slack/web-client-presenter.ts';
 import { memoryEpochThreadKey, memoryQuarantineThreadKey, slackThreadKey } from '../slack/thread-key.ts';
 import type { NormalizedSlackTurn } from '../slack/types.ts';
 import { parseMemoryCommand, type MemoryCommand } from './commands.ts';
-import { serializeMemoryPrompt } from './prompt.ts';
+import { fitMemorySelectionToPrompt, serializeMemoryPrompt } from './prompt.ts';
 import {
   createMemoryScopeSlack,
   resolveMemoryScope,
+  validateMemoryScopeLease,
   verifyMemoryMutationMembership,
   type EnabledMemoryScope,
   type MemoryScopeSlack,
@@ -29,6 +30,7 @@ export interface PreparedMemoryTurn {
   footerItems: string[];
   visibilityBarrierAt: number | null;
   validateLease(): Promise<boolean>;
+  confirmInjection(): Promise<boolean>;
 }
 
 interface MemoryRuntime {
@@ -82,12 +84,12 @@ export async function prepareMemoryTurn(input: {
     if (input.turn.source === 'dm_message') return memoryFree(baseKey);
     const runtime = await resolveRuntime(input.turn, input.platformEnv, input.client, state);
     const entries = await runtime.service.list({ scope: runtime.scope });
-    const selection = selectMemoryEntries({
+    const selection = fitMemorySelectionToPrompt(runtime.scope, selectMemoryEntries({
       entries,
       query: input.turn.text,
       sourceChannelId: runtime.scope.sourceChannelId,
       now: Date.now(),
-    });
+    }));
     const scopeSignature = memoryScopeSignature(runtime.scope);
     const context = await state.resolveConversationContext({
       baseConversationKey: baseKey,
@@ -110,6 +112,13 @@ export async function prepareMemoryTurn(input: {
       selection,
       footerItems,
       visibilityBarrierAt: runtime.scope.visibilityBarrierAt,
+      confirmInjection: context.inject
+        ? () => state.confirmConversationContext({
+            baseConversationKey: baseKey,
+            epoch: context.epoch,
+            selectionFingerprint: context.selectionFingerprint,
+          })
+        : async () => true,
       validateLease: () => validateMemoryLease(input.turn, runtime, selection, scopeSignature),
     };
   } catch (error) {
@@ -209,7 +218,7 @@ async function executeMemoryCommand(
     return `Saved ${scopeLabel(runtime.scope)} \`${created.entry.slug}\` (v${created.entry.version}).`;
   }
   if (command.kind === 'update') {
-    const current = await currentSourceEntry(runtime, command.target);
+    const current = await currentWritableEntry(runtime, command.target);
     const updated = await runtime.service.update({
       scope: runtime.scope,
       actorId: turn.userId,
@@ -226,9 +235,6 @@ async function executeMemoryCommand(
     return `Updated ${scopeLabel(runtime.scope)} \`${updated.entry.slug}\` to v${updated.entry.version}.`;
   }
   if (command.kind === 'merge') {
-    const sources = await Promise.all(
-      command.targets.map((target) => currentSourceEntry(runtime, target)),
-    );
     const merged = await runtime.service.merge({
       scope: runtime.scope,
       workspaceId: turn.workspaceId,
@@ -236,14 +242,14 @@ async function executeMemoryCommand(
       eventId: turn.eventId,
       threadTs: turn.threadTs,
       messageTs: turn.messageTs,
-      targets: sources.map((entry) => ({ target: entry.entryId, expectedVersion: entry.version })),
+      targets: command.targets.map((target) => ({ target })),
       name: command.name,
       description: command.description,
       type: 'fact',
       body: command.body,
       idempotencyKey,
     });
-    return `Merged ${sources.length} entries into \`${merged.entry.slug}\` (v1).`;
+    return `Merged ${command.targets.length} entries into \`${merged.entry.slug}\` (v1).`;
   }
   if (command.kind === 'forget_request') {
     const challenge = await runtime.service.requestForget({
@@ -297,6 +303,22 @@ async function currentSourceEntry(runtime: MemoryRuntime, target: string): Promi
   return matches[0]!;
 }
 
+async function currentWritableEntry(runtime: MemoryRuntime, target: string): Promise<MemoryEntry> {
+  const entries = (await runtime.service.list({ scope: runtime.scope })).filter(
+    (entry) =>
+      entry.sourceChannelId === runtime.scope.sourceChannelId &&
+      entry.storeId === runtime.scope.writeStoreId,
+  );
+  const matches = entries.filter((entry) => entry.entryId === target || entry.slug === target);
+  if (matches.length !== 1) {
+    throw new MemoryStateError(
+      matches.length > 1 ? 'memory_target_ambiguous' : 'memory_entry_not_found',
+      matches.length > 1 ? 'Memory name is ambiguous.' : 'Memory entry was not found.',
+    );
+  }
+  return matches[0]!;
+}
+
 async function qualifiedEntry(runtime: MemoryRuntime, target: string): Promise<MemoryEntry> {
   const [channelId, slug, extra] = target.split('/');
   if (!channelId || !slug || extra) {
@@ -315,7 +337,20 @@ async function qualifiedEntry(runtime: MemoryRuntime, target: string): Promise<M
 }
 
 async function forgetTarget(runtime: MemoryRuntime, target: string): Promise<MemoryEntry> {
-  if (!target.startsWith('public/')) return currentSourceEntry(runtime, target);
+  if (!target.startsWith('public/')) {
+    try {
+      return await currentWritableEntry(runtime, target);
+    } catch (error) {
+      if (
+        runtime.scope.privacy !== 'private' ||
+        !(error instanceof MemoryStateError) ||
+        error.code !== 'memory_entry_not_found'
+      ) {
+        throw error;
+      }
+      return currentSourceEntry(runtime, target);
+    }
+  }
   const slug = target.slice('public/'.length);
   const entry = (await runtime.service.list({ scope: runtime.scope })).find(
     (candidate) =>
@@ -343,7 +378,7 @@ async function validateMemoryLease(
   expectedScopeSignature: string,
 ): Promise<boolean> {
   try {
-    const scope = await resolveMemoryScope(
+    if (!(await validateMemoryScopeLease(
       {
         workspaceId: turn.workspaceId,
         channelId: turn.channelId,
@@ -351,13 +386,14 @@ async function validateMemoryLease(
         botUserId: runtime.botUserId,
         observedAt: Date.now(),
       },
-      { slack: runtime.slack, state: runtime.state },
-    );
-    if (!scope.enabled || memoryScopeSignature(scope) !== expectedScopeSignature) return false;
+      runtime.scope,
+      runtime.slack,
+    ))) return false;
+    if (memoryScopeSignature(runtime.scope) !== expectedScopeSignature) return false;
     const current = await Promise.all(
       selection.entries.map(({ entry }) => runtime.state.getEntry(entry.entryId)),
     );
-    const allowedStores = new Set(scope.reads.map((read) => read.storeId));
+    const allowedStores = new Set(runtime.scope.reads.map((read) => read.storeId));
     return current.every((entry, index) => {
       const selected = selection.entries[index]!.entry;
       return (
@@ -407,6 +443,7 @@ function memoryFree(conversationKey: string): PreparedMemoryTurn {
     footerItems: [],
     visibilityBarrierAt: null,
     validateLease: async () => true,
+    confirmInjection: async () => true,
   };
 }
 

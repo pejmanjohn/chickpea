@@ -19,6 +19,12 @@ test('selection changes rotate agent transcripts while operational parsing stays
       selectionFingerprint: 'one', selected: [{ entryId: 'mem_1', version: 1 }],
       expiresAt: 2_000,
     });
+    assert.equal(first.inject, true);
+    assert.equal(await store.confirmConversationContext({
+      baseConversationKey: first.baseConversationKey,
+      epoch: first.epoch,
+      selectionFingerprint: first.selectionFingerprint,
+    }), true);
     const unchanged = await store.resolveConversationContext({
       baseConversationKey: 'T:C:100.1', scopeSignature: 'public',
       selectionFingerprint: 'one', selected: [{ entryId: 'mem_1', version: 1 }],
@@ -29,7 +35,6 @@ test('selection changes rotate agent transcripts while operational parsing stays
       selectionFingerprint: 'two', selected: [{ entryId: 'mem_1', version: 2 }],
       expiresAt: 2_000,
     });
-    assert.equal(first.inject, true);
     assert.equal(unchanged.inject, false);
     assert.equal(rotated.inject, true);
     assert.equal(memoryEpochThreadKey('T:C:100.1', first.epoch), 'T:C:100.1:memory-e1');

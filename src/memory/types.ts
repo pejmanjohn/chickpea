@@ -178,6 +178,12 @@ export interface ResolveMemoryConversationContextInput {
   expiresAt: number;
 }
 
+export interface ConfirmMemoryConversationContextInput {
+  baseConversationKey: string;
+  epoch: number;
+  selectionFingerprint: string;
+}
+
 export interface MemoryConversationContext {
   baseConversationKey: string;
   epoch: number;
@@ -281,6 +287,7 @@ export type MemoryRpcRequest =
   | { kind: 'list_audit_events'; filter: AuditEventFilter }
   | { kind: 'get_mutation_counts'; workspaceId: string; channelId: string; actorId: string }
   | { kind: 'resolve_conversation_context'; input: ResolveMemoryConversationContextInput }
+  | { kind: 'confirm_conversation_context'; input: ConfirmMemoryConversationContextInput }
   | { kind: 'observe_channel_scope'; input: ObserveMemoryChannelScopeInput }
   | { kind: 'get_channel_scope'; workspaceId: string; channelId: string }
   | { kind: 'cleanup_retention' };
@@ -294,6 +301,7 @@ export type MemoryRpcResponse =
   | { kind: 'audit_events'; events: AuditEvent[] }
   | { kind: 'mutation_counts'; counts: MemoryMutationCounts }
   | { kind: 'conversation_context'; context: MemoryConversationContext }
+  | { kind: 'conversation_context_confirmed'; confirmed: boolean }
   | { kind: 'channel_scope'; state: MemoryChannelScopeState | null }
   | { kind: 'forget_challenge'; challenge: MemoryForgetChallenge | null }
   | { kind: 'cleanup'; actorIdsCleared: number; rateWindowsDeleted: number; contextsDeleted: number };
@@ -329,6 +337,7 @@ export interface MemoryStateStore {
   resolveConversationContext(
     input: ResolveMemoryConversationContextInput,
   ): Promise<MemoryConversationContext>;
+  confirmConversationContext(input: ConfirmMemoryConversationContextInput): Promise<boolean>;
   observeChannelScope(input: ObserveMemoryChannelScopeInput): Promise<MemoryChannelScopeState>;
   getChannelScope(
     workspaceId: string,

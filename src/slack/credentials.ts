@@ -342,6 +342,8 @@ export interface SlackChannelSummary {
 export interface SlackConversationFacts {
   id: string;
   name: string;
+  im?: boolean;
+  mpim?: boolean;
   private: boolean;
   archived: boolean;
   frozen: boolean;
@@ -384,6 +386,8 @@ function toConversationFacts(raw: unknown): SlackConversationFacts | null {
   return {
     id: channel.id,
     name: typeof channel.name === 'string' ? channel.name : '',
+    im: channel.is_im === true,
+    mpim: channel.is_mpim === true,
     private: channel.is_private === true,
     archived: channel.is_archived === true,
     frozen: channel.is_frozen === true,

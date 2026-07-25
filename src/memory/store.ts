@@ -20,6 +20,7 @@ import {
   MemoryVersionConflictError,
   type CreateMemoryEntryInput,
   type CreateForgetChallengeInput,
+  type ConfirmMemoryConversationContextInput,
   type ForgetMemoryEntryInput,
   type MemoryConversationContext,
   type MemoryChannelScopeState,
@@ -203,6 +204,11 @@ export class MemoryStoreLogic {
         return {
           kind: 'conversation_context',
           context: this.resolveConversationContext(request.input),
+        };
+      case 'confirm_conversation_context':
+        return {
+          kind: 'conversation_context_confirmed',
+          confirmed: this.confirmConversationContext(request.input),
         };
       case 'observe_channel_scope':
         return { kind: 'channel_scope', state: this.observeChannelScope(request.input) };
@@ -768,7 +774,7 @@ export class MemoryStoreLogic {
         createdAt: at,
         beforeHash: null,
         afterHash: hash,
-        reasonCode: 'merge_replacement',
+        reasonCode: `slug_seed:${input.replacement.slugSeed ?? input.replacement.slug}`,
         idempotencyKey: input.replacement.idempotencyKey,
       });
       this.audit.append({
@@ -904,14 +910,12 @@ export class MemoryStoreLogic {
     const selectedJson = JSON.stringify(input.selected);
     const barrier = input.visibilityBarrierAt ?? null;
     return this.db.transaction(() => {
-      let inject = false;
       const row = this.db.get(
         `SELECT * FROM memory_conversation_contexts
          WHERE base_conversation_key = ?`,
         input.baseConversationKey,
       ) as unknown as ContextRow | undefined;
       if (!row) {
-        inject = true;
         this.db.run(
           `INSERT INTO memory_conversation_contexts (
             base_conversation_key, epoch, scope_signature,
@@ -933,7 +937,6 @@ export class MemoryStoreLogic {
           row.selection_fingerprint === input.selectionFingerprint &&
           row.selected_json === selectedJson &&
           row.visibility_barrier_at === barrier;
-        inject = !unchanged;
         this.db.run(
           `UPDATE memory_conversation_contexts SET
             epoch = ?, scope_signature = ?, selection_fingerprint = ?,
@@ -951,7 +954,48 @@ export class MemoryStoreLogic {
           input.baseConversationKey,
         );
       }
-      return { ...this.getConversationContext(input.baseConversationKey), inject };
+      const context = this.getConversationContext(input.baseConversationKey);
+      this.db.run(
+        `DELETE FROM memory_conversation_injections
+         WHERE base_conversation_key = ? AND epoch < ?`,
+        context.baseConversationKey,
+        context.epoch,
+      );
+      const confirmed = this.db.get(
+        `SELECT 1 AS confirmed FROM memory_conversation_injections
+         WHERE base_conversation_key = ? AND epoch = ? AND selection_fingerprint = ?`,
+        context.baseConversationKey,
+        context.epoch,
+        context.selectionFingerprint,
+      );
+      return { ...context, inject: !confirmed };
+    });
+  }
+
+  confirmConversationContext(input: ConfirmMemoryConversationContextInput): boolean {
+    return this.db.transaction(() => {
+      const row = this.db.get(
+        'SELECT * FROM memory_conversation_contexts WHERE base_conversation_key = ?',
+        input.baseConversationKey,
+      ) as unknown as ContextRow | undefined;
+      if (!row) return false;
+      const context = rowToContext(row);
+      if (
+        context.epoch !== input.epoch ||
+        context.selectionFingerprint !== input.selectionFingerprint
+      ) {
+        return false;
+      }
+      this.db.run(
+        `INSERT OR REPLACE INTO memory_conversation_injections (
+          base_conversation_key, epoch, selection_fingerprint, confirmed_at
+        ) VALUES (?, ?, ?, ?)`,
+        input.baseConversationKey,
+        input.epoch,
+        input.selectionFingerprint,
+        this.now(),
+      );
+      return true;
     });
   }
 
@@ -1060,17 +1104,26 @@ export class MemoryStoreLogic {
     contextsDeleted: number;
   } {
     const at = this.now();
-    return this.db.transaction(() => ({
-      actorIdsCleared: this.audit.clearExpiredActorIds(at - MEMORY_RETENTION_MS),
-      rateWindowsDeleted: this.db.run(
+    return this.db.transaction(() => {
+      this.db.run(
+        `DELETE FROM memory_conversation_injections
+         WHERE base_conversation_key IN (
+           SELECT base_conversation_key FROM memory_conversation_contexts WHERE expires_at < ?
+         )`,
+        at,
+      );
+      return {
+        actorIdsCleared: this.audit.clearExpiredActorIds(at - MEMORY_RETENTION_MS),
+        rateWindowsDeleted: this.db.run(
         'DELETE FROM memory_mutation_windows WHERE updated_at < ?',
         at - 2 * MEMORY_RATE_WINDOW_MS,
-      ).changes,
-      contextsDeleted: this.db.run(
+        ).changes,
+        contextsDeleted: this.db.run(
         'DELETE FROM memory_conversation_contexts WHERE expires_at < ?',
         at,
-      ).changes,
-    }));
+        ).changes,
+      };
+    });
   }
 
   private initializeSchema(): void {
@@ -1197,6 +1250,15 @@ export class MemoryStoreLogic {
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
         expires_at INTEGER NOT NULL
+      )`,
+    );
+    this.db.exec(
+      `CREATE TABLE IF NOT EXISTS memory_conversation_injections (
+        base_conversation_key TEXT NOT NULL,
+        epoch INTEGER NOT NULL,
+        selection_fingerprint TEXT NOT NULL,
+        confirmed_at INTEGER NOT NULL,
+        PRIMARY KEY (base_conversation_key, epoch, selection_fingerprint)
       )`,
     );
     this.db.exec(
@@ -1529,6 +1591,12 @@ export class SqliteMemoryStateStore implements MemoryStateStore {
     input: ResolveMemoryConversationContextInput,
   ): Promise<MemoryConversationContext> {
     return this.logic.resolveConversationContext(input);
+  }
+
+  async confirmConversationContext(
+    input: ConfirmMemoryConversationContextInput,
+  ): Promise<boolean> {
+    return this.logic.confirmConversationContext(input);
   }
 
   async observeChannelScope(

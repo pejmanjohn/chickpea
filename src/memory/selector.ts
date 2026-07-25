@@ -84,14 +84,18 @@ export function selectMemoryEntries(input: {
     truncated ||= excerpt.truncated;
   }
 
-  const fingerprintInput = selected
-    .map(({ entry }) => `${entry.entryId}:${entry.version}`)
-    .join('|');
   return {
     entries: selected,
-    fingerprint: createHash('sha256').update(fingerprintInput || 'none').digest('hex'),
+    fingerprint: memorySelectionFingerprint(selected),
     truncated,
   };
+}
+
+export function memorySelectionFingerprint(
+  entries: readonly Pick<SelectedMemoryEntry, 'entry'>[],
+): string {
+  const input = entries.map(({ entry }) => `${entry.entryId}:${entry.version}`).join('|');
+  return createHash('sha256').update(input || 'none').digest('hex');
 }
 
 function rankEntry(

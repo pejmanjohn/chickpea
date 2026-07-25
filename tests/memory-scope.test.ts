@@ -3,6 +3,7 @@ import { test } from 'node:test';
 
 import {
   resolveMemoryScope,
+  validateMemoryScopeLease,
   verifyMemoryMutationMembership,
   type MemoryScopeSlack,
 } from '../src/memory/scope.ts';
@@ -218,6 +219,70 @@ test('unsupported sharing and ineligible actors disable memory without blocking 
     );
     assert.equal(guestActor.enabled, false);
     assert.equal(guestActor.reason, 'ineligible_actor');
+
+    const absentActor = await resolveMemoryScope(
+      {
+        workspaceId: 'T_TEST', channelId: 'C_SOURCE', actorId: 'U_MEMBER',
+        botUserId: 'U_BOT', observedAt: 100,
+      },
+      {
+        state,
+        slack: slack({
+          async members() {
+            return { ok: true, ids: ['U_OTHER', 'U_BOT'] };
+          },
+        }),
+      },
+    );
+    assert.equal(absentActor.enabled, false);
+    assert.equal(absentActor.reason, 'ineligible_actor');
+
+    const groupDm = await resolveMemoryScope(
+      {
+        workspaceId: 'T_TEST', channelId: 'C_SOURCE', actorId: 'U_MEMBER',
+        botUserId: 'U_BOT', observedAt: 100,
+      },
+      {
+        state,
+        slack: slack({
+          async conversation() {
+            const base = await slack().conversation('C_SOURCE');
+            assert.ok(base.facts);
+            return { ...base, facts: { ...base.facts, mpim: true } };
+          },
+        }),
+      },
+    );
+    assert.equal(groupDm.enabled, false);
+    assert.equal(groupDm.reason, 'unsupported_channel_scope');
+  } finally {
+    state.close();
+  }
+});
+
+test('delivery lease rechecks current channel and actor membership without refetching the directory', async () => {
+  const state = new SqliteMemoryStateStore(':memory:');
+  try {
+    let directoryCalls = 0;
+    const liveSlack = slack({
+      async users() {
+        directoryCalls += 1;
+        return {
+          ok: true,
+          users: [fullMember, { ...fullMember, id: 'U_OTHER' }, { ...fullMember, id: 'U_BOT', bot: true }],
+        };
+      },
+    });
+    const input = {
+      workspaceId: 'T_TEST', channelId: 'C_SOURCE', actorId: 'U_MEMBER',
+      botUserId: 'U_BOT', observedAt: 100,
+    };
+    const decision = await resolveMemoryScope(input, { slack: liveSlack, state });
+    assert.equal(decision.enabled, true);
+    if (!decision.enabled) return;
+    assert.equal(directoryCalls, 1);
+    assert.equal(await validateMemoryScopeLease(input, decision, liveSlack), true);
+    assert.equal(directoryCalls, 1);
   } finally {
     state.close();
   }
@@ -226,6 +291,18 @@ test('unsupported sharing and ineligible actors disable memory without blocking 
 test('mutation membership is re-proven and page-bound failures deny the write', async () => {
   assert.equal(
     await verifyMemoryMutationMembership('C_SOURCE', 'U_MEMBER', slack()),
+    true,
+  );
+  assert.equal(
+    await verifyMemoryMutationMembership(
+      'C_SOURCE',
+      'U_MEMBER',
+      slack({
+        async members() {
+          return { ok: true, ids: ['U_MEMBER'], incomplete: true };
+        },
+      }),
+    ),
     true,
   );
   assert.equal(

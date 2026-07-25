@@ -14,6 +14,7 @@ const scope: EnabledMemoryScope = {
   writeStoreId: 'store_public_T_TEST',
   sourceChannelId: 'C_SOURCE',
   displayName: 'product',
+  audienceMemberIds: ['U_MEMBER'],
   visibilityBarrierAt: null,
   transitionVersion: 1,
 };
@@ -209,6 +210,19 @@ test('idempotency replays reject different content and do not spend another rate
       /different memory content/i,
     );
     assert.equal((await state.getMutationCounts('T_TEST', 'C_SOURCE', 'U_MEMBER')).actor, 1);
+
+    const symbols = await memory.remember({
+      scope, workspaceId: 'T_TEST', actorId: 'U_MEMBER', eventId: 'E2', messageTs: '2',
+      name: '重要', description: 'Stable symbol fallback.', type: 'fact', body: 'Same body.',
+      idempotencyKey: 'memory:slack:T_TEST:E2:0',
+    });
+    const symbolReplay = await memory.remember({
+      scope, workspaceId: 'T_TEST', actorId: 'U_MEMBER', eventId: 'E2', messageTs: '2',
+      name: '重要', description: 'Stable symbol fallback.', type: 'fact', body: 'Same body.',
+      idempotencyKey: 'memory:slack:T_TEST:E2:0',
+    });
+    assert.equal(symbolReplay.entry.entryId, symbols.entry.entryId);
+    assert.equal(symbolReplay.entry.slug, symbols.entry.slug);
   } finally {
     state.close();
   }
@@ -258,6 +272,13 @@ test('merge is atomic on a stale source version and supersedes sources on succes
     assert.equal(merged.entry.slug, 'combined-fact');
     assert.deepEqual((await memory.list({ scope })).map((entry) => entry.slug), ['combined-fact']);
     assert.equal((await state.getEntry(first.entry.entryId))?.supersedingEntryId, merged.entry.entryId);
+    const replay = await memory.merge({
+      scope, workspaceId: 'T_TEST', actorId: 'U_MEMBER', eventId: 'E4',
+      targets: [{ target: first.entry.slug }, { target: second.entry.slug }],
+      name: 'Combined fact', description: 'Combined.', type: 'fact', body: 'Alpha and beta.',
+      idempotencyKey: 'memory:slack:T_TEST:E4:0',
+    });
+    assert.equal(replay.entry.entryId, merged.entry.entryId);
   } finally {
     state.close();
   }
@@ -341,6 +362,87 @@ test('a private scope can forget but cannot update its source channel retained p
       idempotencyKey: 'memory:slack:T_TEST:E3:0',
     });
     assert.equal(forgotten.entry.status, 'forgotten');
+  } finally {
+    state.close();
+  }
+});
+
+test('forget-confirm replay survives a consumed challenge and retained public reads', async () => {
+  const state = new SqliteMemoryStateStore(':memory:', () => 1_000);
+  try {
+    await state.ensurePublicStore('T_TEST');
+    await state.ensurePrivateStore('T_TEST', 'C_SOURCE', 1);
+    const memory = service(state);
+    const created = await memory.remember({
+      scope, workspaceId: 'T_TEST', actorId: 'U_MEMBER', eventId: 'E1', messageTs: '1',
+      name: 'Retained public', description: 'Before conversion.', type: 'fact', body: 'Public body.',
+      idempotencyKey: 'memory:slack:T_TEST:E1:0',
+    });
+    const privateScope: EnabledMemoryScope = {
+      ...scope,
+      privacy: 'private',
+      workspaceRead: true,
+      reads: [
+        { storeId: 'store_private_T_TEST_C_SOURCE_1', sourceChannelId: null },
+        { storeId: 'store_public_T_TEST', sourceChannelId: null },
+      ],
+      writeStoreId: 'store_private_T_TEST_C_SOURCE_1',
+    };
+    const challenge = await memory.requestForget({
+      scope: privateScope,
+      actorId: 'U_MEMBER',
+      target: `public/${created.entry.slug}`,
+      expectedVersion: 1,
+    });
+    const input = {
+      scope: privateScope,
+      actorId: 'U_MEMBER',
+      eventId: 'E2',
+      confirmationToken: challenge.token,
+      idempotencyKey: 'memory:slack:T_TEST:E2:0',
+    };
+    const first = await memory.confirmForget(input);
+    const replay = await memory.confirmForget(input);
+    assert.equal(first.entry.status, 'forgotten');
+    assert.equal(replay.entry.entryId, first.entry.entryId);
+    assert.equal(replay.entry.version, first.entry.version);
+  } finally {
+    state.close();
+  }
+});
+
+test('private writable entries win unqualified slug collisions with retained public memory', async () => {
+  const state = new SqliteMemoryStateStore(':memory:', () => 1_000);
+  try {
+    await state.ensurePublicStore('T_TEST');
+    await state.ensurePrivateStore('T_TEST', 'C_SOURCE', 1);
+    const memory = service(state);
+    const publicEntry = await memory.remember({
+      scope, workspaceId: 'T_TEST', actorId: 'U_MEMBER', eventId: 'E1', messageTs: '1',
+      name: 'Same name', description: 'Public.', type: 'fact', body: 'Public body.',
+      idempotencyKey: 'memory:slack:T_TEST:E1:0',
+    });
+    const privateScope: EnabledMemoryScope = {
+      ...scope,
+      privacy: 'private',
+      reads: [
+        { storeId: 'store_private_T_TEST_C_SOURCE_1', sourceChannelId: null },
+        { storeId: 'store_public_T_TEST', sourceChannelId: 'C_SOURCE' },
+      ],
+      writeStoreId: 'store_private_T_TEST_C_SOURCE_1',
+    };
+    const privateEntry = await memory.remember({
+      scope: privateScope, workspaceId: 'T_TEST', actorId: 'U_MEMBER', eventId: 'E2', messageTs: '2',
+      name: 'Same name', description: 'Private.', type: 'fact', body: 'Private body.',
+      idempotencyKey: 'memory:slack:T_TEST:E2:0',
+    });
+    const updated = await memory.update({
+      scope: privateScope, actorId: 'U_MEMBER', eventId: 'E3', target: 'same-name',
+      expectedVersion: 1, description: 'Private updated.', type: 'fact', body: 'Private updated.',
+      idempotencyKey: 'memory:slack:T_TEST:E3:0',
+    });
+    assert.equal(updated.entry.entryId, privateEntry.entry.entryId);
+    assert.equal((await state.getEntry(publicEntry.entry.entryId))?.version, 1);
   } finally {
     state.close();
   }

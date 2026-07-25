@@ -1,5 +1,9 @@
 import type { EnabledMemoryScope } from './scope.ts';
-import type { MemorySelection } from './selector.ts';
+import {
+  MEMORY_PROMPT_BYTES_LIMIT,
+  memorySelectionFingerprint,
+  type MemorySelection,
+} from './selector.ts';
 
 export const MEMORY_PROMPT_START = '--- BEGIN CHICKPEA ADVISORY MEMORY v1 ---';
 export const MEMORY_PROMPT_END = '--- END CHICKPEA ADVISORY MEMORY v1 ---';
@@ -18,7 +22,9 @@ export function serializeMemoryPrompt(
     entries: selection.entries.map(({ entry, bodyExcerpt, bodyTruncated, stale }) => ({
       entryId: entry.entryId,
       version: entry.version,
-      visibility: scope.privacy,
+      visibility: entry.storeId === scope.writeStoreId && scope.privacy === 'private'
+        ? 'private'
+        : 'public',
       sourceChannelId: entry.sourceChannelId,
       slug: entry.slug,
       type: entry.type,
@@ -30,6 +36,29 @@ export function serializeMemoryPrompt(
     })),
   };
   return `${MEMORY_PROMPT_START}\n${MEMORY_PROMPT_DIRECTIVE}\n${JSON.stringify(payload)}\n${MEMORY_PROMPT_END}`;
+}
+
+export function fitMemorySelectionToPrompt(
+  scope: EnabledMemoryScope,
+  selection: MemorySelection,
+  maximumBytes = MEMORY_PROMPT_BYTES_LIMIT,
+): MemorySelection {
+  let entries = [...selection.entries];
+  while (entries.length > 0) {
+    const candidate = {
+      entries,
+      fingerprint: memorySelectionFingerprint(entries),
+      truncated: selection.truncated || entries.length < selection.entries.length,
+    };
+    const prompt = serializeMemoryPrompt(scope, candidate);
+    if (prompt && new TextEncoder().encode(prompt).byteLength <= maximumBytes) return candidate;
+    entries = entries.slice(0, -1);
+  }
+  return {
+    entries: [],
+    fingerprint: memorySelectionFingerprint([]),
+    truncated: selection.truncated || selection.entries.length > 0,
+  };
 }
 
 function escapeMemoryDelimiter(value: string): string {
