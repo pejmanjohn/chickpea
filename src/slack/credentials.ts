@@ -508,51 +508,61 @@ async function fetchSlackTruthJson(
   options: SlackTruthFetchOptions = {},
 ): Promise<SlackTruthJsonResult> {
   const timeoutMs = options.timeoutMs ?? SLACK_TRUTH_FETCH_TIMEOUT_MS;
-  const deadline = AbortSignal.timeout(timeoutMs);
-  const responseResult = await settleBeforeDeadline(
-    Promise.resolve().then(() => globalThis.fetch(url, { ...init, signal: deadline })),
-    deadline,
-  );
-  if (responseResult.kind === 'timeout') return slackTruthFailure('slack_request_timeout');
-  if (responseResult.kind === 'error') {
-    return slackTruthFailure(
-      deadline.aborted || isAbortError(responseResult.error)
-        ? 'slack_request_timeout'
-        : 'slack_network_error',
+  const controller = new AbortController();
+  // AbortSignal.timeout() is deliberately unref'ed on Node. A never-resolving
+  // fetch can therefore let an otherwise-idle process exit before the deadline
+  // fires. Own a referenced timer so the timeout is an actual runtime bound on
+  // every supported target, not just while unrelated handles stay alive.
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const deadline = controller.signal;
+  try {
+    const responseResult = await settleBeforeDeadline(
+      Promise.resolve().then(() => globalThis.fetch(url, { ...init, signal: deadline })),
+      deadline,
     );
-  }
+    if (responseResult.kind === 'timeout') return slackTruthFailure('slack_request_timeout');
+    if (responseResult.kind === 'error') {
+      return slackTruthFailure(
+        deadline.aborted || isAbortError(responseResult.error)
+          ? 'slack_request_timeout'
+          : 'slack_network_error',
+      );
+    }
 
-  const response = responseResult.value;
-  const retryAfter = retryAfterMs(response);
-  const bodyResult = await settleBeforeDeadline(
-    Promise.resolve().then(() => response.json()),
-    deadline,
-  );
-  if (bodyResult.kind === 'timeout') {
-    return slackTruthFailure('slack_request_timeout', retryAfter);
-  }
-  if (
-    bodyResult.kind === 'error' ||
-    !bodyResult.value ||
-    typeof bodyResult.value !== 'object' ||
-    Array.isArray(bodyResult.value)
-  ) {
-    return slackTruthFailure('slack_non_json_response', retryAfter);
-  }
-  const body = bodyResult.value as Record<string, unknown>;
-  if (response.status === 429) {
-    return slackTruthFailure(
-      typeof body.error === 'string' ? body.error : 'ratelimited',
-      retryAfter,
+    const response = responseResult.value;
+    const retryAfter = retryAfterMs(response);
+    const bodyResult = await settleBeforeDeadline(
+      Promise.resolve().then(() => response.json()),
+      deadline,
     );
+    if (bodyResult.kind === 'timeout') {
+      return slackTruthFailure('slack_request_timeout', retryAfter);
+    }
+    if (
+      bodyResult.kind === 'error' ||
+      !bodyResult.value ||
+      typeof bodyResult.value !== 'object' ||
+      Array.isArray(bodyResult.value)
+    ) {
+      return slackTruthFailure('slack_non_json_response', retryAfter);
+    }
+    const body = bodyResult.value as Record<string, unknown>;
+    if (response.status === 429) {
+      return slackTruthFailure(
+        typeof body.error === 'string' ? body.error : 'ratelimited',
+        retryAfter,
+      );
+    }
+    if (!response.ok) {
+      return slackTruthFailure(
+        typeof body.error === 'string' ? body.error : `slack_http_${response.status}`,
+        retryAfter,
+      );
+    }
+    return { ok: true, body, error: undefined, retryAfterMs: retryAfter };
+  } finally {
+    clearTimeout(timer);
   }
-  if (!response.ok) {
-    return slackTruthFailure(
-      typeof body.error === 'string' ? body.error : `slack_http_${response.status}`,
-      retryAfter,
-    );
-  }
-  return { ok: true, body, error: undefined, retryAfterMs: retryAfter };
 }
 
 function settleBeforeDeadline<T>(
