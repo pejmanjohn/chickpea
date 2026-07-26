@@ -2881,12 +2881,8 @@ test('the searchable Connections gallery is immediate, renders brand logos, and 
   assert.match(recommended, /data-action="conn-oauth-start"[^>]*>[\s\S]*?<span>Sign into Linear<\/span>/);
   assert.doesNotMatch(recommended, /data-action="conn-field-bearer"/);
   assert.doesNotMatch(recommended, /data-action="conn-field-url"/);
-  const docsAnchor = recommended.match(
-    /<a class="hint-link" href="https:\/\/linear\.app\/docs\/mcp"[^>]*>Where do I find this\?<\/a>/,
-  )?.[0];
-  assert.ok(docsAnchor);
-  assert.match(docsAnchor, /target="_blank"/);
-  assert.match(docsAnchor, /rel="[^"]*noopener[^"]*"/);
+  assert.doesNotMatch(recommended, /Where do I find this\?/);
+  assert.doesNotMatch(recommended, /href="https:\/\/linear\.app\/docs\/mcp"/);
 
   click({ target: actionTarget({ 'data-action': 'conn-view', 'data-view': 'advanced' }) });
   assert.match(
@@ -3075,6 +3071,12 @@ test('the Sentry preset keeps its header auth and applies the same idempotent pr
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
   click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'sentry' }) });
+  const recommended = harness.app.innerHTML;
+  assert.match(recommended, /Sentry → Settings → Account → User Auth Tokens/);
+  assert.match(
+    recommended,
+    /<a class="hint-link" href="https:\/\/sentry\.io\/settings\/account\/api\/auth-tokens\/"[^>]*>Where do I find this\?<\/a>/,
+  );
   click({ target: actionTarget({ 'data-action': 'conn-view', 'data-view': 'advanced' }) });
 
   assert.match(harness.app.innerHTML, /<option value="none" selected>None<\/option>/);
@@ -3216,6 +3218,8 @@ test('the Notion preset saves OAuth policy before starting authorization and nev
   assert.doesNotMatch(harness.app.innerHTML, /When you continue|Save and connect Notion/);
   assert.doesNotMatch(harness.app.innerHTML, />Add connection<\/button>/);
   assert.equal((harness.app.innerHTML.match(/Sign in to Notion and choose the workspace access Chickpea should receive\./g) ?? []).length, 1);
+  assert.doesNotMatch(harness.app.innerHTML, /Where do I find this\?/);
+  assert.doesNotMatch(harness.app.innerHTML, /href="https:\/\/developers\.notion\.com\/guides\/mcp\/build-mcp-client"/);
   assert.doesNotMatch(harness.app.innerHTML, /data-action="conn-field-bearer"/);
   assert.match(harness.app.innerHTML, /data-action="conn-test" disabled/);
 
@@ -3506,6 +3510,8 @@ test('a connected OAuth account offers confirmed disconnect and clears its store
 
   assert.match(harness.app.innerHTML, /data-action="conn-oauth-start">Reconnect<\/button>/);
   assert.match(harness.app.innerHTML, /data-action="conn-oauth-disconnect">Disconnect<\/button>/);
+  assert.doesNotMatch(harness.app.innerHTML, /Where do I find this\?/);
+  assert.doesNotMatch(harness.app.innerHTML, /href="https:\/\/developers\.notion\.com\/guides\/mcp\/build-mcp-client"/);
 
   click({ target: actionTarget({ 'data-action': 'conn-oauth-disconnect' }) });
   assert.match(harness.app.innerHTML, /Disconnect Notion\?/);

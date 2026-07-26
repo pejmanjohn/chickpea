@@ -3007,7 +3007,7 @@ details[open].advanced summary::before {
       }
     }
     var docsHtml = preset.auth.kind !== "oauth" && preset.tokenDocsHint ? '<p class="hint">' + esc(preset.tokenDocsHint) + '</p>' : "";
-    if (preset.tokenDocsUrl) {
+    if (preset.auth.kind !== "oauth" && preset.tokenDocsUrl) {
       docsHtml += '<a class="hint-link" href="' + esc(preset.tokenDocsUrl) + '" target="_blank" rel="noopener noreferrer">Where do I find this?</a>';
     }
     var notesHtml = preset.notes ? '<p class="hint">' + esc(preset.notes) + '</p>' : "";
