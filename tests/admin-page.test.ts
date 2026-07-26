@@ -2436,6 +2436,37 @@ test('a saved PAT Airtable connection stays Advanced after the catalog upgrades 
   assert.doesNotMatch(editor, /data-action="conn-view"/);
 });
 
+test('a saved API-key PostHog connection stays Advanced after the catalog upgrades to OAuth', async () => {
+  const harness = runAdminPageHarness({
+    agents: [
+      connectionsAgent({
+        mcpServers: [
+          mcpConnectionFixture({
+            id: 'posthog',
+            displayName: 'PostHog',
+            url: 'https://mcp.posthog.com/mcp',
+            presetId: 'posthog',
+          }),
+        ],
+      }),
+    ],
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-edit', 'data-index': '0' }) });
+
+  const editor = harness.app.innerHTML;
+  assert.match(editor, /value="https:\/\/mcp\.posthog\.com\/mcp"[^>]*data-action="conn-field-url"/);
+  assert.match(editor, /<option value="bearer" selected>Bearer token<\/option>/);
+  assert.match(editor, /placeholder="•••• stored"[^>]*data-action="conn-field-bearer"/);
+  assert.doesNotMatch(editor, /data-action="conn-oauth-start"/);
+  assert.doesNotMatch(editor, /data-action="conn-view"/);
+});
+
 test('a saved read-only Linear OAuth connection stays Advanced after the catalog URL gains write access', async () => {
   const harness = runAdminPageHarness({
     agents: [
@@ -3287,6 +3318,66 @@ test('the Airtable preset saves OAuth policy before requesting its documented sc
   ]);
   assert.deepEqual(harness.assignedUrls, [
     'https://airtable.example/authorize?state=opaque-state',
+  ]);
+});
+
+test('the PostHog preset saves OAuth policy before starting provider-managed authorization', async () => {
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    deferAgentPatch: true,
+    oauthStartResult: {
+      authorizationUrl: 'https://oauth.posthog.com/oauth/authorize/?state=opaque-state',
+    },
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'posthog' }) });
+
+  const editor = harness.app.innerHTML;
+  assert.match(
+    editor,
+    /Sign in to PostHog and choose the organization and project Chickpea should access\.<\/p>/,
+  );
+  assert.match(editor, /data-action="conn-oauth-start"[^>]*>[\s\S]*?<span>Sign into PostHog<\/span>/);
+  assert.doesNotMatch(editor, /data-action="conn-field-bearer"/);
+  assert.doesNotMatch(editor, /Where do I find this\?/);
+
+  click({ target: actionTarget({ 'data-action': 'conn-oauth-start' }) });
+  await flushAsync();
+
+  assert.equal(harness.agentPatchBodies.length, 1);
+  assert.deepEqual(harness.oauthStartPosts, []);
+  assert.deepEqual(harness.assignedUrls, []);
+
+  harness.resolveAgentPatch();
+  await flushAsync();
+
+  const servers = harness.agentPatchBodies[0]?.body.mcpServers as Array<Record<string, unknown>>;
+  assert.deepEqual(servers, [
+    {
+      id: 'posthog',
+      displayName: 'PostHog',
+      url: 'https://mcp.posthog.com/mcp',
+      transport: 'streamable-http',
+      authMode: 'oauth',
+      headerNames: [],
+      enabled: true,
+      lifecycleStatus: 'pending',
+      statusText: '',
+      discoveredTools: [],
+      allowedTools: [],
+      presetId: 'posthog',
+    },
+  ]);
+  assert.deepEqual(harness.oauthStartPosts, [
+    { agentId: 'agent_conn', connectionId: 'posthog', body: {} },
+  ]);
+  assert.deepEqual(harness.assignedUrls, [
+    'https://oauth.posthog.com/oauth/authorize/?state=opaque-state',
   ]);
 });
 

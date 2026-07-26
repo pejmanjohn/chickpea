@@ -156,10 +156,12 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
     accent: '#F54E00',
     url: 'https://mcp.posthog.com/mcp',
     transport: 'streamable-http',
-    auth: { kind: 'bearer', placeholder: 'phx_…' },
-    tokenDocsUrl: 'https://us.posthog.com/settings/user-api-keys',
-    tokenDocsHint: 'PostHog → Settings → Personal API keys',
-    notes: 'EU cloud: use https://mcp-eu.posthog.com/mcp (Advanced).',
+    auth: { kind: 'oauth' },
+    tokenDocsUrl: 'https://posthog.com/docs/model-context-protocol',
+    tokenDocsHint:
+      'Sign in to PostHog and choose the organization and project Chickpea should access.',
+    notes:
+      'PostHog OAuth routes to the correct US or EU region and provides the read and write tools allowed by your account.',
   },
   {
     id: 'airtable',

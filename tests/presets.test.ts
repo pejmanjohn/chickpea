@@ -157,6 +157,23 @@ test('the Airtable MCP preset requests the documented read-write OAuth scopes', 
   });
 });
 
+test('the PostHog MCP preset uses the provider-recommended OAuth flow', () => {
+  assert.deepEqual(getConnectorPreset('posthog'), {
+    id: 'posthog',
+    name: 'PostHog',
+    category: 'data',
+    accent: '#F54E00',
+    url: 'https://mcp.posthog.com/mcp',
+    transport: 'streamable-http',
+    auth: { kind: 'oauth' },
+    tokenDocsUrl: 'https://posthog.com/docs/model-context-protocol',
+    tokenDocsHint:
+      'Sign in to PostHog and choose the organization and project Chickpea should access.',
+    notes:
+      'PostHog OAuth routes to the correct US or EU region and provides the read and write tools allowed by your account.',
+  });
+});
+
 test('the Asana and Zendesk API presets keep their locked shapes', () => {
   assert.deepEqual(getConnectorPreset('asana'), {
     id: 'asana',
