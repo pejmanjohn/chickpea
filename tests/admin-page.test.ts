@@ -4128,7 +4128,7 @@ test('Settings explains the Cloudflare-only coding tier and saves install-level 
   ]);
 });
 
-test('Settings presents channel memory as always on without an opt-out', async () => {
+test('Settings omits the redundant always-on channel memory status block', async () => {
   const harness = runAdminPageHarness();
   await flushAsync();
   const click = harness.listeners.click;
@@ -4137,9 +4137,8 @@ test('Settings presents channel memory as always on without an opt-out', async (
   click({ target: actionTarget({ 'data-action': 'open-settings' }) });
   await flushAsync();
 
-  assert.match(harness.app.innerHTML, /<h2 class="section-title">Channel memory<\/h2>/);
-  assert.match(harness.app.innerHTML, /Always on/);
-  assert.match(harness.app.innerHTML, /Explicit channel memory is available wherever the live Slack scope is eligible/);
+  assert.doesNotMatch(harness.app.innerHTML, /<h2 class="section-title">Channel memory<\/h2>/);
+  assert.doesNotMatch(harness.app.innerHTML, /Explicit channel memory is available wherever the live Slack scope is eligible/);
   assert.doesNotMatch(harness.app.innerHTML, /data-action="memory-enabled"/);
   assert.doesNotMatch(harness.app.innerHTML, /data-action="memory-save"/);
   assert.doesNotMatch(harness.app.innerHTML, /SLACK_TAG_MEMORY_ENABLED/);

@@ -3915,15 +3915,6 @@ details[open].advanced summary::before {
       '<div><button type="button" class="btn btn-primary" data-action="sandbox-save"' + disabled + '>' + (state.sandboxSaving ? "Saving&hellip;" : "Save") + '</button></div></section>';
   }
 
-  function memorySectionHtml() {
-    var head = '<div class="section-head"><div><h2 class="section-title">Channel memory</h2>' +
-      '<p class="hint">Lets channel members explicitly save, update, and forget shared guidance. Memory is advisory and never overrides live permissions or system settings.</p></div>' +
-      '<span class="badge badge-on"><span class="dot"></span>Always on</span></div>';
-    return '<section class="section" id="memory-settings">' + head +
-      '<div class="bundle-row"><div class="danger-copy"><span class="field-label">Always available</span>' +
-      '<span class="hint">Explicit channel memory is available wherever the live Slack scope is eligible. Direct messages and automatic background memory creation remain intentionally unavailable in this release.</span></div></div></section>';
-  }
-
   function settingsMainHtml() {
     var head = '<div style="display:flex; flex-direction:column; gap:6px;">' +
       '<h1 class="page-title">Settings</h1>' +
@@ -3944,7 +3935,7 @@ details[open].advanced summary::before {
         rows +
         '<p class="hint">More providers appear here as this install registers them in <span class="mono" style="color:var(--text-2);">src/app.ts</span>.</p></section>';
     }
-    return head + githubSectionHtml() + memorySectionHtml() + sandboxSectionHtml() + providerSection + egressSectionHtml();
+    return head + githubSectionHtml() + sandboxSectionHtml() + providerSection + egressSectionHtml();
   }
 
   function egressSectionHtml() {
