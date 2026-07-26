@@ -52,12 +52,22 @@ The first DM answers with **zero model keys** on a fresh Cloudflare deploy: the 
 
 - A single self-contained admin page, gated by `TAG_ADMIN_TOKEN` — `Authorization: Bearer` for API callers or a POST-only token form that sets an HttpOnly session cookie.
 - Reusable profiles: name, model, instructions, enabled skills, remote MCP connections with per-tool approvals, and an enable toggle. Disabling a profile blocks DMs and new channel threads; existing channel threads keep the frozen profile snapshot they started with.
-- GitHub and skills.sh imports support public repositories only and copy `SKILL.md` instructions without authentication. Scripts and assets are not copied or executed; repository scans inspect at most 40 skills, so use `owner/repo@skill` to select one in a larger repository. Private repository access is governed separately by the GitHub App integration and profile grants.
+- Skills can be imported by pasting any public `owner/repo`, GitHub URL, or skills.sh link. When the GitHub App is connected, the same field can also resolve App-accessible private repositories, and **Browse GitHub** can fill it from the connected installations without limiting public paste to repositories you own.
 - Per-channel assignments: add a channel by workspace + channel ID, enable/disable it, swap the attached profile, or detach it. Per-channel instructions append to the profile's instructions in that channel only.
 - Model pinning: a combobox showing concrete models grouped by the providers this install actually has configured. Any free-text `provider/model` specifier is accepted; unknown providers get a warning.
 - A read-only Access summary showing exactly what a new thread will use — profile, model, provider, enabled skills, approved MCP connections and tools, the layered instruction stack, and a config snapshot hash — resolved by the same code path the Slack agent uses.
 - The first-run Slack connection wizard described above, with live `auth.test` validation and per-credential provenance (environment / stored / missing).
 - Every edit applies to new threads without a restart.
+
+### Skills
+
+Open a profile's Skills tab and choose **Import from URL**. The source field is always free-form: paste another person's public repository, a GitHub URL, or a skills.sh page, then choose **Find skills**. Use `owner/repo@skill` to select one skill in a large repository; scans inspect at most 40 skill directories.
+
+If this deployment's GitHub App is connected, **Browse GitHub** searches its installations and includes private repositories. Choosing a result only fills the same editable `owner/repo` field. Pasting an exact private source works too when the App can access it, including when bounded discovery does not show it. Chickpea first tries the anonymous public path, then verifies private access against that exact repository and uses a short-lived, one-repository App token with Contents read permission. Personal access tokens and browser-supplied installation IDs are not used.
+
+An import is a one-time snapshot, not a live link: the selected `SKILL.md` name, description, and instructions are copied into the profile draft, replace a same-named skill, and persist only when you save the profile. Those instructions may be sent to the profile's configured model when the skill is used. Scripts, assets, plugin manifests, and other repository files are not copied or executed.
+
+Skill-source access is separate from runtime repository access. Importing from a repository does not add it to the profile's Repositories tab, and removing a runtime repository grant does not delete an already imported skill snapshot. Add a repository grant separately only when the profile itself should read or change that repository during a turn.
 
 ### Repositories
 
