@@ -324,10 +324,12 @@ test('buildEgressPlan keeps connector scopes off the open internet and fails clo
   assert.equal(scope.network.dangerouslyAllowFullInternetAccess, undefined);
   assert.deepEqual(scope.network.allowedMethods, ['GET', 'DELETE']);
 
-  // Fallback (only if just-bash stops exposing secureFetch): every prefix but
-  // capped at the baseline methods, so connector writes are never global.
+  // Fallback (only if just-bash stops exposing secureFetch): the flat network
+  // cannot represent this connector's narrower methods, so its credentialed
+  // prefix is omitted rather than widened to baseline POST.
   assert.deepEqual(fallbackNetwork.allowedMethods, ['GET', 'HEAD', 'POST']);
   assert.equal(fallbackNetwork.dangerouslyAllowFullInternetAccess, true);
+  assert.deepEqual(fallbackNetwork.allowedUrlPrefixes ?? [], []);
 });
 
 test('createScopedFetch rejects a method the matched scope does not allow', async () => {
@@ -494,8 +496,9 @@ test('guarded scopes are excluded from the fallback network allow-list', async (
         // not contribute prefix+transform entries a flat allow-list cannot guard.
         assert.ok(!fallbackUrls.some((url) => url.includes('/repos/')), String(fallbackUrls));
         assert.ok(!fallbackUrls.some((url) => url.includes('/search/code')), String(fallbackUrls));
-        // The unguarded github.com git scope stays available in fallback mode.
-        assert.ok(fallbackUrls.includes('https://github.com/Acme/Alpha'), String(fallbackUrls));
+        // The unguarded Git scope also drops because its method set does not
+        // include the fallback's global HEAD baseline.
+        assert.ok(!fallbackUrls.includes('https://github.com/Acme/Alpha'), String(fallbackUrls));
       } finally {
         globalThis.fetch = previousFetch;
       }

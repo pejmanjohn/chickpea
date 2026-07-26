@@ -29,6 +29,7 @@ interface ApiPresetLane {
     valuePrefix?: string;
     methods: string[];
     placeholder: string;
+    oauth?: { provider: 'google' };
   };
 }
 
@@ -114,35 +115,19 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
     notes: 'Use a restricted key (rk_), not a full secret key.',
   },
   {
-    id: 'cloudflare-docs',
-    name: 'Cloudflare Docs',
+    id: 'cloudflare-api',
+    name: 'Cloudflare API',
     category: 'dev',
     accent: '#F38020',
-    url: 'https://docs.mcp.cloudflare.com/mcp',
+    url: 'https://mcp.cloudflare.com/mcp',
     transport: 'streamable-http',
-    auth: { kind: 'none' },
-  },
-  {
-    id: 'cloudflare-bindings',
-    name: 'Cloudflare Bindings',
-    category: 'dev',
-    accent: '#F38020',
-    url: 'https://bindings.mcp.cloudflare.com/mcp',
-    transport: 'streamable-http',
-    auth: { kind: 'bearer', placeholder: 'Cloudflare API token' },
-    tokenDocsUrl: 'https://dash.cloudflare.com/profile/api-tokens',
-    tokenDocsHint: 'Cloudflare → My Profile → API Tokens',
-  },
-  {
-    id: 'cloudflare-observability',
-    name: 'Cloudflare Observability',
-    category: 'dev',
-    accent: '#F38020',
-    url: 'https://observability.mcp.cloudflare.com/mcp',
-    transport: 'streamable-http',
-    auth: { kind: 'bearer', placeholder: 'Cloudflare API token' },
-    tokenDocsUrl: 'https://dash.cloudflare.com/profile/api-tokens',
-    tokenDocsHint: 'Cloudflare → My Profile → API Tokens',
+    auth: { kind: 'oauth' },
+    tokenDocsUrl:
+      'https://developers.cloudflare.com/agents/model-context-protocol/cloudflare/servers-for-cloudflare/',
+    tokenDocsHint:
+      'Sign in to Cloudflare and choose the account permissions Chickpea should receive.',
+    notes:
+      'Cloudflare Code Mode covers the entire API through three token-efficient tools: docs, search, and execute. Granted actions remain limited by the permissions you approve.',
   },
   {
     id: 'supabase',
@@ -321,6 +306,26 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
     tokenDocsUrl: 'https://lunarcrush.com/developers/api/authentication',
     tokenDocsHint: 'LunarCrush → Developers → API authentication',
     notes: 'API key requires a LunarCrush subscription.',
+  },
+  {
+    id: 'google-workspace',
+    name: 'Google Workspace',
+    category: 'docs',
+    accent: '#4285F4',
+    api: {
+      hosts: ['gmail.googleapis.com', 'www.googleapis.com'],
+      pathPrefixes: ['/gmail/v1/users/me', '/calendar/v3', '/drive/v3'],
+      headerName: 'Authorization',
+      valuePrefix: 'Bearer ',
+      methods: ['GET', 'HEAD'],
+      placeholder: '',
+      oauth: { provider: 'google' },
+    },
+    tokenDocsUrl: 'https://console.cloud.google.com/apis/credentials',
+    tokenDocsHint:
+      'Create a Web application OAuth client in your own Google Cloud project, then paste its client ID and secret here.',
+    notes:
+      'Use a dedicated Google account when possible. Chickpea stores the OAuth client and tokens outside the profile and grants only the services selected during setup.',
   },
   {
     id: 'asana',

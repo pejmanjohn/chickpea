@@ -226,6 +226,8 @@ function runAdminPageHarness(
     mcpTestResult?: { ok: true; tools: Array<{ name: string; title?: string; description?: string }> } | { ok: false; code: string; message: string };
     oauthStartResult?: { authorizationUrl: string };
     oauthStartError?: { status: number; error: string; message?: string };
+    apiOAuthStartResult?: { authorizationUrl: string };
+    apiOAuthStartError?: { status: number; error: string; message?: string };
     deferAgentPatch?: boolean;
     initialSearch?: string;
   } = {},
@@ -262,6 +264,8 @@ function runAdminPageHarness(
   skillResolvePosts: Array<{ source: string }>;
   mcpTestPosts: Array<Record<string, unknown>>;
   oauthStartPosts: Array<{ agentId: string; connectionId: string; body: Record<string, unknown> }>;
+  apiOAuthStartPosts: Array<{ agentId: string; connectionId: string; body: Record<string, unknown> }>;
+  apiOAuthClientPuts: Array<{ agentId: string; connectionId: string; body: Record<string, unknown> }>;
   assignedUrls: string[];
   mcpSecretPuts: Array<{ agentId: string; id: string; body: Record<string, unknown> }>;
   mcpSecretDeletes: Array<{ agentId: string; id: string; body: Record<string, unknown> }>;
@@ -347,6 +351,16 @@ function runAdminPageHarness(
     connectionId: string;
     body: Record<string, unknown>;
   }> = [];
+  const apiOAuthStartPosts: Array<{
+    agentId: string;
+    connectionId: string;
+    body: Record<string, unknown>;
+  }> = [];
+  const apiOAuthClientPuts: Array<{
+    agentId: string;
+    connectionId: string;
+    body: Record<string, unknown>;
+  }> = [];
   const assignedUrls: string[] = [];
   const mcpSecretPuts: Array<{ agentId: string; id: string; body: Record<string, unknown> }> = [];
   const mcpSecretDeletes: Array<{ agentId: string; id: string; body: Record<string, unknown> }> = [];
@@ -387,6 +401,8 @@ function runAdminPageHarness(
   const skillResolution = options.skillResolution;
   const oauthStartResult = options.oauthStartResult;
   const oauthStartError = options.oauthStartError;
+  const apiOAuthStartResult = options.apiOAuthStartResult;
+  const apiOAuthStartError = options.apiOAuthStartError;
   const deferAgentPatch = options.deferAgentPatch === true;
   let resolveOpsEffective: (() => void) | undefined;
   let resolveAgentPatch: (() => void) | undefined;
@@ -605,6 +621,35 @@ function runAdminPageHarness(
         jsonResponse(
           oauthStartResult ?? {
             authorizationUrl: 'https://auth.notion.example/authorize?state=opaque',
+          },
+        ),
+      );
+    }
+    const apiOAuthClientMatch = path.match(
+      /^\/admin\/api\/agents\/([^/]+)\/api-connections\/oauth\/([^/]+)\/client$/,
+    );
+    if (apiOAuthClientMatch && method === 'PUT') {
+      const agentId = decodeURIComponent(apiOAuthClientMatch[1] as string);
+      const connectionId = decodeURIComponent(apiOAuthClientMatch[2] as string);
+      const body = JSON.parse(options?.body ?? '{}') as Record<string, unknown>;
+      apiOAuthClientPuts.push({ agentId, connectionId, body });
+      return Promise.resolve(jsonResponse({ source: 'stored' }));
+    }
+    const apiOAuthStartMatch = path.match(
+      /^\/admin\/api\/agents\/([^/]+)\/api-connections\/oauth\/([^/]+)\/start$/,
+    );
+    if (apiOAuthStartMatch && method === 'POST') {
+      const agentId = decodeURIComponent(apiOAuthStartMatch[1] as string);
+      const connectionId = decodeURIComponent(apiOAuthStartMatch[2] as string);
+      const body = JSON.parse(options?.body ?? '{}') as Record<string, unknown>;
+      apiOAuthStartPosts.push({ agentId, connectionId, body });
+      if (apiOAuthStartError) {
+        return Promise.resolve(jsonResponse(apiOAuthStartError, apiOAuthStartError.status));
+      }
+      return Promise.resolve(
+        jsonResponse(
+          apiOAuthStartResult ?? {
+            authorizationUrl: 'https://accounts.google.com/o/oauth2/v2/auth?state=opaque',
           },
         ),
       );
@@ -1022,6 +1067,8 @@ function runAdminPageHarness(
     skillResolvePosts,
     mcpTestPosts,
     oauthStartPosts,
+    apiOAuthStartPosts,
+    apiOAuthClientPuts,
     assignedUrls,
     mcpSecretPuts,
     mcpSecretDeletes,
@@ -2332,9 +2379,9 @@ test('a connected preset drops out of the Available gallery until it is removed'
   // Linear and Asana are already connected, so the gallery no longer offers them...
   assert.doesNotMatch(panel, /data-action="conn-preset" data-preset="linear"/);
   assert.doesNotMatch(panel, /data-action="conn-preset" data-preset="asana"/);
-  // ...other presets remain, and the Available count dropped from 24 to 22.
+  // ...other presets remain, and the Available count dropped from 23 to 21.
   assert.match(panel, /data-action="conn-preset" data-preset="airtable"/);
-  assert.match(panel, /<span class="gallery-head-count">22<\/span>/);
+  assert.match(panel, /<span class="gallery-head-count">21<\/span>/);
 });
 
 test('saved MCP and API connections share one lane-badged list with matching inline editors', async () => {
@@ -2926,9 +2973,9 @@ test('the searchable Connections gallery is immediate, renders brand logos, and 
   assert.match(gallery, /data-action="conn-gallery-search"/);
   assert.equal(
     (gallery.match(/data-action="conn-preset" data-preset="[^"]+">Connect<\/button>/g) ?? []).length,
-    24,
+    23,
   );
-  assert.match(gallery, /<span>Available<\/span><span class="gallery-head-count">24<\/span>/);
+  assert.match(gallery, /<span>Available<\/span><span class="gallery-head-count">23<\/span>/);
   assert.doesNotMatch(gallery, /data-preset="github"/);
   assert.doesNotMatch(gallery, /data-preset="context7"/);
   assert.doesNotMatch(gallery, /data-preset="deepwiki"/);
@@ -2937,13 +2984,13 @@ test('the searchable Connections gallery is immediate, renders brand logos, and 
 
   const ahrefsIndex = gallery.indexOf('data-preset="ahrefs"');
   const airtableIndex = gallery.indexOf('data-preset="airtable"');
-  const cloudflareBindingsIndex = gallery.indexOf('data-preset="cloudflare-bindings"');
+  const cloudflareApiIndex = gallery.indexOf('data-preset="cloudflare-api"');
   const stripeIndex = gallery.indexOf('data-preset="stripe"');
   assert.ok(
     ahrefsIndex >= 0 &&
       ahrefsIndex < airtableIndex &&
-      airtableIndex < cloudflareBindingsIndex &&
-      cloudflareBindingsIndex < stripeIndex,
+      airtableIndex < cloudflareApiIndex &&
+      cloudflareApiIndex < stripeIndex,
   );
 
   const ahrefsRow = gallery.match(
@@ -3121,6 +3168,130 @@ test('the Asana gallery preset opens a compact Recommended API editor', async ()
   assert.doesNotMatch(recommended, /data-action="apiconn-method-toggle"/);
 });
 
+test('the Google Workspace preset saves exact scope-derived policy and its BYO OAuth client separately', async () => {
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    deferAgentPatch: true,
+    apiOAuthStartResult: {
+      authorizationUrl: 'https://accounts.google.com/o/oauth2/v2/auth?state=opaque-state',
+    },
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  assert.ok(click && input);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'google-workspace' }) });
+
+  assert.match(harness.app.innerHTML, /Use a dedicated Google account for Chickpea when possible/);
+  assert.match(harness.app.innerHTML, /Authorized redirect URI/);
+  assert.match(harness.app.innerHTML, /http:\/\/localhost\/oauth\/api\/callback/);
+  assert.match(harness.app.innerHTML, />Workspace internal<\/button>/);
+  assert.doesNotMatch(harness.app.innerHTML, /Where do I find this\?/);
+
+  input({ target: inputTarget({ 'data-action': 'apiconn-google-client-id' }, 'google-client-id') });
+  input({ target: inputTarget({ 'data-action': 'apiconn-google-client-secret' }, 'google-client-secret') });
+  click({ target: actionTarget({ 'data-action': 'apiconn-google-access', 'data-service': 'calendar', 'data-access': 'off' }) });
+  click({ target: actionTarget({ 'data-action': 'apiconn-google-access', 'data-service': 'gmail', 'data-access': 'write' }) });
+  click({ target: actionTarget({ 'data-action': 'apiconn-oauth-start' }) });
+  await flushAsync();
+
+  assert.equal(harness.agentPatchBodies.length, 1);
+  assert.deepEqual(harness.apiOAuthClientPuts, []);
+  assert.deepEqual(harness.apiOAuthStartPosts, []);
+  harness.resolveAgentPatch();
+  await flushAsync();
+
+  const connections = harness.agentPatchBodies[0]?.body.apiConnections as Array<Record<string, unknown>>;
+  assert.deepEqual(connections, [
+    {
+      id: 'google-workspace',
+      displayName: 'Google Workspace',
+      allowedHosts: ['gmail.googleapis.com', 'www.googleapis.com'],
+      pathPrefixes: ['/gmail/v1/users/me', '/drive/v3'],
+      headerName: 'Authorization',
+      allowedMethods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'],
+      enabled: true,
+      headerValuePrefix: 'Bearer ',
+      presetId: 'google-workspace',
+      authMode: 'oauth',
+      oauthProvider: 'google',
+      oauthScopes: [
+        'https://www.googleapis.com/auth/gmail.modify',
+        'https://www.googleapis.com/auth/drive.readonly',
+      ],
+      oauthAppType: 'workspace-internal',
+      lifecycleStatus: 'pending',
+      statusText: 'Not connected',
+    },
+  ]);
+  assert.doesNotMatch(JSON.stringify(harness.agentPatchBodies[0]?.body), /google-client-(id|secret)/);
+  assert.deepEqual(harness.apiOAuthClientPuts, [
+    {
+      agentId: 'agent_conn',
+      connectionId: 'google-workspace',
+      body: { provider: 'google', clientId: 'google-client-id', clientSecret: 'google-client-secret' },
+    },
+  ]);
+  assert.deepEqual(harness.apiOAuthStartPosts, [
+    { agentId: 'agent_conn', connectionId: 'google-workspace', body: {} },
+  ]);
+  assert.deepEqual(harness.assignedUrls, [
+    'https://accounts.google.com/o/oauth2/v2/auth?state=opaque-state',
+  ]);
+});
+
+test('a Google OAuth callback return opens a connected account state without MCP tool copy', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/profiles/agent_conn',
+    initialSearch: '?oauth=connected&connection=google-workspace&lane=api',
+    agents: [
+      connectionsAgent({
+        apiConnections: [
+          apiConnectionFixture({
+            id: 'google-workspace',
+            displayName: 'Google Workspace',
+            presetId: 'google-workspace',
+            authMode: 'oauth',
+            oauthProvider: 'google',
+            oauthScopes: ['https://www.googleapis.com/auth/gmail.readonly'],
+            oauthAppType: 'workspace-internal',
+            allowedHosts: ['gmail.googleapis.com'],
+            pathPrefixes: ['/gmail/v1/users/me'],
+            allowedMethods: ['GET', 'HEAD'],
+            lifecycleStatus: 'ready',
+            statusText: 'Connected',
+            identity: { accountName: 'operator@example.com' },
+            oauthClientSource: 'stored',
+            oauthTokenSource: 'stored',
+            credentialSource: 'missing',
+          }),
+        ],
+      }),
+    ],
+  });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /Connected to operator@example\.com\. The selected Google services are ready to use\./);
+  assert.match(harness.app.innerHTML, /<span class="oauth-account-name">operator@example\.com<\/span>/);
+  assert.doesNotMatch(harness.app.innerHTML, /tools enabled/);
+  assert.equal(harness.historyReplaces.at(-1), '/admin/profiles/agent_conn');
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({
+    target: actionTarget({
+      'data-action': 'apiconn-google-access',
+      'data-service': 'drive',
+      'data-access': 'read',
+    }),
+  });
+  assert.match(harness.app.innerHTML, /<span>Sign into Google<\/span>/);
+  assert.doesNotMatch(harness.app.innerHTML, /<span class="oauth-account-status">Connected<\/span>/);
+});
+
 test('the Asana API editor keeps its credential and seeded policy in Advanced before saving', async () => {
   const harness = runAdminPageHarness({ agents: [connectionsAgent()] });
   await flushAsync();
@@ -3284,13 +3455,13 @@ test('a preset connection carries presetId in the profile save body', async () =
   assert.ok(click);
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
-  click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'cloudflare-docs' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'stripe' }) });
   click({ target: actionTarget({ 'data-action': 'conn-save-row' }) });
   click({ target: actionTarget({ 'data-action': 'save-profile' }) });
   await flushAsync();
 
   const servers = harness.agentPatchBodies[0]?.body.mcpServers as Array<Record<string, unknown>>;
-  assert.equal(servers[0]?.presetId, 'cloudflare-docs');
+  assert.equal(servers[0]?.presetId, 'stripe');
 });
 
 test('the Linear preset saves read-write OAuth policy and requests read and write scopes', async () => {
@@ -3608,7 +3779,7 @@ test('the Atlassian preset saves OAuth policy before requesting its advertised r
   ]);
 });
 
-test('the keyless Cloudflare Docs recommended editor shows its token note once', async () => {
+test('the Cloudflare API preset replaces the narrow catalog rows with the full OAuth server', async () => {
   const harness = runAdminPageHarness({ agents: [connectionsAgent()] });
   await flushAsync();
 
@@ -3616,11 +3787,12 @@ test('the keyless Cloudflare Docs recommended editor shows its token note once',
   assert.ok(click);
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
-  click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'cloudflare-docs' }) });
+  assert.match(harness.app.innerHTML, /data-preset="cloudflare-api"/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-preset="cloudflare-(docs|bindings|observability)"/);
+  click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'cloudflare-api' }) });
 
-  assert.equal((harness.app.innerHTML.match(/No token needed\./g) ?? []).length, 1);
-  click({ target: actionTarget({ 'data-action': 'conn-view', 'data-view': 'advanced' }) });
-  assert.match(harness.app.innerHTML, /<option value="none" selected>None<\/option>/);
+  assert.match(harness.app.innerHTML, /Sign into Cloudflare/);
+  assert.match(harness.app.innerHTML, /entire API through three token-efficient tools: docs, search, and execute/);
 });
 
 test('the Notion preset saves OAuth policy before starting authorization and never puts credentials in client state', async () => {

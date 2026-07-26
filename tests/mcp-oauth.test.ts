@@ -443,6 +443,35 @@ test('authorization start removes its writes when the connection disappears in f
   }
 });
 
+test('authorization start preserves OAuth settings on a transient connection-store error', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const oauth = fakeOAuthServer();
+  let checks = 0;
+  try {
+    await assert.rejects(
+      startMcpOAuthAuthorization(
+        { ref: REF, serverUrl: SERVER_URL, callbackUrl: CALLBACK_URL },
+        {
+          settings,
+          fetchFn: oauth.fetchFn,
+          randomId: () => 'nonce',
+          validateConnection: () => {
+            checks += 1;
+            if (checks === 1) return true;
+            throw new Error('temporary config-store failure');
+          },
+        },
+      ),
+      /temporary config-store failure/,
+    );
+    const [client, pending] = await settings.getSettings(mcpOAuthSettingKeys(REF));
+    assert.match(client ?? '', /registered-client/);
+    assert.match(pending ?? '', /codeVerifier/);
+  } finally {
+    settings.close();
+  }
+});
+
 test('expired OAuth state is consumed without attempting code exchange', async () => {
   const settings = new SqliteSettingsStore(':memory:');
   const oauth = fakeOAuthServer();
@@ -606,6 +635,46 @@ test('expired tokens refresh once across concurrent callers and preserve rotatio
     const stored = (await settings.getSettings(mcpOAuthSettingKeys(REF))).join('\n');
     assert.match(stored, /refresh-rotated/);
     assert.doesNotMatch(stored, /"refresh_token":"refresh-initial"/);
+  } finally {
+    settings.close();
+  }
+});
+
+test('an expired MCP OAuth lease can be recovered without timing out first', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const oauth = fakeOAuthServer({ initialExpiresIn: 1 });
+  let now = 1_000_000;
+  const dependencies = {
+    settings,
+    fetchFn: oauth.fetchFn,
+    now: () => now,
+    randomId: () => 'new-owner',
+    sleep: async (milliseconds: number) => { now += milliseconds; },
+  };
+  try {
+    const started = await startMcpOAuthAuthorization(
+      { ref: REF, serverUrl: SERVER_URL, callbackUrl: CALLBACK_URL },
+      dependencies,
+    );
+    await completeMcpOAuthAuthorization(
+      { code: 'provider-code', state: started.state },
+      dependencies,
+    );
+    now += 2_000;
+    await settings.setSetting(
+      mcpOAuthSettingKeys(REF)[4],
+      JSON.stringify({ owner: 'stalled-owner', expiresAt: now + 20_000 }),
+    );
+
+    assert.equal(
+      await resolveMcpOAuthAccessToken(
+        { ref: REF, serverUrl: SERVER_URL },
+        dependencies,
+      ),
+      'access-refreshed',
+    );
+    assert.equal(oauth.counts.refreshes, 1);
+    assert.equal(await settings.getSetting(mcpOAuthSettingKeys(REF)[4]), undefined);
   } finally {
     settings.close();
   }
@@ -923,6 +992,66 @@ test('invalid_grant clears the unusable token bundle and requires reconnection',
     );
   } finally {
     settings.close();
+  }
+});
+
+test('an invalid-grant refresh loser returns the token stored by the winning refresher', async () => {
+  const backing = new SqliteSettingsStore(':memory:');
+  const tokenKey = mcpOAuthSettingKeys(REF)[2];
+  let replaceOnDelete = false;
+  let currentTime = 1_000_000;
+  const settings: SettingsStore = {
+    getSetting: (key) => backing.getSetting(key),
+    getSettings: (keys) => backing.getSettings(keys),
+    setSetting: (key, value) => backing.setSetting(key, value),
+    deleteSetting: (key) => backing.deleteSetting(key),
+    mergeSettingStringSet: (key, values) => backing.mergeSettingStringSet(key, values),
+    applySettingsPatch: async (patch: SettingsPatch) => {
+      if (replaceOnDelete && patch.delete?.includes(tokenKey)) {
+        replaceOnDelete = false;
+        const winner = JSON.parse((await backing.getSetting(tokenKey))!) as {
+          tokens: Record<string, unknown>;
+          obtainedAt: number;
+        };
+        winner.tokens.access_token = 'access-from-winner';
+        winner.tokens.expires_in = 3600;
+        winner.obtainedAt = currentTime;
+        await backing.setSetting(tokenKey, JSON.stringify(winner));
+        return false;
+      }
+      return backing.applySettingsPatch(patch);
+    },
+  };
+  const oauth = fakeOAuthServer({ initialExpiresIn: 1, refreshError: 'invalid_grant' });
+  const dependencies = {
+    settings,
+    fetchFn: oauth.fetchFn,
+    now: () => currentTime,
+    randomId: () => 'nonce',
+    validateConnection: () => true,
+  };
+  try {
+    const started = await startMcpOAuthAuthorization(
+      { ref: REF, serverUrl: SERVER_URL, callbackUrl: CALLBACK_URL },
+      dependencies,
+    );
+    await completeMcpOAuthAuthorization(
+      { code: 'provider-code', state: started.state },
+      dependencies,
+    );
+    currentTime += 2_000;
+    replaceOnDelete = true;
+
+    assert.equal(
+      await resolveMcpOAuthAccessToken(
+        { ref: REF, serverUrl: SERVER_URL },
+        dependencies,
+      ),
+      'access-from-winner',
+    );
+    assert.equal(oauth.counts.refreshes, 1);
+  } finally {
+    backing.close();
   }
 });
 

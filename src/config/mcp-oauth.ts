@@ -36,9 +36,10 @@ import type { SettingsStore } from './settings-store.ts';
 import type { ConfigStore } from './store.ts';
 
 const PENDING_TTL_MS = 10 * 60_000;
-const LEASE_TTL_MS = 12_000;
+const LEASE_TTL_MS = 20_000;
 const LEASE_RETRY_MS = 25;
-const LEASE_ATTEMPTS = 360;
+const LEASE_MAX_RETRY_MS = 400;
+const LEASE_ATTEMPTS = 64;
 const OAUTH_FETCH_TIMEOUT_MS = 8_000;
 const REFRESH_SKEW_MS = 60_000;
 const AGENT_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,127}$/;
@@ -307,7 +308,9 @@ export async function startMcpOAuthAuthorization(
   try {
     await requireCurrentConnection(input.ref, serverUrl, dependencies);
   } catch (error) {
-    await deleteMcpOAuthSettings(input.ref, settings);
+    if (isConnectionMissing(error)) {
+      await deleteMcpOAuthSettings(input.ref, settings);
+    }
     throw error;
   }
   return { authorizationUrl, state };
@@ -358,7 +361,9 @@ export async function completeMcpOAuthAuthorization(
   try {
     await requireCurrentConnection(ref, pending.serverUrl, dependencies);
   } catch (error) {
-    await deleteMcpOAuthSettings(ref, settings);
+    if (isConnectionMissing(error)) {
+      await deleteMcpOAuthSettings(ref, settings);
+    }
     throw error;
   }
   return { ref };
@@ -400,6 +405,16 @@ export async function resolveMcpOAuthAccessToken(
       'reauthorization_required',
       'MCP OAuth access expired without a refresh token',
     );
+  }
+
+  const leaseRaw = await dependencies.settings.getSetting(refreshLeaseKey);
+  const lease = leaseRaw ? parseLease(leaseRaw) : undefined;
+  if (
+    lease &&
+    lease.expiresAt > now(dependencies) &&
+    !tokenHardExpired(initial, now(dependencies))
+  ) {
+    return initial.tokens.access_token;
   }
 
   return withLease(
@@ -444,10 +459,19 @@ export async function resolveMcpOAuthAccessToken(
           error instanceof InvalidGrantError ||
           (isRecord(error) && error.errorCode === 'invalid_grant')
         ) {
-          await dependencies.settings.applySettingsPatch({
+          const deleted = await dependencies.settings.applySettingsPatch({
             expected: { key: tokenKey, value: currentRaw },
             delete: [tokenKey],
           });
+          if (!deleted) {
+            const winner = await dependencies.settings.getSetting(tokenKey);
+            if (winner) {
+              const winnerBundle = parseStoredTokenBundle(winner);
+              assertTokenResource(winnerBundle, serverUrl);
+              await requireCurrentConnection(input.ref, serverUrl, dependencies);
+              return winnerBundle.tokens.access_token;
+            }
+          }
           throw new McpOAuthError(
             'reauthorization_required',
             'MCP OAuth refresh was rejected',
@@ -497,7 +521,9 @@ export async function resolveMcpOAuthAccessToken(
       try {
         await requireCurrentConnection(input.ref, serverUrl, dependencies);
       } catch (error) {
-        await deleteMcpOAuthSettings(input.ref, dependencies.settings);
+        if (isConnectionMissing(error)) {
+          await deleteMcpOAuthSettings(input.ref, dependencies.settings);
+        }
         throw error;
       }
       return refreshedTokens.access_token;
@@ -621,6 +647,7 @@ async function withLease<T>(
 ): Promise<T> {
   const owner = randomId(dependencies);
   const settings = dependencies.settings;
+  let retryDelay = LEASE_RETRY_MS;
   for (let attempt = 0; attempt < LEASE_ATTEMPTS; attempt += 1) {
     const currentRaw = await settings.getSetting(key);
     const current = currentRaw ? parseLease(currentRaw) : undefined;
@@ -644,7 +671,8 @@ async function withLease<T>(
         }
       }
     }
-    await (dependencies.sleep ?? defaultSleep)(LEASE_RETRY_MS);
+    await (dependencies.sleep ?? defaultSleep)(retryDelay);
+    retryDelay = Math.min(retryDelay * 2, LEASE_MAX_RETRY_MS);
   }
   throw new McpOAuthError('oauth_unavailable', 'OAuth operation is already in progress');
 }
@@ -897,6 +925,10 @@ function invalidStorage(cause?: unknown): McpOAuthError {
     'Stored MCP OAuth state is invalid',
     cause === undefined ? undefined : { cause },
   );
+}
+
+function isConnectionMissing(error: unknown): boolean {
+  return error instanceof McpOAuthError && error.code === 'connection_missing';
 }
 
 function validateRef(ref: McpSecretRef): void {

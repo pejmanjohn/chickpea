@@ -9,7 +9,7 @@ import {
   type ConnectorPreset,
 } from '../src/config/presets.ts';
 
-const API_PRESET_IDS = new Set(['asana', 'zendesk']);
+const API_PRESET_IDS = new Set(['google-workspace', 'asana', 'zendesk']);
 const API_METHODS = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE']);
 
 function isAllowedConnectorHost(host: string): boolean {
@@ -68,14 +68,14 @@ test('connector preset catalog entries are valid', () => {
       assert.ok(api.methods.length > 0);
       assert.ok(api.methods.every((method) => API_METHODS.has(method)));
       assert.equal(new Set(api.methods).size, api.methods.length);
-      assert.ok(api.placeholder.length > 0);
+      if (!api.oauth) assert.ok(api.placeholder.length > 0);
     }
   }
 });
 
 test('preset lanes classify the existing MCP catalog, the API additions, and both', () => {
   const existingMcpPresets = CONNECTOR_PRESETS.filter((preset) => !API_PRESET_IDS.has(preset.id));
-  assert.equal(existingMcpPresets.length, 22);
+  assert.equal(existingMcpPresets.length, 20);
   for (const preset of existingMcpPresets) {
     assert.deepEqual(presetLanes(preset), { mcp: true, api: false }, preset.id);
   }
@@ -191,7 +191,51 @@ test('the Supabase MCP preset requests every currently required OAuth scope', ()
     tokenDocsHint:
       'Sign in to Supabase and choose the organization and projects Chickpea should access.',
     notes:
-      'Supabase MCP is for development and testing only; do not connect production data. Chickpea requests all currently required scopes, including write access. Use Advanced with ?read_only=true and project_ref=… to narrow access.',
+      'Use a development or test project; do not connect production data. Chickpea limits the connection to that project, with read-only access recommended by default.',
+  });
+});
+
+test('the Cloudflare API preset uses the token-efficient full API OAuth server', () => {
+  assert.deepEqual(getConnectorPreset('cloudflare-api'), {
+    id: 'cloudflare-api',
+    name: 'Cloudflare API',
+    category: 'dev',
+    accent: '#F38020',
+    url: 'https://mcp.cloudflare.com/mcp',
+    transport: 'streamable-http',
+    auth: { kind: 'oauth' },
+    tokenDocsUrl:
+      'https://developers.cloudflare.com/agents/model-context-protocol/cloudflare/servers-for-cloudflare/',
+    tokenDocsHint:
+      'Sign in to Cloudflare and choose the account permissions Chickpea should receive.',
+    notes:
+      'Cloudflare Code Mode covers the entire API through three token-efficient tools: docs, search, and execute. Granted actions remain limited by the permissions you approve.',
+  });
+  assert.equal(getConnectorPreset('cloudflare-docs'), undefined);
+  assert.equal(getConnectorPreset('cloudflare-bindings'), undefined);
+  assert.equal(getConnectorPreset('cloudflare-observability'), undefined);
+});
+
+test('the Google Workspace API preset starts with read-only service policy', () => {
+  assert.deepEqual(getConnectorPreset('google-workspace'), {
+    id: 'google-workspace',
+    name: 'Google Workspace',
+    category: 'docs',
+    accent: '#4285F4',
+    api: {
+      hosts: ['gmail.googleapis.com', 'www.googleapis.com'],
+      pathPrefixes: ['/gmail/v1/users/me', '/calendar/v3', '/drive/v3'],
+      headerName: 'Authorization',
+      valuePrefix: 'Bearer ',
+      methods: ['GET', 'HEAD'],
+      placeholder: '',
+      oauth: { provider: 'google' },
+    },
+    tokenDocsUrl: 'https://console.cloud.google.com/apis/credentials',
+    tokenDocsHint:
+      'Create a Web application OAuth client in your own Google Cloud project, then paste its client ID and secret here.',
+    notes:
+      'Use a dedicated Google account when possible. Chickpea stores the OAuth client and tokens outside the profile and grants only the services selected during setup.',
   });
 });
 

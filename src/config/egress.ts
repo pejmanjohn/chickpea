@@ -67,8 +67,9 @@ export interface EgressPlan {
   baseNetwork: NetworkConfig;
   baseMethods: Set<string>;
   // A single fail-closed network used only if just-bash stops exposing its
-  // secureFetch property: every prefix (credentials still inject) but capped at
-  // the baseline methods, so connector write methods are never granted globally.
+  // secureFetch property. A connector is included only when it permits every
+  // global baseline method; otherwise its credential-bearing prefix drops out
+  // because a flat network cannot represent that connector's narrower policy.
   fallbackNetwork: NetworkConfig;
 }
 
@@ -181,13 +182,18 @@ export function buildEgressPlan(
   // Guarded scopes (per-request URL predicates) cannot be represented in a
   // flat prefix allow-list: including their entries would carry the credential
   // transform onto URLs the guard exists to deny. They drop out of the
-  // fallback entirely — fail closed if just-bash ever loses secureFetch.
+  // fallback entirely. The same applies to method-narrow scopes: the fallback
+  // has one global method set, so including a read-only credential alongside
+  // baseline POST would silently widen it.
+  const fallbackConnectorSpecs = connectorSpecs.filter(
+    (spec) =>
+      spec.matchesRequest === undefined &&
+      BASE_EGRESS_METHODS.every((method) => spec.methods.includes(method)),
+  );
   const fallbackNetwork = buildCombinedNetwork(
     [
       ...domainEntries,
-      ...connectorSpecs
-        .filter((spec) => spec.matchesRequest === undefined)
-        .flatMap((spec) => spec.entries),
+      ...fallbackConnectorSpecs.flatMap((spec) => spec.entries),
     ],
     policy,
     opts,

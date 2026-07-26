@@ -6,6 +6,14 @@ import { Hono } from 'hono';
 import { createAdminRoutes } from '../src/admin/routes.ts';
 import flueApp from '../src/app.ts';
 import {
+  ApiOAuthError,
+  apiOAuthSettingKeys,
+  type ApiOAuthDependencies,
+  type ApiOAuthProvider,
+  type ApiOAuthRef,
+} from '../src/config/api-oauth.ts';
+import { googleWorkspaceApiPolicy } from '../src/config/api-oauth-policy.ts';
+import {
   connectorCredentialSettingKey,
   connectorSecretCleanupMarkerKey,
   describeConnectorCredentialSource,
@@ -64,6 +72,27 @@ interface AdminHarnessOptions {
     headers: Record<string, string>;
     presetId?: string;
   }) => Promise<{ workspaceName?: string; accountName?: string } | undefined>;
+  startApiOAuth?: (
+    input: {
+      ref: ApiOAuthRef;
+      provider: ApiOAuthProvider;
+      callbackUrl: string;
+      scopes: readonly string[];
+    },
+    dependencies: ApiOAuthDependencies,
+  ) => Promise<{ authorizationUrl: URL; state: string }>;
+  completeApiOAuth?: (
+    input: { code: string; state: string },
+    dependencies: ApiOAuthDependencies,
+  ) => Promise<{
+    ref: ApiOAuthRef;
+    provider: ApiOAuthProvider;
+    identity?: { accountName?: string };
+  }>;
+  cancelApiOAuth?: (
+    state: string,
+    dependencies: ApiOAuthDependencies,
+  ) => Promise<{ ref: ApiOAuthRef; provider: ApiOAuthProvider }>;
 }
 
 function appWithAdmin(store: ConfigStore, adminToken?: string): Hono {
@@ -99,6 +128,9 @@ function appWithAdminOptions(store: ConfigStore, options: AdminHarnessOptions = 
         ? { resolveMcpOAuthToken: options.resolveMcpOAuthToken }
         : {}),
       ...(options.identifyMcp ? { identifyMcp: options.identifyMcp } : {}),
+      ...(options.startApiOAuth ? { startApiOAuth: options.startApiOAuth } : {}),
+      ...(options.completeApiOAuth ? { completeApiOAuth: options.completeApiOAuth } : {}),
+      ...(options.cancelApiOAuth ? { cancelApiOAuth: options.cancelApiOAuth } : {}),
     }),
   );
   return app;
@@ -132,6 +164,30 @@ function apiConnection(overrides: Partial<ApiConnectionConfig> = {}): ApiConnect
     allowedMethods: ['GET', 'POST'],
     enabled: true,
     presetId: 'linear-api',
+    ...overrides,
+  };
+}
+
+function googleApiConnection(
+  scopes = [
+    'https://www.googleapis.com/auth/gmail.readonly',
+    'https://www.googleapis.com/auth/calendar.readonly',
+    'https://www.googleapis.com/auth/drive.readonly',
+  ],
+  overrides: Partial<ApiConnectionConfig> = {},
+): ApiConnectionConfig {
+  return {
+    id: 'google-workspace',
+    displayName: 'Google Workspace',
+    ...googleWorkspaceApiPolicy(scopes),
+    enabled: true,
+    authMode: 'oauth',
+    oauthProvider: 'google',
+    oauthScopes: scopes,
+    oauthAppType: 'workspace-internal',
+    lifecycleStatus: 'pending',
+    statusText: 'Not connected',
+    presetId: 'google-workspace',
     ...overrides,
   };
 }
@@ -1572,6 +1628,281 @@ test('admin API rejects invalid apiConnection hosts, methods, and header names',
       });
     }
   } finally {
+    store.close();
+  }
+});
+
+test('admin API accepts exact Google OAuth policy and rejects client-side widening', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  try {
+    const app = appWithAdmin(store);
+    const valid = await app.request('/admin/api/agents', {
+      method: 'POST',
+      headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+      body: JSON.stringify(agent({ id: 'agent_google', apiConnections: [googleApiConnection()] })),
+    });
+    assert.equal(valid.status, 201);
+    const created = (await valid.json()) as { agent: CustomAgentConfig };
+    assert.deepEqual(created.agent.apiConnections, [googleApiConnection()]);
+
+    const widened = await app.request('/admin/api/agents/agent_google', {
+      method: 'PATCH',
+      headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        apiConnections: [
+          googleApiConnection(undefined, {
+            allowedHosts: ['gmail.googleapis.com', 'www.googleapis.com', 'evil.example.com'],
+          }),
+        ],
+      }),
+    });
+    assert.equal(widened.status, 400);
+  } finally {
+    store.close();
+  }
+});
+
+test('editing Google OAuth scopes invalidates old tokens and resets connection status', async () => {
+  const originalScopes = ['https://www.googleapis.com/auth/gmail.readonly'];
+  const nextScopes = [
+    'https://www.googleapis.com/auth/gmail.readonly',
+    'https://www.googleapis.com/auth/drive.readonly',
+  ];
+  const store = new SqliteConfigStore(':memory:', {
+    agents: [agent({
+      id: 'agent_google',
+      apiConnections: [googleApiConnection(originalScopes, {
+        lifecycleStatus: 'ready',
+        statusText: 'Connected',
+        identity: { accountName: 'original@example.com' },
+      })],
+    })],
+    assignments: [],
+  });
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    const [clientKey, , tokenKey] = apiOAuthSettingKeys(REF_FOR_TEST);
+    await settings.setSetting(clientKey, 'stored-client-record');
+    await settings.setSetting(tokenKey, 'stored-old-scope-token');
+    const app = appWithAdminOptions(store, { settings });
+    const response = await app.request('/admin/api/agents/agent_google', {
+      method: 'PATCH',
+      headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        apiConnections: [googleApiConnection(nextScopes, {
+          lifecycleStatus: 'ready',
+          statusText: 'Connected',
+          identity: { accountName: 'spoofed@example.com' },
+        })],
+      }),
+    });
+
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as { agent: CustomAgentConfig };
+    assert.deepEqual(body.agent.apiConnections, [googleApiConnection(nextScopes, {
+      lifecycleStatus: 'pending',
+      statusText: 'Not connected',
+    })]);
+    assert.equal(await settings.getSetting(clientKey), 'stored-client-record');
+    assert.equal(await settings.getSetting(tokenKey), undefined);
+  } finally {
+    settings.close();
+    store.close();
+  }
+});
+
+test('removing Google OAuth policy through the profile API deletes its stored OAuth state', async () => {
+  const store = new SqliteConfigStore(':memory:', {
+    agents: [agent({ id: 'agent_google', apiConnections: [googleApiConnection()] })],
+    assignments: [],
+  });
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    for (const [index, key] of apiOAuthSettingKeys(REF_FOR_TEST).entries()) {
+      await settings.setSetting(key, `oauth-setting-${index}`);
+    }
+    const app = appWithAdminOptions(store, { settings });
+    const response = await app.request('/admin/api/agents/agent_google', {
+      method: 'PATCH',
+      headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+      body: JSON.stringify({ apiConnections: [] }),
+    });
+
+    assert.equal(response.status, 200);
+    assert.ok(
+      (await settings.getSettings(apiOAuthSettingKeys(REF_FOR_TEST))).every(
+        (value) => value === undefined,
+      ),
+    );
+  } finally {
+    settings.close();
+    store.close();
+  }
+});
+
+test('Google OAuth client credentials are write-only and start uses saved profile policy', async () => {
+  const store = new SqliteConfigStore(':memory:', {
+    agents: [agent({ id: 'agent_google', apiConnections: [googleApiConnection()] })],
+    assignments: [],
+  });
+  const settings = new SqliteSettingsStore(':memory:');
+  const starts: Array<Record<string, unknown>> = [];
+  try {
+    await settings.setSetting(
+      connectorCredentialSettingKey('agent_google', 'google-workspace'),
+      'legacy-static-token',
+    );
+    await settings.setSetting(
+      apiOAuthSettingKeys(REF_FOR_TEST)[2],
+      'old-client-token-bundle',
+    );
+    const app = appWithAdminOptions(store, {
+      settings,
+      startApiOAuth: async (input) => {
+        starts.push(input);
+        return {
+          authorizationUrl: new URL('https://accounts.google.com/o/oauth2/v2/auth?state=opaque'),
+          state: 'must-not-cross-api',
+        };
+      },
+    });
+    const clientResponse = await app.request(
+      '/admin/api/agents/agent_google/api-connections/oauth/google-workspace/client',
+      {
+        method: 'PUT',
+        headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+        body: JSON.stringify({
+          provider: 'google',
+          clientId: 'google-client-id',
+          clientSecret: 'google-client-secret',
+        }),
+      },
+    );
+    assert.equal(clientResponse.status, 200);
+    assert.deepEqual(await clientResponse.json(), { source: 'stored' });
+    assert.equal(
+      await settings.getSetting(
+        connectorCredentialSettingKey('agent_google', 'google-workspace'),
+      ),
+      undefined,
+    );
+    assert.equal(
+      await settings.getSetting(apiOAuthSettingKeys(REF_FOR_TEST)[2]),
+      undefined,
+    );
+    assert.doesNotMatch(await (await app.request('/admin/api/agents/agent_google', {
+      headers: auth(ADMIN_TOKEN),
+    })).text(), /google-client-secret|google-client-id/);
+
+    const rejectedStaticCredential = await app.request(
+      '/admin/api/agents/agent_google/api-connections/secrets/google-workspace',
+      {
+        method: 'PUT',
+        headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+        body: JSON.stringify({ credential: 'must-not-replace-oauth' }),
+      },
+    );
+    assert.equal(rejectedStaticCredential.status, 404);
+
+    const start = await app.request(
+      'https://chickpea.example.test/admin/api/agents/agent_google/api-connections/oauth/google-workspace/start',
+      { method: 'POST', headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' }, body: '{}' },
+    );
+    assert.equal(start.status, 200);
+    assert.deepEqual(await start.json(), {
+      authorizationUrl: 'https://accounts.google.com/o/oauth2/v2/auth?state=opaque',
+    });
+    assert.deepEqual(starts, [{
+      ref: { agentId: 'agent_google', connectionId: 'google-workspace' },
+      provider: 'google',
+      callbackUrl: 'https://chickpea.example.test/oauth/api/callback',
+      scopes: googleApiConnection().oauthScopes,
+    }]);
+    const stored = (await settings.getSettings(apiOAuthSettingKeys(REF_FOR_TEST))).join('\n');
+    assert.match(stored, /google-client-secret/);
+  } finally {
+    settings.close();
+    store.close();
+  }
+});
+
+const REF_FOR_TEST = { agentId: 'agent_google', connectionId: 'google-workspace' };
+
+test('Google OAuth callback is public, state-gated, and marks the API connection ready', async () => {
+  const store = new SqliteConfigStore(':memory:', {
+    agents: [agent({ id: 'agent_google', apiConnections: [googleApiConnection()] })],
+    assignments: [],
+  });
+  try {
+    const app = appWithAdminOptions(store, {
+      completeApiOAuth: async ({ state }) => {
+        if (state !== 'valid-state') throw new ApiOAuthError('invalid_state', 'invalid');
+        return {
+          ref: REF_FOR_TEST,
+          provider: 'google',
+          identity: { accountName: 'operator@example.com' },
+        };
+      },
+    });
+    const invalid = await app.request('/oauth/api/callback?state=wrong&code=provider-code');
+    assert.equal(invalid.status, 400);
+
+    const completed = await app.request(
+      '/oauth/api/callback?state=valid-state&code=provider-code',
+      { redirect: 'manual' },
+    );
+    assert.equal(completed.status, 303);
+    assert.equal(
+      completed.headers.get('location'),
+      '/admin/profiles/agent_google?oauth=connected&connection=google-workspace&lane=api',
+    );
+    const saved = await store.getAgent('agent_google');
+    assert.deepEqual(saved.apiConnections[0], googleApiConnection(undefined, {
+      lifecycleStatus: 'ready',
+      statusText: 'Connected',
+      identity: { accountName: 'operator@example.com' },
+    }));
+  } finally {
+    store.close();
+  }
+});
+
+test('Google OAuth callback deletes tokens when the saved connection changes during exchange', async () => {
+  const store = new SqliteConfigStore(':memory:', {
+    agents: [agent({ id: 'agent_google', apiConnections: [googleApiConnection()] })],
+    assignments: [],
+  });
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    for (const [index, key] of apiOAuthSettingKeys(REF_FOR_TEST).entries()) {
+      await settings.setSetting(key, `opaque-setting-${index}`);
+    }
+    const app = appWithAdminOptions(store, {
+      settings,
+      completeApiOAuth: async () => {
+        await store.updateAgent('agent_google', {
+          apiConnections: [apiConnection({ id: 'google-workspace' })],
+        });
+        return { ref: REF_FOR_TEST, provider: 'google' };
+      },
+    });
+
+    const completed = await app.request(
+      '/oauth/api/callback?state=valid-state&code=provider-code',
+      { redirect: 'manual' },
+    );
+    assert.equal(completed.status, 303);
+    assert.equal(
+      completed.headers.get('location'),
+      '/admin/profiles/agent_google?oauth=failed&connection=google-workspace&lane=api',
+    );
+    assert.ok(
+      (await settings.getSettings(apiOAuthSettingKeys(REF_FOR_TEST))).every(
+        (value) => value === undefined,
+      ),
+    );
+  } finally {
+    settings.close();
     store.close();
   }
 });

@@ -75,6 +75,15 @@ export interface ApiConnectionConfig {
   headerValuePrefix?: string;
   allowedMethods: string[];
   enabled: boolean;
+  /** Missing on legacy rows; credential means a static write-only secret. */
+  authMode?: 'credential' | 'oauth';
+  oauthProvider?: 'google';
+  /** Exact provider scopes are policy and safe to expose; tokens are not. */
+  oauthScopes?: string[];
+  oauthAppType?: 'workspace-internal' | 'external';
+  lifecycleStatus?: 'pending' | 'ready' | 'failed';
+  statusText?: string;
+  identity?: McpConnectionIdentity;
   presetId?: string;
 }
 

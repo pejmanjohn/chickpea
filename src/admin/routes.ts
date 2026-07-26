@@ -11,12 +11,29 @@ import { renderAdminLogin, renderAdminPage } from './page.ts';
 // so users never hand-edit a request_url.
 import slackAppManifest from '../../slack-app-manifest.json' with { type: 'json' };
 import {
+  apiOAuthSettingKeys,
+  apiOAuthReturnRefFromState,
+  ApiOAuthError,
+  cancelApiOAuthAuthorization,
+  completeApiOAuthAuthorization,
+  deleteApiOAuthSettings,
+  describeApiOAuthSources,
+  invalidateApiOAuthAuthorization,
+  saveApiOAuthClient,
+  startApiOAuthAuthorization,
+  type ApiOAuthDependencies,
+  type ApiOAuthProvider,
+  type ApiOAuthRef,
+} from '../config/api-oauth.ts';
+import { isValidApiOAuthConnectionPolicy } from '../config/api-oauth-policy.ts';
+import {
   clearConnectorCredential,
   deleteConnectorSecrets,
   describeConnectorCredentialSource,
   finishConnectorSecretCleanup,
   saveConnectorCredential,
   stageConnectorSecretCleanup,
+  stageConnectorSettingCleanup,
 } from '../config/connector-secrets.ts';
 import {
   computeSnapshotHash,
@@ -182,6 +199,23 @@ interface AdminRoutesOptions {
   ) => ReturnType<typeof resolveMcpOAuthAccessToken>) | undefined;
   identifyMcp?: ((input: McpIdentityInput) => Promise<McpConnectionIdentity | undefined>) | undefined;
   oauthFetch?: typeof fetch | undefined;
+  startApiOAuth?: ((
+    input: {
+      ref: ApiOAuthRef;
+      provider: ApiOAuthProvider;
+      callbackUrl: string;
+      scopes: readonly string[];
+    },
+    dependencies: ApiOAuthDependencies,
+  ) => ReturnType<typeof startApiOAuthAuthorization>) | undefined;
+  completeApiOAuth?: ((
+    input: { code: string; state: string },
+    dependencies: ApiOAuthDependencies,
+  ) => ReturnType<typeof completeApiOAuthAuthorization>) | undefined;
+  cancelApiOAuth?: ((
+    state: string,
+    dependencies: ApiOAuthDependencies,
+  ) => ReturnType<typeof cancelApiOAuthAuthorization>) | undefined;
 }
 
 const ADMIN_COOKIE = 'flue_admin';
@@ -331,9 +365,35 @@ const apiConnectionSchema = v.pipe(
       v.minLength(1),
     ),
     enabled: v.boolean(),
+    authMode: v.optional(v.picklist(['credential', 'oauth'])),
+    oauthProvider: v.optional(v.literal('google')),
+    oauthScopes: v.optional(
+      v.pipe(v.array(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(256))), v.maxLength(12)),
+    ),
+    oauthAppType: v.optional(v.picklist(['workspace-internal', 'external'])),
+    lifecycleStatus: v.optional(v.picklist(['pending', 'ready', 'failed'])),
+    statusText: v.optional(v.pipe(v.string(), v.maxLength(300))),
+    identity: v.optional(mcpIdentitySchema),
     presetId: v.optional(v.pipe(v.string(), v.regex(/^[a-z0-9][a-z0-9-]{0,63}$/), v.maxLength(64))),
   }),
   v.check((connection) => connection.allowedHosts.length > 0, 'allowed hosts must not be empty'),
+  v.check(
+    (connection) => {
+      if (connection.authMode === 'oauth') {
+        return isValidApiOAuthConnectionPolicy(connection) &&
+          connection.oauthAppType !== undefined &&
+          connection.lifecycleStatus !== undefined &&
+          connection.statusText !== undefined;
+      }
+      return connection.oauthProvider === undefined &&
+        connection.oauthScopes === undefined &&
+        connection.oauthAppType === undefined &&
+        connection.lifecycleStatus === undefined &&
+        connection.statusText === undefined &&
+        connection.identity === undefined;
+    },
+    'OAuth connection policy is invalid',
+  ),
 );
 
 // just-bash applies EVERY allow-list transform whose prefix matches a request,
@@ -532,6 +592,12 @@ const connectorSecretsPutSchema = v.object({
   clearCredential: v.optional(v.boolean()),
 });
 
+const apiOAuthClientSchema = v.object({
+  provider: v.literal('google'),
+  clientId: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(512)),
+  clientSecret: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(2_048)),
+});
+
 const assignmentSchema = v.object({
   workspaceId: nonEmptyString,
   channelId: nonEmptyString,
@@ -621,11 +687,20 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   const resolveMcpOAuthToken =
     options.resolveMcpOAuthToken ?? resolveMcpOAuthAccessToken;
   const identifyMcp = options.identifyMcp ?? discoverMcpConnectionIdentity;
+  const startApiOAuth = options.startApiOAuth ?? startApiOAuthAuthorization;
+  const completeApiOAuth = options.completeApiOAuth ?? completeApiOAuthAuthorization;
+  const cancelApiOAuth = options.cancelApiOAuth ?? cancelApiOAuthAuthorization;
   const oauthDependencies = (c: Context): McpOAuthDependencies => ({
     settings: settings(c),
     ...(options.oauthFetch ? { fetchFn: options.oauthFetch } : {}),
     validateConnection: (ref, serverUrl) =>
       isCurrentMcpOAuthConnection(store(c), ref, serverUrl),
+  });
+  const apiOAuthDependencies = (c: Context): ApiOAuthDependencies => ({
+    settings: settings(c),
+    ...(options.oauthFetch ? { fetchFn: options.oauthFetch } : {}),
+    validateConnection: (ref, provider) =>
+      isCurrentApiOAuthConnection(store(c), ref, provider),
   });
   const adminLoginBodyLimit = bodyLimit({
     maxSize: MAX_ADMIN_LOGIN_BODY_BYTES,
@@ -780,6 +855,73 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
   });
 
+  // BYO REST OAuth uses its own fixed callback so provider-managed MCP OAuth
+  // state and operator-supplied client credentials can never cross lanes.
+  app.get('/oauth/api/callback', async (c) => {
+    c.header('Referrer-Policy', 'no-referrer');
+    c.header('Cache-Control', 'no-store');
+    const state = c.req.query('state');
+    const code = c.req.query('code');
+    const providerError = c.req.query('error');
+    if (
+      !state ||
+      state.length > 2_048 ||
+      (code !== undefined && code.length > 8_192) ||
+      (providerError !== undefined && providerError.length > 256) ||
+      (!code && !providerError) ||
+      (code && providerError)
+    ) {
+      return invalidRequest(c);
+    }
+    let ref: ApiOAuthRef | undefined;
+    try {
+      if (providerError) {
+        const cancelled = await cancelApiOAuth(state, apiOAuthDependencies(c));
+        const status = providerError === 'access_denied' ? 'cancelled' : 'failed';
+        return c.redirect(apiOAuthAdminRedirect(status, cancelled.ref), 303);
+      }
+      const completed = await completeApiOAuth(
+        { code: code!, state },
+        apiOAuthDependencies(c),
+      );
+      ref = completed.ref;
+      try {
+        await replaceReadyApiOAuthConnection(
+          store(c),
+          completed.ref,
+          completed.provider,
+          completed.identity,
+        );
+      } catch (error) {
+        // Remove orphaned OAuth state only when the row truly disappeared or
+        // changed. A transient config-store error must not destroy the
+        // operator's write-only client and freshly minted tokens.
+        if (error instanceof ApiOAuthError && error.code === 'connection_missing') {
+          await deleteApiOAuthSettings(completed.ref, settings(c));
+        }
+        throw error;
+      }
+      return c.redirect(apiOAuthAdminRedirect('connected', completed.ref), 303);
+    } catch (error) {
+      if (error instanceof ApiOAuthError && error.code === 'invalid_state') {
+        return invalidRequest(c);
+      }
+      console.error(
+        '[chickpea] API OAuth callback failed:',
+        error instanceof ApiOAuthError ? error.code : 'internal_error',
+      );
+      if (ref) {
+        return c.redirect(apiOAuthAdminRedirect('failed', ref), 303);
+      }
+      try {
+        ref = apiOAuthReturnRefFromState(state);
+        return c.redirect(apiOAuthAdminRedirect('failed', ref), 303);
+      } catch {
+        return c.redirect('/admin?oauth=failed&lane=api', 303);
+      }
+    }
+  });
+
   // The worker's root is not a product surface — send visitors to the admin
   // (the gate/login there handles auth). Bare 404 at `/` read as a broken
   // install during live testing.
@@ -859,6 +1001,107 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       console.error(
         '[chickpea] MCP OAuth start failed:',
         error instanceof McpOAuthError ? error.code : 'internal_error',
+      );
+      return c.json({ error: 'oauth_unavailable' }, 502);
+    }
+  });
+
+  app.put('/admin/api/agents/:agentId/api-connections/oauth/:connectionId/client', async (c) => {
+    c.header('Cache-Control', 'no-store');
+    const agentId = c.req.param('agentId');
+    const connectionId = c.req.param('connectionId');
+    if (!AGENT_ID_PATTERN.test(agentId) || !MCP_CONNECTION_ID_PATTERN.test(connectionId)) {
+      return invalidRequest(c);
+    }
+    const parsed = v.safeParse(apiOAuthClientSchema, await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
+    const ref = { agentId, connectionId };
+    let connection: CustomAgentConfig['apiConnections'][number] | undefined;
+    try {
+      connection = (await store(c).getAgent(agentId)).apiConnections.find(
+        (candidate) => candidate.id === connectionId,
+      );
+    } catch (error) {
+      if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+      return internalError(c, error);
+    }
+    if (
+      !connection ||
+      connection.authMode !== 'oauth' ||
+      connection.oauthProvider !== parsed.output.provider ||
+      !isValidApiOAuthConnectionPolicy(connection)
+    ) {
+      return c.json({ error: 'not_found' }, 404);
+    }
+    try {
+      await stageConnectorSecretCleanup(agentId, [connectionId], c.env as PlatformEnv | undefined, settings(c));
+      await stageConnectorSettingCleanup(agentId, apiOAuthSettingKeys(ref), c.env as PlatformEnv | undefined, settings(c));
+      await clearConnectorCredential(agentId, connectionId, c.env as PlatformEnv | undefined, settings(c));
+      // A token bundle belongs to the client that minted it. Replacing the
+      // BYO app must not leave old access/refresh tokens usable under a new
+      // client id, or defer the mismatch until the next refresh.
+      await deleteApiOAuthSettings(ref, settings(c));
+      await saveApiOAuthClient(ref, parsed.output, settings(c));
+      if (!(await isCurrentApiOAuthConnection(store(c), ref, parsed.output.provider))) {
+        await deleteApiOAuthSettings(ref, settings(c));
+        return c.json({ error: 'connection_changed' }, 409);
+      }
+      await replacePendingApiOAuthConnection(store(c), ref, parsed.output.provider);
+      return c.json({ source: 'stored' });
+    } catch (error) {
+      return internalError(c, error);
+    }
+  });
+
+  app.post('/admin/api/agents/:agentId/api-connections/oauth/:connectionId/start', async (c) => {
+    c.header('Cache-Control', 'no-store');
+    const agentId = c.req.param('agentId');
+    const connectionId = c.req.param('connectionId');
+    if (!AGENT_ID_PATTERN.test(agentId) || !MCP_CONNECTION_ID_PATTERN.test(connectionId)) {
+      return invalidRequest(c);
+    }
+    const body = await readJson(c.req);
+    if (!isRecord(body) || Object.keys(body).length > 0) return invalidRequest(c);
+    const ref = { agentId, connectionId };
+    let connection: CustomAgentConfig['apiConnections'][number] | undefined;
+    try {
+      connection = (await store(c).getAgent(agentId)).apiConnections.find(
+        (candidate) => candidate.id === connectionId,
+      );
+    } catch (error) {
+      if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+      return internalError(c, error);
+    }
+    if (
+      !connection ||
+      connection.authMode !== 'oauth' ||
+      connection.oauthProvider !== 'google' ||
+      !connection.oauthScopes ||
+      !isValidApiOAuthConnectionPolicy(connection)
+    ) {
+      return c.json({ error: 'oauth_not_enabled' }, 409);
+    }
+    try {
+      const result = await startApiOAuth(
+        {
+          ref,
+          provider: connection.oauthProvider,
+          callbackUrl: `${requestOrigin(c)}/oauth/api/callback`,
+          scopes: connection.oauthScopes,
+        },
+        apiOAuthDependencies(c),
+      );
+      return c.json({ authorizationUrl: result.authorizationUrl.href });
+    } catch (error) {
+      if (error instanceof ApiOAuthError && error.code === 'connection_missing') {
+        return c.json({ error: 'not_found' }, 404);
+      }
+      if (error instanceof ApiOAuthError && error.code === 'client_missing') {
+        return c.json({ error: 'oauth_client_missing' }, 409);
+      }
+      console.error(
+        '[chickpea] API OAuth start failed:',
+        error instanceof ApiOAuthError ? error.code : 'internal_error',
       );
       return c.json({ error: 'oauth_unavailable' }, 502);
     }
@@ -1282,13 +1525,22 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (!parsed.success) {
       return invalidRequest(c, githubApiConnectionValidationMessage(parsed.issues));
     }
-    const agent = toAgentConfig(parsed.output);
+    let agent = toAgentConfig(parsed.output);
     const modelError = modelResolutionError(agent);
     if (modelError) {
       return modelNotResolvable(c, modelError);
     }
     try {
       const configStore = store(c);
+      agent = {
+        ...agent,
+        apiConnections: await normalizeApiOAuthPatch(
+          agent.id,
+          [],
+          agent.apiConnections,
+          settings(c),
+        ),
+      };
       return c.json(
         {
           agent: await configStore.createAgent(agent),
@@ -1558,7 +1810,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       }
       return internalError(c, err);
     }
-    if (!connection) {
+    if (!connection || connection.authMode === 'oauth') {
       return c.json({ error: 'not_found' }, 404);
     }
 
@@ -1568,6 +1820,19 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       platformEnv,
       settingsStore,
     );
+    const oauthSources = await describeApiOAuthSources(
+      { agentId, connectionId },
+      settingsStore,
+    );
+    if (oauthSources.client === 'stored' || oauthSources.tokens === 'stored') {
+      await stageConnectorSettingCleanup(
+        agentId,
+        apiOAuthSettingKeys({ agentId, connectionId }),
+        platformEnv,
+        settingsStore,
+      );
+      await deleteApiOAuthSettings({ agentId, connectionId }, settingsStore);
+    }
     if (input.credential !== undefined && input.credential !== '') {
       await saveConnectorCredential(
         agentId,
@@ -1639,6 +1904,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const platformEnv = c.env as PlatformEnv | undefined;
     const settingsStore = settings(c);
     await clearConnectorCredential(agentId, connectionId, platformEnv, settingsStore);
+    await deleteApiOAuthSettings({ agentId, connectionId }, settingsStore);
     return c.json({
       source: await describeConnectorCredentialSource(
         agentId,
@@ -1702,6 +1968,14 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const agentId = c.req.param('id');
       const current = await configStore.getAgent(agentId);
       const patch = toAgentPatch(parsed.output);
+      if (patch.apiConnections) {
+        patch.apiConnections = await normalizeApiOAuthPatch(
+          agentId,
+          current.apiConnections,
+          patch.apiConnections,
+          settings(c),
+        );
+      }
       const next: ModelResolvableAgent = {
         ...current,
         ...patch,
@@ -1780,6 +2054,14 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       await stageConnectorSecretCleanup(
         agentId,
         agent.apiConnections.map((connection) => connection.id),
+        c.env as PlatformEnv | undefined,
+        settingsStore,
+      );
+      await stageConnectorSettingCleanup(
+        agentId,
+        agent.apiConnections.filter((connection) => connection.authMode === 'oauth').flatMap((connection) =>
+          apiOAuthSettingKeys({ agentId, connectionId: connection.id }),
+        ),
         c.env as PlatformEnv | undefined,
         settingsStore,
       );
@@ -2331,6 +2613,139 @@ function mcpOAuthAdminRedirect(
   );
 }
 
+function apiOAuthAdminRedirect(
+  status: 'connected' | 'cancelled' | 'failed',
+  ref: ApiOAuthRef,
+): string {
+  return (
+    `/admin/profiles/${encodeURIComponent(ref.agentId)}` +
+    `?oauth=${status}&connection=${encodeURIComponent(ref.connectionId)}&lane=api`
+  );
+}
+
+async function isCurrentApiOAuthConnection(
+  configStore: Pick<ConfigStore, 'getAgent'>,
+  ref: ApiOAuthRef,
+  provider: ApiOAuthProvider,
+): Promise<boolean> {
+  try {
+    const connection = (await configStore.getAgent(ref.agentId)).apiConnections.find(
+      (candidate) => candidate.id === ref.connectionId,
+    );
+    return !!connection &&
+      connection.authMode === 'oauth' &&
+      connection.oauthProvider === provider &&
+      isValidApiOAuthConnectionPolicy(connection);
+  } catch (error) {
+    if (error instanceof UnknownAgentError) return false;
+    throw error;
+  }
+}
+
+async function replaceReadyApiOAuthConnection(
+  configStore: ConfigStore,
+  ref: ApiOAuthRef,
+  provider: ApiOAuthProvider,
+  identity: { accountName?: string } | undefined,
+): Promise<void> {
+  const agent = await configStore.getAgent(ref.agentId);
+  const index = agent.apiConnections.findIndex(
+    (connection) => connection.id === ref.connectionId &&
+      connection.authMode === 'oauth' &&
+      connection.oauthProvider === provider &&
+      isValidApiOAuthConnectionPolicy(connection),
+  );
+  if (index < 0) {
+    throw new ApiOAuthError('connection_missing', 'OAuth connection no longer exists');
+  }
+  const apiConnections = agent.apiConnections.slice();
+  const current = apiConnections[index]!;
+  apiConnections[index] = {
+    ...current,
+    lifecycleStatus: 'ready',
+    statusText: 'Connected',
+    ...(identity ? { identity } : {}),
+  };
+  await configStore.updateAgent(ref.agentId, { apiConnections });
+}
+
+async function replacePendingApiOAuthConnection(
+  configStore: ConfigStore,
+  ref: ApiOAuthRef,
+  provider: ApiOAuthProvider,
+): Promise<void> {
+  const agent = await configStore.getAgent(ref.agentId);
+  const index = agent.apiConnections.findIndex(
+    (connection) => connection.id === ref.connectionId &&
+      connection.authMode === 'oauth' &&
+      connection.oauthProvider === provider &&
+      isValidApiOAuthConnectionPolicy(connection),
+  );
+  if (index < 0) {
+    throw new ApiOAuthError('connection_missing', 'OAuth connection no longer exists');
+  }
+  const apiConnections = agent.apiConnections.slice();
+  const current = apiConnections[index]!;
+  const { identity: _identity, ...withoutIdentity } = current;
+  apiConnections[index] = {
+    ...withoutIdentity,
+    lifecycleStatus: 'pending',
+    statusText: 'Not connected',
+  };
+  await configStore.updateAgent(ref.agentId, { apiConnections });
+}
+
+async function normalizeApiOAuthPatch(
+  agentId: string,
+  currentConnections: readonly CustomAgentConfig['apiConnections'][number][],
+  nextConnections: readonly CustomAgentConfig['apiConnections'][number][],
+  settingsStore: SettingsStore,
+): Promise<CustomAgentConfig['apiConnections']> {
+  const currentById = new Map(currentConnections.map((connection) => [connection.id, connection]));
+  const nextById = new Map(nextConnections.map((connection) => [connection.id, connection]));
+  await Promise.all(currentConnections.map(async (current) => {
+    if (current.authMode !== 'oauth' || current.oauthProvider !== 'google') return;
+    const next = nextById.get(current.id);
+    if (next?.authMode === 'oauth' && next.oauthProvider === current.oauthProvider) return;
+    await deleteApiOAuthSettings(
+      { agentId, connectionId: current.id },
+      settingsStore,
+    );
+  }));
+  return Promise.all(nextConnections.map(async (connection) => {
+    if (connection.authMode !== 'oauth' || connection.oauthProvider !== 'google') {
+      return connection;
+    }
+    const current = currentById.get(connection.id);
+    const sameAuthorization = current?.authMode === 'oauth' &&
+      current.oauthProvider === connection.oauthProvider &&
+      sameStringSet(current.oauthScopes ?? [], connection.oauthScopes ?? []);
+    const ref = { agentId, connectionId: connection.id };
+    if (!sameAuthorization) {
+      await invalidateApiOAuthAuthorization(ref, settingsStore);
+    }
+    const sources = await describeApiOAuthSources(ref, settingsStore);
+    if (sameAuthorization && sources.tokens === 'stored') {
+      return {
+        ...connection,
+        lifecycleStatus: 'ready' as const,
+        statusText: current.statusText || 'Connected',
+        ...(current.identity ? { identity: current.identity } : {}),
+      };
+    }
+    const { identity: _identity, ...withoutIdentity } = connection;
+    return {
+      ...withoutIdentity,
+      lifecycleStatus: 'pending' as const,
+      statusText: 'Not connected',
+    };
+  }));
+}
+
+function sameStringSet(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value) => right.includes(value));
+}
+
 interface VerifyMcpOAuthConnectionInput {
   ref: { agentId: string; connectionId: string };
   configStore: ConfigStore;
@@ -2629,6 +3044,10 @@ function isHttps(c: Context): boolean {
   }
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 function toAgentConfig(input: v.InferOutput<typeof agentSchema>): CustomAgentConfig {
   return {
     id: input.id,
@@ -2696,15 +3115,29 @@ async function withApiConnectionSources(
 ): Promise<CustomAgentConfig> {
   if (agent.apiConnections.length === 0) return agent;
   const apiConnections = await Promise.all(
-    agent.apiConnections.map(async (connection) => ({
-      ...connection,
-      credentialSource: await describeConnectorCredentialSource(
-        agent.id,
-        connection.id,
-        platformEnv,
-        settingsStore,
-      ),
-    })),
+    agent.apiConnections.map(async (connection) => {
+      if (connection.authMode === 'oauth') {
+        const sources = await describeApiOAuthSources(
+          { agentId: agent.id, connectionId: connection.id },
+          settingsStore,
+        );
+        return {
+          ...connection,
+          credentialSource: 'missing' as const,
+          oauthClientSource: sources.client,
+          oauthTokenSource: sources.tokens,
+        };
+      }
+      return {
+        ...connection,
+        credentialSource: await describeConnectorCredentialSource(
+          agent.id,
+          connection.id,
+          platformEnv,
+          settingsStore,
+        ),
+      };
+    }),
   );
   return { ...agent, apiConnections };
 }
@@ -2723,6 +3156,24 @@ function toApiConnections(
       : {}),
     allowedMethods: connection.allowedMethods,
     enabled: connection.enabled,
+    ...(connection.authMode !== undefined ? { authMode: connection.authMode } : {}),
+    ...(connection.oauthProvider !== undefined ? { oauthProvider: connection.oauthProvider } : {}),
+    ...(connection.oauthScopes !== undefined ? { oauthScopes: connection.oauthScopes } : {}),
+    ...(connection.oauthAppType !== undefined ? { oauthAppType: connection.oauthAppType } : {}),
+    ...(connection.lifecycleStatus !== undefined ? { lifecycleStatus: connection.lifecycleStatus } : {}),
+    ...(connection.statusText !== undefined ? { statusText: connection.statusText } : {}),
+    ...(connection.identity !== undefined
+      ? {
+          identity: {
+            ...(connection.identity.workspaceName !== undefined
+              ? { workspaceName: connection.identity.workspaceName }
+              : {}),
+            ...(connection.identity.accountName !== undefined
+              ? { accountName: connection.identity.accountName }
+              : {}),
+          },
+        }
+      : {}),
     ...(connection.presetId !== undefined ? { presetId: connection.presetId } : {}),
   }));
 }
