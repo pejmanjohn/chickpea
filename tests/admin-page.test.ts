@@ -2852,6 +2852,15 @@ test('the searchable Connections gallery is immediate, renders brand logos, and 
   assert.match(linearRow, /<span class="gallery-row-name">Linear<\/span>/);
   assert.match(linearRow, /<span class="gallery-lane">MCP<\/span>/);
 
+  const airtableRow = gallery.match(
+    /<div class="gallery-row"><span class="conn-logo conn-logo-img conn-logo-full"><svg(?:(?!<\/div>)[\s\S])*?data-preset="airtable">Connect<\/button><\/div>/,
+  )?.[0];
+  assert.ok(airtableRow);
+  assert.match(airtableRow, /fill="#FCB400"/);
+  assert.match(airtableRow, /fill="#18BFFF"/);
+  assert.match(airtableRow, /fill="#F82B60"/);
+  assert.doesNotMatch(airtableRow, /currentColor/);
+
   const notionRow = gallery.match(
     /<div class="gallery-row"><span class="conn-logo conn-logo-img conn-logo-full"><svg[^>]*aria-hidden="true"(?:(?!<\/div>)[\s\S])*?data-preset="notion">Connect<\/button><\/div>/,
   )?.[0];
@@ -3231,7 +3240,10 @@ test('the Airtable preset saves OAuth policy before requesting its documented sc
     editor,
     /Sign in to Airtable and choose the workspaces and bases Chickpea should access\.<\/p>/,
   );
-  assert.match(editor, /data-action="conn-oauth-start"[^>]*>[\s\S]*?<span>Sign into Airtable<\/span>/);
+  assert.match(
+    editor,
+    /data-action="conn-oauth-start"[^>]*><span class="conn-logo conn-logo-img conn-logo-full"><svg[\s\S]*?<span>Sign into Airtable<\/span>/,
+  );
   assert.doesNotMatch(editor, /data-action="conn-field-bearer"/);
   assert.doesNotMatch(editor, /Where do I find this\?/);
   assert.doesNotMatch(editor, /href="https:\/\/support\.airtable\.com\/using-the-airtable-mcp-server"/);
