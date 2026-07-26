@@ -78,7 +78,7 @@ test('connector preset catalog entries are valid', () => {
 
 test('preset lanes classify the existing MCP catalog, the API additions, and both', () => {
   const existingMcpPresets = CONNECTOR_PRESETS.filter((preset) => !API_PRESET_IDS.has(preset.id));
-  assert.equal(existingMcpPresets.length, 20);
+  assert.equal(existingMcpPresets.length, 21);
   for (const preset of existingMcpPresets) {
     assert.deepEqual(presetLanes(preset), { mcp: true, api: false }, preset.id);
   }
@@ -139,6 +139,25 @@ test('the Linear MCP preset requests read-write OAuth access', () => {
     tokenDocsHint: 'Sign in to Linear and choose the workspace Chickpea should access.',
     notes:
       'Chickpea requests Linear read and write access so it can find, create, and update workspace objects.',
+  });
+});
+
+test('the Granola MCP preset uses browser OAuth with the advertised resource scope', () => {
+  assert.deepEqual(getConnectorPreset('granola'), {
+    id: 'granola',
+    name: 'Granola',
+    description:
+      'Search meeting notes and transcripts, browse folders, and extract decisions and action items.',
+    category: 'docs',
+    accent: '#292929',
+    url: 'https://mcp.granola.ai/mcp',
+    transport: 'streamable-http',
+    auth: { kind: 'oauth', scope: 'mcp' },
+    tokenDocsUrl: 'https://docs.granola.ai/help-center/sharing/integrations/mcp',
+    tokenDocsHint:
+      'Sign in to Granola and choose the account whose meeting notes Chickpea should access.',
+    notes:
+      'Granola MCP uses personal browser OAuth. Anyone who can use this profile may query meetings available to the connected account; plan and workspace restrictions still apply.',
   });
 });
 

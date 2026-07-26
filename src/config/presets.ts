@@ -344,6 +344,22 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
     notes: 'API keys require a Pro, Ultra, Teams, or Business plan.',
   },
   {
+    id: 'granola',
+    name: 'Granola',
+    description:
+      'Search meeting notes and transcripts, browse folders, and extract decisions and action items.',
+    category: 'docs',
+    accent: '#292929',
+    url: 'https://mcp.granola.ai/mcp',
+    transport: 'streamable-http',
+    auth: { kind: 'oauth', scope: 'mcp' },
+    tokenDocsUrl: 'https://docs.granola.ai/help-center/sharing/integrations/mcp',
+    tokenDocsHint:
+      'Sign in to Granola and choose the account whose meeting notes Chickpea should access.',
+    notes:
+      'Granola MCP uses personal browser OAuth. Anyone who can use this profile may query meetings available to the connected account; plan and workspace restrictions still apply.',
+  },
+  {
     id: 'incident-io',
     name: 'incident.io',
     description: 'Query incidents and alerts, check on-call, and manage escalations.',

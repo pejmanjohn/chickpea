@@ -30,6 +30,7 @@ const IDENTITY_PROBES: Record<string, McpIdentityProbe> = {
   notion: { name: 'notion-fetch', arguments: { id: 'self' } },
   linear: { name: 'get_user', arguments: { query: 'me' } },
   airtable: { name: 'list_workspaces', arguments: {} },
+  granola: { name: 'get_account_info', arguments: {} },
 };
 
 /**
@@ -49,6 +50,7 @@ export async function discoverMcpConnectionIdentity(
   if (presetId === 'notion') return parseNotionIdentity(payload);
   if (presetId === 'linear') return parseLinearIdentity(payload);
   if (presetId === 'airtable') return parseAirtableIdentity(payload);
+  if (presetId === 'granola') return parseGranolaIdentity(payload);
   return undefined;
 }
 
@@ -117,6 +119,30 @@ function parseAirtableIdentity(value: unknown): McpConnectionIdentity | undefine
     return workspaceName ? { workspaceName } : undefined;
   }
   return { workspaceName: `${workspaces.length} accessible workspaces` };
+}
+
+function parseGranolaIdentity(value: unknown): McpConnectionIdentity | undefined {
+  if (!isRecord(value)) return undefined;
+  const content = isRecord(value.structuredContent) ? value.structuredContent : value;
+  const account = isRecord(content.account)
+    ? content.account
+    : isRecord(content.user)
+      ? content.user
+      : undefined;
+  const workspace =
+    content.active_workspace ?? content.activeWorkspace ?? content.workspace;
+  const workspaceName = boundedLabel(
+    isRecord(workspace) ? workspace.name ?? workspace.title : workspace,
+  );
+  const accountName =
+    boundedLabel(content.email) ??
+    boundedLabel(content.account_email) ??
+    boundedLabel(account?.email);
+  if (!workspaceName && !accountName) return undefined;
+  return {
+    ...(workspaceName ? { workspaceName } : {}),
+    ...(accountName ? { accountName } : {}),
+  };
 }
 
 function boundedLabel(value: unknown): string | undefined {

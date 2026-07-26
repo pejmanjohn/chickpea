@@ -2379,9 +2379,9 @@ test('a connected preset drops out of the Available gallery until it is removed'
   // Linear and Asana are already connected, so the gallery no longer offers them...
   assert.doesNotMatch(panel, /data-action="conn-preset" data-preset="linear"/);
   assert.doesNotMatch(panel, /data-action="conn-preset" data-preset="asana"/);
-  // ...other presets remain, and the Available count drops from 25 to 23.
+  // ...other presets remain, and the Available count drops from 26 to 24.
   assert.match(panel, /data-action="conn-preset" data-preset="airtable"/);
-  assert.match(panel, /<span class="gallery-head-count">23<\/span>/);
+  assert.match(panel, /<span class="gallery-head-count">24<\/span>/);
 });
 
 test('saved MCP and API connections share one lane-badged list with matching inline editors', async () => {
@@ -2973,9 +2973,9 @@ test('the searchable Connections gallery is immediate, renders brand logos, and 
   assert.match(gallery, /data-action="conn-gallery-search"/);
   assert.equal(
     (gallery.match(/data-action="conn-preset" data-preset="[^"]+">Connect<\/button>/g) ?? []).length,
-    25,
+    26,
   );
-  assert.match(gallery, /<span>Available<\/span><span class="gallery-head-count">25<\/span>/);
+  assert.match(gallery, /<span>Available<\/span><span class="gallery-head-count">26<\/span>/);
   assert.doesNotMatch(gallery, /data-preset="google-workspace"/);
   assert.doesNotMatch(gallery, /data-preset="github"/);
   assert.doesNotMatch(gallery, /data-preset="context7"/);
@@ -3064,6 +3064,17 @@ test('the searchable Connections gallery is immediate, renders brand logos, and 
   assert.match(driveRow, /<span class="gallery-row-name">Google Drive<\/span>/);
   assert.match(driveRow, /Find, read, create, and organize files\./);
   assert.match(driveRow, /fill="url\(#google-drive-yellow\)"/);
+
+  const granolaRow = gallery.match(
+    /<div class="gallery-row gallery-row-described"><span class="conn-logo conn-logo-raster"><img src="data:image\/png;base64,[^"]+" alt=""><\/span>(?:(?!<\/div>)[\s\S])*?data-preset="granola">Connect<\/button><\/div>/,
+  )?.[0];
+  assert.ok(granolaRow);
+  assert.match(granolaRow, /<span class="gallery-row-name">Granola<\/span>/);
+  assert.match(
+    granolaRow,
+    /Search meeting notes and transcripts, browse folders, and extract decisions and action items\./,
+  );
+  assert.match(granolaRow, /<span class="gallery-lane">MCP<\/span>/);
 
   for (const id of ['asana', 'zendesk']) {
     const apiRow = gallery.match(
@@ -3602,6 +3613,63 @@ test('the Linear preset saves read-write OAuth policy and requests read and writ
   ]);
   assert.deepEqual(harness.assignedUrls, [
     'https://linear.example/authorize?state=opaque-state',
+  ]);
+});
+
+test('the Granola preset saves OAuth policy before requesting its MCP resource scope', async () => {
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    deferAgentPatch: true,
+    oauthStartResult: {
+      authorizationUrl: 'https://mcp-auth.granola.ai/oauth2/authorize?state=opaque-state',
+    },
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'granola' }) });
+
+  assert.match(harness.app.innerHTML, /Sign into Granola/);
+  assert.match(
+    harness.app.innerHTML,
+    /Anyone who can use this profile may query meetings available to the connected account/,
+  );
+  assert.doesNotMatch(harness.app.innerHTML, /Where do I find this\?/);
+
+  click({ target: actionTarget({ 'data-action': 'conn-oauth-start' }) });
+  await flushAsync();
+
+  assert.equal(harness.agentPatchBodies.length, 1);
+  assert.deepEqual(harness.oauthStartPosts, []);
+  harness.resolveAgentPatch();
+  await flushAsync();
+
+  const servers = harness.agentPatchBodies[0]?.body.mcpServers as Array<Record<string, unknown>>;
+  assert.deepEqual(servers, [
+    {
+      id: 'granola',
+      displayName: 'Granola',
+      url: 'https://mcp.granola.ai/mcp',
+      transport: 'streamable-http',
+      authMode: 'oauth',
+      headerNames: [],
+      enabled: true,
+      lifecycleStatus: 'pending',
+      statusText: '',
+      discoveredTools: [],
+      allowedTools: [],
+      oauthScope: 'mcp',
+      presetId: 'granola',
+    },
+  ]);
+  assert.deepEqual(harness.oauthStartPosts, [
+    { agentId: 'agent_conn', connectionId: 'granola', body: { scope: 'mcp' } },
+  ]);
+  assert.deepEqual(harness.assignedUrls, [
+    'https://mcp-auth.granola.ai/oauth2/authorize?state=opaque-state',
   ]);
 });
 

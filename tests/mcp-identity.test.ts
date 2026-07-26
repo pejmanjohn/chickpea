@@ -103,6 +103,35 @@ test('Airtable identity discovery summarizes accessible workspaces without retai
   assert.doesNotMatch(JSON.stringify(severalWorkspaces), /First|Second|Third|owner|editor|viewer/);
 });
 
+test('Granola identity discovery keeps only the connected email and active workspace label', async () => {
+  const input = {
+    ...notionInput,
+    id: 'granola',
+    url: 'https://mcp.granola.ai/mcp',
+    presetId: 'granola',
+  };
+  const identity = await discoverMcpConnectionIdentity(input, async (received, probe) => {
+    assert.equal(received, input);
+    assert.deepEqual(probe, { name: 'get_account_info', arguments: {} });
+    return {
+      structuredContent: {
+        email: '  pejman@example.com  ',
+        active_workspace: {
+          id: 'workspace-secret-id',
+          name: '  Magoosh   Leadership  ',
+        },
+        access_token: 'must-not-enter-profile',
+      },
+    };
+  });
+
+  assert.deepEqual(identity, {
+    workspaceName: 'Magoosh Leadership',
+    accountName: 'pejman@example.com',
+  });
+  assert.doesNotMatch(JSON.stringify(identity), /secret-id|access_token|must-not-enter-profile/);
+});
+
 test('identity discovery stays provider-gated for presets without a proven probe', async () => {
   let calls = 0;
   const identity = await discoverMcpConnectionIdentity(
