@@ -21,7 +21,10 @@ import type {
   ResolveMcpOAuthAccessInput,
   StartMcpOAuthInput,
 } from '../src/config/mcp-oauth.ts';
-import { mcpSecretCleanupMarkerKey } from '../src/config/mcp-secrets.ts';
+import {
+  mcpSecretCleanupMarkerKey,
+  saveMcpSecrets,
+} from '../src/config/mcp-secrets.ts';
 import type { McpConnectInput, McpDiscoveryResult } from '../src/config/mcp-test.ts';
 import { SqliteSettingsStore, type SettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore, type ConfigStore } from '../src/config/store.ts';
@@ -166,7 +169,7 @@ test('the worker root redirects to /admin instead of a bare 404', async () => {
 
 test('MCP OAuth routes expose public metadata but gate start and return no secrets', async () => {
   const store = new SqliteConfigStore(':memory:', {
-    agents: [agent({ mcpServers: [mcpServer({ authMode: 'oauth' })] })],
+    agents: [agent({ mcpServers: [mcpServer({ authMode: 'oauth', oauthScope: 'read write' })] })],
     assignments: [],
   });
   const settings = new SqliteSettingsStore(':memory:');
@@ -213,7 +216,7 @@ test('MCP OAuth routes expose public metadata but gate start and return no secre
           ...auth(ADMIN_TOKEN),
           'content-type': 'application/json',
         },
-        body: JSON.stringify({ scope: 'read write' }),
+        body: JSON.stringify({ scope: 'tampered scope' }),
       },
     );
     assert.equal(response.status, 200);
@@ -246,6 +249,7 @@ test('MCP OAuth callback is public, state-gated, enables all tools on first conn
         authMode: 'oauth',
         lifecycleStatus: 'pending',
         statusText: '',
+        headerNames: ['X-Tenant'],
         discoveredTools: [],
         allowedTools: [],
         presetId: 'notion',
@@ -257,8 +261,16 @@ test('MCP OAuth callback is public, state-gated, enables all tools on first conn
   const cancelled: string[] = [];
   const discoveryCalls: McpConnectInput[] = [];
   const identityCalls: Array<Record<string, unknown>> = [];
+  const settings = new SqliteSettingsStore(':memory:');
   try {
+    await saveMcpSecrets(
+      { agentId: 'agent_admin', connectionId: 'notion' },
+      { headers: { 'X-Tenant': 'tenant-1' } },
+      undefined,
+      settings,
+    );
     const app = appWithAdminOptions(store, {
+      settings,
       completeMcpOAuth: async (input) => {
         completed.push(input);
         return {
@@ -307,6 +319,7 @@ test('MCP OAuth callback is public, state-gated, enables all tools on first conn
     assert.equal(success.headers.get('location')?.includes('provider-code'), false);
     assert.equal(discoveryCalls.length, 1);
     assert.equal(discoveryCalls[0]?.headers.Authorization, 'Bearer notion-access-token');
+    assert.equal(discoveryCalls[0]?.headers['X-Tenant'], 'tenant-1');
     assert.equal(identityCalls.length, 1);
     assert.equal(identityCalls[0]?.headers, discoveryCalls[0]?.headers);
     const connected = (await store.getAgent('agent_admin')).mcpServers[0];
@@ -348,11 +361,12 @@ test('MCP OAuth callback is public, state-gated, enables all tools on first conn
     assert.equal(malformed.status, 400);
     assert.deepEqual(await malformed.json(), { error: 'invalid_request' });
   } finally {
+    settings.close();
     store.close();
   }
 });
 
-test('MCP OAuth reconnect preserves revoked tools and enables newly discovered tools', async () => {
+test('MCP OAuth reconnect preserves approvals without enabling newly discovered tools', async () => {
   const store = new SqliteConfigStore(':memory:', {
     agents: [agent({
       mcpServers: [mcpServer({
@@ -398,7 +412,7 @@ test('MCP OAuth reconnect preserves revoked tools and enables newly discovered t
       { name: 'create', description: 'Create a Linear issue.' },
       { name: 'get', description: 'Get a Linear issue.' },
     ]);
-    assert.deepEqual(connected?.allowedTools, ['search', 'get']);
+    assert.deepEqual(connected?.allowedTools, ['search']);
   } finally {
     store.close();
   }
@@ -1793,7 +1807,7 @@ test('admin API accepts an agent with a valid mcpServers entry and round-trips i
     const app = appWithAdmin(store);
     const createdAgent = agent({
       id: 'agent_mcp',
-      mcpServers: [mcpServer({ authMode: 'oauth' })],
+      mcpServers: [mcpServer({ authMode: 'oauth', oauthScope: 'read write' })],
     });
 
     const create = await app.request('/admin/api/agents', {
@@ -1807,6 +1821,8 @@ test('admin API accepts an agent with a valid mcpServers entry and round-trips i
     // A PATCH carrying only mcpServers must preserve the array verbatim.
     const patched = [mcpServer({
       id: 'linear-mcp',
+      authMode: 'oauth',
+      oauthScope: 'read write admin',
       allowedTools: ['search', 'create'],
       identity: {
         workspaceName: 'Engineering workspace',

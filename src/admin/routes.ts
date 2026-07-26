@@ -253,6 +253,7 @@ const mcpServerSchema = v.pipe(
       v.array(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(120))),
       v.maxLength(50),
     ),
+    oauthScope: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(4096))),
     lastCheckedAt: v.optional(v.number()),
     identity: v.optional(mcpIdentitySchema),
     presetId: v.optional(v.pipe(v.string(), v.regex(/^[a-z0-9][a-z0-9-]{0,63}$/), v.maxLength(64))),
@@ -761,6 +762,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       await verifyAndStoreMcpOAuthConnection({
         ref,
         configStore: store(c),
+        ...((c.env as PlatformEnv | undefined) !== undefined
+          ? { platformEnv: c.env as PlatformEnv }
+          : {}),
         discoverMcp,
         identifyMcp,
         resolveMcpOAuthToken,
@@ -837,12 +841,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return c.json({ error: 'oauth_not_enabled' }, 409);
     }
     try {
+      const oauthScope = connection.oauthScope ?? parsed.output.scope;
       const result = await startMcpOAuth(
         {
           ref: { agentId, connectionId },
           serverUrl: connection.url,
           callbackUrl: `${requestOrigin(c)}/oauth/callback`,
-          ...(parsed.output.scope ? { scope: parsed.output.scope } : {}),
+          ...(oauthScope ? { scope: oauthScope } : {}),
         },
         oauthDependencies(c),
       );
@@ -2329,6 +2334,7 @@ function mcpOAuthAdminRedirect(
 interface VerifyMcpOAuthConnectionInput {
   ref: { agentId: string; connectionId: string };
   configStore: ConfigStore;
+  platformEnv?: PlatformEnv;
   discoverMcp: (input: McpConnectInput) => Promise<McpDiscoveryResult>;
   identifyMcp: (input: McpIdentityInput) => Promise<McpConnectionIdentity | undefined>;
   resolveMcpOAuthToken: (
@@ -2354,10 +2360,14 @@ async function verifyAndStoreMcpOAuthConnection(
     { ref: input.ref, serverUrl: validated.url },
     input.oauthDependencies,
   );
-  const headers = buildMcpRequestHeaders('oauth', {
-    bearer: accessToken,
-    headers: {},
-  });
+  const secrets = await resolveMcpSecrets(
+    input.ref,
+    connection.headerNames,
+    input.platformEnv,
+    input.oauthDependencies.settings,
+  );
+  secrets.bearer = accessToken;
+  const headers = buildMcpRequestHeaders('oauth', secrets);
 
   try {
     const discovery = await input.discoverMcp({
@@ -2404,16 +2414,13 @@ function allowedToolsAfterMcpDiscovery(
   connection: Pick<McpConnectionConfig, 'allowedTools' | 'discoveredTools'>,
   discoveredTools: McpConnectionConfig['discoveredTools'],
 ): string[] {
-  const previouslyDiscovered = new Set(
-    connection.discoveredTools.map((tool) => tool.name),
-  );
   const previouslyAllowed = new Set(connection.allowedTools);
+  if (connection.discoveredTools.length === 0) {
+    return discoveredTools.map((tool) => tool.name);
+  }
   return discoveredTools
     .map((tool) => tool.name)
-    .filter(
-      (toolName) =>
-        !previouslyDiscovered.has(toolName) || previouslyAllowed.has(toolName),
-    );
+    .filter((toolName) => previouslyAllowed.has(toolName));
 }
 
 type VerifiedMcpConnectionResult = Pick<
@@ -2659,6 +2666,7 @@ function toMcpServers(
       ...(tool.description !== undefined ? { description: tool.description } : {}),
     })),
     allowedTools: server.allowedTools,
+    ...(server.oauthScope !== undefined ? { oauthScope: server.oauthScope } : {}),
     ...(server.lastCheckedAt !== undefined ? { lastCheckedAt: server.lastCheckedAt } : {}),
     ...(server.identity !== undefined
       ? {

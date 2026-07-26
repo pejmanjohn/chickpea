@@ -2532,6 +2532,7 @@ test('a saved read-only Linear OAuth connection stays Advanced after the catalog
     /value="https:\/\/mcp\.linear\.app\/mcp\/readonly"[^>]*data-action="conn-field-url"/,
   );
   assert.match(editor, /<option value="oauth" selected disabled>OAuth \(configured separately\)<\/option>/);
+  assert.match(editor, /data-action="conn-oauth-start"[^>]*>[\s\S]*?<span>Sign into Linear<\/span>/);
   assert.doesNotMatch(editor, /data-action="conn-view"/);
   assert.doesNotMatch(editor, /read and write access/);
 
@@ -2556,6 +2557,58 @@ test('a saved read-only Linear OAuth connection stays Advanced after the catalog
   ]);
   assert.deepEqual(harness.assignedUrls, [
     'https://linear.example/authorize?state=legacy-readonly',
+  ]);
+});
+
+test('a URL-customized OAuth connection keeps lifecycle controls and its saved scope', async () => {
+  const scope =
+    'organizations:read projects:read projects:write database:write database:read analytics:read secrets:read edge_functions:read edge_functions:write environment:read environment:write storage:read';
+  const harness = runAdminPageHarness({
+    agents: [
+      connectionsAgent({
+        mcpServers: [
+          mcpConnectionFixture({
+            id: 'supabase',
+            displayName: 'Supabase',
+            url: 'https://mcp.supabase.com/mcp?project_ref=test-project&read_only=true',
+            authMode: 'oauth',
+            oauthScope: scope,
+            lifecycleStatus: 'ready',
+            statusText: 'Connected · 2 tools',
+            presetId: 'supabase',
+          }),
+        ],
+      }),
+    ],
+    deferAgentPatch: true,
+    oauthStartResult: {
+      authorizationUrl: 'https://api.supabase.com/v1/oauth/authorize?state=customized',
+    },
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-edit', 'data-index': '0' }) });
+
+  const editor = harness.app.innerHTML;
+  assert.doesNotMatch(editor, /data-action="conn-view"/);
+  assert.match(editor, /value="https:\/\/mcp\.supabase\.com\/mcp\?project_ref=test-project&amp;read_only=true"/);
+  assert.match(editor, /data-action="conn-oauth-start">Reconnect<\/button>/);
+  assert.match(editor, /data-action="conn-oauth-disconnect">Disconnect<\/button>/);
+
+  click({ target: actionTarget({ 'data-action': 'conn-oauth-start' }) });
+  await flushAsync();
+  assert.deepEqual(harness.oauthStartPosts, []);
+  const servers = harness.agentPatchBodies[0]?.body.mcpServers as Array<Record<string, unknown>>;
+  assert.equal(servers[0]?.oauthScope, scope);
+
+  harness.resolveAgentPatch();
+  await flushAsync();
+  assert.deepEqual(harness.oauthStartPosts, [
+    { agentId: 'agent_conn', connectionId: 'supabase', body: { scope } },
   ]);
 });
 
@@ -3277,6 +3330,7 @@ test('the Linear preset saves read-write OAuth policy and requests read and writ
       statusText: '',
       discoveredTools: [],
       allowedTools: [],
+      oauthScope: 'read write',
       presetId: 'linear',
     },
   ]);
@@ -3341,6 +3395,8 @@ test('the Airtable preset saves OAuth policy before requesting its documented sc
       statusText: '',
       discoveredTools: [],
       allowedTools: [],
+      oauthScope:
+        'data.records:read data.records:write schema.bases:read schema.bases:write data.recordComments:read data.recordComments:write workspacesAndBases:read',
       presetId: 'airtable',
     },
   ]);
@@ -3468,6 +3524,7 @@ test('the Supabase preset saves OAuth policy before requesting every required sc
       statusText: '',
       discoveredTools: [],
       allowedTools: [],
+      oauthScope: scope,
       presetId: 'supabase',
     },
   ]);
@@ -3527,6 +3584,7 @@ test('the Atlassian preset saves OAuth policy before requesting its advertised r
       statusText: '',
       discoveredTools: [],
       allowedTools: [],
+      oauthScope: scope,
       presetId: 'atlassian',
     },
   ]);
@@ -3636,6 +3694,32 @@ test('a Notion OAuth start failure keeps the saved connection recoverable in pla
     harness.app.innerHTML,
     /Notion OAuth could not be prepared\. Check that this install has a reachable callback URL, then try again\./,
   );
+});
+
+test('a blocked profile save re-enables OAuth start after returning to Connections', async () => {
+  const harness = runAdminPageHarness({ agents: [connectionsAgent()] });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  assert.ok(click);
+  assert.ok(input);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'skills' }) });
+  click({ target: actionTarget({ 'data-action': 'skill-new' }) });
+  input({ target: inputTarget({ 'data-action': 'skill-field-name' }, 'Bad Name!') });
+  input({ target: inputTarget({ 'data-action': 'skill-field-description' }, 'x') });
+  input({ target: inputTarget({ 'data-action': 'skill-field-instructions' }, 'y') });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'notion' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-oauth-start' }) });
+  await flushAsync();
+
+  assert.deepEqual(harness.agentPatchBodies, []);
+  assert.deepEqual(harness.oauthStartPosts, []);
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  assert.match(harness.app.innerHTML, /data-action="conn-oauth-start"[^>]*>[\s\S]*?<span>Sign into Notion<\/span>/);
+  assert.doesNotMatch(harness.app.innerHTML, /Opening Notion/);
 });
 
 test('an OAuth callback return opens the profile Connections tab with a status-only notice', async () => {

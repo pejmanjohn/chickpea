@@ -49,6 +49,8 @@ export interface McpConnectionConfig {
   statusText: string;
   discoveredTools: McpConnectionToolInfo[];
   allowedTools: string[];
+  /** OAuth scopes are connection policy, never credentials. */
+  oauthScope?: string;
   lastCheckedAt?: number;
   identity?: McpConnectionIdentity;
   /**

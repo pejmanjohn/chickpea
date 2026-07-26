@@ -18,6 +18,13 @@ import type {
   OAuthProtectedResourceMetadata,
   OAuthTokens,
 } from '@modelcontextprotocol/sdk/shared/auth.js';
+import {
+  OAuthClientInformationFullSchema,
+  OAuthClientInformationSchema,
+  OAuthMetadataSchema,
+  OAuthTokensSchema,
+  OpenIdProviderDiscoveryMetadataSchema,
+} from '@modelcontextprotocol/sdk/shared/auth.js';
 
 import { UnknownAgentError } from './errors.ts';
 import {
@@ -386,6 +393,9 @@ export async function resolveMcpOAuthAccessToken(
     return initial.tokens.access_token;
   }
   if (!initial.tokens.refresh_token) {
+    if (!tokenHardExpired(initial, now(dependencies))) {
+      return initial.tokens.access_token;
+    }
     throw new McpOAuthError(
       'reauthorization_required',
       'MCP OAuth access expired without a refresh token',
@@ -411,6 +421,9 @@ export async function resolveMcpOAuthAccessToken(
       }
       const refreshToken = current.tokens.refresh_token;
       if (!refreshToken) {
+        if (!tokenHardExpired(current, now(dependencies))) {
+          return current.tokens.access_token;
+        }
         throw new McpOAuthError(
           'reauthorization_required',
           'MCP OAuth access expired without a refresh token',
@@ -476,7 +489,10 @@ export async function resolveMcpOAuthAccessToken(
             'MCP OAuth connection is not authorized',
           );
         }
-        return parseStoredTokenBundle(winner).tokens.access_token;
+        const winnerBundle = parseStoredTokenBundle(winner);
+        assertTokenResource(winnerBundle, serverUrl);
+        await requireCurrentConnection(input.ref, serverUrl, dependencies);
+        return winnerBundle.tokens.access_token;
       }
       try {
         await requireCurrentConnection(input.ref, serverUrl, dependencies);
@@ -531,7 +547,8 @@ async function resolveClientInformation(
       if (
         stored.authorizationServerUrl === authorizationServerUrl &&
         stored.callbackUrl === callbackUrl &&
-        stored.scope === scope
+        stored.scope === scope &&
+        !clientInformationExpired(stored.clientInformation, now(dependencies))
       ) {
         return stored.clientInformation;
       }
@@ -637,6 +654,23 @@ function tokenNeedsRefresh(bundle: StoredTokenBundle, currentTime: number): bool
   return (
     bundle.obtainedAt + bundle.tokens.expires_in * 1_000 <=
     currentTime + REFRESH_SKEW_MS
+  );
+}
+
+function tokenHardExpired(bundle: StoredTokenBundle, currentTime: number): boolean {
+  if (bundle.tokens.expires_in === undefined) return false;
+  return bundle.obtainedAt + bundle.tokens.expires_in * 1_000 <= currentTime;
+}
+
+function clientInformationExpired(
+  clientInformation: OAuthClientInformationMixed,
+  currentTime: number,
+): boolean {
+  const expiresAt = clientInformation.client_secret_expires_at;
+  return (
+    expiresAt !== undefined &&
+    expiresAt !== 0 &&
+    expiresAt <= Math.floor(currentTime / 1_000)
   );
 }
 
@@ -751,13 +785,23 @@ function parsePendingAuthorization(
     (value.scope !== undefined && typeof value.scope !== 'string') ||
     typeof value.authorizationServerUrl !== 'string' ||
     typeof value.codeVerifier !== 'string' ||
-    !isRecord(value.metadata) ||
     typeof value.resource !== 'string' ||
+    !isRecord(value.metadata) ||
     !isRecord(value.clientInformation)
   ) {
     throw invalidStorage();
   }
-  return value as unknown as PendingAuthorization & { codeVerifier: string };
+  return {
+    state: value.state,
+    expiresAt: value.expiresAt,
+    serverUrl: value.serverUrl,
+    callbackUrl: value.callbackUrl,
+    authorizationServerUrl: value.authorizationServerUrl,
+    metadata: parseAuthorizationServerMetadata(value.metadata),
+    resource: value.resource,
+    clientInformation: parseClientInformation(value.clientInformation),
+    codeVerifier: value.codeVerifier,
+  };
 }
 
 function parseStoredClient(raw: string): StoredClient {
@@ -765,12 +809,18 @@ function parseStoredClient(raw: string): StoredClient {
   if (
     typeof value.authorizationServerUrl !== 'string' ||
     typeof value.callbackUrl !== 'string' ||
+    (value.scope !== undefined && typeof value.scope !== 'string') ||
     !isRecord(value.clientInformation) ||
     typeof value.clientInformation.client_id !== 'string'
   ) {
     throw invalidStorage();
   }
-  return value as unknown as StoredClient;
+  return {
+    authorizationServerUrl: value.authorizationServerUrl,
+    callbackUrl: value.callbackUrl,
+    clientInformation: parseClientInformation(value.clientInformation),
+    ...(typeof value.scope === 'string' ? { scope: value.scope } : {}),
+  };
 }
 
 function parseStoredTokenBundle(raw: string): StoredTokenBundle {
@@ -782,13 +832,45 @@ function parseStoredTokenBundle(raw: string): StoredTokenBundle {
     typeof value.obtainedAt !== 'number' ||
     !isRecord(value.metadata) ||
     !isRecord(value.clientInformation) ||
-    !isRecord(value.tokens) ||
-    typeof value.tokens.access_token !== 'string' ||
-    typeof value.tokens.token_type !== 'string'
+    !isRecord(value.tokens)
   ) {
     throw invalidStorage();
   }
-  return value as unknown as StoredTokenBundle;
+  return {
+    serverUrl: value.serverUrl,
+    authorizationServerUrl: value.authorizationServerUrl,
+    metadata: parseAuthorizationServerMetadata(value.metadata),
+    resource: value.resource,
+    clientInformation: parseClientInformation(value.clientInformation),
+    tokens: parseTokens(value.tokens),
+    obtainedAt: value.obtainedAt,
+  };
+}
+
+function parseAuthorizationServerMetadata(
+  value: Record<string, unknown>,
+): AuthorizationServerMetadata {
+  const oauth = OAuthMetadataSchema.safeParse(value);
+  if (oauth.success) return oauth.data;
+  const openId = OpenIdProviderDiscoveryMetadataSchema.safeParse(value);
+  if (openId.success) return openId.data;
+  throw invalidStorage();
+}
+
+function parseClientInformation(
+  value: Record<string, unknown>,
+): OAuthClientInformationMixed {
+  const full = OAuthClientInformationFullSchema.safeParse(value);
+  if (full.success) return full.data;
+  const minimal = OAuthClientInformationSchema.safeParse(value);
+  if (minimal.success) return minimal.data;
+  throw invalidStorage();
+}
+
+function parseTokens(value: Record<string, unknown>): OAuthTokens {
+  const parsed = OAuthTokensSchema.safeParse(value);
+  if (!parsed.success) throw invalidStorage();
+  return parsed.data;
 }
 
 function parseLease(raw: string): StoredLease {

@@ -189,8 +189,13 @@ export function buildMcpRequestHeaders(
   authMode: 'none' | 'bearer' | 'oauth',
   secrets: ResolvedMcpSecrets,
 ): Record<string, string> {
-  const headers: Record<string, string> = { ...secrets.headers };
-  if ((authMode === 'bearer' || authMode === 'oauth') && secrets.bearer) {
+  const bearerManaged = authMode === 'bearer' || authMode === 'oauth';
+  const headers = Object.fromEntries(
+    Object.entries(secrets.headers).filter(
+      ([name]) => !bearerManaged || name.toLowerCase() !== 'authorization',
+    ),
+  );
+  if (bearerManaged && secrets.bearer) {
     headers.Authorization = 'Bearer ' + secrets.bearer;
   }
   return headers;

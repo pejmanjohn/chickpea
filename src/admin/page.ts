@@ -2977,6 +2977,19 @@ details[open].advanced summary::before {
       '<button type="button" class="link-btn" data-action="conn-oauth-disconnect">Disconnect</button></div></div>';
   }
 
+  function oauthConnectionHtml(editor, preset) {
+    if (editor.lifecycleStatus === "ready") return oauthAccountHtml(editor);
+    var providerName = (preset && preset.name) || editor.displayName || "provider";
+    var hint = (preset && preset.tokenDocsHint) || ("Sign in to " + providerName + " and choose the access Chickpea should receive.");
+    var label = editor.oauthStarting
+      ? "Opening " + esc(providerName) + "&hellip;"
+      : "Sign into " + esc(providerName);
+    return '<div class="field"><p class="hint">' + esc(hint) + '</p>' +
+      '<button type="button" class="btn btn-primary btn-sm oauth-signin" data-action="conn-oauth-start"' + (editor.oauthStarting ? " disabled" : "") + '>' +
+      (preset ? connectorLogoHtml(preset) : "") + '<span>' + label + '</span></button>' +
+      (editor.oauthError ? '<p class="field-error" role="alert">' + esc(editor.oauthError) + '</p>' : "") + '</div>';
+  }
+
   function connectionRecommendedBodyHtml(editor) {
     var preset = editor.preset;
     var bearerStored = editor.sources && editor.sources.bearer && editor.sources.bearer !== "missing";
@@ -2995,16 +3008,7 @@ details[open].advanced summary::before {
       tokenHtml = '<div class="field"><label class="field-label">API key</label>' +
         '<input class="input mono" type="password" autocomplete="off" value="' + esc((editor.headerValues || [])[0] || "") + '" placeholder="' + esc(headerPlaceholder) + '" data-action="conn-header-value" data-index="0"></div>';
     } else {
-      if (editor.lifecycleStatus === "ready") {
-        tokenHtml = oauthAccountHtml(editor);
-      } else {
-        var oauthLabel = editor.oauthStarting
-          ? "Opening " + esc(preset.name) + "&hellip;"
-          : "Sign into " + esc(preset.name);
-        tokenHtml = '<div class="field"><p class="hint">' + esc(preset.tokenDocsHint || "Sign in to Notion to choose access.") + '</p>' +
-          '<button type="button" class="btn btn-primary btn-sm oauth-signin" data-action="conn-oauth-start"' + (editor.oauthStarting ? " disabled" : "") + '>' + connectorLogoHtml(preset) + '<span>' + oauthLabel + '</span></button>' +
-          (editor.oauthError ? '<p class="field-error" role="alert">' + esc(editor.oauthError) + '</p>' : "") + '</div>';
-      }
+      tokenHtml = oauthConnectionHtml(editor, preset);
     }
     var docsHtml = preset.auth.kind !== "oauth" && preset.tokenDocsHint ? '<p class="hint">' + esc(preset.tokenDocsHint) + '</p>' : "";
     if (preset.auth.kind !== "oauth" && preset.tokenDocsUrl) {
@@ -3037,6 +3041,9 @@ details[open].advanced summary::before {
     if (editor.preset && editor.view === "recommended") {
       return '<div class="skill-form">' + viewToggle + connectionRecommendedBodyHtml(editor) + '</div>';
     }
+    var advancedOAuthHtml = editor.authMode === "oauth"
+      ? oauthConnectionHtml(editor, editor.preset || presetById(editor.presetId) || null)
+      : "";
     return '<div class="skill-form">' + viewToggle +
       '<div class="field"><label class="field-label" for="conn-name">Name</label>' +
       '<input class="input" id="conn-name" type="text" value="' + esc(editor.displayName) + '" placeholder="Linear" data-action="conn-field-name"></div>' +
@@ -3045,6 +3052,7 @@ details[open].advanced summary::before {
       '<p class="hint">https only. The tool prefix is ' + esc(editor.id || connectionSlug(editor.displayName) || "id") + '.</p></div>' +
       '<div class="field"><label class="field-label">Transport</label>' + transportSegmentHtml(editor.transport) + '</div>' +
       authHtml +
+      advancedOAuthHtml +
       connectionHeadersHtml(editor) +
       connectionEditorCompletionHtml(editor) + '</div>';
   }
@@ -5065,6 +5073,7 @@ details[open].advanced summary::before {
       }),
       allowedTools: (conn.allowedTools || []).slice()
     };
+    if (conn.oauthScope !== undefined) copy.oauthScope = conn.oauthScope;
     if (conn.lastCheckedAt !== undefined) copy.lastCheckedAt = conn.lastCheckedAt;
     if (conn.identity !== undefined) {
       copy.identity = {
@@ -6478,6 +6487,7 @@ details[open].advanced summary::before {
       url: "",
       transport: "streamable-http",
       authMode: "none",
+      oauthScope: "",
       headerNames: [],
       headerValues: [],
       bearerToken: "",
@@ -6520,6 +6530,7 @@ details[open].advanced summary::before {
       transport: preset.transport,
       id: preset.id,
       authMode: authMode,
+      oauthScope: preset.auth.kind === "oauth" ? String(preset.auth.scope || "").trim() : "",
       headerNames: headerNames,
       headerValues: headerValues
     });
@@ -6542,6 +6553,7 @@ details[open].advanced summary::before {
     editor.url = conn.url;
     editor.transport = conn.transport || "streamable-http";
     editor.authMode = conn.authMode || "none";
+    editor.oauthScope = conn.oauthScope || "";
     editor.headerNames = (conn.headerNames || []).slice();
     editor.headerValues = editor.headerNames.map(function () { return ""; });
     editor.enabled = !!conn.enabled;
@@ -6579,7 +6591,12 @@ details[open].advanced summary::before {
         matchedPreset.auth.kind === connectionAuthKind(conn) &&
         matchedPreset.url === conn.url;
       editor.preset = presetMatchesPolicy ? matchedPreset : null;
-      if (editor.preset) editor.view = "recommended";
+      if (editor.preset) {
+        editor.view = "recommended";
+        if (!editor.oauthScope && editor.preset.auth.kind === "oauth") {
+          editor.oauthScope = String(editor.preset.auth.scope || "").trim();
+        }
+      }
     }
     return editor;
   }
@@ -6739,9 +6756,7 @@ details[open].advanced summary::before {
     var validationError = validateConnectionEditor(editor, servers);
     if (validationError) { editor.error = validationError; render(); return; }
     var connectionId = editor.id || connectionSlug(editor.displayName);
-    var oauthScope = editor.preset && editor.preset.auth && editor.preset.auth.kind === "oauth"
-      ? String(editor.preset.auth.scope || "").trim()
-      : "";
+    var oauthScope = String(editor.oauthScope || "").trim();
     var oauthStartBody = oauthScope ? { scope: oauthScope } : {};
     editor.oauthStarting = true;
     editor.oauthError = "";
@@ -6767,6 +6782,12 @@ details[open].advanced summary::before {
       }).catch(function (error) {
         showOAuthStartError(connectionId, error);
       });
+    }, function () {
+      var current = state.connectionEditor;
+      if (current && (current.id || connectionSlug(current.displayName)) === connectionId) {
+        current.oauthStarting = false;
+      }
+      render();
     });
   }
 
@@ -6795,6 +6816,9 @@ details[open].advanced summary::before {
       discoveredTools: discovered,
       allowedTools: allowed
     };
+    if (editor.authMode === "oauth" && String(editor.oauthScope || "").trim()) {
+      conn.oauthScope = String(editor.oauthScope).trim();
+    }
     if (editor.lastCheckedAt) conn.lastCheckedAt = editor.lastCheckedAt;
     if (editor.identity) conn.identity = editor.identity;
     if (editor.presetId) conn.presetId = editor.presetId;
@@ -7331,7 +7355,7 @@ details[open].advanced summary::before {
     }
   }
 
-  function saveProfile(onSaved) {
+  function saveProfile(onSaved, onFailed) {
     var draft = collectProfileDraft();
     // Clear any stale field error BEFORE the commit gates below render — a
     // fixed-but-uncleared error would otherwise resurface on a hidden panel.
@@ -7339,13 +7363,13 @@ details[open].advanced summary::before {
     // Commit an open inline skill editor into the draft first — a filled-but-
     // not-"Added" skill must be saved, not silently dropped. Abort on invalid,
     // jumping to the tab that carries the inline error so it is visible.
-    if (!commitOpenSkillEditor()) { showProfileTab("skills"); return; }
+    if (!commitOpenSkillEditor()) { showProfileTab("skills"); if (onFailed) onFailed(); return; }
     // Same for an open Connections editor — commit it into mcpServers (and stage
     // its typed secrets) before the PATCH, or bail on an inline validation error.
-    if (!commitOpenConnectionEditor()) { showProfileTab("connections"); return; }
-    if (!commitOpenApiConnectionEditor()) { showProfileTab("connections"); return; }
-    if (!draft.name) { state.profileError = "Name is required."; render(); return; }
-    if (!draft.instructions) { state.profileError = "Profile instructions are required."; state.profileTab = "instructions"; render(); return; }
+    if (!commitOpenConnectionEditor()) { showProfileTab("connections"); if (onFailed) onFailed(); return; }
+    if (!commitOpenApiConnectionEditor()) { showProfileTab("connections"); if (onFailed) onFailed(); return; }
+    if (!draft.name) { state.profileError = "Name is required."; render(); if (onFailed) onFailed(); return; }
+    if (!draft.instructions) { state.profileError = "Profile instructions are required."; state.profileTab = "instructions"; render(); if (onFailed) onFailed(); return; }
     // An open repository picker holds checkbox changes the user has made but
     // not yet Applied; saving must not silently serialize the stale grant
     // list. Committing equals clicking Apply — which is what the checked
@@ -7415,6 +7439,7 @@ details[open].advanced summary::before {
               : "Profile saved, but a credential could not be removed — Save again to retry.";
             state.profileDirty = true;
             render();
+            if (onFailed) onFailed();
             return;
           }
           if (onSaved) { onSaved(); } else { render(); }
@@ -7434,7 +7459,7 @@ details[open].advanced summary::before {
       state.profileDraft = null;
       state.editingAgentId = null;
       return refreshData();
-    }).catch(function (error) { state.profileError = error.serverMessage || error.message; render(); });
+    }).catch(function (error) { state.profileError = error.serverMessage || error.message; render(); if (onFailed) onFailed(); });
   }
 
   function discardProfile() {
