@@ -63,6 +63,22 @@ type SlackBehaviorFixture = {
   unassignedHint: SlackBehaviorEntry;
   welcomeOnJoin: SlackBehaviorEntry;
 };
+type GithubStatusFixture = {
+  mode: 'none' | 'app';
+  appSlug?: string;
+  installations?: Array<{
+    id: number;
+    accountLogin: string;
+    accountType: 'User' | 'Organization';
+    repoCount: number | null;
+  }>;
+  referencingProfiles?: Array<{ id: string; name: string }>;
+};
+type GithubRepoPageFixture = {
+  repos: Array<{ fullName: string; private: boolean; defaultBranch: string }>;
+  totalCount: number;
+  truncated: boolean;
+};
 
 const releaseAgent = {
   id: 'agent_release',
@@ -223,6 +239,11 @@ function runAdminPageHarness(
     apiConnectionSecretDeleteFailures?: number;
     skillResolution?: Record<string, unknown>;
     skillResolveError?: { status: number; error: string; message?: string };
+    githubStatus?: GithubStatusFixture;
+    githubRepoPages?: Record<string, GithubRepoPageFixture>;
+    githubRepoError?: { status: number; error: string; message?: string };
+    githubRepoFetch?: (path: string) => Promise<FakeResponse>;
+    skillBrowseDom?: boolean;
     mcpTestResult?: { ok: true; tools: Array<{ name: string; title?: string; description?: string }> } | { ok: false; code: string; message: string };
   } = {},
 ): {
@@ -256,6 +277,10 @@ function runAdminPageHarness(
   agentPatchBodies: Array<{ id: string; body: Record<string, unknown> }>;
   agentPostBodies: Array<Record<string, unknown>>;
   skillResolvePosts: Array<{ source: string }>;
+  githubRepoCalls: string[];
+  skillBrowseFocusCalls(): number;
+  skillBrowseHostUpdates(): number;
+  skillBrowseScrollTop(): number;
   mcpTestPosts: Array<Record<string, unknown>>;
   mcpSecretPuts: Array<{ agentId: string; id: string; body: Record<string, unknown> }>;
   mcpSecretDeletes: Array<{ agentId: string; id: string; body: Record<string, unknown> }>;
@@ -334,12 +359,22 @@ function runAdminPageHarness(
   const agentPatchBodies: Array<{ id: string; body: Record<string, unknown> }> = [];
   const agentPostBodies: Array<Record<string, unknown>> = [];
   const skillResolvePosts: Array<{ source: string }> = [];
+  const githubRepoCalls: string[] = [];
   const mcpTestPosts: Array<Record<string, unknown>> = [];
   const mcpSecretPuts: Array<{ agentId: string; id: string; body: Record<string, unknown> }> = [];
   const mcpSecretDeletes: Array<{ agentId: string; id: string; body: Record<string, unknown> }> = [];
   const apiConnectionSecretPuts: Array<{ agentId: string; id: string; body: Record<string, unknown> }> = [];
   const apiConnectionSecretDeletes: Array<{ agentId: string; id: string; body: Record<string, unknown> }> = [];
   let gallerySearchFocusCalls = 0;
+  let skillBrowseFocusCalls = 0;
+  let skillBrowseHostUpdates = 0;
+  const skillBrowseList = { scrollTop: 137 };
+  const skillBrowseHost = {
+    innerHTML: '',
+    querySelector(selector: string) {
+      return selector === '.repo-picker-list' ? skillBrowseList : null;
+    },
+  };
   const gallerySearchSelections: Array<[number, number]> = [];
   const mcpTestResult = options.mcpTestResult;
   let assignments = options.assignments ?? defaultAssignments();
@@ -372,6 +407,10 @@ function runAdminPageHarness(
   let apiConnectionSecretDeleteFailures = options.apiConnectionSecretDeleteFailures ?? 0;
   const skillResolveError = options.skillResolveError;
   const skillResolution = options.skillResolution;
+  const githubStatus = options.githubStatus;
+  const githubRepoPages = options.githubRepoPages;
+  const githubRepoError = options.githubRepoError;
+  const githubRepoFetch = options.githubRepoFetch;
   let resolveOpsEffective: (() => void) | undefined;
   const location = { pathname: options.initialPath ?? '/admin' };
   const historyPushes: string[] = [];
@@ -456,11 +495,32 @@ function runAdminPageHarness(
           },
         };
       }
+      if (id === 'skill-import-browse-search' && options.skillBrowseDom) {
+        return {
+          value: '',
+          focus() {
+            skillBrowseFocusCalls += 1;
+          },
+          setSelectionRange() {},
+        };
+      }
       return null;
     },
     querySelector(selector: string) {
       if (selector === '.topbar') return topbarRegion;
       if (selector === '.body') return bodyRegion;
+      if (selector === '.import-browse-host' && options.skillBrowseDom && appHtml.includes('import-browse-host')) {
+        return {
+          get innerHTML() {
+            return skillBrowseHost.innerHTML;
+          },
+          set innerHTML(value: string) {
+            skillBrowseHost.innerHTML = value;
+            skillBrowseHostUpdates += 1;
+          },
+          querySelector: skillBrowseHost.querySelector.bind(skillBrowseHost),
+        };
+      }
       const slackFocusRole = selector.match(/^\[data-role="(slack-(?:disconnect-dialog|connection-error|disconnect-error))"\]$/)?.[1];
       if (slackFocusRole && appHtml.includes(`data-role="${slackFocusRole}"`)) {
         return focusElement(slackFocusRole);
@@ -526,6 +586,7 @@ function runAdminPageHarness(
           owner: 'acme',
           repo: 'skills',
           ref: 'main',
+          source: { visibility: 'public', access: 'anonymous' },
           total: 2,
           capped: false,
           skipped: 0,
@@ -549,6 +610,34 @@ function runAdminPageHarness(
           ],
         };
       return Promise.resolve(jsonResponse({ resolution }));
+    }
+    if (path === '/admin/api/github/status' && method === 'GET' && githubStatus) {
+      return Promise.resolve(jsonResponse(githubStatus));
+    }
+    if (path.startsWith('/admin/api/github/installations/') && path.includes('/repos?') && method === 'GET') {
+      githubRepoCalls.push(path);
+      if (githubRepoFetch) return githubRepoFetch(path);
+      if (githubRepoError) {
+        return Promise.resolve(
+          jsonResponse(
+            {
+              error: githubRepoError.error,
+              ...(githubRepoError.message ? { message: githubRepoError.message } : {}),
+            },
+            githubRepoError.status,
+          ),
+        );
+      }
+      const installationId = path.match(/^\/admin\/api\/github\/installations\/([^/]+)\/repos/)?.[1] ?? '';
+      return Promise.resolve(
+        jsonResponse(
+          githubRepoPages?.[decodeURIComponent(installationId)] ?? {
+            repos: [],
+            totalCount: 0,
+            truncated: false,
+          },
+        ),
+      );
     }
     const mcpTestMatch = path.match(/^\/admin\/api\/agents\/([^/]+)\/mcp\/test$/);
     if (mcpTestMatch && method === 'POST') {
@@ -969,6 +1058,10 @@ function runAdminPageHarness(
     agentPatchBodies,
     agentPostBodies,
     skillResolvePosts,
+    githubRepoCalls,
+    skillBrowseFocusCalls: () => skillBrowseFocusCalls,
+    skillBrowseHostUpdates: () => skillBrowseHostUpdates,
+    skillBrowseScrollTop: () => skillBrowseList.scrollTop,
     mcpTestPosts,
     mcpSecretPuts,
     mcpSecretDeletes,
@@ -1962,6 +2055,7 @@ test('importing skills from a URL resolves a picker, adds the selected skill, an
 
   // The picker renders both skills, the summary line, and the has-scripts badge.
   assert.match(harness.app.innerHTML, /Found 2 skills in acme\/skills/);
+  assert.match(harness.app.innerHTML, /Public repository/);
   assert.match(harness.app.innerHTML, /release-notes/);
   assert.match(harness.app.innerHTML, /incident-scribe/);
   assert.match(harness.app.innerHTML, /won&rsquo;t run yet/);
@@ -2085,6 +2179,359 @@ test('importing a same-named skill replaces the existing one rather than duplica
   assert.deepEqual(harness.agentPatchBodies[0]?.body.skills, [
     { name: 'release-notes', description: 'Fresh copy.', instructions: 'Fresh body.', enabled: true },
   ]);
+});
+
+test('the import panel keeps public paste open while connected GitHub adds private repository discovery', async () => {
+  const originalRepositories = [
+    {
+      id: 'repo_9_existing',
+      installationId: 9,
+      accountLogin: 'acme',
+      fullName: 'acme/runtime-repo',
+      enabled: true,
+    },
+  ];
+  const harness = runAdminPageHarness({
+    agents: [
+      {
+        id: 'agent_private_import',
+        name: 'Private Import Profile',
+        description: 'Private import profile',
+        instructions: 'Answer with context.',
+        enabled: true,
+        model: 'local-stub/private-import',
+        skills: [],
+        repositories: originalRepositories,
+      },
+    ],
+    githubStatus: {
+      mode: 'app',
+      appSlug: 'chickpea-test',
+      installations: [
+        { id: 9, accountLogin: 'acme', accountType: 'Organization', repoCount: 80 },
+      ],
+      referencingProfiles: [],
+    },
+    githubRepoPages: {
+      '9': {
+        repos: [
+          { fullName: 'acme/private-skills', private: true, defaultBranch: 'main' },
+          { fullName: 'acme/<img src=x onerror=alert(1)>', private: false, defaultBranch: 'main' },
+        ],
+        totalCount: 80,
+        truncated: true,
+      },
+    },
+    skillResolution: {
+      owner: 'acme',
+      repo: 'private-skills',
+      ref: 'main',
+      source: { visibility: 'private', access: 'github_app' },
+      total: 1,
+      capped: false,
+      skipped: 0,
+      skills: [
+        {
+          name: 'private-release',
+          description: 'Prepare a private release.',
+          instructions: 'Use the private release checklist.',
+          hasScripts: true,
+          path: 'private-release',
+          sourceUrl: 'https://github.com/acme/private-skills/tree/main/private-release',
+        },
+      ],
+    },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  assert.ok(click && input);
+
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_private_import' }) });
+  click({ target: actionTarget({ 'data-action': 'import-skills' }) });
+  await flushAsync();
+
+  // Browse is a helper beside the same free-form source field; public paste remains supported.
+  assert.match(harness.app.innerHTML, /owner\/repo, a GitHub URL, or a skills\.sh link/);
+  assert.match(harness.app.innerHTML, /data-action="import-browse-open"[^>]*>Browse GitHub/);
+  input({ target: inputTarget({ 'data-action': 'import-source' }, 'https://github.com/someone/public-skills') });
+  click({ target: actionTarget({ 'data-action': 'import-browse-open' }) });
+  await flushAsync();
+
+  assert.deepEqual(harness.githubRepoCalls, [
+    '/admin/api/github/installations/9/repos?q=&page=1',
+  ]);
+  assert.match(harness.app.innerHTML, /acme\/private-skills/);
+  assert.match(harness.app.innerHTML, />Private<\/span>/);
+  assert.match(harness.app.innerHTML, /Not every repository is shown/);
+  assert.match(harness.app.innerHTML, /acme\/&lt;img src=x onerror=alert\(1\)&gt;/);
+  assert.doesNotMatch(harness.app.innerHTML, /<img src=x onerror=alert\(1\)>/);
+
+  // Choosing a repo only fills the editable source field; the normal Find action remains authoritative.
+  click({
+    target: actionTarget({
+      'data-action': 'import-browse-select',
+      'data-repo': 'acme/private-skills',
+    }),
+  });
+  assert.match(harness.app.innerHTML, /value="acme\/private-skills"[^>]*data-action="import-source"/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="import-browse-select"/);
+  click({ target: actionTarget({ 'data-action': 'import-find' }) });
+  await flushAsync();
+
+  assert.deepEqual(harness.skillResolvePosts, [{ source: 'acme/private-skills' }]);
+  assert.match(harness.app.innerHTML, /Private repository/);
+  assert.match(harness.app.innerHTML, /Read through the connected GitHub App/);
+  assert.match(harness.app.innerHTML, /copied into this profile as a snapshot/);
+  assert.match(harness.app.innerHTML, /does not grant the profile access to the repository/);
+  assert.match(harness.app.innerHTML, /won&rsquo;t run yet/);
+
+  click({ target: actionTarget({ 'data-action': 'import-add' }) });
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+  assert.deepEqual(harness.agentPatchBodies[0]?.body.repositories, originalRepositories);
+});
+
+test('a repository picked from GitHub remains editable before Find skills', async () => {
+  const harness = runAdminPageHarness({
+    agents: [
+      {
+        id: 'agent_edit_source',
+        name: 'Editable Source Profile',
+        instructions: 'Answer.',
+        enabled: true,
+        model: 'local-stub/edit-source',
+        skills: [],
+      },
+    ],
+    githubStatus: {
+      mode: 'app',
+      installations: [
+        { id: 17, accountLogin: 'acme', accountType: 'Organization', repoCount: 1 },
+      ],
+      referencingProfiles: [],
+    },
+    githubRepoPages: {
+      '17': {
+        repos: [{ fullName: 'acme/private-skills', private: true, defaultBranch: 'main' }],
+        totalCount: 1,
+        truncated: false,
+      },
+    },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  assert.ok(click && input);
+
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_edit_source' }) });
+  click({ target: actionTarget({ 'data-action': 'import-skills' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'import-browse-open' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'import-browse-select', 'data-repo': 'acme/private-skills' }) });
+  input({ target: inputTarget({ 'data-action': 'import-source' }, 'someone/public-skills@review') });
+  click({ target: actionTarget({ 'data-action': 'import-find' }) });
+  await flushAsync();
+
+  assert.deepEqual(harness.skillResolvePosts, [{ source: 'someone/public-skills@review' }]);
+});
+
+test('GitHub import browsing chooses an installation locally and cancel preserves the pasted source', async () => {
+  const harness = runAdminPageHarness({
+    githubStatus: {
+      mode: 'app',
+      installations: [
+        { id: 21, accountLogin: 'alice', accountType: 'User', repoCount: 2 },
+        { id: 22, accountLogin: 'org<script>', accountType: 'Organization', repoCount: null },
+      ],
+      referencingProfiles: [],
+    },
+    githubRepoPages: {
+      '22': {
+        repos: [{ fullName: 'org/private-skill', private: true, defaultBranch: 'main' }],
+        totalCount: 1,
+        truncated: false,
+      },
+    },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  assert.ok(click && input);
+
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_release' }) });
+  click({ target: actionTarget({ 'data-action': 'import-skills' }) });
+  await flushAsync();
+  input({ target: inputTarget({ 'data-action': 'import-source' }, 'someone/public-skills') });
+  click({ target: actionTarget({ 'data-action': 'import-browse-open' }) });
+
+  assert.match(harness.app.innerHTML, /Choose an account or organization/);
+  assert.match(harness.app.innerHTML, /org&lt;script&gt;/);
+  assert.doesNotMatch(harness.app.innerHTML, /org<script>/);
+  assert.equal(harness.githubRepoCalls.length, 0);
+  click({
+    target: actionTarget({
+      'data-action': 'import-browse-account',
+      'data-installation': '22',
+      'data-account': 'org<script>',
+    }),
+  });
+  await flushAsync();
+  assert.deepEqual(harness.githubRepoCalls, ['/admin/api/github/installations/22/repos?q=&page=1']);
+
+  click({ target: actionTarget({ 'data-action': 'import-browse-cancel' }) });
+  assert.match(harness.app.innerHTML, /value="someone\/public-skills"[^>]*data-action="import-source"/);
+  assert.match(harness.app.innerHTML, /data-action="import-find"/);
+});
+
+test('without a GitHub connection private discovery points to Settings but paste still works', async () => {
+  const harness = runAdminPageHarness({
+    githubStatus: { mode: 'none', referencingProfiles: [] },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_release' }) });
+  click({ target: actionTarget({ 'data-action': 'import-skills' }) });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /data-action="import-source"/);
+  assert.match(harness.app.innerHTML, /Paste any public GitHub repository/);
+  assert.match(harness.app.innerHTML, /Connect GitHub in Settings to browse or import private repositories/);
+  assert.match(harness.app.innerHTML, /data-action="open-settings" data-section="github-settings"/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="import-browse-open"/);
+});
+
+test('GitHub import search ignores stale responses and keeps failures local to browsing', async () => {
+  const pending: Array<(response: FakeResponse) => void> = [];
+  const harness = runAdminPageHarness({
+    githubStatus: {
+      mode: 'app',
+      installations: [
+        { id: 31, accountLogin: 'acme', accountType: 'Organization', repoCount: 3 },
+      ],
+      referencingProfiles: [],
+    },
+    githubRepoFetch: () =>
+      new Promise<FakeResponse>((resolve) => {
+        pending.push(resolve);
+      }),
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  assert.ok(click && input);
+
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_release' }) });
+  click({ target: actionTarget({ 'data-action': 'import-skills' }) });
+  await flushAsync();
+  input({ target: inputTarget({ 'data-action': 'import-source' }, 'someone/public-skills') });
+  click({ target: actionTarget({ 'data-action': 'import-browse-open' }) });
+  assert.equal(pending.length, 1);
+  pending[0]?.(jsonResponse({ repos: [], totalCount: 3, truncated: false }));
+  await flushAsync();
+
+  input({ target: inputTarget({ 'data-action': 'import-browse-search' }, 'old') });
+  input({ target: inputTarget({ 'data-action': 'import-browse-search' }, 'new') });
+  assert.equal(pending.length, 3);
+  assert.deepEqual(harness.githubRepoCalls.slice(1), [
+    '/admin/api/github/installations/31/repos?q=old&page=1',
+    '/admin/api/github/installations/31/repos?q=new&page=1',
+  ]);
+  pending[2]?.(
+    jsonResponse({
+      repos: [{ fullName: 'acme/new-result', private: true, defaultBranch: 'main' }],
+      totalCount: 3,
+      truncated: false,
+    }),
+  );
+  await flushAsync();
+  pending[1]?.(
+    jsonResponse({
+      repos: [{ fullName: 'acme/old-result', private: true, defaultBranch: 'main' }],
+      totalCount: 3,
+      truncated: false,
+    }),
+  );
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /acme\/new-result/);
+  assert.doesNotMatch(harness.app.innerHTML, /acme\/old-result/);
+  click({ target: actionTarget({ 'data-action': 'import-browse-cancel' }) });
+  assert.match(harness.app.innerHTML, /value="someone\/public-skills"/);
+});
+
+test('a GitHub discovery failure preserves the source field and offers a local retry', async () => {
+  const harness = runAdminPageHarness({
+    githubStatus: {
+      mode: 'app',
+      installations: [
+        { id: 41, accountLogin: 'acme', accountType: 'Organization', repoCount: null },
+      ],
+      referencingProfiles: [],
+    },
+    githubRepoError: {
+      status: 502,
+      error: 'github_unavailable',
+      message: 'Repository catalog unavailable. Paste an exact source or retry.',
+    },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  assert.ok(click && input);
+
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_release' }) });
+  click({ target: actionTarget({ 'data-action': 'import-skills' }) });
+  await flushAsync();
+  input({ target: inputTarget({ 'data-action': 'import-source' }, 'someone/public-skills') });
+  click({ target: actionTarget({ 'data-action': 'import-browse-open' }) });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /Repository catalog unavailable\. Paste an exact source or retry\./);
+  assert.match(harness.app.innerHTML, /data-action="import-browse-retry"/);
+  assert.match(harness.app.innerHTML, /value="someone\/public-skills"[^>]*data-action="import-source"/);
+  click({ target: actionTarget({ 'data-action': 'import-browse-cancel' }) });
+  assert.match(harness.app.innerHTML, /data-action="import-find"/);
+  click({ target: actionTarget({ 'data-action': 'import-find' }) });
+  await flushAsync();
+  assert.deepEqual(harness.skillResolvePosts, [{ source: 'someone/public-skills' }]);
+});
+
+test('GitHub import search updates its local browser while retaining focus and list scroll', async () => {
+  const harness = runAdminPageHarness({
+    skillBrowseDom: true,
+    githubStatus: {
+      mode: 'app',
+      installations: [
+        { id: 51, accountLogin: 'acme', accountType: 'Organization', repoCount: 1 },
+      ],
+      referencingProfiles: [],
+    },
+    githubRepoPages: {
+      '51': {
+        repos: [{ fullName: 'acme/private-skills', private: true, defaultBranch: 'main' }],
+        totalCount: 1,
+        truncated: false,
+      },
+    },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_release' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'skills' }) });
+  click({ target: actionTarget({ 'data-action': 'import-skills' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'import-browse-open' }) });
+  await flushAsync();
+
+  assert.ok(harness.skillBrowseHostUpdates() >= 1);
+  assert.ok(harness.skillBrowseFocusCalls() >= 2);
+  assert.equal(harness.skillBrowseScrollTop(), 137);
 });
 
 test('saving a profile with a filled-but-not-added skill editor commits the skill, not drops it', async () => {
