@@ -12,7 +12,7 @@ test('memory telemetry admits only machine tokens and scalar measurements', () =
       outcome: 'success',
       candidateCount: 4,
       truncated: true,
-      reason: 'CANARY private memory body',
+      reason: 'SENTINEL private memory body',
       'bad-key': 'also private',
       workspaceId: 'T_PRIVATE',
     });
@@ -30,5 +30,5 @@ test('memory telemetry admits only machine tokens and scalar measurements', () =
     truncated: true,
     reason: 'other',
   });
-  assert.doesNotMatch(JSON.stringify(lines), /CANARY|private memory body|also private|T_PRIVATE|workspaceId/);
+  assert.doesNotMatch(JSON.stringify(lines), /SENTINEL|private memory body|also private|T_PRIVATE|workspaceId/);
 });

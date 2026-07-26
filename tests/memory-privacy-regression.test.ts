@@ -10,14 +10,14 @@ test('public queries cannot match entries from a private store id', async () => 
     await state.createEntry({
       entryId: 'private_1', storeId: privateStore.storeId, workspaceId: 'T_TEST',
       sourceChannelId: 'C_PRIVATE', slug: 'secret', description: 'Private fact.',
-      type: 'fact', body: 'PRIVATE_CANARY', actorId: 'U_MEMBER', actorClass: 'member',
+      type: 'fact', body: 'PRIVATE_SENTINEL', actorId: 'U_MEMBER', actorClass: 'member',
       idempotencyKey: 'private:create:1',
     });
     assert.deepEqual(
       await state.listEntries({ storeId: 'store_public_T_TEST', workspaceId: 'T_TEST' }),
       [],
     );
-    assert.equal(JSON.stringify(await state.listAuditEvents()).includes('PRIVATE_CANARY'), false);
+    assert.equal(JSON.stringify(await state.listAuditEvents()).includes('PRIVATE_SENTINEL'), false);
   } finally {
     state.close();
   }

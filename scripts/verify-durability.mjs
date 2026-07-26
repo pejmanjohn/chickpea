@@ -326,7 +326,7 @@ try {
     const { SqliteMemoryStateStore } = await loadTsModule('src/memory/store.ts');
     const { SqliteConfigStore } = await loadTsModule('src/config/store.ts');
     const memoryPath = `${dbA}.state`;
-    const memoryCanary = 'MEMORY_DURABILITY_CANARY_ALPHA';
+    const memorySentinel = 'MEMORY_DURABILITY_SENTINEL_ALPHA';
     const priorLegacyFlag = process.env.SLACK_TAG_MEMORY_ENABLED;
     process.env.SLACK_TAG_MEMORY_ENABLED = 'false';
     let memoryStore;
@@ -341,14 +341,14 @@ try {
         observedAt: Date.now(),
       });
       await memoryStore.createEntry({
-        entryId: 'mem_durability_canary',
+        entryId: 'mem_durability_sentinel',
         storeId: publicStore.storeId,
         workspaceId: 'T_DEMO',
         sourceChannelId: EXEC_CHANNEL,
-        slug: 'durability-canary',
+        slug: 'durability-sentinel',
         description: 'Restart durability proof.',
         type: 'fact',
-        body: memoryCanary,
+        body: memorySentinel,
         actorId: 'U_ALICE',
         actorClass: 'member',
         idempotencyKey: 'memory:durability:create',
@@ -363,14 +363,14 @@ try {
       configOnly.close();
 
       memoryStore = new SqliteMemoryStateStore(memoryPath);
-      const restarted = await memoryStore.getEntry('mem_durability_canary');
+      const restarted = await memoryStore.getEntry('mem_durability_sentinel');
       record(
         'MEMORY DURABILITY: create survives close/restart and legacy false is inert',
-        restarted?.body === memoryCanary && restarted.version === 1,
+        restarted?.body === memorySentinel && restarted.version === 1,
         `status=${String(restarted?.status)} version=${String(restarted?.version)}`,
       );
       await memoryStore.forgetEntry({
-        entryId: 'mem_durability_canary',
+        entryId: 'mem_durability_sentinel',
         expectedVersion: 1,
         actorId: 'operator',
         actorClass: 'operator',
@@ -380,8 +380,8 @@ try {
       memoryStore = undefined;
 
       memoryStore = new SqliteMemoryStateStore(memoryPath);
-      const forgotten = await memoryStore.getEntry('mem_durability_canary');
-      const revisions = await memoryStore.listRevisions('mem_durability_canary');
+      const forgotten = await memoryStore.getEntry('mem_durability_sentinel');
+      const revisions = await memoryStore.listRevisions('mem_durability_sentinel');
       memoryStore.close();
       memoryStore = undefined;
       record(
@@ -391,8 +391,8 @@ try {
         `status=${String(forgotten?.status)} revisions=${revisions.length}`,
       );
       record(
-        'MEMORY DURABILITY: deleted canary is absent from the raw state file',
-        !readFileSync(memoryPath).toString('latin1').includes(memoryCanary),
+        'MEMORY DURABILITY: deleted sentinel is absent from the raw state file',
+        !readFileSync(memoryPath).toString('latin1').includes(memorySentinel),
       );
     } finally {
       memoryStore?.close();
