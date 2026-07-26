@@ -4385,15 +4385,19 @@ details[open].advanced summary::before {
     return candidate;
   }
 
-  function focusRepositorySearch() {
-    if (state.profileTab !== "repositories") return;
-    var input = document.getElementById("repo-picker-search");
+  function focusInputAtEnd(inputId) {
+    var input = document.getElementById(inputId);
     if (!input || !input.focus) return;
     input.focus();
     if (input.setSelectionRange) {
       var end = String(input.value || "").length;
       try { input.setSelectionRange(end, end); } catch (error) { /* ignore */ }
     }
+  }
+
+  function focusRepositorySearch() {
+    if (state.profileTab !== "repositories") return;
+    focusInputAtEnd("repo-picker-search");
   }
 
   function loadRepositoryPickerRepos() {
@@ -7081,24 +7085,12 @@ details[open].advanced summary::before {
 
   function focusSkillImportSource() {
     if (state.profileTab !== "skills") return;
-    var input = document.getElementById("import-source");
-    if (!input || !input.focus) return;
-    input.focus();
-    if (input.setSelectionRange) {
-      var end = String(input.value || "").length;
-      try { input.setSelectionRange(end, end); } catch (error) { /* ignore */ }
-    }
+    focusInputAtEnd("import-source");
   }
 
   function focusSkillImportBrowseSearch() {
     if (state.profileTab !== "skills") return;
-    var input = document.getElementById("skill-import-browse-search");
-    if (!input || !input.focus) return;
-    input.focus();
-    if (input.setSelectionRange) {
-      var end = String(input.value || "").length;
-      try { input.setSelectionRange(end, end); } catch (error) { /* ignore */ }
-    }
+    focusInputAtEnd("skill-import-browse-search");
   }
 
   function loadSkillImportRepositories() {
