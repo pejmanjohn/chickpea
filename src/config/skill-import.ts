@@ -62,6 +62,7 @@ export class SkillImportError extends Error {
 // under the ceiling. Larger repos report `capped: true` and the user narrows
 // with an `@skill` filter.
 const MAX_SCANNED_SKILLS = 40;
+const SKILL_IMPORT_REQUEST_TIMEOUT_MS = 10_000;
 const MAX_DESCRIPTION = 1024;
 const MAX_INSTRUCTIONS = 100_000;
 const SKILL_NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -210,7 +211,8 @@ export async function resolveSkillSource(
   const ref = parsed.ref ?? metadata?.defaultBranch ?? 'main';
   const visibility = metadata?.private ? 'private' : 'public';
 
-  const treeRes = await fetchImpl(
+  const treeRes = await githubRequest(
+    fetchImpl,
     `https://api.github.com/repos/${owner}/${repo}/git/trees/${encodeURIComponent(ref)}?recursive=1`,
     { headers },
   );
@@ -233,7 +235,8 @@ export async function resolveSkillSource(
   let skipped = 0;
   for (const entry of scan) {
     const rawRes = access
-      ? await fetchImpl(
+      ? await githubRequest(
+          fetchImpl,
           `https://api.github.com/repos/${owner}/${repo}/contents/${encodeGithubPath(entry.path)}?ref=${encodeURIComponent(ref)}`,
           {
             headers: {
@@ -242,7 +245,8 @@ export async function resolveSkillSource(
             },
           },
         )
-      : await fetchImpl(
+      : await githubRequest(
+          fetchImpl,
           `https://raw.githubusercontent.com/${owner}/${repo}/${encodeURIComponent(ref)}/${entry.path}`,
         );
     if (!rawRes.ok) {
@@ -296,7 +300,11 @@ async function fetchRepositoryMetadata(
   headers: Record<string, string>,
   authenticated: boolean,
 ): Promise<{ defaultBranch: string; private: boolean }> {
-  const res = await fetchImpl(`https://api.github.com/repos/${owner}/${repo}`, { headers });
+  const res = await githubRequest(
+    fetchImpl,
+    `https://api.github.com/repos/${owner}/${repo}`,
+    { headers },
+  );
   assertRepositoryResponse(res, authenticated, owner, repo);
   const meta = (await res.json()) as { default_branch?: string; private?: boolean };
   return {
@@ -328,6 +336,27 @@ function isRateLimited(response: Response): boolean {
   return response.status === 429 ||
     response.headers.get('retry-after') !== null ||
     response.headers.get('x-ratelimit-remaining') === '0';
+}
+
+async function githubRequest(
+  fetchImpl: typeof fetch,
+  input: string,
+  init: RequestInit = {},
+): Promise<Response> {
+  const signal =
+    init.signal ??
+    (typeof AbortSignal.timeout === 'function'
+      ? AbortSignal.timeout(SKILL_IMPORT_REQUEST_TIMEOUT_MS)
+      : undefined);
+  try {
+    return await fetchImpl(input, { ...init, ...(signal ? { signal } : {}) });
+  } catch (error) {
+    if (error instanceof SkillImportError) throw error;
+    throw new SkillImportError(
+      'github_error',
+      'GitHub could not complete the skill import request. Try again.',
+    );
+  }
 }
 
 function encodeGithubPath(path: string): string {

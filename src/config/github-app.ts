@@ -444,12 +444,16 @@ async function githubFetch(
       : undefined);
   const response = await fetchImpl(url, { ...init, ...(signal ? { signal } : {}) });
   if (!response.ok) {
-    const error: Error & { status?: number } = new Error(
+    const error: Error & { status?: number; rateLimited?: boolean } = new Error(
       `GitHub API request failed with status ${response.status}`,
     );
     // Carried so callers can distinguish a validation rejection (422 — e.g. a
     // stale repository name) from outages they must not retry-amplify.
     error.status = response.status;
+    error.rateLimited =
+      response.status === 429 ||
+      response.headers.get('retry-after') !== null ||
+      response.headers.get('x-ratelimit-remaining') === '0';
     throw error;
   }
   return response;
@@ -459,6 +463,11 @@ export function githubErrorStatus(error: unknown): number | undefined {
   if (!(error instanceof Error)) return undefined;
   const status = (error as Error & { status?: unknown }).status;
   return typeof status === 'number' ? status : undefined;
+}
+
+export function githubErrorIsRateLimited(error: unknown): boolean {
+  return error instanceof Error &&
+    (error as Error & { rateLimited?: unknown }).rateLimited === true;
 }
 
 function githubHeaders(authorization?: string, json = false): Headers {

@@ -5111,6 +5111,7 @@ details[open].advanced summary::before {
   function showProfileTab(tab) {
     var changed = state.profileTab !== tab;
     if (changed) {
+      if (tab !== "skills") resetSkillImportBrowseTransientState();
       state.profileTab = tab;
       render();
     }
@@ -6094,7 +6095,7 @@ details[open].advanced summary::before {
     }
     if (event.key === "Escape" || event.key === "Esc") {
       if (state.leavePrompt) { state.leavePrompt = null; render(); return; }
-      if (state.skillImport && state.skillImport.browse) { closeSkillImportBrowse(); return; }
+      if (state.profileTab === "skills" && state.skillImport && state.skillImport.browse) { closeSkillImportBrowse(); return; }
       if (state.repositoryPicker || state.repositoryAddOpen) { closeRepositoryPicker(); return; }
       if (state.modelPickerOpen) { closeModelPicker(); }
     }
@@ -7207,20 +7208,19 @@ details[open].advanced summary::before {
     imp.error = "";
     render();
     postJson("/admin/api/skills/resolve", "POST", { source: source }).then(function (body) {
-      var current = state.skillImport;
-      // The panel may have been closed while the request was in flight.
-      if (!current) return;
+      // The panel may have been closed and reopened for another source while
+      // this request was in flight. Never let the old session repaint the new.
+      if (state.skillImport !== imp) return;
       var resolution = body && body.resolution ? body.resolution : { owner: "", repo: "", skills: [], capped: false, skipped: 0 };
-      current.loading = false;
-      current.error = "";
-      current.resolution = resolution;
-      current.selected = (resolution.skills || []).map(function () { return true; });
+      imp.loading = false;
+      imp.error = "";
+      imp.resolution = resolution;
+      imp.selected = (resolution.skills || []).map(function () { return true; });
       render();
     }).catch(function (error) {
-      var current = state.skillImport;
-      if (!current) return;
-      current.loading = false;
-      current.error = (error && error.serverMessage) || skillImportFallback(error && error.message);
+      if (state.skillImport !== imp) return;
+      imp.loading = false;
+      imp.error = (error && error.serverMessage) || skillImportFallback(error && error.message);
       render();
     });
   }

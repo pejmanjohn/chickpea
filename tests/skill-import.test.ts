@@ -206,6 +206,7 @@ test('resolveSkillSource reads private skill files through authenticated Content
       'Bearer private-installation-token',
       request.url,
     );
+    assert.ok(request.init?.signal, `expected a request deadline for ${request.url}`);
   }
   const contentsRequest = requests.find((request) => request.url.includes('/contents/'));
   assert.match(new Headers(contentsRequest?.init?.headers).get('accept') ?? '', /github\.raw/);

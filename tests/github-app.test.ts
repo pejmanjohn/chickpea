@@ -16,6 +16,7 @@ import {
   getGithubConnection,
   getRepositoryInstallation,
   GITHUB_API_BASE,
+  githubErrorIsRateLimited,
   githubErrorStatus,
   mintAppJwt,
   normalizePrivateKeyPem,
@@ -242,6 +243,24 @@ test('getRepositoryInstallation preserves classified upstream failures', async (
   );
 });
 
+test('getRepositoryInstallation preserves header-classified GitHub rate limits', async () => {
+  const { pkcs8 } = rsaKeys();
+  const conn: GithubConnection = {
+    mode: 'app',
+    appId: '12345',
+    privateKeyPem: pkcs8,
+  };
+  const fetchImpl: typeof fetch = async () => new Response('rate limited', {
+    status: 403,
+    headers: { 'x-ratelimit-remaining': '0' },
+  });
+
+  await assert.rejects(
+    () => getRepositoryInstallation(conn, 'acme/private-skills', fetchImpl),
+    (error: unknown) => githubErrorStatus(error) === 403 && githubErrorIsRateLimited(error),
+  );
+});
+
 test('getRepositoryInstallation rejects malformed coordinates before GitHub access', async () => {
   const { pkcs8 } = rsaKeys();
   const conn: GithubConnection = {
@@ -397,6 +416,56 @@ test('skill resolve route does not mint a token for anonymous rate limits', asyn
   } finally {
     store.close();
     settings.close();
+  }
+});
+
+test('skill resolve route classifies App lookup and token-mint primary rate limits', async () => {
+  const { pkcs8 } = rsaKeys();
+  for (const rateLimitedStep of ['lookup', 'token'] as const) {
+    const store = new SqliteConfigStore(':memory:', { agents: [agent()], assignments: [] });
+    const settings = new SqliteSettingsStore(':memory:');
+    await settings.setSetting('github.app.id', '12345');
+    await settings.setSetting('github.app.private_key', pkcs8);
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const url = String(input);
+      const authorization = new Headers(init?.headers).get('authorization');
+      if (url.endsWith('/repos/acme/private-skills') && !authorization) {
+        return new Response('', { status: 404 });
+      }
+      if (url.endsWith('/repos/acme/private-skills/installation')) {
+        if (rateLimitedStep === 'lookup') {
+          return new Response('', {
+            status: 403,
+            headers: { 'x-ratelimit-remaining': '0' },
+          });
+        }
+        return Response.json({ id: 42, account: { login: 'acme', type: 'Organization' } });
+      }
+      if (url.endsWith('/app/installations/42/access_tokens')) {
+        return new Response('', {
+          status: 403,
+          headers: { 'retry-after': '60' },
+        });
+      }
+      return new Response('unexpected request', { status: 500 });
+    };
+
+    try {
+      const response = await withFetch(fetchImpl, async () =>
+        await adminApp(store, settings).request('/admin/api/skills/resolve', {
+          method: 'POST',
+          headers: jsonHeaders(),
+          body: JSON.stringify({ source: 'acme/private-skills' }),
+        }));
+      assert.equal(response.status, 429, rateLimitedStep);
+      assert.deepEqual(await response.json(), {
+        error: 'github_rate_limited',
+        message: 'GitHub rate limit reached. Try again after it resets.',
+      });
+    } finally {
+      store.close();
+      settings.close();
+    }
   }
 });
 

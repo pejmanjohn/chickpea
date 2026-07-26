@@ -239,6 +239,7 @@ function runAdminPageHarness(
     apiConnectionSecretDeleteFailures?: number;
     skillResolution?: Record<string, unknown>;
     skillResolveError?: { status: number; error: string; message?: string };
+    skillResolveFetch?: (source: string) => Promise<FakeResponse>;
     githubStatus?: GithubStatusFixture;
     githubRepoPages?: Record<string, GithubRepoPageFixture>;
     githubRepoError?: { status: number; error: string; message?: string };
@@ -280,6 +281,7 @@ function runAdminPageHarness(
   githubRepoCalls: string[];
   skillBrowseFocusCalls(): number;
   skillBrowseHostUpdates(): number;
+  skillBrowseHtml(): string;
   skillBrowseScrollTop(): number;
   mcpTestPosts: Array<Record<string, unknown>>;
   mcpSecretPuts: Array<{ agentId: string; id: string; body: Record<string, unknown> }>;
@@ -368,9 +370,18 @@ function runAdminPageHarness(
   let gallerySearchFocusCalls = 0;
   let skillBrowseFocusCalls = 0;
   let skillBrowseHostUpdates = 0;
-  const skillBrowseList = { scrollTop: 137 };
+  let skillBrowseList = { scrollTop: 137 };
+  let skillBrowseHtml = '';
   const skillBrowseHost = {
-    innerHTML: '',
+    get innerHTML() {
+      return skillBrowseHtml;
+    },
+    set innerHTML(value: string) {
+      skillBrowseHtml = value;
+      // Real innerHTML replacement destroys the old subtree. The new list
+      // starts at zero so production must explicitly restore its scroll.
+      skillBrowseList = { scrollTop: 0 };
+    },
     querySelector(selector: string) {
       return selector === '.repo-picker-list' ? skillBrowseList : null;
     },
@@ -406,6 +417,7 @@ function runAdminPageHarness(
   let apiConnectionSecretPutFailures = options.apiConnectionSecretPutFailures ?? 0;
   let apiConnectionSecretDeleteFailures = options.apiConnectionSecretDeleteFailures ?? 0;
   const skillResolveError = options.skillResolveError;
+  const skillResolveFetch = options.skillResolveFetch;
   const skillResolution = options.skillResolution;
   const githubStatus = options.githubStatus;
   const githubRepoPages = options.githubRepoPages;
@@ -570,6 +582,7 @@ function runAdminPageHarness(
     if (path === '/admin/api/skills/resolve' && method === 'POST') {
       const body = JSON.parse(options?.body ?? '{}') as { source: string };
       skillResolvePosts.push({ source: body.source });
+      if (skillResolveFetch) return skillResolveFetch(body.source);
       if (skillResolveError) {
         return Promise.resolve(
           jsonResponse(
@@ -1061,6 +1074,7 @@ function runAdminPageHarness(
     githubRepoCalls,
     skillBrowseFocusCalls: () => skillBrowseFocusCalls,
     skillBrowseHostUpdates: () => skillBrowseHostUpdates,
+    skillBrowseHtml: () => skillBrowseHost.innerHTML,
     skillBrowseScrollTop: () => skillBrowseList.scrollTop,
     mcpTestPosts,
     mcpSecretPuts,
@@ -2222,6 +2236,7 @@ test('the import panel keeps public paste open while connected GitHub adds priva
         truncated: true,
       },
     },
+    skillBrowseDom: true,
     skillResolution: {
       owner: 'acme',
       repo: 'private-skills',
@@ -2261,11 +2276,12 @@ test('the import panel keeps public paste open while connected GitHub adds priva
   assert.deepEqual(harness.githubRepoCalls, [
     '/admin/api/github/installations/9/repos?q=&page=1',
   ]);
-  assert.match(harness.app.innerHTML, /acme\/private-skills/);
-  assert.match(harness.app.innerHTML, />Private<\/span>/);
-  assert.match(harness.app.innerHTML, /Not every repository is shown/);
-  assert.match(harness.app.innerHTML, /acme\/&lt;img src=x onerror=alert\(1\)&gt;/);
-  assert.doesNotMatch(harness.app.innerHTML, /<img src=x onerror=alert\(1\)>/);
+  const browseHtml = harness.skillBrowseHtml();
+  assert.match(browseHtml, /acme\/private-skills/);
+  assert.match(browseHtml, />Private<\/span>/);
+  assert.match(browseHtml, /Not every repository is shown/);
+  assert.match(browseHtml, /acme\/&lt;img src=x onerror=alert\(1\)&gt;/);
+  assert.doesNotMatch(browseHtml, /<img src=x onerror=alert\(1\)>/);
 
   // Choosing a repo only fills the editable source field; the normal Find action remains authoritative.
   click({
@@ -2418,6 +2434,7 @@ test('GitHub import search ignores stale responses and keeps failures local to b
       new Promise<FakeResponse>((resolve) => {
         pending.push(resolve);
       }),
+    skillBrowseDom: true,
   });
   await flushAsync();
   const click = harness.listeners.click;
@@ -2457,8 +2474,8 @@ test('GitHub import search ignores stale responses and keeps failures local to b
   );
   await flushAsync();
 
-  assert.match(harness.app.innerHTML, /acme\/new-result/);
-  assert.doesNotMatch(harness.app.innerHTML, /acme\/old-result/);
+  assert.match(harness.skillBrowseHtml(), /acme\/new-result/);
+  assert.doesNotMatch(harness.skillBrowseHtml(), /acme\/old-result/);
   click({ target: actionTarget({ 'data-action': 'import-browse-cancel' }) });
   assert.match(harness.app.innerHTML, /value="someone\/public-skills"/);
 });
@@ -2532,6 +2549,91 @@ test('GitHub import search updates its local browser while retaining focus and l
   assert.ok(harness.skillBrowseHostUpdates() >= 1);
   assert.ok(harness.skillBrowseFocusCalls() >= 2);
   assert.equal(harness.skillBrowseScrollTop(), 137);
+});
+
+test('a pending skill resolution cannot repaint a reopened import panel', async () => {
+  const pending = new Map<string, (response: FakeResponse) => void>();
+  const resolution = (name: string) => jsonResponse({
+    resolution: {
+      owner: 'acme',
+      repo: name,
+      ref: 'main',
+      source: { visibility: 'public', access: 'anonymous' },
+      total: 1,
+      capped: false,
+      skipped: 0,
+      skills: [{
+        name,
+        description: `${name} description`,
+        instructions: `${name} instructions`,
+        hasScripts: false,
+        path: name,
+        sourceUrl: `https://github.com/acme/${name}`,
+      }],
+    },
+  });
+  const harness = runAdminPageHarness({
+    githubStatus: { mode: 'none', referencingProfiles: [] },
+    skillResolveFetch: (source) => new Promise<FakeResponse>((resolve) => {
+      pending.set(source, resolve);
+    }),
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  assert.ok(click && input);
+
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_release' }) });
+  click({ target: actionTarget({ 'data-action': 'import-skills' }) });
+  input({ target: inputTarget({ 'data-action': 'import-source' }, 'acme/old-source') });
+  click({ target: actionTarget({ 'data-action': 'import-find' }) });
+  click({ target: actionTarget({ 'data-action': 'import-cancel' }) });
+  click({ target: actionTarget({ 'data-action': 'import-skills' }) });
+  input({ target: inputTarget({ 'data-action': 'import-source' }, 'acme/new-source') });
+  click({ target: actionTarget({ 'data-action': 'import-find' }) });
+
+  pending.get('acme/new-source')?.(resolution('new-source'));
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /new-source description/);
+  pending.get('acme/old-source')?.(resolution('old-source'));
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /new-source description/);
+  assert.doesNotMatch(harness.app.innerHTML, /old-source description/);
+});
+
+test('leaving the Skills tab closes only the nested import browser state', async () => {
+  const harness = runAdminPageHarness({
+    githubStatus: {
+      mode: 'app',
+      installations: [
+        { id: 61, accountLogin: 'acme', accountType: 'Organization', repoCount: 1 },
+      ],
+      referencingProfiles: [],
+    },
+    githubRepoPages: {
+      '61': {
+        repos: [{ fullName: 'acme/private-skills', private: true, defaultBranch: 'main' }],
+        totalCount: 1,
+        truncated: false,
+      },
+    },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_release' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'skills' }) });
+  click({ target: actionTarget({ 'data-action': 'import-skills' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'import-browse-open' }) });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /import-browse-host/);
+
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'repositories' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'skills' }) });
+  assert.doesNotMatch(harness.app.innerHTML, /import-browse-host/);
+  assert.match(harness.app.innerHTML, /data-action="import-find"/);
 });
 
 test('saving a profile with a filled-but-not-added skill editor commits the skill, not drops it', async () => {

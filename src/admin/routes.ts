@@ -40,6 +40,7 @@ import {
   exchangeGithubAppManifest,
   getGithubConnection,
   getRepositoryInstallation,
+  githubErrorIsRateLimited,
   githubErrorStatus,
   isGithubAppManagedHost,
   GITHUB_OWNER_PATTERN,
@@ -1157,8 +1158,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       try {
         installation = await getRepositoryInstallation(connection, fullName);
       } catch (error) {
-        const status = githubErrorStatus(error);
-        if (status === 429) {
+        if (githubErrorIsRateLimited(error)) {
           return githubRateLimited();
         }
         return githubAccessUnavailable();
@@ -1179,7 +1179,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         ));
       } catch (error) {
         const status = githubErrorStatus(error);
-        if (status === 429) {
+        if (githubErrorIsRateLimited(error)) {
           return githubRateLimited();
         }
         if (status === 403 || status === 404 || status === 422) {
