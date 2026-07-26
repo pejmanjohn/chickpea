@@ -191,6 +191,36 @@ export async function listInstallations(
   return installations;
 }
 
+/**
+ * Resolve the App installation that can access one exact repository.
+ * A 404 is deliberately returned as null: GitHub uses the same status for a
+ * missing repository and one the App cannot access, and callers must not claim
+ * a more specific cause. Other failures retain githubErrorStatus metadata.
+ */
+export async function getRepositoryInstallation(
+  conn: GithubConnection,
+  fullName: string,
+  fetchImpl: FetchImpl = fetch,
+): Promise<GithubInstallation | null> {
+  const app = requireAppConnection(conn);
+  if (!isValidRepositoryFullName(fullName)) {
+    throw new Error('Invalid GitHub repository');
+  }
+  const [owner, repo] = fullName.split('/') as [string, string];
+  const jwt = await currentAppJwt(app);
+  try {
+    const response = await githubFetch(
+      `${GITHUB_API_BASE}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/installation`,
+      { headers: githubHeaders(`Bearer ${jwt}`) },
+      fetchImpl,
+    );
+    return parseInstallation(await response.json());
+  } catch (error) {
+    if (githubErrorStatus(error) === 404) return null;
+    throw error;
+  }
+}
+
 export async function listInstallationRepos(
   conn: GithubConnection,
   installationId: number,

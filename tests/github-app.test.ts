@@ -14,7 +14,9 @@ import {
   createInstallationToken,
   getCachedInstallationToken,
   getGithubConnection,
+  getRepositoryInstallation,
   GITHUB_API_BASE,
+  githubErrorStatus,
   mintAppJwt,
   normalizePrivateKeyPem,
   type GithubConnection,
@@ -156,7 +158,7 @@ test('createInstallationToken down-scopes repositories and permissions', async (
   const fetchImpl: typeof fetch = async (input, init) => {
     request = { url: String(input), ...(init ? { init } : {}) };
     return new Response(
-      JSON.stringify({ token: 'installation-token', expires_at: '2026-07-21T20:00:00Z' }),
+      JSON.stringify({ token: 'opaque.v2.2026::installation-token', expires_at: '2026-07-21T20:00:00Z' }),
       { status: 201, headers: { 'content-type': 'application/json' } },
     );
   };
@@ -180,9 +182,86 @@ test('createInstallationToken down-scopes repositories and permissions', async (
   });
   assert.match(new Headers(request?.init?.headers).get('authorization') ?? '', /^Bearer /);
   assert.deepEqual(result, {
-    token: 'installation-token',
+    token: 'opaque.v2.2026::installation-token',
     expiresAt: '2026-07-21T20:00:00Z',
   });
+});
+
+test('getRepositoryInstallation resolves one validated repository with an App JWT', async () => {
+  const { pkcs8 } = rsaKeys();
+  const conn: GithubConnection = {
+    mode: 'app',
+    appId: '12345',
+    privateKeyPem: pkcs8,
+  };
+  let request: { url: string; init?: RequestInit } | undefined;
+  const fetchImpl: typeof fetch = async (input, init) => {
+    request = { url: String(input), ...(init ? { init } : {}) };
+    return Response.json({
+      id: 42,
+      account: { login: 'acme', type: 'Organization' },
+    });
+  };
+
+  const installation = await getRepositoryInstallation(conn, 'acme/private-skills', fetchImpl);
+
+  assert.deepEqual(installation, {
+    id: 42,
+    accountLogin: 'acme',
+    accountType: 'Organization',
+  });
+  assert.equal(request?.url, `${GITHUB_API_BASE}/repos/acme/private-skills/installation`);
+  assert.ok(request?.init?.signal, 'repository installation lookup must have a timeout signal');
+  assert.match(new Headers(request?.init?.headers).get('authorization') ?? '', /^Bearer /);
+});
+
+test('getRepositoryInstallation returns null for an inaccessible repository', async () => {
+  const { pkcs8 } = rsaKeys();
+  const conn: GithubConnection = {
+    mode: 'app',
+    appId: '12345',
+    privateKeyPem: pkcs8,
+  };
+  const fetchImpl: typeof fetch = async () => new Response('private details', { status: 404 });
+
+  assert.equal(await getRepositoryInstallation(conn, 'acme/missing', fetchImpl), null);
+});
+
+test('getRepositoryInstallation preserves classified upstream failures', async () => {
+  const { pkcs8 } = rsaKeys();
+  const conn: GithubConnection = {
+    mode: 'app',
+    appId: '12345',
+    privateKeyPem: pkcs8,
+  };
+  const fetchImpl: typeof fetch = async () => new Response('rejected', { status: 401 });
+
+  await assert.rejects(
+    () => getRepositoryInstallation(conn, 'acme/private-skills', fetchImpl),
+    (error: unknown) => githubErrorStatus(error) === 401,
+  );
+});
+
+test('getRepositoryInstallation rejects malformed coordinates before GitHub access', async () => {
+  const { pkcs8 } = rsaKeys();
+  const conn: GithubConnection = {
+    mode: 'app',
+    appId: '12345',
+    privateKeyPem: pkcs8,
+  };
+  let requests = 0;
+  const fetchImpl: typeof fetch = async () => {
+    requests += 1;
+    return new Response('unexpected');
+  };
+
+  for (const fullName of ['acme/..', 'acme', 'acme/repo/extra']) {
+    await assert.rejects(
+      () => getRepositoryInstallation(conn, fullName, fetchImpl),
+      /Invalid GitHub repository/,
+    );
+  }
+  assert.equal(requests, 0);
 });
 
 test('getCachedInstallationToken caches by installation and sorted repository names', async () => {
