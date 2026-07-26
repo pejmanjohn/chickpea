@@ -31,6 +31,10 @@ export interface SkillResolution {
   owner: string;
   repo: string;
   ref: string;
+  source: {
+    visibility: 'public' | 'private';
+    access: 'anonymous' | 'github_app';
+  };
   skills: ResolvedSkillCandidate[];
   /** Total SKILL.md directories found (before the scan cap). */
   total: number;
@@ -38,6 +42,10 @@ export interface SkillResolution {
   capped: boolean;
   /** Skills found but skipped because a required field was missing/invalid. */
   skipped: number;
+}
+
+export interface SkillResolutionAccess {
+  token: string;
 }
 
 export class SkillImportError extends Error {
@@ -59,8 +67,9 @@ const MAX_INSTRUCTIONS = 100_000;
 const SKILL_NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const SKIP_DIR_RE = /(^|\/)(tests?|node_modules|\.git|dist|build|__pycache__|fixtures)(\/|$)/;
 const SCRIPT_EXT_RE = /\.(sh|py|js|mjs|cjs|ts|rb|bash|zsh)$/i;
-const PUBLIC_REPOSITORIES_ONLY =
-  'Only public repositories can be imported; the GitHub App integration governs private repository access';
+const REPOSITORY_NOT_FOUND =
+  'Repository not found or not accessible. Check the source and GitHub App access.';
+const GITHUB_RATE_LIMITED = 'GitHub rate limit reached. Try again after it resets.';
 
 /**
  * Parse a pasted source into `{ owner, repo, ref?, skillFilter? }`, or null if
@@ -178,32 +187,34 @@ interface GitTreeEntry {
 }
 
 /**
- * Resolve a parsed source into importable skill candidates. Costs
- * 2 + min(N, MAX_SCANNED_SKILLS) subrequests. Skill imports are deliberately
- * unauthenticated and therefore limited to public repositories.
+ * Resolve a parsed source into importable skill candidates. Anonymous calls
+ * preserve the public path; an optional request-local App token enables the
+ * same bounded scan for one server-authorized private repository.
  */
 export async function resolveSkillSource(
   parsed: ParsedSkillSource,
   fetchImpl: typeof fetch,
+  access?: SkillResolutionAccess,
 ): Promise<SkillResolution> {
   const { owner, repo } = parsed;
+  const authenticated = access !== undefined;
   const headers: Record<string, string> = {
     accept: 'application/vnd.github+json',
     'user-agent': 'chickpea-skill-import',
+    ...(access ? { authorization: `Bearer ${access.token}` } : {}),
   };
 
-  const ref = parsed.ref ?? (await fetchDefaultBranch(owner, repo, fetchImpl, headers));
+  const metadata = !parsed.ref || access
+    ? await fetchRepositoryMetadata(owner, repo, fetchImpl, headers, authenticated)
+    : undefined;
+  const ref = parsed.ref ?? metadata?.defaultBranch ?? 'main';
+  const visibility = metadata?.private ? 'private' : 'public';
 
   const treeRes = await fetchImpl(
     `https://api.github.com/repos/${owner}/${repo}/git/trees/${encodeURIComponent(ref)}?recursive=1`,
     { headers },
   );
-  if (treeRes.status === 403 || treeRes.status === 404) {
-    throw new SkillImportError('public_only', PUBLIC_REPOSITORIES_ONLY);
-  }
-  if (!treeRes.ok) {
-    throw new SkillImportError('github_error', `GitHub returned ${treeRes.status} for ${owner}/${repo}.`);
-  }
+  assertRepositoryResponse(treeRes, authenticated, owner, repo);
   const tree = (await treeRes.json()) as { tree?: GitTreeEntry[] };
   const blobs = (tree.tree ?? []).filter((entry) => entry.type === 'blob');
 
@@ -221,10 +232,23 @@ export async function resolveSkillSource(
   const skills: ResolvedSkillCandidate[] = [];
   let skipped = 0;
   for (const entry of scan) {
-    const rawRes = await fetchImpl(
-      `https://raw.githubusercontent.com/${owner}/${repo}/${encodeURIComponent(ref)}/${entry.path}`,
-    );
+    const rawRes = access
+      ? await fetchImpl(
+          `https://api.github.com/repos/${owner}/${repo}/contents/${encodeGithubPath(entry.path)}?ref=${encodeURIComponent(ref)}`,
+          {
+            headers: {
+              ...headers,
+              accept: 'application/vnd.github.raw+json',
+            },
+          },
+        )
+      : await fetchImpl(
+          `https://raw.githubusercontent.com/${owner}/${repo}/${encodeURIComponent(ref)}/${entry.path}`,
+        );
     if (!rawRes.ok) {
+      if (access && (rawRes.status === 401 || rawRes.status === 403 || rawRes.status === 404 || rawRes.status === 429)) {
+        assertRepositoryResponse(rawRes, true, owner, repo);
+      }
       skipped += 1;
       continue;
     }
@@ -250,24 +274,64 @@ export async function resolveSkillSource(
     });
   }
 
-  return { owner, repo, ref, skills, total, capped: total > scan.length, skipped };
+  return {
+    owner,
+    repo,
+    ref,
+    source: {
+      visibility,
+      access: authenticated ? 'github_app' : 'anonymous',
+    },
+    skills,
+    total,
+    capped: total > scan.length,
+    skipped,
+  };
 }
 
-async function fetchDefaultBranch(
+async function fetchRepositoryMetadata(
   owner: string,
   repo: string,
   fetchImpl: typeof fetch,
   headers: Record<string, string>,
-): Promise<string> {
+  authenticated: boolean,
+): Promise<{ defaultBranch: string; private: boolean }> {
   const res = await fetchImpl(`https://api.github.com/repos/${owner}/${repo}`, { headers });
-  if (res.status === 403 || res.status === 404) {
-    throw new SkillImportError('public_only', PUBLIC_REPOSITORIES_ONLY);
+  assertRepositoryResponse(res, authenticated, owner, repo);
+  const meta = (await res.json()) as { default_branch?: string; private?: boolean };
+  return {
+    defaultBranch: meta.default_branch || 'main',
+    private: meta.private === true,
+  };
+}
+
+function assertRepositoryResponse(
+  response: Response,
+  authenticated: boolean,
+  owner: string,
+  repo: string,
+): void {
+  if (response.ok) return;
+  if (isRateLimited(response)) {
+    throw new SkillImportError('rate_limited', GITHUB_RATE_LIMITED);
   }
-  if (!res.ok) {
-    throw new SkillImportError('github_error', `GitHub returned ${res.status} for ${owner}/${repo}.`);
+  if (response.status === 403 || response.status === 404) {
+    throw new SkillImportError(
+      authenticated ? 'repository_inaccessible' : 'access_candidate',
+      REPOSITORY_NOT_FOUND,
+    );
   }
-  const meta = (await res.json()) as { default_branch?: string };
-  return meta.default_branch || 'main';
+  throw new SkillImportError('github_error', `GitHub returned ${response.status} for ${owner}/${repo}.`);
+}
+
+function isRateLimited(response: Response): boolean {
+  return response.status === 429 ||
+    response.headers.get('retry-after') !== null ||
+    response.headers.get('x-ratelimit-remaining') === '0';
+}
+
+function encodeGithubPath(path: string): string {
+  return path.split('/').map(encodeURIComponent).join('/');
 }
 
 function basename(path: string): string {

@@ -264,6 +264,166 @@ test('getRepositoryInstallation rejects malformed coordinates before GitHub acce
   assert.equal(requests, 0);
 });
 
+test('skill resolve route retries a private source with exact App access', async () => {
+  const { pkcs8 } = rsaKeys();
+  const store = new SqliteConfigStore(':memory:', { agents: [agent()], assignments: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  await settings.setSetting('github.app.id', '12345');
+  await settings.setSetting('github.app.private_key', pkcs8);
+  const requests: Array<{ url: string; authorization: string | null; body?: string }> = [];
+  const fetchImpl: typeof fetch = async (input, init) => {
+    const url = String(input);
+    const authorization = new Headers(init?.headers).get('authorization');
+    requests.push({
+      url,
+      authorization,
+      ...(init?.body ? { body: String(init.body) } : {}),
+    });
+    if (url.endsWith('/repos/acme/private-skills')) {
+      if (authorization === 'Bearer private-installation-token') {
+        return Response.json({ default_branch: 'main', private: true });
+      }
+      return new Response('', { status: 404 });
+    }
+    if (url.endsWith('/repos/acme/private-skills/installation')) {
+      return Response.json({ id: 42, account: { login: 'acme', type: 'Organization' } });
+    }
+    if (url.endsWith('/app/installations/42/access_tokens')) {
+      return Response.json({
+        token: 'private-installation-token',
+        expires_at: '2026-07-26T00:00:00Z',
+      });
+    }
+    if (url.includes('/git/trees/main')) {
+      return Response.json({ tree: [{ path: 'skills/private/SKILL.md', type: 'blob' }] });
+    }
+    if (url.includes('/contents/skills/private/SKILL.md')) {
+      return new Response(
+        '---\nname: private-skill\ndescription: Private instructions.\n---\n# Private body',
+      );
+    }
+    return new Response('unexpected request', { status: 500 });
+  };
+
+  try {
+    const response = await withFetch(fetchImpl, async () =>
+      await adminApp(store, settings).request('/admin/api/skills/resolve', {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({ source: 'acme/private-skills' }),
+      }));
+    assert.equal(response.status, 200);
+    const responseText = await response.text();
+    assert.doesNotMatch(responseText, /private-installation-token/);
+    const body = JSON.parse(responseText) as {
+      resolution: {
+        source: { visibility: string; access: string };
+        skills: Array<{ name: string }>;
+      };
+    };
+    assert.deepEqual(body.resolution.source, { visibility: 'private', access: 'github_app' });
+    assert.deepEqual(body.resolution.skills.map((skill) => skill.name), ['private-skill']);
+
+    const tokenRequest = requests.find((request) => request.url.endsWith('/access_tokens'));
+    assert.deepEqual(JSON.parse(String(tokenRequest?.body)), {
+      repositories: ['private-skills'],
+      permissions: { contents: 'read' },
+    });
+    const anonymousRequest = requests.find((request) => request.url.endsWith('/repos/acme/private-skills'));
+    assert.equal(anonymousRequest?.authorization, null);
+  } finally {
+    store.close();
+    settings.close();
+  }
+});
+
+test('skill resolve route keeps private lookup errors deliberately ambiguous', async () => {
+  const { pkcs8 } = rsaKeys();
+  const store = new SqliteConfigStore(':memory:', { agents: [agent()], assignments: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  await settings.setSetting('github.app.id', '12345');
+  await settings.setSetting('github.app.private_key', pkcs8);
+  let tokenMints = 0;
+  const fetchImpl: typeof fetch = async (input) => {
+    const url = String(input);
+    if (url.endsWith('/access_tokens')) tokenMints += 1;
+    return new Response('', { status: 404 });
+  };
+
+  try {
+    const response = await withFetch(fetchImpl, async () =>
+      await adminApp(store, settings).request('/admin/api/skills/resolve', {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({ source: 'acme/unknown' }),
+      }));
+    assert.equal(response.status, 404);
+    assert.deepEqual(await response.json(), {
+      error: 'repository_not_found_or_inaccessible',
+      message: 'Repository not found or not accessible. Check the source and GitHub App access.',
+    });
+    assert.equal(tokenMints, 0);
+  } finally {
+    store.close();
+    settings.close();
+  }
+});
+
+test('skill resolve route does not mint a token for anonymous rate limits', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [agent()], assignments: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  let requests = 0;
+  const fetchImpl: typeof fetch = async () => {
+    requests += 1;
+    return new Response('', {
+      status: 403,
+      headers: { 'x-ratelimit-remaining': '0' },
+    });
+  };
+
+  try {
+    const response = await withFetch(fetchImpl, async () =>
+      await adminApp(store, settings).request('/admin/api/skills/resolve', {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({ source: 'acme/public-skills' }),
+      }));
+    assert.equal(response.status, 429);
+    assert.deepEqual(await response.json(), {
+      error: 'github_rate_limited',
+      message: 'GitHub rate limit reached. Try again after it resets.',
+    });
+    assert.equal(requests, 1);
+  } finally {
+    store.close();
+    settings.close();
+  }
+});
+
+test('skill resolve route rejects unauthenticated requests before GitHub access', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [agent()], assignments: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  let requests = 0;
+  const fetchImpl: typeof fetch = async () => {
+    requests += 1;
+    return new Response('unexpected');
+  };
+
+  try {
+    const response = await withFetch(fetchImpl, async () =>
+      await adminApp(store, settings).request('/admin/api/skills/resolve', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ source: 'acme/private-skills' }),
+      }));
+    assert.equal(response.status, 401);
+    assert.equal(requests, 0);
+  } finally {
+    store.close();
+    settings.close();
+  }
+});
+
 test('getCachedInstallationToken caches by installation and sorted repository names', async () => {
   const { pkcs8 } = rsaKeys();
   const conn: GithubConnection = {

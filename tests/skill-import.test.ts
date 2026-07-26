@@ -67,7 +67,7 @@ test('sanitizeSkillName normalizes to the strict rule or empty', () => {
 
 // A fetch mock: ordered [substring, response] pairs; first match wins.
 function mockFetch(
-  routes: Array<[string, { status?: number; json?: unknown; text?: string }]>,
+  routes: Array<[string, { status?: number; json?: unknown; text?: string; headers?: HeadersInit }]>,
   requests?: Array<{ url: string; init?: RequestInit }>,
 ): typeof fetch {
   return (async (input: unknown, init?: RequestInit) => {
@@ -79,6 +79,7 @@ function mockFetch(
         return {
           ok: status >= 200 && status < 300,
           status,
+          headers: new Headers(res.headers),
           async json() {
             return res.json;
           },
@@ -118,6 +119,7 @@ test('resolveSkillSource resolves candidates, flags scripts, and skips test fixt
     assert.equal(new Headers(request.init?.headers).has('authorization'), false, request.url);
   }
   assert.equal(result.ref, 'main');
+  assert.deepEqual(result.source, { visibility: 'public', access: 'anonymous' });
   assert.equal(result.total, 2); // tests/fixtures/x is excluded from the count
   assert.equal(result.capped, false);
   assert.deepEqual(
@@ -156,16 +158,86 @@ test('resolveSkillSource skips a skill missing a description', async () => {
   assert.equal(result.skipped, 1);
 });
 
-test('resolveSkillSource explains that unauthenticated 403/404 repositories must be public', async () => {
-  for (const status of [403, 404]) {
-    const fetchImpl = mockFetch([['api.github.com/repos/acme/private', { status }]]);
-    await assert.rejects(
-      () => resolveSkillSource({ owner: 'acme', repo: 'private' }, fetchImpl),
-      (err: unknown) =>
-        err instanceof SkillImportError &&
-        err.code === 'public_only' &&
-        err.message ===
-          'Only public repositories can be imported; the GitHub App integration governs private repository access',
+test('resolveSkillSource marks an anonymous 404 as an authenticated-access candidate', async () => {
+  const fetchImpl = mockFetch([['api.github.com/repos/acme/private', { status: 404 }]]);
+  await assert.rejects(
+    () => resolveSkillSource({ owner: 'acme', repo: 'private' }, fetchImpl),
+    (err: unknown) => err instanceof SkillImportError && err.code === 'access_candidate',
+  );
+});
+
+test('resolveSkillSource classifies anonymous rate limits without requesting App fallback', async () => {
+  const fetchImpl = mockFetch([
+    ['api.github.com/repos/acme/skills', {
+      status: 403,
+      headers: { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': '1800000000' },
+    }],
+  ]);
+  await assert.rejects(
+    () => resolveSkillSource({ owner: 'acme', repo: 'skills' }, fetchImpl),
+    (err: unknown) => err instanceof SkillImportError && err.code === 'rate_limited',
+  );
+});
+
+test('resolveSkillSource reads private skill files through authenticated Contents requests', async () => {
+  const requests: Array<{ url: string; init?: RequestInit }> = [];
+  const fetchImpl = mockFetch([
+    ['/contents/skills/private/SKILL.md?', {
+      text: '---\nname: private-skill\ndescription: Private instructions.\n---\n# Secret body',
+    }],
+    ['/git/trees/', { json: { tree: [{ path: 'skills/private/SKILL.md', type: 'blob' }] } }],
+    ['api.github.com/repos/acme/private-skills', {
+      json: { default_branch: 'main', private: true },
+    }],
+  ], requests);
+
+  const result = await resolveSkillSource(
+    { owner: 'acme', repo: 'private-skills' },
+    fetchImpl,
+    { token: 'private-installation-token' },
+  );
+
+  assert.deepEqual(result.source, { visibility: 'private', access: 'github_app' });
+  assert.deepEqual(result.skills.map((skill) => skill.name), ['private-skill']);
+  assert.equal(requests.some((request) => request.url.includes('raw.githubusercontent.com')), false);
+  for (const request of requests) {
+    assert.equal(
+      new Headers(request.init?.headers).get('authorization'),
+      'Bearer private-installation-token',
+      request.url,
     );
   }
+  const contentsRequest = requests.find((request) => request.url.includes('/contents/'));
+  assert.match(new Headers(contentsRequest?.init?.headers).get('accept') ?? '', /github\.raw/);
+});
+
+test('resolveSkillSource classifies access removed during authenticated resolution', async () => {
+  const fetchImpl = mockFetch([
+    ['api.github.com/repos/acme/private-skills', { status: 404 }],
+  ]);
+  await assert.rejects(
+    () => resolveSkillSource(
+      { owner: 'acme', repo: 'private-skills' },
+      fetchImpl,
+      { token: 'private-installation-token' },
+    ),
+    (err: unknown) => err instanceof SkillImportError && err.code === 'repository_inaccessible',
+  );
+});
+
+test('resolveSkillSource preserves rate-limit recovery during authenticated resolution', async () => {
+  const fetchImpl = mockFetch([
+    ['api.github.com/repos/acme/private-skills', {
+      status: 403,
+      headers: { 'retry-after': '60' },
+    }],
+  ]);
+  await assert.rejects(
+    () => resolveSkillSource(
+      { owner: 'acme', repo: 'private-skills' },
+      fetchImpl,
+      { token: 'private-installation-token' },
+    ),
+    (err: unknown) => err instanceof SkillImportError && err.code === 'rate_limited',
+  );
 });
