@@ -20,7 +20,7 @@ const baseTurn: NormalizedSlackTurn = {
   workspaceId: 'T_RUNTIME',
   channelId: 'C_RUNTIME',
   eventId: 'E1',
-  text: '<@U_BOT> !remember Answer style — Keep answers concise.\nUse short bullets.',
+  text: '<@U_BOT> Please remember that answers should use short bullets.',
   userId: 'U_MEMBER',
   messageTs: '1782770400.000100',
   threadTs: '1782770400.000100',
@@ -51,7 +51,15 @@ test('Slack commands persist memory even when a legacy disable override remains'
       await handleMemoryCommand({ turn: baseTurn, platformEnv: undefined, client, presenter }),
       true,
     );
-    assert.match(delivered[0] ?? '', /Saved workspace memory `answer-style`/);
+    assert.match(delivered[0] ?? '', /Saved workspace memory `answers-should-use-short-bullets`/);
+
+    await handleMemoryCommand({
+      turn: { ...baseTurn, eventId: 'E_HELP', text: '<@U_BOT> !memory help' },
+      platformEnv: undefined,
+      client,
+      presenter,
+    });
+    assert.match(delivered.at(-1) ?? '', /Please remember that <what matters>/);
 
     const queryTurn = {
       ...baseTurn,
@@ -60,14 +68,14 @@ test('Slack commands persist memory even when a legacy disable override remains'
     };
     const first = await prepareMemoryTurn({ turn: queryTurn, platformEnv: undefined, client });
     assert.match(first.conversationKey, /:memory-e1$/);
-    assert.match(first.promptBlock ?? '', /answer-style/);
+    assert.match(first.promptBlock ?? '', /answers-should-use-short-bullets/);
     assert.equal(await first.validateLease(), true);
     const unconfirmedRetry = await prepareMemoryTurn({
       turn: { ...queryTurn, eventId: 'E2-retry' },
       platformEnv: undefined,
       client,
     });
-    assert.match(unconfirmedRetry.promptBlock ?? '', /answer-style/);
+    assert.match(unconfirmedRetry.promptBlock ?? '', /answers-should-use-short-bullets/);
     assert.equal(await first.confirmInjection(), true);
 
     const second = await prepareMemoryTurn({
@@ -83,7 +91,7 @@ test('Slack commands persist memory even when a legacy disable override remains'
         ...baseTurn,
         eventId: 'E4',
         messageTs: '1782770402.000100',
-        text: '<@U_BOT> !memory update answer-style — Keep answers extremely concise.\nUse at most three bullets.',
+        text: '<@U_BOT> !memory update answers-should-use-short-bullets — Keep answers extremely concise.\nUse at most three bullets.',
       },
       platformEnv: undefined,
       client,

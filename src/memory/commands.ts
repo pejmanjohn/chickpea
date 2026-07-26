@@ -41,6 +41,9 @@ export function parseMemoryCommand(rawText: string): MemoryCommand | undefined {
     return contentCommand('remember', match[1]!, match[2]!, match[3]);
   }
 
+  match = text.match(/^(?:(?:please\s+)?remember|can you remember)(?:\s+that|:)\s+([\s\S]+)$/i);
+  if (match) return conversationalRememberCommand(match[1]!);
+
   match = text.match(
     new RegExp(`^!memory\\s+update\\s+(${TARGET})${DASH}([^\\n]+)(?:\\n([\\s\\S]+))?$`, 'i'),
   );
@@ -57,6 +60,18 @@ export function parseMemoryCommand(rawText: string): MemoryCommand | undefined {
       description,
       body: match[3]?.trim() || description,
     };
+  }
+
+  match = text.match(
+    new RegExp(
+      `^(?:please\\s+)?update\\s+(?:the\\s+)?memory\\s+[\u0060]?(${TARGET})[\u0060]?\\s+to\\s+(?:say\\s+)?(?:that\\s+)?([\\s\\S]+)$`,
+      'i',
+    ),
+  );
+  if (match) {
+    const content = conversationalContent(match[2]!);
+    if (!content) return invalid('Say what the memory should contain.');
+    return { kind: 'update', target: match[1]!.toLowerCase(), description: content, body: content };
   }
 
   match = text.match(
@@ -121,6 +136,27 @@ function contentCommand(
     description,
     body: bodyInput?.trim() || description,
   };
+}
+
+function conversationalRememberCommand(rawContent: string): MemoryCommand {
+  const body = conversationalContent(rawContent);
+  if (!body) return invalid('Say what Chickpea should remember.');
+  const description = body.split('\n', 1)[0]!.trim();
+  const name = description
+    .replace(/[`*_~]/g, '')
+    .replace(/\s+/g, ' ')
+    .replace(/[.,:;!?]+$/u, '')
+    .split(' ')
+    .slice(0, 8)
+    .join(' ')
+    .slice(0, 80)
+    .trim();
+  if (!name) return invalid('Say what Chickpea should remember.');
+  return { kind: 'remember', name, description, body };
+}
+
+function conversationalContent(rawContent: string): string {
+  return rawContent.trim().replace(/\?\s*$/u, '').trim();
 }
 
 function invalid(hint: string): MemoryCommand {

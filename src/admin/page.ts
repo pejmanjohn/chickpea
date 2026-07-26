@@ -4046,7 +4046,7 @@ details[open].advanced summary::before {
   }
 
   function memoryHelpHtml() {
-    return '<div class="memory-help">Relevant saved memories are used automatically in replies. To intentionally change memory in this release, use <code>@Chickpea !remember &lt;name&gt; &mdash; &lt;description&gt;</code>, <code>@Chickpea !memory update &lt;slug&gt; &mdash; &lt;description&gt;</code>, <code>@Chickpea !memory</code>, or <code>@Chickpea !forget &lt;slug&gt;</code>. Generated <code>MEMORY.md</code> files are never edited directly. <button type="button" class="btn btn-ghost btn-sm" data-action="memory-copy-controls">Copy controls</button></div>';
+    return '<div class="memory-help">Relevant saved memories are used automatically in replies. To save one naturally in Slack, say <code>@Chickpea please remember that &lt;what matters&gt;</code>. Exact controls include <code>@Chickpea !remember &lt;name&gt; &mdash; &lt;description&gt;</code>, <code>@Chickpea !memory update &lt;slug&gt; &mdash; &lt;description&gt;</code>, <code>@Chickpea !memory</code>, and <code>@Chickpea !forget &lt;slug&gt;</code>. Generated <code>MEMORY.md</code> files are never edited directly. <button type="button" class="btn btn-ghost btn-sm" data-action="memory-copy-controls">Copy controls</button></div>';
   }
 
   function memoryDeleteModalHtml() {
@@ -4262,7 +4262,7 @@ details[open].advanced summary::before {
   }
 
   function copyMemoryControls() {
-    var controls = "@Chickpea !remember <name> — <description>\\n@Chickpea !memory update <slug> — <description>\\n@Chickpea !memory\\n@Chickpea !forget <slug>";
+    var controls = "@Chickpea please remember that <what matters>\\n@Chickpea please update the memory <slug> to say that <new guidance>\\n@Chickpea !remember <name> — <description>\\n@Chickpea !memory update <slug> — <description>\\n@Chickpea !memory\\n@Chickpea !forget <slug>";
     if (!navigator.clipboard || !navigator.clipboard.writeText) {
       state.memoryError = "Clipboard access is unavailable. Select the commands above to copy them.";
       render();

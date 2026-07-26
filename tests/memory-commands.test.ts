@@ -35,14 +35,39 @@ test('canonical memory commands parse after a Slack mention', () => {
   });
 });
 
-test('narrow natural-language aliases parse but ordinary or ambiguous prose does not mutate', () => {
+test('explicit conversational memory intent parses without rigid command syntax', () => {
   assert.deepEqual(parseMemoryCommand('remember for this channel: Tone — Be concise'), {
     kind: 'remember', name: 'Tone', description: 'Be concise', body: 'Be concise',
+  });
+  assert.deepEqual(parseMemoryCommand('Please remember that release updates should be concise.'), {
+    kind: 'remember',
+    name: 'release updates should be concise',
+    description: 'release updates should be concise.',
+    body: 'release updates should be concise.',
+  });
+  assert.deepEqual(parseMemoryCommand('Can you remember that staging deploys require smoke tests?'), {
+    kind: 'remember',
+    name: 'staging deploys require smoke tests',
+    description: 'staging deploys require smoke tests',
+    body: 'staging deploys require smoke tests',
   });
   assert.deepEqual(parseMemoryCommand('update memory `tone`: Prefer short answers'), {
     kind: 'update', target: 'tone', description: 'Prefer short answers', body: 'Prefer short answers',
   });
-  assert.equal(parseMemoryCommand('Please remember that I like this'), undefined);
+  assert.deepEqual(
+    parseMemoryCommand('Please update the memory `tone` to say that answers should use three bullets.'),
+    {
+      kind: 'update',
+      target: 'tone',
+      description: 'answers should use three bullets.',
+      body: 'answers should use three bullets.',
+    },
+  );
+});
+
+test('ordinary or ambiguous prose never mutates memory', () => {
+  assert.equal(parseMemoryCommand('I remember that the release was delayed.'), undefined);
+  assert.equal(parseMemoryCommand('Keep this in mind for the current answer.'), undefined);
   assert.equal(parseMemoryCommand('Can you update the memory?'), undefined);
   assert.equal(parseMemoryCommand('!memory merge only-one')?.kind, 'invalid');
 });

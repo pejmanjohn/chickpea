@@ -4286,6 +4286,7 @@ test('Memory editor escapes stored Markdown and explains irreversible deletion a
   assert.doesNotMatch(harness.app.innerHTML, /<script>alert\(1\)<\/script>/);
   assert.match(harness.app.innerHTML, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
   assert.match(harness.app.innerHTML, /Relevant saved memories are used automatically in replies/);
+  assert.match(harness.app.innerHTML, /please remember that &lt;what matters&gt;/);
   assert.match(harness.app.innerHTML, /@Chickpea !remember &lt;name&gt; &mdash; &lt;description&gt;/);
   assert.doesNotMatch(harness.app.innerHTML, /@Chickpea remember &hellip;/);
   assert.match(harness.app.innerHTML, /Generated <code>MEMORY\.md<\/code> files are never edited directly/);

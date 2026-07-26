@@ -533,6 +533,8 @@ function memoryErrorText(error: unknown): string {
 function memoryHelpText(): string {
   return [
     '### Channel memory commands',
+    '- `Please remember that <what matters>` — save a memory with an automatic name',
+    '- `Please update the memory <slug> to say that <new guidance>` — update it naturally',
     '- `!memory` — list this channel’s entries',
     '- `!remember <name> — <description>` — save an entry; add a body on the next line',
     '- `!memory show <slug>` — show an entry',

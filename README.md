@@ -63,11 +63,13 @@ The first DM answers with **zero model keys** on a fresh Cloudflare deploy: the 
 
 ### Channel memory
 
-Channel memory is always available in eligible assigned Slack channels; there is no enable switch or environment flag. Creation is explicit in this release—Chickpea does not silently save facts from normal conversation. Direct-message memory, past-session browsing, automatic curation, and vector search are intentionally deferred.
+Channel memory is always available in eligible assigned Slack channels; there is no enable switch or environment flag. Creation is explicit but does not require rigid command syntax: direct phrases such as “Please remember that…” are accepted, while Chickpea does not silently save facts from normal conversation. Direct-message memory, past-session browsing, automatic curation, and vector search are intentionally deferred.
 
 Use these commands in an admitted channel turn:
 
 ```text
+Please remember that <what matters>
+Please update the memory <slug> to say that <new guidance>
 !memory
 !remember <name> — <description>
 <Markdown body on the next line>
