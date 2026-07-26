@@ -3,7 +3,11 @@ import { test } from 'node:test';
 
 import { CfMemoryStateStore } from '../src/config/cf-state-proxies.ts';
 import type { StateRpcResult, TagStateRpc } from '../src/config/state-rpc.ts';
-import type { MemoryRpcRequest, MemoryRpcResponse } from '../src/memory/types.ts';
+import {
+  MemoryRateLimitError,
+  type MemoryRpcRequest,
+  type MemoryRpcResponse,
+} from '../src/memory/types.ts';
 
 test('Cloudflare memory proxy forwards clone-safe requests and returns typed values', async () => {
   const calls: MemoryRpcRequest[] = [];
@@ -17,6 +21,7 @@ test('Cloudflare memory proxy forwards clone-safe requests and returns typed val
           actorIdsCleared: 1,
           rateWindowsDeleted: 2,
           contextsDeleted: 3,
+          forgetChallengesDeleted: 4,
         },
       };
     },
@@ -27,8 +32,76 @@ test('Cloudflare memory proxy forwards clone-safe requests and returns typed val
     actorIdsCleared: 1,
     rateWindowsDeleted: 2,
     contextsDeleted: 3,
+    forgetChallengesDeleted: 4,
   });
   assert.deepEqual(calls, [{ kind: 'cleanup_retention' }]);
+});
+
+test('Cloudflare memory proxy preserves typed rate-limit retry timestamps', async () => {
+  const stub = {
+    async memoryExecute(): Promise<StateRpcResult<MemoryRpcResponse>> {
+      return {
+        ok: false,
+        error: {
+          code: 'memory',
+          message: 'Too many memory changes; try again later.',
+          details: {
+            memoryCode: 'memory_rate_limited',
+            retryAt: '1785000000123',
+          },
+        },
+      };
+    },
+  } as unknown as TagStateRpc;
+
+  const store = new CfMemoryStateStore(stub);
+  await assert.rejects(
+    () => store.createEntry({} as never),
+    (error: unknown) =>
+      error instanceof MemoryRateLimitError && error.retryAt === 1_785_000_000_123,
+  );
+});
+
+test('Cloudflare memory proxy forwards lifecycle retention and grouped entry summaries', async () => {
+  const calls: MemoryRpcRequest[] = [];
+  const retained = {
+    workspaceId: 'T_TEST', channelId: 'C_PRIVATE', privacy: 'private' as const,
+    lifecycle: 'retained' as const, privateGeneration: 1,
+    privateStoreId: 'store_private_T_TEST_C_PRIVATE_1', currentDisplayName: 'private',
+    lastPublicDisplayName: null, firstObservedAt: 100, lastObservedAt: 200,
+    lastVerifiedAt: 200, visibilityBarrierAt: null, transitionVersion: 2,
+  };
+  const stub = {
+    async memoryExecute(request: MemoryRpcRequest): Promise<StateRpcResult<MemoryRpcResponse>> {
+      calls.push(request);
+      if (request.kind === 'retain_channel_scope') {
+        return { ok: true, value: { kind: 'channel_scope', state: retained } };
+      }
+      return {
+        ok: true,
+        value: {
+          kind: 'entry_scope_summaries',
+          summaries: [{
+            storeId: 'store_public_T_TEST', sourceChannelId: 'C_PUBLIC', entryCount: 3,
+          }],
+        },
+      };
+    },
+  } as unknown as TagStateRpc;
+  const store = new CfMemoryStateStore(stub);
+  const input = {
+    workspaceId: 'T_TEST', channelId: 'C_PRIVATE', reason: 'archived' as const,
+    observedAt: 200,
+  };
+
+  assert.deepEqual(await store.retainChannelScope(input), retained);
+  assert.deepEqual(await store.listEntryScopeSummaries('T_TEST'), [{
+    storeId: 'store_public_T_TEST', sourceChannelId: 'C_PUBLIC', entryCount: 3,
+  }]);
+  assert.deepEqual(calls, [
+    { kind: 'retain_channel_scope', input },
+    { kind: 'list_entry_scope_summaries', workspaceId: 'T_TEST' },
+  ]);
 });
 
 test('Cloudflare memory proxy preserves typed memory conflict errors', async () => {

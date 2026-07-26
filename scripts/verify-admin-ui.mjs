@@ -133,7 +133,7 @@ try {
     'admin page carries the Memory workspace and irreversible-delete disclosure',
     pageHtml.includes('Audit logs') &&
       pageHtml.includes('Generated <code>MEMORY.md</code> files are never edited directly') &&
-      pageHtml.includes('Slack transcripts, model-provider logs, or prior exports are not retracted'),
+      pageHtml.includes('Prior exports, Slack or provider logs, backups, and Flue transcripts may still retain copies'),
   );
 
   const created = await adminBody(app, 'POST', '/admin/api/agents', {

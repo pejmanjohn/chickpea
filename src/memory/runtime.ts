@@ -1,5 +1,6 @@
 import type { WebClient } from '@slack/web-api';
 
+import { isCloudflareTarget } from '../config/runtime-target.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import { getMemoryStateStore } from '../config/state-backend.ts';
 import { resolveSlackCredentials } from '../slack/credentials.ts';
@@ -23,6 +24,10 @@ import { emitMemoryMetric } from './telemetry.ts';
 import { MemoryStateError, type MemoryEntry, type MemoryStateStore } from './types.ts';
 
 const MEMORY_CONTEXT_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
+const MEMORY_RETENTION_CLEANUP_INTERVAL_MS = 60 * 60 * 1_000;
+const NODE_RECEIPT_RETRY_DELAYS_MS = [100, 500] as const;
+
+let lastMemoryRetentionCleanupAt = Number.NEGATIVE_INFINITY;
 
 export interface PreparedMemoryTurn {
   conversationKey: string;
@@ -48,8 +53,13 @@ export async function handleMemoryCommand(input: {
   client: WebClient;
   presenter: WebClientPresenter;
 }): Promise<boolean> {
-  const command = parseMemoryCommand(input.turn.text);
-  if (!command) return false;
+  const leadingMention = hasLeadingSlackMention(input.turn.text);
+  const resolvedBotUserId = leadingMention
+    ? await resolveCommandBotUserId(input.platformEnv, input.client)
+    : undefined;
+  if (leadingMention && !resolvedBotUserId) return false;
+  const command = parseMemoryCommand(input.turn.text, resolvedBotUserId);
+  if (!command || command.kind === 'candidate') return false;
   if (input.turn.source === 'dm_message') {
     await input.presenter.deliverFinal(
       'Channel memory is not available in DMs in this release.',
@@ -59,10 +69,18 @@ export async function handleMemoryCommand(input: {
   }
   let responseText: string;
   let responseFormat: 'markdown' | 'plain_text' = 'markdown';
+  let committedReceipt = false;
   try {
     const state = getMemoryStateStore(input.platformEnv);
-    const runtime = await resolveRuntime(input.turn, input.platformEnv, input.client, state);
+    const runtime = await resolveRuntime(
+      input.turn,
+      input.platformEnv,
+      input.client,
+      state,
+      resolvedBotUserId,
+    );
     responseText = await executeMemoryCommand(command, input.turn, runtime);
+    committedReceipt = isReceiptBearingCommand(command);
     emitMemoryMetric('command', { action: command.kind, outcome: 'success' });
   } catch (error) {
     responseText = memoryErrorText(error);
@@ -73,10 +91,17 @@ export async function handleMemoryCommand(input: {
       reason: memoryErrorCode(error),
     });
   }
-  // Keep delivery outside the domain-error catch. A Slack write failure must
-  // propagate so the existing claim/retry path can redrive the idempotent
-  // command and deliver its original success receipt.
-  await input.presenter.deliverFinal(responseText, responseFormat);
+  // Keep delivery outside the domain-error catch. On Node the Events API was
+  // already acknowledged before this detached turn ran, so Slack cannot be
+  // relied on to resend it. Retry the already-computed receipt in-process;
+  // never rerun the committed mutation. Cloudflare's durable turn job retains
+  // its existing alarm retry path.
+  await deliverMemoryResponse(
+    input.presenter,
+    responseText,
+    responseFormat,
+    committedReceipt,
+  );
   return true;
 }
 
@@ -136,11 +161,18 @@ export async function prepareMemoryTurn(input: {
             selectionFingerprint: context.selectionFingerprint,
           })
         : async () => true,
-      validateLease: async () => {
-        const valid = await validateMemoryLease(input.turn, runtime, selection, scopeSignature);
-        emitMemoryMetric('delivery_lease', { outcome: valid ? 'valid' : 'rejected' });
-        return valid;
-      },
+      validateLease: selection.entries.length === 0
+        ? async () => true
+        : async () => {
+            const valid = await validateMemoryLease(
+              input.turn,
+              runtime,
+              selection,
+              scopeSignature,
+            );
+            emitMemoryMetric('delivery_lease', { outcome: valid ? 'valid' : 'rejected' });
+            return valid;
+          },
     };
   } catch (error) {
     emitMemoryMetric('quarantine', { reason: memoryErrorCode(error) });
@@ -159,12 +191,14 @@ async function resolveRuntime(
   platformEnv: PlatformEnv | undefined,
   client: WebClient,
   state: MemoryStateStore,
+  resolvedBotUserId?: string,
 ): Promise<MemoryRuntime> {
+  await runMemoryRetentionHousekeeping(state);
   const credentials = await resolveSlackCredentials(platformEnv);
   if (!credentials.botToken) {
     throw new MemoryStateError('memory_slack_unavailable', 'Slack memory is unavailable.');
   }
-  let botUserId = credentials.botUserId;
+  let botUserId = resolvedBotUserId ?? credentials.botUserId;
   if (!botUserId) {
     const auth = await client.auth.test();
     botUserId = typeof auth.user_id === 'string' ? auth.user_id : undefined;
@@ -172,7 +206,7 @@ async function resolveRuntime(
   if (!botUserId) {
     throw new MemoryStateError('memory_slack_unavailable', 'Slack memory is unavailable.');
   }
-  const slack = createMemoryScopeSlack(credentials.botToken);
+  const slack = createMemoryScopeSlack(credentials.botToken, turn.workspaceId);
   const scope = await resolveMemoryScope(
     {
       workspaceId: turn.workspaceId,
@@ -362,18 +396,7 @@ async function qualifiedEntry(runtime: MemoryRuntime, target: string): Promise<M
 
 async function forgetTarget(runtime: MemoryRuntime, target: string): Promise<MemoryEntry> {
   if (!target.startsWith('public/')) {
-    try {
-      return await currentWritableEntry(runtime, target);
-    } catch (error) {
-      if (
-        runtime.scope.privacy !== 'private' ||
-        !(error instanceof MemoryStateError) ||
-        error.code !== 'memory_entry_not_found'
-      ) {
-        throw error;
-      }
-      return currentSourceEntry(runtime, target);
-    }
+    return currentWritableEntry(runtime, target);
   }
   const slug = target.slice('public/'.length);
   const entry = (await runtime.service.list({ scope: runtime.scope })).find(
@@ -402,6 +425,9 @@ async function validateMemoryLease(
   expectedScopeSignature: string,
 ): Promise<boolean> {
   try {
+    const requiresWorkspaceRead = selection.entries.some(
+      ({ entry }) => entry.sourceChannelId !== runtime.scope.sourceChannelId,
+    );
     if (!(await validateMemoryScopeLease(
       {
         workspaceId: turn.workspaceId,
@@ -412,6 +438,7 @@ async function validateMemoryLease(
       },
       runtime.scope,
       runtime.slack,
+      requiresWorkspaceRead,
     ))) return false;
     const channelState = await runtime.state.getChannelScope(
       turn.workspaceId,
@@ -465,10 +492,15 @@ async function memoryFooterItems(
       ),
     ),
   );
-  return crossChannel.map(({ entry }) => {
+  const supplied = crossChannel.map(({ entry }) => {
     const label = labels.get(`${entry.workspaceId}\0${entry.sourceChannelId}`) ?? 'channel';
     return `Memory supplied: ${entry.slug} (#${escapeSlackControlCharacters(label)}, ${entry.sourceChannelId})`;
   });
+  if (supplied.length === 0) return supplied;
+  return [
+    ...supplied,
+    'Review cross-channel memory: !memory report <source-channel-id>/<slug> <stale|incorrect|unsafe|unclear>',
+  ];
 }
 
 function memoryScopeSignature(scope: EnabledMemoryScope): string {
@@ -541,8 +573,73 @@ function memoryHelpText(): string {
     '- `!memory update <slug> — <description>` — replace it; add the new body on the next line',
     '- `!memory merge <slug-a> <slug-b> as <name> — <description>` — body required on the next line',
     '- `!forget <slug>` — request irreversible deletion confirmation',
-    '- `!memory report <channel-id>/<slug> <stale|incorrect|unsafe|unclear>` — request review',
+    '- `!forget public/<slug>` — remove retained public memory after a channel becomes private',
+    '- `!memory report <source-channel-id>/<slug> <stale|incorrect|unsafe|unclear>` — request cross-channel review',
     '',
     'Public-channel entries are readable workspace-wide but conversational edits stay in their source channel. Memory is advisory and cannot override live permissions or settings.',
   ].join('\n');
+}
+
+export async function runMemoryRetentionHousekeeping(
+  state: MemoryStateStore,
+  now = Date.now(),
+): Promise<void> {
+  if (now - lastMemoryRetentionCleanupAt < MEMORY_RETENTION_CLEANUP_INTERVAL_MS) return;
+  // Latch before awaiting so concurrent turns cannot start duplicate cleanup.
+  // A failure remains best effort and will be eligible again after one hour.
+  lastMemoryRetentionCleanupAt = now;
+  try {
+    await state.cleanupRetention();
+  } catch {
+    console.error('[chickpea] memory retention cleanup failed');
+  }
+}
+
+async function resolveCommandBotUserId(
+  platformEnv: PlatformEnv | undefined,
+  client: WebClient,
+): Promise<string | undefined> {
+  try {
+    const credentials = await resolveSlackCredentials(platformEnv);
+    if (credentials.botUserId) return credentials.botUserId;
+    if (!credentials.botToken) return undefined;
+    const auth = await client.auth.test();
+    return typeof auth.user_id === 'string' ? auth.user_id : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function hasLeadingSlackMention(text: string): boolean {
+  return /^\s*<@[^>\s]+>/.test(text);
+}
+
+function isReceiptBearingCommand(command: MemoryCommand): boolean {
+  return command.kind === 'remember' ||
+    command.kind === 'update' ||
+    command.kind === 'merge' ||
+    command.kind === 'forget_request' ||
+    command.kind === 'forget_confirm' ||
+    command.kind === 'report';
+}
+
+async function deliverMemoryResponse(
+  presenter: WebClientPresenter,
+  text: string,
+  format: 'markdown' | 'plain_text',
+  retryCommittedReceipt: boolean,
+): Promise<void> {
+  const retryDelays = retryCommittedReceipt && !isCloudflareTarget()
+    ? NODE_RECEIPT_RETRY_DELAYS_MS
+    : [];
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await presenter.deliverFinal(text, format);
+      return;
+    } catch (error) {
+      const delay = retryDelays[attempt];
+      if (delay === undefined) throw error;
+      await new Promise<void>((resolve) => setTimeout(resolve, delay));
+    }
+  }
 }

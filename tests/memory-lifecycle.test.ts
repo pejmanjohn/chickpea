@@ -78,3 +78,47 @@ test('public to private preserves the frozen public label and starts a new gener
     state.close();
   }
 });
+
+test('retaining a private channel is idempotent, seals its store, audits safely, and reactivation rotates generation', async () => {
+  let now = 100;
+  const state = new SqliteMemoryStateStore(':memory:', () => now);
+  try {
+    const active = await state.observeChannelScope({
+      workspaceId: 'T_TEST', channelId: 'C_PRIVATE', privacy: 'private',
+      displayName: 'secret-project', observedAt: now,
+    });
+    const oldStoreId = active.privateStoreId;
+    assert.ok(oldStoreId);
+
+    now = 200;
+    const retained = await state.retainChannelScope({
+      workspaceId: 'T_TEST', channelId: 'C_PRIVATE', reason: 'archived', observedAt: now,
+    });
+    const replay = await state.retainChannelScope({
+      workspaceId: 'T_TEST', channelId: 'C_PRIVATE', reason: 'archived', observedAt: now + 1,
+    });
+    assert.equal(retained.lifecycle, 'retained');
+    assert.equal(retained.transitionVersion, 2);
+    assert.equal(replay.transitionVersion, 2);
+    assert.equal((await state.getStore(oldStoreId))?.lifecycle, 'sealed');
+    assert.equal((await state.getStore(oldStoreId))?.sealedReason, 'channel_archived');
+    const events = await state.listAuditEvents({ eventType: 'memory.channel_scope_retained' });
+    assert.equal(events.length, 1);
+    assert.equal(events[0]?.actorId, null);
+    assert.equal(events[0]?.reasonCode, 'channel_archived');
+    assert.equal(events[0]?.metadataJson, '{}');
+
+    now = 300;
+    const reactivated = await state.observeChannelScope({
+      workspaceId: 'T_TEST', channelId: 'C_PRIVATE', privacy: 'private',
+      displayName: 'secret-project-returned', observedAt: now,
+    });
+    assert.equal(reactivated.lifecycle, 'active');
+    assert.equal(reactivated.transitionVersion, 3);
+    assert.equal(reactivated.privateGeneration, 2);
+    assert.notEqual(reactivated.privateStoreId, oldStoreId);
+    assert.equal((await state.getStore(reactivated.privateStoreId ?? ''))?.lifecycle, 'active');
+  } finally {
+    state.close();
+  }
+});

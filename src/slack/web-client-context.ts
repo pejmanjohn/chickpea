@@ -14,6 +14,7 @@ import {
   type SlackWebApiMessage,
 } from './thread-context.ts';
 import type { NormalizedSlackTurn } from './types.ts';
+import { serializeCurrentRequestEnvelope } from '../memory/tool-policy.ts';
 
 /**
  * WebClient-backed hydration of the bounded Slack context that feeds a turn's
@@ -157,12 +158,9 @@ async function fetchThread(
 export function assembleSlackPrompt(
   turn: NormalizedSlackTurn,
   context: SlackTurnContext,
-  options: { memoryBlock?: string } = {},
+  options: { memoryBlock?: string; memorySelected?: boolean } = {},
 ): string {
   const backgroundMessages = context.messages.filter((message) => !message.isTrigger);
-  if (backgroundMessages.length === 0 && !options.memoryBlock) {
-    return turn.text;
-  }
 
   const parts: string[] = [];
   if (backgroundMessages.length > 0) {
@@ -182,6 +180,10 @@ export function assembleSlackPrompt(
     parts.push('', options.memoryBlock);
   }
   parts.push('', 'Current Slack request (answer this; current system truth takes precedence):', turn.text);
+  parts.push(
+    '',
+    serializeCurrentRequestEnvelope(turn.text, options.memorySelected === true),
+  );
   return parts.join('\n');
 }
 

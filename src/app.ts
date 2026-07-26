@@ -6,6 +6,10 @@ import { createAdminRoutes } from './admin/routes.ts';
 import { activityStatusForObservation } from './activity/status.ts';
 import { recordRegisteredProvider } from './config/providers.ts';
 import {
+  memoryToolPolicyInterceptor,
+  observeMemoryToolPolicy,
+} from './memory/tool-policy.ts';
+import {
   activityStatusGenerationInterceptor,
   publishActivityStatus,
 } from './slack/activity-publisher.ts';
@@ -79,6 +83,13 @@ instrument({
       publishActivityStatus(event.instanceId, status, context.env);
     }
   },
+  dispose() {},
+});
+
+instrument({
+  key: Symbol.for('chickpea.memory-tool-policy'),
+  interceptor: memoryToolPolicyInterceptor,
+  observe: observeMemoryToolPolicy,
   dispose() {},
 });
 

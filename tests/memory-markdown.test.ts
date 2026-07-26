@@ -98,4 +98,3 @@ test('private projection stays in its generation namespace', () => {
   assert.ok(files.some((file) => file.path === 'private/C_PRIVATE/generation-3/release-guidance.md'));
   assert.ok(files.every((file) => !file.path.startsWith('channel/')));
 });
-

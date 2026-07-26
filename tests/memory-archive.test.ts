@@ -32,4 +32,3 @@ test('archive decoder rejects unsafe paths, duplicate paths, links, and oversize
   archive[156] = '2'.charCodeAt(0);
   assert.throws(() => decodeMemoryArchive(archive), /type|checksum/i);
 });
-

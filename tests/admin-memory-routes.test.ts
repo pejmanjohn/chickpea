@@ -5,7 +5,7 @@ import { Hono } from 'hono';
 
 import { createAdminRoutes } from '../src/admin/routes.ts';
 import { decodeMemoryArchive, encodeMemoryArchive } from '../src/memory/archive.ts';
-import { projectMemoryEntry } from '../src/memory/markdown.ts';
+import { projectMemoryEntry, projectMemoryFiles } from '../src/memory/markdown.ts';
 import { SqliteMemoryStateStore } from '../src/memory/store.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
@@ -72,6 +72,55 @@ test('memory admin scopes, files, entry detail, history, and audit events are au
     assert.equal(events.status, 200);
     assert.equal(((await events.json()) as { events: unknown[] }).events.length, 1);
     assert.equal((await h.app.request('/admin/api/audit/scheduled_work/events', { headers: auth })).status, 404);
+  } finally {
+    h.config.close(); h.settings.close(); h.memory.close();
+  }
+});
+
+test('memory admin scope bootstrap uses body-free summaries', async () => {
+  const h = await harness();
+  const originalListEntries = h.memory.listEntries.bind(h.memory);
+  try {
+    h.memory.listEntries = async () => {
+      throw new Error('scope bootstrap must not load memory bodies');
+    };
+    const scopes = await h.app.request('/admin/api/audit/memory/scopes', { headers: auth });
+    assert.equal(scopes.status, 200);
+    assert.equal(
+      ((await scopes.json()) as { scopes: Array<{ entryCount: number }> }).scopes[0]?.entryCount,
+      1,
+    );
+  } finally {
+    h.memory.listEntries = originalListEntries;
+    h.config.close(); h.settings.close(); h.memory.close();
+  }
+});
+
+test('private memory file listing does not audit every entry before detail is opened', async () => {
+  const h = await harness();
+  try {
+    await h.memory.observeChannelScope({
+      workspaceId: 'T_TEST', channelId: 'C_SECRET', privacy: 'private',
+      displayName: 'secret', observedAt: NOW,
+    });
+    const privateStore = await h.memory.ensurePrivateStore('T_TEST', 'C_SECRET', 1);
+    await h.memory.createEntry({
+      entryId: 'mem_secret', storeId: privateStore.storeId, workspaceId: 'T_TEST',
+      sourceChannelId: 'C_SECRET', slug: 'private-guidance', description: 'Private.',
+      type: 'fact', body: 'Keep this private.', actorId: 'U_MEMBER', actorClass: 'member',
+      idempotencyKey: 'memory:test:create-private',
+    });
+
+    const files = await h.app.request(
+      `/admin/api/audit/memory/stores/${privateStore.storeId}/files?sourceChannelId=C_SECRET`,
+      { headers: auth },
+    );
+    assert.equal(files.status, 200);
+    assert.equal((await h.memory.listAuditEvents({ eventType: 'memory.private_entry_viewed' })).length, 0);
+
+    const detail = await h.app.request('/admin/api/audit/memory/entries/mem_secret', { headers: auth });
+    assert.equal(detail.status, 200);
+    assert.equal((await h.memory.listAuditEvents({ eventType: 'memory.private_entry_viewed' })).length, 1);
   } finally {
     h.config.close(); h.settings.close(); h.memory.close();
   }
@@ -177,6 +226,70 @@ test('memory export is an attachment and import preview/apply round-trips create
     assert.equal(mismatchedReplay.status, 409);
     assert.deepEqual(await mismatchedReplay.json(), { error: 'memory_idempotency_mismatch' });
   } finally {
+    h.config.close(); h.settings.close(); h.memory.close();
+  }
+});
+
+test('memory manifest import preserves the reviewed entry status', async () => {
+  const h = await harness();
+  try {
+    const staleEntry = {
+      ...h.entry,
+      entryId: 'mem_stale_import',
+      slug: 'stale-import',
+      description: 'Imported stale guidance.',
+      body: 'This needs review.',
+      status: 'stale' as const,
+    };
+    const archiveBase64 = Buffer.from(encodeMemoryArchive(
+      projectMemoryFiles({ store: h.publicStore, entries: [staleEntry] }),
+    )).toString('base64');
+    const preview = await h.app.request('/admin/api/audit/memory/import/preview', {
+      method: 'POST', headers: { ...auth, 'content-type': 'application/json' },
+      body: JSON.stringify({ storeId: h.publicStore.storeId, archiveBase64 }),
+    });
+    assert.equal(preview.status, 200);
+    const previewToken = ((await preview.json()) as { previewToken: string }).previewToken;
+
+    const applied = await h.app.request('/admin/api/audit/memory/import/apply', {
+      method: 'POST', headers: { ...auth, 'content-type': 'application/json', 'idempotency-key': 'admin-import-status' },
+      body: JSON.stringify({ storeId: h.publicStore.storeId, archiveBase64, previewToken }),
+    });
+    assert.equal(applied.status, 200, await applied.text());
+    assert.equal((await h.memory.getEntry('mem_stale_import'))?.status, 'stale');
+  } finally {
+    h.config.close(); h.settings.close(); h.memory.close();
+  }
+});
+
+test('memory import validation is typed while unknown failures stay sanitized', async () => {
+  const h = await harness();
+  const originalGetStore = h.memory.getStore.bind(h.memory);
+  try {
+    const invalidArchive = await h.app.request('/admin/api/audit/memory/import/preview', {
+      method: 'POST', headers: { ...auth, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        storeId: h.publicStore.storeId,
+        archiveBase64: Buffer.alloc(512, 1).toString('base64'),
+      }),
+    });
+    assert.equal(invalidArchive.status, 400);
+    assert.deepEqual(await invalidArchive.json(), { error: 'memory_import_invalid' });
+
+    h.memory.getStore = async () => {
+      throw new Error('archive import conflict: internal database detail');
+    };
+    const unknown = await h.app.request('/admin/api/audit/memory/import/preview', {
+      method: 'POST', headers: { ...auth, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        storeId: h.publicStore.storeId,
+        archiveBase64: Buffer.from(encodeMemoryArchive([])).toString('base64'),
+      }),
+    });
+    assert.equal(unknown.status, 500);
+    assert.deepEqual(await unknown.json(), { error: 'internal_error' });
+  } finally {
+    h.memory.getStore = originalGetStore;
     h.config.close(); h.settings.close(); h.memory.close();
   }
 });

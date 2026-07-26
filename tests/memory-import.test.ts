@@ -35,6 +35,94 @@ test('manifest import previews updates and unchanged entries without mutating st
   assert.equal(changed.candidates[0]?.description, 'Updated.');
 });
 
+test('manifest validation rejects malformed IDs, enums, hashes, paths, booleans, and provenance', async (t) => {
+  const files = projectMemoryFiles({ store, entries: [entry] });
+  const invalidCases: Array<[string, (manifest: Record<string, any>) => void]> = [
+    ['entry ID', (manifest) => { manifest.entries[0].entryId = '../mem'; }],
+    ['status', (manifest) => { manifest.entries[0].status = 'deleted'; }],
+    ['hash', (manifest) => { manifest.entries[0].sha256 = 'not-a-hash'; }],
+    ['path', (manifest) => { manifest.entries[0].path = '../guidance.md'; }],
+    ['generated flag', (manifest) => { manifest.files[0].generated = null; }],
+    ['provenance', (manifest) => { manifest.entries[0].provenance.creatorActorId = false; }],
+  ];
+  for (const [name, mutate] of invalidCases) {
+    await t.test(name, () => {
+      const copied = files.map((file) => ({ ...file }));
+      const manifestFile = copied.find((file) => file.path === 'manifest.json');
+      assert.ok(manifestFile);
+      const manifest = JSON.parse(manifestFile.content) as Record<string, any>;
+      mutate(manifest);
+      manifestFile.content = `${JSON.stringify(manifest)}\n`;
+      assert.throws(
+        () => createImportPreview({
+          archive: encodeMemoryArchive(copied), targetStore: store, currentEntries: [entry],
+        }),
+        /manifest/i,
+      );
+    });
+  }
+});
+
+test('manifest status round-trips expired and superseded entries without making them active', async () => {
+  const state = new SqliteMemoryStateStore(':memory:', () => now);
+  try {
+    await state.ensurePublicStore(store.workspaceId);
+    const exported = [
+      { ...entry, entryId: 'mem_expired', slug: 'expired', status: 'expired' as const },
+      { ...entry, entryId: 'mem_superseded', slug: 'superseded', status: 'superseded' as const },
+    ];
+    const archive = encodeMemoryArchive(projectMemoryFiles({ store, entries: exported }));
+    const preview = createImportPreview({ archive, targetStore: store, currentEntries: [] });
+    assert.deepEqual(preview.candidates.map((candidate) => candidate.status), [
+      'expired', 'superseded',
+    ]);
+
+    await state.applyImport({
+      storeId: store.storeId, workspaceId: store.workspaceId, actorId: 'admin',
+      archiveSha256: preview.archiveSha256, idempotencyKey: 'status-round-trip',
+      operations: preview.candidates.map((candidate) => ({
+        action: 'create' as const,
+        entryId: candidate.entryId!, sourceChannelId: candidate.sourceChannelId,
+        slug: candidate.slug, description: candidate.description, type: candidate.type,
+        body: candidate.body, status: candidate.status,
+      })),
+    });
+    assert.deepEqual(
+      (await state.listEntries({ storeId: store.storeId })).map((item) => item.status),
+      ['expired', 'superseded'],
+    );
+    assert.equal((await state.listEntries({
+      storeId: store.storeId, statuses: ['active', 'stale'],
+    })).length, 0);
+  } finally {
+    state.close();
+  }
+});
+
+test('store import boundary rejects malformed manifest-derived operations', async () => {
+  const state = new SqliteMemoryStateStore(':memory:', () => now);
+  try {
+    await state.ensurePublicStore(store.workspaceId);
+    const valid = {
+      storeId: store.storeId, workspaceId: store.workspaceId, actorId: 'admin',
+      archiveSha256: 'a'.repeat(64), idempotencyKey: 'invalid-import',
+      operations: [{
+        action: 'create' as const, entryId: 'mem_valid', sourceChannelId: 'C1', slug: 'valid',
+        description: 'Valid.', type: 'fact' as const, body: 'Valid.', status: 'active' as const,
+      }],
+    };
+    for (const request of [
+      { ...valid, archiveSha256: 'not-a-hash' },
+      { ...valid, operations: [{ ...valid.operations[0]!, entryId: '../mem' }] },
+      { ...valid, operations: [{ ...valid.operations[0]!, status: 'forgotten' as never }] },
+    ]) {
+      await assert.rejects(() => state.applyImport(request), /import.*invalid/i);
+    }
+  } finally {
+    state.close();
+  }
+});
+
 test('import rejects authored generated indexes and human archives cannot update', () => {
   const files = projectMemoryFiles({ store, entries: [entry] });
   const index = files.find((file) => file.path === 'channel/C1/MEMORY.md');

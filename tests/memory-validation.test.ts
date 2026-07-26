@@ -25,9 +25,15 @@ test('memory rejects known credentials while allowing ordinary near-miss prose',
   for (const secret of [
     'xoxb-' + '123456789012-123456789012-abcdefghijklmnopqrstuvwxyz',
     'sk-ant-api03-abcdefghijklmnopqrstuvwxyz1234567890',
+    'sk-proj-abcdefghijklmnopqrstuvwxyz1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ',
     'ghp_abcdefghijklmnopqrstuvwxyz1234567890',
+    'AKIAIOSFODNN7EXAMPLE',
+    'ASIAIOSFODNN7EXAMPLE',
     '-----BEGIN PRIVATE KEY-----',
     'TAG_ADMIN_TOKEN=super-secret-value',
+    'AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY',
+    'aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY',
+    '"AWS_SECRET_ACCESS_KEY": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"',
   ]) {
     assert.throws(
       () => validateMemoryContent({ description: 'credential', body: secret, type: 'fact' }),

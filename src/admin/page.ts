@@ -4045,15 +4045,33 @@ details[open].advanced summary::before {
       '<button type="button" class="btn btn-ghost btn-sm" data-action="memory-use-latest">Use latest and discard draft</button></div>';
   }
 
+  function memoryCommandCatalog() {
+    return [
+      "@Chickpea !memory help",
+      "@Chickpea !memory",
+      "@Chickpea !memory show <slug>",
+      "@Chickpea !remember <name> — <description>",
+      "@Chickpea !memory update <slug> — <description>",
+      "@Chickpea !memory merge <slug-a> <slug-b> as <name> — <description>",
+      "@Chickpea !forget <slug>",
+      "@Chickpea !memory report <channel-id>/<slug> <stale|incorrect|unsafe|unclear>"
+    ];
+  }
+
   function memoryHelpHtml() {
-    return '<div class="memory-help">Relevant saved memories are used automatically in replies. To save one naturally in Slack, say <code>@Chickpea please remember that &lt;what matters&gt;</code>. Exact controls include <code>@Chickpea !remember &lt;name&gt; &mdash; &lt;description&gt;</code>, <code>@Chickpea !memory update &lt;slug&gt; &mdash; &lt;description&gt;</code>, <code>@Chickpea !memory</code>, and <code>@Chickpea !forget &lt;slug&gt;</code>. Generated <code>MEMORY.md</code> files are never edited directly. <button type="button" class="btn btn-ghost btn-sm" data-action="memory-copy-controls">Copy controls</button></div>';
+    var commands = memoryCommandCatalog().map(function (command) {
+      return '<code>' + esc(command).replace(/—/g, "&mdash;") + '</code>';
+    }).join(", ");
+    return '<div class="memory-help">Relevant saved memories are used automatically in replies. To save one naturally in Slack, say <code>@Chickpea please remember that &lt;what matters&gt;</code>. Commands: ' +
+      commands + '. The merge command requires the replacement body on the next line. ' +
+      'Generated <code>MEMORY.md</code> files are never edited directly. <button type="button" class="btn btn-ghost btn-sm" data-action="memory-copy-controls">Copy controls</button></div>';
   }
 
   function memoryDeleteModalHtml() {
     if (!state.memoryDeleteConfirm || !state.memoryDetail) return '';
     return '<div class="modal-backdrop"><div class="modal-card" role="dialog" aria-modal="true" aria-label="Delete memory">' +
       '<h2 class="modal-title">Delete ' + esc(state.memoryDetail.entry.slug) + '?</h2>' +
-      '<p class="modal-body">This irreversibly removes the current and historical memory content. Audit tombstones remain. Copies already present in Slack transcripts, model-provider logs, or prior exports are not retracted.</p>' +
+      '<p class="modal-body">This permanently removes the canonical memory body and the content from every stored revision in Chickpea. Body-free audit tombstones and revision metadata remain. Prior exports, Slack or provider logs, backups, and Flue transcripts may still retain copies; Chickpea cannot retract them.</p>' +
       '<div class="modal-foot"><button type="button" class="btn btn-ghost" data-action="memory-delete-cancel">Cancel</button><span class="spacer"></span><button type="button" class="btn btn-danger" data-action="memory-delete-confirm">Delete permanently</button></div></div></div>';
   }
 
@@ -4262,7 +4280,15 @@ details[open].advanced summary::before {
   }
 
   function copyMemoryControls() {
-    var controls = "@Chickpea please remember that <what matters>\\n@Chickpea please update the memory <slug> to say that <new guidance>\\n@Chickpea !remember <name> — <description>\\n@Chickpea !memory update <slug> — <description>\\n@Chickpea !memory\\n@Chickpea !forget <slug>";
+    var commands = memoryCommandCatalog().map(function (command) {
+      return command.indexOf("@Chickpea !memory merge ") === 0
+        ? command + "\\n<replacement body on the next line>"
+        : command;
+    });
+    var controls = [
+      "@Chickpea please remember that <what matters>",
+      "@Chickpea please update the memory <slug> to say that <new guidance>"
+    ].concat(commands).join("\\n");
     if (!navigator.clipboard || !navigator.clipboard.writeText) {
       state.memoryError = "Clipboard access is unavailable. Select the commands above to copy them.";
       render();
@@ -4293,7 +4319,7 @@ details[open].advanced summary::before {
       state.memoryBusy = "";
       state.memoryDirty = false;
       state.memoryIdempotencyKey = "";
-      state.memoryNotice = "Memory deleted. Its content cannot be recovered from Chickpea.";
+      state.memoryNotice = "Memory deleted from Chickpea. Its canonical body and revision content were removed; body-free audit records remain, and prior exports, Slack or provider logs, backups, and Flue transcripts may still retain copies.";
       return loadMemoryFiles();
     }).catch(function (error) {
       state.memoryBusy = "";

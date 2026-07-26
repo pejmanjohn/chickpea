@@ -8,10 +8,12 @@ import {
 } from '../slack/credentials.ts';
 import { classifyMemorySlackUser } from '../slack/user-classification.ts';
 import { privateStoreId, publicStoreId } from './store.ts';
-import type { MemoryStateStore } from './types.ts';
+import { MemoryStateError, type MemoryStateStore } from './types.ts';
 
 const PAGE_LIMIT = 200;
 const MAX_PAGES = 5;
+const USERS_DIRECTORY_CACHE_TTL_MS = 30_000;
+const TERMINAL_CHANNEL_ERRORS = new Set(['channel_not_found', 'channel_deleted']);
 
 export interface MemoryScopeSlackResult<T> {
   ok: boolean;
@@ -28,6 +30,25 @@ export interface MemoryScopeSlack {
     channelId: string,
   ): Promise<MemoryScopeSlackResult<never> & { ids: string[] }>;
   users(): Promise<MemoryScopeSlackResult<never> & { users: SlackUserFacts[] }>;
+}
+
+type MemoryScopeUsersResult = MemoryScopeSlackResult<never> & { users: SlackUserFacts[] };
+
+let usersDirectoryCache = new Map<
+  string,
+  { expiresAt: number; pending: Promise<MemoryScopeUsersResult> }
+>();
+
+/** Drop one workspace/token directory snapshot, or every snapshot in tests. */
+export function invalidateMemoryScopeUsersCache(
+  workspaceId?: string,
+  botToken?: string,
+): void {
+  if (workspaceId !== undefined && botToken !== undefined) {
+    usersDirectoryCache.delete(usersDirectoryCacheKey(workspaceId, botToken));
+    return;
+  }
+  usersDirectoryCache = new Map();
 }
 
 export interface ResolveMemoryScopeInput {
@@ -80,15 +101,23 @@ export async function resolveMemoryScope(
     deps.slack.conversation(input.channelId),
     deps.slack.user(input.actorId),
   ]);
-  if (!conversation.ok || !conversation.facts || !actor.ok || !actor.user) {
-    return disabled('slack_truth_unavailable');
-  }
   const facts = conversation.facts;
-  if (facts.id !== input.channelId || (facts.teamId && facts.teamId !== input.workspaceId)) {
+  if (facts && (facts.id !== input.channelId || (facts.teamId && facts.teamId !== input.workspaceId))) {
     return disabled('workspace_mismatch');
   }
+  if (facts?.archived) {
+    await retainKnownChannelScope(input, deps.state, 'archived');
+    return disabled('unsupported_channel_scope');
+  }
+  if (!conversation.ok || !facts) {
+    if (conversation.error && TERMINAL_CHANNEL_ERRORS.has(conversation.error)) {
+      await retainKnownChannelScope(input, deps.state, 'deleted');
+      return disabled('unsupported_channel_scope');
+    }
+    return disabled('slack_truth_unavailable');
+  }
+  if (!actor.ok || !actor.user) return disabled('slack_truth_unavailable');
   if (
-    facts.archived ||
     facts.frozen ||
     facts.shared ||
     facts.externallyShared ||
@@ -172,11 +201,13 @@ export async function validateMemoryScopeLease(
   input: ResolveMemoryScopeInput,
   expected: EnabledMemoryScope,
   slack: MemoryScopeSlack,
+  requiresWorkspaceRead = false,
 ): Promise<boolean> {
-  const [conversation, actor, members] = await Promise.all([
+  const [conversation, actor, members, directory] = await Promise.all([
     slack.conversation(input.channelId),
     slack.user(input.actorId),
     slack.members(input.channelId),
+    requiresWorkspaceRead ? slack.users() : Promise.resolve(undefined),
   ]);
   if (
     !conversation.ok ||
@@ -207,11 +238,20 @@ export async function validateMemoryScopeLease(
   ) {
     return false;
   }
-  if (!expected.audienceMemberIds) {
-    return !expected.workspaceRead && members.ids.includes(input.actorId);
-  }
-  if (members.incomplete) return false;
-  return sameIds(expected.audienceMemberIds, members.ids);
+  if (!requiresWorkspaceRead) return true;
+  if (
+    !expected.workspaceRead ||
+    members.incomplete ||
+    !directory ||
+    !directory.ok ||
+    directory.incomplete
+  ) return false;
+  return audienceQualifies(
+    members.ids,
+    directory.users,
+    input.workspaceId,
+    input.botUserId,
+  );
 }
 
 export async function verifyMemoryMutationMembership(
@@ -223,7 +263,33 @@ export async function verifyMemoryMutationMembership(
   return members.ok && members.ids.includes(actorId);
 }
 
-export function createMemoryScopeSlack(botToken: string): MemoryScopeSlack {
+export function createMemoryScopeSlack(
+  botToken: string,
+  workspaceId?: string,
+): MemoryScopeSlack {
+  const loadUsers = async (): Promise<MemoryScopeUsersResult> => {
+    const users: SlackUserFacts[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < MAX_PAGES; page += 1) {
+      const result = await slackUsersList(botToken, {
+        limit: PAGE_LIMIT,
+        ...(cursor ? { cursor } : {}),
+      });
+      if (!result.ok) {
+        return {
+          ok: false,
+          users: [],
+          ...(result.error ? { error: result.error } : {}),
+          ...(result.retryAfterMs !== undefined ? { retryAfterMs: result.retryAfterMs } : {}),
+        };
+      }
+      users.push(...result.users);
+      cursor = result.nextCursor;
+      if (!cursor) return { ok: true, users };
+    }
+    return { ok: true, users, incomplete: Boolean(cursor) };
+  };
+
   return {
     async conversation(channelId) {
       const result = await slackConversationsInfo(botToken, channelId);
@@ -266,26 +332,8 @@ export function createMemoryScopeSlack(botToken: string): MemoryScopeSlack {
       return { ok: true, ids, incomplete: Boolean(cursor) };
     },
     async users() {
-      const users: SlackUserFacts[] = [];
-      let cursor: string | undefined;
-      for (let page = 0; page < MAX_PAGES; page += 1) {
-        const result = await slackUsersList(botToken, {
-          limit: PAGE_LIMIT,
-          ...(cursor ? { cursor } : {}),
-        });
-        if (!result.ok) {
-          return {
-            ok: false,
-            users: [],
-            ...(result.error ? { error: result.error } : {}),
-            ...(result.retryAfterMs !== undefined ? { retryAfterMs: result.retryAfterMs } : {}),
-          };
-        }
-        users.push(...result.users);
-        cursor = result.nextCursor;
-        if (!cursor) return { ok: true, users };
-      }
-      return { ok: true, users, incomplete: Boolean(cursor) };
+      if (!workspaceId) return loadUsers();
+      return cachedWorkspaceUsers(workspaceId, botToken, loadUsers);
     },
   };
 }
@@ -319,17 +367,66 @@ async function resolveAudience(
   if (!directory.ok || directory.incomplete) {
     return { workspaceRead: false, memberIds, actorIsMember: true };
   }
-  const byId = new Map(directory.users.map((user) => [user.id, user]));
-  const workspaceRead = memberIds.every((id) => {
-    const classification = classifyMemorySlackUser(byId.get(id), workspaceId, botUserId);
-    return classification === 'eligible_human' || classification === 'chickpea_bot';
-  });
+  const workspaceRead = audienceQualifies(memberIds, directory.users, workspaceId, botUserId);
   return { workspaceRead, memberIds, actorIsMember: true };
 }
 
-function sameIds(left: readonly string[], right: readonly string[]): boolean {
-  const normalized = [...new Set(right)].sort();
-  return left.length === normalized.length && left.every((id, index) => id === normalized[index]);
+function audienceQualifies(
+  memberIds: readonly string[],
+  users: readonly SlackUserFacts[],
+  workspaceId: string,
+  botUserId: string,
+): boolean {
+  const byId = new Map(users.map((user) => [user.id, user]));
+  return memberIds.every((id) => {
+    const classification = classifyMemorySlackUser(byId.get(id), workspaceId, botUserId);
+    return classification === 'eligible_human' || classification === 'chickpea_bot';
+  });
+}
+
+async function cachedWorkspaceUsers(
+  workspaceId: string,
+  botToken: string,
+  load: () => Promise<MemoryScopeUsersResult>,
+): Promise<MemoryScopeUsersResult> {
+  const key = usersDirectoryCacheKey(workspaceId, botToken);
+  const now = Date.now();
+  const cached = usersDirectoryCache.get(key);
+  if (cached && cached.expiresAt > now) return cached.pending;
+
+  const pending = load();
+  usersDirectoryCache.set(key, {
+    expiresAt: now + USERS_DIRECTORY_CACHE_TTL_MS,
+    pending,
+  });
+  const result = await pending;
+  if (!result.ok || result.incomplete) {
+    const current = usersDirectoryCache.get(key);
+    if (current?.pending === pending) usersDirectoryCache.delete(key);
+  }
+  return result;
+}
+
+function usersDirectoryCacheKey(workspaceId: string, botToken: string): string {
+  return `${workspaceId}\0${botToken}`;
+}
+
+async function retainKnownChannelScope(
+  input: ResolveMemoryScopeInput,
+  state: MemoryStateStore,
+  reason: 'archived' | 'deleted',
+): Promise<void> {
+  try {
+    await state.retainChannelScope({
+      workspaceId: input.workspaceId,
+      channelId: input.channelId,
+      reason,
+      observedAt: input.observedAt,
+    });
+  } catch (error) {
+    if (error instanceof MemoryStateError && error.code === 'memory_scope_not_found') return;
+    throw error;
+  }
 }
 
 function disabled(reason: Extract<MemoryScopeDecision, { enabled: false }>['reason']): MemoryScopeDecision {

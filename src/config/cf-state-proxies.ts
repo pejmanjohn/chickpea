@@ -8,6 +8,7 @@ import type { AgentSnapshot, ChannelAssignment, CustomAgentConfig } from './type
 import type { SlackStateStore } from '../slack/claim-store.ts';
 import {
   MemoryStateError,
+  MemoryRateLimitError,
   MemoryVersionConflictError,
   type ApplyMemoryImportInput,
   type CreateMemoryEntryInput,
@@ -18,6 +19,7 @@ import {
   type MemoryChannelScopeState,
   type MemoryEntry,
   type MemoryEntryFilter,
+  type MemoryEntryScopeSummary,
   type MemoryForgetChallenge,
   type MergeMemoryEntriesInput,
   type MemoryMutationCounts,
@@ -31,6 +33,7 @@ import {
   type RecordMemoryAdminViewInput,
   type RecordMemoryAdminEventInput,
   type ReplayMemoryImportInput,
+  type RetainMemoryChannelScopeInput,
   type ResolveMemoryConversationContextInput,
   type TransitionMemoryEntryInput,
   type UpdateMemoryEntryInput,
@@ -72,6 +75,12 @@ function unwrap<T>(result: StateRpcResult<T>): T {
           details?.entryId ?? 'unknown',
           Number(details?.currentVersion ?? 0),
         );
+      }
+      if (memoryCode === 'memory_rate_limited') {
+        const retryAt = Number(details?.retryAt);
+        if (Number.isSafeInteger(retryAt) && retryAt > 0) {
+          throw new MemoryRateLimitError(retryAt);
+        }
       }
       const memoryDetails = { ...(details ?? {}) };
       delete memoryDetails.memoryCode;
@@ -257,6 +266,15 @@ export class CfMemoryStateStore implements MemoryStateStore {
     return response.entries;
   }
 
+  async listEntryScopeSummaries(workspaceId?: string): Promise<MemoryEntryScopeSummary[]> {
+    const response = await this.execute({
+      kind: 'list_entry_scope_summaries',
+      ...(workspaceId ? { workspaceId } : {}),
+    });
+    if (response.kind !== 'entry_scope_summaries') throw unexpectedMemoryResponse();
+    return response.summaries;
+  }
+
   async replayImport(input: ReplayMemoryImportInput): Promise<MemoryEntry[] | undefined> {
     const response = await this.execute({ kind: 'replay_import', input });
     if (response.kind !== 'import_replay') throw unexpectedMemoryResponse();
@@ -369,6 +387,16 @@ export class CfMemoryStateStore implements MemoryStateStore {
     return response.state;
   }
 
+  async retainChannelScope(
+    input: RetainMemoryChannelScopeInput,
+  ): Promise<MemoryChannelScopeState> {
+    const response = await this.execute({ kind: 'retain_channel_scope', input });
+    if (response.kind !== 'channel_scope' || !response.state) {
+      throw unexpectedMemoryResponse();
+    }
+    return response.state;
+  }
+
   async getChannelScope(
     workspaceId: string,
     channelId: string,
@@ -391,6 +419,7 @@ export class CfMemoryStateStore implements MemoryStateStore {
     actorIdsCleared: number;
     rateWindowsDeleted: number;
     contextsDeleted: number;
+    forgetChallengesDeleted: number;
   }> {
     const response = await this.execute({ kind: 'cleanup_retention' });
     if (response.kind !== 'cleanup') throw unexpectedMemoryResponse();
@@ -398,6 +427,7 @@ export class CfMemoryStateStore implements MemoryStateStore {
       actorIdsCleared: response.actorIdsCleared,
       rateWindowsDeleted: response.rateWindowsDeleted,
       contextsDeleted: response.contextsDeleted,
+      forgetChallengesDeleted: response.forgetChallengesDeleted,
     };
   }
 

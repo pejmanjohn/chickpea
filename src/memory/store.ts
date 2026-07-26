@@ -4,6 +4,7 @@ import { AuditStoreLogic } from '../audit/store.ts';
 import type { AuditEvent, AuditEventFilter } from '../audit/types.ts';
 import { openStateDb, resolveStateDbPath, type NodeStateDb } from '../state/node-state-db.ts';
 import type { SqlParam, StateDb } from '../state/state-db.ts';
+import { isOpaqueMemoryId } from './ids.ts';
 import {
   MEMORY_RATE_WINDOW_MS,
   MEMORY_ACTOR_RATE_LIMIT,
@@ -27,7 +28,9 @@ import {
   type MemoryChannelScopeState,
   type MemoryEntry,
   type MemoryEntryFilter,
+  type MemoryEntryScopeSummary,
   type MemoryForgetChallenge,
+  type MemoryImportEntryStatus,
   type MergeMemoryEntriesInput,
   type MemoryMutationCounts,
   type MemoryRevision,
@@ -40,6 +43,7 @@ import {
   type RecordMemoryAdminViewInput,
   type RecordMemoryAdminEventInput,
   type ReplayMemoryImportInput,
+  type RetainMemoryChannelScopeInput,
   type ResolveMemoryConversationContextInput,
   type TransitionMemoryEntryInput,
   type UpdateMemoryEntryInput,
@@ -141,6 +145,12 @@ interface ImportReceiptRow {
 }
 
 const CHANNEL_RATE_ACTOR = '*channel*';
+const IMPORT_ENTRY_STATUSES = new Set<MemoryImportEntryStatus>([
+  'active', 'stale', 'expired', 'superseded',
+]);
+const MEMORY_ENTRY_TYPES = new Set<MemoryEntry['type']>([
+  'fact', 'decision', 'project', 'feedback', 'preference',
+]);
 
 /**
  * Synchronous, target-neutral memory state logic. Every mutation that changes
@@ -182,6 +192,11 @@ export class MemoryStoreLogic {
         return { kind: 'entry', entry: this.getEntry(request.entryId) ?? null };
       case 'list_entries':
         return { kind: 'entries', entries: this.listEntries(request.filter) };
+      case 'list_entry_scope_summaries':
+        return {
+          kind: 'entry_scope_summaries',
+          summaries: this.listEntryScopeSummaries(request.workspaceId),
+        };
       case 'replay_import':
         return { kind: 'import_replay', entries: this.replayImport(request.input) ?? null };
       case 'apply_import':
@@ -236,6 +251,8 @@ export class MemoryStoreLogic {
         };
       case 'observe_channel_scope':
         return { kind: 'channel_scope', state: this.observeChannelScope(request.input) };
+      case 'retain_channel_scope':
+        return { kind: 'channel_scope', state: this.retainChannelScope(request.input) };
       case 'get_channel_scope':
         return {
           kind: 'channel_scope',
@@ -429,7 +446,32 @@ export class MemoryStoreLogic {
       .map((row) => rowToEntry(row as unknown as EntryRow));
   }
 
+  listEntryScopeSummaries(workspaceId?: string): MemoryEntryScopeSummary[] {
+    const rows = workspaceId
+      ? this.db.all(
+          `SELECT store_id, source_channel_id, COUNT(*) AS entry_count
+           FROM memory_entries
+           WHERE workspace_id = ? AND status != 'forgotten'
+           GROUP BY store_id, source_channel_id
+           ORDER BY store_id, source_channel_id`,
+          workspaceId,
+        )
+      : this.db.all(
+          `SELECT store_id, source_channel_id, COUNT(*) AS entry_count
+           FROM memory_entries
+           WHERE status != 'forgotten'
+           GROUP BY store_id, source_channel_id
+           ORDER BY store_id, source_channel_id`,
+        );
+    return rows.map((row) => ({
+      storeId: String(row.store_id),
+      sourceChannelId: String(row.source_channel_id),
+      entryCount: Number(row.entry_count),
+    }));
+  }
+
   applyImport(input: ApplyMemoryImportInput): MemoryEntry[] {
+    validateImportInput(input);
     const replay = this.importForReplay(input);
     if (replay) return replay;
     if (input.operations.length > 1_024) {
@@ -448,6 +490,7 @@ export class MemoryStoreLogic {
       for (const [index, operation] of input.operations.entries()) {
         const key = operationKeys[index]!;
         const hash = contentHash(operation.description, operation.body);
+        const status = operation.status ?? 'active';
         if (operation.action === 'create') {
           if (this.getEntry(operation.entryId)) {
             throw new MemoryStateError('memory_entry_conflict', 'Imported memory already exists.');
@@ -461,9 +504,9 @@ export class MemoryStoreLogic {
                 last_editor_actor_id, actor_class, source_event_id,
                 source_thread_ts, source_message_ts, created_at, modified_at,
                 expires_at, content_hash, superseding_entry_id
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', 1, ?, ?, 'operator', NULL, NULL, NULL, ?, ?, NULL, ?, NULL)`,
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, 'operator', NULL, NULL, NULL, ?, ?, NULL, ?, NULL)`,
               operation.entryId, store.storeId, store.workspaceId, operation.sourceChannelId,
-              operation.slug, operation.description, operation.type, operation.body,
+              operation.slug, operation.description, operation.type, operation.body, status,
               input.actorId, input.actorId, at, at, hash,
             );
           } catch (error) {
@@ -495,10 +538,10 @@ export class MemoryStoreLogic {
           this.enforceUpdateQuota(current, operation.description, operation.body);
           const version = current.version + 1;
           this.db.run(
-            `UPDATE memory_entries SET description = ?, type = ?, body = ?, version = ?,
+            `UPDATE memory_entries SET description = ?, type = ?, body = ?, status = ?, version = ?,
              last_editor_actor_id = ?, actor_class = 'operator', modified_at = ?, content_hash = ?
              WHERE entry_id = ?`,
-            operation.description, operation.type, operation.body, version,
+            operation.description, operation.type, operation.body, status, version,
             input.actorId, at, hash, operation.entryId,
           );
           this.insertRevision({
@@ -539,6 +582,7 @@ export class MemoryStoreLogic {
   }
 
   replayImport(input: ReplayMemoryImportInput): MemoryEntry[] | undefined {
+    validateReplayImportInput(input);
     return this.importForReplay({ ...input, operations: [] });
   }
 
@@ -1221,8 +1265,18 @@ export class MemoryStoreLogic {
           transitionVersion,
         );
       } else {
+        const reactivating = current.lifecycle === 'retained';
         const changed = current.privacy !== input.privacy;
-        if (changed) {
+        if (reactivating) {
+          transitionVersion += 1;
+          if (input.privacy === 'private') {
+            privateGeneration = Math.max(current.privateGeneration + 1, 1);
+            this.ensurePrivateStore(input.workspaceId, input.channelId, privateGeneration);
+          } else {
+            lastPublicDisplayName = input.displayName;
+            if (current.privacy === 'private') visibilityBarrierAt = input.observedAt;
+          }
+        } else if (changed) {
           transitionVersion += 1;
           if (current.privacy === 'private' && input.privacy === 'public') {
             const oldStoreId = privateStoreId(
@@ -1271,6 +1325,88 @@ export class MemoryStoreLogic {
     });
   }
 
+  retainChannelScope(input: RetainMemoryChannelScopeInput): MemoryChannelScopeState {
+    if (
+      !isOpaqueMemoryId(input.workspaceId) ||
+      !isOpaqueMemoryId(input.channelId) ||
+      (input.reason !== 'archived' && input.reason !== 'deleted') ||
+      !Number.isSafeInteger(input.observedAt) || input.observedAt < 0
+    ) {
+      throw new MemoryStateError(
+        'memory_scope_retention_invalid',
+        'Memory channel lifecycle observation is invalid.',
+      );
+    }
+    return this.db.transaction(() => {
+      const current = this.getChannelScope(input.workspaceId, input.channelId);
+      if (!current) {
+        throw new MemoryStateError(
+          'memory_scope_not_found',
+          'Observed memory channel scope was not found.',
+        );
+      }
+      if (current.lifecycle === 'retained') {
+        this.db.run(
+          `UPDATE memory_scope_state SET last_observed_at = ?, last_verified_at = ?
+           WHERE workspace_id = ? AND channel_id = ?`,
+          Math.max(current.lastObservedAt, input.observedAt),
+          Math.max(current.lastVerifiedAt, input.observedAt),
+          input.workspaceId,
+          input.channelId,
+        );
+        return this.getChannelScope(input.workspaceId, input.channelId) ?? current;
+      }
+
+      const transitionVersion = current.transitionVersion + 1;
+      const reasonCode = `channel_${input.reason}`;
+      const activePrivateStoreId = current.privacy === 'private'
+        ? privateStoreId(input.workspaceId, input.channelId, current.privateGeneration)
+        : null;
+      if (activePrivateStoreId) {
+        this.db.run(
+          `UPDATE memory_stores SET lifecycle = 'sealed', sealed_at = ?, sealed_reason = ?
+           WHERE store_id = ? AND lifecycle = 'active'`,
+          input.observedAt,
+          reasonCode,
+          activePrivateStoreId,
+        );
+      }
+      this.db.run(
+        `UPDATE memory_scope_state SET lifecycle = 'retained', last_observed_at = ?,
+           last_verified_at = ?, transition_version = ?
+         WHERE workspace_id = ? AND channel_id = ?`,
+        Math.max(current.lastObservedAt, input.observedAt),
+        Math.max(current.lastVerifiedAt, input.observedAt),
+        transitionVersion,
+        input.workspaceId,
+        input.channelId,
+      );
+      const idempotencyKey = [
+        'memory', 'scope-retained', input.workspaceId, input.channelId, String(transitionVersion),
+      ].join(':');
+      this.audit.append({
+        eventId: auditId(idempotencyKey),
+        domain: 'memory',
+        eventType: 'memory.channel_scope_retained',
+        outcome: 'success',
+        actorClass: 'system',
+        actorId: null,
+        workspaceId: input.workspaceId,
+        channelId: input.channelId,
+        storeId: activePrivateStoreId,
+        subjectId: input.channelId,
+        subjectVersion: transitionVersion,
+        createdAt: input.observedAt,
+        reasonCode,
+        metadataJson: '{}',
+        idempotencyKey,
+      });
+      const retained = this.getChannelScope(input.workspaceId, input.channelId);
+      if (!retained) throw new Error('Memory channel scope was not readable after retention');
+      return retained;
+    });
+  }
+
   getChannelScope(
     workspaceId: string,
     channelId: string,
@@ -1300,6 +1436,7 @@ export class MemoryStoreLogic {
     actorIdsCleared: number;
     rateWindowsDeleted: number;
     contextsDeleted: number;
+    forgetChallengesDeleted: number;
   } {
     const at = this.now();
     return this.db.transaction(() => {
@@ -1319,6 +1456,11 @@ export class MemoryStoreLogic {
         contextsDeleted: this.db.run(
         'DELETE FROM memory_conversation_contexts WHERE expires_at < ?',
         at,
+        ).changes,
+        forgetChallengesDeleted: this.db.run(
+          `DELETE FROM memory_forget_challenges
+           WHERE consumed_at IS NOT NULL OR expires_at < ?`,
+          at,
         ).changes,
       };
     });
@@ -1789,6 +1931,10 @@ export class SqliteMemoryStateStore implements MemoryStateStore {
     return this.logic.listEntries(filter);
   }
 
+  async listEntryScopeSummaries(workspaceId?: string): Promise<MemoryEntryScopeSummary[]> {
+    return this.logic.listEntryScopeSummaries(workspaceId);
+  }
+
   async replayImport(input: ReplayMemoryImportInput): Promise<MemoryEntry[] | undefined> {
     return this.logic.replayImport(input);
   }
@@ -1870,6 +2016,12 @@ export class SqliteMemoryStateStore implements MemoryStateStore {
     return this.logic.observeChannelScope(input);
   }
 
+  async retainChannelScope(
+    input: RetainMemoryChannelScopeInput,
+  ): Promise<MemoryChannelScopeState> {
+    return this.logic.retainChannelScope(input);
+  }
+
   async getChannelScope(
     workspaceId: string,
     channelId: string,
@@ -1885,6 +2037,7 @@ export class SqliteMemoryStateStore implements MemoryStateStore {
     actorIdsCleared: number;
     rateWindowsDeleted: number;
     contextsDeleted: number;
+    forgetChallengesDeleted: number;
   }> {
     return this.logic.cleanupRetention();
   }
@@ -1913,6 +2066,49 @@ function contentBytes(description: string, body: string): number {
 
 function auditId(idempotencyKey: string): string {
   return `audit_${createHash('sha256').update(idempotencyKey).digest('hex').slice(0, 32)}`;
+}
+
+function validateReplayImportInput(input: ReplayMemoryImportInput): void {
+  if (
+    !isOpaqueMemoryId(input.storeId) ||
+    !isOpaqueMemoryId(input.workspaceId) ||
+    !isOpaqueMemoryId(input.actorId) ||
+    !/^[a-f0-9]{64}$/.test(input.archiveSha256) ||
+    typeof input.idempotencyKey !== 'string' ||
+    input.idempotencyKey.length < 1 ||
+    input.idempotencyKey.length > 512 ||
+    !/^[A-Za-z0-9_.:-]+$/.test(input.idempotencyKey)
+  ) {
+    throw invalidImport();
+  }
+}
+
+function validateImportInput(input: ApplyMemoryImportInput): void {
+  validateReplayImportInput(input);
+  if (!Array.isArray(input.operations)) throw invalidImport();
+  for (const operation of input.operations) {
+    if (
+      typeof operation !== 'object' || operation === null ||
+      (operation.action !== 'create' && operation.action !== 'update') ||
+      !isOpaqueMemoryId(operation.entryId) ||
+      !isOpaqueMemoryId(operation.sourceChannelId) ||
+      typeof operation.slug !== 'string' ||
+      !/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/.test(operation.slug) ||
+      typeof operation.description !== 'string' ||
+      typeof operation.body !== 'string' ||
+      !MEMORY_ENTRY_TYPES.has(operation.type) ||
+      (operation.status !== undefined && !IMPORT_ENTRY_STATUSES.has(operation.status)) ||
+      (operation.action === 'update' &&
+        (!Number.isInteger(operation.expectedVersion) || Number(operation.expectedVersion) < 1)) ||
+      (operation.action === 'create' && operation.expectedVersion !== undefined)
+    ) {
+      throw invalidImport();
+    }
+  }
+}
+
+function invalidImport(): MemoryStateError {
+  return new MemoryStateError('memory_import_invalid', 'Memory import request is invalid.');
 }
 
 function rateWindowStart(at: number): number {

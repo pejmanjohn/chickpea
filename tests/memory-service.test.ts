@@ -325,7 +325,7 @@ test('expiry, restore, and review actions preserve bodies and emit typed audit e
   }
 });
 
-test('a private scope can forget but cannot update its source channel retained public memory', async () => {
+test('a private scope requires public/<slug> to forget retained public memory', async () => {
   const state = new SqliteMemoryStateStore(':memory:', () => 1_000);
   try {
     await state.ensurePublicStore('T_TEST');
@@ -353,11 +353,17 @@ test('a private scope can forget but cannot update its source channel retained p
       }),
       /not found/i,
     );
+    await assert.rejects(
+      () => memory.requestForget({
+        scope: privateScope, actorId: 'U_MEMBER', target: created.entry.slug, expectedVersion: 1,
+      }),
+      /not found/i,
+    );
     const challenge = await memory.requestForget({
-      scope: privateScope, actorId: 'U_MEMBER', target: created.entry.slug, expectedVersion: 1,
+      scope: privateScope, actorId: 'U_MEMBER', target: `public/${created.entry.slug}`, expectedVersion: 1,
     });
     const forgotten = await memory.forget({
-      scope: privateScope, actorId: 'U_MEMBER', eventId: 'E3', target: created.entry.slug,
+      scope: privateScope, actorId: 'U_MEMBER', eventId: 'E3', target: `public/${created.entry.slug}`,
       expectedVersion: 1, confirmationToken: challenge.token,
       idempotencyKey: 'memory:slack:T_TEST:E3:0',
     });

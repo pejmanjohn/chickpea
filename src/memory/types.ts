@@ -16,6 +16,7 @@ export type MemoryVisibility = 'public' | 'private';
 export type MemoryStoreLifecycle = 'active' | 'sealed' | 'retained';
 export type MemoryEntryType = 'fact' | 'decision' | 'project' | 'feedback' | 'preference';
 export type MemoryEntryStatus = 'active' | 'stale' | 'expired' | 'superseded' | 'forgotten';
+export type MemoryImportEntryStatus = Exclude<MemoryEntryStatus, 'forgotten'>;
 export type MemoryActorClass = 'member' | 'operator' | 'system';
 
 export interface MemoryStoreDescriptor {
@@ -213,6 +214,13 @@ export interface ObserveMemoryChannelScopeInput {
   observedAt: number;
 }
 
+export interface RetainMemoryChannelScopeInput {
+  workspaceId: string;
+  channelId: string;
+  reason: 'archived' | 'deleted';
+  observedAt: number;
+}
+
 export interface MemoryChannelScopeState {
   workspaceId: string;
   channelId: string;
@@ -238,6 +246,12 @@ export interface MemoryEntryFilter {
   offset?: number;
 }
 
+export interface MemoryEntryScopeSummary {
+  storeId: string;
+  sourceChannelId: string;
+  entryCount: number;
+}
+
 export interface ApplyMemoryImportOperation {
   action: 'create' | 'update';
   entryId: string;
@@ -247,6 +261,8 @@ export interface ApplyMemoryImportOperation {
   description: string;
   type: MemoryEntryType;
   body: string;
+  /** Absent only for legacy content-only callers, which import as active. */
+  status?: MemoryImportEntryStatus;
 }
 
 export interface ApplyMemoryImportInput {
@@ -331,8 +347,10 @@ export type MemoryRpcRequest =
   | { kind: 'resolve_conversation_context'; input: ResolveMemoryConversationContextInput }
   | { kind: 'confirm_conversation_context'; input: ConfirmMemoryConversationContextInput }
   | { kind: 'observe_channel_scope'; input: ObserveMemoryChannelScopeInput }
+  | { kind: 'retain_channel_scope'; input: RetainMemoryChannelScopeInput }
   | { kind: 'get_channel_scope'; workspaceId: string; channelId: string }
   | { kind: 'list_channel_scopes'; workspaceId?: string }
+  | { kind: 'list_entry_scope_summaries'; workspaceId?: string }
   | { kind: 'cleanup_retention' };
 
 export type MemoryRpcResponse =
@@ -343,6 +361,7 @@ export type MemoryRpcResponse =
   | { kind: 'entries'; entries: MemoryEntry[] }
   | { kind: 'import_replay'; entries: MemoryEntry[] | null }
   | { kind: 'channel_scopes'; states: MemoryChannelScopeState[] }
+  | { kind: 'entry_scope_summaries'; summaries: MemoryEntryScopeSummary[] }
   | { kind: 'revisions'; revisions: MemoryRevision[] }
   | { kind: 'audit_events'; events: AuditEvent[] }
   | { kind: 'mutation_counts'; counts: MemoryMutationCounts }
@@ -350,7 +369,13 @@ export type MemoryRpcResponse =
   | { kind: 'conversation_context_confirmed'; confirmed: boolean }
   | { kind: 'channel_scope'; state: MemoryChannelScopeState | null }
   | { kind: 'forget_challenge'; challenge: MemoryForgetChallenge | null }
-  | { kind: 'cleanup'; actorIdsCleared: number; rateWindowsDeleted: number; contextsDeleted: number };
+  | {
+      kind: 'cleanup';
+      actorIdsCleared: number;
+      rateWindowsDeleted: number;
+      contextsDeleted: number;
+      forgetChallengesDeleted: number;
+    };
 
 export interface MemoryStateStore {
   ensurePublicStore(workspaceId: string): Promise<MemoryStoreDescriptor>;
@@ -390,15 +415,18 @@ export interface MemoryStateStore {
   ): Promise<MemoryConversationContext>;
   confirmConversationContext(input: ConfirmMemoryConversationContextInput): Promise<boolean>;
   observeChannelScope(input: ObserveMemoryChannelScopeInput): Promise<MemoryChannelScopeState>;
+  retainChannelScope(input: RetainMemoryChannelScopeInput): Promise<MemoryChannelScopeState>;
   getChannelScope(
     workspaceId: string,
     channelId: string,
   ): Promise<MemoryChannelScopeState | undefined>;
   listChannelScopes(workspaceId?: string): Promise<MemoryChannelScopeState[]>;
+  listEntryScopeSummaries(workspaceId?: string): Promise<MemoryEntryScopeSummary[]>;
   cleanupRetention(): Promise<{
     actorIdsCleared: number;
     rateWindowsDeleted: number;
     contextsDeleted: number;
+    forgetChallengesDeleted: number;
   }>;
   close?(): void;
 }

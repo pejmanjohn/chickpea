@@ -115,6 +115,72 @@ test('entry listing pages over the stable scope and slug ordering', async () => 
   }
 });
 
+test('entry scope summaries group non-forgotten entries without loading bodies', async () => {
+  const store = new SqliteMemoryStateStore(':memory:', () => createdAt);
+  try {
+    await store.ensurePublicStore('T_TEST');
+    const entries = [
+      { entryId: 'mem_a', sourceChannelId: 'C_ONE', slug: 'alpha' },
+      { entryId: 'mem_b', sourceChannelId: 'C_ONE', slug: 'bravo' },
+      { entryId: 'mem_c', sourceChannelId: 'C_TWO', slug: 'charlie' },
+    ];
+    for (const [index, item] of entries.entries()) {
+      await store.createEntry({
+        ...createInput(`summary-${index}`), ...item, actorClass: 'operator',
+      });
+    }
+    await store.forgetEntry({
+      entryId: 'mem_b', expectedVersion: 1, actorId: 'admin', actorClass: 'operator',
+      idempotencyKey: 'forget-summary-entry',
+    });
+    assert.deepEqual(await store.listEntryScopeSummaries('T_TEST'), [
+      { storeId: 'store_public_T_TEST', sourceChannelId: 'C_ONE', entryCount: 1 },
+      { storeId: 'store_public_T_TEST', sourceChannelId: 'C_TWO', entryCount: 1 },
+    ]);
+  } finally {
+    store.close();
+  }
+});
+
+test('retention cleanup removes expired and consumed forget challenges', async () => {
+  let now = createdAt;
+  const store = new SqliteMemoryStateStore(':memory:', () => now);
+  try {
+    await store.ensurePublicStore('T_TEST');
+    const consumed = await store.createEntry({
+      ...createInput('cleanup-consumed'), entryId: 'mem_consumed', slug: 'consumed',
+      actorClass: 'operator',
+    });
+    const expired = await store.createEntry({
+      ...createInput('cleanup-expired'), entryId: 'mem_expired_challenge', slug: 'expired-challenge',
+      actorClass: 'operator',
+    });
+    await store.createForgetChallenge({
+      challengeId: 'challenge_consumed', tokenHash: 'token_consumed', actorId: 'U_MEMBER',
+      storeId: consumed.storeId, entryId: consumed.entryId, expectedVersion: consumed.version,
+      expiresAt: now + 10_000,
+    });
+    await store.createForgetChallenge({
+      challengeId: 'challenge_expired', tokenHash: 'token_expired', actorId: 'U_MEMBER',
+      storeId: expired.storeId, entryId: expired.entryId, expectedVersion: expired.version,
+      expiresAt: now + 100,
+    });
+    await store.forgetEntry({
+      entryId: consumed.entryId, expectedVersion: consumed.version,
+      actorId: 'U_MEMBER', actorClass: 'member', confirmationTokenHash: 'token_consumed',
+      idempotencyKey: 'consume-challenge',
+    });
+    now += 101;
+    const result = await store.cleanupRetention();
+    assert.equal(result.forgetChallengesDeleted, 2);
+    assert.equal(await store.getForgetChallenge('token_consumed', 'U_MEMBER'), undefined);
+    assert.equal(await store.getForgetChallenge('token_expired', 'U_MEMBER'), undefined);
+    assert.equal((await store.cleanupRetention()).forgetChallengesDeleted, 0);
+  } finally {
+    store.close();
+  }
+});
+
 test('audit failure rolls back the entry, revision, and rate-window writes', () => {
   const db = openStateDb(':memory:');
   const logic = new MemoryStoreLogic(db, () => createdAt);

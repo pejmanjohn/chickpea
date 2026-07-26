@@ -16,6 +16,7 @@ import {
   MemoryVersionConflictError,
   type MemoryEntry,
   type MemoryEntryFilter,
+  type MemoryEntryScopeSummary,
   type MemoryRevision,
   type MemoryStateStore,
   type MemoryStoreDescriptor,
@@ -51,6 +52,10 @@ const importApplySchema = v.object({
   previewToken: v.string(),
 });
 
+class MemoryImportValidationError extends Error {
+  override readonly name = 'MemoryImportValidationError';
+}
+
 export function createMemoryAdminApi(options: MemoryAdminApiOptions): Hono {
   const app = new Hono();
   const now = options.now ?? Date.now;
@@ -60,14 +65,12 @@ export function createMemoryAdminApi(options: MemoryAdminApiOptions): Hono {
     try {
       const state = options.store(c);
       const workspaceId = c.req.query('workspaceId');
-      const [stores, channelStates] = await Promise.all([
+      const [stores, channelStates, summaries] = await Promise.all([
         state.listStores(workspaceId),
         state.listChannelScopes(workspaceId),
+        state.listEntryScopeSummaries(workspaceId),
       ]);
-      const entries = (await Promise.all(
-        stores.map((store) => listAllEntries(state, { storeId: store.storeId })),
-      )).flat();
-      return c.json({ scopes: buildScopes(stores, channelStates, entries) });
+      return c.json({ scopes: buildScopes(stores, channelStates, summaries) });
     } catch (error) {
       return memoryError(c, error);
     }
@@ -82,9 +85,6 @@ export function createMemoryAdminApi(options: MemoryAdminApiOptions): Hono {
       const store = await state.getStore(storeId);
       if (!store) return c.json({ error: 'memory_store_not_found' }, 404);
       const entries = await listAllEntries(state, { storeId, sourceChannelId });
-      if (store.visibility === 'private') {
-        await Promise.all(entries.map((entry) => recordPrivateView(state, c, entry.entryId, now())));
-      }
       const projected = projectMemoryFiles({ store, entries });
       const prefix = projectionPrefix(store, sourceChannelId);
       const entriesByFilename = new Map(entries.map((entry) => [`${entry.slug}.md`, entry]));
@@ -301,7 +301,7 @@ export function createMemoryAdminApi(options: MemoryAdminApiOptions): Hono {
     const parsed = v.safeParse(importPreviewSchema, await readJson(c));
     if (!parsed.success) return invalid(c);
     try {
-      const archive = decodeBase64(parsed.output.archiveBase64);
+      const archive = decodeImportArchive(parsed.output.archiveBase64);
       const state = options.store(c);
       const store = await state.getStore(parsed.output.storeId);
       if (!store) return c.json({ error: 'memory_store_not_found' }, 404);
@@ -311,7 +311,7 @@ export function createMemoryAdminApi(options: MemoryAdminApiOptions): Hono {
       ]);
       const allowed = new Set(scopes.map((scope) => scope.channelId));
       for (const entry of currentEntries) allowed.add(entry.sourceChannelId);
-      const preview = createImportPreview({
+      const preview = createValidatedImportPreview({
         archive,
         targetStore: store,
         currentEntries,
@@ -325,7 +325,7 @@ export function createMemoryAdminApi(options: MemoryAdminApiOptions): Hono {
       }, options.adminSecret(), now());
       return c.json({ preview, previewToken });
     } catch (error) {
-      return memoryError(c, error);
+      return memoryImportError(c, error);
     }
   });
 
@@ -336,14 +336,14 @@ export function createMemoryAdminApi(options: MemoryAdminApiOptions): Hono {
     const parsed = v.safeParse(importApplySchema, await readJson(c));
     if (!parsed.success) return invalid(c);
     try {
-      const archive = decodeBase64(parsed.output.archiveBase64);
+      const archive = decodeImportArchive(parsed.output.archiveBase64);
       const state = options.store(c);
       const store = await state.getStore(parsed.output.storeId);
       if (!store) return c.json({ error: 'memory_store_not_found' }, 404);
       const actorId = adminActor(c);
       const namespacedKey = `admin:import:${idempotencyKey}`;
       const archiveSha256 = sha256Hex(archive);
-      verifyImportPreview(parsed.output.previewToken, options.adminSecret(), {
+      verifyValidatedImportPreview(parsed.output.previewToken, options.adminSecret(), {
         sessionFingerprint: sessionFingerprint(c),
         storeId: store.storeId,
         archiveSha256,
@@ -364,7 +364,7 @@ export function createMemoryAdminApi(options: MemoryAdminApiOptions): Hono {
       ]);
       const allowed = new Set(scopes.map((scope) => scope.channelId));
       for (const entry of currentEntries) allowed.add(entry.sourceChannelId);
-      const preview = createImportPreview({
+      const preview = createValidatedImportPreview({
         archive, targetStore: store, currentEntries, allowedSourceChannelIds: [...allowed],
       });
       if (preview.summary.conflicts > 0) {
@@ -384,18 +384,21 @@ export function createMemoryAdminApi(options: MemoryAdminApiOptions): Hono {
           return [{
             action: candidate.action,
             entryId: candidate.entryId ?? `mem_${id()}`,
-            ...(candidate.expectedVersion === null ? {} : { expectedVersion: candidate.expectedVersion }),
+            ...(candidate.action === 'update' && candidate.expectedVersion !== null
+              ? { expectedVersion: candidate.expectedVersion }
+              : {}),
             sourceChannelId: candidate.sourceChannelId,
             slug: candidate.slug,
             description: candidate.description,
             type: candidate.type,
             body: candidate.body,
+            status: candidate.status,
           }];
         }),
       });
       return c.json({ entries });
     } catch (error) {
-      return memoryError(c, error);
+      return memoryImportError(c, error);
     }
   });
 
@@ -533,7 +536,7 @@ function reviewMetadata(raw: string): Record<string, unknown> {
 function buildScopes(
   stores: readonly MemoryStoreDescriptor[],
   channelStates: Awaited<ReturnType<MemoryStateStore['listChannelScopes']>>,
-  entries: readonly MemoryEntry[],
+  summaries: readonly MemoryEntryScopeSummary[],
 ): Array<Record<string, unknown>> {
   const result = new Map<string, Record<string, unknown>>();
   const counts = new Map<string, number>();
@@ -543,10 +546,8 @@ function buildScopes(
       .filter((store) => store.visibility === 'public')
       .map((store) => [store.workspaceId, store]),
   );
-  for (const entry of entries) {
-    if (entry.status === 'forgotten') continue;
-    const key = `${entry.storeId}\0${entry.sourceChannelId}`;
-    counts.set(key, (counts.get(key) ?? 0) + 1);
+  for (const summary of summaries) {
+    counts.set(`${summary.storeId}\0${summary.sourceChannelId}`, summary.entryCount);
   }
   const stateByChannel = new Map(channelStates.map((state) => [`${state.workspaceId}\0${state.channelId}`, state]));
   for (const state of channelStates) {
@@ -560,13 +561,20 @@ function buildScopes(
     const state = stateByChannel.get(`${store.workspaceId}\0${store.channelId}`);
     addScope(result, store, store.channelId, state?.currentDisplayName ?? store.channelId, state?.lifecycle ?? 'retained', counts);
   }
-  for (const entry of entries) {
-    const store = storeById.get(entry.storeId);
+  for (const summary of summaries) {
+    const store = storeById.get(summary.storeId);
     if (!store) continue;
-    const key = `${entry.storeId}\0${entry.sourceChannelId}`;
+    const key = `${summary.storeId}\0${summary.sourceChannelId}`;
     if (!result.has(key)) {
-      const state = stateByChannel.get(`${entry.workspaceId}\0${entry.sourceChannelId}`);
-      addScope(result, store, entry.sourceChannelId, state?.currentDisplayName ?? entry.sourceChannelId, state?.lifecycle ?? 'retained', counts);
+      const state = stateByChannel.get(`${store.workspaceId}\0${summary.sourceChannelId}`);
+      addScope(
+        result,
+        store,
+        summary.sourceChannelId,
+        state?.currentDisplayName ?? summary.sourceChannelId,
+        state?.lifecycle ?? 'retained',
+        counts,
+      );
     }
   }
   return [...result.values()].sort((left, right) =>
@@ -658,14 +666,43 @@ async function readJson(c: Context): Promise<unknown> {
   try { return await c.req.json(); } catch { return undefined; }
 }
 
-function decodeBase64(raw: string): Uint8Array {
-  if (!raw || raw.length > 8 * 1024 * 1024 || !/^[A-Za-z0-9+/]*={0,2}$/.test(raw)) {
-    throw new MemoryStateError('memory_archive_invalid', 'Memory archive encoding is invalid.');
+function decodeImportArchive(raw: string): Uint8Array {
+  try {
+    if (!raw || raw.length > 8 * 1024 * 1024 || !/^[A-Za-z0-9+/]*={0,2}$/.test(raw)) {
+      throw new MemoryImportValidationError();
+    }
+    const bytes = Buffer.from(raw, 'base64');
+    // Parsing performs the authoritative uncompressed-size and entry-count checks.
+    decodeMemoryArchive(bytes);
+    return bytes;
+  } catch (error) {
+    if (error instanceof MemoryImportValidationError) throw error;
+    throw new MemoryImportValidationError();
   }
-  const bytes = Buffer.from(raw, 'base64');
-  // Parsing performs the authoritative uncompressed-size and entry-count checks.
-  decodeMemoryArchive(bytes);
-  return bytes;
+}
+
+function createValidatedImportPreview(
+  input: Parameters<typeof createImportPreview>[0],
+): ReturnType<typeof createImportPreview> {
+  try {
+    return createImportPreview(input);
+  } catch (error) {
+    if (error instanceof MemoryStateError) throw error;
+    throw new MemoryImportValidationError();
+  }
+}
+
+function verifyValidatedImportPreview(
+  token: string,
+  secret: string,
+  expected: Parameters<typeof verifyImportPreview>[2],
+): void {
+  try {
+    verifyImportPreview(token, secret, expected);
+  } catch (error) {
+    if (error instanceof MemoryStateError) throw error;
+    throw new MemoryImportValidationError();
+  }
 }
 
 function invalid(c: Context): Response {
@@ -682,11 +719,15 @@ function memoryError(c: Context, error: unknown): Response {
         : error.code.includes('quota') || error.code.includes('too_large') ? 413 : 400;
     return c.json({ error: error.code }, status as 400 | 404 | 409 | 413);
   }
-  if (error instanceof Error && /conflict|bound|expired|hash|manifest|archive|import|index|path|frontmatter|scope|store/i.test(error.message)) {
-    return c.json({ error: 'memory_import_invalid', message: error.message }, 400);
-  }
   console.error('[chickpea] memory admin API failure:', error instanceof Error ? error.message : String(error));
   return c.json({ error: 'internal_error' }, 500);
+}
+
+function memoryImportError(c: Context, error: unknown): Response {
+  if (error instanceof MemoryImportValidationError) {
+    return c.json({ error: 'memory_import_invalid' }, 400);
+  }
+  return memoryError(c, error);
 }
 
 function compare(left: string, right: string): number {

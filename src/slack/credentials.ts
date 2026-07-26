@@ -479,6 +479,118 @@ export interface SlackConversationsInfoResult {
   retryAfterMs: number | undefined;
 }
 
+export interface SlackTruthFetchOptions {
+  timeoutMs?: number;
+}
+
+const SLACK_TRUTH_FETCH_TIMEOUT_MS = 5_000;
+
+interface SlackTruthJsonResult {
+  ok: boolean;
+  body: Record<string, unknown>;
+  error: string | undefined;
+  retryAfterMs: number | undefined;
+}
+
+type DeadlineResult<T> =
+  | { kind: 'value'; value: T }
+  | { kind: 'error'; error: unknown }
+  | { kind: 'timeout' };
+
+/**
+ * Bound raw Slack authorization reads across both fetch and body consumption.
+ * Every failure becomes a typed result so memory can quarantine instead of
+ * hanging a turn or throwing an unclassified JSON/network error.
+ */
+async function fetchSlackTruthJson(
+  url: string,
+  init: RequestInit,
+  options: SlackTruthFetchOptions = {},
+): Promise<SlackTruthJsonResult> {
+  const timeoutMs = options.timeoutMs ?? SLACK_TRUTH_FETCH_TIMEOUT_MS;
+  const deadline = AbortSignal.timeout(timeoutMs);
+  const responseResult = await settleBeforeDeadline(
+    Promise.resolve().then(() => globalThis.fetch(url, { ...init, signal: deadline })),
+    deadline,
+  );
+  if (responseResult.kind === 'timeout') return slackTruthFailure('slack_request_timeout');
+  if (responseResult.kind === 'error') {
+    return slackTruthFailure(
+      deadline.aborted || isAbortError(responseResult.error)
+        ? 'slack_request_timeout'
+        : 'slack_network_error',
+    );
+  }
+
+  const response = responseResult.value;
+  const retryAfter = retryAfterMs(response);
+  const bodyResult = await settleBeforeDeadline(
+    Promise.resolve().then(() => response.json()),
+    deadline,
+  );
+  if (bodyResult.kind === 'timeout') {
+    return slackTruthFailure('slack_request_timeout', retryAfter);
+  }
+  if (
+    bodyResult.kind === 'error' ||
+    !bodyResult.value ||
+    typeof bodyResult.value !== 'object' ||
+    Array.isArray(bodyResult.value)
+  ) {
+    return slackTruthFailure('slack_non_json_response', retryAfter);
+  }
+  const body = bodyResult.value as Record<string, unknown>;
+  if (response.status === 429) {
+    return slackTruthFailure(
+      typeof body.error === 'string' ? body.error : 'ratelimited',
+      retryAfter,
+    );
+  }
+  if (!response.ok) {
+    return slackTruthFailure(
+      typeof body.error === 'string' ? body.error : `slack_http_${response.status}`,
+      retryAfter,
+    );
+  }
+  return { ok: true, body, error: undefined, retryAfterMs: retryAfter };
+}
+
+function settleBeforeDeadline<T>(
+  pending: Promise<T>,
+  deadline: AbortSignal,
+): Promise<DeadlineResult<T>> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (result: DeadlineResult<T>): void => {
+      if (settled) return;
+      settled = true;
+      deadline.removeEventListener('abort', onAbort);
+      resolve(result);
+    };
+    const onAbort = (): void => finish({ kind: 'timeout' });
+    if (deadline.aborted) {
+      finish({ kind: 'timeout' });
+      return;
+    }
+    deadline.addEventListener('abort', onAbort, { once: true });
+    void pending.then(
+      (value) => finish({ kind: 'value', value }),
+      (error: unknown) => finish({ kind: 'error', error }),
+    );
+  });
+}
+
+function slackTruthFailure(
+  error: string,
+  retryAfter: number | undefined = undefined,
+): SlackTruthJsonResult {
+  return { ok: false, body: {}, error, retryAfterMs: retryAfter };
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'AbortError';
+}
+
 /**
  * `conversations.info` for one channel id — used to VERIFY an assignment's
  * channel really exists in the connected workspace (and to read its
@@ -487,22 +599,32 @@ export interface SlackConversationsInfoResult {
 export async function slackConversationsInfo(
   botToken: string,
   channelId: string,
+  options: SlackTruthFetchOptions = {},
 ): Promise<SlackConversationsInfoResult> {
-  const response = await fetch(`${slackApiBase()}/conversations.info`, {
+  const result = await fetchSlackTruthJson(`${slackApiBase()}/conversations.info`, {
     method: 'POST',
     headers: {
       authorization: `Bearer ${botToken}`,
       'content-type': 'application/x-www-form-urlencoded',
     },
     body: new URLSearchParams({ channel: channelId }).toString(),
-  });
-  const body = (await response.json()) as Record<string, unknown>;
+  }, options);
+  if (!result.ok) {
+    return {
+      ok: false,
+      error: result.error,
+      channel: undefined,
+      facts: undefined,
+      retryAfterMs: result.retryAfterMs,
+    };
+  }
+  const body = result.body;
   return {
     ok: body.ok === true,
     error: typeof body.error === 'string' ? body.error : undefined,
     channel: toChannelSummary(body.channel) ?? undefined,
     facts: toConversationFacts(body.channel) ?? undefined,
-    retryAfterMs: retryAfterMs(response),
+    retryAfterMs: result.retryAfterMs,
   };
 }
 
@@ -516,21 +638,30 @@ export interface SlackUsersInfoResult {
 export async function slackUsersInfo(
   botToken: string,
   userId: string,
+  options: SlackTruthFetchOptions = {},
 ): Promise<SlackUsersInfoResult> {
-  const response = await fetch(`${slackApiBase()}/users.info`, {
+  const result = await fetchSlackTruthJson(`${slackApiBase()}/users.info`, {
     method: 'POST',
     headers: {
       authorization: `Bearer ${botToken}`,
       'content-type': 'application/x-www-form-urlencoded',
     },
     body: new URLSearchParams({ user: userId }).toString(),
-  });
-  const body = (await response.json()) as Record<string, unknown>;
+  }, options);
+  if (!result.ok) {
+    return {
+      ok: false,
+      error: result.error,
+      user: undefined,
+      retryAfterMs: result.retryAfterMs,
+    };
+  }
+  const body = result.body;
   return {
     ok: body.ok === true,
     error: typeof body.error === 'string' ? body.error : undefined,
     user: toUserFacts(body.user) ?? undefined,
-    retryAfterMs: retryAfterMs(response),
+    retryAfterMs: result.retryAfterMs,
   };
 }
 
@@ -544,26 +675,35 @@ export interface SlackUsersListPage {
 
 export async function slackUsersList(
   botToken: string,
-  options: { cursor?: string; limit?: number } = {},
+  options: { cursor?: string; limit?: number; timeoutMs?: number } = {},
 ): Promise<SlackUsersListPage> {
   const params = new URLSearchParams({ limit: String(options.limit ?? 200) });
   if (options.cursor) params.set('cursor', options.cursor);
-  const response = await fetch(`${slackApiBase()}/users.list`, {
+  const result = await fetchSlackTruthJson(`${slackApiBase()}/users.list`, {
     method: 'POST',
     headers: {
       authorization: `Bearer ${botToken}`,
       'content-type': 'application/x-www-form-urlencoded',
     },
     body: params.toString(),
-  });
-  const body = (await response.json()) as Record<string, unknown>;
+  }, options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs });
+  if (!result.ok) {
+    return {
+      ok: false,
+      error: result.error,
+      users: [],
+      nextCursor: undefined,
+      retryAfterMs: result.retryAfterMs,
+    };
+  }
+  const body = result.body;
   const rawUsers = Array.isArray(body.members) ? body.members : [];
   return {
     ok: body.ok === true,
     error: typeof body.error === 'string' ? body.error : undefined,
     users: rawUsers.map(toUserFacts).filter((user): user is SlackUserFacts => user !== null),
     nextCursor: readNextCursor(body),
-    retryAfterMs: retryAfterMs(response),
+    retryAfterMs: result.retryAfterMs,
   };
 }
 
@@ -578,22 +718,31 @@ export interface SlackConversationsMembersPage {
 export async function slackConversationsMembers(
   botToken: string,
   channelId: string,
-  options: { cursor?: string; limit?: number } = {},
+  options: { cursor?: string; limit?: number; timeoutMs?: number } = {},
 ): Promise<SlackConversationsMembersPage> {
   const params = new URLSearchParams({
     channel: channelId,
     limit: String(options.limit ?? 200),
   });
   if (options.cursor) params.set('cursor', options.cursor);
-  const response = await fetch(`${slackApiBase()}/conversations.members`, {
+  const result = await fetchSlackTruthJson(`${slackApiBase()}/conversations.members`, {
     method: 'POST',
     headers: {
       authorization: `Bearer ${botToken}`,
       'content-type': 'application/x-www-form-urlencoded',
     },
     body: params.toString(),
-  });
-  const body = (await response.json()) as Record<string, unknown>;
+  }, options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs });
+  if (!result.ok) {
+    return {
+      ok: false,
+      error: result.error,
+      memberIds: [],
+      nextCursor: undefined,
+      retryAfterMs: result.retryAfterMs,
+    };
+  }
+  const body = result.body;
   const members = Array.isArray(body.members)
     ? body.members.filter((id): id is string => typeof id === 'string')
     : [];
@@ -602,7 +751,7 @@ export async function slackConversationsMembers(
     error: typeof body.error === 'string' ? body.error : undefined,
     memberIds: members,
     nextCursor: readNextCursor(body),
-    retryAfterMs: retryAfterMs(response),
+    retryAfterMs: result.retryAfterMs,
   };
 }
 

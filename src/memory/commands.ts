@@ -18,11 +18,27 @@ export type MemoryCommand =
   | { kind: 'report'; target: string; reason: MemoryReportReason }
   | { kind: 'invalid'; hint: string };
 
+export type ParsedMemoryCommand = MemoryCommand | { kind: 'candidate' };
+
 const TARGET = '[a-z0-9][a-z0-9/-]{0,128}';
 const DASH = '\\s+(?:—|-)\\s+';
 
-export function parseMemoryCommand(rawText: string): MemoryCommand | undefined {
-  const text = stripLeadingMentions(rawText).trim().replace(/\r\n?/g, '\n');
+export function parseMemoryCommand(
+  rawText: string,
+  resolvedBotUserId?: string,
+): ParsedMemoryCommand | undefined {
+  if (resolvedBotUserId === undefined) {
+    const withoutUnresolvedMentions = rawText.replace(/^\s*(?:<@[^>\s]+>\s*)+/i, '');
+    if (withoutUnresolvedMentions !== rawText) {
+      // run-turn uses this truthy sentinel only to enter the authoritative
+      // handler, which resolves Chickpea's user ID and reparses. Do not expose
+      // a mutation-shaped command before that identity check.
+      return parseMemoryCommand(withoutUnresolvedMentions, '')
+        ? { kind: 'candidate' }
+        : undefined;
+    }
+  }
+  const text = stripLeadingMentions(rawText, resolvedBotUserId).trim().replace(/\r\n?/g, '\n');
   if (!text) return undefined;
 
   if (/^!memory(?:\s+list)?\s*$/i.test(text) || /^what do you remember about this channel\??$/i.test(text)) {
@@ -41,8 +57,16 @@ export function parseMemoryCommand(rawText: string): MemoryCommand | undefined {
     return contentCommand('remember', match[1]!, match[2]!, match[3]);
   }
 
-  match = text.match(/^(?:(?:please\s+)?remember|can you remember)(?:\s+that|:)\s+([\s\S]+)$/i);
+  match = text.match(/^can you remember(?:\s+that|:)\s+([\s\S]+)$/i);
   if (match) return conversationalRememberCommand(match[1]!);
+  match = text.match(/^(?:please\s+)?remember(?:\s+that|:)\s+([\s\S]+)$/i);
+  if (match) {
+    // "Remember that ...?" is commonly a recall question, not mutation
+    // intent. The explicit !remember grammar remains available when the
+    // content itself genuinely needs to end in a question mark.
+    if (/\?\s*$/u.test(match[1]!)) return undefined;
+    return conversationalRememberCommand(match[1]!);
+  }
 
   match = text.match(
     new RegExp(`^!memory\\s+update\\s+(${TARGET})${DASH}([^\\n]+)(?:\\n([\\s\\S]+))?$`, 'i'),
@@ -119,8 +143,13 @@ export function parseMemoryCommand(rawText: string): MemoryCommand | undefined {
   return undefined;
 }
 
-function stripLeadingMentions(text: string): string {
-  return text.replace(/^\s*(?:<@[^>\s]+>\s*)+/i, '');
+function stripLeadingMentions(text: string, resolvedBotUserId: string | undefined): string {
+  // Once an identity is supplied, never consume a teammate's mention as
+  // though it addressed Chickpea. Empty means no mention stripping (used only
+  // while classifying the suffix of an unresolved mention as a candidate).
+  if (!resolvedBotUserId) return text;
+  const escapedBotUserId = resolvedBotUserId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return text.replace(new RegExp(`^\\s*(?:<@${escapedBotUserId}>\\s*)+`), '');
 }
 
 function contentCommand(

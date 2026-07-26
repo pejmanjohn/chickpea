@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { SqliteMemoryStateStore } from '../src/memory/store.ts';
+import { parseCurrentRequestEnvelope } from '../src/memory/tool-policy.ts';
 import { assembleSlackPrompt } from '../src/slack/web-client-context.ts';
+import { applyVisibilityBarrier } from '../src/slack/run-turn.ts';
 import { sandboxThreadKey } from '../src/sandbox/thread-key.ts';
 import {
   baseSlackThreadKey,
@@ -72,10 +74,35 @@ test('prompt assembly omits the trigger from history and places advisory memory 
         { userId: 'U', text: 'Current question', ts: '2.0', isTrigger: true },
       ],
     },
-    { memoryBlock: 'ADVISORY MEMORY' },
+    { memoryBlock: 'ADVISORY MEMORY', memorySelected: true },
   );
   assert.equal(prompt.match(/Current question/g)?.length, 1);
   assert.ok(prompt.indexOf('Earlier context') < prompt.indexOf('ADVISORY MEMORY'));
   assert.ok(prompt.indexOf('ADVISORY MEMORY') < prompt.indexOf('Current Slack request'));
-  assert.ok(prompt.endsWith('Current question'));
+  assert.deepEqual(parseCurrentRequestEnvelope(prompt), {
+    schemaVersion: 1,
+    memoryInfluenced: true,
+    explicitExternalSideEffectIntent: false,
+    explicitArtifactDeliveryIntent: false,
+  });
+});
+
+test('visibility barriers compare the full fractional Slack timestamp', () => {
+  const context = applyVisibilityBarrier(
+    {
+      mode: 'thread', truncated: false, degradations: [],
+      messages: [
+        { userId: 'U1', text: 'before', ts: '1753470000.499999', isTrigger: false },
+        { userId: 'U2', text: 'at barrier', ts: '1753470000.500000', isTrigger: false },
+        { userId: 'U3', text: 'after', ts: '1753470000.500001', isTrigger: false },
+        { userId: 'U', text: 'trigger', ts: '1753470000.100000', isTrigger: true },
+      ],
+    },
+    1_753_470_000_500,
+  );
+  assert.deepEqual(context.messages.map(({ text }) => text), [
+    'at barrier',
+    'after',
+    'trigger',
+  ]);
 });

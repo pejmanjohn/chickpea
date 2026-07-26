@@ -191,6 +191,7 @@ export async function runTurn(
     await statusTurn.setStatus(hydratedContextStatus(context));
     const prompt = assembleSlackPrompt(turn, context, {
       ...(preparedMemory?.promptBlock ? { memoryBlock: preparedMemory.promptBlock } : {}),
+      memorySelected: (preparedMemory?.selection?.entries.length ?? 0) > 0,
     });
 
     // 3 + 4. Prompt the durable agent, then deliver the final — with clearStatus
@@ -369,7 +370,7 @@ function modelStatus(modelId: string): SlackStatusUpdate {
   };
 }
 
-function applyVisibilityBarrier(
+export function applyVisibilityBarrier(
   context: SlackTurnContext,
   barrierAt: number | null,
 ): SlackTurnContext {
@@ -378,10 +379,22 @@ function applyVisibilityBarrier(
     ...context,
     messages: context.messages.filter((message) => {
       if (message.isTrigger) return true;
-      const seconds = Number(message.ts.split('.')[0]);
-      return Number.isFinite(seconds) && seconds * 1_000 >= barrierAt;
+      return slackTimestampAtOrAfter(message.ts, barrierAt);
     }),
   };
+}
+
+function slackTimestampAtOrAfter(timestamp: string, barrierAt: number): boolean {
+  if (!Number.isSafeInteger(barrierAt) || barrierAt < 0) return false;
+  const match = /^(\d+)(?:\.(\d+))?$/.exec(timestamp);
+  if (!match) return false;
+  const fraction = match[2] ?? '';
+  const scaleDigits = Math.max(3, fraction.length);
+  const scale = 10n ** BigInt(scaleDigits);
+  const timestampUnits =
+    BigInt(match[1]!) * scale + BigInt(fraction.padEnd(scaleDigits, '0') || '0');
+  const barrierUnits = BigInt(barrierAt) * (scale / 1_000n);
+  return timestampUnits >= barrierUnits;
 }
 
 export function sanitizeError(err: unknown): string {

@@ -470,28 +470,7 @@ export class MemoryService {
       );
       return resolveTarget(entries.flat(), slug);
     }
-    try {
-      return await this.resolveWritableTarget(scope, target);
-    } catch (error) {
-      if (
-        scope.privacy !== 'private' ||
-        !(error instanceof MemoryStateError) ||
-        error.code !== 'memory_entry_not_found'
-      ) {
-        throw error;
-      }
-    }
-    const publicReads = scope.reads.filter((read) => read.storeId !== scope.writeStoreId);
-    const entries = await Promise.all(
-      publicReads.map((read) =>
-        this.state.listEntries({
-          storeId: read.storeId,
-          sourceChannelId: scope.sourceChannelId,
-          statuses: READABLE_STATUSES,
-        }),
-      ),
-    );
-    return resolveTarget(entries.flat(), target);
+    return this.resolveWritableTarget(scope, target);
   }
 
   private async resolveTransitionTarget(
