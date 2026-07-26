@@ -10,6 +10,9 @@
 # the value written here, and a placeholder would deploy as the real token.
 TAG_ADMIN_TOKEN=""
 
+# Channel memory is always on for eligible assigned channels. There is no
+# memory feature flag or opt-out secret to configure.
+
 # Optional: add a catalog provider after deploy. Without one, the seeded Default
 # profile runs keyless on the Workers AI binding (@cf/zai-org/glm-5.2). These
 # deliberately remain comments: the Deploy to Cloudflare button renders every

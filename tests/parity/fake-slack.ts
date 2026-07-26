@@ -92,6 +92,10 @@ export interface FakeSlackBehaviorConfig {
   channels?: FakeSlackChannel[];
   /** Page size for conversations.list cursor pagination (default 100). */
   conversationsListPageSize?: number;
+  /** Members served by conversations.members for memory authorization. */
+  channelMembers?: Record<string, string[]>;
+  /** Workspace directory served by users.list/users.info. */
+  workspaceUsers?: FakeSlackUser[];
   /**
    * Force `conversations.join` to answer `{ ok:false, error }` (e.g.
    * `missing_scope` for installs that predate the `channels:join` scope). When
@@ -117,6 +121,16 @@ export interface FakeSlackChannel {
   name: string;
   isPrivate?: boolean;
   isMember?: boolean;
+}
+
+export interface FakeSlackUser {
+  id: string;
+  teamId?: string;
+  isBot?: boolean;
+  isAppUser?: boolean;
+  deleted?: boolean;
+  isRestricted?: boolean;
+  isUltraRestricted?: boolean;
 }
 
 export interface FakeProviderConfig {
@@ -186,6 +200,8 @@ export class FakeSlackBackend {
   private channels: FakeSlackChannel[];
   private conversationsListPageSize: number;
   private conversationsJoinError: string | undefined;
+  private channelMembers: Record<string, string[]>;
+  private workspaceUsers: FakeSlackUser[];
   private readonly repliesPages: RepliesPage[];
   private readonly historyMessages: unknown[];
   private readonly cursorToIndex = new Map<string, number>();
@@ -220,6 +236,8 @@ export class FakeSlackBackend {
     this.channels = slack.channels ?? [];
     this.conversationsListPageSize = slack.conversationsListPageSize ?? 100;
     this.conversationsJoinError = slack.conversationsJoinError;
+    this.channelMembers = slack.channelMembers ?? {};
+    this.workspaceUsers = slack.workspaceUsers ?? [];
     this.providerMode = config.provider?.mode ?? 'ok';
     this.replyText = config.provider?.replyText ?? STUB_REPLY_MARKER;
     this.providerDelayMs = config.provider?.delayMs ?? 0;
@@ -424,6 +442,12 @@ export class FakeSlackBackend {
       }
       if (config.slack.conversationsJoinError !== undefined) {
         this.conversationsJoinError = config.slack.conversationsJoinError;
+      }
+      if (config.slack.channelMembers !== undefined) {
+        this.channelMembers = config.slack.channelMembers;
+      }
+      if (config.slack.workspaceUsers !== undefined) {
+        this.workspaceUsers = config.slack.workspaceUsers;
       }
     }
     if (config.provider) {
@@ -701,6 +725,16 @@ export class FakeSlackBackend {
           ? { ok: true, channel: channelPayload(found) }
           : { ok: false, error: 'channel_not_found' };
       }
+      case 'conversations.members': {
+        const channelId = String(body.channel ?? '');
+        const found = this.channels.find((channel) => channel.id === channelId);
+        if (!found) return { ok: false, error: 'channel_not_found' };
+        return {
+          ok: true,
+          members: this.channelMembers[channelId] ?? [],
+          response_metadata: { next_cursor: '' },
+        };
+      }
       case 'conversations.join': {
         // A configured error (e.g. missing_scope on installs predating the
         // channels:join scope) short-circuits without joining.
@@ -720,11 +754,19 @@ export class FakeSlackBackend {
         found.isMember = true;
         return { ok: true, channel: channelPayload(found) };
       }
-      case 'users.info':
+      case 'users.info': {
+        const requested = String(body.user ?? '');
+        const configured = this.workspaceUsers.find((user) => user.id === requested);
         return {
           ok: true,
           user: {
-            id: body.user,
+            id: requested,
+            team_id: configured?.teamId,
+            is_bot: configured?.isBot ?? false,
+            is_app_user: configured?.isAppUser ?? false,
+            deleted: configured?.deleted ?? false,
+            is_restricted: configured?.isRestricted ?? false,
+            is_ultra_restricted: configured?.isUltraRestricted ?? false,
             name: this.identity.displayName,
             profile: {
               display_name: this.identity.displayName,
@@ -733,6 +775,21 @@ export class FakeSlackBackend {
               image_72: this.identity.image72Url,
             },
           },
+        };
+      }
+      case 'users.list':
+        return {
+          ok: true,
+          members: this.workspaceUsers.map((user) => ({
+            id: user.id,
+            team_id: user.teamId,
+            is_bot: user.isBot ?? false,
+            is_app_user: user.isAppUser ?? false,
+            deleted: user.deleted ?? false,
+            is_restricted: user.isRestricted ?? false,
+            is_ultra_restricted: user.isUltraRestricted ?? false,
+          })),
+          response_metadata: { next_cursor: '' },
         };
       default:
         return { ok: true };

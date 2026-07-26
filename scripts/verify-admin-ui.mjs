@@ -5,7 +5,9 @@
  *   2. exchange the POSTed admin token for a browser session cookie,
  *   3. create a profile and addendum-bearing assignment through /admin/api,
  *   4. read the server-side effective-config panel data,
- *   5. edit the addendum and prove the panel data changes in the same process.
+ *   5. edit the addendum and prove the panel data changes in the same process,
+ *   6. seed the real Memory store and prove scope/index, conflict, and
+ *      irreversible-delete contracts through the authenticated admin plane.
  */
 import {
   assertNodeVersion,
@@ -20,6 +22,7 @@ const AGENT_ID = 'agent_admin_ui';
 const MODEL_SPECIFIER = 'local-stub/admin-ui-model';
 const FIRST_ADDENDUM = 'ADMIN_UI_ADDENDUM_V1: prefer release readiness.';
 const SECOND_ADDENDUM = 'ADMIN_UI_ADDENDUM_V2: prefer launch-risk deltas.';
+const MEMORY_ENTRY_ID = 'mem_admin_ui_release';
 
 const results = [];
 
@@ -63,17 +66,42 @@ async function readEffectiveConfig(app) {
 }
 
 let store;
+let memory;
 try {
   console.log(`node ${assertNodeVersion()}`);
   const { Hono } = await import('hono');
   const { createAdminRoutes } = await loadTsModule('src/admin/routes.ts');
   const { SqliteConfigStore } = await loadTsModule('src/config/store.ts');
+  const { SqliteMemoryStateStore } = await loadTsModule('src/memory/store.ts');
   store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  memory = new SqliteMemoryStateStore(':memory:');
+  const publicMemory = await memory.ensurePublicStore(WORKSPACE_ID);
+  await memory.observeChannelScope({
+    workspaceId: WORKSPACE_ID,
+    channelId: CHANNEL_ID,
+    privacy: 'public',
+    displayName: CHANNEL_LABEL,
+    observedAt: Date.now(),
+  });
+  await memory.createEntry({
+    entryId: MEMORY_ENTRY_ID,
+    storeId: publicMemory.storeId,
+    workspaceId: WORKSPACE_ID,
+    sourceChannelId: CHANNEL_ID,
+    slug: 'release-guidance',
+    description: 'Use the release checklist.',
+    type: 'project',
+    body: 'Run focused tests before release.',
+    actorId: 'U_ADMIN_UI_MEMBER',
+    actorClass: 'member',
+    idempotencyKey: 'admin-ui-memory-create',
+  });
   const app = new Hono();
   app.route(
     '/',
     createAdminRoutes({
       store,
+      memory,
       adminToken: ADMIN_TOKEN,
       knownProviders: new Set(['local-stub']),
     }),
@@ -99,6 +127,13 @@ try {
       pageResponse.status === 200 &&
       pageHtml.includes('Access summary'),
     `login=${login.status} page=${pageResponse.status}`,
+  );
+
+  record(
+    'admin page carries the Memory workspace and irreversible-delete disclosure',
+    pageHtml.includes('Audit logs') &&
+      pageHtml.includes('Generated <code>MEMORY.md</code> files are never edited directly') &&
+      pageHtml.includes('Slack transcripts, model-provider logs, or prior exports are not retracted'),
   );
 
   const created = await adminBody(app, 'POST', '/admin/api/agents', {
@@ -164,10 +199,73 @@ try {
       secondConfig?.snapshotHash !== firstConfig?.snapshotHash,
     `status=${second.status} hashChanged=${String(secondConfig?.snapshotHash !== firstConfig?.snapshotHash)}`,
   );
+
+  const scopes = await adminJson(app, '/admin/api/audit/memory/scopes');
+  const files = await adminJson(
+    app,
+    `/admin/api/audit/memory/stores/${encodeURIComponent(publicMemory.storeId)}/files` +
+      `?sourceChannelId=${encodeURIComponent(CHANNEL_ID)}`,
+  );
+  record(
+    'Memory scope tree and generated channel index use the real state store',
+    scopes.status === 200 &&
+      scopes.body?.scopes?.[0]?.channelId === CHANNEL_ID &&
+      files.status === 200 &&
+      files.body?.files?.[0]?.name === 'MEMORY.md' &&
+      files.body?.files?.[1]?.name === 'release-guidance.md',
+    `scopes=${scopes.status} files=${files.status}`,
+  );
+
+  const editBody = JSON.stringify({
+    expectedVersion: 1,
+    description: 'Use the full release checklist.',
+    type: 'project',
+    body: 'Run focused tests and the durability gate before release.',
+  });
+  const edit = await adminJson(app, `/admin/api/audit/memory/entries/${MEMORY_ENTRY_ID}`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json', 'idempotency-key': 'admin-ui-memory-edit' },
+    body: editBody,
+  });
+  const conflict = await adminJson(app, `/admin/api/audit/memory/entries/${MEMORY_ENTRY_ID}`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json', 'idempotency-key': 'admin-ui-memory-conflict' },
+    body: editBody,
+  });
+  record(
+    'Memory edit is versioned and a stale draft receives 409 without overwrite',
+    edit.status === 200 && edit.body?.entry?.version === 2 &&
+      conflict.status === 409 && conflict.body?.currentVersion === 2,
+    `edit=${edit.status} conflict=${conflict.status}`,
+  );
+
+  const unacknowledgedDelete = await adminJson(
+    app,
+    `/admin/api/audit/memory/entries/${MEMORY_ENTRY_ID}`,
+    {
+      method: 'DELETE',
+      headers: { 'content-type': 'application/json', 'idempotency-key': 'admin-ui-memory-delete-rejected' },
+      body: JSON.stringify({ expectedVersion: 2, acknowledgeIrreversible: false }),
+    },
+  );
+  const deleted = await adminJson(app, `/admin/api/audit/memory/entries/${MEMORY_ENTRY_ID}`, {
+    method: 'DELETE',
+    headers: { 'content-type': 'application/json', 'idempotency-key': 'admin-ui-memory-delete' },
+    body: JSON.stringify({ expectedVersion: 2, acknowledgeIrreversible: true }),
+  });
+  const deletedEntry = await memory.getEntry(MEMORY_ENTRY_ID);
+  record(
+    'Memory delete requires explicit acknowledgement and scrubs canonical content',
+    unacknowledgedDelete.status === 400 && deleted.status === 200 &&
+      deletedEntry?.status === 'forgotten' && deletedEntry.body === '' &&
+      deletedEntry.description === '' && deletedEntry.contentHash === null,
+    `unacknowledged=${unacknowledgedDelete.status} deleted=${deleted.status}`,
+  );
 } catch (error) {
   record('verification harness', false, error instanceof Error ? error.message : String(error));
 } finally {
   store?.close();
+  memory?.close();
 }
 
 const failed = results.filter((result) => !result.passed);

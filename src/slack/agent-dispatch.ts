@@ -66,14 +66,17 @@ export async function promptSlackThreadAgent(
   message: string,
   env: PlatformEnv | undefined,
   turnId: string,
+  useCloudflareSandbox: boolean,
 ): Promise<string> {
-  try {
-    await prepareCloudflareSandboxTurn(env, conversationKey, turnId);
-  } catch {
-    // This boundary is exclusively the thread-scoped Sandbox binding/RPC
-    // setup. Keep its raw control-plane error private while preserving the
-    // correct user-visible failure surface.
-    throw new AgentPromptFailure('sandbox', 500);
+  if (useCloudflareSandbox) {
+    try {
+      await prepareCloudflareSandboxTurn(env, conversationKey, turnId);
+    } catch {
+      // This boundary is exclusively the thread-scoped Sandbox binding/RPC
+      // setup. Keep its raw control-plane error private while preserving the
+      // correct user-visible failure surface.
+      throw new AgentPromptFailure('sandbox', 500);
+    }
   }
   const path = `/agents/slack-thread/${encodeURIComponent(conversationKey)}?wait=result`;
   const response = await getRouter().request(
@@ -203,8 +206,9 @@ async function prepareCloudflareSandboxTurn(
 export async function releaseCloudflareSandboxTurn(
   env: PlatformEnv | undefined,
   conversationKey: string,
+  usedCloudflareSandbox: boolean,
 ): Promise<void> {
-  if (!isCloudflareTarget()) return;
+  if (!usedCloudflareSandbox || !isCloudflareTarget()) return;
   const binding = env?.SANDBOX ?? env?.Sandbox;
   if (!binding) return;
 

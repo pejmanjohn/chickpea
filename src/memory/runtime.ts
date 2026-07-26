@@ -19,6 +19,7 @@ import {
 } from './scope.ts';
 import { selectMemoryEntries, type MemorySelection } from './selector.ts';
 import { MemoryService } from './service.ts';
+import { emitMemoryMetric } from './telemetry.ts';
 import { MemoryStateError, type MemoryEntry, type MemoryStateStore } from './types.ts';
 
 const MEMORY_CONTEXT_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
@@ -62,9 +63,15 @@ export async function handleMemoryCommand(input: {
     const state = getMemoryStateStore(input.platformEnv);
     const runtime = await resolveRuntime(input.turn, input.platformEnv, input.client, state);
     responseText = await executeMemoryCommand(command, input.turn, runtime);
+    emitMemoryMetric('command', { action: command.kind, outcome: 'success' });
   } catch (error) {
     responseText = memoryErrorText(error);
     responseFormat = 'plain_text';
+    emitMemoryMetric('command', {
+      action: command.kind,
+      outcome: 'failure',
+      reason: memoryErrorCode(error),
+    });
   }
   // Keep delivery outside the domain-error catch. A Slack write failure must
   // propagate so the existing claim/retry path can redrive the idempotent
@@ -106,6 +113,16 @@ export async function prepareMemoryTurn(input: {
     const promptBlock = context.inject
       ? serializeMemoryPrompt(runtime.scope, selection)
       : undefined;
+    emitMemoryMetric('selection', {
+      candidateCount: entries.length,
+      selectedCount: selection.entries.length,
+      serializedBytes: promptBlock ? new TextEncoder().encode(promptBlock).byteLength : 0,
+      truncated: selection.truncated,
+      crossChannelCount: selection.entries.filter(
+        ({ entry }) => entry.sourceChannelId !== runtime.scope.sourceChannelId,
+      ).length,
+      inject: context.inject,
+    });
     return {
       conversationKey: memoryEpochThreadKey(baseKey, context.epoch),
       ...(promptBlock ? { promptBlock } : {}),
@@ -119,10 +136,14 @@ export async function prepareMemoryTurn(input: {
             selectionFingerprint: context.selectionFingerprint,
           })
         : async () => true,
-      validateLease: () => validateMemoryLease(input.turn, runtime, selection, scopeSignature),
+      validateLease: async () => {
+        const valid = await validateMemoryLease(input.turn, runtime, selection, scopeSignature);
+        emitMemoryMetric('delivery_lease', { outcome: valid ? 'valid' : 'rejected' });
+        return valid;
+      },
     };
   } catch (error) {
-    console.warn('[chickpea] memory runtime quarantined:', memoryErrorCode(error));
+    emitMemoryMetric('quarantine', { reason: memoryErrorCode(error) });
     return {
       ...memoryFree(memoryQuarantineThreadKey(baseKey, input.turn.eventId)),
       conversationKey: memoryQuarantineThreadKey(baseKey, input.turn.eventId),

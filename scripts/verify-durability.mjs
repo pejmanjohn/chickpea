@@ -43,6 +43,7 @@ import {
   delay,
   getFreePort,
   loadFake,
+  loadTsModule,
   postSignedEvent,
   seedOfflineDemoChannelConfig,
   spawnServer,
@@ -55,7 +56,7 @@ const DURABILITY_MARKER = 'DURABILITY_MARKER_ALPHA';
 const INTERNAL_TOKEN = 'durability-internal-token';
 const EXEC_CHANNEL = 'C_EXEC';
 const ROOT_TS = '1782770400.000100';
-const THREAD_KEY = `T_DEMO:${EXEC_CHANNEL}:${ROOT_TS}`;
+const THREAD_KEY = `T_DEMO:${EXEC_CHANNEL}:${ROOT_TS}:memory-e1`;
 
 function log(line) {
   console.log(line);
@@ -139,7 +140,18 @@ async function runServerTurn({ serverEntry, fakeUrl, dbPath, netGuardLog, payloa
 }
 
 const { FakeSlackBackend } = await loadFake();
-const backend = new FakeSlackBackend({ provider: { mode: 'ok', replyText: DURABILITY_MARKER } });
+const backend = new FakeSlackBackend({
+  slack: {
+    identity: { teamId: 'T_DEMO' },
+    channels: [{ id: EXEC_CHANNEL, name: 'exec', isMember: true }],
+    channelMembers: { [EXEC_CHANNEL]: ['U_ALICE', 'U_BOT'] },
+    workspaceUsers: [
+      { id: 'U_ALICE', teamId: 'T_DEMO' },
+      { id: 'U_BOT', teamId: 'T_DEMO', isBot: true, isAppUser: true },
+    ],
+  },
+  provider: { mode: 'ok', replyText: DURABILITY_MARKER },
+});
 const fake = await backend.listen();
 log(`fake backend listening at ${fake.url}`);
 
@@ -307,6 +319,86 @@ try {
       finals === 0,
       `finals=${finals}`,
     );
+  }
+
+  // --- Memory state: additive upgrade, restart, compatibility open, scrub. ---
+  {
+    const { SqliteMemoryStateStore } = await loadTsModule('src/memory/store.ts');
+    const { SqliteConfigStore } = await loadTsModule('src/config/store.ts');
+    const memoryPath = `${dbA}.state`;
+    const memoryCanary = 'MEMORY_DURABILITY_CANARY_ALPHA';
+    const priorLegacyFlag = process.env.SLACK_TAG_MEMORY_ENABLED;
+    process.env.SLACK_TAG_MEMORY_ENABLED = 'false';
+    let memoryStore;
+    try {
+      memoryStore = new SqliteMemoryStateStore(memoryPath);
+      const publicStore = await memoryStore.ensurePublicStore('T_DEMO');
+      await memoryStore.observeChannelScope({
+        workspaceId: 'T_DEMO',
+        channelId: EXEC_CHANNEL,
+        privacy: 'public',
+        displayName: 'exec',
+        observedAt: Date.now(),
+      });
+      await memoryStore.createEntry({
+        entryId: 'mem_durability_canary',
+        storeId: publicStore.storeId,
+        workspaceId: 'T_DEMO',
+        sourceChannelId: EXEC_CHANNEL,
+        slug: 'durability-canary',
+        description: 'Restart durability proof.',
+        type: 'fact',
+        body: memoryCanary,
+        actorId: 'U_ALICE',
+        actorClass: 'member',
+        idempotencyKey: 'memory:durability:create',
+      });
+      memoryStore.close();
+      memoryStore = undefined;
+
+      // A config-only open stands in for rollback code that knows nothing about
+      // the additive memory tables: it must boot and leave them untouched.
+      const configOnly = new SqliteConfigStore(memoryPath, { agents: [], assignments: [] });
+      await configOnly.listAgents();
+      configOnly.close();
+
+      memoryStore = new SqliteMemoryStateStore(memoryPath);
+      const restarted = await memoryStore.getEntry('mem_durability_canary');
+      record(
+        'MEMORY DURABILITY: create survives close/restart and legacy false is inert',
+        restarted?.body === memoryCanary && restarted.version === 1,
+        `status=${String(restarted?.status)} version=${String(restarted?.version)}`,
+      );
+      await memoryStore.forgetEntry({
+        entryId: 'mem_durability_canary',
+        expectedVersion: 1,
+        actorId: 'operator',
+        actorClass: 'operator',
+        idempotencyKey: 'memory:durability:forget',
+      });
+      memoryStore.close();
+      memoryStore = undefined;
+
+      memoryStore = new SqliteMemoryStateStore(memoryPath);
+      const forgotten = await memoryStore.getEntry('mem_durability_canary');
+      const revisions = await memoryStore.listRevisions('mem_durability_canary');
+      memoryStore.close();
+      memoryStore = undefined;
+      record(
+        'MEMORY DURABILITY: forget survives restart and removes recoverable revision content',
+        forgotten?.status === 'forgotten' && forgotten.body === '' && forgotten.description === '' &&
+          revisions.every((revision) => revision.body === null && revision.description === null),
+        `status=${String(forgotten?.status)} revisions=${revisions.length}`,
+      );
+      record(
+        'MEMORY DURABILITY: deleted canary is absent from the raw state file',
+        !readFileSync(memoryPath).toString('latin1').includes(memoryCanary),
+      );
+    } finally {
+      memoryStore?.close();
+      if (priorLegacyFlag === undefined) delete process.env.SLACK_TAG_MEMORY_ENABLED;
+      else process.env.SLACK_TAG_MEMORY_ENABLED = priorLegacyFlag;
+    }
   }
 
   // --- Net guard: zero external traffic. ---

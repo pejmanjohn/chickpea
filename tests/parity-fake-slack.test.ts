@@ -67,3 +67,42 @@ test('http_500 provider mode surfaces a 500 with the raw marker for leak checks'
 
   assert.equal(response.status, 500);
 });
+
+test('fake Slack serves bounded membership and user-directory fixtures for memory parity', async () => {
+  const backend = new FakeSlackBackend({
+    slack: {
+      channels: [{ id: 'C_MEMORY', name: 'memory', isMember: true }],
+      channelMembers: { C_MEMORY: ['U_MEMBER', 'U_BOT'] },
+      workspaceUsers: [
+        { id: 'U_MEMBER', teamId: 'T_MEMORY' },
+        { id: 'U_BOT', teamId: 'T_MEMORY', isBot: true, isAppUser: true },
+      ],
+    },
+  });
+  const fetchImpl = backend.asFetch();
+
+  const members = await fetchImpl('https://slack.com/api/conversations.members', {
+    method: 'POST',
+    body: JSON.stringify({ channel: 'C_MEMORY' }),
+  });
+  const users = await fetchImpl('https://slack.com/api/users.list', {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
+  const actor = await fetchImpl('https://slack.com/api/users.info', {
+    method: 'POST',
+    body: JSON.stringify({ user: 'U_MEMBER' }),
+  });
+
+  assert.deepEqual(await members.json(), {
+    ok: true,
+    members: ['U_MEMBER', 'U_BOT'],
+    response_metadata: { next_cursor: '' },
+  });
+  const usersBody = await users.json() as { members: Array<Record<string, unknown>> };
+  assert.equal(usersBody.members.length, 2);
+  assert.equal(usersBody.members[1]?.is_bot, true);
+  const actorBody = await actor.json() as { user: Record<string, unknown> };
+  assert.equal(actorBody.user.team_id, 'T_MEMORY');
+  assert.equal(actorBody.user.is_restricted, false);
+});

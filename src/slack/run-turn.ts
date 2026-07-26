@@ -1,7 +1,10 @@
 import { WebClient } from '@slack/web-api';
 
 import { resolveAgentModel } from '../config/model-policy.ts';
+import { getGithubConnection } from '../config/github-app.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
+import { resolveSandboxSettings } from '../config/sandbox-settings.ts';
+import { getSettingsStore } from '../config/state-backend.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
 import { parseMemoryCommand } from '../memory/commands.ts';
@@ -17,6 +20,7 @@ import { registerSlackStatusTurn } from './status-registry.ts';
 import type { SlackTurnContext } from './thread-context.ts';
 import { slackThreadKey } from './thread-key.ts';
 import type { NormalizedSlackTurn } from './types.ts';
+import { selectSandbox } from '../sandbox/select.ts';
 import {
   assembleSlackPrompt,
   hydrateSlackContextViaWebClient,
@@ -161,6 +165,7 @@ export async function runTurn(
     statusTurn.close();
     await statusTurn.drain();
   };
+  let usedCloudflareSandbox = false;
 
   // 1. Visible work: set status; if it is rejected, post a durable progress
   //    placeholder so the user still sees work in-flight before the final.
@@ -207,11 +212,13 @@ export async function runTurn(
       text = options.replayText;
     } else {
       try {
+        usedCloudflareSandbox = await shouldUseCloudflareSandbox(assignment, platformEnv);
         text = await promptSlackThreadAgent(
           conversationKey,
           prompt,
           platformEnv,
           statusGeneration,
+          usedCloudflareSandbox,
         );
       } catch (err) {
         console.error('[chickpea] agent run failed:', sanitizeError(err));
@@ -248,8 +255,39 @@ export async function runTurn(
     } finally {
       // The Sandbox DO lives in a different isolate from the agent factory;
       // release it by its durable thread id at the actual end-of-turn seam.
-      await releaseCloudflareSandboxTurn(platformEnv, conversationKey);
+      await releaseCloudflareSandboxTurn(
+        platformEnv,
+        conversationKey,
+        usedCloudflareSandbox,
+      );
     }
+  }
+}
+
+async function shouldUseCloudflareSandbox(
+  assignment: ResolvedAssignment,
+  env: PlatformEnv | undefined,
+): Promise<boolean> {
+  if (!isCloudflareTarget()) return false;
+  const repositories = assignment.agent.repositories ?? [];
+  if (repositories.length === 0) return false;
+
+  try {
+    const settingsStore = getSettingsStore(env);
+    const [settings, connection] = await Promise.all([
+      resolveSandboxSettings(settingsStore),
+      getGithubConnection(settingsStore),
+    ]);
+    return selectSandbox({
+      target: 'cloudflare',
+      enabled: settings.enabled,
+      appConnected: connection.mode === 'app',
+      repositoryGrants: repositories,
+    }) === 'cloudflare';
+  } catch {
+    // The agent factory resolves the same live settings and will fail closed.
+    // Avoid touching a container when its policy cannot be established here.
+    return false;
   }
 }
 

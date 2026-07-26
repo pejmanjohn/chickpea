@@ -53,6 +53,7 @@ const WORKSPACE = 'T_SMOKE';
 const CHANNEL = 'C_SMOKE';
 const AI_CHANNEL = 'C_SMOKE_AI';
 const MENTION_TS = '1782770400.000100';
+const MEMORY_TS = '1782770450.000100';
 const AI_MENTION_TS = '1782770100.000100';
 const PORT = Number(process.env.SMOKE_WRANGLER_PORT ?? 8788);
 const AI_SMOKE_SERVICE = 'chickpea-ai-smoke-stub';
@@ -145,12 +146,18 @@ function writeSmokeWranglerConfigs() {
   ];
   const smokeConfig = {
     ...productionConfig,
+    dev: { ...(productionConfig.dev ?? {}), enable_containers: false },
     compatibility_flags: smokeCompatibilityFlags,
     services: [
       ...(productionConfig.services ?? []).filter((service) => service.binding !== 'AI'),
       { binding: 'AI', service: AI_SMOKE_SERVICE },
     ],
   };
+  // The production container declaration was asserted above. This disposable
+  // workerd config never calls the coding tier, and Wrangler 4.103 still tries
+  // to invoke Docker despite dev.enable_containers=false, so omit only the
+  // smoke copy of the image declaration.
+  delete smokeConfig.containers;
   delete smokeConfig.ai;
   writeFileSync(CF_SMOKE_WRANGLER_CONFIG, `${JSON.stringify(smokeConfig, null, 2)}\n`);
   writeFileSync(
@@ -206,6 +213,10 @@ function spawnWranglerDev() {
       // DO state must survive it (and the restart half of this smoke).
       '--persist-to',
       PERSIST_DIR,
+      // This gate verifies the production container declaration above but
+      // intentionally runs read-only model turns that never acquire one.
+      // Avoid making an unrelated local Docker daemon a prerequisite.
+      '--enable-containers=false',
     ],
     { cwd: REPO_ROOT, env: { ...process.env, CI: '1' }, stdio: ['ignore', 'pipe', 'pipe'] },
   );
@@ -362,6 +373,18 @@ function mentionEvent(eventId = 'Ev_SMOKE_MENTION_1') {
   };
 }
 
+function memoryRememberEvent() {
+  return {
+    ...mentionEvent('Ev_SMOKE_MEMORY_1'),
+    event: {
+      ...mentionEvent('Ev_SMOKE_MEMORY_1').event,
+      text: '<@U_BOT> !remember release-guidance — Use the release checklist.\nRun focused tests before release.',
+      ts: MEMORY_TS,
+      event_ts: MEMORY_TS,
+    },
+  };
+}
+
 function aiMentionEvent() {
   const payload = mentionEvent('Ev_SMOKE_AI_PRIVACY_1');
   return {
@@ -453,6 +476,15 @@ async function main() {
         { id: AI_CHANNEL, name: 'smoke-workers-ai', isMember: true },
         { id: SLOW_CHANNEL, name: 'smoke-slow', isMember: true },
         { id: 'C_SMOKE_EXTRA', name: 'general', isMember: false },
+      ],
+      channelMembers: {
+        [CHANNEL]: ['U_ALICE', 'U_BOT'],
+        [AI_CHANNEL]: ['U_ALICE', 'U_BOT'],
+        [SLOW_CHANNEL]: ['U_ALICE', 'U_BOT'],
+      },
+      workspaceUsers: [
+        { id: 'U_ALICE', teamId: WORKSPACE },
+        { id: 'U_BOT', teamId: WORKSPACE, isBot: true, isAppUser: true },
       ],
     },
   });
@@ -900,6 +932,66 @@ async function main() {
       `${backend.finals().length} finals`,
     );
 
+    const memoryAdmission = await postSignedEvent(eventsUrl, memoryRememberEvent());
+    check(
+      memoryAdmission.status === 200 || memoryAdmission.status === 202,
+      'explicit Memory command admitted on workerd',
+      `HTTP ${memoryAdmission.status}`,
+    );
+    const memoryFinals = await waitForFinalCount(backend, 2, 90_000);
+    check(
+      memoryFinals.length === 2 && Boolean(memoryFinals[1]?.text.includes('Saved workspace memory `release-guidance`')),
+      'explicit Memory command persisted and returned an attributed receipt',
+      memoryFinals[1]?.text ?? 'no memory receipt',
+    );
+    const memoryScopes = await adminFetch(baseUrl, '/admin/api/audit/memory/scopes');
+    const smokeScope = memoryScopes.body?.scopes?.find((scope) => scope.channelId === CHANNEL);
+    const memoryFiles = smokeScope
+      ? await adminFetch(
+          baseUrl,
+          `/admin/api/audit/memory/stores/${encodeURIComponent(smokeScope.storeId)}/files` +
+            `?sourceChannelId=${encodeURIComponent(CHANNEL)}`,
+        )
+      : { status: 0, body: undefined };
+    const smokeMemoryFile = memoryFiles.body?.files?.find((file) => file.name === 'release-guidance.md');
+    check(
+      memoryScopes.status === 200 && smokeScope?.privacy === 'public' &&
+        memoryFiles.status === 200 && memoryFiles.body?.files?.[0]?.name === 'MEMORY.md' &&
+        Boolean(smokeMemoryFile?.entryId),
+      'workerd admin Memory API exposes scope, generated index, and saved file',
+      `scopes=${memoryScopes.status} files=${memoryFiles.status}`,
+    );
+    const memoryEditBody = JSON.stringify({
+      expectedVersion: 1,
+      description: 'Use the full release checklist.',
+      type: 'fact',
+      body: 'Run focused tests and the workerd smoke before release.',
+    });
+    const memoryEdit = await adminFetch(
+      baseUrl,
+      `/admin/api/audit/memory/entries/${encodeURIComponent(smokeMemoryFile?.entryId ?? '')}`,
+      {
+        method: 'PUT',
+        headers: { 'idempotency-key': 'cf-smoke-memory-edit' },
+        body: memoryEditBody,
+      },
+    );
+    const memoryConflict = await adminFetch(
+      baseUrl,
+      `/admin/api/audit/memory/entries/${encodeURIComponent(smokeMemoryFile?.entryId ?? '')}`,
+      {
+        method: 'PUT',
+        headers: { 'idempotency-key': 'cf-smoke-memory-conflict' },
+        body: memoryEditBody,
+      },
+    );
+    check(
+      memoryEdit.status === 200 && memoryEdit.body?.entry?.version === 2 &&
+        memoryConflict.status === 409 && memoryConflict.body?.currentVersion === 2,
+      'workerd Memory edit is optimistic and conflict-safe',
+      `edit=${memoryEdit.status} conflict=${memoryConflict.status}`,
+    );
+
     // Restart workerd on the SAME persist dir: claims, the thread registry,
     // and the config all live in the state DO's SQLite and must survive.
     console.log('• restarting wrangler dev (persistence round)…');
@@ -916,6 +1008,16 @@ async function main() {
       'stored Slack credentials survived the restart',
       JSON.stringify(restartCreds),
     );
+    const restartMemory = await adminFetch(
+      baseUrl,
+      `/admin/api/audit/memory/entries/${encodeURIComponent(smokeMemoryFile?.entryId ?? '')}`,
+    );
+    check(
+      restartMemory.status === 200 && restartMemory.body?.entry?.version === 2 &&
+        restartMemory.body?.entry?.body === 'Run focused tests and the workerd smoke before release.',
+      'Memory entry and version survived the workerd restart',
+      `HTTP ${restartMemory.status} version=${String(restartMemory.body?.entry?.version)}`,
+    );
 
     const postRestartRedelivery = await postSignedEvent(eventsUrl, mentionEvent());
     check(
@@ -925,7 +1027,7 @@ async function main() {
     );
     await backend.quiesce(1500, 15_000);
     check(
-      backend.finals().length === 1,
+      backend.finals().length === 2,
       'post-restart redelivery still deduped (claims persisted)',
       `${backend.finals().length} finals`,
     );
@@ -937,9 +1039,9 @@ async function main() {
       'implicit thread reply admitted post-restart',
       `HTTP ${reply.status}`,
     );
-    const replyFinals = await waitForFinalCount(backend, 2, 90_000);
+    const replyFinals = await waitForFinalCount(backend, 3, 90_000);
     check(
-      replyFinals.length === 2,
+      replyFinals.length === 3,
       'thread registry persisted across restart (reply turn delivered)',
       `${replyFinals.length} finals in ${Date.now() - replyStartedAt}ms`,
     );
