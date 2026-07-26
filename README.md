@@ -59,7 +59,7 @@ The first DM answers with **zero model keys** on a fresh Cloudflare deploy: the 
 - A read-only Access summary showing exactly what a new thread will use — profile, model, provider, enabled skills, approved MCP connections and tools, the layered instruction stack, and a config snapshot hash — resolved by the same code path the Slack agent uses.
 - The first-run Slack connection wizard described above, with live `auth.test` validation and per-credential provenance (environment / stored / missing).
 - Every edit applies to new threads without a restart.
-- Audit Logs > Memory provides the workspace/channel scope tree, generated `MEMORY.md` indexes, escaped file previews, editing with optimistic versions, revision history, review resolution, export/import, and irreversible deletion. Scheduled Work and Network Events are reserved labels, not active domains.
+- Channels > Memory opens the workspace/channel memory browser with generated `MEMORY.md` indexes, escaped file previews, optimistic editing, revision history, review resolution, and irreversible deletion. Scheduled Work and Network Events remain reserved audit-domain labels rather than active features.
 
 ### Channel memory
 
@@ -89,7 +89,7 @@ The bounded defaults are 64 entries per source channel; 512 entries/1 MiB in the
 
 Canonical state is structured SQLite/Durable Object data projected deterministically as portable Markdown and an uncompressed tar export; the filesystem is not required. The generated `MEMORY.md` files are read-only. Import is previewed, path/hash checked, bounded, and applied atomically. Admin edits use expected versions and preserve a draft across conflicts.
 
-`TAG_ADMIN_TOKEN` currently grants broad operator access to public and private retained memory, including view, edit, export, import, review, and delete. Forget/delete scrubs canonical entry and revision content and prevents it from being supplied again, while retaining body-free tombstones and audit facts. It cannot retract copies already present in Slack messages, model-provider processing/logs, prior exports, backups, or separate Flue transcripts; those systems keep their own retention controls. Export before deleting if recovery may be needed.
+`TAG_ADMIN_TOKEN` currently grants broad operator access to public and private retained memory, including view, edit, review, and delete in the admin UI. Deterministic export/import remain API-level portability and recovery capabilities rather than everyday admin controls. Forget/delete scrubs canonical entry and revision content and prevents it from being supplied again, while retaining body-free tombstones and audit facts. It cannot retract copies already present in Slack messages, model-provider processing/logs, prior exports, backups, or separate Flue transcripts; those systems keep their own retention controls.
 
 ### Repositories
 
@@ -211,7 +211,7 @@ If neither exists, initialization fails with an error that tells the operator to
 - **The public v1 schema is a clean baseline.** Pre-open-source migration history was consolidated because there are no supported legacy upgrade targets; do not point v1 at a private/pre-release database expecting it to migrate. Migrations introduced after the public v1 baseline are append-only so supported public installs can carry state across later re-deploys.
 - **Durability is single-host.** Dedupe, runtime config, thread registry, and snapshots are restart-durable — on one Durable Object or one SQLite file. Multi-instance deployments would need a shared store first.
 - **No state backup/export on Cloudflare yet**, and the debug story is `wrangler tail`.
-- **Memory export is not a full state backup.** Audit Logs can export deterministic Markdown memory archives on Cloudflare and Node, but there is not yet a one-click backup for transcripts, config, claims, or every Durable Object table; the debug story remains `wrangler tail`.
+- **Memory export is not a full state backup.** The authenticated Memory API can export deterministic Markdown archives on Cloudflare and Node, but there is not yet a one-click backup for transcripts, config, claims, or every Durable Object table; the debug story remains `wrangler tail`.
 - **The container coding sandbox is Cloudflare-only.** Node and other non-Cloudflare installs use the standard in-memory bash sandbox, not the container coding tier, and Chickpea never gives that sandbox the host filesystem or host git/SSH credentials.
 - **Remote MCP URLs are trusted operator configuration in v1.** Connections can be created only through token-gated `/admin`; Chickpea requires HTTPS and rejects literal local/private addresses at save, test, and turn time. It does not resolve and pin DNS before connecting, so an operator-approved hostname could still rebind to an internal address on the Node lane. Do not expose connection authoring to untrusted users, and use MCP endpoints you trust. Cloudflare Workers cannot directly reach localhost or RFC1918 networks, which narrows this risk there; DNS pinning is required before connection presets or broader connection authoring ship.
 

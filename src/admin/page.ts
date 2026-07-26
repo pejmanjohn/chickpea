@@ -441,6 +441,10 @@ button, input, textarea, select { font: inherit; }
 .bundle-row .b-name { align-items: center; color: var(--text); display: inline-flex; flex-shrink: 0; font-size: 0.8125rem; font-weight: 700; gap: 6px; max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bundle-row .b-meta { color: var(--text-3); font-family: var(--mono); font-size: 0.6875rem; min-width: 0; overflow-wrap: anywhere; }
 .bundle-row .spacer { flex: 1; }
+.channel-memory-summary { display: flex; flex: 1; flex-direction: column; gap: 2px; min-width: 0; }
+.channel-memory-total { color: var(--text); font-size: 0.8125rem; font-variant-numeric: tabular-nums; font-weight: 700; }
+.channel-memory-note { color: var(--text-3); font-size: 0.78125rem; text-wrap: pretty; }
+.channel-memory-row .btn { flex-shrink: 0; }
 .x-btn {
   background: none;
   border: 0;
@@ -825,6 +829,7 @@ details[open].advanced summary::before {
   .btn { font-size: 0.875rem; padding: 9px 15px; }
   .btn-sm { font-size: 0.8125rem; padding: 6px 12px; }
   .main-head, .section-head, .bundle-row, .save-bar { align-items: stretch; flex-direction: column; }
+  .channel-memory-total, .channel-memory-note { font-size: 1rem; }
   .workspace-card { align-items: flex-start; grid-template-columns: 1fr; }
   .behavior-row { align-items: flex-start; }
   .behavior-row .toggle { margin-left: auto; }
@@ -1333,7 +1338,6 @@ details[open].advanced summary::before {
 .memory-history-row { align-items: baseline; background: var(--bg); border-radius: 10px; display: flex; flex-wrap: wrap; gap: 7px; padding: 8px 10px; }
 .memory-history-row .spacer { flex: 1; }
 .memory-review { background: var(--danger-well); border-radius: 12px; color: var(--danger); display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 12px; }
-.memory-import { background: var(--bg); border-radius: 13px; display: flex; flex-direction: column; gap: 8px; padding: 11px 12px; }
 .memory-help { background: var(--well); border-radius: 13px; color: var(--text-2); font-size: 0.75rem; padding: 10px 12px; }
 .memory-help code { color: var(--text); font-family: var(--mono); }
 .memory-live { min-height: 1.2em; }
@@ -1359,7 +1363,6 @@ details[open].advanced summary::before {
     <div class="actions">
       <button type="button" class="btn btn-soft" disabled>Channels</button>
       <button type="button" class="btn btn-soft" disabled>Profiles</button>
-      <button type="button" class="btn btn-soft" disabled>Audit logs</button>
       <button type="button" class="btn btn-soft" disabled>Settings</button>
     </div>
   </header>
@@ -1567,9 +1570,7 @@ details[open].advanced summary::before {
     memoryNotice: "",
     memoryIdempotencyKey: "",
     memoryConflict: null,
-    memoryDeleteConfirm: false,
-    memoryImport: null,
-    memoryImportRequestId: 0
+    memoryDeleteConfirm: false
   };
   var egressDraft = { mode: "allowlist", domains: [""] };
   var sandboxDraft = {
@@ -1908,9 +1909,8 @@ details[open].advanced summary::before {
       '<div class="brand"><button type="button" class="brand-home" data-action="go-home" aria-label="Home"><span class="avatar">T<svg class="pea" viewBox="0 0 48 48" aria-hidden="true" focusable="false"><circle cx="24" cy="25" r="15.5" fill="#E3AC45"></circle><circle cx="17" cy="17.5" r="4.2" fill="#F4D084"></circle><g class="pea-eyes"><circle class="pea-eye" cx="18.5" cy="24" r="1.9" fill="#3B3220"></circle><circle class="pea-eye" cx="29.5" cy="24" r="1.9" fill="#3B3220"></circle></g><g class="pea-lids"><path d="M16.4 24.2 Q18.5 22 20.6 24.2" fill="none" stroke="#3B3220" stroke-width="1.8" stroke-linecap="round"></path><path d="M27.4 24.2 Q29.5 22 31.6 24.2" fill="none" stroke="#3B3220" stroke-width="1.8" stroke-linecap="round"></path></g><path class="pea-smile" d="M19 29 Q24 32.5 29 29" fill="none" stroke="#3B3220" stroke-width="1.8" stroke-linecap="round"></path><path class="pea-grin" d="M18.5 28.5 Q24 35.5 29.5 28.5 Z" fill="#3B3220"></path><circle class="pea-blush" cx="15.5" cy="28.5" r="2" fill="#DC8A4F"></circle><circle class="pea-blush" cx="32.5" cy="28.5" r="2" fill="#DC8A4F"></circle></svg></span><span class="brand-name">Chickpea</span></button><span class="chip">${targetChip}</span></div>' +
       '<details class="topbar-menu"><summary aria-label="Menu">' + icon("bars-3") + '</summary></details>' +
       '<div class="actions actions-list">' + connectedBadge +
-      '<button type="button" class="btn btn-soft' + (state.view === "channels" ? " nav-active" : "") + '" data-action="open-channels">Channels</button>' +
+      '<button type="button" class="btn btn-soft' + (state.view === "channels" || state.view === "audit" ? " nav-active" : "") + '" data-action="open-channels">Channels</button>' +
       '<button type="button" class="btn btn-soft' + (state.view === "profiles" ? " nav-active" : "") + '" data-action="open-profiles">Profiles</button>' +
-      '<button type="button" class="btn btn-soft' + (state.view === "audit" ? " nav-active" : "") + '" data-action="open-audit">Audit logs</button>' +
       '<button type="button" class="btn btn-soft' + (state.view === "settings" ? " nav-active" : "") + '" data-action="open-settings">Settings</button></div>' +
       "</header>";
   }
@@ -2027,6 +2027,7 @@ details[open].advanced summary::before {
       '<span class="toggle"><span class="thumb"></span><input type="checkbox" data-action="channel-enabled" ' + (enabled ? "checked" : "") + ' aria-label="Channel enabled"></span></label></div>' +
       profileSectionHtml(agent, assignment) +
       channelInstructionsHtml() +
+      channelMemorySectionHtml(assignment) +
       accessSummaryHtml() +
       advancedHtml(assignment) +
       saveBarHtml() +
@@ -3873,9 +3874,50 @@ details[open].advanced summary::before {
 
   function memoryScopes() { return state.memoryScopes || []; }
 
+  function memoryScopeForChannel(workspaceId, channelId) {
+    var matches = memoryScopes().filter(function (scope) {
+      return scope.workspaceId === workspaceId && scope.channelId === channelId;
+    });
+    return matches.find(function (scope) { return scope.lifecycle === "active"; }) || matches[0] || null;
+  }
+
+  function channelMemorySectionHtml(assignment) {
+    var scope = memoryScopeForChannel(assignment.workspaceId, assignment.channelId);
+    var count = scope ? Number(scope.entryCount || 0) : 0;
+    var countText = state.memoryScopes === null
+      ? (state.memoryScopesError ? "Memory count unavailable" : "Loading memory&hellip;")
+      : count + " saved " + (count === 1 ? "memory" : "memories");
+    var note = count > 0
+      ? "Review what Chickpea remembers and correct anything outdated."
+      : "Nothing saved yet. Ask Chickpea to remember something in Slack.";
+    var accessibleCount = state.memoryScopes === null
+      ? "saved memories"
+      : count + " saved " + (count === 1 ? "memory" : "memories");
+    return '<section class="section channel-memory-section"><div class="section-head"><div><h2 class="section-title">Memory</h2>' +
+      '<p class="hint">Shared facts and guidance Chickpea carries into conversations in this channel.</p></div></div>' +
+      '<div class="bundle-row channel-memory-row"><div class="channel-memory-summary">' +
+      '<span class="channel-memory-total">' + countText + '</span><span class="channel-memory-note">' + esc(note) + '</span></div>' +
+      '<span class="spacer"></span><button type="button" class="btn btn-soft btn-sm" data-action="open-channel-memory"' +
+      ' data-workspace="' + esc(assignment.workspaceId) + '" data-channel="' + esc(assignment.channelId) + '"' +
+      ' data-store="' + esc(scope && scope.storeId || "") + '" aria-label="Review ' + esc(accessibleCount) + ' for ' + esc(channelLabel(assignment)) + '">Review memory</button></div></section>';
+  }
+
   function selectedMemoryScope() {
-    return memoryScopes().find(function (scope) {
+    var exact = memoryScopes().find(function (scope) {
       return scope.storeId === state.memorySelection.storeId && scope.channelId === state.memorySelection.channelId;
+    });
+    if (exact) return exact;
+    if (!state.memorySelection.storeId && state.memorySelection.channelId) {
+      var matches = memoryScopes().filter(function (scope) { return scope.channelId === state.memorySelection.channelId; });
+      return matches.find(function (scope) { return scope.lifecycle === "active"; }) || matches[0] || null;
+    }
+    return null;
+  }
+
+  function selectedMemoryAssignment() {
+    if (!state.memorySelection.channelId) return null;
+    return state.assignments.find(function (assignment) {
+      return assignment.workspaceId !== "*" && assignment.channelId === state.memorySelection.channelId;
     }) || null;
   }
 
@@ -3924,19 +3966,24 @@ details[open].advanced summary::before {
 
   function auditMemoryMainHtml() {
     var scope = selectedMemoryScope();
-    var head = '<div class="audit-main-head"><div><h1 class="page-title">Audit logs</h1>' +
-      '<p class="hint">Review durable actions and retained data. Memory is the first available domain.</p></div>' +
-      (scope ? '<div class="memory-editor-actions"><a class="btn btn-ghost btn-sm" href="/admin/api/audit/memory/export?storeId=' + encodeURIComponent(scope.storeId) + '" download>Export store</a><label class="btn btn-soft btn-sm">Import<input type="file" accept=".tar,application/x-tar" data-action="memory-import-file" hidden></label></div>' : '') + '</div>' + auditTabsHtml();
+    var head = '<div class="audit-main-head"><h1 class="page-title">Audit logs</h1></div>' + auditTabsHtml();
     if (state.memoryScopesLoading && !state.memoryScopes) return head + '<div class="empty"><p class="hint">Loading memory&hellip;</p></div>';
     if (state.memoryScopesError) return head + '<div class="empty"><p class="field-error">' + esc(state.memoryScopesError) + '</p><button type="button" class="btn btn-ghost" data-action="memory-retry-scopes">Retry</button></div>';
     if (!scope) {
-      return head + '<div class="empty"><h2 class="section-title">No memory selected</h2><p class="hint">Choose a channel scope to review its generated index and saved Markdown files.</p></div>' + memoryHelpHtml();
+      var requestedAssignment = selectedMemoryAssignment();
+      var emptyTitle = requestedAssignment
+        ? "No memories saved in " + channelLabel(requestedAssignment)
+        : "No memory selected";
+      var emptyCopy = requestedAssignment
+        ? "Saved memories for this channel will appear here after a member asks Chickpea to remember something in Slack."
+        : "Choose a channel scope to review its generated index and saved Markdown files.";
+      return head + '<div class="empty"><h2 class="section-title">' + esc(emptyTitle) + '</h2><p class="hint">' + esc(emptyCopy) + '</p></div>' + memoryHelpHtml();
     }
+    var sourceLabel = "#" + (scope.displayName || scope.channelId);
     var banner = scope.privacy === "public"
-      ? '<div class="memory-banner">This channel doesn&rsquo;t have its own memory store. Showing this channel&rsquo;s folder from the workspace memory store. Public channel memories are readable workspace-wide.</div>'
-      : '<div class="memory-banner">Private channel memory is isolated to this channel generation. It is never included in workspace-public exports or prompts.</div>';
-    var importHtml = memoryImportHtml();
-    return head + banner + importHtml +
+      ? '<div class="memory-banner">Memories saved in ' + esc(sourceLabel) + ' can help Chickpea respond across this workspace. In Slack, they can only be changed from ' + esc(sourceLabel) + '.</div>'
+      : '<div class="memory-banner">Memories saved in this private channel are used only here. They are never shared with other channels.</div>';
+    return head + banner +
       '<div class="memory-layout"><section class="memory-pane" aria-label="Memory files"><div class="memory-pane-title">Files</div>' + memoryFilesHtml() + '</section>' +
       '<section class="memory-pane memory-editor" aria-label="Memory editor">' + memoryEditorHtml() + '</section></div>' +
       '<div class="memory-live" role="status" aria-live="polite">' + esc(state.memoryNotice || state.memoryError) + '</div>' + memoryHelpHtml();
@@ -3989,18 +4036,6 @@ details[open].advanced summary::before {
     }).join("") + '</div></details>';
   }
 
-  function memoryImportHtml() {
-    var imp = state.memoryImport;
-    if (!imp) return '';
-    if (imp.loading) return '<div class="memory-import"><strong>Reading archive&hellip;</strong></div>';
-    if (imp.error) return '<div class="memory-import"><p class="field-error">' + esc(imp.error) + '</p><button type="button" class="btn btn-ghost btn-sm" data-action="memory-import-cancel">Dismiss</button></div>';
-    if (!imp.preview) return '';
-    var summary = imp.preview.summary;
-    return '<div class="memory-import"><strong>Import preview</strong><p class="hint">' + Number(summary.creates) + ' create · ' + Number(summary.updates) + ' update · ' + Number(summary.unchanged) + ' unchanged · ' + Number(summary.conflicts) + ' conflict</p>' +
-      (summary.conflicts ? '<p class="field-error">Resolve conflicts and preview the archive again before applying.</p>' : '') +
-      '<div class="memory-editor-actions"><button type="button" class="btn btn-primary btn-sm" data-action="memory-import-apply"' + (summary.conflicts || state.memoryBusy ? " disabled" : "") + '>Apply import</button><button type="button" class="btn btn-ghost btn-sm" data-action="memory-import-cancel">Cancel</button></div></div>';
-  }
-
   function memoryConflictHtml() {
     var conflict = state.memoryConflict;
     if (!conflict) return '';
@@ -4011,7 +4046,7 @@ details[open].advanced summary::before {
   }
 
   function memoryHelpHtml() {
-    return '<div class="memory-help">Slack controls: <code>@Chickpea remember &hellip;</code>, <code>update memory &lt;name&gt; &hellip;</code>, <code>show memory</code>, and <code>forget memory &lt;name&gt;</code>. Generated <code>MEMORY.md</code> files are never edited directly. <button type="button" class="btn btn-ghost btn-sm" data-action="memory-copy-controls">Copy controls</button></div>';
+    return '<div class="memory-help">Relevant saved memories are used automatically in replies. To intentionally change memory in this release, use <code>@Chickpea !remember &lt;name&gt; &mdash; &lt;description&gt;</code>, <code>@Chickpea !memory update &lt;slug&gt; &mdash; &lt;description&gt;</code>, <code>@Chickpea !memory</code>, or <code>@Chickpea !forget &lt;slug&gt;</code>. Generated <code>MEMORY.md</code> files are never edited directly. <button type="button" class="btn btn-ghost btn-sm" data-action="memory-copy-controls">Copy controls</button></div>';
   }
 
   function memoryDeleteModalHtml() {
@@ -4028,8 +4063,6 @@ details[open].advanced summary::before {
     state.memorySelection = { storeId: storeId || "", channelId: channelId || "", entryId: entryId || "" };
     state.memoryFilesRequestId += 1;
     state.memoryEntryRequestId += 1;
-    state.memoryImportRequestId += 1;
-    state.memoryImport = null;
     state.memorySelectedFile = entryId || "";
     state.memoryError = "";
     state.memoryNotice = "";
@@ -4046,10 +4079,10 @@ details[open].advanced summary::before {
       state.memoryScopes = body.scopes || [];
       state.memoryScopesLoading = false;
       var selected = selectedMemoryScope();
-      if (!selected && state.memoryScopes.length) {
+      if (!selected && state.memoryScopes.length && !state.memorySelection.channelId) {
         selected = state.memoryScopes[0];
-        state.memorySelection = { storeId: selected.storeId, channelId: selected.channelId, entryId: "" };
       }
+      if (selected) state.memorySelection = { storeId: selected.storeId, channelId: selected.channelId, entryId: state.memorySelection.entryId || "" };
       render();
       if (selected) return loadMemoryFiles();
     }).catch(function (error) {
@@ -4065,8 +4098,6 @@ details[open].advanced summary::before {
     state.memorySelection = { storeId: storeId, channelId: channelId, entryId: "" };
     state.memoryFilesRequestId += 1;
     state.memoryEntryRequestId += 1;
-    state.memoryImportRequestId += 1;
-    state.memoryImport = null;
     state.memorySelectedFile = "";
     state.memoryDetail = null;
     state.memoryDraft = null;
@@ -4231,7 +4262,7 @@ details[open].advanced summary::before {
   }
 
   function copyMemoryControls() {
-    var controls = "@Chickpea remember …\\nupdate memory <name> …\\nshow memory\\nforget memory <name>";
+    var controls = "@Chickpea !remember <name> — <description>\\n@Chickpea !memory update <slug> — <description>\\n@Chickpea !memory\\n@Chickpea !forget <slug>";
     if (!navigator.clipboard || !navigator.clipboard.writeText) {
       state.memoryError = "Clipboard access is unavailable. Select the commands above to copy them.";
       render();
@@ -4289,62 +4320,6 @@ details[open].advanced summary::before {
     }).catch(function (error) {
       state.memoryBusy = "";
       state.memoryError = error.serverMessage || error.message || "Could not resolve review.";
-      render();
-    });
-  }
-
-  function previewMemoryImport(file) {
-    var scope = selectedMemoryScope();
-    if (!scope || !file || typeof FileReader === "undefined") return;
-    var requestId = ++state.memoryImportRequestId;
-    var storeId = scope.storeId;
-    var channelId = scope.channelId;
-    state.memoryImport = { loading: true, error: "", storeId: storeId, archiveBase64: "", preview: null, previewToken: "", idempotencyKey: "" };
-    render();
-    var reader = new FileReader();
-    reader.onload = function () {
-      if (requestId !== state.memoryImportRequestId || state.memorySelection.storeId !== storeId || state.memorySelection.channelId !== channelId) return;
-      var result = String(reader.result || "");
-      var archiveBase64 = result.slice(result.indexOf(",") + 1);
-      postJson("/admin/api/audit/memory/import/preview", "POST", { storeId: storeId, archiveBase64: archiveBase64 }).then(function (body) {
-        if (requestId !== state.memoryImportRequestId || state.memorySelection.storeId !== storeId || state.memorySelection.channelId !== channelId) return;
-        state.memoryImport = { loading: false, error: "", storeId: storeId, archiveBase64: archiveBase64, preview: body.preview, previewToken: body.previewToken, idempotencyKey: "" };
-        render();
-      }).catch(function (error) {
-        if (requestId !== state.memoryImportRequestId || state.memorySelection.storeId !== storeId || state.memorySelection.channelId !== channelId) return;
-        state.memoryImport = { loading: false, error: error.serverMessage || error.message || "Could not preview import.", storeId: storeId, archiveBase64: "", preview: null, previewToken: "", idempotencyKey: "" };
-        render();
-      });
-    };
-    reader.onerror = function () {
-      if (requestId !== state.memoryImportRequestId || state.memorySelection.storeId !== storeId || state.memorySelection.channelId !== channelId) return;
-      state.memoryImport = { loading: false, error: "Could not read this archive.", storeId: storeId, archiveBase64: "", preview: null, previewToken: "", idempotencyKey: "" };
-      render();
-    };
-    reader.readAsDataURL(file);
-  }
-
-  function applyMemoryImport() {
-    var scope = selectedMemoryScope();
-    var imp = state.memoryImport;
-    if (!scope || !imp || !imp.preview || imp.storeId !== scope.storeId || state.memoryBusy) return;
-    if (!imp.idempotencyKey) imp.idempotencyKey = "import-" + Date.now() + "-" + Math.random().toString(36).slice(2);
-    state.memoryBusy = "import";
-    render();
-    api("/admin/api/audit/memory/import/apply", {
-      method: "POST",
-      headers: { "content-type": "application/json", "idempotency-key": imp.idempotencyKey },
-      body: JSON.stringify({ storeId: scope.storeId, archiveBase64: imp.archiveBase64, previewToken: imp.previewToken })
-    }).then(function (body) {
-      if (state.memoryImport !== imp) return;
-      state.memoryBusy = "";
-      state.memoryImport = null;
-      state.memoryNotice = String((body.entries || []).length) + " memories imported.";
-      return loadMemoryScopes();
-    }).catch(function (error) {
-      if (state.memoryImport !== imp) return;
-      state.memoryBusy = "";
-      state.memoryImport.error = error.serverMessage || error.message || "Could not apply import.";
       render();
     });
   }
@@ -5711,6 +5686,11 @@ details[open].advanced summary::before {
         return { body: body, error: "" };
       }).catch(function (error) {
         return { body: null, error: error.serverMessage || error.message || "Could not load Slack behavior." };
+      }),
+      api("/admin/api/audit/memory/scopes").then(function (body) {
+        return { scopes: body.scopes || [], error: "" };
+      }).catch(function (error) {
+        return { scopes: null, error: error.serverMessage || error.message || "Could not load memory counts." };
       })
     ]).then(function (parts) {
       state.agents = parts[0].agents || [];
@@ -5720,6 +5700,8 @@ details[open].advanced summary::before {
       state.slackBehavior = parts[4].body;
       state.slackBehaviorError = parts[4].error;
       state.slackBehaviorBusy = "";
+      state.memoryScopes = parts[5].scopes;
+      state.memoryScopesError = parts[5].error;
       if (state.active) {
         var assignment = activeAssignment();
         if (assignment) {
@@ -5925,6 +5907,9 @@ details[open].advanced summary::before {
     if (action === "advance-slack-step") { state.slackStep = 2; render(); }
     if (action === "dismiss-slack-toast") { state.slackToastDismissed = true; render(); }
     if (action === "select-channel") { state.view = "channels"; state.channelScreen = "detail"; selectActive(target.getAttribute("data-workspace"), target.getAttribute("data-channel")); render(); }
+    if (action === "open-channel-memory") {
+      openAuditLogs(target.getAttribute("data-store") || "", target.getAttribute("data-channel") || "", "");
+    }
     if (action === "toggle-add-channel") { openAddChannel(); }
     if (action === "cancel-add-channel") { state.addChannelOpen = false; state.addChannelManual = false; state.addChannelError = ""; state.addChannelAgentId = ""; render(); }
     if (action === "refresh-channels") { loadSlackChannels(true); }
@@ -5993,8 +5978,6 @@ details[open].advanced summary::before {
     if (action === "memory-copy-controls") { copyMemoryControls(); }
     if (action === "memory-delete-open" && state.memoryDetail) { state.memoryDeleteConfirm = true; render(); }
     if (action === "memory-resolve-review") { resolveMemoryReview(); }
-    if (action === "memory-import-cancel" && !state.memoryBusy) { state.memoryImportRequestId += 1; state.memoryImport = null; render(); }
-    if (action === "memory-import-apply") { applyMemoryImport(); }
     if (state.githubBusy && action.indexOf("github-") === 0) return;
     if (action === "github-manifest-open") {
       state.githubManifestOpen = true;
@@ -6392,9 +6375,6 @@ details[open].advanced summary::before {
       state.memoryDraft.type = target.value;
       markMemoryDirty();
       render();
-    }
-    if (action === "memory-import-file" && target.files && target.files[0]) {
-      previewMemoryImport(target.files[0]);
     }
     if (action === "sandbox-enabled" && !state.sandboxSaving) {
       sandboxDraft.enabled = !!target.checked;

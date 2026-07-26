@@ -1128,9 +1128,12 @@ test('Channels opens a Slack overview with an uncounted platform rail and explic
   await flushAsync();
 
   const html = harness.app.innerHTML;
+  const topbar = html.match(/<header class="topbar">[\s\S]*?<\/header>/)?.[0] ?? '';
   assert.equal(harness.locationPath(), '/admin/channels');
   assert.deepEqual(harness.historyReplaces, ['/admin/channels']);
   assert.match(html, /class="btn btn-soft nav-active" data-action="open-channels">Channels<\/button>/);
+  assert.doesNotMatch(topbar, /Audit logs/);
+  assert.doesNotMatch(topbar, /data-action="open-audit"/);
   assert.match(html, /<div class="rail-head"><span class="section-eyebrow">Channels<\/span><\/div>/);
   assert.doesNotMatch(html, /<div class="rail-head">[\s\S]*?<span class="hint"[^>]*>\d+<\/span>/);
   assert.match(html, /class="platform-row active" data-action="open-channels"/);
@@ -1152,6 +1155,26 @@ test('Channels opens a Slack overview with an uncounted platform rail and explic
   assert.match(harness.app.innerHTML, /<h1 class="page-title mono-title">#eng-releases<\/h1>/);
   assert.match(harness.app.innerHTML, /class="chan-item active"/);
   assert.doesNotMatch(harness.app.innerHTML, /class="platform-row active"/);
+  const channelHeader = harness.app.innerHTML.match(/<div class="main-head">[\s\S]*?<\/div><\/div>/)?.[0] ?? '';
+  assert.doesNotMatch(channelHeader, /data-action="open-channel-memory"/);
+  assert.match(harness.app.innerHTML, /<h2 class="section-title">Memory<\/h2>/);
+  assert.match(harness.app.innerHTML, /data-action="open-channel-memory"[^>]*data-store="store_public_T_DESIGN"/);
+  assert.match(harness.app.innerHTML, /<span class="channel-memory-total">1 saved memory<\/span>/);
+  assert.ok(harness.app.innerHTML.indexOf('Channel instructions') < harness.app.innerHTML.indexOf('<h2 class="section-title">Memory</h2>'));
+  assert.ok(harness.app.innerHTML.indexOf('<h2 class="section-title">Memory</h2>') < harness.app.innerHTML.indexOf('Access summary'));
+
+  click({
+    target: actionTarget({
+      'data-action': 'open-channel-memory',
+      'data-workspace': 'T_DESIGN',
+      'data-channel': 'C0EXR3L9T',
+      'data-store': 'store_public_T_DESIGN',
+    }),
+  });
+  await flushAsync();
+  assert.equal(harness.locationPath(), '/admin/audit-logs/memory/store_public_T_DESIGN/C0EXR3L9T');
+  assert.match(harness.app.innerHTML, /class="btn btn-soft nav-active" data-action="open-channels">Channels<\/button>/);
+  assert.match(harness.app.innerHTML, /<h1 class="page-title">Audit logs<\/h1>/);
 
   click({ target: actionTarget({ 'data-action': 'open-channels' }) });
   assert.equal(harness.locationPath(), '/admin/channels');
@@ -4219,6 +4242,39 @@ test('Audit logs deep link renders the real Memory scope, generated index, edito
   assert.match(harness.app.innerHTML, /release-guidance\.md/);
   assert.match(harness.app.innerHTML, /Review requested/);
   assert.match(harness.app.innerHTML, /Revision history \(1\)/);
+  assert.match(harness.app.innerHTML, /Memories saved in #eng-releases can help Chickpea respond across this workspace/);
+  assert.match(harness.app.innerHTML, /they can only be changed from #eng-releases/);
+  assert.doesNotMatch(harness.app.innerHTML, /Review durable actions and retained data/);
+  assert.doesNotMatch(harness.app.innerHTML, />Export store</);
+  assert.doesNotMatch(harness.app.innerHTML, />Import</);
+});
+
+test('Channel Memory action keeps a zero-count channel in context', async () => {
+  const harness = runAdminPageHarness({ memoryScopes: [] });
+  await flushAsync();
+
+  harness.listeners.click?.({
+    target: actionTarget({
+      'data-action': 'select-channel',
+      'data-workspace': 'T_DESIGN',
+      'data-channel': 'C0EXR3L9T',
+    }),
+  });
+  assert.match(harness.app.innerHTML, /<span class="channel-memory-total">0 saved memories<\/span>/);
+
+  harness.listeners.click?.({
+    target: actionTarget({
+      'data-action': 'open-channel-memory',
+      'data-workspace': 'T_DESIGN',
+      'data-channel': 'C0EXR3L9T',
+      'data-store': '',
+    }),
+  });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /No memories saved in #eng-releases/);
+  assert.match(harness.app.innerHTML, /after a member asks Chickpea to remember something in Slack/);
+  assert.doesNotMatch(harness.app.innerHTML, /No memory selected/);
 });
 
 test('Memory editor escapes stored Markdown and explains irreversible deletion and generated indexes', async () => {
@@ -4229,6 +4285,9 @@ test('Memory editor escapes stored Markdown and explains irreversible deletion a
 
   assert.doesNotMatch(harness.app.innerHTML, /<script>alert\(1\)<\/script>/);
   assert.match(harness.app.innerHTML, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+  assert.match(harness.app.innerHTML, /Relevant saved memories are used automatically in replies/);
+  assert.match(harness.app.innerHTML, /@Chickpea !remember &lt;name&gt; &mdash; &lt;description&gt;/);
+  assert.doesNotMatch(harness.app.innerHTML, /@Chickpea remember &hellip;/);
   assert.match(harness.app.innerHTML, /Generated <code>MEMORY\.md<\/code> files are never edited directly/);
 
   harness.listeners.click?.({
