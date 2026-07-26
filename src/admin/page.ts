@@ -441,6 +441,10 @@ button, input, textarea, select { font: inherit; }
 .bundle-row .b-name { align-items: center; color: var(--text); display: inline-flex; flex-shrink: 0; font-size: 0.8125rem; font-weight: 700; gap: 6px; max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bundle-row .b-meta { color: var(--text-3); font-family: var(--mono); font-size: 0.6875rem; min-width: 0; overflow-wrap: anywhere; }
 .bundle-row .spacer { flex: 1; }
+.channel-memory-summary { display: flex; flex: 1; flex-direction: column; gap: 2px; min-width: 0; }
+.channel-memory-total { color: var(--text); font-size: 0.8125rem; font-variant-numeric: tabular-nums; font-weight: 700; }
+.channel-memory-note { color: var(--text-3); font-size: 0.78125rem; text-wrap: pretty; }
+.channel-memory-row .btn { flex-shrink: 0; }
 .x-btn {
   background: none;
   border: 0;
@@ -825,6 +829,7 @@ details[open].advanced summary::before {
   .btn { font-size: 0.875rem; padding: 9px 15px; }
   .btn-sm { font-size: 0.8125rem; padding: 6px 12px; }
   .main-head, .section-head, .bundle-row, .save-bar { align-items: stretch; flex-direction: column; }
+  .channel-memory-total, .channel-memory-note { font-size: 1rem; }
   .workspace-card { align-items: flex-start; grid-template-columns: 1fr; }
   .behavior-row { align-items: flex-start; }
   .behavior-row .toggle { margin-left: auto; }
@@ -1267,6 +1272,84 @@ details[open].advanced summary::before {
 /* ---- profile footer (delete / add-to-channels / usage) ---- */
 .profile-foot { align-items: center; border-top: 1.5px dashed rgba(59, 50, 32, 0.15); display: flex; flex-wrap: wrap; gap: 10px; padding-top: 20px; }
 
+/* ---- Audit logs: real Memory domain, reserved future tabs ---- */
+.audit-rail { gap: 2px; }
+.audit-rail .ws-row { margin-top: 5px; }
+.audit-lock { color: var(--text-3); margin-left: auto; }
+.audit-main { gap: 18px; max-width: none; }
+.audit-main-head { align-items: flex-start; display: flex; flex-wrap: wrap; gap: 12px; justify-content: space-between; }
+.audit-tabs { border-bottom: 1.5px solid var(--line-strong); display: flex; gap: 4px; overflow-x: auto; }
+.audit-tab {
+  background: transparent;
+  border: 0;
+  border-bottom: 3px solid transparent;
+  color: var(--text-3);
+  font: inherit;
+  font-size: 0.8125rem;
+  font-weight: 700;
+  margin-bottom: -1.5px;
+  padding: 9px 13px;
+  white-space: nowrap;
+}
+.audit-tab.active { border-color: var(--ember-press); color: var(--text); }
+.audit-tab:disabled { cursor: not-allowed; opacity: 0.52; }
+.memory-banner { background: var(--ember-tint); border-radius: 13px; color: var(--text-2); font-size: 0.78125rem; padding: 10px 13px; }
+.memory-layout { display: grid; gap: 14px; grid-template-columns: minmax(180px, 0.7fr) minmax(320px, 1.8fr); min-height: 480px; }
+.memory-pane { background: var(--well); border-radius: 16px; min-width: 0; padding: 12px; }
+.memory-pane-title { color: var(--text-3); font-size: 0.6875rem; font-weight: 800; letter-spacing: 0.08em; margin: 1px 3px 9px; text-transform: uppercase; }
+.memory-file-list { display: flex; flex-direction: column; gap: 4px; }
+.memory-file {
+  align-items: flex-start;
+  background: transparent;
+  border: 0;
+  border-radius: 10px;
+  color: var(--text-2);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 9px 10px;
+  text-align: left;
+  width: 100%;
+}
+.memory-file:hover { background: var(--bg); }
+.memory-file.active { background: var(--bg); box-shadow: inset 0 0 0 1.5px var(--line-strong); color: var(--text); }
+.memory-file-name { font-family: var(--mono); font-size: 0.75rem; overflow-wrap: anywhere; }
+.memory-file-meta { color: var(--text-3); font-size: 0.6875rem; }
+.memory-editor { display: flex; flex-direction: column; gap: 13px; }
+.memory-editor-head { align-items: flex-start; display: flex; flex-wrap: wrap; gap: 9px; justify-content: space-between; }
+.memory-editor-title { font-family: var(--mono); font-size: 0.9375rem; font-weight: 700; overflow-wrap: anywhere; }
+.memory-editor-actions { display: flex; flex-wrap: wrap; gap: 7px; }
+.memory-source {
+  background: #2e281d;
+  border-radius: 12px;
+  color: #fff8e8;
+  font-family: var(--mono);
+  font-size: 0.71875rem;
+  line-height: 1.65;
+  margin: 0;
+  max-height: 420px;
+  overflow: auto;
+  padding: 14px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.memory-history { display: flex; flex-direction: column; gap: 6px; }
+.memory-history-row { align-items: baseline; background: var(--bg); border-radius: 10px; display: flex; flex-wrap: wrap; gap: 7px; padding: 8px 10px; }
+.memory-history-row .spacer { flex: 1; }
+.memory-review { background: var(--danger-well); border-radius: 12px; color: var(--danger); display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 12px; }
+.memory-help { background: var(--well); border-radius: 13px; color: var(--text-2); font-size: 0.75rem; padding: 10px 12px; }
+.memory-help code { color: var(--text); font-family: var(--mono); }
+.memory-live { min-height: 1.2em; }
+@media (max-width: 900px) {
+  .memory-layout { grid-template-columns: 1fr; }
+  .memory-pane { min-height: auto; }
+}
+@media (max-width: 720px) {
+  .audit-main-head, .memory-editor-head, .memory-review { align-items: stretch; flex-direction: column; }
+  .memory-editor-actions .btn { flex: 1; }
+}
+
 </style>
 </head>
 <body>
@@ -1463,7 +1546,31 @@ details[open].advanced summary::before {
     // the static suggestions for it (offline).
     modelPickerOpen: false,
     modelPickerFilter: "",
-    providerModelsError: {}
+    providerModelsError: {},
+    // Audit Logs is a top-level operator surface. Memory is the only live
+    // domain in this release; Scheduled Work and Network Events are labels,
+    // not empty APIs. The draft mirrors editable entry fields so a conflict or
+    // retry never erases operator work.
+    memoryScopes: null,
+    memoryScopesLoading: false,
+    memoryScopesError: "",
+    memorySelection: { storeId: "", channelId: "", entryId: "" },
+    memoryFiles: null,
+    memoryFilesLoading: false,
+    memoryFilesError: "",
+    memoryFilesRequestId: 0,
+    memorySelectedFile: "",
+    memoryDetail: null,
+    memoryHistory: [],
+    memoryEntryRequestId: 0,
+    memoryDraft: null,
+    memoryDirty: false,
+    memoryBusy: "",
+    memoryError: "",
+    memoryNotice: "",
+    memoryIdempotencyKey: "",
+    memoryConflict: null,
+    memoryDeleteConfirm: false
   };
   var egressDraft = { mode: "allowlist", domains: [""] };
   var sandboxDraft = {
@@ -1517,6 +1624,8 @@ details[open].advanced summary::before {
           // The assignment validators return a ready-to-show message (naming
           // the connected workspace, or explaining a channel_not_found); keep it.
           if (body && body.message) err.serverMessage = body.message;
+          err.payload = body;
+          err.status = response.status;
           throw err;
         }
         return body;
@@ -1663,6 +1772,14 @@ details[open].advanced summary::before {
 
   function canonicalPath() {
     if (state.view === "settings") return "/admin/settings";
+    if (state.view === "audit") {
+      var memoryPath = "/admin/audit-logs/memory";
+      if (state.memorySelection.storeId && state.memorySelection.channelId) {
+        memoryPath += "/" + encodeURIComponent(state.memorySelection.storeId) + "/" + encodeURIComponent(state.memorySelection.channelId);
+        if (state.memorySelection.entryId) memoryPath += "/" + encodeURIComponent(state.memorySelection.entryId);
+      }
+      return memoryPath;
+    }
     if (state.view === "profiles") {
       if (state.profileScreen === "create") return "/admin/profiles/new";
       if (state.profileScreen === "edit" && state.editingAgentId) return "/admin/profiles/" + encodeURIComponent(state.editingAgentId);
@@ -1688,6 +1805,10 @@ details[open].advanced summary::before {
     });
     state.leavePrompt = null;
     if (parts[1] === "settings") { openSettings(); return; }
+    if (parts[1] === "audit-logs") {
+      openAuditLogs(parts[3] || "", parts[4] || "", parts[5] || "");
+      return;
+    }
     if (parts[1] === "profiles") {
       if (parts[2] === "new") {
         openNewProfile();
@@ -1717,7 +1838,7 @@ details[open].advanced summary::before {
 
   function render() {
     var app = document.getElementById("app");
-    app.innerHTML = topbarHtml() + '<div class="body">' + railHtml() + mainHtml() + "</div>" + leavePromptModalHtml() + connectionRemoveModalHtml() + apiConnectionRemoveModalHtml() + slackDisconnectModalHtml() + githubDisconnectModalHtml();
+    app.innerHTML = topbarHtml() + '<div class="body">' + railHtml() + mainHtml() + "</div>" + leavePromptModalHtml() + connectionRemoveModalHtml() + apiConnectionRemoveModalHtml() + slackDisconnectModalHtml() + githubDisconnectModalHtml() + memoryDeleteModalHtml();
     // The disconnect confirmation is a true modal: keep the rest of the app
     // out of the focus and accessibility trees until it is resolved.
     if (state.slackDisconnectConfirm) {
@@ -1741,6 +1862,15 @@ details[open].advanced summary::before {
       if (state.githubBusy === "disconnect") focusGithubDisconnectDialog();
       else if (state.githubDisconnectError) focusSlackLiveRegion("github-disconnect-error");
       else focusSlackDisconnectAction("github-disconnect-cancel");
+    }
+    if (state.memoryDeleteConfirm) {
+      [document.querySelector(".topbar"), document.querySelector(".body")].forEach(function (region) {
+        if (!region) return;
+        region.inert = true;
+        if (region.setAttribute) region.setAttribute("aria-hidden", "true");
+      });
+      var memoryDeleteCancel = document.querySelector('[data-action="memory-delete-cancel"]');
+      if (memoryDeleteCancel && memoryDeleteCancel.focus) memoryDeleteCancel.focus();
     }
     syncUrl();
   }
@@ -1779,7 +1909,7 @@ details[open].advanced summary::before {
       '<div class="brand"><button type="button" class="brand-home" data-action="go-home" aria-label="Home"><span class="avatar">T<svg class="pea" viewBox="0 0 48 48" aria-hidden="true" focusable="false"><circle cx="24" cy="25" r="15.5" fill="#E3AC45"></circle><circle cx="17" cy="17.5" r="4.2" fill="#F4D084"></circle><g class="pea-eyes"><circle class="pea-eye" cx="18.5" cy="24" r="1.9" fill="#3B3220"></circle><circle class="pea-eye" cx="29.5" cy="24" r="1.9" fill="#3B3220"></circle></g><g class="pea-lids"><path d="M16.4 24.2 Q18.5 22 20.6 24.2" fill="none" stroke="#3B3220" stroke-width="1.8" stroke-linecap="round"></path><path d="M27.4 24.2 Q29.5 22 31.6 24.2" fill="none" stroke="#3B3220" stroke-width="1.8" stroke-linecap="round"></path></g><path class="pea-smile" d="M19 29 Q24 32.5 29 29" fill="none" stroke="#3B3220" stroke-width="1.8" stroke-linecap="round"></path><path class="pea-grin" d="M18.5 28.5 Q24 35.5 29.5 28.5 Z" fill="#3B3220"></path><circle class="pea-blush" cx="15.5" cy="28.5" r="2" fill="#DC8A4F"></circle><circle class="pea-blush" cx="32.5" cy="28.5" r="2" fill="#DC8A4F"></circle></svg></span><span class="brand-name">Chickpea</span></button><span class="chip">${targetChip}</span></div>' +
       '<details class="topbar-menu"><summary aria-label="Menu">' + icon("bars-3") + '</summary></details>' +
       '<div class="actions actions-list">' + connectedBadge +
-      '<button type="button" class="btn btn-soft' + (state.view === "channels" ? " nav-active" : "") + '" data-action="open-channels">Channels</button>' +
+      '<button type="button" class="btn btn-soft' + (state.view === "channels" || state.view === "audit" ? " nav-active" : "") + '" data-action="open-channels">Channels</button>' +
       '<button type="button" class="btn btn-soft' + (state.view === "profiles" ? " nav-active" : "") + '" data-action="open-profiles">Profiles</button>' +
       '<button type="button" class="btn btn-soft' + (state.view === "settings" ? " nav-active" : "") + '" data-action="open-settings">Settings</button></div>' +
       "</header>";
@@ -1794,6 +1924,7 @@ details[open].advanced summary::before {
   }
 
   function railHtml() {
+    if (state.view === "audit") return auditRailHtml();
     // Not connected → the whole screen is the Connect stepper; the rail (and its
     // add affordance) stay gated off until Slack is live.
     if (state.slack && !state.slack.connected) return "";
@@ -1852,6 +1983,9 @@ details[open].advanced summary::before {
     if (state.view === "settings") {
       return '<main class="main"><div class="main-inner">' + settingsMainHtml() + '</div></main>';
     }
+    if (state.view === "audit") {
+      return '<main class="main"><div class="main-inner audit-main">' + auditMemoryMainHtml() + '</div></main>';
+    }
     if (state.channelScreen === "overview") {
       return '<main class="main"><div class="main-inner slack-overview">' + slackOverviewHtml() + '</div></main>';
     }
@@ -1893,6 +2027,7 @@ details[open].advanced summary::before {
       '<span class="toggle"><span class="thumb"></span><input type="checkbox" data-action="channel-enabled" ' + (enabled ? "checked" : "") + ' aria-label="Channel enabled"></span></label></div>' +
       profileSectionHtml(agent, assignment) +
       channelInstructionsHtml() +
+      channelMemorySectionHtml(assignment) +
       accessSummaryHtml() +
       advancedHtml(assignment) +
       saveBarHtml() +
@@ -3735,6 +3870,491 @@ details[open].advanced summary::before {
     return html + '<div class="combo-foot">Anthropic and OpenAI list their live models; OpenRouter and Workers AI show your starred favorites. Type any provider/model specifier.</div>' + settingsRow + '</div>';
   }
 
+  // ---- Audit Logs > Memory -------------------------------------------------
+
+  function memoryScopes() { return state.memoryScopes || []; }
+
+  function memoryScopeForChannel(workspaceId, channelId) {
+    var matches = memoryScopes().filter(function (scope) {
+      return scope.workspaceId === workspaceId && scope.channelId === channelId;
+    });
+    return matches.find(function (scope) { return scope.lifecycle === "active"; }) || matches[0] || null;
+  }
+
+  function channelMemorySectionHtml(assignment) {
+    var scope = memoryScopeForChannel(assignment.workspaceId, assignment.channelId);
+    var count = scope ? Number(scope.entryCount || 0) : 0;
+    var countText = state.memoryScopes === null
+      ? (state.memoryScopesError ? "Memory count unavailable" : "Loading memory&hellip;")
+      : count + " saved " + (count === 1 ? "memory" : "memories");
+    var note = count > 0
+      ? "Review what Chickpea remembers and correct anything outdated."
+      : "Nothing saved yet. Ask Chickpea to remember something in Slack.";
+    var accessibleCount = state.memoryScopes === null
+      ? "saved memories"
+      : count + " saved " + (count === 1 ? "memory" : "memories");
+    return '<section class="section channel-memory-section"><div class="section-head"><div><h2 class="section-title">Memory</h2>' +
+      '<p class="hint">Shared facts and guidance Chickpea carries into conversations in this channel.</p></div></div>' +
+      '<div class="bundle-row channel-memory-row"><div class="channel-memory-summary">' +
+      '<span class="channel-memory-total">' + countText + '</span><span class="channel-memory-note">' + esc(note) + '</span></div>' +
+      '<span class="spacer"></span><button type="button" class="btn btn-soft btn-sm" data-action="open-channel-memory"' +
+      ' data-workspace="' + esc(assignment.workspaceId) + '" data-channel="' + esc(assignment.channelId) + '"' +
+      ' data-store="' + esc(scope && scope.storeId || "") + '" aria-label="Review ' + esc(accessibleCount) + ' for ' + esc(channelLabel(assignment)) + '">Review memory</button></div></section>';
+  }
+
+  function selectedMemoryScope() {
+    var exact = memoryScopes().find(function (scope) {
+      return scope.storeId === state.memorySelection.storeId && scope.channelId === state.memorySelection.channelId;
+    });
+    if (exact) return exact;
+    if (!state.memorySelection.storeId && state.memorySelection.channelId) {
+      var matches = memoryScopes().filter(function (scope) { return scope.channelId === state.memorySelection.channelId; });
+      return matches.find(function (scope) { return scope.lifecycle === "active"; }) || matches[0] || null;
+    }
+    return null;
+  }
+
+  function selectedMemoryAssignment() {
+    if (!state.memorySelection.channelId) return null;
+    return state.assignments.find(function (assignment) {
+      return assignment.workspaceId !== "*" && assignment.channelId === state.memorySelection.channelId;
+    }) || null;
+  }
+
+  function auditRailHtml() {
+    var scopes = memoryScopes();
+    var html = '<nav class="rail audit-rail" aria-label="Memory scopes">' +
+      '<div class="rail-head"><span class="section-eyebrow">Audit logs</span></div>' +
+      '<div class="platform-row active"><span class="platform-logo slack-logo-image" aria-hidden="true"></span>Slack</div>';
+    if (state.memoryScopesLoading && !state.memoryScopes) {
+      return html + '<div class="empty" style="margin:8px; padding:12px;"><p class="hint">Loading memory scopes&hellip;</p></div></nav>';
+    }
+    if (state.memoryScopesError) {
+      return html + '<div class="empty" style="margin:8px; padding:12px;"><p class="field-error">' + esc(state.memoryScopesError) + '</p><button type="button" class="btn btn-ghost btn-sm" data-action="memory-retry-scopes">Retry</button></div></nav>';
+    }
+    if (!scopes.length) {
+      return html + '<div class="ws-row">Workspace</div><div class="empty" style="margin:8px; padding:12px;"><p class="hint">No channel memories yet</p></div></nav>';
+    }
+    var workspaces = [];
+    scopes.forEach(function (scope) {
+      var workspace = workspaces.find(function (candidate) { return candidate.id === scope.workspaceId; });
+      if (!workspace) { workspace = { id: scope.workspaceId, scopes: [] }; workspaces.push(workspace); }
+      workspace.scopes.push(scope);
+    });
+    workspaces.forEach(function (workspace) {
+      html += '<div class="ws-row">' + icon("chevron-down") + esc(railGroupLabel(workspace.id)) + '</div>';
+      workspace.scopes.forEach(function (scope) {
+        var active = scope.storeId === state.memorySelection.storeId && scope.channelId === state.memorySelection.channelId;
+        var privacy = scope.privacy === "private" ? "Private" : "Workspace shared";
+        if (scope.lifecycle !== "active") privacy += " · " + scope.lifecycle;
+        html += '<button type="button" class="chan-item' + (active ? " active" : "") + '" data-action="select-memory-scope" data-store="' + esc(scope.storeId) + '" data-channel="' + esc(scope.channelId) + '">' +
+          '<span class="chan-name">#' + esc(scope.displayName || scope.channelId) + '</span>' +
+          '<span class="chan-meta">' + esc(privacy) + ' · ' + Number(scope.entryCount || 0) + '</span>' +
+          (scope.privacy === "private" ? '<span class="audit-lock" aria-label="Private">' + icon("lock-closed") + '</span>' : '') + '</button>';
+      });
+    });
+    return html + '</nav>';
+  }
+
+  function auditTabsHtml() {
+    return '<div class="audit-tabs" role="tablist" aria-label="Audit domains">' +
+      '<button type="button" class="audit-tab" role="tab" disabled aria-disabled="true" title="Coming later">Scheduled work</button>' +
+      '<button type="button" class="audit-tab active" role="tab" aria-selected="true">Memory</button>' +
+      '<button type="button" class="audit-tab" role="tab" disabled aria-disabled="true" title="Coming later">Network events</button>' +
+      '</div>';
+  }
+
+  function auditMemoryMainHtml() {
+    var scope = selectedMemoryScope();
+    var head = '<div class="audit-main-head"><h1 class="page-title">Audit logs</h1></div>' + auditTabsHtml();
+    if (state.memoryScopesLoading && !state.memoryScopes) return head + '<div class="empty"><p class="hint">Loading memory&hellip;</p></div>';
+    if (state.memoryScopesError) return head + '<div class="empty"><p class="field-error">' + esc(state.memoryScopesError) + '</p><button type="button" class="btn btn-ghost" data-action="memory-retry-scopes">Retry</button></div>';
+    if (!scope) {
+      var requestedAssignment = selectedMemoryAssignment();
+      var emptyTitle = requestedAssignment
+        ? "No memories saved in " + channelLabel(requestedAssignment)
+        : "No memory selected";
+      var emptyCopy = requestedAssignment
+        ? "Saved memories for this channel will appear here after a member asks Chickpea to remember something in Slack."
+        : "Choose a channel scope to review its generated index and saved Markdown files.";
+      return head + '<div class="empty"><h2 class="section-title">' + esc(emptyTitle) + '</h2><p class="hint">' + esc(emptyCopy) + '</p></div>' + memoryHelpHtml();
+    }
+    var sourceLabel = "#" + (scope.displayName || scope.channelId);
+    var banner = scope.privacy === "public"
+      ? '<div class="memory-banner">Memories saved in ' + esc(sourceLabel) + ' can help Chickpea respond across this workspace. In Slack, they can only be changed from ' + esc(sourceLabel) + '.</div>'
+      : '<div class="memory-banner">Memories saved in this private channel are used only here. They are never shared with other channels.</div>';
+    return head + banner +
+      '<div class="memory-layout"><section class="memory-pane" aria-label="Memory files"><div class="memory-pane-title">Files</div>' + memoryFilesHtml() + '</section>' +
+      '<section class="memory-pane memory-editor" aria-label="Memory editor">' + memoryEditorHtml() + '</section></div>' +
+      '<div class="memory-live" role="status" aria-live="polite">' + esc(state.memoryNotice || state.memoryError) + '</div>' + memoryHelpHtml();
+  }
+
+  function memoryFilesHtml() {
+    if (state.memoryFilesLoading) return '<p class="hint">Loading files&hellip;</p>';
+    if (state.memoryFilesError) return '<p class="field-error">' + esc(state.memoryFilesError) + '</p><button type="button" class="btn btn-ghost btn-sm" data-action="memory-retry-files">Retry</button>';
+    var files = state.memoryFiles || [];
+    if (!files.length) return '<p class="hint">No projected files are available.</p>';
+    return '<div class="memory-file-list">' + files.map(function (file) {
+      var key = file.generated ? "MEMORY.md" : file.entryId;
+      var active = state.memorySelectedFile === key;
+      return '<button type="button" class="memory-file' + (active ? " active" : "") + '" data-action="select-memory-file" data-file="' + esc(key) + '">' +
+        '<span class="memory-file-name">' + esc(file.name) + '</span>' +
+        '<span class="memory-file-meta">' + (file.generated ? "Generated · read-only" : esc(file.status || "active") + " · v" + Number(file.version || 0)) + '</span></button>';
+    }).join("") + '</div>';
+  }
+
+  function memoryEditorHtml() {
+    if (state.memoryFilesLoading || state.memoryBusy === "load") return '<p class="hint">Loading selection&hellip;</p>';
+    if (state.memorySelectedFile === "MEMORY.md") {
+      var index = (state.memoryFiles || []).find(function (file) { return file.generated; });
+      return '<div class="memory-editor-head"><div><div class="memory-editor-title">MEMORY.md</div><p class="hint">Generated index · changes are made through individual files.</p></div><span class="badge badge-off">Read-only</span></div>' +
+        '<pre class="memory-source">' + esc(index && index.content || '# Channel Memory Index\\n\\n') + '</pre>';
+    }
+    if (!state.memorySelectedFile) return '<div class="empty"><p class="hint">Select a file to view, edit, or delete it.</p></div>';
+    if (!state.memoryDetail || !state.memoryDraft) return '<p class="hint">Loading entry&hellip;</p>';
+    var entry = state.memoryDetail.entry;
+    var review = state.memoryDetail.unresolvedReview;
+    var reviewHtml = review ? '<div class="memory-review"><strong>Review requested</strong><span>' + esc(review.reasonCode || "Needs operator review") + '</span><span class="spacer"></span><button type="button" class="btn btn-ghost btn-sm" data-action="memory-resolve-review">Mark reviewed</button></div>' : '';
+    var status = entry.status === "forgotten" ? '<span class="badge badge-off">Forgotten</span>' : '<span class="badge badge-on"><span class="dot"></span>' + esc(entry.status) + '</span>';
+    var editor = entry.status === "forgotten" ? '<p class="hint">Content was irreversibly removed. Tombstone metadata and body-free history remain for audit integrity.</p>' :
+      '<div class="form-grid"><label class="field"><span class="field-label">Name</span><input class="input mono" value="' + esc(entry.slug) + '" readonly aria-readonly="true"></label>' +
+      '<label class="field"><span class="field-label">Type</span><span class="select-wrap"><select class="input" data-action="memory-type">' + ["fact", "decision", "project", "feedback", "preference"].map(function (type) { return '<option value="' + type + '"' + (state.memoryDraft.type === type ? " selected" : "") + '>' + type + '</option>'; }).join("") + '</select><span class="select-caret">' + icon("chevron-down") + '</span></span></label>' +
+      '<label class="field full"><span class="field-label">Description</span><input class="input" data-action="memory-description" value="' + esc(state.memoryDraft.description) + '"></label>' +
+      '<label class="field full"><span class="field-label">Markdown body</span><textarea class="textarea mono" data-action="memory-body" rows="12">' + esc(state.memoryDraft.body) + '</textarea></label></div>' +
+      '<div class="memory-editor-actions"><button type="button" class="btn btn-primary" data-action="memory-save"' + (!state.memoryDirty || state.memoryBusy ? " disabled" : "") + '>' + (state.memoryBusy === "save" ? "Saving&hellip;" : "Save changes") + '</button>' +
+      '<button type="button" class="btn btn-ghost" data-action="memory-discard"' + (!state.memoryDirty || state.memoryBusy ? " disabled" : "") + '>Discard</button>' +
+      '<button type="button" class="btn btn-danger" data-action="memory-delete-open"' + (state.memoryBusy ? " disabled" : "") + '>Delete memory</button></div>' + memoryConflictHtml();
+    return '<div class="memory-editor-head"><div><div class="memory-editor-title">' + esc(entry.slug) + '.md</div><p class="hint">Version ' + Number(entry.version) + ' · modified ' + esc(formatMemoryDate(entry.modifiedAt)) + '</p></div>' + status + '</div>' + reviewHtml + editor + memoryHistoryHtml() +
+      (entry.status !== "forgotten" ? '<details><summary class="field-label">Projected Markdown</summary><pre class="memory-source">' + esc(state.memoryDetail.projected || "") + '</pre></details>' : '');
+  }
+
+  function memoryHistoryHtml() {
+    var history = state.memoryHistory || [];
+    if (!history.length) return '';
+    return '<details><summary class="field-label">Revision history (' + history.length + ')</summary><div class="memory-history">' + history.slice().reverse().map(function (revision) {
+      return '<div class="memory-history-row"><span class="mono">v' + Number(revision.version) + '</span><strong>' + esc(revision.operation) + '</strong><span class="spacer"></span><span class="hint">' + esc(formatMemoryDate(revision.createdAt)) + '</span></div>';
+    }).join("") + '</div></details>';
+  }
+
+  function memoryConflictHtml() {
+    var conflict = state.memoryConflict;
+    if (!conflict) return '';
+    var latest = conflict.latest;
+    return '<div class="memory-review"><div><strong>Newer version available</strong><p class="hint">Your draft is preserved. Compare it with version ' + Number(latest.version) + ' before deciding.</p>' +
+      '<details><summary class="field-label">View latest saved content</summary><pre class="memory-source">Type: ' + esc(latest.type) + '\\nDescription: ' + esc(latest.description) + '\\n\\n' + esc(latest.body) + '</pre></details></div><span class="spacer"></span>' +
+      '<button type="button" class="btn btn-ghost btn-sm" data-action="memory-use-latest">Use latest and discard draft</button></div>';
+  }
+
+  function memoryCommandCatalog() {
+    return [
+      "@Chickpea !memory help",
+      "@Chickpea !memory",
+      "@Chickpea !memory show <slug>",
+      "@Chickpea !remember <name> — <description>",
+      "@Chickpea !memory update <slug> — <description>",
+      "@Chickpea !memory merge <slug-a> <slug-b> as <name> — <description>",
+      "@Chickpea !forget <slug>",
+      "@Chickpea !memory report <channel-id>/<slug> <stale|incorrect|unsafe|unclear>"
+    ];
+  }
+
+  function memoryHelpHtml() {
+    var commands = memoryCommandCatalog().map(function (command) {
+      return '<code>' + esc(command).replace(/—/g, "&mdash;") + '</code>';
+    }).join(", ");
+    return '<div class="memory-help">Relevant saved memories are used automatically in replies. To save one naturally in Slack, say <code>@Chickpea please remember that &lt;what matters&gt;</code>. Commands: ' +
+      commands + '. The merge command requires the replacement body on the next line. ' +
+      'Generated <code>MEMORY.md</code> files are never edited directly. <button type="button" class="btn btn-ghost btn-sm" data-action="memory-copy-controls">Copy controls</button></div>';
+  }
+
+  function memoryDeleteModalHtml() {
+    if (!state.memoryDeleteConfirm || !state.memoryDetail) return '';
+    return '<div class="modal-backdrop"><div class="modal-card" role="dialog" aria-modal="true" aria-label="Delete memory">' +
+      '<h2 class="modal-title">Delete ' + esc(state.memoryDetail.entry.slug) + '?</h2>' +
+      '<p class="modal-body">This permanently removes the canonical memory body and the content from every stored revision in Chickpea. Body-free audit tombstones and revision metadata remain. Prior exports, Slack or provider logs, backups, and Flue transcripts may still retain copies; Chickpea cannot retract them.</p>' +
+      '<div class="modal-foot"><button type="button" class="btn btn-ghost" data-action="memory-delete-cancel">Cancel</button><span class="spacer"></span><button type="button" class="btn btn-danger" data-action="memory-delete-confirm">Delete permanently</button></div></div></div>';
+  }
+
+  function openAuditLogs(storeId, channelId, entryId) {
+    state.view = "audit";
+    state.profileScreen = "list";
+    state.memorySelection = { storeId: storeId || "", channelId: channelId || "", entryId: entryId || "" };
+    state.memoryFilesRequestId += 1;
+    state.memoryEntryRequestId += 1;
+    state.memorySelectedFile = entryId || "";
+    state.memoryError = "";
+    state.memoryNotice = "";
+    render();
+    loadMemoryScopes();
+  }
+
+  function loadMemoryScopes() {
+    if (state.memoryScopesLoading) return Promise.resolve();
+    state.memoryScopesLoading = true;
+    state.memoryScopesError = "";
+    render();
+    return api("/admin/api/audit/memory/scopes").then(function (body) {
+      state.memoryScopes = body.scopes || [];
+      state.memoryScopesLoading = false;
+      var selected = selectedMemoryScope();
+      if (!selected && state.memoryScopes.length && !state.memorySelection.channelId) {
+        selected = state.memoryScopes[0];
+      }
+      if (selected) state.memorySelection = { storeId: selected.storeId, channelId: selected.channelId, entryId: state.memorySelection.entryId || "" };
+      render();
+      if (selected) return loadMemoryFiles();
+    }).catch(function (error) {
+      state.memoryScopesLoading = false;
+      state.memoryScopesError = error.serverMessage || error.message || "Could not load memory scopes.";
+      render();
+    });
+  }
+
+  function selectMemoryScope(storeId, channelId) {
+    if (state.memoryDirty) { state.memoryError = "Save or discard the current draft before changing channels."; render(); return; }
+    if (state.memoryBusy && state.memoryBusy !== "load") { state.memoryError = "Wait for the current memory action to finish before changing channels."; render(); return; }
+    state.memorySelection = { storeId: storeId, channelId: channelId, entryId: "" };
+    state.memoryFilesRequestId += 1;
+    state.memoryEntryRequestId += 1;
+    state.memorySelectedFile = "";
+    state.memoryDetail = null;
+    state.memoryDraft = null;
+    state.memoryHistory = [];
+    state.memoryConflict = null;
+    state.memoryNotice = "";
+    state.memoryError = "";
+    render();
+    loadMemoryFiles();
+  }
+
+  function loadMemoryFiles() {
+    var scope = selectedMemoryScope();
+    if (!scope) return Promise.resolve();
+    var requestId = ++state.memoryFilesRequestId;
+    var storeId = scope.storeId;
+    var channelId = scope.channelId;
+    state.memoryFilesLoading = true;
+    state.memoryFilesError = "";
+    render();
+    return api("/admin/api/audit/memory/stores/" + encodeURIComponent(scope.storeId) + "/files?sourceChannelId=" + encodeURIComponent(scope.channelId)).then(function (body) {
+      if (requestId !== state.memoryFilesRequestId || state.memorySelection.storeId !== storeId || state.memorySelection.channelId !== channelId) return;
+      state.memoryFiles = body.files || [];
+      state.memoryFilesLoading = false;
+      var requested = state.memorySelection.entryId;
+      var hasRequested = requested && state.memoryFiles.some(function (file) { return file.entryId === requested; });
+      state.memorySelectedFile = hasRequested ? requested : "MEMORY.md";
+      state.memorySelection.entryId = hasRequested ? requested : "";
+      render();
+      if (hasRequested) return loadMemoryEntry(requested);
+    }).catch(function (error) {
+      if (requestId !== state.memoryFilesRequestId || state.memorySelection.storeId !== storeId || state.memorySelection.channelId !== channelId) return;
+      state.memoryFilesLoading = false;
+      state.memoryFilesError = error.serverMessage || error.message || "Could not load memory files.";
+      render();
+    });
+  }
+
+  function selectMemoryFile(key) {
+    if (state.memoryDirty) { state.memoryError = "Save or discard the current draft before opening another file."; render(); return; }
+    if (state.memoryBusy && state.memoryBusy !== "load") { state.memoryError = "Wait for the current memory action to finish before opening another file."; render(); return; }
+    state.memoryEntryRequestId += 1;
+    state.memorySelectedFile = key;
+    state.memorySelection.entryId = key === "MEMORY.md" ? "" : key;
+    state.memoryDetail = null;
+    state.memoryDraft = null;
+    state.memoryHistory = [];
+    state.memoryConflict = null;
+    state.memoryError = "";
+    state.memoryNotice = "";
+    render();
+    if (key !== "MEMORY.md") loadMemoryEntry(key);
+  }
+
+  function loadMemoryEntry(entryId) {
+    var requestId = ++state.memoryEntryRequestId;
+    state.memoryBusy = "load";
+    render();
+    return Promise.all([
+      api("/admin/api/audit/memory/entries/" + encodeURIComponent(entryId)),
+      api("/admin/api/audit/memory/entries/" + encodeURIComponent(entryId) + "/history")
+    ]).then(function (parts) {
+      if (requestId !== state.memoryEntryRequestId || state.memorySelectedFile !== entryId) return;
+      state.memoryDetail = parts[0];
+      state.memoryHistory = parts[1].revisions || [];
+      state.memoryDraft = {
+        description: parts[0].entry.description || "",
+        type: parts[0].entry.type || "fact",
+        body: parts[0].entry.body || ""
+      };
+      state.memoryDirty = false;
+      state.memoryBusy = "";
+      state.memoryIdempotencyKey = "";
+      state.memoryConflict = null;
+      render();
+    }).catch(function (error) {
+      if (requestId !== state.memoryEntryRequestId || state.memorySelectedFile !== entryId) return;
+      state.memoryBusy = "";
+      state.memoryError = error.serverMessage || error.message || "Could not load this memory.";
+      render();
+    });
+  }
+
+  function memoryMutationKey(prefix) {
+    if (!state.memoryIdempotencyKey) state.memoryIdempotencyKey = prefix + "-" + Date.now() + "-" + Math.random().toString(36).slice(2);
+    return state.memoryIdempotencyKey;
+  }
+
+  function markMemoryDirty() {
+    state.memoryDirty = true;
+    state.memoryError = "";
+    state.memoryNotice = "";
+    state.memoryIdempotencyKey = "";
+    state.memoryConflict = null;
+    var save = document.querySelector('[data-action="memory-save"]');
+    var discard = document.querySelector('[data-action="memory-discard"]');
+    if (save) save.disabled = false;
+    if (discard) discard.disabled = false;
+  }
+
+  function saveMemoryEntry() {
+    if (!state.memoryDetail || !state.memoryDraft || !state.memoryDirty || state.memoryBusy) return;
+    var entry = state.memoryDetail.entry;
+    state.memoryBusy = "save";
+    state.memoryError = "";
+    state.memoryNotice = "";
+    render();
+    return api("/admin/api/audit/memory/entries/" + encodeURIComponent(entry.entryId), {
+      method: "PUT",
+      headers: { "content-type": "application/json", "idempotency-key": memoryMutationKey("edit") },
+      body: JSON.stringify({ expectedVersion: entry.version, description: state.memoryDraft.description, type: state.memoryDraft.type, body: state.memoryDraft.body })
+    }).then(function (body) {
+      state.memoryDetail.entry = body.entry;
+      state.memoryDetail.projected = body.projected;
+      state.memoryDraft = { description: body.entry.description, type: body.entry.type, body: body.entry.body };
+      state.memoryDirty = false;
+      state.memoryBusy = "";
+      state.memoryIdempotencyKey = "";
+      state.memoryNotice = "Memory saved.";
+      // loadMemoryFiles already reloads the selected entry. A second explicit
+      // load raced the operator's next keystroke and could repaint their draft.
+      return loadMemoryFiles();
+    }).catch(function (error) {
+      state.memoryBusy = "";
+      if (error.payload && error.payload.error === "memory_version_conflict") {
+        state.memoryError = "This memory changed elsewhere (now version " + Number(error.payload.currentVersion) + "). Your draft is preserved; reload before saving again.";
+        state.memoryIdempotencyKey = "";
+        api("/admin/api/audit/memory/entries/" + encodeURIComponent(entry.entryId)).then(function (body) {
+          state.memoryConflict = { latest: body.entry };
+          render();
+        }).catch(function () { render(); });
+      } else {
+        state.memoryError = error.serverMessage || error.message || "Could not save memory. Retry will reuse the same request key.";
+      }
+      render();
+    });
+  }
+
+  function discardMemoryDraft() {
+    if (!state.memoryDetail) return;
+    var entry = state.memoryDetail.entry;
+    state.memoryDraft = { description: entry.description || "", type: entry.type || "fact", body: entry.body || "" };
+    state.memoryDirty = false;
+    state.memoryIdempotencyKey = "";
+    state.memoryError = "";
+    state.memoryConflict = null;
+    render();
+  }
+
+  function useLatestMemoryEntry() {
+    if (!state.memoryConflict || !state.memoryConflict.latest) return;
+    var latest = state.memoryConflict.latest;
+    state.memoryDetail.entry = latest;
+    state.memoryDraft = { description: latest.description || "", type: latest.type || "fact", body: latest.body || "" };
+    state.memoryDirty = false;
+    state.memoryIdempotencyKey = "";
+    state.memoryConflict = null;
+    state.memoryError = "";
+    state.memoryNotice = "Loaded the latest saved version.";
+    render();
+    loadMemoryEntry(latest.entryId);
+  }
+
+  function copyMemoryControls() {
+    var commands = memoryCommandCatalog().map(function (command) {
+      return command.indexOf("@Chickpea !memory merge ") === 0
+        ? command + "\\n<replacement body on the next line>"
+        : command;
+    });
+    var controls = [
+      "@Chickpea please remember that <what matters>",
+      "@Chickpea please update the memory <slug> to say that <new guidance>"
+    ].concat(commands).join("\\n");
+    if (!navigator.clipboard || !navigator.clipboard.writeText) {
+      state.memoryError = "Clipboard access is unavailable. Select the commands above to copy them.";
+      render();
+      return;
+    }
+    navigator.clipboard.writeText(controls).then(function () {
+      state.memoryNotice = "Slack memory controls copied.";
+      state.memoryError = "";
+      render();
+    }).catch(function () {
+      state.memoryError = "Could not copy the controls. Select the commands above to copy them.";
+      render();
+    });
+  }
+
+  function deleteMemoryEntry() {
+    if (!state.memoryDetail || state.memoryBusy) return;
+    var entry = state.memoryDetail.entry;
+    state.memoryDeleteConfirm = false;
+    state.memoryBusy = "delete";
+    state.memoryError = "";
+    render();
+    api("/admin/api/audit/memory/entries/" + encodeURIComponent(entry.entryId), {
+      method: "DELETE",
+      headers: { "content-type": "application/json", "idempotency-key": memoryMutationKey("delete") },
+      body: JSON.stringify({ expectedVersion: entry.version, acknowledgeIrreversible: true })
+    }).then(function () {
+      state.memoryBusy = "";
+      state.memoryDirty = false;
+      state.memoryIdempotencyKey = "";
+      state.memoryNotice = "Memory deleted from Chickpea. Its canonical body and revision content were removed; body-free audit records remain, and prior exports, Slack or provider logs, backups, and Flue transcripts may still retain copies.";
+      return loadMemoryFiles();
+    }).catch(function (error) {
+      state.memoryBusy = "";
+      state.memoryError = error.serverMessage || error.message || "Could not delete memory.";
+      render();
+    });
+  }
+
+  function resolveMemoryReview() {
+    if (!state.memoryDetail || !state.memoryDetail.unresolvedReview || state.memoryBusy) return;
+    var entry = state.memoryDetail.entry;
+    var review = state.memoryDetail.unresolvedReview;
+    state.memoryBusy = "review";
+    state.memoryError = "";
+    render();
+    api("/admin/api/audit/memory/entries/" + encodeURIComponent(entry.entryId) + "/reviews/" + encodeURIComponent(review.eventId) + "/resolve", {
+      method: "POST",
+      headers: { "content-type": "application/json", "idempotency-key": memoryMutationKey("review") },
+      body: JSON.stringify({ expectedVersion: entry.version, resolution: "confirmed" })
+    }).then(function () {
+      state.memoryBusy = "";
+      state.memoryNotice = "Review resolved.";
+      return loadMemoryEntry(entry.entryId);
+    }).catch(function (error) {
+      state.memoryBusy = "";
+      state.memoryError = error.serverMessage || error.message || "Could not resolve review.";
+      render();
+    });
+  }
+
+  function formatMemoryDate(value) {
+    var date = new Date(Number(value));
+    return Number.isFinite(date.getTime()) ? date.toLocaleString() : "Unknown time";
+  }
+
   // ---- Settings: model providers (cards 13-14) -----------------------------
 
   var STAR_PATH = "M8 1.75a.75.75 0 0 1 .692.462l1.41 3.393 3.664.293a.75.75 0 0 1 .428 1.317l-2.791 2.39.853 3.575a.75.75 0 0 1-1.117.812L8 11.799l-3.139 1.905a.75.75 0 0 1-1.117-.812l.853-3.575-2.791-2.39a.75.75 0 0 1 .428-1.317l3.664-.293 1.41-3.393A.75.75 0 0 1 8 1.75Z";
@@ -4333,6 +4953,7 @@ details[open].advanced summary::before {
       openRepositoryPicker(Number(installations[0].id), installations[0].accountLogin);
       return;
     }
+
     resetRepositoryTransientState();
     state.repositoryAddOpen = true;
     render();
@@ -5091,6 +5712,11 @@ details[open].advanced summary::before {
         return { body: body, error: "" };
       }).catch(function (error) {
         return { body: null, error: error.serverMessage || error.message || "Could not load Slack behavior." };
+      }),
+      api("/admin/api/audit/memory/scopes").then(function (body) {
+        return { scopes: body.scopes || [], error: "" };
+      }).catch(function (error) {
+        return { scopes: null, error: error.serverMessage || error.message || "Could not load memory counts." };
       })
     ]).then(function (parts) {
       state.agents = parts[0].agents || [];
@@ -5100,6 +5726,8 @@ details[open].advanced summary::before {
       state.slackBehavior = parts[4].body;
       state.slackBehaviorError = parts[4].error;
       state.slackBehaviorBusy = "";
+      state.memoryScopes = parts[5].scopes;
+      state.memoryScopesError = parts[5].error;
       if (state.active) {
         var assignment = activeAssignment();
         if (assignment) {
@@ -5234,6 +5862,24 @@ details[open].advanced summary::before {
       return;
     }
 
+    if (state.memoryDeleteConfirm) {
+      if (action === "memory-delete-cancel") {
+        state.memoryDeleteConfirm = false;
+        render();
+      } else if (action === "memory-delete-confirm") {
+        deleteMemoryEntry();
+      }
+      return;
+    }
+    if (state.view === "audit" && state.memoryDirty && (
+      action === "open-channels" || action === "open-profiles" || action === "open-settings" ||
+      action === "open-audit" || action === "go-home"
+    )) {
+      state.memoryError = "Save or discard the current memory draft before navigating away.";
+      render();
+      return;
+    }
+
     // Disconnect is an atomic transition. Do not let navigation or another
     // action make the operation appear canceled while its request is live.
     if (state.githubBusy === "disconnect") return;
@@ -5279,6 +5925,7 @@ details[open].advanced summary::before {
     // or (with a data-agent) directly on that profile's edit detail (the
     // channel-page Profile row's Edit affordance).
     if (action === "open-profiles") { enterProfiles(target.getAttribute("data-agent")); }
+    if (action === "open-audit") { openAuditLogs("", "", ""); }
     // Brand-as-home: the reliable exit back to the Channels overview.
     if (action === "go-home") { openChannels(); }
     // Stepper: mark step 1 done and reveal step 2. Not preventing default lets
@@ -5286,6 +5933,9 @@ details[open].advanced summary::before {
     if (action === "advance-slack-step") { state.slackStep = 2; render(); }
     if (action === "dismiss-slack-toast") { state.slackToastDismissed = true; render(); }
     if (action === "select-channel") { state.view = "channels"; state.channelScreen = "detail"; selectActive(target.getAttribute("data-workspace"), target.getAttribute("data-channel")); render(); }
+    if (action === "open-channel-memory") {
+      openAuditLogs(target.getAttribute("data-store") || "", target.getAttribute("data-channel") || "", "");
+    }
     if (action === "toggle-add-channel") { openAddChannel(); }
     if (action === "cancel-add-channel") { state.addChannelOpen = false; state.addChannelManual = false; state.addChannelError = ""; state.addChannelAgentId = ""; render(); }
     if (action === "refresh-channels") { loadSlackChannels(true); }
@@ -5344,6 +5994,16 @@ details[open].advanced summary::before {
     // Settings (model-providers) is a separate destination that lands with its
     // own build; the affordance is present per the approved model-field design.
     if (action === "open-settings") { openSettings(target.getAttribute("data-section") || ""); }
+    if (action === "memory-retry-scopes") { loadMemoryScopes(); }
+    if (action === "select-memory-scope") { selectMemoryScope(target.getAttribute("data-store") || "", target.getAttribute("data-channel") || ""); }
+    if (action === "memory-retry-files") { loadMemoryFiles(); }
+    if (action === "select-memory-file") { selectMemoryFile(target.getAttribute("data-file") || "MEMORY.md"); }
+    if (action === "memory-save") { saveMemoryEntry(); }
+    if (action === "memory-discard") { discardMemoryDraft(); }
+    if (action === "memory-use-latest") { useLatestMemoryEntry(); }
+    if (action === "memory-copy-controls") { copyMemoryControls(); }
+    if (action === "memory-delete-open" && state.memoryDetail) { state.memoryDeleteConfirm = true; render(); }
+    if (action === "memory-resolve-review") { resolveMemoryReview(); }
     if (state.githubBusy && action.indexOf("github-") === 0) return;
     if (action === "github-manifest-open") {
       state.githubManifestOpen = true;
@@ -5627,6 +6287,10 @@ details[open].advanced summary::before {
   document.addEventListener("input", function (event) {
     var target = event.target;
     var action = target.getAttribute && target.getAttribute("data-action");
+    if (state.memoryDraft) {
+      if (action === "memory-description") { state.memoryDraft.description = target.value; markMemoryDirty(); }
+      if (action === "memory-body") { state.memoryDraft.body = target.value; markMemoryDirty(); }
+    }
     if (action === "channel-addendum") {
       state.channelDraft.channelPromptAddendum = target.value;
       state.dirty = true;
@@ -5733,6 +6397,11 @@ details[open].advanced summary::before {
   document.addEventListener("change", function (event) {
     var target = event.target;
     var action = target.getAttribute && target.getAttribute("data-action");
+    if (action === "memory-type" && state.memoryDraft) {
+      state.memoryDraft.type = target.value;
+      markMemoryDirty();
+      render();
+    }
     if (action === "sandbox-enabled" && !state.sandboxSaving) {
       sandboxDraft.enabled = !!target.checked;
       state.sandboxError = "";
@@ -5883,6 +6552,14 @@ details[open].advanced summary::before {
   }
 
   document.addEventListener("keydown", function (event) {
+    if (state.memoryDeleteConfirm && (event.key === "Escape" || event.key === "Esc")) {
+      event.preventDefault();
+      state.memoryDeleteConfirm = false;
+      render();
+      var restoreMemoryDelete = document.querySelector('[data-action="memory-delete-open"]');
+      if (restoreMemoryDelete && restoreMemoryDelete.focus) restoreMemoryDelete.focus();
+      return;
+    }
     if (state.githubDisconnectConfirm && event.key === "Tab") {
       event.preventDefault();
       if (state.githubBusy === "disconnect") {
@@ -5979,6 +6656,7 @@ details[open].advanced summary::before {
     window.addEventListener("beforeunload", function (event) {
       if (
         (state.profileScreen === "edit" && state.profileDirty) ||
+        state.memoryDirty ||
         state.slackConnectionBusy === "update" ||
         state.slackConnectionBusy === "disconnect" ||
         state.githubBusy === "disconnect"
@@ -6017,6 +6695,12 @@ details[open].advanced summary::before {
       if (state.profileScreen === "edit" && state.profileDirty && targetPath !== canonicalPath()) {
         history.pushState(null, "", canonicalPath());
         state.leavePrompt = { action: "route", path: targetPath };
+        render();
+        return;
+      }
+      if (state.memoryDirty && targetPath !== canonicalPath()) {
+        history.pushState(null, "", canonicalPath());
+        state.memoryError = "Save or discard the current memory draft before navigating away.";
         render();
         return;
       }
@@ -6972,7 +7656,7 @@ details[open].advanced summary::before {
   // the brand-home logo, and the "<- Profiles" back link.
   function isEditLeaveAction(action) {
     return action === "open-channels" || action === "open-profiles" || action === "open-settings" ||
-      action === "go-home" || action === "profiles-back";
+      action === "open-audit" || action === "go-home" || action === "profiles-back";
   }
 
   // Perform a confirmed leave — the edit draft is dropped and the pending
@@ -6999,6 +7683,8 @@ details[open].advanced summary::before {
       applyRoute(pending.path);
     } else if (action === "open-settings") {
       openSettings((pending && pending.section) || "");
+    } else if (action === "open-audit") {
+      openAuditLogs("", "", "");
     } else if (action === "go-home" || action === "open-channels") {
       openChannels();
     } else {

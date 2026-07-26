@@ -339,6 +339,33 @@ export interface SlackChannelSummary {
   isMember: boolean;
 }
 
+export interface SlackConversationFacts {
+  id: string;
+  name: string;
+  im?: boolean;
+  mpim?: boolean;
+  private: boolean;
+  archived: boolean;
+  frozen: boolean;
+  shared: boolean;
+  externallyShared: boolean;
+  organizationShared: boolean;
+  pendingShared: boolean;
+  member: boolean;
+  teamId: string | undefined;
+}
+
+export interface SlackUserFacts {
+  id: string;
+  teamId: string | undefined;
+  deleted: boolean;
+  bot: boolean;
+  appUser: boolean;
+  restricted: boolean;
+  ultraRestricted: boolean;
+  stranger: boolean;
+}
+
 /** Map a raw Slack conversation object to the admin summary shape. */
 function toChannelSummary(raw: unknown): SlackChannelSummary | null {
   if (!raw || typeof raw !== 'object') return null;
@@ -349,6 +376,48 @@ function toChannelSummary(raw: unknown): SlackChannelSummary | null {
     name: typeof channel.name === 'string' ? channel.name : '',
     isPrivate: channel.is_private === true,
     isMember: channel.is_member === true,
+  };
+}
+
+function toConversationFacts(raw: unknown): SlackConversationFacts | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const channel = raw as Record<string, unknown>;
+  if (typeof channel.id !== 'string') return null;
+  return {
+    id: channel.id,
+    name: typeof channel.name === 'string' ? channel.name : '',
+    im: channel.is_im === true,
+    mpim: channel.is_mpim === true,
+    private: channel.is_private === true,
+    archived: channel.is_archived === true,
+    frozen: channel.is_frozen === true,
+    shared: channel.is_shared === true,
+    externallyShared: channel.is_ext_shared === true,
+    organizationShared: channel.is_org_shared === true,
+    pendingShared: Array.isArray(channel.pending_shared) && channel.pending_shared.length > 0,
+    member: channel.is_member === true,
+    teamId:
+      typeof channel.context_team_id === 'string'
+        ? channel.context_team_id
+        : typeof channel.team_id === 'string'
+          ? channel.team_id
+          : undefined,
+  };
+}
+
+function toUserFacts(raw: unknown): SlackUserFacts | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const user = raw as Record<string, unknown>;
+  if (typeof user.id !== 'string') return null;
+  return {
+    id: user.id,
+    teamId: typeof user.team_id === 'string' ? user.team_id : undefined,
+    deleted: user.deleted === true,
+    bot: user.is_bot === true,
+    appUser: user.is_app_user === true,
+    restricted: user.is_restricted === true,
+    ultraRestricted: user.is_ultra_restricted === true,
+    stranger: user.is_stranger === true,
   };
 }
 
@@ -406,6 +475,130 @@ export interface SlackConversationsInfoResult {
   ok: boolean;
   error: string | undefined;
   channel: SlackChannelSummary | undefined;
+  facts: SlackConversationFacts | undefined;
+  retryAfterMs: number | undefined;
+}
+
+export interface SlackTruthFetchOptions {
+  timeoutMs?: number;
+}
+
+const SLACK_TRUTH_FETCH_TIMEOUT_MS = 5_000;
+
+interface SlackTruthJsonResult {
+  ok: boolean;
+  body: Record<string, unknown>;
+  error: string | undefined;
+  retryAfterMs: number | undefined;
+}
+
+type DeadlineResult<T> =
+  | { kind: 'value'; value: T }
+  | { kind: 'error'; error: unknown }
+  | { kind: 'timeout' };
+
+/**
+ * Bound raw Slack authorization reads across both fetch and body consumption.
+ * Every failure becomes a typed result so memory can quarantine instead of
+ * hanging a turn or throwing an unclassified JSON/network error.
+ */
+async function fetchSlackTruthJson(
+  url: string,
+  init: RequestInit,
+  options: SlackTruthFetchOptions = {},
+): Promise<SlackTruthJsonResult> {
+  const timeoutMs = options.timeoutMs ?? SLACK_TRUTH_FETCH_TIMEOUT_MS;
+  const controller = new AbortController();
+  // AbortSignal.timeout() is deliberately unref'ed on Node. A never-resolving
+  // fetch can therefore let an otherwise-idle process exit before the deadline
+  // fires. Own a referenced timer so the timeout is an actual runtime bound on
+  // every supported target, not just while unrelated handles stay alive.
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const deadline = controller.signal;
+  try {
+    const responseResult = await settleBeforeDeadline(
+      Promise.resolve().then(() => globalThis.fetch(url, { ...init, signal: deadline })),
+      deadline,
+    );
+    if (responseResult.kind === 'timeout') return slackTruthFailure('slack_request_timeout');
+    if (responseResult.kind === 'error') {
+      return slackTruthFailure(
+        deadline.aborted || isAbortError(responseResult.error)
+          ? 'slack_request_timeout'
+          : 'slack_network_error',
+      );
+    }
+
+    const response = responseResult.value;
+    const retryAfter = retryAfterMs(response);
+    const bodyResult = await settleBeforeDeadline(
+      Promise.resolve().then(() => response.json()),
+      deadline,
+    );
+    if (bodyResult.kind === 'timeout') {
+      return slackTruthFailure('slack_request_timeout', retryAfter);
+    }
+    if (
+      bodyResult.kind === 'error' ||
+      !bodyResult.value ||
+      typeof bodyResult.value !== 'object' ||
+      Array.isArray(bodyResult.value)
+    ) {
+      return slackTruthFailure('slack_non_json_response', retryAfter);
+    }
+    const body = bodyResult.value as Record<string, unknown>;
+    if (response.status === 429) {
+      return slackTruthFailure(
+        typeof body.error === 'string' ? body.error : 'ratelimited',
+        retryAfter,
+      );
+    }
+    if (!response.ok) {
+      return slackTruthFailure(
+        typeof body.error === 'string' ? body.error : `slack_http_${response.status}`,
+        retryAfter,
+      );
+    }
+    return { ok: true, body, error: undefined, retryAfterMs: retryAfter };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function settleBeforeDeadline<T>(
+  pending: Promise<T>,
+  deadline: AbortSignal,
+): Promise<DeadlineResult<T>> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (result: DeadlineResult<T>): void => {
+      if (settled) return;
+      settled = true;
+      deadline.removeEventListener('abort', onAbort);
+      resolve(result);
+    };
+    const onAbort = (): void => finish({ kind: 'timeout' });
+    if (deadline.aborted) {
+      finish({ kind: 'timeout' });
+      return;
+    }
+    deadline.addEventListener('abort', onAbort, { once: true });
+    void pending.then(
+      (value) => finish({ kind: 'value', value }),
+      (error: unknown) => finish({ kind: 'error', error }),
+    );
+  });
+}
+
+function slackTruthFailure(
+  error: string,
+  retryAfter: number | undefined = undefined,
+): SlackTruthJsonResult {
+  return { ok: false, body: {}, error, retryAfterMs: retryAfter };
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'AbortError';
 }
 
 /**
@@ -416,21 +609,167 @@ export interface SlackConversationsInfoResult {
 export async function slackConversationsInfo(
   botToken: string,
   channelId: string,
+  options: SlackTruthFetchOptions = {},
 ): Promise<SlackConversationsInfoResult> {
-  const response = await fetch(`${slackApiBase()}/conversations.info`, {
+  const result = await fetchSlackTruthJson(`${slackApiBase()}/conversations.info`, {
     method: 'POST',
     headers: {
       authorization: `Bearer ${botToken}`,
       'content-type': 'application/x-www-form-urlencoded',
     },
     body: new URLSearchParams({ channel: channelId }).toString(),
-  });
-  const body = (await response.json()) as Record<string, unknown>;
+  }, options);
+  if (!result.ok) {
+    return {
+      ok: false,
+      error: result.error,
+      channel: undefined,
+      facts: undefined,
+      retryAfterMs: result.retryAfterMs,
+    };
+  }
+  const body = result.body;
   return {
     ok: body.ok === true,
     error: typeof body.error === 'string' ? body.error : undefined,
     channel: toChannelSummary(body.channel) ?? undefined,
+    facts: toConversationFacts(body.channel) ?? undefined,
+    retryAfterMs: result.retryAfterMs,
   };
+}
+
+export interface SlackUsersInfoResult {
+  ok: boolean;
+  error: string | undefined;
+  user: SlackUserFacts | undefined;
+  retryAfterMs: number | undefined;
+}
+
+export async function slackUsersInfo(
+  botToken: string,
+  userId: string,
+  options: SlackTruthFetchOptions = {},
+): Promise<SlackUsersInfoResult> {
+  const result = await fetchSlackTruthJson(`${slackApiBase()}/users.info`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${botToken}`,
+      'content-type': 'application/x-www-form-urlencoded',
+    },
+    body: new URLSearchParams({ user: userId }).toString(),
+  }, options);
+  if (!result.ok) {
+    return {
+      ok: false,
+      error: result.error,
+      user: undefined,
+      retryAfterMs: result.retryAfterMs,
+    };
+  }
+  const body = result.body;
+  return {
+    ok: body.ok === true,
+    error: typeof body.error === 'string' ? body.error : undefined,
+    user: toUserFacts(body.user) ?? undefined,
+    retryAfterMs: result.retryAfterMs,
+  };
+}
+
+export interface SlackUsersListPage {
+  ok: boolean;
+  error: string | undefined;
+  users: SlackUserFacts[];
+  nextCursor: string | undefined;
+  retryAfterMs: number | undefined;
+}
+
+export async function slackUsersList(
+  botToken: string,
+  options: { cursor?: string; limit?: number; timeoutMs?: number } = {},
+): Promise<SlackUsersListPage> {
+  const params = new URLSearchParams({ limit: String(options.limit ?? 200) });
+  if (options.cursor) params.set('cursor', options.cursor);
+  const result = await fetchSlackTruthJson(`${slackApiBase()}/users.list`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${botToken}`,
+      'content-type': 'application/x-www-form-urlencoded',
+    },
+    body: params.toString(),
+  }, options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs });
+  if (!result.ok) {
+    return {
+      ok: false,
+      error: result.error,
+      users: [],
+      nextCursor: undefined,
+      retryAfterMs: result.retryAfterMs,
+    };
+  }
+  const body = result.body;
+  const rawUsers = Array.isArray(body.members) ? body.members : [];
+  return {
+    ok: body.ok === true,
+    error: typeof body.error === 'string' ? body.error : undefined,
+    users: rawUsers.map(toUserFacts).filter((user): user is SlackUserFacts => user !== null),
+    nextCursor: readNextCursor(body),
+    retryAfterMs: result.retryAfterMs,
+  };
+}
+
+export interface SlackConversationsMembersPage {
+  ok: boolean;
+  error: string | undefined;
+  memberIds: string[];
+  nextCursor: string | undefined;
+  retryAfterMs: number | undefined;
+}
+
+export async function slackConversationsMembers(
+  botToken: string,
+  channelId: string,
+  options: { cursor?: string; limit?: number; timeoutMs?: number } = {},
+): Promise<SlackConversationsMembersPage> {
+  const params = new URLSearchParams({
+    channel: channelId,
+    limit: String(options.limit ?? 200),
+  });
+  if (options.cursor) params.set('cursor', options.cursor);
+  const result = await fetchSlackTruthJson(`${slackApiBase()}/conversations.members`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${botToken}`,
+      'content-type': 'application/x-www-form-urlencoded',
+    },
+    body: params.toString(),
+  }, options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs });
+  if (!result.ok) {
+    return {
+      ok: false,
+      error: result.error,
+      memberIds: [],
+      nextCursor: undefined,
+      retryAfterMs: result.retryAfterMs,
+    };
+  }
+  const body = result.body;
+  const members = Array.isArray(body.members)
+    ? body.members.filter((id): id is string => typeof id === 'string')
+    : [];
+  return {
+    ok: body.ok === true,
+    error: typeof body.error === 'string' ? body.error : undefined,
+    memberIds: members,
+    nextCursor: readNextCursor(body),
+    retryAfterMs: result.retryAfterMs,
+  };
+}
+
+function retryAfterMs(response: Response): number | undefined {
+  const raw = response.headers.get('retry-after');
+  if (!raw) return undefined;
+  const seconds = Number(raw);
+  return Number.isFinite(seconds) && seconds >= 0 ? seconds * 1_000 : undefined;
 }
 
 export interface SlackConversationsJoinResult {

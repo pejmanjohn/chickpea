@@ -6,6 +6,7 @@ import { getCookie, setCookie } from 'hono/cookie';
 import * as v from 'valibot';
 
 import { renderAdminLogin, renderAdminPage } from './page.ts';
+import { createMemoryAdminApi } from './memory-api.ts';
 // Build-time JSON import: the committed manifest is the single source of the
 // Slack app identity; the wizard deep-link below substitutes the request host
 // so users never hand-edit a request_url.
@@ -96,11 +97,13 @@ import { parseSkillSource, resolveSkillSource, SkillImportError } from '../confi
 import type { SettingsStore } from '../config/settings-store.ts';
 import {
   getConfigStore,
+  getMemoryStateStore,
   getSettingsStore,
   isCloudflareTarget,
   type PlatformEnv,
 } from '../config/state-backend.ts';
 import type { ConfigStore } from '../config/store.ts';
+import type { MemoryStateStore } from '../memory/types.ts';
 import type { ChannelAssignment, CustomAgentConfig } from '../config/types.ts';
 import {
   envManagedSlackBehaviorKeys,
@@ -133,6 +136,7 @@ interface AdminRoutesOptions {
   store?: ConfigStore | undefined;
   // Same seam for the Slack-connection wizard's settings persistence.
   settings?: SettingsStore | undefined;
+  memory?: MemoryStateStore | undefined;
   adminToken?: string | undefined;
   knownProviders?: ReadonlySet<string> | undefined;
   // Injection seam for the MCP test-connection route, mirroring how the skills
@@ -548,6 +552,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   const store = (c: Context) => options.store ?? getConfigStore(c.env as PlatformEnv | undefined);
   const settings = (c: Context) =>
     options.settings ?? getSettingsStore(c.env as PlatformEnv | undefined);
+  const memory = (c: Context) =>
+    options.memory ?? getMemoryStateStore(c.env as PlatformEnv | undefined);
   const adminToken = () =>
     tokenFromOptions ? options.adminToken : process.env.TAG_ADMIN_TOKEN;
   const modelProviders = () =>
@@ -658,6 +664,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   });
 
   app.get('/admin', (c) => c.html(renderAdminPage()));
+
+  app.route('/admin/api', createMemoryAdminApi({
+    store: memory,
+    adminSecret: () => adminToken() ?? '',
+  }));
 
   app.get('/admin/api/agents', async (c) => {
     const platformEnv = c.env as PlatformEnv | undefined;
@@ -858,6 +869,17 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       ],
     });
     return c.json(await sandboxStatus(settings(c)));
+  });
+
+  app.get('/admin/api/memory/settings', async (c) => {
+    return c.json({ enabled: true, alwaysOn: true });
+  });
+
+  app.put('/admin/api/memory/settings', async (c) => {
+    return c.json(
+      { error: 'memory_always_enabled', enabled: true, alwaysOn: true },
+      409,
+    );
   });
 
   app.get('/admin/api/github/status', async (c) => {

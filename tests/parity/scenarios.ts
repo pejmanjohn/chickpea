@@ -93,6 +93,22 @@ function demoChannelConfig(config: ScenarioLaneConfig = {}): ScenarioLaneConfig 
   }
   return {
     ...config,
+    slack: {
+      channels: [
+        { id: 'C_EXEC', name: 'exec-briefing', isMember: true, teamId: 'T_DEMO' },
+        { id: 'C_ENG', name: 'eng-releases', isMember: true, teamId: 'T_DEMO' },
+      ],
+      channelMembers: {
+        C_EXEC: ['U_ALICE', 'U_BOB', 'U_BOT'],
+        C_ENG: ['U_ALICE', 'U_BOB', 'U_BOT'],
+      },
+      workspaceUsers: [
+        { id: 'U_ALICE', teamId: 'T_DEMO' },
+        { id: 'U_BOB', teamId: 'T_DEMO' },
+        { id: 'U_BOT', teamId: 'T_DEMO', isBot: true, isAppUser: true },
+      ],
+      ...config.slack,
+    },
     configSeed: {
       agents: pinAgentsForParity(seededAgents),
       // The T_DEMO fixtures (single source: src/config/seed.ts) on top of the

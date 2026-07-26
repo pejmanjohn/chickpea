@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
+import { createMemoryScopeSlack, resolveMemoryScope } from '../src/memory/scope.ts';
+import { SqliteMemoryStateStore } from '../src/memory/store.ts';
 import { loopbackListenSkipReason } from './helpers/listen.ts';
 import { FakeSlackBackend, STUB_REPLY_MARKER } from './parity/fake-slack.ts';
 
@@ -66,4 +68,122 @@ test('http_500 provider mode surfaces a 500 with the raw marker for leak checks'
   });
 
   assert.equal(response.status, 500);
+});
+
+test('fake Slack serves bounded membership and user-directory fixtures for memory parity', async () => {
+  const backend = new FakeSlackBackend({
+    slack: {
+      channels: [{ id: 'C_MEMORY', name: 'memory', isMember: true }],
+      channelMembers: { C_MEMORY: ['U_MEMBER', 'U_BOT'] },
+      workspaceUsers: [
+        { id: 'U_MEMBER', teamId: 'T_MEMORY' },
+        { id: 'U_BOT', teamId: 'T_MEMORY', isBot: true, isAppUser: true },
+      ],
+    },
+  });
+  const fetchImpl = backend.asFetch();
+
+  const members = await fetchImpl('https://slack.com/api/conversations.members', {
+    method: 'POST',
+    body: JSON.stringify({ channel: 'C_MEMORY' }),
+  });
+  const users = await fetchImpl('https://slack.com/api/users.list', {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
+  const actor = await fetchImpl('https://slack.com/api/users.info', {
+    method: 'POST',
+    body: JSON.stringify({ user: 'U_MEMBER' }),
+  });
+
+  assert.deepEqual(await members.json(), {
+    ok: true,
+    members: ['U_MEMBER', 'U_BOT'],
+    response_metadata: { next_cursor: '' },
+  });
+  const usersBody = await users.json() as { members: Array<Record<string, unknown>> };
+  assert.equal(usersBody.members.length, 2);
+  assert.equal(usersBody.members[1]?.is_bot, true);
+  const actorBody = await actor.json() as { user: Record<string, unknown> };
+  assert.equal(actorBody.user.team_id, 'T_MEMORY');
+  assert.equal(actorBody.user.is_restricted, false);
+});
+
+test('fake Slack emits the raw scope flags used by memory privacy checks', async () => {
+  const backend = new FakeSlackBackend({
+    slack: {
+      channels: [{
+        id: 'C_SHARED', name: 'shared', isMember: true,
+        isFrozen: true, isShared: true, isExternallyShared: true,
+        isOrganizationShared: true, pendingShared: ['T_OTHER'], isMpim: true,
+        teamId: 'T_HOME', contextTeamId: 'T_OTHER',
+      }],
+    },
+  });
+  const response = await backend.asFetch()('https://slack.com/api/conversations.info', {
+    method: 'POST',
+    body: JSON.stringify({ channel: 'C_SHARED' }),
+  });
+  const body = await response.json() as { channel: Record<string, unknown> };
+
+  assert.deepEqual(body.channel, {
+    id: 'C_SHARED', name: 'shared', is_private: false, is_member: true,
+    is_archived: false, is_frozen: true, is_shared: true, is_ext_shared: true,
+    is_org_shared: true, pending_shared: ['T_OTHER'], is_im: false, is_mpim: true,
+    team_id: 'T_HOME', context_team_id: 'T_OTHER',
+  });
+});
+
+test('memory Slack mapper preserves unsupported shared-channel flags from the fake backend', async () => {
+  const backend = new FakeSlackBackend({
+    slack: {
+      channels: [{
+        id: 'C_SHARED', name: 'shared', isMember: true,
+        isFrozen: true, isShared: true, isExternallyShared: true,
+        isOrganizationShared: true, pendingShared: ['T_OTHER'], isMpim: true,
+        teamId: 'T_HOME', contextTeamId: 'T_OTHER',
+      }],
+    },
+  });
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = backend.asFetch();
+    const result = await createMemoryScopeSlack('xoxb-test').conversation('C_SHARED');
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.facts, {
+      id: 'C_SHARED', name: 'shared', private: false, member: true,
+      archived: false, frozen: true, shared: true, externallyShared: true,
+      organizationShared: true, pendingShared: true, im: false, mpim: true,
+      teamId: 'T_OTHER',
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('raw Slack Connect context-team evidence fails closed before memory scope is admitted', async () => {
+  const backend = new FakeSlackBackend({
+    slack: {
+      channels: [{
+        id: 'C_CONNECT', name: 'connect', isMember: true,
+        teamId: 'T_HOME', contextTeamId: 'T_FOREIGN',
+      }],
+      workspaceUsers: [{ id: 'U_MEMBER', teamId: 'T_HOME' }],
+    },
+  });
+  const originalFetch = globalThis.fetch;
+  const state = new SqliteMemoryStateStore(':memory:');
+  try {
+    globalThis.fetch = backend.asFetch();
+    const decision = await resolveMemoryScope({
+      workspaceId: 'T_HOME', channelId: 'C_CONNECT', actorId: 'U_MEMBER',
+      botUserId: 'U_BOT', observedAt: Date.now(),
+    }, { slack: createMemoryScopeSlack('xoxb-test'), state });
+    assert.deepEqual(decision, {
+      enabled: false, reason: 'workspace_mismatch', workspaceRead: false, reads: [],
+    });
+  } finally {
+    state.close();
+    globalThis.fetch = originalFetch;
+  }
 });

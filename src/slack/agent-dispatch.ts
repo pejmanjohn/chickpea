@@ -5,6 +5,7 @@ import { getInternalAgentToken, INTERNAL_AGENT_TOKEN_HEADER } from './internal-a
 import type { PlatformEnv } from '../config/state-backend.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import { cloudflareSandboxOptionVariants } from '../sandbox/lifecycle.ts';
+import { sandboxThreadKey } from '../sandbox/thread-key.ts';
 import { prepareSandboxTurn, type SandboxTurnContext } from '../sandbox/turn-context.ts';
 import { activityStatusTraceHeaders } from './activity-publisher.ts';
 
@@ -65,14 +66,17 @@ export async function promptSlackThreadAgent(
   message: string,
   env: PlatformEnv | undefined,
   turnId: string,
+  useCloudflareSandbox: boolean,
 ): Promise<string> {
-  try {
-    await prepareCloudflareSandboxTurn(env, conversationKey, turnId);
-  } catch {
-    // This boundary is exclusively the thread-scoped Sandbox binding/RPC
-    // setup. Keep its raw control-plane error private while preserving the
-    // correct user-visible failure surface.
-    throw new AgentPromptFailure('sandbox', 500);
+  if (useCloudflareSandbox) {
+    try {
+      await prepareCloudflareSandboxTurn(env, conversationKey, turnId);
+    } catch {
+      // This boundary is exclusively the thread-scoped Sandbox binding/RPC
+      // setup. Keep its raw control-plane error private while preserving the
+      // correct user-visible failure surface.
+      throw new AgentPromptFailure('sandbox', 500);
+    }
   }
   const path = `/agents/slack-thread/${encodeURIComponent(conversationKey)}?wait=result`;
   const response = await getRouter().request(
@@ -178,11 +182,12 @@ async function prepareCloudflareSandboxTurn(
     throw new Error('SANDBOX Durable Object binding is unavailable');
   }
   const { getSandbox } = await import('@cloudflare/sandbox');
+  const sandboxKey = sandboxThreadKey(conversationKey);
   const preparations = await Promise.allSettled(
-    cloudflareSandboxOptionVariants(conversationKey).map(async (options) => {
+    cloudflareSandboxOptionVariants(sandboxKey).map(async (options) => {
       const sandbox = getSandbox(
         binding as Parameters<typeof getSandbox>[0],
-        conversationKey,
+        sandboxKey,
         options,
       ) as ReturnType<typeof getSandbox> & SandboxTurnContext;
       await prepareSandboxTurn(sandbox, turnId);
@@ -201,18 +206,20 @@ async function prepareCloudflareSandboxTurn(
 export async function releaseCloudflareSandboxTurn(
   env: PlatformEnv | undefined,
   conversationKey: string,
+  usedCloudflareSandbox: boolean,
 ): Promise<void> {
-  if (!isCloudflareTarget()) return;
+  if (!usedCloudflareSandbox || !isCloudflareTarget()) return;
   const binding = env?.SANDBOX ?? env?.Sandbox;
   if (!binding) return;
 
   try {
     const { getSandbox } = await import('@cloudflare/sandbox');
+    const sandboxKey = sandboxThreadKey(conversationKey);
     const teardowns = await Promise.allSettled(
-      cloudflareSandboxOptionVariants(conversationKey).map(async (options) => {
+      cloudflareSandboxOptionVariants(sandboxKey).map(async (options) => {
         const sandbox = getSandbox(
           binding as Parameters<typeof getSandbox>[0],
-          conversationKey,
+          sandboxKey,
           options,
         ) as ReturnType<typeof getSandbox> & { destroy(): Promise<void> };
         // Await the provider operation itself. A local Promise.race timeout

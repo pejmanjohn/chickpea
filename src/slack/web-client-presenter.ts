@@ -38,6 +38,7 @@ export interface SlackPresenterTarget {
   publicUrl?: string | undefined;
   userId?: string;
   workspaceId?: string;
+  memoryFooterItems?: readonly string[];
 }
 
 export interface SlackArtifactInput {
@@ -194,6 +195,7 @@ export class WebClientPresenter {
       modelLabel: this.target.modelLabel,
       agentId: this.target.agentId,
       publicUrl: this.target.publicUrl,
+      memoryItems: this.target.memoryFooterItems,
     };
   }
 }

@@ -1,5 +1,6 @@
 import type { NetworkConfig, SecureFetch } from 'just-bash';
 
+import { assertCurrentRequestSideEffectAllowed } from '../memory/tool-policy.ts';
 import { getSettingsStore, type PlatformEnv } from './state-backend.ts';
 
 export type EgressMode = 'allowlist' | 'open' | 'off';
@@ -67,8 +68,8 @@ export interface EgressPlan {
   baseNetwork: NetworkConfig;
   baseMethods: Set<string>;
   // A single fail-closed network used only if just-bash stops exposing its
-  // secureFetch property: every prefix (credentials still inject) but capped at
-  // the baseline methods, so connector write methods are never granted globally.
+  // secureFetch property: every prefix (credentials still inject) but read-only.
+  // Without the wrapper there is no per-submission admission seam for writes.
   fallbackNetwork: NetworkConfig;
 }
 
@@ -191,7 +192,7 @@ export function buildEgressPlan(
     ],
     policy,
     opts,
-    [...BASE_EGRESS_METHODS],
+    ['GET', 'HEAD'],
   );
 
   return { scopes, baseNetwork, baseMethods, fallbackNetwork };
@@ -254,6 +255,9 @@ export function createScopedFetch(params: {
 
   return async (url, options) => {
     const method = (options?.method || 'GET').toUpperCase();
+    if (method !== 'GET' && method !== 'HEAD') {
+      assertCurrentRequestSideEffectAllowed(`${method} ${new URL(url).origin}`);
+    }
     // Several scopes can share a prefix (one guarded /search/code scope per
     // installation), so a guard rejection falls through to the NEXT matching
     // scope — but never past the matching set to the base delegate: base

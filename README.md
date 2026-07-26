@@ -33,6 +33,7 @@ The first DM answers with **zero model keys** on a fresh Cloudflare deploy: the 
 
 - Answers `@`-mentions, thread replies (no re-mention needed), and DMs with one streamed reply in the thread — falling back gracefully to a single durable final message if Slack rejects the streaming APIs, never a duplicate.
 - Fetches channel context only when asked, over a bounded prompt-derived window — no passive monitoring, ever.
+- Keeps explicit, team-owned channel memory: members can remember, inspect, correct, merge, report, and irreversibly forget small Markdown notes that carry across Slack threads.
 - Renders standard Markdown natively (tables, lists, blockquotes, fenced code/diff blocks) and signs every reply with the profile and model that answered.
 - Absorbs Slack's duplicate retries while an event claim is held, so normal redelivery produces one final reply and one provider call. If the provider succeeds but Slack rejects final delivery, the claim is released so Slack can retry the event; that recovery can call the provider again.
 
@@ -58,6 +59,39 @@ The first DM answers with **zero model keys** on a fresh Cloudflare deploy: the 
 - A read-only Access summary showing exactly what a new thread will use — profile, model, provider, enabled skills, approved MCP connections and tools, the layered instruction stack, and a config snapshot hash — resolved by the same code path the Slack agent uses.
 - The first-run Slack connection wizard described above, with live `auth.test` validation and per-credential provenance (environment / stored / missing).
 - Every edit applies to new threads without a restart.
+- Channels > Memory opens the workspace/channel memory browser with generated `MEMORY.md` indexes, escaped file previews, optimistic editing, revision history, review resolution, and irreversible deletion. Scheduled Work and Network Events remain reserved audit-domain labels rather than active features.
+
+### Channel memory
+
+Channel memory is always available in eligible assigned Slack channels; there is no enable switch or environment flag. Creation is explicit but does not require rigid command syntax: direct phrases such as “Please remember that…” are accepted, while Chickpea does not silently save facts from normal conversation. Direct-message memory, past-session browsing, automatic curation, and vector search are intentionally deferred.
+
+Use these commands in an admitted channel turn:
+
+```text
+Please remember that <what matters>
+Please update the memory <slug> to say that <new guidance>
+!memory
+!remember <name> — <description>
+<Markdown body on the next line>
+!memory show <slug>
+!memory update <slug> — <description>
+<replacement body on the next line>
+!memory merge <slug-a> <slug-b> as <name> — <description>
+<merged body on the next line>
+!memory report <channel-id>/<slug> <stale|incorrect|unsafe|unclear>
+!forget <slug>
+!forget confirm <one-time token>
+```
+
+Public-channel entries are grouped by their source channel, readable from eligible public channels workspace-wide, and editable conversationally only from their source channel. A private channel reads its own isolated generation plus workspace-public memory read-only, and writes only to that private generation. A private-to-public conversion seals the old private generation; later public turns do not read it. Slack Connect/shared channels, unresolved scope or actor identity, bots/apps, guests, foreign users, and failed live membership proof do not receive expanded memory access. DMs have no memory in this release.
+
+Memory is advisory data, never policy. The prompt labels every entry untrusted and potentially stale; current profile instructions, the current Slack request, live repository/tool permissions, spend and egress limits, and fresh Slack scope checks always win. A changed scope or selected entry invalidates the delivery lease so stale model text is not posted.
+
+The bounded defaults are 64 entries per source channel; 512 entries/1 MiB in the public workspace store; 128 entries/256 KiB in a private store; 512-byte descriptions; 8 KiB bodies; and at most 8 entries/8 KiB in a turn prompt. Ninety-day age marks an entry stale for ranking but does not delete it. Credential-like content is rejected. Mutation rate windows allow 30 actor changes and 120 channel changes per hour.
+
+Canonical state is structured SQLite/Durable Object data projected deterministically as portable Markdown and an uncompressed tar export; the filesystem is not required. The generated `MEMORY.md` files are read-only. Import is previewed, path/hash checked, bounded, and applied atomically. Admin edits use expected versions and preserve a draft across conflicts.
+
+`TAG_ADMIN_TOKEN` currently grants broad operator access to public and private retained memory, including view, edit, review, and delete in the admin UI. Deterministic export/import remain API-level portability and recovery capabilities rather than everyday admin controls. Forget/delete scrubs canonical entry and revision content and prevents it from being supplied again, while retaining body-free tombstones and audit facts. It cannot retract copies already present in Slack messages, model-provider processing/logs, prior exports, backups, or separate Flue transcripts; those systems keep their own retention controls.
 
 ### Repositories
 
@@ -69,7 +103,7 @@ Connect GitHub once in Settings through the GitHub App manifest flow, the only s
 - A mention in an unassigned channel posts nothing to the channel. The mentioner alone gets one rate-limited ephemeral hint linking to that channel's `/admin` page (`SLACK_TAG_UNASSIGNED_HINT=false` turns even that off).
 - Every operational event is signature-verified; a tampered signature gets a 401 and no side effects. The one pre-setup exception is Slack's unsigned `url_verification` challenge, which is echoed before credentials exist so Retry works mid-setup.
 - If `TAG_ADMIN_TOKEN` is unset, every `/admin` route returns 404 — the admin plane is invisible, not merely locked.
-- Channel history is fetched per turn to build the prompt — the bot keeps no separate index of your workspace. What persists is scoped to threads it participates in: each thread's own agent transcript (the durability that lets a thread continue), dedupe claims, and config snapshots.
+- Channel history is fetched per turn to build conversational context — there is no passive workspace-message index. Separately, explicit channel memory persists small team-authored notes, their revisions/audit envelope, scope lifecycle, and bounded selection epochs. Each participating thread also keeps its own agent transcript, dedupe claims, and config snapshot.
 - A thread freezes its resolved profile, model, instructions, skills, and MCP connection approvals at its first durable turn. Admin edits apply to new threads only; in-flight conversations keep the config they started with, even across retries or a later profile edit. DMs deliberately track current config instead.
 - Failures degrade loudly, never silently: a provider error, an unresolvable model, or a context-read failure each still deliver one sanitized final reply and clear the status line.
 
@@ -179,6 +213,7 @@ If neither exists, initialization fails with an error that tells the operator to
 - **The public v1 schema is a clean baseline.** Pre-open-source migration history was consolidated because there are no supported legacy upgrade targets; do not point v1 at a private/pre-release database expecting it to migrate. Migrations introduced after the public v1 baseline are append-only so supported public installs can carry state across later re-deploys.
 - **Durability is single-host.** Dedupe, runtime config, thread registry, and snapshots are restart-durable — on one Durable Object or one SQLite file. Multi-instance deployments would need a shared store first.
 - **No state backup/export on Cloudflare yet**, and the debug story is `wrangler tail`.
+- **Memory export is not a full state backup.** The authenticated Memory API can export deterministic Markdown archives on Cloudflare and Node, but there is not yet a one-click backup for transcripts, config, claims, or every Durable Object table; the debug story remains `wrangler tail`.
 - **The container coding sandbox is Cloudflare-only.** Node and other non-Cloudflare installs use the standard in-memory bash sandbox, not the container coding tier, and Chickpea never gives that sandbox the host filesystem or host git/SSH credentials.
 - **Remote MCP URLs are trusted operator configuration in v1.** Connections can be created only through token-gated `/admin`; Chickpea requires HTTPS and rejects literal local/private addresses at save, test, and turn time. It does not resolve and pin DNS before connecting, so an operator-approved hostname could still rebind to an internal address on the Node lane. Do not expose connection authoring to untrusted users, and use MCP endpoints you trust. Cloudflare Workers cannot directly reach localhost or RFC1918 networks, which narrows this risk there; DNS pinning is required before connection presets or broader connection authoring ship.
 
@@ -205,7 +240,7 @@ The behavior described above is a tested contract, not a description.
 FLUE_NODE_BIN=/path/to/node npm test
 ```
 
-The parity suite covers signature checks, dedupe, streaming fallbacks, fail-closed admission, and thread snapshots, alongside admin/config-store checks, identity checks, fake-Slack smoke tests, Slack formatting, the model resolver, and turn-normalization/history-window units. Set `TAG_REQUIRE_LOOPBACK=1` (what `npm run test:ci` does) so a loopback-denied environment fails instead of silently skipping the parity run.
+The parity suite covers signature checks, dedupe, streaming fallbacks, fail-closed admission, thread snapshots, explicit memory controls, scope/lifecycle isolation, deterministic bounded prompt selection, delivery leases, and memory conversation epochs, alongside admin/config-store checks, identity checks, fake-Slack smoke tests, Slack formatting, the model resolver, and turn-normalization/history-window units. Set `TAG_REQUIRE_LOOPBACK=1` (what `npm run test:ci` does) so a loopback-denied environment fails instead of silently skipping the parity run.
 
 Offline, net-guarded evidence scripts (run with Node >= 22.19 on `PATH`) spawn the real app against a fake Slack/provider backend and assert zero external network traffic (`scripts/net-guard.mjs`):
 
@@ -214,11 +249,12 @@ node scripts/verify-flue-offline-turn.mjs
 node scripts/verify-agent-config.mjs
 npm run verify:durability
 npm run verify:providers
+npm run verify:admin-ui
 npm run verify:cf-smoke
 npm run verify:oss-export
 ```
 
-`verify:cf-smoke` builds the Cloudflare bundle and boots it under real workerd (`wrangler dev`), driving the full first-run story with no Slack credentials: seeding from the Durable Object store, fail-closed 401s before the wizard, wizard validation and persistence, a signed mention delivering a final, dedupe on redelivery, state surviving a workerd restart, and tampered-signature rejection — with every outbound URL pointed at loopback.
+`verify:admin-ui` exercises the authenticated admin plane, including a real Memory scope/index, versioned edit conflict, and irreversible delete contract. `verify:durability` proves transcript/config state plus memory create/restart/read/delete behavior on file-backed SQLite. `verify:cf-smoke` builds the Cloudflare bundle and boots it under real workerd (`wrangler dev`), driving the full first-run story with no Slack credentials: seeding from the Durable Object store, fail-closed 401s before the wizard, wizard validation and persistence, signed Slack delivery, dedupe, Memory state across a workerd restart, and tampered-signature rejection — with every outbound URL pointed at loopback.
 
 `verify:oss-export` rehearses the committed GitHub source export in a clean scratch directory, runs its offline verification, and finishes with the real build-before-deploy entrypoint under `wrangler deploy --dry-run`.
 

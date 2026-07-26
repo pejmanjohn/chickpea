@@ -6,6 +6,39 @@ import type { StateRpcResult, TagStateRpc } from './state-rpc.ts';
 import type { ConfigAgentPatch, ConfigStore } from './store.ts';
 import type { AgentSnapshot, ChannelAssignment, CustomAgentConfig } from './types.ts';
 import type { SlackStateStore } from '../slack/claim-store.ts';
+import {
+  MemoryStateError,
+  MemoryRateLimitError,
+  MemoryVersionConflictError,
+  type ApplyMemoryImportInput,
+  type CreateMemoryEntryInput,
+  type CreateForgetChallengeInput,
+  type ConfirmMemoryConversationContextInput,
+  type ForgetMemoryEntryInput,
+  type MemoryConversationContext,
+  type MemoryChannelScopeState,
+  type MemoryEntry,
+  type MemoryEntryFilter,
+  type MemoryEntryScopeSummary,
+  type MemoryForgetChallenge,
+  type MergeMemoryEntriesInput,
+  type MemoryMutationCounts,
+  type MemoryRevision,
+  type MemoryRpcRequest,
+  type MemoryRpcResponse,
+  type MemoryStateStore,
+  type MemoryStoreDescriptor,
+  type ObserveMemoryChannelScopeInput,
+  type RecordMemoryReviewInput,
+  type RecordMemoryAdminViewInput,
+  type RecordMemoryAdminEventInput,
+  type ReplayMemoryImportInput,
+  type RetainMemoryChannelScopeInput,
+  type ResolveMemoryConversationContextInput,
+  type TransitionMemoryEntryInput,
+  type UpdateMemoryEntryInput,
+} from '../memory/types.ts';
+import type { AuditEvent, AuditEventFilter } from '../audit/types.ts';
 
 /**
  * Cloudflare backends for the four public store interfaces: thin async proxies
@@ -35,6 +68,24 @@ function unwrap<T>(result: StateRpcResult<T>): T {
       throw new AgentExistsError(details?.agentId ?? 'unknown');
     case 'agent_still_assigned':
       throw new AgentStillAssignedError(details?.agentId ?? 'unknown', details?.keys ?? '');
+    case 'memory': {
+      const memoryCode = details?.memoryCode ?? 'memory_state_error';
+      if (memoryCode === 'memory_version_conflict') {
+        throw new MemoryVersionConflictError(
+          details?.entryId ?? 'unknown',
+          Number(details?.currentVersion ?? 0),
+        );
+      }
+      if (memoryCode === 'memory_rate_limited') {
+        const retryAt = Number(details?.retryAt);
+        if (Number.isSafeInteger(retryAt) && retryAt > 0) {
+          throw new MemoryRateLimitError(retryAt);
+        }
+      }
+      const memoryDetails = { ...(details ?? {}) };
+      delete memoryDetails.memoryCode;
+      throw new MemoryStateError(memoryCode, message, memoryDetails);
+    }
     default:
       throw new Error(message);
   }
@@ -158,4 +209,238 @@ export class CfSettingsStore implements SettingsStore {
   async mergeSettingStringSet(key: string, values: readonly string[]): Promise<string[]> {
     return unwrap(await this.stub.settingMergeStringSet(key, values));
   }
+}
+
+export class CfMemoryStateStore implements MemoryStateStore {
+  constructor(private readonly stub: TagStateRpc) {}
+
+  async ensurePublicStore(workspaceId: string): Promise<MemoryStoreDescriptor> {
+    const response = await this.execute({ kind: 'ensure_public_store', workspaceId });
+    if (response.kind !== 'store' || !response.store) throw unexpectedMemoryResponse();
+    return response.store;
+  }
+
+  async ensurePrivateStore(
+    workspaceId: string,
+    channelId: string,
+    generation: number,
+  ): Promise<MemoryStoreDescriptor> {
+    const response = await this.execute({
+      kind: 'ensure_private_store',
+      workspaceId,
+      channelId,
+      generation,
+    });
+    if (response.kind !== 'store' || !response.store) throw unexpectedMemoryResponse();
+    return response.store;
+  }
+
+  async getStore(storeId: string): Promise<MemoryStoreDescriptor | undefined> {
+    const response = await this.execute({ kind: 'get_store', storeId });
+    if (response.kind !== 'store') throw unexpectedMemoryResponse();
+    return orUndefined(response.store);
+  }
+
+  async listStores(workspaceId?: string): Promise<MemoryStoreDescriptor[]> {
+    const response = await this.execute({
+      kind: 'list_stores',
+      ...(workspaceId ? { workspaceId } : {}),
+    });
+    if (response.kind !== 'stores') throw unexpectedMemoryResponse();
+    return response.stores;
+  }
+
+  async createEntry(input: CreateMemoryEntryInput): Promise<MemoryEntry> {
+    return this.requiredEntry(await this.execute({ kind: 'create_entry', input }));
+  }
+
+  async getEntry(entryId: string): Promise<MemoryEntry | undefined> {
+    const response = await this.execute({ kind: 'get_entry', entryId });
+    if (response.kind !== 'entry') throw unexpectedMemoryResponse();
+    return orUndefined(response.entry);
+  }
+
+  async listEntries(filter: MemoryEntryFilter = {}): Promise<MemoryEntry[]> {
+    const response = await this.execute({ kind: 'list_entries', filter });
+    if (response.kind !== 'entries') throw unexpectedMemoryResponse();
+    return response.entries;
+  }
+
+  async listEntryScopeSummaries(workspaceId?: string): Promise<MemoryEntryScopeSummary[]> {
+    const response = await this.execute({
+      kind: 'list_entry_scope_summaries',
+      ...(workspaceId ? { workspaceId } : {}),
+    });
+    if (response.kind !== 'entry_scope_summaries') throw unexpectedMemoryResponse();
+    return response.summaries;
+  }
+
+  async replayImport(input: ReplayMemoryImportInput): Promise<MemoryEntry[] | undefined> {
+    const response = await this.execute({ kind: 'replay_import', input });
+    if (response.kind !== 'import_replay') throw unexpectedMemoryResponse();
+    return orUndefined(response.entries);
+  }
+
+  async applyImport(input: ApplyMemoryImportInput): Promise<MemoryEntry[]> {
+    const response = await this.execute({ kind: 'apply_import', input });
+    if (response.kind !== 'entries') throw unexpectedMemoryResponse();
+    return response.entries;
+  }
+
+  async recordAdminView(input: RecordMemoryAdminViewInput): Promise<void> {
+    const response = await this.execute({ kind: 'record_admin_view', input });
+    if (response.kind !== 'ok') throw unexpectedMemoryResponse();
+  }
+
+  async recordAdminEvent(input: RecordMemoryAdminEventInput): Promise<void> {
+    const response = await this.execute({ kind: 'record_admin_event', input });
+    if (response.kind !== 'ok') throw unexpectedMemoryResponse();
+  }
+
+  async updateEntry(input: UpdateMemoryEntryInput): Promise<MemoryEntry> {
+    return this.requiredEntry(await this.execute({ kind: 'update_entry', input }));
+  }
+
+  async forgetEntry(input: ForgetMemoryEntryInput): Promise<MemoryEntry> {
+    return this.requiredEntry(await this.execute({ kind: 'forget_entry', input }));
+  }
+
+  async transitionEntry(input: TransitionMemoryEntryInput): Promise<MemoryEntry> {
+    return this.requiredEntry(await this.execute({ kind: 'transition_entry', input }));
+  }
+
+  async mergeEntries(input: MergeMemoryEntriesInput): Promise<MemoryEntry> {
+    return this.requiredEntry(await this.execute({ kind: 'merge_entries', input }));
+  }
+
+  async recordReview(input: RecordMemoryReviewInput): Promise<void> {
+    const response = await this.execute({ kind: 'record_review', input });
+    if (response.kind !== 'ok') throw unexpectedMemoryResponse();
+  }
+
+  async createForgetChallenge(input: CreateForgetChallengeInput): Promise<void> {
+    const response = await this.execute({ kind: 'create_forget_challenge', input });
+    if (response.kind !== 'ok') throw unexpectedMemoryResponse();
+  }
+
+  async getForgetChallenge(
+    tokenHash: string,
+    actorId: string,
+  ): Promise<MemoryForgetChallenge | undefined> {
+    const response = await this.execute({ kind: 'get_forget_challenge', tokenHash, actorId });
+    if (response.kind !== 'forget_challenge') throw unexpectedMemoryResponse();
+    return orUndefined(response.challenge);
+  }
+
+  async listRevisions(entryId: string): Promise<MemoryRevision[]> {
+    const response = await this.execute({ kind: 'list_revisions', entryId });
+    if (response.kind !== 'revisions') throw unexpectedMemoryResponse();
+    return response.revisions;
+  }
+
+  async listAuditEvents(filter: AuditEventFilter = {}): Promise<AuditEvent[]> {
+    const response = await this.execute({ kind: 'list_audit_events', filter });
+    if (response.kind !== 'audit_events') throw unexpectedMemoryResponse();
+    return response.events;
+  }
+
+  async getMutationCounts(
+    workspaceId: string,
+    channelId: string,
+    actorId: string,
+  ): Promise<MemoryMutationCounts> {
+    const response = await this.execute({
+      kind: 'get_mutation_counts',
+      workspaceId,
+      channelId,
+      actorId,
+    });
+    if (response.kind !== 'mutation_counts') throw unexpectedMemoryResponse();
+    return response.counts;
+  }
+
+  async resolveConversationContext(
+    input: ResolveMemoryConversationContextInput,
+  ): Promise<MemoryConversationContext> {
+    const response = await this.execute({ kind: 'resolve_conversation_context', input });
+    if (response.kind !== 'conversation_context') throw unexpectedMemoryResponse();
+    return response.context;
+  }
+
+  async confirmConversationContext(
+    input: ConfirmMemoryConversationContextInput,
+  ): Promise<boolean> {
+    const response = await this.execute({ kind: 'confirm_conversation_context', input });
+    if (response.kind !== 'conversation_context_confirmed') {
+      throw unexpectedMemoryResponse();
+    }
+    return response.confirmed;
+  }
+
+  async observeChannelScope(
+    input: ObserveMemoryChannelScopeInput,
+  ): Promise<MemoryChannelScopeState> {
+    const response = await this.execute({ kind: 'observe_channel_scope', input });
+    if (response.kind !== 'channel_scope' || !response.state) {
+      throw unexpectedMemoryResponse();
+    }
+    return response.state;
+  }
+
+  async retainChannelScope(
+    input: RetainMemoryChannelScopeInput,
+  ): Promise<MemoryChannelScopeState> {
+    const response = await this.execute({ kind: 'retain_channel_scope', input });
+    if (response.kind !== 'channel_scope' || !response.state) {
+      throw unexpectedMemoryResponse();
+    }
+    return response.state;
+  }
+
+  async getChannelScope(
+    workspaceId: string,
+    channelId: string,
+  ): Promise<MemoryChannelScopeState | undefined> {
+    const response = await this.execute({ kind: 'get_channel_scope', workspaceId, channelId });
+    if (response.kind !== 'channel_scope') throw unexpectedMemoryResponse();
+    return orUndefined(response.state);
+  }
+
+  async listChannelScopes(workspaceId?: string): Promise<MemoryChannelScopeState[]> {
+    const response = await this.execute({
+      kind: 'list_channel_scopes',
+      ...(workspaceId ? { workspaceId } : {}),
+    });
+    if (response.kind !== 'channel_scopes') throw unexpectedMemoryResponse();
+    return response.states;
+  }
+
+  async cleanupRetention(): Promise<{
+    actorIdsCleared: number;
+    rateWindowsDeleted: number;
+    contextsDeleted: number;
+    forgetChallengesDeleted: number;
+  }> {
+    const response = await this.execute({ kind: 'cleanup_retention' });
+    if (response.kind !== 'cleanup') throw unexpectedMemoryResponse();
+    return {
+      actorIdsCleared: response.actorIdsCleared,
+      rateWindowsDeleted: response.rateWindowsDeleted,
+      contextsDeleted: response.contextsDeleted,
+      forgetChallengesDeleted: response.forgetChallengesDeleted,
+    };
+  }
+
+  private async execute(request: MemoryRpcRequest): Promise<MemoryRpcResponse> {
+    return unwrap(await this.stub.memoryExecute(request));
+  }
+
+  private requiredEntry(response: MemoryRpcResponse): MemoryEntry {
+    if (response.kind !== 'entry' || !response.entry) throw unexpectedMemoryResponse();
+    return response.entry;
+  }
+}
+
+function unexpectedMemoryResponse(): Error {
+  return new Error('Unexpected memory state response');
 }

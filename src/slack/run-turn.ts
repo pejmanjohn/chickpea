@@ -1,9 +1,14 @@
 import { WebClient } from '@slack/web-api';
 
 import { resolveAgentModel } from '../config/model-policy.ts';
+import { getGithubConnection } from '../config/github-app.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
+import { resolveSandboxSettings } from '../config/sandbox-settings.ts';
+import { getSettingsStore } from '../config/state-backend.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
+import { parseMemoryCommand } from '../memory/commands.ts';
+import { handleMemoryCommand, prepareMemoryTurn } from '../memory/runtime.ts';
 import {
   AgentPromptFailure,
   promptSlackThreadAgent,
@@ -15,6 +20,7 @@ import { registerSlackStatusTurn } from './status-registry.ts';
 import type { SlackTurnContext } from './thread-context.ts';
 import { slackThreadKey } from './thread-key.ts';
 import type { NormalizedSlackTurn } from './types.ts';
+import { selectSandbox } from '../sandbox/select.ts';
 import {
   assembleSlackPrompt,
   hydrateSlackContextViaWebClient,
@@ -129,6 +135,10 @@ export async function runTurn(
   // pinned): on a button deploy nobody sets the env var, so without the stored
   // fallback the footer's "Configure" link would be dead.
   const publicUrl = await resolveSlackPublicUrl(platformEnv);
+  const memoryCommand = parseMemoryCommand(turn.text);
+  const preparedMemory = memoryCommand
+    ? undefined
+    : await prepareMemoryTurn({ turn, platformEnv, client });
   const presenter = new WebClientPresenter(client, {
     channelId: turn.channelId,
     threadTs: turn.threadTs,
@@ -138,8 +148,9 @@ export async function runTurn(
     publicUrl,
     userId: turn.userId,
     workspaceId: turn.workspaceId,
+    ...(preparedMemory ? { memoryFooterItems: preparedMemory.footerItems } : {}),
   });
-  const conversationKey = slackThreadKey(turn);
+  const conversationKey = preparedMemory?.conversationKey ?? slackThreadKey(turn);
   const statusGeneration = options.turnId ?? `msg:${turn.channelId}:${turn.messageTs}`;
   const statusTurn = registerSlackStatusTurn(conversationKey, presenter, {
     generation: statusGeneration,
@@ -154,19 +165,34 @@ export async function runTurn(
     statusTurn.close();
     await statusTurn.drain();
   };
+  let usedCloudflareSandbox = false;
 
   // 1. Visible work: set status; if it is rejected, post a durable progress
   //    placeholder so the user still sees work in-flight before the final.
   try {
+    if (memoryCommand) {
+      const handled = await handleMemoryCommand({ turn, platformEnv, client, presenter });
+      if (handled) {
+        await options.onDelivered?.();
+        return;
+      }
+    }
     const statusSet = await statusTurn.setStatus(readingThreadStatus());
     if (!statusSet) {
       await presenter.postProgress(`${assignment.agent.name} is reading the thread.`);
     }
 
     // 2. Hydrate bounded context (degrades to current-message-only on failure).
-    const context = await hydrateSlackContextViaWebClient(client, turn);
+    const hydratedContext = await hydrateSlackContextViaWebClient(client, turn);
+    const context = applyVisibilityBarrier(
+      hydratedContext,
+      preparedMemory?.visibilityBarrierAt ?? null,
+    );
     await statusTurn.setStatus(hydratedContextStatus(context));
-    const prompt = assembleSlackPrompt(turn, context);
+    const prompt = assembleSlackPrompt(turn, context, {
+      ...(preparedMemory?.promptBlock ? { memoryBlock: preparedMemory.promptBlock } : {}),
+      memorySelected: (preparedMemory?.selection?.entries.length ?? 0) > 0,
+    });
 
     // 3 + 4. Prompt the durable agent, then deliver the final — with clearStatus
     //    in a finally so a status that was actually set is cleared even if
@@ -187,17 +213,20 @@ export async function runTurn(
       text = options.replayText;
     } else {
       try {
+        usedCloudflareSandbox = await shouldUseCloudflareSandbox(assignment, platformEnv);
         text = await promptSlackThreadAgent(
           conversationKey,
           prompt,
           platformEnv,
           statusGeneration,
+          usedCloudflareSandbox,
         );
       } catch (err) {
         console.error('[chickpea] agent run failed:', sanitizeError(err));
         const recoveredText = await options.beforeDelivery?.();
         await closeAndDrainStatus();
         if (recoveredText) {
+          await preparedMemory?.confirmInjection();
           await presenter.deliverFinal(recoveredText, 'markdown');
           await options.onDelivered?.();
           return;
@@ -207,7 +236,18 @@ export async function runTurn(
         return;
       }
     }
-    await options.beforeDelivery?.();
+    const recoveredText = await options.beforeDelivery?.();
+    // Confirmation only prevents reinjecting the same selection into this
+    // transcript. A concurrent turn can legitimately advance the epoch before
+    // this one finishes; that bookkeeping race must not discard a completed,
+    // lease-valid answer.
+    await preparedMemory?.confirmInjection();
+    const leaseValid = await preparedMemory?.validateLease() ?? true;
+    text = resolveMemoryDeliveryText(
+      text,
+      recoveredText,
+      leaseValid,
+    );
     await closeAndDrainStatus();
     await presenter.deliverFinal(text, 'markdown');
     await options.onDelivered?.();
@@ -220,9 +260,52 @@ export async function runTurn(
     } finally {
       // The Sandbox DO lives in a different isolate from the agent factory;
       // release it by its durable thread id at the actual end-of-turn seam.
-      await releaseCloudflareSandboxTurn(platformEnv, conversationKey);
+      await releaseCloudflareSandboxTurn(
+        platformEnv,
+        conversationKey,
+        usedCloudflareSandbox,
+      );
     }
   }
+}
+
+async function shouldUseCloudflareSandbox(
+  assignment: ResolvedAssignment,
+  env: PlatformEnv | undefined,
+): Promise<boolean> {
+  if (!isCloudflareTarget()) return false;
+  const repositories = assignment.agent.repositories ?? [];
+  if (repositories.length === 0) return false;
+
+  try {
+    const settingsStore = getSettingsStore(env);
+    const [settings, connection] = await Promise.all([
+      resolveSandboxSettings(settingsStore),
+      getGithubConnection(settingsStore),
+    ]);
+    return selectSandbox({
+      target: 'cloudflare',
+      enabled: settings.enabled,
+      appConnected: connection.mode === 'app',
+      repositoryGrants: repositories,
+    }) === 'cloudflare';
+  } catch {
+    // The agent factory resolves the same live settings and will fail closed.
+    // Avoid touching a container when its policy cannot be established here.
+    return false;
+  }
+}
+
+export const MEMORY_CHANGED_RETRY_TEXT =
+  'Channel memory or Slack access changed while I was answering, so I withheld the draft. Before trying again, check whether any requested external action already completed.';
+
+export function resolveMemoryDeliveryText(
+  draft: string,
+  recoveredText: string | undefined,
+  leaseValid: boolean,
+): string {
+  if (leaseValid) return draft;
+  return recoveredText || MEMORY_CHANGED_RETRY_TEXT;
 }
 
 export function agentFailureText(err: unknown): string {
@@ -285,6 +368,33 @@ function modelStatus(modelId: string): SlackStatusUpdate {
   return {
     text: `is using ${modelId}`,
   };
+}
+
+export function applyVisibilityBarrier(
+  context: SlackTurnContext,
+  barrierAt: number | null,
+): SlackTurnContext {
+  if (barrierAt === null) return context;
+  return {
+    ...context,
+    messages: context.messages.filter((message) => {
+      if (message.isTrigger) return true;
+      return slackTimestampAtOrAfter(message.ts, barrierAt);
+    }),
+  };
+}
+
+function slackTimestampAtOrAfter(timestamp: string, barrierAt: number): boolean {
+  if (!Number.isSafeInteger(barrierAt) || barrierAt < 0) return false;
+  const match = /^(\d+)(?:\.(\d+))?$/.exec(timestamp);
+  if (!match) return false;
+  const fraction = match[2] ?? '';
+  const scaleDigits = Math.max(3, fraction.length);
+  const scale = 10n ** BigInt(scaleDigits);
+  const timestampUnits =
+    BigInt(match[1]!) * scale + BigInt(fraction.padEnd(scaleDigits, '0') || '0');
+  const barrierUnits = BigInt(barrierAt) * (scale / 1_000n);
+  return timestampUnits >= barrierUnits;
 }
 
 export function sanitizeError(err: unknown): string {

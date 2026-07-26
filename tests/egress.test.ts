@@ -325,8 +325,9 @@ test('buildEgressPlan keeps connector scopes off the open internet and fails clo
   assert.deepEqual(scope.network.allowedMethods, ['GET', 'DELETE']);
 
   // Fallback (only if just-bash stops exposing secureFetch): every prefix but
-  // capped at the baseline methods, so connector writes are never global.
-  assert.deepEqual(fallbackNetwork.allowedMethods, ['GET', 'HEAD', 'POST']);
+  // read-only, because static NetworkConfig cannot enforce per-request write
+  // admission from the current Slack request.
+  assert.deepEqual(fallbackNetwork.allowedMethods, ['GET', 'HEAD']);
   assert.equal(fallbackNetwork.dangerouslyAllowFullInternetAccess, true);
 });
 

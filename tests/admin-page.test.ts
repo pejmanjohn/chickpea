@@ -184,7 +184,16 @@ type SandboxStatusFixture = {
   target: 'cloudflare' | 'node';
   workersPaidNote: string | null;
 };
-
+type MemoryScopeFixture = {
+  workspaceId: string;
+  channelId: string;
+  displayName: string;
+  privacy: 'public' | 'private';
+  lifecycle: string;
+  storeId: string;
+  generation: number | null;
+  entryCount: number;
+};
 function runAdminPageHarness(
   options: {
     assignments?: AssignmentFixture[];
@@ -224,6 +233,12 @@ function runAdminPageHarness(
     skillResolution?: Record<string, unknown>;
     skillResolveError?: { status: number; error: string; message?: string };
     mcpTestResult?: { ok: true; tools: Array<{ name: string; title?: string; description?: string }> } | { ok: false; code: string; message: string };
+    memoryScopes?: MemoryScopeFixture[];
+    memoryFiles?: Record<string, unknown[]>;
+    deferMemoryFiles?: boolean;
+    memorySaveError?: { status: number; error: string; currentVersion?: number };
+    memoryDeleteError?: { status: number; error: string };
+    memoryReviewError?: { status: number; error: string };
   } = {},
 ): {
   app: FakeElement;
@@ -261,9 +276,14 @@ function runAdminPageHarness(
   mcpSecretDeletes: Array<{ agentId: string; id: string; body: Record<string, unknown> }>;
   apiConnectionSecretPuts: Array<{ agentId: string; id: string; body: Record<string, unknown> }>;
   apiConnectionSecretDeletes: Array<{ agentId: string; id: string; body: Record<string, unknown> }>;
+  memoryPuts: Array<Record<string, unknown>>;
+  memoryDeletes: Array<Record<string, unknown>>;
+  memoryReviewPosts: Array<Record<string, unknown>>;
+  clipboardWrites: string[];
   gallerySearchFocusCalls(): number;
   gallerySearchSelections: Array<[number, number]>;
   resolveOpsEffective(): void;
+  resolveMemoryFiles(channelId: string): void;
 } {
   const makeRegion = (): FakeRegion => ({
     inert: false,
@@ -339,6 +359,10 @@ function runAdminPageHarness(
   const mcpSecretDeletes: Array<{ agentId: string; id: string; body: Record<string, unknown> }> = [];
   const apiConnectionSecretPuts: Array<{ agentId: string; id: string; body: Record<string, unknown> }> = [];
   const apiConnectionSecretDeletes: Array<{ agentId: string; id: string; body: Record<string, unknown> }> = [];
+  const memoryPuts: Array<Record<string, unknown>> = [];
+  const memoryDeletes: Array<Record<string, unknown>> = [];
+  const memoryReviewPosts: Array<Record<string, unknown>> = [];
+  const clipboardWrites: string[] = [];
   let gallerySearchFocusCalls = 0;
   const gallerySearchSelections: Array<[number, number]> = [];
   const mcpTestResult = options.mcpTestResult;
@@ -373,6 +397,23 @@ function runAdminPageHarness(
   const skillResolveError = options.skillResolveError;
   const skillResolution = options.skillResolution;
   let resolveOpsEffective: (() => void) | undefined;
+  const memoryFileResolvers: Record<string, () => void> = {};
+  let memoryEntry = {
+    entryId: 'mem_release', storeId: 'store_public_T_DESIGN', workspaceId: 'T_DESIGN',
+    sourceChannelId: 'C0EXR3L9T', slug: 'release-guidance', description: 'Use the checklist.',
+    type: 'project', body: 'Run <script>alert(1)</script> before release.', status: 'active',
+    version: 1, modifiedAt: 1753444800000,
+  };
+  let memoryReview: { eventId: string; reasonCode: string; createdAt: number } | null = {
+    eventId: 'audit_review', reasonCode: 'stale', createdAt: 1753444800000,
+  };
+  const memoryHistory: Array<Record<string, unknown>> = [
+    { entryId: 'mem_release', version: 1, operation: 'create', createdAt: 1753444800000 },
+  ];
+  let defaultMemoryFiles: unknown[] = [
+    { name: 'MEMORY.md', path: 'channel/C0EXR3L9T/MEMORY.md', generated: true, entryId: null, content: '# Channel Memory Index\n\n- [release-guidance](release-guidance.md) — Use the checklist.\n' },
+    { name: 'release-guidance.md', path: 'channel/C0EXR3L9T/release-guidance.md', generated: false, entryId: 'mem_release', version: 1, status: 'active', description: 'Use the checklist.' },
+  ];
   const location = { pathname: options.initialPath ?? '/admin' };
   const historyPushes: string[] = [];
   const historyReplaces: string[] = [];
@@ -484,9 +525,102 @@ function runAdminPageHarness(
   const agentsList: Record<string, unknown>[] = (agentsFixture ?? [releaseAgent, opsAgent]).map(
     (agent) => ({ ...(agent as Record<string, unknown>) }),
   );
+  const harnessOptions = options;
 
   const fetch = (path: string, options?: { method?: string; body?: string }): Promise<FakeResponse> => {
     const method = options?.method ?? 'GET';
+    if (path === '/admin/api/audit/memory/scopes' && method === 'GET') {
+      return Promise.resolve(jsonResponse({
+        scopes: harnessOptions.memoryScopes ?? [{
+          workspaceId: 'T_DESIGN', channelId: 'C0EXR3L9T', displayName: 'eng-releases',
+          privacy: 'public', lifecycle: 'active', storeId: 'store_public_T_DESIGN',
+          generation: null, entryCount: 1,
+        }],
+      }));
+    }
+    if (path.startsWith('/admin/api/audit/memory/stores/') && path.includes('/files?sourceChannelId=') && method === 'GET') {
+      const channelId = new URL(path, 'http://admin.test').searchParams.get('sourceChannelId') ?? '';
+      const files = harnessOptions.memoryFiles?.[channelId] ?? (channelId === 'C0EXR3L9T' ? defaultMemoryFiles : []);
+      if (!harnessOptions.deferMemoryFiles) return Promise.resolve(jsonResponse({ files }));
+      return new Promise<FakeResponse>((resolve) => {
+        memoryFileResolvers[channelId] = () => resolve(jsonResponse({ files }));
+      });
+    }
+    if (path === '/admin/api/audit/memory/entries/mem_release/history' && method === 'GET') {
+      return Promise.resolve(jsonResponse({ revisions: memoryHistory }));
+    }
+    if (path === '/admin/api/audit/memory/entries/mem_release' && method === 'PUT') {
+      const body = JSON.parse(options?.body ?? '{}') as Record<string, unknown>;
+      memoryPuts.push(body);
+      if (harnessOptions.memorySaveError) {
+        if (harnessOptions.memorySaveError.error === 'memory_version_conflict') {
+          memoryEntry = {
+            ...memoryEntry,
+            version: harnessOptions.memorySaveError.currentVersion ?? memoryEntry.version + 1,
+            description: 'Latest saved guidance.',
+            body: 'Latest saved body.',
+            modifiedAt: memoryEntry.modifiedAt + 1000,
+          };
+        }
+        return Promise.resolve(jsonResponse(harnessOptions.memorySaveError, harnessOptions.memorySaveError.status));
+      }
+      memoryEntry = {
+        ...memoryEntry,
+        description: String(body.description ?? ''),
+        type: String(body.type ?? 'fact'),
+        body: String(body.body ?? ''),
+        version: memoryEntry.version + 1,
+        modifiedAt: memoryEntry.modifiedAt + 1000,
+      };
+      memoryHistory.push({
+        entryId: memoryEntry.entryId,
+        version: memoryEntry.version,
+        operation: 'update',
+        createdAt: memoryEntry.modifiedAt,
+      });
+      defaultMemoryFiles = defaultMemoryFiles.map((file) => {
+        const record = file as Record<string, unknown>;
+        return record.entryId === memoryEntry.entryId
+          ? { ...record, version: memoryEntry.version, description: memoryEntry.description }
+          : record;
+      });
+      return Promise.resolve(jsonResponse({
+        entry: memoryEntry,
+        projected: '---\nname: "release-guidance"\n---\n\n' + memoryEntry.body + '\n',
+      }));
+    }
+    if (path === '/admin/api/audit/memory/entries/mem_release' && method === 'DELETE') {
+      const body = JSON.parse(options?.body ?? '{}') as Record<string, unknown>;
+      memoryDeletes.push(body);
+      if (harnessOptions.memoryDeleteError) {
+        return Promise.resolve(jsonResponse(harnessOptions.memoryDeleteError, harnessOptions.memoryDeleteError.status));
+      }
+      defaultMemoryFiles = defaultMemoryFiles.filter((file) =>
+        (file as Record<string, unknown>).entryId !== memoryEntry.entryId
+      ).map((file) => ({
+        ...(file as Record<string, unknown>),
+        ...((file as Record<string, unknown>).generated
+          ? { content: '# Channel Memory Index\n\n' }
+          : {}),
+      }));
+      return Promise.resolve(jsonResponse({ irreversible: true }));
+    }
+    if (path === '/admin/api/audit/memory/entries/mem_release/reviews/audit_review/resolve' && method === 'POST') {
+      const body = JSON.parse(options?.body ?? '{}') as Record<string, unknown>;
+      memoryReviewPosts.push(body);
+      if (harnessOptions.memoryReviewError) {
+        return Promise.resolve(jsonResponse(harnessOptions.memoryReviewError, harnessOptions.memoryReviewError.status));
+      }
+      memoryReview = null;
+      return Promise.resolve(jsonResponse({ ok: true }));
+    }
+    if (path === '/admin/api/audit/memory/entries/mem_release' && method === 'GET') {
+      return Promise.resolve(jsonResponse({
+        entry: memoryEntry,
+        projected: '---\nname: "release-guidance"\n---\n\n' + memoryEntry.body + '\n',
+        unresolvedReview: memoryReview,
+      }));
+    }
     if (path === '/admin/api/agents' && method === 'GET') {
       return Promise.resolve(jsonResponse({ agents: agentsList }));
     }
@@ -932,6 +1066,14 @@ function runAdminPageHarness(
       },
       URL,
       URLSearchParams,
+      navigator: {
+        clipboard: {
+          writeText(text: string) {
+            clipboardWrites.push(text);
+            return Promise.resolve();
+          },
+        },
+      },
       window,
       history,
       location,
@@ -974,11 +1116,21 @@ function runAdminPageHarness(
     mcpSecretDeletes,
     apiConnectionSecretPuts,
     apiConnectionSecretDeletes,
+    memoryPuts,
+    memoryDeletes,
+    memoryReviewPosts,
+    clipboardWrites,
     gallerySearchFocusCalls: () => gallerySearchFocusCalls,
     gallerySearchSelections,
     resolveOpsEffective() {
       assert.ok(resolveOpsEffective, 'expected C_OPS effective-config request to be pending');
       resolveOpsEffective();
+    },
+    resolveMemoryFiles(channelId: string) {
+      const resolve = memoryFileResolvers[channelId];
+      assert.ok(resolve, `expected ${channelId} memory files request to be pending`);
+      delete memoryFileResolvers[channelId];
+      resolve();
     },
   };
 }
@@ -1072,9 +1224,12 @@ test('Channels opens a Slack overview with an uncounted platform rail and explic
   await flushAsync();
 
   const html = harness.app.innerHTML;
+  const topbar = html.match(/<header class="topbar">[\s\S]*?<\/header>/)?.[0] ?? '';
   assert.equal(harness.locationPath(), '/admin/channels');
   assert.deepEqual(harness.historyReplaces, ['/admin/channels']);
   assert.match(html, /class="btn btn-soft nav-active" data-action="open-channels">Channels<\/button>/);
+  assert.doesNotMatch(topbar, /Audit logs/);
+  assert.doesNotMatch(topbar, /data-action="open-audit"/);
   assert.match(html, /<div class="rail-head"><span class="section-eyebrow">Channels<\/span><\/div>/);
   assert.doesNotMatch(html, /<div class="rail-head">[\s\S]*?<span class="hint"[^>]*>\d+<\/span>/);
   assert.match(html, /class="platform-row active" data-action="open-channels"/);
@@ -1096,6 +1251,26 @@ test('Channels opens a Slack overview with an uncounted platform rail and explic
   assert.match(harness.app.innerHTML, /<h1 class="page-title mono-title">#eng-releases<\/h1>/);
   assert.match(harness.app.innerHTML, /class="chan-item active"/);
   assert.doesNotMatch(harness.app.innerHTML, /class="platform-row active"/);
+  const channelHeader = harness.app.innerHTML.match(/<div class="main-head">[\s\S]*?<\/div><\/div>/)?.[0] ?? '';
+  assert.doesNotMatch(channelHeader, /data-action="open-channel-memory"/);
+  assert.match(harness.app.innerHTML, /<h2 class="section-title">Memory<\/h2>/);
+  assert.match(harness.app.innerHTML, /data-action="open-channel-memory"[^>]*data-store="store_public_T_DESIGN"/);
+  assert.match(harness.app.innerHTML, /<span class="channel-memory-total">1 saved memory<\/span>/);
+  assert.ok(harness.app.innerHTML.indexOf('Channel instructions') < harness.app.innerHTML.indexOf('<h2 class="section-title">Memory</h2>'));
+  assert.ok(harness.app.innerHTML.indexOf('<h2 class="section-title">Memory</h2>') < harness.app.innerHTML.indexOf('Access summary'));
+
+  click({
+    target: actionTarget({
+      'data-action': 'open-channel-memory',
+      'data-workspace': 'T_DESIGN',
+      'data-channel': 'C0EXR3L9T',
+      'data-store': 'store_public_T_DESIGN',
+    }),
+  });
+  await flushAsync();
+  assert.equal(harness.locationPath(), '/admin/audit-logs/memory/store_public_T_DESIGN/C0EXR3L9T');
+  assert.match(harness.app.innerHTML, /class="btn btn-soft nav-active" data-action="open-channels">Channels<\/button>/);
+  assert.match(harness.app.innerHTML, /<h1 class="page-title">Audit logs<\/h1>/);
 
   click({ target: actionTarget({ 'data-action': 'open-channels' }) });
   assert.equal(harness.locationPath(), '/admin/channels');
@@ -4127,6 +4302,282 @@ test('Settings explains the Cloudflare-only coding tier and saves install-level 
       monthlySessionCap: 200,
     },
   ]);
+});
+
+test('Settings omits the redundant always-on channel memory status block', async () => {
+  const harness = runAdminPageHarness();
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+
+  click({ target: actionTarget({ 'data-action': 'open-settings' }) });
+  await flushAsync();
+
+  assert.doesNotMatch(harness.app.innerHTML, /<h2 class="section-title">Channel memory<\/h2>/);
+  assert.doesNotMatch(harness.app.innerHTML, /Explicit channel memory is available wherever the live Slack scope is eligible/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="memory-enabled"/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="memory-save"/);
+  assert.doesNotMatch(harness.app.innerHTML, /SLACK_TAG_MEMORY_ENABLED/);
+});
+
+test('Audit logs deep link renders the real Memory scope, generated index, editor, and disabled future domains', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/audit-logs/memory/store_public_T_DESIGN/C0EXR3L9T/mem_release',
+  });
+  await flushAsync();
+
+  assert.equal(
+    harness.locationPath(),
+    '/admin/audit-logs/memory/store_public_T_DESIGN/C0EXR3L9T/mem_release',
+  );
+  assert.match(harness.app.innerHTML, /Audit logs/);
+  assert.match(harness.app.innerHTML, /Scheduled work/);
+  assert.match(harness.app.innerHTML, /Network events/);
+  assert.match(harness.app.innerHTML, /class="audit-tab" role="tab" disabled/);
+  assert.match(harness.app.innerHTML, /#eng-releases/);
+  assert.match(harness.app.innerHTML, /release-guidance\.md/);
+  assert.match(harness.app.innerHTML, /Review requested/);
+  assert.match(harness.app.innerHTML, /Revision history \(1\)/);
+  assert.match(harness.app.innerHTML, /Memories saved in #eng-releases can help Chickpea respond across this workspace/);
+  assert.match(harness.app.innerHTML, /they can only be changed from #eng-releases/);
+  assert.doesNotMatch(harness.app.innerHTML, /Review durable actions and retained data/);
+  assert.doesNotMatch(harness.app.innerHTML, />Export store</);
+  assert.doesNotMatch(harness.app.innerHTML, />Import</);
+});
+
+test('Channel Memory action keeps a zero-count channel in context', async () => {
+  const harness = runAdminPageHarness({ memoryScopes: [] });
+  await flushAsync();
+
+  harness.listeners.click?.({
+    target: actionTarget({
+      'data-action': 'select-channel',
+      'data-workspace': 'T_DESIGN',
+      'data-channel': 'C0EXR3L9T',
+    }),
+  });
+  assert.match(harness.app.innerHTML, /<span class="channel-memory-total">0 saved memories<\/span>/);
+
+  harness.listeners.click?.({
+    target: actionTarget({
+      'data-action': 'open-channel-memory',
+      'data-workspace': 'T_DESIGN',
+      'data-channel': 'C0EXR3L9T',
+      'data-store': '',
+    }),
+  });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /No memories saved in #eng-releases/);
+  assert.match(harness.app.innerHTML, /after a member asks Chickpea to remember something in Slack/);
+  assert.doesNotMatch(harness.app.innerHTML, /No memory selected/);
+});
+
+test('Memory editor escapes stored Markdown and explains irreversible deletion and generated indexes', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/audit-logs/memory/store_public_T_DESIGN/C0EXR3L9T/mem_release',
+  });
+  await flushAsync();
+
+  assert.doesNotMatch(harness.app.innerHTML, /<script>alert\(1\)<\/script>/);
+  assert.match(harness.app.innerHTML, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+  assert.match(harness.app.innerHTML, /Relevant saved memories are used automatically in replies/);
+  assert.match(harness.app.innerHTML, /please remember that &lt;what matters&gt;/);
+  assert.match(harness.app.innerHTML, /@Chickpea !remember &lt;name&gt; &mdash; &lt;description&gt;/);
+  assert.match(harness.app.innerHTML, /@Chickpea !memory help/);
+  assert.match(harness.app.innerHTML, /@Chickpea !memory show &lt;slug&gt;/);
+  assert.match(harness.app.innerHTML, /@Chickpea !memory merge &lt;slug-a&gt; &lt;slug-b&gt; as &lt;name&gt; &mdash; &lt;description&gt;/);
+  assert.match(harness.app.innerHTML, /@Chickpea !memory report &lt;channel-id&gt;\/&lt;slug&gt; &lt;stale\|incorrect\|unsafe\|unclear&gt;/);
+  assert.doesNotMatch(harness.app.innerHTML, /@Chickpea remember &hellip;/);
+  assert.match(harness.app.innerHTML, /Generated <code>MEMORY\.md<\/code> files are never edited directly/);
+
+  harness.listeners.click?.({
+    target: actionTarget({ 'data-action': 'memory-copy-controls' }),
+  });
+  await flushAsync();
+  assert.equal(harness.clipboardWrites.length, 1);
+  assert.match(
+    harness.clipboardWrites[0] ?? '',
+    /@Chickpea !memory report <channel-id>\/<slug> <stale\|incorrect\|unsafe\|unclear>/,
+  );
+  assert.match(harness.clipboardWrites[0] ?? '', /@Chickpea !memory help/);
+  assert.match(harness.clipboardWrites[0] ?? '', /@Chickpea !memory show <slug>/);
+  assert.match(harness.clipboardWrites[0] ?? '', /@Chickpea !memory merge <slug-a> <slug-b> as <name> — <description>/);
+
+  harness.listeners.click?.({
+    target: actionTarget({ 'data-action': 'memory-delete-open' }),
+  });
+  assert.match(harness.app.innerHTML, /Delete release-guidance\?/);
+  assert.match(
+    harness.app.innerHTML,
+    /This permanently removes the canonical memory body and the content from every stored revision in Chickpea\. Body-free audit tombstones and revision metadata remain\. Prior exports, Slack or provider logs, backups, and Flue transcripts may still retain copies; Chickpea cannot retract them\./,
+  );
+
+  harness.listeners.click?.({
+    target: actionTarget({ 'data-action': 'memory-delete-cancel' }),
+  });
+  assert.doesNotMatch(harness.app.innerHTML, /Delete release-guidance\?/);
+
+  harness.listeners.input?.({
+    target: inputTarget({ 'data-action': 'memory-description' }, 'Unsaved operator draft'),
+  });
+  harness.listeners.click?.({
+    target: actionTarget({ 'data-action': 'open-settings' }),
+  });
+  assert.equal(
+    harness.locationPath(),
+    '/admin/audit-logs/memory/store_public_T_DESIGN/C0EXR3L9T/mem_release',
+  );
+  assert.match(harness.app.innerHTML, /Save or discard the current memory draft before navigating away/);
+});
+
+test('Memory editor saves a changed draft through the browser harness', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/audit-logs/memory/store_public_T_DESIGN/C0EXR3L9T/mem_release',
+  });
+  await flushAsync();
+
+  harness.listeners.input?.({
+    target: inputTarget({ 'data-action': 'memory-description' }, 'Updated release guidance.'),
+  });
+  harness.listeners.input?.({
+    target: inputTarget({ 'data-action': 'memory-body' }, 'Run the focused and full suites.'),
+  });
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'memory-save' }) });
+  await flushAsync();
+
+  assert.deepEqual(harness.memoryPuts, [{
+    expectedVersion: 1,
+    description: 'Updated release guidance.',
+    type: 'project',
+    body: 'Run the focused and full suites.',
+  }]);
+  assert.match(harness.app.innerHTML, /Memory saved\./);
+  assert.match(harness.app.innerHTML, /value="Updated release guidance\."/);
+  assert.match(harness.app.innerHTML, /Version 2/);
+});
+
+test('Memory editor preserves a conflicted draft until the operator loads the latest version', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/audit-logs/memory/store_public_T_DESIGN/C0EXR3L9T/mem_release',
+    memorySaveError: { status: 409, error: 'memory_version_conflict', currentVersion: 2 },
+  });
+  await flushAsync();
+
+  harness.listeners.input?.({
+    target: inputTarget({ 'data-action': 'memory-description' }, 'Unsaved operator draft'),
+  });
+  harness.listeners.input?.({
+    target: inputTarget({ 'data-action': 'memory-body' }, 'Unsaved body'),
+  });
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'memory-save' }) });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /now version 2/);
+  assert.match(harness.app.innerHTML, /Your draft is preserved/);
+  assert.match(harness.app.innerHTML, /value="Unsaved operator draft"/);
+  assert.match(harness.app.innerHTML, /Unsaved body<\/textarea>/);
+  assert.match(harness.app.innerHTML, /Latest saved guidance\./);
+
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'memory-use-latest' }) });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /Loaded the latest saved version\./);
+  assert.match(harness.app.innerHTML, /value="Latest saved guidance\."/);
+  assert.doesNotMatch(harness.app.innerHTML, /Unsaved operator draft/);
+});
+
+test('Memory review resolution exposes both success and error states', async () => {
+  const success = runAdminPageHarness({
+    initialPath: '/admin/audit-logs/memory/store_public_T_DESIGN/C0EXR3L9T/mem_release',
+  });
+  await flushAsync();
+  success.listeners.click?.({ target: actionTarget({ 'data-action': 'memory-resolve-review' }) });
+  await flushAsync();
+  assert.deepEqual(success.memoryReviewPosts, [{ expectedVersion: 1, resolution: 'confirmed' }]);
+  assert.match(success.app.innerHTML, /Review resolved\./);
+  assert.doesNotMatch(success.app.innerHTML, /Review requested/);
+
+  const failure = runAdminPageHarness({
+    initialPath: '/admin/audit-logs/memory/store_public_T_DESIGN/C0EXR3L9T/mem_release',
+    memoryReviewError: { status: 409, error: 'memory_review_not_current' },
+  });
+  await flushAsync();
+  failure.listeners.click?.({ target: actionTarget({ 'data-action': 'memory-resolve-review' }) });
+  await flushAsync();
+  assert.match(failure.app.innerHTML, /memory_review_not_current/);
+  assert.match(failure.app.innerHTML, /Review requested/);
+});
+
+test('Memory permanent delete exposes honest success and error states', async () => {
+  const success = runAdminPageHarness({
+    initialPath: '/admin/audit-logs/memory/store_public_T_DESIGN/C0EXR3L9T/mem_release',
+  });
+  await flushAsync();
+  success.listeners.click?.({ target: actionTarget({ 'data-action': 'memory-delete-open' }) });
+  success.listeners.click?.({ target: actionTarget({ 'data-action': 'memory-delete-confirm' }) });
+  await flushAsync();
+  assert.deepEqual(success.memoryDeletes, [{ expectedVersion: 1, acknowledgeIrreversible: true }]);
+  assert.match(
+    success.app.innerHTML,
+    /Memory deleted from Chickpea\. Its canonical body and revision content were removed; body-free audit records remain, and prior exports, Slack or provider logs, backups, and Flue transcripts may still retain copies\./,
+  );
+  assert.doesNotMatch(success.app.innerHTML, /release-guidance\.md/);
+
+  const failure = runAdminPageHarness({
+    initialPath: '/admin/audit-logs/memory/store_public_T_DESIGN/C0EXR3L9T/mem_release',
+    memoryDeleteError: { status: 503, error: 'memory_delete_unavailable' },
+  });
+  await flushAsync();
+  failure.listeners.click?.({ target: actionTarget({ 'data-action': 'memory-delete-open' }) });
+  failure.listeners.click?.({ target: actionTarget({ 'data-action': 'memory-delete-confirm' }) });
+  await flushAsync();
+  assert.match(failure.app.innerHTML, /memory_delete_unavailable/);
+  assert.match(failure.app.innerHTML, /release-guidance\.md/);
+});
+
+test('Memory scope navigation ignores out-of-order file responses', async () => {
+  const scopes: MemoryScopeFixture[] = [
+    {
+      workspaceId: 'T_DESIGN', channelId: 'C_FIRST', displayName: 'first',
+      privacy: 'public', lifecycle: 'active', storeId: 'store_public_T_DESIGN',
+      generation: null, entryCount: 1,
+    },
+    {
+      workspaceId: 'T_DESIGN', channelId: 'C_SECOND', displayName: 'second',
+      privacy: 'public', lifecycle: 'active', storeId: 'store_public_T_DESIGN',
+      generation: null, entryCount: 1,
+    },
+  ];
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/audit-logs/memory/store_public_T_DESIGN/C_FIRST',
+    memoryScopes: scopes,
+    memoryFiles: {
+      C_FIRST: [{ name: 'MEMORY.md', generated: true, content: '# FIRST INDEX\n' }],
+      C_SECOND: [{ name: 'MEMORY.md', generated: true, content: '# SECOND INDEX\n' }],
+    },
+    deferMemoryFiles: true,
+  });
+  await flushAsync();
+
+  harness.listeners.click?.({
+    target: actionTarget({
+      'data-action': 'select-memory-scope',
+      'data-store': 'store_public_T_DESIGN',
+      'data-channel': 'C_SECOND',
+    }),
+  });
+  harness.resolveMemoryFiles('C_SECOND');
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /# SECOND INDEX/);
+
+  harness.resolveMemoryFiles('C_FIRST');
+  await flushAsync();
+  assert.equal(
+    harness.locationPath(),
+    '/admin/audit-logs/memory/store_public_T_DESIGN/C_SECOND',
+  );
+  assert.match(harness.app.innerHTML, /# SECOND INDEX/);
+  assert.doesNotMatch(harness.app.innerHTML, /# FIRST INDEX/);
 });
 
 test('Repositories tab explains grants-implied sandbox availability without a profile toggle', async () => {

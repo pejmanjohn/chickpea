@@ -1,6 +1,7 @@
 import { defineTool, type SandboxFactory, type SessionEnv } from '@flue/runtime';
 import * as v from 'valibot';
 
+import { assertCurrentRequestSideEffectAllowed } from '../memory/tool-policy.ts';
 import type {
   SlackArtifactInput,
   SlackArtifactResult,
@@ -44,6 +45,7 @@ export function createWorkspaceArtifactCapability(
       title: v.optional(v.pipe(v.string(), v.minLength(1))),
     }),
     async run({ input }) {
+      assertCurrentRequestSideEffectAllowed('post_artifact');
       if (!sessionEnv) {
         throw new Error('workspace is not initialized');
       }

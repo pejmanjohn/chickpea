@@ -1670,6 +1670,48 @@ test('admin sandbox settings are auth-gated and round-trip install-level control
   }
 });
 
+test('admin memory status is auth-gated, always on, and cannot be disabled', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  try {
+    const app = appWithAdminOptions(store);
+
+    const unauthorized = await app.request('/admin/api/memory/settings');
+    assert.equal(unauthorized.status, 401);
+
+    const initial = await app.request('/admin/api/memory/settings', {
+      headers: auth(ADMIN_TOKEN),
+    });
+    assert.deepEqual(await initial.json(), {
+      enabled: true,
+      alwaysOn: true,
+    });
+
+    const rejected = await app.request('/admin/api/memory/settings', {
+      method: 'PUT',
+      headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+      body: JSON.stringify({ enabled: false }),
+    });
+    assert.equal(rejected.status, 409);
+    assert.deepEqual(await rejected.json(), {
+      error: 'memory_always_enabled',
+      enabled: true,
+      alwaysOn: true,
+    });
+    await withEnv({ SLACK_TAG_MEMORY_ENABLED: 'false' }, async () => {
+      const status = await app.request('/admin/api/memory/settings', {
+        headers: auth(ADMIN_TOKEN),
+      });
+      assert.equal(status.status, 200);
+      assert.deepEqual(await status.json(), {
+        enabled: true,
+        alwaysOn: true,
+      });
+    });
+  } finally {
+    store.close();
+  }
+});
+
 test('profile-scoped MCP test classifies a 401 as unauthorized (HTTP 200)', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   try {

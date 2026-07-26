@@ -14,6 +14,7 @@ import {
   type SlackWebApiMessage,
 } from './thread-context.ts';
 import type { NormalizedSlackTurn } from './types.ts';
+import { serializeCurrentRequestEnvelope } from '../memory/tool-policy.ts';
 
 /**
  * WebClient-backed hydration of the bounded Slack context that feeds a turn's
@@ -154,15 +155,20 @@ async function fetchThread(
  * filtered bot rows (scenario S07). The agent's own instructions are assembled
  * separately inside the agent module.
  */
-export function assembleSlackPrompt(turn: NormalizedSlackTurn, context: SlackTurnContext): string {
-  if (context.messages.length === 0) {
-    return turn.text;
-  }
+export function assembleSlackPrompt(
+  turn: NormalizedSlackTurn,
+  context: SlackTurnContext,
+  options: { memoryBlock?: string; memorySelected?: boolean } = {},
+): string {
+  const backgroundMessages = context.messages.filter((message) => !message.isTrigger);
 
-  const rows = formatSlackContextRows(context.messages, { prefix: '- ', separator: '\n' });
-  const label = slackContextWindowLabel(context, 'none');
-  const parts = [turn.text, '', `Bounded Slack context (${label}):`, rows];
-  if (context.truncated) {
+  const parts: string[] = [];
+  if (backgroundMessages.length > 0) {
+    const rows = formatSlackContextRows(backgroundMessages, { prefix: '- ', separator: '\n' });
+    const label = slackContextWindowLabel(context, 'none');
+    parts.push(`Bounded Slack context (${label}):`, rows);
+  }
+  if (context.truncated && backgroundMessages.length > 0) {
     // Tell the model the window is partial so a "summarize today" over a busy
     // channel can caveat what it covers instead of presenting the newest slice
     // as the whole story.
@@ -170,6 +176,14 @@ export function assembleSlackPrompt(turn: NormalizedSlackTurn, context: SlackTur
       '(Context truncated: only the most recent messages of this window are included; older messages were dropped.)',
     );
   }
+  if (options.memoryBlock) {
+    parts.push('', options.memoryBlock);
+  }
+  parts.push('', 'Current Slack request (answer this; current system truth takes precedence):', turn.text);
+  parts.push(
+    '',
+    serializeCurrentRequestEnvelope(turn.text, options.memorySelected === true),
+  );
   return parts.join('\n');
 }
 
