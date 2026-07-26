@@ -2594,8 +2594,10 @@ test('a URL-customized OAuth connection keeps lifecycle controls and its saved s
   click({ target: actionTarget({ 'data-action': 'conn-edit', 'data-index': '0' }) });
 
   const editor = harness.app.innerHTML;
-  assert.doesNotMatch(editor, /data-action="conn-view"/);
-  assert.match(editor, /value="https:\/\/mcp\.supabase\.com\/mcp\?project_ref=test-project&amp;read_only=true"/);
+  assert.match(editor, /data-action="conn-view" data-view="recommended"/);
+  assert.match(editor, /value="test-project"[^>]*data-action="conn-supabase-project-ref"/);
+  assert.match(editor, /class="on" data-action="conn-supabase-access" data-access="read-only"/);
+  assert.match(editor, /class="oauth-account-name">test-project<\/span>/);
   assert.match(editor, /data-action="conn-oauth-start">Reconnect<\/button>/);
   assert.match(editor, /data-action="conn-oauth-disconnect">Disconnect<\/button>/);
 
@@ -3488,7 +3490,8 @@ test('the Supabase preset saves OAuth policy before requesting every required sc
   await flushAsync();
 
   const click = harness.listeners.click;
-  assert.ok(click);
+  const input = harness.listeners.input;
+  assert.ok(click && input);
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
   click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'supabase' }) });
@@ -3499,10 +3502,19 @@ test('the Supabase preset saves OAuth policy before requesting every required sc
     /Sign in to Supabase and choose the organization and projects Chickpea should access\.<\/p>/,
   );
   assert.match(editor, /data-action="conn-oauth-start"[^>]*>[\s\S]*?<span>Sign into Supabase<\/span>/);
-  assert.match(editor, /Supabase MCP is for development and testing only; do not connect production data\./);
+  assert.match(editor, /Use a development or test project; do not connect production data\./);
+  assert.match(editor, /Project reference/);
+  assert.match(editor, /data-action="conn-supabase-project-ref"/);
+  assert.match(editor, /class="on" data-action="conn-supabase-access" data-access="read-only"/);
+  assert.match(editor, /data-action="conn-supabase-access" data-access="read-write"/);
+  assert.match(editor, /Sign into Supabase[^>]* disabled|data-action="conn-oauth-start" disabled/);
   assert.doesNotMatch(editor, /data-action="conn-field-bearer"/);
   assert.doesNotMatch(editor, /Where do I find this\?/);
 
+  input({ target: inputTarget({ 'data-action': 'conn-supabase-project-ref' }, 'abcdefghijklmnopqrst') });
+  click({ target: actionTarget({ 'data-action': 'conn-supabase-access', 'data-access': 'read-write' }) });
+  assert.match(harness.app.innerHTML, /class="on" data-action="conn-supabase-access" data-access="read-write"/);
+  click({ target: actionTarget({ 'data-action': 'conn-supabase-access', 'data-access': 'read-only' }) });
   click({ target: actionTarget({ 'data-action': 'conn-oauth-start' }) });
   await flushAsync();
   assert.deepEqual(harness.oauthStartPosts, []);
@@ -3515,7 +3527,7 @@ test('the Supabase preset saves OAuth policy before requesting every required sc
     {
       id: 'supabase',
       displayName: 'Supabase',
-      url: 'https://mcp.supabase.com/mcp',
+      url: 'https://mcp.supabase.com/mcp?project_ref=abcdefghijklmnopqrst&read_only=true',
       transport: 'streamable-http',
       authMode: 'oauth',
       headerNames: [],

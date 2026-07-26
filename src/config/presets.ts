@@ -160,7 +160,7 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
     tokenDocsHint:
       'Sign in to Supabase and choose the organization and projects Chickpea should access.',
     notes:
-      'Supabase MCP is for development and testing only; do not connect production data. Chickpea requests all currently required scopes, including write access. Use Advanced with ?read_only=true and project_ref=… to narrow access.',
+      'Use a development or test project; do not connect production data. Chickpea limits the connection to that project, with read-only access recommended by default.',
   },
   {
     id: 'neon',

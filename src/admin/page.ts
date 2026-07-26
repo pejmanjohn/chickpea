@@ -2965,7 +2965,8 @@ details[open].advanced summary::before {
   function oauthAccountHtml(editor) {
     if (editor.authMode !== "oauth" || editor.lifecycleStatus !== "ready") return "";
     var identity = editor.identity || {};
-    var workspaceName = identity.workspaceName || editor.displayName;
+    var workspaceName = identity.workspaceName ||
+      (editor.presetId === "supabase" && editor.supabaseProjectRef ? editor.supabaseProjectRef : editor.displayName);
     var account = identity.accountName
       ? '<span class="oauth-account-detail">Connected as ' + esc(identity.accountName) + '</span>'
       : '<span class="oauth-account-detail">OAuth verified</span>';
@@ -2984,10 +2985,52 @@ details[open].advanced summary::before {
     var label = editor.oauthStarting
       ? "Opening " + esc(providerName) + "&hellip;"
       : "Sign into " + esc(providerName);
+    var setupBlocked = preset && preset.id === "supabase" && !validSupabaseProjectRef(editor.supabaseProjectRef);
     return '<div class="field"><p class="hint">' + esc(hint) + '</p>' +
-      '<button type="button" class="btn btn-primary btn-sm oauth-signin" data-action="conn-oauth-start"' + (editor.oauthStarting ? " disabled" : "") + '>' +
+      '<button type="button" class="btn btn-primary btn-sm oauth-signin" data-action="conn-oauth-start"' + (editor.oauthStarting || setupBlocked ? " disabled" : "") + '>' +
       (preset ? connectorLogoHtml(preset) : "") + '<span>' + label + '</span></button>' +
       (editor.oauthError ? '<p class="field-error" role="alert">' + esc(editor.oauthError) + '</p>' : "") + '</div>';
+  }
+
+  function validSupabaseProjectRef(value) {
+    return /^[a-z0-9][a-z0-9-]{2,62}[a-z0-9]$/.test(String(value || "").trim());
+  }
+
+  function supabaseSetupFromUrl(value) {
+    try {
+      var url = new URL(String(value || ""));
+      if (url.origin !== "https://mcp.supabase.com" || url.pathname !== "/mcp") return null;
+      var allowed = { project_ref: true, read_only: true };
+      var entries = Array.from(url.searchParams.entries());
+      if (entries.some(function (entry) { return !allowed[entry[0]]; })) return null;
+      if (url.searchParams.getAll("project_ref").length > 1 || url.searchParams.getAll("read_only").length > 1) return null;
+      var projectRef = String(url.searchParams.get("project_ref") || "").trim();
+      var readOnlyValue = url.searchParams.get("read_only");
+      if (readOnlyValue !== null && readOnlyValue !== "true") return null;
+      return { projectRef: projectRef, readOnly: readOnlyValue === "true" };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function syncSupabaseUrl(editor) {
+    var url = new URL("https://mcp.supabase.com/mcp");
+    var projectRef = String(editor.supabaseProjectRef || "").trim();
+    if (projectRef) url.searchParams.set("project_ref", projectRef);
+    if (editor.supabaseReadOnly !== false) url.searchParams.set("read_only", "true");
+    editor.url = url.href;
+  }
+
+  function supabaseSetupHtml(editor) {
+    var readOnly = editor.supabaseReadOnly !== false;
+    return '<div class="field"><label class="field-label" for="conn-supabase-project-ref">Project reference</label>' +
+      '<input class="input mono" id="conn-supabase-project-ref" type="text" autocomplete="off" value="' + esc(editor.supabaseProjectRef || "") + '" placeholder="abcdefghijklmnopqrst" data-action="conn-supabase-project-ref">' +
+      '<p class="hint">Find this in Supabase project Settings &rarr; General. This keeps account-wide tools out of the connection.</p></div>' +
+      '<div class="field"><label class="field-label">Database access</label>' +
+      '<div class="seg" role="group" aria-label="Supabase database access">' +
+      '<button type="button" class="' + (readOnly ? "on" : "") + '" data-action="conn-supabase-access" data-access="read-only">Read-only</button>' +
+      '<button type="button" class="' + (!readOnly ? "on" : "") + '" data-action="conn-supabase-access" data-access="read-write">Read and write</button></div>' +
+      '<p class="hint">Read-only is recommended. Enable writes only for a project where Chickpea may safely change schema and data.</p></div>';
   }
 
   function connectionRecommendedBodyHtml(editor) {
@@ -3010,6 +3053,7 @@ details[open].advanced summary::before {
     } else {
       tokenHtml = oauthConnectionHtml(editor, preset);
     }
+    var setupHtml = preset.id === "supabase" ? supabaseSetupHtml(editor) : "";
     var docsHtml = preset.auth.kind !== "oauth" && preset.tokenDocsHint ? '<p class="hint">' + esc(preset.tokenDocsHint) + '</p>' : "";
     if (preset.auth.kind !== "oauth" && preset.tokenDocsUrl) {
       docsHtml += '<a class="hint-link" href="' + esc(preset.tokenDocsUrl) + '" target="_blank" rel="noopener noreferrer">Where do I find this?</a>';
@@ -3019,7 +3063,7 @@ details[open].advanced summary::before {
       connectorLogoHtml(preset) +
       '<span class="field-label">' + esc(preset.name) + '</span>' +
       '<span class="conn-url-chip mono">' + esc(connectionHost(editor.url)) + '</span></div>' +
-      tokenHtml + docsHtml + notesHtml + connectionEditorCompletionHtml(editor);
+      setupHtml + tokenHtml + docsHtml + notesHtml + connectionEditorCompletionHtml(editor);
   }
 
   function connectionEditorFormHtml(editor) {
@@ -3075,6 +3119,9 @@ details[open].advanced summary::before {
       return index !== editor.index && server.id === id;
     });
     if (duplicate) return "Another connection already uses that name.";
+    if (editor.presetId === "supabase" && editor.preset && !validSupabaseProjectRef(editor.supabaseProjectRef)) {
+      return "Enter a valid Supabase project reference before signing in.";
+    }
     return "";
   }
 
@@ -5639,6 +5686,13 @@ details[open].advanced summary::before {
       state.connectionEditor.view = target.getAttribute("data-view") === "advanced" ? "advanced" : "recommended";
       render();
     }
+    if (action === "conn-supabase-access" && state.connectionEditor && state.connectionEditor.presetId === "supabase") {
+      state.connectionEditor.supabaseReadOnly = target.getAttribute("data-access") !== "read-write";
+      syncSupabaseUrl(state.connectionEditor);
+      state.connectionEditor.error = "";
+      markProfileDirty();
+      render();
+    }
     if (action === "conn-edit") {
       collectProfileDraft();
       var connEditIndex = Number(target.getAttribute("data-index"));
@@ -5856,6 +5910,14 @@ details[open].advanced summary::before {
       if (state.connectionEditor) {
         var connEditor = state.connectionEditor;
         if (action === "conn-field-name") { connEditor.displayName = target.value; markProfileDirty(); }
+        if (action === "conn-supabase-project-ref" && connEditor.presetId === "supabase") {
+          connEditor.supabaseProjectRef = target.value;
+          syncSupabaseUrl(connEditor);
+          connEditor.error = "";
+          markProfileDirty();
+          var supabaseOauthButton = document.querySelector('[data-action="conn-oauth-start"]');
+          if (supabaseOauthButton) supabaseOauthButton.disabled = !validSupabaseProjectRef(connEditor.supabaseProjectRef);
+        }
         if (action === "conn-field-url") {
           connEditor.url = target.value;
           markProfileDirty();
@@ -6520,7 +6582,7 @@ details[open].advanced summary::before {
       : (preset.auth.kind === "oauth" ? "oauth" : "none");
     var headerNames = preset.auth.kind === "header" ? [preset.auth.headerName] : [];
     var headerValues = preset.auth.kind === "header" ? [""] : [];
-    return Object.assign(newConnectionEditor(), {
+    var editor = Object.assign(newConnectionEditor(), {
       index: null,
       preset: preset,
       presetId: preset.id,
@@ -6534,6 +6596,12 @@ details[open].advanced summary::before {
       headerNames: headerNames,
       headerValues: headerValues
     });
+    if (preset.id === "supabase") {
+      editor.supabaseProjectRef = "";
+      editor.supabaseReadOnly = true;
+      syncSupabaseUrl(editor);
+    }
+    return editor;
   }
 
   function connectionAuthKind(conn) {
@@ -6587,12 +6655,20 @@ details[open].advanced summary::before {
       // Reattach catalog copy and behavior only while the saved policy still
       // matches it. A changed auth kind or URL leaves the row in Advanced so a
       // catalog upgrade cannot broaden the saved connection's access.
+      var supabaseSetup = matchedPreset && matchedPreset.id === "supabase"
+        ? supabaseSetupFromUrl(conn.url)
+        : null;
       var presetMatchesPolicy = !!matchedPreset &&
         matchedPreset.auth.kind === connectionAuthKind(conn) &&
-        matchedPreset.url === conn.url;
+        (matchedPreset.url === conn.url ||
+          (matchedPreset.id === "supabase" && !!supabaseSetup && validSupabaseProjectRef(supabaseSetup.projectRef)));
       editor.preset = presetMatchesPolicy ? matchedPreset : null;
       if (editor.preset) {
         editor.view = "recommended";
+        if (editor.preset.id === "supabase" && supabaseSetup) {
+          editor.supabaseProjectRef = supabaseSetup.projectRef;
+          editor.supabaseReadOnly = supabaseSetup.readOnly;
+        }
         if (!editor.oauthScope && editor.preset.auth.kind === "oauth") {
           editor.oauthScope = String(editor.preset.auth.scope || "").trim();
         }
