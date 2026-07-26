@@ -6525,6 +6525,12 @@ details[open].advanced summary::before {
     });
   }
 
+  function connectionAuthKind(conn) {
+    if (conn.authMode === "oauth") return "oauth";
+    if (conn.authMode === "bearer") return "bearer";
+    return (conn.headerNames || []).length > 0 ? "header" : "none";
+  }
+
   // Seed an editor from an existing connection (POLICY only — secrets never live
   // in the profile row). checked[] is derived from allowedTools ∩ discoveredTools;
   // sources carry the "stored" placeholders for the bearer + known header names.
@@ -6566,12 +6572,13 @@ details[open].advanced summary::before {
     editor.presetId = conn.presetId;
     if (conn.presetId) {
       var matchedPreset = presetById(conn.presetId) || null;
-      // A preset can be upgraded between token and OAuth setup over time.
-      // Keep saved rows on their original auth boundary in Advanced so a
-      // catalog update never silently reinterprets stored credentials.
-      var presetUsesOAuth = !!matchedPreset && matchedPreset.auth.kind === "oauth";
-      var connectionUsesOAuth = conn.authMode === "oauth";
-      editor.preset = matchedPreset && presetUsesOAuth === connectionUsesOAuth ? matchedPreset : null;
+      // Reattach catalog copy and behavior only while the saved policy still
+      // matches it. A changed auth kind or URL leaves the row in Advanced so a
+      // catalog upgrade cannot broaden the saved connection's access.
+      var presetMatchesPolicy = !!matchedPreset &&
+        matchedPreset.auth.kind === connectionAuthKind(conn) &&
+        matchedPreset.url === conn.url;
+      editor.preset = presetMatchesPolicy ? matchedPreset : null;
       if (editor.preset) editor.view = "recommended";
     }
     return editor;

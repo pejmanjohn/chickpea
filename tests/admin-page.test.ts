@@ -2405,6 +2405,67 @@ test('a saved bearer Linear connection stays Advanced after the catalog upgrades
   assert.deepEqual(harness.mcpSecretPuts, []);
 });
 
+test('a saved read-only Linear OAuth connection stays Advanced after the catalog URL gains write access', async () => {
+  const harness = runAdminPageHarness({
+    agents: [
+      connectionsAgent({
+        mcpServers: [
+          mcpConnectionFixture({
+            url: 'https://mcp.linear.app/mcp/readonly',
+            authMode: 'oauth',
+            lifecycleStatus: 'pending',
+            discoveredTools: [],
+            allowedTools: [],
+          }),
+        ],
+      }),
+    ],
+    deferAgentPatch: true,
+    oauthStartResult: {
+      authorizationUrl: 'https://linear.example/authorize?state=legacy-readonly',
+    },
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-edit', 'data-index': '0' }) });
+
+  const editor = harness.app.innerHTML;
+  assert.match(
+    editor,
+    /value="https:\/\/mcp\.linear\.app\/mcp\/readonly"[^>]*data-action="conn-field-url"/,
+  );
+  assert.match(editor, /<option value="oauth" selected disabled>OAuth \(configured separately\)<\/option>/);
+  assert.doesNotMatch(editor, /data-action="conn-view"/);
+  assert.doesNotMatch(editor, /read and write access/);
+
+  // Exercise the mocked OAuth action directly to prove this legacy row does
+  // not borrow the replacement catalog preset's broader scope.
+  click({ target: actionTarget({ 'data-action': 'conn-oauth-start' }) });
+  await flushAsync();
+
+  assert.equal(harness.agentPatchBodies.length, 1);
+  assert.deepEqual(harness.oauthStartPosts, []);
+
+  const servers = harness.agentPatchBodies[0]?.body.mcpServers as Array<Record<string, unknown>>;
+  assert.equal(servers[0]?.url, 'https://mcp.linear.app/mcp/readonly');
+  assert.equal(servers[0]?.authMode, 'oauth');
+  assert.equal(servers[0]?.presetId, 'linear');
+
+  harness.resolveAgentPatch();
+  await flushAsync();
+
+  assert.deepEqual(harness.oauthStartPosts, [
+    { agentId: 'agent_conn', connectionId: 'linear', body: {} },
+  ]);
+  assert.deepEqual(harness.assignedUrls, [
+    'https://linear.example/authorize?state=legacy-readonly',
+  ]);
+});
+
 test('canceling the custom API form clears custom mode and restores the gallery', async () => {
   const harness = runAdminPageHarness({ agents: [connectionsAgent()] });
   await flushAsync();
@@ -2830,7 +2891,7 @@ test('the searchable Connections gallery is immediate, renders brand logos, and 
   click({ target: actionTarget({ 'data-action': 'conn-view', 'data-view': 'advanced' }) });
   assert.match(
     harness.app.innerHTML,
-    /id="conn-url"[^>]*value="https:\/\/mcp\.linear\.app\/mcp\/readonly"[^>]*data-action="conn-field-url"/,
+    /id="conn-url"[^>]*value="https:\/\/mcp\.linear\.app\/mcp"[^>]*data-action="conn-field-url"/,
   );
   assert.match(harness.app.innerHTML, /id="conn-name"[^>]*data-action="conn-field-name"/);
 });
@@ -3066,7 +3127,7 @@ test('a preset connection carries presetId in the profile save body', async () =
   assert.equal(servers[0]?.presetId, 'cloudflare-docs');
 });
 
-test('the Linear preset saves read-only OAuth policy and requests only the read scope', async () => {
+test('the Linear preset saves read-write OAuth policy and requests read and write scopes', async () => {
   const harness = runAdminPageHarness({
     agents: [connectionsAgent()],
     deferAgentPatch: true,
@@ -3096,7 +3157,7 @@ test('the Linear preset saves read-only OAuth policy and requests only the read 
     {
       id: 'linear',
       displayName: 'Linear',
-      url: 'https://mcp.linear.app/mcp/readonly',
+      url: 'https://mcp.linear.app/mcp',
       transport: 'streamable-http',
       authMode: 'oauth',
       headerNames: [],
@@ -3109,7 +3170,7 @@ test('the Linear preset saves read-only OAuth policy and requests only the read 
     },
   ]);
   assert.deepEqual(harness.oauthStartPosts, [
-    { agentId: 'agent_conn', connectionId: 'linear', body: { scope: 'read' } },
+    { agentId: 'agent_conn', connectionId: 'linear', body: { scope: 'read write' } },
   ]);
   assert.deepEqual(harness.assignedUrls, [
     'https://linear.example/authorize?state=opaque-state',

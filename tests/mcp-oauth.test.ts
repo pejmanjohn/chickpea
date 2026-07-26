@@ -193,11 +193,21 @@ test('DCR is registered once, pending state is single-use, and callback stores t
   try {
     const [first, second] = await Promise.all([
       startMcpOAuthAuthorization(
-        { ref: REF, serverUrl: SERVER_URL, callbackUrl: CALLBACK_URL, scope: 'read' },
+        {
+          ref: REF,
+          serverUrl: SERVER_URL,
+          callbackUrl: CALLBACK_URL,
+          scope: 'read write',
+        },
         dependencies,
       ),
       startMcpOAuthAuthorization(
-        { ref: REF, serverUrl: SERVER_URL, callbackUrl: CALLBACK_URL, scope: 'read' },
+        {
+          ref: REF,
+          serverUrl: SERVER_URL,
+          callbackUrl: CALLBACK_URL,
+          scope: 'read write',
+        },
         dependencies,
       ),
     ]);
@@ -206,6 +216,8 @@ test('DCR is registered once, pending state is single-use, and callback stores t
     assert.equal(first.authorizationUrl.searchParams.get('client_id'), 'registered-client');
     assert.equal(second.authorizationUrl.searchParams.get('client_id'), 'registered-client');
     assert.equal(second.authorizationUrl.searchParams.get('resource'), SERVER_URL);
+    assert.equal(first.authorizationUrl.searchParams.get('scope'), 'read write');
+    assert.equal(second.authorizationUrl.searchParams.get('scope'), 'read write');
     assert.equal(second.authorizationUrl.searchParams.get('code_challenge_method'), 'S256');
     assert.notEqual(first.state, second.state);
 

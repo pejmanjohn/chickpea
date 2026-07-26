@@ -120,19 +120,19 @@ test('the Notion MCP preset keeps the official OAuth-only hosted-server shape', 
   });
 });
 
-test('the Linear MCP preset uses its server-enforced read-only OAuth endpoint', () => {
+test('the Linear MCP preset requests read-write OAuth access', () => {
   assert.deepEqual(getConnectorPreset('linear'), {
     id: 'linear',
     name: 'Linear',
     category: 'project',
     accent: '#5E6AD2',
-    url: 'https://mcp.linear.app/mcp/readonly',
+    url: 'https://mcp.linear.app/mcp',
     transport: 'streamable-http',
-    auth: { kind: 'oauth', scope: 'read' },
+    auth: { kind: 'oauth', scope: 'read write' },
     tokenDocsUrl: 'https://linear.app/docs/mcp',
     tokenDocsHint: 'Sign in to Linear and choose the workspace Chickpea should access.',
     notes:
-      'Chickpea uses Linear\'s server-enforced read-only MCP endpoint and requests only the read scope.',
+      'Chickpea requests Linear read and write access so it can find, create, and update workspace objects.',
   });
 });
 

@@ -2387,7 +2387,6 @@ async function verifyAndStoreMcpOAuthConnection(
         `Connected · ${discovery.tools.length} tool` +
         (discovery.tools.length === 1 ? '' : 's'),
       discoveredTools: discovery.tools,
-      allowedTools: discovery.tools.map((tool) => tool.name),
       lastCheckedAt: Date.now(),
       ...(identity ? { identity } : {}),
     });
@@ -2395,26 +2394,48 @@ async function verifyAndStoreMcpOAuthConnection(
     await replaceVerifiedMcpConnection(input.configStore, input.ref, connection, {
       lifecycleStatus: 'failed',
       statusText: safeMcpFailureText(error),
-      discoveredTools: [],
-      allowedTools: [],
       lastCheckedAt: Date.now(),
     }).catch(() => undefined);
     throw error;
   }
 }
 
+function allowedToolsAfterMcpDiscovery(
+  connection: Pick<McpConnectionConfig, 'allowedTools' | 'discoveredTools'>,
+  discoveredTools: McpConnectionConfig['discoveredTools'],
+): string[] {
+  const previouslyDiscovered = new Set(
+    connection.discoveredTools.map((tool) => tool.name),
+  );
+  const previouslyAllowed = new Set(connection.allowedTools);
+  return discoveredTools
+    .map((tool) => tool.name)
+    .filter(
+      (toolName) =>
+        !previouslyDiscovered.has(toolName) || previouslyAllowed.has(toolName),
+    );
+}
+
+type VerifiedMcpConnectionResult = Pick<
+  McpConnectionConfig,
+  'statusText' | 'lastCheckedAt'
+> &
+  (
+    | {
+        lifecycleStatus: 'ready';
+        discoveredTools: McpConnectionConfig['discoveredTools'];
+        identity?: McpConnectionIdentity;
+      }
+    | {
+        lifecycleStatus: 'failed';
+      }
+  );
+
 async function replaceVerifiedMcpConnection(
   configStore: ConfigStore,
   ref: { agentId: string; connectionId: string },
   original: McpConnectionConfig,
-  result: Pick<
-    McpConnectionConfig,
-    | 'lifecycleStatus'
-    | 'statusText'
-    | 'discoveredTools'
-    | 'allowedTools'
-    | 'lastCheckedAt'
-  > & { identity?: McpConnectionIdentity },
+  result: VerifiedMcpConnectionResult,
 ): Promise<void> {
   const latest = await configStore.getAgent(ref.agentId);
   const index = latest.mcpServers.findIndex(
@@ -2428,8 +2449,16 @@ async function replaceVerifiedMcpConnection(
   }
   const current = latest.mcpServers[index]!;
   const { identity: _priorIdentity, ...policy } = current;
+  const discoveredTools =
+    result.lifecycleStatus === 'ready'
+      ? result.discoveredTools
+      : current.discoveredTools;
+  const allowedTools =
+    result.lifecycleStatus === 'ready'
+      ? allowedToolsAfterMcpDiscovery(current, discoveredTools)
+      : current.allowedTools;
   const mcpServers = latest.mcpServers.slice();
-  mcpServers[index] = { ...policy, ...result };
+  mcpServers[index] = { ...policy, ...result, discoveredTools, allowedTools };
   await configStore.updateAgent(ref.agentId, { mcpServers });
 }
 

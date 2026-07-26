@@ -213,7 +213,7 @@ test('MCP OAuth routes expose public metadata but gate start and return no secre
           ...auth(ADMIN_TOKEN),
           'content-type': 'application/json',
         },
-        body: JSON.stringify({ scope: 'read' }),
+        body: JSON.stringify({ scope: 'read write' }),
       },
     );
     assert.equal(response.status, 200);
@@ -227,7 +227,7 @@ test('MCP OAuth routes expose public metadata but gate start and return no secre
         ref: { agentId: 'agent_admin', connectionId: 'linear-mcp' },
         serverUrl: 'https://mcp.linear.app/mcp',
         callbackUrl: 'https://chickpea.example.test/oauth/callback',
-        scope: 'read',
+        scope: 'read write',
       },
     ]);
   } finally {
@@ -236,7 +236,7 @@ test('MCP OAuth routes expose public metadata but gate start and return no secre
   }
 });
 
-test('MCP OAuth callback is public, state-gated, and redirects with status only', async () => {
+test('MCP OAuth callback is public, state-gated, enables all tools on first connect, and redirects with status only', async () => {
   const store = new SqliteConfigStore(':memory:', {
     agents: [agent({
       mcpServers: [mcpServer({
@@ -352,7 +352,59 @@ test('MCP OAuth callback is public, state-gated, and redirects with status only'
   }
 });
 
-test('MCP OAuth callback distinguishes post-authorization verification failures', async () => {
+test('MCP OAuth reconnect preserves revoked tools and enables newly discovered tools', async () => {
+  const store = new SqliteConfigStore(':memory:', {
+    agents: [agent({
+      mcpServers: [mcpServer({
+        authMode: 'oauth',
+        discoveredTools: [
+          { name: 'search', description: 'Search Linear.' },
+          { name: 'create', description: 'Create a Linear issue.' },
+          { name: 'legacy', description: 'A removed Linear tool.' },
+        ],
+        allowedTools: ['search', 'legacy'],
+      })],
+    })],
+    assignments: [],
+  });
+  try {
+    const app = appWithAdminOptions(store, {
+      completeMcpOAuth: async () => ({
+        ref: { agentId: 'agent_admin', connectionId: 'linear-mcp' },
+      }),
+      resolveMcpOAuthToken: async () => 'linear-access-token',
+      discoverMcp: async () => ({
+        tools: [
+          { name: 'search', description: 'Search Linear.' },
+          { name: 'create', description: 'Create a Linear issue.' },
+          { name: 'get', description: 'Get a Linear issue.' },
+        ],
+      }),
+    });
+
+    const response = await app.request(
+      'https://chickpea.example.test/oauth/callback?code=provider-code&state=opaque-state',
+      { redirect: 'manual' },
+    );
+
+    assert.equal(response.status, 303);
+    assert.equal(
+      response.headers.get('location'),
+      '/admin/profiles/agent_admin?oauth=connected&connection=linear-mcp',
+    );
+    const connected = (await store.getAgent('agent_admin')).mcpServers[0];
+    assert.deepEqual(connected?.discoveredTools, [
+      { name: 'search', description: 'Search Linear.' },
+      { name: 'create', description: 'Create a Linear issue.' },
+      { name: 'get', description: 'Get a Linear issue.' },
+    ]);
+    assert.deepEqual(connected?.allowedTools, ['search', 'get']);
+  } finally {
+    store.close();
+  }
+});
+
+test('MCP OAuth callback preserves tool policy across post-authorization verification failures', async () => {
   const store = new SqliteConfigStore(':memory:', {
     agents: [agent({
       mcpServers: [mcpServer({
@@ -362,8 +414,11 @@ test('MCP OAuth callback distinguishes post-authorization verification failures'
         authMode: 'oauth',
         lifecycleStatus: 'pending',
         statusText: '',
-        discoveredTools: [],
-        allowedTools: [],
+        discoveredTools: [
+          { name: 'notion-search', description: 'Search Notion.' },
+          { name: 'notion-update', description: 'Update Notion.' },
+        ],
+        allowedTools: ['notion-search'],
         presetId: 'notion',
       })],
     })],
@@ -394,8 +449,11 @@ test('MCP OAuth callback distinguishes post-authorization verification failures'
     assert.equal(failed?.lifecycleStatus, 'failed');
     assert.match(failed?.statusText ?? '', /did not respond in time/i);
     assert.doesNotMatch(failed?.statusText ?? '', /remote-secret/);
-    assert.deepEqual(failed?.discoveredTools, []);
-    assert.deepEqual(failed?.allowedTools, []);
+    assert.deepEqual(failed?.discoveredTools, [
+      { name: 'notion-search', description: 'Search Notion.' },
+      { name: 'notion-update', description: 'Update Notion.' },
+    ]);
+    assert.deepEqual(failed?.allowedTools, ['notion-search']);
   } finally {
     store.close();
   }
