@@ -82,7 +82,11 @@ export function createMemoryAdminApi(options: MemoryAdminApiOptions): Hono {
       }
       const projected = projectMemoryFiles({ store, entries });
       const prefix = projectionPrefix(store, sourceChannelId);
-      const files = projected
+      const channelIndex = projected.find((file) => file.path === `${prefix}/MEMORY.md`) ?? {
+        path: `${prefix}/MEMORY.md`,
+        content: '# Channel Memory Index\n\n',
+      };
+      const files = [channelIndex, ...projected.filter((file) => file.path !== channelIndex.path)]
         .filter((file) => file.path === `${prefix}/MEMORY.md` || file.path.startsWith(`${prefix}/`) && file.path.endsWith('.md'))
         .map((file) => {
           const name = file.path.slice(prefix.length + 1);

@@ -486,6 +486,38 @@ function runAdminPageHarness(
 
   const fetch = (path: string, options?: { method?: string; body?: string }): Promise<FakeResponse> => {
     const method = options?.method ?? 'GET';
+    if (path === '/admin/api/audit/memory/scopes' && method === 'GET') {
+      return Promise.resolve(jsonResponse({
+        scopes: [{
+          workspaceId: 'T_DESIGN', channelId: 'C0EXR3L9T', displayName: 'eng-releases',
+          privacy: 'public', lifecycle: 'active', storeId: 'store_public_T_DESIGN',
+          generation: null, entryCount: 1,
+        }],
+      }));
+    }
+    if (path === '/admin/api/audit/memory/stores/store_public_T_DESIGN/files?sourceChannelId=C0EXR3L9T' && method === 'GET') {
+      return Promise.resolve(jsonResponse({
+        files: [
+          { name: 'MEMORY.md', path: 'channel/C0EXR3L9T/MEMORY.md', generated: true, entryId: null, content: '# Channel Memory Index\n\n- [release-guidance](release-guidance.md) — Use the checklist.\n' },
+          { name: 'release-guidance.md', path: 'channel/C0EXR3L9T/release-guidance.md', generated: false, entryId: 'mem_release', version: 1, status: 'active', description: 'Use the checklist.' },
+        ],
+      }));
+    }
+    if (path === '/admin/api/audit/memory/entries/mem_release/history' && method === 'GET') {
+      return Promise.resolve(jsonResponse({ revisions: [{ entryId: 'mem_release', version: 1, operation: 'create', createdAt: 1753444800000 }] }));
+    }
+    if (path === '/admin/api/audit/memory/entries/mem_release' && method === 'GET') {
+      return Promise.resolve(jsonResponse({
+        entry: {
+          entryId: 'mem_release', storeId: 'store_public_T_DESIGN', workspaceId: 'T_DESIGN',
+          sourceChannelId: 'C0EXR3L9T', slug: 'release-guidance', description: 'Use the checklist.',
+          type: 'project', body: 'Run <script>alert(1)</script> before release.', status: 'active',
+          version: 1, modifiedAt: 1753444800000,
+        },
+        projected: '---\nname: "release-guidance"\n---\n\nRun <script>alert(1)</script> before release.\n',
+        unresolvedReview: { eventId: 'audit_review', reasonCode: 'stale', createdAt: 1753444800000 },
+      }));
+    }
     if (path === '/admin/api/agents' && method === 'GET') {
       return Promise.resolve(jsonResponse({ agents: agentsList }));
     }
@@ -4142,6 +4174,60 @@ test('Settings omits the redundant always-on channel memory status block', async
   assert.doesNotMatch(harness.app.innerHTML, /data-action="memory-enabled"/);
   assert.doesNotMatch(harness.app.innerHTML, /data-action="memory-save"/);
   assert.doesNotMatch(harness.app.innerHTML, /SLACK_TAG_MEMORY_ENABLED/);
+});
+
+test('Audit logs deep link renders the real Memory scope, generated index, editor, and disabled future domains', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/audit-logs/memory/store_public_T_DESIGN/C0EXR3L9T/mem_release',
+  });
+  await flushAsync();
+
+  assert.equal(
+    harness.locationPath(),
+    '/admin/audit-logs/memory/store_public_T_DESIGN/C0EXR3L9T/mem_release',
+  );
+  assert.match(harness.app.innerHTML, /Audit logs/);
+  assert.match(harness.app.innerHTML, /Scheduled work/);
+  assert.match(harness.app.innerHTML, /Network events/);
+  assert.match(harness.app.innerHTML, /class="audit-tab" role="tab" disabled/);
+  assert.match(harness.app.innerHTML, /#eng-releases/);
+  assert.match(harness.app.innerHTML, /release-guidance\.md/);
+  assert.match(harness.app.innerHTML, /Review requested/);
+  assert.match(harness.app.innerHTML, /Revision history \(1\)/);
+});
+
+test('Memory editor escapes stored Markdown and explains irreversible deletion and generated indexes', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/audit-logs/memory/store_public_T_DESIGN/C0EXR3L9T/mem_release',
+  });
+  await flushAsync();
+
+  assert.doesNotMatch(harness.app.innerHTML, /<script>alert\(1\)<\/script>/);
+  assert.match(harness.app.innerHTML, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+  assert.match(harness.app.innerHTML, /Generated <code>MEMORY\.md<\/code> files are never edited directly/);
+
+  harness.listeners.click?.({
+    target: actionTarget({ 'data-action': 'memory-delete-open' }),
+  });
+  assert.match(harness.app.innerHTML, /Delete release-guidance\?/);
+  assert.match(harness.app.innerHTML, /Slack transcripts, model-provider logs, or prior exports are not retracted/);
+
+  harness.listeners.click?.({
+    target: actionTarget({ 'data-action': 'memory-delete-cancel' }),
+  });
+  assert.doesNotMatch(harness.app.innerHTML, /Delete release-guidance\?/);
+
+  harness.listeners.input?.({
+    target: inputTarget({ 'data-action': 'memory-description' }, 'Unsaved operator draft'),
+  });
+  harness.listeners.click?.({
+    target: actionTarget({ 'data-action': 'open-settings' }),
+  });
+  assert.equal(
+    harness.locationPath(),
+    '/admin/audit-logs/memory/store_public_T_DESIGN/C0EXR3L9T/mem_release',
+  );
+  assert.match(harness.app.innerHTML, /Save or discard the current memory draft before navigating away/);
 });
 
 test('Repositories tab explains grants-implied sandbox availability without a profile toggle', async () => {

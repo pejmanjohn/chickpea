@@ -1267,6 +1267,85 @@ details[open].advanced summary::before {
 /* ---- profile footer (delete / add-to-channels / usage) ---- */
 .profile-foot { align-items: center; border-top: 1.5px dashed rgba(59, 50, 32, 0.15); display: flex; flex-wrap: wrap; gap: 10px; padding-top: 20px; }
 
+/* ---- Audit logs: real Memory domain, reserved future tabs ---- */
+.audit-rail { gap: 2px; }
+.audit-rail .ws-row { margin-top: 5px; }
+.audit-lock { color: var(--text-3); margin-left: auto; }
+.audit-main { gap: 18px; max-width: none; }
+.audit-main-head { align-items: flex-start; display: flex; flex-wrap: wrap; gap: 12px; justify-content: space-between; }
+.audit-tabs { border-bottom: 1.5px solid var(--line-strong); display: flex; gap: 4px; overflow-x: auto; }
+.audit-tab {
+  background: transparent;
+  border: 0;
+  border-bottom: 3px solid transparent;
+  color: var(--text-3);
+  font: inherit;
+  font-size: 0.8125rem;
+  font-weight: 700;
+  margin-bottom: -1.5px;
+  padding: 9px 13px;
+  white-space: nowrap;
+}
+.audit-tab.active { border-color: var(--ember-press); color: var(--text); }
+.audit-tab:disabled { cursor: not-allowed; opacity: 0.52; }
+.memory-banner { background: var(--ember-tint); border-radius: 13px; color: var(--text-2); font-size: 0.78125rem; padding: 10px 13px; }
+.memory-layout { display: grid; gap: 14px; grid-template-columns: minmax(180px, 0.7fr) minmax(320px, 1.8fr); min-height: 480px; }
+.memory-pane { background: var(--well); border-radius: 16px; min-width: 0; padding: 12px; }
+.memory-pane-title { color: var(--text-3); font-size: 0.6875rem; font-weight: 800; letter-spacing: 0.08em; margin: 1px 3px 9px; text-transform: uppercase; }
+.memory-file-list { display: flex; flex-direction: column; gap: 4px; }
+.memory-file {
+  align-items: flex-start;
+  background: transparent;
+  border: 0;
+  border-radius: 10px;
+  color: var(--text-2);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 9px 10px;
+  text-align: left;
+  width: 100%;
+}
+.memory-file:hover { background: var(--bg); }
+.memory-file.active { background: var(--bg); box-shadow: inset 0 0 0 1.5px var(--line-strong); color: var(--text); }
+.memory-file-name { font-family: var(--mono); font-size: 0.75rem; overflow-wrap: anywhere; }
+.memory-file-meta { color: var(--text-3); font-size: 0.6875rem; }
+.memory-editor { display: flex; flex-direction: column; gap: 13px; }
+.memory-editor-head { align-items: flex-start; display: flex; flex-wrap: wrap; gap: 9px; justify-content: space-between; }
+.memory-editor-title { font-family: var(--mono); font-size: 0.9375rem; font-weight: 700; overflow-wrap: anywhere; }
+.memory-editor-actions { display: flex; flex-wrap: wrap; gap: 7px; }
+.memory-source {
+  background: #2e281d;
+  border-radius: 12px;
+  color: #fff8e8;
+  font-family: var(--mono);
+  font-size: 0.71875rem;
+  line-height: 1.65;
+  margin: 0;
+  max-height: 420px;
+  overflow: auto;
+  padding: 14px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.memory-history { display: flex; flex-direction: column; gap: 6px; }
+.memory-history-row { align-items: baseline; background: var(--bg); border-radius: 10px; display: flex; flex-wrap: wrap; gap: 7px; padding: 8px 10px; }
+.memory-history-row .spacer { flex: 1; }
+.memory-review { background: var(--danger-well); border-radius: 12px; color: var(--danger); display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 12px; }
+.memory-import { background: var(--bg); border-radius: 13px; display: flex; flex-direction: column; gap: 8px; padding: 11px 12px; }
+.memory-help { background: var(--well); border-radius: 13px; color: var(--text-2); font-size: 0.75rem; padding: 10px 12px; }
+.memory-help code { color: var(--text); font-family: var(--mono); }
+.memory-live { min-height: 1.2em; }
+@media (max-width: 900px) {
+  .memory-layout { grid-template-columns: 1fr; }
+  .memory-pane { min-height: auto; }
+}
+@media (max-width: 720px) {
+  .audit-main-head, .memory-editor-head, .memory-review { align-items: stretch; flex-direction: column; }
+  .memory-editor-actions .btn { flex: 1; }
+}
+
 </style>
 </head>
 <body>
@@ -1280,6 +1359,7 @@ details[open].advanced summary::before {
     <div class="actions">
       <button type="button" class="btn btn-soft" disabled>Channels</button>
       <button type="button" class="btn btn-soft" disabled>Profiles</button>
+      <button type="button" class="btn btn-soft" disabled>Audit logs</button>
       <button type="button" class="btn btn-soft" disabled>Settings</button>
     </div>
   </header>
@@ -1463,7 +1543,30 @@ details[open].advanced summary::before {
     // the static suggestions for it (offline).
     modelPickerOpen: false,
     modelPickerFilter: "",
-    providerModelsError: {}
+    providerModelsError: {},
+    // Audit Logs is a top-level operator surface. Memory is the only live
+    // domain in this release; Scheduled Work and Network Events are labels,
+    // not empty APIs. The draft mirrors editable entry fields so a conflict or
+    // retry never erases operator work.
+    memoryScopes: null,
+    memoryScopesLoading: false,
+    memoryScopesError: "",
+    memorySelection: { storeId: "", channelId: "", entryId: "" },
+    memoryFiles: null,
+    memoryFilesLoading: false,
+    memoryFilesError: "",
+    memorySelectedFile: "",
+    memoryDetail: null,
+    memoryHistory: [],
+    memoryDraft: null,
+    memoryDirty: false,
+    memoryBusy: "",
+    memoryError: "",
+    memoryNotice: "",
+    memoryIdempotencyKey: "",
+    memoryConflict: null,
+    memoryDeleteConfirm: false,
+    memoryImport: null
   };
   var egressDraft = { mode: "allowlist", domains: [""] };
   var sandboxDraft = {
@@ -1517,6 +1620,8 @@ details[open].advanced summary::before {
           // The assignment validators return a ready-to-show message (naming
           // the connected workspace, or explaining a channel_not_found); keep it.
           if (body && body.message) err.serverMessage = body.message;
+          err.payload = body;
+          err.status = response.status;
           throw err;
         }
         return body;
@@ -1663,6 +1768,14 @@ details[open].advanced summary::before {
 
   function canonicalPath() {
     if (state.view === "settings") return "/admin/settings";
+    if (state.view === "audit") {
+      var memoryPath = "/admin/audit-logs/memory";
+      if (state.memorySelection.storeId && state.memorySelection.channelId) {
+        memoryPath += "/" + encodeURIComponent(state.memorySelection.storeId) + "/" + encodeURIComponent(state.memorySelection.channelId);
+        if (state.memorySelection.entryId) memoryPath += "/" + encodeURIComponent(state.memorySelection.entryId);
+      }
+      return memoryPath;
+    }
     if (state.view === "profiles") {
       if (state.profileScreen === "create") return "/admin/profiles/new";
       if (state.profileScreen === "edit" && state.editingAgentId) return "/admin/profiles/" + encodeURIComponent(state.editingAgentId);
@@ -1688,6 +1801,10 @@ details[open].advanced summary::before {
     });
     state.leavePrompt = null;
     if (parts[1] === "settings") { openSettings(); return; }
+    if (parts[1] === "audit-logs") {
+      openAuditLogs(parts[3] || "", parts[4] || "", parts[5] || "");
+      return;
+    }
     if (parts[1] === "profiles") {
       if (parts[2] === "new") {
         openNewProfile();
@@ -1717,7 +1834,7 @@ details[open].advanced summary::before {
 
   function render() {
     var app = document.getElementById("app");
-    app.innerHTML = topbarHtml() + '<div class="body">' + railHtml() + mainHtml() + "</div>" + leavePromptModalHtml() + connectionRemoveModalHtml() + apiConnectionRemoveModalHtml() + slackDisconnectModalHtml() + githubDisconnectModalHtml();
+    app.innerHTML = topbarHtml() + '<div class="body">' + railHtml() + mainHtml() + "</div>" + leavePromptModalHtml() + connectionRemoveModalHtml() + apiConnectionRemoveModalHtml() + slackDisconnectModalHtml() + githubDisconnectModalHtml() + memoryDeleteModalHtml();
     // The disconnect confirmation is a true modal: keep the rest of the app
     // out of the focus and accessibility trees until it is resolved.
     if (state.slackDisconnectConfirm) {
@@ -1741,6 +1858,15 @@ details[open].advanced summary::before {
       if (state.githubBusy === "disconnect") focusGithubDisconnectDialog();
       else if (state.githubDisconnectError) focusSlackLiveRegion("github-disconnect-error");
       else focusSlackDisconnectAction("github-disconnect-cancel");
+    }
+    if (state.memoryDeleteConfirm) {
+      [document.querySelector(".topbar"), document.querySelector(".body")].forEach(function (region) {
+        if (!region) return;
+        region.inert = true;
+        if (region.setAttribute) region.setAttribute("aria-hidden", "true");
+      });
+      var memoryDeleteCancel = document.querySelector('[data-action="memory-delete-cancel"]');
+      if (memoryDeleteCancel && memoryDeleteCancel.focus) memoryDeleteCancel.focus();
     }
     syncUrl();
   }
@@ -1781,6 +1907,7 @@ details[open].advanced summary::before {
       '<div class="actions actions-list">' + connectedBadge +
       '<button type="button" class="btn btn-soft' + (state.view === "channels" ? " nav-active" : "") + '" data-action="open-channels">Channels</button>' +
       '<button type="button" class="btn btn-soft' + (state.view === "profiles" ? " nav-active" : "") + '" data-action="open-profiles">Profiles</button>' +
+      '<button type="button" class="btn btn-soft' + (state.view === "audit" ? " nav-active" : "") + '" data-action="open-audit">Audit logs</button>' +
       '<button type="button" class="btn btn-soft' + (state.view === "settings" ? " nav-active" : "") + '" data-action="open-settings">Settings</button></div>' +
       "</header>";
   }
@@ -1794,6 +1921,7 @@ details[open].advanced summary::before {
   }
 
   function railHtml() {
+    if (state.view === "audit") return auditRailHtml();
     // Not connected → the whole screen is the Connect stepper; the rail (and its
     // add affordance) stay gated off until Slack is live.
     if (state.slack && !state.slack.connected) return "";
@@ -1851,6 +1979,9 @@ details[open].advanced summary::before {
     // "Manage providers" affordance, connected or not.
     if (state.view === "settings") {
       return '<main class="main"><div class="main-inner">' + settingsMainHtml() + '</div></main>';
+    }
+    if (state.view === "audit") {
+      return '<main class="main"><div class="main-inner audit-main">' + auditMemoryMainHtml() + '</div></main>';
     }
     if (state.channelScreen === "overview") {
       return '<main class="main"><div class="main-inner slack-overview">' + slackOverviewHtml() + '</div></main>';
@@ -3735,6 +3866,464 @@ details[open].advanced summary::before {
     return html + '<div class="combo-foot">Anthropic and OpenAI list their live models; OpenRouter and Workers AI show your starred favorites. Type any provider/model specifier.</div>' + settingsRow + '</div>';
   }
 
+  // ---- Audit Logs > Memory -------------------------------------------------
+
+  function memoryScopes() { return state.memoryScopes || []; }
+
+  function selectedMemoryScope() {
+    return memoryScopes().find(function (scope) {
+      return scope.storeId === state.memorySelection.storeId && scope.channelId === state.memorySelection.channelId;
+    }) || null;
+  }
+
+  function auditRailHtml() {
+    var scopes = memoryScopes();
+    var html = '<nav class="rail audit-rail" aria-label="Memory scopes">' +
+      '<div class="rail-head"><span class="section-eyebrow">Audit logs</span></div>' +
+      '<div class="platform-row active"><span class="platform-logo slack-logo-image" aria-hidden="true"></span>Slack</div>';
+    if (state.memoryScopesLoading && !state.memoryScopes) {
+      return html + '<div class="empty" style="margin:8px; padding:12px;"><p class="hint">Loading memory scopes&hellip;</p></div></nav>';
+    }
+    if (state.memoryScopesError) {
+      return html + '<div class="empty" style="margin:8px; padding:12px;"><p class="field-error">' + esc(state.memoryScopesError) + '</p><button type="button" class="btn btn-ghost btn-sm" data-action="memory-retry-scopes">Retry</button></div></nav>';
+    }
+    if (!scopes.length) {
+      return html + '<div class="ws-row">Workspace</div><div class="empty" style="margin:8px; padding:12px;"><p class="hint">No channel memories yet</p></div></nav>';
+    }
+    var workspaces = [];
+    scopes.forEach(function (scope) {
+      var workspace = workspaces.find(function (candidate) { return candidate.id === scope.workspaceId; });
+      if (!workspace) { workspace = { id: scope.workspaceId, scopes: [] }; workspaces.push(workspace); }
+      workspace.scopes.push(scope);
+    });
+    workspaces.forEach(function (workspace) {
+      html += '<div class="ws-row">' + icon("chevron-down") + esc(railGroupLabel(workspace.id)) + '</div>';
+      workspace.scopes.forEach(function (scope) {
+        var active = scope.storeId === state.memorySelection.storeId && scope.channelId === state.memorySelection.channelId;
+        var privacy = scope.privacy === "private" ? "Private" : "Workspace shared";
+        if (scope.lifecycle !== "active") privacy += " · " + scope.lifecycle;
+        html += '<button type="button" class="chan-item' + (active ? " active" : "") + '" data-action="select-memory-scope" data-store="' + esc(scope.storeId) + '" data-channel="' + esc(scope.channelId) + '">' +
+          '<span class="chan-name">#' + esc(scope.displayName || scope.channelId) + '</span>' +
+          '<span class="chan-meta">' + esc(privacy) + ' · ' + Number(scope.entryCount || 0) + '</span>' +
+          (scope.privacy === "private" ? '<span class="audit-lock" aria-label="Private">' + icon("lock-closed") + '</span>' : '') + '</button>';
+      });
+    });
+    return html + '</nav>';
+  }
+
+  function auditTabsHtml() {
+    return '<div class="audit-tabs" role="tablist" aria-label="Audit domains">' +
+      '<button type="button" class="audit-tab" role="tab" disabled aria-disabled="true" title="Coming later">Scheduled work</button>' +
+      '<button type="button" class="audit-tab active" role="tab" aria-selected="true">Memory</button>' +
+      '<button type="button" class="audit-tab" role="tab" disabled aria-disabled="true" title="Coming later">Network events</button>' +
+      '</div>';
+  }
+
+  function auditMemoryMainHtml() {
+    var scope = selectedMemoryScope();
+    var head = '<div class="audit-main-head"><div><h1 class="page-title">Audit logs</h1>' +
+      '<p class="hint">Review durable actions and retained data. Memory is the first available domain.</p></div>' +
+      (scope ? '<div class="memory-editor-actions"><a class="btn btn-ghost btn-sm" href="/admin/api/audit/memory/export?storeId=' + encodeURIComponent(scope.storeId) + '" download>Export store</a><label class="btn btn-soft btn-sm">Import<input type="file" accept=".tar,application/x-tar" data-action="memory-import-file" hidden></label></div>' : '') + '</div>' + auditTabsHtml();
+    if (state.memoryScopesLoading && !state.memoryScopes) return head + '<div class="empty"><p class="hint">Loading memory&hellip;</p></div>';
+    if (state.memoryScopesError) return head + '<div class="empty"><p class="field-error">' + esc(state.memoryScopesError) + '</p><button type="button" class="btn btn-ghost" data-action="memory-retry-scopes">Retry</button></div>';
+    if (!scope) {
+      return head + '<div class="empty"><h2 class="section-title">No memory selected</h2><p class="hint">Choose a channel scope to review its generated index and saved Markdown files.</p></div>' + memoryHelpHtml();
+    }
+    var banner = scope.privacy === "public"
+      ? '<div class="memory-banner">This channel doesn&rsquo;t have its own memory store. Showing this channel&rsquo;s folder from the workspace memory store. Public channel memories are readable workspace-wide.</div>'
+      : '<div class="memory-banner">Private channel memory is isolated to this channel generation. It is never included in workspace-public exports or prompts.</div>';
+    var importHtml = memoryImportHtml();
+    return head + banner + importHtml +
+      '<div class="memory-layout"><section class="memory-pane" aria-label="Memory files"><div class="memory-pane-title">Files</div>' + memoryFilesHtml() + '</section>' +
+      '<section class="memory-pane memory-editor" aria-label="Memory editor">' + memoryEditorHtml() + '</section></div>' +
+      '<div class="memory-live" role="status" aria-live="polite">' + esc(state.memoryNotice || state.memoryError) + '</div>' + memoryHelpHtml();
+  }
+
+  function memoryFilesHtml() {
+    if (state.memoryFilesLoading) return '<p class="hint">Loading files&hellip;</p>';
+    if (state.memoryFilesError) return '<p class="field-error">' + esc(state.memoryFilesError) + '</p><button type="button" class="btn btn-ghost btn-sm" data-action="memory-retry-files">Retry</button>';
+    var files = state.memoryFiles || [];
+    if (!files.length) return '<p class="hint">No projected files are available.</p>';
+    return '<div class="memory-file-list">' + files.map(function (file) {
+      var key = file.generated ? "MEMORY.md" : file.entryId;
+      var active = state.memorySelectedFile === key;
+      return '<button type="button" class="memory-file' + (active ? " active" : "") + '" data-action="select-memory-file" data-file="' + esc(key) + '">' +
+        '<span class="memory-file-name">' + esc(file.name) + '</span>' +
+        '<span class="memory-file-meta">' + (file.generated ? "Generated · read-only" : esc(file.status || "active") + " · v" + Number(file.version || 0)) + '</span></button>';
+    }).join("") + '</div>';
+  }
+
+  function memoryEditorHtml() {
+    if (state.memoryFilesLoading || state.memoryBusy === "load") return '<p class="hint">Loading selection&hellip;</p>';
+    if (state.memorySelectedFile === "MEMORY.md") {
+      var index = (state.memoryFiles || []).find(function (file) { return file.generated; });
+      return '<div class="memory-editor-head"><div><div class="memory-editor-title">MEMORY.md</div><p class="hint">Generated index · changes are made through individual files.</p></div><span class="badge badge-off">Read-only</span></div>' +
+        '<pre class="memory-source">' + esc(index && index.content || '# Channel Memory Index\\n\\n') + '</pre>';
+    }
+    if (!state.memorySelectedFile) return '<div class="empty"><p class="hint">Select a file to view, edit, or delete it.</p></div>';
+    if (!state.memoryDetail || !state.memoryDraft) return '<p class="hint">Loading entry&hellip;</p>';
+    var entry = state.memoryDetail.entry;
+    var review = state.memoryDetail.unresolvedReview;
+    var reviewHtml = review ? '<div class="memory-review"><strong>Review requested</strong><span>' + esc(review.reasonCode || "Needs operator review") + '</span><span class="spacer"></span><button type="button" class="btn btn-ghost btn-sm" data-action="memory-resolve-review">Mark reviewed</button></div>' : '';
+    var status = entry.status === "forgotten" ? '<span class="badge badge-off">Forgotten</span>' : '<span class="badge badge-on"><span class="dot"></span>' + esc(entry.status) + '</span>';
+    var editor = entry.status === "forgotten" ? '<p class="hint">Content was irreversibly removed. Tombstone metadata and body-free history remain for audit integrity.</p>' :
+      '<div class="form-grid"><label class="field"><span class="field-label">Name</span><input class="input mono" value="' + esc(entry.slug) + '" readonly aria-readonly="true"></label>' +
+      '<label class="field"><span class="field-label">Type</span><span class="select-wrap"><select class="input" data-action="memory-type">' + ["fact", "decision", "project", "feedback", "preference"].map(function (type) { return '<option value="' + type + '"' + (state.memoryDraft.type === type ? " selected" : "") + '>' + type + '</option>'; }).join("") + '</select><span class="select-caret">' + icon("chevron-down") + '</span></span></label>' +
+      '<label class="field full"><span class="field-label">Description</span><input class="input" data-action="memory-description" value="' + esc(state.memoryDraft.description) + '"></label>' +
+      '<label class="field full"><span class="field-label">Markdown body</span><textarea class="textarea mono" data-action="memory-body" rows="12">' + esc(state.memoryDraft.body) + '</textarea></label></div>' +
+      '<div class="memory-editor-actions"><button type="button" class="btn btn-primary" data-action="memory-save"' + (!state.memoryDirty || state.memoryBusy ? " disabled" : "") + '>' + (state.memoryBusy === "save" ? "Saving&hellip;" : "Save changes") + '</button>' +
+      '<button type="button" class="btn btn-ghost" data-action="memory-discard"' + (!state.memoryDirty || state.memoryBusy ? " disabled" : "") + '>Discard</button>' +
+      '<button type="button" class="btn btn-danger" data-action="memory-delete-open"' + (state.memoryBusy ? " disabled" : "") + '>Delete memory</button></div>' + memoryConflictHtml();
+    return '<div class="memory-editor-head"><div><div class="memory-editor-title">' + esc(entry.slug) + '.md</div><p class="hint">Version ' + Number(entry.version) + ' · modified ' + esc(formatMemoryDate(entry.modifiedAt)) + '</p></div>' + status + '</div>' + reviewHtml + editor + memoryHistoryHtml() +
+      (entry.status !== "forgotten" ? '<details><summary class="field-label">Projected Markdown</summary><pre class="memory-source">' + esc(state.memoryDetail.projected || "") + '</pre></details>' : '');
+  }
+
+  function memoryHistoryHtml() {
+    var history = state.memoryHistory || [];
+    if (!history.length) return '';
+    return '<details><summary class="field-label">Revision history (' + history.length + ')</summary><div class="memory-history">' + history.slice().reverse().map(function (revision) {
+      return '<div class="memory-history-row"><span class="mono">v' + Number(revision.version) + '</span><strong>' + esc(revision.operation) + '</strong><span class="spacer"></span><span class="hint">' + esc(formatMemoryDate(revision.createdAt)) + '</span></div>';
+    }).join("") + '</div></details>';
+  }
+
+  function memoryImportHtml() {
+    var imp = state.memoryImport;
+    if (!imp) return '';
+    if (imp.loading) return '<div class="memory-import"><strong>Reading archive&hellip;</strong></div>';
+    if (imp.error) return '<div class="memory-import"><p class="field-error">' + esc(imp.error) + '</p><button type="button" class="btn btn-ghost btn-sm" data-action="memory-import-cancel">Dismiss</button></div>';
+    if (!imp.preview) return '';
+    var summary = imp.preview.summary;
+    return '<div class="memory-import"><strong>Import preview</strong><p class="hint">' + Number(summary.creates) + ' create · ' + Number(summary.updates) + ' update · ' + Number(summary.unchanged) + ' unchanged · ' + Number(summary.conflicts) + ' conflict</p>' +
+      (summary.conflicts ? '<p class="field-error">Resolve conflicts and preview the archive again before applying.</p>' : '') +
+      '<div class="memory-editor-actions"><button type="button" class="btn btn-primary btn-sm" data-action="memory-import-apply"' + (summary.conflicts || state.memoryBusy ? " disabled" : "") + '>Apply import</button><button type="button" class="btn btn-ghost btn-sm" data-action="memory-import-cancel">Cancel</button></div></div>';
+  }
+
+  function memoryConflictHtml() {
+    var conflict = state.memoryConflict;
+    if (!conflict) return '';
+    var latest = conflict.latest;
+    return '<div class="memory-review"><div><strong>Newer version available</strong><p class="hint">Your draft is preserved. Compare it with version ' + Number(latest.version) + ' before deciding.</p>' +
+      '<details><summary class="field-label">View latest saved content</summary><pre class="memory-source">Type: ' + esc(latest.type) + '\\nDescription: ' + esc(latest.description) + '\\n\\n' + esc(latest.body) + '</pre></details></div><span class="spacer"></span>' +
+      '<button type="button" class="btn btn-ghost btn-sm" data-action="memory-use-latest">Use latest and discard draft</button></div>';
+  }
+
+  function memoryHelpHtml() {
+    return '<div class="memory-help">Slack controls: <code>@Chickpea remember &hellip;</code>, <code>update memory &lt;name&gt; &hellip;</code>, <code>show memory</code>, and <code>forget memory &lt;name&gt;</code>. Generated <code>MEMORY.md</code> files are never edited directly. <button type="button" class="btn btn-ghost btn-sm" data-action="memory-copy-controls">Copy controls</button></div>';
+  }
+
+  function memoryDeleteModalHtml() {
+    if (!state.memoryDeleteConfirm || !state.memoryDetail) return '';
+    return '<div class="modal-backdrop"><div class="modal-card" role="dialog" aria-modal="true" aria-label="Delete memory">' +
+      '<h2 class="modal-title">Delete ' + esc(state.memoryDetail.entry.slug) + '?</h2>' +
+      '<p class="modal-body">This irreversibly removes the current and historical memory content. Audit tombstones remain. Copies already present in Slack transcripts, model-provider logs, or prior exports are not retracted.</p>' +
+      '<div class="modal-foot"><button type="button" class="btn btn-ghost" data-action="memory-delete-cancel">Cancel</button><span class="spacer"></span><button type="button" class="btn btn-danger" data-action="memory-delete-confirm">Delete permanently</button></div></div></div>';
+  }
+
+  function openAuditLogs(storeId, channelId, entryId) {
+    state.view = "audit";
+    state.profileScreen = "list";
+    state.memorySelection = { storeId: storeId || "", channelId: channelId || "", entryId: entryId || "" };
+    state.memorySelectedFile = entryId || "";
+    state.memoryError = "";
+    state.memoryNotice = "";
+    render();
+    loadMemoryScopes();
+  }
+
+  function loadMemoryScopes() {
+    if (state.memoryScopesLoading) return Promise.resolve();
+    state.memoryScopesLoading = true;
+    state.memoryScopesError = "";
+    render();
+    return api("/admin/api/audit/memory/scopes").then(function (body) {
+      state.memoryScopes = body.scopes || [];
+      state.memoryScopesLoading = false;
+      var selected = selectedMemoryScope();
+      if (!selected && state.memoryScopes.length) {
+        selected = state.memoryScopes[0];
+        state.memorySelection = { storeId: selected.storeId, channelId: selected.channelId, entryId: "" };
+      }
+      render();
+      if (selected) return loadMemoryFiles();
+    }).catch(function (error) {
+      state.memoryScopesLoading = false;
+      state.memoryScopesError = error.serverMessage || error.message || "Could not load memory scopes.";
+      render();
+    });
+  }
+
+  function selectMemoryScope(storeId, channelId) {
+    if (state.memoryDirty) { state.memoryError = "Save or discard the current draft before changing channels."; render(); return; }
+    state.memorySelection = { storeId: storeId, channelId: channelId, entryId: "" };
+    state.memorySelectedFile = "";
+    state.memoryDetail = null;
+    state.memoryDraft = null;
+    state.memoryHistory = [];
+    state.memoryConflict = null;
+    state.memoryNotice = "";
+    state.memoryError = "";
+    render();
+    loadMemoryFiles();
+  }
+
+  function loadMemoryFiles() {
+    var scope = selectedMemoryScope();
+    if (!scope) return Promise.resolve();
+    state.memoryFilesLoading = true;
+    state.memoryFilesError = "";
+    render();
+    return api("/admin/api/audit/memory/stores/" + encodeURIComponent(scope.storeId) + "/files?sourceChannelId=" + encodeURIComponent(scope.channelId)).then(function (body) {
+      state.memoryFiles = body.files || [];
+      state.memoryFilesLoading = false;
+      var requested = state.memorySelection.entryId;
+      var hasRequested = requested && state.memoryFiles.some(function (file) { return file.entryId === requested; });
+      state.memorySelectedFile = hasRequested ? requested : "MEMORY.md";
+      state.memorySelection.entryId = hasRequested ? requested : "";
+      render();
+      if (hasRequested) return loadMemoryEntry(requested);
+    }).catch(function (error) {
+      state.memoryFilesLoading = false;
+      state.memoryFilesError = error.serverMessage || error.message || "Could not load memory files.";
+      render();
+    });
+  }
+
+  function selectMemoryFile(key) {
+    if (state.memoryDirty) { state.memoryError = "Save or discard the current draft before opening another file."; render(); return; }
+    state.memorySelectedFile = key;
+    state.memorySelection.entryId = key === "MEMORY.md" ? "" : key;
+    state.memoryDetail = null;
+    state.memoryDraft = null;
+    state.memoryHistory = [];
+    state.memoryConflict = null;
+    state.memoryError = "";
+    state.memoryNotice = "";
+    render();
+    if (key !== "MEMORY.md") loadMemoryEntry(key);
+  }
+
+  function loadMemoryEntry(entryId) {
+    state.memoryBusy = "load";
+    render();
+    return Promise.all([
+      api("/admin/api/audit/memory/entries/" + encodeURIComponent(entryId)),
+      api("/admin/api/audit/memory/entries/" + encodeURIComponent(entryId) + "/history")
+    ]).then(function (parts) {
+      if (state.memorySelectedFile !== entryId) return;
+      state.memoryDetail = parts[0];
+      state.memoryHistory = parts[1].revisions || [];
+      state.memoryDraft = {
+        description: parts[0].entry.description || "",
+        type: parts[0].entry.type || "fact",
+        body: parts[0].entry.body || ""
+      };
+      state.memoryDirty = false;
+      state.memoryBusy = "";
+      state.memoryIdempotencyKey = "";
+      state.memoryConflict = null;
+      render();
+    }).catch(function (error) {
+      state.memoryBusy = "";
+      state.memoryError = error.serverMessage || error.message || "Could not load this memory.";
+      render();
+    });
+  }
+
+  function memoryMutationKey(prefix) {
+    if (!state.memoryIdempotencyKey) state.memoryIdempotencyKey = prefix + "-" + Date.now() + "-" + Math.random().toString(36).slice(2);
+    return state.memoryIdempotencyKey;
+  }
+
+  function markMemoryDirty() {
+    state.memoryDirty = true;
+    state.memoryError = "";
+    state.memoryNotice = "";
+    state.memoryIdempotencyKey = "";
+    state.memoryConflict = null;
+    var save = document.querySelector('[data-action="memory-save"]');
+    var discard = document.querySelector('[data-action="memory-discard"]');
+    if (save) save.disabled = false;
+    if (discard) discard.disabled = false;
+  }
+
+  function saveMemoryEntry() {
+    if (!state.memoryDetail || !state.memoryDraft || !state.memoryDirty || state.memoryBusy) return;
+    var entry = state.memoryDetail.entry;
+    state.memoryBusy = "save";
+    state.memoryError = "";
+    state.memoryNotice = "";
+    render();
+    return api("/admin/api/audit/memory/entries/" + encodeURIComponent(entry.entryId), {
+      method: "PUT",
+      headers: { "content-type": "application/json", "idempotency-key": memoryMutationKey("edit") },
+      body: JSON.stringify({ expectedVersion: entry.version, description: state.memoryDraft.description, type: state.memoryDraft.type, body: state.memoryDraft.body })
+    }).then(function (body) {
+      state.memoryDetail.entry = body.entry;
+      state.memoryDetail.projected = body.projected;
+      state.memoryDraft = { description: body.entry.description, type: body.entry.type, body: body.entry.body };
+      state.memoryDirty = false;
+      state.memoryBusy = "";
+      state.memoryIdempotencyKey = "";
+      state.memoryNotice = "Memory saved.";
+      // loadMemoryFiles already reloads the selected entry. A second explicit
+      // load raced the operator's next keystroke and could repaint their draft.
+      return loadMemoryFiles();
+    }).catch(function (error) {
+      state.memoryBusy = "";
+      if (error.payload && error.payload.error === "memory_version_conflict") {
+        state.memoryError = "This memory changed elsewhere (now version " + Number(error.payload.currentVersion) + "). Your draft is preserved; reload before saving again.";
+        state.memoryIdempotencyKey = "";
+        api("/admin/api/audit/memory/entries/" + encodeURIComponent(entry.entryId)).then(function (body) {
+          state.memoryConflict = { latest: body.entry };
+          render();
+        }).catch(function () { render(); });
+      } else {
+        state.memoryError = error.serverMessage || error.message || "Could not save memory. Retry will reuse the same request key.";
+      }
+      render();
+    });
+  }
+
+  function discardMemoryDraft() {
+    if (!state.memoryDetail) return;
+    var entry = state.memoryDetail.entry;
+    state.memoryDraft = { description: entry.description || "", type: entry.type || "fact", body: entry.body || "" };
+    state.memoryDirty = false;
+    state.memoryIdempotencyKey = "";
+    state.memoryError = "";
+    state.memoryConflict = null;
+    render();
+  }
+
+  function useLatestMemoryEntry() {
+    if (!state.memoryConflict || !state.memoryConflict.latest) return;
+    var latest = state.memoryConflict.latest;
+    state.memoryDetail.entry = latest;
+    state.memoryDraft = { description: latest.description || "", type: latest.type || "fact", body: latest.body || "" };
+    state.memoryDirty = false;
+    state.memoryIdempotencyKey = "";
+    state.memoryConflict = null;
+    state.memoryError = "";
+    state.memoryNotice = "Loaded the latest saved version.";
+    render();
+    loadMemoryEntry(latest.entryId);
+  }
+
+  function copyMemoryControls() {
+    var controls = "@Chickpea remember …\\nupdate memory <name> …\\nshow memory\\nforget memory <name>";
+    if (!navigator.clipboard || !navigator.clipboard.writeText) {
+      state.memoryError = "Clipboard access is unavailable. Select the commands above to copy them.";
+      render();
+      return;
+    }
+    navigator.clipboard.writeText(controls).then(function () {
+      state.memoryNotice = "Slack memory controls copied.";
+      state.memoryError = "";
+      render();
+    }).catch(function () {
+      state.memoryError = "Could not copy the controls. Select the commands above to copy them.";
+      render();
+    });
+  }
+
+  function deleteMemoryEntry() {
+    if (!state.memoryDetail || state.memoryBusy) return;
+    var entry = state.memoryDetail.entry;
+    state.memoryDeleteConfirm = false;
+    state.memoryBusy = "delete";
+    state.memoryError = "";
+    render();
+    api("/admin/api/audit/memory/entries/" + encodeURIComponent(entry.entryId), {
+      method: "DELETE",
+      headers: { "content-type": "application/json", "idempotency-key": memoryMutationKey("delete") },
+      body: JSON.stringify({ expectedVersion: entry.version, acknowledgeIrreversible: true })
+    }).then(function () {
+      state.memoryBusy = "";
+      state.memoryDirty = false;
+      state.memoryIdempotencyKey = "";
+      state.memoryNotice = "Memory deleted. Its content cannot be recovered from Chickpea.";
+      return loadMemoryFiles();
+    }).catch(function (error) {
+      state.memoryBusy = "";
+      state.memoryError = error.serverMessage || error.message || "Could not delete memory.";
+      render();
+    });
+  }
+
+  function resolveMemoryReview() {
+    if (!state.memoryDetail || !state.memoryDetail.unresolvedReview || state.memoryBusy) return;
+    var entry = state.memoryDetail.entry;
+    var review = state.memoryDetail.unresolvedReview;
+    state.memoryBusy = "review";
+    state.memoryError = "";
+    render();
+    api("/admin/api/audit/memory/entries/" + encodeURIComponent(entry.entryId) + "/reviews/" + encodeURIComponent(review.eventId) + "/resolve", {
+      method: "POST",
+      headers: { "content-type": "application/json", "idempotency-key": memoryMutationKey("review") },
+      body: JSON.stringify({ expectedVersion: entry.version, resolution: "confirmed" })
+    }).then(function () {
+      state.memoryBusy = "";
+      state.memoryNotice = "Review resolved.";
+      return loadMemoryEntry(entry.entryId);
+    }).catch(function (error) {
+      state.memoryBusy = "";
+      state.memoryError = error.serverMessage || error.message || "Could not resolve review.";
+      render();
+    });
+  }
+
+  function previewMemoryImport(file) {
+    var scope = selectedMemoryScope();
+    if (!scope || !file || typeof FileReader === "undefined") return;
+    state.memoryImport = { loading: true, error: "", archiveBase64: "", preview: null, previewToken: "", idempotencyKey: "" };
+    render();
+    var reader = new FileReader();
+    reader.onload = function () {
+      var result = String(reader.result || "");
+      var archiveBase64 = result.slice(result.indexOf(",") + 1);
+      postJson("/admin/api/audit/memory/import/preview", "POST", { storeId: scope.storeId, archiveBase64: archiveBase64 }).then(function (body) {
+        state.memoryImport = { loading: false, error: "", archiveBase64: archiveBase64, preview: body.preview, previewToken: body.previewToken, idempotencyKey: "" };
+        render();
+      }).catch(function (error) {
+        state.memoryImport = { loading: false, error: error.serverMessage || error.message || "Could not preview import.", archiveBase64: "", preview: null, previewToken: "", idempotencyKey: "" };
+        render();
+      });
+    };
+    reader.onerror = function () {
+      state.memoryImport = { loading: false, error: "Could not read this archive.", archiveBase64: "", preview: null, previewToken: "", idempotencyKey: "" };
+      render();
+    };
+    reader.readAsDataURL(file);
+  }
+
+  function applyMemoryImport() {
+    var scope = selectedMemoryScope();
+    var imp = state.memoryImport;
+    if (!scope || !imp || !imp.preview || state.memoryBusy) return;
+    if (!imp.idempotencyKey) imp.idempotencyKey = "import-" + Date.now() + "-" + Math.random().toString(36).slice(2);
+    state.memoryBusy = "import";
+    render();
+    api("/admin/api/audit/memory/import/apply", {
+      method: "POST",
+      headers: { "content-type": "application/json", "idempotency-key": imp.idempotencyKey },
+      body: JSON.stringify({ storeId: scope.storeId, archiveBase64: imp.archiveBase64, previewToken: imp.previewToken })
+    }).then(function (body) {
+      state.memoryBusy = "";
+      state.memoryImport = null;
+      state.memoryNotice = String((body.entries || []).length) + " memories imported.";
+      return loadMemoryScopes();
+    }).catch(function (error) {
+      state.memoryBusy = "";
+      state.memoryImport.error = error.serverMessage || error.message || "Could not apply import.";
+      render();
+    });
+  }
+
+  function formatMemoryDate(value) {
+    var date = new Date(Number(value));
+    return Number.isFinite(date.getTime()) ? date.toLocaleString() : "Unknown time";
+  }
+
   // ---- Settings: model providers (cards 13-14) -----------------------------
 
   var STAR_PATH = "M8 1.75a.75.75 0 0 1 .692.462l1.41 3.393 3.664.293a.75.75 0 0 1 .428 1.317l-2.791 2.39.853 3.575a.75.75 0 0 1-1.117.812L8 11.799l-3.139 1.905a.75.75 0 0 1-1.117-.812l.853-3.575-2.791-2.39a.75.75 0 0 1 .428-1.317l3.664-.293 1.41-3.393A.75.75 0 0 1 8 1.75Z";
@@ -4333,6 +4922,7 @@ details[open].advanced summary::before {
       openRepositoryPicker(Number(installations[0].id), installations[0].accountLogin);
       return;
     }
+
     resetRepositoryTransientState();
     state.repositoryAddOpen = true;
     render();
@@ -5234,6 +5824,24 @@ details[open].advanced summary::before {
       return;
     }
 
+    if (state.memoryDeleteConfirm) {
+      if (action === "memory-delete-cancel") {
+        state.memoryDeleteConfirm = false;
+        render();
+      } else if (action === "memory-delete-confirm") {
+        deleteMemoryEntry();
+      }
+      return;
+    }
+    if (state.view === "audit" && state.memoryDirty && (
+      action === "open-channels" || action === "open-profiles" || action === "open-settings" ||
+      action === "open-audit" || action === "go-home"
+    )) {
+      state.memoryError = "Save or discard the current memory draft before navigating away.";
+      render();
+      return;
+    }
+
     // Disconnect is an atomic transition. Do not let navigation or another
     // action make the operation appear canceled while its request is live.
     if (state.githubBusy === "disconnect") return;
@@ -5279,6 +5887,7 @@ details[open].advanced summary::before {
     // or (with a data-agent) directly on that profile's edit detail (the
     // channel-page Profile row's Edit affordance).
     if (action === "open-profiles") { enterProfiles(target.getAttribute("data-agent")); }
+    if (action === "open-audit") { openAuditLogs("", "", ""); }
     // Brand-as-home: the reliable exit back to the Channels overview.
     if (action === "go-home") { openChannels(); }
     // Stepper: mark step 1 done and reveal step 2. Not preventing default lets
@@ -5344,6 +5953,18 @@ details[open].advanced summary::before {
     // Settings (model-providers) is a separate destination that lands with its
     // own build; the affordance is present per the approved model-field design.
     if (action === "open-settings") { openSettings(target.getAttribute("data-section") || ""); }
+    if (action === "memory-retry-scopes") { loadMemoryScopes(); }
+    if (action === "select-memory-scope") { selectMemoryScope(target.getAttribute("data-store") || "", target.getAttribute("data-channel") || ""); }
+    if (action === "memory-retry-files") { loadMemoryFiles(); }
+    if (action === "select-memory-file") { selectMemoryFile(target.getAttribute("data-file") || "MEMORY.md"); }
+    if (action === "memory-save") { saveMemoryEntry(); }
+    if (action === "memory-discard") { discardMemoryDraft(); }
+    if (action === "memory-use-latest") { useLatestMemoryEntry(); }
+    if (action === "memory-copy-controls") { copyMemoryControls(); }
+    if (action === "memory-delete-open" && state.memoryDetail) { state.memoryDeleteConfirm = true; render(); }
+    if (action === "memory-resolve-review") { resolveMemoryReview(); }
+    if (action === "memory-import-cancel") { state.memoryImport = null; render(); }
+    if (action === "memory-import-apply") { applyMemoryImport(); }
     if (state.githubBusy && action.indexOf("github-") === 0) return;
     if (action === "github-manifest-open") {
       state.githubManifestOpen = true;
@@ -5627,6 +6248,10 @@ details[open].advanced summary::before {
   document.addEventListener("input", function (event) {
     var target = event.target;
     var action = target.getAttribute && target.getAttribute("data-action");
+    if (state.memoryDraft) {
+      if (action === "memory-description") { state.memoryDraft.description = target.value; markMemoryDirty(); }
+      if (action === "memory-body") { state.memoryDraft.body = target.value; markMemoryDirty(); }
+    }
     if (action === "channel-addendum") {
       state.channelDraft.channelPromptAddendum = target.value;
       state.dirty = true;
@@ -5733,6 +6358,17 @@ details[open].advanced summary::before {
   document.addEventListener("change", function (event) {
     var target = event.target;
     var action = target.getAttribute && target.getAttribute("data-action");
+    if (action === "memory-type" && state.memoryDraft) {
+      state.memoryDraft.type = target.value;
+      state.memoryDirty = true;
+      state.memoryError = "";
+      state.memoryNotice = "";
+      state.memoryIdempotencyKey = "";
+      render();
+    }
+    if (action === "memory-import-file" && target.files && target.files[0]) {
+      previewMemoryImport(target.files[0]);
+    }
     if (action === "sandbox-enabled" && !state.sandboxSaving) {
       sandboxDraft.enabled = !!target.checked;
       state.sandboxError = "";
@@ -5883,6 +6519,14 @@ details[open].advanced summary::before {
   }
 
   document.addEventListener("keydown", function (event) {
+    if (state.memoryDeleteConfirm && (event.key === "Escape" || event.key === "Esc")) {
+      event.preventDefault();
+      state.memoryDeleteConfirm = false;
+      render();
+      var restoreMemoryDelete = document.querySelector('[data-action="memory-delete-open"]');
+      if (restoreMemoryDelete && restoreMemoryDelete.focus) restoreMemoryDelete.focus();
+      return;
+    }
     if (state.githubDisconnectConfirm && event.key === "Tab") {
       event.preventDefault();
       if (state.githubBusy === "disconnect") {
@@ -5979,6 +6623,7 @@ details[open].advanced summary::before {
     window.addEventListener("beforeunload", function (event) {
       if (
         (state.profileScreen === "edit" && state.profileDirty) ||
+        state.memoryDirty ||
         state.slackConnectionBusy === "update" ||
         state.slackConnectionBusy === "disconnect" ||
         state.githubBusy === "disconnect"
@@ -6017,6 +6662,12 @@ details[open].advanced summary::before {
       if (state.profileScreen === "edit" && state.profileDirty && targetPath !== canonicalPath()) {
         history.pushState(null, "", canonicalPath());
         state.leavePrompt = { action: "route", path: targetPath };
+        render();
+        return;
+      }
+      if (state.memoryDirty && targetPath !== canonicalPath()) {
+        history.pushState(null, "", canonicalPath());
+        state.memoryError = "Save or discard the current memory draft before navigating away.";
         render();
         return;
       }
@@ -6972,7 +7623,7 @@ details[open].advanced summary::before {
   // the brand-home logo, and the "<- Profiles" back link.
   function isEditLeaveAction(action) {
     return action === "open-channels" || action === "open-profiles" || action === "open-settings" ||
-      action === "go-home" || action === "profiles-back";
+      action === "open-audit" || action === "go-home" || action === "profiles-back";
   }
 
   // Perform a confirmed leave — the edit draft is dropped and the pending
@@ -6999,6 +7650,8 @@ details[open].advanced summary::before {
       applyRoute(pending.path);
     } else if (action === "open-settings") {
       openSettings((pending && pending.section) || "");
+    } else if (action === "open-audit") {
+      openAuditLogs("", "", "");
     } else if (action === "go-home" || action === "open-channels") {
       openChannels();
     } else {
