@@ -1555,9 +1555,11 @@ details[open].advanced summary::before {
     memoryFiles: null,
     memoryFilesLoading: false,
     memoryFilesError: "",
+    memoryFilesRequestId: 0,
     memorySelectedFile: "",
     memoryDetail: null,
     memoryHistory: [],
+    memoryEntryRequestId: 0,
     memoryDraft: null,
     memoryDirty: false,
     memoryBusy: "",
@@ -1566,7 +1568,8 @@ details[open].advanced summary::before {
     memoryIdempotencyKey: "",
     memoryConflict: null,
     memoryDeleteConfirm: false,
-    memoryImport: null
+    memoryImport: null,
+    memoryImportRequestId: 0
   };
   var egressDraft = { mode: "allowlist", domains: [""] };
   var sandboxDraft = {
@@ -4023,6 +4026,10 @@ details[open].advanced summary::before {
     state.view = "audit";
     state.profileScreen = "list";
     state.memorySelection = { storeId: storeId || "", channelId: channelId || "", entryId: entryId || "" };
+    state.memoryFilesRequestId += 1;
+    state.memoryEntryRequestId += 1;
+    state.memoryImportRequestId += 1;
+    state.memoryImport = null;
     state.memorySelectedFile = entryId || "";
     state.memoryError = "";
     state.memoryNotice = "";
@@ -4054,7 +4061,12 @@ details[open].advanced summary::before {
 
   function selectMemoryScope(storeId, channelId) {
     if (state.memoryDirty) { state.memoryError = "Save or discard the current draft before changing channels."; render(); return; }
+    if (state.memoryBusy && state.memoryBusy !== "load") { state.memoryError = "Wait for the current memory action to finish before changing channels."; render(); return; }
     state.memorySelection = { storeId: storeId, channelId: channelId, entryId: "" };
+    state.memoryFilesRequestId += 1;
+    state.memoryEntryRequestId += 1;
+    state.memoryImportRequestId += 1;
+    state.memoryImport = null;
     state.memorySelectedFile = "";
     state.memoryDetail = null;
     state.memoryDraft = null;
@@ -4069,10 +4081,14 @@ details[open].advanced summary::before {
   function loadMemoryFiles() {
     var scope = selectedMemoryScope();
     if (!scope) return Promise.resolve();
+    var requestId = ++state.memoryFilesRequestId;
+    var storeId = scope.storeId;
+    var channelId = scope.channelId;
     state.memoryFilesLoading = true;
     state.memoryFilesError = "";
     render();
     return api("/admin/api/audit/memory/stores/" + encodeURIComponent(scope.storeId) + "/files?sourceChannelId=" + encodeURIComponent(scope.channelId)).then(function (body) {
+      if (requestId !== state.memoryFilesRequestId || state.memorySelection.storeId !== storeId || state.memorySelection.channelId !== channelId) return;
       state.memoryFiles = body.files || [];
       state.memoryFilesLoading = false;
       var requested = state.memorySelection.entryId;
@@ -4082,6 +4098,7 @@ details[open].advanced summary::before {
       render();
       if (hasRequested) return loadMemoryEntry(requested);
     }).catch(function (error) {
+      if (requestId !== state.memoryFilesRequestId || state.memorySelection.storeId !== storeId || state.memorySelection.channelId !== channelId) return;
       state.memoryFilesLoading = false;
       state.memoryFilesError = error.serverMessage || error.message || "Could not load memory files.";
       render();
@@ -4090,6 +4107,8 @@ details[open].advanced summary::before {
 
   function selectMemoryFile(key) {
     if (state.memoryDirty) { state.memoryError = "Save or discard the current draft before opening another file."; render(); return; }
+    if (state.memoryBusy && state.memoryBusy !== "load") { state.memoryError = "Wait for the current memory action to finish before opening another file."; render(); return; }
+    state.memoryEntryRequestId += 1;
     state.memorySelectedFile = key;
     state.memorySelection.entryId = key === "MEMORY.md" ? "" : key;
     state.memoryDetail = null;
@@ -4103,13 +4122,14 @@ details[open].advanced summary::before {
   }
 
   function loadMemoryEntry(entryId) {
+    var requestId = ++state.memoryEntryRequestId;
     state.memoryBusy = "load";
     render();
     return Promise.all([
       api("/admin/api/audit/memory/entries/" + encodeURIComponent(entryId)),
       api("/admin/api/audit/memory/entries/" + encodeURIComponent(entryId) + "/history")
     ]).then(function (parts) {
-      if (state.memorySelectedFile !== entryId) return;
+      if (requestId !== state.memoryEntryRequestId || state.memorySelectedFile !== entryId) return;
       state.memoryDetail = parts[0];
       state.memoryHistory = parts[1].revisions || [];
       state.memoryDraft = {
@@ -4123,6 +4143,7 @@ details[open].advanced summary::before {
       state.memoryConflict = null;
       render();
     }).catch(function (error) {
+      if (requestId !== state.memoryEntryRequestId || state.memorySelectedFile !== entryId) return;
       state.memoryBusy = "";
       state.memoryError = error.serverMessage || error.message || "Could not load this memory.";
       render();
@@ -4275,22 +4296,29 @@ details[open].advanced summary::before {
   function previewMemoryImport(file) {
     var scope = selectedMemoryScope();
     if (!scope || !file || typeof FileReader === "undefined") return;
-    state.memoryImport = { loading: true, error: "", archiveBase64: "", preview: null, previewToken: "", idempotencyKey: "" };
+    var requestId = ++state.memoryImportRequestId;
+    var storeId = scope.storeId;
+    var channelId = scope.channelId;
+    state.memoryImport = { loading: true, error: "", storeId: storeId, archiveBase64: "", preview: null, previewToken: "", idempotencyKey: "" };
     render();
     var reader = new FileReader();
     reader.onload = function () {
+      if (requestId !== state.memoryImportRequestId || state.memorySelection.storeId !== storeId || state.memorySelection.channelId !== channelId) return;
       var result = String(reader.result || "");
       var archiveBase64 = result.slice(result.indexOf(",") + 1);
-      postJson("/admin/api/audit/memory/import/preview", "POST", { storeId: scope.storeId, archiveBase64: archiveBase64 }).then(function (body) {
-        state.memoryImport = { loading: false, error: "", archiveBase64: archiveBase64, preview: body.preview, previewToken: body.previewToken, idempotencyKey: "" };
+      postJson("/admin/api/audit/memory/import/preview", "POST", { storeId: storeId, archiveBase64: archiveBase64 }).then(function (body) {
+        if (requestId !== state.memoryImportRequestId || state.memorySelection.storeId !== storeId || state.memorySelection.channelId !== channelId) return;
+        state.memoryImport = { loading: false, error: "", storeId: storeId, archiveBase64: archiveBase64, preview: body.preview, previewToken: body.previewToken, idempotencyKey: "" };
         render();
       }).catch(function (error) {
-        state.memoryImport = { loading: false, error: error.serverMessage || error.message || "Could not preview import.", archiveBase64: "", preview: null, previewToken: "", idempotencyKey: "" };
+        if (requestId !== state.memoryImportRequestId || state.memorySelection.storeId !== storeId || state.memorySelection.channelId !== channelId) return;
+        state.memoryImport = { loading: false, error: error.serverMessage || error.message || "Could not preview import.", storeId: storeId, archiveBase64: "", preview: null, previewToken: "", idempotencyKey: "" };
         render();
       });
     };
     reader.onerror = function () {
-      state.memoryImport = { loading: false, error: "Could not read this archive.", archiveBase64: "", preview: null, previewToken: "", idempotencyKey: "" };
+      if (requestId !== state.memoryImportRequestId || state.memorySelection.storeId !== storeId || state.memorySelection.channelId !== channelId) return;
+      state.memoryImport = { loading: false, error: "Could not read this archive.", storeId: storeId, archiveBase64: "", preview: null, previewToken: "", idempotencyKey: "" };
       render();
     };
     reader.readAsDataURL(file);
@@ -4299,7 +4327,7 @@ details[open].advanced summary::before {
   function applyMemoryImport() {
     var scope = selectedMemoryScope();
     var imp = state.memoryImport;
-    if (!scope || !imp || !imp.preview || state.memoryBusy) return;
+    if (!scope || !imp || !imp.preview || imp.storeId !== scope.storeId || state.memoryBusy) return;
     if (!imp.idempotencyKey) imp.idempotencyKey = "import-" + Date.now() + "-" + Math.random().toString(36).slice(2);
     state.memoryBusy = "import";
     render();
@@ -4308,11 +4336,13 @@ details[open].advanced summary::before {
       headers: { "content-type": "application/json", "idempotency-key": imp.idempotencyKey },
       body: JSON.stringify({ storeId: scope.storeId, archiveBase64: imp.archiveBase64, previewToken: imp.previewToken })
     }).then(function (body) {
+      if (state.memoryImport !== imp) return;
       state.memoryBusy = "";
       state.memoryImport = null;
       state.memoryNotice = String((body.entries || []).length) + " memories imported.";
       return loadMemoryScopes();
     }).catch(function (error) {
+      if (state.memoryImport !== imp) return;
       state.memoryBusy = "";
       state.memoryImport.error = error.serverMessage || error.message || "Could not apply import.";
       render();
@@ -5963,7 +5993,7 @@ details[open].advanced summary::before {
     if (action === "memory-copy-controls") { copyMemoryControls(); }
     if (action === "memory-delete-open" && state.memoryDetail) { state.memoryDeleteConfirm = true; render(); }
     if (action === "memory-resolve-review") { resolveMemoryReview(); }
-    if (action === "memory-import-cancel") { state.memoryImport = null; render(); }
+    if (action === "memory-import-cancel" && !state.memoryBusy) { state.memoryImportRequestId += 1; state.memoryImport = null; render(); }
     if (action === "memory-import-apply") { applyMemoryImport(); }
     if (state.githubBusy && action.indexOf("github-") === 0) return;
     if (action === "github-manifest-open") {

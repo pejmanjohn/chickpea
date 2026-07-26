@@ -121,6 +121,16 @@ export interface FakeSlackChannel {
   name: string;
   isPrivate?: boolean;
   isMember?: boolean;
+  isArchived?: boolean;
+  isFrozen?: boolean;
+  isShared?: boolean;
+  isExternallyShared?: boolean;
+  isOrganizationShared?: boolean;
+  pendingShared?: string[];
+  isIm?: boolean;
+  isMpim?: boolean;
+  teamId?: string;
+  contextTeamId?: string;
 }
 
 export interface FakeSlackUser {
@@ -983,7 +993,16 @@ function channelPayload(channel: FakeSlackChannel): Record<string, unknown> {
     name: channel.name,
     is_private: channel.isPrivate ?? false,
     is_member: channel.isMember ?? false,
-    is_archived: false,
+    is_archived: channel.isArchived ?? false,
+    is_frozen: channel.isFrozen ?? false,
+    is_shared: channel.isShared ?? false,
+    is_ext_shared: channel.isExternallyShared ?? false,
+    is_org_shared: channel.isOrganizationShared ?? false,
+    pending_shared: channel.pendingShared ?? [],
+    is_im: channel.isIm ?? false,
+    is_mpim: channel.isMpim ?? false,
+    ...(channel.teamId ? { team_id: channel.teamId } : {}),
+    ...(channel.contextTeamId ? { context_team_id: channel.contextTeamId } : {}),
   };
 }
 

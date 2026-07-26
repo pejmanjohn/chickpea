@@ -153,6 +153,7 @@ export class MemoryService {
           storeId: read.storeId,
           ...(read.sourceChannelId ? { sourceChannelId: read.sourceChannelId } : {}),
           statuses: READABLE_STATUSES,
+          limit: 1_000,
         }),
       ),
     );

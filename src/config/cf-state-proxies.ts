@@ -30,6 +30,7 @@ import {
   type RecordMemoryReviewInput,
   type RecordMemoryAdminViewInput,
   type RecordMemoryAdminEventInput,
+  type ReplayMemoryImportInput,
   type ResolveMemoryConversationContextInput,
   type TransitionMemoryEntryInput,
   type UpdateMemoryEntryInput,
@@ -254,6 +255,12 @@ export class CfMemoryStateStore implements MemoryStateStore {
     const response = await this.execute({ kind: 'list_entries', filter });
     if (response.kind !== 'entries') throw unexpectedMemoryResponse();
     return response.entries;
+  }
+
+  async replayImport(input: ReplayMemoryImportInput): Promise<MemoryEntry[] | undefined> {
+    const response = await this.execute({ kind: 'replay_import', input });
+    if (response.kind !== 'import_replay') throw unexpectedMemoryResponse();
+    return orUndefined(response.entries);
   }
 
   async applyImport(input: ApplyMemoryImportInput): Promise<MemoryEntry[]> {

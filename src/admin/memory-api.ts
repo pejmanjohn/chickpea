@@ -3,17 +3,20 @@ import { createHash, randomUUID } from 'node:crypto';
 import { Hono, type Context } from 'hono';
 import * as v from 'valibot';
 
+import type { AuditEvent } from '../audit/types.ts';
 import { decodeMemoryArchive, encodeMemoryArchive } from '../memory/archive.ts';
 import {
   createImportPreview,
   signImportPreview,
   verifyImportPreview,
 } from '../memory/import.ts';
-import { projectMemoryEntry, projectMemoryFiles } from '../memory/markdown.ts';
+import { projectMemoryEntry, projectMemoryFiles, sha256Hex } from '../memory/markdown.ts';
 import {
   MemoryStateError,
   MemoryVersionConflictError,
   type MemoryEntry,
+  type MemoryEntryFilter,
+  type MemoryRevision,
   type MemoryStateStore,
   type MemoryStoreDescriptor,
 } from '../memory/types.ts';
@@ -57,11 +60,13 @@ export function createMemoryAdminApi(options: MemoryAdminApiOptions): Hono {
     try {
       const state = options.store(c);
       const workspaceId = c.req.query('workspaceId');
-      const [stores, channelStates, entries] = await Promise.all([
+      const [stores, channelStates] = await Promise.all([
         state.listStores(workspaceId),
         state.listChannelScopes(workspaceId),
-        state.listEntries(workspaceId ? { workspaceId } : {}),
       ]);
+      const entries = (await Promise.all(
+        stores.map((store) => listAllEntries(state, { storeId: store.storeId })),
+      )).flat();
       return c.json({ scopes: buildScopes(stores, channelStates, entries) });
     } catch (error) {
       return memoryError(c, error);
@@ -76,7 +81,7 @@ export function createMemoryAdminApi(options: MemoryAdminApiOptions): Hono {
       const state = options.store(c);
       const store = await state.getStore(storeId);
       if (!store) return c.json({ error: 'memory_store_not_found' }, 404);
-      const entries = await state.listEntries({ storeId, sourceChannelId, limit: 1_000 });
+      const entries = await listAllEntries(state, { storeId, sourceChannelId });
       if (store.visibility === 'private') {
         await Promise.all(entries.map((entry) => recordPrivateView(state, c, entry.entryId, now())));
       }
@@ -142,14 +147,26 @@ export function createMemoryAdminApi(options: MemoryAdminApiOptions): Hono {
     if (!parsed.success) return invalid(c);
     try {
       const content = validateMemoryContent(parsed.output);
-      const entry = await options.store(c).updateEntry({
-        entryId: parseId(c.req.param('entryId')),
+      const entryId = parseId(c.req.param('entryId'));
+      const actorId = adminActor(c);
+      const state = options.store(c);
+      const namespacedKey = `admin:update:${idempotencyKey}`;
+      const entry = await state.updateEntry({
+        entryId,
         expectedVersion: parsed.output.expectedVersion,
         ...content,
-        actorId: adminActor(c),
+        actorId,
         actorClass: 'operator',
-        idempotencyKey: `admin:update:${idempotencyKey}`,
+        idempotencyKey: namespacedKey,
       });
+      assertUpdateReceipt(
+        await state.listRevisions(entryId),
+        namespacedKey,
+        entryId,
+        parsed.output.expectedVersion,
+        actorId,
+        content,
+      );
       return c.json({ entry, projected: projectMemoryEntry(entry) });
     } catch (error) {
       return memoryError(c, error);
@@ -163,14 +180,25 @@ export function createMemoryAdminApi(options: MemoryAdminApiOptions): Hono {
     const parsed = v.safeParse(deleteSchema, await readJson(c));
     if (!parsed.success) return invalid(c);
     try {
-      const entry = await options.store(c).forgetEntry({
-        entryId: parseId(c.req.param('entryId')),
+      const entryId = parseId(c.req.param('entryId'));
+      const actorId = adminActor(c);
+      const state = options.store(c);
+      const namespacedKey = `admin:delete:${idempotencyKey}`;
+      const entry = await state.forgetEntry({
+        entryId,
         expectedVersion: parsed.output.expectedVersion,
-        actorId: adminActor(c),
+        actorId,
         actorClass: 'operator',
         reasonCode: 'admin_delete',
-        idempotencyKey: `admin:delete:${idempotencyKey}`,
+        idempotencyKey: namespacedKey,
       });
+      assertDeleteReceipt(
+        await state.listRevisions(entryId),
+        namespacedKey,
+        entryId,
+        parsed.output.expectedVersion,
+        actorId,
+      );
       return c.json({ entry, irreversible: true });
     } catch (error) {
       return memoryError(c, error);
@@ -202,18 +230,37 @@ export function createMemoryAdminApi(options: MemoryAdminApiOptions): Hono {
       const entryId = parseId(c.req.param('entryId'));
       const eventId = parseId(c.req.param('eventId'));
       const state = options.store(c);
-      const request = (await state.listAuditEvents({ subjectId: entryId, eventType: 'memory.review_requested', limit: 100 }))
-        .find((event) => event.eventId === eventId);
-      if (!request) return c.json({ error: 'memory_review_not_found' }, 404);
+      const actorId = adminActor(c);
+      const namespacedKey = `admin:review:${idempotencyKey}`;
+      const receipt = (await state.listAuditEvents({ idempotencyKey: namespacedKey, limit: 1 }))[0];
+      if (receipt) {
+        assertReviewReceipt(receipt, entryId, eventId, parsed.output.expectedVersion, actorId, parsed.output.resolution);
+        return c.json({ ok: true });
+      }
+      const events = await state.listAuditEvents({ subjectId: entryId, limit: 100 });
+      const current = unresolvedReview(events);
+      const requested = events.some((event) =>
+        event.eventType === 'memory.review_requested' && event.eventId === eventId
+      );
+      if (!requested) return c.json({ error: 'memory_review_not_found' }, 404);
+      if (!current || current.eventId !== eventId) {
+        return c.json({ error: 'memory_review_not_current' }, 409);
+      }
       await state.recordReview({
         entryId,
         expectedVersion: parsed.output.expectedVersion,
         action: 'resolved',
         resolution: parsed.output.resolution,
-        actorId: adminActor(c),
+        reviewRequestEventId: eventId,
+        actorId,
         actorClass: 'operator',
-        idempotencyKey: `admin:review:${idempotencyKey}`,
+        idempotencyKey: namespacedKey,
       });
+      const resolved = (await state.listAuditEvents({ idempotencyKey: namespacedKey, limit: 1 }))[0];
+      if (!resolved) {
+        throw new MemoryStateError('memory_idempotency_incomplete', 'Memory review receipt is unavailable.');
+      }
+      assertReviewReceipt(resolved, entryId, eventId, parsed.output.expectedVersion, actorId, parsed.output.resolution);
       return c.json({ ok: true });
     } catch (error) {
       return memoryError(c, error);
@@ -227,7 +274,7 @@ export function createMemoryAdminApi(options: MemoryAdminApiOptions): Hono {
       const state = options.store(c);
       const store = await state.getStore(storeId);
       if (!store) return c.json({ error: 'memory_store_not_found' }, 404);
-      const entries = await state.listEntries({ storeId, limit: 1_000 });
+      const entries = await listAllEntries(state, { storeId }, 1_000);
       const archive = encodeMemoryArchive(projectMemoryFiles({ store, entries }));
       await state.recordAdminEvent({
         eventType: 'memory.exported',
@@ -259,7 +306,7 @@ export function createMemoryAdminApi(options: MemoryAdminApiOptions): Hono {
       const store = await state.getStore(parsed.output.storeId);
       if (!store) return c.json({ error: 'memory_store_not_found' }, 404);
       const [currentEntries, scopes] = await Promise.all([
-        state.listEntries({ storeId: store.storeId, limit: 1_000 }),
+        listAllEntries(state, { storeId: store.storeId }, 1_000),
         state.listChannelScopes(store.workspaceId),
       ]);
       const allowed = new Set(scopes.map((scope) => scope.channelId));
@@ -293,21 +340,32 @@ export function createMemoryAdminApi(options: MemoryAdminApiOptions): Hono {
       const state = options.store(c);
       const store = await state.getStore(parsed.output.storeId);
       if (!store) return c.json({ error: 'memory_store_not_found' }, 404);
+      const actorId = adminActor(c);
+      const namespacedKey = `admin:import:${idempotencyKey}`;
+      const archiveSha256 = sha256Hex(archive);
+      verifyImportPreview(parsed.output.previewToken, options.adminSecret(), {
+        sessionFingerprint: sessionFingerprint(c),
+        storeId: store.storeId,
+        archiveSha256,
+        schemaVersion: 1,
+        now: now(),
+      });
+      const replay = await state.replayImport({
+        storeId: store.storeId,
+        workspaceId: store.workspaceId,
+        actorId,
+        archiveSha256,
+        idempotencyKey: namespacedKey,
+      });
+      if (replay) return c.json({ entries: replay });
       const [currentEntries, scopes] = await Promise.all([
-        state.listEntries({ storeId: store.storeId, limit: 1_000 }),
+        listAllEntries(state, { storeId: store.storeId }, 1_000),
         state.listChannelScopes(store.workspaceId),
       ]);
       const allowed = new Set(scopes.map((scope) => scope.channelId));
       for (const entry of currentEntries) allowed.add(entry.sourceChannelId);
       const preview = createImportPreview({
         archive, targetStore: store, currentEntries, allowedSourceChannelIds: [...allowed],
-      });
-      verifyImportPreview(parsed.output.previewToken, options.adminSecret(), {
-        sessionFingerprint: sessionFingerprint(c),
-        storeId: store.storeId,
-        archiveSha256: preview.archiveSha256,
-        schemaVersion: 1,
-        now: now(),
       });
       if (preview.summary.conflicts > 0) {
         return c.json({ error: 'memory_import_conflict', preview }, 409);
@@ -318,8 +376,9 @@ export function createMemoryAdminApi(options: MemoryAdminApiOptions): Hono {
       const entries = await state.applyImport({
         storeId: store.storeId,
         workspaceId: store.workspaceId,
-        actorId: adminActor(c),
-        idempotencyKey: `admin:import:${idempotencyKey}`,
+        actorId,
+        archiveSha256: preview.archiveSha256,
+        idempotencyKey: namespacedKey,
         operations: preview.candidates.flatMap((candidate) => {
           if (candidate.action !== 'create' && candidate.action !== 'update') return [];
           return [{
@@ -361,6 +420,114 @@ export function createMemoryAdminApi(options: MemoryAdminApiOptions): Hono {
   });
 
   return app;
+}
+
+async function listAllEntries(
+  state: MemoryStateStore,
+  filter: Omit<MemoryEntryFilter, 'limit' | 'offset'>,
+  maximum = Number.POSITIVE_INFINITY,
+): Promise<MemoryEntry[]> {
+  const entries: MemoryEntry[] = [];
+  const pageSize = 250;
+  for (let offset = 0; ; offset += pageSize) {
+    const page = await state.listEntries({ ...filter, limit: pageSize, offset });
+    entries.push(...page);
+    if (entries.length > maximum) {
+      throw new MemoryStateError(
+        'memory_export_too_large',
+        'Memory store exceeds portable export limits.',
+      );
+    }
+    if (page.length < pageSize) return entries;
+  }
+}
+
+function assertUpdateReceipt(
+  revisions: readonly MemoryRevision[],
+  idempotencyKey: string,
+  entryId: string,
+  expectedVersion: number,
+  actorId: string,
+  content: Pick<MemoryEntry, 'description' | 'type' | 'body'>,
+): void {
+  const receipt = revisions.find((revision) => revision.idempotencyKey === idempotencyKey);
+  if (
+    !receipt ||
+    receipt.entryId !== entryId ||
+    receipt.version !== expectedVersion + 1 ||
+    receipt.operation !== 'update' ||
+    receipt.actorId !== actorId ||
+    receipt.actorClass !== 'operator' ||
+    receipt.description !== content.description ||
+    receipt.type !== content.type ||
+    receipt.body !== content.body
+  ) {
+    throw new MemoryStateError(
+      'memory_idempotency_mismatch',
+      'The idempotency key belongs to a different memory update.',
+    );
+  }
+}
+
+function assertDeleteReceipt(
+  revisions: readonly MemoryRevision[],
+  idempotencyKey: string,
+  entryId: string,
+  expectedVersion: number,
+  actorId: string,
+): void {
+  const receipt = revisions.find((revision) => revision.idempotencyKey === idempotencyKey);
+  if (
+    !receipt ||
+    receipt.entryId !== entryId ||
+    receipt.version !== expectedVersion + 1 ||
+    receipt.operation !== 'forget' ||
+    receipt.actorId !== actorId ||
+    receipt.actorClass !== 'operator' ||
+    receipt.reasonCode !== 'admin_delete'
+  ) {
+    throw new MemoryStateError(
+      'memory_idempotency_mismatch',
+      'The idempotency key belongs to a different memory deletion.',
+    );
+  }
+}
+
+function assertReviewReceipt(
+  receipt: AuditEvent,
+  entryId: string,
+  requestEventId: string,
+  expectedVersion: number,
+  actorId: string,
+  resolution: 'confirmed' | 'corrected' | 'expired',
+): void {
+  const metadata = reviewMetadata(receipt.metadataJson);
+  if (
+    receipt.domain !== 'memory' ||
+    receipt.eventType !== 'memory.review_resolved' ||
+    receipt.subjectId !== entryId ||
+    receipt.subjectVersion !== expectedVersion ||
+    receipt.actorId !== actorId ||
+    receipt.actorClass !== 'operator' ||
+    metadata.resolution !== resolution ||
+    metadata.reviewRequestEventId !== requestEventId
+  ) {
+    throw new MemoryStateError(
+      'memory_idempotency_mismatch',
+      'The idempotency key belongs to a different memory review.',
+    );
+  }
+}
+
+function reviewMetadata(raw: string): Record<string, unknown> {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+  } catch {
+    return {};
+  }
 }
 
 function buildScopes(
@@ -430,7 +597,9 @@ function addScope(
   });
 }
 
-function unresolvedReview(events: Awaited<ReturnType<MemoryStateStore['listAuditEvents']>>): object | null {
+function unresolvedReview(
+  events: Awaited<ReturnType<MemoryStateStore['listAuditEvents']>>,
+): { eventId: string; reasonCode: string | null; createdAt: number } | null {
   const requested = events.find((event) => event.eventType === 'memory.review_requested');
   const resolved = events.find((event) => event.eventType === 'memory.review_resolved');
   if (!requested || resolved && resolved.createdAt >= requested.createdAt) return null;
@@ -509,7 +678,7 @@ function memoryError(c: Context, error: unknown): Response {
   }
   if (error instanceof MemoryStateError) {
     const status = error.code.includes('not_found') ? 404
-      : error.code.includes('conflict') || error.code.includes('sealed') ? 409
+      : error.code.includes('conflict') || error.code.includes('sealed') || error.code.includes('idempotency') ? 409
         : error.code.includes('quota') || error.code.includes('too_large') ? 413 : 400;
     return c.json({ error: error.code }, status as 400 | 404 | 409 | 413);
   }

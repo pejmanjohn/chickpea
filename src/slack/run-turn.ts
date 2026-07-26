@@ -236,12 +236,16 @@ export async function runTurn(
       }
     }
     const recoveredText = await options.beforeDelivery?.();
-    const injectionConfirmed = await preparedMemory?.confirmInjection() ?? true;
+    // Confirmation only prevents reinjecting the same selection into this
+    // transcript. A concurrent turn can legitimately advance the epoch before
+    // this one finishes; that bookkeeping race must not discard a completed,
+    // lease-valid answer.
+    await preparedMemory?.confirmInjection();
     const leaseValid = await preparedMemory?.validateLease() ?? true;
     text = resolveMemoryDeliveryText(
       text,
       recoveredText,
-      injectionConfirmed && leaseValid,
+      leaseValid,
     );
     await closeAndDrainStatus();
     await presenter.deliverFinal(text, 'markdown');

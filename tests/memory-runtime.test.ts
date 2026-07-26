@@ -13,6 +13,7 @@ import {
   MEMORY_CHANGED_RETRY_TEXT,
   resolveMemoryDeliveryText,
 } from '../src/slack/run-turn.ts';
+import { slackThreadKey } from '../src/slack/thread-key.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 
 const baseTurn: NormalizedSlackTurn = {
@@ -114,6 +115,80 @@ test('stale delivery leases preserve recovered side-effect receipts and never in
   assert.doesNotMatch(MEMORY_CHANGED_RETRY_TEXT, /please retry/i);
   assert.equal(resolveMemoryDeliveryText('draft', 'receipt', true), 'draft');
 });
+
+test('memory quarantine hides all pre-trigger transcript history when live Slack scope is unavailable', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-memory-quarantine-'));
+  const previous = snapshotEnvironment();
+  try {
+    process.env.SLACK_STATE_DB_PATH = join(directory, 'state.db');
+    delete process.env.SLACK_BOT_TOKEN;
+    delete process.env.SLACK_BOT_USER_ID;
+    const prepared = await prepareMemoryTurn({
+      turn: { ...baseTurn, eventId: 'E_QUARANTINE', text: '<@U_BOT> What do you remember?' },
+      platformEnv: undefined,
+      client: {} as WebClient,
+    });
+    assert.match(prepared.conversationKey, /:memory-q-E_QUARANTINE$/);
+    assert.equal(prepared.visibilityBarrierAt, Number.MAX_SAFE_INTEGER);
+    assert.equal(prepared.promptBlock, undefined);
+  } finally {
+    process.env.SLACK_STATE_DB_PATH = ':memory:';
+    getMemoryStateStore();
+    restoreEnvironment(previous);
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('delivery validates channel transition versions but ignores an unrelated transcript epoch race', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-memory-lease-'));
+  const previous = snapshotEnvironment();
+  const originalFetch = globalThis.fetch;
+  try {
+    process.env.SLACK_STATE_DB_PATH = join(directory, 'state.db');
+    process.env.SLACK_BOT_TOKEN = 'xoxb-test-not-a-real-token';
+    process.env.SLACK_SIGNING_SECRET = 'test-signing-secret';
+    process.env.SLACK_BOT_USER_ID = 'U_BOT';
+    globalThis.fetch = fakeSlackFetch;
+    const client = {} as WebClient;
+    const state = getMemoryStateStore();
+    const store = await state.ensurePublicStore('T_RUNTIME');
+    await state.createEntry({
+      entryId: 'mem_lease', storeId: store.storeId, workspaceId: 'T_RUNTIME',
+      sourceChannelId: 'C_RUNTIME', slug: 'lease-guidance', description: 'Use the checklist.',
+      type: 'project', body: 'Validate before delivery.', actorId: 'U_MEMBER', actorClass: 'member',
+      idempotencyKey: 'lease-seed',
+    });
+    const query = { ...baseTurn, eventId: 'E_LEASE', text: '<@U_BOT> What is the checklist?' };
+    const prepared = await prepareMemoryTurn({ turn: query, platformEnv: undefined, client });
+    assert.equal(await prepared.validateLease(), true);
+
+    await state.resolveConversationContext({
+      baseConversationKey: slackThreadKey(query),
+      scopeSignature: 'unrelated-new-epoch',
+      selectionFingerprint: 'unrelated-selection',
+      selected: [],
+      visibilityBarrierAt: null,
+      expiresAt: NOW_PLUS_DAY,
+    });
+    assert.equal(await prepared.confirmInjection(), false);
+    assert.equal(await prepared.validateLease(), true);
+    assert.equal(resolveMemoryDeliveryText('completed answer', undefined, true), 'completed answer');
+
+    await state.observeChannelScope({
+      workspaceId: 'T_RUNTIME', channelId: 'C_RUNTIME', privacy: 'private',
+      displayName: 'bot-test', observedAt: Date.now() + 1,
+    });
+    assert.equal(await prepared.validateLease(), false);
+  } finally {
+    globalThis.fetch = originalFetch;
+    process.env.SLACK_STATE_DB_PATH = ':memory:';
+    getMemoryStateStore();
+    restoreEnvironment(previous);
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+const NOW_PLUS_DAY = Date.now() + 24 * 60 * 60 * 1_000;
 
 async function fakeSlackFetch(input: string | URL | Request): Promise<Response> {
   const url = new URL(typeof input === 'string' || input instanceof URL ? input : input.url);

@@ -87,3 +87,20 @@ test('Cloudflare memory proxy confirms injected conversation epochs', async () =
   assert.equal(await store.confirmConversationContext(input), true);
   assert.deepEqual(calls, [{ kind: 'confirm_conversation_context', input }]);
 });
+
+test('Cloudflare memory proxy distinguishes a missing import replay receipt', async () => {
+  const calls: MemoryRpcRequest[] = [];
+  const stub = {
+    async memoryExecute(request: MemoryRpcRequest): Promise<StateRpcResult<MemoryRpcResponse>> {
+      calls.push(request);
+      return { ok: true, value: { kind: 'import_replay', entries: null } };
+    },
+  } as unknown as TagStateRpc;
+  const store = new CfMemoryStateStore(stub);
+  const input = {
+    storeId: 'store_public_T_TEST', workspaceId: 'T_TEST', actorId: 'admin',
+    archiveSha256: 'a'.repeat(64), idempotencyKey: 'admin:import:1',
+  };
+  assert.equal(await store.replayImport(input), undefined);
+  assert.deepEqual(calls, [{ kind: 'replay_import', input }]);
+});

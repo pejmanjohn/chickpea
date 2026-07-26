@@ -184,6 +184,16 @@ type SandboxStatusFixture = {
   target: 'cloudflare' | 'node';
   workersPaidNote: string | null;
 };
+type MemoryScopeFixture = {
+  workspaceId: string;
+  channelId: string;
+  displayName: string;
+  privacy: 'public' | 'private';
+  lifecycle: string;
+  storeId: string;
+  generation: number | null;
+  entryCount: number;
+};
 function runAdminPageHarness(
   options: {
     assignments?: AssignmentFixture[];
@@ -223,6 +233,9 @@ function runAdminPageHarness(
     skillResolution?: Record<string, unknown>;
     skillResolveError?: { status: number; error: string; message?: string };
     mcpTestResult?: { ok: true; tools: Array<{ name: string; title?: string; description?: string }> } | { ok: false; code: string; message: string };
+    memoryScopes?: MemoryScopeFixture[];
+    memoryFiles?: Record<string, unknown[]>;
+    deferMemoryFiles?: boolean;
   } = {},
 ): {
   app: FakeElement;
@@ -263,6 +276,7 @@ function runAdminPageHarness(
   gallerySearchFocusCalls(): number;
   gallerySearchSelections: Array<[number, number]>;
   resolveOpsEffective(): void;
+  resolveMemoryFiles(channelId: string): void;
 } {
   const makeRegion = (): FakeRegion => ({
     inert: false,
@@ -372,6 +386,7 @@ function runAdminPageHarness(
   const skillResolveError = options.skillResolveError;
   const skillResolution = options.skillResolution;
   let resolveOpsEffective: (() => void) | undefined;
+  const memoryFileResolvers: Record<string, () => void> = {};
   const location = { pathname: options.initialPath ?? '/admin' };
   const historyPushes: string[] = [];
   const historyReplaces: string[] = [];
@@ -483,25 +498,29 @@ function runAdminPageHarness(
   const agentsList: Record<string, unknown>[] = (agentsFixture ?? [releaseAgent, opsAgent]).map(
     (agent) => ({ ...(agent as Record<string, unknown>) }),
   );
+  const harnessOptions = options;
 
   const fetch = (path: string, options?: { method?: string; body?: string }): Promise<FakeResponse> => {
     const method = options?.method ?? 'GET';
     if (path === '/admin/api/audit/memory/scopes' && method === 'GET') {
       return Promise.resolve(jsonResponse({
-        scopes: [{
+        scopes: harnessOptions.memoryScopes ?? [{
           workspaceId: 'T_DESIGN', channelId: 'C0EXR3L9T', displayName: 'eng-releases',
           privacy: 'public', lifecycle: 'active', storeId: 'store_public_T_DESIGN',
           generation: null, entryCount: 1,
         }],
       }));
     }
-    if (path === '/admin/api/audit/memory/stores/store_public_T_DESIGN/files?sourceChannelId=C0EXR3L9T' && method === 'GET') {
-      return Promise.resolve(jsonResponse({
-        files: [
+    if (path.startsWith('/admin/api/audit/memory/stores/') && path.includes('/files?sourceChannelId=') && method === 'GET') {
+      const channelId = new URL(path, 'http://admin.test').searchParams.get('sourceChannelId') ?? '';
+      const files = harnessOptions.memoryFiles?.[channelId] ?? (channelId === 'C0EXR3L9T' ? [
           { name: 'MEMORY.md', path: 'channel/C0EXR3L9T/MEMORY.md', generated: true, entryId: null, content: '# Channel Memory Index\n\n- [release-guidance](release-guidance.md) — Use the checklist.\n' },
           { name: 'release-guidance.md', path: 'channel/C0EXR3L9T/release-guidance.md', generated: false, entryId: 'mem_release', version: 1, status: 'active', description: 'Use the checklist.' },
-        ],
-      }));
+        ] : []);
+      if (!harnessOptions.deferMemoryFiles) return Promise.resolve(jsonResponse({ files }));
+      return new Promise<FakeResponse>((resolve) => {
+        memoryFileResolvers[channelId] = () => resolve(jsonResponse({ files }));
+      });
     }
     if (path === '/admin/api/audit/memory/entries/mem_release/history' && method === 'GET') {
       return Promise.resolve(jsonResponse({ revisions: [{ entryId: 'mem_release', version: 1, operation: 'create', createdAt: 1753444800000 }] }));
@@ -1010,6 +1029,12 @@ function runAdminPageHarness(
     resolveOpsEffective() {
       assert.ok(resolveOpsEffective, 'expected C_OPS effective-config request to be pending');
       resolveOpsEffective();
+    },
+    resolveMemoryFiles(channelId: string) {
+      const resolve = memoryFileResolvers[channelId];
+      assert.ok(resolve, `expected ${channelId} memory files request to be pending`);
+      delete memoryFileResolvers[channelId];
+      resolve();
     },
   };
 }
@@ -4228,6 +4253,51 @@ test('Memory editor escapes stored Markdown and explains irreversible deletion a
     '/admin/audit-logs/memory/store_public_T_DESIGN/C0EXR3L9T/mem_release',
   );
   assert.match(harness.app.innerHTML, /Save or discard the current memory draft before navigating away/);
+});
+
+test('Memory scope navigation ignores out-of-order file responses', async () => {
+  const scopes: MemoryScopeFixture[] = [
+    {
+      workspaceId: 'T_DESIGN', channelId: 'C_FIRST', displayName: 'first',
+      privacy: 'public', lifecycle: 'active', storeId: 'store_public_T_DESIGN',
+      generation: null, entryCount: 1,
+    },
+    {
+      workspaceId: 'T_DESIGN', channelId: 'C_SECOND', displayName: 'second',
+      privacy: 'public', lifecycle: 'active', storeId: 'store_public_T_DESIGN',
+      generation: null, entryCount: 1,
+    },
+  ];
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/audit-logs/memory/store_public_T_DESIGN/C_FIRST',
+    memoryScopes: scopes,
+    memoryFiles: {
+      C_FIRST: [{ name: 'MEMORY.md', generated: true, content: '# FIRST INDEX\n' }],
+      C_SECOND: [{ name: 'MEMORY.md', generated: true, content: '# SECOND INDEX\n' }],
+    },
+    deferMemoryFiles: true,
+  });
+  await flushAsync();
+
+  harness.listeners.click?.({
+    target: actionTarget({
+      'data-action': 'select-memory-scope',
+      'data-store': 'store_public_T_DESIGN',
+      'data-channel': 'C_SECOND',
+    }),
+  });
+  harness.resolveMemoryFiles('C_SECOND');
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /# SECOND INDEX/);
+
+  harness.resolveMemoryFiles('C_FIRST');
+  await flushAsync();
+  assert.equal(
+    harness.locationPath(),
+    '/admin/audit-logs/memory/store_public_T_DESIGN/C_SECOND',
+  );
+  assert.match(harness.app.innerHTML, /# SECOND INDEX/);
+  assert.doesNotMatch(harness.app.innerHTML, /# FIRST INDEX/);
 });
 
 test('Repositories tab explains grants-implied sandbox availability without a profile toggle', async () => {

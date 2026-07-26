@@ -78,6 +78,7 @@ test('import apply is atomic when a later operation conflicts', async () => {
         storeId: store.storeId,
         workspaceId: store.workspaceId,
         actorId: 'admin',
+        archiveSha256: 'a'.repeat(64),
         idempotencyKey: 'batch',
         operations: [
           {
@@ -96,6 +97,40 @@ test('import apply is atomic when a later operation conflicts', async () => {
     assert.equal(await state.getEntry('mem_new'), undefined);
     assert.equal((await state.getEntry(entry.entryId))?.version, 1);
     assert.equal((await state.listAuditEvents({ eventType: 'memory.imported' })).length, 0);
+  } finally {
+    state.close();
+  }
+});
+
+test('import apply replays only the exact archive bound to its idempotency key', async () => {
+  const state = new SqliteMemoryStateStore(':memory:', () => now);
+  try {
+    await state.ensurePublicStore('T_TEST');
+    const request = {
+      storeId: store.storeId,
+      workspaceId: store.workspaceId,
+      actorId: 'admin',
+      archiveSha256: 'b'.repeat(64),
+      idempotencyKey: 'batch-replay',
+      operations: [{
+        action: 'create' as const,
+        entryId: 'mem_imported',
+        sourceChannelId: 'C1',
+        slug: 'imported',
+        description: 'Imported.',
+        type: 'fact' as const,
+        body: 'Imported body.',
+      }],
+    };
+    const created = await state.applyImport(request);
+    const replay = await state.applyImport(request);
+    assert.deepEqual(replay, created);
+    assert.equal((await state.listAuditEvents({ eventType: 'memory.imported' })).length, 1);
+
+    await assert.rejects(
+      () => state.applyImport({ ...request, archiveSha256: 'c'.repeat(64) }),
+      /different import request/i,
+    );
   } finally {
     state.close();
   }

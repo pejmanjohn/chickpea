@@ -116,7 +116,7 @@ export function projectMemoryFiles(input: {
     files: files.map((file) => ({
       path: file.path,
       sha256: sha256Hex(file.content),
-      generated: file.path.endsWith('MEMORY.md'),
+      generated: file.path === 'MEMORY.md' || file.path.endsWith('/MEMORY.md'),
     })),
     entries: manifestEntries,
   };
@@ -174,4 +174,3 @@ function normalizeLf(value: string): string {
 function singleLine(value: string): string {
   return normalizeLf(value).replace(/\s+/g, ' ').trim();
 }
-

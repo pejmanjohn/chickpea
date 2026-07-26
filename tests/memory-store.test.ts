@@ -94,6 +94,27 @@ test('create is atomic, idempotent, audited, and does not double-count rate wind
   }
 });
 
+test('entry listing pages over the stable scope and slug ordering', async () => {
+  const store = new SqliteMemoryStateStore(':memory:', () => createdAt);
+  try {
+    await store.ensurePublicStore('T_TEST');
+    for (const slug of ['charlie', 'alpha', 'bravo']) {
+      await store.createEntry({
+        ...createInput(`create-${slug}`),
+        entryId: `mem_${slug}`,
+        slug,
+        actorClass: 'operator',
+      });
+    }
+    const first = await store.listEntries({ storeId: 'store_public_T_TEST', limit: 2 });
+    const second = await store.listEntries({ storeId: 'store_public_T_TEST', limit: 2, offset: 2 });
+    assert.deepEqual(first.map((entry) => entry.slug), ['alpha', 'bravo']);
+    assert.deepEqual(second.map((entry) => entry.slug), ['charlie']);
+  } finally {
+    store.close();
+  }
+});
+
 test('audit failure rolls back the entry, revision, and rate-window writes', () => {
   const db = openStateDb(':memory:');
   const logic = new MemoryStoreLogic(db, () => createdAt);

@@ -159,6 +159,7 @@ export interface RecordMemoryReviewInput {
   action: 'requested' | 'resolved';
   resolution?: 'confirmed' | 'corrected' | 'expired';
   reasonCode?: 'stale' | 'incorrect' | 'unsafe' | 'unclear';
+  reviewRequestEventId?: string;
   actorId: string;
   actorClass: MemoryActorClass;
   idempotencyKey: string;
@@ -234,6 +235,7 @@ export interface MemoryEntryFilter {
   sourceChannelId?: string;
   statuses?: readonly MemoryEntryStatus[];
   limit?: number;
+  offset?: number;
 }
 
 export interface ApplyMemoryImportOperation {
@@ -251,9 +253,12 @@ export interface ApplyMemoryImportInput {
   storeId: string;
   workspaceId: string;
   actorId: string;
+  archiveSha256: string;
   idempotencyKey: string;
   operations: ApplyMemoryImportOperation[];
 }
+
+export type ReplayMemoryImportInput = Omit<ApplyMemoryImportInput, 'operations'>;
 
 export interface RecordMemoryAdminViewInput {
   entryId: string;
@@ -309,6 +314,7 @@ export type MemoryRpcRequest =
   | { kind: 'create_entry'; input: CreateMemoryEntryInput }
   | { kind: 'get_entry'; entryId: string }
   | { kind: 'list_entries'; filter: MemoryEntryFilter }
+  | { kind: 'replay_import'; input: ReplayMemoryImportInput }
   | { kind: 'apply_import'; input: ApplyMemoryImportInput }
   | { kind: 'record_admin_view'; input: RecordMemoryAdminViewInput }
   | { kind: 'record_admin_event'; input: RecordMemoryAdminEventInput }
@@ -335,6 +341,7 @@ export type MemoryRpcResponse =
   | { kind: 'stores'; stores: MemoryStoreDescriptor[] }
   | { kind: 'entry'; entry: MemoryEntry | null }
   | { kind: 'entries'; entries: MemoryEntry[] }
+  | { kind: 'import_replay'; entries: MemoryEntry[] | null }
   | { kind: 'channel_scopes'; states: MemoryChannelScopeState[] }
   | { kind: 'revisions'; revisions: MemoryRevision[] }
   | { kind: 'audit_events'; events: AuditEvent[] }
@@ -357,6 +364,7 @@ export interface MemoryStateStore {
   createEntry(input: CreateMemoryEntryInput): Promise<MemoryEntry>;
   getEntry(entryId: string): Promise<MemoryEntry | undefined>;
   listEntries(filter?: MemoryEntryFilter): Promise<MemoryEntry[]>;
+  replayImport(input: ReplayMemoryImportInput): Promise<MemoryEntry[] | undefined>;
   applyImport(input: ApplyMemoryImportInput): Promise<MemoryEntry[]>;
   recordAdminView(input: RecordMemoryAdminViewInput): Promise<void>;
   recordAdminEvent(input: RecordMemoryAdminEventInput): Promise<void>;

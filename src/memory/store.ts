@@ -39,6 +39,7 @@ import {
   type RecordMemoryReviewInput,
   type RecordMemoryAdminViewInput,
   type RecordMemoryAdminEventInput,
+  type ReplayMemoryImportInput,
   type ResolveMemoryConversationContextInput,
   type TransitionMemoryEntryInput,
   type UpdateMemoryEntryInput,
@@ -131,6 +132,14 @@ interface ScopeRow {
   transition_version: number;
 }
 
+interface ImportReceiptRow {
+  store_id: string;
+  workspace_id: string;
+  actor_id: string;
+  archive_sha256: string;
+  entry_ids_json: string;
+}
+
 const CHANNEL_RATE_ACTOR = '*channel*';
 
 /**
@@ -173,6 +182,8 @@ export class MemoryStoreLogic {
         return { kind: 'entry', entry: this.getEntry(request.entryId) ?? null };
       case 'list_entries':
         return { kind: 'entries', entries: this.listEntries(request.filter) };
+      case 'replay_import':
+        return { kind: 'import_replay', entries: this.replayImport(request.input) ?? null };
       case 'apply_import':
         return { kind: 'entries', entries: this.applyImport(request.input) };
       case 'record_admin_view':
@@ -406,29 +417,29 @@ export class MemoryStoreLogic {
     }
     const where = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '';
     const limit = Math.min(Math.max(filter.limit ?? 500, 1), 1_000);
+    const offset = Math.max(Math.floor(filter.offset ?? 0), 0);
     return this.db
       .all(
         `SELECT * FROM memory_entries ${where}
-         ORDER BY source_channel_id, slug, entry_id LIMIT ?`,
+         ORDER BY source_channel_id, slug, entry_id LIMIT ? OFFSET ?`,
         ...params,
         limit,
+        offset,
       )
       .map((row) => rowToEntry(row as unknown as EntryRow));
   }
 
   applyImport(input: ApplyMemoryImportInput): MemoryEntry[] {
-    if (input.operations.length === 0) return [];
+    const replay = this.importForReplay(input);
+    if (replay) return replay;
     if (input.operations.length > 1_024) {
       throw new MemoryStateError('memory_import_too_large', 'Memory import has too many operations.');
     }
     const operationKeys = input.operations.map((_, index) => `${input.idempotencyKey}:${index}`);
-    const replays = operationKeys.map((key) => this.entryForReplay(key));
-    if (replays.every(Boolean)) return replays as MemoryEntry[];
-    if (replays.some(Boolean)) {
-      throw new MemoryStateError('memory_import_incomplete', 'Memory import replay is inconsistent.');
-    }
     const at = this.now();
     return this.db.transaction(() => {
+      const secondReplay = this.importForReplay(input);
+      if (secondReplay) return secondReplay;
       const store = requiredStore(this.getStore(input.storeId), input.storeId);
       if (store.workspaceId !== input.workspaceId || store.lifecycle !== 'active') {
         throw new MemoryStateError('memory_store_sealed', 'Memory store is unavailable.');
@@ -510,8 +521,25 @@ export class MemoryStoreLogic {
         }
         results.push(requiredEntry(this.getEntry(operation.entryId), operation.entryId));
       }
+      this.db.run(
+        `INSERT INTO memory_import_receipts (
+          idempotency_key, store_id, workspace_id, actor_id,
+          archive_sha256, entry_ids_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        input.idempotencyKey,
+        input.storeId,
+        input.workspaceId,
+        input.actorId,
+        input.archiveSha256,
+        JSON.stringify(results.map((entry) => entry.entryId)),
+        at,
+      );
       return results;
     });
+  }
+
+  replayImport(input: ReplayMemoryImportInput): MemoryEntry[] | undefined {
+    return this.importForReplay({ ...input, operations: [] });
   }
 
   recordAdminView(input: RecordMemoryAdminViewInput): void {
@@ -980,7 +1008,12 @@ export class MemoryStoreLogic {
       subjectVersion: entry.version,
       createdAt: this.now(),
       reasonCode: input.reasonCode ?? null,
-      metadataJson: JSON.stringify(input.resolution ? { resolution: input.resolution } : {}),
+      metadataJson: JSON.stringify({
+        ...(input.resolution ? { resolution: input.resolution } : {}),
+        ...(input.reviewRequestEventId
+          ? { reviewRequestEventId: input.reviewRequestEventId }
+          : {}),
+      }),
       idempotencyKey: input.idempotencyKey,
     });
   }
@@ -1382,6 +1415,17 @@ export class MemoryStoreLogic {
       )`,
     );
     this.db.exec(
+      `CREATE TABLE IF NOT EXISTS memory_import_receipts (
+        idempotency_key TEXT PRIMARY KEY,
+        store_id TEXT NOT NULL,
+        workspace_id TEXT NOT NULL,
+        actor_id TEXT NOT NULL,
+        archive_sha256 TEXT NOT NULL,
+        entry_ids_json TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      )`,
+    );
+    this.db.exec(
       `CREATE TABLE IF NOT EXISTS memory_forget_challenges (
         challenge_id TEXT PRIMARY KEY,
         token_hash TEXT NOT NULL UNIQUE,
@@ -1510,6 +1554,42 @@ export class MemoryStoreLogic {
       idempotencyKey,
     );
     return typeof row?.entry_id === 'string' ? this.getEntry(row.entry_id) : undefined;
+  }
+
+  private importForReplay(input: ApplyMemoryImportInput): MemoryEntry[] | undefined {
+    const row = this.db.get(
+      `SELECT store_id, workspace_id, actor_id, archive_sha256, entry_ids_json
+       FROM memory_import_receipts WHERE idempotency_key = ?`,
+      input.idempotencyKey,
+    ) as unknown as ImportReceiptRow | undefined;
+    if (!row) return undefined;
+    if (
+      row.store_id !== input.storeId ||
+      row.workspace_id !== input.workspaceId ||
+      row.actor_id !== input.actorId ||
+      row.archive_sha256 !== input.archiveSha256
+    ) {
+      throw new MemoryStateError(
+        'memory_idempotency_mismatch',
+        'The idempotency key belongs to a different import request.',
+      );
+    }
+    let entryIds: unknown;
+    try {
+      entryIds = JSON.parse(row.entry_ids_json);
+    } catch {
+      throw new MemoryStateError(
+        'memory_import_incomplete',
+        'Memory import replay is inconsistent.',
+      );
+    }
+    if (!Array.isArray(entryIds) || entryIds.some((entryId) => typeof entryId !== 'string')) {
+      throw new MemoryStateError(
+        'memory_import_incomplete',
+        'Memory import replay is inconsistent.',
+      );
+    }
+    return entryIds.map((entryId) => requiredEntry(this.getEntry(entryId), entryId));
   }
 
   private incrementMutationCounts(
@@ -1707,6 +1787,10 @@ export class SqliteMemoryStateStore implements MemoryStateStore {
 
   async listEntries(filter: MemoryEntryFilter = {}): Promise<MemoryEntry[]> {
     return this.logic.listEntries(filter);
+  }
+
+  async replayImport(input: ReplayMemoryImportInput): Promise<MemoryEntry[] | undefined> {
+    return this.logic.replayImport(input);
   }
 
   async applyImport(input: ApplyMemoryImportInput): Promise<MemoryEntry[]> {

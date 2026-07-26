@@ -145,7 +145,10 @@ export async function prepareMemoryTurn(input: {
   } catch (error) {
     emitMemoryMetric('quarantine', { reason: memoryErrorCode(error) });
     return {
-      ...memoryFree(memoryQuarantineThreadKey(baseKey, input.turn.eventId)),
+      ...memoryFree(
+        memoryQuarantineThreadKey(baseKey, input.turn.eventId),
+        Number.MAX_SAFE_INTEGER,
+      ),
       conversationKey: memoryQuarantineThreadKey(baseKey, input.turn.eventId),
     };
   }
@@ -410,7 +413,15 @@ async function validateMemoryLease(
       runtime.scope,
       runtime.slack,
     ))) return false;
-    if (memoryScopeSignature(runtime.scope) !== expectedScopeSignature) return false;
+    const channelState = await runtime.state.getChannelScope(
+      turn.workspaceId,
+      turn.channelId,
+    );
+    if (
+      !channelState ||
+      channelState.transitionVersion !== runtime.scope.transitionVersion ||
+      memoryScopeSignature(runtime.scope) !== expectedScopeSignature
+    ) return false;
     const current = await Promise.all(
       selection.entries.map(({ entry }) => runtime.state.getEntry(entry.entryId)),
     );
@@ -471,11 +482,14 @@ function memoryScopeSignature(scope: EnabledMemoryScope): string {
   });
 }
 
-function memoryFree(conversationKey: string): PreparedMemoryTurn {
+function memoryFree(
+  conversationKey: string,
+  visibilityBarrierAt: number | null = null,
+): PreparedMemoryTurn {
   return {
     conversationKey,
     footerItems: [],
-    visibilityBarrierAt: null,
+    visibilityBarrierAt,
     validateLease: async () => true,
     confirmInjection: async () => true,
   };

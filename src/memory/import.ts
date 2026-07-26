@@ -75,7 +75,17 @@ export function createImportPreview(input: {
         throw new Error(`Archive file is not declared by the manifest: ${file.path}`);
       }
     }
+    const entryIds = new Set<string>();
+    const entryPaths = new Set<string>();
     for (const item of manifest.entries) {
+      if (entryIds.has(item.entryId) || entryPaths.has(item.path)) {
+        throw new Error('Manifest contains duplicate memory entries.');
+      }
+      entryIds.add(item.entryId);
+      entryPaths.add(item.path);
+      if (manifestFiles.get(item.path)?.generated !== false) {
+        throw new Error(`Memory entry is not declared as an authored file: ${item.path}`);
+      }
       const content = byPath.get(item.path);
       if (content === undefined || sha256Hex(content) !== item.sha256) {
         throw new Error(`Memory entry hash mismatch: ${item.path}`);
@@ -257,4 +267,3 @@ function sameContent(
 function previewSignature(encoded: string, secret: string): string {
   return createHmac('sha256', secret).update('chickpea-memory-import-preview-v1\0').update(encoded).digest('base64url');
 }
-

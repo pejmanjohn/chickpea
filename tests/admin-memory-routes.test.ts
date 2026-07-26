@@ -92,6 +92,13 @@ test('memory admin edit is idempotent, versioned, validated, and same-origin for
     assert.equal(replay.status, 200);
     assert.equal(((await replay.json()) as { entry: { version: number } }).entry.version, 2);
 
+    const mismatchedReplay = await h.app.request('/admin/api/audit/memory/entries/mem_product', {
+      method: 'PUT', headers: { ...auth, 'content-type': 'application/json', 'idempotency-key': 'admin-edit-1' },
+      body: JSON.stringify({ expectedVersion: 1, description: 'Different request.', type: 'project', body: 'Different body.' }),
+    });
+    assert.equal(mismatchedReplay.status, 409);
+    assert.deepEqual(await mismatchedReplay.json(), { error: 'memory_idempotency_mismatch' });
+
     const conflict = await h.app.request('/admin/api/audit/memory/entries/mem_product', {
       method: 'PUT', headers: { ...auth, 'content-type': 'application/json', 'idempotency-key': 'admin-edit-2' }, body,
     });
@@ -144,6 +151,31 @@ test('memory export is an attachment and import preview/apply round-trips create
     assert.equal(applied.status, 200);
     assert.equal(((await applied.json()) as { entries: unknown[] }).entries.length, 1);
     assert.ok((await h.memory.listEntries({ storeId: h.publicStore.storeId })).some((item) => item.slug === 'new-guidance'));
+
+    const replay = await h.app.request('/admin/api/audit/memory/import/apply', {
+      method: 'POST', headers: { ...auth, 'content-type': 'application/json', 'idempotency-key': 'admin-import-1' },
+      body: JSON.stringify({ storeId: h.publicStore.storeId, archiveBase64, previewToken: previewBody.previewToken }),
+    });
+    assert.equal(replay.status, 200);
+    assert.equal(((await replay.json()) as { entries: unknown[] }).entries.length, 1);
+
+    const otherArchive = encodeMemoryArchive([{
+      path: 'channel/C_PRODUCT/other-guidance.md',
+      content: projectMemoryEntry({ ...authored, slug: 'other-guidance', description: 'Other guidance.' }),
+    }]);
+    const otherArchiveBase64 = Buffer.from(otherArchive).toString('base64');
+    const otherPreview = await h.app.request('/admin/api/audit/memory/import/preview', {
+      method: 'POST', headers: { ...auth, 'content-type': 'application/json' },
+      body: JSON.stringify({ storeId: h.publicStore.storeId, archiveBase64: otherArchiveBase64 }),
+    });
+    assert.equal(otherPreview.status, 200);
+    const otherPreviewToken = ((await otherPreview.json()) as { previewToken: string }).previewToken;
+    const mismatchedReplay = await h.app.request('/admin/api/audit/memory/import/apply', {
+      method: 'POST', headers: { ...auth, 'content-type': 'application/json', 'idempotency-key': 'admin-import-1' },
+      body: JSON.stringify({ storeId: h.publicStore.storeId, archiveBase64: otherArchiveBase64, previewToken: otherPreviewToken }),
+    });
+    assert.equal(mismatchedReplay.status, 409);
+    assert.deepEqual(await mismatchedReplay.json(), { error: 'memory_idempotency_mismatch' });
   } finally {
     h.config.close(); h.settings.close(); h.memory.close();
   }
@@ -156,19 +188,52 @@ test('memory admin delete irreversibly scrubs content and review resolution is a
       entryId: h.entry.entryId, expectedVersion: 1, action: 'requested', reasonCode: 'stale',
       actorId: 'U_MEMBER', actorClass: 'member', idempotencyKey: 'review-request',
     });
+    await h.memory.recordReview({
+      entryId: h.entry.entryId, expectedVersion: 1, action: 'requested', reasonCode: 'incorrect',
+      actorId: 'U_MEMBER', actorClass: 'member', idempotencyKey: 'review-request-newer',
+    });
     const reviews = await h.memory.listAuditEvents({ subjectId: h.entry.entryId, eventType: 'memory.review_requested' });
     const reviewId = reviews[0]!.eventId;
+    const staleReviewId = reviews[1]!.eventId;
+    const stale = await h.app.request(`/admin/api/audit/memory/entries/mem_product/reviews/${staleReviewId}/resolve`, {
+      method: 'POST', headers: { ...auth, 'content-type': 'application/json', 'idempotency-key': 'review-stale' },
+      body: JSON.stringify({ expectedVersion: 1, resolution: 'confirmed' }),
+    });
+    assert.equal(stale.status, 409);
+    assert.deepEqual(await stale.json(), { error: 'memory_review_not_current' });
     const resolved = await h.app.request(`/admin/api/audit/memory/entries/mem_product/reviews/${reviewId}/resolve`, {
       method: 'POST', headers: { ...auth, 'content-type': 'application/json', 'idempotency-key': 'review-resolve' },
       body: JSON.stringify({ expectedVersion: 1, resolution: 'confirmed' }),
     });
     assert.equal(resolved.status, 200);
+    const reviewReplay = await h.app.request(`/admin/api/audit/memory/entries/mem_product/reviews/${reviewId}/resolve`, {
+      method: 'POST', headers: { ...auth, 'content-type': 'application/json', 'idempotency-key': 'review-resolve' },
+      body: JSON.stringify({ expectedVersion: 1, resolution: 'confirmed' }),
+    });
+    assert.equal(reviewReplay.status, 200);
+    const reviewMismatch = await h.app.request(`/admin/api/audit/memory/entries/mem_product/reviews/${reviewId}/resolve`, {
+      method: 'POST', headers: { ...auth, 'content-type': 'application/json', 'idempotency-key': 'review-resolve' },
+      body: JSON.stringify({ expectedVersion: 1, resolution: 'expired' }),
+    });
+    assert.equal(reviewMismatch.status, 409);
+    assert.deepEqual(await reviewMismatch.json(), { error: 'memory_idempotency_mismatch' });
 
     const deleted = await h.app.request('/admin/api/audit/memory/entries/mem_product', {
       method: 'DELETE', headers: { ...auth, 'content-type': 'application/json', 'idempotency-key': 'admin-delete-1' },
       body: JSON.stringify({ expectedVersion: 1, acknowledgeIrreversible: true }),
     });
     assert.equal(deleted.status, 200);
+    const deleteReplay = await h.app.request('/admin/api/audit/memory/entries/mem_product', {
+      method: 'DELETE', headers: { ...auth, 'content-type': 'application/json', 'idempotency-key': 'admin-delete-1' },
+      body: JSON.stringify({ expectedVersion: 1, acknowledgeIrreversible: true }),
+    });
+    assert.equal(deleteReplay.status, 200);
+    const deleteMismatch = await h.app.request('/admin/api/audit/memory/entries/mem_product', {
+      method: 'DELETE', headers: { ...auth, 'content-type': 'application/json', 'idempotency-key': 'admin-delete-1' },
+      body: JSON.stringify({ expectedVersion: 2, acknowledgeIrreversible: true }),
+    });
+    assert.equal(deleteMismatch.status, 409);
+    assert.deepEqual(await deleteMismatch.json(), { error: 'memory_idempotency_mismatch' });
     const forgotten = await h.memory.getEntry('mem_product');
     assert.equal(forgotten?.status, 'forgotten');
     assert.equal(forgotten?.body, '');
