@@ -139,7 +139,13 @@ async function runServerTurn({ serverEntry, fakeUrl, dbPath, netGuardLog, payloa
   return { child, baseUrl, eventsUrl };
 }
 
+// Load every TypeScript dependency before the restart probes begin. Registering
+// tsx after repeatedly spawning and SIGKILLing server processes can leave its
+// esbuild loader waiting indefinitely on Linux; module loading is setup, not
+// part of the durability behavior this harness is meant to exercise.
 const { FakeSlackBackend } = await loadFake();
+const { SqliteMemoryStateStore } = await loadTsModule('src/memory/store.ts');
+const { SqliteConfigStore } = await loadTsModule('src/config/store.ts');
 const backend = new FakeSlackBackend({
   slack: {
     identity: { teamId: 'T_DEMO' },
@@ -323,8 +329,6 @@ try {
 
   // --- Memory state: additive upgrade, restart, compatibility open, scrub. ---
   {
-    const { SqliteMemoryStateStore } = await loadTsModule('src/memory/store.ts');
-    const { SqliteConfigStore } = await loadTsModule('src/config/store.ts');
     const memoryPath = `${dbA}.state`;
     const memorySentinel = 'MEMORY_DURABILITY_SENTINEL_ALPHA';
     const priorLegacyFlag = process.env.SLACK_TAG_MEMORY_ENABLED;
