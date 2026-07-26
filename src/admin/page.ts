@@ -2895,7 +2895,7 @@ details[open].advanced summary::before {
     if (!tools.length) return "";
     var checked = editor.checked || [];
     var savedOAuth = isPersistedReadyOAuthEditor(editor);
-    var accessChanged = savedOAuth && oauthToolAccessChanged(editor);
+    var accessChanged = oauthToolAccessChanged(editor);
     var rows = tools.map(function (tool, index) {
       var on = checked[index] !== false;
       var meta = tool.description ? '<span class="tool-desc">' + esc(tool.description) + '</span>' : "";
@@ -2936,7 +2936,7 @@ details[open].advanced summary::before {
   function connectionEditorCompletionHtml(editor) {
     var isNew = editor.index === null || editor.index === undefined;
     var savedOAuth = isPersistedReadyOAuthEditor(editor);
-    var accessChanged = savedOAuth && oauthToolAccessChanged(editor);
+    var accessChanged = oauthToolAccessChanged(editor);
     var testDisabled = !String(editor.url || "").trim() ||
       (editor.authMode === "oauth" && isNew) || !!editor.oauthStarting;
     var toolsHtml = connectionToolsHtml(editor);
@@ -6781,8 +6781,7 @@ details[open].advanced summary::before {
       if (tool.description !== undefined) t.description = tool.description;
       return t;
     });
-    var checked = editor.checked || [];
-    var allowed = discovered.filter(function (tool, i) { return checked[i] !== false; }).map(function (tool) { return tool.name; });
+    var allowed = selectedConnectionToolNames(editor);
     var conn = {
       id: id,
       displayName: String(editor.displayName || "").trim(),

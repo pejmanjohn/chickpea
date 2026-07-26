@@ -99,7 +99,7 @@ interface PendingAuthorization {
   callbackUrl: string;
   authorizationServerUrl: string;
   metadata: AuthorizationServerMetadata;
-  resourceMetadata: OAuthProtectedResourceMetadata;
+  resource: string;
   clientInformation: OAuthClientInformationMixed;
 }
 
@@ -290,7 +290,7 @@ export async function startMcpOAuthAuthorization(
     callbackUrl,
     authorizationServerUrl,
     metadata,
-    resourceMetadata,
+    resource: resourceMetadata.resource,
     clientInformation,
   };
   await settings.setSetting(
@@ -325,7 +325,7 @@ export async function completeMcpOAuthAuthorization(
       authorizationCode: input.code,
       codeVerifier: pending.codeVerifier,
       redirectUri: pending.callbackUrl,
-      resource: new URL(pending.resourceMetadata.resource),
+      resource: new URL(pending.resource),
       fetchFn: guardedOAuthFetch(dependencies),
     });
   } catch (error) {
@@ -341,7 +341,7 @@ export async function completeMcpOAuthAuthorization(
     serverUrl: pending.serverUrl,
     authorizationServerUrl: pending.authorizationServerUrl,
     metadata: pending.metadata,
-    resource: pending.resourceMetadata.resource,
+    resource: pending.resource,
     clientInformation: pending.clientInformation,
     tokens,
     obtainedAt: now(dependencies),
@@ -752,7 +752,7 @@ function parsePendingAuthorization(
     typeof value.authorizationServerUrl !== 'string' ||
     typeof value.codeVerifier !== 'string' ||
     !isRecord(value.metadata) ||
-    !isRecord(value.resourceMetadata) ||
+    typeof value.resource !== 'string' ||
     !isRecord(value.clientInformation)
   ) {
     throw invalidStorage();
