@@ -16,7 +16,21 @@ export interface McpIdentityInput {
   presetId?: string;
 }
 
-type IdentityPayloadLoader = (input: McpIdentityInput) => Promise<unknown>;
+export interface McpIdentityProbe {
+  name: string;
+  arguments: Record<string, unknown>;
+}
+
+type IdentityPayloadLoader = (
+  input: McpIdentityInput,
+  probe: McpIdentityProbe,
+) => Promise<unknown>;
+
+const IDENTITY_PROBES: Record<string, McpIdentityProbe> = {
+  notion: { name: 'notion-fetch', arguments: { id: 'self' } },
+  linear: { name: 'get_user', arguments: { query: 'me' } },
+  airtable: { name: 'list_workspaces', arguments: {} },
+};
 
 /**
  * Returns bounded, non-secret account labels when a preset exposes a safe
@@ -25,13 +39,23 @@ type IdentityPayloadLoader = (input: McpIdentityInput) => Promise<unknown>;
  */
 export async function discoverMcpConnectionIdentity(
   input: McpIdentityInput,
-  loadPayload: IdentityPayloadLoader = loadNotionIdentityPayload,
+  loadPayload: IdentityPayloadLoader = loadIdentityPayload,
 ): Promise<McpConnectionIdentity | undefined> {
-  if (input.presetId !== 'notion') return undefined;
-  return parseNotionIdentity(await loadPayload(input));
+  const presetId = input.presetId;
+  if (!presetId) return undefined;
+  const probe = IDENTITY_PROBES[presetId];
+  if (!probe) return undefined;
+  const payload = await loadPayload(input, probe);
+  if (presetId === 'notion') return parseNotionIdentity(payload);
+  if (presetId === 'linear') return parseLinearIdentity(payload);
+  if (presetId === 'airtable') return parseAirtableIdentity(payload);
+  return undefined;
 }
 
-async function loadNotionIdentityPayload(input: McpIdentityInput): Promise<unknown> {
+async function loadIdentityPayload(
+  input: McpIdentityInput,
+  probe: McpIdentityProbe,
+): Promise<unknown> {
   if (input.transport !== 'streamable-http') return undefined;
   const client = new Client({ name: 'chickpea', version: '0.0.0' });
   const transport = new StreamableHTTPClientTransport(new URL(input.url), {
@@ -46,13 +70,13 @@ async function loadNotionIdentityPayload(input: McpIdentityInput): Promise<unkno
       timeout: CONNECT_TIMEOUT_MS,
     });
     const result = await client.callTool(
-      { name: 'notion-fetch', arguments: { id: 'self' } },
+      probe,
       undefined,
       { timeout: CALL_TIMEOUT_MS },
     );
-    if (!isRecord(result) || result.isError === true || !Array.isArray(result.content)) {
-      return undefined;
-    }
+    if (!isRecord(result) || result.isError === true) return undefined;
+    if (isRecord(result.structuredContent)) return result;
+    if (!Array.isArray(result.content)) return undefined;
     const text = result.content.find(
       (entry) => isRecord(entry) && entry.type === 'text' && typeof entry.text === 'string',
     );
@@ -74,6 +98,25 @@ function parseNotionIdentity(value: unknown): McpConnectionIdentity | undefined 
     ...(workspaceName ? { workspaceName } : {}),
     ...(accountName ? { accountName } : {}),
   };
+}
+
+function parseLinearIdentity(value: unknown): McpConnectionIdentity | undefined {
+  if (!isRecord(value)) return undefined;
+  const accountName = boundedLabel(value.displayName) ?? boundedLabel(value.name);
+  return accountName ? { accountName } : undefined;
+}
+
+function parseAirtableIdentity(value: unknown): McpConnectionIdentity | undefined {
+  if (!isRecord(value)) return undefined;
+  const content = isRecord(value.structuredContent) ? value.structuredContent : value;
+  if (!Array.isArray(content.workspaces)) return undefined;
+  const workspaces = content.workspaces.filter(isRecord);
+  if (workspaces.length === 0) return undefined;
+  if (workspaces.length === 1) {
+    const workspaceName = boundedLabel(workspaces[0]?.name);
+    return workspaceName ? { workspaceName } : undefined;
+  }
+  return { workspaceName: `${workspaces.length} accessible workspaces` };
 }
 
 function boundedLabel(value: unknown): string | undefined {

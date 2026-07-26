@@ -37,7 +37,7 @@ test('Notion identity discovery keeps bounded workspace and account labels only'
 test('identity discovery is provider-gated and tolerates an absent self payload', async () => {
   let calls = 0;
   const unknown = await discoverMcpConnectionIdentity(
-    { ...notionInput, presetId: 'linear' },
+    { ...notionInput, presetId: 'unknown-provider' },
     async () => {
       calls += 1;
       return {};
@@ -48,4 +48,70 @@ test('identity discovery is provider-gated and tolerates an absent self payload'
 
   const missing = await discoverMcpConnectionIdentity(notionInput, async () => ({ self: {} }));
   assert.equal(missing, undefined);
+});
+
+test('Linear identity discovery requests the current user and stores only a bounded display name', async () => {
+  const input = {
+    ...notionInput,
+    id: 'linear',
+    url: 'https://mcp.linear.app/mcp',
+    presetId: 'linear',
+  };
+  const identity = await discoverMcpConnectionIdentity(input, async (received, probe) => {
+    assert.equal(received, input);
+    assert.deepEqual(probe, { name: 'get_user', arguments: { query: 'me' } });
+    return {
+      id: 'user-secret-id',
+      name: 'Fallback Name',
+      displayName: '  Pejman   Pour-Moezzi  ',
+      email: 'must-not-enter-profile@example.com',
+      teams: [{ id: 'team-secret-id', name: 'Chickpea', key: 'CHI' }],
+    };
+  });
+
+  assert.deepEqual(identity, { accountName: 'Pejman Pour-Moezzi' });
+  assert.doesNotMatch(JSON.stringify(identity), /secret-id|example\.com|Chickpea|CHI/);
+});
+
+test('Airtable identity discovery summarizes accessible workspaces without retaining ids', async () => {
+  const input = {
+    ...notionInput,
+    id: 'airtable',
+    url: 'https://mcp.airtable.com/mcp',
+    presetId: 'airtable',
+  };
+  const oneWorkspace = await discoverMcpConnectionIdentity(input, async (_received, probe) => {
+    assert.deepEqual(probe, { name: 'list_workspaces', arguments: {} });
+    return {
+      structuredContent: {
+        workspaces: [{ id: 'workspace-secret-id', name: '  Product   Ops ', permissionLevel: 'owner' }],
+      },
+    };
+  });
+  assert.deepEqual(oneWorkspace, { workspaceName: 'Product Ops' });
+
+  const severalWorkspaces = await discoverMcpConnectionIdentity(input, async () => ({
+    structuredContent: {
+      workspaces: [
+        { id: 'one', name: 'First', permissionLevel: 'owner' },
+        { id: 'two', name: 'Second', permissionLevel: 'editor' },
+        { id: 'three', name: 'Third', permissionLevel: 'viewer' },
+      ],
+    },
+  }));
+  assert.deepEqual(severalWorkspaces, { workspaceName: '3 accessible workspaces' });
+  assert.doesNotMatch(JSON.stringify(severalWorkspaces), /First|Second|Third|owner|editor|viewer/);
+});
+
+test('identity discovery stays provider-gated for presets without a proven probe', async () => {
+  let calls = 0;
+  const identity = await discoverMcpConnectionIdentity(
+    { ...notionInput, presetId: 'supabase' },
+    async () => {
+      calls += 1;
+      return {};
+    },
+  );
+  assert.equal(identity, undefined);
+  assert.equal(calls, 0);
 });
