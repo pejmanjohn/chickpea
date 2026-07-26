@@ -2995,19 +2995,20 @@ test('the searchable Connections gallery is immediate, renders brand logos, and 
   );
 
   const ahrefsRow = gallery.match(
-    /<div class="gallery-row"><span class="conn-logo conn-logo-img conn-logo-full"><svg(?:(?!<\/div>)[\s\S])*?data-preset="ahrefs">Connect<\/button><\/div>/,
+    /<div class="gallery-row gallery-row-described"><span class="conn-logo conn-logo-img conn-logo-full"><svg(?:(?!<\/div>)[\s\S])*?data-preset="ahrefs">Connect<\/button><\/div>/,
   )?.[0];
   assert.ok(ahrefsRow);
   assert.match(ahrefsRow, /conn-logo-full"><svg/);
+  assert.match(ahrefsRow, /Research keywords, backlinks, competitors, and search performance\./);
 
   const incidentIoRow = gallery.match(
-    /<div class="gallery-row"><span class="conn-logo conn-logo-raster"><img src="data:image\/png;base64,[^"]+" alt=""><\/span>(?:(?!<\/div>)[\s\S])*?data-preset="incident-io">Connect<\/button><\/div>/,
+    /<div class="gallery-row gallery-row-described"><span class="conn-logo conn-logo-raster"><img src="data:image\/png;base64,[^"]+" alt=""><\/span>(?:(?!<\/div>)[\s\S])*?data-preset="incident-io">Connect<\/button><\/div>/,
   )?.[0];
   assert.ok(incidentIoRow);
   assert.match(incidentIoRow, /conn-logo-raster"><img src="data:image\/png;base64,/);
 
   const linearRow = gallery.match(
-    /<div class="gallery-row"><span class="conn-logo conn-logo-img"><svg[\s\S]*?data-preset="linear">Connect<\/button><\/div>/,
+    /<div class="gallery-row gallery-row-described"><span class="conn-logo conn-logo-img"><svg[\s\S]*?data-preset="linear">Connect<\/button><\/div>/,
   )?.[0];
   assert.ok(linearRow);
   assert.match(
@@ -3015,10 +3016,11 @@ test('the searchable Connections gallery is immediate, renders brand logos, and 
     /<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" style="color:#5E6AD2"><path/,
   );
   assert.match(linearRow, /<span class="gallery-row-name">Linear<\/span>/);
+  assert.match(linearRow, /Find, create, and update issues, projects, and workspace plans\./);
   assert.match(linearRow, /<span class="gallery-lane">MCP<\/span>/);
 
   const airtableRow = gallery.match(
-    /<div class="gallery-row"><span class="conn-logo conn-logo-img conn-logo-full"><svg(?:(?!<\/div>)[\s\S])*?data-preset="airtable">Connect<\/button><\/div>/,
+    /<div class="gallery-row gallery-row-described"><span class="conn-logo conn-logo-img conn-logo-full"><svg(?:(?!<\/div>)[\s\S])*?data-preset="airtable">Connect<\/button><\/div>/,
   )?.[0];
   assert.ok(airtableRow);
   assert.match(airtableRow, /fill="#FCB400"/);
@@ -3027,20 +3029,20 @@ test('the searchable Connections gallery is immediate, renders brand logos, and 
   assert.doesNotMatch(airtableRow, /currentColor/);
 
   const atlassianRow = gallery.match(
-    /<div class="gallery-row"><span class="conn-logo conn-logo-img"><svg[\s\S]*?data-preset="atlassian">Connect<\/button><\/div>/,
+    /<div class="gallery-row gallery-row-described"><span class="conn-logo conn-logo-img"><svg[\s\S]*?data-preset="atlassian">Connect<\/button><\/div>/,
   )?.[0];
   assert.ok(atlassianRow);
   assert.match(atlassianRow, /style="color:#0052CC"><path/);
   assert.match(atlassianRow, /<span class="gallery-row-name">Atlassian<\/span>/);
 
   const notionRow = gallery.match(
-    /<div class="gallery-row"><span class="conn-logo conn-logo-img conn-logo-full"><svg[^>]*aria-hidden="true"(?:(?!<\/div>)[\s\S])*?data-preset="notion">Connect<\/button><\/div>/,
+    /<div class="gallery-row gallery-row-described"><span class="conn-logo conn-logo-img conn-logo-full"><svg[^>]*aria-hidden="true"(?:(?!<\/div>)[\s\S])*?data-preset="notion">Connect<\/button><\/div>/,
   )?.[0];
   assert.ok(notionRow);
   assert.doesNotMatch(notionRow, /conn-logo-mono|conn-logo-raster|data:image|>NO<\/span>/);
 
   const gmailRow = gallery.match(
-    /<div class="gallery-row gallery-row-service">(?:(?!<\/div>)[\s\S])*?data-preset="gmail">Connect<\/button><\/div>/,
+    /<div class="gallery-row gallery-row-described">(?:(?!<\/div>)[\s\S])*?data-preset="gmail">Connect<\/button><\/div>/,
   )?.[0];
   assert.ok(gmailRow);
   assert.match(gmailRow, /<span class="gallery-row-name">Gmail<\/span>/);
@@ -3048,7 +3050,7 @@ test('the searchable Connections gallery is immediate, renders brand logos, and 
   assert.match(gmailRow, /fill="#fc413d"/);
 
   const calendarRow = gallery.match(
-    /<div class="gallery-row gallery-row-service">(?:(?!<\/div>)[\s\S])*?data-preset="google-calendar">Connect<\/button><\/div>/,
+    /<div class="gallery-row gallery-row-described">(?:(?!<\/div>)[\s\S])*?data-preset="google-calendar">Connect<\/button><\/div>/,
   )?.[0];
   assert.ok(calendarRow);
   assert.match(calendarRow, /<span class="gallery-row-name">Google Calendar<\/span>/);
@@ -3056,7 +3058,7 @@ test('the searchable Connections gallery is immediate, renders brand logos, and 
   assert.match(calendarRow, /fill="#3c90ff"/);
 
   const driveRow = gallery.match(
-    /<div class="gallery-row gallery-row-service">(?:(?!<\/div>)[\s\S])*?data-preset="google-drive">Connect<\/button><\/div>/,
+    /<div class="gallery-row gallery-row-described">(?:(?!<\/div>)[\s\S])*?data-preset="google-drive">Connect<\/button><\/div>/,
   )?.[0];
   assert.ok(driveRow);
   assert.match(driveRow, /<span class="gallery-row-name">Google Drive<\/span>/);
@@ -3065,7 +3067,7 @@ test('the searchable Connections gallery is immediate, renders brand logos, and 
 
   for (const id of ['asana', 'zendesk']) {
     const apiRow = gallery.match(
-      new RegExp('<div class="gallery-row">(?:(?!<\\/div>)[\\s\\S])*?data-preset="' + id + '">Connect<\\/button><\\/div>'),
+      new RegExp('<div class="gallery-row gallery-row-described">(?:(?!<\\/div>)[\\s\\S])*?data-preset="' + id + '">Connect<\\/button><\\/div>'),
     )?.[0];
     assert.ok(apiRow, `${id} row should render`);
     assert.match(apiRow, /<span class="conn-logo conn-logo-img"><svg/);
@@ -3074,14 +3076,14 @@ test('the searchable Connections gallery is immediate, renders brand logos, and 
   }
 
   const mondayRow = gallery.match(
-    /<div class="gallery-row"><span class="conn-logo conn-logo-img conn-logo-full"><svg[\s\S]*?data-preset="monday">Connect<\/button><\/div>/,
+    /<div class="gallery-row gallery-row-described"><span class="conn-logo conn-logo-img conn-logo-full"><svg[\s\S]*?data-preset="monday">Connect<\/button><\/div>/,
   )?.[0];
   assert.ok(mondayRow);
   assert.match(mondayRow, /<svg viewBox="0 0 64 64"/);
   assert.match(mondayRow, /fill="#ff3d57"/);
 
   const exaRow = gallery.match(
-    /<div class="gallery-row"><span class="conn-logo conn-logo-raster"><img src="data:image\/png;base64,[^"]+" alt=""><\/span>[\s\S]*?data-preset="exa">Connect<\/button><\/div>/,
+    /<div class="gallery-row gallery-row-described"><span class="conn-logo conn-logo-raster"><img src="data:image\/png;base64,[^"]+" alt=""><\/span>[\s\S]*?data-preset="exa">Connect<\/button><\/div>/,
   )?.[0];
   assert.ok(exaRow);
   assert.match(exaRow, /<img src="data:image\/png;base64,[^"]+" alt="">/);

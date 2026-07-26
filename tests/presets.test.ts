@@ -33,6 +33,8 @@ test('connector preset catalog entries are valid', () => {
   for (const preset of CONNECTOR_PRESETS) {
     assert.match(preset.id, /^[a-z0-9][a-z0-9-]{0,63}$/);
     assert.ok(preset.name.trim().length > 0 && preset.name.length <= 80);
+    assert.ok(preset.description.trim().length > 0 && preset.description.length <= 100);
+    assert.match(preset.description, /\.$/);
     const lanes = presetLanes(preset);
     assert.ok(lanes.mcp || lanes.api, `${preset.id} has no connector lane`);
 
@@ -90,6 +92,7 @@ test('preset lanes classify the existing MCP catalog, the API additions, and bot
   const both = {
     id: 'both-test',
     name: 'Both Test',
+    description: 'Exercise both connector lanes.',
     category: 'dev',
     accent: '#123456',
     url: 'https://mcp.example.com/mcp',
@@ -109,6 +112,7 @@ test('the Notion MCP preset keeps the official OAuth-only hosted-server shape', 
   assert.deepEqual(getConnectorPreset('notion'), {
     id: 'notion',
     name: 'Notion',
+    description: 'Search, read, create, and update workspace pages and databases.',
     category: 'docs',
     accent: '#000000',
     url: 'https://mcp.notion.com/mcp',
@@ -125,6 +129,7 @@ test('the Linear MCP preset requests read-write OAuth access', () => {
   assert.deepEqual(getConnectorPreset('linear'), {
     id: 'linear',
     name: 'Linear',
+    description: 'Find, create, and update issues, projects, and workspace plans.',
     category: 'project',
     accent: '#5E6AD2',
     url: 'https://mcp.linear.app/mcp',
@@ -141,6 +146,7 @@ test('the Airtable MCP preset requests the documented read-write OAuth scopes', 
   assert.deepEqual(getConnectorPreset('airtable'), {
     id: 'airtable',
     name: 'Airtable',
+    description: 'Read and update records, bases, schemas, and comments.',
     category: 'data',
     accent: '#18BFFF',
     url: 'https://mcp.airtable.com/mcp',
@@ -162,6 +168,7 @@ test('the PostHog MCP preset uses the provider-recommended OAuth flow', () => {
   assert.deepEqual(getConnectorPreset('posthog'), {
     id: 'posthog',
     name: 'PostHog',
+    description: 'Analyze product data and manage insights, feature flags, and experiments.',
     category: 'data',
     accent: '#F54E00',
     url: 'https://mcp.posthog.com/mcp',
@@ -179,6 +186,7 @@ test('the Supabase MCP preset requests every currently required OAuth scope', ()
   assert.deepEqual(getConnectorPreset('supabase'), {
     id: 'supabase',
     name: 'Supabase',
+    description: 'Manage projects, databases, storage, functions, and development settings.',
     category: 'data',
     accent: '#3ECF8E',
     url: 'https://mcp.supabase.com/mcp',
@@ -200,6 +208,7 @@ test('the Cloudflare API preset uses the token-efficient full API OAuth server',
   assert.deepEqual(getConnectorPreset('cloudflare-api'), {
     id: 'cloudflare-api',
     name: 'Cloudflare API',
+    description: 'Search Cloudflare docs and execute approved operations across your account.',
     category: 'dev',
     accent: '#F38020',
     url: 'https://mcp.cloudflare.com/mcp',
@@ -221,6 +230,7 @@ test('the Google Workspace API preset starts with read-only service policy', () 
   assert.deepEqual(getConnectorPreset('google-workspace'), {
     id: 'google-workspace',
     name: 'Google Workspace',
+    description: 'Use one shared OAuth client for Gmail, Calendar, and Drive.',
     category: 'docs',
     accent: '#4285F4',
     api: {
@@ -273,6 +283,7 @@ test('the Atlassian MCP preset requests the advertised read-write OAuth scopes',
   assert.deepEqual(getConnectorPreset('atlassian'), {
     id: 'atlassian',
     name: 'Atlassian',
+    description: 'Search and update Jira work, Confluence content, and Compass data.',
     category: 'project',
     accent: '#0052CC',
     url: 'https://mcp.atlassian.com/v1/mcp/authv2',
@@ -294,6 +305,7 @@ test('the Asana and Zendesk API presets keep their locked shapes', () => {
   assert.deepEqual(getConnectorPreset('asana'), {
     id: 'asana',
     name: 'Asana',
+    description: 'Find, create, and update tasks, projects, teams, and portfolios.',
     category: 'project',
     accent: '#F06A6A',
     api: {
@@ -310,6 +322,7 @@ test('the Asana and Zendesk API presets keep their locked shapes', () => {
   assert.deepEqual(getConnectorPreset('zendesk'), {
     id: 'zendesk',
     name: 'Zendesk',
+    description: 'Search and update tickets, users, organizations, and help-center content.',
     category: 'business',
     accent: '#03363D',
     api: {

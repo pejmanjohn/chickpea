@@ -5,6 +5,7 @@ export type ConnectorCategory = 'project' | 'dev' | 'data' | 'search' | 'docs' |
 interface ConnectorPresetCommon {
   id: string; // also seeds the connection id; MUST match /^[a-z0-9][a-z0-9-]{0,63}$/
   name: string;
+  description: string;
   category: ConnectorCategory;
   accent: string; // hex color for the monogram chip, e.g. '#5E6AD2'
   tokenDocsUrl?: string;
@@ -85,6 +86,7 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
   {
     id: 'linear',
     name: 'Linear',
+    description: 'Find, create, and update issues, projects, and workspace plans.',
     category: 'project',
     accent: '#5E6AD2',
     url: 'https://mcp.linear.app/mcp',
@@ -98,6 +100,7 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
   {
     id: 'atlassian',
     name: 'Atlassian',
+    description: 'Search and update Jira work, Confluence content, and Compass data.',
     category: 'project',
     accent: '#0052CC',
     url: 'https://mcp.atlassian.com/v1/mcp/authv2',
@@ -116,6 +119,7 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
   {
     id: 'notion',
     name: 'Notion',
+    description: 'Search, read, create, and update workspace pages and databases.',
     category: 'docs',
     accent: '#000000',
     url: 'https://mcp.notion.com/mcp',
@@ -129,6 +133,7 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
   {
     id: 'sentry',
     name: 'Sentry',
+    description: 'Investigate errors, issues, traces, and application health.',
     category: 'dev',
     accent: '#362D59',
     url: 'https://mcp.sentry.dev/mcp',
@@ -146,6 +151,7 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
   {
     id: 'stripe',
     name: 'Stripe',
+    description: 'Search Stripe data and manage customers, invoices, payments, and subscriptions.',
     category: 'business',
     accent: '#635BFF',
     url: 'https://mcp.stripe.com',
@@ -158,6 +164,7 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
   {
     id: 'cloudflare-api',
     name: 'Cloudflare API',
+    description: 'Search Cloudflare docs and execute approved operations across your account.',
     category: 'dev',
     accent: '#F38020',
     url: 'https://mcp.cloudflare.com/mcp',
@@ -173,6 +180,7 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
   {
     id: 'supabase',
     name: 'Supabase',
+    description: 'Manage projects, databases, storage, functions, and development settings.',
     category: 'data',
     accent: '#3ECF8E',
     url: 'https://mcp.supabase.com/mcp',
@@ -191,6 +199,7 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
   {
     id: 'neon',
     name: 'Neon',
+    description: 'Inspect and manage Postgres projects, branches, databases, and compute.',
     category: 'data',
     accent: '#00E599',
     url: 'https://mcp.neon.tech/mcp',
@@ -202,6 +211,7 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
   {
     id: 'posthog',
     name: 'PostHog',
+    description: 'Analyze product data and manage insights, feature flags, and experiments.',
     category: 'data',
     accent: '#F54E00',
     url: 'https://mcp.posthog.com/mcp',
@@ -216,6 +226,7 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
   {
     id: 'airtable',
     name: 'Airtable',
+    description: 'Read and update records, bases, schemas, and comments.',
     category: 'data',
     accent: '#18BFFF',
     url: 'https://mcp.airtable.com/mcp',
@@ -234,6 +245,7 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
   {
     id: 'monday',
     name: 'Monday.com',
+    description: 'Find and update workspaces, boards, items, and columns.',
     category: 'project',
     accent: '#FF3D57',
     url: 'https://mcp.monday.com/mcp',
@@ -245,6 +257,7 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
   {
     id: 'intercom',
     name: 'Intercom',
+    description: 'Search customers and conversations, and manage support content.',
     category: 'business',
     accent: '#1F8DED',
     url: 'https://mcp.intercom.com/mcp',
@@ -258,6 +271,7 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
   {
     id: 'exa',
     name: 'Exa',
+    description: 'Search the web and retrieve research-ready pages and context.',
     category: 'search',
     accent: '#1F40FF',
     url: 'https://mcp.exa.ai/mcp',
@@ -270,6 +284,7 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
   {
     id: 'firecrawl',
     name: 'Firecrawl',
+    description: 'Search, scrape, crawl, and map websites into structured content.',
     category: 'search',
     accent: '#FF5A1F',
     url: 'https://mcp.firecrawl.dev/v2/mcp',
@@ -281,6 +296,7 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
   {
     id: 'huggingface',
     name: 'Hugging Face',
+    description: 'Explore models, datasets, Spaces, papers, and community tools.',
     category: 'data',
     accent: '#FFD21E',
     url: 'https://huggingface.co/mcp',
@@ -292,6 +308,7 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
   {
     id: 'ahrefs',
     name: 'Ahrefs',
+    description: 'Research keywords, backlinks, competitors, and search performance.',
     category: 'search',
     accent: '#FF8D00',
     url: 'https://api.ahrefs.com/mcp/mcp',
@@ -304,6 +321,7 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
   {
     id: 'fireflies',
     name: 'Fireflies',
+    description: 'Search meeting transcripts, summaries, speakers, and action items.',
     category: 'business',
     accent: '#E1447E',
     url: 'https://api.fireflies.ai/mcp',
@@ -315,6 +333,7 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
   {
     id: 'gamma',
     name: 'Gamma',
+    description: 'Create and browse presentations, documents, and webpages.',
     category: 'docs',
     accent: '#3B5BDB',
     url: 'https://mcp.gamma.app/mcp',
@@ -327,6 +346,7 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
   {
     id: 'incident-io',
     name: 'incident.io',
+    description: 'Query incidents and alerts, check on-call, and manage escalations.',
     category: 'dev',
     accent: '#F25533',
     url: 'https://mcp.incident.io/mcp',
@@ -339,6 +359,7 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
   {
     id: 'lunarcrush',
     name: 'LunarCrush',
+    description: 'Analyze social activity and market signals for digital assets.',
     category: 'data',
     accent: '#101113',
     url: 'https://lunarcrush.ai/mcp',
@@ -351,6 +372,7 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
   {
     id: 'google-workspace',
     name: 'Google Workspace',
+    description: 'Use one shared OAuth client for Gmail, Calendar, and Drive.',
     category: 'docs',
     accent: '#4285F4',
     api: {
@@ -371,6 +393,7 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
   {
     id: 'asana',
     name: 'Asana',
+    description: 'Find, create, and update tasks, projects, teams, and portfolios.',
     category: 'project',
     accent: '#F06A6A',
     api: {
@@ -387,6 +410,7 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
   {
     id: 'zendesk',
     name: 'Zendesk',
+    description: 'Search and update tickets, users, organizations, and help-center content.',
     category: 'business',
     accent: '#03363D',
     api: {

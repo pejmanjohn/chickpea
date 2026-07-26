@@ -1216,6 +1216,9 @@ details[open].advanced summary::before {
 .gallery-row-copy { display: flex; flex: 1; flex-direction: column; gap: 2px; min-width: 0; }
 .gallery-row-name { font-weight: 600; }
 .gallery-row-desc { color: var(--text-3); font-size: 0.75rem; line-height: 1.35; overflow-wrap: anywhere; }
+@media (min-width: 721px) {
+  .gallery-row-desc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+}
 .gallery-lane { background: rgba(59, 50, 32, 0.08); border-radius: 999px; color: var(--text-3); font-size: 0.625rem; font-weight: 700; letter-spacing: 0.05em; padding: 3px 7px; white-space: nowrap; }
 .gallery-row-spacer { margin-left: auto; }
 .gallery-empty { color: var(--text-3); font-size: 0.8125rem; padding: 14px 4px; }
@@ -1233,12 +1236,12 @@ details[open].advanced summary::before {
 .google-service-chip .conn-logo { border-radius: 5px; height: 20px; width: 20px; }
 .google-service-level { color: var(--text-3); font-weight: 600; }
 @media (max-width: 720px) {
-  .gallery-row-service { align-items: center; display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; row-gap: 6px; }
-  .gallery-row-service > .conn-logo { grid-column: 1; grid-row: 1 / span 2; }
-  .gallery-row-service > .gallery-row-copy { grid-column: 2 / 4; grid-row: 1; }
-  .gallery-row-service > .gallery-lane { grid-column: 2; grid-row: 2; justify-self: start; }
-  .gallery-row-service > .gallery-row-spacer { display: none; }
-  .gallery-row-service > .btn { grid-column: 3; grid-row: 2; justify-self: end; }
+  .gallery-row-described { align-items: center; display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; row-gap: 6px; }
+  .gallery-row-described > .conn-logo { grid-column: 1; grid-row: 1 / span 2; }
+  .gallery-row-described > .gallery-row-copy { grid-column: 2 / 4; grid-row: 1; }
+  .gallery-row-described > .gallery-lane { grid-column: 2; grid-row: 2; justify-self: start; }
+  .gallery-row-described > .gallery-row-spacer { display: none; }
+  .gallery-row-described > .btn { grid-column: 3; grid-row: 2; justify-self: end; }
 }
 .oauth-account { align-items: center; background: rgba(255,255,255,0.48); border: 1px solid var(--border); border-radius: 14px; display: flex; gap: 12px; justify-content: space-between; padding: 14px 16px; }
 .oauth-account-copy { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
@@ -2863,9 +2866,9 @@ details[open].advanced summary::before {
       var googleService = googleServicePresetById(preset.id);
       var lanes = googleService ? { mcp: false, api: true } : presetLanes(preset);
       var laneLabel = [lanes.mcp ? "MCP" : "", lanes.api ? "API" : ""].filter(function (label) { return !!label; }).join(" ");
-      var description = googleService ? '<span class="gallery-row-desc">' + esc(googleService.description) + '</span>' : "";
+      var description = preset.description ? '<span class="gallery-row-desc">' + esc(preset.description) + '</span>' : "";
       var actionLabel = googleService && googleConnection ? "Enable" : "Connect";
-      var rowClass = googleService ? "gallery-row gallery-row-service" : "gallery-row";
+      var rowClass = description ? "gallery-row gallery-row-described" : "gallery-row";
       return '<div class="' + rowClass + '">' + connectorLogoHtml(preset) +
         '<span class="gallery-row-copy"><span class="gallery-row-name">' + esc(preset.name) + '</span>' + description + '</span>' +
         '<span class="gallery-lane">' + laneLabel + '</span>' +
