@@ -2405,6 +2405,37 @@ test('a saved bearer Linear connection stays Advanced after the catalog upgrades
   assert.deepEqual(harness.mcpSecretPuts, []);
 });
 
+test('a saved PAT Airtable connection stays Advanced after the catalog upgrades to OAuth', async () => {
+  const harness = runAdminPageHarness({
+    agents: [
+      connectionsAgent({
+        mcpServers: [
+          mcpConnectionFixture({
+            id: 'airtable',
+            displayName: 'Airtable',
+            url: 'https://mcp.airtable.com/mcp',
+            presetId: 'airtable',
+          }),
+        ],
+      }),
+    ],
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-edit', 'data-index': '0' }) });
+
+  const editor = harness.app.innerHTML;
+  assert.match(editor, /value="https:\/\/mcp\.airtable\.com\/mcp"[^>]*data-action="conn-field-url"/);
+  assert.match(editor, /<option value="bearer" selected>Bearer token<\/option>/);
+  assert.match(editor, /placeholder="•••• stored"[^>]*data-action="conn-field-bearer"/);
+  assert.doesNotMatch(editor, /data-action="conn-oauth-start"/);
+  assert.doesNotMatch(editor, /data-action="conn-view"/);
+});
+
 test('a saved read-only Linear OAuth connection stays Advanced after the catalog URL gains write access', async () => {
   const harness = runAdminPageHarness({
     agents: [
@@ -3176,6 +3207,74 @@ test('the Linear preset saves read-write OAuth policy and requests read and writ
   ]);
   assert.deepEqual(harness.assignedUrls, [
     'https://linear.example/authorize?state=opaque-state',
+  ]);
+});
+
+test('the Airtable preset saves OAuth policy before requesting its documented scopes', async () => {
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    deferAgentPatch: true,
+    oauthStartResult: {
+      authorizationUrl: 'https://airtable.example/authorize?state=opaque-state',
+    },
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'airtable' }) });
+
+  const editor = harness.app.innerHTML;
+  assert.match(
+    editor,
+    /Sign in to Airtable and choose the workspaces and bases Chickpea should access\.<\/p>/,
+  );
+  assert.match(editor, /data-action="conn-oauth-start"[^>]*>[\s\S]*?<span>Sign into Airtable<\/span>/);
+  assert.doesNotMatch(editor, /data-action="conn-field-bearer"/);
+  assert.doesNotMatch(editor, /Where do I find this\?/);
+  assert.doesNotMatch(editor, /href="https:\/\/support\.airtable\.com\/using-the-airtable-mcp-server"/);
+
+  click({ target: actionTarget({ 'data-action': 'conn-oauth-start' }) });
+  await flushAsync();
+
+  assert.equal(harness.agentPatchBodies.length, 1);
+  assert.deepEqual(harness.oauthStartPosts, []);
+  assert.deepEqual(harness.assignedUrls, []);
+
+  harness.resolveAgentPatch();
+  await flushAsync();
+
+  const servers = harness.agentPatchBodies[0]?.body.mcpServers as Array<Record<string, unknown>>;
+  assert.deepEqual(servers, [
+    {
+      id: 'airtable',
+      displayName: 'Airtable',
+      url: 'https://mcp.airtable.com/mcp',
+      transport: 'streamable-http',
+      authMode: 'oauth',
+      headerNames: [],
+      enabled: true,
+      lifecycleStatus: 'pending',
+      statusText: '',
+      discoveredTools: [],
+      allowedTools: [],
+      presetId: 'airtable',
+    },
+  ]);
+  assert.deepEqual(harness.oauthStartPosts, [
+    {
+      agentId: 'agent_conn',
+      connectionId: 'airtable',
+      body: {
+        scope:
+          'data.records:read data.records:write schema.bases:read schema.bases:write data.recordComments:read data.recordComments:write workspacesAndBases:read',
+      },
+    },
+  ]);
+  assert.deepEqual(harness.assignedUrls, [
+    'https://airtable.example/authorize?state=opaque-state',
   ]);
 });
 

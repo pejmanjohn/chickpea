@@ -168,9 +168,16 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
     accent: '#18BFFF',
     url: 'https://mcp.airtable.com/mcp',
     transport: 'streamable-http',
-    auth: { kind: 'bearer', placeholder: 'pat…' },
-    tokenDocsUrl: 'https://airtable.com/create/tokens',
-    tokenDocsHint: 'Airtable → Builder hub → Personal access tokens',
+    auth: {
+      kind: 'oauth',
+      scope:
+        'data.records:read data.records:write schema.bases:read schema.bases:write data.recordComments:read data.recordComments:write workspacesAndBases:read',
+    },
+    tokenDocsUrl: 'https://support.airtable.com/using-the-airtable-mcp-server',
+    tokenDocsHint:
+      'Sign in to Airtable and choose the workspaces and bases Chickpea should access.',
+    notes:
+      'Chickpea requests read and write access for records, schemas, and comments in the workspaces and bases you approve.',
   },
   {
     id: 'monday',

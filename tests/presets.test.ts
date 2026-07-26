@@ -136,6 +136,27 @@ test('the Linear MCP preset requests read-write OAuth access', () => {
   });
 });
 
+test('the Airtable MCP preset requests the documented read-write OAuth scopes', () => {
+  assert.deepEqual(getConnectorPreset('airtable'), {
+    id: 'airtable',
+    name: 'Airtable',
+    category: 'data',
+    accent: '#18BFFF',
+    url: 'https://mcp.airtable.com/mcp',
+    transport: 'streamable-http',
+    auth: {
+      kind: 'oauth',
+      scope:
+        'data.records:read data.records:write schema.bases:read schema.bases:write data.recordComments:read data.recordComments:write workspacesAndBases:read',
+    },
+    tokenDocsUrl: 'https://support.airtable.com/using-the-airtable-mcp-server',
+    tokenDocsHint:
+      'Sign in to Airtable and choose the workspaces and bases Chickpea should access.',
+    notes:
+      'Chickpea requests read and write access for records, schemas, and comments in the workspaces and bases you approve.',
+  });
+});
+
 test('the Asana and Zendesk API presets keep their locked shapes', () => {
   assert.deepEqual(getConnectorPreset('asana'), {
     id: 'asana',
