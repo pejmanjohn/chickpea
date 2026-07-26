@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import { encodeMemoryArchive } from '../src/memory/archive.ts';
 import { createImportPreview, signImportPreview, verifyImportPreview } from '../src/memory/import.ts';
 import { projectMemoryFiles } from '../src/memory/markdown.ts';
+import { SqliteMemoryStateStore } from '../src/memory/store.ts';
 import type { MemoryEntry, MemoryStoreDescriptor } from '../src/memory/types.ts';
 
 const now = Date.UTC(2026, 6, 25, 12);
@@ -62,3 +63,40 @@ test('preview tokens bind session, store, archive hash, schema, and expiry', () 
   assert.throws(() => verifyImportPreview(token, 'admin-secret', { ...claims, now: claims.expiresAt + 1 }), /expired/i);
 });
 
+test('import apply is atomic when a later operation conflicts', async () => {
+  const state = new SqliteMemoryStateStore(':memory:', () => now);
+  try {
+    await state.ensurePublicStore('T_TEST');
+    await state.createEntry({
+      entryId: entry.entryId, storeId: store.storeId, workspaceId: store.workspaceId,
+      sourceChannelId: entry.sourceChannelId, slug: entry.slug, description: entry.description,
+      type: entry.type, body: entry.body, actorId: 'U1', actorClass: 'member',
+      idempotencyKey: 'seed',
+    });
+    await assert.rejects(
+      () => state.applyImport({
+        storeId: store.storeId,
+        workspaceId: store.workspaceId,
+        actorId: 'admin',
+        idempotencyKey: 'batch',
+        operations: [
+          {
+            action: 'create', entryId: 'mem_new', sourceChannelId: 'C1', slug: 'new',
+            description: 'New.', type: 'fact', body: 'New body.',
+          },
+          {
+            action: 'update', entryId: entry.entryId, expectedVersion: 99,
+            sourceChannelId: 'C1', slug: entry.slug, description: 'Changed.',
+            type: 'fact', body: 'Changed body.',
+          },
+        ],
+      }),
+      /changed before this update/i,
+    );
+    assert.equal(await state.getEntry('mem_new'), undefined);
+    assert.equal((await state.getEntry(entry.entryId))?.version, 1);
+    assert.equal((await state.listAuditEvents({ eventType: 'memory.imported' })).length, 0);
+  } finally {
+    state.close();
+  }
+});

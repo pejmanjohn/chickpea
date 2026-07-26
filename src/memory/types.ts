@@ -236,6 +236,38 @@ export interface MemoryEntryFilter {
   limit?: number;
 }
 
+export interface ApplyMemoryImportOperation {
+  action: 'create' | 'update';
+  entryId: string;
+  expectedVersion?: number;
+  sourceChannelId: string;
+  slug: string;
+  description: string;
+  type: MemoryEntryType;
+  body: string;
+}
+
+export interface ApplyMemoryImportInput {
+  storeId: string;
+  workspaceId: string;
+  actorId: string;
+  idempotencyKey: string;
+  operations: ApplyMemoryImportOperation[];
+}
+
+export interface RecordMemoryAdminViewInput {
+  entryId: string;
+  actorId: string;
+  idempotencyKey: string;
+}
+
+export interface RecordMemoryAdminEventInput {
+  eventType: 'memory.exported';
+  storeId: string;
+  actorId: string;
+  idempotencyKey: string;
+}
+
 export class MemoryStateError extends Error {
   override readonly name: string = 'MemoryStateError';
 
@@ -273,9 +305,13 @@ export type MemoryRpcRequest =
   | { kind: 'ensure_public_store'; workspaceId: string }
   | { kind: 'ensure_private_store'; workspaceId: string; channelId: string; generation: number }
   | { kind: 'get_store'; storeId: string }
+  | { kind: 'list_stores'; workspaceId?: string }
   | { kind: 'create_entry'; input: CreateMemoryEntryInput }
   | { kind: 'get_entry'; entryId: string }
   | { kind: 'list_entries'; filter: MemoryEntryFilter }
+  | { kind: 'apply_import'; input: ApplyMemoryImportInput }
+  | { kind: 'record_admin_view'; input: RecordMemoryAdminViewInput }
+  | { kind: 'record_admin_event'; input: RecordMemoryAdminEventInput }
   | { kind: 'update_entry'; input: UpdateMemoryEntryInput }
   | { kind: 'forget_entry'; input: ForgetMemoryEntryInput }
   | { kind: 'transition_entry'; input: TransitionMemoryEntryInput }
@@ -290,13 +326,16 @@ export type MemoryRpcRequest =
   | { kind: 'confirm_conversation_context'; input: ConfirmMemoryConversationContextInput }
   | { kind: 'observe_channel_scope'; input: ObserveMemoryChannelScopeInput }
   | { kind: 'get_channel_scope'; workspaceId: string; channelId: string }
+  | { kind: 'list_channel_scopes'; workspaceId?: string }
   | { kind: 'cleanup_retention' };
 
 export type MemoryRpcResponse =
   | { kind: 'ok' }
   | { kind: 'store'; store: MemoryStoreDescriptor | null }
+  | { kind: 'stores'; stores: MemoryStoreDescriptor[] }
   | { kind: 'entry'; entry: MemoryEntry | null }
   | { kind: 'entries'; entries: MemoryEntry[] }
+  | { kind: 'channel_scopes'; states: MemoryChannelScopeState[] }
   | { kind: 'revisions'; revisions: MemoryRevision[] }
   | { kind: 'audit_events'; events: AuditEvent[] }
   | { kind: 'mutation_counts'; counts: MemoryMutationCounts }
@@ -314,9 +353,13 @@ export interface MemoryStateStore {
     generation: number,
   ): Promise<MemoryStoreDescriptor>;
   getStore(storeId: string): Promise<MemoryStoreDescriptor | undefined>;
+  listStores(workspaceId?: string): Promise<MemoryStoreDescriptor[]>;
   createEntry(input: CreateMemoryEntryInput): Promise<MemoryEntry>;
   getEntry(entryId: string): Promise<MemoryEntry | undefined>;
   listEntries(filter?: MemoryEntryFilter): Promise<MemoryEntry[]>;
+  applyImport(input: ApplyMemoryImportInput): Promise<MemoryEntry[]>;
+  recordAdminView(input: RecordMemoryAdminViewInput): Promise<void>;
+  recordAdminEvent(input: RecordMemoryAdminEventInput): Promise<void>;
   updateEntry(input: UpdateMemoryEntryInput): Promise<MemoryEntry>;
   forgetEntry(input: ForgetMemoryEntryInput): Promise<MemoryEntry>;
   transitionEntry(input: TransitionMemoryEntryInput): Promise<MemoryEntry>;
@@ -343,6 +386,7 @@ export interface MemoryStateStore {
     workspaceId: string,
     channelId: string,
   ): Promise<MemoryChannelScopeState | undefined>;
+  listChannelScopes(workspaceId?: string): Promise<MemoryChannelScopeState[]>;
   cleanupRetention(): Promise<{
     actorIdsCleared: number;
     rateWindowsDeleted: number;

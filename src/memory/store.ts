@@ -18,6 +18,7 @@ import {
   MemoryStateError,
   MemoryRateLimitError,
   MemoryVersionConflictError,
+  type ApplyMemoryImportInput,
   type CreateMemoryEntryInput,
   type CreateForgetChallengeInput,
   type ConfirmMemoryConversationContextInput,
@@ -36,6 +37,8 @@ import {
   type MemoryStoreDescriptor,
   type ObserveMemoryChannelScopeInput,
   type RecordMemoryReviewInput,
+  type RecordMemoryAdminViewInput,
+  type RecordMemoryAdminEventInput,
   type ResolveMemoryConversationContextInput,
   type TransitionMemoryEntryInput,
   type UpdateMemoryEntryInput,
@@ -162,12 +165,22 @@ export class MemoryStoreLogic {
         };
       case 'get_store':
         return { kind: 'store', store: this.getStore(request.storeId) ?? null };
+      case 'list_stores':
+        return { kind: 'stores', stores: this.listStores(request.workspaceId) };
       case 'create_entry':
         return { kind: 'entry', entry: this.createEntry(request.input) };
       case 'get_entry':
         return { kind: 'entry', entry: this.getEntry(request.entryId) ?? null };
       case 'list_entries':
         return { kind: 'entries', entries: this.listEntries(request.filter) };
+      case 'apply_import':
+        return { kind: 'entries', entries: this.applyImport(request.input) };
+      case 'record_admin_view':
+        this.recordAdminView(request.input);
+        return { kind: 'ok' };
+      case 'record_admin_event':
+        this.recordAdminEvent(request.input);
+        return { kind: 'ok' };
       case 'update_entry':
         return { kind: 'entry', entry: this.updateEntry(request.input) };
       case 'forget_entry':
@@ -217,6 +230,8 @@ export class MemoryStoreLogic {
           kind: 'channel_scope',
           state: this.getChannelScope(request.workspaceId, request.channelId) ?? null,
         };
+      case 'list_channel_scopes':
+        return { kind: 'channel_scopes', states: this.listChannelScopes(request.workspaceId) };
       case 'cleanup_retention':
         return { kind: 'cleanup', ...this.cleanupRetention() };
     }
@@ -252,6 +267,20 @@ export class MemoryStoreLogic {
   getStore(storeId: string): MemoryStoreDescriptor | undefined {
     const row = this.db.get('SELECT * FROM memory_stores WHERE store_id = ?', storeId);
     return row ? rowToStore(row as unknown as StoreRow) : undefined;
+  }
+
+  listStores(workspaceId?: string): MemoryStoreDescriptor[] {
+    const rows = workspaceId
+      ? this.db.all(
+          `SELECT * FROM memory_stores WHERE workspace_id = ?
+           ORDER BY visibility, channel_id, generation, store_id`,
+          workspaceId,
+        )
+      : this.db.all(
+          `SELECT * FROM memory_stores
+           ORDER BY workspace_id, visibility, channel_id, generation, store_id`,
+        );
+    return rows.map((row) => rowToStore(row as unknown as StoreRow));
   }
 
   createEntry(input: CreateMemoryEntryInput): MemoryEntry {
@@ -385,6 +414,129 @@ export class MemoryStoreLogic {
         limit,
       )
       .map((row) => rowToEntry(row as unknown as EntryRow));
+  }
+
+  applyImport(input: ApplyMemoryImportInput): MemoryEntry[] {
+    if (input.operations.length === 0) return [];
+    if (input.operations.length > 1_024) {
+      throw new MemoryStateError('memory_import_too_large', 'Memory import has too many operations.');
+    }
+    const operationKeys = input.operations.map((_, index) => `${input.idempotencyKey}:${index}`);
+    const replays = operationKeys.map((key) => this.entryForReplay(key));
+    if (replays.every(Boolean)) return replays as MemoryEntry[];
+    if (replays.some(Boolean)) {
+      throw new MemoryStateError('memory_import_incomplete', 'Memory import replay is inconsistent.');
+    }
+    const at = this.now();
+    return this.db.transaction(() => {
+      const store = requiredStore(this.getStore(input.storeId), input.storeId);
+      if (store.workspaceId !== input.workspaceId || store.lifecycle !== 'active') {
+        throw new MemoryStateError('memory_store_sealed', 'Memory store is unavailable.');
+      }
+      const results: MemoryEntry[] = [];
+      for (const [index, operation] of input.operations.entries()) {
+        const key = operationKeys[index]!;
+        const hash = contentHash(operation.description, operation.body);
+        if (operation.action === 'create') {
+          if (this.getEntry(operation.entryId)) {
+            throw new MemoryStateError('memory_entry_conflict', 'Imported memory already exists.');
+          }
+          this.enforceCreateQuota(store, operation.sourceChannelId, operation.description, operation.body);
+          try {
+            this.db.run(
+              `INSERT INTO memory_entries (
+                entry_id, store_id, workspace_id, source_channel_id, slug,
+                description, type, body, status, version, creator_actor_id,
+                last_editor_actor_id, actor_class, source_event_id,
+                source_thread_ts, source_message_ts, created_at, modified_at,
+                expires_at, content_hash, superseding_entry_id
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', 1, ?, ?, 'operator', NULL, NULL, NULL, ?, ?, NULL, ?, NULL)`,
+              operation.entryId, store.storeId, store.workspaceId, operation.sourceChannelId,
+              operation.slug, operation.description, operation.type, operation.body,
+              input.actorId, input.actorId, at, at, hash,
+            );
+          } catch (error) {
+            if (isConstraintViolation(error)) {
+              throw new MemoryStateError('memory_slug_conflict', 'Memory name is already in use.');
+            }
+            throw error;
+          }
+          this.insertRevision({
+            entryId: operation.entryId, version: 1, operation: 'create',
+            description: operation.description, body: operation.body, type: operation.type,
+            actorId: input.actorId, actorClass: 'operator', sourceEventId: null,
+            sourceThreadTs: null, sourceMessageTs: null, createdAt: at, beforeHash: null,
+            afterHash: hash, reasonCode: 'admin_import', idempotencyKey: key,
+          });
+          this.audit.append({
+            eventId: auditId(key), domain: 'memory', eventType: 'memory.imported', outcome: 'success',
+            actorClass: 'operator', actorId: input.actorId, workspaceId: store.workspaceId,
+            channelId: operation.sourceChannelId, storeId: store.storeId,
+            subjectId: operation.entryId, subjectVersion: 1, createdAt: at,
+            afterHash: hash, reasonCode: 'admin_import', idempotencyKey: key,
+          });
+        } else {
+          const current = requiredEntry(this.getEntry(operation.entryId), operation.entryId);
+          if (current.storeId !== store.storeId || current.sourceChannelId !== operation.sourceChannelId || current.slug !== operation.slug) {
+            throw new MemoryStateError('memory_import_scope_conflict', 'Imported memory scope changed.');
+          }
+          this.assertMutableVersion(current, operation.expectedVersion ?? -1);
+          this.enforceUpdateQuota(current, operation.description, operation.body);
+          const version = current.version + 1;
+          this.db.run(
+            `UPDATE memory_entries SET description = ?, type = ?, body = ?, version = ?,
+             last_editor_actor_id = ?, actor_class = 'operator', modified_at = ?, content_hash = ?
+             WHERE entry_id = ?`,
+            operation.description, operation.type, operation.body, version,
+            input.actorId, at, hash, operation.entryId,
+          );
+          this.insertRevision({
+            entryId: operation.entryId, version, operation: 'update',
+            description: operation.description, body: operation.body, type: operation.type,
+            actorId: input.actorId, actorClass: 'operator', sourceEventId: current.sourceEventId,
+            sourceThreadTs: current.sourceThreadTs, sourceMessageTs: current.sourceMessageTs,
+            createdAt: at, beforeHash: current.contentHash, afterHash: hash,
+            reasonCode: 'admin_import', idempotencyKey: key,
+          });
+          this.audit.append({
+            eventId: auditId(key), domain: 'memory', eventType: 'memory.imported', outcome: 'success',
+            actorClass: 'operator', actorId: input.actorId, workspaceId: store.workspaceId,
+            channelId: operation.sourceChannelId, storeId: store.storeId,
+            subjectId: operation.entryId, subjectVersion: version, createdAt: at,
+            beforeHash: current.contentHash, afterHash: hash, reasonCode: 'admin_import',
+            idempotencyKey: key,
+          });
+          this.trimRevisionContent(operation.entryId);
+        }
+        results.push(requiredEntry(this.getEntry(operation.entryId), operation.entryId));
+      }
+      return results;
+    });
+  }
+
+  recordAdminView(input: RecordMemoryAdminViewInput): void {
+    if (this.audit.findByIdempotencyKey(input.idempotencyKey)) return;
+    const entry = requiredEntry(this.getEntry(input.entryId), input.entryId);
+    const store = requiredStore(this.getStore(entry.storeId), entry.storeId);
+    if (store.visibility !== 'private') return;
+    this.audit.append({
+      eventId: auditId(input.idempotencyKey), domain: 'memory', eventType: 'memory.private_entry_viewed',
+      outcome: 'success', actorClass: 'operator', actorId: input.actorId,
+      workspaceId: entry.workspaceId, channelId: entry.sourceChannelId,
+      storeId: entry.storeId, subjectId: entry.entryId, subjectVersion: entry.version,
+      createdAt: this.now(), idempotencyKey: input.idempotencyKey,
+    });
+  }
+
+  recordAdminEvent(input: RecordMemoryAdminEventInput): void {
+    if (this.audit.findByIdempotencyKey(input.idempotencyKey)) return;
+    const store = requiredStore(this.getStore(input.storeId), input.storeId);
+    this.audit.append({
+      eventId: auditId(input.idempotencyKey), domain: 'memory', eventType: input.eventType,
+      outcome: 'success', actorClass: 'operator', actorId: input.actorId,
+      workspaceId: store.workspaceId, channelId: store.channelId, storeId: store.storeId,
+      createdAt: this.now(), idempotencyKey: input.idempotencyKey,
+    });
   }
 
   updateEntry(input: UpdateMemoryEntryInput): MemoryEntry {
@@ -1098,6 +1250,19 @@ export class MemoryStoreLogic {
     return row ? rowToScope(row as unknown as ScopeRow) : undefined;
   }
 
+  listChannelScopes(workspaceId?: string): MemoryChannelScopeState[] {
+    const rows = workspaceId
+      ? this.db.all(
+          `SELECT * FROM memory_scope_state WHERE workspace_id = ?
+           ORDER BY channel_id`,
+          workspaceId,
+        )
+      : this.db.all(
+          `SELECT * FROM memory_scope_state ORDER BY workspace_id, channel_id`,
+        );
+    return rows.map((row) => rowToScope(row as unknown as ScopeRow));
+  }
+
   cleanupRetention(): {
     actorIdsCleared: number;
     rateWindowsDeleted: number;
@@ -1528,6 +1693,10 @@ export class SqliteMemoryStateStore implements MemoryStateStore {
     return this.logic.getStore(storeId);
   }
 
+  async listStores(workspaceId?: string): Promise<MemoryStoreDescriptor[]> {
+    return this.logic.listStores(workspaceId);
+  }
+
   async createEntry(input: CreateMemoryEntryInput): Promise<MemoryEntry> {
     return this.logic.createEntry(input);
   }
@@ -1538,6 +1707,18 @@ export class SqliteMemoryStateStore implements MemoryStateStore {
 
   async listEntries(filter: MemoryEntryFilter = {}): Promise<MemoryEntry[]> {
     return this.logic.listEntries(filter);
+  }
+
+  async applyImport(input: ApplyMemoryImportInput): Promise<MemoryEntry[]> {
+    return this.logic.applyImport(input);
+  }
+
+  async recordAdminView(input: RecordMemoryAdminViewInput): Promise<void> {
+    this.logic.recordAdminView(input);
+  }
+
+  async recordAdminEvent(input: RecordMemoryAdminEventInput): Promise<void> {
+    this.logic.recordAdminEvent(input);
   }
 
   async updateEntry(input: UpdateMemoryEntryInput): Promise<MemoryEntry> {
@@ -1610,6 +1791,10 @@ export class SqliteMemoryStateStore implements MemoryStateStore {
     channelId: string,
   ): Promise<MemoryChannelScopeState | undefined> {
     return this.logic.getChannelScope(workspaceId, channelId);
+  }
+
+  async listChannelScopes(workspaceId?: string): Promise<MemoryChannelScopeState[]> {
+    return this.logic.listChannelScopes(workspaceId);
   }
 
   async cleanupRetention(): Promise<{

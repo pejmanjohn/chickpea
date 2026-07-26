@@ -9,6 +9,7 @@ import type { SlackStateStore } from '../slack/claim-store.ts';
 import {
   MemoryStateError,
   MemoryVersionConflictError,
+  type ApplyMemoryImportInput,
   type CreateMemoryEntryInput,
   type CreateForgetChallengeInput,
   type ConfirmMemoryConversationContextInput,
@@ -27,6 +28,8 @@ import {
   type MemoryStoreDescriptor,
   type ObserveMemoryChannelScopeInput,
   type RecordMemoryReviewInput,
+  type RecordMemoryAdminViewInput,
+  type RecordMemoryAdminEventInput,
   type ResolveMemoryConversationContextInput,
   type TransitionMemoryEntryInput,
   type UpdateMemoryEntryInput,
@@ -228,6 +231,15 @@ export class CfMemoryStateStore implements MemoryStateStore {
     return orUndefined(response.store);
   }
 
+  async listStores(workspaceId?: string): Promise<MemoryStoreDescriptor[]> {
+    const response = await this.execute({
+      kind: 'list_stores',
+      ...(workspaceId ? { workspaceId } : {}),
+    });
+    if (response.kind !== 'stores') throw unexpectedMemoryResponse();
+    return response.stores;
+  }
+
   async createEntry(input: CreateMemoryEntryInput): Promise<MemoryEntry> {
     return this.requiredEntry(await this.execute({ kind: 'create_entry', input }));
   }
@@ -242,6 +254,22 @@ export class CfMemoryStateStore implements MemoryStateStore {
     const response = await this.execute({ kind: 'list_entries', filter });
     if (response.kind !== 'entries') throw unexpectedMemoryResponse();
     return response.entries;
+  }
+
+  async applyImport(input: ApplyMemoryImportInput): Promise<MemoryEntry[]> {
+    const response = await this.execute({ kind: 'apply_import', input });
+    if (response.kind !== 'entries') throw unexpectedMemoryResponse();
+    return response.entries;
+  }
+
+  async recordAdminView(input: RecordMemoryAdminViewInput): Promise<void> {
+    const response = await this.execute({ kind: 'record_admin_view', input });
+    if (response.kind !== 'ok') throw unexpectedMemoryResponse();
+  }
+
+  async recordAdminEvent(input: RecordMemoryAdminEventInput): Promise<void> {
+    const response = await this.execute({ kind: 'record_admin_event', input });
+    if (response.kind !== 'ok') throw unexpectedMemoryResponse();
   }
 
   async updateEntry(input: UpdateMemoryEntryInput): Promise<MemoryEntry> {
@@ -341,6 +369,15 @@ export class CfMemoryStateStore implements MemoryStateStore {
     const response = await this.execute({ kind: 'get_channel_scope', workspaceId, channelId });
     if (response.kind !== 'channel_scope') throw unexpectedMemoryResponse();
     return orUndefined(response.state);
+  }
+
+  async listChannelScopes(workspaceId?: string): Promise<MemoryChannelScopeState[]> {
+    const response = await this.execute({
+      kind: 'list_channel_scopes',
+      ...(workspaceId ? { workspaceId } : {}),
+    });
+    if (response.kind !== 'channel_scopes') throw unexpectedMemoryResponse();
+    return response.states;
   }
 
   async cleanupRetention(): Promise<{
