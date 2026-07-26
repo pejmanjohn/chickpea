@@ -88,7 +88,7 @@ export function parseMemoryCommand(
 
   match = text.match(
     new RegExp(
-      `^(?:please\\s+)?update\\s+(?:the\\s+)?memory\\s+[\u0060]?(${TARGET})[\u0060]?\\s+to\\s+(?:say\\s+)?(?:that\\s+)?([\\s\\S]+)$`,
+      `^(?:please\\s+)?update\\s+(?:the\\s+)?memory\\s+[\u0060]?(${TARGET})[\u0060]?\\s+(?:to\\s+(?:say\\s+)?(?:that\\s+)?|so\\s+(?:that\\s+)?)([\\s\\S]+)$`,
       'i',
     ),
   );

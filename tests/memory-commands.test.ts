@@ -64,6 +64,18 @@ test('explicit conversational memory intent parses without rigid command syntax'
       body: 'answers should use three bullets.',
     },
   );
+  assert.deepEqual(
+    parseMemoryCommand(
+      '<@U_BOT> Update the memory tone so future answers use two bullets.',
+      'U_BOT',
+    ),
+    {
+      kind: 'update',
+      target: 'tone',
+      description: 'future answers use two bullets.',
+      body: 'future answers use two bullets.',
+    },
+  );
 });
 
 test('ordinary or ambiguous prose never mutates memory', () => {
