@@ -4,6 +4,7 @@ import test from 'node:test';
 import { validateMcpUrl } from '../src/config/mcp-url.ts';
 import {
   CONNECTOR_PRESETS,
+  GOOGLE_WORKSPACE_SERVICE_PRESETS,
   getConnectorPreset,
   presetLanes,
   type ConnectorPreset,
@@ -237,6 +238,35 @@ test('the Google Workspace API preset starts with read-only service policy', () 
     notes:
       'Use a dedicated Google account when possible. Chickpea stores the OAuth client and tokens outside the profile and grants only the services selected during setup.',
   });
+});
+
+test('Google services are separate catalog entries backed by one shared OAuth connection', () => {
+  assert.deepEqual(GOOGLE_WORKSPACE_SERVICE_PRESETS, [
+    {
+      id: 'gmail',
+      service: 'gmail',
+      connectionPresetId: 'google-workspace',
+      name: 'Gmail',
+      description: 'Search mail, summarize threads, and draft or organize messages.',
+      accent: '#EA4335',
+    },
+    {
+      id: 'google-calendar',
+      service: 'calendar',
+      connectionPresetId: 'google-workspace',
+      name: 'Google Calendar',
+      description: 'Review availability and create or update events.',
+      accent: '#4285F4',
+    },
+    {
+      id: 'google-drive',
+      service: 'drive',
+      connectionPresetId: 'google-workspace',
+      name: 'Google Drive',
+      description: 'Find, read, create, and organize files.',
+      accent: '#4285F4',
+    },
+  ]);
 });
 
 test('the Atlassian MCP preset requests the advertised read-write OAuth scopes', () => {

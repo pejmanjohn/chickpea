@@ -2379,9 +2379,9 @@ test('a connected preset drops out of the Available gallery until it is removed'
   // Linear and Asana are already connected, so the gallery no longer offers them...
   assert.doesNotMatch(panel, /data-action="conn-preset" data-preset="linear"/);
   assert.doesNotMatch(panel, /data-action="conn-preset" data-preset="asana"/);
-  // ...other presets remain, and the Available count dropped from 23 to 21.
+  // ...other presets remain, and the Available count drops from 25 to 23.
   assert.match(panel, /data-action="conn-preset" data-preset="airtable"/);
-  assert.match(panel, /<span class="gallery-head-count">21<\/span>/);
+  assert.match(panel, /<span class="gallery-head-count">23<\/span>/);
 });
 
 test('saved MCP and API connections share one lane-badged list with matching inline editors', async () => {
@@ -2973,9 +2973,10 @@ test('the searchable Connections gallery is immediate, renders brand logos, and 
   assert.match(gallery, /data-action="conn-gallery-search"/);
   assert.equal(
     (gallery.match(/data-action="conn-preset" data-preset="[^"]+">Connect<\/button>/g) ?? []).length,
-    23,
+    25,
   );
-  assert.match(gallery, /<span>Available<\/span><span class="gallery-head-count">23<\/span>/);
+  assert.match(gallery, /<span>Available<\/span><span class="gallery-head-count">25<\/span>/);
+  assert.doesNotMatch(gallery, /data-preset="google-workspace"/);
   assert.doesNotMatch(gallery, /data-preset="github"/);
   assert.doesNotMatch(gallery, /data-preset="context7"/);
   assert.doesNotMatch(gallery, /data-preset="deepwiki"/);
@@ -3037,6 +3038,30 @@ test('the searchable Connections gallery is immediate, renders brand logos, and 
   )?.[0];
   assert.ok(notionRow);
   assert.doesNotMatch(notionRow, /conn-logo-mono|conn-logo-raster|data:image|>NO<\/span>/);
+
+  const gmailRow = gallery.match(
+    /<div class="gallery-row gallery-row-service">(?:(?!<\/div>)[\s\S])*?data-preset="gmail">Connect<\/button><\/div>/,
+  )?.[0];
+  assert.ok(gmailRow);
+  assert.match(gmailRow, /<span class="gallery-row-name">Gmail<\/span>/);
+  assert.match(gmailRow, /Search mail, summarize threads, and draft or organize messages\./);
+  assert.match(gmailRow, /fill="#fc413d"/);
+
+  const calendarRow = gallery.match(
+    /<div class="gallery-row gallery-row-service">(?:(?!<\/div>)[\s\S])*?data-preset="google-calendar">Connect<\/button><\/div>/,
+  )?.[0];
+  assert.ok(calendarRow);
+  assert.match(calendarRow, /<span class="gallery-row-name">Google Calendar<\/span>/);
+  assert.match(calendarRow, /Review availability and create or update events\./);
+  assert.match(calendarRow, /fill="#3c90ff"/);
+
+  const driveRow = gallery.match(
+    /<div class="gallery-row gallery-row-service">(?:(?!<\/div>)[\s\S])*?data-preset="google-drive">Connect<\/button><\/div>/,
+  )?.[0];
+  assert.ok(driveRow);
+  assert.match(driveRow, /<span class="gallery-row-name">Google Drive<\/span>/);
+  assert.match(driveRow, /Find, read, create, and organize files\./);
+  assert.match(driveRow, /fill="url\(#google-drive-yellow\)"/);
 
   for (const id of ['asana', 'zendesk']) {
     const apiRow = gallery.match(
@@ -3168,7 +3193,7 @@ test('the Asana gallery preset opens a compact Recommended API editor', async ()
   assert.doesNotMatch(recommended, /data-action="apiconn-method-toggle"/);
 });
 
-test('the Google Workspace preset saves exact scope-derived policy and its BYO OAuth client separately', async () => {
+test('the Gmail catalog entry saves one shared Google connection and its BYO OAuth client separately', async () => {
   const harness = runAdminPageHarness({
     agents: [connectionsAgent()],
     deferAgentPatch: true,
@@ -3183,7 +3208,7 @@ test('the Google Workspace preset saves exact scope-derived policy and its BYO O
   assert.ok(click && input);
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
-  click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'google-workspace' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'gmail' }) });
 
   assert.match(harness.app.innerHTML, /Use a dedicated Google account for Chickpea when possible/);
   assert.match(harness.app.innerHTML, /Authorized redirect URI/);
@@ -3193,7 +3218,7 @@ test('the Google Workspace preset saves exact scope-derived policy and its BYO O
 
   input({ target: inputTarget({ 'data-action': 'apiconn-google-client-id' }, 'google-client-id') });
   input({ target: inputTarget({ 'data-action': 'apiconn-google-client-secret' }, 'google-client-secret') });
-  click({ target: actionTarget({ 'data-action': 'apiconn-google-access', 'data-service': 'calendar', 'data-access': 'off' }) });
+  click({ target: actionTarget({ 'data-action': 'apiconn-google-access', 'data-service': 'drive', 'data-access': 'read' }) });
   click({ target: actionTarget({ 'data-action': 'apiconn-google-access', 'data-service': 'gmail', 'data-access': 'write' }) });
   click({ target: actionTarget({ 'data-action': 'apiconn-oauth-start' }) });
   await flushAsync();
@@ -3240,6 +3265,69 @@ test('the Google Workspace preset saves exact scope-derived policy and its BYO O
   ]);
   assert.deepEqual(harness.assignedUrls, [
     'https://accounts.google.com/o/oauth2/v2/auth?state=opaque-state',
+  ]);
+});
+
+test('enabling Drive reuses the connected Gmail OAuth client and preserves Gmail access', async () => {
+  const harness = runAdminPageHarness({
+    agents: [
+      connectionsAgent({
+        apiConnections: [
+          apiConnectionFixture({
+            id: 'google-workspace',
+            displayName: 'Google Workspace',
+            presetId: 'google-workspace',
+            authMode: 'oauth',
+            oauthProvider: 'google',
+            oauthScopes: ['https://www.googleapis.com/auth/gmail.readonly'],
+            oauthAppType: 'external',
+            allowedHosts: ['gmail.googleapis.com'],
+            pathPrefixes: ['/gmail/v1/users/me'],
+            allowedMethods: ['GET', 'HEAD'],
+            lifecycleStatus: 'ready',
+            statusText: 'Connected',
+            identity: { accountName: 'person@gmail.com' },
+            oauthClientSource: 'stored',
+            oauthTokenSource: 'stored',
+            credentialSource: 'missing',
+          }),
+        ],
+      }),
+    ],
+    deferAgentPatch: true,
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+
+  const gallery = harness.app.innerHTML;
+  assert.doesNotMatch(gallery, /data-preset="gmail"/);
+  assert.match(gallery, /data-preset="google-calendar">Enable<\/button>/);
+  assert.match(gallery, /data-preset="google-drive">Enable<\/button>/);
+  assert.match(gallery, /google-service-summary[\s\S]*Gmail[\s\S]*Read-only/);
+
+  click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'google-drive' }) });
+  assert.match(harness.app.innerHTML, /aria-label="Gmail access"[\s\S]*class="on" data-action="apiconn-google-access" data-service="gmail" data-access="read"/);
+  assert.match(harness.app.innerHTML, /aria-label="Drive access"[\s\S]*class="on" data-action="apiconn-google-access" data-service="drive" data-access="read"/);
+  click({ target: actionTarget({ 'data-action': 'apiconn-oauth-start' }) });
+  await flushAsync();
+
+  assert.equal(harness.agentPatchBodies.length, 1);
+  const connections = harness.agentPatchBodies[0]?.body.apiConnections as Array<Record<string, unknown>>;
+  assert.equal(connections[0]?.id, 'google-workspace');
+  assert.deepEqual(connections[0]?.oauthScopes, [
+    'https://www.googleapis.com/auth/gmail.readonly',
+    'https://www.googleapis.com/auth/drive.readonly',
+  ]);
+  assert.deepEqual(harness.apiOAuthClientPuts, []);
+
+  harness.resolveAgentPatch();
+  await flushAsync();
+  assert.deepEqual(harness.apiOAuthStartPosts, [
+    { agentId: 'agent_conn', connectionId: 'google-workspace', body: {} },
   ]);
 });
 

@@ -19,6 +19,8 @@ export const GOOGLE_WORKSPACE_SCOPE_OPTIONS = {
   drive: { read: DRIVE_READ, write: DRIVE_WRITE },
 } as const;
 
+export type GoogleWorkspaceService = keyof typeof GOOGLE_WORKSPACE_SCOPE_OPTIONS;
+
 export interface DerivedApiOAuthPolicy {
   allowedHosts: string[];
   pathPrefixes: string[];

@@ -1,3 +1,5 @@
+import type { GoogleWorkspaceService } from './api-oauth-policy.ts';
+
 export type ConnectorCategory = 'project' | 'dev' | 'data' | 'search' | 'docs' | 'business';
 
 interface ConnectorPresetCommon {
@@ -39,6 +41,45 @@ export type ConnectorPreset = ConnectorPresetCommon &
     | (ApiPresetLane & { url?: never; transport?: never; auth?: never })
     | (McpPresetLane & ApiPresetLane)
   );
+
+export interface GoogleWorkspaceServicePreset {
+  id: string;
+  service: GoogleWorkspaceService;
+  connectionPresetId: 'google-workspace';
+  name: string;
+  description: string;
+  accent: string;
+}
+
+// These are service-level catalog entries, not independent connector configs.
+// Each one opens and updates the canonical google-workspace connection so the
+// BYO OAuth client, token bundle, identity, and refresh lease remain shared.
+export const GOOGLE_WORKSPACE_SERVICE_PRESETS: GoogleWorkspaceServicePreset[] = [
+  {
+    id: 'gmail',
+    service: 'gmail',
+    connectionPresetId: 'google-workspace',
+    name: 'Gmail',
+    description: 'Search mail, summarize threads, and draft or organize messages.',
+    accent: '#EA4335',
+  },
+  {
+    id: 'google-calendar',
+    service: 'calendar',
+    connectionPresetId: 'google-workspace',
+    name: 'Google Calendar',
+    description: 'Review availability and create or update events.',
+    accent: '#4285F4',
+  },
+  {
+    id: 'google-drive',
+    service: 'drive',
+    connectionPresetId: 'google-workspace',
+    name: 'Google Drive',
+    description: 'Find, read, create, and organize files.',
+    accent: '#4285F4',
+  },
+];
 
 export const CONNECTOR_PRESETS: ConnectorPreset[] = [
   {

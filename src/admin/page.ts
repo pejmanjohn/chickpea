@@ -1,6 +1,6 @@
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import { CONNECTOR_LOGOS } from '../config/connector-logos.ts';
-import { CONNECTOR_PRESETS } from '../config/presets.ts';
+import { CONNECTOR_PRESETS, GOOGLE_WORKSPACE_SERVICE_PRESETS } from '../config/presets.ts';
 import { GOOGLE_WORKSPACE_SCOPE_OPTIONS } from '../config/api-oauth-policy.ts';
 
 const ADMIN_FAVICON = `<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='8 9 32 32'%3E%3Ccircle cx='24' cy='25' r='15.5' fill='%23E3AC45'/%3E%3Ccircle cx='17' cy='17.5' r='4.2' fill='%23F4D084'/%3E%3Ccircle cx='18.5' cy='24' r='1.9' fill='%233B3220'/%3E%3Ccircle cx='29.5' cy='24' r='1.9' fill='%233B3220'/%3E%3Cpath d='M19 29 Q24 32.5 29 29' fill='none' stroke='%233B3220' stroke-width='1.8' stroke-linecap='round'/%3E%3Ccircle cx='15.5' cy='28.5' r='2' fill='%23DC8A4F' opacity='0.4'/%3E%3Ccircle cx='32.5' cy='28.5' r='2' fill='%23DC8A4F' opacity='0.4'/%3E%3C/svg%3E">`;
@@ -1213,7 +1213,9 @@ details[open].advanced summary::before {
 .gallery-row { align-items: center; display: flex; gap: 12px; padding: 9px 12px; }
 .gallery-row + .gallery-row { box-shadow: inset 0 1px 0 var(--line); }
 .gallery-row:hover { background: var(--well); }
+.gallery-row-copy { display: flex; flex: 1; flex-direction: column; gap: 2px; min-width: 0; }
 .gallery-row-name { font-weight: 600; }
+.gallery-row-desc { color: var(--text-3); font-size: 0.75rem; line-height: 1.35; overflow-wrap: anywhere; }
 .gallery-lane { background: rgba(59, 50, 32, 0.08); border-radius: 999px; color: var(--text-3); font-size: 0.625rem; font-weight: 700; letter-spacing: 0.05em; padding: 3px 7px; white-space: nowrap; }
 .gallery-row-spacer { margin-left: auto; }
 .gallery-empty { color: var(--text-3); font-size: 0.8125rem; padding: 14px 4px; }
@@ -1224,6 +1226,20 @@ details[open].advanced summary::before {
 .conn-logo-raster { overflow: hidden; }
 .conn-logo-raster img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .conn-title, .conn-recommended-head { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; }
+.google-access-label { align-items: center; display: flex; gap: 8px; }
+.google-access-label .conn-logo { border-radius: 6px; height: 24px; width: 24px; }
+.google-service-summary { align-items: center; display: flex; flex-wrap: wrap; gap: 6px; }
+.google-service-chip { align-items: center; background: rgba(255,255,255,0.52); border: 1px solid var(--border); border-radius: 999px; color: var(--text-2); display: inline-flex; font-size: 0.71875rem; font-weight: 650; gap: 6px; padding: 4px 9px 4px 5px; }
+.google-service-chip .conn-logo { border-radius: 5px; height: 20px; width: 20px; }
+.google-service-level { color: var(--text-3); font-weight: 600; }
+@media (max-width: 720px) {
+  .gallery-row-service { align-items: center; display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; row-gap: 6px; }
+  .gallery-row-service > .conn-logo { grid-column: 1; grid-row: 1 / span 2; }
+  .gallery-row-service > .gallery-row-copy { grid-column: 2 / 4; grid-row: 1; }
+  .gallery-row-service > .gallery-lane { grid-column: 2; grid-row: 2; justify-self: start; }
+  .gallery-row-service > .gallery-row-spacer { display: none; }
+  .gallery-row-service > .btn { grid-column: 3; grid-row: 2; justify-self: end; }
+}
 .oauth-account { align-items: center; background: rgba(255,255,255,0.48); border: 1px solid var(--border); border-radius: 14px; display: flex; gap: 12px; justify-content: space-between; padding: 14px 16px; }
 .oauth-account-copy { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .oauth-account-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 12px; justify-content: flex-end; }
@@ -1310,6 +1326,7 @@ details[open].advanced summary::before {
   // of its own — this is interpolated as a literal boolean at render time).
   var IS_CLOUDFLARE = ${isCloudflare};
   var CONNECTOR_PRESETS = ${JSON.stringify(CONNECTOR_PRESETS).replace(/</g, '\\u003c')};
+  var GOOGLE_WORKSPACE_SERVICE_PRESETS = ${JSON.stringify(GOOGLE_WORKSPACE_SERVICE_PRESETS).replace(/</g, '\\u003c')};
   var CONNECTOR_LOGOS = ${JSON.stringify(CONNECTOR_LOGOS).replace(/</g, '\\u003c')};
   var API_CONNECTION_METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"];
   var GOOGLE_WORKSPACE_SCOPES = ${JSON.stringify(GOOGLE_WORKSPACE_SCOPE_OPTIONS)};
@@ -2772,6 +2789,20 @@ details[open].advanced summary::before {
     return (CONNECTOR_PRESETS || []).find(function (preset) { return preset.id === id; });
   }
 
+  function googleServicePresetById(id) {
+    return (GOOGLE_WORKSPACE_SERVICE_PRESETS || []).find(function (preset) { return preset.id === id; });
+  }
+
+  function googleServicePresetByService(service) {
+    return (GOOGLE_WORKSPACE_SERVICE_PRESETS || []).find(function (preset) { return preset.service === service; });
+  }
+
+  function googleWorkspaceConnection(draft) {
+    return ((draft && draft.apiConnections) || []).find(function (conn) {
+      return conn.id === "google-workspace" || conn.presetId === "google-workspace";
+    });
+  }
+
   function presetLanes(preset) {
     return {
       mcp: !!preset && typeof preset.url === "string",
@@ -2808,23 +2839,38 @@ details[open].advanced summary::before {
     var connectedPresetIds = {};
     (draft.mcpServers || []).forEach(function (conn) { if (conn.presetId) connectedPresetIds[conn.presetId] = true; });
     (draft.apiConnections || []).forEach(function (conn) { if (conn.presetId) connectedPresetIds[conn.presetId] = true; });
+    var googleConnection = googleWorkspaceConnection(draft);
+    var googleAccess = googleAccessFromScopes(googleConnection ? googleConnection.oauthScopes : []);
     var q = String(state.connectorGallerySearch || "").trim().toLowerCase();
-    var shown = (CONNECTOR_PRESETS || []).filter(function (preset) {
-      if (connectedPresetIds[preset.id]) return false;
-      return !q || preset.name.toLowerCase().indexOf(q) >= 0;
+    var catalog = (CONNECTOR_PRESETS || []).filter(function (preset) {
+      return preset.id !== "google-workspace";
+    }).concat(GOOGLE_WORKSPACE_SERVICE_PRESETS || []);
+    var shown = catalog.filter(function (preset) {
+      var googleService = googleServicePresetById(preset.id);
+      if (googleService) {
+        if (googleAccess[googleService.service] !== "off") return false;
+      } else if (connectedPresetIds[preset.id]) {
+        return false;
+      }
+      var searchText = (preset.name + " " + (preset.description || "")).toLowerCase();
+      return !q || searchText.indexOf(q) >= 0;
     }).slice().sort(function (a, b) {
       var an = a.name.toLowerCase();
       var bn = b.name.toLowerCase();
       return an < bn ? -1 : an > bn ? 1 : 0;
     });
     var rows = shown.map(function (preset) {
-      var lanes = presetLanes(preset);
+      var googleService = googleServicePresetById(preset.id);
+      var lanes = googleService ? { mcp: false, api: true } : presetLanes(preset);
       var laneLabel = [lanes.mcp ? "MCP" : "", lanes.api ? "API" : ""].filter(function (label) { return !!label; }).join(" ");
-      return '<div class="gallery-row">' + connectorLogoHtml(preset) +
-        '<span class="gallery-row-name">' + esc(preset.name) + '</span>' +
+      var description = googleService ? '<span class="gallery-row-desc">' + esc(googleService.description) + '</span>' : "";
+      var actionLabel = googleService && googleConnection ? "Enable" : "Connect";
+      var rowClass = googleService ? "gallery-row gallery-row-service" : "gallery-row";
+      return '<div class="' + rowClass + '">' + connectorLogoHtml(preset) +
+        '<span class="gallery-row-copy"><span class="gallery-row-name">' + esc(preset.name) + '</span>' + description + '</span>' +
         '<span class="gallery-lane">' + laneLabel + '</span>' +
         '<span class="gallery-row-spacer"></span>' +
-        '<button type="button" class="btn btn-soft btn-sm" data-action="conn-preset" data-preset="' + esc(preset.id) + '">Connect</button></div>';
+        '<button type="button" class="btn btn-soft btn-sm" data-action="conn-preset" data-preset="' + esc(preset.id) + '">' + actionLabel + '</button></div>';
     }).join("");
     var list = shown.length
       ? '<div class="gallery-list">' + rows + '</div>'
@@ -3176,6 +3222,7 @@ details[open].advanced summary::before {
         '<span class="gallery-lane">API</span>' +
         '<span class="conn-host">' + esc(apiConnectionHostSummary(conn)) + '</span>' +
         '<span class="conn-meta">' + apiConnectionStatusPill(conn) + '</span>' +
+        googleServiceSummaryHtml(conn) +
         legacyGithubConnectionNoticeHtml(conn) + '</div>' +
         '<span class="toggle"><span class="thumb"></span><input type="checkbox" data-action="apiconn-toggle" data-index="' + index + '" ' + (conn.enabled ? "checked" : "") + ' aria-label="API connection enabled"></span>' +
         '<button type="button" class="btn btn-ghost btn-sm" data-action="apiconn-edit" data-index="' + index + '">Edit</button>' +
@@ -3529,6 +3576,19 @@ details[open].advanced summary::before {
     return access;
   }
 
+  function googleServiceSummaryHtml(conn) {
+    if (!conn || (conn.id !== "google-workspace" && conn.presetId !== "google-workspace")) return "";
+    var access = googleAccessFromScopes(conn.oauthScopes || []);
+    var chips = (GOOGLE_WORKSPACE_SERVICE_PRESETS || []).map(function (servicePreset) {
+      var level = access[servicePreset.service];
+      if (level === "off") return "";
+      var levelLabel = level === "write" ? "Read and write" : "Read-only";
+      return '<span class="google-service-chip">' + connectorLogoHtml(servicePreset) +
+        '<span>' + esc(servicePreset.name) + '</span><span class="google-service-level">' + levelLabel + '</span></span>';
+    }).filter(function (chip) { return !!chip; }).join("");
+    return chips ? '<span class="google-service-summary" aria-label="Enabled Google services">' + chips + '</span>' : "";
+  }
+
   function googleScopesFromEditor(editor) {
     var access = editor.googleAccess || {};
     var scopes = [];
@@ -3589,10 +3649,11 @@ details[open].advanced summary::before {
 
   function googleAccessRowHtml(editor, service, label, note) {
     var access = (editor.googleAccess && editor.googleAccess[service]) || "off";
+    var servicePreset = googleServicePresetByService(service);
     function option(value, text) {
       return '<button type="button" class="' + (access === value ? "on" : "") + '" data-action="apiconn-google-access" data-service="' + service + '" data-access="' + value + '">' + text + '</button>';
     }
-    return '<div class="field"><label class="field-label">' + label + '</label>' +
+    return '<div class="field"><label class="field-label google-access-label">' + (servicePreset ? connectorLogoHtml(servicePreset) : "") + '<span>' + label + '</span></label>' +
       '<div class="seg" role="group" aria-label="' + label + ' access">' +
       option("off", "Off") + option("read", "Read-only") + option("write", "Read and write") + '</div>' +
       '<p class="hint">' + note + '</p></div>';
@@ -5856,7 +5917,28 @@ details[open].advanced summary::before {
     if (action === "conn-preset") {
       var connPresetId = target.getAttribute("data-preset");
       var selectedPreset = presetById(connPresetId);
-      if (selectedPreset) {
+      var selectedGoogleService = googleServicePresetById(connPresetId);
+      if (selectedGoogleService) {
+        collectProfileDraft();
+        state.customConnectionLane = null;
+        state.connectorGallerySearch = "";
+        state.connectionEditor = null;
+        var googleConnections = state.profileDraft.apiConnections || [];
+        var googleConnectionIndex = googleConnections.findIndex(function (conn) {
+          return conn.id === selectedGoogleService.connectionPresetId || conn.presetId === selectedGoogleService.connectionPresetId;
+        });
+        if (googleConnectionIndex >= 0) {
+          state.apiConnectionEditor = editorFromApiConnection(googleConnectionIndex, googleConnections[googleConnectionIndex]);
+        } else {
+          var googlePreset = presetById(selectedGoogleService.connectionPresetId);
+          if (!googlePreset) return;
+          state.apiConnectionEditor = apiEditorFromPreset(googlePreset);
+          state.apiConnectionEditor.googleAccess = googleAccessFromScopes([]);
+        }
+        state.apiConnectionEditor.googleAccess[selectedGoogleService.service] = "read";
+        syncGoogleApiPolicy(state.apiConnectionEditor);
+        render();
+      } else if (selectedPreset) {
         collectProfileDraft();
         state.customConnectionLane = null;
         state.connectorGallerySearch = "";
