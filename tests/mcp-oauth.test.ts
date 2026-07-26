@@ -26,8 +26,10 @@ interface FakeOAuthServerOptions {
   initialExpiresIn?: number;
   issuer?: string;
   omitRefreshTokenOnRefresh?: boolean;
+  registrationAuthMethod?: 'client_secret_basic' | 'client_secret_post' | 'none';
   registrationDelayMs?: number;
   refreshError?: string;
+  tokenAuthMethods?: Array<'client_secret_basic' | 'client_secret_post' | 'none'>;
 }
 
 function fakeOAuthServer(options: FakeOAuthServerOptions = {}) {
@@ -71,7 +73,7 @@ function fakeOAuthServer(options: FakeOAuthServerOptions = {}) {
         response_types_supported: ['code'],
         grant_types_supported: ['authorization_code', 'refresh_token'],
         code_challenge_methods_supported: ['S256'],
-        token_endpoint_auth_methods_supported: ['none'],
+        token_endpoint_auth_methods_supported: options.tokenAuthMethods ?? ['none'],
         client_id_metadata_document_supported: options.cimd ?? false,
       });
     }
@@ -88,9 +90,17 @@ function fakeOAuthServer(options: FakeOAuthServerOptions = {}) {
         ...(options.clientSecret
           ? { client_secret: options.clientSecret }
           : {}),
+        ...(options.registrationAuthMethod
+          ? { token_endpoint_auth_method: options.registrationAuthMethod }
+          : {}),
       });
     }
     if (url === 'https://auth.example.test/token') {
+      if (options.clientSecret) {
+        assert.equal(body?.get('client_id'), 'registered-client');
+        assert.equal(body?.get('client_secret'), options.clientSecret);
+        assert.equal(request.headers.get('authorization'), null);
+      }
       const grantType = body?.get('grant_type');
       if (grantType === 'authorization_code') {
         exchanges += 1;
@@ -303,6 +313,53 @@ test('DCR client secrets stay in settings and never enter the authorization resu
     );
 
     assert.equal(JSON.stringify(started).includes('registered-secret'), false);
+    assert.match(
+      (await settings.getSetting(mcpOAuthSettingKeys(REF)[0])) ?? '',
+      /registered-secret/,
+    );
+  } finally {
+    settings.close();
+  }
+});
+
+test('confidential DCR clients authenticate code exchange and refresh without exposing their secret', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const oauth = fakeOAuthServer({
+    clientSecret: 'registered-secret',
+    initialExpiresIn: 1,
+    registrationAuthMethod: 'client_secret_post',
+    tokenAuthMethods: ['client_secret_post'],
+  });
+  let currentTime = 1_000_000;
+  const dependencies = {
+    settings,
+    fetchFn: oauth.fetchFn,
+    now: () => currentTime,
+    randomId: () => 'nonce',
+  };
+
+  try {
+    const started = await startMcpOAuthAuthorization(
+      { ref: REF, serverUrl: SERVER_URL, callbackUrl: CALLBACK_URL },
+      dependencies,
+    );
+    assert.equal(JSON.stringify(started).includes('registered-secret'), false);
+
+    await completeMcpOAuthAuthorization(
+      { code: 'provider-code', state: started.state },
+      dependencies,
+    );
+    currentTime += 2_000;
+
+    assert.equal(
+      await resolveMcpOAuthAccessToken(
+        { ref: REF, serverUrl: SERVER_URL },
+        dependencies,
+      ),
+      'access-refreshed',
+    );
+    assert.equal(oauth.counts.exchanges, 1);
+    assert.equal(oauth.counts.refreshes, 1);
     assert.match(
       (await settings.getSetting(mcpOAuthSettingKeys(REF)[0])) ?? '',
       /registered-secret/,

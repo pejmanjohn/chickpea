@@ -2467,6 +2467,37 @@ test('a saved API-key PostHog connection stays Advanced after the catalog upgrad
   assert.doesNotMatch(editor, /data-action="conn-view"/);
 });
 
+test('a saved access-token Supabase connection stays Advanced after the catalog upgrades to OAuth', async () => {
+  const harness = runAdminPageHarness({
+    agents: [
+      connectionsAgent({
+        mcpServers: [
+          mcpConnectionFixture({
+            id: 'supabase',
+            displayName: 'Supabase',
+            url: 'https://mcp.supabase.com/mcp',
+            presetId: 'supabase',
+          }),
+        ],
+      }),
+    ],
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-edit', 'data-index': '0' }) });
+
+  const editor = harness.app.innerHTML;
+  assert.match(editor, /value="https:\/\/mcp\.supabase\.com\/mcp"[^>]*data-action="conn-field-url"/);
+  assert.match(editor, /<option value="bearer" selected>Bearer token<\/option>/);
+  assert.match(editor, /placeholder="•••• stored"[^>]*data-action="conn-field-bearer"/);
+  assert.doesNotMatch(editor, /data-action="conn-oauth-start"/);
+  assert.doesNotMatch(editor, /data-action="conn-view"/);
+});
+
 test('a saved read-only Linear OAuth connection stays Advanced after the catalog URL gains write access', async () => {
   const harness = runAdminPageHarness({
     agents: [
@@ -3385,6 +3416,66 @@ test('the PostHog preset saves OAuth policy before starting provider-managed aut
   ]);
   assert.deepEqual(harness.assignedUrls, [
     'https://oauth.posthog.com/oauth/authorize/?state=opaque-state',
+  ]);
+});
+
+test('the Supabase preset saves OAuth policy before requesting every required scope', async () => {
+  const scope =
+    'organizations:read projects:read projects:write database:write database:read analytics:read secrets:read edge_functions:read edge_functions:write environment:read environment:write storage:read';
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    deferAgentPatch: true,
+    oauthStartResult: {
+      authorizationUrl: 'https://api.supabase.com/v1/oauth/authorize?state=opaque-state',
+    },
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'supabase' }) });
+
+  const editor = harness.app.innerHTML;
+  assert.match(
+    editor,
+    /Sign in to Supabase and choose the organization and projects Chickpea should access\.<\/p>/,
+  );
+  assert.match(editor, /data-action="conn-oauth-start"[^>]*>[\s\S]*?<span>Sign into Supabase<\/span>/);
+  assert.match(editor, /Supabase MCP is for development and testing only; do not connect production data\./);
+  assert.doesNotMatch(editor, /data-action="conn-field-bearer"/);
+  assert.doesNotMatch(editor, /Where do I find this\?/);
+
+  click({ target: actionTarget({ 'data-action': 'conn-oauth-start' }) });
+  await flushAsync();
+  assert.deepEqual(harness.oauthStartPosts, []);
+
+  harness.resolveAgentPatch();
+  await flushAsync();
+
+  const servers = harness.agentPatchBodies[0]?.body.mcpServers as Array<Record<string, unknown>>;
+  assert.deepEqual(servers, [
+    {
+      id: 'supabase',
+      displayName: 'Supabase',
+      url: 'https://mcp.supabase.com/mcp',
+      transport: 'streamable-http',
+      authMode: 'oauth',
+      headerNames: [],
+      enabled: true,
+      lifecycleStatus: 'pending',
+      statusText: '',
+      discoveredTools: [],
+      allowedTools: [],
+      presetId: 'supabase',
+    },
+  ]);
+  assert.deepEqual(harness.oauthStartPosts, [
+    { agentId: 'agent_conn', connectionId: 'supabase', body: { scope } },
+  ]);
+  assert.deepEqual(harness.assignedUrls, [
+    'https://api.supabase.com/v1/oauth/authorize?state=opaque-state',
   ]);
 });
 

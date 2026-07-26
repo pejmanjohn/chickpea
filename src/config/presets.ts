@@ -151,10 +151,16 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
     accent: '#3ECF8E',
     url: 'https://mcp.supabase.com/mcp',
     transport: 'streamable-http',
-    auth: { kind: 'bearer', placeholder: 'sbp_…' },
-    tokenDocsUrl: 'https://supabase.com/dashboard/account/tokens',
-    tokenDocsHint: 'Supabase → Account → Access Tokens',
-    notes: 'Append ?read_only=true to the URL (Advanced) to limit to reads.',
+    auth: {
+      kind: 'oauth',
+      scope:
+        'organizations:read projects:read projects:write database:write database:read analytics:read secrets:read edge_functions:read edge_functions:write environment:read environment:write storage:read',
+    },
+    tokenDocsUrl: 'https://supabase.com/docs/guides/ai-tools/mcp',
+    tokenDocsHint:
+      'Sign in to Supabase and choose the organization and projects Chickpea should access.',
+    notes:
+      'Supabase MCP is for development and testing only; do not connect production data. Chickpea requests all currently required scopes, including write access. Use Advanced with ?read_only=true and project_ref=… to narrow access.',
   },
   {
     id: 'neon',
