@@ -75,7 +75,7 @@ test('connector preset catalog entries are valid', () => {
 
 test('preset lanes classify the existing MCP catalog, the API additions, and both', () => {
   const existingMcpPresets = CONNECTOR_PRESETS.filter((preset) => !API_PRESET_IDS.has(preset.id));
-  assert.equal(existingMcpPresets.length, 21);
+  assert.equal(existingMcpPresets.length, 22);
   for (const preset of existingMcpPresets) {
     assert.deepEqual(presetLanes(preset), { mcp: true, api: false }, preset.id);
   }
@@ -171,6 +171,27 @@ test('the PostHog MCP preset uses the provider-recommended OAuth flow', () => {
       'Sign in to PostHog and choose the organization and project Chickpea should access.',
     notes:
       'PostHog OAuth routes to the correct US or EU region and provides the read and write tools allowed by your account.',
+  });
+});
+
+test('the Atlassian MCP preset requests the advertised read-write OAuth scopes', () => {
+  assert.deepEqual(getConnectorPreset('atlassian'), {
+    id: 'atlassian',
+    name: 'Atlassian',
+    category: 'project',
+    accent: '#0052CC',
+    url: 'https://mcp.atlassian.com/v1/mcp/authv2',
+    transport: 'streamable-http',
+    auth: {
+      kind: 'oauth',
+      scope:
+        'read:me read:account offline_access email read:jira-work write:jira-work search:confluence read:confluence-user read:page:confluence write:page:confluence read:comment:confluence write:comment:confluence read:space:confluence read:hierarchical-content:confluence write:component:compass read:component:compass read:scorecard:compass write:scorecard:compass read:event:compass read:metric:compass read:all:twg write:all:twg',
+    },
+    tokenDocsUrl: 'https://developer.atlassian.com/cloud/rovo-mcp/guides/getting-started/',
+    tokenDocsHint:
+      'Sign in to Atlassian and choose the sites and products Chickpea should access.',
+    notes:
+      'Chickpea requests Atlassian read and write access; available Jira, Confluence, Compass, and Teamwork Graph tools still follow your user permissions and organization policy.',
   });
 });
 

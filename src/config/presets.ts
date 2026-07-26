@@ -54,6 +54,24 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
       'Chickpea requests Linear read and write access so it can find, create, and update workspace objects.',
   },
   {
+    id: 'atlassian',
+    name: 'Atlassian',
+    category: 'project',
+    accent: '#0052CC',
+    url: 'https://mcp.atlassian.com/v1/mcp/authv2',
+    transport: 'streamable-http',
+    auth: {
+      kind: 'oauth',
+      scope:
+        'read:me read:account offline_access email read:jira-work write:jira-work search:confluence read:confluence-user read:page:confluence write:page:confluence read:comment:confluence write:comment:confluence read:space:confluence read:hierarchical-content:confluence write:component:compass read:component:compass read:scorecard:compass write:scorecard:compass read:event:compass read:metric:compass read:all:twg write:all:twg',
+    },
+    tokenDocsUrl: 'https://developer.atlassian.com/cloud/rovo-mcp/guides/getting-started/',
+    tokenDocsHint:
+      'Sign in to Atlassian and choose the sites and products Chickpea should access.',
+    notes:
+      'Chickpea requests Atlassian read and write access; available Jira, Confluence, Compass, and Teamwork Graph tools still follow your user permissions and organization policy.',
+  },
+  {
     id: 'notion',
     name: 'Notion',
     category: 'docs',

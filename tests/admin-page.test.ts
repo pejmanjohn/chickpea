@@ -2332,9 +2332,9 @@ test('a connected preset drops out of the Available gallery until it is removed'
   // Linear and Asana are already connected, so the gallery no longer offers them...
   assert.doesNotMatch(panel, /data-action="conn-preset" data-preset="linear"/);
   assert.doesNotMatch(panel, /data-action="conn-preset" data-preset="asana"/);
-  // ...other presets remain, and the Available count dropped from 23 to 21.
+  // ...other presets remain, and the Available count dropped from 24 to 22.
   assert.match(panel, /data-action="conn-preset" data-preset="airtable"/);
-  assert.match(panel, /<span class="gallery-head-count">21<\/span>/);
+  assert.match(panel, /<span class="gallery-head-count">22<\/span>/);
 });
 
 test('saved MCP and API connections share one lane-badged list with matching inline editors', async () => {
@@ -2840,9 +2840,9 @@ test('the searchable Connections gallery is immediate, renders brand logos, and 
   assert.match(gallery, /data-action="conn-gallery-search"/);
   assert.equal(
     (gallery.match(/data-action="conn-preset" data-preset="[^"]+">Connect<\/button>/g) ?? []).length,
-    23,
+    24,
   );
-  assert.match(gallery, /<span>Available<\/span><span class="gallery-head-count">23<\/span>/);
+  assert.match(gallery, /<span>Available<\/span><span class="gallery-head-count">24<\/span>/);
   assert.doesNotMatch(gallery, /data-preset="github"/);
   assert.doesNotMatch(gallery, /data-preset="context7"/);
   assert.doesNotMatch(gallery, /data-preset="deepwiki"/);
@@ -2891,6 +2891,13 @@ test('the searchable Connections gallery is immediate, renders brand logos, and 
   assert.match(airtableRow, /fill="#18BFFF"/);
   assert.match(airtableRow, /fill="#F82B60"/);
   assert.doesNotMatch(airtableRow, /currentColor/);
+
+  const atlassianRow = gallery.match(
+    /<div class="gallery-row"><span class="conn-logo conn-logo-img"><svg[\s\S]*?data-preset="atlassian">Connect<\/button><\/div>/,
+  )?.[0];
+  assert.ok(atlassianRow);
+  assert.match(atlassianRow, /style="color:#0052CC"><path/);
+  assert.match(atlassianRow, /<span class="gallery-row-name">Atlassian<\/span>/);
 
   const notionRow = gallery.match(
     /<div class="gallery-row"><span class="conn-logo conn-logo-img conn-logo-full"><svg[^>]*aria-hidden="true"(?:(?!<\/div>)[\s\S])*?data-preset="notion">Connect<\/button><\/div>/,
@@ -3378,6 +3385,65 @@ test('the PostHog preset saves OAuth policy before starting provider-managed aut
   ]);
   assert.deepEqual(harness.assignedUrls, [
     'https://oauth.posthog.com/oauth/authorize/?state=opaque-state',
+  ]);
+});
+
+test('the Atlassian preset saves OAuth policy before requesting its advertised read-write scopes', async () => {
+  const scope =
+    'read:me read:account offline_access email read:jira-work write:jira-work search:confluence read:confluence-user read:page:confluence write:page:confluence read:comment:confluence write:comment:confluence read:space:confluence read:hierarchical-content:confluence write:component:compass read:component:compass read:scorecard:compass write:scorecard:compass read:event:compass read:metric:compass read:all:twg write:all:twg';
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    deferAgentPatch: true,
+    oauthStartResult: {
+      authorizationUrl: 'https://auth.atlassian.com/authorize?state=opaque-state',
+    },
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'atlassian' }) });
+
+  const editor = harness.app.innerHTML;
+  assert.match(
+    editor,
+    /Sign in to Atlassian and choose the sites and products Chickpea should access\.<\/p>/,
+  );
+  assert.match(editor, /data-action="conn-oauth-start"[^>]*>[\s\S]*?<span>Sign into Atlassian<\/span>/);
+  assert.doesNotMatch(editor, /data-action="conn-field-bearer"/);
+  assert.doesNotMatch(editor, /Where do I find this\?/);
+
+  click({ target: actionTarget({ 'data-action': 'conn-oauth-start' }) });
+  await flushAsync();
+  assert.deepEqual(harness.oauthStartPosts, []);
+
+  harness.resolveAgentPatch();
+  await flushAsync();
+
+  const servers = harness.agentPatchBodies[0]?.body.mcpServers as Array<Record<string, unknown>>;
+  assert.deepEqual(servers, [
+    {
+      id: 'atlassian',
+      displayName: 'Atlassian',
+      url: 'https://mcp.atlassian.com/v1/mcp/authv2',
+      transport: 'streamable-http',
+      authMode: 'oauth',
+      headerNames: [],
+      enabled: true,
+      lifecycleStatus: 'pending',
+      statusText: '',
+      discoveredTools: [],
+      allowedTools: [],
+      presetId: 'atlassian',
+    },
+  ]);
+  assert.deepEqual(harness.oauthStartPosts, [
+    { agentId: 'agent_conn', connectionId: 'atlassian', body: { scope } },
+  ]);
+  assert.deepEqual(harness.assignedUrls, [
+    'https://auth.atlassian.com/authorize?state=opaque-state',
   ]);
 });
 
