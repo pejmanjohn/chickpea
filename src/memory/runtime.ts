@@ -438,13 +438,26 @@ async function memoryFooterItems(
   const crossChannel = selection.entries.filter(
     ({ entry }) => entry.sourceChannelId !== scope.sourceChannelId,
   );
-  return Promise.all(
-    crossChannel.map(async ({ entry }) => {
-      const source = await state.getChannelScope(entry.workspaceId, entry.sourceChannelId);
-      const label = source?.lastPublicDisplayName ?? source?.currentDisplayName ?? 'channel';
-      return `Memory supplied: ${entry.slug} (#${escapeSlackControlCharacters(label)}, ${entry.sourceChannelId})`;
-    }),
+  const sources = new Map(
+    crossChannel.map(({ entry }) => [
+      `${entry.workspaceId}\0${entry.sourceChannelId}`,
+      entry,
+    ]),
   );
+  const labels = new Map(
+    await Promise.all(
+      [...sources].map(
+        async ([key, entry]) => {
+          const source = await state.getChannelScope(entry.workspaceId, entry.sourceChannelId);
+          return [key, source?.lastPublicDisplayName ?? source?.currentDisplayName ?? 'channel'] as const;
+        },
+      ),
+    ),
+  );
+  return crossChannel.map(({ entry }) => {
+    const label = labels.get(`${entry.workspaceId}\0${entry.sourceChannelId}`) ?? 'channel';
+    return `Memory supplied: ${entry.slug} (#${escapeSlackControlCharacters(label)}, ${entry.sourceChannelId})`;
+  });
 }
 
 function memoryScopeSignature(scope: EnabledMemoryScope): string {

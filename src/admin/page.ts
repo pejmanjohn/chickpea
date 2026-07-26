@@ -6360,10 +6360,7 @@ details[open].advanced summary::before {
     var action = target.getAttribute && target.getAttribute("data-action");
     if (action === "memory-type" && state.memoryDraft) {
       state.memoryDraft.type = target.value;
-      state.memoryDirty = true;
-      state.memoryError = "";
-      state.memoryNotice = "";
-      state.memoryIdempotencyKey = "";
+      markMemoryDirty();
       render();
     }
     if (action === "memory-import-file" && target.files && target.files[0]) {

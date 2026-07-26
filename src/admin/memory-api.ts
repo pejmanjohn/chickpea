@@ -82,6 +82,7 @@ export function createMemoryAdminApi(options: MemoryAdminApiOptions): Hono {
       }
       const projected = projectMemoryFiles({ store, entries });
       const prefix = projectionPrefix(store, sourceChannelId);
+      const entriesByFilename = new Map(entries.map((entry) => [`${entry.slug}.md`, entry]));
       const channelIndex = projected.find((file) => file.path === `${prefix}/MEMORY.md`) ?? {
         path: `${prefix}/MEMORY.md`,
         content: '# Channel Memory Index\n\n',
@@ -90,7 +91,7 @@ export function createMemoryAdminApi(options: MemoryAdminApiOptions): Hono {
         .filter((file) => file.path === `${prefix}/MEMORY.md` || file.path.startsWith(`${prefix}/`) && file.path.endsWith('.md'))
         .map((file) => {
           const name = file.path.slice(prefix.length + 1);
-          const entry = entries.find((candidate) => `${candidate.slug}.md` === name);
+          const entry = entriesByFilename.get(name);
           return {
             name,
             path: file.path,
@@ -369,6 +370,12 @@ function buildScopes(
 ): Array<Record<string, unknown>> {
   const result = new Map<string, Record<string, unknown>>();
   const counts = new Map<string, number>();
+  const storeById = new Map(stores.map((store) => [store.storeId, store]));
+  const publicStoreByWorkspace = new Map(
+    stores
+      .filter((store) => store.visibility === 'public')
+      .map((store) => [store.workspaceId, store]),
+  );
   for (const entry of entries) {
     if (entry.status === 'forgotten') continue;
     const key = `${entry.storeId}\0${entry.sourceChannelId}`;
@@ -376,7 +383,7 @@ function buildScopes(
   }
   const stateByChannel = new Map(channelStates.map((state) => [`${state.workspaceId}\0${state.channelId}`, state]));
   for (const state of channelStates) {
-    const publicStore = stores.find((store) => store.workspaceId === state.workspaceId && store.visibility === 'public');
+    const publicStore = publicStoreByWorkspace.get(state.workspaceId);
     if (publicStore && (state.privacy === 'public' || counts.has(`${publicStore.storeId}\0${state.channelId}`))) {
       addScope(result, publicStore, state.channelId, state.currentDisplayName, state.lifecycle, counts);
     }
@@ -387,7 +394,7 @@ function buildScopes(
     addScope(result, store, store.channelId, state?.currentDisplayName ?? store.channelId, state?.lifecycle ?? 'retained', counts);
   }
   for (const entry of entries) {
-    const store = stores.find((candidate) => candidate.storeId === entry.storeId);
+    const store = storeById.get(entry.storeId);
     if (!store) continue;
     const key = `${entry.storeId}\0${entry.sourceChannelId}`;
     if (!result.has(key)) {
