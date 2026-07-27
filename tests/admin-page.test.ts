@@ -210,6 +210,18 @@ type MemoryScopeFixture = {
   generation: number | null;
   entryCount: number;
 };
+type ScheduledWorkFixture = {
+  routine: Record<string, unknown>;
+  runs: Array<Record<string, unknown>>;
+  revisions: Array<Record<string, unknown>>;
+  events: Array<Record<string, unknown>>;
+  capability: {
+    target: 'cloudflare' | 'node';
+    available: boolean;
+    enabled: boolean;
+    reason: 'enabled' | 'operator_disabled' | 'unsupported_target';
+  };
+};
 function runAdminPageHarness(
   options: {
     assignments?: AssignmentFixture[];
@@ -261,6 +273,8 @@ function runAdminPageHarness(
     memorySaveError?: { status: number; error: string; currentVersion?: number };
     memoryDeleteError?: { status: number; error: string };
     memoryReviewError?: { status: number; error: string };
+    scheduledWork?: ScheduledWorkFixture;
+    scheduledControlError?: { status: number; error: string; message?: string };
     oauthStartResult?: { authorizationUrl: string };
     oauthStartError?: { status: number; error: string; message?: string };
     apiOAuthStartResult?: { authorizationUrl: string };
@@ -316,6 +330,7 @@ function runAdminPageHarness(
   memoryPuts: Array<Record<string, unknown>>;
   memoryDeletes: Array<Record<string, unknown>>;
   memoryReviewPosts: Array<Record<string, unknown>>;
+  scheduledControlPosts: Array<{ routineId: string; body: Record<string, unknown>; idempotencyKey: string }>;
   clipboardWrites: string[];
   gallerySearchFocusCalls(): number;
   gallerySearchSelections: Array<[number, number]>;
@@ -417,6 +432,7 @@ function runAdminPageHarness(
   const memoryPuts: Array<Record<string, unknown>> = [];
   const memoryDeletes: Array<Record<string, unknown>> = [];
   const memoryReviewPosts: Array<Record<string, unknown>> = [];
+  const scheduledControlPosts: Array<{ routineId: string; body: Record<string, unknown>; idempotencyKey: string }> = [];
   const clipboardWrites: string[] = [];
   let gallerySearchFocusCalls = 0;
   let skillBrowseFocusCalls = 0;
@@ -497,6 +513,40 @@ function runAdminPageHarness(
     { name: 'MEMORY.md', path: 'channel/C0EXR3L9T/MEMORY.md', generated: true, entryId: null, content: '# Channel Memory Index\n\n- [release-guidance](release-guidance.md) — Use the checklist.\n' },
     { name: 'release-guidance.md', path: 'channel/C0EXR3L9T/release-guidance.md', generated: false, entryId: 'mem_release', version: 1, status: 'active', description: 'Use the checklist.' },
   ];
+  const scheduledFixture: ScheduledWorkFixture = options.scheduledWork ?? {
+    routine: {
+      id: 'routine_release_digest', workspaceId: 'T_DESIGN', channelId: 'C0EXR3L9T',
+      creatorUserId: 'U_CREATOR', name: 'Release readiness check', description: 'Check launch readiness every weekday.',
+      state: 'active', version: 2, triggerKind: 'schedule', scheduleInput: 'weekdays at 9:00 AM',
+      scheduleJson: '{"kind":"cron","expression":"0 9 * * 1-5"}', timezone: 'America/Los_Angeles',
+      outputPolicy: 'post', authorityMode: 'live_channel_v1', taskText: 'Review open launch blockers and resolve anything safe to change.',
+      nextRunAt: 1785168000000, lastScheduledAt: 1785081600000, lastFinishedAt: 1785081660000,
+      consecutiveFailures: 0, projectedDailyStarts: 1, createdAt: 1784908800000, updatedAt: 1785081660000,
+      pausedAt: null, pausedReason: null, disabledAt: null, disabledReason: null, deletedAt: null,
+    },
+    runs: [{
+      id: 'rrun_release_digest_1', routineId: 'routine_release_digest', routineVersion: 2,
+      scheduledFor: 1785081600000, triggerSource: 'scheduled', requestedBy: null, status: 'succeeded',
+      failureClass: null, publicError: null, queuedAt: 1785081600000, admittedAt: 1785081601000,
+      startedAt: 1785081602000, finishedAt: 1785081660000, resolvedAccessHash: 'access_hash_123',
+      resolvedAgentId: 'agent_release', model: 'anthropic/claude-sonnet-4', inputTokens: 1200,
+      outputTokens: 300, cacheReadTokens: 0, cacheWriteTokens: 0, costEstimate: 0.009,
+      costUnit: 'USD', toolCallCount: 3, deliveryStatus: 'delivered', deliveryChannelId: 'C0EXR3L9T',
+      deliveryMessageTs: '1785081660.000100', suppressedAsNoOp: false, missedSlotCount: 0,
+      skipReason: null, flueRunId: 'flue_run_release_1', traceId: 'trace_release_1',
+    }],
+    revisions: [{
+      routineId: 'routine_release_digest', version: 2,
+      definition: { name: 'Release readiness check' }, definitionHash: 'definition_hash_2',
+      actorId: 'U_CREATOR', actorClass: 'member', createdAt: 1785000000000,
+    }],
+    events: [{
+      eventId: 'audit_routine_update', eventType: 'routine_updated', outcome: 'succeeded',
+      actorClass: 'member', actorId: 'U_CREATOR', workspaceId: 'T_DESIGN', channelId: 'C0EXR3L9T',
+      subjectId: 'routine_release_digest', subjectVersion: 2, createdAt: 1785000000000,
+    }],
+    capability: { target: 'cloudflare', available: true, enabled: true, reason: 'enabled' },
+  };
   let resolveAgentPatch: (() => void) | undefined;
   const location = {
     pathname: options.initialPath ?? '/admin',
@@ -638,8 +688,58 @@ function runAdminPageHarness(
   );
   const harnessOptions = options;
 
-  const fetch = (path: string, options?: { method?: string; body?: string }): Promise<FakeResponse> => {
+  const fetch = (path: string, options?: { method?: string; body?: string; headers?: Record<string, string> }): Promise<FakeResponse> => {
     const method = options?.method ?? 'GET';
+    if (path.startsWith('/admin/api/audit/scheduled_work/routines') && method === 'GET') {
+      const detailMatch = path.match(/^\/admin\/api\/audit\/scheduled_work\/routines\/([^/?]+)$/);
+      if (detailMatch) {
+        const routineId = decodeURIComponent(detailMatch[1] as string);
+        if (routineId !== scheduledFixture.routine.id) return Promise.resolve(jsonResponse({ error: 'routine_not_found' }, 404));
+        return Promise.resolve(jsonResponse({
+          routine: { ...scheduledFixture.routine },
+          runs: scheduledFixture.runs.map((run) => ({ ...run })),
+          revisions: scheduledFixture.revisions.map((revision) => ({ ...revision })),
+          events: scheduledFixture.events.map((event) => ({ ...event })),
+          capability: { ...scheduledFixture.capability },
+        }));
+      }
+      const url = new URL(path, 'http://admin.test');
+      const stateFilter = url.searchParams.get('state');
+      const channelFilter = url.searchParams.get('channelId');
+      const workspaceFilter = url.searchParams.get('workspaceId');
+      const routine = scheduledFixture.routine;
+      const included = (!stateFilter || routine.state === stateFilter) &&
+        (!channelFilter || routine.channelId === channelFilter) &&
+        (!workspaceFilter || routine.workspaceId === workspaceFilter);
+      const summary = { ...routine };
+      delete summary.taskText;
+      return Promise.resolve(jsonResponse({
+        routines: included ? [summary] : [],
+        nextCursor: null,
+        capability: { ...scheduledFixture.capability },
+      }));
+    }
+    const scheduledControlMatch = path.match(/^\/admin\/api\/audit\/scheduled_work\/routines\/([^/]+)\/control$/);
+    if (scheduledControlMatch && method === 'POST') {
+      const routineId = decodeURIComponent(scheduledControlMatch[1] as string);
+      const body = JSON.parse(options?.body ?? '{}') as Record<string, unknown>;
+      scheduledControlPosts.push({
+        routineId,
+        body,
+        idempotencyKey: options?.headers?.['idempotency-key'] ?? '',
+      });
+      if (harnessOptions.scheduledControlError) {
+        return Promise.resolve(jsonResponse(harnessOptions.scheduledControlError, harnessOptions.scheduledControlError.status));
+      }
+      const action = String(body.action || '');
+      scheduledFixture.routine = {
+        ...scheduledFixture.routine,
+        state: action === 'delete' ? 'deleted' : action === 'resume' ? 'active' : action === 'pause' ? 'paused' : 'disabled',
+        version: Number(scheduledFixture.routine.version || 0) + 1,
+        ...(action === 'delete' ? { taskText: null, deletedAt: 1785081700000 } : {}),
+      };
+      return Promise.resolve(jsonResponse({ routine: { ...scheduledFixture.routine }, ...(action === 'delete' ? { irreversible: true } : {}) }));
+    }
     if (path === '/admin/api/audit/memory/scopes' && method === 'GET') {
       return Promise.resolve(jsonResponse({
         scopes: harnessOptions.memoryScopes ?? [{
@@ -1326,6 +1426,7 @@ function runAdminPageHarness(
     memoryPuts,
     memoryDeletes,
     memoryReviewPosts,
+    scheduledControlPosts,
     clipboardWrites,
     gallerySearchFocusCalls: () => gallerySearchFocusCalls,
     gallerySearchSelections,
@@ -6321,7 +6422,7 @@ test('Settings omits the redundant always-on channel memory status block', async
   assert.doesNotMatch(harness.app.innerHTML, /SLACK_TAG_MEMORY_ENABLED/);
 });
 
-test('Audit logs deep link renders the real Memory scope, generated index, editor, and disabled future domains', async () => {
+test('Audit logs deep link renders the real Memory scope, generated index, editor, and reserved Network domain', async () => {
   const harness = runAdminPageHarness({
     initialPath: '/admin/audit-logs/memory/store_public_T_DESIGN/C0EXR3L9T/mem_release',
   });
@@ -6334,7 +6435,8 @@ test('Audit logs deep link renders the real Memory scope, generated index, edito
   assert.match(harness.app.innerHTML, /Audit logs/);
   assert.match(harness.app.innerHTML, /Scheduled work/);
   assert.match(harness.app.innerHTML, /Network events/);
-  assert.match(harness.app.innerHTML, /class="audit-tab" role="tab" disabled/);
+  assert.match(harness.app.innerHTML, /data-action="audit-tab-scheduled">Scheduled work/);
+  assert.match(harness.app.innerHTML, /role="tab" disabled aria-disabled="true" title="Coming later">Network events/);
   assert.match(harness.app.innerHTML, /#eng-releases/);
   assert.match(harness.app.innerHTML, /release-guidance\.md/);
   assert.match(harness.app.innerHTML, /Review requested/);
@@ -6344,6 +6446,58 @@ test('Audit logs deep link renders the real Memory scope, generated index, edito
   assert.doesNotMatch(harness.app.innerHTML, /Review durable actions and retained data/);
   assert.doesNotMatch(harness.app.innerHTML, />Export store</);
   assert.doesNotMatch(harness.app.innerHTML, />Import</);
+});
+
+test('Scheduled Work tab is live, deep-linked, inspectable, and controls durable routines', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/audit-logs/scheduled-work/routine_release_digest',
+  });
+  await flushAsync();
+
+  assert.equal(
+    harness.locationPath(),
+    '/admin/audit-logs/scheduled-work/routine_release_digest',
+  );
+  assert.match(harness.app.innerHTML, /class="audit-tab active" role="tab" aria-selected="true" data-action="audit-tab-scheduled">Scheduled work/);
+  assert.match(harness.app.innerHTML, /Release readiness check/);
+  assert.match(harness.app.innerHTML, /weekdays at 9:00 AM/);
+  assert.match(harness.app.innerHTML, /America\/Los_Angeles/);
+  assert.match(harness.app.innerHTML, /same authority as a live @mention/);
+  assert.match(harness.app.innerHTML, /Review open launch blockers and resolve anything safe to change/);
+  assert.match(harness.app.innerHTML, /flue_run_release_1/);
+  assert.match(harness.app.innerHTML, /access_hash_123/);
+  assert.match(harness.app.innerHTML, /1500 input \+ output tokens/);
+  assert.match(harness.app.innerHTML, /Open message/);
+  assert.match(harness.app.innerHTML, /Revision history/);
+  assert.match(harness.app.innerHTML, /Audit trail/);
+
+  harness.listeners.click?.({
+    target: actionTarget({ 'data-action': 'scheduled-control', 'data-control': 'pause' }),
+  });
+  await flushAsync();
+
+  assert.equal(harness.scheduledControlPosts.length, 1);
+  assert.deepEqual(harness.scheduledControlPosts[0]?.body, {
+    action: 'pause',
+    expectedVersion: 2,
+  });
+  assert.match(harness.scheduledControlPosts[0]?.idempotencyKey ?? '', /^admin-ui:routine:pause:/);
+  assert.match(harness.app.innerHTML, /data-control="resume">Resume/);
+
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'scheduled-delete-open' }) });
+  assert.match(harness.app.innerHTML, /permanently removes the saved task/);
+  assert.match(harness.app.innerHTML, /Flue transcripts may still retain prior content/);
+
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'scheduled-delete-confirm' }) });
+  await flushAsync();
+
+  assert.deepEqual(harness.scheduledControlPosts[1]?.body, {
+    action: 'delete',
+    expectedVersion: 3,
+    acknowledgeIrreversible: true,
+  });
+  assert.match(harness.app.innerHTML, /The task body was removed with this routine/);
+  assert.doesNotMatch(harness.app.innerHTML, /Review open launch blockers and resolve anything safe to change/);
 });
 
 test('Channel Memory action keeps a zero-count channel in context', async () => {

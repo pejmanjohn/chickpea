@@ -402,10 +402,7 @@ export function createMemoryAdminApi(options: MemoryAdminApiOptions): Hono {
     }
   });
 
-  app.get('/audit/:domain/events', async (c) => {
-    if (c.req.param('domain') !== 'memory') {
-      return c.json({ error: 'domain_not_available' }, 404);
-    }
+  app.get('/audit/memory/events', async (c) => {
     try {
       const state = options.store(c);
       const limitRaw = c.req.query('limit');

@@ -1320,7 +1320,7 @@ details[open].advanced summary::before {
 /* ---- profile footer (delete / add-to-channels / usage) ---- */
 .profile-foot { align-items: center; border-top: 1.5px dashed rgba(59, 50, 32, 0.15); display: flex; flex-wrap: wrap; gap: 10px; padding-top: 20px; }
 
-/* ---- Audit logs: real Memory domain, reserved future tabs ---- */
+/* ---- Audit logs: Scheduled Work and Memory domains ---- */
 .audit-rail { gap: 2px; }
 .audit-rail .ws-row { margin-top: 5px; }
 .audit-lock { color: var(--text-3); margin-left: auto; }
@@ -1339,8 +1339,34 @@ details[open].advanced summary::before {
   padding: 9px 13px;
   white-space: nowrap;
 }
+.audit-tab:not(:disabled) { cursor: pointer; }
 .audit-tab.active { border-color: var(--ember-press); color: var(--text); }
 .audit-tab:disabled { cursor: not-allowed; opacity: 0.52; }
+.scheduled-filters { align-items: flex-end; display: flex; flex-wrap: wrap; gap: 9px; }
+.scheduled-filters .field { min-width: 150px; }
+.scheduled-capability { align-items: flex-start; background: var(--well); border-radius: 13px; display: flex; flex-wrap: wrap; gap: 8px; padding: 11px 13px; }
+.scheduled-capability .spacer { flex: 1; }
+.scheduled-grid { display: grid; gap: 14px; grid-template-columns: minmax(260px, 0.9fr) minmax(360px, 1.6fr); }
+.scheduled-card { background: var(--well); border-radius: 16px; min-width: 0; padding: 15px; }
+.scheduled-card + .scheduled-card { margin-top: 12px; }
+.scheduled-meta { display: grid; gap: 9px 16px; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 12px; }
+.scheduled-meta-item { min-width: 0; }
+.scheduled-meta-item .field-label { display: block; margin-bottom: 3px; }
+.scheduled-meta-item .mono { overflow-wrap: anywhere; }
+.scheduled-task { background: var(--bg); border-radius: 12px; color: var(--text-2); font-size: 0.8125rem; line-height: 1.55; margin: 10px 0 0; padding: 12px; white-space: pre-wrap; }
+.scheduled-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 13px; }
+.scheduled-list { display: flex; flex-direction: column; gap: 5px; }
+.scheduled-list-row { align-items: flex-start; background: var(--bg); border: 0; border-radius: 11px; color: var(--text-2); cursor: pointer; display: flex; flex-direction: column; gap: 3px; padding: 10px 11px; text-align: left; width: 100%; }
+.scheduled-list-row:hover { box-shadow: inset 0 0 0 1.5px var(--line-strong); }
+.scheduled-list-row.active { box-shadow: inset 0 0 0 1.5px var(--ember-press); color: var(--text); }
+.scheduled-run { background: var(--bg); border-radius: 12px; display: flex; flex-direction: column; gap: 7px; padding: 11px 12px; }
+.scheduled-run + .scheduled-run { margin-top: 7px; }
+.scheduled-run-head { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; }
+.scheduled-run-grid { display: grid; gap: 6px 14px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.scheduled-run-grid span { color: var(--text-3); font-size: 0.71875rem; overflow-wrap: anywhere; }
+.scheduled-revisions { display: flex; flex-direction: column; gap: 6px; }
+.scheduled-revision { align-items: baseline; background: var(--bg); border-radius: 10px; display: flex; flex-wrap: wrap; gap: 7px; padding: 8px 10px; }
+.scheduled-live { min-height: 1.2em; }
 .memory-banner { background: var(--ember-tint); border-radius: 13px; color: var(--text-2); font-size: 0.78125rem; padding: 10px 13px; }
 .memory-layout { display: grid; gap: 14px; grid-template-columns: minmax(180px, 0.7fr) minmax(320px, 1.8fr); min-height: 480px; }
 .memory-pane { background: var(--well); border-radius: 16px; min-width: 0; padding: 12px; }
@@ -1392,10 +1418,12 @@ details[open].advanced summary::before {
 @media (max-width: 900px) {
   .memory-layout { grid-template-columns: 1fr; }
   .memory-pane { min-height: auto; }
+  .scheduled-grid { grid-template-columns: 1fr; }
 }
 @media (max-width: 720px) {
   .audit-main-head, .memory-editor-head, .memory-review { align-items: stretch; flex-direction: column; }
   .memory-editor-actions .btn { flex: 1; }
+  .scheduled-meta, .scheduled-run-grid { grid-template-columns: 1fr; }
 }
 
 </style>
@@ -1606,10 +1634,23 @@ details[open].advanced summary::before {
     modelPickerOpen: false,
     modelPickerFilter: "",
     providerModelsError: {},
-    // Audit Logs is reached from a channel's Review memory action. Memory is
-    // the only live domain in this release; Scheduled Work and Network Events
-    // are labels, not empty APIs. The draft mirrors editable entry fields so a
-    // conflict or retry never erases operator work.
+    // Audit Logs has two live domains: Scheduled Work for routines and their
+    // executions, and Memory for durable channel context. The selected domain
+    // owns its own route and loading state so switching tabs cannot mix data.
+    auditDomain: "memory",
+    scheduledRoutines: null,
+    scheduledLoading: false,
+    scheduledError: "",
+    scheduledSelection: "",
+    scheduledDetail: null,
+    scheduledDetailLoading: false,
+    scheduledBusy: "",
+    scheduledNotice: "",
+    scheduledCapability: null,
+    scheduledFilters: { workspaceId: "", channelId: "", state: "", status: "" },
+    scheduledDeleteConfirm: false,
+    // The Memory draft mirrors editable entry fields so a conflict or retry
+    // never erases operator work.
     memoryScopes: null,
     memoryScopesLoading: false,
     memoryScopesError: "",
@@ -1843,6 +1884,9 @@ details[open].advanced summary::before {
   function canonicalPath() {
     if (state.view === "settings") return "/admin/settings";
     if (state.view === "audit") {
+      if (state.auditDomain === "scheduled-work") {
+        return "/admin/audit-logs/scheduled-work" + (state.scheduledSelection ? "/" + encodeURIComponent(state.scheduledSelection) : "");
+      }
       var memoryPath = "/admin/audit-logs/memory";
       if (state.memorySelection.storeId && state.memorySelection.channelId) {
         memoryPath += "/" + encodeURIComponent(state.memorySelection.storeId) + "/" + encodeURIComponent(state.memorySelection.channelId);
@@ -1876,6 +1920,10 @@ details[open].advanced summary::before {
     state.leavePrompt = null;
     if (parts[1] === "settings") { openSettings(); return; }
     if (parts[1] === "audit-logs") {
+      if (parts[2] === "scheduled-work") {
+        openScheduledWork(parts[3] || "");
+        return;
+      }
       openAuditLogs(parts[3] || "", parts[4] || "", parts[5] || "");
       return;
     }
@@ -1908,7 +1956,7 @@ details[open].advanced summary::before {
 
   function render() {
     var app = document.getElementById("app");
-    app.innerHTML = topbarHtml() + '<div class="body">' + railHtml() + mainHtml() + "</div>" + leavePromptModalHtml() + connectionRemoveModalHtml() + apiConnectionRemoveModalHtml() + slackDisconnectModalHtml() + githubDisconnectModalHtml() + memoryDeleteModalHtml();
+    app.innerHTML = topbarHtml() + '<div class="body">' + railHtml() + mainHtml() + "</div>" + leavePromptModalHtml() + connectionRemoveModalHtml() + apiConnectionRemoveModalHtml() + slackDisconnectModalHtml() + githubDisconnectModalHtml() + memoryDeleteModalHtml() + scheduledDeleteModalHtml();
     // The disconnect confirmation is a true modal: keep the rest of the app
     // out of the focus and accessibility trees until it is resolved.
     if (state.slackDisconnectConfirm) {
@@ -1941,6 +1989,15 @@ details[open].advanced summary::before {
       });
       var memoryDeleteCancel = document.querySelector('[data-action="memory-delete-cancel"]');
       if (memoryDeleteCancel && memoryDeleteCancel.focus) memoryDeleteCancel.focus();
+    }
+    if (state.scheduledDeleteConfirm) {
+      [document.querySelector(".topbar"), document.querySelector(".body")].forEach(function (region) {
+        if (!region) return;
+        region.inert = true;
+        if (region.setAttribute) region.setAttribute("aria-hidden", "true");
+      });
+      var routineDeleteCancel = document.querySelector('[data-action="scheduled-delete-cancel"]');
+      if (routineDeleteCancel && routineDeleteCancel.focus) routineDeleteCancel.focus();
     }
     syncUrl();
   }
@@ -1994,7 +2051,7 @@ details[open].advanced summary::before {
   }
 
   function railHtml() {
-    if (state.view === "audit") return auditRailHtml();
+    if (state.view === "audit") return state.auditDomain === "scheduled-work" ? scheduledWorkRailHtml() : auditRailHtml();
     // Not connected → the whole screen is the Connect stepper; the rail (and its
     // add affordance) stay gated off until Slack is live.
     if (state.slack && !state.slack.connected) return "";
@@ -2054,7 +2111,7 @@ details[open].advanced summary::before {
       return '<main class="main"><div class="main-inner">' + settingsMainHtml() + '</div></main>';
     }
     if (state.view === "audit") {
-      return '<main class="main"><div class="main-inner audit-main">' + auditMemoryMainHtml() + '</div></main>';
+      return '<main class="main"><div class="main-inner audit-main">' + (state.auditDomain === "scheduled-work" ? scheduledWorkMainHtml() : auditMemoryMainHtml()) + '</div></main>';
     }
     if (state.channelScreen === "overview") {
       return '<main class="main"><div class="main-inner slack-overview">' + slackOverviewHtml() + '</div></main>';
@@ -4515,11 +4572,173 @@ details[open].advanced summary::before {
   }
 
   function auditTabsHtml() {
+    var scheduled = state.auditDomain === "scheduled-work";
     return '<div class="audit-tabs" role="tablist" aria-label="Audit domains">' +
-      '<button type="button" class="audit-tab" role="tab" disabled aria-disabled="true" title="Coming later">Scheduled work</button>' +
-      '<button type="button" class="audit-tab active" role="tab" aria-selected="true">Memory</button>' +
+      '<button type="button" class="audit-tab' + (scheduled ? " active" : "") + '" role="tab" aria-selected="' + (scheduled ? "true" : "false") + '" data-action="audit-tab-scheduled">Scheduled work</button>' +
+      '<button type="button" class="audit-tab' + (!scheduled ? " active" : "") + '" role="tab" aria-selected="' + (!scheduled ? "true" : "false") + '" data-action="audit-tab-memory">Memory</button>' +
       '<button type="button" class="audit-tab" role="tab" disabled aria-disabled="true" title="Coming later">Network events</button>' +
       '</div>';
+  }
+
+  function scheduledWorkRailHtml() {
+    var html = '<nav class="rail audit-rail" aria-label="Scheduled routines">' +
+      '<div class="rail-head"><span class="section-eyebrow">Audit logs</span></div>' +
+      '<div class="platform-row active"><span class="platform-logo slack-logo-image" aria-hidden="true"></span>Slack</div>';
+    if (state.scheduledLoading && !state.scheduledRoutines) {
+      return html + '<div class="empty" style="margin:8px; padding:12px;"><p class="hint">Loading routines&hellip;</p></div></nav>';
+    }
+    if (state.scheduledError && !state.scheduledRoutines) {
+      return html + '<div class="empty" style="margin:8px; padding:12px;"><p class="field-error">' + esc(state.scheduledError) + '</p><button type="button" class="btn btn-ghost btn-sm" data-action="scheduled-retry">Retry</button></div></nav>';
+    }
+    var routines = state.scheduledRoutines || [];
+    if (!routines.length) {
+      return html + '<div class="ws-row">Scheduled work</div><div class="empty" style="margin:8px; padding:12px;"><p class="hint">No routines match these filters.</p></div></nav>';
+    }
+    html += '<div class="ws-row">' + icon("chevron-down") + 'Scheduled work</div><div class="scheduled-list">';
+    routines.forEach(function (routine) {
+      var active = routine.id === state.scheduledSelection;
+      html += '<button type="button" class="chan-item' + (active ? " active" : "") + '" data-action="select-scheduled-routine" data-routine="' + esc(routine.id) + '">' +
+        '<span class="chan-name">' + esc(routine.name) + '</span>' +
+        '<span class="chan-meta">' + esc(scheduledChannelLabel(routine.workspaceId, routine.channelId)) + ' · ' + esc(routine.state) + '</span></button>';
+    });
+    return html + '</div></nav>';
+  }
+
+  function scheduledChannelLabel(workspaceId, channelId) {
+    var assignment = assignmentByKey(workspaceId, channelId);
+    return assignment ? channelLabel(assignment) : "#" + String(channelId || "channel");
+  }
+
+  function scheduledStatusBadge(status) {
+    var on = status === "active" || status === "running" || status === "succeeded" || status === "delivered" || status === "enabled";
+    return '<span class="badge ' + (on ? "badge-on" : "badge-off") + '">' + (on ? '<span class="dot"></span>' : '') + esc(String(status || "unknown").replace(/_/g, " ")) + '</span>';
+  }
+
+  function scheduledCapabilityHtml(capability) {
+    if (!capability) return '';
+    var title = capability.enabled ? "Scheduling enabled" : capability.reason === "unsupported_target" ? "Scheduling unavailable on this target" : "Scheduling disabled by operator";
+    var detail = capability.enabled
+      ? "Cloudflare heartbeat admission is active. Routine controls and run history remain available here."
+      : capability.reason === "unsupported_target"
+        ? "This installation is running on Node. Routine definitions remain inspectable, but automatic scheduling is Cloudflare-only in this release."
+        : "This Cloudflare installation has TAG_ROUTINES_ENABLED turned off. Definitions remain inspectable; no automatic occurrences are admitted.";
+    return '<div class="scheduled-capability"><div><strong>' + esc(title) + '</strong><p class="hint" style="margin:3px 0 0;">' + esc(detail) + '</p></div><span class="spacer"></span>' + scheduledStatusBadge(capability.enabled ? "enabled" : capability.reason) + '</div>';
+  }
+
+  function scheduledFiltersHtml() {
+    var filters = state.scheduledFilters;
+    function options(values, selected) {
+      return values.map(function (value) {
+        var label = value ? value.replace(/_/g, " ") : "All";
+        return '<option value="' + esc(value) + '"' + (value === selected ? " selected" : "") + '>' + esc(label) + '</option>';
+      }).join("");
+    }
+    return '<div class="scheduled-filters" aria-label="Scheduled work filters">' +
+      '<label class="field"><span class="field-label">Workspace</span><input class="input mono" data-action="scheduled-filter-workspace" value="' + esc(filters.workspaceId) + '" placeholder="All"></label>' +
+      '<label class="field"><span class="field-label">Channel</span><input class="input mono" data-action="scheduled-filter-channel" value="' + esc(filters.channelId) + '" placeholder="All"></label>' +
+      '<label class="field"><span class="field-label">Routine state</span><span class="select-wrap"><select class="input" data-action="scheduled-filter-state">' + options(["", "active", "paused", "disabled", "deleted"], filters.state) + '</select><span class="select-caret">' + icon("chevron-down") + '</span></span></label>' +
+      '<label class="field"><span class="field-label">Run status</span><span class="select-wrap"><select class="input" data-action="scheduled-filter-status">' + options(["", "queued", "admitting", "running", "succeeded", "no_op", "failed", "skipped", "cancelled", "superseded"], filters.status) + '</select><span class="select-caret">' + icon("chevron-down") + '</span></span></label>' +
+      '<button type="button" class="btn btn-soft btn-sm" data-action="scheduled-apply-filters"' + (state.scheduledLoading ? " disabled" : "") + '>Apply filters</button></div>';
+  }
+
+  function scheduledWorkMainHtml() {
+    var head = '<div class="audit-main-head"><h1 class="page-title">Audit logs</h1></div>' + auditTabsHtml() + scheduledFiltersHtml();
+    var capability = scheduledCapabilityHtml(state.scheduledCapability);
+    if (state.scheduledLoading && !state.scheduledRoutines) return head + capability + '<div class="empty"><p class="hint">Loading scheduled work&hellip;</p></div>';
+    if (state.scheduledError && !state.scheduledRoutines) return head + capability + '<div class="empty"><p class="field-error">' + esc(state.scheduledError) + '</p><button type="button" class="btn btn-ghost" data-action="scheduled-retry">Retry</button></div>';
+    if (!state.scheduledSelection) {
+      return head + capability + '<div class="empty"><h2 class="section-title">No routine selected</h2><p class="hint">Choose a routine to inspect its definition, revisions, executions, delivery receipts, and audit trail.</p></div>' + scheduledLiveHtml();
+    }
+    if (state.scheduledDetailLoading || !state.scheduledDetail) {
+      return head + capability + '<div class="empty"><p class="hint">Loading routine detail&hellip;</p></div>' + scheduledLiveHtml();
+    }
+    var detail = state.scheduledDetail;
+    var routine = detail.routine;
+    var controls = '';
+    if (routine.state === "active") controls += '<button type="button" class="btn btn-soft btn-sm" data-action="scheduled-control" data-control="pause">Pause</button>';
+    if (routine.state === "paused") controls += '<button type="button" class="btn btn-primary btn-sm" data-action="scheduled-control" data-control="resume">Resume</button>';
+    if (routine.state !== "disabled" && routine.state !== "deleted") controls += '<button type="button" class="btn btn-soft btn-sm" data-action="scheduled-control" data-control="disable">Disable</button>';
+    if (routine.state !== "deleted") controls += '<button type="button" class="btn btn-danger btn-sm" data-action="scheduled-delete-open">Delete</button>';
+    var definition = '<section class="scheduled-card"><div class="memory-editor-head"><div><h2 class="section-title">' + esc(routine.name) + '</h2><p class="hint">' + esc(routine.description || "No description") + '</p></div>' + scheduledStatusBadge(routine.state) + '</div>' +
+      '<div class="scheduled-meta">' +
+      scheduledMeta("Routine ID", routine.id, true) + scheduledMeta("Version", "v" + Number(routine.version), true) +
+      scheduledMeta("Workspace", routine.workspaceId, true) + scheduledMeta("Channel", scheduledChannelLabel(routine.workspaceId, routine.channelId) + " (" + routine.channelId + ")", false) +
+      scheduledMeta("Creator", routine.creatorUserId, true) + scheduledMeta("Trigger", routine.triggerKind, false) +
+      scheduledMeta("Schedule", routine.scheduleInput, false) + scheduledMeta("Timezone", routine.timezone, false) +
+      scheduledMeta("Next run", formatScheduledDate(routine.nextRunAt), false) + scheduledMeta("Last finished", formatScheduledDate(routine.lastFinishedAt), false) +
+      scheduledMeta("Output", routine.outputPolicy, false) + scheduledMeta("Daily starts", Number(routine.projectedDailyStarts || 0), false) + '</div>' +
+      '<div class="memory-banner" style="margin-top:12px;"><strong>Authority</strong><br>' + esc(scheduledAuthorityCopy(routine)) + '</div>' +
+      (routine.taskText == null ? '<p class="hint">The task body was removed with this routine.</p>' : '<div><span class="field-label" style="display:block; margin-top:12px;">Saved task</span><div class="scheduled-task">' + esc(routine.taskText) + '</div></div>') +
+      '<div class="scheduled-actions">' + controls.replace(/<button /g, '<button ' + (state.scheduledBusy ? 'disabled ' : '')) + '</div></section>';
+    var revisions = scheduledRevisionsHtml(detail.revisions || []);
+    var runs = scheduledRunsHtml(detail.runs || [], routine);
+    return head + scheduledCapabilityHtml(detail.capability || state.scheduledCapability) + '<div class="scheduled-grid"><div>' + definition + revisions + '</div><div>' + runs + scheduledEventsHtml(detail.events || []) + '</div></div>' + scheduledLiveHtml();
+  }
+
+  function scheduledMeta(label, value, mono) {
+    return '<div class="scheduled-meta-item"><span class="field-label">' + esc(label) + '</span><span' + (mono ? ' class="mono"' : '') + '>' + esc(value == null ? "—" : value) + '</span></div>';
+  }
+
+  function scheduledAuthorityCopy(routine) {
+    if (routine.authorityMode === "live_channel_v1") {
+      return "Each occurrence re-resolves current channel membership, profile, connections, credentials, repository grants, and policy. It has the same authority as a live @mention in the owning channel; saved or fetched content cannot widen that authority.";
+    }
+    return "Authority mode: " + String(routine.authorityMode || "unknown") + ". Access is resolved again when each occurrence starts.";
+  }
+
+  function scheduledRevisionsHtml(revisions) {
+    return '<section class="scheduled-card"><h2 class="section-title">Revision history</h2>' + (!revisions.length ? '<p class="hint">No revisions retained.</p>' : '<div class="scheduled-revisions">' + revisions.slice().reverse().map(function (revision) {
+      var operation = revision.definition ? "definition saved" : "content removed";
+      return '<div class="scheduled-revision"><span class="mono">v' + Number(revision.version) + '</span><strong>' + esc(operation) + '</strong><span class="spacer"></span><span class="hint">' + esc(formatScheduledDate(revision.createdAt)) + ' · ' + esc(revision.actorClass || "system") + '</span></div>';
+    }).join("") + '</div>') + '</section>';
+  }
+
+  function scheduledRunsHtml(runs, routine) {
+    var body = !runs.length ? '<p class="hint">No occurrences have been admitted yet.</p>' : runs.map(function (run) {
+      var tokens = [run.inputTokens, run.outputTokens].some(function (value) { return value != null; })
+        ? String(Number(run.inputTokens || 0) + Number(run.outputTokens || 0)) + " input + output tokens"
+        : "Usage unavailable";
+      var delivery = run.suppressedAsNoOp ? "No post (no-op)" : String(run.deliveryStatus || "none").replace(/_/g, " ");
+      var receipt = scheduledDeliveryLink(run, routine);
+      return '<article class="scheduled-run"><div class="scheduled-run-head"><strong>' + esc(formatScheduledDate(run.scheduledFor)) + '</strong><span class="spacer"></span>' + scheduledStatusBadge(run.status) + '</div>' +
+        (run.publicError ? '<p class="field-error" style="margin:0;">' + esc(run.publicError) + '</p>' : '') +
+        '<div class="scheduled-run-grid"><span>Run <span class="mono">' + esc(run.id) + '</span></span><span>Trigger ' + esc(run.triggerSource || "scheduled") + '</span>' +
+        '<span>Started ' + esc(formatScheduledDate(run.startedAt)) + '</span><span>Finished ' + esc(formatScheduledDate(run.finishedAt)) + '</span>' +
+        '<span>Model ' + esc(run.model || "unresolved") + '</span><span>' + esc(tokens) + '</span>' +
+        '<span>Tools ' + Number(run.toolCallCount || 0) + '</span><span>Cost ' + esc(formatScheduledCost(run)) + '</span>' +
+        '<span>Delivery ' + esc(delivery) + (receipt ? ' · ' + receipt : '') + '</span><span>Access <span class="mono">' + esc(run.resolvedAccessHash || "unresolved") + '</span></span>' +
+        '<span>Flue run <span class="mono">' + esc(run.flueRunId || "not admitted") + '</span></span><span>Trace <span class="mono">' + esc(run.traceId || "unavailable") + '</span></span></div></article>';
+    }).join("");
+    return '<section class="scheduled-card"><div class="memory-editor-head"><div><h2 class="section-title">Occurrences</h2><p class="hint">One independent Flue Workflow run per trigger.</p></div><span class="badge badge-off">' + Number(runs.length) + '</span></div>' + body + '</section>';
+  }
+
+  function scheduledDeliveryLink(run, routine) {
+    var channel = String(run.deliveryChannelId || routine.channelId || "");
+    var timestamp = String(run.deliveryMessageTs || "");
+    if (!/^[A-Z0-9]+$/.test(channel) || !/^\\d+\\.\\d+$/.test(timestamp)) return '';
+    var href = "https://slack.com/archives/" + encodeURIComponent(channel) + "/p" + timestamp.replace(".", "");
+    return '<a class="hint-link" href="' + esc(href) + '" target="_blank" rel="noopener noreferrer">Open message</a>';
+  }
+
+  function formatScheduledCost(run) {
+    if (run.costEstimate == null) return "unavailable";
+    return Number(run.costEstimate).toFixed(6) + (run.costUnit ? " " + run.costUnit : "");
+  }
+
+  function scheduledEventsHtml(events) {
+    return '<section class="scheduled-card"><h2 class="section-title">Audit trail</h2>' + (!events.length ? '<p class="hint">No retained events.</p>' : '<div class="scheduled-revisions">' + events.map(function (event) {
+      return '<div class="scheduled-revision"><strong>' + esc(String(event.eventType || "event").replace(/_/g, " ")) + '</strong><span>' + scheduledStatusBadge(event.outcome) + '</span><span class="spacer"></span><span class="hint">' + esc(formatScheduledDate(event.createdAt)) + ' · ' + esc(event.actorClass || "system") + '</span></div>';
+    }).join("") + '</div>') + '</section>';
+  }
+
+  function scheduledLiveHtml() {
+    return '<div class="scheduled-live" role="status" aria-live="polite">' + esc(state.scheduledNotice || state.scheduledError) + '</div>';
+  }
+
+  function formatScheduledDate(value) {
+    if (value == null) return "—";
+    var date = new Date(Number(value));
+    return Number.isFinite(date.getTime()) ? date.toLocaleString() : "Unknown time";
   }
 
   function auditMemoryMainHtml() {
@@ -4633,9 +4852,138 @@ details[open].advanced summary::before {
       '<div class="modal-foot"><button type="button" class="btn btn-ghost" data-action="memory-delete-cancel">Cancel</button><span class="spacer"></span><button type="button" class="btn btn-danger" data-action="memory-delete-confirm">Delete permanently</button></div></div></div>';
   }
 
+  function scheduledDeleteModalHtml() {
+    if (!state.scheduledDeleteConfirm || !state.scheduledDetail) return '';
+    var routine = state.scheduledDetail.routine;
+    return '<div class="modal-backdrop"><div class="modal-card" role="dialog" aria-modal="true" aria-label="Delete routine">' +
+      '<h2 class="modal-title">Delete ' + esc(routine.name) + '?</h2>' +
+      '<p class="modal-body">This permanently removes the saved task from the routine and its retained revisions, disables future occurrences, and keeps only body-free audit metadata and run records. Existing Slack messages, provider logs, backups, and Flue transcripts may still retain prior content; Chickpea cannot retract them.</p>' +
+      '<div class="modal-foot"><button type="button" class="btn btn-ghost" data-action="scheduled-delete-cancel">Cancel</button><span class="spacer"></span><button type="button" class="btn btn-danger" data-action="scheduled-delete-confirm"' + (state.scheduledBusy ? " disabled" : "") + '>Delete permanently</button></div></div></div>';
+  }
+
+  function openScheduledWork(routineId) {
+    state.view = "audit";
+    state.profileScreen = "list";
+    state.auditDomain = "scheduled-work";
+    state.scheduledSelection = routineId || "";
+    state.scheduledDetail = null;
+    state.scheduledError = "";
+    state.scheduledNotice = "";
+    render();
+    loadScheduledRoutines();
+  }
+
+  function scheduledListPath() {
+    var query = new URLSearchParams();
+    var filters = state.scheduledFilters;
+    if (filters.workspaceId) query.set("workspaceId", filters.workspaceId.trim());
+    if (filters.channelId) query.set("channelId", filters.channelId.trim());
+    if (filters.state) query.set("state", filters.state);
+    if (filters.status) query.set("status", filters.status);
+    var encoded = query.toString();
+    return "/admin/api/audit/scheduled_work/routines" + (encoded ? "?" + encoded : "");
+  }
+
+  function loadScheduledRoutines() {
+    if (state.scheduledLoading) return Promise.resolve();
+    state.scheduledLoading = true;
+    state.scheduledError = "";
+    render();
+    return api(scheduledListPath()).then(function (body) {
+      state.scheduledRoutines = body.routines || [];
+      state.scheduledCapability = body.capability || null;
+      state.scheduledLoading = false;
+      if (state.scheduledSelection && !state.scheduledRoutines.some(function (routine) { return routine.id === state.scheduledSelection; })) {
+        state.scheduledSelection = "";
+        state.scheduledDetail = null;
+      }
+      if (!state.scheduledSelection && state.scheduledRoutines.length) state.scheduledSelection = state.scheduledRoutines[0].id;
+      render();
+      if (state.scheduledSelection) return loadScheduledDetail(state.scheduledSelection);
+    }).catch(function (error) {
+      state.scheduledLoading = false;
+      state.scheduledError = error.serverMessage || error.message || "Could not load scheduled work.";
+      render();
+    });
+  }
+
+  function selectScheduledRoutine(routineId) {
+    if (!routineId || state.scheduledBusy) return;
+    state.scheduledSelection = routineId;
+    state.scheduledDetail = null;
+    state.scheduledNotice = "";
+    state.scheduledError = "";
+    render();
+    loadScheduledDetail(routineId);
+  }
+
+  function loadScheduledDetail(routineId) {
+    if (!routineId) return Promise.resolve();
+    state.scheduledDetailLoading = true;
+    state.scheduledError = "";
+    render();
+    return api("/admin/api/audit/scheduled_work/routines/" + encodeURIComponent(routineId)).then(function (body) {
+      if (state.scheduledSelection !== routineId) return;
+      state.scheduledDetail = body;
+      state.scheduledCapability = body.capability || state.scheduledCapability;
+      state.scheduledDetailLoading = false;
+      render();
+    }).catch(function (error) {
+      if (state.scheduledSelection !== routineId) return;
+      state.scheduledDetailLoading = false;
+      state.scheduledError = error.serverMessage || error.message || "Could not load this routine.";
+      render();
+    });
+  }
+
+  function scheduledMutationKey(action) {
+    return "admin-ui:routine:" + action + ":" + Date.now() + ":" + Math.random().toString(36).slice(2);
+  }
+
+  function controlScheduledRoutine(action) {
+    if (!state.scheduledDetail || state.scheduledBusy) return;
+    var routine = state.scheduledDetail.routine;
+    state.scheduledBusy = action;
+    state.scheduledError = "";
+    state.scheduledNotice = "";
+    render();
+    api("/admin/api/audit/scheduled_work/routines/" + encodeURIComponent(routine.id) + "/control", {
+      method: "POST",
+      headers: { "content-type": "application/json", "idempotency-key": scheduledMutationKey(action) },
+      body: JSON.stringify({
+        action: action,
+        expectedVersion: Number(routine.version),
+        ...(action === "delete" ? { acknowledgeIrreversible: true } : {})
+      })
+    }).then(function (body) {
+      state.scheduledBusy = "";
+      state.scheduledDeleteConfirm = false;
+      if (action === "delete") {
+        state.scheduledSelection = "";
+        state.scheduledDetail = null;
+        state.scheduledNotice = "Routine deleted. The saved task was irreversibly removed.";
+      } else {
+        state.scheduledNotice = "Routine " + action + (action.endsWith("e") ? "d" : "ed") + ".";
+        if (state.scheduledDetail) state.scheduledDetail.routine = body.routine;
+      }
+      state.scheduledRoutines = null;
+      render();
+      return loadScheduledRoutines();
+    }).catch(function (error) {
+      state.scheduledBusy = "";
+      state.scheduledError = error.status === 409
+        ? "This routine changed in another session. Reloaded the latest version; review it before trying again."
+        : error.serverMessage || error.message || "Could not update this routine.";
+      state.scheduledDeleteConfirm = false;
+      render();
+      if (error.status === 409) return loadScheduledDetail(routine.id);
+    });
+  }
+
   function openAuditLogs(storeId, channelId, entryId) {
     state.view = "audit";
     state.profileScreen = "list";
+    state.auditDomain = "memory";
     state.memorySelection = { storeId: storeId || "", channelId: channelId || "", entryId: entryId || "" };
     state.memoryFilesRequestId += 1;
     state.memoryEntryRequestId += 1;
@@ -6455,9 +6803,19 @@ details[open].advanced summary::before {
       }
       return;
     }
+    if (state.scheduledDeleteConfirm) {
+      if (action === "scheduled-delete-cancel") {
+        if (state.scheduledBusy) return;
+        state.scheduledDeleteConfirm = false;
+        render();
+      } else if (action === "scheduled-delete-confirm") {
+        controlScheduledRoutine("delete");
+      }
+      return;
+    }
     if (state.view === "audit" && state.memoryDirty && (
       action === "open-channels" || action === "open-profiles" || action === "open-settings" ||
-      action === "open-audit" || action === "go-home"
+      action === "open-audit" || action === "go-home" || action === "audit-tab-scheduled"
     )) {
       state.memoryError = "Save or discard the current memory draft before navigating away.";
       render();
@@ -6578,6 +6936,18 @@ details[open].advanced summary::before {
     // Settings (model-providers) is a separate destination that lands with its
     // own build; the affordance is present per the approved model-field design.
     if (action === "open-settings") { openSettings(target.getAttribute("data-section") || ""); }
+    if (action === "audit-tab-scheduled" && state.auditDomain !== "scheduled-work") { openScheduledWork(""); }
+    if (action === "audit-tab-memory" && state.auditDomain !== "memory") { openAuditLogs("", "", ""); }
+    if (action === "scheduled-retry") { loadScheduledRoutines(); }
+    if (action === "scheduled-apply-filters") {
+      state.scheduledSelection = "";
+      state.scheduledDetail = null;
+      state.scheduledRoutines = null;
+      loadScheduledRoutines();
+    }
+    if (action === "select-scheduled-routine") { selectScheduledRoutine(target.getAttribute("data-routine") || ""); }
+    if (action === "scheduled-control") { controlScheduledRoutine(target.getAttribute("data-control") || ""); }
+    if (action === "scheduled-delete-open" && state.scheduledDetail) { state.scheduledDeleteConfirm = true; render(); }
     if (action === "memory-retry-scopes") { loadMemoryScopes(); }
     if (action === "select-memory-scope") { selectMemoryScope(target.getAttribute("data-store") || "", target.getAttribute("data-channel") || ""); }
     if (action === "memory-retry-files") { loadMemoryFiles(); }
@@ -6956,6 +7326,8 @@ details[open].advanced summary::before {
       if (action === "memory-description") { state.memoryDraft.description = target.value; markMemoryDirty(); }
       if (action === "memory-body") { state.memoryDraft.body = target.value; markMemoryDirty(); }
     }
+    if (action === "scheduled-filter-workspace") state.scheduledFilters.workspaceId = target.value;
+    if (action === "scheduled-filter-channel") state.scheduledFilters.channelId = target.value;
     if (action === "channel-addendum") {
       state.channelDraft.channelPromptAddendum = target.value;
       state.dirty = true;
@@ -7078,6 +7450,8 @@ details[open].advanced summary::before {
       markMemoryDirty();
       render();
     }
+    if (action === "scheduled-filter-state") state.scheduledFilters.state = target.value;
+    if (action === "scheduled-filter-status") state.scheduledFilters.status = target.value;
     if (action === "sandbox-enabled" && !state.sandboxSaving) {
       sandboxDraft.enabled = !!target.checked;
       state.sandboxError = "";

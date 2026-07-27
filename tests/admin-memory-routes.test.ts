@@ -9,6 +9,7 @@ import { projectMemoryEntry, projectMemoryFiles } from '../src/memory/markdown.t
 import { SqliteMemoryStateStore } from '../src/memory/store.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { SqliteRoutineStore } from '../src/routines/store.ts';
 
 const ADMIN_TOKEN = 'admin-memory-secret';
 const NOW = Date.UTC(2026, 6, 25, 12);
@@ -17,6 +18,7 @@ async function harness() {
   const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const memory = new SqliteMemoryStateStore(':memory:', () => NOW);
+  const routines = new SqliteRoutineStore(':memory:', () => NOW);
   const publicStore = await memory.ensurePublicStore('T_TEST');
   await memory.observeChannelScope({
     workspaceId: 'T_TEST', channelId: 'C_PRODUCT', privacy: 'public',
@@ -30,9 +32,9 @@ async function harness() {
   });
   const app = new Hono();
   app.route('/', createAdminRoutes({
-    store: config, settings, memory, adminToken: ADMIN_TOKEN, knownProviders: new Set(),
+    store: config, settings, memory, routines, adminToken: ADMIN_TOKEN, knownProviders: new Set(),
   }));
-  return { app, config, settings, memory, publicStore, entry };
+  return { app, config, settings, memory, routines, publicStore, entry };
 }
 
 const auth = { authorization: `Bearer ${ADMIN_TOKEN}` };
@@ -71,9 +73,9 @@ test('memory admin scopes, files, entry detail, history, and audit events are au
     const events = await h.app.request('/admin/api/audit/memory/events', { headers: auth });
     assert.equal(events.status, 200);
     assert.equal(((await events.json()) as { events: unknown[] }).events.length, 1);
-    assert.equal((await h.app.request('/admin/api/audit/scheduled_work/events', { headers: auth })).status, 404);
+    assert.equal((await h.app.request('/admin/api/audit/scheduled_work/events', { headers: auth })).status, 200);
   } finally {
-    h.config.close(); h.settings.close(); h.memory.close();
+    h.config.close(); h.settings.close(); h.memory.close(); h.routines.close();
   }
 });
 
@@ -92,7 +94,7 @@ test('memory admin scope bootstrap uses body-free summaries', async () => {
     );
   } finally {
     h.memory.listEntries = originalListEntries;
-    h.config.close(); h.settings.close(); h.memory.close();
+    h.config.close(); h.settings.close(); h.memory.close(); h.routines.close();
   }
 });
 
@@ -122,7 +124,7 @@ test('private memory file listing does not audit every entry before detail is op
     assert.equal(detail.status, 200);
     assert.equal((await h.memory.listAuditEvents({ eventType: 'memory.private_entry_viewed' })).length, 1);
   } finally {
-    h.config.close(); h.settings.close(); h.memory.close();
+    h.config.close(); h.settings.close(); h.memory.close(); h.routines.close();
   }
 });
 
@@ -164,7 +166,7 @@ test('memory admin edit is idempotent, versioned, validated, and same-origin for
     });
     assert.equal(crossOrigin.status, 403);
   } finally {
-    h.config.close(); h.settings.close(); h.memory.close();
+    h.config.close(); h.settings.close(); h.memory.close(); h.routines.close();
   }
 });
 
@@ -226,7 +228,7 @@ test('memory export is an attachment and import preview/apply round-trips create
     assert.equal(mismatchedReplay.status, 409);
     assert.deepEqual(await mismatchedReplay.json(), { error: 'memory_idempotency_mismatch' });
   } finally {
-    h.config.close(); h.settings.close(); h.memory.close();
+    h.config.close(); h.settings.close(); h.memory.close(); h.routines.close();
   }
 });
 
@@ -258,7 +260,7 @@ test('memory manifest import preserves the reviewed entry status', async () => {
     assert.equal(applied.status, 200, await applied.text());
     assert.equal((await h.memory.getEntry('mem_stale_import'))?.status, 'stale');
   } finally {
-    h.config.close(); h.settings.close(); h.memory.close();
+    h.config.close(); h.settings.close(); h.memory.close(); h.routines.close();
   }
 });
 
@@ -290,7 +292,7 @@ test('memory import validation is typed while unknown failures stay sanitized', 
     assert.deepEqual(await unknown.json(), { error: 'internal_error' });
   } finally {
     h.memory.getStore = originalGetStore;
-    h.config.close(); h.settings.close(); h.memory.close();
+    h.config.close(); h.settings.close(); h.memory.close(); h.routines.close();
   }
 });
 
@@ -352,6 +354,6 @@ test('memory admin delete irreversibly scrubs content and review resolution is a
     assert.equal(forgotten?.body, '');
     assert.ok((await h.memory.listRevisions('mem_product')).every((revision) => revision.body === null));
   } finally {
-    h.config.close(); h.settings.close(); h.memory.close();
+    h.config.close(); h.settings.close(); h.memory.close(); h.routines.close();
   }
 });

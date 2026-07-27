@@ -21,6 +21,7 @@ import { validateRoutineDefinition, validateRoutineScope } from './validation.ts
 export interface RoutineDraftRequest {
   action: 'create' | 'edit' | 'delete';
   actorId: string;
+  actorClass?: 'member' | 'operator';
   workspaceId: string;
   channelId: string;
   routineId?: string;
@@ -78,7 +79,7 @@ export class RoutineService {
       confirmationId,
       tokenHash: hashRoutineValue(token),
       actorId: request.actorId,
-      actorClass: 'member',
+      actorClass: request.actorClass ?? 'member',
       workspaceId: request.workspaceId,
       channelId: request.channelId,
       draft,
