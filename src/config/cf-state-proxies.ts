@@ -39,6 +39,25 @@ import {
   type UpdateMemoryEntryInput,
 } from '../memory/types.ts';
 import type { AuditEvent, AuditEventFilter } from '../audit/types.ts';
+import {
+  RoutineStateError,
+  type BeginRoutineOccurrenceInput,
+  type ConfirmRoutineInput,
+  type ControlRoutineInput,
+  type CreateRoutineOccurrenceInput,
+  type PutRoutineConfirmationInput,
+  type RoutineAdmissionAttempt,
+  type RoutineConfirmation,
+  type RoutineDefinition,
+  type RoutineRevision,
+  type RoutineRpcRequest,
+  type RoutineRpcResponse,
+  type RoutineRun,
+  type RoutineRunFilter,
+  type RoutineStore,
+  type StartRoutineAdmissionInput,
+  type TransitionRoutineRunInput,
+} from '../routines/types.ts';
 
 /**
  * Cloudflare backends for the four public store interfaces: thin async proxies
@@ -85,6 +104,12 @@ function unwrap<T>(result: StateRpcResult<T>): T {
       const memoryDetails = { ...(details ?? {}) };
       delete memoryDetails.memoryCode;
       throw new MemoryStateError(memoryCode, message, memoryDetails);
+    }
+    case 'routine': {
+      const routineDetails = { ...(details ?? {}) };
+      const routineCode = routineDetails.routineCode ?? 'routine_state_error';
+      delete routineDetails.routineCode;
+      throw new RoutineStateError(routineCode, message, routineDetails);
     }
     default:
       throw new Error(message);
@@ -445,6 +470,115 @@ export class CfMemoryStateStore implements MemoryStateStore {
   }
 }
 
+export class CfRoutineStore implements RoutineStore {
+  constructor(private readonly stub: TagStateRpc) {}
+
+  async putConfirmation(input: PutRoutineConfirmationInput): Promise<RoutineConfirmation> {
+    const response = await this.execute({ kind: 'put_confirmation', input });
+    if (response.kind !== 'confirmation' || !response.confirmation) throw unexpectedRoutineResponse();
+    return response.confirmation;
+  }
+  async getConfirmation(tokenHash: string): Promise<RoutineConfirmation | undefined> {
+    const response = await this.execute({ kind: 'get_confirmation', tokenHash });
+    if (response.kind !== 'confirmation') throw unexpectedRoutineResponse();
+    return orUndefined(response.confirmation);
+  }
+  async confirm(input: ConfirmRoutineInput): Promise<RoutineDefinition> {
+    return this.requiredRoutine(await this.execute({ kind: 'confirm', input }));
+  }
+  async purgeConfirmations(): Promise<number> {
+    const response = await this.execute({ kind: 'purge_confirmations' });
+    if (response.kind !== 'purged') throw unexpectedRoutineResponse();
+    return response.count;
+  }
+  async getRoutine(routineId: string): Promise<RoutineDefinition | undefined> {
+    const response = await this.execute({ kind: 'get_routine', routineId });
+    if (response.kind !== 'routine') throw unexpectedRoutineResponse();
+    return orUndefined(response.routine);
+  }
+  async listRoutines(workspaceId?: string, channelId?: string): Promise<RoutineDefinition[]> {
+    const response = await this.execute({
+      kind: 'list_routines',
+      ...(workspaceId ? { workspaceId } : {}),
+      ...(channelId ? { channelId } : {}),
+    });
+    if (response.kind !== 'routines') throw unexpectedRoutineResponse();
+    return response.routines;
+  }
+  async listRevisions(routineId: string): Promise<RoutineRevision[]> {
+    const response = await this.execute({ kind: 'list_revisions', routineId });
+    if (response.kind !== 'revisions') throw unexpectedRoutineResponse();
+    return response.revisions;
+  }
+  async control(input: ControlRoutineInput): Promise<RoutineDefinition> {
+    return this.requiredRoutine(await this.execute({ kind: 'control', input }));
+  }
+  async createOccurrence(input: CreateRoutineOccurrenceInput): Promise<RoutineRun> {
+    return this.requiredRun(await this.execute({ kind: 'create_occurrence', input }));
+  }
+  async getRun(occurrenceId: string): Promise<RoutineRun | undefined> {
+    const response = await this.execute({ kind: 'get_run', occurrenceId });
+    if (response.kind !== 'run') throw unexpectedRoutineResponse();
+    return orUndefined(response.run);
+  }
+  async listRuns(filter: RoutineRunFilter = {}): Promise<RoutineRun[]> {
+    const response = await this.execute({ kind: 'list_runs', filter });
+    if (response.kind !== 'runs') throw unexpectedRoutineResponse();
+    return response.runs;
+  }
+  async startAdmissionAttempt(input: StartRoutineAdmissionInput): Promise<RoutineAdmissionAttempt> {
+    const response = await this.execute({ kind: 'start_admission', input });
+    if (response.kind !== 'admission') throw unexpectedRoutineResponse();
+    return response.admission;
+  }
+  async recordAdmissionReceipt(
+    occurrenceId: string,
+    attempt: number,
+    flueRunId: string,
+    receiptAt: number,
+  ): Promise<RoutineAdmissionAttempt> {
+    const response = await this.execute({
+      kind: 'record_admission_receipt', occurrenceId, attempt, flueRunId, receiptAt,
+    });
+    if (response.kind !== 'admission') throw unexpectedRoutineResponse();
+    return response.admission;
+  }
+  async beginOccurrence(input: BeginRoutineOccurrenceInput): Promise<'started' | 'superseded'> {
+    const response = await this.execute({ kind: 'begin_occurrence', input });
+    if (response.kind !== 'begin') throw unexpectedRoutineResponse();
+    return response.outcome;
+  }
+  async transitionRun(input: TransitionRoutineRunInput): Promise<RoutineRun> {
+    return this.requiredRun(await this.execute({ kind: 'transition_run', input }));
+  }
+  async listAdmissions(occurrenceId: string): Promise<RoutineAdmissionAttempt[]> {
+    const response = await this.execute({ kind: 'list_admissions', occurrenceId });
+    if (response.kind !== 'admissions') throw unexpectedRoutineResponse();
+    return response.admissions;
+  }
+  async listAuditEvents(filter: AuditEventFilter = {}): Promise<AuditEvent[]> {
+    const response = await this.execute({ kind: 'list_audit_events', filter });
+    if (response.kind !== 'audit_events') throw unexpectedRoutineResponse();
+    return response.events;
+  }
+
+  private async execute(request: RoutineRpcRequest): Promise<RoutineRpcResponse> {
+    return unwrap(await this.stub.routinesExecute(request));
+  }
+  private requiredRoutine(response: RoutineRpcResponse): RoutineDefinition {
+    if (response.kind !== 'routine' || !response.routine) throw unexpectedRoutineResponse();
+    return response.routine;
+  }
+  private requiredRun(response: RoutineRpcResponse): RoutineRun {
+    if (response.kind !== 'run' || !response.run) throw unexpectedRoutineResponse();
+    return response.run;
+  }
+}
+
 function unexpectedMemoryResponse(): Error {
   return new Error('Unexpected memory state response');
+}
+
+function unexpectedRoutineResponse(): Error {
+  return new Error('Unexpected routine state response');
 }

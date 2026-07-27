@@ -64,10 +64,18 @@ function inspectBuild(outputDir) {
     'generated config includes the workflow Durable Object',
   );
   check(
+    bindings.some(
+      (binding) =>
+        binding.name === 'ROUTINE_STATE_SPIKE' && binding.class_name === 'RoutineStateSpike',
+    ),
+    'generated config preserves the product-state Durable Object',
+  );
+  check(
     (config.migrations ?? []).some(
       (migration) =>
         migration.tag === 'v1' &&
-        migration.new_sqlite_classes?.includes('FlueRoutineSpikeWorkflow'),
+        migration.new_sqlite_classes?.includes('FlueRoutineSpikeWorkflow') &&
+        migration.new_sqlite_classes?.includes('RoutineStateSpike'),
     ),
     'generated config preserves the workflow migration',
   );
@@ -115,7 +123,13 @@ async function waitForReady(handle, timeoutMs = 30_000) {
 async function readJson(url, init) {
   const response = await fetch(url, init);
   const text = await response.text();
-  return { status: response.status, body: text ? JSON.parse(text) : undefined };
+  let body;
+  try {
+    body = text ? JSON.parse(text) : undefined;
+  } catch {
+    body = text;
+  }
+  return { status: response.status, body };
 }
 
 async function trigger(baseUrl) {
@@ -136,6 +150,22 @@ async function waitForRuns(baseUrl, minimum, timeoutMs = 10_000) {
 async function verifyRuntime(baseUrl, handle) {
   const hiddenList = await fetch(`${baseUrl}/spike/runs`);
   check(hiddenList.status === 404, 'internal run inspection fails closed without its token');
+
+  const state = await readJson(`${baseUrl}/spike/state`, {
+    method: 'POST',
+    headers: { ...INTERNAL_HEADERS, 'content-type': 'application/json' },
+    body: JSON.stringify({ suffix: 'parity', at: Date.now() }),
+  });
+  const statePassed =
+    state.status === 200 &&
+    state.body.routineId === 'routine_workerd_parity' &&
+    state.body.version === 1 &&
+    state.body.revisionCount === 1 &&
+    state.body.auditCount === 1;
+  if (!statePassed) {
+    throw new Error(`DO state parity failed (${state.status}): ${JSON.stringify(state.body)}`);
+  }
+  check(true, 'production RoutineStoreLogic preserves definition, revision, and audit atomicity on DO SQLite');
 
   await trigger(baseUrl);
   const firstRuns = await waitForRuns(baseUrl, 1);
@@ -197,7 +227,12 @@ async function main() {
     const port = await getFreePort();
     handle = startWrangler(configPath, join(tempRoot, 'state'), port);
     await waitForReady(handle);
-    await verifyRuntime(`http://127.0.0.1:${port}`, handle);
+    try {
+      await verifyRuntime(`http://127.0.0.1:${port}`, handle);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`${message}\n\nwrangler output:\n${handle.getOutput()}`);
+    }
   } finally {
     if (handle) await stopChild(handle.child);
     rmSync(tempRoot, { recursive: true, force: true });

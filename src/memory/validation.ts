@@ -1,6 +1,10 @@
 import * as v from 'valibot';
 
 import { MemoryStateError, type MemoryEntryType } from './types.ts';
+import {
+  hasCredentialLikeContent,
+  hasDisallowedControlCharacter,
+} from '../security/content-validation.ts';
 
 const MAX_DESCRIPTION_BYTES = 512;
 const MAX_BODY_BYTES = 8 * 1_024;
@@ -17,18 +21,6 @@ const MemoryContentSchema = v.object({
   body: v.pipe(v.string(), v.minLength(1)),
   type: v.picklist(MEMORY_ENTRY_TYPES),
 });
-
-const CONTROL_CHARACTER_PATTERN = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/u;
-const CREDENTIAL_PATTERNS = [
-  /\bxox[a-z]-[a-z0-9-]{20,}\b/i,
-  /\bsk-ant-[a-z0-9_-]{20,}\b/i,
-  /\bsk-proj-[a-z0-9_-]{20,}(?![a-z0-9_-])/i,
-  /\b(?:ghp|github_pat)_[a-z0-9_]{20,}\b/i,
-  /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/,
-  /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/i,
-  /\b(?:TAG_ADMIN_TOKEN|ADMIN_TOKEN|SLACK_(?:BOT|APP)_TOKEN|ANTHROPIC_API_KEY|OPENAI_API_KEY|GITHUB_TOKEN)\s*=\s*[^\s]{8,}/i,
-  /\bAWS_(?:ACCESS_KEY_ID|SECRET_ACCESS_KEY)\b["']?\s*(?:=|:)\s*["']?[a-z0-9/+=]{8,}/i,
-];
 
 export interface ValidMemoryContent {
   description: string;
@@ -48,14 +40,14 @@ export function validateMemoryContent(input: unknown): ValidMemoryContent {
   }
   assertByteLength('Description', description, MAX_DESCRIPTION_BYTES);
   assertByteLength('Body', body, MAX_BODY_BYTES);
-  if (CONTROL_CHARACTER_PATTERN.test(description) || CONTROL_CHARACTER_PATTERN.test(body)) {
+  if (hasDisallowedControlCharacter(description) || hasDisallowedControlCharacter(body)) {
     throw new MemoryStateError(
       'memory_invalid_control_character',
       'Memory content cannot contain control characters.',
     );
   }
   const combined = `${description}\n${body}`;
-  if (CREDENTIAL_PATTERNS.some((pattern) => pattern.test(combined))) {
+  if (hasCredentialLikeContent(combined)) {
     throw new MemoryStateError(
       'memory_credential_rejected',
       'Memory cannot contain credential-like content.',

@@ -2,6 +2,7 @@ import {
   CfAgentSnapshotStore,
   CfConfigStore,
   CfMemoryStateStore,
+  CfRoutineStore,
   CfSettingsStore,
   CfSlackStateStore,
 } from './cf-state-proxies.ts';
@@ -14,6 +15,8 @@ import { SqliteSlackStateStore, type SlackStateStore } from '../slack/claim-stor
 import { resolveStateDbPath } from '../state/node-state-db.ts';
 import { SqliteMemoryStateStore } from '../memory/store.ts';
 import type { MemoryStateStore } from '../memory/types.ts';
+import { SqliteRoutineStore } from '../routines/store.ts';
+import type { RoutineStore } from '../routines/types.ts';
 
 export { isCloudflareTarget } from './runtime-target.ts';
 
@@ -42,6 +45,7 @@ export interface AppStores {
   slackState: SlackStateStore;
   settings: SettingsStore;
   memory: MemoryStateStore;
+  routines: RoutineStore;
 }
 
 // Node singletons, cached by resolved DB path exactly like the pre-refactor
@@ -57,6 +61,7 @@ let cachedSnapshotStore: CachedStore<SqliteAgentSnapshotStore> | undefined;
 let cachedSlackStateStore: CachedStore<SqliteSlackStateStore> | undefined;
 let cachedSettingsStore: CachedStore<SqliteSettingsStore> | undefined;
 let cachedMemoryStore: CachedStore<SqliteMemoryStateStore> | undefined;
+let cachedRoutineStore: CachedStore<SqliteRoutineStore> | undefined;
 
 function nodeCached<T extends { close(): void }>(
   cached: CachedStore<T> | undefined,
@@ -125,6 +130,17 @@ export function getMemoryStateStore(env?: PlatformEnv): MemoryStateStore {
   return cachedMemoryStore.store;
 }
 
+export function getRoutineStore(env?: PlatformEnv): RoutineStore {
+  if (isCloudflareTarget()) {
+    return new CfRoutineStore(tagStateStub(env));
+  }
+  cachedRoutineStore = nodeCached(
+    cachedRoutineStore,
+    (path) => new SqliteRoutineStore(path),
+  );
+  return cachedRoutineStore.store;
+}
+
 /**
  * Resolve every store a request handler needs in one call. Handlers pass their
  * platform env through (`c.env` in routes); on Node it is ignored.
@@ -136,5 +152,6 @@ export function resolveStores(env?: PlatformEnv): AppStores {
     slackState: getSlackStateStore(env),
     settings: getSettingsStore(env),
     memory: getMemoryStateStore(env),
+    routines: getRoutineStore(env),
   };
 }

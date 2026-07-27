@@ -83,6 +83,12 @@ import type { SqlParam, StateDb } from './state/state-db.ts';
 import { registerCloudflareBindingProvider } from './cloudflare-provider.ts';
 import { MemoryStoreLogic } from './memory/store.ts';
 import { MemoryStateError, type MemoryRpcRequest, type MemoryRpcResponse } from './memory/types.ts';
+import { RoutineStoreLogic } from './routines/store.ts';
+import {
+  RoutineStateError,
+  type RoutineRpcRequest,
+  type RoutineRpcResponse,
+} from './routines/types.ts';
 
 // This module is imported only by Flue's Cloudflare entry. Register before
 // the generated entry's guarded default so `cloudflare/*` remains keyless but
@@ -407,6 +413,7 @@ interface TagStateStores {
   settings: SettingsStoreLogic;
   turnJobs: TurnJobStoreLogic;
   memory: MemoryStoreLogic;
+  routines: RoutineStoreLogic;
 }
 
 export class TagStateStore extends DurableObject implements TagStateRpc {
@@ -445,6 +452,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         settings: new SettingsStoreLogic(db),
         turnJobs: new TurnJobStoreLogic(db),
         memory: new MemoryStoreLogic(db),
+        routines: new RoutineStoreLogic(db),
       };
       this.initError = undefined;
       return stores;
@@ -604,6 +612,12 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     request: MemoryRpcRequest,
   ): Promise<StateRpcResult<MemoryRpcResponse>> {
     return this.call((stores) => stores.memory.execute(request));
+  }
+
+  async routinesExecute(
+    request: RoutineRpcRequest,
+  ): Promise<StateRpcResult<RoutineRpcResponse>> {
+    return this.call((stores) => stores.routines.execute(request));
   }
 
   // ── turn relay (Cloudflare turn-horizon fix) ─────────────────────────────
@@ -892,6 +906,12 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           ...err.details,
         });
       }
+      if (err instanceof RoutineStateError) {
+        return rpcError('routine', err.message, {
+          routineCode: err.code,
+          ...err.details,
+        });
+      }
       const message = err instanceof Error ? err.message : String(err);
       console.error('[chickpea] TagStateStore RPC failure:', message);
       return rpcError('internal', message);
@@ -900,7 +920,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
 }
 
 function rpcError(
-  code: 'unknown_agent' | 'agent_exists' | 'agent_still_assigned' | 'memory' | 'internal',
+  code: 'unknown_agent' | 'agent_exists' | 'agent_still_assigned' | 'memory' | 'routine' | 'internal',
   message: string,
   details?: Record<string, string>,
 ): { ok: false; error: { code: typeof code; message: string; details?: Record<string, string> } } {

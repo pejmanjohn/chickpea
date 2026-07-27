@@ -9,10 +9,18 @@
   "ai": {
     "binding": "AI"
   },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "ROUTINE_STATE_SPIKE",
+        "class_name": "RoutineStateSpike"
+      }
+    ]
+  },
   "migrations": [
     {
       "tag": "v1",
-      "new_sqlite_classes": ["FlueRoutineSpikeWorkflow", "FlueRegistry"]
+      "new_sqlite_classes": ["RoutineStateSpike", "FlueRoutineSpikeWorkflow", "FlueRegistry"]
     }
   ]
 }
