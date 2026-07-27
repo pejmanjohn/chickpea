@@ -46,6 +46,10 @@
     {
       "tag": "v4",
       "new_sqlite_classes": ["FlueRoutineWorkflow"]
+    },
+    {
+      "tag": "v5",
+      "new_sqlite_classes": ["FlueRoutineIntentAgent"]
     }
   ],
   "containers": [

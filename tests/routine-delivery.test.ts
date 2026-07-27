@@ -1,0 +1,99 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+
+import { WebClient } from '@slack/web-api';
+
+import {
+  deliverRoutineFailureNotice,
+  deliverRoutineResult,
+  renderRoutineDelivery,
+} from '../src/routines/delivery.ts';
+import { RoutineRuntimeError } from '../src/routines/runtime.ts';
+import type {
+  RecordRoutineDeliveryInput,
+  RoutineDefinition,
+  RoutineRun,
+  RoutineStore,
+} from '../src/routines/types.ts';
+
+const routine = { id: 'routine_test', name: '<Daily & write>', channelId: 'C_TEST' } as RoutineDefinition;
+const run = { id: 'rrun_test' } as RoutineRun;
+const access = {
+  config: {} as never, accessHash: 'a'.repeat(64), botToken: 'xoxb-test', botUserId: 'U_BOT',
+};
+
+function store(events: string[]): RoutineStore {
+  return {
+    claimDelivery: async () => { events.push('claim'); return 'claimed'; },
+    recordDelivery: async (input: RecordRoutineDeliveryInput) => {
+      events.push(`record:${input.outcome}:${input.messageTs ?? ''}`);
+      return run;
+    },
+  } as unknown as RoutineStore;
+}
+
+test('routine delivery claims once, posts at top level, and records the Slack receipt', async () => {
+  const events: string[] = [];
+  const requests: Array<Record<string, string>> = [];
+  const client = new WebClient('xoxb-test', {
+    slackApiUrl: 'https://slack.invalid/api/', retryConfig: { retries: 0 },
+    fetch: async (_url, init) => {
+      requests.push(Object.fromEntries(new URLSearchParams(String(init?.body ?? ''))));
+      return new Response(JSON.stringify({ ok: true, channel: 'C_TEST', ts: '1785000000.000100' }), {
+        headers: { 'content-type': 'application/json' },
+      });
+    },
+  });
+  const receipt = await deliverRoutineResult({
+    store: store(events), run, routine, access, message: 'Completed the write.',
+    changeKeyHash: 'b'.repeat(64), now: () => 1_000,
+  }, client);
+  assert.deepEqual(receipt, { channelId: 'C_TEST', messageTs: '1785000000.000100' });
+  assert.deepEqual(events, ['claim', 'record:delivered:1785000000.000100']);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0]?.channel, 'C_TEST');
+  assert.equal(requests[0]?.thread_ts, undefined);
+  assert.match(requests[0]?.text ?? '', /Completed the write/);
+  assert.equal(
+    renderRoutineDelivery(routine, 'Done.'),
+    '*Routine: &lt;Daily &amp; write&gt;*\nDone.\n\n_Routine ID: `routine_test`_',
+  );
+});
+
+test('an ambiguous Slack failure records unknown and is never retried', async () => {
+  const events: string[] = [];
+  let requests = 0;
+  const client = new WebClient('xoxb-test', {
+    slackApiUrl: 'https://slack.invalid/api/', retryConfig: { retries: 0 },
+    fetch: async () => { requests += 1; throw new Error('socket closed after send'); },
+  });
+  await assert.rejects(
+    () => deliverRoutineResult({
+      store: store(events), run, routine, access, message: 'Maybe posted.',
+      changeKeyHash: null, now: () => 1_000,
+    }, client),
+    (error: unknown) => error instanceof RoutineRuntimeError && error.failureClass === 'delivery_unknown',
+  );
+  assert.equal(requests, 1);
+  assert.deepEqual(events, ['claim', 'record:unknown:']);
+});
+
+test('terminal notices point to safe history and share the same dedupe lease', async () => {
+  const events: string[] = [];
+  let posted = '';
+  const client = new WebClient('xoxb-test', {
+    slackApiUrl: 'https://slack.invalid/api/', retryConfig: { retries: 0 },
+    fetch: async (_url, init) => {
+      posted = new URLSearchParams(String(init?.body ?? '')).get('text') ?? '';
+      return new Response(JSON.stringify({ ok: true, channel: 'C_TEST', ts: '1785000000.000200' }), {
+        headers: { 'content-type': 'application/json' },
+      });
+    },
+  });
+  await deliverRoutineFailureNotice({
+    store: store(events), run, routine, access,
+    publicError: 'The routine stopped safely.', now: () => 2_000,
+  }, client);
+  assert.match(posted, /!routines show routine_test/);
+  assert.deepEqual(events, ['claim', 'record:delivered:1785000000.000200']);
+});

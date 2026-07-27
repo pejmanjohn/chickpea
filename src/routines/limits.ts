@@ -11,6 +11,7 @@ export const ROUTINE_LIMITS = {
   minimumIntervalMs: 60 * 60 * 1_000,
   admissionGraceMs: 15 * 60 * 1_000,
   admissionLeaseMs: 2 * 60 * 1_000,
+  deliveryLeaseMs: 2 * 60 * 1_000,
   confirmationTtlMs: 15 * 60 * 1_000,
   confirmationPurgeDelayMs: 24 * 60 * 60 * 1_000,
   occurrenceDeadlineMs: 15 * 60 * 1_000,

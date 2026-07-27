@@ -372,6 +372,16 @@ test('occurrence uniqueness, admission attempts, and atomic Workflow begin preve
     assert.equal((await store.getRun(run.id))?.resolvedAccessHash, 'a'.repeat(64));
     assert.equal((await store.getRun(run.id))?.resolvedAgentId, 'agent_default');
     assert.deepEqual((await store.listAdmissions(run.id)).map((item) => item.status), ['attached', 'superseded']);
+    assert.equal(await store.claimDelivery({
+      occurrenceId: run.id, at: CREATED_AT + 4, leaseUntil: CREATED_AT + 60_004,
+    }), 'claimed');
+    assert.equal(await store.claimDelivery({
+      occurrenceId: run.id, at: CREATED_AT + 4, leaseUntil: CREATED_AT + 60_004,
+    }), 'superseded');
+    await store.recordDelivery({
+      occurrenceId: run.id, outcome: 'delivered', at: CREATED_AT + 4,
+      channelId: 'C_TEST', messageTs: '1785000000.000100', changeKeyHash: 'b'.repeat(64),
+    });
     await store.transitionRun({
       occurrenceId: run.id, from: ['running'], to: 'succeeded', at: CREATED_AT + 5,
       model: 'anthropic/claude-sonnet-4-6', inputTokens: 10, outputTokens: 20,
@@ -383,6 +393,8 @@ test('occurrence uniqueness, admission attempts, and atomic Workflow begin preve
     assert.equal(completed?.inputTokens, 10);
     assert.equal(completed?.toolCallCount, 2);
     assert.equal(completed?.changeKeyHash, 'b'.repeat(64));
+    assert.equal(completed?.deliveryStatus, 'delivered');
+    assert.equal((await store.getRoutine(routine.id))?.lastChangeKeyHash, 'b'.repeat(64));
   } finally {
     store.close();
   }

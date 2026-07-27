@@ -42,11 +42,14 @@ import type { AuditEvent, AuditEventFilter } from '../audit/types.ts';
 import {
   RoutineStateError,
   type BeginRoutineOccurrenceInput,
+  type CancelRoutineConfirmationInput,
+  type ClaimRoutineDeliveryInput,
   type ClaimDueRoutinesInput,
   type ConfirmRoutineInput,
   type ControlRoutineInput,
   type CreateRoutineOccurrenceInput,
   type PutRoutineConfirmationInput,
+  type RecordRoutineDeliveryInput,
   type RoutineAdmissionAttempt,
   type RoutineConfirmation,
   type RoutineDefinition,
@@ -486,6 +489,11 @@ export class CfRoutineStore implements RoutineStore {
     if (response.kind !== 'confirmation') throw unexpectedRoutineResponse();
     return orUndefined(response.confirmation);
   }
+  async cancelConfirmation(input: CancelRoutineConfirmationInput): Promise<boolean> {
+    const response = await this.execute({ kind: 'cancel_confirmation', input });
+    if (response.kind !== 'boolean') throw unexpectedRoutineResponse();
+    return response.value;
+  }
   async confirm(input: ConfirmRoutineInput): Promise<RoutineDefinition> {
     return this.requiredRoutine(await this.execute({ kind: 'confirm', input }));
   }
@@ -561,6 +569,14 @@ export class CfRoutineStore implements RoutineStore {
   }
   async transitionRun(input: TransitionRoutineRunInput): Promise<RoutineRun> {
     return this.requiredRun(await this.execute({ kind: 'transition_run', input }));
+  }
+  async claimDelivery(input: ClaimRoutineDeliveryInput): Promise<'claimed' | 'superseded'> {
+    const response = await this.execute({ kind: 'claim_delivery', input });
+    if (response.kind !== 'delivery_claim') throw unexpectedRoutineResponse();
+    return response.outcome;
+  }
+  async recordDelivery(input: RecordRoutineDeliveryInput): Promise<RoutineRun> {
+    return this.requiredRun(await this.execute({ kind: 'record_delivery', input }));
   }
   async listAdmissions(occurrenceId: string): Promise<RoutineAdmissionAttempt[]> {
     const response = await this.execute({ kind: 'list_admissions', occurrenceId });

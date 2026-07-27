@@ -13,11 +13,14 @@ import { nextRoutineOccurrence } from './schedule.ts';
 import {
   RoutineStateError,
   type BeginRoutineOccurrenceInput,
+  type CancelRoutineConfirmationInput,
+  type ClaimRoutineDeliveryInput,
   type ClaimDueRoutinesInput,
   type ConfirmRoutineInput,
   type ControlRoutineInput,
   type CreateRoutineOccurrenceInput,
   type PutRoutineConfirmationInput,
+  type RecordRoutineDeliveryInput,
   type RoutineAdmissionAttempt,
   type RoutineConfirmation,
   type RoutineConfirmationDraft,
@@ -203,6 +206,8 @@ export class RoutineStoreLogic {
         return { kind: 'confirmation', confirmation: this.putConfirmation(request.input) };
       case 'get_confirmation':
         return { kind: 'confirmation', confirmation: this.getConfirmation(request.tokenHash) ?? null };
+      case 'cancel_confirmation':
+        return { kind: 'boolean', value: this.cancelConfirmation(request.input) };
       case 'confirm':
         return { kind: 'routine', routine: this.confirm(request.input) };
       case 'purge_confirmations':
@@ -244,6 +249,10 @@ export class RoutineStoreLogic {
         return { kind: 'begin', outcome: this.beginOccurrence(request.input) };
       case 'transition_run':
         return { kind: 'run', run: this.transitionRun(request.input) };
+      case 'claim_delivery':
+        return { kind: 'delivery_claim', outcome: this.claimDelivery(request.input) };
+      case 'record_delivery':
+        return { kind: 'run', run: this.recordDelivery(request.input) };
       case 'list_admissions':
         return { kind: 'admissions', admissions: this.listAdmissions(request.occurrenceId) };
       case 'list_audit_events':
@@ -285,6 +294,32 @@ export class RoutineStoreLogic {
       tokenHash,
     );
     return row ? rowToConfirmation(row as unknown as ConfirmationRow) : undefined;
+  }
+
+  cancelConfirmation(input: CancelRoutineConfirmationInput): boolean {
+    validateRoutineScope(input.workspaceId, input.channelId, input.actorId);
+    if (!/^[a-f0-9]{64}$/.test(input.tokenHash) || !Number.isSafeInteger(input.at)) {
+      throw routineError('routine_confirmation_invalid', 'Routine confirmation is invalid.');
+    }
+    return this.db.transaction(() => {
+      const confirmation = this.getConfirmation(input.tokenHash);
+      if (
+        !confirmation ||
+        confirmation.actorId !== input.actorId ||
+        confirmation.workspaceId !== input.workspaceId ||
+        confirmation.channelId !== input.channelId ||
+        confirmation.consumedAt !== null ||
+        confirmation.expiresAt < input.at
+      ) {
+        return false;
+      }
+      this.db.run(
+        'UPDATE routine_confirmations SET consumed_at = ? WHERE id = ? AND consumed_at IS NULL',
+        input.at,
+        confirmation.id,
+      );
+      return true;
+    });
   }
 
   confirm(input: ConfirmRoutineInput): RoutineDefinition {
@@ -1073,6 +1108,76 @@ export class RoutineStoreLogic {
     });
   }
 
+  claimDelivery(input: ClaimRoutineDeliveryInput): 'claimed' | 'superseded' {
+    if (
+      !isOpaqueRoutineId(input.occurrenceId) ||
+      !Number.isSafeInteger(input.at) ||
+      !Number.isSafeInteger(input.leaseUntil) ||
+      input.leaseUntil <= input.at ||
+      input.leaseUntil > input.at + ROUTINE_LIMITS.deliveryLeaseMs
+    ) {
+      throw routineError('routine_delivery_invalid', 'Routine delivery claim is invalid.');
+    }
+    return this.db.transaction(() => {
+      const run = required(this.getRun(input.occurrenceId), 'Routine occurrence was not found.');
+      if (!['running', 'failed'].includes(run.status) || run.deliveryStatus !== 'none') return 'superseded';
+      this.db.run(
+        `UPDATE routine_runs SET delivery_status = 'leased', delivery_lease_until = ?
+         WHERE id = ? AND status IN ('running', 'failed') AND delivery_status = 'none'`,
+        input.leaseUntil,
+        run.id,
+      );
+      return this.getRun(run.id)?.deliveryStatus === 'leased' ? 'claimed' : 'superseded';
+    });
+  }
+
+  recordDelivery(input: RecordRoutineDeliveryInput): RoutineRun {
+    if (
+      !isOpaqueRoutineId(input.occurrenceId) ||
+      !Number.isSafeInteger(input.at) ||
+      !['delivered', 'unknown', 'failed'].includes(input.outcome) ||
+      (input.channelId !== undefined && !isOpaqueRoutineId(input.channelId)) ||
+      (input.messageTs !== undefined && !/^\d{1,20}\.\d{1,12}$/.test(input.messageTs)) ||
+      (input.changeKeyHash !== undefined &&
+        input.changeKeyHash !== null &&
+        !/^[a-f0-9]{64}$/.test(input.changeKeyHash)) ||
+      (input.outcome === 'delivered' && (!input.channelId || !input.messageTs))
+    ) {
+      throw routineError('routine_delivery_invalid', 'Routine delivery result is invalid.');
+    }
+    return this.db.transaction(() => {
+      const run = required(this.getRun(input.occurrenceId), 'Routine occurrence was not found.');
+      if (!['running', 'failed'].includes(run.status) || run.deliveryStatus !== 'leased') {
+        throw routineError('routine_delivery_superseded', 'Routine delivery was superseded.');
+      }
+      this.db.run(
+        `UPDATE routine_runs SET delivery_status = ?, delivery_lease_until = NULL,
+           delivery_channel_id = ?, delivery_message_ts = ?,
+           change_key_hash = COALESCE(?, change_key_hash) WHERE id = ?`,
+        input.outcome,
+        input.channelId ?? null,
+        input.messageTs ?? null,
+        input.changeKeyHash ?? null,
+        run.id,
+      );
+      if (input.outcome === 'delivered' && input.changeKeyHash) {
+        this.db.run(
+          'UPDATE routines SET last_change_key_hash = ? WHERE id = ? AND deleted_at IS NULL',
+          input.changeKeyHash,
+          run.routineId,
+        );
+      }
+      const updated = required(this.getRun(run.id), 'Routine occurrence was not readable after delivery.');
+      this.appendRunAudit(
+        `routine.delivery_${input.outcome}`,
+        updated,
+        `routine:delivery:${run.id}:${input.outcome}`,
+        input.at,
+      );
+      return updated;
+    });
+  }
+
   listAdmissions(occurrenceId: string): RoutineAdmissionAttempt[] {
     return this.db
       .all(
@@ -1636,6 +1741,9 @@ export class SqliteRoutineStore implements RoutineStore {
   async getConfirmation(tokenHash: string): Promise<RoutineConfirmation | undefined> {
     return this.logic.getConfirmation(tokenHash);
   }
+  async cancelConfirmation(input: CancelRoutineConfirmationInput): Promise<boolean> {
+    return this.logic.cancelConfirmation(input);
+  }
   async confirm(input: ConfirmRoutineInput): Promise<RoutineDefinition> {
     return this.logic.confirm(input);
   }
@@ -1685,6 +1793,12 @@ export class SqliteRoutineStore implements RoutineStore {
   }
   async transitionRun(input: TransitionRoutineRunInput): Promise<RoutineRun> {
     return this.logic.transitionRun(input);
+  }
+  async claimDelivery(input: ClaimRoutineDeliveryInput): Promise<'claimed' | 'superseded'> {
+    return this.logic.claimDelivery(input);
+  }
+  async recordDelivery(input: RecordRoutineDeliveryInput): Promise<RoutineRun> {
+    return this.logic.recordDelivery(input);
   }
   async listAdmissions(occurrenceId: string): Promise<RoutineAdmissionAttempt[]> {
     return this.logic.listAdmissions(occurrenceId);

@@ -147,6 +147,14 @@ export interface PutRoutineConfirmationInput {
   expiresAt: number;
 }
 
+export interface CancelRoutineConfirmationInput {
+  tokenHash: string;
+  actorId: string;
+  workspaceId: string;
+  channelId: string;
+  at: number;
+}
+
 export interface ConfirmRoutineInput {
   tokenHash: string;
   actorId: string;
@@ -295,6 +303,21 @@ export interface TransitionRoutineRunInput {
   suppressedAsNoOp?: boolean;
 }
 
+export interface ClaimRoutineDeliveryInput {
+  occurrenceId: string;
+  at: number;
+  leaseUntil: number;
+}
+
+export interface RecordRoutineDeliveryInput {
+  occurrenceId: string;
+  outcome: 'delivered' | 'unknown' | 'failed';
+  at: number;
+  channelId?: string;
+  messageTs?: string;
+  changeKeyHash?: string | null;
+}
+
 export interface RoutineRunFilter {
   routineId?: string;
   statuses?: readonly RoutineRunStatus[];
@@ -304,6 +327,7 @@ export interface RoutineRunFilter {
 export interface RoutineStore {
   putConfirmation(input: PutRoutineConfirmationInput): Promise<RoutineConfirmation>;
   getConfirmation(tokenHash: string): Promise<RoutineConfirmation | undefined>;
+  cancelConfirmation(input: CancelRoutineConfirmationInput): Promise<boolean>;
   confirm(input: ConfirmRoutineInput): Promise<RoutineDefinition>;
   purgeConfirmations(): Promise<number>;
   getRoutine(routineId: string): Promise<RoutineDefinition | undefined>;
@@ -324,6 +348,8 @@ export interface RoutineStore {
   resolveAdmission(input: ResolveRoutineAdmissionInput): Promise<RoutineRun>;
   beginOccurrence(input: BeginRoutineOccurrenceInput): Promise<'started' | 'superseded'>;
   transitionRun(input: TransitionRoutineRunInput): Promise<RoutineRun>;
+  claimDelivery(input: ClaimRoutineDeliveryInput): Promise<'claimed' | 'superseded'>;
+  recordDelivery(input: RecordRoutineDeliveryInput): Promise<RoutineRun>;
   listAdmissions(occurrenceId: string): Promise<RoutineAdmissionAttempt[]>;
   listAuditEvents(filter?: AuditEventFilter): Promise<AuditEvent[]>;
 }
@@ -342,6 +368,7 @@ export class RoutineStateError extends Error {
 export type RoutineRpcRequest =
   | { kind: 'put_confirmation'; input: PutRoutineConfirmationInput }
   | { kind: 'get_confirmation'; tokenHash: string }
+  | { kind: 'cancel_confirmation'; input: CancelRoutineConfirmationInput }
   | { kind: 'confirm'; input: ConfirmRoutineInput }
   | { kind: 'purge_confirmations' }
   | { kind: 'get_routine'; routineId: string }
@@ -363,6 +390,8 @@ export type RoutineRpcRequest =
   | { kind: 'resolve_admission'; input: ResolveRoutineAdmissionInput }
   | { kind: 'begin_occurrence'; input: BeginRoutineOccurrenceInput }
   | { kind: 'transition_run'; input: TransitionRoutineRunInput }
+  | { kind: 'claim_delivery'; input: ClaimRoutineDeliveryInput }
+  | { kind: 'record_delivery'; input: RecordRoutineDeliveryInput }
   | { kind: 'list_admissions'; occurrenceId: string }
   | { kind: 'list_audit_events'; filter: AuditEventFilter };
 
@@ -377,5 +406,7 @@ export type RoutineRpcResponse =
   | { kind: 'admission'; admission: RoutineAdmissionAttempt }
   | { kind: 'admissions'; admissions: RoutineAdmissionAttempt[] }
   | { kind: 'begin'; outcome: 'started' | 'superseded' }
+  | { kind: 'delivery_claim'; outcome: 'claimed' | 'superseded' }
+  | { kind: 'boolean'; value: boolean }
   | { kind: 'purged'; count: number }
   | { kind: 'audit_events'; events: AuditEvent[] };

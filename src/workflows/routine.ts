@@ -18,6 +18,10 @@ import {
   prepareRoutinePrompt,
 } from '../routines/prompt.ts';
 import {
+  deliverRoutineFailureNotice,
+  deliverRoutineResult,
+} from '../routines/delivery.ts';
+import {
   resolveRoutineRuntimeAccess,
   RoutineRuntimeError,
   type RoutineRuntimeAccess,
@@ -225,17 +229,39 @@ export default defineWorkflow({
         runtime.run,
         runtime.routine,
       );
-      await runtime.store.transitionRun({
-        occurrenceId: runtime.run.id,
-        from: ['running'],
-        to: result.status,
-        at: Date.now(),
-        model: modelLabel(response.model),
-        ...usageMetadata(response.usage),
-        toolCallCount,
-        changeKeyHash: result.changeKeyHash,
-        suppressedAsNoOp: result.suppressedAsNoOp,
-      });
+      let delivered = false;
+      if (result.status === 'succeeded') {
+        await deliverRoutineResult({
+          store: runtime.store,
+          run: runtime.run,
+          routine: runtime.routine,
+          access: runtime.access,
+          message: result.message,
+          changeKeyHash: result.changeKeyHash,
+        });
+        delivered = true;
+      }
+      try {
+        await runtime.store.transitionRun({
+          occurrenceId: runtime.run.id,
+          from: ['running'],
+          to: result.status,
+          at: Date.now(),
+          model: modelLabel(response.model),
+          ...usageMetadata(response.usage),
+          toolCallCount,
+          changeKeyHash: result.changeKeyHash,
+          suppressedAsNoOp: result.suppressedAsNoOp,
+        });
+      } catch (error) {
+        if (delivered) {
+          throw new RoutineRuntimeError(
+            'unknown_external_outcome',
+            'The Slack result was posted but the occurrence could not be finalized.',
+          );
+        }
+        throw error;
+      }
       return {
         occurrenceId: runtime.run.id,
         status: result.status,
@@ -251,6 +277,7 @@ export default defineWorkflow({
         failure.publicError,
         toolCallCount,
       );
+      await deliverFailureNoticeBestEffort(runtime, failure.publicError);
       throw new Error(failure.publicError);
     } finally {
       unsubscribe();
@@ -278,6 +305,29 @@ async function failBeforeStart(
     failureClass,
     publicError,
   });
+}
+
+async function deliverFailureNoticeBestEffort(
+  runtime: RoutineWorkflowRuntime,
+  publicError: string,
+): Promise<void> {
+  try {
+    const [run, routine] = await Promise.all([
+      runtime.store.getRun(runtime.run.id),
+      runtime.store.getRoutine(runtime.routine.id),
+    ]);
+    if (!run || !routine || run.status !== 'failed' || run.deliveryStatus !== 'none') return;
+    await deliverRoutineFailureNotice({
+      store: runtime.store,
+      run,
+      routine,
+      access: runtime.access,
+      publicError,
+    });
+  } catch {
+    // Terminal notices are one best-effort attempt. The run remains visible in
+    // `!routines show` and Admin Scheduled Work even when Slack is unavailable.
+  }
 }
 
 async function failAfterStart(
