@@ -1,7 +1,11 @@
 import { ErrorCode, WebClient, type ChatPostMessageResponse } from '@slack/web-api';
 
 import { isCloudflareTarget } from '../config/runtime-target.ts';
-import { renderSlackMessage, type RenderedSlackMessage } from '../slack/message-format.ts';
+import {
+  escapeSlackControlCharacters,
+  renderSlackMessage,
+  type RenderedSlackMessage,
+} from '../slack/message-format.ts';
 import { ROUTINE_LIMITS } from './limits.ts';
 import { RoutineRuntimeError, type RoutineRuntimeAccess } from './runtime.ts';
 import type { RoutineDefinition, RoutineRun, RoutineStore } from './types.ts';
@@ -41,8 +45,8 @@ export async function deliverRoutineFailureNotice(
   client: WebClient = createRoutineSlackClient(input.access.botToken),
 ): Promise<RoutineDeliveryReceipt> {
   const text = [
-    `*Routine needs attention: ${escapeSlackText(input.routine.name)}*`,
-    escapeSlackText(input.publicError),
+    `*Routine needs attention: ${escapeSlackControlCharacters(input.routine.name)}*`,
+    escapeSlackControlCharacters(input.publicError),
     ...(input.routine.state === 'paused'
       ? ['Automatic scheduling is paused until a channel member reviews and resumes it.']
       : input.routine.state === 'disabled'
@@ -129,7 +133,7 @@ export function renderRoutineDelivery(
   message: string,
 ): RenderedSlackMessage {
   const rendered = renderSlackMessage(
-    `**Routine: ${escapeSlackText(routine.name)}**\n\n${message}`,
+    `**Routine: ${escapeSlackControlCharacters(routine.name)}**\n\n${message}`,
     'markdown',
   );
   const fallback = renderSlackMessage(`Routine: ${routine.name}\n\n${message}`, 'plain_text');
@@ -181,8 +185,4 @@ async function recordFailedDelivery(
 
 function slackErrorCode(error: unknown): unknown {
   return error && typeof error === 'object' ? (error as { code?: unknown }).code : undefined;
-}
-
-function escapeSlackText(value: string): string {
-  return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
 }

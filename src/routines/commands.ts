@@ -108,7 +108,7 @@ export async function handleRoutineSlackRequest(
     );
     if (!intent) return undefined;
     requireRoutineScheduling(capability);
-    const defaultTimezone = intent.timezoneWasDefaulted === true || !intent.timezone
+    const defaultTimezone = intent.action === 'create' && (intent.timezoneWasDefaulted === true || !intent.timezone)
       ? await (dependencies.resolveDefaultTimezone ?? resolveRoutineDefaultTimezone)(turn, env)
       : undefined;
     return await createIntentConfirmation(intent, turn, store, now, defaultTimezone);

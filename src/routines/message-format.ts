@@ -3,6 +3,7 @@ import type {
   RoutineDefinition,
   RoutineRun,
 } from './types.ts';
+import { escapeSlackControlCharacters } from '../slack/message-format.ts';
 
 export function renderRoutineList(
   routines: readonly RoutineDefinition[],
@@ -15,7 +16,7 @@ export function renderRoutineList(
   return [
     `*Routines for <#${channelId}>*`,
     ...visible.map((routine) =>
-      `• *${escapeSlack(routine.name)}* — ${routine.state} — \`${routine.scheduleInput}\` (${routine.timezone}) — \`${routine.id}\``,
+      `• *${escapeSlackControlCharacters(routine.name)}* — ${routine.state} — \`${routine.scheduleInput}\` (${routine.timezone}) — \`${routine.id}\``,
     ),
     '',
     'Use `!routines show <id>` for details.',
@@ -26,15 +27,15 @@ export function renderRoutineDetail(routine: RoutineDefinition, runs: readonly R
   const next = routine.nextRunAt === null ? 'none' : formatInstant(routine.nextRunAt, routine.timezone);
   const recent = runs.slice(0, 5);
   return [
-    `*${escapeSlack(routine.name)}* — \`${routine.id}\``,
-    escapeSlack(routine.description || routine.taskText),
+    `*${escapeSlackControlCharacters(routine.name)}* — \`${routine.id}\``,
+    escapeSlackControlCharacters(routine.description || routine.taskText),
     `State: *${routine.state}*`,
     `Schedule: \`${routine.scheduleInput}\` (${routine.timezone})`,
     `Next occurrence: ${next}`,
     'Authority: current channel access, connections, profile, repositories, and credentials are resolved again for every run.',
     recent.length > 0 ? '*Recent occurrences*' : '*Recent occurrences:* none',
     ...recent.map((run) =>
-      `• ${formatInstant(run.scheduledFor, routine.timezone)} — ${run.status}${run.publicError ? ` — ${escapeSlack(run.publicError)}` : ''}`,
+      `• ${formatInstant(run.scheduledFor, routine.timezone)} — ${run.status}${run.publicError ? ` — ${escapeSlackControlCharacters(run.publicError)}` : ''}`,
     ),
   ].join('\n');
 }
@@ -56,11 +57,11 @@ export function renderRoutineConfirmation(input: {
   const { definition } = input.draft;
   return [
     `*${input.draft.action === 'create' ? 'Create' : 'Edit'} routine preview*`,
-    `Name: *${escapeSlack(definition.name)}*`,
+    `Name: *${escapeSlackControlCharacters(definition.name)}*`,
     `Schedule: \`${definition.scheduleInput}\` (${definition.timezone})${input.timezoneDefaulted ? ' — proposed from your Slack profile, or UTC when unavailable' : ''}`,
     `Next three: ${input.draft.reservations.slice(0, 3).map((item) => formatInstant(item.windowStart, definition.timezone)).join(' · ')}`,
     ...(input.creatorUserId ? [`Creator: <@${input.creatorUserId}>`] : []),
-    `Task: ${escapeSlack(definition.taskText)}`,
+    `Task: ${escapeSlackControlCharacters(definition.taskText)}`,
     `Output: ${definition.outputPolicy === 'post_on_change' ? 'post only when the change key changes' : 'post every successful result'}`,
     'Authority: this routine uses this channel\'s current Chickpea access each time it runs. Membership, profile, connections, repositories, and credentials are rechecked at run time.',
     'Resource limits: at most one active occurrence for this routine; deployment-wide run, model, tool, and sandbox ceilings also apply.',
@@ -72,7 +73,7 @@ export function renderRoutineConfirmation(input: {
 
 export function renderRoutineCreated(routine: RoutineDefinition): string {
   return [
-    `Routine *${escapeSlack(routine.name)}* is ${routine.state}.`,
+    `Routine *${escapeSlackControlCharacters(routine.name)}* is ${routine.state}.`,
     `ID: \`${routine.id}\``,
     `Schedule: \`${routine.scheduleInput}\` (${routine.timezone})`,
     'Controls: `!routines show <id>`, `pause`, `resume`, `disable`, `run`, `clone`, or `delete`.',
@@ -104,8 +105,4 @@ function formatInstant(timestamp: number, timezone: string): string {
   } catch {
     return new Date(timestamp).toISOString();
   }
-}
-
-function escapeSlack(value: string): string {
-  return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
 }
