@@ -74,6 +74,7 @@ test('Scheduled Work APIs are admin-authenticated, body-safe, filterable, and co
     assert.equal(listBody.routines[0].taskText, undefined);
     assert.equal(listBody.capability.reason, 'unsupported_target');
     assert.equal(listBody.limits.concurrentDeploymentRuns, 4);
+    assert.equal(listBody.limits.totalStartsRollingDay, 250);
     assert.equal(listBody.limits.retentionDays, 365);
 
     const detail = await app.request(

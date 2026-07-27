@@ -4626,7 +4626,8 @@ details[open].advanced summary::before {
     var limits = state.scheduledLimits;
     var bounds = limits ? '<p class="hint" style="margin:5px 0 0;">Hard bounds: ' +
       Number(limits.activeDeployment) + ' active per deployment · ' + Number(limits.activeChannel) + ' per channel · ' +
-      Number(limits.concurrentDeploymentRuns) + ' concurrent runs · minimum ' + Number(limits.minimumIntervalMinutes) +
+      Number(limits.scheduledStartsPerDay) + ' scheduled + ' + Number(limits.runNowStartsPerDay) + ' run-now starts/day · ' +
+      Number(limits.totalStartsRollingDay) + ' total starts/rolling day · ' + Number(limits.concurrentDeploymentRuns) + ' concurrent runs · minimum ' + Number(limits.minimumIntervalMinutes) +
       ' minutes · ' + Number(limits.occurrenceDeadlineMinutes) + '-minute deadline · ' + Number(limits.retentionDays) + '-day run/audit retention.</p>' : '';
     return '<div class="scheduled-capability"><div><strong>' + esc(title) + '</strong><p class="hint" style="margin:3px 0 0;">' + esc(detail) + '</p>' + bounds + '</div><span class="spacer"></span>' + scheduledStatusBadge(capability.enabled ? "enabled" : capability.reason) + '</div>';
   }

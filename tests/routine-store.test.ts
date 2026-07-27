@@ -6,6 +6,7 @@ import { test } from 'node:test';
 
 import { openStateDb } from '../src/state/node-state-db.ts';
 import { hashRoutineValue } from '../src/routines/ids.ts';
+import { normalizeRoutineSchedule } from '../src/routines/schedule.ts';
 import { RoutineStoreLogic, SqliteRoutineStore } from '../src/routines/store.ts';
 import {
   RoutineStateError,
@@ -24,7 +25,7 @@ function definition(overrides: Partial<RoutineDefinitionContent> = {}): RoutineD
     taskText: 'Review the current project status and perform the requested channel-authorized actions.',
     triggerKind: 'schedule',
     scheduleInput: 'Every day at 9am',
-    scheduleJson: JSON.stringify({ kind: 'cron', expression: '0 9 * * *' }),
+    scheduleJson: JSON.stringify({ version: 1, kind: 'cron', expression: '0 9 * * *' }),
     timezone: 'America/Los_Angeles',
     outputPolicy: 'post',
     authorityMode: 'live_channel_v1',
@@ -330,6 +331,227 @@ test('cluster reservations enforce every rolling half-open fifteen-minute window
         reservations: [{ windowStart: NEXT_RUN + 15 * 60_000, count: 1 }],
       }),
       'cluster-edge',
+    );
+  } finally {
+    store.close();
+  }
+});
+
+test('resume reprojects the schedule and reservations from current time', async () => {
+  let now = CREATED_AT;
+  const store = new SqliteRoutineStore(':memory:', () => now);
+  try {
+    let routine = await confirmDraft(store, createDraft(), 'resume-projection', now);
+    const originalNextRunAt = routine.nextRunAt;
+    routine = await store.control({
+      routineId: routine.id,
+      expectedVersion: routine.version,
+      action: 'pause',
+      actorId: 'U_MEMBER',
+      actorClass: 'member',
+      idempotencyKey: 'routine:pause:resume-projection',
+    });
+    now += 14 * 24 * 60 * 60 * 1_000;
+    routine = await store.control({
+      routineId: routine.id,
+      expectedVersion: routine.version,
+      action: 'resume',
+      actorId: 'U_MEMBER',
+      actorClass: 'member',
+      idempotencyKey: 'routine:resume:resume-projection',
+    });
+
+    assert.equal(routine.state, 'active');
+    assert.notEqual(routine.nextRunAt, originalNextRunAt);
+    assert.ok(routine.nextRunAt !== null && routine.nextRunAt > now);
+    assert.equal(routine.reservationWindows[0]?.windowStart, routine.nextRunAt);
+    assert.ok(routine.reservationWindows.every(({ windowStart }) => windowStart > now));
+  } finally {
+    store.close();
+  }
+});
+
+test('hourly schedules persist their full projection without per-occurrence inserts', async () => {
+  const store = new SqliteRoutineStore(':memory:', () => CREATED_AT);
+  try {
+    const projection = normalizeRoutineSchedule('0 * * * *', 'UTC', CREATED_AT);
+    assert.ok(projection.reservations.length > 8_000);
+    const routine = await confirmDraft(
+      store,
+      createDraft('routine_hourly', {
+        definition: definition({
+          scheduleInput: projection.schedule.expression,
+          scheduleJson: projection.scheduleJson,
+          timezone: 'UTC',
+        }),
+        nextRunAt: projection.nextRunAt,
+        projectedDailyStarts: projection.projectedDailyStarts,
+        reservations: projection.reservations,
+      }),
+      'hourly-projection',
+    );
+    assert.equal(routine.reservationWindows.length, projection.reservations.length);
+    assert.deepEqual(routine.reservationWindows.at(-1), projection.reservations.at(-1));
+  } finally {
+    store.close();
+  }
+});
+
+test('run-now and deployment concurrency ceilings are enforced transactionally', async () => {
+  let now = CREATED_AT;
+  const store = new SqliteRoutineStore(':memory:', () => now);
+  try {
+    const routine = await confirmDraft(store, createDraft(), 'run-now-limit', now);
+    let lastRun;
+    for (let index = 0; index < 10; index += 1) {
+      const queuedAt = now + index;
+      lastRun = await store.createOccurrence({
+        runId: `rrun_run_now_${index}`,
+        idempotencyKey: `routine:run-now:${index}`,
+        routineId: routine.id,
+        routineVersion: routine.version,
+        scheduledFor: queuedAt,
+        triggerSource: 'run_now',
+        requestedBy: 'U_MEMBER',
+        queuedAt,
+        deadlineAt: queuedAt + 15 * 60 * 1_000,
+      });
+      await store.transitionRun({
+        occurrenceId: lastRun.id,
+        from: ['queued'],
+        to: 'cancelled',
+        at: queuedAt + 1,
+      });
+    }
+    const replay = await store.createOccurrence({
+        runId: lastRun!.id,
+        idempotencyKey: lastRun!.idempotencyKey,
+        routineId: routine.id,
+        routineVersion: routine.version,
+        scheduledFor: lastRun!.scheduledFor,
+        triggerSource: 'run_now',
+        requestedBy: 'U_MEMBER',
+        queuedAt: lastRun!.queuedAt,
+        deadlineAt: lastRun!.deadlineAt,
+      });
+    assert.equal(replay.id, lastRun!.id);
+    assert.equal(replay.status, 'cancelled');
+    await assert.rejects(
+      () => store.createOccurrence({
+        runId: 'rrun_run_now_rejected',
+        idempotencyKey: 'routine:run-now:rejected',
+        routineId: routine.id,
+        routineVersion: routine.version,
+        scheduledFor: now + 11,
+        triggerSource: 'run_now',
+        requestedBy: 'U_MEMBER',
+        queuedAt: now + 11,
+        deadlineAt: now + 15 * 60 * 1_000,
+      }),
+      (error: unknown) => error instanceof RoutineStateError && error.code === 'routine_run_now_limit',
+    );
+
+    now += 24 * 60 * 60 * 1_000 + 12;
+    assert.equal(
+      (await store.createOccurrence({
+        runId: 'rrun_run_now_after_window',
+        idempotencyKey: 'routine:run-now:after-window',
+        routineId: routine.id,
+        routineVersion: routine.version,
+        scheduledFor: now,
+        triggerSource: 'run_now',
+        requestedBy: 'U_MEMBER',
+        queuedAt: now,
+        deadlineAt: now + 15 * 60 * 1_000,
+      })).status,
+      'queued',
+    );
+  } finally {
+    store.close();
+  }
+});
+
+test('the total rolling-day start ceiling protects reserved scheduled capacity', async () => {
+  const store = new SqliteRoutineStore(':memory:', () => CREATED_AT);
+  try {
+    const routine = await confirmDraft(store, createDraft(), 'total-start-limit');
+    for (let index = 0; index < 250; index += 1) {
+      const queuedAt = CREATED_AT + index;
+      const run = await store.createOccurrence({
+        runId: `rrun_total_${index}`,
+        idempotencyKey: `routine:total:${index}`,
+        routineId: routine.id,
+        routineVersion: routine.version,
+        scheduledFor: NEXT_RUN + index,
+        triggerSource: 'schedule',
+        queuedAt,
+        deadlineAt: queuedAt + 15 * 60 * 1_000,
+      });
+      await store.transitionRun({
+        occurrenceId: run.id,
+        from: ['queued'],
+        to: 'cancelled',
+        at: queuedAt + 1,
+      });
+    }
+    await assert.rejects(
+      () => store.createOccurrence({
+        runId: 'rrun_total_rejected',
+        idempotencyKey: 'routine:total:rejected',
+        routineId: routine.id,
+        routineVersion: routine.version,
+        scheduledFor: NEXT_RUN + 251,
+        triggerSource: 'schedule',
+        queuedAt: CREATED_AT + 251,
+        deadlineAt: CREATED_AT + 251 + 15 * 60 * 1_000,
+      }),
+      (error: unknown) => error instanceof RoutineStateError && error.code === 'routine_total_start_limit',
+    );
+  } finally {
+    store.close();
+  }
+});
+
+test('deployment active-run ceiling rejects a fifth distinct routine', async () => {
+  const store = new SqliteRoutineStore(':memory:', () => CREATED_AT);
+  try {
+    const routines: RoutineDefinition[] = [];
+    for (let index = 0; index < 5; index += 1) {
+      routines.push(await confirmDraft(
+        store,
+        createDraft(`routine_concurrent_${index}`, {
+          nextRunAt: NEXT_RUN + index * 15 * 60 * 1_000,
+          reservations: [{ windowStart: NEXT_RUN + index * 15 * 60 * 1_000, count: 1 }],
+        }),
+        `concurrent-${index}`,
+      ));
+    }
+    for (let index = 0; index < 4; index += 1) {
+      await store.createOccurrence({
+        runId: `rrun_concurrent_${index}`,
+        idempotencyKey: `routine:concurrent:${index}`,
+        routineId: routines[index]!.id,
+        routineVersion: routines[index]!.version,
+        scheduledFor: CREATED_AT,
+        triggerSource: 'run_now',
+        requestedBy: 'U_MEMBER',
+        queuedAt: CREATED_AT,
+        deadlineAt: CREATED_AT + 15 * 60 * 1_000,
+      });
+    }
+    await assert.rejects(
+      () => store.createOccurrence({
+        runId: 'rrun_concurrent_rejected',
+        idempotencyKey: 'routine:concurrent:rejected',
+        routineId: routines[4]!.id,
+        routineVersion: routines[4]!.version,
+        scheduledFor: CREATED_AT,
+        triggerSource: 'run_now',
+        requestedBy: 'U_MEMBER',
+        queuedAt: CREATED_AT,
+        deadlineAt: CREATED_AT + 15 * 60 * 1_000,
+      }),
+      (error: unknown) => error instanceof RoutineStateError && error.code === 'routine_concurrent_capacity',
     );
   } finally {
     store.close();

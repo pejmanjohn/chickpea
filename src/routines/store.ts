@@ -9,7 +9,11 @@ import {
   scheduledOccurrenceKey,
 } from './ids.ts';
 import { ROUTINE_LIMITS } from './limits.ts';
-import { nextRoutineOccurrence } from './schedule.ts';
+import {
+  nextRoutineOccurrence,
+  normalizeRoutineSchedule,
+  parseRoutineSchedule,
+} from './schedule.ts';
 import {
   RoutineStateError,
   type BeginRoutineOccurrenceInput,
@@ -704,26 +708,34 @@ export class RoutineStoreLogic {
       ) {
         throw routineError('routine_transition_invalid', 'Routine state transition is invalid.');
       }
+      const at = this.now();
+      let nextRunAt = routine.nextRunAt;
+      let projectedDailyStarts = routine.projectedDailyStarts;
+      let reservationWindows = routine.reservationWindows;
       if (input.action === 'resume') {
-        const reservations = reservationRows(routine);
+        const schedule = parseRoutineSchedule(routine.scheduleJson);
+        const projection = normalizeRoutineSchedule(schedule.expression, routine.timezone, at);
+        nextRunAt = projection.nextRunAt;
+        projectedDailyStarts = projection.projectedDailyStarts;
+        reservationWindows = projection.reservations;
         this.assertCapacity(
           routine.workspaceId,
           routine.channelId,
-          routine.projectedDailyStarts,
-          reservations,
+          projectedDailyStarts,
+          reservationWindows,
           routine.id,
         );
-        this.replaceReservations(routine.id, reservations);
+        this.replaceReservations(routine.id, reservationWindows);
       } else {
         this.db.run('DELETE FROM routine_schedule_reservations WHERE routine_id = ?', routine.id);
       }
-      const at = this.now();
       const nextVersion = routine.version + 1;
       this.db.run(
         `UPDATE routines SET state = ?, version = ?, updated_at = ?, updated_by = ?,
            paused_at = ?, paused_by = ?, paused_reason = ?, disabled_at = ?,
            disabled_by = ?, disabled_reason = ?,
-           consecutive_failures = CASE WHEN ? THEN 0 ELSE consecutive_failures END
+           consecutive_failures = CASE WHEN ? THEN 0 ELSE consecutive_failures END,
+           next_run_at = ?, projected_daily_starts = ?, reservation_windows_json = ?
          WHERE id = ? AND version = ?`,
         target,
         nextVersion,
@@ -736,6 +748,9 @@ export class RoutineStoreLogic {
         target === 'disabled' ? input.actorId : null,
         target === 'disabled' ? (input.reasonCode ?? 'member_disable') : null,
         input.action === 'resume' ? 1 : 0,
+        nextRunAt,
+        projectedDailyStarts,
+        JSON.stringify(reservationWindows),
         routine.id,
         routine.version,
       );
@@ -784,6 +799,7 @@ export class RoutineStoreLogic {
         throw routineError('routine_revision_not_found', 'Routine revision is unavailable.');
       }
       const status: RoutineRunStatus = input.skipReason ? 'skipped' : 'queued';
+      if (status === 'queued') this.assertOccurrenceCapacity(input);
       const finishedAt = status === 'skipped' ? input.queuedAt : null;
       try {
         this.db.run(
@@ -1624,13 +1640,59 @@ export class RoutineStoreLogic {
     reservations: RoutineScheduleReservation[],
   ): void {
     this.db.run('DELETE FROM routine_schedule_reservations WHERE routine_id = ?', routineId);
-    for (const reservation of reservations) {
-      this.db.run(
-        `INSERT INTO routine_schedule_reservations (routine_id, window_start, reserved_count)
-         VALUES (?, ?, ?)`,
-        routineId,
-        reservation.windowStart,
-        reservation.count,
+    if (reservations.length === 0) return;
+    this.db.run(
+      `INSERT INTO routine_schedule_reservations (routine_id, window_start, reserved_count)
+       SELECT ?,
+              CAST(json_extract(value, '$.windowStart') AS INTEGER),
+              CAST(json_extract(value, '$.count') AS INTEGER)
+       FROM json_each(?)`,
+      routineId,
+      JSON.stringify(reservations),
+    );
+  }
+
+  private assertOccurrenceCapacity(input: CreateRoutineOccurrenceInput): void {
+    const rollingDayStart = input.queuedAt - 24 * 60 * 60 * 1_000;
+    const active = Number(
+      this.db.get(
+        `SELECT COUNT(*) AS count FROM routine_runs
+         WHERE status IN ('queued', 'admitting', 'running')`,
+      )?.count ?? 0,
+    );
+    if (active >= ROUTINE_LIMITS.concurrentDeploymentRuns) {
+      throw routineError(
+        'routine_concurrent_capacity',
+        'This deployment has reached its active routine run limit.',
+      );
+    }
+    const totalStarts = Number(
+      this.db.get(
+        `SELECT COUNT(*) AS count FROM routine_runs
+         WHERE queued_at > ? AND queued_at <= ? AND skip_reason IS NULL`,
+        rollingDayStart,
+        input.queuedAt,
+      )?.count ?? 0,
+    );
+    if (totalStarts >= ROUTINE_LIMITS.totalStartsRollingDay) {
+      throw routineError(
+        'routine_total_start_limit',
+        'This deployment has reached its rolling routine start limit.',
+      );
+    }
+    if (input.triggerSource !== 'run_now') return;
+    const runNowStarts = Number(
+      this.db.get(
+        `SELECT COUNT(*) AS count FROM routine_runs
+         WHERE trigger_source = 'run_now' AND queued_at > ? AND queued_at <= ?`,
+        rollingDayStart,
+        input.queuedAt,
+      )?.count ?? 0,
+    );
+    if (runNowStarts >= ROUTINE_LIMITS.runNowStartsPerDay) {
+      throw routineError(
+        'routine_run_now_limit',
+        'This deployment has reached its rolling run-now limit.',
       );
     }
   }
@@ -2249,10 +2311,6 @@ function rowToAdmission(row: AdmissionRow): RoutineAdmissionAttempt {
     status: row.status,
     safeError: row.safe_error,
   };
-}
-
-function reservationRows(routine: RoutineDefinition): RoutineScheduleReservation[] {
-  return routine.reservationWindows;
 }
 
 function definitionHash(definition: RoutineDefinitionContent): string;

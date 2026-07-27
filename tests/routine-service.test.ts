@@ -16,7 +16,7 @@ function definition(): RoutineDefinitionContent {
     taskText: 'Review status and perform the current channel-authorized follow-up actions.',
     triggerKind: 'schedule',
     scheduleInput: 'Every weekday at 9am',
-    scheduleJson: JSON.stringify({ kind: 'cron', expression: '0 9 * * 1-5' }),
+    scheduleJson: JSON.stringify({ version: 1, kind: 'cron', expression: '0 9 * * 1-5' }),
     timezone: 'America/Los_Angeles',
     outputPolicy: 'post_on_change',
     authorityMode: 'live_channel_v1',

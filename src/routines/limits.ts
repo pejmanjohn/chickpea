@@ -34,6 +34,7 @@ export function routineOperatorLimits(): Record<string, number> {
     activeChannel: ROUTINE_LIMITS.activeChannel,
     scheduledStartsPerDay: ROUTINE_LIMITS.scheduledStartsPerDay,
     runNowStartsPerDay: ROUTINE_LIMITS.runNowStartsPerDay,
+    totalStartsRollingDay: ROUTINE_LIMITS.totalStartsRollingDay,
     startsPerRollingFifteenMinutes: ROUTINE_LIMITS.startsPerRollingFifteenMinutes,
     concurrentDeploymentRuns: ROUTINE_LIMITS.concurrentDeploymentRuns,
     concurrentRunsPerRoutine: ROUTINE_LIMITS.concurrentRunsPerRoutine,
