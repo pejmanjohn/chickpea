@@ -42,6 +42,7 @@ import type { AuditEvent, AuditEventFilter } from '../audit/types.ts';
 import {
   RoutineStateError,
   type BeginRoutineOccurrenceInput,
+  type ClaimDueRoutinesInput,
   type ConfirmRoutineInput,
   type ControlRoutineInput,
   type CreateRoutineOccurrenceInput,
@@ -49,12 +50,14 @@ import {
   type RoutineAdmissionAttempt,
   type RoutineConfirmation,
   type RoutineDefinition,
+  type RoutineDueClaimBatch,
   type RoutineRevision,
   type RoutineRpcRequest,
   type RoutineRpcResponse,
   type RoutineRun,
   type RoutineRunFilter,
   type RoutineStore,
+  type ResolveRoutineAdmissionInput,
   type StartRoutineAdmissionInput,
   type TransitionRoutineRunInput,
 } from '../routines/types.ts';
@@ -526,6 +529,11 @@ export class CfRoutineStore implements RoutineStore {
     if (response.kind !== 'runs') throw unexpectedRoutineResponse();
     return response.runs;
   }
+  async claimDueSchedules(input: ClaimDueRoutinesInput): Promise<RoutineDueClaimBatch> {
+    const response = await this.execute({ kind: 'claim_due_schedules', input });
+    if (response.kind !== 'due_claims') throw unexpectedRoutineResponse();
+    return response.batch;
+  }
   async startAdmissionAttempt(input: StartRoutineAdmissionInput): Promise<RoutineAdmissionAttempt> {
     const response = await this.execute({ kind: 'start_admission', input });
     if (response.kind !== 'admission') throw unexpectedRoutineResponse();
@@ -542,6 +550,9 @@ export class CfRoutineStore implements RoutineStore {
     });
     if (response.kind !== 'admission') throw unexpectedRoutineResponse();
     return response.admission;
+  }
+  async resolveAdmission(input: ResolveRoutineAdmissionInput): Promise<RoutineRun> {
+    return this.requiredRun(await this.execute({ kind: 'resolve_admission', input }));
   }
   async beginOccurrence(input: BeginRoutineOccurrenceInput): Promise<'started' | 'superseded'> {
     const response = await this.execute({ kind: 'begin_occurrence', input });

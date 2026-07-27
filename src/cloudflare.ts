@@ -89,6 +89,7 @@ import {
   type RoutineRpcRequest,
   type RoutineRpcResponse,
 } from './routines/types.ts';
+import { createRoutineScheduledHandler } from './routines/scheduler-adapter.ts';
 
 // This module is imported only by Flue's Cloudflare entry. Register before
 // the generated entry's guarded default so `cloudflare/*` remains keyless but
@@ -926,3 +927,13 @@ function rpcError(
 ): { ok: false; error: { code: typeof code; message: string; details?: Record<string, string> } } {
   return { ok: false, error: { code, message, ...(details ? { details } : {}) } };
 }
+
+// U3 installs the generated heartbeat and its default-off capability boundary.
+// U4 replaces this fail-before-claim guard with the discovered routine Workflow
+// admission controller. Keeping the guard here makes an accidentally enabled
+// intermediate build loud and non-mutating rather than silently queuing work.
+export default createRoutineScheduledHandler({
+  heartbeat: async () => {
+    throw new Error('Routine Workflow admission is not installed in this build.');
+  },
+});

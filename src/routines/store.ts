@@ -2,11 +2,18 @@ import { AuditStoreLogic } from '../audit/store.ts';
 import type { AuditEvent, AuditEventFilter } from '../audit/types.ts';
 import { openStateDb, resolveStateDbPath, type NodeStateDb } from '../state/node-state-db.ts';
 import type { SqlParam, StateDb } from '../state/state-db.ts';
-import { hashRoutineValue, isOpaqueRoutineId, routineAuditId } from './ids.ts';
+import {
+  hashRoutineValue,
+  isOpaqueRoutineId,
+  routineAuditId,
+  scheduledOccurrenceKey,
+} from './ids.ts';
 import { ROUTINE_LIMITS } from './limits.ts';
+import { nextRoutineOccurrence } from './schedule.ts';
 import {
   RoutineStateError,
   type BeginRoutineOccurrenceInput,
+  type ClaimDueRoutinesInput,
   type ConfirmRoutineInput,
   type ControlRoutineInput,
   type CreateRoutineOccurrenceInput,
@@ -16,6 +23,7 @@ import {
   type RoutineConfirmationDraft,
   type RoutineDefinition,
   type RoutineDefinitionContent,
+  type RoutineDueClaimBatch,
   type RoutineRevision,
   type RoutineRpcRequest,
   type RoutineRpcResponse,
@@ -24,6 +32,7 @@ import {
   type RoutineRunStatus,
   type RoutineScheduleReservation,
   type RoutineStore,
+  type ResolveRoutineAdmissionInput,
   type StartRoutineAdmissionInput,
   type TransitionRoutineRunInput,
 } from './types.ts';
@@ -215,6 +224,8 @@ export class RoutineStoreLogic {
         return { kind: 'run', run: this.getRun(request.occurrenceId) ?? null };
       case 'list_runs':
         return { kind: 'runs', runs: this.listRuns(request.filter) };
+      case 'claim_due_schedules':
+        return { kind: 'due_claims', batch: this.claimDueSchedules(request.input) };
       case 'start_admission':
         return { kind: 'admission', admission: this.startAdmissionAttempt(request.input) };
       case 'record_admission_receipt':
@@ -227,6 +238,8 @@ export class RoutineStoreLogic {
             request.receiptAt,
           ),
         };
+      case 'resolve_admission':
+        return { kind: 'run', run: this.resolveAdmission(request.input) };
       case 'begin_occurrence':
         return { kind: 'begin', outcome: this.beginOccurrence(request.input) };
       case 'transition_run':
@@ -596,7 +609,10 @@ export class RoutineStoreLogic {
 
   createOccurrence(input: CreateRoutineOccurrenceInput): RoutineRun {
     validateOccurrenceInput(input);
-    return this.db.transaction(() => {
+    return this.db.transaction(() => this.insertOccurrence(input));
+  }
+
+  private insertOccurrence(input: CreateRoutineOccurrenceInput): RoutineRun {
       const replay = this.runByIdempotencyKey(input.idempotencyKey);
       if (replay) return replay;
       const routine = this.requiredMutableRoutine(input.routineId, input.routineVersion);
@@ -660,7 +676,6 @@ export class RoutineStoreLogic {
       const run = required(this.getRun(input.runId), 'Routine occurrence was not readable.');
       this.appendRunAudit('routine.occurrence_created', run, input.idempotencyKey, input.queuedAt);
       return run;
-    });
   }
 
   getRun(occurrenceId: string): RoutineRun | undefined {
@@ -691,6 +706,77 @@ export class RoutineStoreLogic {
       .map((row) => rowToRun(row as unknown as RunRow));
   }
 
+  claimDueSchedules(input: ClaimDueRoutinesInput): RoutineDueClaimBatch {
+    validateDueClaimInput(input);
+    return this.db.transaction(() => {
+      const rows = this.db.all(
+        `SELECT * FROM routines
+         WHERE state = 'active' AND deleted_at IS NULL AND next_run_at <= ?
+         ORDER BY next_run_at, id LIMIT ?`,
+        input.now,
+        Math.min(input.limit, ROUTINE_LIMITS.dueClaimsPerHeartbeat),
+      );
+      const runs: RoutineRun[] = [];
+      let deferredCount = 0;
+      let activeCount = Number(
+        this.db.get(
+          `SELECT COUNT(*) AS count FROM routine_runs
+           WHERE status IN ('queued', 'admitting', 'running')`,
+        )?.count ?? 0,
+      );
+      for (const row of rows) {
+        const routine = rowToRoutine(row as unknown as RoutineRow);
+        const due = this.dueSlots(routine, input.now);
+        if (!due) continue;
+        const activeForRoutine = Number(
+          this.db.get(
+            `SELECT COUNT(*) AS count FROM routine_runs
+             WHERE routine_id = ? AND status IN ('queued', 'admitting', 'running')`,
+            routine.id,
+          )?.count ?? 0,
+        ) > 0;
+        const age = input.now - due.latest;
+        let skipReason: string | undefined;
+        if (due.count > 1) skipReason = 'missed_schedule';
+        else if (activeForRoutine) skipReason = 'overlap';
+        else if (age > ROUTINE_LIMITS.admissionGraceMs) skipReason = 'admission_grace_expired';
+        else if (activeCount >= ROUTINE_LIMITS.concurrentDeploymentRuns) {
+          deferredCount += 1;
+          continue;
+        }
+        const slotKey = scheduledOccurrenceKey(routine.id, due.latest);
+        const run = this.insertOccurrence({
+          runId: `rrun_${slotKey.slice(0, 32)}`,
+          idempotencyKey: `routine:slot:${slotKey}`,
+          routineId: routine.id,
+          routineVersion: routine.version,
+          scheduledFor: due.latest,
+          triggerSource: 'schedule',
+          queuedAt: input.now,
+          deadlineAt: due.latest + ROUTINE_LIMITS.admissionGraceMs,
+          ...(skipReason ? { skipReason } : {}),
+          ...(due.count > 1
+            ? {
+                missedSlotCount: due.count,
+                firstMissedAt: due.first,
+                lastMissedAt: due.latest,
+              }
+            : {}),
+        });
+        this.db.run(
+          `UPDATE routines SET next_run_at = ?, last_scheduled_at = ? WHERE id = ? AND version = ?`,
+          due.next,
+          due.latest,
+          routine.id,
+          routine.version,
+        );
+        runs.push(run);
+        if (!skipReason) activeCount += 1;
+      }
+      return { runs, scannedCount: rows.length, deferredCount };
+    });
+  }
+
   startAdmissionAttempt(input: StartRoutineAdmissionInput): RoutineAdmissionAttempt {
     if (
       !isOpaqueRoutineId(input.occurrenceId) ||
@@ -706,6 +792,12 @@ export class RoutineStoreLogic {
       const run = required(this.getRun(input.occurrenceId), 'Routine occurrence was not found.');
       if (run.status !== 'queued' && run.status !== 'admitting') {
         throw routineError('routine_run_transition_invalid', 'Routine occurrence cannot be admitted.');
+      }
+      if (
+        run.status === 'admitting' &&
+        (run.flueRunId !== null || (run.admissionLeaseUntil ?? 0) > input.invokeStartedAt)
+      ) {
+        throw routineError('routine_admission_leased', 'Routine admission is already in progress.');
       }
       const row = this.db.get(
         `SELECT COALESCE(MAX(attempt), 0) AS attempt
@@ -777,6 +869,66 @@ export class RoutineStoreLogic {
         throw error;
       }
       return required(this.getAdmission(occurrenceId, attempt), 'Routine admission receipt was not readable.');
+    });
+  }
+
+  resolveAdmission(input: ResolveRoutineAdmissionInput): RoutineRun {
+    if (
+      !isOpaqueRoutineId(input.occurrenceId) ||
+      !Number.isSafeInteger(input.at) ||
+      !Number.isSafeInteger(input.attempt) ||
+      input.attempt < 1 ||
+      !['absent', 'unknown'].includes(input.outcome)
+    ) {
+      throw routineError('routine_admission_invalid', 'Routine admission is invalid.');
+    }
+    const safeError = validatePublicRoutineError(input.safeError);
+    return this.db.transaction(() => {
+      const admission = required(
+        this.getAdmission(input.occurrenceId, input.attempt),
+        'Routine admission attempt was not found.',
+      );
+      const run = required(this.getRun(input.occurrenceId), 'Routine occurrence was not found.');
+      if (admission.status !== 'attempting' || run.status !== 'admitting') {
+        throw routineError('routine_admission_conflict', 'Routine admission already resolved.');
+      }
+      this.db.run(
+        `UPDATE routine_run_admissions SET status = ?, visible_at = ?, safe_error = ?
+         WHERE occurrence_id = ? AND attempt = ? AND status = 'attempting'`,
+        input.outcome === 'absent' ? 'failed' : 'unknown',
+        input.at,
+        safeError,
+        input.occurrenceId,
+        input.attempt,
+      );
+      if (input.outcome === 'absent') {
+        this.db.run(
+          `UPDATE routine_runs SET status = 'queued', admission_owner = NULL,
+             admission_lease_until = NULL WHERE id = ? AND status = 'admitting'`,
+          input.occurrenceId,
+        );
+      } else {
+        this.db.run(
+          `UPDATE routine_runs SET status = 'failed', failure_class = 'admission_unknown',
+             public_error = ?, finished_at = ?, admission_owner = NULL,
+             admission_lease_until = NULL WHERE id = ? AND status = 'admitting'`,
+          safeError,
+          input.at,
+          input.occurrenceId,
+        );
+        this.applyRoutineOutcome(run.routineId, 'failed', 'admission_unknown', input.at);
+      }
+      const updated = required(this.getRun(input.occurrenceId), 'Routine occurrence was not readable.');
+      this.appendRunAudit(
+        input.outcome === 'absent'
+          ? 'routine.admission_absent'
+          : 'routine.occurrence_failed',
+        updated,
+        `routine:admission:${input.occurrenceId}:${input.attempt}:${input.outcome}`,
+        input.at,
+        input.outcome === 'unknown' ? 'admission_unknown' : 'proven_absence',
+      );
+      return updated;
     });
   }
 
@@ -1085,6 +1237,49 @@ export class RoutineStoreLogic {
     return routine;
   }
 
+  private dueSlots(
+    routine: RoutineDefinition,
+    now: number,
+  ): { first: number; latest: number; next: number; count: number } | null {
+    if (routine.nextRunAt === null || routine.nextRunAt > now) return null;
+    try {
+      const first = routine.nextRunAt;
+      let latest = first;
+      let count = 1;
+      let next = nextRoutineOccurrence(routine.scheduleJson, routine.timezone, latest);
+      while (next <= now) {
+        latest = next;
+        count += 1;
+        next = nextRoutineOccurrence(routine.scheduleJson, routine.timezone, latest);
+      }
+      return { first, latest, next, count };
+    } catch {
+      const at = now;
+      this.db.run(
+        `UPDATE routines SET state = 'paused', paused_at = ?, paused_by = NULL,
+           paused_reason = 'schedule_invalid', updated_at = ? WHERE id = ? AND version = ?`,
+        at,
+        at,
+        routine.id,
+        routine.version,
+      );
+      this.db.run('DELETE FROM routine_schedule_reservations WHERE routine_id = ?', routine.id);
+      const paused = required(this.getRoutine(routine.id), 'Invalid routine schedule was not paused.');
+      this.appendRoutineAudit(
+        `routine:schedule-invalid:${routine.id}:${routine.version}`,
+        'routine.auto_paused',
+        paused,
+        null,
+        'system',
+        definitionHash(routine),
+        definitionHash(paused),
+        at,
+        'schedule_invalid',
+      );
+      return null;
+    }
+  }
+
   private assertCapacity(
     workspaceId: string,
     channelId: string,
@@ -1127,38 +1322,46 @@ export class RoutineStoreLogic {
     if (projected + projectedDailyStarts > ROUTINE_LIMITS.scheduledStartsPerDay) {
       throw routineError('routine_scheduled_capacity', 'This schedule exceeds deployment capacity.');
     }
-    const existingByWindow = this.reservedCounts(
-      reservations.map((reservation) => reservation.windowStart),
-      excludingRoutineId,
+    this.assertRollingClusterCapacity(reservations, excludingRoutineId);
+  }
+
+  private assertRollingClusterCapacity(
+    reservations: readonly RoutineScheduleReservation[],
+    excludingRoutineId?: string,
+  ): void {
+    const width = 15 * 60 * 1_000;
+    const first = Math.min(...reservations.map(({ windowStart }) => windowStart));
+    const last = Math.max(...reservations.map(({ windowStart }) => windowStart));
+    const rows = this.db.all(
+      `SELECT window_start, SUM(reserved_count) AS count
+       FROM routine_schedule_reservations
+       WHERE window_start > ? AND window_start < ?${excludingRoutineId ? ' AND routine_id <> ?' : ''}
+       GROUP BY window_start`,
+      first - width,
+      last + width,
+      ...(excludingRoutineId ? [excludingRoutineId] : []),
     );
+    const totals = new Map<number, number>();
+    for (const row of rows) totals.set(Number(row.window_start), Number(row.count));
     for (const reservation of reservations) {
-      const existing = existingByWindow.get(reservation.windowStart) ?? 0;
-      if (existing + reservation.count > ROUTINE_LIMITS.startsPerRollingFifteenMinutes) {
+      totals.set(
+        reservation.windowStart,
+        (totals.get(reservation.windowStart) ?? 0) + reservation.count,
+      );
+    }
+    const points = [...totals].sort(([left], [right]) => left - right);
+    let left = 0;
+    let count = 0;
+    for (let right = 0; right < points.length; right += 1) {
+      count += points[right]![1];
+      while (points[right]![0] - points[left]![0] >= width) {
+        count -= points[left]![1];
+        left += 1;
+      }
+      if (count > ROUTINE_LIMITS.startsPerRollingFifteenMinutes) {
         throw routineError('routine_cluster_capacity', 'Too many routines run near that time.');
       }
     }
-  }
-
-  private reservedCounts(
-    windowStarts: readonly number[],
-    excludingRoutineId?: string,
-  ): Map<number, number> {
-    const counts = new Map<number, number>();
-    const chunkSize = 100;
-    for (let offset = 0; offset < windowStarts.length; offset += chunkSize) {
-      const chunk = windowStarts.slice(offset, offset + chunkSize);
-      const placeholders = chunk.map(() => '?').join(',');
-      const rows = this.db.all(
-        `SELECT window_start, SUM(reserved_count) AS count
-         FROM routine_schedule_reservations
-         WHERE window_start IN (${placeholders})${excludingRoutineId ? ' AND routine_id <> ?' : ''}
-         GROUP BY window_start`,
-        ...chunk,
-        ...(excludingRoutineId ? [excludingRoutineId] : []),
-      );
-      for (const row of rows) counts.set(Number(row.window_start), Number(row.count));
-    }
-    return counts;
   }
 
   private replaceReservations(
@@ -1432,6 +1635,9 @@ export class SqliteRoutineStore implements RoutineStore {
   async listRuns(filter: RoutineRunFilter = {}): Promise<RoutineRun[]> {
     return this.logic.listRuns(filter);
   }
+  async claimDueSchedules(input: ClaimDueRoutinesInput): Promise<RoutineDueClaimBatch> {
+    return this.logic.claimDueSchedules(input);
+  }
   async startAdmissionAttempt(input: StartRoutineAdmissionInput): Promise<RoutineAdmissionAttempt> {
     return this.logic.startAdmissionAttempt(input);
   }
@@ -1442,6 +1648,9 @@ export class SqliteRoutineStore implements RoutineStore {
     receiptAt: number,
   ): Promise<RoutineAdmissionAttempt> {
     return this.logic.recordAdmissionReceipt(occurrenceId, attempt, flueRunId, receiptAt);
+  }
+  async resolveAdmission(input: ResolveRoutineAdmissionInput): Promise<RoutineRun> {
+    return this.logic.resolveAdmission(input);
   }
   async beginOccurrence(input: BeginRoutineOccurrenceInput): Promise<'started' | 'superseded'> {
     return this.logic.beginOccurrence(input);
@@ -1511,6 +1720,20 @@ function validateOccurrenceInput(input: CreateRoutineOccurrenceInput): void {
     (input.triggerSource === 'run_now' && !input.requestedBy)
   ) {
     throw routineError('routine_occurrence_invalid', 'Routine occurrence is invalid.');
+  }
+}
+
+function validateDueClaimInput(input: ClaimDueRoutinesInput): void {
+  if (
+    !Number.isSafeInteger(input.now) ||
+    input.now < 0 ||
+    typeof input.owner !== 'string' ||
+    !/^[A-Za-z0-9_.:-]{1,200}$/.test(input.owner) ||
+    !Number.isSafeInteger(input.limit) ||
+    input.limit < 1 ||
+    input.limit > ROUTINE_LIMITS.dueClaimsPerHeartbeat
+  ) {
+    throw routineError('routine_due_claim_invalid', 'Routine heartbeat claim is invalid.');
   }
 }
 

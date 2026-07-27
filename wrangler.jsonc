@@ -11,7 +11,11 @@
     "binding": "AI"
   },
   "vars": {
-    "SANDBOX_TRANSPORT": "rpc"
+    "SANDBOX_TRANSPORT": "rpc",
+    "TAG_ROUTINES_ENABLED": "0"
+  },
+  "triggers": {
+    "crons": ["* * * * *"]
   },
   // App-owned state Durable Object (src/cloudflare.ts): one singleton instance
   // hosts config agents/assignments, thread snapshots, claims, the thread

@@ -246,6 +246,26 @@ export interface StartRoutineAdmissionInput {
   invokeStartedAt: number;
 }
 
+export interface ClaimDueRoutinesInput {
+  now: number;
+  owner: string;
+  limit: number;
+}
+
+export interface RoutineDueClaimBatch {
+  runs: RoutineRun[];
+  scannedCount: number;
+  deferredCount: number;
+}
+
+export interface ResolveRoutineAdmissionInput {
+  occurrenceId: string;
+  attempt: number;
+  outcome: 'absent' | 'unknown';
+  at: number;
+  safeError?: string | null;
+}
+
 export interface BeginRoutineOccurrenceInput {
   occurrenceId: string;
   flueRunId: string;
@@ -279,6 +299,7 @@ export interface RoutineStore {
   createOccurrence(input: CreateRoutineOccurrenceInput): Promise<RoutineRun>;
   getRun(occurrenceId: string): Promise<RoutineRun | undefined>;
   listRuns(filter?: RoutineRunFilter): Promise<RoutineRun[]>;
+  claimDueSchedules(input: ClaimDueRoutinesInput): Promise<RoutineDueClaimBatch>;
   startAdmissionAttempt(input: StartRoutineAdmissionInput): Promise<RoutineAdmissionAttempt>;
   recordAdmissionReceipt(
     occurrenceId: string,
@@ -286,6 +307,7 @@ export interface RoutineStore {
     flueRunId: string,
     receiptAt: number,
   ): Promise<RoutineAdmissionAttempt>;
+  resolveAdmission(input: ResolveRoutineAdmissionInput): Promise<RoutineRun>;
   beginOccurrence(input: BeginRoutineOccurrenceInput): Promise<'started' | 'superseded'>;
   transitionRun(input: TransitionRoutineRunInput): Promise<RoutineRun>;
   listAdmissions(occurrenceId: string): Promise<RoutineAdmissionAttempt[]>;
@@ -315,6 +337,7 @@ export type RoutineRpcRequest =
   | { kind: 'create_occurrence'; input: CreateRoutineOccurrenceInput }
   | { kind: 'get_run'; occurrenceId: string }
   | { kind: 'list_runs'; filter: RoutineRunFilter }
+  | { kind: 'claim_due_schedules'; input: ClaimDueRoutinesInput }
   | { kind: 'start_admission'; input: StartRoutineAdmissionInput }
   | {
       kind: 'record_admission_receipt';
@@ -323,6 +346,7 @@ export type RoutineRpcRequest =
       flueRunId: string;
       receiptAt: number;
     }
+  | { kind: 'resolve_admission'; input: ResolveRoutineAdmissionInput }
   | { kind: 'begin_occurrence'; input: BeginRoutineOccurrenceInput }
   | { kind: 'transition_run'; input: TransitionRoutineRunInput }
   | { kind: 'list_admissions'; occurrenceId: string }
@@ -335,6 +359,7 @@ export type RoutineRpcResponse =
   | { kind: 'revisions'; revisions: RoutineRevision[] }
   | { kind: 'run'; run: RoutineRun | null }
   | { kind: 'runs'; runs: RoutineRun[] }
+  | { kind: 'due_claims'; batch: RoutineDueClaimBatch }
   | { kind: 'admission'; admission: RoutineAdmissionAttempt }
   | { kind: 'admissions'; admissions: RoutineAdmissionAttempt[] }
   | { kind: 'begin'; outcome: 'started' | 'superseded' }

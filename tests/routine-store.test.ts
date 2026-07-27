@@ -304,6 +304,38 @@ test('schedule capacity and collision reservations fail atomically', async () =>
   }
 });
 
+test('cluster reservations enforce every rolling half-open fifteen-minute window', async () => {
+  const store = new SqliteRoutineStore(':memory:', () => CREATED_AT);
+  try {
+    await confirmDraft(
+      store,
+      createDraft('routine_cluster_a', {
+        reservations: [{ windowStart: NEXT_RUN, count: 4 }],
+      }),
+      'cluster-a',
+    );
+    await assert.rejects(
+      () => confirmDraft(
+        store,
+        createDraft('routine_cluster_b', {
+          reservations: [{ windowStart: NEXT_RUN + 14 * 60_000 + 59_000, count: 1 }],
+        }),
+        'cluster-b',
+      ),
+      (error: unknown) => error instanceof RoutineStateError && error.code === 'routine_cluster_capacity',
+    );
+    await confirmDraft(
+      store,
+      createDraft('routine_cluster_edge', {
+        reservations: [{ windowStart: NEXT_RUN + 15 * 60_000, count: 1 }],
+      }),
+      'cluster-edge',
+    );
+  } finally {
+    store.close();
+  }
+});
+
 test('occurrence uniqueness, admission attempts, and atomic Workflow begin prevent duplicate work', async () => {
   const store = new SqliteRoutineStore(':memory:', () => CREATED_AT);
   try {
