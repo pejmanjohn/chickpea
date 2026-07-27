@@ -136,6 +136,7 @@ export interface FakeSlackChannel {
 export interface FakeSlackUser {
   id: string;
   teamId?: string;
+  timezone?: string;
   isBot?: boolean;
   isAppUser?: boolean;
   deleted?: boolean;
@@ -772,6 +773,7 @@ export class FakeSlackBackend {
           user: {
             id: requested,
             team_id: configured?.teamId,
+            tz: configured?.timezone,
             is_bot: configured?.isBot ?? false,
             is_app_user: configured?.isAppUser ?? false,
             deleted: configured?.deleted ?? false,

@@ -44,6 +44,7 @@ export function renderRoutineConfirmation(input: {
   token: string;
   expiresAt: number;
   timezoneDefaulted?: boolean;
+  creatorUserId?: string;
 }): string {
   if (input.draft.action === 'delete') {
     return [
@@ -56,11 +57,14 @@ export function renderRoutineConfirmation(input: {
   return [
     `*${input.draft.action === 'create' ? 'Create' : 'Edit'} routine preview*`,
     `Name: *${escapeSlack(definition.name)}*`,
-    `Schedule: \`${definition.scheduleInput}\` (${definition.timezone})${input.timezoneDefaulted ? ' — defaulted to UTC' : ''}`,
+    `Schedule: \`${definition.scheduleInput}\` (${definition.timezone})${input.timezoneDefaulted ? ' — proposed from your Slack profile, or UTC when unavailable' : ''}`,
     `Next three: ${input.draft.reservations.slice(0, 3).map((item) => formatInstant(item.windowStart, definition.timezone)).join(' · ')}`,
+    ...(input.creatorUserId ? [`Creator: <@${input.creatorUserId}>`] : []),
     `Task: ${escapeSlack(definition.taskText)}`,
     `Output: ${definition.outputPolicy === 'post_on_change' ? 'post only when the change key changes' : 'post every successful result'}`,
-    'Authority: each occurrence has the same current channel authority as a live tag. Membership, profile, connections, repositories, and credentials are rechecked at run time.',
+    'Authority: this routine uses this channel\'s current Chickpea access each time it runs. Membership, profile, connections, repositories, and credentials are rechecked at run time.',
+    'Resource limits: at most one active occurrence for this routine; deployment-wide run, model, tool, and sandbox ceilings also apply.',
+    'Tools that require a separate just-in-time human confirmation cannot run unattended; that occurrence fails safely.',
     'The routine may perform writes when this saved task requests them. Untrusted history, memory, fetched content, and trigger data cannot widen the saved task.',
     `Confirm within 15 minutes with \`!routines confirm ${input.token}\` or cancel with \`!routines cancel ${input.token}\`.`,
   ].join('\n');

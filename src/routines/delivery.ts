@@ -1,6 +1,7 @@
 import { ErrorCode, WebClient, type ChatPostMessageResponse } from '@slack/web-api';
 
 import { isCloudflareTarget } from '../config/runtime-target.ts';
+import { renderSlackMessage, type RenderedSlackMessage } from '../slack/message-format.ts';
 import { ROUTINE_LIMITS } from './limits.ts';
 import { RoutineRuntimeError, type RoutineRuntimeAccess } from './runtime.ts';
 import type { RoutineDefinition, RoutineRun, RoutineStore } from './types.ts';
@@ -25,7 +26,7 @@ export async function deliverRoutineResult(
   },
   client: WebClient = createRoutineSlackClient(input.access.botToken),
 ): Promise<RoutineDeliveryReceipt> {
-  return deliverRoutineSlackMessage(input, renderRoutineDelivery(input.routine, input.message), client);
+  return deliverRoutineSlackMessage(input, renderRoutineDelivery(input.routine, input.run, input.message), client);
 }
 
 export async function deliverRoutineFailureNotice(
@@ -61,7 +62,7 @@ async function deliverRoutineSlackMessage(
     changeKeyHash: string | null;
     now?: () => number;
   },
-  text: string,
+  message: string | RenderedSlackMessage,
   client: WebClient,
 ): Promise<RoutineDeliveryReceipt> {
   const now = input.now ?? Date.now;
@@ -81,7 +82,7 @@ async function deliverRoutineSlackMessage(
   try {
     response = await client.chat.postMessage({
       channel: input.routine.channelId,
-      text,
+      ...(typeof message === 'string' ? { text: message } : message),
       unfurl_links: false,
       unfurl_media: false,
     });
@@ -122,8 +123,30 @@ async function deliverRoutineSlackMessage(
   return { channelId, messageTs };
 }
 
-export function renderRoutineDelivery(routine: Pick<RoutineDefinition, 'name' | 'id'>, message: string): string {
-  return `*Routine: ${escapeSlackText(routine.name)}*\n${escapeSlackText(message)}\n\n_Routine ID: \`${routine.id}\`_`;
+export function renderRoutineDelivery(
+  routine: Pick<RoutineDefinition, 'name' | 'id'>,
+  run: Pick<RoutineRun, 'id' | 'scheduledFor'>,
+  message: string,
+): RenderedSlackMessage {
+  const rendered = renderSlackMessage(
+    `**Routine: ${escapeSlackText(routine.name)}**\n\n${message}`,
+    'markdown',
+  );
+  const fallback = renderSlackMessage(`Routine: ${routine.name}\n\n${message}`, 'plain_text');
+  return {
+    ...rendered,
+    text: fallback.text,
+    blocks: [
+      ...(rendered.blocks ?? []),
+      {
+        type: 'context',
+        elements: [{
+          type: 'mrkdwn',
+          text: `Scheduled: ${new Date(run.scheduledFor).toISOString()} | Run: \`${run.id}\` | Details: \`!routines show ${routine.id}\``,
+        }],
+      },
+    ],
+  };
 }
 
 function createRoutineSlackClient(botToken: string): WebClient {

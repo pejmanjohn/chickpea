@@ -84,7 +84,7 @@ test('scheduled write crosses confirmation, heartbeat, Workflow admission, resta
     );
     const token = preview?.match(/!routines confirm ([A-Za-z0-9._-]+)/)?.[1];
     assert.ok(token);
-    assert.match(preview ?? '', /same current channel authority as a live tag/i);
+    assert.match(preview ?? '', /uses this channel's current Chickpea access each time it runs/i);
     await handleRoutineSlackRequest(
       turn(`!routines confirm ${token}`, 'Ev_ACCEPT_CONFIRM'),
       undefined,

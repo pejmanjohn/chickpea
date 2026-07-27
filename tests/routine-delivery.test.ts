@@ -17,7 +17,7 @@ import type {
 } from '../src/routines/types.ts';
 
 const routine = { id: 'routine_test', name: '<Daily & write>', channelId: 'C_TEST' } as RoutineDefinition;
-const run = { id: 'rrun_test' } as RoutineRun;
+const run = { id: 'rrun_test', scheduledFor: Date.UTC(2026, 6, 27, 16) } as RoutineRun;
 const access = {
   config: {} as never, accessHash: 'a'.repeat(64), botToken: 'xoxb-test', botUserId: 'U_BOT',
 };
@@ -54,10 +54,15 @@ test('routine delivery claims once, posts at top level, and records the Slack re
   assert.equal(requests[0]?.channel, 'C_TEST');
   assert.equal(requests[0]?.thread_ts, undefined);
   assert.match(requests[0]?.text ?? '', /Completed the write/);
-  assert.equal(
-    renderRoutineDelivery(routine, 'Done.'),
-    '*Routine: &lt;Daily &amp; write&gt;*\nDone.\n\n_Routine ID: `routine_test`_',
-  );
+  const rendered = renderRoutineDelivery(routine, run, 'Done.');
+  assert.equal(rendered.text, 'Routine: &lt;Daily &amp; write&gt;\n\nDone.');
+  assert.deepEqual(rendered.blocks?.at(-1), {
+    type: 'context',
+    elements: [{
+      type: 'mrkdwn',
+      text: 'Scheduled: 2026-07-27T16:00:00.000Z | Run: `rrun_test` | Details: `!routines show routine_test`',
+    }],
+  });
 });
 
 test('an ambiguous Slack failure records unknown and is never retried', async () => {

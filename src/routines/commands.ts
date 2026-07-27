@@ -2,6 +2,7 @@ import type { PlatformEnv } from '../config/state-backend.ts';
 import { getRoutineStore } from '../config/state-backend.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import type { NormalizedSlackTurn } from '../slack/types.ts';
+import { resolveSlackCredentials, slackUsersInfo } from '../slack/credentials.ts';
 import {
   createRoutineRunId,
   hashRoutineValue,
@@ -30,6 +31,7 @@ import {
   type RoutineDefinitionContent,
   type RoutineStore,
 } from './types.ts';
+import { isIanaTimeZone } from './validation.ts';
 
 export type RoutineCommand =
   | { kind: 'list'; channelMention?: string }
@@ -77,6 +79,7 @@ export async function handleRoutineSlackRequest(
   dependencies: {
     store?: RoutineStore;
     parseIntent?: typeof parseRoutineIntent;
+    resolveDefaultTimezone?: (turn: NormalizedSlackTurn, env: PlatformEnv | undefined) => Promise<string>;
     now?: () => number;
     capability?: RoutineCapability;
   } = {},
@@ -105,7 +108,10 @@ export async function handleRoutineSlackRequest(
     );
     if (!intent) return undefined;
     requireRoutineScheduling(capability);
-    return await createIntentConfirmation(intent, turn, store, now);
+    const defaultTimezone = intent.timezoneWasDefaulted === true || !intent.timezone
+      ? await (dependencies.resolveDefaultTimezone ?? resolveRoutineDefaultTimezone)(turn, env)
+      : undefined;
+    return await createIntentConfirmation(intent, turn, store, now, defaultTimezone);
   } catch (error) {
     return routineErrorText(error);
   }
@@ -216,7 +222,7 @@ async function executeRoutineCommand(
       projectedDailyStarts: projection.projectedDailyStarts,
       reservations: projection.reservations,
     });
-    return renderRoutineConfirmation({ ...receipt });
+    return renderRoutineConfirmation({ ...receipt, creatorUserId: turn.userId });
   }
   const receipt = await service.createConfirmation({
     action: 'delete',
@@ -234,6 +240,7 @@ async function createIntentConfirmation(
   turn: NormalizedSlackTurn,
   store: RoutineStore,
   now: () => number,
+  defaultTimezone?: string,
 ): Promise<string> {
   const service = new RoutineService(store, { now });
   const current = intent.action === 'edit' && intent.routineId
@@ -241,7 +248,12 @@ async function createIntentConfirmation(
     : undefined;
   if (intent.action === 'edit' && !current) return notFoundText();
   const scheduleInput = cleanRequired(intent.scheduleExpression ?? current?.scheduleInput, 'A recurring schedule is required.');
-  const timezone = cleanRequired(intent.timezone ?? current?.timezone ?? 'UTC', 'An IANA time zone is required.');
+  const timezone = cleanRequired(
+    intent.timezoneWasDefaulted === true
+      ? current?.timezone ?? defaultTimezone ?? 'UTC'
+      : intent.timezone ?? current?.timezone ?? defaultTimezone ?? 'UTC',
+    'An IANA time zone is required.',
+  );
   const projection = normalizeRoutineSchedule(scheduleInput, timezone, now());
   const taskText = cleanRequired(intent.taskText ?? current?.taskText, 'A routine task is required.');
   const definition: RoutineDefinitionContent = {
@@ -270,7 +282,23 @@ async function createIntentConfirmation(
   return renderRoutineConfirmation({
     ...receipt,
     timezoneDefaulted: !current && (intent.timezoneWasDefaulted === true || !intent.timezone),
+    creatorUserId: current?.creatorUserId ?? turn.userId,
   });
+}
+
+async function resolveRoutineDefaultTimezone(
+  turn: NormalizedSlackTurn,
+  env: PlatformEnv | undefined,
+): Promise<string> {
+  try {
+    const { botToken } = await resolveSlackCredentials(env);
+    if (!botToken) return 'UTC';
+    const result = await slackUsersInfo(botToken, turn.userId);
+    const timezone = result.ok ? result.user?.timezone : undefined;
+    return timezone && isIanaTimeZone(timezone) ? timezone : 'UTC';
+  } catch {
+    return 'UTC';
+  }
 }
 
 async function scopedRoutine(
