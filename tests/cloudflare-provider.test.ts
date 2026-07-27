@@ -85,6 +85,40 @@ test('the seeded keyless GLM binding explicitly disables server-side thinking', 
   assert.equal((calls[0]?.options?.signal as AbortSignal).aborted, false);
 });
 
+test('a caller abort reaches the active Workers AI model request', async () => {
+  let receivedSignal: AbortSignal | undefined;
+  const binding: CloudflareAIBinding = {
+    run: async (_modelId, _inputs, options) => {
+      receivedSignal = options?.signal as AbortSignal | undefined;
+      return new Promise((_resolve, reject) => {
+        const signal = receivedSignal;
+        if (!signal) return;
+        signal.addEventListener(
+          'abort',
+          () => reject(signal.reason ?? new DOMException('Aborted', 'AbortError')),
+          { once: true },
+        );
+      });
+    },
+  };
+  registerCloudflareBindingProvider(binding);
+  const model = resolveModel('cloudflare/@cf/zai-org/glm-5.2');
+  const registeredBinding = Object.getOwnPropertyDescriptor(model, 'binding')
+    ?.value as CloudflareAIBinding;
+  const controller = new AbortController();
+  const prompt = registeredBinding.run(
+    '@cf/zai-org/glm-5.2',
+    { messages: [{ role: 'user', content: 'stop' }] },
+    { signal: controller.signal },
+  );
+
+  controller.abort(new DOMException('routine deadline reached', 'TimeoutError'));
+
+  await assert.rejects(prompt, /routine deadline reached/);
+  assert.equal(receivedSignal?.aborted, true);
+  assert.equal(receivedSignal?.reason.name, 'TimeoutError');
+});
+
 test('the seeded keyless GLM binding preserves a lower requested output limit', async () => {
   let receivedPayload: Record<string, unknown> | undefined;
   const binding: CloudflareAIBinding = {

@@ -41,6 +41,7 @@
     "build": "npm run flue:build:cf",
     "deploy": "node scripts/deploy-with-epilogue.mjs",
     "verify:cf-smoke": "node scripts/verify-cf-smoke.mjs",
+    "verify:routines-runtime": "node scripts/verify-routines-runtime-spike.mjs",
     "verify:admin-ui": "node scripts/verify-admin-ui.mjs",
     "verify:durability": "node scripts/verify-durability.mjs",
     "verify:providers": "node scripts/verify-providers.mjs",
@@ -57,6 +58,7 @@
     "@modelcontextprotocol/sdk": "1.29.0",
     "@slack/web-api": "^8.0.0-rc.1",
     "agents": "^0.14.5",
+    "croner": "10.0.1",
     "hono": "^4.12.27",
     "just-bash": "3.0.2",
     "valibot": "^1.4.2"
