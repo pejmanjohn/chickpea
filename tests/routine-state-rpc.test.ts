@@ -36,6 +36,28 @@ test('Cloudflare routine proxy preserves the typed execute request and response'
   assert.deepEqual(requests, [{ kind: 'get_routine', routineId: routine.id }]);
 });
 
+test('Cloudflare routine proxy carries maintenance results across the RPC seam', async () => {
+  const requests: RoutineRpcRequest[] = [];
+  const result = {
+    confirmationsPurged: 1,
+    reservationsPurged: 2,
+    deliveryLeasesReconciled: 3,
+    deadlineRunsReconciled: 4,
+    runsDeleted: 5,
+    auditEventsDeleted: 6,
+  };
+  const stub = {
+    async routinesExecute(request: RoutineRpcRequest): Promise<StateRpcResult<RoutineRpcResponse>> {
+      requests.push(request);
+      return { ok: true, value: { kind: 'maintenance', result } };
+    },
+  } as unknown as TagStateRpc;
+  const store = new CfRoutineStore(stub);
+
+  assert.deepEqual(await store.cleanupRetention(), result);
+  assert.deepEqual(requests, [{ kind: 'cleanup_retention' }]);
+});
+
 test('Cloudflare routine proxy reconstructs stable domain errors', async () => {
   const stub = {
     async routinesExecute(): Promise<StateRpcResult<RoutineRpcResponse>> {

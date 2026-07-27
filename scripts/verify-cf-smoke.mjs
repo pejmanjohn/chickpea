@@ -100,14 +100,15 @@ function buildCloudflareTarget() {
 
 function verifyBuildArtifacts() {
   const config = JSON.parse(readFileSync(CF_WRANGLER_CONFIG, 'utf8'));
+  const bundle = readFileSync(join(CF_OUTPUT_DIR, 'chickpea', config.main ?? 'index.js'), 'utf8');
   const doBindings = config.durable_objects?.bindings ?? [];
   check(
     doBindings.some((b) => b.name === 'TAG_STATE' && b.class_name === 'TagStateStore'),
     'built wrangler.json carries the TAG_STATE binding',
   );
   check(
-    doBindings.some((b) => String(b.class_name ?? '').startsWith('Flue')),
-    'built wrangler.json carries the Flue agent DO bindings',
+    doBindings.some((b) => b.name === 'FLUE_ROUTINE_WORKFLOW' && b.class_name === 'FlueRoutineWorkflow'),
+    'built wrangler.json carries the routine Workflow binding',
   );
   check(
     doBindings.some((b) => b.name === 'SANDBOX' && b.class_name === 'Sandbox'),
@@ -115,8 +116,8 @@ function verifyBuildArtifacts() {
   );
   const tags = (config.migrations ?? []).map((m) => m.tag);
   check(
-    tags.includes('v1') && tags.includes('v2') && tags.includes('v3'),
-    'built wrangler.json migrations include v1 through v3',
+    tags.includes('v1') && tags.includes('v2') && tags.includes('v3') && tags.includes('v4') && tags.includes('v5'),
+    'built wrangler.json migrations include v1 through v5',
     tags.join(','),
   );
   const sandboxContainer = (config.containers ?? []).find(
@@ -134,6 +135,21 @@ function verifyBuildArtifacts() {
   check(redirectBody.includes('dist-cf'), '.wrangler/deploy/config.json points into dist-cf');
   check(existsSync(join(REPO_ROOT, 'src', 'db.ts')), 'src/db.ts restored after the CF build');
   check(config.ai?.binding === 'AI', 'built wrangler.json carries the production AI binding');
+  check(
+    sameArray(config.triggers?.crons ?? [], ['* * * * *']),
+    'built wrangler.json carries exactly one heartbeat Cron Trigger',
+  );
+  check(
+    config.vars?.TAG_ROUTINES_ENABLED === '0',
+    'routine admission remains off by default in the built artifact',
+  );
+  check(
+    bundle.includes('scheduled(controller') &&
+      bundle.includes('routine-intent') &&
+      bundle.includes('x-flue-internal-token') &&
+      bundle.includes('error: "unauthorized"'),
+    'built Worker composes the heartbeat and internal-only routine Agent guard',
+  );
 }
 
 function writeSmokeWranglerConfigs() {

@@ -221,6 +221,7 @@ type ScheduledWorkFixture = {
     enabled: boolean;
     reason: 'enabled' | 'operator_disabled' | 'unsupported_target';
   };
+  limits: Record<string, number>;
 };
 function runAdminPageHarness(
   options: {
@@ -546,6 +547,10 @@ function runAdminPageHarness(
       subjectId: 'routine_release_digest', subjectVersion: 2, createdAt: 1785000000000,
     }],
     capability: { target: 'cloudflare', available: true, enabled: true, reason: 'enabled' },
+    limits: {
+      activeDeployment: 100, activeChannel: 20, concurrentDeploymentRuns: 4,
+      minimumIntervalMinutes: 60, occurrenceDeadlineMinutes: 15, retentionDays: 365,
+    },
   };
   let resolveAgentPatch: (() => void) | undefined;
   const location = {
@@ -701,6 +706,7 @@ function runAdminPageHarness(
           revisions: scheduledFixture.revisions.map((revision) => ({ ...revision })),
           events: scheduledFixture.events.map((event) => ({ ...event })),
           capability: { ...scheduledFixture.capability },
+          limits: { ...scheduledFixture.limits },
         }));
       }
       const url = new URL(path, 'http://admin.test');
@@ -717,6 +723,7 @@ function runAdminPageHarness(
         routines: included ? [summary] : [],
         nextCursor: null,
         capability: { ...scheduledFixture.capability },
+        limits: { ...scheduledFixture.limits },
       }));
     }
     const scheduledControlMatch = path.match(/^\/admin\/api\/audit\/scheduled_work\/routines\/([^/]+)\/control$/);
@@ -6470,6 +6477,8 @@ test('Scheduled Work tab is live, deep-linked, inspectable, and controls durable
   assert.match(harness.app.innerHTML, /Open message/);
   assert.match(harness.app.innerHTML, /Revision history/);
   assert.match(harness.app.innerHTML, /Audit trail/);
+  assert.match(harness.app.innerHTML, /100 active per deployment/);
+  assert.match(harness.app.innerHTML, /365-day run\/audit retention/);
 
   harness.listeners.click?.({
     target: actionTarget({ 'data-action': 'scheduled-control', 'data-control': 'pause' }),

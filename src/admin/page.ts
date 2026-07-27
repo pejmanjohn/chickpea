@@ -1647,6 +1647,7 @@ details[open].advanced summary::before {
     scheduledBusy: "",
     scheduledNotice: "",
     scheduledCapability: null,
+    scheduledLimits: null,
     scheduledFilters: { workspaceId: "", channelId: "", state: "", status: "" },
     scheduledDeleteConfirm: false,
     // The Memory draft mirrors editable entry fields so a conflict or retry
@@ -4622,7 +4623,12 @@ details[open].advanced summary::before {
       : capability.reason === "unsupported_target"
         ? "This installation is running on Node. Routine definitions remain inspectable, but automatic scheduling is Cloudflare-only in this release."
         : "This Cloudflare installation has TAG_ROUTINES_ENABLED turned off. Definitions remain inspectable; no automatic occurrences are admitted.";
-    return '<div class="scheduled-capability"><div><strong>' + esc(title) + '</strong><p class="hint" style="margin:3px 0 0;">' + esc(detail) + '</p></div><span class="spacer"></span>' + scheduledStatusBadge(capability.enabled ? "enabled" : capability.reason) + '</div>';
+    var limits = state.scheduledLimits;
+    var bounds = limits ? '<p class="hint" style="margin:5px 0 0;">Hard bounds: ' +
+      Number(limits.activeDeployment) + ' active per deployment · ' + Number(limits.activeChannel) + ' per channel · ' +
+      Number(limits.concurrentDeploymentRuns) + ' concurrent runs · minimum ' + Number(limits.minimumIntervalMinutes) +
+      ' minutes · ' + Number(limits.occurrenceDeadlineMinutes) + '-minute deadline · ' + Number(limits.retentionDays) + '-day run/audit retention.</p>' : '';
+    return '<div class="scheduled-capability"><div><strong>' + esc(title) + '</strong><p class="hint" style="margin:3px 0 0;">' + esc(detail) + '</p>' + bounds + '</div><span class="spacer"></span>' + scheduledStatusBadge(capability.enabled ? "enabled" : capability.reason) + '</div>';
   }
 
   function scheduledFiltersHtml() {
@@ -4892,6 +4898,7 @@ details[open].advanced summary::before {
     return api(scheduledListPath()).then(function (body) {
       state.scheduledRoutines = body.routines || [];
       state.scheduledCapability = body.capability || null;
+      state.scheduledLimits = body.limits || null;
       state.scheduledLoading = false;
       if (state.scheduledSelection && !state.scheduledRoutines.some(function (routine) { return routine.id === state.scheduledSelection; })) {
         state.scheduledSelection = "";
@@ -4926,6 +4933,7 @@ details[open].advanced summary::before {
       if (state.scheduledSelection !== routineId) return;
       state.scheduledDetail = body;
       state.scheduledCapability = body.capability || state.scheduledCapability;
+      state.scheduledLimits = body.limits || state.scheduledLimits;
       state.scheduledDetailLoading = false;
       render();
     }).catch(function (error) {

@@ -266,6 +266,15 @@ export interface RoutineDueClaimBatch {
   deferredCount: number;
 }
 
+export interface RoutineMaintenanceResult {
+  confirmationsPurged: number;
+  reservationsPurged: number;
+  deliveryLeasesReconciled: number;
+  deadlineRunsReconciled: number;
+  runsDeleted: number;
+  auditEventsDeleted: number;
+}
+
 export interface ResolveRoutineAdmissionInput {
   occurrenceId: string;
   attempt: number;
@@ -330,6 +339,7 @@ export interface RoutineStore {
   cancelConfirmation(input: CancelRoutineConfirmationInput): Promise<boolean>;
   confirm(input: ConfirmRoutineInput): Promise<RoutineDefinition>;
   purgeConfirmations(): Promise<number>;
+  cleanupRetention(): Promise<RoutineMaintenanceResult>;
   getRoutine(routineId: string): Promise<RoutineDefinition | undefined>;
   listRoutines(workspaceId?: string, channelId?: string): Promise<RoutineDefinition[]>;
   listRevisions(routineId: string): Promise<RoutineRevision[]>;
@@ -371,6 +381,7 @@ export type RoutineRpcRequest =
   | { kind: 'cancel_confirmation'; input: CancelRoutineConfirmationInput }
   | { kind: 'confirm'; input: ConfirmRoutineInput }
   | { kind: 'purge_confirmations' }
+  | { kind: 'cleanup_retention' }
   | { kind: 'get_routine'; routineId: string }
   | { kind: 'list_routines'; workspaceId?: string; channelId?: string }
   | { kind: 'list_revisions'; routineId: string }
@@ -409,4 +420,5 @@ export type RoutineRpcResponse =
   | { kind: 'delivery_claim'; outcome: 'claimed' | 'superseded' }
   | { kind: 'boolean'; value: boolean }
   | { kind: 'purged'; count: number }
+  | { kind: 'maintenance'; result: RoutineMaintenanceResult }
   | { kind: 'audit_events'; events: AuditEvent[] };

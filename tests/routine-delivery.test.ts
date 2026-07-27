@@ -91,9 +91,10 @@ test('terminal notices point to safe history and share the same dedupe lease', a
     },
   });
   await deliverRoutineFailureNotice({
-    store: store(events), run, routine, access,
+    store: store(events), run, routine: { ...routine, state: 'paused' }, access,
     publicError: 'The routine stopped safely.', now: () => 2_000,
   }, client);
   assert.match(posted, /!routines show routine_test/);
+  assert.match(posted, /Automatic scheduling is paused/);
   assert.deepEqual(events, ['claim', 'record:delivered:1785000000.000200']);
 });

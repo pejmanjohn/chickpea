@@ -59,6 +59,7 @@ import {
   type RoutineRpcResponse,
   type RoutineRun,
   type RoutineRunFilter,
+  type RoutineMaintenanceResult,
   type RoutineStore,
   type ResolveRoutineAdmissionInput,
   type StartRoutineAdmissionInput,
@@ -501,6 +502,11 @@ export class CfRoutineStore implements RoutineStore {
     const response = await this.execute({ kind: 'purge_confirmations' });
     if (response.kind !== 'purged') throw unexpectedRoutineResponse();
     return response.count;
+  }
+  async cleanupRetention(): Promise<RoutineMaintenanceResult> {
+    const response = await this.execute({ kind: 'cleanup_retention' });
+    if (response.kind !== 'maintenance') throw unexpectedRoutineResponse();
+    return response.result;
   }
   async getRoutine(routineId: string): Promise<RoutineDefinition | undefined> {
     const response = await this.execute({ kind: 'get_routine', routineId });

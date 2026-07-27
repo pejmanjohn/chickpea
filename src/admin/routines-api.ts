@@ -5,6 +5,7 @@ import * as v from 'valibot';
 
 import { isCloudflareTarget, type PlatformEnv } from '../config/state-backend.ts';
 import { RoutineService } from '../routines/service.ts';
+import { routineOperatorLimits } from '../routines/limits.ts';
 import {
   resolveRoutineCapability,
   type RoutineCapability,
@@ -65,6 +66,7 @@ export function createRoutineAdminApi(options: RoutineAdminApiOptions): Hono {
         routines: page.map(routineSummary),
         nextCursor: offset + limit < routines.length ? String(offset + limit) : null,
         capability: capabilityFor(c, options),
+        limits: routineOperatorLimits(),
       });
     } catch (error) {
       return routineError(c, error);
@@ -114,6 +116,7 @@ export function createRoutineAdminApi(options: RoutineAdminApiOptions): Hono {
         })),
         events: events.map(safeAuditEvent),
         capability: capabilityFor(c, options),
+        limits: routineOperatorLimits(),
       });
     } catch (error) {
       return routineError(c, error);

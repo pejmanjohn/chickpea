@@ -145,6 +145,14 @@ export class AuditStoreLogic {
       before,
     ).changes;
   }
+
+  deleteBefore(domain: AuditEvent['domain'], before: number): number {
+    return this.db.run(
+      'DELETE FROM audit_events WHERE domain = ? AND created_at < ?',
+      domain,
+      before,
+    ).changes;
+  }
 }
 
 function validateSafeMetadata(raw: string): void {

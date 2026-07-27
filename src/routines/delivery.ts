@@ -42,6 +42,11 @@ export async function deliverRoutineFailureNotice(
   const text = [
     `*Routine needs attention: ${escapeSlackText(input.routine.name)}*`,
     escapeSlackText(input.publicError),
+    ...(input.routine.state === 'paused'
+      ? ['Automatic scheduling is paused until a channel member reviews and resumes it.']
+      : input.routine.state === 'disabled'
+        ? ['This routine was disabled because its current channel authority is no longer eligible.']
+        : []),
     `Inspect the safe run history with \`!routines show ${input.routine.id}\`.`,
   ].join('\n');
   return deliverRoutineSlackMessage({ ...input, changeKeyHash: null }, text, client);

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {
   copyFileSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -65,6 +66,35 @@ function commands(logPath: string): string[] {
   return readFileSync(logPath, 'utf8').trim().split('\n');
 }
 
+function writeRoutineArtifact(
+  harness: ReturnType<typeof createHarness>,
+  options: { cron?: boolean; workflow?: boolean; guarded?: boolean } = {},
+) {
+  const builtDir = path.join(harness.root, 'dist-cf', 'chickpea');
+  const redirectDir = path.join(harness.root, '.wrangler', 'deploy');
+  mkdirSync(builtDir, { recursive: true });
+  mkdirSync(redirectDir, { recursive: true });
+  writeFileSync(path.join(redirectDir, 'config.json'), JSON.stringify({
+    configPath: '../../dist-cf/chickpea/wrangler.json',
+  }));
+  writeFileSync(path.join(builtDir, 'wrangler.json'), JSON.stringify({
+    name: 'chickpea',
+    main: 'index.js',
+    vars: { TAG_ROUTINES_ENABLED: '1' },
+    triggers: { crons: options.cron === false ? [] : ['* * * * *'] },
+    durable_objects: { bindings: [
+      { name: 'TAG_STATE', class_name: 'TagStateStore' },
+      ...(options.workflow === false ? [] : [{ name: 'FLUE_ROUTINE_WORKFLOW', class_name: 'FlueRoutineWorkflow' }]),
+    ] },
+  }));
+  writeFileSync(
+    path.join(builtDir, 'index.js'),
+    options.guarded === false
+      ? 'scheduled(controller) {}'
+      : 'scheduled(controller) {} routine-intent slack-thread x-flue-internal-token error: "unauthorized"',
+  );
+}
+
 test('deploy builds by default before forwarding dry-run to Wrangler', (context) => {
   const harness = createHarness();
   context.after(() => rmSync(harness.root, { recursive: true, force: true }));
@@ -88,4 +118,28 @@ test('deploy skip-build flag stays private while dry-run still reaches Wrangler'
   assert.equal(result.status, 0, result.stderr);
   assert.doesNotMatch(result.stdout, /Building the Cloudflare artifact from current source/);
   assert.deepEqual(commands(harness.logPath), ['wrangler:["deploy","--dry-run"]']);
+});
+
+test('enabled routines require Cron, state, Workflow, scheduled handler, and internal route guards', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+  writeRoutineArtifact(harness);
+
+  const result = runHarness(harness, ['--skip-build', '--dry-run']);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(commands(harness.logPath), ['wrangler:["deploy","--dry-run"]']);
+});
+
+test('deploy refuses an enabled routines artifact with a missing heartbeat', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+  writeRoutineArtifact(harness, { cron: false });
+
+  const result = runHarness(harness, ['--skip-build', '--dry-run']);
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /TAG_ROUTINES_ENABLED=1 is unsafe/);
+  assert.match(result.stderr, /heartbeat Cron Trigger/);
+  assert.equal(existsSync(harness.logPath), false);
 });

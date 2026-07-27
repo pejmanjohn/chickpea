@@ -27,6 +27,7 @@ import {
   type RoutineDefinition,
   type RoutineDefinitionContent,
   type RoutineDueClaimBatch,
+  type RoutineMaintenanceResult,
   type RoutineRevision,
   type RoutineRpcRequest,
   type RoutineRpcResponse,
@@ -179,7 +180,6 @@ const ATTRIBUTABLE_FAILURES = new Set<RoutineRun['failureClass']>([
   'deadline_exceeded',
   'tool_failed',
   'result_invalid',
-  'delivery_unknown',
 ]);
 const ACCESS_FAILURES = new Set<RoutineRun['failureClass']>([
   'creator_ineligible',
@@ -212,6 +212,8 @@ export class RoutineStoreLogic {
         return { kind: 'routine', routine: this.confirm(request.input) };
       case 'purge_confirmations':
         return { kind: 'purged', count: this.purgeConfirmations() };
+      case 'cleanup_retention':
+        return { kind: 'maintenance', result: this.cleanupRetention() };
       case 'get_routine':
         return { kind: 'routine', routine: this.getRoutine(request.routineId) ?? null };
       case 'list_routines':
@@ -531,6 +533,123 @@ export class RoutineStoreLogic {
     ).changes;
   }
 
+  cleanupRetention(): RoutineMaintenanceResult {
+    const at = this.now();
+    const retentionCutoff = at - ROUTINE_LIMITS.metadataRetentionMs;
+    const confirmationsPurged = this.purgeConfirmations();
+    const reservationsPurged = this.db.run(
+      'DELETE FROM routine_schedule_reservations WHERE window_start < ?',
+      at - 15 * 60 * 1_000,
+    ).changes;
+
+    let deliveryLeasesReconciled = 0;
+    const staleDeliveries = this.db.all(
+      `SELECT id FROM routine_runs
+       WHERE delivery_status = 'leased' AND delivery_lease_until IS NOT NULL
+         AND delivery_lease_until <= ?`,
+      at,
+    );
+    for (const row of staleDeliveries) {
+      const occurrenceId = String(row.id);
+      const run = this.getRun(occurrenceId);
+      if (!run) continue;
+      this.recordDelivery({ occurrenceId, outcome: 'unknown', at });
+      if (run.status === 'running') {
+        this.transitionRun({
+          occurrenceId,
+          from: ['running'],
+          to: 'failed',
+          at,
+          failureClass: 'delivery_unknown',
+          publicError: 'The Slack delivery lease expired with an unknown outcome; Chickpea did not retry it.',
+        });
+      } else {
+        this.pauseRoutineForUnknownOutcome(run, 'delivery_unknown', at);
+      }
+      deliveryLeasesReconciled += 1;
+    }
+
+    let deadlineRunsReconciled = 0;
+    const expiredRuns = this.db.all(
+      `SELECT id, status FROM routine_runs
+       WHERE (
+         status = 'queued' AND deadline_at < ?
+       ) OR (
+         status = 'admitting' AND deadline_at + ? < ?
+           AND (admission_lease_until IS NULL OR admission_lease_until <= ?)
+       ) OR (
+         status = 'running' AND deadline_at + ? < ?
+       )
+       ORDER BY deadline_at, id`,
+      at,
+      ROUTINE_LIMITS.admissionGraceMs,
+      at,
+      at,
+      ROUTINE_LIMITS.deliveryLeaseMs,
+      at,
+    );
+    for (const row of expiredRuns) {
+      const occurrenceId = String(row.id);
+      const status = String(row.status) as RoutineRunStatus;
+      const current = this.getRun(occurrenceId);
+      if (!current || current.status !== status) continue;
+      if (status === 'queued') {
+        this.transitionRun({
+          occurrenceId,
+          from: ['queued'],
+          to: 'skipped',
+          at,
+          failureClass: 'capacity_limited',
+          publicError: 'Routine admission expired before execution began.',
+        });
+      } else if (status === 'admitting') {
+        this.transitionRun({
+          occurrenceId,
+          from: ['admitting'],
+          to: 'failed',
+          at,
+          failureClass: 'admission_unknown',
+          publicError: 'Routine admission did not reach a safely reconcilable state.',
+        });
+      } else if (status === 'running') {
+        this.transitionRun({
+          occurrenceId,
+          from: ['running'],
+          to: 'failed',
+          at,
+          failureClass: 'unknown_external_outcome',
+          publicError: 'The routine exceeded its deadline and may require external-result inspection.',
+        });
+      }
+      deadlineRunsReconciled += 1;
+    }
+
+    this.db.run(
+      `DELETE FROM routine_run_admissions
+       WHERE occurrence_id IN (
+         SELECT id FROM routine_runs
+         WHERE status IN ('succeeded', 'no_op', 'failed', 'skipped', 'cancelled', 'superseded')
+           AND finished_at IS NOT NULL AND finished_at < ?
+       )`,
+      retentionCutoff,
+    );
+    const runsDeleted = this.db.run(
+      `DELETE FROM routine_runs
+       WHERE status IN ('succeeded', 'no_op', 'failed', 'skipped', 'cancelled', 'superseded')
+         AND finished_at IS NOT NULL AND finished_at < ?`,
+      retentionCutoff,
+    ).changes;
+    const auditEventsDeleted = this.audit.deleteBefore('scheduled_work', retentionCutoff);
+    return {
+      confirmationsPurged,
+      reservationsPurged,
+      deliveryLeasesReconciled,
+      deadlineRunsReconciled,
+      runsDeleted,
+      auditEventsDeleted,
+    };
+  }
+
   getRoutine(routineId: string): RoutineDefinition | undefined {
     const row = this.db.get('SELECT * FROM routines WHERE id = ?', routineId);
     return row ? rowToRoutine(row as unknown as RoutineRow) : undefined;
@@ -603,7 +722,9 @@ export class RoutineStoreLogic {
       this.db.run(
         `UPDATE routines SET state = ?, version = ?, updated_at = ?, updated_by = ?,
            paused_at = ?, paused_by = ?, paused_reason = ?, disabled_at = ?,
-           disabled_by = ?, disabled_reason = ? WHERE id = ? AND version = ?`,
+           disabled_by = ?, disabled_reason = ?,
+           consecutive_failures = CASE WHEN ? THEN 0 ELSE consecutive_failures END
+         WHERE id = ? AND version = ?`,
         target,
         nextVersion,
         at,
@@ -614,6 +735,7 @@ export class RoutineStoreLogic {
         target === 'disabled' ? at : null,
         target === 'disabled' ? input.actorId : null,
         target === 'disabled' ? (input.reasonCode ?? 'member_disable') : null,
+        input.action === 'resume' ? 1 : 0,
         routine.id,
         routine.version,
       );
@@ -951,7 +1073,7 @@ export class RoutineStoreLogic {
           input.at,
           input.occurrenceId,
         );
-        this.applyRoutineOutcome(run.routineId, 'failed', 'admission_unknown', input.at);
+        this.applyRoutineOutcome(run, 'failed', 'admission_unknown', input.at);
       }
       const updated = required(this.getRun(input.occurrenceId), 'Routine occurrence was not readable.');
       this.appendRunAudit(
@@ -1095,7 +1217,7 @@ export class RoutineStoreLogic {
         run.id,
         run.status,
       );
-      if (finishedAt !== null) this.applyRoutineOutcome(run.routineId, input.to, input.failureClass ?? null, input.at);
+      if (finishedAt !== null) this.applyRoutineOutcome(run, input.to, input.failureClass ?? null, input.at);
       const updated = required(this.getRun(run.id), 'Routine occurrence was not readable after transition.');
       this.appendRunAudit(
         `routine.occurrence_${input.to}`,
@@ -1601,11 +1723,12 @@ export class RoutineStoreLogic {
   }
 
   private applyRoutineOutcome(
-    routineId: string,
+    run: RoutineRun,
     status: RoutineRunStatus,
     failureClass: RoutineRun['failureClass'],
     at: number,
   ): void {
+    const routineId = run.routineId;
     const routine = this.getRoutine(routineId);
     if (!routine || routine.deletedAt !== null) return;
     if (status === 'succeeded' || status === 'no_op') {
@@ -1630,18 +1753,22 @@ export class RoutineStoreLogic {
         routineId,
       );
       this.db.run('DELETE FROM routine_schedule_reservations WHERE routine_id = ?', routineId);
-      return;
-    }
-    if (failureClass === 'unknown_external_outcome') {
-      this.db.run(
-        `UPDATE routines SET state = 'paused', paused_at = ?, paused_by = NULL,
-           paused_reason = ?, last_finished_at = ? WHERE id = ?`,
+      const disabled = required(this.getRoutine(routineId), 'Auto-disabled routine was not readable.');
+      this.appendRoutineAudit(
+        `routine:auto-disable:${run.id}:${failureClass}`,
+        'routine.auto_disabled',
+        disabled,
+        null,
+        'system',
+        definitionHash(routine),
+        definitionHash(disabled),
         at,
         failureClass,
-        at,
-        routineId,
       );
-      this.db.run('DELETE FROM routine_schedule_reservations WHERE routine_id = ?', routineId);
+      return;
+    }
+    if (failureClass === 'unknown_external_outcome' || failureClass === 'delivery_unknown') {
+      this.pauseRoutineForUnknownOutcome(run, failureClass, at);
       return;
     }
     if (ATTRIBUTABLE_FAILURES.has(failureClass)) {
@@ -1661,10 +1788,56 @@ export class RoutineStoreLogic {
         pause ? 1 : 0,
         routineId,
       );
-      if (pause) this.db.run('DELETE FROM routine_schedule_reservations WHERE routine_id = ?', routineId);
+      if (pause) {
+        this.db.run('DELETE FROM routine_schedule_reservations WHERE routine_id = ?', routineId);
+        const paused = required(this.getRoutine(routineId), 'Auto-paused routine was not readable.');
+        this.appendRoutineAudit(
+          `routine:auto-pause:${run.id}:consecutive_failures`,
+          'routine.auto_paused',
+          paused,
+          null,
+          'system',
+          definitionHash(routine),
+          definitionHash(paused),
+          at,
+          'consecutive_failures',
+        );
+      }
       return;
     }
     this.db.run('UPDATE routines SET last_finished_at = ? WHERE id = ?', at, routineId);
+  }
+
+  private pauseRoutineForUnknownOutcome(
+    run: RoutineRun,
+    reason: 'unknown_external_outcome' | 'delivery_unknown',
+    at: number,
+  ): void {
+    const routine = this.getRoutine(run.routineId);
+    if (!routine || routine.deletedAt !== null || routine.state === 'disabled') return;
+    this.db.run(
+      `UPDATE routines SET state = 'paused', paused_at = ?, paused_by = NULL,
+         paused_reason = ?, last_finished_at = ? WHERE id = ?`,
+      at,
+      reason,
+      at,
+      run.routineId,
+    );
+    this.db.run('DELETE FROM routine_schedule_reservations WHERE routine_id = ?', run.routineId);
+    const paused = required(this.getRoutine(run.routineId), 'Unknown-outcome routine was not readable.');
+    if (routine.state !== 'paused' || routine.pausedReason !== reason) {
+      this.appendRoutineAudit(
+        `routine:auto-pause:${run.id}:${reason}`,
+        'routine.auto_paused',
+        paused,
+        null,
+        'system',
+        definitionHash(routine),
+        definitionHash(paused),
+        at,
+        reason,
+      );
+    }
   }
 
   private runByIdempotencyKey(idempotencyKey: string): RoutineRun | undefined {
@@ -1749,6 +1922,9 @@ export class SqliteRoutineStore implements RoutineStore {
   }
   async purgeConfirmations(): Promise<number> {
     return this.logic.purgeConfirmations();
+  }
+  async cleanupRetention(): Promise<RoutineMaintenanceResult> {
+    return this.logic.cleanupRetention();
   }
   async getRoutine(routineId: string): Promise<RoutineDefinition | undefined> {
     return this.logic.getRoutine(routineId);

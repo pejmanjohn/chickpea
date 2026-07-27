@@ -12,6 +12,10 @@
   },
   "vars": {
     "SANDBOX_TRANSPORT": "rpc",
+    // Cloudflare-only routine kill switch. Keep "0" through deployment and
+    // workerd verification; set "1" only when the fixed Cron, TAG_STATE, Flue
+    // Workflow, and internal route guards are present. `npm run deploy` rejects
+    // an enabled artifact when any required seam is missing.
     "TAG_ROUTINES_ENABLED": "0"
   },
   "triggers": {
