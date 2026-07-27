@@ -91,6 +91,8 @@ test('mixed Google access describes methods per service rather than as a writabl
   assert.match(instructions, /Gmail: read-only/);
   assert.match(instructions, /Calendar: read and write/);
   assert.match(instructions, /Drive: not enabled/);
+  assert.match(instructions, /event-scoped read-and-write grant does not authorize this endpoint/);
+  assert.match(instructions, /Use `primary` as `\{calendar_id\}`/);
   assert.doesNotMatch(instructions, /Allowed methods:.*POST/);
 });
 
