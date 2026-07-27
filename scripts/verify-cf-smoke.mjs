@@ -529,6 +529,24 @@ async function main() {
       String(defaultAgent?.model),
     );
 
+    const wireBeforeHeartbeat = backend.wireLog.length;
+    const disabledHeartbeat = await fetch(`${baseUrl}/cdn-cgi/handler/scheduled?cron=*+*+*+*+*`);
+    await delay(100);
+    const scheduledWork = await adminFetch(baseUrl, '/admin/api/audit/scheduled_work/routines');
+    check(
+      disabledHeartbeat.status === 200 && backend.wireLog.length === wireBeforeHeartbeat,
+      'disabled heartbeat performs no Slack or model work',
+      `HTTP ${disabledHeartbeat.status} wireDelta=${backend.wireLog.length - wireBeforeHeartbeat}`,
+    );
+    check(
+      scheduledWork.status === 200 &&
+        scheduledWork.body?.capability?.reason === 'operator_disabled' &&
+        Array.isArray(scheduledWork.body?.routines) &&
+        scheduledWork.body.routines.length === 0,
+      'Scheduled Work reports the Cloudflare capability as operator-disabled',
+      `HTTP ${scheduledWork.status} reason=${String(scheduledWork.body?.capability?.reason)}`,
+    );
+
     // --- First-run wizard flow (no Slack creds anywhere yet) ---------------
 
     // The app is up and serving /admin, but events must fail closed until

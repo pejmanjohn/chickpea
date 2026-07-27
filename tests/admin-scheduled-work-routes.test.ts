@@ -84,6 +84,8 @@ test('Scheduled Work APIs are admin-authenticated, body-safe, filterable, and co
     const detailBody = await detail.json() as Record<string, any>;
     assert.equal(detailBody.routine.taskText, definition().taskText);
     assert.equal(detailBody.runs[0].id, 'rrun_admin');
+    assert.ok(detailBody.events.some((event: Record<string, unknown>) =>
+      event.eventType === 'routine.occurrence_created'));
     const runWire = JSON.stringify(detailBody.runs[0]);
     assert.doesNotMatch(runWire, /taskText|revision|toolOutput|prompt/i);
 

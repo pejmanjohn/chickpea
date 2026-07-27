@@ -97,11 +97,14 @@ export function createRoutineAdminApi(options: RoutineAdminApiOptions): Hono {
       const state = options.store(c);
       const routine = await state.getRoutine(routineId);
       if (!routine) return c.json({ error: 'routine_not_found' }, 404);
-      const [runs, revisions, events] = await Promise.all([
+      const [runs, revisions] = await Promise.all([
         state.listRuns({ routineId, limit: 100 }),
         state.listRevisions(routineId),
-        state.listAuditEvents({ subjectId: routineId, limit: 100 }),
       ]);
+      const events = await state.listAuditEvents({
+        subjectIds: [routineId, ...runs.map((run) => run.id)],
+        limit: 500,
+      });
       return c.json({
         routine: routineDetail(routine),
         runs: runs.map(runDetail),

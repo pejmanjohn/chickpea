@@ -123,6 +123,8 @@ The hard deployment defaults are 100 active routines, 20 per channel, 240 schedu
 
 The feature is Cloudflare-only for now and deploys **off by default**. Set `TAG_ROUTINES_ENABLED` to `"1"` in `wrangler.jsonc` and deploy only after the normal offline/workerd gates pass. The deploy wrapper refuses an enabled artifact unless the heartbeat Cron, `TAG_STATE`, routine Workflow binding, composed scheduled handler, and internal Agent route guards are all present. To roll back, set the flag to `"0"` and deploy: definitions and audit history remain inspectable and controllable, but no heartbeat scans, model calls, or Slack work run. Node honestly rejects create/edit/resume/run-now while retaining list/show/pause/disable/delete and Admin inspection; it does not start an in-process timer.
 
+See [Scheduled routines](docs/routines.md) for the exact execution policy, bounds, enable/rollback gates, live-acceptance boundary, and troubleshooting guide.
+
 ### Skills
 
 Open a profile's Skills tab and choose **Import from URL**. The source field is always free-form: paste another person's public repository, a GitHub URL, or a skills.sh page, then choose **Find skills**. Use `owner/repo@skill` to select one skill in a large repository; scans inspect at most 40 skill directories.

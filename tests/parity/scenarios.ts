@@ -1412,6 +1412,30 @@ export const scenarios: Scenario[] = [
       assert.equal(instance.backend.finals().length, 1, 'assigned channel turns still run');
     },
   },
+  {
+    id: 'S41',
+    title: 'signed routine command is deterministic and honest on Node',
+    config: demoChannelConfig(),
+    async run(instance) {
+      const response = await instance.postEvent(
+        appMention({
+          event_id: 'Ev_S41_ROUTINES',
+          event: {
+            text: '<@U_BOT> !routines',
+            ts: '1782772100.000100',
+            event_ts: '1782772100.000100',
+          },
+        }),
+      );
+      assert.equal(response.status, 200, JSON.stringify(response.body));
+      await instance.quiesce();
+
+      const finals = instance.backend.finals();
+      assert.equal(finals.length, 1);
+      assert.match(finals[0]?.text ?? '', /Cloudflare-only/);
+      assert.equal(instance.backend.providerCalls().length, 0);
+    },
+  },
 ];
 
 /**

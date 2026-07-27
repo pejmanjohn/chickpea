@@ -118,6 +118,11 @@ export class AuditStoreLogic {
       clauses.push('subject_id = ?');
       params.push(filter.subjectId);
     }
+    if (filter.subjectIds?.length) {
+      const subjectIds = [...new Set(filter.subjectIds)].slice(0, 101);
+      clauses.push(`subject_id IN (${subjectIds.map(() => '?').join(', ')})`);
+      params.push(...subjectIds);
+    }
     if (filter.storeId) {
       clauses.push('store_id = ?');
       params.push(filter.storeId);

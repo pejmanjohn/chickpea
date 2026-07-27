@@ -19,7 +19,6 @@ import {
   assertNodeVersion,
   delay,
   getFreePort,
-  stopChild,
 } from './lib/offline-harness.mjs';
 
 const FIXTURE_ROOT = join(REPO_ROOT, 'scripts', 'fixtures', 'routines-runtime-spike');
@@ -100,12 +99,40 @@ function startWrangler(configPath, persistDir, port) {
       '--persist-to',
       persistDir,
     ],
-    { cwd: REPO_ROOT, env: { ...process.env, CI: '1' }, stdio: ['ignore', 'pipe', 'pipe'] },
+    {
+      cwd: REPO_ROOT,
+      env: { ...process.env, CI: '1' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+      // Wrangler starts workerd grandchildren. Give this disposable harness a
+      // process group so cleanup cannot orphan either Wrangler or workerd and
+      // keep this Node process alive through inherited output pipes.
+      detached: process.platform !== 'win32',
+    },
   );
   let output = '';
   child.stdout.on('data', (chunk) => (output += chunk));
   child.stderr.on('data', (chunk) => (output += chunk));
   return { child, getOutput: () => output };
+}
+
+async function stopWrangler(handle) {
+  const child = handle.child;
+  const exited = child.exitCode !== null || child.signalCode !== null
+    ? Promise.resolve()
+    : new Promise((resolve) => child.once('exit', resolve));
+  if (child.pid && process.platform !== 'win32') {
+    try { process.kill(-child.pid, 'SIGTERM'); } catch { /* already gone */ }
+  } else if (child.exitCode === null && child.signalCode === null) {
+    child.kill('SIGTERM');
+  }
+  await Promise.race([exited, delay(3_000)]);
+  if (child.pid && process.platform !== 'win32') {
+    try { process.kill(-child.pid, 'SIGKILL'); } catch { /* group exited */ }
+  } else if (child.exitCode === null && child.signalCode === null) {
+    child.kill('SIGKILL');
+  }
+  child.stdout?.destroy();
+  child.stderr?.destroy();
 }
 
 async function waitForReady(handle, timeoutMs = 30_000) {
@@ -234,7 +261,7 @@ async function main() {
       throw new Error(`${message}\n\nwrangler output:\n${handle.getOutput()}`);
     }
   } finally {
-    if (handle) await stopChild(handle.child);
+    if (handle) await stopWrangler(handle);
     rmSync(tempRoot, { recursive: true, force: true });
   }
   console.log('routine runtime spike passed');
