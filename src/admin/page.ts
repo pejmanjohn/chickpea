@@ -1547,10 +1547,10 @@ details[open].advanced summary::before {
     modelPickerOpen: false,
     modelPickerFilter: "",
     providerModelsError: {},
-    // Audit Logs is a top-level operator surface. Memory is the only live
-    // domain in this release; Scheduled Work and Network Events are labels,
-    // not empty APIs. The draft mirrors editable entry fields so a conflict or
-    // retry never erases operator work.
+    // Audit Logs is reached from a channel's Review memory action. Memory is
+    // the only live domain in this release; Scheduled Work and Network Events
+    // are labels, not empty APIs. The draft mirrors editable entry fields so a
+    // conflict or retry never erases operator work.
     memoryScopes: null,
     memoryScopesLoading: false,
     memoryScopesError: "",
