@@ -4,15 +4,23 @@ interface ConnectorSkillScope {
   allowedHosts: string[];
   pathPrefixes: string[];
   allowedMethods: string[];
+  presetId?: string;
+  oauthScopes?: string[];
 }
 
-type ConnectorSkillKind = 'github-api' | 'asana-api' | 'zendesk-api' | 'repositories';
+type ConnectorSkillKind =
+  | 'github-api'
+  | 'asana-api'
+  | 'zendesk-api'
+  | 'google-workspace'
+  | 'repositories';
 
 interface ConnectorSkillDefinition {
   name: ConnectorSkillKind;
   description: string;
   instructions: string;
   matchesHost: (host: string) => boolean;
+  matchesScope?: (scope: ConnectorSkillScope) => boolean;
 }
 
 const AUTOMATIC_AUTH =
@@ -390,6 +398,69 @@ const ZENDESK_INSTRUCTIONS = [
   ERROR_AND_RESTRICTION_GUIDANCE,
 ].join('\n');
 
+const GOOGLE_WORKSPACE_INSTRUCTIONS = [
+  '# Google Workspace',
+  '',
+  'Use Gmail, Calendar, and Drive through their official REST APIs. Use only the services, paths, and methods listed under **Your connection**.',
+  '',
+  AUTOMATIC_AUTH,
+  '',
+  '## Gmail',
+  '',
+  'Search messages (Gmail query syntax goes in `q`):',
+  apiCurl(['  "https://gmail.googleapis.com/gmail/v1/users/me/messages?q=is%3Aunread&maxResults=100"']),
+  '',
+  'Read one message:',
+  apiCurl(['  "https://gmail.googleapis.com/gmail/v1/users/me/messages/{message_id}?format=full"']),
+  '',
+  'Send mail only when Gmail write access is listed. Build an RFC 2822 message, encode it as base64url without padding, and POST `{"raw":"{base64url_message}"}` to:',
+  apiCurl([
+    '  --request POST \\',
+    "  -H 'Content-Type: application/json' \\",
+    "  --data '{\"raw\":\"{base64url_message}\"}' \\",
+    '  "https://gmail.googleapis.com/gmail/v1/users/me/messages/send"',
+  ]),
+  '',
+  '## Calendar',
+  '',
+  'List calendars only when Calendar read-only access is listed. The event-scoped read-and-write grant does not authorize this endpoint:',
+  apiCurl(['  "https://www.googleapis.com/calendar/v3/users/me/calendarList?maxResults=250"']),
+  '',
+  'List events. Use `primary` as `{calendar_id}` unless the user supplied another calendar id:',
+  apiCurl(['  "https://www.googleapis.com/calendar/v3/calendars/{calendar_id}/events?singleEvents=true&orderBy=startTime&timeMin={RFC3339}"']),
+  '',
+  'Create an event only when Calendar write access is listed. Use `primary` as `{calendar_id}` unless the user supplied another calendar id:',
+  apiCurl([
+    '  --request POST \\',
+    "  -H 'Content-Type: application/json' \\",
+    "  --data '{\"summary\":\"Event title\",\"start\":{\"dateTime\":\"{RFC3339}\"},\"end\":{\"dateTime\":\"{RFC3339}\"}}' \\",
+    '  "https://www.googleapis.com/calendar/v3/calendars/{calendar_id}/events"',
+  ]),
+  '',
+  '## Drive',
+  '',
+  'Search or list files:',
+  apiCurl(['  "https://www.googleapis.com/drive/v3/files?q=trashed%3Dfalse&pageSize=100&fields=nextPageToken%2Cfiles%28id%2Cname%2CmimeType%2CmodifiedTime%2CwebViewLink%29"']),
+  '',
+  'Read metadata or download a binary file:',
+  apiCurl(['  "https://www.googleapis.com/drive/v3/files/{file_id}?fields=id%2Cname%2CmimeType%2CmodifiedTime%2CwebViewLink"']),
+  apiCurl(['  "https://www.googleapis.com/drive/v3/files/{file_id}?alt=media"']),
+  '',
+  'Export a Google-native document:',
+  apiCurl(['  "https://www.googleapis.com/drive/v3/files/{file_id}/export?mimeType=text%2Fplain"']),
+  '',
+  'Create or update files only when Drive write access is listed. Use the `/upload/drive/v3/files` path for media or multipart uploads.',
+  '',
+  '## Pagination and safety',
+  '',
+  '- Gmail uses `nextPageToken`; Calendar and Drive use `nextPageToken`/`pageToken`. Follow tokens exactly and stop when absent.',
+  '- Confirm recipients and event details before sending mail or creating/changing calendar events.',
+  '- Confirm destructive changes before deleting events or Drive files.',
+  '- Google API errors are JSON. A 401 means the connection needs to be renewed; a 403 can also mean the selected OAuth scope does not permit the operation.',
+  '',
+  ERROR_AND_RESTRICTION_GUIDANCE,
+].join('\n');
+
 const CONNECTOR_SKILLS: ConnectorSkillDefinition[] = [
   {
     name: 'github-api',
@@ -409,6 +480,13 @@ const CONNECTOR_SKILLS: ConnectorSkillDefinition[] = [
     instructions: ZENDESK_INSTRUCTIONS,
     matchesHost: (host) => host.endsWith('.zendesk.com'),
   },
+  {
+    name: 'google-workspace',
+    description: 'Read and update Gmail, Google Calendar, and Google Drive within the connected account scope.',
+    instructions: GOOGLE_WORKSPACE_INSTRUCTIONS,
+    matchesHost: (host) => host === 'gmail.googleapis.com' || host === 'www.googleapis.com',
+    matchesScope: (scope) => scope.presetId === 'google-workspace',
+  },
 ];
 
 /**
@@ -426,7 +504,10 @@ export function connectorSkillsForConnections(
   for (const scope of scopes) {
     const hosts = scope.allowedHosts.map((host) => host.toLowerCase());
     for (const definition of CONNECTOR_SKILLS) {
-      if (attached.has(definition.name) || !hosts.some(definition.matchesHost)) {
+      const matches = definition.matchesScope
+        ? definition.matchesScope(scope)
+        : hosts.some(definition.matchesHost);
+      if (attached.has(definition.name) || !matches) {
         continue;
       }
       attached.add(definition.name);
@@ -500,13 +581,29 @@ function connectionContext(
   matchesHost: ConnectorSkillDefinition['matchesHost'],
 ): string {
   const matchingHosts = scope.allowedHosts.filter((host) => matchesHost(host.toLowerCase()));
-  return [
+  const details = [
     '## Your connection',
     '',
     `- Allowed hosts: ${inlineValues(matchingHosts)}`,
     `- Path scope: ${scope.pathPrefixes.length > 0 ? inlineValues(scope.pathPrefixes) : 'whole host'}`,
-    `- Allowed methods: ${scope.allowedMethods.join(', ')}`,
-  ].join('\n');
+  ];
+  if (scope.presetId === 'google-workspace') {
+    const scopes = scope.oauthScopes ?? [];
+    details.push(
+      `- Gmail: ${googleAccess(scopes, 'gmail.readonly', 'gmail.modify')}`,
+      `- Calendar: ${googleAccess(scopes, 'calendar.readonly', 'calendar.events')}`,
+      `- Drive: ${googleAccess(scopes, 'drive.readonly', 'drive')}`,
+    );
+  } else {
+    details.push(`- Allowed methods: ${scope.allowedMethods.join(', ')}`);
+  }
+  return details.join('\n');
+}
+
+function googleAccess(scopes: readonly string[], readSuffix: string, writeSuffix: string): string {
+  if (scopes.some((scope) => scope.endsWith('/' + writeSuffix))) return 'read and write';
+  if (scopes.some((scope) => scope.endsWith('/' + readSuffix))) return 'read-only';
+  return 'not enabled';
 }
 
 function inlineValues(values: string[]): string {

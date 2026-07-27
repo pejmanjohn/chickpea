@@ -31,6 +31,7 @@ test('matches supported API hosts case-insensitively and rejects lookalikes', ()
     { host: 'APP.ASANA.COM', expectedNames: ['asana-api'] },
     { host: 'foo.zendesk.com', expectedNames: ['zendesk-api'] },
     { host: 'Foo.Zendesk.Com', expectedNames: ['zendesk-api'] },
+    { host: 'www.googleapis.com', expectedNames: [] },
     { host: 'zendesk.com', expectedNames: [] },
     { host: 'zendesk.com.evil.com', expectedNames: [] },
     { host: 'api.github.com.evil.com', expectedNames: [] },
@@ -44,6 +45,55 @@ test('matches supported API hosts case-insensitively and rejects lookalikes', ()
       host,
     );
   }
+});
+
+test('Google Workspace policy attaches one scope-aware Gmail, Calendar, and Drive skill', () => {
+  const [skill] = connectorSkillsForConnections([
+    scope(['gmail.googleapis.com', 'www.googleapis.com'], {
+      presetId: 'google-workspace',
+      pathPrefixes: ['/gmail/v1/users/me', '/calendar/v3', '/drive/v3'],
+      allowedMethods: ['GET', 'HEAD'],
+      oauthScopes: [
+        'https://www.googleapis.com/auth/gmail.readonly',
+        'https://www.googleapis.com/auth/calendar.readonly',
+        'https://www.googleapis.com/auth/drive.readonly',
+      ],
+    }),
+  ]);
+
+  assert.equal(skill?.name, 'google-workspace');
+  const instructions = skill?.instructions ?? '';
+  assert.match(instructions, /Gmail, Calendar, and Drive/);
+  assert.match(instructions, /gmail\.googleapis\.com\/gmail\/v1\/users\/me\/messages/);
+  assert.match(instructions, /www\.googleapis\.com\/calendar\/v3\/calendars/);
+  assert.match(instructions, /www\.googleapis\.com\/drive\/v3\/files/);
+  assert.match(instructions, /Gmail: read-only/);
+  assert.match(instructions, /Calendar: read-only/);
+  assert.match(instructions, /Drive: read-only/);
+  assert.match(instructions, /Authentication is handled automatically/);
+  assert.doesNotMatch(instructions, /Bearer |access[_ -]?token|client[_ -]?secret/i);
+});
+
+test('mixed Google access describes methods per service rather than as a writable union', () => {
+  const [skill] = connectorSkillsForConnections([
+    scope(['gmail.googleapis.com', 'www.googleapis.com'], {
+      presetId: 'google-workspace',
+      pathPrefixes: ['/gmail/v1/users/me', '/calendar/v3'],
+      allowedMethods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'],
+      oauthScopes: [
+        'https://www.googleapis.com/auth/gmail.readonly',
+        'https://www.googleapis.com/auth/calendar.events',
+      ],
+    }),
+  ]);
+
+  const instructions = skill?.instructions ?? '';
+  assert.match(instructions, /Gmail: read-only/);
+  assert.match(instructions, /Calendar: read and write/);
+  assert.match(instructions, /Drive: not enabled/);
+  assert.match(instructions, /event-scoped read-and-write grant does not authorize this endpoint/);
+  assert.match(instructions, /Use `primary` as `\{calendar_id\}`/);
+  assert.doesNotMatch(instructions, /Allowed methods:.*POST/);
 });
 
 test('matches every supported kind represented in one connection', () => {

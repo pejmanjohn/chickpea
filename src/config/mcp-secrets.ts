@@ -186,11 +186,16 @@ export async function deleteMcpSecrets(
  * never override the real token in bearer mode.
  */
 export function buildMcpRequestHeaders(
-  authMode: 'none' | 'bearer',
+  authMode: 'none' | 'bearer' | 'oauth',
   secrets: ResolvedMcpSecrets,
 ): Record<string, string> {
-  const headers: Record<string, string> = { ...secrets.headers };
-  if (authMode === 'bearer' && secrets.bearer) {
+  const bearerManaged = authMode === 'bearer' || authMode === 'oauth';
+  const headers = Object.fromEntries(
+    Object.entries(secrets.headers).filter(
+      ([name]) => !bearerManaged || name.toLowerCase() !== 'authorization',
+    ),
+  );
+  if (bearerManaged && secrets.bearer) {
     headers.Authorization = 'Bearer ' + secrets.bearer;
   }
   return headers;

@@ -3,7 +3,7 @@ import type { AssignmentLookupOptions } from './resolver.ts';
 import type { SettingsPatch, SettingsStore } from './settings-store.ts';
 import type { AgentSnapshotStore } from './snapshot-store.ts';
 import type { StateRpcResult, TagStateRpc } from './state-rpc.ts';
-import type { ConfigAgentPatch, ConfigStore } from './store.ts';
+import type { ConfigAgentPatch, ConfigStore, OAuthReauthorizationTarget } from './store.ts';
 import type { AgentSnapshot, ChannelAssignment, CustomAgentConfig } from './types.ts';
 import type { SlackStateStore } from '../slack/claim-store.ts';
 import {
@@ -113,6 +113,10 @@ export class CfConfigStore implements ConfigStore {
 
   async updateAgent(agentId: string, patch: ConfigAgentPatch): Promise<CustomAgentConfig> {
     return unwrap(await this.stub.configUpdateAgent(agentId, patch));
+  }
+
+  async markOAuthReauthorizationRequired(target: OAuthReauthorizationTarget): Promise<boolean> {
+    return unwrap(await this.stub.configMarkOAuthReauthorizationRequired(target));
   }
 
   async deleteAgent(agentId: string): Promise<boolean> {

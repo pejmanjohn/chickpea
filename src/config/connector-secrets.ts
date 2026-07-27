@@ -61,6 +61,21 @@ export async function stageConnectorSecretCleanup(
   validateCleanupKeys(agentId, merged);
 }
 
+/** Stage additional fixed connector settings (for example BYO OAuth records). */
+export async function stageConnectorSettingCleanup(
+  agentId: string,
+  settingKeys: readonly string[],
+  env?: PlatformEnv,
+  store?: SettingsStore,
+): Promise<void> {
+  if (settingKeys.length === 0) return;
+  const settings = store ?? getSettingsStore(env);
+  const markerKey = connectorSecretCleanupMarkerKey(agentId);
+  const keys = validateCleanupKeys(agentId, settingKeys);
+  const merged = await settings.mergeSettingStringSet(markerKey, keys);
+  validateCleanupKeys(agentId, merged);
+}
+
 export async function finishConnectorSecretCleanup(
   agentId: string,
   env?: PlatformEnv,

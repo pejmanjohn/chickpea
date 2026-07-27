@@ -23,6 +23,12 @@ export interface McpConnectionToolInfo {
   description?: string;
 }
 
+/** Non-secret account labels returned by a provider identity probe. */
+export interface McpConnectionIdentity {
+  workspaceName?: string;
+  accountName?: string;
+}
+
 /**
  * A profile-attached remote MCP server ("Connection"): tools added by URL that
  * join the agent's toolset at the `slack-thread.ts` seam. This is POLICY ONLY —
@@ -36,14 +42,17 @@ export interface McpConnectionConfig {
   displayName: string;
   url: string;
   transport: 'streamable-http' | 'sse';
-  authMode: 'none' | 'bearer';
+  authMode: 'none' | 'bearer' | 'oauth';
   headerNames: string[];
   enabled: boolean;
   lifecycleStatus: 'pending' | 'ready' | 'failed';
   statusText: string;
   discoveredTools: McpConnectionToolInfo[];
   allowedTools: string[];
+  /** OAuth scopes are connection policy, never credentials. */
+  oauthScope?: string;
   lastCheckedAt?: number;
+  identity?: McpConnectionIdentity;
   /**
    * Policy-only back-reference to the connector-preset catalog used to create
    * this connection; enables badge rendering and "reset to preset".
@@ -66,6 +75,15 @@ export interface ApiConnectionConfig {
   headerValuePrefix?: string;
   allowedMethods: string[];
   enabled: boolean;
+  /** Missing on legacy rows; credential means a static write-only secret. */
+  authMode?: 'credential' | 'oauth';
+  oauthProvider?: 'google';
+  /** Exact provider scopes are policy and safe to expose; tokens are not. */
+  oauthScopes?: string[];
+  oauthAppType?: 'workspace-internal' | 'external';
+  lifecycleStatus?: 'pending' | 'ready' | 'failed';
+  statusText?: string;
+  identity?: McpConnectionIdentity;
   presetId?: string;
 }
 

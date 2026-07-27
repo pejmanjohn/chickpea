@@ -6,12 +6,33 @@ import { Hono } from 'hono';
 import { createAdminRoutes } from '../src/admin/routes.ts';
 import flueApp from '../src/app.ts';
 import {
+  ApiOAuthError,
+  apiOAuthSettingKeys,
+  type ApiOAuthDependencies,
+  type ApiOAuthProvider,
+  type ApiOAuthRef,
+} from '../src/config/api-oauth.ts';
+import { googleWorkspaceApiPolicy } from '../src/config/api-oauth-policy.ts';
+import {
   connectorCredentialSettingKey,
   connectorSecretCleanupMarkerKey,
   describeConnectorCredentialSource,
 } from '../src/config/connector-secrets.ts';
 import { DEFAULT_EGRESS_POLICY } from '../src/config/egress.ts';
-import { mcpSecretCleanupMarkerKey } from '../src/config/mcp-secrets.ts';
+import {
+  McpOAuthError,
+  mcpOAuthSettingKeys,
+} from '../src/config/mcp-oauth.ts';
+import type {
+  CompleteMcpOAuthInput,
+  McpOAuthDependencies,
+  ResolveMcpOAuthAccessInput,
+  StartMcpOAuthInput,
+} from '../src/config/mcp-oauth.ts';
+import {
+  mcpSecretCleanupMarkerKey,
+  saveMcpSecrets,
+} from '../src/config/mcp-secrets.ts';
 import type { McpConnectInput, McpDiscoveryResult } from '../src/config/mcp-test.ts';
 import { SqliteSettingsStore, type SettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore, type ConfigStore } from '../src/config/store.ts';
@@ -28,6 +49,50 @@ interface AdminHarnessOptions {
   adminToken?: string | undefined;
   settings?: SettingsStore;
   discoverMcp?: (input: McpConnectInput) => Promise<McpDiscoveryResult>;
+  startMcpOAuth?: (
+    input: StartMcpOAuthInput,
+    dependencies: McpOAuthDependencies,
+  ) => Promise<{ authorizationUrl: URL; state: string }>;
+  completeMcpOAuth?: (
+    input: CompleteMcpOAuthInput,
+    dependencies: McpOAuthDependencies,
+  ) => Promise<{ ref: { agentId: string; connectionId: string } }>;
+  cancelMcpOAuth?: (
+    state: string,
+    dependencies: McpOAuthDependencies,
+  ) => Promise<{ ref: { agentId: string; connectionId: string } }>;
+  resolveMcpOAuthToken?: (
+    input: ResolveMcpOAuthAccessInput,
+    dependencies: McpOAuthDependencies,
+  ) => Promise<string>;
+  identifyMcp?: (input: {
+    id: string;
+    url: string;
+    transport: 'streamable-http' | 'sse';
+    headers: Record<string, string>;
+    presetId?: string;
+  }) => Promise<{ workspaceName?: string; accountName?: string } | undefined>;
+  startApiOAuth?: (
+    input: {
+      ref: ApiOAuthRef;
+      provider: ApiOAuthProvider;
+      callbackUrl: string;
+      scopes: readonly string[];
+    },
+    dependencies: ApiOAuthDependencies,
+  ) => Promise<{ authorizationUrl: URL; state: string }>;
+  completeApiOAuth?: (
+    input: { code: string; state: string },
+    dependencies: ApiOAuthDependencies,
+  ) => Promise<{
+    ref: ApiOAuthRef;
+    provider: ApiOAuthProvider;
+    identity?: { accountName?: string };
+  }>;
+  cancelApiOAuth?: (
+    state: string,
+    dependencies: ApiOAuthDependencies,
+  ) => Promise<{ ref: ApiOAuthRef; provider: ApiOAuthProvider }>;
 }
 
 function appWithAdmin(store: ConfigStore, adminToken?: string): Hono {
@@ -54,6 +119,18 @@ function appWithAdminOptions(store: ConfigStore, options: AdminHarnessOptions = 
       adminToken: token,
       knownProviders: new Set(['local-stub']),
       ...(options.discoverMcp ? { discoverMcp: options.discoverMcp } : {}),
+      ...(options.startMcpOAuth ? { startMcpOAuth: options.startMcpOAuth } : {}),
+      ...(options.completeMcpOAuth
+        ? { completeMcpOAuth: options.completeMcpOAuth }
+        : {}),
+      ...(options.cancelMcpOAuth ? { cancelMcpOAuth: options.cancelMcpOAuth } : {}),
+      ...(options.resolveMcpOAuthToken
+        ? { resolveMcpOAuthToken: options.resolveMcpOAuthToken }
+        : {}),
+      ...(options.identifyMcp ? { identifyMcp: options.identifyMcp } : {}),
+      ...(options.startApiOAuth ? { startApiOAuth: options.startApiOAuth } : {}),
+      ...(options.completeApiOAuth ? { completeApiOAuth: options.completeApiOAuth } : {}),
+      ...(options.cancelApiOAuth ? { cancelApiOAuth: options.cancelApiOAuth } : {}),
     }),
   );
   return app;
@@ -91,6 +168,30 @@ function apiConnection(overrides: Partial<ApiConnectionConfig> = {}): ApiConnect
   };
 }
 
+function googleApiConnection(
+  scopes = [
+    'https://www.googleapis.com/auth/gmail.readonly',
+    'https://www.googleapis.com/auth/calendar.readonly',
+    'https://www.googleapis.com/auth/drive.readonly',
+  ],
+  overrides: Partial<ApiConnectionConfig> = {},
+): ApiConnectionConfig {
+  return {
+    id: 'google-workspace',
+    displayName: 'Google Workspace',
+    ...googleWorkspaceApiPolicy(scopes),
+    enabled: true,
+    authMode: 'oauth',
+    oauthProvider: 'google',
+    oauthScopes: scopes,
+    oauthAppType: 'workspace-internal',
+    lifecycleStatus: 'pending',
+    statusText: 'Not connected',
+    presetId: 'google-workspace',
+    ...overrides,
+  };
+}
+
 function auth(token: string): HeadersInit {
   return { authorization: `Bearer ${token}` };
 }
@@ -117,6 +218,346 @@ test('the worker root redirects to /admin instead of a bare 404', async () => {
     const response = await app.request('/', { redirect: 'manual' });
     assert.equal(response.status, 302);
     assert.equal(response.headers.get('location'), '/admin');
+  } finally {
+    store.close();
+  }
+});
+
+test('MCP OAuth routes expose public metadata but gate start and return no secrets', async () => {
+  const store = new SqliteConfigStore(':memory:', {
+    agents: [agent({ mcpServers: [mcpServer({ authMode: 'oauth', oauthScope: 'read write' })] })],
+    assignments: [],
+  });
+  const settings = new SqliteSettingsStore(':memory:');
+  const starts: StartMcpOAuthInput[] = [];
+  try {
+    const app = appWithAdminOptions(store, {
+      settings,
+      startMcpOAuth: async (input) => {
+        starts.push(input);
+        return {
+          authorizationUrl: new URL(
+            'https://auth.example.test/authorize?client_id=registered-client',
+          ),
+          state: 'must-not-cross-the-admin-api',
+        };
+      },
+    });
+
+    const metadataResponse = await app.request(
+      'https://chickpea.example.test/.well-known/oauth-client-metadata.json',
+    );
+    assert.equal(metadataResponse.status, 200);
+    assert.deepEqual(await metadataResponse.json(), {
+      client_id:
+        'https://chickpea.example.test/.well-known/oauth-client-metadata.json',
+      redirect_uris: ['https://chickpea.example.test/oauth/callback'],
+      token_endpoint_auth_method: 'none',
+      grant_types: ['authorization_code', 'refresh_token'],
+      response_types: ['code'],
+      client_name: 'Chickpea',
+    });
+
+    const unauthorized = await app.request(
+      '/admin/api/agents/agent_admin/mcp/oauth/linear-mcp/start',
+      { method: 'POST', body: '{}' },
+    );
+    assert.equal(unauthorized.status, 401);
+
+    const response = await app.request(
+      'https://chickpea.example.test/admin/api/agents/agent_admin/mcp/oauth/linear-mcp/start',
+      {
+        method: 'POST',
+        headers: {
+          ...auth(ADMIN_TOKEN),
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ scope: 'tampered scope' }),
+      },
+    );
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('cache-control'), 'no-store');
+    assert.deepEqual(await response.json(), {
+      authorizationUrl:
+        'https://auth.example.test/authorize?client_id=registered-client',
+    });
+    assert.deepEqual(starts, [
+      {
+        ref: { agentId: 'agent_admin', connectionId: 'linear-mcp' },
+        serverUrl: 'https://mcp.linear.app/mcp',
+        callbackUrl: 'https://chickpea.example.test/oauth/callback',
+        scope: 'read write',
+      },
+    ]);
+  } finally {
+    settings.close();
+    store.close();
+  }
+});
+
+test('MCP OAuth callback is public, state-gated, enables all tools on first connect, and redirects with status only', async () => {
+  const store = new SqliteConfigStore(':memory:', {
+    agents: [agent({
+      mcpServers: [mcpServer({
+        id: 'notion',
+        displayName: 'Notion',
+        url: 'https://mcp.notion.com/mcp',
+        authMode: 'oauth',
+        lifecycleStatus: 'pending',
+        statusText: '',
+        headerNames: ['X-Tenant'],
+        discoveredTools: [],
+        allowedTools: [],
+        presetId: 'notion',
+      })],
+    })],
+    assignments: [],
+  });
+  const completed: CompleteMcpOAuthInput[] = [];
+  const cancelled: string[] = [];
+  const discoveryCalls: McpConnectInput[] = [];
+  const identityCalls: Array<Record<string, unknown>> = [];
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    await saveMcpSecrets(
+      { agentId: 'agent_admin', connectionId: 'notion' },
+      { headers: { 'X-Tenant': 'tenant-1' } },
+      undefined,
+      settings,
+    );
+    const app = appWithAdminOptions(store, {
+      settings,
+      completeMcpOAuth: async (input) => {
+        completed.push(input);
+        return {
+          ref: { agentId: 'agent_admin', connectionId: 'notion' },
+        };
+      },
+      cancelMcpOAuth: async (state) => {
+        cancelled.push(state);
+        return {
+          ref: { agentId: 'agent_admin', connectionId: 'notion' },
+        };
+      },
+      resolveMcpOAuthToken: async () => 'notion-access-token',
+      discoverMcp: async (input) => {
+        discoveryCalls.push(input);
+        return {
+          tools: [
+            { name: 'notion-search', description: 'Search Notion.' },
+            { name: 'notion-fetch', description: 'Fetch from Notion.' },
+          ],
+        };
+      },
+      identifyMcp: async (input) => {
+        identityCalls.push(input);
+        return {
+          workspaceName: "Pejman Pour-Moezzi's Notion",
+          accountName: 'Pejman Pour-Moezzi',
+        };
+      },
+    });
+
+    const success = await app.request(
+      'https://chickpea.example.test/oauth/callback?code=provider-code&state=opaque-state',
+      { redirect: 'manual' },
+    );
+    assert.equal(success.status, 303);
+    assert.equal(
+      success.headers.get('location'),
+      '/admin/profiles/agent_admin?oauth=connected&connection=notion',
+    );
+    assert.equal(success.headers.get('referrer-policy'), 'no-referrer');
+    assert.equal(success.headers.get('cache-control'), 'no-store');
+    assert.deepEqual(completed, [
+      { code: 'provider-code', state: 'opaque-state' },
+    ]);
+    assert.equal(success.headers.get('location')?.includes('provider-code'), false);
+    assert.equal(discoveryCalls.length, 1);
+    assert.equal(discoveryCalls[0]?.headers.Authorization, 'Bearer notion-access-token');
+    assert.equal(discoveryCalls[0]?.headers['X-Tenant'], 'tenant-1');
+    assert.equal(identityCalls.length, 1);
+    assert.equal(identityCalls[0]?.headers, discoveryCalls[0]?.headers);
+    const connected = (await store.getAgent('agent_admin')).mcpServers[0];
+    assert.equal(connected?.lifecycleStatus, 'ready');
+    assert.equal(connected?.statusText, 'Connected · 2 tools');
+    assert.deepEqual(connected?.allowedTools, ['notion-search', 'notion-fetch']);
+    assert.deepEqual(connected?.identity, {
+      workspaceName: "Pejman Pour-Moezzi's Notion",
+      accountName: 'Pejman Pour-Moezzi',
+    });
+    assert.equal(typeof connected?.lastCheckedAt, 'number');
+
+    const denied = await app.request(
+      'https://chickpea.example.test/oauth/callback?error=access_denied&state=denied-state',
+      { redirect: 'manual' },
+    );
+    assert.equal(denied.status, 303);
+    assert.equal(
+      denied.headers.get('location'),
+      '/admin/profiles/agent_admin?oauth=cancelled&connection=notion',
+    );
+    assert.deepEqual(cancelled, ['denied-state']);
+
+    const providerFailure = await app.request(
+      'https://chickpea.example.test/oauth/callback?error=server_error&state=failed-state',
+      { redirect: 'manual' },
+    );
+    assert.equal(providerFailure.status, 303);
+    assert.equal(
+      providerFailure.headers.get('location'),
+      '/admin/profiles/agent_admin?oauth=failed&connection=notion',
+    );
+    assert.deepEqual(cancelled, ['denied-state', 'failed-state']);
+
+    const malformed = await app.request(
+      'https://chickpea.example.test/oauth/callback?code=provider-code',
+      { redirect: 'manual' },
+    );
+    assert.equal(malformed.status, 400);
+    assert.deepEqual(await malformed.json(), { error: 'invalid_request' });
+  } finally {
+    settings.close();
+    store.close();
+  }
+});
+
+test('MCP OAuth reconnect preserves approvals without enabling newly discovered tools', async () => {
+  const store = new SqliteConfigStore(':memory:', {
+    agents: [agent({
+      mcpServers: [mcpServer({
+        authMode: 'oauth',
+        discoveredTools: [
+          { name: 'search', description: 'Search Linear.' },
+          { name: 'create', description: 'Create a Linear issue.' },
+          { name: 'legacy', description: 'A removed Linear tool.' },
+        ],
+        allowedTools: ['search', 'legacy'],
+      })],
+    })],
+    assignments: [],
+  });
+  try {
+    const app = appWithAdminOptions(store, {
+      completeMcpOAuth: async () => ({
+        ref: { agentId: 'agent_admin', connectionId: 'linear-mcp' },
+      }),
+      resolveMcpOAuthToken: async () => 'linear-access-token',
+      discoverMcp: async () => ({
+        tools: [
+          { name: 'search', description: 'Search Linear.' },
+          { name: 'create', description: 'Create a Linear issue.' },
+          { name: 'get', description: 'Get a Linear issue.' },
+        ],
+      }),
+    });
+
+    const response = await app.request(
+      'https://chickpea.example.test/oauth/callback?code=provider-code&state=opaque-state',
+      { redirect: 'manual' },
+    );
+
+    assert.equal(response.status, 303);
+    assert.equal(
+      response.headers.get('location'),
+      '/admin/profiles/agent_admin?oauth=connected&connection=linear-mcp',
+    );
+    const connected = (await store.getAgent('agent_admin')).mcpServers[0];
+    assert.deepEqual(connected?.discoveredTools, [
+      { name: 'search', description: 'Search Linear.' },
+      { name: 'create', description: 'Create a Linear issue.' },
+      { name: 'get', description: 'Get a Linear issue.' },
+    ]);
+    assert.deepEqual(connected?.allowedTools, ['search']);
+  } finally {
+    store.close();
+  }
+});
+
+test('MCP OAuth callback preserves tool policy across post-authorization verification failures', async () => {
+  const store = new SqliteConfigStore(':memory:', {
+    agents: [agent({
+      mcpServers: [mcpServer({
+        id: 'notion',
+        displayName: 'Notion',
+        url: 'https://mcp.notion.com/mcp',
+        authMode: 'oauth',
+        lifecycleStatus: 'pending',
+        statusText: '',
+        discoveredTools: [
+          { name: 'notion-search', description: 'Search Notion.' },
+          { name: 'notion-update', description: 'Update Notion.' },
+        ],
+        allowedTools: ['notion-search'],
+        presetId: 'notion',
+      })],
+    })],
+    assignments: [],
+  });
+  try {
+    const app = appWithAdminOptions(store, {
+      completeMcpOAuth: async () => ({
+        ref: { agentId: 'agent_admin', connectionId: 'notion' },
+      }),
+      resolveMcpOAuthToken: async () => 'notion-access-token',
+      discoverMcp: async () => {
+        throw new Error('connect timeout after 8000ms with remote-secret');
+      },
+    });
+
+    const response = await app.request(
+      'https://chickpea.example.test/oauth/callback?code=provider-code&state=opaque-state',
+      { redirect: 'manual' },
+    );
+
+    assert.equal(response.status, 303);
+    assert.equal(
+      response.headers.get('location'),
+      '/admin/profiles/agent_admin?oauth=verification_failed&connection=notion',
+    );
+    const failed = (await store.getAgent('agent_admin')).mcpServers[0];
+    assert.equal(failed?.lifecycleStatus, 'failed');
+    assert.match(failed?.statusText ?? '', /did not respond in time/i);
+    assert.doesNotMatch(failed?.statusText ?? '', /remote-secret/);
+    assert.deepEqual(failed?.discoveredTools, [
+      { name: 'notion-search', description: 'Search Notion.' },
+      { name: 'notion-update', description: 'Update Notion.' },
+    ]);
+    assert.deepEqual(failed?.allowedTools, ['notion-search']);
+  } finally {
+    store.close();
+  }
+});
+
+test('MCP OAuth callback returns exchange failures to the affected connection', async () => {
+  const store = new SqliteConfigStore(':memory:', {
+    agents: [agent({ mcpServers: [mcpServer({ authMode: 'oauth' })] })],
+    assignments: [],
+  });
+  const state = Buffer.from(
+    JSON.stringify({ a: 'agent_admin', c: 'linear-mcp', n: 'nonce' }),
+  ).toString('base64url');
+  try {
+    const app = appWithAdminOptions(store, {
+      completeMcpOAuth: async () => {
+        throw new McpOAuthError(
+          'oauth_unavailable',
+          'authorization-code exchange failed',
+        );
+      },
+    });
+
+    const response = await app.request(
+      `https://chickpea.example.test/oauth/callback?code=provider-code&state=${state}`,
+      { redirect: 'manual' },
+    );
+
+    assert.equal(response.status, 303);
+    assert.equal(
+      response.headers.get('location'),
+      '/admin/profiles/agent_admin?oauth=failed&connection=linear-mcp',
+    );
+    assert.equal(response.headers.get('location')?.includes('provider-code'), false);
   } finally {
     store.close();
   }
@@ -1191,6 +1632,281 @@ test('admin API rejects invalid apiConnection hosts, methods, and header names',
   }
 });
 
+test('admin API accepts exact Google OAuth policy and rejects client-side widening', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  try {
+    const app = appWithAdmin(store);
+    const valid = await app.request('/admin/api/agents', {
+      method: 'POST',
+      headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+      body: JSON.stringify(agent({ id: 'agent_google', apiConnections: [googleApiConnection()] })),
+    });
+    assert.equal(valid.status, 201);
+    const created = (await valid.json()) as { agent: CustomAgentConfig };
+    assert.deepEqual(created.agent.apiConnections, [googleApiConnection()]);
+
+    const widened = await app.request('/admin/api/agents/agent_google', {
+      method: 'PATCH',
+      headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        apiConnections: [
+          googleApiConnection(undefined, {
+            allowedHosts: ['gmail.googleapis.com', 'www.googleapis.com', 'evil.example.com'],
+          }),
+        ],
+      }),
+    });
+    assert.equal(widened.status, 400);
+  } finally {
+    store.close();
+  }
+});
+
+test('editing Google OAuth scopes invalidates old tokens and resets connection status', async () => {
+  const originalScopes = ['https://www.googleapis.com/auth/gmail.readonly'];
+  const nextScopes = [
+    'https://www.googleapis.com/auth/gmail.readonly',
+    'https://www.googleapis.com/auth/drive.readonly',
+  ];
+  const store = new SqliteConfigStore(':memory:', {
+    agents: [agent({
+      id: 'agent_google',
+      apiConnections: [googleApiConnection(originalScopes, {
+        lifecycleStatus: 'ready',
+        statusText: 'Connected',
+        identity: { accountName: 'original@example.com' },
+      })],
+    })],
+    assignments: [],
+  });
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    const [clientKey, , tokenKey] = apiOAuthSettingKeys(REF_FOR_TEST);
+    await settings.setSetting(clientKey, 'stored-client-record');
+    await settings.setSetting(tokenKey, 'stored-old-scope-token');
+    const app = appWithAdminOptions(store, { settings });
+    const response = await app.request('/admin/api/agents/agent_google', {
+      method: 'PATCH',
+      headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        apiConnections: [googleApiConnection(nextScopes, {
+          lifecycleStatus: 'ready',
+          statusText: 'Connected',
+          identity: { accountName: 'spoofed@example.com' },
+        })],
+      }),
+    });
+
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as { agent: CustomAgentConfig };
+    assert.deepEqual(body.agent.apiConnections, [googleApiConnection(nextScopes, {
+      lifecycleStatus: 'pending',
+      statusText: 'Not connected',
+    })]);
+    assert.equal(await settings.getSetting(clientKey), 'stored-client-record');
+    assert.equal(await settings.getSetting(tokenKey), undefined);
+  } finally {
+    settings.close();
+    store.close();
+  }
+});
+
+test('removing Google OAuth policy through the profile API deletes its stored OAuth state', async () => {
+  const store = new SqliteConfigStore(':memory:', {
+    agents: [agent({ id: 'agent_google', apiConnections: [googleApiConnection()] })],
+    assignments: [],
+  });
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    for (const [index, key] of apiOAuthSettingKeys(REF_FOR_TEST).entries()) {
+      await settings.setSetting(key, `oauth-setting-${index}`);
+    }
+    const app = appWithAdminOptions(store, { settings });
+    const response = await app.request('/admin/api/agents/agent_google', {
+      method: 'PATCH',
+      headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+      body: JSON.stringify({ apiConnections: [] }),
+    });
+
+    assert.equal(response.status, 200);
+    assert.ok(
+      (await settings.getSettings(apiOAuthSettingKeys(REF_FOR_TEST))).every(
+        (value) => value === undefined,
+      ),
+    );
+  } finally {
+    settings.close();
+    store.close();
+  }
+});
+
+test('Google OAuth client credentials are write-only and start uses saved profile policy', async () => {
+  const store = new SqliteConfigStore(':memory:', {
+    agents: [agent({ id: 'agent_google', apiConnections: [googleApiConnection()] })],
+    assignments: [],
+  });
+  const settings = new SqliteSettingsStore(':memory:');
+  const starts: Array<Record<string, unknown>> = [];
+  try {
+    await settings.setSetting(
+      connectorCredentialSettingKey('agent_google', 'google-workspace'),
+      'legacy-static-token',
+    );
+    await settings.setSetting(
+      apiOAuthSettingKeys(REF_FOR_TEST)[2],
+      'old-client-token-bundle',
+    );
+    const app = appWithAdminOptions(store, {
+      settings,
+      startApiOAuth: async (input) => {
+        starts.push(input);
+        return {
+          authorizationUrl: new URL('https://accounts.google.com/o/oauth2/v2/auth?state=opaque'),
+          state: 'must-not-cross-api',
+        };
+      },
+    });
+    const clientResponse = await app.request(
+      '/admin/api/agents/agent_google/api-connections/oauth/google-workspace/client',
+      {
+        method: 'PUT',
+        headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+        body: JSON.stringify({
+          provider: 'google',
+          clientId: 'google-client-id',
+          clientSecret: 'google-client-secret',
+        }),
+      },
+    );
+    assert.equal(clientResponse.status, 200);
+    assert.deepEqual(await clientResponse.json(), { source: 'stored' });
+    assert.equal(
+      await settings.getSetting(
+        connectorCredentialSettingKey('agent_google', 'google-workspace'),
+      ),
+      undefined,
+    );
+    assert.equal(
+      await settings.getSetting(apiOAuthSettingKeys(REF_FOR_TEST)[2]),
+      undefined,
+    );
+    assert.doesNotMatch(await (await app.request('/admin/api/agents/agent_google', {
+      headers: auth(ADMIN_TOKEN),
+    })).text(), /google-client-secret|google-client-id/);
+
+    const rejectedStaticCredential = await app.request(
+      '/admin/api/agents/agent_google/api-connections/secrets/google-workspace',
+      {
+        method: 'PUT',
+        headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+        body: JSON.stringify({ credential: 'must-not-replace-oauth' }),
+      },
+    );
+    assert.equal(rejectedStaticCredential.status, 404);
+
+    const start = await app.request(
+      'https://chickpea.example.test/admin/api/agents/agent_google/api-connections/oauth/google-workspace/start',
+      { method: 'POST', headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' }, body: '{}' },
+    );
+    assert.equal(start.status, 200);
+    assert.deepEqual(await start.json(), {
+      authorizationUrl: 'https://accounts.google.com/o/oauth2/v2/auth?state=opaque',
+    });
+    assert.deepEqual(starts, [{
+      ref: { agentId: 'agent_google', connectionId: 'google-workspace' },
+      provider: 'google',
+      callbackUrl: 'https://chickpea.example.test/oauth/api/callback',
+      scopes: googleApiConnection().oauthScopes,
+    }]);
+    const stored = (await settings.getSettings(apiOAuthSettingKeys(REF_FOR_TEST))).join('\n');
+    assert.match(stored, /google-client-secret/);
+  } finally {
+    settings.close();
+    store.close();
+  }
+});
+
+const REF_FOR_TEST = { agentId: 'agent_google', connectionId: 'google-workspace' };
+
+test('Google OAuth callback is public, state-gated, and marks the API connection ready', async () => {
+  const store = new SqliteConfigStore(':memory:', {
+    agents: [agent({ id: 'agent_google', apiConnections: [googleApiConnection()] })],
+    assignments: [],
+  });
+  try {
+    const app = appWithAdminOptions(store, {
+      completeApiOAuth: async ({ state }) => {
+        if (state !== 'valid-state') throw new ApiOAuthError('invalid_state', 'invalid');
+        return {
+          ref: REF_FOR_TEST,
+          provider: 'google',
+          identity: { accountName: 'operator@example.com' },
+        };
+      },
+    });
+    const invalid = await app.request('/oauth/api/callback?state=wrong&code=provider-code');
+    assert.equal(invalid.status, 400);
+
+    const completed = await app.request(
+      '/oauth/api/callback?state=valid-state&code=provider-code',
+      { redirect: 'manual' },
+    );
+    assert.equal(completed.status, 303);
+    assert.equal(
+      completed.headers.get('location'),
+      '/admin/profiles/agent_google?oauth=connected&connection=google-workspace&lane=api',
+    );
+    const saved = await store.getAgent('agent_google');
+    assert.deepEqual(saved.apiConnections[0], googleApiConnection(undefined, {
+      lifecycleStatus: 'ready',
+      statusText: 'Connected',
+      identity: { accountName: 'operator@example.com' },
+    }));
+  } finally {
+    store.close();
+  }
+});
+
+test('Google OAuth callback deletes tokens when the saved connection changes during exchange', async () => {
+  const store = new SqliteConfigStore(':memory:', {
+    agents: [agent({ id: 'agent_google', apiConnections: [googleApiConnection()] })],
+    assignments: [],
+  });
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    for (const [index, key] of apiOAuthSettingKeys(REF_FOR_TEST).entries()) {
+      await settings.setSetting(key, `opaque-setting-${index}`);
+    }
+    const app = appWithAdminOptions(store, {
+      settings,
+      completeApiOAuth: async () => {
+        await store.updateAgent('agent_google', {
+          apiConnections: [apiConnection({ id: 'google-workspace' })],
+        });
+        return { ref: REF_FOR_TEST, provider: 'google' };
+      },
+    });
+
+    const completed = await app.request(
+      '/oauth/api/callback?state=valid-state&code=provider-code',
+      { redirect: 'manual' },
+    );
+    assert.equal(completed.status, 303);
+    assert.equal(
+      completed.headers.get('location'),
+      '/admin/profiles/agent_google?oauth=failed&connection=google-workspace&lane=api',
+    );
+    assert.ok(
+      (await settings.getSettings(apiOAuthSettingKeys(REF_FOR_TEST))).every(
+        (value) => value === undefined,
+      ),
+    );
+  } finally {
+    settings.close();
+    store.close();
+  }
+});
+
 test('API connection secret PUT stores a write-only credential and keeps blank values', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   const settings = new SqliteSettingsStore(':memory:');
@@ -1420,7 +2136,10 @@ test('admin API accepts an agent with a valid mcpServers entry and round-trips i
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   try {
     const app = appWithAdmin(store);
-    const createdAgent = agent({ id: 'agent_mcp', mcpServers: [mcpServer()] });
+    const createdAgent = agent({
+      id: 'agent_mcp',
+      mcpServers: [mcpServer({ authMode: 'oauth', oauthScope: 'read write' })],
+    });
 
     const create = await app.request('/admin/api/agents', {
       method: 'POST',
@@ -1431,7 +2150,16 @@ test('admin API accepts an agent with a valid mcpServers entry and round-trips i
     assert.deepEqual(await create.json(), { agent: createdAgent });
 
     // A PATCH carrying only mcpServers must preserve the array verbatim.
-    const patched = [mcpServer({ id: 'linear-mcp', allowedTools: ['search', 'create'] })];
+    const patched = [mcpServer({
+      id: 'linear-mcp',
+      authMode: 'oauth',
+      oauthScope: 'read write admin',
+      allowedTools: ['search', 'create'],
+      identity: {
+        workspaceName: 'Engineering workspace',
+        accountName: 'Admin user',
+      },
+    })];
     const patch = await app.request('/admin/api/agents/agent_mcp', {
       method: 'PATCH',
       headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
@@ -1507,6 +2235,46 @@ test('POST /admin/api/agents/:agentId/mcp/test returns discovered tools on succe
     });
     // The transient bearer from the body is applied to the connect headers.
     assert.equal(calls[0]?.headers.Authorization, 'Bearer tok-from-form');
+  } finally {
+    store.close();
+  }
+});
+
+test('profile-scoped MCP test resolves OAuth at the request boundary', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const calls: McpConnectInput[] = [];
+  const resolutions: ResolveMcpOAuthAccessInput[] = [];
+  try {
+    const app = appWithAdminOptions(store, {
+      resolveMcpOAuthToken: async (input) => {
+        resolutions.push(input);
+        return 'oauth-access-token';
+      },
+      discoverMcp: async (input) => {
+        calls.push(input);
+        return { tools: [] };
+      },
+    });
+
+    const response = await app.request('/admin/api/agents/agent_test/mcp/test', {
+      method: 'POST',
+      headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        id: 'linear-mcp',
+        url: 'https://mcp.linear.app/mcp',
+        transport: 'streamable-http',
+        authMode: 'oauth',
+      }),
+    });
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(resolutions, [
+      {
+        ref: { agentId: 'agent_test', connectionId: 'linear-mcp' },
+        serverUrl: 'https://mcp.linear.app/mcp',
+      },
+    ]);
+    assert.equal(calls[0]?.headers.Authorization, 'Bearer oauth-access-token');
   } finally {
     store.close();
   }
@@ -1949,6 +2717,40 @@ test('MCP secret PUT rejects missing scopes and header names outside the connect
   }
 });
 
+test('MCP secret PUT can clear an OAuth bundle without returning its values', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    await store.createAgent(
+      agent({
+        id: 'agent_alpha',
+        mcpServers: [mcpServer({ id: 'linear-mcp', authMode: 'none' })],
+      }),
+    );
+    const oauthKeys = mcpOAuthSettingKeys({
+      agentId: 'agent_alpha',
+      connectionId: 'linear-mcp',
+    });
+    for (const [index, key] of oauthKeys.entries()) {
+      await settings.setSetting(key, `oauth-secret-${index}`);
+    }
+    const app = appWithAdminOptions(store, { settings });
+
+    const response = await app.request('/admin/api/agents/agent_alpha/mcp/secrets/linear-mcp', {
+      method: 'PUT',
+      headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+      body: JSON.stringify({ headerNames: [], clearOAuth: true }),
+    });
+
+    assert.equal(response.status, 200);
+    assert.doesNotMatch(await response.clone().text(), /oauth-secret/);
+    assert.deepEqual(await settings.getSettings(oauthKeys), oauthKeys.map(() => undefined));
+  } finally {
+    settings.close?.();
+    store.close();
+  }
+});
+
 test('MCP secret PUT removes its writes when the profile disappears in flight', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   const settings = new SqliteSettingsStore(':memory:');
@@ -2073,7 +2875,19 @@ test('DELETE /admin/api/agents/:agentId/mcp/secrets/:connectionId clears only sc
   try {
     await settings.setSetting('mcp.agent_alpha.linear-mcp.bearer', 'tok');
     await settings.setSetting('mcp.agent_alpha.linear-mcp.header.X-Api-Key', 'val');
+    const alphaOAuthKeys = mcpOAuthSettingKeys({
+      agentId: 'agent_alpha',
+      connectionId: 'linear-mcp',
+    });
+    for (const [index, key] of alphaOAuthKeys.entries()) {
+      await settings.setSetting(key, `alpha-oauth-${index}`);
+    }
     await settings.setSetting('mcp.agent_beta.linear-mcp.bearer', 'beta-tok');
+    const betaOAuthTokenKey = mcpOAuthSettingKeys({
+      agentId: 'agent_beta',
+      connectionId: 'linear-mcp',
+    })[2];
+    await settings.setSetting(betaOAuthTokenKey, 'beta-oauth-token');
     const app = appWithAdminOptions(store, { settings });
 
     const response = await app.request('/admin/api/agents/agent_alpha/mcp/secrets/linear-mcp', {
@@ -2089,7 +2903,12 @@ test('DELETE /admin/api/agents/:agentId/mcp/secrets/:connectionId clears only sc
       await settings.getSetting('mcp.agent_alpha.linear-mcp.header.X-Api-Key'),
       undefined,
     );
+    assert.deepEqual(
+      await settings.getSettings(alphaOAuthKeys),
+      alphaOAuthKeys.map(() => undefined),
+    );
     assert.equal(await settings.getSetting('mcp.agent_beta.linear-mcp.bearer'), 'beta-tok');
+    assert.equal(await settings.getSetting(betaOAuthTokenKey), 'beta-oauth-token');
   } finally {
     settings.close?.();
     store.close();
@@ -2180,6 +2999,44 @@ test('deleting an agent sweeps only that agent\'s connection secrets', async () 
     );
   } finally {
     settings.close?.();
+    store.close();
+  }
+});
+
+test('agent deletion removes every fixed MCP OAuth setting', async () => {
+  const oauthRef = { agentId: 'agent_oauth_delete', connectionId: 'linear-mcp' };
+  const store = new SqliteConfigStore(':memory:', {
+    agents: [
+      agent({
+        id: oauthRef.agentId,
+        mcpServers: [mcpServer({ id: oauthRef.connectionId, authMode: 'oauth' })],
+      }),
+    ],
+    assignments: [],
+  });
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    for (const key of mcpOAuthSettingKeys(oauthRef)) {
+      await settings.setSetting(key, 'sensitive-oauth-state');
+    }
+    const app = appWithAdminOptions(store, { settings });
+
+    const response = await app.request(
+      `/admin/api/agents/${oauthRef.agentId}`,
+      { method: 'DELETE', headers: auth(ADMIN_TOKEN) },
+    );
+
+    assert.equal(response.status, 204);
+    assert.deepEqual(
+      await settings.getSettings(mcpOAuthSettingKeys(oauthRef)),
+      [undefined, undefined, undefined, undefined, undefined],
+    );
+    assert.equal(
+      await settings.getSetting(mcpSecretCleanupMarkerKey(oauthRef.agentId)),
+      undefined,
+    );
+  } finally {
+    settings.close();
     store.close();
   }
 });
@@ -2336,7 +3193,14 @@ test('agent deletion leaves secrets untouched when the config delete fails befor
     assert.equal(await settings.getSetting(headerKey), 'val');
     assert.equal(
       await settings.getSetting(mcpSecretCleanupMarkerKey('agent_config_retry')),
-      JSON.stringify([bearerKey, headerKey]),
+      JSON.stringify([
+        bearerKey,
+        headerKey,
+        ...mcpOAuthSettingKeys({
+          agentId: 'agent_config_retry',
+          connectionId: 'linear-mcp',
+        }),
+      ]),
     );
 
     failConfigDelete = false;

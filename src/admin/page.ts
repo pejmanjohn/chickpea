@@ -1,6 +1,7 @@
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import { CONNECTOR_LOGOS } from '../config/connector-logos.ts';
-import { CONNECTOR_PRESETS } from '../config/presets.ts';
+import { CONNECTOR_PRESETS, GOOGLE_WORKSPACE_SERVICE_PRESETS } from '../config/presets.ts';
+import { GOOGLE_WORKSPACE_SCOPE_OPTIONS } from '../config/api-oauth-policy.ts';
 
 const ADMIN_FAVICON = `<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='8 9 32 32'%3E%3Ccircle cx='24' cy='25' r='15.5' fill='%23E3AC45'/%3E%3Ccircle cx='17' cy='17.5' r='4.2' fill='%23F4D084'/%3E%3Ccircle cx='18.5' cy='24' r='1.9' fill='%233B3220'/%3E%3Ccircle cx='29.5' cy='24' r='1.9' fill='%233B3220'/%3E%3Cpath d='M19 29 Q24 32.5 29 29' fill='none' stroke='%233B3220' stroke-width='1.8' stroke-linecap='round'/%3E%3Ccircle cx='15.5' cy='28.5' r='2' fill='%23DC8A4F' opacity='0.4'/%3E%3Ccircle cx='32.5' cy='28.5' r='2' fill='%23DC8A4F' opacity='0.4'/%3E%3C/svg%3E">`;
 const SLACK_LOGO_DATA_URL =
@@ -1217,7 +1218,12 @@ details[open].advanced summary::before {
 .gallery-row { align-items: center; display: flex; gap: 12px; padding: 9px 12px; }
 .gallery-row + .gallery-row { box-shadow: inset 0 1px 0 var(--line); }
 .gallery-row:hover { background: var(--well); }
+.gallery-row-copy { display: flex; flex: 1; flex-direction: column; gap: 2px; min-width: 0; }
 .gallery-row-name { font-weight: 600; }
+.gallery-row-desc { color: var(--text-3); font-size: 0.75rem; line-height: 1.35; overflow-wrap: anywhere; }
+@media (min-width: 721px) {
+  .gallery-row-desc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+}
 .gallery-lane { background: rgba(59, 50, 32, 0.08); border-radius: 999px; color: var(--text-3); font-size: 0.625rem; font-weight: 700; letter-spacing: 0.05em; padding: 3px 7px; white-space: nowrap; }
 .gallery-row-spacer { margin-left: auto; }
 .gallery-empty { color: var(--text-3); font-size: 0.8125rem; padding: 14px 4px; }
@@ -1228,6 +1234,31 @@ details[open].advanced summary::before {
 .conn-logo-raster { overflow: hidden; }
 .conn-logo-raster img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .conn-title, .conn-recommended-head { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; }
+.google-access-label { align-items: center; display: flex; gap: 8px; }
+.google-access-label .conn-logo { border-radius: 6px; height: 24px; width: 24px; }
+.google-service-summary { align-items: center; display: flex; flex-wrap: wrap; gap: 6px; }
+.google-service-chip { align-items: center; background: rgba(255,255,255,0.52); border: 1px solid var(--border); border-radius: 999px; color: var(--text-2); display: inline-flex; font-size: 0.71875rem; font-weight: 650; gap: 6px; padding: 4px 9px 4px 5px; }
+.google-service-chip .conn-logo { border-radius: 5px; height: 20px; width: 20px; }
+.google-service-level { color: var(--text-3); font-weight: 600; }
+@media (max-width: 720px) {
+  .gallery-row-described { align-items: center; display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; row-gap: 6px; }
+  .gallery-row-described > .conn-logo { grid-column: 1; grid-row: 1 / span 2; }
+  .gallery-row-described > .gallery-row-copy { grid-column: 2 / 4; grid-row: 1; }
+  .gallery-row-described > .gallery-lane { grid-column: 2; grid-row: 2; justify-self: start; }
+  .gallery-row-described > .gallery-row-spacer { display: none; }
+  .gallery-row-described > .btn { grid-column: 3; grid-row: 2; justify-self: end; }
+}
+.oauth-account { align-items: center; background: rgba(255,255,255,0.48); border: 1px solid var(--border); border-radius: 14px; display: flex; gap: 12px; justify-content: space-between; padding: 14px 16px; }
+.oauth-account-copy { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.oauth-account-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 12px; justify-content: flex-end; }
+.oauth-account-status { color: var(--ok); font-size: 0.8125rem; font-weight: 800; }
+.oauth-account-name { color: var(--text); font-size: 0.9375rem; font-weight: 750; overflow-wrap: anywhere; }
+.oauth-account-detail { color: var(--text-3); font-size: 0.78125rem; overflow-wrap: anywhere; }
+.oauth-signin { align-self: flex-start; }
+.oauth-signin .conn-logo { border-radius: 5px; height: 18px; width: 18px; }
+.oauth-return { border: 1px solid var(--border); border-left-width: 4px; border-radius: 12px; font-size: 0.875rem; font-weight: 650; line-height: 1.45; margin-bottom: 18px; padding: 12px 14px; }
+.oauth-return.ok { background: rgba(45, 125, 78, 0.08); border-left-color: var(--ok); color: var(--text); }
+.oauth-return.error { background: rgba(173, 54, 50, 0.08); border-left-color: var(--danger); color: var(--danger); }
 .conn-view-seg { margin-bottom: 10px; }
 .conn-url-chip { background: var(--well); border-radius: 999px; color: var(--text-3); font-size: 0.6875rem; padding: 4px 8px; }
 .hint-link { color: var(--ember-deep); font-size: 0.8125rem; font-weight: 700; text-decoration: none; }
@@ -1381,8 +1412,10 @@ details[open].advanced summary::before {
   // of its own — this is interpolated as a literal boolean at render time).
   var IS_CLOUDFLARE = ${isCloudflare};
   var CONNECTOR_PRESETS = ${JSON.stringify(CONNECTOR_PRESETS).replace(/</g, '\\u003c')};
+  var GOOGLE_WORKSPACE_SERVICE_PRESETS = ${JSON.stringify(GOOGLE_WORKSPACE_SERVICE_PRESETS).replace(/</g, '\\u003c')};
   var CONNECTOR_LOGOS = ${JSON.stringify(CONNECTOR_LOGOS).replace(/</g, '\\u003c')};
   var API_CONNECTION_METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"];
+  var GOOGLE_WORKSPACE_SCOPES = ${JSON.stringify(GOOGLE_WORKSPACE_SCOPE_OPTIONS)};
   var state = {
     agents: [],
     assignments: [],
@@ -1449,6 +1482,10 @@ details[open].advanced summary::before {
     // discoveredTools), lifecycleStatus, statusText, lastCheckedAt, sources
     // (secret presence from a prior save: {bearer, headers}), error }.
     connectionEditor: null,
+    // Status-only OAuth return state parsed from the callback redirect. No
+    // authorization code, token, verifier, client secret, or provider error is
+    // ever placed in the URL or this browser state.
+    oauthReturn: null,
     // Inline credentialed REST API editor. Its credential is transient and is
     // written to the API-connection secret endpoint only after the profile
     // policy saves successfully.
@@ -2890,6 +2927,20 @@ details[open].advanced summary::before {
     return (CONNECTOR_PRESETS || []).find(function (preset) { return preset.id === id; });
   }
 
+  function googleServicePresetById(id) {
+    return (GOOGLE_WORKSPACE_SERVICE_PRESETS || []).find(function (preset) { return preset.id === id; });
+  }
+
+  function googleServicePresetByService(service) {
+    return (GOOGLE_WORKSPACE_SERVICE_PRESETS || []).find(function (preset) { return preset.service === service; });
+  }
+
+  function googleWorkspaceConnection(draft) {
+    return ((draft && draft.apiConnections) || []).find(function (conn) {
+      return conn.id === "google-workspace" || conn.presetId === "google-workspace";
+    });
+  }
+
   function presetLanes(preset) {
     return {
       mcp: !!preset && typeof preset.url === "string",
@@ -2926,23 +2977,38 @@ details[open].advanced summary::before {
     var connectedPresetIds = {};
     (draft.mcpServers || []).forEach(function (conn) { if (conn.presetId) connectedPresetIds[conn.presetId] = true; });
     (draft.apiConnections || []).forEach(function (conn) { if (conn.presetId) connectedPresetIds[conn.presetId] = true; });
+    var googleConnection = googleWorkspaceConnection(draft);
+    var googleAccess = googleAccessFromScopes(googleConnection ? googleConnection.oauthScopes : []);
     var q = String(state.connectorGallerySearch || "").trim().toLowerCase();
-    var shown = (CONNECTOR_PRESETS || []).filter(function (preset) {
-      if (connectedPresetIds[preset.id]) return false;
-      return !q || preset.name.toLowerCase().indexOf(q) >= 0;
+    var catalog = (CONNECTOR_PRESETS || []).filter(function (preset) {
+      return preset.id !== "google-workspace";
+    }).concat(GOOGLE_WORKSPACE_SERVICE_PRESETS || []);
+    var shown = catalog.filter(function (preset) {
+      var googleService = googleServicePresetById(preset.id);
+      if (googleService) {
+        if (googleAccess[googleService.service] !== "off") return false;
+      } else if (connectedPresetIds[preset.id]) {
+        return false;
+      }
+      var searchText = (preset.name + " " + (preset.description || "")).toLowerCase();
+      return !q || searchText.indexOf(q) >= 0;
     }).slice().sort(function (a, b) {
       var an = a.name.toLowerCase();
       var bn = b.name.toLowerCase();
       return an < bn ? -1 : an > bn ? 1 : 0;
     });
     var rows = shown.map(function (preset) {
-      var lanes = presetLanes(preset);
+      var googleService = googleServicePresetById(preset.id);
+      var lanes = googleService ? { mcp: false, api: true } : presetLanes(preset);
       var laneLabel = [lanes.mcp ? "MCP" : "", lanes.api ? "API" : ""].filter(function (label) { return !!label; }).join(" ");
-      return '<div class="gallery-row">' + connectorLogoHtml(preset) +
-        '<span class="gallery-row-name">' + esc(preset.name) + '</span>' +
+      var description = preset.description ? '<span class="gallery-row-desc">' + esc(preset.description) + '</span>' : "";
+      var actionLabel = googleService && googleConnection ? "Enable" : "Connect";
+      var rowClass = description ? "gallery-row gallery-row-described" : "gallery-row";
+      return '<div class="' + rowClass + '">' + connectorLogoHtml(preset) +
+        '<span class="gallery-row-copy"><span class="gallery-row-name">' + esc(preset.name) + '</span>' + description + '</span>' +
         '<span class="gallery-lane">' + laneLabel + '</span>' +
         '<span class="gallery-row-spacer"></span>' +
-        '<button type="button" class="btn btn-soft btn-sm" data-action="conn-preset" data-preset="' + esc(preset.id) + '">Connect</button></div>';
+        '<button type="button" class="btn btn-soft btn-sm" data-action="conn-preset" data-preset="' + esc(preset.id) + '">' + actionLabel + '</button></div>';
     }).join("");
     var list = shown.length
       ? '<div class="gallery-list">' + rows + '</div>'
@@ -2967,7 +3033,40 @@ details[open].advanced summary::before {
     if (conn.lifecycleStatus === "failed") {
       return '<span class="conn-pill conn-pill-warn">' + esc(conn.statusText || "Connection failed") + '</span>';
     }
-    return '<span class="conn-pill conn-pill-off">Not tested</span>';
+    return '<span class="conn-pill conn-pill-off">' + esc(conn.statusText || "Not tested") + '</span>';
+  }
+
+  function apiConnectionStatusPill(conn) {
+    if (conn.authMode !== "oauth") return "";
+    if (conn.lifecycleStatus === "ready") {
+      return '<span class="conn-pill conn-pill-on"><span class="badge"><span class="dot"></span></span>Connected</span>';
+    }
+    if (conn.lifecycleStatus === "failed") {
+      return '<span class="conn-pill conn-pill-warn">' + esc(conn.statusText || "Connection failed") + '</span>';
+    }
+    return '<span class="conn-pill conn-pill-off">' + esc(conn.statusText || "Not connected") + '</span>';
+  }
+
+  function isPersistedReadyOAuthEditor(editor) {
+    return !!editor && editor.authMode === "oauth" && editor.lifecycleStatus === "ready" &&
+      editor.index !== null && editor.index !== undefined;
+  }
+
+  function selectedConnectionToolNames(editor) {
+    var checked = editor.checked || [];
+    return (editor.discoveredTools || []).filter(function (_tool, index) {
+      return checked[index] !== false;
+    }).map(function (tool) { return tool.name; });
+  }
+
+  function sameToolNames(left, right) {
+    if (left.length !== right.length) return false;
+    return left.every(function (name) { return right.indexOf(name) >= 0; });
+  }
+
+  function oauthToolAccessChanged(editor) {
+    if (!isPersistedReadyOAuthEditor(editor)) return false;
+    return !sameToolNames(selectedConnectionToolNames(editor), editor.savedAllowedTools || []);
   }
 
   // The segmented transport control. STDIO is present but greyed (disabled) with
@@ -2992,16 +3091,23 @@ details[open].advanced summary::before {
     var tools = editor.discoveredTools || [];
     if (!tools.length) return "";
     var checked = editor.checked || [];
+    var savedOAuth = isPersistedReadyOAuthEditor(editor);
+    var accessChanged = oauthToolAccessChanged(editor);
     var rows = tools.map(function (tool, index) {
       var on = checked[index] !== false;
       var meta = tool.description ? '<span class="tool-desc">' + esc(tool.description) + '</span>' : "";
       return '<label class="conn-tool">' +
-        '<span class="import-check' + (on ? " on" : "") + '"><input type="checkbox" data-action="conn-tool-toggle" data-index="' + index + '" ' + (on ? "checked" : "") + ' aria-label="Allow ' + esc(tool.name) + '"></span>' +
+        '<span class="import-check' + (on ? " on" : "") + '"><input type="checkbox" data-action="conn-tool-toggle" data-index="' + index + '" ' + (on ? "checked" : "") + (editor.toolAccessSaving ? " disabled" : "") + ' aria-label="Allow ' + esc(tool.name) + '"></span>' +
         '<span class="tool-body"><span class="tool-name">' + esc(tool.name) + '</span>' + meta + '</span></label>';
     }).join("");
     var count = tools.length;
+    var hint = savedOAuth
+      ? (accessChanged
+        ? "Review your changes, then save tool access once."
+        : "Tool access is already saved. Uncheck any tools you don&rsquo;t want Chickpea to use.")
+      : "All checked by default. Uncheck write-capable tools you don&rsquo;t need.";
     return '<div class="field"><label class="field-label">Discovered tools &mdash; Connected &middot; ' + count + ' tool' + (count === 1 ? "" : "s") + '</label>' +
-      '<p class="hint">All checked by default. Uncheck write-capable tools you don&rsquo;t need.</p>' +
+      '<p class="hint">' + hint + '</p>' +
       '<div class="conn-tools">' + rows + '</div></div>';
   }
 
@@ -3026,16 +3132,102 @@ details[open].advanced summary::before {
 
   function connectionEditorCompletionHtml(editor) {
     var isNew = editor.index === null || editor.index === undefined;
-    var testDisabled = !String(editor.url || "").trim();
+    var savedOAuth = isPersistedReadyOAuthEditor(editor);
+    var accessChanged = oauthToolAccessChanged(editor);
+    var testDisabled = !String(editor.url || "").trim() ||
+      (editor.authMode === "oauth" && isNew) || !!editor.oauthStarting;
     var toolsHtml = connectionToolsHtml(editor);
     var testError = editor.testError ? '<p class="field-error">' + esc(editor.testError) + '</p>' : "";
-    var testLabel = editor.testing ? "Testing&hellip;" : (editor.lifecycleStatus === "ready" ? "Re-test connection" : "Test connection");
+    var testLabel = editor.testing
+      ? "Testing&hellip;"
+      : (editor.authMode === "oauth" && editor.lifecycleStatus === "failed"
+        ? "Retry verification"
+        : (editor.lifecycleStatus === "ready" ? "Re-test connection" : "Test connection"));
+    var saveLabel = isNew
+      ? "Add connection"
+      : (savedOAuth ? (editor.toolAccessSaving ? "Saving&hellip;" : "Save tool access") : "Save connection");
+    var saveButton = (isNew && editor.authMode === "oauth") || (savedOAuth && !accessChanged)
+      ? ""
+      : '<button type="button" class="btn btn-primary btn-sm" data-action="conn-save-row"' + (editor.toolAccessSaving ? " disabled" : "") + '>' + saveLabel + '</button>';
+    var cancelLabel = savedOAuth && !accessChanged && !state.profileDirty ? "Done" : "Cancel";
     return '<div><button type="button" class="btn btn-soft btn-sm" data-action="conn-test"' + (testDisabled ? " disabled" : "") + '>' + testLabel + '</button>' + testError + '</div>' +
       toolsHtml +
+      (editor.toolAccessError ? '<p class="field-error" role="alert">' + esc(editor.toolAccessError) + '</p>' : "") +
       (editor.error ? '<p class="field-error">' + esc(editor.error) + '</p>' : "") +
       '<div class="skill-form-actions">' +
-      '<button type="button" class="btn btn-ghost btn-sm" data-action="conn-cancel">Cancel</button>' +
-      '<button type="button" class="btn btn-primary btn-sm" data-action="conn-save-row">' + (isNew ? "Add connection" : "Save connection") + '</button></div>';
+      '<button type="button" class="btn btn-ghost btn-sm" data-action="conn-cancel">' + cancelLabel + '</button>' +
+      saveButton + '</div>';
+  }
+
+  function oauthAccountHtml(editor) {
+    if (editor.authMode !== "oauth" || editor.lifecycleStatus !== "ready") return "";
+    var identity = editor.identity || {};
+    var workspaceName = identity.workspaceName ||
+      (editor.presetId === "supabase" && editor.supabaseProjectRef ? editor.supabaseProjectRef : editor.displayName);
+    var account = identity.accountName
+      ? '<span class="oauth-account-detail">Connected as ' + esc(identity.accountName) + '</span>'
+      : '<span class="oauth-account-detail">OAuth verified</span>';
+    return '<div class="oauth-account" role="status">' +
+      '<div class="oauth-account-copy"><span class="oauth-account-status">Connected</span>' +
+      '<span class="oauth-account-name">' + esc(workspaceName) + '</span>' + account + '</div>' +
+      '<div class="oauth-account-actions">' +
+      '<button type="button" class="link-btn" data-action="conn-oauth-start">Reconnect</button>' +
+      '<button type="button" class="link-btn" data-action="conn-oauth-disconnect">Disconnect</button></div></div>';
+  }
+
+  function oauthConnectionHtml(editor, preset) {
+    if (editor.lifecycleStatus === "ready") return oauthAccountHtml(editor);
+    var providerName = (preset && preset.name) || editor.displayName || "provider";
+    var hint = (preset && preset.tokenDocsHint) || ("Sign in to " + providerName + " and choose the access Chickpea should receive.");
+    var label = editor.oauthStarting
+      ? "Opening " + esc(providerName) + "&hellip;"
+      : "Sign into " + esc(providerName);
+    var setupBlocked = preset && preset.id === "supabase" && !validSupabaseProjectRef(editor.supabaseProjectRef);
+    return '<div class="field"><p class="hint">' + esc(hint) + '</p>' +
+      '<button type="button" class="btn btn-primary btn-sm oauth-signin" data-action="conn-oauth-start"' + (editor.oauthStarting || setupBlocked ? " disabled" : "") + '>' +
+      (preset ? connectorLogoHtml(preset) : "") + '<span>' + label + '</span></button>' +
+      (editor.oauthError ? '<p class="field-error" role="alert">' + esc(editor.oauthError) + '</p>' : "") + '</div>';
+  }
+
+  function validSupabaseProjectRef(value) {
+    return /^[a-z0-9][a-z0-9-]{2,62}[a-z0-9]$/.test(String(value || "").trim());
+  }
+
+  function supabaseSetupFromUrl(value) {
+    try {
+      var url = new URL(String(value || ""));
+      if (url.origin !== "https://mcp.supabase.com" || url.pathname !== "/mcp") return null;
+      var allowed = { project_ref: true, read_only: true };
+      var entries = Array.from(url.searchParams.entries());
+      if (entries.some(function (entry) { return !allowed[entry[0]]; })) return null;
+      if (url.searchParams.getAll("project_ref").length > 1 || url.searchParams.getAll("read_only").length > 1) return null;
+      var projectRef = String(url.searchParams.get("project_ref") || "").trim();
+      var readOnlyValue = url.searchParams.get("read_only");
+      if (readOnlyValue !== null && readOnlyValue !== "true") return null;
+      return { projectRef: projectRef, readOnly: readOnlyValue === "true" };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function syncSupabaseUrl(editor) {
+    var url = new URL("https://mcp.supabase.com/mcp");
+    var projectRef = String(editor.supabaseProjectRef || "").trim();
+    if (projectRef) url.searchParams.set("project_ref", projectRef);
+    if (editor.supabaseReadOnly !== false) url.searchParams.set("read_only", "true");
+    editor.url = url.href;
+  }
+
+  function supabaseSetupHtml(editor) {
+    var readOnly = editor.supabaseReadOnly !== false;
+    return '<div class="field"><label class="field-label" for="conn-supabase-project-ref">Project reference</label>' +
+      '<input class="input mono" id="conn-supabase-project-ref" type="text" autocomplete="off" value="' + esc(editor.supabaseProjectRef || "") + '" placeholder="abcdefghijklmnopqrst" data-action="conn-supabase-project-ref">' +
+      '<p class="hint">Find this in Supabase project Settings &rarr; General. This keeps account-wide tools out of the connection.</p></div>' +
+      '<div class="field"><label class="field-label">Database access</label>' +
+      '<div class="seg" role="group" aria-label="Supabase database access">' +
+      '<button type="button" class="' + (readOnly ? "on" : "") + '" data-action="conn-supabase-access" data-access="read-only">Read-only</button>' +
+      '<button type="button" class="' + (!readOnly ? "on" : "") + '" data-action="conn-supabase-access" data-access="read-write">Read and write</button></div>' +
+      '<p class="hint">Read-only is recommended. Enable writes only for a project where Chickpea may safely change schema and data.</p></div>';
   }
 
   function connectionRecommendedBodyHtml(editor) {
@@ -3048,16 +3240,19 @@ details[open].advanced summary::before {
       var bearerPlaceholder = bearerStored ? "\\u2022\\u2022\\u2022\\u2022 stored" : preset.auth.placeholder;
       tokenHtml = '<div class="field"><label class="field-label">API key</label>' +
         '<input class="input mono" type="password" autocomplete="off" value="' + esc(editor.bearerToken || "") + '" placeholder="' + esc(bearerPlaceholder) + '" data-action="conn-field-bearer"></div>';
-    } else {
+    } else if (preset.auth.kind === "header") {
       var headerName = preset.auth.headerName;
       var headerSources = (editor.sources && editor.sources.headers) || {};
       var headerStored = headerSources[headerName] && headerSources[headerName] !== "missing";
       var headerPlaceholder = headerStored ? "\\u2022\\u2022\\u2022\\u2022 stored" : preset.auth.placeholder;
       tokenHtml = '<div class="field"><label class="field-label">API key</label>' +
         '<input class="input mono" type="password" autocomplete="off" value="' + esc((editor.headerValues || [])[0] || "") + '" placeholder="' + esc(headerPlaceholder) + '" data-action="conn-header-value" data-index="0"></div>';
+    } else {
+      tokenHtml = oauthConnectionHtml(editor, preset);
     }
-    var docsHtml = preset.tokenDocsHint ? '<p class="hint">' + esc(preset.tokenDocsHint) + '</p>' : "";
-    if (preset.tokenDocsUrl) {
+    var setupHtml = preset.id === "supabase" ? supabaseSetupHtml(editor) : "";
+    var docsHtml = preset.auth.kind !== "oauth" && preset.tokenDocsHint ? '<p class="hint">' + esc(preset.tokenDocsHint) + '</p>' : "";
+    if (preset.auth.kind !== "oauth" && preset.tokenDocsUrl) {
       docsHtml += '<a class="hint-link" href="' + esc(preset.tokenDocsUrl) + '" target="_blank" rel="noopener noreferrer">Where do I find this?</a>';
     }
     var notesHtml = preset.notes ? '<p class="hint">' + esc(preset.notes) + '</p>' : "";
@@ -3065,7 +3260,7 @@ details[open].advanced summary::before {
       connectorLogoHtml(preset) +
       '<span class="field-label">' + esc(preset.name) + '</span>' +
       '<span class="conn-url-chip mono">' + esc(connectionHost(editor.url)) + '</span></div>' +
-      tokenHtml + docsHtml + notesHtml + connectionEditorCompletionHtml(editor);
+      setupHtml + tokenHtml + docsHtml + notesHtml + connectionEditorCompletionHtml(editor);
   }
 
   function connectionEditorFormHtml(editor) {
@@ -3075,6 +3270,7 @@ details[open].advanced summary::before {
       '<div class="select-wrap"><select class="input" id="conn-auth" data-action="conn-auth">' +
       '<option value="none"' + (editor.authMode === "none" ? " selected" : "") + '>None</option>' +
       '<option value="bearer"' + (editor.authMode === "bearer" ? " selected" : "") + '>Bearer token</option>' +
+      (editor.authMode === "oauth" ? '<option value="oauth" selected disabled>OAuth (configured separately)</option>' : "") +
       '</select></div>';
     if (editor.authMode === "bearer") {
       authHtml += '<input class="input mono" type="password" autocomplete="off" style="margin-top:8px;" value="' + esc(editor.bearerToken || "") + '" placeholder="' + bearerPlaceholder + '" aria-label="Bearer token" data-action="conn-field-bearer">';
@@ -3086,6 +3282,9 @@ details[open].advanced summary::before {
     if (editor.preset && editor.view === "recommended") {
       return '<div class="skill-form">' + viewToggle + connectionRecommendedBodyHtml(editor) + '</div>';
     }
+    var advancedOAuthHtml = editor.authMode === "oauth"
+      ? oauthConnectionHtml(editor, editor.preset || presetById(editor.presetId) || null)
+      : "";
     return '<div class="skill-form">' + viewToggle +
       '<div class="field"><label class="field-label" for="conn-name">Name</label>' +
       '<input class="input" id="conn-name" type="text" value="' + esc(editor.displayName) + '" placeholder="Linear" data-action="conn-field-name"></div>' +
@@ -3094,6 +3293,7 @@ details[open].advanced summary::before {
       '<p class="hint">https only. The tool prefix is ' + esc(editor.id || connectionSlug(editor.displayName) || "id") + '.</p></div>' +
       '<div class="field"><label class="field-label">Transport</label>' + transportSegmentHtml(editor.transport) + '</div>' +
       authHtml +
+      advancedOAuthHtml +
       connectionHeadersHtml(editor) +
       connectionEditorCompletionHtml(editor) + '</div>';
   }
@@ -3116,6 +3316,9 @@ details[open].advanced summary::before {
       return index !== editor.index && server.id === id;
     });
     if (duplicate) return "Another connection already uses that name.";
+    if (editor.presetId === "supabase" && editor.preset && !validSupabaseProjectRef(editor.supabaseProjectRef)) {
+      return "Enter a valid Supabase project reference before signing in.";
+    }
     return "";
   }
 
@@ -3148,10 +3351,16 @@ details[open].advanced summary::before {
     }).join("");
     var apiRows = apiConnections.map(function (conn, index) {
       if (apiEditor && apiEditor.index === index) return apiConnectionEditorFormHtml(apiEditor);
+      var connPreset = conn.presetId ? presetById(conn.presetId) : null;
+      var nameHtml = connPreset
+        ? '<span class="conn-title">' + connectorLogoHtml(connPreset) + '<span class="sk-name" style="font-family:inherit;">' + esc(conn.displayName) + '</span></span>'
+        : '<span class="sk-name" style="font-family:inherit;">' + esc(conn.displayName) + '</span>';
       return '<div class="skill-row conn-row">' +
-        '<div class="sk-body"><span class="sk-name" style="font-family:inherit;">' + esc(conn.displayName) + '</span>' +
+        '<div class="sk-body">' + nameHtml +
         '<span class="gallery-lane">API</span>' +
         '<span class="conn-host">' + esc(apiConnectionHostSummary(conn)) + '</span>' +
+        '<span class="conn-meta">' + apiConnectionStatusPill(conn) + '</span>' +
+        googleServiceSummaryHtml(conn) +
         legacyGithubConnectionNoticeHtml(conn) + '</div>' +
         '<span class="toggle"><span class="thumb"></span><input type="checkbox" data-action="apiconn-toggle" data-index="' + index + '" ' + (conn.enabled ? "checked" : "") + ' aria-label="API connection enabled"></span>' +
         '<button type="button" class="btn btn-ghost btn-sm" data-action="apiconn-edit" data-index="' + index + '">Edit</button>' +
@@ -3173,7 +3382,57 @@ details[open].advanced summary::before {
     var gallery = editor || apiEditor || state.customConnectionLane ? "" : connectorGalleryHtml();
     var hint = 'MCP servers and REST APIs this profile can call.';
     var security = '<p class="conn-security">Your profile stores connection policy and tool approvals only &mdash; tokens live in the settings store and are never returned by the API.</p>';
-    return '<p class="hint ptab-hint">' + hint + '</p>' + list + createForm + gallery + security;
+    return oauthReturnNoticeHtml(draft) + '<p class="hint ptab-hint">' + hint + '</p>' + list + createForm + gallery + security;
+  }
+
+  function oauthReturnNoticeHtml(draft) {
+    var result = state.oauthReturn;
+    if (!result || result.agentId !== draft.id) return "";
+    var lane = result.lane === "api" ? "api" : "mcp";
+    var connection = (lane === "api" ? (draft.apiConnections || []) : (draft.mcpServers || [])).find(function (entry) {
+      return entry.id === result.connectionId;
+    });
+    var presetId = connection && connection.presetId
+      ? connection.presetId
+      : result.connectionId;
+    var preset = presetById(presetId);
+    var name = connection ? connection.displayName : (preset ? preset.name : "The connection");
+    var message;
+    var statusClass = "ok";
+    var role = "status";
+    if (result.status === "connected") {
+      // A callback success is one-shot evidence about the connection row that
+      // returned. Never reinterpret it as success after that row is removed.
+      if (!connection) return "";
+      var identity = connection && connection.identity;
+      var targetName = identity && (identity.workspaceName || identity.accountName)
+        ? (identity.workspaceName || identity.accountName)
+        : name;
+      if (lane === "api") {
+        message = "Connected to " + targetName + ". The selected Google services are ready to use.";
+      } else {
+        var toolCount = connection ? (connection.allowedTools || []).length : 0;
+        message = "Connected to " + targetName + ". " + toolCount + " tool" + (toolCount === 1 ? "" : "s") + " enabled.";
+      }
+    } else if (result.status === "cancelled") {
+      message = name + " authorization was cancelled. Your saved connection was not changed; you can try again when ready.";
+      statusClass = "error";
+      role = "alert";
+    } else if (result.status === "verification_failed") {
+      message = name + " was authorized, but Chickpea could not verify the connection. No tools were enabled. Retry verification below.";
+      statusClass = "error";
+      role = "alert";
+    } else {
+      var existingConnectionActive = connection &&
+        connection.lifecycleStatus === "ready" &&
+        (lane === "api" || (connection.allowedTools || []).length > 0);
+      message = existingConnectionActive
+        ? name + " reconnect failed. Your existing connection is still active."
+        : name + " authorization failed. Sign in again to retry.";
+      statusClass = "error";
+      role = "alert";
+    }
+    return '<div class="oauth-return ' + statusClass + '" role="' + role + '">' + esc(message) + '</div>';
   }
 
   function repositoryOwner(fullName) {
@@ -3440,7 +3699,160 @@ details[open].advanced summary::before {
     return host.slice(parts.prefix.length, lowerSuffix ? -parts.suffix.length : undefined);
   }
 
+  function isGoogleWorkspaceEditor(editor) {
+    return !!editor && editor.authMode === "oauth" && editor.oauthProvider === "google";
+  }
+
+  function googleAccessFromScopes(scopes) {
+    var selected = scopes || [];
+    var access = { gmail: "off", calendar: "off", drive: "off" };
+    Object.keys(GOOGLE_WORKSPACE_SCOPES).forEach(function (service) {
+      var options = GOOGLE_WORKSPACE_SCOPES[service];
+      if (selected.indexOf(options.write) >= 0) access[service] = "write";
+      else if (selected.indexOf(options.read) >= 0) access[service] = "read";
+    });
+    return access;
+  }
+
+  function googleServiceSummaryHtml(conn) {
+    if (!conn || (conn.id !== "google-workspace" && conn.presetId !== "google-workspace")) return "";
+    var access = googleAccessFromScopes(conn.oauthScopes || []);
+    var chips = (GOOGLE_WORKSPACE_SERVICE_PRESETS || []).map(function (servicePreset) {
+      var level = access[servicePreset.service];
+      if (level === "off") return "";
+      var levelLabel = level === "write" ? "Read and write" : "Read-only";
+      return '<span class="google-service-chip">' + connectorLogoHtml(servicePreset) +
+        '<span>' + esc(servicePreset.name) + '</span><span class="google-service-level">' + levelLabel + '</span></span>';
+    }).filter(function (chip) { return !!chip; }).join("");
+    return chips ? '<span class="google-service-summary" aria-label="Enabled Google services">' + chips + '</span>' : "";
+  }
+
+  function googleScopesFromEditor(editor) {
+    var access = editor.googleAccess || {};
+    var scopes = [];
+    Object.keys(GOOGLE_WORKSPACE_SCOPES).forEach(function (service) {
+      var level = access[service];
+      if (level === "read" || level === "write") scopes.push(GOOGLE_WORKSPACE_SCOPES[service][level]);
+    });
+    return scopes;
+  }
+
+  function sameStringSet(left, right) {
+    return left.length === right.length && left.every(function (value) { return right.indexOf(value) >= 0; });
+  }
+
+  function syncGoogleApiPolicy(editor) {
+    if (!isGoogleWorkspaceEditor(editor)) return;
+    var scopes = googleScopesFromEditor(editor);
+    var hasGmail = scopes.indexOf(GOOGLE_WORKSPACE_SCOPES.gmail.read) >= 0 || scopes.indexOf(GOOGLE_WORKSPACE_SCOPES.gmail.write) >= 0;
+    var hasCalendar = scopes.indexOf(GOOGLE_WORKSPACE_SCOPES.calendar.read) >= 0 || scopes.indexOf(GOOGLE_WORKSPACE_SCOPES.calendar.write) >= 0;
+    var hasDrive = scopes.indexOf(GOOGLE_WORKSPACE_SCOPES.drive.read) >= 0 || scopes.indexOf(GOOGLE_WORKSPACE_SCOPES.drive.write) >= 0;
+    var hasWrite = scopes.some(function (scope) {
+      return scope === GOOGLE_WORKSPACE_SCOPES.gmail.write ||
+        scope === GOOGLE_WORKSPACE_SCOPES.calendar.write ||
+        scope === GOOGLE_WORKSPACE_SCOPES.drive.write;
+    });
+    editor.oauthScopes = scopes;
+    editor.allowedHosts = [].concat(hasGmail ? ["gmail.googleapis.com"] : [], hasCalendar || hasDrive ? ["www.googleapis.com"] : []);
+    editor.pathPrefixes = [].concat(
+      hasGmail ? ["/gmail/v1/users/me"] : [],
+      hasCalendar ? ["/calendar/v3"] : [],
+      hasDrive ? ["/drive/v3"] : [],
+      scopes.indexOf(GOOGLE_WORKSPACE_SCOPES.drive.write) >= 0 ? ["/upload/drive/v3"] : []
+    );
+    editor.headerName = "Authorization";
+    editor.headerValuePrefix = "Bearer ";
+    editor.methodChecked = API_CONNECTION_METHODS.map(function (method) {
+      return hasWrite || method === "GET" || method === "HEAD";
+    });
+    if (editor.savedLifecycleStatus === "ready") {
+      if (sameStringSet(scopes, editor.savedOAuthScopes || [])) {
+        editor.lifecycleStatus = "ready";
+        editor.statusText = editor.savedStatusText || "Connected";
+        editor.identity = editor.savedIdentity || null;
+      } else {
+        editor.lifecycleStatus = "pending";
+        editor.statusText = "Not connected";
+        editor.identity = null;
+      }
+    }
+  }
+
+  function apiOAuthCallbackUrl() {
+    var origin = typeof location.origin === "string" && location.origin
+      ? location.origin
+      : "http://localhost";
+    return (origin.charAt(origin.length - 1) === "/" ? origin.slice(0, -1) : origin) + "/oauth/api/callback";
+  }
+
+  function googleAccessRowHtml(editor, service, label, note) {
+    var access = (editor.googleAccess && editor.googleAccess[service]) || "off";
+    var servicePreset = googleServicePresetByService(service);
+    function option(value, text) {
+      return '<button type="button" class="' + (access === value ? "on" : "") + '" data-action="apiconn-google-access" data-service="' + service + '" data-access="' + value + '">' + text + '</button>';
+    }
+    return '<div class="field"><label class="field-label google-access-label">' + (servicePreset ? connectorLogoHtml(servicePreset) : "") + '<span>' + label + '</span></label>' +
+      '<div class="seg" role="group" aria-label="' + label + ' access">' +
+      option("off", "Off") + option("read", "Read-only") + option("write", "Read and write") + '</div>' +
+      '<p class="hint">' + note + '</p></div>';
+  }
+
+  function googleConnectedAccountHtml(editor) {
+    if (editor.lifecycleStatus !== "ready") return "";
+    var accountName = editor.identity && editor.identity.accountName
+      ? editor.identity.accountName
+      : "Google account";
+    return '<div class="oauth-account" role="status">' +
+      '<div class="oauth-account-copy"><span class="oauth-account-status">Connected</span>' +
+      '<span class="oauth-account-name">' + esc(accountName) + '</span>' +
+      '<span class="oauth-account-detail">Selected Google services are available to this profile.</span></div>' +
+      '<div class="oauth-account-actions">' +
+      '<button type="button" class="link-btn" data-action="apiconn-oauth-start">Reconnect</button>' +
+      '<button type="button" class="link-btn" data-action="apiconn-oauth-disconnect">Disconnect</button></div></div>';
+  }
+
+  function googleWorkspaceRecommendedBodyHtml(editor, preset) {
+    var clientStored = editor.sources && editor.sources.oauthClient === "stored";
+    var clientIdPlaceholder = clientStored ? "•••• stored" : "Google OAuth client ID";
+    var clientSecretPlaceholder = clientStored ? "•••• stored" : "Google OAuth client secret";
+    var appType = editor.oauthAppType === "external" ? "external" : "workspace-internal";
+    var appTypeHint = appType === "external"
+      ? "Personal and external apps may require Google verification. While the consent screen is in Testing, refresh authorization for these scopes may expire after seven days."
+      : "Recommended for a Google Workspace organization: configure the consent screen as Internal so only members of that organization can sign in.";
+    var signInLabel = editor.oauthStarting ? "Opening Google…" : (editor.lifecycleStatus === "ready" ? "Reconnect Google" : "Sign into Google");
+    return '<div class="conn-recommended-head">' + connectorLogoHtml(preset) +
+      '<span class="field-label">' + esc(preset.name) + '</span><span class="conn-url-chip mono">Google APIs</span></div>' +
+      '<div class="oauth-account"><div class="oauth-account-copy"><span class="oauth-account-status">Account safety</span>' +
+      '<span class="oauth-account-name">Use a dedicated Google account for Chickpea when possible.</span>' +
+      '<span class="oauth-account-detail">Only grant the Gmail, Calendar, and Drive access this profile needs.</span></div></div>' +
+      googleConnectedAccountHtml(editor) +
+      '<div class="field"><label class="field-label">Google app audience</label>' +
+      '<div class="seg" role="group" aria-label="Google app audience">' +
+      '<button type="button" class="' + (appType === "workspace-internal" ? "on" : "") + '" data-action="apiconn-google-app-type" data-app-type="workspace-internal">Workspace internal</button>' +
+      '<button type="button" class="' + (appType === "external" ? "on" : "") + '" data-action="apiconn-google-app-type" data-app-type="external">Personal / external</button></div>' +
+      '<p class="hint">' + esc(appTypeHint) + '</p></div>' +
+      '<div class="field"><label class="field-label">Authorized redirect URI</label>' +
+      '<input class="input mono" type="text" readonly value="' + esc(apiOAuthCallbackUrl()) + '" aria-label="Google OAuth redirect URI">' +
+      '<p class="hint">Add this exact URI to the Web application OAuth client in Google Cloud.</p></div>' +
+      '<div class="form-grid"><div class="field"><label class="field-label">Client ID</label>' +
+      '<input class="input mono" type="password" autocomplete="off" value="' + esc(editor.oauthClientId || "") + '" placeholder="' + esc(clientIdPlaceholder) + '" data-action="apiconn-google-client-id"></div>' +
+      '<div class="field"><label class="field-label">Client secret</label>' +
+      '<input class="input mono" type="password" autocomplete="off" value="' + esc(editor.oauthClientSecret || "") + '" placeholder="' + esc(clientSecretPlaceholder) + '" data-action="apiconn-google-client-secret"></div></div>' +
+      (clientStored ? '<p class="hint">Leave both fields blank to keep the stored OAuth client.</p>' : '') +
+      '<p class="hint"><a class="hint-link" href="' + esc(editor.tokenDocsUrl || "https://console.cloud.google.com/apis/credentials") + '" target="_blank" rel="noopener noreferrer">Open Google Cloud credentials</a></p>' +
+      '<div class="field"><label class="field-label">Google service access</label><p class="hint">These choices become both OAuth scopes and the server-enforced API allowlist.</p></div>' +
+      googleAccessRowHtml(editor, "gmail", "Gmail", "Read and write can read mail, modify labels, archive messages, and move messages to trash; it cannot permanently delete mail.") +
+      googleAccessRowHtml(editor, "calendar", "Calendar", "Read and write can create, update, and delete calendar events.") +
+      googleAccessRowHtml(editor, "drive", "Drive", "Read and write uses Google Drive's broad file scope and can create, update, and delete accessible files.") +
+      (editor.oauthError ? '<p class="field-error" role="alert">' + esc(editor.oauthError) + '</p>' : '') +
+      (editor.error ? '<p class="field-error" role="alert">' + esc(editor.error) + '</p>' : '') +
+      '<div class="skill-form-actions"><button type="button" class="btn btn-ghost btn-sm" data-action="apiconn-cancel">Cancel</button>' +
+      '<button type="button" class="btn btn-primary btn-sm oauth-signin" data-action="apiconn-oauth-start"' + (editor.oauthStarting ? " disabled" : "") + '>' +
+      connectorLogoHtml(preset) + '<span>' + signInLabel + '</span></button></div>';
+  }
+
   function apiConnectionRecommendedBodyHtml(editor, preset) {
+    if (isGoogleWorkspaceEditor(editor)) return googleWorkspaceRecommendedBodyHtml(editor, preset);
     var credentialStored = editor.sources && editor.sources.credential && editor.sources.credential !== "missing";
     var credentialPlaceholder = credentialStored ? "\\u2022\\u2022\\u2022\\u2022 stored" : (editor.credentialPlaceholder || "Paste credential \\u2014 stored, never returned by the API");
     var credentialHint = credentialStored ? '<p class="hint">Leave blank to keep the stored credential.</p>' : "";
@@ -3472,10 +3884,10 @@ details[open].advanced summary::before {
     if (editor.tokenDocsUrl) {
       tokenDocs += '<a class="hint-link" href="' + esc(editor.tokenDocsUrl) + '" target="_blank" rel="noopener noreferrer">Where do I find this?</a>';
     }
-    var viewToggle = preset ? '<div class="seg conn-view-seg" role="group" aria-label="Setup mode">' +
+    var viewToggle = preset && !isGoogleWorkspaceEditor(editor) ? '<div class="seg conn-view-seg" role="group" aria-label="Setup mode">' +
       '<button type="button" class="' + (editor.view === "recommended" ? "on" : "") + '" data-action="apiconn-view" data-view="recommended">Recommended</button>' +
       '<button type="button" class="' + (editor.view !== "recommended" ? "on" : "") + '" data-action="apiconn-view" data-view="advanced">Advanced</button></div>' : "";
-    if (preset && editor.view === "recommended") {
+    if (preset && (editor.view === "recommended" || isGoogleWorkspaceEditor(editor))) {
       return '<div class="skill-form">' + viewToggle + apiConnectionRecommendedBodyHtml(editor, preset) + '</div>';
     }
     return '<div class="skill-form">' + viewToggle +
@@ -3501,6 +3913,7 @@ details[open].advanced summary::before {
   }
 
   function validateApiConnectionEditor(editor, connections) {
+    if (isGoogleWorkspaceEditor(editor)) syncGoogleApiPolicy(editor);
     var name = String(editor.displayName || "").trim();
     if (!name) return "Name is required.";
     if (name.length > 80) return "Name must be 80 characters or fewer.";
@@ -3508,6 +3921,14 @@ details[open].advanced summary::before {
     if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(id)) return "Name must contain at least one letter or digit.";
     var duplicate = (connections || []).some(function (conn, index) { return index !== editor.index && conn.id === id; });
     if (duplicate) return "Another API connection already uses that name.";
+    if (isGoogleWorkspaceEditor(editor)) {
+      if (!(editor.oauthScopes || []).length) return "Choose access to at least one Google service.";
+      var clientStored = editor.sources && editor.sources.oauthClient === "stored";
+      var hasClientId = !!String(editor.oauthClientId || "").trim();
+      var hasClientSecret = !!String(editor.oauthClientSecret || "").trim();
+      if (hasClientId !== hasClientSecret) return "Enter both the Google OAuth client ID and client secret.";
+      if (!clientStored && !hasClientId) return "Enter the Google OAuth client ID and client secret.";
+    }
     var hosts = (editor.allowedHosts || []).map(function (host) { return String(host || "").trim(); }).filter(function (host) { return !!host; });
     if (!hosts.length) return "Add at least one allowed host.";
     var templateHost = String(editor.hostTemplateHost || "").toLowerCase();
@@ -3529,13 +3950,18 @@ details[open].advanced summary::before {
     var servers = (draft && draft.mcpServers) || [];
     var conn = servers[state.connectionRemove];
     if (!conn) return "";
+    var isOAuth = conn.authMode === "oauth";
+    var title = isOAuth ? "Disconnect " + conn.displayName + "?" : "Remove " + conn.displayName + "?";
+    var body = isOAuth
+      ? "This disconnects the account and removes its tool approvals from this profile. Chickpea's stored OAuth tokens and client registration are deleted when you save."
+      : "This drops the connection and its tool approvals from this profile. Its stored token and header values are deleted when you save.";
     return '<div class="modal-backdrop">' +
-      '<div class="modal-card" role="dialog" aria-modal="true" aria-label="Remove connection">' +
-      '<h2 class="modal-title">Remove ' + esc(conn.displayName) + '?</h2>' +
-      '<p class="modal-body">This drops the connection and its tool approvals from this profile. Its stored token and header values are deleted when you save.</p>' +
+      '<div class="modal-card" role="dialog" aria-modal="true" aria-label="' + (isOAuth ? "Disconnect account" : "Remove connection") + '">' +
+      '<h2 class="modal-title">' + esc(title) + '</h2>' +
+      '<p class="modal-body">' + esc(body) + '</p>' +
       '<div class="modal-foot"><span class="spacer"></span>' +
       '<button type="button" class="btn btn-ghost" data-action="conn-remove-cancel">Cancel</button>' +
-      '<button type="button" class="btn btn-danger" data-action="conn-remove-confirm">Remove connection</button>' +
+      '<button type="button" class="btn btn-danger" data-action="conn-remove-confirm">' + (isOAuth ? "Disconnect and remove" : "Remove connection") + '</button>' +
       '</div></div></div>';
   }
 
@@ -3545,13 +3971,16 @@ details[open].advanced summary::before {
     var connections = (draft && draft.apiConnections) || [];
     var conn = connections[state.apiConnectionRemove];
     if (!conn) return "";
+    var isOAuth = conn.authMode === "oauth";
     return '<div class="modal-backdrop">' +
-      '<div class="modal-card" role="dialog" aria-modal="true" aria-label="Remove API connection">' +
-      '<h2 class="modal-title">Remove ' + esc(conn.displayName) + '?</h2>' +
-      '<p class="modal-body">This drops the API policy from this profile. Its stored credential is deleted when you save.</p>' +
+      '<div class="modal-card" role="dialog" aria-modal="true" aria-label="' + (isOAuth ? "Disconnect account" : "Remove API connection") + '">' +
+      '<h2 class="modal-title">' + (isOAuth ? "Disconnect " : "Remove ") + esc(conn.displayName) + '?</h2>' +
+      '<p class="modal-body">' + (isOAuth
+        ? "This disconnects the account and removes its API access policy. Chickpea's stored OAuth client and tokens are deleted when you save."
+        : "This drops the API policy from this profile. Its stored credential is deleted when you save.") + '</p>' +
       '<div class="modal-foot"><span class="spacer"></span>' +
       '<button type="button" class="btn btn-ghost" data-action="apiconn-remove-cancel">Cancel</button>' +
-      '<button type="button" class="btn btn-danger" data-action="apiconn-remove-confirm">Remove connection</button>' +
+      '<button type="button" class="btn btn-danger" data-action="apiconn-remove-confirm">' + (isOAuth ? "Disconnect and remove" : "Remove connection") + '</button>' +
       '</div></div></div>';
   }
 
@@ -5552,7 +5981,14 @@ details[open].advanced summary::before {
       }),
       allowedTools: (conn.allowedTools || []).slice()
     };
+    if (conn.oauthScope !== undefined) copy.oauthScope = conn.oauthScope;
     if (conn.lastCheckedAt !== undefined) copy.lastCheckedAt = conn.lastCheckedAt;
+    if (conn.identity !== undefined) {
+      copy.identity = {
+        workspaceName: conn.identity.workspaceName,
+        accountName: conn.identity.accountName
+      };
+    }
     if (conn.presetId !== undefined) copy.presetId = conn.presetId;
     return copy;
   }
@@ -5569,9 +6005,23 @@ details[open].advanced summary::before {
     };
     if (conn.headerValuePrefix !== undefined) copy.headerValuePrefix = conn.headerValuePrefix;
     if (conn.presetId !== undefined) copy.presetId = conn.presetId;
+    if (conn.authMode !== undefined) copy.authMode = conn.authMode;
+    if (conn.oauthProvider !== undefined) copy.oauthProvider = conn.oauthProvider;
+    if (conn.oauthScopes !== undefined) copy.oauthScopes = conn.oauthScopes.slice();
+    if (conn.oauthAppType !== undefined) copy.oauthAppType = conn.oauthAppType;
+    if (conn.lifecycleStatus !== undefined) copy.lifecycleStatus = conn.lifecycleStatus;
+    if (conn.statusText !== undefined) copy.statusText = conn.statusText;
+    if (conn.identity !== undefined) {
+      copy.identity = {
+        workspaceName: conn.identity.workspaceName,
+        accountName: conn.identity.accountName
+      };
+    }
     // Server-resolved write-only credential source (stored/env/missing); carried
     // through so the editor reflects the real state, not a persisted-policy guess.
     if (conn.credentialSource !== undefined) copy.credentialSource = conn.credentialSource;
+    if (conn.oauthClientSource !== undefined) copy.oauthClientSource = conn.oauthClientSource;
+    if (conn.oauthTokenSource !== undefined) copy.oauthTokenSource = conn.oauthTokenSource;
     return copy;
   }
 
@@ -6130,7 +6580,28 @@ details[open].advanced summary::before {
     if (action === "conn-preset") {
       var connPresetId = target.getAttribute("data-preset");
       var selectedPreset = presetById(connPresetId);
-      if (selectedPreset) {
+      var selectedGoogleService = googleServicePresetById(connPresetId);
+      if (selectedGoogleService) {
+        collectProfileDraft();
+        state.customConnectionLane = null;
+        state.connectorGallerySearch = "";
+        state.connectionEditor = null;
+        var googleConnections = state.profileDraft.apiConnections || [];
+        var googleConnectionIndex = googleConnections.findIndex(function (conn) {
+          return conn.id === selectedGoogleService.connectionPresetId || conn.presetId === selectedGoogleService.connectionPresetId;
+        });
+        if (googleConnectionIndex >= 0) {
+          state.apiConnectionEditor = editorFromApiConnection(googleConnectionIndex, googleConnections[googleConnectionIndex]);
+        } else {
+          var googlePreset = presetById(selectedGoogleService.connectionPresetId);
+          if (!googlePreset) return;
+          state.apiConnectionEditor = apiEditorFromPreset(googlePreset);
+          state.apiConnectionEditor.googleAccess = googleAccessFromScopes([]);
+        }
+        state.apiConnectionEditor.googleAccess[selectedGoogleService.service] = "read";
+        syncGoogleApiPolicy(state.apiConnectionEditor);
+        render();
+      } else if (selectedPreset) {
         collectProfileDraft();
         state.customConnectionLane = null;
         state.connectorGallerySearch = "";
@@ -6148,6 +6619,13 @@ details[open].advanced summary::before {
     }
     if (action === "conn-view" && state.connectionEditor) {
       state.connectionEditor.view = target.getAttribute("data-view") === "advanced" ? "advanced" : "recommended";
+      render();
+    }
+    if (action === "conn-supabase-access" && state.connectionEditor && state.connectionEditor.presetId === "supabase") {
+      state.connectionEditor.supabaseReadOnly = target.getAttribute("data-access") !== "read-write";
+      syncSupabaseUrl(state.connectionEditor);
+      state.connectionEditor.error = "";
+      markProfileDirty();
       render();
     }
     if (action === "conn-edit") {
@@ -6175,6 +6653,14 @@ details[open].advanced summary::before {
       state.connectionRemove = Number(target.getAttribute("data-index"));
       render();
     }
+    if (action === "conn-oauth-disconnect" && state.connectionEditor) {
+      collectProfileDraft();
+      var oauthDisconnectIndex = state.connectionEditor.index;
+      if (oauthDisconnectIndex !== null && oauthDisconnectIndex !== undefined) {
+        state.connectionRemove = oauthDisconnectIndex;
+        render();
+      }
+    }
     if (action === "conn-remove-cancel") { state.connectionRemove = null; render(); }
     if (action === "conn-remove-confirm") {
       var removeConnIndex = state.connectionRemove;
@@ -6183,6 +6669,9 @@ details[open].advanced summary::before {
         // Record the id so its secrets are DELETEd on the next save, even though
         // the row is gone from the array now.
         rememberRemovedConnection(removeServers[removeConnIndex]);
+        if (state.oauthReturn && state.oauthReturn.connectionId === removeServers[removeConnIndex].id) {
+          state.oauthReturn = null;
+        }
         removeServers.splice(removeConnIndex, 1);
         state.profileDraft.mcpServers = removeServers;
         // If the open editor pointed at a shifted index, just close it — simplest
@@ -6214,13 +6703,43 @@ details[open].advanced summary::before {
       markProfileDirty();
       render();
     }
+    if (action === "conn-oauth-start") { startOAuthConnection(); }
     if (action === "conn-test") { testConnection(); }
-    if (action === "conn-save-row") { commitConnectionRow(); }
+    if (action === "conn-save-row") {
+      if (isPersistedReadyOAuthEditor(state.connectionEditor)) saveOAuthToolAccess();
+      else commitConnectionRow();
+    }
     // Credentialed REST API connections keep their own action namespace even
     // though their saved rows and custom-create flow now share this panel.
     if (action === "apiconn-view" && state.apiConnectionEditor) {
       state.apiConnectionEditor.view = target.getAttribute("data-view") === "advanced" ? "advanced" : "recommended";
       render();
+    }
+    if (action === "apiconn-google-app-type" && isGoogleWorkspaceEditor(state.apiConnectionEditor)) {
+      state.apiConnectionEditor.oauthAppType = target.getAttribute("data-app-type") === "external" ? "external" : "workspace-internal";
+      state.apiConnectionEditor.error = "";
+      markProfileDirty();
+      render();
+    }
+    if (action === "apiconn-google-access" && isGoogleWorkspaceEditor(state.apiConnectionEditor)) {
+      var googleService = target.getAttribute("data-service");
+      var googleAccess = target.getAttribute("data-access");
+      if (GOOGLE_WORKSPACE_SCOPES[googleService] && ["off", "read", "write"].indexOf(googleAccess) >= 0) {
+        state.apiConnectionEditor.googleAccess[googleService] = googleAccess;
+        syncGoogleApiPolicy(state.apiConnectionEditor);
+        state.apiConnectionEditor.error = "";
+        markProfileDirty();
+        render();
+      }
+    }
+    if (action === "apiconn-oauth-start") { startApiOAuthConnection(); }
+    if (action === "apiconn-oauth-disconnect" && state.apiConnectionEditor) {
+      collectProfileDraft();
+      var apiOauthDisconnectIndex = state.apiConnectionEditor.index;
+      if (apiOauthDisconnectIndex !== null && apiOauthDisconnectIndex !== undefined) {
+        state.apiConnectionRemove = apiOauthDisconnectIndex;
+        render();
+      }
     }
     if (action === "apiconn-edit") {
       collectProfileDraft();
@@ -6252,6 +6771,9 @@ details[open].advanced summary::before {
       var apiConnRemoveValues = (state.profileDraft && state.profileDraft.apiConnections) || [];
       if (apiConnRemoveIndex !== null && apiConnRemoveIndex >= 0 && apiConnRemoveIndex < apiConnRemoveValues.length) {
         rememberRemovedApiConnection(apiConnRemoveValues[apiConnRemoveIndex]);
+        if (state.oauthReturn && state.oauthReturn.lane === "api" && state.oauthReturn.connectionId === apiConnRemoveValues[apiConnRemoveIndex].id) {
+          state.oauthReturn = null;
+        }
         apiConnRemoveValues.splice(apiConnRemoveIndex, 1);
         state.profileDraft.apiConnections = apiConnRemoveValues;
         if (state.customConnectionLane) clearCustomConnectionMode();
@@ -6356,6 +6878,14 @@ details[open].advanced summary::before {
       if (state.connectionEditor) {
         var connEditor = state.connectionEditor;
         if (action === "conn-field-name") { connEditor.displayName = target.value; markProfileDirty(); }
+        if (action === "conn-supabase-project-ref" && connEditor.presetId === "supabase") {
+          connEditor.supabaseProjectRef = target.value;
+          syncSupabaseUrl(connEditor);
+          connEditor.error = "";
+          markProfileDirty();
+          var supabaseOauthButton = document.querySelector('[data-action="conn-oauth-start"]');
+          if (supabaseOauthButton) supabaseOauthButton.disabled = !validSupabaseProjectRef(connEditor.supabaseProjectRef);
+        }
         if (action === "conn-field-url") {
           connEditor.url = target.value;
           markProfileDirty();
@@ -6390,6 +6920,8 @@ details[open].advanced summary::before {
         if (action === "apiconn-field-header-name") { apiConnEditor.headerName = target.value; markProfileDirty(); }
         if (action === "apiconn-field-header-prefix") { apiConnEditor.headerValuePrefix = target.value; markProfileDirty(); }
         if (action === "apiconn-field-credential") { apiConnEditor.credential = target.value; markProfileDirty(); }
+        if (action === "apiconn-google-client-id") { apiConnEditor.oauthClientId = target.value; apiConnEditor.error = ""; markProfileDirty(); }
+        if (action === "apiconn-google-client-secret") { apiConnEditor.oauthClientSecret = target.value; apiConnEditor.error = ""; markProfileDirty(); }
       }
     }
   });
@@ -6465,8 +6997,9 @@ details[open].advanced summary::before {
       var connToggleServers = state.profileDraft.mcpServers || [];
       if (connToggleServers[connToggleIndex]) { connToggleServers[connToggleIndex].enabled = target.checked; state.profileDraft.mcpServers = connToggleServers; markProfileDirty(); render(); }
     }
-    // Connection auth mode select (None / Bearer). Re-render to show/hide the
-    // bearer paste field.
+    // Connection auth mode select. Advanced mode keeps an existing OAuth row
+    // visible as a read-only compatibility option; choosing another mode
+    // explicitly stages the OAuth credential cleanup on save.
     if (action === "conn-auth" && state.connectionEditor) {
       state.connectionEditor.authMode = target.value === "bearer" ? "bearer" : "none";
       markProfileDirty();
@@ -6479,7 +7012,8 @@ details[open].advanced summary::before {
       var connChecked = state.connectionEditor.checked || [];
       connChecked[connToolIndex] = target.checked;
       state.connectionEditor.checked = connChecked;
-      markProfileDirty();
+      state.connectionEditor.toolAccessError = "";
+      if (!isPersistedReadyOAuthEditor(state.connectionEditor)) markProfileDirty();
       render();
     }
     if (action === "apiconn-toggle" && state.profileDraft) {
@@ -7005,6 +7539,7 @@ details[open].advanced summary::before {
       url: "",
       transport: "streamable-http",
       authMode: "none",
+      oauthScope: "",
       headerNames: [],
       headerValues: [],
       bearerToken: "",
@@ -7016,20 +7551,28 @@ details[open].advanced summary::before {
       lifecycleStatus: "pending",
       statusText: "",
       lastCheckedAt: null,
+      identity: null,
       // Secret presence is inferred from the persisted policy (secrets-by-
       // reference): a saved bearer connection means a token was stored, a saved
       // headerName means that header value was stored. A freshly typed value
       // overrides the placeholder. Blank for a new connection.
       sources: { bearer: "missing", headers: {} },
+      oauthStarting: false,
+      oauthError: "",
+      savedAllowedTools: [],
+      toolAccessSaving: false,
+      toolAccessError: "",
       error: ""
     };
   }
 
   function editorFromPreset(preset) {
-    var authMode = preset.auth.kind === "bearer" ? "bearer" : "none";
+    var authMode = preset.auth.kind === "bearer"
+      ? "bearer"
+      : (preset.auth.kind === "oauth" ? "oauth" : "none");
     var headerNames = preset.auth.kind === "header" ? [preset.auth.headerName] : [];
     var headerValues = preset.auth.kind === "header" ? [""] : [];
-    return Object.assign(newConnectionEditor(), {
+    var editor = Object.assign(newConnectionEditor(), {
       index: null,
       preset: preset,
       presetId: preset.id,
@@ -7039,9 +7582,22 @@ details[open].advanced summary::before {
       transport: preset.transport,
       id: preset.id,
       authMode: authMode,
+      oauthScope: preset.auth.kind === "oauth" ? String(preset.auth.scope || "").trim() : "",
       headerNames: headerNames,
       headerValues: headerValues
     });
+    if (preset.id === "supabase") {
+      editor.supabaseProjectRef = "";
+      editor.supabaseReadOnly = true;
+      syncSupabaseUrl(editor);
+    }
+    return editor;
+  }
+
+  function connectionAuthKind(conn) {
+    if (conn.authMode === "oauth") return "oauth";
+    if (conn.authMode === "bearer") return "bearer";
+    return (conn.headerNames || []).length > 0 ? "header" : "none";
   }
 
   // Seed an editor from an existing connection (POLICY only — secrets never live
@@ -7055,12 +7611,17 @@ details[open].advanced summary::before {
     editor.url = conn.url;
     editor.transport = conn.transport || "streamable-http";
     editor.authMode = conn.authMode || "none";
+    editor.oauthScope = conn.oauthScope || "";
     editor.headerNames = (conn.headerNames || []).slice();
     editor.headerValues = editor.headerNames.map(function () { return ""; });
     editor.enabled = !!conn.enabled;
     editor.lifecycleStatus = conn.lifecycleStatus || "pending";
     editor.statusText = conn.statusText || "";
     editor.lastCheckedAt = conn.lastCheckedAt !== undefined ? conn.lastCheckedAt : null;
+    editor.identity = conn.identity ? {
+      workspaceName: conn.identity.workspaceName,
+      accountName: conn.identity.accountName
+    } : null;
     editor.discoveredTools = (conn.discoveredTools || []).map(function (tool) {
       var t = { name: tool.name };
       if (tool.title !== undefined) t.title = tool.title;
@@ -7069,6 +7630,7 @@ details[open].advanced summary::before {
     });
     var approved = conn.allowedTools || [];
     editor.checked = editor.discoveredTools.map(function (tool) { return approved.indexOf(tool.name) >= 0; });
+    editor.savedAllowedTools = approved.slice();
     var pending = state.profileDraft && state.profileDraft.pendingSecrets && state.profileDraft.pendingSecrets[conn.id];
     var pendingHeaders = (pending && pending.headers) || {};
     var headerSources = {};
@@ -7079,8 +7641,28 @@ details[open].advanced summary::before {
     editor.sources = { bearer: bearerSource, headers: headerSources };
     editor.presetId = conn.presetId;
     if (conn.presetId) {
-      editor.preset = presetById(conn.presetId) || null;
-      if (editor.preset) editor.view = "recommended";
+      var matchedPreset = presetById(conn.presetId) || null;
+      // Reattach catalog copy and behavior only while the saved policy still
+      // matches it. A changed auth kind or URL leaves the row in Advanced so a
+      // catalog upgrade cannot broaden the saved connection's access.
+      var supabaseSetup = matchedPreset && matchedPreset.id === "supabase"
+        ? supabaseSetupFromUrl(conn.url)
+        : null;
+      var presetMatchesPolicy = !!matchedPreset &&
+        matchedPreset.auth.kind === connectionAuthKind(conn) &&
+        (matchedPreset.url === conn.url ||
+          (matchedPreset.id === "supabase" && !!supabaseSetup && validSupabaseProjectRef(supabaseSetup.projectRef)));
+      editor.preset = presetMatchesPolicy ? matchedPreset : null;
+      if (editor.preset) {
+        editor.view = "recommended";
+        if (editor.preset.id === "supabase" && supabaseSetup) {
+          editor.supabaseProjectRef = supabaseSetup.projectRef;
+          editor.supabaseReadOnly = supabaseSetup.readOnly;
+        }
+        if (!editor.oauthScope && editor.preset.auth.kind === "oauth") {
+          editor.oauthScope = String(editor.preset.auth.scope || "").trim();
+        }
+      }
     }
     return editor;
   }
@@ -7201,6 +7783,155 @@ details[open].advanced summary::before {
     });
   }
 
+  function oauthStartErrorText(error, connectionName) {
+    if (error && error.message === "oauth_unavailable") {
+      return connectionName + " OAuth could not be prepared. Check that this install has a reachable callback URL, then try again.";
+    }
+    return (error && (error.serverMessage || error.message)) || connectionName + " OAuth could not be started.";
+  }
+
+  function showOAuthStartError(connectionId, error) {
+    var draft = state.profileDraft;
+    var servers = (draft && draft.mcpServers) || [];
+    var index = servers.findIndex(function (connection) { return connection.id === connectionId; });
+    var connectionName = index >= 0
+      ? servers[index].displayName
+      : ((state.connectionEditor && state.connectionEditor.displayName) || "Connection");
+    var message = oauthStartErrorText(error, connectionName);
+    if (index >= 0) {
+      state.connectionEditor = editorFromConnection(index, servers[index]);
+      state.connectionEditor.oauthError = message;
+    } else if (state.connectionEditor) {
+      state.connectionEditor.oauthStarting = false;
+      state.connectionEditor.oauthError = message;
+    } else {
+      state.profileError = message;
+    }
+    state.profileTab = "connections";
+    render();
+  }
+
+  // OAuth start is deliberately operator-driven. Persist the profile policy
+  // first so the server can bind discovery/state/client registration to an
+  // existing connection, then navigate only to the HTTPS authorization URL it
+  // returns. The browser never receives credentials or the PKCE verifier.
+  function startOAuthConnection() {
+    var editor = state.connectionEditor;
+    if (!editor || editor.authMode !== "oauth" || editor.oauthStarting) return;
+    var servers = (state.profileDraft && state.profileDraft.mcpServers) || [];
+    var validationError = validateConnectionEditor(editor, servers);
+    if (validationError) { editor.error = validationError; render(); return; }
+    var connectionId = editor.id || connectionSlug(editor.displayName);
+    var oauthScope = String(editor.oauthScope || "").trim();
+    var oauthStartBody = oauthScope ? { scope: oauthScope } : {};
+    editor.oauthStarting = true;
+    editor.oauthError = "";
+    editor.error = "";
+    render();
+    saveProfile(function () {
+      var agentId = state.editingAgentId || connectionAgentId();
+      postJson(
+        "/admin/api/agents/" + encodeURIComponent(agentId) + "/mcp/oauth/" + encodeURIComponent(connectionId) + "/start",
+        "POST",
+        oauthStartBody
+      ).then(function (body) {
+        var authorizationUrl;
+        try {
+          authorizationUrl = new URL(String(body && body.authorizationUrl || ""));
+        } catch (_) {
+          throw new Error("The OAuth provider returned an invalid authorization URL.");
+        }
+        if (authorizationUrl.protocol !== "https:") {
+          throw new Error("The OAuth provider returned an unsafe authorization URL.");
+        }
+        location.assign(authorizationUrl.href);
+      }).catch(function (error) {
+        showOAuthStartError(connectionId, error);
+      });
+    }, function () {
+      var current = state.connectionEditor;
+      if (current && (current.id || connectionSlug(current.displayName)) === connectionId) {
+        current.oauthStarting = false;
+      }
+      render();
+    });
+  }
+
+  function apiOAuthStartErrorText(error, connectionName) {
+    if (error && (error.message === "client_missing" || error.message === "oauth_client_missing")) {
+      return "Enter and save the Google OAuth client ID and client secret, then try again.";
+    }
+    if (error && error.message === "oauth_unavailable") {
+      return connectionName + " OAuth could not be prepared. Check the Google client and redirect URI, then try again.";
+    }
+    return (error && (error.serverMessage || error.message)) || connectionName + " OAuth could not be started.";
+  }
+
+  function showApiOAuthStartError(connectionId, error) {
+    var draft = state.profileDraft;
+    var connections = (draft && draft.apiConnections) || [];
+    var index = connections.findIndex(function (connection) { return connection.id === connectionId; });
+    var connectionName = index >= 0
+      ? connections[index].displayName
+      : ((state.apiConnectionEditor && state.apiConnectionEditor.displayName) || "Connection");
+    var message = apiOAuthStartErrorText(error, connectionName);
+    if (index >= 0) {
+      state.apiConnectionEditor = editorFromApiConnection(index, connections[index]);
+      state.apiConnectionEditor.oauthError = message;
+    } else if (state.apiConnectionEditor) {
+      state.apiConnectionEditor.oauthStarting = false;
+      state.apiConnectionEditor.oauthError = message;
+    } else {
+      state.profileError = message;
+    }
+    state.profileTab = "connections";
+    render();
+  }
+
+  // BYO API OAuth follows the same save-before-navigation rule as MCP OAuth:
+  // persist policy and the write-only client first, then ask the server for a
+  // provider authorization URL. Tokens and PKCE state never enter this page.
+  function startApiOAuthConnection() {
+    var editor = state.apiConnectionEditor;
+    if (!isGoogleWorkspaceEditor(editor) || editor.oauthStarting) return;
+    syncGoogleApiPolicy(editor);
+    var connections = (state.profileDraft && state.profileDraft.apiConnections) || [];
+    var validationError = validateApiConnectionEditor(editor, connections);
+    if (validationError) { editor.error = validationError; render(); return; }
+    var connectionId = editor.id || connectionSlug(editor.displayName);
+    editor.oauthStarting = true;
+    editor.oauthError = "";
+    editor.error = "";
+    render();
+    saveProfile(function () {
+      var agentId = state.editingAgentId || connectionAgentId();
+      postJson(
+        "/admin/api/agents/" + encodeURIComponent(agentId) + "/api-connections/oauth/" + encodeURIComponent(connectionId) + "/start",
+        "POST",
+        {}
+      ).then(function (body) {
+        var authorizationUrl;
+        try {
+          authorizationUrl = new URL(String(body && body.authorizationUrl || ""));
+        } catch (_) {
+          throw new Error("Google returned an invalid authorization URL.");
+        }
+        if (authorizationUrl.protocol !== "https:") {
+          throw new Error("Google returned an unsafe authorization URL.");
+        }
+        location.assign(authorizationUrl.href);
+      }).catch(function (error) {
+        showApiOAuthStartError(connectionId, error);
+      });
+    }, function () {
+      var current = state.apiConnectionEditor;
+      if (current && (current.id || connectionSlug(current.displayName)) === connectionId) {
+        current.oauthStarting = false;
+      }
+      render();
+    });
+  }
+
   // Turn an open editor into a saved connection POLICY entry (never a secret).
   // allowedTools is the currently-checked subset of discoveredTools.
   function connectionFromEditor(editor) {
@@ -7212,8 +7943,7 @@ details[open].advanced summary::before {
       if (tool.description !== undefined) t.description = tool.description;
       return t;
     });
-    var checked = editor.checked || [];
-    var allowed = discovered.filter(function (tool, i) { return checked[i] !== false; }).map(function (tool) { return tool.name; });
+    var allowed = selectedConnectionToolNames(editor);
     var conn = {
       id: id,
       displayName: String(editor.displayName || "").trim(),
@@ -7227,9 +7957,79 @@ details[open].advanced summary::before {
       discoveredTools: discovered,
       allowedTools: allowed
     };
+    if (editor.authMode === "oauth" && String(editor.oauthScope || "").trim()) {
+      conn.oauthScope = String(editor.oauthScope).trim();
+    }
     if (editor.lastCheckedAt) conn.lastCheckedAt = editor.lastCheckedAt;
+    if (editor.identity) conn.identity = editor.identity;
     if (editor.presetId) conn.presetId = editor.presetId;
     return conn;
+  }
+
+  // A successful OAuth callback has already persisted every discovered tool.
+  // Later checkbox edits are therefore their own small policy operation: PATCH
+  // only mcpServers, keep the editor open, and leave the profile-level dirty bit
+  // untouched so unrelated draft changes still control the sticky save bar.
+  function saveOAuthToolAccess() {
+    var editor = state.connectionEditor;
+    var draft = collectProfileDraft();
+    if (!isPersistedReadyOAuthEditor(editor) || !draft || !draft.id ||
+        editor.toolAccessSaving || !oauthToolAccessChanged(editor)) return;
+    var savedAgent = agentById(draft.id);
+    var persistedServers = ((savedAgent && savedAgent.mcpServers) || draft.mcpServers || []).map(cloneConnection);
+    var persistedIndex = persistedServers.findIndex(function (connection) { return connection.id === editor.id; });
+    if (persistedIndex < 0) {
+      editor.toolAccessError = "This connection is no longer available. Reload the profile and try again.";
+      render();
+      return;
+    }
+
+    var fromEditor = connectionFromEditor(editor);
+    var updatedConnection = cloneConnection(persistedServers[persistedIndex]);
+    updatedConnection.discoveredTools = fromEditor.discoveredTools;
+    updatedConnection.allowedTools = fromEditor.allowedTools;
+    updatedConnection.lifecycleStatus = fromEditor.lifecycleStatus;
+    updatedConnection.statusText = fromEditor.statusText;
+    updatedConnection.lastCheckedAt = editor.lastCheckedAt;
+    persistedServers[persistedIndex] = updatedConnection;
+
+    var savedAllowedTools = updatedConnection.allowedTools.slice();
+    var connectionId = editor.id;
+    editor.toolAccessSaving = true;
+    editor.toolAccessError = "";
+    render();
+    postJson(
+      "/admin/api/agents/" + encodeURIComponent(draft.id),
+      "PATCH",
+      { mcpServers: persistedServers }
+    ).then(function () {
+      var agent = agentById(draft.id);
+      if (agent) agent.mcpServers = persistedServers.map(cloneConnection);
+      var draftIndex = (draft.mcpServers || []).findIndex(function (connection) { return connection.id === connectionId; });
+      if (draftIndex >= 0) {
+        var draftConnection = draft.mcpServers[draftIndex];
+        draftConnection.discoveredTools = updatedConnection.discoveredTools.map(function (tool) {
+          return Object.assign({}, tool);
+        });
+        draftConnection.allowedTools = savedAllowedTools.slice();
+        draftConnection.lifecycleStatus = updatedConnection.lifecycleStatus;
+        draftConnection.statusText = updatedConnection.statusText;
+        draftConnection.lastCheckedAt = updatedConnection.lastCheckedAt;
+      }
+      var current = state.connectionEditor;
+      if (current && current.id === connectionId) {
+        current.savedAllowedTools = savedAllowedTools.slice();
+        current.toolAccessSaving = false;
+        current.toolAccessError = "";
+      }
+      render();
+    }).catch(function (error) {
+      var current = state.connectionEditor;
+      if (!current || current.id !== connectionId) return;
+      current.toolAccessSaving = false;
+      current.toolAccessError = (error && (error.serverMessage || error.message)) || "Tool access could not be saved.";
+      render();
+    });
   }
 
   // Stage the transient secrets typed into an editor for the settings PUT that
@@ -7254,6 +8054,9 @@ details[open].advanced summary::before {
       }
       if (prior.authMode === "bearer" && editor.authMode !== "bearer") {
         entry.clearBearer = true;
+      }
+      if (prior.authMode === "oauth" && editor.authMode !== "oauth") {
+        entry.clearOAuth = true;
       }
     }
     if (editor.authMode === "bearer" && String(editor.bearerToken || "").trim()) {
@@ -7383,8 +8186,9 @@ details[open].advanced summary::before {
       if (entry.headers !== undefined) body.headers = entry.headers;
       if (entry.removeHeaderNames && entry.removeHeaderNames.length) body.removeHeaderNames = entry.removeHeaderNames;
       if (entry.clearBearer) body.clearBearer = true;
+      if (entry.clearOAuth) body.clearOAuth = true;
       // Round-trip when there is a value to store OR an orphan to clean up.
-      if (body.bearerToken !== undefined || body.headers !== undefined || body.removeHeaderNames !== undefined || body.clearBearer !== undefined) {
+      if (body.bearerToken !== undefined || body.headers !== undefined || body.removeHeaderNames !== undefined || body.clearBearer !== undefined || body.clearOAuth !== undefined) {
         operations.push({
           id: id,
           op: "put",
@@ -7422,7 +8226,23 @@ details[open].advanced summary::before {
       hostTemplate: false,
       hostTemplateHost: "",
       enabled: true,
-      sources: { credential: "missing" },
+      authMode: "credential",
+      oauthProvider: "",
+      oauthScopes: [],
+      savedOAuthScopes: [],
+      oauthAppType: "workspace-internal",
+      lifecycleStatus: "pending",
+      statusText: "Not connected",
+      identity: null,
+      savedLifecycleStatus: "pending",
+      savedStatusText: "Not connected",
+      savedIdentity: null,
+      oauthClientId: "",
+      oauthClientSecret: "",
+      oauthStarting: false,
+      oauthError: "",
+      googleAccess: { gmail: "read", calendar: "read", drive: "read" },
+      sources: { credential: "missing", oauthClient: "missing", oauthTokens: "missing" },
       error: ""
     };
   }
@@ -7436,13 +8256,15 @@ details[open].advanced summary::before {
       tokenDocsUrl: preset.tokenDocsUrl || "",
       tokenDocsHint: preset.tokenDocsHint || "",
       hostTemplate: api.hostTemplate === true,
-      hostTemplateHost: api.hostTemplate && api.hosts && api.hosts.length ? api.hosts[0] : ""
+      hostTemplateHost: api.hostTemplate && api.hosts && api.hosts.length ? api.hosts[0] : "",
+      authMode: api.oauth ? "oauth" : "credential",
+      oauthProvider: api.oauth ? api.oauth.provider : ""
     };
   }
 
   function apiEditorFromPreset(preset) {
     var api = preset.api;
-    return Object.assign(newApiConnectionEditor(), apiEditorPresetMetadata(preset), {
+    var editor = Object.assign(newApiConnectionEditor(), apiEditorPresetMetadata(preset), {
       displayName: preset.name,
       id: preset.id,
       allowedHosts: (api.hosts || []).slice(),
@@ -7451,6 +8273,8 @@ details[open].advanced summary::before {
       headerValuePrefix: api.valuePrefix || "",
       methodChecked: API_CONNECTION_METHODS.map(function (method) { return (api.methods || []).indexOf(method) >= 0; })
     });
+    if (isGoogleWorkspaceEditor(editor)) syncGoogleApiPolicy(editor);
+    return editor;
   }
 
   function editorFromApiConnection(index, conn) {
@@ -7466,16 +8290,31 @@ details[open].advanced summary::before {
     editor.methodChecked = API_CONNECTION_METHODS.map(function (method) { return allowedMethods.indexOf(method) >= 0; });
     editor.enabled = !!conn.enabled;
     editor.presetId = conn.presetId;
+    editor.authMode = conn.authMode || "credential";
+    editor.oauthProvider = conn.oauthProvider || "";
+    editor.oauthScopes = (conn.oauthScopes || []).slice();
+    editor.savedOAuthScopes = editor.oauthScopes.slice();
+    editor.oauthAppType = conn.oauthAppType || "workspace-internal";
+    editor.lifecycleStatus = conn.lifecycleStatus || "pending";
+    editor.statusText = conn.statusText || "";
+    editor.identity = conn.identity || null;
+    editor.savedLifecycleStatus = editor.lifecycleStatus;
+    editor.savedStatusText = editor.statusText;
+    editor.savedIdentity = editor.identity;
+    editor.googleAccess = googleAccessFromScopes(editor.oauthScopes);
     // Credentials are write-only, so trust the server's resolved source
     // (stored/env/missing) rather than assuming a persisted policy has a value.
     // A draft that still carries an unsaved write for this connection overrides
     // it to "missing" until that write persists.
     var pending = state.profileDraft && state.profileDraft.pendingApiSecrets && state.profileDraft.pendingApiSecrets[conn.id];
     editor.sources = {
-      credential: pending && pending.credential !== undefined ? "missing" : (conn.credentialSource || "missing")
+      credential: pending && pending.credential !== undefined ? "missing" : (conn.credentialSource || "missing"),
+      oauthClient: pending && pending.oauthClient !== undefined ? "missing" : (conn.oauthClientSource || "missing"),
+      oauthTokens: conn.oauthTokenSource || "missing"
     };
     var preset = conn.presetId ? presetById(conn.presetId) : null;
     if (preset && preset.api) Object.assign(editor, apiEditorPresetMetadata(preset));
+    if (isGoogleWorkspaceEditor(editor)) syncGoogleApiPolicy(editor);
     return editor;
   }
 
@@ -7492,13 +8331,30 @@ details[open].advanced summary::before {
     };
     if (String(editor.headerValuePrefix || "") !== "") conn.headerValuePrefix = String(editor.headerValuePrefix);
     if (editor.presetId) conn.presetId = editor.presetId;
+    if (isGoogleWorkspaceEditor(editor)) {
+      conn.authMode = "oauth";
+      conn.oauthProvider = "google";
+      conn.oauthScopes = (editor.oauthScopes || []).slice();
+      conn.oauthAppType = editor.oauthAppType === "external" ? "external" : "workspace-internal";
+      conn.lifecycleStatus = editor.lifecycleStatus || "pending";
+      conn.statusText = editor.statusText || "Not connected";
+      if (editor.identity) conn.identity = editor.identity;
+    }
     return conn;
   }
 
   function stagePendingApiSecret(id, editor) {
-    if (!state.profileDraft || !String(editor.credential || "").trim()) return;
+    if (!state.profileDraft) return;
     var pending = state.profileDraft.pendingApiSecrets || {};
-    pending[id] = { credential: editor.credential };
+    if (isGoogleWorkspaceEditor(editor)) {
+      var clientId = String(editor.oauthClientId || "").trim();
+      var clientSecret = String(editor.oauthClientSecret || "").trim();
+      if (!clientId || !clientSecret) return;
+      pending[id] = { oauthClient: { provider: "google", clientId: clientId, clientSecret: clientSecret } };
+    } else {
+      if (!String(editor.credential || "").trim()) return;
+      pending[id] = { credential: editor.credential };
+    }
     state.profileDraft.pendingApiSecrets = pending;
   }
 
@@ -7565,7 +8421,7 @@ details[open].advanced summary::before {
     var succeededPending = {};
     var skippedRemoved = {};
     function pendingHasValue(id) {
-      return !!pending[id] && pending[id].credential !== undefined;
+      return !!pending[id] && (pending[id].credential !== undefined || pending[id].oauthClient !== undefined);
     }
     removed.forEach(function (entry, index) {
       if (pendingHasValue(entry.id)) { skippedRemoved[index] = true; return; }
@@ -7579,7 +8435,14 @@ details[open].advanced summary::before {
     });
     Object.keys(pending).forEach(function (id) {
       var entry = pending[id];
-      if (entry.credential !== undefined) {
+      if (entry.oauthClient !== undefined) {
+        operations.push({
+          id: id,
+          op: "put",
+          kind: "pending",
+          request: postJson("/admin/api/agents/" + encodeURIComponent(agentId) + "/api-connections/oauth/" + encodeURIComponent(id) + "/client", "PUT", entry.oauthClient)
+        });
+      } else if (entry.credential !== undefined) {
         operations.push({
           id: id,
           op: "put",
@@ -7694,7 +8557,7 @@ details[open].advanced summary::before {
     }
   }
 
-  function saveProfile(onSaved) {
+  function saveProfile(onSaved, onFailed) {
     var draft = collectProfileDraft();
     // Clear any stale field error BEFORE the commit gates below render — a
     // fixed-but-uncleared error would otherwise resurface on a hidden panel.
@@ -7702,13 +8565,13 @@ details[open].advanced summary::before {
     // Commit an open inline skill editor into the draft first — a filled-but-
     // not-"Added" skill must be saved, not silently dropped. Abort on invalid,
     // jumping to the tab that carries the inline error so it is visible.
-    if (!commitOpenSkillEditor()) { showProfileTab("skills"); return; }
+    if (!commitOpenSkillEditor()) { showProfileTab("skills"); if (onFailed) onFailed(); return; }
     // Same for an open Connections editor — commit it into mcpServers (and stage
     // its typed secrets) before the PATCH, or bail on an inline validation error.
-    if (!commitOpenConnectionEditor()) { showProfileTab("connections"); return; }
-    if (!commitOpenApiConnectionEditor()) { showProfileTab("connections"); return; }
-    if (!draft.name) { state.profileError = "Name is required."; render(); return; }
-    if (!draft.instructions) { state.profileError = "Profile instructions are required."; state.profileTab = "instructions"; render(); return; }
+    if (!commitOpenConnectionEditor()) { showProfileTab("connections"); if (onFailed) onFailed(); return; }
+    if (!commitOpenApiConnectionEditor()) { showProfileTab("connections"); if (onFailed) onFailed(); return; }
+    if (!draft.name) { state.profileError = "Name is required."; render(); if (onFailed) onFailed(); return; }
+    if (!draft.instructions) { state.profileError = "Profile instructions are required."; state.profileTab = "instructions"; render(); if (onFailed) onFailed(); return; }
     // An open repository picker holds checkbox changes the user has made but
     // not yet Applied; saving must not silently serialize the stale grant
     // list. Committing equals clicking Apply — which is what the checked
@@ -7778,17 +8641,27 @@ details[open].advanced summary::before {
               : "Profile saved, but a credential could not be removed — Save again to retry.";
             state.profileDirty = true;
             render();
+            if (onFailed) onFailed();
             return;
           }
           if (onSaved) { onSaved(); } else { render(); }
         });
       }
       // Create → return to the overview so the new profile shows in the list.
+      if (onSaved) {
+        state.profileScreen = "edit";
+        state.editingAgentId = secretAgentId;
+        return refreshData().then(function () {
+          var created = agentById(secretAgentId);
+          if (created) state.profileDraft = cloneAgent(created);
+          onSaved();
+        });
+      }
       state.profileScreen = "list";
       state.profileDraft = null;
       state.editingAgentId = null;
       return refreshData();
-    }).catch(function (error) { state.profileError = error.serverMessage || error.message; render(); });
+    }).catch(function (error) { state.profileError = error.serverMessage || error.message; render(); if (onFailed) onFailed(); });
   }
 
   function discardProfile() {
@@ -7869,9 +8742,50 @@ details[open].advanced summary::before {
   // otherwise sync the URL to the default state), apply it once data is
   // loaded, then turn URL sync on with a replace so landing on /admin becomes
   // the canonical Channels overview without adding a history entry.
+  function oauthReturnFromSearch(search) {
+    if (!search) return null;
+    var params = new URLSearchParams(search);
+    var status = params.get("oauth");
+    var connectionId = params.get("connection");
+    var lane = params.get("lane") === "api" ? "api" : "mcp";
+    if (["connected", "cancelled", "failed", "verification_failed"].indexOf(status) < 0) return null;
+    if (!connectionId || !/^[a-z0-9][a-z0-9-]{0,63}$/.test(connectionId)) return null;
+    return { status: status, connectionId: connectionId, lane: lane };
+  }
+
   var initialRoute = canNavigate ? location.pathname : "/admin";
+  state.oauthReturn = canNavigate ? oauthReturnFromSearch(location.search || "") : null;
   refreshData().then(function () {
     if (initialRoute !== "/admin") applyRoute(initialRoute);
+    if (state.oauthReturn && state.profileDraft && state.profileScreen === "edit") {
+      state.oauthReturn.agentId = state.profileDraft.id;
+      state.profileTab = "connections";
+      if (state.oauthReturn.lane === "api") {
+        var returnedApiIndex = (state.profileDraft.apiConnections || []).findIndex(function (connection) {
+          return connection.id === state.oauthReturn.connectionId;
+        });
+        if (returnedApiIndex >= 0) {
+          state.apiConnectionEditor = editorFromApiConnection(
+            returnedApiIndex,
+            state.profileDraft.apiConnections[returnedApiIndex]
+          );
+        }
+      } else {
+        var returnedIndex = (state.profileDraft.mcpServers || []).findIndex(function (connection) {
+          return connection.id === state.oauthReturn.connectionId;
+        });
+        if (returnedIndex >= 0) {
+          state.connectionEditor = editorFromConnection(
+            returnedIndex,
+            state.profileDraft.mcpServers[returnedIndex]
+          );
+        }
+      }
+      render();
+      // The callback URL carries status and connection identity only, but it is
+      // one-shot UI state. Remove it so a refresh cannot replay a stale banner.
+      history.replaceState(null, "", location.pathname);
+    }
     routeReady = true;
     syncUrl(true);
   });

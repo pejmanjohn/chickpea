@@ -329,6 +329,9 @@ test('buildEgressPlan keeps connector scopes off the open internet and fails clo
   // admission from the current Slack request.
   assert.deepEqual(fallbackNetwork.allowedMethods, ['GET', 'HEAD']);
   assert.equal(fallbackNetwork.dangerouslyAllowFullInternetAccess, true);
+  assert.deepEqual(fallbackNetwork.allowedUrlPrefixes, [
+    connectorUrl('https://api.linear.app/v1'),
+  ]);
 });
 
 test('createScopedFetch rejects a method the matched scope does not allow', async () => {
@@ -495,7 +498,8 @@ test('guarded scopes are excluded from the fallback network allow-list', async (
         // not contribute prefix+transform entries a flat allow-list cannot guard.
         assert.ok(!fallbackUrls.some((url) => url.includes('/repos/')), String(fallbackUrls));
         assert.ok(!fallbackUrls.some((url) => url.includes('/search/code')), String(fallbackUrls));
-        // The unguarded github.com git scope stays available in fallback mode.
+        // The unguarded Git scope remains available for the fallback's
+        // read-only methods.
         assert.ok(fallbackUrls.includes('https://github.com/Acme/Alpha'), String(fallbackUrls));
       } finally {
         globalThis.fetch = previousFetch;

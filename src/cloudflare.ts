@@ -37,7 +37,11 @@ import type {
 } from './config/state-rpc.ts';
 import type { PlatformEnv } from './config/state-backend.ts';
 import { getSettingsStore } from './config/state-backend.ts';
-import { ConfigStoreLogic, type ConfigAgentPatch } from './config/store.ts';
+import {
+  ConfigStoreLogic,
+  type ConfigAgentPatch,
+  type OAuthReauthorizationTarget,
+} from './config/store.ts';
 import type {
   AgentSnapshot,
   ChannelAssignment,
@@ -470,6 +474,12 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     patch: ConfigAgentPatch,
   ): Promise<StateRpcResult<CustomAgentConfig>> {
     return this.call((stores) => stores.config.updateAgent(agentId, patch));
+  }
+
+  async configMarkOAuthReauthorizationRequired(
+    target: OAuthReauthorizationTarget,
+  ): Promise<StateRpcResult<boolean>> {
+    return this.call((stores) => stores.config.markOAuthReauthorizationRequired(target));
   }
 
   async configDeleteAgent(agentId: string): Promise<StateRpcResult<boolean>> {

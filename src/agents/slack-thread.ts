@@ -11,6 +11,16 @@ import {
   registerActivityContext,
   type ApiConnectionActivity,
 } from '../activity/status.ts';
+import {
+  ApiOAuthError,
+  resolveApiOAuthAccessToken,
+  type ApiOAuthProvider,
+  type ApiOAuthRef,
+} from '../config/api-oauth.ts';
+import {
+  googleWorkspaceServicePolicies,
+  isValidApiOAuthConnectionPolicy,
+} from '../config/api-oauth-policy.ts';
 import { resolveConnectorCredential } from '../config/connector-secrets.ts';
 import { connectorSkillsForConnections } from '../config/connector-skills.ts';
 import {
@@ -120,9 +130,18 @@ export interface ResolvedRepositoryAccess {
   governsGithubHosts: boolean;
 }
 
-interface ResolvedApiConnectionForTurn {
-  connector: ResolvedApiConnection;
+export interface ResolvedApiConnectionForTurn {
+  connectors: ResolvedApiConnection[];
   displayName: string;
+  policy: ApiConnectionConfig;
+}
+
+export interface ApiConnectionResolutionDependencies {
+  resolveCredential?: typeof resolveConnectorCredential;
+  resolveOAuthToken?: (input: {
+    ref: ApiOAuthRef;
+    provider: ApiOAuthProvider;
+  }) => Promise<string>;
 }
 
 /**
@@ -350,30 +369,85 @@ function withoutGithubManagedHosts(
   return allowedHosts.length > 0 ? { ...connector, allowedHosts } : undefined;
 }
 
-async function resolveApiConnectionsForTurn(
+export async function resolveApiConnectionsForTurn(
   agentId: string,
   connections: readonly ApiConnectionConfig[],
   env?: PlatformEnv,
+  dependencies: ApiConnectionResolutionDependencies = {},
 ): Promise<ResolvedApiConnectionForTurn[]> {
+  const resolveCredential = dependencies.resolveCredential ?? resolveConnectorCredential;
+  const resolveOAuthToken = dependencies.resolveOAuthToken ?? (async (input) => {
+    const configStore = getConfigStore(env);
+    return resolveApiOAuthAccessToken(input, {
+      settings: getSettingsStore(env),
+      validateConnection: async (ref, provider) => {
+        try {
+          const current = (await configStore.getAgent(ref.agentId)).apiConnections.find(
+            (connection) => connection.id === ref.connectionId,
+          );
+          return !!current &&
+            current.authMode === 'oauth' &&
+            current.oauthProvider === provider &&
+            isValidApiOAuthConnectionPolicy(current);
+        } catch {
+          return false;
+        }
+      },
+      onReauthorizationRequired: async (ref, provider) => {
+        await configStore.markOAuthReauthorizationRequired({
+          lane: 'api',
+          ...ref,
+          provider,
+        });
+      },
+    });
+  });
   const resolved = await Promise.all(
     connections
       .filter((connection) => connection.enabled)
       .map(async (connection): Promise<ResolvedApiConnectionForTurn | undefined> => {
-        const credential = await resolveConnectorCredential(
-          { agentId, connectionId: connection.id },
-          env,
-        );
+        let credential: string | undefined;
+        if (connection.authMode === 'oauth') {
+          if (
+            connection.lifecycleStatus !== 'ready' ||
+            connection.oauthProvider !== 'google' ||
+            !isValidApiOAuthConnectionPolicy(connection)
+          ) {
+            return undefined;
+          }
+          try {
+            credential = await resolveOAuthToken({
+              ref: { agentId, connectionId: connection.id },
+              provider: connection.oauthProvider,
+            });
+          } catch (error) {
+            console.warn(
+              `[chickpea] API OAuth unavailable (${connection.id}): ` +
+                (error instanceof ApiOAuthError ? error.code : 'oauth_unavailable'),
+            );
+            return undefined;
+          }
+        } else {
+          credential = await resolveCredential(
+            { agentId, connectionId: connection.id },
+            env,
+          );
+        }
         if (!credential) return undefined;
 
+        const policies = connection.authMode === 'oauth'
+          ? googleWorkspaceServicePolicies(connection.oauthScopes ?? [])
+          : [connection];
         return {
-          connector: {
-            allowedHosts: connection.allowedHosts,
-            pathPrefixes: connection.pathPrefixes,
-            headerName: connection.headerName,
-            headerValue: (connection.headerValuePrefix ?? '') + credential,
-            allowedMethods: connection.allowedMethods,
-          },
+          connectors: policies.map((policy) => ({
+            allowedHosts: policy.allowedHosts,
+            pathPrefixes: policy.pathPrefixes,
+            headerName: policy.headerName,
+            headerValue: (policy.headerValuePrefix ?? '') + credential,
+            allowedMethods: policy.allowedMethods,
+          })),
           displayName: connection.displayName,
+          policy: connection,
         };
       }),
   );
@@ -472,18 +546,34 @@ export default defineAgent(async ({ id }) => {
   // grants are active, including for narrower legacy path prefixes.
   const resolvedConnectors = mergeRepositoryAndApiConnectors(
     repositoryAccess.connectors,
-    resolvedApiConnections.map(({ connector }) => connector),
+    resolvedApiConnections.flatMap(({ connectors }) => connectors),
   );
   // Project resolved connectors into credential-free scope before skill
   // construction. Connector skills come first so the existing last-writer-wins
   // dedupe lets a profile-authored skill deliberately override the built-in.
   const connectorSkills = suppressProfileNamedConnectorSkills(
     connectorSkillsForConnections(
-      resolvedConnectors.map(({ allowedHosts, pathPrefixes, allowedMethods }) => ({
-        allowedHosts,
-        pathPrefixes,
-        allowedMethods,
-      })),
+      [
+        ...repositoryAccess.connectors.map(({ allowedHosts, pathPrefixes, allowedMethods }) => ({
+          allowedHosts,
+          pathPrefixes,
+          allowedMethods,
+        })),
+        ...resolvedApiConnections.flatMap(({ policy }) => {
+          const allowedHosts = policy.allowedHosts.filter(
+            (host) => !isGithubAppManagedHost(host),
+          );
+          return allowedHosts.length > 0
+            ? [{
+                allowedHosts,
+                pathPrefixes: policy.pathPrefixes,
+                allowedMethods: policy.allowedMethods,
+                ...(policy.presetId ? { presetId: policy.presetId } : {}),
+                ...(policy.oauthScopes ? { oauthScopes: policy.oauthScopes } : {}),
+              }]
+            : [];
+        }),
+      ],
       repositoryAccess.grants,
     ),
     config.agent.skills,
@@ -504,11 +594,11 @@ export default defineAgent(async ({ id }) => {
       allowedMethods,
       ...(matchesRequest ? { matchesRequest } : {}),
     })),
-    ...resolvedApiConnections.flatMap(({ connector, displayName }) => {
-      const withoutGithub = withoutGithubManagedHosts(connector);
-      return withoutGithub
-        ? [
-            {
+    ...resolvedApiConnections.flatMap(({ connectors, displayName }) =>
+      connectors.flatMap((connector) => {
+        const withoutGithub = withoutGithubManagedHosts(connector);
+        return withoutGithub
+          ? [{
               displayName,
               allowedHosts: withoutGithub.allowedHosts,
               pathPrefixes: withoutGithub.pathPrefixes,
@@ -516,10 +606,10 @@ export default defineAgent(async ({ id }) => {
               ...(withoutGithub.matchesRequest
                 ? { matchesRequest: withoutGithub.matchesRequest }
                 : {}),
-            },
-          ]
-        : [];
-    }),
+            }]
+          : [];
+      }),
+    ),
   ];
   registerActivityContext(id, {
     skills: skills.map((skill) => ({ name: skill.name })),

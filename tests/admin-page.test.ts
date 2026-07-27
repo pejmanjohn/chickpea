@@ -239,6 +239,12 @@ function runAdminPageHarness(
     memorySaveError?: { status: number; error: string; currentVersion?: number };
     memoryDeleteError?: { status: number; error: string };
     memoryReviewError?: { status: number; error: string };
+    oauthStartResult?: { authorizationUrl: string };
+    oauthStartError?: { status: number; error: string; message?: string };
+    apiOAuthStartResult?: { authorizationUrl: string };
+    apiOAuthStartError?: { status: number; error: string; message?: string };
+    deferAgentPatch?: boolean;
+    initialSearch?: string;
   } = {},
 ): {
   app: FakeElement;
@@ -272,6 +278,10 @@ function runAdminPageHarness(
   agentPostBodies: Array<Record<string, unknown>>;
   skillResolvePosts: Array<{ source: string }>;
   mcpTestPosts: Array<Record<string, unknown>>;
+  oauthStartPosts: Array<{ agentId: string; connectionId: string; body: Record<string, unknown> }>;
+  apiOAuthStartPosts: Array<{ agentId: string; connectionId: string; body: Record<string, unknown> }>;
+  apiOAuthClientPuts: Array<{ agentId: string; connectionId: string; body: Record<string, unknown> }>;
+  assignedUrls: string[];
   mcpSecretPuts: Array<{ agentId: string; id: string; body: Record<string, unknown> }>;
   mcpSecretDeletes: Array<{ agentId: string; id: string; body: Record<string, unknown> }>;
   apiConnectionSecretPuts: Array<{ agentId: string; id: string; body: Record<string, unknown> }>;
@@ -284,6 +294,7 @@ function runAdminPageHarness(
   gallerySearchSelections: Array<[number, number]>;
   resolveOpsEffective(): void;
   resolveMemoryFiles(channelId: string): void;
+  resolveAgentPatch(): void;
 } {
   const makeRegion = (): FakeRegion => ({
     inert: false,
@@ -355,6 +366,22 @@ function runAdminPageHarness(
   const agentPostBodies: Array<Record<string, unknown>> = [];
   const skillResolvePosts: Array<{ source: string }> = [];
   const mcpTestPosts: Array<Record<string, unknown>> = [];
+  const oauthStartPosts: Array<{
+    agentId: string;
+    connectionId: string;
+    body: Record<string, unknown>;
+  }> = [];
+  const apiOAuthStartPosts: Array<{
+    agentId: string;
+    connectionId: string;
+    body: Record<string, unknown>;
+  }> = [];
+  const apiOAuthClientPuts: Array<{
+    agentId: string;
+    connectionId: string;
+    body: Record<string, unknown>;
+  }> = [];
+  const assignedUrls: string[] = [];
   const mcpSecretPuts: Array<{ agentId: string; id: string; body: Record<string, unknown> }> = [];
   const mcpSecretDeletes: Array<{ agentId: string; id: string; body: Record<string, unknown> }> = [];
   const apiConnectionSecretPuts: Array<{ agentId: string; id: string; body: Record<string, unknown> }> = [];
@@ -396,6 +423,11 @@ function runAdminPageHarness(
   let apiConnectionSecretDeleteFailures = options.apiConnectionSecretDeleteFailures ?? 0;
   const skillResolveError = options.skillResolveError;
   const skillResolution = options.skillResolution;
+  const oauthStartResult = options.oauthStartResult;
+  const oauthStartError = options.oauthStartError;
+  const apiOAuthStartResult = options.apiOAuthStartResult;
+  const apiOAuthStartError = options.apiOAuthStartError;
+  const deferAgentPatch = options.deferAgentPatch === true;
   let resolveOpsEffective: (() => void) | undefined;
   const memoryFileResolvers: Record<string, () => void> = {};
   let memoryEntry = {
@@ -414,7 +446,14 @@ function runAdminPageHarness(
     { name: 'MEMORY.md', path: 'channel/C0EXR3L9T/MEMORY.md', generated: true, entryId: null, content: '# Channel Memory Index\n\n- [release-guidance](release-guidance.md) — Use the checklist.\n' },
     { name: 'release-guidance.md', path: 'channel/C0EXR3L9T/release-guidance.md', generated: false, entryId: 'mem_release', version: 1, status: 'active', description: 'Use the checklist.' },
   ];
-  const location = { pathname: options.initialPath ?? '/admin' };
+  let resolveAgentPatch: (() => void) | undefined;
+  const location = {
+    pathname: options.initialPath ?? '/admin',
+    search: options.initialSearch ?? '',
+    assign(url: string) {
+      assignedUrls.push(String(url));
+    },
+  };
   const historyPushes: string[] = [];
   const historyReplaces: string[] = [];
   const history = {
@@ -701,6 +740,54 @@ function runAdminPageHarness(
       // The test endpoint always answers HTTP 200 — failures ride in the body.
       return Promise.resolve(jsonResponse(result));
     }
+    const oauthStartMatch = path.match(
+      /^\/admin\/api\/agents\/([^/]+)\/mcp\/oauth\/([^/]+)\/start$/,
+    );
+    if (oauthStartMatch && method === 'POST') {
+      const agentId = decodeURIComponent(oauthStartMatch[1] as string);
+      const connectionId = decodeURIComponent(oauthStartMatch[2] as string);
+      const body = JSON.parse(options?.body ?? '{}') as Record<string, unknown>;
+      oauthStartPosts.push({ agentId, connectionId, body });
+      if (oauthStartError) {
+        return Promise.resolve(jsonResponse(oauthStartError, oauthStartError.status));
+      }
+      return Promise.resolve(
+        jsonResponse(
+          oauthStartResult ?? {
+            authorizationUrl: 'https://auth.notion.example/authorize?state=opaque',
+          },
+        ),
+      );
+    }
+    const apiOAuthClientMatch = path.match(
+      /^\/admin\/api\/agents\/([^/]+)\/api-connections\/oauth\/([^/]+)\/client$/,
+    );
+    if (apiOAuthClientMatch && method === 'PUT') {
+      const agentId = decodeURIComponent(apiOAuthClientMatch[1] as string);
+      const connectionId = decodeURIComponent(apiOAuthClientMatch[2] as string);
+      const body = JSON.parse(options?.body ?? '{}') as Record<string, unknown>;
+      apiOAuthClientPuts.push({ agentId, connectionId, body });
+      return Promise.resolve(jsonResponse({ source: 'stored' }));
+    }
+    const apiOAuthStartMatch = path.match(
+      /^\/admin\/api\/agents\/([^/]+)\/api-connections\/oauth\/([^/]+)\/start$/,
+    );
+    if (apiOAuthStartMatch && method === 'POST') {
+      const agentId = decodeURIComponent(apiOAuthStartMatch[1] as string);
+      const connectionId = decodeURIComponent(apiOAuthStartMatch[2] as string);
+      const body = JSON.parse(options?.body ?? '{}') as Record<string, unknown>;
+      apiOAuthStartPosts.push({ agentId, connectionId, body });
+      if (apiOAuthStartError) {
+        return Promise.resolve(jsonResponse(apiOAuthStartError, apiOAuthStartError.status));
+      }
+      return Promise.resolve(
+        jsonResponse(
+          apiOAuthStartResult ?? {
+            authorizationUrl: 'https://accounts.google.com/o/oauth2/v2/auth?state=opaque',
+          },
+        ),
+      );
+    }
     const mcpSecretsMatch = path.match(
       /^\/admin\/api\/agents\/([^/]+)\/mcp\/secrets\/([^/]+)$/,
     );
@@ -772,10 +859,19 @@ function runAdminPageHarness(
         );
       }
       const existing = agentsList.find((agent) => agent.id === id);
-      if (existing) {
-        Object.assign(existing, body, { id });
+      const completePatch = () => {
+        if (existing) Object.assign(existing, body, { id });
+        return jsonResponse({ agent: { id, ...body } });
+      };
+      if (deferAgentPatch) {
+        return new Promise((resolve) => {
+          resolveAgentPatch = () => {
+            resolveAgentPatch = undefined;
+            resolve(completePatch());
+          };
+        });
       }
-      return Promise.resolve(jsonResponse({ agent: { id, ...body } }));
+      return Promise.resolve(completePatch());
     }
     if (path === '/admin/api/assignments' && method === 'PUT') {
       const body = JSON.parse(options?.body ?? '{}') as AssignmentFixture;
@@ -1112,6 +1208,10 @@ function runAdminPageHarness(
     agentPostBodies,
     skillResolvePosts,
     mcpTestPosts,
+    oauthStartPosts,
+    apiOAuthStartPosts,
+    apiOAuthClientPuts,
+    assignedUrls,
     mcpSecretPuts,
     mcpSecretDeletes,
     apiConnectionSecretPuts,
@@ -1131,6 +1231,10 @@ function runAdminPageHarness(
       assert.ok(resolve, `expected ${channelId} memory files request to be pending`);
       delete memoryFileResolvers[channelId];
       resolve();
+    },
+    resolveAgentPatch() {
+      assert.ok(resolveAgentPatch, 'expected agent PATCH request to be pending');
+      resolveAgentPatch();
     },
   };
 }
@@ -2450,9 +2554,49 @@ test('a connected preset drops out of the Available gallery until it is removed'
   // Linear and Asana are already connected, so the gallery no longer offers them...
   assert.doesNotMatch(panel, /data-action="conn-preset" data-preset="linear"/);
   assert.doesNotMatch(panel, /data-action="conn-preset" data-preset="asana"/);
-  // ...other presets remain, and the Available count dropped from 22 to 20.
+  // ...other presets remain, and the Available count drops from 26 to 24.
   assert.match(panel, /data-action="conn-preset" data-preset="airtable"/);
-  assert.match(panel, /<span class="gallery-head-count">20<\/span>/);
+  assert.match(panel, /<span class="gallery-head-count">24<\/span>/);
+});
+
+test('OAuth rows surface a persisted reconnect requirement instead of stale connected copy', async () => {
+  const harness = runAdminPageHarness({
+    agents: [
+      connectionsAgent({
+        mcpServers: [mcpConnectionFixture({
+          id: 'notion',
+          displayName: 'Notion',
+          url: 'https://mcp.notion.com/mcp',
+          authMode: 'oauth',
+          lifecycleStatus: 'pending',
+          statusText: 'Reconnect required',
+          presetId: 'notion',
+        })],
+        apiConnections: [apiConnectionFixture({
+          id: 'google-workspace',
+          displayName: 'Google Workspace',
+          authMode: 'oauth',
+          oauthProvider: 'google',
+          lifecycleStatus: 'pending',
+          statusText: 'Reconnect required',
+          presetId: 'google-workspace',
+        })],
+      }),
+    ],
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+
+  const panel = harness.app.innerHTML;
+  assert.equal((panel.match(/Reconnect required/g) ?? []).length, 2);
+  assert.doesNotMatch(panel, /Connected &middot;/);
+
+  click({ target: actionTarget({ 'data-action': 'conn-edit', 'data-index': '0' }) });
+  assert.match(harness.app.innerHTML, /<span>Sign into Notion<\/span>/);
 });
 
 test('saved MCP and API connections share one lane-badged list with matching inline editors', async () => {
@@ -2492,6 +2636,244 @@ test('saved MCP and API connections share one lane-badged list with matching inl
   click({ target: actionTarget({ 'data-action': 'conn-edit', 'data-index': '0' }) });
   assert.match(harness.app.innerHTML, /value="Linear"[^>]*data-action="conn-field-name"/);
   assert.match(harness.app.innerHTML, /value="https:\/\/mcp\.linear\.app\/mcp"[^>]*data-action="conn-field-url"/);
+});
+
+test('a saved bearer Linear connection stays Advanced after the catalog upgrades to OAuth', async () => {
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent({ mcpServers: [mcpConnectionFixture()] })],
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-edit', 'data-index': '0' }) });
+
+  const editor = harness.app.innerHTML;
+  assert.match(editor, /value="https:\/\/mcp\.linear\.app\/mcp"[^>]*data-action="conn-field-url"/);
+  assert.match(editor, /<option value="bearer" selected>Bearer token<\/option>/);
+  assert.match(editor, /placeholder="•••• stored"[^>]*data-action="conn-field-bearer"/);
+  assert.doesNotMatch(editor, /data-action="conn-oauth-start"/);
+  assert.doesNotMatch(editor, /data-action="conn-view"/);
+
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+
+  const saved = (harness.agentPatchBodies[0]?.body.mcpServers as Array<Record<string, unknown>>)[0];
+  assert.equal(saved?.url, 'https://mcp.linear.app/mcp');
+  assert.equal(saved?.authMode, 'bearer');
+  assert.equal(saved?.presetId, 'linear');
+  assert.deepEqual(harness.mcpSecretPuts, []);
+});
+
+test('a saved PAT Airtable connection stays Advanced after the catalog upgrades to OAuth', async () => {
+  const harness = runAdminPageHarness({
+    agents: [
+      connectionsAgent({
+        mcpServers: [
+          mcpConnectionFixture({
+            id: 'airtable',
+            displayName: 'Airtable',
+            url: 'https://mcp.airtable.com/mcp',
+            presetId: 'airtable',
+          }),
+        ],
+      }),
+    ],
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-edit', 'data-index': '0' }) });
+
+  const editor = harness.app.innerHTML;
+  assert.match(editor, /value="https:\/\/mcp\.airtable\.com\/mcp"[^>]*data-action="conn-field-url"/);
+  assert.match(editor, /<option value="bearer" selected>Bearer token<\/option>/);
+  assert.match(editor, /placeholder="•••• stored"[^>]*data-action="conn-field-bearer"/);
+  assert.doesNotMatch(editor, /data-action="conn-oauth-start"/);
+  assert.doesNotMatch(editor, /data-action="conn-view"/);
+});
+
+test('a saved API-key PostHog connection stays Advanced after the catalog upgrades to OAuth', async () => {
+  const harness = runAdminPageHarness({
+    agents: [
+      connectionsAgent({
+        mcpServers: [
+          mcpConnectionFixture({
+            id: 'posthog',
+            displayName: 'PostHog',
+            url: 'https://mcp.posthog.com/mcp',
+            presetId: 'posthog',
+          }),
+        ],
+      }),
+    ],
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-edit', 'data-index': '0' }) });
+
+  const editor = harness.app.innerHTML;
+  assert.match(editor, /value="https:\/\/mcp\.posthog\.com\/mcp"[^>]*data-action="conn-field-url"/);
+  assert.match(editor, /<option value="bearer" selected>Bearer token<\/option>/);
+  assert.match(editor, /placeholder="•••• stored"[^>]*data-action="conn-field-bearer"/);
+  assert.doesNotMatch(editor, /data-action="conn-oauth-start"/);
+  assert.doesNotMatch(editor, /data-action="conn-view"/);
+});
+
+test('a saved access-token Supabase connection stays Advanced after the catalog upgrades to OAuth', async () => {
+  const harness = runAdminPageHarness({
+    agents: [
+      connectionsAgent({
+        mcpServers: [
+          mcpConnectionFixture({
+            id: 'supabase',
+            displayName: 'Supabase',
+            url: 'https://mcp.supabase.com/mcp',
+            presetId: 'supabase',
+          }),
+        ],
+      }),
+    ],
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-edit', 'data-index': '0' }) });
+
+  const editor = harness.app.innerHTML;
+  assert.match(editor, /value="https:\/\/mcp\.supabase\.com\/mcp"[^>]*data-action="conn-field-url"/);
+  assert.match(editor, /<option value="bearer" selected>Bearer token<\/option>/);
+  assert.match(editor, /placeholder="•••• stored"[^>]*data-action="conn-field-bearer"/);
+  assert.doesNotMatch(editor, /data-action="conn-oauth-start"/);
+  assert.doesNotMatch(editor, /data-action="conn-view"/);
+});
+
+test('a saved read-only Linear OAuth connection stays Advanced after the catalog URL gains write access', async () => {
+  const harness = runAdminPageHarness({
+    agents: [
+      connectionsAgent({
+        mcpServers: [
+          mcpConnectionFixture({
+            url: 'https://mcp.linear.app/mcp/readonly',
+            authMode: 'oauth',
+            lifecycleStatus: 'pending',
+            discoveredTools: [],
+            allowedTools: [],
+          }),
+        ],
+      }),
+    ],
+    deferAgentPatch: true,
+    oauthStartResult: {
+      authorizationUrl: 'https://linear.example/authorize?state=legacy-readonly',
+    },
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-edit', 'data-index': '0' }) });
+
+  const editor = harness.app.innerHTML;
+  assert.match(
+    editor,
+    /value="https:\/\/mcp\.linear\.app\/mcp\/readonly"[^>]*data-action="conn-field-url"/,
+  );
+  assert.match(editor, /<option value="oauth" selected disabled>OAuth \(configured separately\)<\/option>/);
+  assert.match(editor, /data-action="conn-oauth-start"[^>]*>[\s\S]*?<span>Sign into Linear<\/span>/);
+  assert.doesNotMatch(editor, /data-action="conn-view"/);
+  assert.doesNotMatch(editor, /read and write access/);
+
+  // Exercise the mocked OAuth action directly to prove this legacy row does
+  // not borrow the replacement catalog preset's broader scope.
+  click({ target: actionTarget({ 'data-action': 'conn-oauth-start' }) });
+  await flushAsync();
+
+  assert.equal(harness.agentPatchBodies.length, 1);
+  assert.deepEqual(harness.oauthStartPosts, []);
+
+  const servers = harness.agentPatchBodies[0]?.body.mcpServers as Array<Record<string, unknown>>;
+  assert.equal(servers[0]?.url, 'https://mcp.linear.app/mcp/readonly');
+  assert.equal(servers[0]?.authMode, 'oauth');
+  assert.equal(servers[0]?.presetId, 'linear');
+
+  harness.resolveAgentPatch();
+  await flushAsync();
+
+  assert.deepEqual(harness.oauthStartPosts, [
+    { agentId: 'agent_conn', connectionId: 'linear', body: {} },
+  ]);
+  assert.deepEqual(harness.assignedUrls, [
+    'https://linear.example/authorize?state=legacy-readonly',
+  ]);
+});
+
+test('a URL-customized OAuth connection keeps lifecycle controls and its saved scope', async () => {
+  const scope =
+    'organizations:read projects:read projects:write database:write database:read analytics:read secrets:read edge_functions:read edge_functions:write environment:read environment:write storage:read';
+  const harness = runAdminPageHarness({
+    agents: [
+      connectionsAgent({
+        mcpServers: [
+          mcpConnectionFixture({
+            id: 'supabase',
+            displayName: 'Supabase',
+            url: 'https://mcp.supabase.com/mcp?project_ref=test-project&read_only=true',
+            authMode: 'oauth',
+            oauthScope: scope,
+            lifecycleStatus: 'ready',
+            statusText: 'Connected · 2 tools',
+            presetId: 'supabase',
+          }),
+        ],
+      }),
+    ],
+    deferAgentPatch: true,
+    oauthStartResult: {
+      authorizationUrl: 'https://api.supabase.com/v1/oauth/authorize?state=customized',
+    },
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-edit', 'data-index': '0' }) });
+
+  const editor = harness.app.innerHTML;
+  assert.match(editor, /data-action="conn-view" data-view="recommended"/);
+  assert.match(editor, /value="test-project"[^>]*data-action="conn-supabase-project-ref"/);
+  assert.match(editor, /class="on" data-action="conn-supabase-access" data-access="read-only"/);
+  assert.match(editor, /class="oauth-account-name">test-project<\/span>/);
+  assert.match(editor, /data-action="conn-oauth-start">Reconnect<\/button>/);
+  assert.match(editor, /data-action="conn-oauth-disconnect">Disconnect<\/button>/);
+
+  click({ target: actionTarget({ 'data-action': 'conn-oauth-start' }) });
+  await flushAsync();
+  assert.deepEqual(harness.oauthStartPosts, []);
+  const servers = harness.agentPatchBodies[0]?.body.mcpServers as Array<Record<string, unknown>>;
+  assert.equal(servers[0]?.oauthScope, scope);
+
+  harness.resolveAgentPatch();
+  await flushAsync();
+  assert.deepEqual(harness.oauthStartPosts, [
+    { agentId: 'agent_conn', connectionId: 'supabase', body: { scope } },
+  ]);
 });
 
 test('canceling the custom API form clears custom mode and restores the gallery', async () => {
@@ -2654,6 +3036,7 @@ test('editing a saved API connection shows a stored write-only credential placeh
           }),
         ],
       }),
+      connectionsAgent({ id: 'agent_other', name: 'Other Profile' }),
     ],
   });
   await flushAsync();
@@ -2787,6 +3170,7 @@ test('the inline script embeds the connector preset catalog and brand logos', ()
   assert.match(script, /CONNECTOR_PRESETS/);
   assert.match(script, /CONNECTOR_LOGOS/);
   assert.match(script, /mcp\.linear\.app/);
+  assert.match(script, /mcp\.notion\.com/);
   assert.match(script, /M2\.886 4\.18/);
 });
 
@@ -2804,9 +3188,10 @@ test('the searchable Connections gallery is immediate, renders brand logos, and 
   assert.match(gallery, /data-action="conn-gallery-search"/);
   assert.equal(
     (gallery.match(/data-action="conn-preset" data-preset="[^"]+">Connect<\/button>/g) ?? []).length,
-    22,
+    26,
   );
-  assert.match(gallery, /<span>Available<\/span><span class="gallery-head-count">22<\/span>/);
+  assert.match(gallery, /<span>Available<\/span><span class="gallery-head-count">26<\/span>/);
+  assert.doesNotMatch(gallery, /data-preset="google-workspace"/);
   assert.doesNotMatch(gallery, /data-preset="github"/);
   assert.doesNotMatch(gallery, /data-preset="context7"/);
   assert.doesNotMatch(gallery, /data-preset="deepwiki"/);
@@ -2815,29 +3200,30 @@ test('the searchable Connections gallery is immediate, renders brand logos, and 
 
   const ahrefsIndex = gallery.indexOf('data-preset="ahrefs"');
   const airtableIndex = gallery.indexOf('data-preset="airtable"');
-  const cloudflareBindingsIndex = gallery.indexOf('data-preset="cloudflare-bindings"');
+  const cloudflareApiIndex = gallery.indexOf('data-preset="cloudflare-api"');
   const stripeIndex = gallery.indexOf('data-preset="stripe"');
   assert.ok(
     ahrefsIndex >= 0 &&
       ahrefsIndex < airtableIndex &&
-      airtableIndex < cloudflareBindingsIndex &&
-      cloudflareBindingsIndex < stripeIndex,
+      airtableIndex < cloudflareApiIndex &&
+      cloudflareApiIndex < stripeIndex,
   );
 
   const ahrefsRow = gallery.match(
-    /<div class="gallery-row"><span class="conn-logo conn-logo-img conn-logo-full"><svg(?:(?!<\/div>)[\s\S])*?data-preset="ahrefs">Connect<\/button><\/div>/,
+    /<div class="gallery-row gallery-row-described"><span class="conn-logo conn-logo-img conn-logo-full"><svg(?:(?!<\/div>)[\s\S])*?data-preset="ahrefs">Connect<\/button><\/div>/,
   )?.[0];
   assert.ok(ahrefsRow);
   assert.match(ahrefsRow, /conn-logo-full"><svg/);
+  assert.match(ahrefsRow, /Research keywords, backlinks, competitors, and search performance\./);
 
   const incidentIoRow = gallery.match(
-    /<div class="gallery-row"><span class="conn-logo conn-logo-raster"><img src="data:image\/png;base64,[^"]+" alt=""><\/span>(?:(?!<\/div>)[\s\S])*?data-preset="incident-io">Connect<\/button><\/div>/,
+    /<div class="gallery-row gallery-row-described"><span class="conn-logo conn-logo-raster"><img src="data:image\/png;base64,[^"]+" alt=""><\/span>(?:(?!<\/div>)[\s\S])*?data-preset="incident-io">Connect<\/button><\/div>/,
   )?.[0];
   assert.ok(incidentIoRow);
   assert.match(incidentIoRow, /conn-logo-raster"><img src="data:image\/png;base64,/);
 
   const linearRow = gallery.match(
-    /<div class="gallery-row"><span class="conn-logo conn-logo-img"><svg[\s\S]*?data-preset="linear">Connect<\/button><\/div>/,
+    /<div class="gallery-row gallery-row-described"><span class="conn-logo conn-logo-img"><svg[\s\S]*?data-preset="linear">Connect<\/button><\/div>/,
   )?.[0];
   assert.ok(linearRow);
   assert.match(
@@ -2845,11 +3231,69 @@ test('the searchable Connections gallery is immediate, renders brand logos, and 
     /<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" style="color:#5E6AD2"><path/,
   );
   assert.match(linearRow, /<span class="gallery-row-name">Linear<\/span>/);
+  assert.match(linearRow, /Find, create, and update issues, projects, and workspace plans\./);
   assert.match(linearRow, /<span class="gallery-lane">MCP<\/span>/);
+
+  const airtableRow = gallery.match(
+    /<div class="gallery-row gallery-row-described"><span class="conn-logo conn-logo-img conn-logo-full"><svg(?:(?!<\/div>)[\s\S])*?data-preset="airtable">Connect<\/button><\/div>/,
+  )?.[0];
+  assert.ok(airtableRow);
+  assert.match(airtableRow, /fill="#FCB400"/);
+  assert.match(airtableRow, /fill="#18BFFF"/);
+  assert.match(airtableRow, /fill="#F82B60"/);
+  assert.doesNotMatch(airtableRow, /currentColor/);
+
+  const atlassianRow = gallery.match(
+    /<div class="gallery-row gallery-row-described"><span class="conn-logo conn-logo-img"><svg[\s\S]*?data-preset="atlassian">Connect<\/button><\/div>/,
+  )?.[0];
+  assert.ok(atlassianRow);
+  assert.match(atlassianRow, /style="color:#0052CC"><path/);
+  assert.match(atlassianRow, /<span class="gallery-row-name">Atlassian<\/span>/);
+
+  const notionRow = gallery.match(
+    /<div class="gallery-row gallery-row-described"><span class="conn-logo conn-logo-img conn-logo-full"><svg[^>]*aria-hidden="true"(?:(?!<\/div>)[\s\S])*?data-preset="notion">Connect<\/button><\/div>/,
+  )?.[0];
+  assert.ok(notionRow);
+  assert.doesNotMatch(notionRow, /conn-logo-mono|conn-logo-raster|data:image|>NO<\/span>/);
+
+  const gmailRow = gallery.match(
+    /<div class="gallery-row gallery-row-described">(?:(?!<\/div>)[\s\S])*?data-preset="gmail">Connect<\/button><\/div>/,
+  )?.[0];
+  assert.ok(gmailRow);
+  assert.match(gmailRow, /<span class="gallery-row-name">Gmail<\/span>/);
+  assert.match(gmailRow, /Search mail, summarize threads, and draft or organize messages\./);
+  assert.match(gmailRow, /fill="#fc413d"/);
+
+  const calendarRow = gallery.match(
+    /<div class="gallery-row gallery-row-described">(?:(?!<\/div>)[\s\S])*?data-preset="google-calendar">Connect<\/button><\/div>/,
+  )?.[0];
+  assert.ok(calendarRow);
+  assert.match(calendarRow, /<span class="gallery-row-name">Google Calendar<\/span>/);
+  assert.match(calendarRow, /Review availability and create or update events\./);
+  assert.match(calendarRow, /fill="#3c90ff"/);
+
+  const driveRow = gallery.match(
+    /<div class="gallery-row gallery-row-described">(?:(?!<\/div>)[\s\S])*?data-preset="google-drive">Connect<\/button><\/div>/,
+  )?.[0];
+  assert.ok(driveRow);
+  assert.match(driveRow, /<span class="gallery-row-name">Google Drive<\/span>/);
+  assert.match(driveRow, /Find, read, create, and organize files\./);
+  assert.match(driveRow, /fill="url\(#google-drive-yellow\)"/);
+
+  const granolaRow = gallery.match(
+    /<div class="gallery-row gallery-row-described"><span class="conn-logo conn-logo-raster"><img src="data:image\/png;base64,[^"]+" alt=""><\/span>(?:(?!<\/div>)[\s\S])*?data-preset="granola">Connect<\/button><\/div>/,
+  )?.[0];
+  assert.ok(granolaRow);
+  assert.match(granolaRow, /<span class="gallery-row-name">Granola<\/span>/);
+  assert.match(
+    granolaRow,
+    /Search meeting notes and transcripts, browse folders, and extract decisions and action items\./,
+  );
+  assert.match(granolaRow, /<span class="gallery-lane">MCP<\/span>/);
 
   for (const id of ['asana', 'zendesk']) {
     const apiRow = gallery.match(
-      new RegExp('<div class="gallery-row">(?:(?!<\\/div>)[\\s\\S])*?data-preset="' + id + '">Connect<\\/button><\\/div>'),
+      new RegExp('<div class="gallery-row gallery-row-described">(?:(?!<\\/div>)[\\s\\S])*?data-preset="' + id + '">Connect<\\/button><\\/div>'),
     )?.[0];
     assert.ok(apiRow, `${id} row should render`);
     assert.match(apiRow, /<span class="conn-logo conn-logo-img"><svg/);
@@ -2858,14 +3302,14 @@ test('the searchable Connections gallery is immediate, renders brand logos, and 
   }
 
   const mondayRow = gallery.match(
-    /<div class="gallery-row"><span class="conn-logo conn-logo-img conn-logo-full"><svg[\s\S]*?data-preset="monday">Connect<\/button><\/div>/,
+    /<div class="gallery-row gallery-row-described"><span class="conn-logo conn-logo-img conn-logo-full"><svg[\s\S]*?data-preset="monday">Connect<\/button><\/div>/,
   )?.[0];
   assert.ok(mondayRow);
   assert.match(mondayRow, /<svg viewBox="0 0 64 64"/);
   assert.match(mondayRow, /fill="#ff3d57"/);
 
   const exaRow = gallery.match(
-    /<div class="gallery-row"><span class="conn-logo conn-logo-raster"><img src="data:image\/png;base64,[^"]+" alt=""><\/span>[\s\S]*?data-preset="exa">Connect<\/button><\/div>/,
+    /<div class="gallery-row gallery-row-described"><span class="conn-logo conn-logo-raster"><img src="data:image\/png;base64,[^"]+" alt=""><\/span>[\s\S]*?data-preset="exa">Connect<\/button><\/div>/,
   )?.[0];
   assert.ok(exaRow);
   assert.match(exaRow, /<img src="data:image\/png;base64,[^"]+" alt="">/);
@@ -2897,17 +3341,18 @@ test('the searchable Connections gallery is immediate, renders brand logos, and 
   assert.match(recommended, /data-action="conn-view" data-view="recommended"/);
   assert.match(recommended, /data-action="conn-view" data-view="advanced"/);
   assert.match(recommended, /<span class="conn-url-chip mono">mcp\.linear\.app<\/span>/);
-  assert.match(recommended, /placeholder="lin_api_[^"]*"[^>]*data-action="conn-field-bearer"/);
+  assert.match(recommended, /Sign in to Linear and choose the workspace Chickpea should access\.<\/p>/);
+  assert.match(recommended, /data-action="conn-oauth-start"[^>]*>[\s\S]*?<span>Sign into Linear<\/span>/);
+  assert.doesNotMatch(recommended, /data-action="conn-field-bearer"/);
   assert.doesNotMatch(recommended, /data-action="conn-field-url"/);
-  const docsAnchor = recommended.match(
-    /<a class="hint-link" href="https:\/\/linear\.app\/docs\/mcp"[^>]*>Where do I find this\?<\/a>/,
-  )?.[0];
-  assert.ok(docsAnchor);
-  assert.match(docsAnchor, /target="_blank"/);
-  assert.match(docsAnchor, /rel="[^"]*noopener[^"]*"/);
+  assert.doesNotMatch(recommended, /Where do I find this\?/);
+  assert.doesNotMatch(recommended, /href="https:\/\/linear\.app\/docs\/mcp"/);
 
   click({ target: actionTarget({ 'data-action': 'conn-view', 'data-view': 'advanced' }) });
-  assert.match(harness.app.innerHTML, /id="conn-url"[^>]*data-action="conn-field-url"/);
+  assert.match(
+    harness.app.innerHTML,
+    /id="conn-url"[^>]*value="https:\/\/mcp\.linear\.app\/mcp"[^>]*data-action="conn-field-url"/,
+  );
   assert.match(harness.app.innerHTML, /id="conn-name"[^>]*data-action="conn-field-name"/);
 });
 
@@ -2974,6 +3419,193 @@ test('the Asana gallery preset opens a compact Recommended API editor', async ()
   assert.doesNotMatch(recommended, /data-action="apiconn-path-input"/);
   assert.doesNotMatch(recommended, /data-action="apiconn-field-header-name"/);
   assert.doesNotMatch(recommended, /data-action="apiconn-method-toggle"/);
+});
+
+test('the Gmail catalog entry saves one shared Google connection and its BYO OAuth client separately', async () => {
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    deferAgentPatch: true,
+    apiOAuthStartResult: {
+      authorizationUrl: 'https://accounts.google.com/o/oauth2/v2/auth?state=opaque-state',
+    },
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  assert.ok(click && input);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'gmail' }) });
+
+  assert.match(harness.app.innerHTML, /Use a dedicated Google account for Chickpea when possible/);
+  assert.match(harness.app.innerHTML, /Authorized redirect URI/);
+  assert.match(harness.app.innerHTML, /http:\/\/localhost\/oauth\/api\/callback/);
+  assert.match(harness.app.innerHTML, />Workspace internal<\/button>/);
+  assert.doesNotMatch(harness.app.innerHTML, /Where do I find this\?/);
+
+  input({ target: inputTarget({ 'data-action': 'apiconn-google-client-id' }, 'google-client-id') });
+  input({ target: inputTarget({ 'data-action': 'apiconn-google-client-secret' }, 'google-client-secret') });
+  click({ target: actionTarget({ 'data-action': 'apiconn-google-access', 'data-service': 'drive', 'data-access': 'read' }) });
+  click({ target: actionTarget({ 'data-action': 'apiconn-google-access', 'data-service': 'gmail', 'data-access': 'write' }) });
+  click({ target: actionTarget({ 'data-action': 'apiconn-oauth-start' }) });
+  await flushAsync();
+
+  assert.equal(harness.agentPatchBodies.length, 1);
+  assert.deepEqual(harness.apiOAuthClientPuts, []);
+  assert.deepEqual(harness.apiOAuthStartPosts, []);
+  harness.resolveAgentPatch();
+  await flushAsync();
+
+  const connections = harness.agentPatchBodies[0]?.body.apiConnections as Array<Record<string, unknown>>;
+  assert.deepEqual(connections, [
+    {
+      id: 'google-workspace',
+      displayName: 'Google Workspace',
+      allowedHosts: ['gmail.googleapis.com', 'www.googleapis.com'],
+      pathPrefixes: ['/gmail/v1/users/me', '/drive/v3'],
+      headerName: 'Authorization',
+      allowedMethods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'],
+      enabled: true,
+      headerValuePrefix: 'Bearer ',
+      presetId: 'google-workspace',
+      authMode: 'oauth',
+      oauthProvider: 'google',
+      oauthScopes: [
+        'https://www.googleapis.com/auth/gmail.modify',
+        'https://www.googleapis.com/auth/drive.readonly',
+      ],
+      oauthAppType: 'workspace-internal',
+      lifecycleStatus: 'pending',
+      statusText: 'Not connected',
+    },
+  ]);
+  assert.doesNotMatch(JSON.stringify(harness.agentPatchBodies[0]?.body), /google-client-(id|secret)/);
+  assert.deepEqual(harness.apiOAuthClientPuts, [
+    {
+      agentId: 'agent_conn',
+      connectionId: 'google-workspace',
+      body: { provider: 'google', clientId: 'google-client-id', clientSecret: 'google-client-secret' },
+    },
+  ]);
+  assert.deepEqual(harness.apiOAuthStartPosts, [
+    { agentId: 'agent_conn', connectionId: 'google-workspace', body: {} },
+  ]);
+  assert.deepEqual(harness.assignedUrls, [
+    'https://accounts.google.com/o/oauth2/v2/auth?state=opaque-state',
+  ]);
+});
+
+test('enabling Drive reuses the connected Gmail OAuth client and preserves Gmail access', async () => {
+  const harness = runAdminPageHarness({
+    agents: [
+      connectionsAgent({
+        apiConnections: [
+          apiConnectionFixture({
+            id: 'google-workspace',
+            displayName: 'Google Workspace',
+            presetId: 'google-workspace',
+            authMode: 'oauth',
+            oauthProvider: 'google',
+            oauthScopes: ['https://www.googleapis.com/auth/gmail.readonly'],
+            oauthAppType: 'external',
+            allowedHosts: ['gmail.googleapis.com'],
+            pathPrefixes: ['/gmail/v1/users/me'],
+            allowedMethods: ['GET', 'HEAD'],
+            lifecycleStatus: 'ready',
+            statusText: 'Connected',
+            identity: { accountName: 'person@gmail.com' },
+            oauthClientSource: 'stored',
+            oauthTokenSource: 'stored',
+            credentialSource: 'missing',
+          }),
+        ],
+      }),
+    ],
+    deferAgentPatch: true,
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+
+  const gallery = harness.app.innerHTML;
+  assert.doesNotMatch(gallery, /data-preset="gmail"/);
+  assert.match(gallery, /data-preset="google-calendar">Enable<\/button>/);
+  assert.match(gallery, /data-preset="google-drive">Enable<\/button>/);
+  assert.match(gallery, /google-service-summary[\s\S]*Gmail[\s\S]*Read-only/);
+
+  click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'google-drive' }) });
+  assert.match(harness.app.innerHTML, /aria-label="Gmail access"[\s\S]*class="on" data-action="apiconn-google-access" data-service="gmail" data-access="read"/);
+  assert.match(harness.app.innerHTML, /aria-label="Drive access"[\s\S]*class="on" data-action="apiconn-google-access" data-service="drive" data-access="read"/);
+  click({ target: actionTarget({ 'data-action': 'apiconn-oauth-start' }) });
+  await flushAsync();
+
+  assert.equal(harness.agentPatchBodies.length, 1);
+  const connections = harness.agentPatchBodies[0]?.body.apiConnections as Array<Record<string, unknown>>;
+  assert.equal(connections[0]?.id, 'google-workspace');
+  assert.deepEqual(connections[0]?.oauthScopes, [
+    'https://www.googleapis.com/auth/gmail.readonly',
+    'https://www.googleapis.com/auth/drive.readonly',
+  ]);
+  assert.deepEqual(harness.apiOAuthClientPuts, []);
+
+  harness.resolveAgentPatch();
+  await flushAsync();
+  assert.deepEqual(harness.apiOAuthStartPosts, [
+    { agentId: 'agent_conn', connectionId: 'google-workspace', body: {} },
+  ]);
+});
+
+test('a Google OAuth callback return opens a connected account state without MCP tool copy', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/profiles/agent_conn',
+    initialSearch: '?oauth=connected&connection=google-workspace&lane=api',
+    agents: [
+      connectionsAgent({
+        apiConnections: [
+          apiConnectionFixture({
+            id: 'google-workspace',
+            displayName: 'Google Workspace',
+            presetId: 'google-workspace',
+            authMode: 'oauth',
+            oauthProvider: 'google',
+            oauthScopes: ['https://www.googleapis.com/auth/gmail.readonly'],
+            oauthAppType: 'workspace-internal',
+            allowedHosts: ['gmail.googleapis.com'],
+            pathPrefixes: ['/gmail/v1/users/me'],
+            allowedMethods: ['GET', 'HEAD'],
+            lifecycleStatus: 'ready',
+            statusText: 'Connected',
+            identity: { accountName: 'operator@example.com' },
+            oauthClientSource: 'stored',
+            oauthTokenSource: 'stored',
+            credentialSource: 'missing',
+          }),
+        ],
+      }),
+    ],
+  });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /Connected to operator@example\.com\. The selected Google services are ready to use\./);
+  assert.match(harness.app.innerHTML, /<span class="oauth-account-name">operator@example\.com<\/span>/);
+  assert.doesNotMatch(harness.app.innerHTML, /tools enabled/);
+  assert.equal(harness.historyReplaces.at(-1), '/admin/profiles/agent_conn');
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({
+    target: actionTarget({
+      'data-action': 'apiconn-google-access',
+      'data-service': 'drive',
+      'data-access': 'read',
+    }),
+  });
+  assert.match(harness.app.innerHTML, /<span>Sign into Google<\/span>/);
+  assert.doesNotMatch(harness.app.innerHTML, /<span class="oauth-account-status">Connected<\/span>/);
 });
 
 test('the Asana API editor keeps its credential and seeded policy in Advanced before saving', async () => {
@@ -3090,6 +3722,12 @@ test('the Sentry preset keeps its header auth and applies the same idempotent pr
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
   click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'sentry' }) });
+  const recommended = harness.app.innerHTML;
+  assert.match(recommended, /Sentry → Settings → Account → User Auth Tokens/);
+  assert.match(
+    recommended,
+    /<a class="hint-link" href="https:\/\/sentry\.io\/settings\/account\/api\/auth-tokens\/"[^>]*>Where do I find this\?<\/a>/,
+  );
   click({ target: actionTarget({ 'data-action': 'conn-view', 'data-view': 'advanced' }) });
 
   assert.match(harness.app.innerHTML, /<option value="none" selected>None<\/option>/);
@@ -3133,16 +3771,388 @@ test('a preset connection carries presetId in the profile save body', async () =
   assert.ok(click);
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
-  click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'linear' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'stripe' }) });
   click({ target: actionTarget({ 'data-action': 'conn-save-row' }) });
   click({ target: actionTarget({ 'data-action': 'save-profile' }) });
   await flushAsync();
 
   const servers = harness.agentPatchBodies[0]?.body.mcpServers as Array<Record<string, unknown>>;
-  assert.equal(servers[0]?.presetId, 'linear');
+  assert.equal(servers[0]?.presetId, 'stripe');
 });
 
-test('the keyless Cloudflare Docs recommended editor shows its token note once', async () => {
+test('the Linear preset saves read-write OAuth policy and requests read and write scopes', async () => {
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    deferAgentPatch: true,
+    oauthStartResult: {
+      authorizationUrl: 'https://linear.example/authorize?state=opaque-state',
+    },
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'linear' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-oauth-start' }) });
+  await flushAsync();
+
+  assert.equal(harness.agentPatchBodies.length, 1);
+  assert.deepEqual(harness.oauthStartPosts, []);
+  assert.deepEqual(harness.assignedUrls, []);
+
+  harness.resolveAgentPatch();
+  await flushAsync();
+
+  const servers = harness.agentPatchBodies[0]?.body.mcpServers as Array<Record<string, unknown>>;
+  assert.deepEqual(servers, [
+    {
+      id: 'linear',
+      displayName: 'Linear',
+      url: 'https://mcp.linear.app/mcp',
+      transport: 'streamable-http',
+      authMode: 'oauth',
+      headerNames: [],
+      enabled: true,
+      lifecycleStatus: 'pending',
+      statusText: '',
+      discoveredTools: [],
+      allowedTools: [],
+      oauthScope: 'read write',
+      presetId: 'linear',
+    },
+  ]);
+  assert.deepEqual(harness.oauthStartPosts, [
+    { agentId: 'agent_conn', connectionId: 'linear', body: { scope: 'read write' } },
+  ]);
+  assert.deepEqual(harness.assignedUrls, [
+    'https://linear.example/authorize?state=opaque-state',
+  ]);
+});
+
+test('the Granola preset saves OAuth policy before requesting its MCP resource scope', async () => {
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    deferAgentPatch: true,
+    oauthStartResult: {
+      authorizationUrl: 'https://mcp-auth.granola.ai/oauth2/authorize?state=opaque-state',
+    },
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'granola' }) });
+
+  assert.match(harness.app.innerHTML, /Sign into Granola/);
+  assert.match(
+    harness.app.innerHTML,
+    /Anyone who can use this profile may query meetings available to the connected account/,
+  );
+  assert.doesNotMatch(harness.app.innerHTML, /Where do I find this\?/);
+
+  click({ target: actionTarget({ 'data-action': 'conn-oauth-start' }) });
+  await flushAsync();
+
+  assert.equal(harness.agentPatchBodies.length, 1);
+  assert.deepEqual(harness.oauthStartPosts, []);
+  harness.resolveAgentPatch();
+  await flushAsync();
+
+  const servers = harness.agentPatchBodies[0]?.body.mcpServers as Array<Record<string, unknown>>;
+  assert.deepEqual(servers, [
+    {
+      id: 'granola',
+      displayName: 'Granola',
+      url: 'https://mcp.granola.ai/mcp',
+      transport: 'streamable-http',
+      authMode: 'oauth',
+      headerNames: [],
+      enabled: true,
+      lifecycleStatus: 'pending',
+      statusText: '',
+      discoveredTools: [],
+      allowedTools: [],
+      oauthScope: 'mcp',
+      presetId: 'granola',
+    },
+  ]);
+  assert.deepEqual(harness.oauthStartPosts, [
+    { agentId: 'agent_conn', connectionId: 'granola', body: { scope: 'mcp' } },
+  ]);
+  assert.deepEqual(harness.assignedUrls, [
+    'https://mcp-auth.granola.ai/oauth2/authorize?state=opaque-state',
+  ]);
+});
+
+test('the Airtable preset saves OAuth policy before requesting its documented scopes', async () => {
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    deferAgentPatch: true,
+    oauthStartResult: {
+      authorizationUrl: 'https://airtable.example/authorize?state=opaque-state',
+    },
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'airtable' }) });
+
+  const editor = harness.app.innerHTML;
+  assert.match(
+    editor,
+    /Sign in to Airtable and choose the workspaces and bases Chickpea should access\.<\/p>/,
+  );
+  assert.match(
+    editor,
+    /data-action="conn-oauth-start"[^>]*><span class="conn-logo conn-logo-img conn-logo-full"><svg[\s\S]*?<span>Sign into Airtable<\/span>/,
+  );
+  assert.doesNotMatch(editor, /data-action="conn-field-bearer"/);
+  assert.doesNotMatch(editor, /Where do I find this\?/);
+  assert.doesNotMatch(editor, /href="https:\/\/support\.airtable\.com\/using-the-airtable-mcp-server"/);
+
+  click({ target: actionTarget({ 'data-action': 'conn-oauth-start' }) });
+  await flushAsync();
+
+  assert.equal(harness.agentPatchBodies.length, 1);
+  assert.deepEqual(harness.oauthStartPosts, []);
+  assert.deepEqual(harness.assignedUrls, []);
+
+  harness.resolveAgentPatch();
+  await flushAsync();
+
+  const servers = harness.agentPatchBodies[0]?.body.mcpServers as Array<Record<string, unknown>>;
+  assert.deepEqual(servers, [
+    {
+      id: 'airtable',
+      displayName: 'Airtable',
+      url: 'https://mcp.airtable.com/mcp',
+      transport: 'streamable-http',
+      authMode: 'oauth',
+      headerNames: [],
+      enabled: true,
+      lifecycleStatus: 'pending',
+      statusText: '',
+      discoveredTools: [],
+      allowedTools: [],
+      oauthScope:
+        'data.records:read data.records:write schema.bases:read schema.bases:write data.recordComments:read data.recordComments:write workspacesAndBases:read',
+      presetId: 'airtable',
+    },
+  ]);
+  assert.deepEqual(harness.oauthStartPosts, [
+    {
+      agentId: 'agent_conn',
+      connectionId: 'airtable',
+      body: {
+        scope:
+          'data.records:read data.records:write schema.bases:read schema.bases:write data.recordComments:read data.recordComments:write workspacesAndBases:read',
+      },
+    },
+  ]);
+  assert.deepEqual(harness.assignedUrls, [
+    'https://airtable.example/authorize?state=opaque-state',
+  ]);
+});
+
+test('the PostHog preset saves OAuth policy before starting provider-managed authorization', async () => {
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    deferAgentPatch: true,
+    oauthStartResult: {
+      authorizationUrl: 'https://oauth.posthog.com/oauth/authorize/?state=opaque-state',
+    },
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'posthog' }) });
+
+  const editor = harness.app.innerHTML;
+  assert.match(
+    editor,
+    /Sign in to PostHog and choose the organization and project Chickpea should access\.<\/p>/,
+  );
+  assert.match(editor, /data-action="conn-oauth-start"[^>]*>[\s\S]*?<span>Sign into PostHog<\/span>/);
+  assert.doesNotMatch(editor, /data-action="conn-field-bearer"/);
+  assert.doesNotMatch(editor, /Where do I find this\?/);
+
+  click({ target: actionTarget({ 'data-action': 'conn-oauth-start' }) });
+  await flushAsync();
+
+  assert.equal(harness.agentPatchBodies.length, 1);
+  assert.deepEqual(harness.oauthStartPosts, []);
+  assert.deepEqual(harness.assignedUrls, []);
+
+  harness.resolveAgentPatch();
+  await flushAsync();
+
+  const servers = harness.agentPatchBodies[0]?.body.mcpServers as Array<Record<string, unknown>>;
+  assert.deepEqual(servers, [
+    {
+      id: 'posthog',
+      displayName: 'PostHog',
+      url: 'https://mcp.posthog.com/mcp',
+      transport: 'streamable-http',
+      authMode: 'oauth',
+      headerNames: [],
+      enabled: true,
+      lifecycleStatus: 'pending',
+      statusText: '',
+      discoveredTools: [],
+      allowedTools: [],
+      presetId: 'posthog',
+    },
+  ]);
+  assert.deepEqual(harness.oauthStartPosts, [
+    { agentId: 'agent_conn', connectionId: 'posthog', body: {} },
+  ]);
+  assert.deepEqual(harness.assignedUrls, [
+    'https://oauth.posthog.com/oauth/authorize/?state=opaque-state',
+  ]);
+});
+
+test('the Supabase preset saves OAuth policy before requesting every required scope', async () => {
+  const scope =
+    'organizations:read projects:read projects:write database:write database:read analytics:read secrets:read edge_functions:read edge_functions:write environment:read environment:write storage:read';
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    deferAgentPatch: true,
+    oauthStartResult: {
+      authorizationUrl: 'https://api.supabase.com/v1/oauth/authorize?state=opaque-state',
+    },
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  assert.ok(click && input);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'supabase' }) });
+
+  const editor = harness.app.innerHTML;
+  assert.match(
+    editor,
+    /Sign in to Supabase and choose the organization and projects Chickpea should access\.<\/p>/,
+  );
+  assert.match(editor, /data-action="conn-oauth-start"[^>]*>[\s\S]*?<span>Sign into Supabase<\/span>/);
+  assert.match(editor, /Use a development or test project; do not connect production data\./);
+  assert.match(editor, /Project reference/);
+  assert.match(editor, /data-action="conn-supabase-project-ref"/);
+  assert.match(editor, /class="on" data-action="conn-supabase-access" data-access="read-only"/);
+  assert.match(editor, /data-action="conn-supabase-access" data-access="read-write"/);
+  assert.match(editor, /Sign into Supabase[^>]* disabled|data-action="conn-oauth-start" disabled/);
+  assert.doesNotMatch(editor, /data-action="conn-field-bearer"/);
+  assert.doesNotMatch(editor, /Where do I find this\?/);
+
+  input({ target: inputTarget({ 'data-action': 'conn-supabase-project-ref' }, 'abcdefghijklmnopqrst') });
+  click({ target: actionTarget({ 'data-action': 'conn-supabase-access', 'data-access': 'read-write' }) });
+  assert.match(harness.app.innerHTML, /class="on" data-action="conn-supabase-access" data-access="read-write"/);
+  click({ target: actionTarget({ 'data-action': 'conn-supabase-access', 'data-access': 'read-only' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-oauth-start' }) });
+  await flushAsync();
+  assert.deepEqual(harness.oauthStartPosts, []);
+
+  harness.resolveAgentPatch();
+  await flushAsync();
+
+  const servers = harness.agentPatchBodies[0]?.body.mcpServers as Array<Record<string, unknown>>;
+  assert.deepEqual(servers, [
+    {
+      id: 'supabase',
+      displayName: 'Supabase',
+      url: 'https://mcp.supabase.com/mcp?project_ref=abcdefghijklmnopqrst&read_only=true',
+      transport: 'streamable-http',
+      authMode: 'oauth',
+      headerNames: [],
+      enabled: true,
+      lifecycleStatus: 'pending',
+      statusText: '',
+      discoveredTools: [],
+      allowedTools: [],
+      oauthScope: scope,
+      presetId: 'supabase',
+    },
+  ]);
+  assert.deepEqual(harness.oauthStartPosts, [
+    { agentId: 'agent_conn', connectionId: 'supabase', body: { scope } },
+  ]);
+  assert.deepEqual(harness.assignedUrls, [
+    'https://api.supabase.com/v1/oauth/authorize?state=opaque-state',
+  ]);
+});
+
+test('the Atlassian preset saves OAuth policy before requesting its advertised read-write scopes', async () => {
+  const scope =
+    'read:me read:account offline_access email read:jira-work write:jira-work search:confluence read:confluence-user read:page:confluence write:page:confluence read:comment:confluence write:comment:confluence read:space:confluence read:hierarchical-content:confluence write:component:compass read:component:compass read:scorecard:compass write:scorecard:compass read:event:compass read:metric:compass read:all:twg write:all:twg';
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    deferAgentPatch: true,
+    oauthStartResult: {
+      authorizationUrl: 'https://auth.atlassian.com/authorize?state=opaque-state',
+    },
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'atlassian' }) });
+
+  const editor = harness.app.innerHTML;
+  assert.match(
+    editor,
+    /Sign in to Atlassian and choose the sites and products Chickpea should access\.<\/p>/,
+  );
+  assert.match(editor, /data-action="conn-oauth-start"[^>]*>[\s\S]*?<span>Sign into Atlassian<\/span>/);
+  assert.doesNotMatch(editor, /data-action="conn-field-bearer"/);
+  assert.doesNotMatch(editor, /Where do I find this\?/);
+
+  click({ target: actionTarget({ 'data-action': 'conn-oauth-start' }) });
+  await flushAsync();
+  assert.deepEqual(harness.oauthStartPosts, []);
+
+  harness.resolveAgentPatch();
+  await flushAsync();
+
+  const servers = harness.agentPatchBodies[0]?.body.mcpServers as Array<Record<string, unknown>>;
+  assert.deepEqual(servers, [
+    {
+      id: 'atlassian',
+      displayName: 'Atlassian',
+      url: 'https://mcp.atlassian.com/v1/mcp/authv2',
+      transport: 'streamable-http',
+      authMode: 'oauth',
+      headerNames: [],
+      enabled: true,
+      lifecycleStatus: 'pending',
+      statusText: '',
+      discoveredTools: [],
+      allowedTools: [],
+      oauthScope: scope,
+      presetId: 'atlassian',
+    },
+  ]);
+  assert.deepEqual(harness.oauthStartPosts, [
+    { agentId: 'agent_conn', connectionId: 'atlassian', body: { scope } },
+  ]);
+  assert.deepEqual(harness.assignedUrls, [
+    'https://auth.atlassian.com/authorize?state=opaque-state',
+  ]);
+});
+
+test('the Cloudflare API preset replaces the narrow catalog rows with the full OAuth server', async () => {
   const harness = runAdminPageHarness({ agents: [connectionsAgent()] });
   await flushAsync();
 
@@ -3150,11 +4160,453 @@ test('the keyless Cloudflare Docs recommended editor shows its token note once',
   assert.ok(click);
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
-  click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'cloudflare-docs' }) });
+  assert.match(harness.app.innerHTML, /data-preset="cloudflare-api"/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-preset="cloudflare-(docs|bindings|observability)"/);
+  click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'cloudflare-api' }) });
 
-  assert.equal((harness.app.innerHTML.match(/No token needed\./g) ?? []).length, 1);
+  assert.match(harness.app.innerHTML, /Sign into Cloudflare/);
+  assert.match(harness.app.innerHTML, /entire API through three token-efficient tools: docs, search, and execute/);
+});
+
+test('the Notion preset saves OAuth policy before starting authorization and never puts credentials in client state', async () => {
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    oauthStartResult: {
+      authorizationUrl: 'https://auth.notion.example/authorize?state=opaque-state',
+    },
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'notion' }) });
+
+  assert.match(harness.app.innerHTML, /mcp\.notion\.com/);
+  assert.match(harness.app.innerHTML, /Sign in to Notion and choose the workspace access Chickpea should receive\.<\/p>/);
+  assert.match(
+    harness.app.innerHTML,
+    /<button[^>]*class="btn btn-primary btn-sm oauth-signin"[^>]*data-action="conn-oauth-start"[^>]*><span class="conn-logo conn-logo-img conn-logo-full"><svg[^>]*aria-hidden="true"[\s\S]*?<\/svg><\/span><span>Sign into Notion<\/span><\/button>/,
+  );
+  assert.doesNotMatch(harness.app.innerHTML, /When you continue|Save and connect Notion/);
+  assert.doesNotMatch(harness.app.innerHTML, />Add connection<\/button>/);
+  assert.equal((harness.app.innerHTML.match(/Sign in to Notion and choose the workspace access Chickpea should receive\./g) ?? []).length, 1);
+  assert.doesNotMatch(harness.app.innerHTML, /Where do I find this\?/);
+  assert.doesNotMatch(harness.app.innerHTML, /href="https:\/\/developers\.notion\.com\/guides\/mcp\/build-mcp-client"/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="conn-field-bearer"/);
+  assert.match(harness.app.innerHTML, /data-action="conn-test" disabled/);
+
+  click({ target: actionTarget({ 'data-action': 'conn-oauth-start' }) });
+  await flushAsync();
+
+  assert.equal(harness.agentPatchBodies.length, 1);
+  const serializedPatch = JSON.stringify(harness.agentPatchBodies[0]?.body);
+  const servers = harness.agentPatchBodies[0]?.body.mcpServers as Array<Record<string, unknown>>;
+  assert.deepEqual(servers, [
+    {
+      id: 'notion',
+      displayName: 'Notion',
+      url: 'https://mcp.notion.com/mcp',
+      transport: 'streamable-http',
+      authMode: 'oauth',
+      headerNames: [],
+      enabled: true,
+      lifecycleStatus: 'pending',
+      statusText: '',
+      discoveredTools: [],
+      allowedTools: [],
+      presetId: 'notion',
+    },
+  ]);
+  assert.doesNotMatch(serializedPatch, /opaque-state|access_token|refresh_token|client_secret/);
+  assert.deepEqual(harness.oauthStartPosts, [
+    { agentId: 'agent_conn', connectionId: 'notion', body: {} },
+  ]);
+  assert.deepEqual(harness.assignedUrls, [
+    'https://auth.notion.example/authorize?state=opaque-state',
+  ]);
+});
+
+test('a Notion OAuth start failure keeps the saved connection recoverable in place', async () => {
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    oauthStartError: { status: 502, error: 'oauth_unavailable' },
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'notion' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-oauth-start' }) });
+  await flushAsync();
+
+  assert.equal(harness.agentPatchBodies.length, 1);
+  assert.equal(harness.oauthStartPosts.length, 1);
+  assert.deepEqual(harness.assignedUrls, []);
+  assert.match(harness.app.innerHTML, /Sign into Notion/);
+  assert.match(
+    harness.app.innerHTML,
+    /Notion OAuth could not be prepared\. Check that this install has a reachable callback URL, then try again\./,
+  );
+});
+
+test('a blocked profile save re-enables OAuth start after returning to Connections', async () => {
+  const harness = runAdminPageHarness({ agents: [connectionsAgent()] });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  assert.ok(click);
+  assert.ok(input);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'skills' }) });
+  click({ target: actionTarget({ 'data-action': 'skill-new' }) });
+  input({ target: inputTarget({ 'data-action': 'skill-field-name' }, 'Bad Name!') });
+  input({ target: inputTarget({ 'data-action': 'skill-field-description' }, 'x') });
+  input({ target: inputTarget({ 'data-action': 'skill-field-instructions' }, 'y') });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'notion' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-oauth-start' }) });
+  await flushAsync();
+
+  assert.deepEqual(harness.agentPatchBodies, []);
+  assert.deepEqual(harness.oauthStartPosts, []);
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  assert.match(harness.app.innerHTML, /data-action="conn-oauth-start"[^>]*>[\s\S]*?<span>Sign into Notion<\/span>/);
+  assert.doesNotMatch(harness.app.innerHTML, /Opening Notion/);
+});
+
+test('an OAuth callback return opens the profile Connections tab with a status-only notice', async () => {
+  const harness = runAdminPageHarness({
+    agents: [
+      connectionsAgent({
+        mcpServers: [
+          mcpConnectionFixture({
+            id: 'notion',
+            displayName: 'Notion',
+            url: 'https://mcp.notion.com/mcp',
+            authMode: 'oauth',
+            presetId: 'notion',
+            lifecycleStatus: 'ready',
+            statusText: 'Connected · 2 tools',
+            discoveredTools: [
+              { name: 'notion-search', description: 'Search Notion.' },
+              { name: 'notion-fetch', description: 'Fetch from Notion.' },
+            ],
+            allowedTools: ['notion-search', 'notion-fetch'],
+            identity: {
+              workspaceName: "Pejman Pour-Moezzi's Notion",
+              accountName: 'Pejman Pour-Moezzi',
+            },
+          }),
+        ],
+      }),
+    ],
+    initialPath: '/admin/profiles/agent_conn',
+    initialSearch: '?oauth=connected&connection=notion',
+  });
+  await flushAsync();
+
+  assert.match(
+    harness.app.innerHTML,
+    /Connected to Pejman Pour-Moezzi&#39;s Notion/,
+  );
+  assert.match(harness.app.innerHTML, /Pejman Pour-Moezzi/);
+  assert.match(harness.app.innerHTML, /2 tools enabled/);
+  assert.equal((harness.app.innerHTML.match(/data-action="conn-tool-toggle"[^>]*checked/g) ?? []).length, 2);
+  assert.match(harness.app.innerHTML, /Tool access is already saved/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="conn-save-row"/);
+  assert.match(harness.app.innerHTML, /save-bar-sticky[^\"]*is-clean/);
+  assert.doesNotMatch(harness.app.innerHTML, /Test the connection to discover tools/);
+  assert.match(
+    harness.app.innerHTML,
+    /data-action="profile-tab" data-tab="connections"[^>]*>Connections<span class="ptab-count">1<\/span>/,
+  );
+  assert.match(harness.app.innerHTML, /id="ptab-panel-connections" role="tabpanel" aria-labelledby="ptab-connections">/);
+  assert.ok(harness.historyReplaces.includes('/admin/profiles/agent_conn'));
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'profiles-back' }) });
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_other' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  assert.doesNotMatch(harness.app.innerHTML, /Connected to Pejman/);
+});
+
+test('changing connected OAuth tool access saves immediately without dirtying the profile', async () => {
+  const harness = runAdminPageHarness({
+    agents: [
+      connectionsAgent({
+        mcpServers: [
+          mcpConnectionFixture({
+            id: 'notion',
+            displayName: 'Notion',
+            url: 'https://mcp.notion.com/mcp',
+            authMode: 'oauth',
+            presetId: 'notion',
+            discoveredTools: [
+              { name: 'notion-search', description: 'Search Notion.' },
+              { name: 'notion-fetch', description: 'Fetch from Notion.' },
+            ],
+            allowedTools: ['notion-search', 'notion-fetch'],
+          }),
+        ],
+      }),
+    ],
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  const change = harness.listeners.change;
+  assert.ok(click && change);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-edit', 'data-index': '0' }) });
+
+  assert.match(harness.app.innerHTML, /Tool access is already saved/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="conn-save-row"/);
+  assert.match(harness.app.innerHTML, /save-bar-sticky[^\"]*is-clean/);
+
+  change({ target: checkboxTarget({ 'data-action': 'conn-tool-toggle', 'data-index': '1' }, false) });
+  assert.match(harness.app.innerHTML, /data-action="conn-save-row"[^>]*>Save tool access<\/button>/);
+  assert.match(harness.app.innerHTML, /save-bar-sticky[^\"]*is-clean/);
+
+  click({ target: actionTarget({ 'data-action': 'conn-save-row' }) });
+  await flushAsync();
+
+  assert.equal(harness.agentPatchBodies.length, 1);
+  assert.deepEqual(Object.keys(harness.agentPatchBodies[0]?.body ?? {}), ['mcpServers']);
+  const servers = harness.agentPatchBodies[0]?.body.mcpServers as Array<Record<string, unknown>>;
+  assert.deepEqual(servers[0]?.allowedTools, ['notion-search']);
+  assert.match(harness.app.innerHTML, /Tool access is already saved/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="conn-save-row"/);
+  assert.match(harness.app.innerHTML, /save-bar-sticky[^\"]*is-clean/);
+
+  click({ target: actionTarget({ 'data-action': 'conn-cancel' }) });
+  assert.match(harness.app.innerHTML, /Connected &middot; 1 tool/);
+});
+
+test('saving OAuth tool access preserves an unrelated unsaved profile change', async () => {
+  const harness = runAdminPageHarness({
+    agents: [
+      connectionsAgent({
+        skills: [{ name: 'existing-skill', description: 'Existing.', instructions: 'Keep it.', enabled: true }],
+        mcpServers: [
+          mcpConnectionFixture({
+            id: 'notion',
+            displayName: 'Notion',
+            url: 'https://mcp.notion.com/mcp',
+            authMode: 'oauth',
+            presetId: 'notion',
+            discoveredTools: [{ name: 'notion-search' }, { name: 'notion-fetch' }],
+            allowedTools: ['notion-search', 'notion-fetch'],
+          }),
+        ],
+      }),
+    ],
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  const change = harness.listeners.change;
+  assert.ok(click && change);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'skills' }) });
+  change({ target: checkboxTarget({ 'data-action': 'skill-toggle', 'data-index': '0' }, false) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-edit', 'data-index': '0' }) });
+  change({ target: checkboxTarget({ 'data-action': 'conn-tool-toggle', 'data-index': '1' }, false) });
+  click({ target: actionTarget({ 'data-action': 'conn-save-row' }) });
+  await flushAsync();
+
+  assert.equal(harness.agentPatchBodies.length, 1);
+  assert.deepEqual(Object.keys(harness.agentPatchBodies[0]?.body ?? {}), ['mcpServers']);
+  assert.doesNotMatch(harness.app.innerHTML, /save-bar-sticky[^\"]*is-clean/);
+
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+  assert.equal(harness.agentPatchBodies.length, 2);
+  assert.equal((harness.agentPatchBodies[1]?.body.skills as Array<Record<string, unknown>>)[0]?.enabled, false);
+  assert.deepEqual(
+    (harness.agentPatchBodies[1]?.body.mcpServers as Array<Record<string, unknown>>)[0]?.allowedTools,
+    ['notion-search'],
+  );
+});
+
+test('disconnecting an OAuth connection clears its one-shot connected notice', async () => {
+  const harness = runAdminPageHarness({
+    agents: [
+      connectionsAgent({
+        mcpServers: [
+          mcpConnectionFixture({
+            id: 'notion',
+            displayName: 'Notion',
+            url: 'https://mcp.notion.com/mcp',
+            authMode: 'oauth',
+            presetId: 'notion',
+            lifecycleStatus: 'ready',
+            statusText: 'Connected · 2 tools',
+            discoveredTools: [
+              { name: 'notion-search', description: 'Search Notion.' },
+              { name: 'notion-fetch', description: 'Fetch from Notion.' },
+            ],
+            allowedTools: ['notion-search', 'notion-fetch'],
+          }),
+        ],
+      }),
+    ],
+    initialPath: '/admin/profiles/agent_conn',
+    initialSearch: '?oauth=connected&connection=notion',
+  });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /Connected to Notion\. 2 tools enabled\./);
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'conn-oauth-disconnect' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-remove-confirm' }) });
+
+  assert.doesNotMatch(harness.app.innerHTML, /Connected to Notion/);
+  assert.doesNotMatch(harness.app.innerHTML, /0 tools enabled/);
+});
+
+test('a connected OAuth account offers confirmed disconnect and clears its stored OAuth state on save', async () => {
+  const harness = runAdminPageHarness({
+    agents: [
+      connectionsAgent({
+        mcpServers: [
+          mcpConnectionFixture({
+            id: 'notion',
+            displayName: 'Notion',
+            url: 'https://mcp.notion.com/mcp',
+            authMode: 'oauth',
+            presetId: 'notion',
+            lifecycleStatus: 'ready',
+            statusText: 'Connected · 2 tools',
+            discoveredTools: [
+              { name: 'notion-search', description: 'Search Notion.' },
+              { name: 'notion-fetch', description: 'Fetch from Notion.' },
+            ],
+            allowedTools: ['notion-search', 'notion-fetch'],
+            identity: {
+              workspaceName: 'Example workspace',
+              accountName: 'Example admin',
+            },
+          }),
+        ],
+      }),
+    ],
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-edit', 'data-index': '0' }) });
+
+  assert.match(harness.app.innerHTML, /data-action="conn-oauth-start">Reconnect<\/button>/);
+  assert.match(harness.app.innerHTML, /data-action="conn-oauth-disconnect">Disconnect<\/button>/);
+  assert.doesNotMatch(harness.app.innerHTML, /Where do I find this\?/);
+  assert.doesNotMatch(harness.app.innerHTML, /href="https:\/\/developers\.notion\.com\/guides\/mcp\/build-mcp-client"/);
+
+  click({ target: actionTarget({ 'data-action': 'conn-oauth-disconnect' }) });
+  assert.match(harness.app.innerHTML, /Disconnect Notion\?/);
+  assert.match(
+    harness.app.innerHTML,
+    /stored OAuth tokens and client registration are deleted when you save/,
+  );
+  assert.match(harness.app.innerHTML, /data-action="conn-remove-confirm">Disconnect and remove<\/button>/);
+
+  click({ target: actionTarget({ 'data-action': 'conn-remove-confirm' }) });
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+
+  assert.deepEqual(harness.agentPatchBodies[0]?.body.mcpServers, []);
+  assert.deepEqual(harness.mcpSecretDeletes, [
+    { agentId: 'agent_conn', id: 'notion', body: { headerNames: [] } },
+  ]);
+  assert.doesNotMatch(JSON.stringify(harness.agentPatchBodies), /access_token|refresh_token|client_secret/);
+});
+
+test('an OAuth verification failure is explicit and offers verification retry without repeating consent', async () => {
+  const harness = runAdminPageHarness({
+    agents: [
+      connectionsAgent({
+        mcpServers: [
+          mcpConnectionFixture({
+            id: 'notion',
+            displayName: 'Notion',
+            url: 'https://mcp.notion.com/mcp',
+            authMode: 'oauth',
+            presetId: 'notion',
+            lifecycleStatus: 'failed',
+            statusText: 'The connection timed out before it was ready.',
+            discoveredTools: [],
+            allowedTools: [],
+          }),
+        ],
+      }),
+    ],
+    initialPath: '/admin/profiles/agent_conn',
+    initialSearch: '?oauth=verification_failed&connection=notion',
+  });
+  await flushAsync();
+
+  assert.match(
+    harness.app.innerHTML,
+    /Notion was authorized, but Chickpea could not verify the connection\./,
+  );
+  assert.match(harness.app.innerHTML, /role="alert"/);
+  assert.match(harness.app.innerHTML, /data-action="conn-test"[^>]*>Retry verification<\/button>/);
+  assert.doesNotMatch(harness.app.innerHTML, />Reconnect Notion<\/button>/);
+});
+
+test('an existing OAuth connection renders honestly and stages token cleanup when disabled', async () => {
+  const harness = runAdminPageHarness({
+    agents: [
+      connectionsAgent({
+        mcpServers: [
+          mcpConnectionFixture({
+            authMode: 'oauth',
+            presetId: 'linear',
+          }),
+        ],
+      }),
+    ],
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  const change = harness.listeners.change;
+  assert.ok(click && change);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-edit', 'data-index': '0' }) });
   click({ target: actionTarget({ 'data-action': 'conn-view', 'data-view': 'advanced' }) });
-  assert.match(harness.app.innerHTML, /<option value="none" selected>None<\/option>/);
+
+  assert.match(
+    harness.app.innerHTML,
+    /<option value="oauth" selected disabled>OAuth \(configured separately\)<\/option>/,
+  );
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="conn-field-bearer"/);
+
+  change({
+    target: {
+      value: 'none',
+      closest: () => null,
+      getAttribute: (name: string) => (name === 'data-action' ? 'conn-auth' : null),
+    } as unknown as FakeTarget,
+  });
+  click({ target: actionTarget({ 'data-action': 'conn-save-row' }) });
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+
+  const servers = harness.agentPatchBodies[0]?.body.mcpServers as Array<Record<string, unknown>>;
+  assert.equal(servers[0]?.authMode, 'none');
+  assert.equal(harness.mcpSecretPuts[0]?.body.clearOAuth, true);
 });
 
 test('the Connections section renders its gallery, with the STDIO-greyed form, exact security copy, and trust-gated Test', async () => {

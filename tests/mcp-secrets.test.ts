@@ -362,6 +362,23 @@ test('buildMcpRequestHeaders: bearer wins over a user-supplied Authorization hea
   assert.equal(headers.Authorization, 'Bearer real-bearer');
 });
 
+test('buildMcpRequestHeaders: bearer removes every case variant of Authorization', () => {
+  const headers = buildMcpRequestHeaders('oauth', {
+    bearer: 'oauth-secret',
+    headers: {
+      authorization: 'legacy-lower',
+      AUTHORIZATION: 'legacy-upper',
+      'X-Tenant': 'tenant-1',
+    },
+  });
+
+  assert.deepEqual(headers, {
+    'X-Tenant': 'tenant-1',
+    Authorization: 'Bearer oauth-secret',
+  });
+  assert.equal(new Headers(headers).get('authorization'), 'Bearer oauth-secret');
+});
+
 test('buildMcpRequestHeaders: bearer mode with no resolved bearer emits no Authorization', () => {
   const headers = buildMcpRequestHeaders('bearer', { headers: { 'X-Api-Key': 'k1' } });
   assert.equal(headers.Authorization, undefined);
