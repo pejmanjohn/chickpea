@@ -286,11 +286,15 @@ test('an invalid Google refresh grant deletes unusable tokens and requires reaut
   const settings = new SqliteSettingsStore(':memory:');
   const google = fakeGoogle({ expiresIn: 1, refreshError: 'invalid_grant' });
   let now = 1_000_000;
+  const reauthorizationRequired: Array<{ ref: typeof REF; provider: 'google' }> = [];
   const dependencies = {
     settings,
     fetchFn: google.fetchFn,
     now: () => now,
     randomId: (() => { let nonce = 0; return () => `nonce-${++nonce}`; })(),
+    onReauthorizationRequired: (ref: typeof REF, provider: 'google') => {
+      reauthorizationRequired.push({ ref, provider });
+    },
   };
   try {
     await saveApiOAuthClient(
@@ -317,6 +321,7 @@ test('an invalid Google refresh grant deletes unusable tokens and requires reaut
       tokens: 'missing',
     });
     assert.equal(await settings.getSetting(apiOAuthSettingKeys(REF)[3]), undefined);
+    assert.deepEqual(reauthorizationRequired, [{ ref: REF, provider: 'google' }]);
   } finally {
     settings.close();
   }
@@ -347,12 +352,16 @@ test('an invalid-grant refresh loser returns the token stored by the winning ref
   };
   const google = fakeGoogle({ expiresIn: 1, refreshError: 'invalid_grant' });
   let now = 1_000_000;
+  let reauthorizationRequired = 0;
   const dependencies = {
     settings,
     fetchFn: google.fetchFn,
     now: () => now,
     randomId: () => 'nonce',
     validateConnection: () => true,
+    onReauthorizationRequired: () => {
+      reauthorizationRequired += 1;
+    },
   };
   try {
     await saveApiOAuthClient(
@@ -376,6 +385,7 @@ test('an invalid-grant refresh loser returns the token stored by the winning ref
       'access-from-winner',
     );
     assert.equal(google.counts.refreshes, 1);
+    assert.equal(reauthorizationRequired, 0);
   } finally {
     backing.close();
   }

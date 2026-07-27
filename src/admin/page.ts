@@ -2898,7 +2898,7 @@ details[open].advanced summary::before {
     if (conn.lifecycleStatus === "failed") {
       return '<span class="conn-pill conn-pill-warn">' + esc(conn.statusText || "Connection failed") + '</span>';
     }
-    return '<span class="conn-pill conn-pill-off">Not tested</span>';
+    return '<span class="conn-pill conn-pill-off">' + esc(conn.statusText || "Not tested") + '</span>';
   }
 
   function apiConnectionStatusPill(conn) {
@@ -2909,7 +2909,7 @@ details[open].advanced summary::before {
     if (conn.lifecycleStatus === "failed") {
       return '<span class="conn-pill conn-pill-warn">' + esc(conn.statusText || "Connection failed") + '</span>';
     }
-    return '<span class="conn-pill conn-pill-off">Not connected</span>';
+    return '<span class="conn-pill conn-pill-off">' + esc(conn.statusText || "Not connected") + '</span>';
   }
 
   function isPersistedReadyOAuthEditor(editor) {

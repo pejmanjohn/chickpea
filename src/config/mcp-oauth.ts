@@ -74,6 +74,10 @@ export interface McpOAuthDependencies {
     ref: McpSecretRef,
     serverUrl: string,
   ) => boolean | Promise<boolean>;
+  onReauthorizationRequired?: (
+    ref: McpSecretRef,
+    serverUrl: string,
+  ) => void | Promise<void>;
 }
 
 export interface StartMcpOAuthInput {
@@ -472,6 +476,7 @@ export async function resolveMcpOAuthAccessToken(
               return winnerBundle.tokens.access_token;
             }
           }
+          await notifyReauthorizationRequired(input.ref, serverUrl, dependencies);
           throw new McpOAuthError(
             'reauthorization_required',
             'MCP OAuth refresh was rejected',
@@ -529,6 +534,20 @@ export async function resolveMcpOAuthAccessToken(
       return refreshedTokens.access_token;
     },
   );
+}
+
+async function notifyReauthorizationRequired(
+  ref: McpSecretRef,
+  serverUrl: string,
+  dependencies: McpOAuthDependencies,
+): Promise<void> {
+  try {
+    await dependencies.onReauthorizationRequired?.(ref, serverUrl);
+  } catch {
+    // Token deletion is authoritative. A cosmetic lifecycle update must never
+    // turn a rejected grant into a retry loop or preserve unusable credentials.
+    console.warn('[chickpea] Could not update MCP OAuth reconnection status');
+  }
 }
 
 export async function deleteMcpOAuthSettings(

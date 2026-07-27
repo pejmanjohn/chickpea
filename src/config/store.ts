@@ -44,6 +44,20 @@ export type ConfigAgentPatch = Partial<Omit<CustomAgentConfig, 'id' | 'model'>> 
   model?: string | null;
 };
 
+export type OAuthReauthorizationTarget =
+  | {
+      lane: 'mcp';
+      agentId: string;
+      connectionId: string;
+      serverUrl: string;
+    }
+  | {
+      lane: 'api';
+      agentId: string;
+      connectionId: string;
+      provider: 'google';
+    };
+
 /**
  * Public async config store — the interface every consumer (routes, channel,
  * agent) is written against. The Node backend answers from local SQLite (the
@@ -56,6 +70,7 @@ export interface ConfigStore {
   getAgent(agentId: string): Promise<CustomAgentConfig>;
   createAgent(agent: CustomAgentConfig): Promise<CustomAgentConfig>;
   updateAgent(agentId: string, patch: ConfigAgentPatch): Promise<CustomAgentConfig>;
+  markOAuthReauthorizationRequired(target: OAuthReauthorizationTarget): Promise<boolean>;
   deleteAgent(agentId: string): Promise<boolean>;
   listAssignments(): Promise<ChannelAssignment[]>;
   getAssignment(workspaceId: string, channelId: string): Promise<ChannelAssignment | undefined>;
@@ -144,6 +159,51 @@ export class ConfigStoreLogic {
       agentId,
     );
     return this.getAgent(agentId);
+  }
+
+  markOAuthReauthorizationRequired(target: OAuthReauthorizationTarget): boolean {
+    const agent = this.getAgent(target.agentId);
+    if (target.lane === 'mcp') {
+      const index = agent.mcpServers.findIndex(
+        (connection) =>
+          connection.id === target.connectionId &&
+          connection.authMode === 'oauth' &&
+          connection.url === target.serverUrl,
+      );
+      if (index < 0) return false;
+      const mcpServers = agent.mcpServers.slice();
+      const { identity: _identity, ...connection } = mcpServers[index]!;
+      mcpServers[index] = {
+        ...connection,
+        lifecycleStatus: 'pending',
+        statusText: 'Reconnect required',
+      };
+      return this.db.run(
+        'UPDATE config_agents SET mcp_servers_json = ? WHERE id = ?',
+        JSON.stringify(mcpServers),
+        target.agentId,
+      ).changes === 1;
+    }
+
+    const index = agent.apiConnections.findIndex(
+      (connection) =>
+        connection.id === target.connectionId &&
+        connection.authMode === 'oauth' &&
+        connection.oauthProvider === target.provider,
+    );
+    if (index < 0) return false;
+    const apiConnections = agent.apiConnections.slice();
+    const { identity: _identity, ...connection } = apiConnections[index]!;
+    apiConnections[index] = {
+      ...connection,
+      lifecycleStatus: 'pending',
+      statusText: 'Reconnect required',
+    };
+    return this.db.run(
+      'UPDATE config_agents SET api_connections_json = ? WHERE id = ?',
+      JSON.stringify(apiConnections),
+      target.agentId,
+    ).changes === 1;
   }
 
   deleteAgent(agentId: string): boolean {
@@ -422,6 +482,10 @@ export class SqliteConfigStore implements ConfigStore {
 
   async updateAgent(agentId: string, patch: ConfigAgentPatch): Promise<CustomAgentConfig> {
     return this.logic.updateAgent(agentId, patch);
+  }
+
+  async markOAuthReauthorizationRequired(target: OAuthReauthorizationTarget): Promise<boolean> {
+    return this.logic.markOAuthReauthorizationRequired(target);
   }
 
   async deleteAgent(agentId: string): Promise<boolean> {

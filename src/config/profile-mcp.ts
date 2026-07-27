@@ -112,16 +112,25 @@ async function resolveOneServer(
     if (server.authMode === 'oauth') {
       secrets.bearer = await (
         opts.resolveOAuthAccessToken ??
-        ((input) =>
-          resolveMcpOAuthAccessToken(input, {
+        ((input) => {
+          const configStore = getConfigStore(opts.env);
+          return resolveMcpOAuthAccessToken(input, {
             settings: getSettingsStore(opts.env),
             validateConnection: (ref, serverUrl) =>
               isCurrentMcpOAuthConnection(
-                getConfigStore(opts.env),
+                configStore,
                 ref,
                 serverUrl,
               ),
-          }))
+            onReauthorizationRequired: async (ref, serverUrl) => {
+              await configStore.markOAuthReauthorizationRequired({
+                lane: 'mcp',
+                ...ref,
+                serverUrl,
+              });
+            },
+          });
+        })
       )({
         ref: { agentId: opts.agentId, connectionId: server.id },
         serverUrl: server.url,

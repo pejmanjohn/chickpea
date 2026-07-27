@@ -695,12 +695,26 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     ...(options.oauthFetch ? { fetchFn: options.oauthFetch } : {}),
     validateConnection: (ref, serverUrl) =>
       isCurrentMcpOAuthConnection(store(c), ref, serverUrl),
+    onReauthorizationRequired: async (ref, serverUrl) => {
+      await store(c).markOAuthReauthorizationRequired({
+        lane: 'mcp',
+        ...ref,
+        serverUrl,
+      });
+    },
   });
   const apiOAuthDependencies = (c: Context): ApiOAuthDependencies => ({
     settings: settings(c),
     ...(options.oauthFetch ? { fetchFn: options.oauthFetch } : {}),
     validateConnection: (ref, provider) =>
       isCurrentApiOAuthConnection(store(c), ref, provider),
+    onReauthorizationRequired: async (ref, provider) => {
+      await store(c).markOAuthReauthorizationRequired({
+        lane: 'api',
+        ...ref,
+        provider,
+      });
+    },
   });
   const adminLoginBodyLimit = bodyLimit({
     maxSize: MAX_ADMIN_LOGIN_BODY_BYTES,

@@ -962,11 +962,15 @@ test('invalid_grant clears the unusable token bundle and requires reconnection',
     refreshError: 'invalid_grant',
   });
   let now = 1_000_000;
+  const reauthorizationRequired: Array<{ ref: typeof REF; serverUrl: string }> = [];
   const dependencies = {
     settings,
     fetchFn: oauth.fetchFn,
     now: () => now,
     randomId: () => 'nonce',
+    onReauthorizationRequired: (ref: typeof REF, serverUrl: string) => {
+      reauthorizationRequired.push({ ref, serverUrl });
+    },
   };
 
   try {
@@ -990,6 +994,7 @@ test('invalid_grant clears the unusable token bundle and requires reconnection',
       await settings.getSetting(mcpOAuthSettingKeys(REF)[2]!),
       undefined,
     );
+    assert.deepEqual(reauthorizationRequired, [{ ref: REF, serverUrl: SERVER_URL }]);
   } finally {
     settings.close();
   }
@@ -1023,12 +1028,16 @@ test('an invalid-grant refresh loser returns the token stored by the winning ref
     },
   };
   const oauth = fakeOAuthServer({ initialExpiresIn: 1, refreshError: 'invalid_grant' });
+  let reauthorizationRequired = 0;
   const dependencies = {
     settings,
     fetchFn: oauth.fetchFn,
     now: () => currentTime,
     randomId: () => 'nonce',
     validateConnection: () => true,
+    onReauthorizationRequired: () => {
+      reauthorizationRequired += 1;
+    },
   };
   try {
     const started = await startMcpOAuthAuthorization(
@@ -1050,6 +1059,7 @@ test('an invalid-grant refresh loser returns the token stored by the winning ref
       'access-from-winner',
     );
     assert.equal(oauth.counts.refreshes, 1);
+    assert.equal(reauthorizationRequired, 0);
   } finally {
     backing.close();
   }

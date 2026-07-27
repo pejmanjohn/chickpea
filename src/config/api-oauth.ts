@@ -42,6 +42,10 @@ export interface ApiOAuthDependencies {
     ref: ApiOAuthRef,
     provider: ApiOAuthProvider,
   ) => boolean | Promise<boolean>;
+  onReauthorizationRequired?: (
+    ref: ApiOAuthRef,
+    provider: ApiOAuthProvider,
+  ) => void | Promise<void>;
 }
 
 type ApiOAuthErrorCode =
@@ -380,6 +384,7 @@ async function refreshAccessToken(
           return winner.accessToken;
         }
       }
+      await notifyReauthorizationRequired(ref, selectedProvider, dependencies);
       throw reauthorizationRequired();
     }
     throw new ApiOAuthError('oauth_unavailable', 'OAuth refresh failed');
@@ -403,6 +408,20 @@ async function refreshAccessToken(
   const winner = parseTokenBundle(winnerRaw);
   if (winner.provider !== selectedProvider) throw invalidStorage();
   return winner.accessToken;
+}
+
+async function notifyReauthorizationRequired(
+  ref: ApiOAuthRef,
+  selectedProvider: ApiOAuthProvider,
+  dependencies: ApiOAuthDependencies,
+): Promise<void> {
+  try {
+    await dependencies.onReauthorizationRequired?.(ref, selectedProvider);
+  } catch {
+    // Token deletion is authoritative. A cosmetic lifecycle update must never
+    // turn a rejected grant into a retry loop or preserve unusable credentials.
+    console.warn('[chickpea] Could not update API OAuth reconnection status');
+  }
 }
 
 async function consumePending(

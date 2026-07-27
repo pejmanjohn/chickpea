@@ -157,6 +157,90 @@ test('SqliteConfigStore round-trips non-empty mcpServers through create and upda
   store.close();
 });
 
+test('SqliteConfigStore marks only the matching OAuth connection for reconnection', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const notion = {
+    id: 'notion',
+    displayName: 'Notion',
+    url: 'https://mcp.notion.com/mcp',
+    transport: 'streamable-http' as const,
+    authMode: 'oauth' as const,
+    headerNames: [],
+    enabled: true,
+    lifecycleStatus: 'ready' as const,
+    statusText: 'Connected · 20 tools',
+    discoveredTools: [{ name: 'search' }],
+    allowedTools: ['search'],
+    identity: { workspaceName: 'Product' },
+  };
+  const linear = {
+    ...notion,
+    id: 'linear',
+    displayName: 'Linear',
+    url: 'https://mcp.linear.app/mcp',
+  };
+  const google = {
+    id: 'google-workspace',
+    displayName: 'Google Workspace',
+    allowedHosts: ['gmail.googleapis.com'],
+    pathPrefixes: ['/gmail/v1/'],
+    headerName: 'Authorization',
+    headerValuePrefix: 'Bearer ',
+    allowedMethods: ['GET'],
+    enabled: true,
+    authMode: 'oauth' as const,
+    oauthProvider: 'google' as const,
+    oauthScopes: ['openid'],
+    lifecycleStatus: 'ready' as const,
+    statusText: 'Connected',
+    identity: { accountName: 'operator@example.com' },
+  };
+
+  try {
+    await store.createAgent(agent({ mcpServers: [notion, linear], apiConnections: [google] }));
+
+    assert.equal(await store.markOAuthReauthorizationRequired({
+      lane: 'mcp',
+      agentId: 'agent_test',
+      connectionId: 'notion',
+      serverUrl: notion.url,
+    }), true);
+    assert.equal(await store.markOAuthReauthorizationRequired({
+      lane: 'api',
+      agentId: 'agent_test',
+      connectionId: 'google-workspace',
+      provider: 'google',
+    }), true);
+
+    const updated = await store.getAgent('agent_test');
+    const { identity: _notionIdentity, ...notionWithoutIdentity } = notion;
+    const { identity: _googleIdentity, ...googleWithoutIdentity } = google;
+    assert.deepEqual(updated.mcpServers, [
+      {
+        ...notionWithoutIdentity,
+        lifecycleStatus: 'pending',
+        statusText: 'Reconnect required',
+      },
+      linear,
+    ]);
+    assert.deepEqual(updated.apiConnections, [{
+      ...googleWithoutIdentity,
+      lifecycleStatus: 'pending',
+      statusText: 'Reconnect required',
+    }]);
+
+    assert.equal(await store.markOAuthReauthorizationRequired({
+      lane: 'mcp',
+      agentId: 'agent_test',
+      connectionId: 'linear',
+      serverUrl: 'https://stale.example.test/mcp',
+    }), false);
+    assert.deepEqual((await store.getAgent('agent_test')).mcpServers[1], linear);
+  } finally {
+    store.close();
+  }
+});
+
 test('SqliteConfigStore round-trips repository grants through create and update', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   const withRepositories = agent({

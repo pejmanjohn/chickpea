@@ -2384,6 +2384,46 @@ test('a connected preset drops out of the Available gallery until it is removed'
   assert.match(panel, /<span class="gallery-head-count">24<\/span>/);
 });
 
+test('OAuth rows surface a persisted reconnect requirement instead of stale connected copy', async () => {
+  const harness = runAdminPageHarness({
+    agents: [
+      connectionsAgent({
+        mcpServers: [mcpConnectionFixture({
+          id: 'notion',
+          displayName: 'Notion',
+          url: 'https://mcp.notion.com/mcp',
+          authMode: 'oauth',
+          lifecycleStatus: 'pending',
+          statusText: 'Reconnect required',
+          presetId: 'notion',
+        })],
+        apiConnections: [apiConnectionFixture({
+          id: 'google-workspace',
+          displayName: 'Google Workspace',
+          authMode: 'oauth',
+          oauthProvider: 'google',
+          lifecycleStatus: 'pending',
+          statusText: 'Reconnect required',
+          presetId: 'google-workspace',
+        })],
+      }),
+    ],
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+
+  const panel = harness.app.innerHTML;
+  assert.equal((panel.match(/Reconnect required/g) ?? []).length, 2);
+  assert.doesNotMatch(panel, /Connected &middot;/);
+
+  click({ target: actionTarget({ 'data-action': 'conn-edit', 'data-index': '0' }) });
+  assert.match(harness.app.innerHTML, /<span>Sign into Notion<\/span>/);
+});
+
 test('saved MCP and API connections share one lane-badged list with matching inline editors', async () => {
   const harness = runAdminPageHarness({
     agents: [

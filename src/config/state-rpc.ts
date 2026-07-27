@@ -1,6 +1,6 @@
 import type { AssignmentLookupOptions } from './resolver.ts';
 import type { SettingsPatch } from './settings-store.ts';
-import type { ConfigAgentPatch } from './store.ts';
+import type { ConfigAgentPatch, OAuthReauthorizationTarget } from './store.ts';
 import type { AgentSnapshot, ChannelAssignment, CustomAgentConfig, ResolvedAssignment } from './types.ts';
 import type { NormalizedSlackTurn } from '../slack/types.ts';
 
@@ -86,6 +86,9 @@ export interface TagStateRpc {
     agentId: string,
     patch: ConfigAgentPatch,
   ): Promise<StateRpcResult<CustomAgentConfig>>;
+  configMarkOAuthReauthorizationRequired(
+    target: OAuthReauthorizationTarget,
+  ): Promise<StateRpcResult<boolean>>;
   configDeleteAgent(agentId: string): Promise<StateRpcResult<boolean>>;
   // -- config: assignments -------------------------------------------------
   configListAssignments(): Promise<StateRpcResult<ChannelAssignment[]>>;

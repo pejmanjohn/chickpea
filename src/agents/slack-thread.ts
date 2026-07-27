@@ -388,6 +388,13 @@ export async function resolveApiConnectionsForTurn(
           return false;
         }
       },
+      onReauthorizationRequired: async (ref, provider) => {
+        await configStore.markOAuthReauthorizationRequired({
+          lane: 'api',
+          ...ref,
+          provider,
+        });
+      },
     });
   });
   const resolved = await Promise.all(
