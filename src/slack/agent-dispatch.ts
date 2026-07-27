@@ -171,7 +171,7 @@ function extractResultText(result: unknown): string {
   return '';
 }
 
-async function prepareCloudflareSandboxTurn(
+export async function prepareCloudflareSandboxTurn(
   env: PlatformEnv | undefined,
   conversationKey: string,
   turnId: string,

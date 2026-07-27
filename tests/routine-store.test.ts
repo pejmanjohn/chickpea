@@ -357,7 +357,11 @@ test('occurrence uniqueness, admission attempts, and atomic Workflow begin preve
     });
     await store.recordAdmissionReceipt(run.id, attempt.attempt, 'run_flue_primary', CREATED_AT + 2);
     assert.equal(
-      await store.beginOccurrence({ occurrenceId: run.id, flueRunId: 'run_flue_primary', startedAt: CREATED_AT + 3 }),
+      await store.beginOccurrence({
+        occurrenceId: run.id, flueRunId: 'run_flue_primary', startedAt: CREATED_AT + 3,
+        resolvedAccessHash: 'a'.repeat(64), resolvedAgentId: 'agent_default',
+        model: 'anthropic/claude-sonnet-4-6', traceId: 'run_flue_primary',
+      }),
       'started',
     );
     assert.equal(
@@ -365,7 +369,20 @@ test('occurrence uniqueness, admission attempts, and atomic Workflow begin preve
       'superseded',
     );
     assert.equal((await store.getRun(run.id))?.flueRunId, 'run_flue_primary');
+    assert.equal((await store.getRun(run.id))?.resolvedAccessHash, 'a'.repeat(64));
+    assert.equal((await store.getRun(run.id))?.resolvedAgentId, 'agent_default');
     assert.deepEqual((await store.listAdmissions(run.id)).map((item) => item.status), ['attached', 'superseded']);
+    await store.transitionRun({
+      occurrenceId: run.id, from: ['running'], to: 'succeeded', at: CREATED_AT + 5,
+      model: 'anthropic/claude-sonnet-4-6', inputTokens: 10, outputTokens: 20,
+      cacheReadTokens: 2, cacheWriteTokens: 1, costEstimate: 0.003,
+      costUnit: 'model_registry_unit', toolCallCount: 2,
+      changeKeyHash: 'b'.repeat(64), suppressedAsNoOp: false,
+    });
+    const completed = await store.getRun(run.id);
+    assert.equal(completed?.inputTokens, 10);
+    assert.equal(completed?.toolCallCount, 2);
+    assert.equal(completed?.changeKeyHash, 'b'.repeat(64));
   } finally {
     store.close();
   }

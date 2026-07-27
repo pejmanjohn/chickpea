@@ -87,7 +87,7 @@ test('ambiguous invoke is reconciled by persisted occurrence input before reinvo
       available: true,
       complete: true,
       candidates: [{
-        runId: 'run_reconciled', workflowName: 'routine-occurrence',
+        runId: 'run_reconciled', workflowName: 'routine',
         startedAt: NOW + 1, input: { occurrenceId: run.id },
       }],
     };

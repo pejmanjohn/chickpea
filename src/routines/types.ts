@@ -270,6 +270,10 @@ export interface BeginRoutineOccurrenceInput {
   occurrenceId: string;
   flueRunId: string;
   startedAt: number;
+  resolvedAccessHash?: string;
+  resolvedAgentId?: string;
+  model?: string;
+  traceId?: string;
 }
 
 export interface TransitionRoutineRunInput {
@@ -279,6 +283,16 @@ export interface TransitionRoutineRunInput {
   at: number;
   failureClass?: RoutineFailureClass | null;
   publicError?: string | null;
+  model?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  costEstimate?: number;
+  costUnit?: string;
+  toolCallCount?: number;
+  changeKeyHash?: string | null;
+  suppressedAsNoOp?: boolean;
 }
 
 export interface RoutineRunFilter {

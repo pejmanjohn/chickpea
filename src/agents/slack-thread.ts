@@ -1,6 +1,7 @@
 import {
   bash,
   defineAgent,
+  type AgentRuntimeConfig,
   type AgentRouteHandler,
   type SandboxFactory,
 } from '@flue/runtime';
@@ -30,7 +31,10 @@ import {
   type ResolvedApiConnection,
   type ScopedDelegate,
 } from '../config/egress.ts';
-import { resolveEffectiveSlackConfig } from '../config/effective-config.ts';
+import {
+  resolveEffectiveSlackConfig,
+  type EffectiveSlackConfig,
+} from '../config/effective-config.ts';
 import {
   getCachedInstallationToken,
   getGithubConnection,
@@ -471,14 +475,33 @@ export const route: AgentRouteHandler = async (c, next) => {
   return next();
 };
 
-export default defineAgent(async ({ id }) => {
-  const env = await resolveAgentPlatformEnv();
+export interface SlackAgentRuntimeInput {
+  id: string;
+  platformEnv?: PlatformEnv;
+  workspaceId?: string;
+  channelId?: string;
+  liveConfig?: EffectiveSlackConfig;
+  freezeChannel?: boolean;
+  artifactThreadTs?: string | null;
+}
+
+/** Shared interactive/routine agent assembly. Credentials always resolve here, live. */
+export async function createSlackAgentRuntime(
+  input: SlackAgentRuntimeInput,
+): Promise<AgentRuntimeConfig> {
+  const id = input.id;
+  const env = input.platformEnv ?? (await resolveAgentPlatformEnv());
   await applyResolvedProviderKeys(env);
   const store = getConfigStore(env);
   const settingsStore = getSettingsStore(env);
   const stores = { agents: store, assignments: store };
-  const { workspaceId, channelId } = parseSlackThreadKey(id);
-  const artifactThreadTs = slackArtifactThreadTs(id);
+  const parsed = input.workspaceId && input.channelId
+    ? { workspaceId: input.workspaceId, channelId: input.channelId }
+    : parseSlackThreadKey(id);
+  const { workspaceId, channelId } = parsed;
+  const artifactThreadTs = input.artifactThreadTs === null
+    ? undefined
+    : (input.artifactThreadTs ?? slackArtifactThreadTs(id));
   const resolve = () => resolveEffectiveSlackConfig(workspaceId, channelId, stores);
 
   // Channel threads are frozen (the channel handler wrote the snapshot at the
@@ -487,13 +510,15 @@ export default defineAgent(async ({ id }) => {
   // resolve the current config every turn instead of freezing — admin edits to
   // the DM profile reach existing DM users.
   const isDirect = surfaceForChannelId(channelId) === 'direct';
-  const config = isDirect
-    ? await resolve()
-    : await getOrCreateSnapshot(
+  const config = input.liveConfig ?? (
+    isDirect || input.freezeChannel === false
+      ? await resolve()
+      : await getOrCreateSnapshot(
         getAgentSnapshotStore(env),
         baseSlackThreadKey(id),
         resolve,
-      );
+      )
+  );
 
   // A channel snapshot is a ceiling, not a revocation lease. Intersect its
   // frozen grants with the current profile once, before repository access
@@ -501,7 +526,7 @@ export default defineAgent(async ({ id }) => {
   // live profile fails closed. Direct conversations already resolved the live
   // profile above and need no second lookup.
   let repositoryGrants = config.agent.repositories;
-  if (!isDirect) {
+  if (!isDirect && input.freezeChannel !== false) {
     try {
       const liveAgent = await store.getAgent(config.agent.id);
       repositoryGrants = intersectFrozenRepositoryGrants(
@@ -720,7 +745,9 @@ export default defineAgent(async ({ id }) => {
     sandbox,
     ...(skills.length > 0 ? { skills } : {}),
   };
-});
+}
+
+export default defineAgent(async ({ id }) => createSlackAgentRuntime({ id }));
 
 export function thinkingLevelForModel(model: string): 'off' | undefined {
   return model === SEED_CLOUDFLARE_MODEL_PIN ? 'off' : undefined;

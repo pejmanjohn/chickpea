@@ -269,7 +269,7 @@ export async function runTurn(
   }
 }
 
-async function shouldUseCloudflareSandbox(
+export async function shouldUseCloudflareSandbox(
   assignment: ResolvedAssignment,
   env: PlatformEnv | undefined,
 ): Promise<boolean> {

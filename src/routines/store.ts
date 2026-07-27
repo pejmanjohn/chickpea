@@ -936,7 +936,11 @@ export class RoutineStoreLogic {
     if (
       !isOpaqueRoutineId(input.occurrenceId) ||
       !isOpaqueRoutineId(input.flueRunId) ||
-      !Number.isSafeInteger(input.startedAt)
+      !Number.isSafeInteger(input.startedAt) ||
+      (input.resolvedAccessHash !== undefined && !/^[a-f0-9]{64}$/.test(input.resolvedAccessHash)) ||
+      (input.resolvedAgentId !== undefined && !isOpaqueRoutineId(input.resolvedAgentId)) ||
+      (input.model !== undefined && (!input.model || input.model.length > 500)) ||
+      (input.traceId !== undefined && !isOpaqueRoutineId(input.traceId))
     ) {
       throw routineError('routine_admission_invalid', 'Routine admission is invalid.');
     }
@@ -950,11 +954,16 @@ export class RoutineStoreLogic {
       try {
         this.db.run(
           `UPDATE routine_runs SET status = 'running', flue_run_id = ?, admitted_at = COALESCE(admitted_at, ?),
-             started_at = ?, admission_owner = NULL, admission_lease_until = NULL
+             started_at = ?, resolved_access_hash = ?, resolved_agent_id = ?, model = ?,
+             trace_id = ?, admission_owner = NULL, admission_lease_until = NULL
            WHERE id = ? AND status = 'admitting'`,
           input.flueRunId,
           input.startedAt,
           input.startedAt,
+          input.resolvedAccessHash ?? null,
+          input.resolvedAgentId ?? null,
+          input.model ?? null,
+          input.traceId ?? null,
           input.occurrenceId,
         );
       } catch (error) {
@@ -1009,7 +1018,8 @@ export class RoutineStoreLogic {
       !isOpaqueRoutineId(input.occurrenceId) ||
       !Number.isSafeInteger(input.at) ||
       !Array.isArray(input.from) ||
-      input.from.length < 1
+      input.from.length < 1 ||
+      !validResultMetadata(input)
     ) {
       throw routineError('routine_run_transition_invalid', 'Routine occurrence transition is invalid.');
     }
@@ -1024,11 +1034,29 @@ export class RoutineStoreLogic {
       this.db.run(
         `UPDATE routine_runs SET status = ?, failure_class = ?, public_error = ?,
            finished_at = COALESCE(?, finished_at), admission_owner = NULL,
-           admission_lease_until = NULL WHERE id = ? AND status = ?`,
+           admission_lease_until = NULL, model = COALESCE(?, model),
+           input_tokens = COALESCE(?, input_tokens), output_tokens = COALESCE(?, output_tokens),
+           cache_read_tokens = COALESCE(?, cache_read_tokens),
+           cache_write_tokens = COALESCE(?, cache_write_tokens),
+           cost_estimate = COALESCE(?, cost_estimate), cost_unit = COALESCE(?, cost_unit),
+           tool_call_count = COALESCE(?, tool_call_count),
+           change_key_hash = COALESCE(?, change_key_hash),
+           suppressed_as_no_op = COALESCE(?, suppressed_as_no_op)
+         WHERE id = ? AND status = ?`,
         input.to,
         input.failureClass ?? null,
         publicError,
         finishedAt,
+        input.model ?? null,
+        input.inputTokens ?? null,
+        input.outputTokens ?? null,
+        input.cacheReadTokens ?? null,
+        input.cacheWriteTokens ?? null,
+        input.costEstimate ?? null,
+        input.costUnit ?? null,
+        input.toolCallCount ?? null,
+        input.changeKeyHash ?? null,
+        input.suppressedAsNoOp === undefined ? null : (input.suppressedAsNoOp ? 1 : 0),
         run.id,
         run.status,
       );
@@ -1735,6 +1763,31 @@ function validateDueClaimInput(input: ClaimDueRoutinesInput): void {
   ) {
     throw routineError('routine_due_claim_invalid', 'Routine heartbeat claim is invalid.');
   }
+}
+
+function validResultMetadata(input: TransitionRoutineRunInput): boolean {
+  const integerValues = [
+    input.inputTokens,
+    input.outputTokens,
+    input.cacheReadTokens,
+    input.cacheWriteTokens,
+    input.toolCallCount,
+  ];
+  if (
+    integerValues.some(
+      (value) => value !== undefined && (!Number.isSafeInteger(value) || value < 0),
+    ) ||
+    (input.costEstimate !== undefined &&
+      (!Number.isFinite(input.costEstimate) || input.costEstimate < 0)) ||
+    (input.model !== undefined && (!input.model || input.model.length > 500)) ||
+    (input.costUnit !== undefined && (!input.costUnit || input.costUnit.length > 40)) ||
+    (input.changeKeyHash !== undefined &&
+      input.changeKeyHash !== null &&
+      !/^[a-f0-9]{64}$/.test(input.changeKeyHash))
+  ) {
+    return false;
+  }
+  return true;
 }
 
 function assertIdempotencyKey(value: string): void {

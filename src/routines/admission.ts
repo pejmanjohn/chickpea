@@ -1,7 +1,7 @@
 import { ROUTINE_LIMITS } from './limits.ts';
 import { RoutineStateError, type RoutineRun, type RoutineStore } from './types.ts';
 
-export const ROUTINE_WORKFLOW_NAME = 'routine-occurrence';
+export const ROUTINE_WORKFLOW_NAME = 'routine';
 export const ADMISSION_RECONCILE_AFTER_MS = Math.max(
   ROUTINE_LIMITS.admissionLeaseMs,
   60_000,
