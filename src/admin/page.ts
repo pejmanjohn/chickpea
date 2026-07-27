@@ -666,6 +666,23 @@ details[open].advanced summary::before {
 
 /* ---- import skills from a URL ---- */
 .import-panel { gap: 12px; }
+.import-source-tools { align-items: center; display: flex; flex-wrap: wrap; gap: 8px 12px; }
+.import-source-tools .hint { flex: 1; min-width: 220px; }
+.import-browse-host { display: flex; flex-direction: column; gap: 8px; }
+.import-browse-picker { margin-left: 0; max-width: none; }
+.import-browse-row { border: 0; font: inherit; text-align: left; width: 100%; }
+.import-disclosure {
+  background: rgba(59, 50, 32, 0.055);
+  border-radius: 11px;
+  color: var(--text-3);
+  display: flex;
+  flex-direction: column;
+  font-size: 0.75rem;
+  gap: 7px;
+  line-height: 1.45;
+  padding: 10px 12px;
+}
+.import-disclosure .badge-src { align-self: flex-start; }
 .import-summary {
   align-items: baseline;
   color: var(--text-2);
@@ -1468,7 +1485,12 @@ details[open].advanced summary::before {
     // instructions, error }. Only one editor is open at a time.
     skillEditor: null,
     // Inline "Import from URL" panel on the profile edit page. null when closed.
-    // When open it is { source, loading, error, resolution, selected } where
+    // When open it is { source, loading, error, resolution, selected, browse }
+    // where browse is an import-local GitHub account/repository picker. It is
+    // deliberately separate from repositoryPicker and profileDraft.repositories:
+    // choosing a source must never grant the profile runtime repository access.
+    // browse is null when closed; otherwise it carries the installation search.
+    //
     // resolution is the /admin/api/skills/resolve payload (null until "Find
     // skills" returns) and selected is a boolean[] parallel to resolution.skills.
     skillImport: null,
@@ -1616,6 +1638,7 @@ details[open].advanced summary::before {
     monthlySessionCap: 200
   };
   var repositorySearchTimer = null;
+  var skillImportSearchTimer = null;
 
   // Inline Heroicons (micro, 16px) — solid unless noted. Colour inherits from
   // the parent via currentColor; never override fill in CSS.
@@ -1756,6 +1779,15 @@ details[open].advanced summary::before {
     state.repositoryAddOpen = false;
   }
 
+  function resetSkillImportBrowseTransientState() {
+    if (skillImportSearchTimer && typeof clearTimeout === "function") clearTimeout(skillImportSearchTimer);
+    skillImportSearchTimer = null;
+    if (state.skillImport && state.skillImport.browse) {
+      state.skillImport.browse.requestId = (state.skillImport.browse.requestId || 0) + 1;
+      state.skillImport.browse = null;
+    }
+  }
+
   function resetProfileTransientState() {
     state.profileError = "";
     state.profileDirty = false;
@@ -1767,6 +1799,7 @@ details[open].advanced summary::before {
     state.attachError = "";
     state.attachNotice = "";
     state.skillEditor = null;
+    resetSkillImportBrowseTransientState();
     state.skillImport = null;
     clearCustomConnectionMode();
     state.connectorGallerySearch = "";
@@ -2748,10 +2781,94 @@ details[open].advanced summary::before {
   // (which the api() helper surfaces as error.message).
   function skillImportFallback(code) {
     if (code === "not_found") return "Could not find that repo or skill. Check the link and try again.";
-    if (code === "rate_limited") return "GitHub rate limit hit. Try again in a little while.";
-    if (code === "github_error") return "GitHub had trouble with that request. Try again in a moment.";
+    if (code === "rate_limited" || code === "github_rate_limited") return "GitHub rate limit hit. Try again in a little while.";
+    if (code === "repository_not_found_or_inaccessible") return "Repository not found or not accessible. Check the source and GitHub App access.";
+    if (code === "github_access_unavailable") return "GitHub App access could not be verified. Check GitHub settings and retry.";
+    if (code === "github_error" || code === "github_unavailable") return "GitHub had trouble with that request. Try again in a moment.";
     if (code === "unrecognized_source") return "That does not look like a repo, a GitHub URL, or a skills.sh link.";
     return "Could not import skills from that source.";
+  }
+
+  function skillImportGithubHelperHtml() {
+    if (!state.githubStatusLoaded) {
+      return '<div class="import-source-tools"><p class="hint"><span class="spinner"></span> Checking GitHub connection&hellip;</p></div>';
+    }
+    var status = state.githubStatus;
+    if (status && status.mode === "app" && (status.installations || []).length > 0) {
+      return '<div class="import-source-tools"><p class="hint">Paste any GitHub source, or pick a repository this deployment&rsquo;s GitHub App can access.</p>' +
+        '<button type="button" class="btn btn-soft btn-sm" data-action="import-browse-open">Browse GitHub</button></div>';
+    }
+    var connectedWithoutBrowse = status && status.mode === "app";
+    var reason = connectedWithoutBrowse
+      ? "Repository discovery is unavailable, but an exact private owner/repo can still resolve when the App has access."
+      : "Connect GitHub in Settings to browse or import private repositories.";
+    var pasteScope = connectedWithoutBrowse ? "Paste any public or private GitHub repository. " : "Paste any public GitHub repository. ";
+    return '<div class="import-source-tools"><p class="hint">' + pasteScope + esc(reason) + '</p>' +
+      '<button type="button" class="link-btn" data-action="open-settings" data-section="github-settings">GitHub settings &nearr;</button></div>';
+  }
+
+  function skillImportBrowseAccountsHtml(browse) {
+    var installations = (state.githubStatus && state.githubStatus.installations) || [];
+    var choices = installations.map(function (installation) {
+      var count = installation.repoCount == null ? "Repository count unavailable" : installation.repoCount + " repositories";
+      return '<button type="button" class="btn btn-ghost repo-account-choice" data-action="import-browse-account" data-installation="' + esc(installation.id) + '" data-account="' + esc(installation.accountLogin) + '">' +
+        '<span class="repo-avatar">' + esc(String(installation.accountLogin || "?").slice(0, 1)) + '</span>' +
+        '<span style="display:flex; flex-direction:column; align-items:flex-start;"><span class="field-label">' + esc(installation.accountLogin) + '</span><span class="hint">' + esc(count) + '</span></span></button>';
+    }).join("");
+    if (!choices) choices = '<p class="hint">No GitHub App installations are available.</p>';
+    return '<div class="repo-account-choices"><span class="tiny-label">Choose an account or organization</span>' + choices +
+      '<div><button type="button" class="btn btn-ghost btn-sm" data-action="import-browse-cancel">Cancel browsing</button></div></div>';
+  }
+
+  function skillImportBrowseRepositoriesHtml(browse) {
+    var totalCount = Number(browse.totalCount || 0);
+    var sourceHint = 'This installation has ' + totalCount + ' repositories. Type to search.';
+    if (browse.truncated) sourceHint += ' Not every repository is shown — type more of a name or paste exact owner/repo.';
+    var rows = (browse.repos || []).map(function (repo) {
+      return '<button type="button" class="repo-picker-row import-browse-row" data-action="import-browse-select" data-repo="' + esc(repo.fullName) + '">' +
+        icon("repository") + '<span class="repo-name mono">' + esc(repo.fullName) + '</span>' +
+        (repo.private ? '<span class="badge badge-off">Private</span>' : "") + '</button>';
+    }).join("");
+    var list;
+    if (browse.loading) {
+      list = '<div class="empty"><p class="hint"><span class="spinner"></span> Loading repositories&hellip;</p></div>';
+    } else if (browse.error) {
+      list = '<div class="empty"><p class="field-error" role="alert">' + esc(browse.error) + '</p><button type="button" class="btn btn-soft btn-sm" data-action="import-browse-retry">Retry</button></div>';
+    } else if (!rows) {
+      list = '<div class="empty"><p class="hint">No repositories match this search. You can still paste exact owner/repo above.</p></div>';
+    } else {
+      list = '<div class="repo-picker-list">' + rows + '</div>';
+    }
+    return '<div class="repo-picker import-browse-picker" role="dialog" aria-label="Browse repositories for ' + esc(browse.accountLogin) + '">' +
+      '<div><p class="repo-picker-title">Browse ' + esc(browse.accountLogin) + '</p><p class="hint">' + esc(sourceHint) + '</p></div>' +
+      '<input class="input mono" id="skill-import-browse-search" type="search" value="' + esc(browse.query) + '" placeholder="Search repositories" data-action="import-browse-search" autocomplete="off">' +
+      list + '<div class="repo-picker-foot"><span class="hint">Choosing a repository fills the source field above.</span><span class="spacer"></span>' +
+      '<button type="button" class="btn btn-ghost btn-sm" data-action="import-browse-cancel">Cancel browsing</button></div></div>';
+  }
+
+  function skillImportBrowseHtml(imp) {
+    var browse = imp.browse;
+    if (!browse) return "";
+    return '<div class="import-browse-host">' + (browse.chooseAccount
+      ? skillImportBrowseAccountsHtml(browse)
+      : skillImportBrowseRepositoriesHtml(browse)) + '</div>';
+  }
+
+  // Repository searches redraw only their local browser. Rebuilding the full
+  // profile would throw away the page and list scroll positions and blur the
+  // search input on every debounced response.
+  function rerenderSkillImportBrowse() {
+    var imp = state.skillImport;
+    var browse = imp && imp.browse;
+    var host = document.querySelector(".import-browse-host");
+    if (!imp || !browse || !host) { render(); return; }
+    var listBefore = host.querySelector(".repo-picker-list");
+    var scrollTop = listBefore ? listBefore.scrollTop : 0;
+    host.innerHTML = browse.chooseAccount
+      ? skillImportBrowseAccountsHtml(browse)
+      : skillImportBrowseRepositoriesHtml(browse);
+    var listAfter = host.querySelector(".repo-picker-list");
+    if (listAfter) listAfter.scrollTop = scrollTop;
   }
 
   // The picker rows shown after "Find skills" resolves. resolution.skills is
@@ -2791,8 +2908,19 @@ details[open].advanced summary::before {
     var selectAll = count > 0
       ? '<button type="button" class="link-btn" data-action="import-select-all">' + (allSelected ? "Clear all" : "Select all") + "</button>"
       : "";
+    var source = resolution.source || null;
+    var sourceDisclosure = "";
+    if (source) {
+      var isPrivate = source.visibility === "private";
+      var access = source.access === "github_app"
+        ? "Read through the connected GitHub App. "
+        : "Read from GitHub without authentication. ";
+      sourceDisclosure = '<div class="import-disclosure"><span class="badge-src">' + (isPrivate ? "Private repository" : "Public repository") + '</span>' +
+        '<span>' + access + 'Selected instructions are copied into this profile as a snapshot and may be sent to its configured model when the skill is used. Scripts and assets are excluded.</span>' +
+        '<span>Importing does not grant the profile access to the repository. Configure ongoing runtime access separately in the Repositories tab.</span></div>';
+    }
     return '<div class="import-summary"><span>' + summary + notes + '</span>' + selectAll + "</div>" +
-      listOrEmpty + actions;
+      sourceDisclosure + listOrEmpty + actions;
   }
 
   function skillImportPanelHtml(imp) {
@@ -2803,6 +2931,7 @@ details[open].advanced summary::before {
         '<div class="field"><label class="field-label" for="import-source">Import from a URL</label>' +
         '<input class="input mono" id="import-source" type="text" value="' + esc(imp.source) + '" placeholder="owner/repo, a GitHub URL, or a skills.sh link" data-action="import-source">' +
         '<p class="hint">Paste a repo, a GitHub link, or a skills.sh page. Narrow to one skill with owner/repo@skill.</p></div>' +
+        skillImportGithubHelperHtml() + skillImportBrowseHtml(imp) +
         (imp.error ? '<p class="field-error">' + esc(imp.error) + '</p>' : "") +
         '<div class="skill-form-actions">' +
         '<button type="button" class="btn btn-ghost btn-sm" data-action="import-cancel">Cancel</button>' +
@@ -5305,15 +5434,19 @@ details[open].advanced summary::before {
     return candidate;
   }
 
-  function focusRepositorySearch() {
-    if (state.profileTab !== "repositories") return;
-    var input = document.getElementById("repo-picker-search");
+  function focusInputAtEnd(inputId) {
+    var input = document.getElementById(inputId);
     if (!input || !input.focus) return;
     input.focus();
     if (input.setSelectionRange) {
       var end = String(input.value || "").length;
       try { input.setSelectionRange(end, end); } catch (error) { /* ignore */ }
     }
+  }
+
+  function focusRepositorySearch() {
+    if (state.profileTab !== "repositories") return;
+    focusInputAtEnd("repo-picker-search");
   }
 
   function loadRepositoryPickerRepos() {
@@ -6049,6 +6182,7 @@ details[open].advanced summary::before {
   function showProfileTab(tab) {
     var changed = state.profileTab !== tab;
     if (changed) {
+      if (tab !== "skills") resetSkillImportBrowseTransientState();
       state.profileTab = tab;
       render();
     }
@@ -6548,9 +6682,18 @@ details[open].advanced summary::before {
     // Import skills from a URL: open the panel, run the resolve, drive the picker.
     // Opening captures the current draft first so a filled skill editor is not
     // lost, and closes any open inline skill editor so only one panel shows.
-    if (action === "import-skills") { collectProfileDraft(); state.skillEditor = null; state.skillImport = { source: "", loading: false, error: "", resolution: null, selected: [] }; render(); }
-    if (action === "import-cancel") { state.skillImport = null; render(); }
+    if (action === "import-skills") { openSkillImport(); }
+    if (action === "import-cancel") { closeSkillImport(); }
     if (action === "import-find") { findSkillsFromSource(); }
+    if (action === "import-browse-open") { openSkillImportBrowse(); }
+    if (action === "import-browse-cancel") { closeSkillImportBrowse(); }
+    if (action === "import-browse-retry") { loadSkillImportRepositories(); }
+    if (action === "import-browse-account") {
+      var importInstallationId = Number(target.getAttribute("data-installation"));
+      var importAccount = target.getAttribute("data-account") || "GitHub";
+      openSkillImportRepositoryBrowser(importInstallationId, importAccount);
+    }
+    if (action === "import-browse-select") { selectSkillImportRepository(target.getAttribute("data-repo") || ""); }
     if (action === "import-select-all" && state.skillImport && state.skillImport.resolution) {
       var imp = state.skillImport;
       var allOn = imp.selected.length > 0 && imp.selected.every(function (on) { return on; });
@@ -6827,13 +6970,14 @@ details[open].advanced summary::before {
     if (action === "manual-channel-input") { state.channelFormDraft.channelId = target.value; }
     // Mirror the import source into state without a re-render so the input keeps
     // focus; "Find skills" reads it off state.skillImport.
-    if (action === "import-source" && state.skillImport) { state.skillImport.source = target.value; }
+    if (action === "import-source" && state.skillImport) { state.skillImport.source = target.value; state.skillImport.error = ""; }
     // Mirror the pasted provider key into state so a re-render (e.g. a validate
     // spinner) never wipes it; the favorites search re-renders only its own
     // results container to keep the input focused.
     if (action === "prov-key-input") { provUiFor(target.getAttribute("data-provider")).key = target.value; }
     if (action === "github-org-input") { state.githubOrg = target.value; }
     if (action === "repo-search") { scheduleRepositorySearch(target.value); }
+    if (action === "import-browse-search") { scheduleSkillImportRepositorySearch(target.value); }
     if (action === "egress-domain-input") {
       var egressInputIndex = Number(target.getAttribute("data-index"));
       if (!state.egressSaving && egressInputIndex >= 0 && egressInputIndex < egressDraft.domains.length) egressDraft.domains[egressInputIndex] = target.value;
@@ -7162,6 +7306,7 @@ details[open].advanced summary::before {
     }
     if (event.key === "Escape" || event.key === "Esc") {
       if (state.leavePrompt) { state.leavePrompt = null; render(); return; }
+      if (state.profileTab === "skills" && state.skillImport && state.skillImport.browse) { closeSkillImportBrowse(); return; }
       if (state.repositoryPicker || state.repositoryAddOpen) { closeRepositoryPicker(); return; }
       if (state.modelPickerOpen) { closeModelPicker(); }
     }
@@ -8458,6 +8603,144 @@ details[open].advanced summary::before {
     return { failed: result.failed };
   }
 
+  function openSkillImport() {
+    collectProfileDraft();
+    state.skillEditor = null;
+    var imp = {
+      source: "",
+      loading: false,
+      error: "",
+      resolution: null,
+      selected: [],
+      browse: null
+    };
+    state.skillImport = imp;
+    render();
+    // GitHub status is optional and lazy. Its failure only changes the helper
+    // copy; the public paste field and resolver stay fully usable.
+    if (!state.githubStatusLoaded) {
+      loadGithubStatus().then(function () {
+        if (state.skillImport === imp) render();
+      });
+    }
+  }
+
+  function closeSkillImport() {
+    resetSkillImportBrowseTransientState();
+    state.skillImport = null;
+    render();
+  }
+
+  function focusSkillImportSource() {
+    if (state.profileTab !== "skills") return;
+    focusInputAtEnd("import-source");
+  }
+
+  function focusSkillImportBrowseSearch() {
+    if (state.profileTab !== "skills") return;
+    focusInputAtEnd("skill-import-browse-search");
+  }
+
+  function loadSkillImportRepositories() {
+    var imp = state.skillImport;
+    var browse = imp && imp.browse;
+    if (!imp || !browse || browse.chooseAccount || !browse.installationId) return Promise.resolve();
+    var requestId = (browse.requestId || 0) + 1;
+    browse.requestId = requestId;
+    browse.loading = true;
+    browse.error = "";
+    rerenderSkillImportBrowse();
+    focusSkillImportBrowseSearch();
+    var path = "/admin/api/github/installations/" + encodeURIComponent(String(browse.installationId)) + "/repos?q=" + encodeURIComponent(browse.query || "") + "&page=1";
+    return api(path).then(function (body) {
+      if (state.skillImport !== imp || imp.browse !== browse || browse.requestId !== requestId) return;
+      browse.repos = (body && body.repos) || [];
+      browse.totalCount = Number((body && body.totalCount) || 0);
+      browse.truncated = !!(body && body.truncated);
+      browse.loading = false;
+      browse.error = "";
+      rerenderSkillImportBrowse();
+      focusSkillImportBrowseSearch();
+    }).catch(function (error) {
+      if (state.skillImport !== imp || imp.browse !== browse || browse.requestId !== requestId) return;
+      browse.loading = false;
+      browse.error = (error && (error.serverMessage || error.message)) || "Could not load repositories.";
+      rerenderSkillImportBrowse();
+      focusSkillImportBrowseSearch();
+    });
+  }
+
+  function openSkillImportRepositoryBrowser(installationId, accountLogin) {
+    var imp = state.skillImport;
+    if (!imp || !Number.isInteger(installationId) || installationId < 1) return;
+    resetSkillImportBrowseTransientState();
+    imp.browse = {
+      chooseAccount: false,
+      installationId: installationId,
+      accountLogin: accountLogin,
+      query: "",
+      repos: [],
+      totalCount: 0,
+      truncated: false,
+      loading: true,
+      error: "",
+      requestId: 0
+    };
+    loadSkillImportRepositories();
+  }
+
+  function openSkillImportBrowse() {
+    var imp = state.skillImport;
+    var status = state.githubStatus;
+    if (!imp || !state.githubStatusLoaded || !status || status.mode !== "app") return;
+    var installations = status.installations || [];
+    if (installations.length === 1) {
+      openSkillImportRepositoryBrowser(Number(installations[0].id), installations[0].accountLogin);
+      return;
+    }
+    resetSkillImportBrowseTransientState();
+    imp.browse = { chooseAccount: true, requestId: 0 };
+    render();
+  }
+
+  function closeSkillImportBrowse() {
+    var imp = state.skillImport;
+    if (!imp || !imp.browse) return;
+    resetSkillImportBrowseTransientState();
+    render();
+    focusSkillImportSource();
+  }
+
+  function scheduleSkillImportRepositorySearch(query) {
+    var imp = state.skillImport;
+    var browse = imp && imp.browse;
+    if (!imp || !browse || browse.chooseAccount) return;
+    browse.query = query;
+    // Invalidate an in-flight query immediately so it cannot repaint stale
+    // results during this query's debounce window.
+    browse.requestId = (browse.requestId || 0) + 1;
+    if (skillImportSearchTimer && typeof clearTimeout === "function") clearTimeout(skillImportSearchTimer);
+    skillImportSearchTimer = null;
+    var run = function () {
+      skillImportSearchTimer = null;
+      if (state.skillImport === imp && imp.browse === browse) loadSkillImportRepositories();
+    };
+    if (typeof setTimeout === "function") skillImportSearchTimer = setTimeout(run, 250);
+    else run();
+  }
+
+  function selectSkillImportRepository(fullName) {
+    var imp = state.skillImport;
+    if (!imp || !imp.browse || !fullName) return;
+    resetSkillImportBrowseTransientState();
+    imp.source = fullName;
+    imp.error = "";
+    imp.resolution = null;
+    imp.selected = [];
+    render();
+    focusSkillImportSource();
+  }
+
   // POST the raw pasted source to the resolve endpoint and, on success, open the
   // picker with every skill pre-selected. On error, surface the server message
   // (error.serverMessage) or a friendly fallback keyed by the code (error.message,
@@ -8467,24 +8750,24 @@ details[open].advanced summary::before {
     if (!imp || imp.loading) return;
     var source = String(imp.source || "").trim();
     if (!source) { imp.error = "Paste a repo, a GitHub URL, or a skills.sh link."; render(); return; }
+    resetSkillImportBrowseTransientState();
     imp.loading = true;
     imp.error = "";
     render();
     postJson("/admin/api/skills/resolve", "POST", { source: source }).then(function (body) {
-      var current = state.skillImport;
-      // The panel may have been closed while the request was in flight.
-      if (!current) return;
+      // The panel may have been closed and reopened for another source while
+      // this request was in flight. Never let the old session repaint the new.
+      if (state.skillImport !== imp) return;
       var resolution = body && body.resolution ? body.resolution : { owner: "", repo: "", skills: [], capped: false, skipped: 0 };
-      current.loading = false;
-      current.error = "";
-      current.resolution = resolution;
-      current.selected = (resolution.skills || []).map(function () { return true; });
+      imp.loading = false;
+      imp.error = "";
+      imp.resolution = resolution;
+      imp.selected = (resolution.skills || []).map(function () { return true; });
       render();
     }).catch(function (error) {
-      var current = state.skillImport;
-      if (!current) return;
-      current.loading = false;
-      current.error = (error && error.serverMessage) || skillImportFallback(error && error.message);
+      if (state.skillImport !== imp) return;
+      imp.loading = false;
+      imp.error = (error && error.serverMessage) || skillImportFallback(error && error.message);
       render();
     });
   }
@@ -8529,6 +8812,7 @@ details[open].advanced summary::before {
     state.leavePrompt = null;
     state.profileDirty = false;
     state.skillEditor = null;
+    resetSkillImportBrowseTransientState();
     state.skillImport = null;
     clearCustomConnectionMode();
     state.connectorGallerySearch = "";

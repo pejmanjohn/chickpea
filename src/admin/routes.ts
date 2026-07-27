@@ -54,8 +54,12 @@ import {
   type EgressPolicy,
 } from '../config/egress.ts';
 import {
+  createInstallationToken,
   exchangeGithubAppManifest,
   getGithubConnection,
+  getRepositoryInstallation,
+  githubErrorIsRateLimited,
+  githubErrorStatus,
   isGithubAppManagedHost,
   GITHUB_OWNER_PATTERN,
   GITHUB_SETTING_KEYS,
@@ -1605,13 +1609,88 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (!source) {
       return c.json({ error: 'unrecognized_source' }, 400);
     }
-    try {
-      const resolution = await resolveSkillSource(source, fetch);
-      return c.json({ resolution });
-    } catch (err) {
-      if (err instanceof SkillImportError) {
-        return c.json({ error: err.code, message: err.message }, 502);
+    const fullName = `${source.owner}/${source.repo}`;
+    if (!isValidRepositoryFullName(fullName)) {
+      return c.json({ error: 'unrecognized_source' }, 400);
+    }
+    const repositoryUnavailable = () => c.json({
+      error: 'repository_not_found_or_inaccessible',
+      message: 'Repository not found or not accessible. Check the source and GitHub App access.',
+    }, 404);
+    const githubRateLimited = (message = 'GitHub rate limit reached. Try again after it resets.') =>
+      c.json({ error: 'github_rate_limited', message }, 429);
+    const githubAccessUnavailable = () => c.json({
+      error: 'github_access_unavailable',
+      message: 'GitHub App access could not be verified. Check GitHub settings and retry.',
+    }, 502);
+    const skillImportFailure = (error: SkillImportError) => {
+      if (error.code === 'rate_limited') {
+        return githubRateLimited(error.message);
       }
+      if (error.code === 'access_candidate' || error.code === 'repository_inaccessible') {
+        return repositoryUnavailable();
+      }
+      return c.json({
+        error: 'github_unavailable',
+        message: 'GitHub could not resolve that skill source. Try again.',
+      }, 502);
+    };
+    try {
+      try {
+        const resolution = await resolveSkillSource(source, fetch);
+        return c.json({ resolution });
+      } catch (error) {
+        if (!(error instanceof SkillImportError)) throw error;
+        if (error.code !== 'access_candidate') return skillImportFailure(error);
+      }
+
+      const connection = await getGithubConnection(settings(c));
+      if (connection.mode !== 'app') {
+        return repositoryUnavailable();
+      }
+
+      let installation;
+      try {
+        installation = await getRepositoryInstallation(connection, fullName);
+      } catch (error) {
+        if (githubErrorIsRateLimited(error)) {
+          return githubRateLimited();
+        }
+        return githubAccessUnavailable();
+      }
+      if (!installation) {
+        return repositoryUnavailable();
+      }
+
+      let token: string;
+      try {
+        ({ token } = await createInstallationToken(
+          connection,
+          installation.id,
+          {
+            repositories: [source.repo],
+            permissions: { contents: 'read' },
+          },
+        ));
+      } catch (error) {
+        const status = githubErrorStatus(error);
+        if (githubErrorIsRateLimited(error)) {
+          return githubRateLimited();
+        }
+        if (status === 403 || status === 404 || status === 422) {
+          return repositoryUnavailable();
+        }
+        return githubAccessUnavailable();
+      }
+
+      try {
+        const resolution = await resolveSkillSource(source, fetch, { token });
+        return c.json({ resolution });
+      } catch (error) {
+        if (error instanceof SkillImportError) return skillImportFailure(error);
+        throw error;
+      }
+    } catch (err) {
       return internalError(c, err);
     }
   });

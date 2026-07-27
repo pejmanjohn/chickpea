@@ -191,6 +191,36 @@ export async function listInstallations(
   return installations;
 }
 
+/**
+ * Resolve the App installation that can access one exact repository.
+ * A 404 is deliberately returned as null: GitHub uses the same status for a
+ * missing repository and one the App cannot access, and callers must not claim
+ * a more specific cause. Other failures retain githubErrorStatus metadata.
+ */
+export async function getRepositoryInstallation(
+  conn: GithubConnection,
+  fullName: string,
+  fetchImpl: FetchImpl = fetch,
+): Promise<GithubInstallation | null> {
+  const app = requireAppConnection(conn);
+  if (!isValidRepositoryFullName(fullName)) {
+    throw new Error('Invalid GitHub repository');
+  }
+  const [owner, repo] = fullName.split('/') as [string, string];
+  const jwt = await currentAppJwt(app);
+  try {
+    const response = await githubFetch(
+      `${GITHUB_API_BASE}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/installation`,
+      { headers: githubHeaders(`Bearer ${jwt}`) },
+      fetchImpl,
+    );
+    return parseInstallation(await response.json());
+  } catch (error) {
+    if (githubErrorStatus(error) === 404) return null;
+    throw error;
+  }
+}
+
 export async function listInstallationRepos(
   conn: GithubConnection,
   installationId: number,
@@ -414,12 +444,16 @@ async function githubFetch(
       : undefined);
   const response = await fetchImpl(url, { ...init, ...(signal ? { signal } : {}) });
   if (!response.ok) {
-    const error: Error & { status?: number } = new Error(
+    const error: Error & { status?: number; rateLimited?: boolean } = new Error(
       `GitHub API request failed with status ${response.status}`,
     );
     // Carried so callers can distinguish a validation rejection (422 — e.g. a
     // stale repository name) from outages they must not retry-amplify.
     error.status = response.status;
+    error.rateLimited =
+      response.status === 429 ||
+      response.headers.get('retry-after') !== null ||
+      response.headers.get('x-ratelimit-remaining') === '0';
     throw error;
   }
   return response;
@@ -429,6 +463,11 @@ export function githubErrorStatus(error: unknown): number | undefined {
   if (!(error instanceof Error)) return undefined;
   const status = (error as Error & { status?: unknown }).status;
   return typeof status === 'number' ? status : undefined;
+}
+
+export function githubErrorIsRateLimited(error: unknown): boolean {
+  return error instanceof Error &&
+    (error as Error & { rateLimited?: unknown }).rateLimited === true;
 }
 
 function githubHeaders(authorization?: string, json = false): Headers {
