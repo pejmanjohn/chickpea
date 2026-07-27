@@ -70,10 +70,11 @@ async function deliverRoutineSlackMessage(
   client: WebClient,
 ): Promise<RoutineDeliveryReceipt> {
   const now = input.now ?? Date.now;
+  const claimedAt = now();
   const claimed = await input.store.claimDelivery({
     occurrenceId: input.run.id,
-    at: now(),
-    leaseUntil: now() + ROUTINE_LIMITS.deliveryLeaseMs,
+    at: claimedAt,
+    leaseUntil: claimedAt + ROUTINE_LIMITS.deliveryLeaseMs,
   });
   if (claimed !== 'claimed') {
     throw new RoutineRuntimeError(

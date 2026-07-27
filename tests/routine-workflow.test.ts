@@ -5,6 +5,7 @@ import type { EffectiveSlackConfig } from '../src/config/effective-config.ts';
 import { RoutineRuntimeError } from '../src/routines/runtime.ts';
 import type { RoutineDefinition, RoutineRun, RoutineStore } from '../src/routines/types.ts';
 import {
+  failInterruptedRoutineWorkflow,
   initializeRoutineWorkflowRuntime,
   routineAgentInstanceId,
 } from '../src/workflows/routine.ts';
@@ -117,4 +118,33 @@ test('every Flue run receives a fresh Agent identity', () => {
     routineAgentInstanceId('run_one', routine),
     routineAgentInstanceId('run_two', routine),
   );
+});
+
+test('cold Workflow context fails persisted state without replaying model or tool work', async () => {
+  const transitions: unknown[] = [];
+  const releases: unknown[] = [];
+  const coldRun = { ...run, status: 'running' as const, toolCallCount: 2 };
+  const store = {
+    getRun: async () => coldRun,
+    getRoutine: async () => routine,
+    transitionRun: async (input: unknown) => { transitions.push(input); return coldRun; },
+  } as unknown as RoutineStore;
+
+  await failInterruptedRoutineWorkflow(coldRun.id, {
+    env: {},
+    store,
+    now: () => 123,
+    releaseSandbox: async (...input) => { releases.push(input); },
+  });
+
+  assert.deepEqual(transitions, [{
+    occurrenceId: coldRun.id,
+    from: ['running'],
+    to: 'failed',
+    at: 123,
+    failureClass: 'workflow_interrupted',
+    publicError: 'The routine Workflow was interrupted before execution could resume safely.',
+    toolCallCount: 2,
+  }]);
+  assert.deepEqual(releases, [[{}, 'routine:run_flue:T_TEST:C_TEST', true]]);
 });

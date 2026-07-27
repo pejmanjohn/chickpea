@@ -13,6 +13,7 @@ import {
   nextRoutineOccurrence,
   normalizeRoutineSchedule,
   parseRoutineSchedule,
+  projectRoutineReservationWindows,
 } from './schedule.ts';
 import {
   RoutineStateError,
@@ -918,31 +919,48 @@ export class RoutineStoreLogic {
           continue;
         }
         const slotKey = scheduledOccurrenceKey(routine.id, due.latest);
-        const run = this.insertOccurrence({
-          runId: `rrun_${slotKey.slice(0, 32)}`,
-          idempotencyKey: `routine:slot:${slotKey}`,
-          routineId: routine.id,
-          routineVersion: routine.version,
-          scheduledFor: due.latest,
-          triggerSource: 'schedule',
-          queuedAt: input.now,
-          deadlineAt: due.latest + ROUTINE_LIMITS.admissionGraceMs,
-          ...(skipReason ? { skipReason } : {}),
-          ...(due.count > 1
-            ? {
-                missedSlotCount: due.count,
-                firstMissedAt: due.first,
-                lastMissedAt: due.latest,
-              }
-            : {}),
-        });
+        let run: RoutineRun;
+        try {
+          run = this.insertOccurrence({
+            runId: `rrun_${slotKey.slice(0, 32)}`,
+            idempotencyKey: `routine:slot:${slotKey}`,
+            routineId: routine.id,
+            routineVersion: routine.version,
+            scheduledFor: due.latest,
+            triggerSource: 'schedule',
+            queuedAt: input.now,
+            deadlineAt: due.latest + ROUTINE_LIMITS.admissionGraceMs,
+            ...(skipReason ? { skipReason } : {}),
+            ...(due.count > 1
+              ? {
+                  missedSlotCount: due.count,
+                  firstMissedAt: due.first,
+                  lastMissedAt: due.latest,
+                }
+              : {}),
+          });
+        } catch (error) {
+          if (isOccurrenceCapacityError(error)) {
+            deferredCount += 1;
+            continue;
+          }
+          throw error;
+        }
+        const reservationWindows = projectRoutineReservationWindows(
+          routine.scheduleJson,
+          routine.timezone,
+          due.latest,
+        );
         this.db.run(
-          `UPDATE routines SET next_run_at = ?, last_scheduled_at = ? WHERE id = ? AND version = ?`,
+          `UPDATE routines SET next_run_at = ?, last_scheduled_at = ?,
+             reservation_windows_json = ? WHERE id = ? AND version = ?`,
           due.next,
           due.latest,
+          JSON.stringify(reservationWindows),
           routine.id,
           routine.version,
         );
+        this.replaceReservations(routine.id, reservationWindows);
         runs.push(run);
         if (!skipReason) activeCount += 1;
       }
@@ -1437,6 +1455,10 @@ export class RoutineStoreLogic {
        ON routine_runs (routine_id, scheduled_for DESC, id DESC)`,
     );
     this.db.exec(
+      `CREATE INDEX IF NOT EXISTS routine_runs_start_capacity_idx
+       ON routine_runs (queued_at) WHERE skip_reason IS NULL`,
+    );
+    this.db.exec(
       `CREATE TABLE IF NOT EXISTS routine_run_admissions (
         occurrence_id TEXT NOT NULL, attempt INTEGER NOT NULL, flue_run_id TEXT UNIQUE,
         invoke_started_at INTEGER NOT NULL, receipt_at INTEGER, visible_at INTEGER,
@@ -1654,6 +1676,7 @@ export class RoutineStoreLogic {
 
   private assertOccurrenceCapacity(input: CreateRoutineOccurrenceInput): void {
     const rollingDayStart = input.queuedAt - 24 * 60 * 60 * 1_000;
+    const rollingClusterStart = input.queuedAt - 15 * 60 * 1_000;
     const active = Number(
       this.db.get(
         `SELECT COUNT(*) AS count FROM routine_runs
@@ -1664,6 +1687,20 @@ export class RoutineStoreLogic {
       throw routineError(
         'routine_concurrent_capacity',
         'This deployment has reached its active routine run limit.',
+      );
+    }
+    const clusteredStarts = Number(
+      this.db.get(
+        `SELECT COUNT(*) AS count FROM routine_runs
+         WHERE queued_at > ? AND queued_at <= ? AND skip_reason IS NULL`,
+        rollingClusterStart,
+        input.queuedAt,
+      )?.count ?? 0,
+    );
+    if (clusteredStarts >= ROUTINE_LIMITS.startsPerRollingFifteenMinutes) {
+      throw routineError(
+        'routine_cluster_capacity',
+        'This deployment has reached its rolling routine start-rate limit.',
       );
     }
     const totalStarts = Number(
@@ -2375,4 +2412,12 @@ function required<T>(value: T | undefined, message: string): T {
 
 function isConstraintViolation(error: unknown): boolean {
   return error instanceof Error && /constraint|unique/i.test(error.message);
+}
+
+function isOccurrenceCapacityError(error: unknown): boolean {
+  return error instanceof RoutineStateError && (
+    error.code === 'routine_concurrent_capacity' ||
+    error.code === 'routine_total_start_limit' ||
+    error.code === 'routine_cluster_capacity'
+  );
 }

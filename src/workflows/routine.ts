@@ -10,7 +10,7 @@ import {
 } from '@flue/runtime';
 import * as v from 'valibot';
 
-import { createSlackAgentRuntime } from '../agents/slack-thread.ts';
+import { createSlackAgentRuntime, resolveAgentPlatformEnv } from '../agents/slack-thread.ts';
 import { getRoutineStore, type PlatformEnv } from '../config/state-backend.ts';
 import {
   RoutineModelResultSchema,
@@ -68,6 +68,13 @@ interface RoutineWorkflowInitializerDependencies {
   prepareSandbox?: typeof prepareCloudflareSandboxTurn;
   releaseSandbox?: typeof releaseCloudflareSandboxTurn;
   createAgent?: typeof createSlackAgentRuntime;
+}
+
+interface InterruptedRoutineWorkflowDependencies {
+  env?: PlatformEnv;
+  store?: RoutineStore;
+  now?: () => number;
+  releaseSandbox?: typeof releaseCloudflareSandboxTurn;
 }
 
 const routineAgent = defineAgent(async ({ id, env }) => {
@@ -191,7 +198,10 @@ export default defineWorkflow({
   output: OutputSchema,
   async run({ harness, input }: ActionContext<typeof InputSchema>) {
     const runtime = runtimeByOccurrence.get(input.occurrenceId);
-    if (!runtime) throw new Error('Routine execution context is unavailable.');
+    if (!runtime) {
+      await failInterruptedRoutineWorkflow(input.occurrenceId);
+      throw new Error('The routine Workflow was interrupted before execution could resume safely.');
+    }
     let toolCallCount = 0;
     const unsubscribe = observe((event) => {
       if (event.runId === runtime.flueRunId && event.type === 'tool_start') {
@@ -290,6 +300,43 @@ export default defineWorkflow({
     }
   },
 });
+
+/**
+ * A Workflow Action must never leave product state running when its ephemeral
+ * initializer context is gone. Do not retry model/tool work: record a proven
+ * interruption and let the next scheduled occurrence start independently.
+ */
+export async function failInterruptedRoutineWorkflow(
+  occurrenceId: string,
+  dependencies: InterruptedRoutineWorkflowDependencies = {},
+): Promise<void> {
+  const env = dependencies.env ?? await resolveAgentPlatformEnv();
+  const store = dependencies.store ?? getRoutineStore(env);
+  const now = dependencies.now ?? Date.now;
+  const releaseSandbox = dependencies.releaseSandbox ?? releaseCloudflareSandboxTurn;
+  const run = await store.getRun(occurrenceId);
+  if (!run || (run.status !== 'admitting' && run.status !== 'running')) return;
+  const routine = await store.getRoutine(run.routineId);
+  try {
+    await store.transitionRun({
+      occurrenceId,
+      from: [run.status],
+      to: 'failed',
+      at: now(),
+      failureClass: 'workflow_interrupted',
+      publicError: 'The routine Workflow was interrupted before execution could resume safely.',
+      toolCallCount: run.toolCallCount,
+    });
+  } finally {
+    if (routine && run.flueRunId) {
+      await releaseSandbox(
+        env,
+        routineAgentInstanceId(run.flueRunId, routine),
+        true,
+      );
+    }
+  }
+}
 
 async function failBeforeStart(
   store: RoutineStore,

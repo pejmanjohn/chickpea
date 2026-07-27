@@ -21,7 +21,7 @@ test('normalizes only five-field cron with an explicit IANA time zone', () => {
   assert.equal(projection.nextRunAt, Date.UTC(2026, 6, 27, 16));
   assert.equal(projection.preview.length, 3);
   assert.equal(projection.projectedDailyStarts, 1);
-  assert.ok(projection.reservations.length >= 260);
+  assert.equal(projection.reservations.length, 3);
 
   for (const expression of ['@daily', '0 0 9 * * *', '0 9 * *']) {
     assert.throws(
@@ -46,6 +46,10 @@ test('rejects schedules with any sub-hour occurrence across the projection horiz
   assert.equal(
     normalizeRoutineSchedule('0 * * * *', 'UTC', Date.UTC(2026, 0, 1)).projectedDailyStarts,
     24,
+  );
+  assert.equal(
+    normalizeRoutineSchedule('0 * * * *', 'UTC', Date.UTC(2026, 0, 1)).reservations.length,
+    49,
   );
 });
 

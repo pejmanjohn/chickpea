@@ -10,6 +10,7 @@ import {
 } from '../src/routines/delivery.ts';
 import { RoutineRuntimeError } from '../src/routines/runtime.ts';
 import type {
+  ClaimRoutineDeliveryInput,
   RecordRoutineDeliveryInput,
   RoutineDefinition,
   RoutineRun,
@@ -63,6 +64,33 @@ test('routine delivery claims once, posts at top level, and records the Slack re
       text: 'Scheduled: 2026-07-27T16:00:00.000Z | Run: `rrun_test` | Details: `!routines show routine_test`',
     }],
   });
+});
+
+test('delivery derives its lease from one clock read', async () => {
+  let clock = 1_000;
+  let claim: ClaimRoutineDeliveryInput | undefined;
+  const advancingStore = {
+    claimDelivery: async (input: ClaimRoutineDeliveryInput) => {
+      claim = input;
+      return 'claimed' as const;
+    },
+    recordDelivery: async () => run,
+  } as unknown as RoutineStore;
+  const client = new WebClient('xoxb-test', {
+    slackApiUrl: 'https://slack.invalid/api/', retryConfig: { retries: 0 },
+    fetch: async () => new Response(
+      JSON.stringify({ ok: true, channel: 'C_TEST', ts: '1785000000.000300' }),
+      { headers: { 'content-type': 'application/json' } },
+    ),
+  });
+
+  await deliverRoutineResult({
+    store: advancingStore, run, routine, access, message: 'Done.',
+    changeKeyHash: null, now: () => clock++,
+  }, client);
+
+  assert.equal(claim?.at, 1_000);
+  assert.equal(claim?.leaseUntil - claim?.at, 2 * 60 * 1_000);
 });
 
 test('an ambiguous Slack failure records unknown and is never retried', async () => {

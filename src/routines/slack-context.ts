@@ -5,8 +5,17 @@ import {
   slackConversationsInfo,
   slackConversationsMembers,
 } from '../slack/credentials.ts';
+import type { NormalizedSlackTurn } from '../slack/types.ts';
 
 const MAX_MEMBER_PAGES = 5;
+
+/** Routine controls and natural-language requests work in mentions and their channel threads. */
+export function isRoutineSlackTurn(turn: NormalizedSlackTurn): boolean {
+  return (turn.source === 'app_mention' || turn.source === 'implicit_thread_reply') &&
+    turn.channelType !== 'im' &&
+    turn.channelType !== 'app_home' &&
+    turn.channelType !== 'mpim';
+}
 
 /** Reauthorize a mentioned channel without revealing private-channel existence on failure. */
 export async function canManageRoutineChannel(

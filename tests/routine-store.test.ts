@@ -371,12 +371,12 @@ test('resume reprojects the schedule and reservations from current time', async 
   }
 });
 
-test('hourly schedules persist their full projection without per-occurrence inserts', async () => {
+test('hourly schedules persist and refresh a compact rolling reservation projection', async () => {
   const store = new SqliteRoutineStore(':memory:', () => CREATED_AT);
   try {
     const projection = normalizeRoutineSchedule('0 * * * *', 'UTC', CREATED_AT);
-    assert.ok(projection.reservations.length > 8_000);
-    const routine = await confirmDraft(
+    assert.equal(projection.reservations.length, 49);
+    let routine = await confirmDraft(
       store,
       createDraft('routine_hourly', {
         definition: definition({
@@ -392,6 +392,18 @@ test('hourly schedules persist their full projection without per-occurrence inse
     );
     assert.equal(routine.reservationWindows.length, projection.reservations.length);
     assert.deepEqual(routine.reservationWindows.at(-1), projection.reservations.at(-1));
+    assert.ok(JSON.stringify(routine.reservationWindows).length < 5_000);
+
+    const claims = await store.claimDueSchedules({
+      now: projection.nextRunAt,
+      owner: 'heartbeat-compact-projection',
+      limit: 1,
+    });
+    assert.equal(claims.runs.length, 1);
+    routine = (await store.getRoutine(routine.id))!;
+    assert.equal(routine.reservationWindows.length, 49);
+    assert.equal(routine.reservationWindows[0]?.windowStart, routine.nextRunAt);
+    assert.ok(routine.reservationWindows.every(({ windowStart }) => windowStart > projection.nextRunAt));
   } finally {
     store.close();
   }
@@ -404,7 +416,7 @@ test('run-now and deployment concurrency ceilings are enforced transactionally',
     const routine = await confirmDraft(store, createDraft(), 'run-now-limit', now);
     let lastRun;
     for (let index = 0; index < 10; index += 1) {
-      const queuedAt = now + index;
+      const queuedAt = now + index * 60 * 60 * 1_000;
       lastRun = await store.createOccurrence({
         runId: `rrun_run_now_${index}`,
         idempotencyKey: `routine:run-now:${index}`,
@@ -442,11 +454,11 @@ test('run-now and deployment concurrency ceilings are enforced transactionally',
         idempotencyKey: 'routine:run-now:rejected',
         routineId: routine.id,
         routineVersion: routine.version,
-        scheduledFor: now + 11,
+        scheduledFor: now + 10 * 60 * 60 * 1_000,
         triggerSource: 'run_now',
         requestedBy: 'U_MEMBER',
-        queuedAt: now + 11,
-        deadlineAt: now + 15 * 60 * 1_000,
+        queuedAt: now + 10 * 60 * 60 * 1_000,
+        deadlineAt: now + 10 * 60 * 60 * 1_000 + 15 * 60 * 1_000,
       }),
       (error: unknown) => error instanceof RoutineStateError && error.code === 'routine_run_now_limit',
     );
@@ -476,13 +488,13 @@ test('the total rolling-day start ceiling protects reserved scheduled capacity',
   try {
     const routine = await confirmDraft(store, createDraft(), 'total-start-limit');
     for (let index = 0; index < 250; index += 1) {
-      const queuedAt = CREATED_AT + index;
+      const queuedAt = CREATED_AT + Math.floor(index / 4) * 15 * 60 * 1_000 + (index % 4);
       const run = await store.createOccurrence({
         runId: `rrun_total_${index}`,
         idempotencyKey: `routine:total:${index}`,
         routineId: routine.id,
         routineVersion: routine.version,
-        scheduledFor: NEXT_RUN + index,
+        scheduledFor: queuedAt,
         triggerSource: 'schedule',
         queuedAt,
         deadlineAt: queuedAt + 15 * 60 * 1_000,
@@ -500,12 +512,53 @@ test('the total rolling-day start ceiling protects reserved scheduled capacity',
         idempotencyKey: 'routine:total:rejected',
         routineId: routine.id,
         routineVersion: routine.version,
-        scheduledFor: NEXT_RUN + 251,
+        scheduledFor: CREATED_AT + Math.floor(250 / 4) * 15 * 60 * 1_000 + (250 % 4),
         triggerSource: 'schedule',
-        queuedAt: CREATED_AT + 251,
-        deadlineAt: CREATED_AT + 251 + 15 * 60 * 1_000,
+        queuedAt: CREATED_AT + Math.floor(250 / 4) * 15 * 60 * 1_000 + (250 % 4),
+        deadlineAt: CREATED_AT + Math.floor(250 / 4) * 15 * 60 * 1_000 + (250 % 4) + 15 * 60 * 1_000,
       }),
       (error: unknown) => error instanceof RoutineStateError && error.code === 'routine_total_start_limit',
+    );
+  } finally {
+    store.close();
+  }
+});
+
+test('actual occurrence starts enforce the rolling cluster ceiling after preview reservations', async () => {
+  const store = new SqliteRoutineStore(':memory:', () => CREATED_AT);
+  try {
+    const routine = await confirmDraft(store, createDraft(), 'actual-cluster-limit');
+    for (let index = 0; index < 4; index += 1) {
+      const run = await store.createOccurrence({
+        runId: `rrun_actual_cluster_${index}`,
+        idempotencyKey: `routine:actual-cluster:${index}`,
+        routineId: routine.id,
+        routineVersion: routine.version,
+        scheduledFor: CREATED_AT + index,
+        triggerSource: 'schedule',
+        queuedAt: CREATED_AT,
+        deadlineAt: CREATED_AT + 15 * 60 * 1_000,
+      });
+      await store.transitionRun({
+        occurrenceId: run.id,
+        from: ['queued'],
+        to: 'cancelled',
+        at: CREATED_AT + 1,
+      });
+    }
+    await assert.rejects(
+      () => store.createOccurrence({
+        runId: 'rrun_actual_cluster_rejected',
+        idempotencyKey: 'routine:actual-cluster:rejected',
+        routineId: routine.id,
+        routineVersion: routine.version,
+        scheduledFor: CREATED_AT + 4,
+        triggerSource: 'schedule',
+        queuedAt: CREATED_AT,
+        deadlineAt: CREATED_AT + 15 * 60 * 1_000,
+      }),
+      (error: unknown) =>
+        error instanceof RoutineStateError && error.code === 'routine_cluster_capacity',
     );
   } finally {
     store.close();

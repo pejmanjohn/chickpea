@@ -832,7 +832,7 @@ async function resolveAgentSandbox(options: AgentSandboxOptions): Promise<Sandbo
  * target: '@flue/runtime/cloudflare' has no business in the node lane's
  * runtime graph, and on node the factories ignore the env anyway.
  */
-async function resolveAgentPlatformEnv(): Promise<PlatformEnv | undefined> {
+export async function resolveAgentPlatformEnv(): Promise<PlatformEnv | undefined> {
   if (!isCloudflareTarget()) {
     return undefined;
   }

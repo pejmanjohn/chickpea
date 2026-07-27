@@ -179,3 +179,22 @@ test('unsupported targets are explicit and unauthorized IDs are non-disclosing',
     store.close();
   }
 });
+
+test('intent parser infrastructure failures fall through to the ordinary Slack turn', async () => {
+  const store = new SqliteRoutineStore(':memory:', () => NOW);
+  try {
+    const result = await handleRoutineSlackRequest(
+      turn('Summarize the weekly release notes.', 'Ev_parser_unavailable'),
+      undefined,
+      {
+        store,
+        capability: enabled,
+        now: () => NOW,
+        parseIntent: async () => { throw new Error('intent service unavailable'); },
+      },
+    );
+    assert.equal(result, undefined);
+  } finally {
+    store.close();
+  }
+});

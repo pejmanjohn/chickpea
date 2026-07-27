@@ -60,8 +60,48 @@ export function normalizeRoutineSchedule(
     nextRunAt: occurrences[0]!,
     preview: occurrences.slice(0, 3),
     projectedDailyStarts,
-    reservations: occurrences.map((windowStart) => ({ windowStart, count: 1 })),
+    reservations: compactReservationOccurrences(occurrences).map((windowStart) => ({
+      windowStart,
+      count: 1,
+    })),
   };
+}
+
+/**
+ * Rebuild the small, rolling collision-preview window after a due slot advances.
+ * Full-year enumeration is retained only for validation and daily-rate
+ * calculation; it is never persisted on each routine.
+ */
+export function projectRoutineReservationWindows(
+  scheduleJson: string,
+  timezone: string,
+  after: number,
+): RoutineScheduleReservation[] {
+  if (!Number.isSafeInteger(after) || after < 0 || !isIanaTimeZone(timezone)) {
+    throw scheduleError('routine_invalid_timezone', 'Routine time zone must be a valid IANA time zone.');
+  }
+  const schedule = parseRoutineSchedule(scheduleJson);
+  const job = cron(schedule, timezone);
+  const occurrences: number[] = [];
+  let cursor = after;
+  let through: number | undefined;
+  try {
+    while (true) {
+      const next = job.nextRun(new Date(cursor));
+      if (!next) break;
+      const timestamp = next.getTime();
+      through ??= timestamp + ROUTINE_LIMITS.reservationLookaheadMs;
+      if (occurrences.length >= 3 && timestamp > through) break;
+      occurrences.push(timestamp);
+      cursor = timestamp;
+    }
+  } finally {
+    job.stop();
+  }
+  if (occurrences.length === 0) {
+    throw scheduleError('routine_schedule_exhausted', 'Routine schedule has no future occurrence.');
+  }
+  return occurrences.map((windowStart) => ({ windowStart, count: 1 }));
 }
 
 export function parseRoutineSchedule(scheduleJson: string): CanonicalRoutineSchedule {
@@ -176,6 +216,15 @@ function maximumInRollingWindow(values: readonly number[], width: number): numbe
     maximum = Math.max(maximum, right - left + 1);
   }
   return maximum;
+}
+
+function compactReservationOccurrences(occurrences: readonly number[]): number[] {
+  const through = occurrences[0]! + ROUTINE_LIMITS.reservationLookaheadMs;
+  let count = 0;
+  while (count < occurrences.length && (count < 3 || occurrences[count]! <= through)) {
+    count += 1;
+  }
+  return occurrences.slice(0, count);
 }
 
 function scheduleError(code: string, message: string): RoutineStateError {

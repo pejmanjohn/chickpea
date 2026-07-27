@@ -21,14 +21,21 @@ export class RoutineScheduler {
   async heartbeat(now: number, owner: string): Promise<RoutineHeartbeatResult> {
     const startedAt = this.clock();
     const maintenance = await this.store.cleanupRetention();
-    const claims = await this.store.claimDueSchedules({
-      now,
-      owner,
-      limit: ROUTINE_LIMITS.dueClaimsPerHeartbeat,
-    });
+    let claimError: unknown;
+    let claims: RoutineDueClaimBatch = { runs: [], scannedCount: 0, deferredCount: 0 };
+    try {
+      claims = await this.store.claimDueSchedules({
+        now,
+        owner,
+        limit: ROUTINE_LIMITS.dueClaimsPerHeartbeat,
+      });
+    } catch (error) {
+      claimError = error;
+    }
     const admissions = await this.admissions.process(now, owner);
     const result = { claims, admissions, maintenance };
     emitRoutineHeartbeatTelemetry(result, this.clock() - startedAt, this.telemetry);
+    if (claimError !== undefined) throw claimError;
     return result;
   }
 }

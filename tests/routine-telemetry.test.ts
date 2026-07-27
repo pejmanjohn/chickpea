@@ -83,3 +83,25 @@ test('scheduler runs maintenance before claims and emits one heartbeat record', 
   assert.equal(messages.length, 1);
   assert.match(messages[0]!, /"durationMs":5/);
 });
+
+test('a claim failure still processes queued admissions and emits heartbeat telemetry', async () => {
+  const order: string[] = [];
+  const messages: string[] = [];
+  const store = {
+    async cleanupRetention() { order.push('maintenance'); return result.maintenance; },
+    async claimDueSchedules() { order.push('claims'); throw new Error('claim failed'); },
+  } as unknown as RoutineStore;
+  const admissions = {
+    async process() { order.push('admissions'); return result.admissions; },
+  } as unknown as RoutineAdmissionController;
+  const scheduler = new RoutineScheduler(
+    store,
+    admissions,
+    { info: (message) => messages.push(message) },
+    () => 100,
+  );
+
+  await assert.rejects(() => scheduler.heartbeat(123, 'heartbeat-test'), /claim failed/);
+  assert.deepEqual(order, ['maintenance', 'claims', 'admissions']);
+  assert.equal(messages.length, 1);
+});

@@ -96,8 +96,9 @@ export async function handleRoutineSlackRequest(
     }
   }
   if (!isRoutineIntentCandidate(turn.text)) return undefined;
+  let intent: RoutineIntent | undefined;
   try {
-    const intent = await (dependencies.parseIntent ?? parseRoutineIntent)(
+    intent = await (dependencies.parseIntent ?? parseRoutineIntent)(
       {
         workspaceId: turn.workspaceId,
         channelId: turn.channelId,
@@ -106,7 +107,13 @@ export async function handleRoutineSlackRequest(
       },
       env,
     );
-    if (!intent) return undefined;
+  } catch {
+    // The classifier is advisory. Infrastructure failures must preserve the
+    // ordinary Slack turn instead of replacing it with routine-specific copy.
+    return undefined;
+  }
+  if (!intent) return undefined;
+  try {
     requireRoutineScheduling(capability);
     const defaultTimezone = intent.action === 'create' && (intent.timezoneWasDefaulted === true || !intent.timezone)
       ? await (dependencies.resolveDefaultTimezone ?? resolveRoutineDefaultTimezone)(turn, env)

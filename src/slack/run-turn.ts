@@ -10,6 +10,7 @@ import type { ResolvedAssignment } from '../config/types.ts';
 import { parseMemoryCommand } from '../memory/commands.ts';
 import { handleMemoryCommand, prepareMemoryTurn } from '../memory/runtime.ts';
 import { handleRoutineSlackRequest } from '../routines/commands.ts';
+import { isRoutineSlackTurn } from '../routines/slack-context.ts';
 import {
   AgentPromptFailure,
   promptSlackThreadAgent,
@@ -136,7 +137,7 @@ export async function runTurn(
   // pinned): on a button deploy nobody sets the env var, so without the stored
   // fallback the footer's "Configure" link would be dead.
   const publicUrl = await resolveSlackPublicUrl(platformEnv);
-  if (isRoutineChannelTurn(turn)) {
+  if (isRoutineSlackTurn(turn)) {
     const routineText = await handleRoutineSlackRequest(turn, platformEnv);
     if (routineText !== undefined) {
       const routinePresenter = new WebClientPresenter(client, {
@@ -286,13 +287,6 @@ export async function runTurn(
       );
     }
   }
-}
-
-function isRoutineChannelTurn(turn: NormalizedSlackTurn): boolean {
-  return turn.source === 'app_mention' &&
-    turn.channelType !== 'im' &&
-    turn.channelType !== 'app_home' &&
-    turn.channelType !== 'mpim';
 }
 
 export async function shouldUseCloudflareSandbox(

@@ -3,6 +3,7 @@ import { test } from 'node:test';
 
 import {
   canManageRoutineChannel,
+  isRoutineSlackTurn,
   parseSlackChannelMention,
 } from '../src/routines/slack-context.ts';
 
@@ -10,6 +11,18 @@ test('channel mentions parse exactly', () => {
   assert.equal(parseSlackChannelMention('<#C_TEST|support>'), 'C_TEST');
   assert.equal(parseSlackChannelMention('<#C_TEST>'), 'C_TEST');
   assert.equal(parseSlackChannelMention('C_TEST'), undefined);
+});
+
+test('routine handling admits channel mentions and their implicit thread replies only', () => {
+  const base = {
+    workspaceId: 'T_TEST', channelId: 'C_TEST', userId: 'U_MEMBER', eventId: 'Ev_TEST',
+    text: '!routines confirm token', messageTs: '1.1', threadTs: '1.0',
+    contextMode: 'thread' as const,
+  };
+  assert.equal(isRoutineSlackTurn({ ...base, source: 'app_mention' }), true);
+  assert.equal(isRoutineSlackTurn({ ...base, source: 'implicit_thread_reply' }), true);
+  assert.equal(isRoutineSlackTurn({ ...base, source: 'implicit_thread_reply', channelType: 'im' }), false);
+  assert.equal(isRoutineSlackTurn({ ...base, source: 'dm_message', channelType: 'im' }), false);
 });
 
 test('mentioned-channel controls require current bot and actor membership', async () => {
