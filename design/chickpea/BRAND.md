@@ -8,8 +8,8 @@ guide records the design rules that should remain consistent as the UI evolves.
 
 ## Name & logo
 
-- Product name: **Chickpea** (capitalized in UI copy); the install-wide Slack bot
-  display name is **@Tag**.
+- Product name: **Chickpea** (capitalized in UI copy); the default install-wide
+  Slack bot display name is **@Chickpea**.
 - Mark: single smiling chickpea — gold pea, highlight top-left, two dot eyes,
   smile, faint blush. Canonical source: [`assets/chickpea-mark.svg`](../../assets/chickpea-mark.svg).
   The admin page renders an inline SVG variant inside `.avatar` so its face can

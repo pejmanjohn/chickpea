@@ -167,6 +167,8 @@ import {
   resolveSlackTeamInfo,
   primeStoredSlackPublicUrl,
   slackAuthTest,
+  slackIdentityAuthTest,
+  slackBotIdentityInfo,
   slackConversationsInfo,
   slackConversationsJoin,
   slackTokenFingerprint,
@@ -2298,7 +2300,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         );
       }
       if (info?.ok && info.channel) {
-        // (c) Membership drives the UI's "invite @Tag or it never hears
+        // (c) Membership drives the UI's "invite @Chickpea or it never hears
         //     mentions" reminder; Slack's authoritative name becomes the label.
         isMember = info.channel.isMember;
         if (info.channel.name) {
@@ -2442,6 +2444,96 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       });
     } catch (err) {
       return internalError(c, err);
+    }
+  });
+
+  // Slack owns the install-wide bot name and avatar. Read both live so the
+  // Channels admin shows what people actually see, then provide the exact app
+  // settings deep-link where an owner can change them. This is intentionally
+  // read-only: Slack's profile mutation API requires a user token, while this
+  // app stores only the least-privileged bot token used at runtime.
+  app.get('/admin/api/slack-identity', async (c) => {
+    let botToken: string | undefined;
+    let botUserId: string | undefined;
+    try {
+      const credentials = await resolveSlackCredentials(
+        c.env as PlatformEnv | undefined,
+        settings(c),
+      );
+      botToken = credentials.botToken;
+      botUserId = credentials.botUserId;
+    } catch (err) {
+      return internalError(c, err);
+    }
+    if (!botToken) {
+      return c.json({ error: 'slack_not_configured' }, 409);
+    }
+
+    try {
+      let auth: Awaited<ReturnType<typeof slackIdentityAuthTest>> | undefined;
+      // An empty bot user ID is intentional for the event lane: it prevents
+      // event-time auth.test discovery and keeps message-family events
+      // fail-closed. This operator-initiated presentation read is separate,
+      // however, and needs a live identity to show the connected installation.
+      if (!botUserId) {
+        auth = await slackIdentityAuthTest(botToken);
+        botUserId = auth.botUserId;
+      }
+      if (!botUserId || (auth && !auth.ok)) {
+        throw new Error('Slack could not resolve the bot user');
+      }
+
+      let identity = await slackBotIdentityInfo(botToken, botUserId);
+      // A bot id saved with this token should remain stable, but recover once
+      // through auth.test if Slack explicitly says that user no longer exists.
+      if (!identity.ok && identity.error === 'user_not_found' && !auth) {
+        auth = await slackIdentityAuthTest(botToken);
+        if (auth.ok && auth.botUserId && auth.botUserId !== botUserId) {
+          botUserId = auth.botUserId;
+          identity = await slackBotIdentityInfo(botToken, botUserId);
+        }
+      }
+      if (!identity.ok) {
+        throw new Error('Slack could not read the bot profile');
+      }
+
+      // A stored bot ID avoids auth.test on the usual path, but users.info
+      // does not always include profile.api_app_id. Probe only to recover the
+      // precise settings link; a failed secondary probe must not hide a valid
+      // live name/avatar card behind an error state.
+      if (!auth && !identity.appId) {
+        try {
+          const appIdentity = await slackIdentityAuthTest(botToken);
+          if (appIdentity.ok) auth = appIdentity;
+        } catch {
+          // The identity itself is already valid; retain the generic apps link.
+        }
+      }
+
+      const appIdCandidate = auth?.appId ?? identity.appId;
+      const appId = appIdCandidate && /^[A-Z0-9]+$/i.test(appIdCandidate)
+        ? appIdCandidate
+        : null;
+      const avatarUrl = safeHttpsUrl(identity.avatarUrl);
+      return c.json({
+        displayName:
+          identity.displayName || slackAppManifest.features.bot_user.display_name,
+        avatarUrl,
+        botUserId,
+        appId,
+        consoleUrl: appId
+          ? `https://api.slack.com/apps/${appId}/general`
+          : 'https://api.slack.com/apps',
+      });
+    } catch (err) {
+      console.error(
+        '[chickpea] Slack identity lookup failed:',
+        err instanceof Error ? err.message : String(err),
+      );
+      return c.json({
+        error: 'slack_identity_unavailable',
+        message: 'Slack identity could not be loaded.',
+      }, 502);
     }
   });
 
@@ -3025,6 +3117,15 @@ function requestOrigin(c: Context): string {
   return `${proto}://${host}`;
 }
 
+function safeHttpsUrl(candidate: string | undefined): string | null {
+  if (!candidate) return null;
+  try {
+    return new URL(candidate).protocol === 'https:' ? candidate : null;
+  } catch {
+    return null;
+  }
+}
+
 // Per-isolate memo of the last origin we wrote to slack.publicUrl, so the
 // opportunistic persist below is a no-op read/write on the steady state (every
 // admin request would otherwise hit the settings store).
@@ -3360,7 +3461,7 @@ function connectedWorkspaceLabel(team: SlackTeamInfo): string {
 function workspaceMismatchMessage(team: SlackTeamInfo, workspaceId: string): string {
   return (
     `Chickpea is connected to ${connectedWorkspaceLabel(team)}, but this channel belongs to a ` +
-    `different workspace (${workspaceId}). Add Tag to ${team.teamName ?? 'the connected workspace'} ` +
+    `different workspace (${workspaceId}). Add Chickpea to ${team.teamName ?? 'the connected workspace'} ` +
     `in Slack, or connect Chickpea to that workspace instead.`
   );
 }
@@ -3369,7 +3470,7 @@ function channelNotFoundMessage(channelId: string, team: SlackTeamInfo): string 
   const where = team.teamName ? ` in ${team.teamName}` : '';
   return (
     `Slack could not find channel ${channelId}${where}. Check for a typo, make sure the channel ` +
-    `is in the connected workspace, and if it is private invite @Tag to it first — then try again.`
+    `is in the connected workspace, and if it is private invite @Chickpea to it first — then try again.`
   );
 }
 

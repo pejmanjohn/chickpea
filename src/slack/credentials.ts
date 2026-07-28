@@ -6,6 +6,7 @@ import {
   isCloudflareTarget,
   type PlatformEnv,
 } from '../config/state-backend.ts';
+import { readSlackIdentityProfile } from './identity-profile.ts';
 
 /**
  * Slack credential resolution: environment first, then the operator settings
@@ -290,6 +291,8 @@ export interface SlackAuthTestResult {
   ok: boolean;
   /** Slack's machine error code when ok is false (e.g. 'invalid_auth'). */
   error: string | undefined;
+  /** Slack app id for deep-linking install-wide identity settings. */
+  appId?: string;
   teamId: string | undefined;
   teamName: string | undefined;
   botName: string | undefined;
@@ -321,14 +324,88 @@ export async function slackAuthTest(botToken: string): Promise<SlackAuthTestResu
     headers: { authorization: `Bearer ${botToken}` },
   });
   const body = (await response.json()) as Record<string, unknown>;
+  return parseSlackAuthTest(body);
+}
+
+function parseSlackAuthTest(body: Record<string, unknown>): SlackAuthTestResult {
   return {
     ok: body.ok === true,
     error: typeof body.error === 'string' ? body.error : undefined,
+    ...(typeof body.app_id === 'string' ? { appId: body.app_id } : {}),
     teamId: typeof body.team_id === 'string' ? body.team_id : undefined,
     teamName: typeof body.team === 'string' ? body.team : undefined,
     botName: typeof body.user === 'string' ? body.user : undefined,
     botUserId: typeof body.user_id === 'string' ? body.user_id : undefined,
   };
+}
+
+export interface SlackBotIdentityResult {
+  ok: boolean;
+  error: string | undefined;
+  displayName: string | undefined;
+  avatarUrl: string | undefined;
+  appId: string | undefined;
+}
+
+/**
+ * Read the Slack-owned bot profile shown beside messages. This stays separate
+ * from SlackUserFacts: memory authorization only needs classification facts,
+ * while the admin identity card needs presentation fields that must never
+ * influence trust decisions.
+ */
+export async function slackBotIdentityInfo(
+  botToken: string,
+  userId: string,
+  options: SlackTruthFetchOptions = {},
+): Promise<SlackBotIdentityResult> {
+  const result = await fetchSlackTruthJson(`${slackApiBase()}/users.info`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${botToken}`,
+      'content-type': 'application/x-www-form-urlencoded',
+    },
+    body: new URLSearchParams({ user: userId }).toString(),
+  }, options);
+  if (!result.ok) {
+    return {
+      ok: false,
+      error: result.error,
+      displayName: undefined,
+      avatarUrl: undefined,
+      appId: undefined,
+    };
+  }
+  const body = result.body;
+  const profile = readSlackIdentityProfile(body.user);
+  return {
+    ok: body.ok === true,
+    error: typeof body.error === 'string' ? body.error : undefined,
+    displayName: profile.displayName,
+    avatarUrl: profile.avatarUrl,
+    appId: profile.appId,
+  };
+}
+
+/** Bounded auth.test for the identity card's best-effort live refresh path. */
+export async function slackIdentityAuthTest(
+  botToken: string,
+  options: SlackTruthFetchOptions = {},
+): Promise<SlackAuthTestResult> {
+  const result = await fetchSlackTruthJson(`${slackApiBase()}/auth.test`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${botToken}` },
+  }, options);
+  if (!result.ok) {
+    return {
+      ok: false,
+      error: result.error,
+      teamId: undefined,
+      teamName: undefined,
+      botName: undefined,
+      botUserId: undefined,
+    };
+  }
+  return parseSlackAuthTest(result.body);
 }
 
 /** One Slack channel, mapped to the admin-facing shape the proxy returns. */
