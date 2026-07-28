@@ -54,7 +54,7 @@ class AcceptanceAdmission implements RoutineAdmissionAdapter {
   }
 }
 
-test('scheduled write crosses confirmation, heartbeat, Workflow admission, restart, live auth, Slack, and Admin', async (context) => {
+test('scheduled write crosses one-message creation, heartbeat, Workflow admission, restart, live auth, Slack, and Admin', async (context) => {
   const directory = mkdtempSync(join(tmpdir(), 'chickpea-routine-acceptance-'));
   const statePath = join(directory, 'state.sqlite');
   context.after(() => rmSync(directory, { recursive: true, force: true }));
@@ -64,6 +64,7 @@ test('scheduled write crosses confirmation, heartbeat, Workflow admission, resta
     store,
     capability: enabled,
     now: () => now,
+    canManageChannel: async () => true,
     parseIntent: async () => ({
       action: 'create' as const,
       name: 'Tracker steward',
@@ -77,19 +78,19 @@ test('scheduled write crosses confirmation, heartbeat, Workflow admission, resta
   };
 
   try {
-    const preview = await handleRoutineSlackRequest(
+    const createdText = await handleRoutineSlackRequest(
       turn('Every hour, update the tracker and post what changed.', 'Ev_ACCEPT_CREATE'),
       undefined,
       commandOptions,
     );
-    const token = preview?.match(/!routines confirm ([A-Za-z0-9._-]+)/)?.[1];
-    assert.ok(token);
-    assert.match(preview ?? '', /uses this channel's current Chickpea access each time it runs/i);
-    await handleRoutineSlackRequest(
-      turn(`!routines confirm ${token}`, 'Ev_ACCEPT_CONFIRM'),
-      undefined,
-      commandOptions,
+    assert.match(createdText ?? '', /was created and is \*active\*/i);
+    assert.match(
+      createdText ?? '',
+      /This routine uses this channel's current Chickpea access each time it runs\./,
     );
+    assert.match(createdText ?? '', /Creator: <@U_CREATOR>/);
+    assert.match(createdText ?? '', /Resource limits:/);
+    assert.doesNotMatch(createdText ?? '', /!routines confirm/);
     const [routine] = await store.listRoutines('T_ACCEPT', 'C_ACCEPT');
     assert.ok(routine);
     assert.match(routine.taskText, /Update the configured tracker/);

@@ -13,31 +13,54 @@ import {
   type RoutineDefinition,
   type RoutineDefinitionContent,
   type RoutineScheduleReservation,
+  type SaveRoutineInput,
   type RoutineStore,
   RoutineStateError,
 } from './types.ts';
 import { validateRoutineDefinition, validateRoutineScope } from './validation.ts';
 
-export interface RoutineDraftRequest {
-  action: 'create' | 'edit' | 'delete';
+interface RoutineRequestBase {
   actorId: string;
   actorClass?: 'member' | 'operator';
   workspaceId: string;
   channelId: string;
-  routineId?: string;
-  expectedVersion?: number;
-  definition?: RoutineDefinitionContent;
-  nextRunAt?: number;
-  projectedDailyStarts?: number;
-  reservations?: RoutineScheduleReservation[];
 }
+
+export type RoutineSaveRequest = RoutineRequestBase & (
+  | {
+      action: 'create';
+      routineId?: string;
+      definition: RoutineDefinitionContent;
+      nextRunAt: number;
+      projectedDailyStarts: number;
+      reservations: RoutineScheduleReservation[];
+    }
+  | {
+      action: 'edit';
+      routineId: string;
+      expectedVersion?: number;
+      definition: RoutineDefinitionContent;
+      nextRunAt: number;
+      projectedDailyStarts: number;
+      reservations: RoutineScheduleReservation[];
+    }
+);
+
+export type RoutineDeletionRequest = RoutineRequestBase & {
+  action: 'delete';
+  routineId: string;
+  expectedVersion?: number;
+};
+
+export type RoutineDraftRequest = RoutineSaveRequest | RoutineDeletionRequest;
+type RoutineExistingRequest = Extract<RoutineSaveRequest, { action: 'edit' }> | RoutineDeletionRequest;
 
 export interface RoutineConfirmationReceipt {
   confirmationId: string;
   token: string;
   previewHash: string;
   expiresAt: number;
-  draft: RoutineConfirmationDraft;
+  draft: Extract<RoutineConfirmationDraft, { action: 'delete' }>;
 }
 
 interface RoutineServiceDependencies {
@@ -49,8 +72,8 @@ interface RoutineServiceDependencies {
 
 /**
  * Deterministic routine-management boundary. Model output may populate a
- * RoutineDraftRequest, but only this service validates and persists a
- * one-time, actor/scope/version-bound confirmation artifact.
+ * RoutineDraftRequest, but only this service validates and persists it.
+ * User-facing confirmation is reserved for irreversible deletion.
  */
 export class RoutineService {
   private readonly now: () => number;
@@ -68,9 +91,10 @@ export class RoutineService {
     this.token = dependencies.token ?? createConfirmationToken;
   }
 
-  async createConfirmation(request: RoutineDraftRequest): Promise<RoutineConfirmationReceipt> {
+  async createConfirmation(request: RoutineDeletionRequest): Promise<RoutineConfirmationReceipt> {
     validateRoutineScope(request.workspaceId, request.channelId, request.actorId);
-    const draft = await this.buildDraft(request);
+    const current = await this.requireCurrent(request);
+    const draft = { action: 'delete' as const, routineId: current.id, expectedVersion: current.version };
     const token = this.token();
     const previewHash = hashRoutineValue(JSON.stringify(draft));
     const confirmationId = this.confirmationId();
@@ -87,6 +111,27 @@ export class RoutineService {
       expiresAt,
     });
     return { confirmationId, token, previewHash, expiresAt, draft };
+  }
+
+  /**
+   * Apply a conversational create/edit in the same Slack turn. Validation,
+   * optimistic versions, capacity, revision history, and audit remain atomic;
+   * no confirmation token or intermediate artifact is created.
+   */
+  async save(
+    request: RoutineSaveRequest,
+    idempotencyKey: string,
+  ): Promise<RoutineDefinition> {
+    const draft = await this.buildSaveDraft(request);
+    const input: SaveRoutineInput = {
+      actorId: request.actorId,
+      actorClass: request.actorClass ?? 'member',
+      workspaceId: request.workspaceId,
+      channelId: request.channelId,
+      draft,
+      idempotencyKey,
+    };
+    return this.store.save(input);
   }
 
   async confirm(input: Omit<ConfirmRoutineInput, 'tokenHash'> & { token: string }): Promise<RoutineDefinition> {
@@ -107,11 +152,9 @@ export class RoutineService {
     return this.store.control(input);
   }
 
-  private async buildDraft(request: RoutineDraftRequest): Promise<RoutineConfirmationDraft> {
-    if (request.action === 'delete') {
-      const current = await this.requireCurrent(request);
-      return { action: 'delete', routineId: current.id, expectedVersion: current.version };
-    }
+  private async buildSaveDraft(
+    request: RoutineSaveRequest,
+  ): Promise<Exclude<RoutineConfirmationDraft, { action: 'delete' }>> {
     const definition = validateRoutineDefinition(request.definition);
     const nextRunAt = requiredInteger(request.nextRunAt, 'Routine next occurrence is required.');
     const projectedDailyStarts = requiredInteger(
@@ -147,7 +190,7 @@ export class RoutineService {
     };
   }
 
-  private async requireCurrent(request: RoutineDraftRequest): Promise<RoutineDefinition> {
+  private async requireCurrent(request: RoutineExistingRequest): Promise<RoutineDefinition> {
     if (!request.routineId) {
       throw new RoutineStateError('routine_draft_invalid', 'Routine ID is required.');
     }

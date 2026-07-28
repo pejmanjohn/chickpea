@@ -164,6 +164,15 @@ export interface ConfirmRoutineInput {
   idempotencyKey: string;
 }
 
+export interface SaveRoutineInput {
+  actorId: string;
+  actorClass: RoutineActorClass;
+  workspaceId: string;
+  channelId: string;
+  draft: Exclude<RoutineConfirmationDraft, { action: 'delete' }>;
+  idempotencyKey: string;
+}
+
 export interface ControlRoutineInput {
   routineId: string;
   expectedVersion: number;
@@ -338,6 +347,7 @@ export interface RoutineStore {
   getConfirmation(tokenHash: string): Promise<RoutineConfirmation | undefined>;
   cancelConfirmation(input: CancelRoutineConfirmationInput): Promise<boolean>;
   confirm(input: ConfirmRoutineInput): Promise<RoutineDefinition>;
+  save(input: SaveRoutineInput): Promise<RoutineDefinition>;
   purgeConfirmations(): Promise<number>;
   cleanupRetention(): Promise<RoutineMaintenanceResult>;
   getRoutine(routineId: string): Promise<RoutineDefinition | undefined>;
@@ -380,6 +390,7 @@ export type RoutineRpcRequest =
   | { kind: 'get_confirmation'; tokenHash: string }
   | { kind: 'cancel_confirmation'; input: CancelRoutineConfirmationInput }
   | { kind: 'confirm'; input: ConfirmRoutineInput }
+  | { kind: 'save'; input: SaveRoutineInput }
   | { kind: 'purge_confirmations' }
   | { kind: 'cleanup_retention' }
   | { kind: 'get_routine'; routineId: string }

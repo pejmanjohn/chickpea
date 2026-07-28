@@ -8,6 +8,7 @@ import {
   type RoutineDefinition,
   type RoutineRpcRequest,
   type RoutineRpcResponse,
+  type SaveRoutineInput,
 } from '../src/routines/types.ts';
 
 const routine: RoutineDefinition = {
@@ -34,6 +35,45 @@ test('Cloudflare routine proxy preserves the typed execute request and response'
 
   assert.deepEqual(await store.getRoutine(routine.id), routine);
   assert.deepEqual(requests, [{ kind: 'get_routine', routineId: routine.id }]);
+});
+
+test('Cloudflare routine proxy carries one-message saves across the RPC seam', async () => {
+  const requests: RoutineRpcRequest[] = [];
+  const stub = {
+    async routinesExecute(request: RoutineRpcRequest): Promise<StateRpcResult<RoutineRpcResponse>> {
+      requests.push(request);
+      return { ok: true, value: { kind: 'routine', routine } };
+    },
+  } as unknown as TagStateRpc;
+  const store = new CfRoutineStore(stub);
+  const input: SaveRoutineInput = {
+    actorId: 'U_MEMBER',
+    actorClass: 'member',
+    workspaceId: 'T_TEST',
+    channelId: 'C_TEST',
+    idempotencyKey: 'routine:rpc:save',
+    draft: {
+      action: 'create',
+      routineId: routine.id,
+      definition: {
+        name: routine.name,
+        description: routine.description,
+        taskText: routine.taskText,
+        triggerKind: routine.triggerKind,
+        scheduleInput: routine.scheduleInput,
+        scheduleJson: routine.scheduleJson,
+        timezone: routine.timezone,
+        outputPolicy: routine.outputPolicy,
+        authorityMode: routine.authorityMode,
+      },
+      nextRunAt: routine.nextRunAt!,
+      projectedDailyStarts: routine.projectedDailyStarts,
+      reservations: routine.reservationWindows,
+    },
+  };
+
+  assert.deepEqual(await store.save(input), routine);
+  assert.deepEqual(requests, [{ kind: 'save', input }]);
 });
 
 test('Cloudflare routine proxy carries maintenance results across the RPC seam', async () => {

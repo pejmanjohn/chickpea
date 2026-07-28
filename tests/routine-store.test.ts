@@ -13,6 +13,7 @@ import {
   type RoutineConfirmationDraft,
   type RoutineDefinition,
   type RoutineDefinitionContent,
+  type SaveRoutineInput,
 } from '../src/routines/types.ts';
 
 const CREATED_AT = Date.UTC(2026, 6, 27, 12);
@@ -96,6 +97,43 @@ test('routine schema is additive and portable across the target-neutral StateDb 
   assert.doesNotThrow(() => new RoutineStoreLogic(portable, () => CREATED_AT));
   assert.equal(sqlite.get('SELECT id FROM existing_fixture')?.id, 'preserved');
   sqlite.close();
+});
+
+test('direct save is idempotent and keeps deletion behind confirmation', async () => {
+  const store = new SqliteRoutineStore(':memory:', () => CREATED_AT);
+  const input: SaveRoutineInput = {
+    actorId: 'U_MEMBER',
+    actorClass: 'member',
+    workspaceId: 'T_TEST',
+    channelId: 'C_TEST',
+    draft: createDraft('routine_direct_save'),
+    idempotencyKey: 'routine:save:direct',
+  };
+  try {
+    const routine = await store.save(input);
+    assert.deepEqual(await store.save(input), routine);
+    assert.equal((await store.listRoutines('T_TEST', 'C_TEST')).length, 1);
+    assert.equal((await store.listRevisions(routine.id)).length, 1);
+    assert.equal((await store.listAuditEvents({ subjectId: routine.id })).length, 1);
+
+    await assert.rejects(
+      () => store.save({
+        ...input,
+        draft: {
+          action: 'delete',
+          routineId: routine.id,
+          expectedVersion: routine.version,
+        } as never,
+        idempotencyKey: 'routine:save:forged-delete',
+      }),
+      (error: unknown) => (
+        error instanceof RoutineStateError && error.code === 'routine_confirmation_required'
+      ),
+    );
+    assert.equal((await store.getRoutine(routine.id))?.deletedAt, null);
+  } finally {
+    store.close();
+  }
 });
 
 test('confirmation atomically creates a versioned routine and body-free scheduled-work audit', async () => {

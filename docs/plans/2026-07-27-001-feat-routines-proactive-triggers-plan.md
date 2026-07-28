@@ -60,20 +60,20 @@ Users therefore cannot ask Chickpea to repeat work without an external actor tag
 | Admin operator | List and filter all routines/runs; pause, resume, disable, or delete with confirmation | Existing `TAG_ADMIN_TOKEN` boundary |
 | Non-member | No routine metadata or control access, including through a mentioned private channel | Fail-closed Slack scope resolution |
 
-Editing does not transfer the authorization anchor, and a later editor does not become an additional lifecycle anchor; editor attribution remains in the revision/audit record. To transfer responsibility, a member clones the routine into a normal confirmation draft anchored to themselves, confirms it, and disables the old one. If the creator is deactivated or is no longer an eligible member of the owning channel, Chickpea disables the routine before any model or tool work. This is intentionally stricter and more implementable than emulating a separate undocumented Claude-organization lifecycle.
+Editing does not transfer the authorization anchor, and a later editor does not become an additional lifecycle anchor; editor attribution remains in the revision/audit record. To transfer responsibility, a member clones the routine in one message, which creates a new routine anchored to themselves, then disables the old one. If the creator is deactivated or is no longer an eligible member of the owning channel, Chickpea disables the routine before any model or tool work. This is intentionally stricter and more implementable than emulating a separate undocumented Claude-organization lifecycle.
 
 ### Key Product Decisions
 
 1. **Arbitrary scheduled read and write work is the V1 product.** `session-settled: user-directed`; rejected alternative: a read-only first product tier. A digest is the first acceptance case because it is easy to verify, while write-capable examples must also pass before launch.
 2. **A routine has full live channel authority.** `session-settled: user-directed`; rejected alternative: a per-routine tool/connection/side-effect permission layer. If the saved task could be performed by a tagged request in the channel, it may be performed on schedule. Existing platform policy, confirmation requirements, credential scopes, egress rules, and resource limits remain authoritative.
-3. **Authority is resolved at run time, not frozen at creation.** `session-settled: user-directed`; rejected alternative: creation-time connection and credential snapshots. Adding or removing channel capabilities changes what active routines can do. Creation and edit confirmations must state this plainly.
+3. **Authority is resolved at run time, not frozen at creation.** `session-settled: user-directed`; rejected alternative: creation-time connection and credential snapshots. Adding or removing channel capabilities changes what active routines can do. Creation and edit receipts must state this plainly.
 4. **V1 is Cloudflare-only.** `session-settled: user-approved`; rejected alternative: delaying launch for a durable Node scheduler. Node rejects creation/edit/resume/run-now with deterministic unavailable messaging while retaining safety-reducing controls. The domain and scheduler boundary remain target-neutral so a durable Node adapter can be added later.
 5. **Only schedules ship in V1.** `session-settled: user-approved`; rejected alternative: coupling watches and event subscriptions to the first delivery. Watches, pull-request subscriptions, webhooks, and other inbound triggers are explicit non-goals, while `trigger_kind` and adapter interfaces leave a future seam.
 6. **Every executing occurrence uses a fresh Flue Workflow run.** Use `invoke(...)`, not `dispatch(...)`. Continuing Agent state is deferred because executing occurrences are bounded jobs and need an independently inspectable winning run ID and Workflow history; skipped/cancelled occurrences remain product-ledger-only.
 7. **A fixed Cloudflare heartbeat claims dynamic schedules.** A `* * * * *` Cron Trigger calls a persisted due-claim service; it does not contain user schedules. Per-routine Durable Object alarms and external schedulers remain replaceable adapters, not V1 dependencies.
 8. **No blind retry after execution begins.** Arbitrary write tools cannot provide generic exactly-once semantics. Admission is reconciled before reinvocation. An interrupted run with no evidence of an uncertain external effect becomes terminal `failed/workflow_interrupted`; a run with an uncertain external effect becomes `failed/unknown_external_outcome`, pauses the routine immediately, and needs human inspection.
 9. **No-op is a first-class successful outcome.** The occurrence remains visible in run history but produces no Slack post.
-10. **Routine management is conversational with deterministic confirmation and controls.** Natural-language creation/editing produces a draft; no schedule mutation occurs until Slack displays the normalized schedule, time zone, next three occurrences, task, and live-authority disclosure and the user confirms. Exact `!routines` controls remain available without model interpretation.
+10. **Routine management is conversational with deterministic persistence and controls.** One clear natural-language creation/edit request is schema-validated and persisted in the same turn, then Slack displays the normalized schedule, time zone, next three occurrences, task, and live-authority disclosure. Ambiguous requests remain ordinary conversation. Exact `!routines` controls remain available without model interpretation, and only irreversible deletion requires a second confirmation.
 
 ### Product Requirements
 
@@ -81,26 +81,26 @@ Editing does not transfer the authorization anchor, and a later editor does not 
 
 - **R1** Persist a channel-scoped routine with stable ID, creator, workspace/channel, name, description, task, trigger kind, normalized schedule, IANA time zone, output behavior, authority mode, state, version, creation/update actors and timestamps, next/last occurrence, and failure streak.
 - **R2** Accept a natural-language schedule request, extract a draft with a structured model result, then validate and normalize it deterministically. The parser must never write routine state.
-- **R3** Store both the user's schedule expression and canonical recurrence. Always display the explicit IANA time zone and next three instants before confirmation.
+- **R3** Store both the user's schedule expression and canonical recurrence. Always display the explicit IANA time zone and next three instants in the creation/edit receipt.
 - **R4** Support recurring five-field schedules with a minimum interval of one hour. Reject seconds-level, ambiguous, one-shot, or unsupported calendar expressions with an actionable correction; do not guess.
-- **R5** If the user omits a time zone, propose the Slack user's IANA time zone when available, otherwise UTC, but require explicit confirmation of the displayed value.
+- **R5** If the user omits a time zone, use the Slack user's IANA time zone when available, otherwise UTC, and call out the selected value in the creation receipt.
 - **R6** Use a well-maintained schedule library that can calculate IANA-zone DST transitions. Do not implement cron/calendar math in Chickpea.
 - **R7** For a repeated wall-clock instant, run once. For a nonexistent wall-clock instant, schedule the first valid instant after the gap. Golden tests must pin this policy.
-- **R8** Keep immutable versioned routine revisions so each occurrence links to exactly the confirmed task and schedule version it admitted. Confirmed deletion is the sole body-redaction transition: it preserves version/hash/actor/timestamp metadata while scrubbing Chickpea-owned human text.
+- **R8** Keep immutable versioned routine revisions so each occurrence links to exactly the saved task and schedule version it admitted. Confirmed deletion is the sole body-redaction transition: it preserves version/hash/actor/timestamp metadata while scrubbing Chickpea-owned human text.
 
 #### Authority and safety
 
-- **R9** Treat the confirmed saved task as the current explicit user request for every occurrence. Advisory memory, owning-channel Slack history, fetched content, tool output, schedule metadata, and future trigger payloads are untrusted context that can narrow but never widen that request.
+- **R9** Treat the saved task as the current explicit user request for every occurrence. Advisory memory, owning-channel Slack history, fetched content, tool output, schedule metadata, and future trigger payloads are untrusted context that can narrow but never widen that request.
 - **R10** At execution time, fail closed unless the owning channel is eligible, Chickpea is present, and the creator is still an eligible member. Resolve the channel's current assignment, profile, model, instructions, skills, repository intersection, connections, credentials, and policies.
 - **R11** Do not persist provider secrets, OAuth tokens, installation tokens, or a runnable connection snapshot on a routine or occurrence. Persist only stable identifiers and a hash of the resolved access description. Apply bounded UTF-8 validation and the existing high-confidence credential-pattern detection to saved task/name/description fields; reject apparent secrets with guidance to use a channel connection instead.
 - **R12** Do not introduce a per-routine permission model. A channel capability added later is available to its active routines; a revoked capability is unavailable immediately.
-- **R13** Apply the existing external-side-effect policy to the saved task as the explicit current request. Memory and event data cannot authorize a write. Schedule confirmation does not waive a separate tool/provider just-in-time confirmation rule; if no unattended confirmation protocol exists, fail that occurrence as `policy_denied` before the protected effect rather than waiting indefinitely or treating the schedule confirmation as blanket approval.
+- **R13** Apply the existing external-side-effect policy to the saved task as the explicit current request. Memory and event data cannot authorize a write. Creating a routine does not waive a separate tool/provider just-in-time confirmation rule; if no unattended confirmation protocol exists, fail that occurrence as `policy_denied` before the protected effect rather than waiting indefinitely or treating the saved routine as blanket approval.
 - **R14** Apply hard unattended-work ceilings before model admission: one active occurrence per routine, four active routine runs per deployment, 25 due claims per heartbeat, 100 active routines per deployment, 20 active routines per channel, 250 total routine starts per rolling 24 hours, one-hour minimum cadence, and a 15-minute occurrence deadline. Creation/edit/resume calculate each schedule's maximum rolling-24-hour count over the next 370 days against 240 scheduled starts/day. Persist only a rolling collision preview covering at least the next three fires and all fires within 48 hours of the next fire; refresh it whenever a slot advances, and reject immediate half-open rolling-15-minute conflicts above four. Enforce the same four-start rolling limit transactionally at actual occurrence creation so a future collision beyond the preview horizon defers rather than over-admits. Pause/disable/delete release future previews; resume and schedule edits reacquire them atomically or fail without changing the prior state. The remaining 10 starts/day are the deployment-wide explicit run-now allowance. Make these deployment settings with the listed values as defaults, not user-configurable routine permissions.
 - **R15** Continue applying the existing sandbox monthly session cap and egress/credential policies. A ceiling failure happens before new external work and is recorded with a safe reason.
 
 #### Lifecycle and reliability
 
-- **R16** Support short-lived pre-confirmation draft artifacts plus persisted routine states `active`, `paused`, and `disabled`. Deletion is a confirmed tombstone operation, not an execution state.
+- **R16** Persist conversational create/edit directly into routine states `active`, `paused`, and `disabled`. Short-lived confirmation artifacts exist only for deletion, which is a confirmed tombstone operation rather than an execution state.
 - **R17** Support occurrence states `queued`, `admitting`, `running`, `succeeded`, `no_op`, `failed`, `skipped`, `cancelled`, and `superseded`.
 - **R18** The heartbeat atomically claims a deterministic scheduled-occurrence key derived from routine ID and scheduled instant, independent of routine version. The admitted row separately freezes the winning routine version. Repeated heartbeats and create/edit races must not create a second logical occurrence for the same routine/instant; run-now uses an explicit nonce.
 - **R19** Skip, rather than queue, a due occurrence when the same routine already has an active occurrence. Record the skip. Do not run missed historical slots after downtime; aggregate them as skipped and calculate the next future slot.
@@ -114,8 +114,8 @@ Editing does not transfer the authorization anchor, and a later editor does not 
 #### Slack experience
 
 - **R26** Recognize explicit natural-language create/edit intent in an owning-channel mention. Examples in quoted text or general discussion must not create a draft.
-- **R27** Post a deterministic confirmation view containing the exact task, canonical schedule, time zone, next three fires, creator, output policy, resource summary, and: “This routine uses this channel's current Chickpea access each time it runs.” Also disclose that a tool with a separate just-in-time human confirmation requirement cannot run unattended and will fail safely.
-- **R28** Provide `!routines`, `!routines <#channel>`, `!routines show <id>`, `!routines confirm <token>`, `cancel <token>`, `clone <id>`, `pause <id>`, `resume`, `disable`, `run <id>`, and `delete <id>`. `show` includes the last five occurrence times, statuses, and safe public failure reasons so members can diagnose without Admin. Every ID-addressed command first resolves and reauthorizes the routine's owning workspace/channel and returns the same non-disclosing not-found response for an absent or unauthorized ID. Mutating commands use exact IDs or an unambiguous selection; delete always requires a second confirmation.
+- **R27** After one-message create/edit, post a deterministic saved receipt containing the exact task, canonical schedule, time zone, next three fires, creator, output policy, resource summary, and: “This routine uses this channel's current Chickpea access each time it runs.” Also disclose that a tool with a separate just-in-time human confirmation requirement cannot run unattended and will fail safely.
+- **R28** Provide `!routines`, `!routines <#channel>`, `!routines show <id>`, `clone <id>`, `pause <id>`, `resume`, `disable`, `run <id>`, and `delete <id>`. `!routines confirm|cancel <token>` applies only to a pending delete. `show` includes the last five occurrence times, statuses, and safe public failure reasons so members can diagnose without Admin. Every ID-addressed command first resolves and reauthorizes the routine's owning workspace/channel and returns the same non-disclosing not-found response for an absent or unauthorized ID. Mutating commands use exact IDs or an unambiguous selection; delete always requires a second confirmation.
 - **R29** Only a current member of a mentioned channel can list it. Keep private cross-channel results ephemeral and never disclose routine names before scope authorization succeeds.
 - **R30** Deliver a successful result as a top-level owning-channel message, not an artificial thread. Reuse the existing Slack renderer and attach routine name, scheduled time, run ID, and admin/detail pointer in compact metadata.
 - **R31** A `no_op` result produces no channel message. A terminal failure or automatic pause produces one sanitized, deduplicated channel notice that points members to `!routines show <id>` for safe recent outcomes; sensitive operator detail remains in Admin Scheduled Work.
@@ -144,11 +144,10 @@ Editing does not transfer the authorization anchor, and a later editor does not 
 
 1. A current channel member tags Chickpea with an explicit schedule request.
 2. The application recognizes create intent and asks a structured parser for task, name, recurrence, and optional time zone.
-3. Deterministic validation converts the draft to canonical recurrence and next-three-fire preview.
-4. Live channel authorization succeeds before the draft is shown.
-5. Chickpea persists only a short-lived confirmation draft and posts its token plus the live-authority disclosure; no active routine exists yet.
-6. The same member sends `!routines confirm <token>` within 15 minutes. The service rechecks channel authority, atomically consumes the token, inserts routine version 1 plus audit event, reserves projected daily and 15-minute slot capacity, and calculates `next_run_at`.
-7. Chickpea posts the stable routine ID and exact `!routines` controls.
+3. Deterministic validation converts the structured interpretation to canonical recurrence and a next-three-fire receipt.
+4. Live channel authorization succeeds before persistence.
+5. In one transaction, Chickpea inserts routine version 1 plus audit event, reserves projected daily and 15-minute slot capacity, and calculates `next_run_at`.
+6. Chickpea posts the stable routine ID, exact interpreted task/schedule/time zone, next three fires, live-authority disclosure, and deterministic controls. If the request is not clear enough to classify and validate, it remains an ordinary conversation and no routine is created.
 
 #### F2. Due occurrence
 
@@ -193,8 +192,8 @@ sequenceDiagram
 
 #### F4. Edit and live authority
 
-1. A current channel member requests an edit and sees a complete new confirmation preview.
-2. Confirmation creates a new immutable revision and routine version and recalculates future occurrences. An already-running occurrence keeps its admitted revision.
+1. A current channel member clearly requests an edit and receives the complete saved task/schedule receipt in the same turn.
+2. The edit transaction creates a new immutable revision and routine version and recalculates future occurrences. An already-running occurrence keeps its admitted revision.
 3. On a later run, Chickpea loads the revision but resolves current channel authority. Newly connected tools can be used if the saved task calls for them; revoked tools fail closed.
 4. If the creator lost membership, the routine transitions to `disabled` before model admission and the channel/admin receive one safe notice.
 
@@ -207,7 +206,7 @@ sequenceDiagram
 
 ### Acceptance Examples
 
-- **AE1 — read routine:** “Every weekday at 9:00 AM America/Los_Angeles, summarize decisions and blockers from this channel.” Confirmation shows the next three zoned instants. Each occurrence is one Workflow run and one top-level post.
+- **AE1 — read routine:** “Every weekday at 9:00 AM America/Los_Angeles, summarize decisions and blockers from this channel.” The one-message creation receipt shows the next three zoned instants. Each occurrence is one Workflow run and one top-level post.
 - **AE2 — write routine:** “Every Friday at 3:00 PM America/Los_Angeles, update the connected project tracker with unresolved blockers and report what changed here.” The saved text authorizes the described write exactly as a live tagged request would. Current credentials and tool policy are resolved at run time.
 - **AE3 — no-op:** “Every hour, check the monitor and post only if its status changed.” The Workflow returns a bounded canonical change key; Chickpea hashes and compares it to the last confirmed-delivery hash. An unchanged result is `no_op`, has usage/run history, and posts nothing.
 - **AE4 — authority expands:** A channel admin connects a project tracker after routine creation. The next occurrence can use it if the saved task requests it; the run's access hash changes and audit records the new resolution without copying credentials.
@@ -220,15 +219,15 @@ sequenceDiagram
 - **AE11 — DST:** A daily local-time routine crosses spring-forward and fall-back fixtures according to R7 and never produces two logical occurrences for one scheduled wall time.
 - **AE12 — Node:** The same creation command on Node returns clear Cloudflare-only messaging and creates no draft or routine.
 - **AE13 — private channel:** A non-member asks `!routines <#private>`. The response does not reveal whether the channel has routines.
-- **AE14 — edit race:** Two members confirm edits from the same version. Exactly one commits; the other receives a version-conflict preview against current state.
+- **AE14 — edit race:** Two members submit edits from the same version. Exactly one commits; the other receives a version-conflict response against current state.
 - **AE15 — delete:** Delete requires an exact ID and second confirmation. The definition is tombstoned, future claims stop, Chickpea-owned task/revision/run snapshot bodies are scrubbed immediately, and body-free audit/run metadata remains subject to retention. Confirmation discloses the separate Slack/provider/backup/Flue-transcript retention boundary.
 
 ### Success Criteria
 
-- A confirmed arbitrary read or write schedule produces at most one logical occurrence per routine/scheduled instant, with exactly one admitted routine version frozen on that occurrence.
+- A saved arbitrary read or write schedule produces at most one logical occurrence per routine/scheduled instant, with exactly one admitted routine version frozen on that occurrence.
 - Every admitted occurrence has one product run record and, when Workflow admission succeeded, one winning inspectable Flue Workflow run ID; any superseded admission attempts remain linked separately.
 - No routine run starts Agent/model/tool work with stale membership, stale credentials, or a frozen connection snapshot.
-- No path allows memory, Slack history, retrieved content, tool output, or trigger metadata to authorize an external action absent from the confirmed saved task.
+- No path allows memory, Slack history, retrieved content, tool output, or trigger metadata to authorize an external action absent from the saved task.
 - Restart, repeated heartbeat, admission crash, overlap, downtime, DST, Slack `429`, and revoked-access tests have deterministic outcomes.
 - Channel members can understand and control routines without Admin; operators can audit every definition and occurrence without raw secrets or prompt/output bodies in generic logs.
 - Node truthfully rejects unsupported scheduling instead of running a non-durable in-process scheduler.
@@ -241,7 +240,7 @@ sequenceDiagram
 - Schedule trigger adapter and fixed Cloudflare heartbeat.
 - Fresh Flue Workflow and Agent execution per occurrence.
 - Live channel authority with no routine-specific permission layer.
-- Conversational draft/confirmation plus deterministic Slack commands.
+- One-message conversational create/edit plus deterministic Slack commands and confirmed deletion.
 - Top-level Slack result/no-op/failure behavior.
 - Product routine/run state, admin Scheduled Work, audit, bounds, reconciliation, and rollout proof.
 
@@ -380,7 +379,7 @@ The heartbeat must query an indexed `next_run_at` range, claim at most 25 rows t
 
 #### KTD-5: App-layer intent parsing, deterministic mutation
 
-- **Decision:** Natural language only produces a short-lived draft. Validation, authorization, confirmation tokens, optimistic versioning, schedule persistence, and controls stay deterministic in application code.
+- **Decision:** Natural language produces schema-bound create/edit fields, then validation, authorization, optimistic versioning, schedule persistence, and controls stay deterministic in application code. Clear create/edit requests persist in that same Slack turn; only deletion creates a short-lived confirmation token.
 - **Evidence:** Existing Agent route does not carry a signed current-user management context into tools; current exact commands bypass model mutation; `repo-observed`.
 - **Consequence:** No routine-management tool is initially exposed to the general Agent, avoiding an unsigned confused-deputy path.
 
@@ -407,12 +406,12 @@ Additive SQLite tables are created by `RoutineStore` on both backends. Do not ad
 | `id` | Opaque stable routine ID |
 | `workspace_id`, `channel_id` | Owning Slack scope; indexed with state/next run |
 | `creator_user_id` | Immutable run-time authorization anchor |
-| `name`, `description`, `task_text` | Confirmed human contract; bounded sizes |
+| `name`, `description`, `task_text` | Saved human contract; bounded sizes |
 | `trigger_kind` | `schedule` in V1; adapter discriminator |
 | `schedule_input`, `schedule_json`, `timezone` | Original expression, versioned canonical schedule, explicit IANA zone |
 | `output_policy` | `post` or `post_on_change`; Workflow may return no-op |
 | `authority_mode` | Literal `live_channel_v1`; documents intentional semantics, not a permission set |
-| `state` | Active/paused/disabled; pre-confirmation drafts live only in `routine_confirmations` |
+| `state` | Active/paused/disabled; deletion confirmations live separately in `routine_confirmations` |
 | `version` | Monotonic optimistic-lock version |
 | `next_run_at`, `last_scheduled_at`, `last_finished_at` | Scheduler cursors in UTC epoch milliseconds |
 | `consecutive_failures` | Auto-pause input |
@@ -423,7 +422,7 @@ Additive SQLite tables are created by `RoutineStore` on both backends. Do not ad
 
 #### `routine_revisions`
 
-Snapshot every confirmed create/edit: routine/version, bounded definition JSON, actor, confirmation receipt ID, timestamp. Never store credentials or resolved context. Confirmed deletion scrubs task/name/description/original schedule from every Chickpea-owned revision while retaining body-free hashes, version, actors, and timestamps for audit.
+Snapshot every create/edit: routine/version, bounded definition JSON, actor, optional deletion-confirmation receipt ID, and timestamp. Never store credentials or resolved context. Confirmed deletion scrubs task/name/description/original schedule from every Chickpea-owned revision while retaining body-free hashes, version, actors, and timestamps for audit.
 
 #### `routine_runs`
 
@@ -450,7 +449,7 @@ Store every admission attempt separately: occurrence ID, monotonic attempt numbe
 
 #### `routine_confirmations`
 
-Store short-lived tokens with at least 128 bits of cryptographic entropy; persist only their hash plus actor, channel, intended action, bounded draft payload, base version, normalized preview hash, expiry, and one-time consumption time. A token is invalid after actor/channel/version mismatch, expires after 15 minutes, and is purged within 24 hours after expiry/consumption.
+Store short-lived deletion tokens with at least 128 bits of cryptographic entropy; persist only their hash plus actor, channel, delete target/base version, preview hash, expiry, and one-time consumption time. Create, edit, and clone never write this table. A deletion token is invalid after actor/channel/version mismatch, expires after 15 minutes, and is purged within 24 hours after expiry/consumption.
 
 #### Indexes and constraints
 
@@ -464,7 +463,7 @@ Store short-lived tokens with at least 128 bits of cryptographic entropy; persis
 
 ```mermaid
 stateDiagram-v2
-    [*] --> active: confirmation draft consumed
+    [*] --> active: validated create saved
     active --> paused: member/admin pause, unknown effect, or 3 attributable failures
     paused --> active: authorized resume
     active --> disabled: creator/access lifecycle failure or explicit disable
@@ -499,7 +498,7 @@ stateDiagram-v2
 
 ```mermaid
 flowchart LR
-    Task["Confirmed saved task"] --> Runtime["Occurrence runtime"]
+    Task["Saved task"] --> Runtime["Occurrence runtime"]
     Channel["Current channel assignment and instructions"] --> Runtime
     Member["Current creator and bot membership"] --> Runtime
     Connections["Current connections, repositories, credentials"] --> Runtime
@@ -544,7 +543,7 @@ The access hash is computed from stable non-secret identifiers and policy versio
 #### Sensitive-content and retention boundary
 
 - Bound names to 80 Unicode code points/320 UTF-8 bytes, descriptions to 280 code points/1,120 bytes, and task text to 8,192 UTF-8 bytes. Reject controls and high-confidence credential patterns using the existing memory-validation approach; direct the user to configure a connection rather than save a secret.
-- Routine lists, metrics, generic audit, and generic logs are body-free. Authorized channel detail and Admin detail may read the active confirmed task from the routine store; neither surface returns provider credentials, raw tool payloads, model output, or Flue transcript bodies.
+- Routine lists, metrics, generic audit, and generic logs are body-free. Authorized channel detail and Admin detail may read the active saved task from the routine store; neither surface returns provider credentials, raw tool payloads, model output, or Flue transcript bodies.
 - Confirmed deletion immediately scrubs Chickpea-owned task/name/description/original-schedule copies from the definition, revisions, confirmation artifacts, and retained run snapshots. Body-free routine tombstone, run metadata, hashes, delivery pointers, and scheduled-work audit remain for 365 days by default, matching the repository's existing audit-retention convention, then may be purged; actor IDs are cleared with that policy.
 - Flue Agent conversations/run streams, Slack source/result messages, provider processing, backups, and external systems are separate data stores. U1 must document beta.8 access/deletion/retention APIs. V1 deletion copy must disclose any transcript that Chickpea cannot erase; do not claim global erasure.
 
@@ -569,7 +568,7 @@ Public errors map these to safe, actionable language. Internal audit may include
 
 | Bound | Launch default | Behavior at limit |
 | --- | --- | --- |
-| Minimum recurrence | 1 hour | Reject draft |
+| Minimum recurrence | 1 hour | Reject before persistence |
 | Active routines | 100 deployment / 20 channel | Reject create/resume |
 | Due claims | 25 per heartbeat | Leave eligible rows for next heartbeat within grace |
 | Concurrent routine runs | 4 deployment / 1 per routine | Defer within grace or skip overlap |
@@ -583,17 +582,17 @@ Public errors map these to safe, actionable language. Internal audit may include
 | Slack history | 200 messages and 7 days | Truncate with explicit prompt marker |
 | Result | Slack-safe 4,000-character rendered contract | Reject as `result_invalid`; do not split into multiple delivery side effects or issue a second model call |
 | Consecutive failures | 3 | Auto-pause and notify |
-| Sensitive field sizes | Name 80 code points/320 bytes; description 280/1,120 bytes; task 8,192 bytes; change key 1,024 bytes | Reject the draft/result before persistence |
+| Sensitive field sizes | Name 80 code points/320 bytes; description 280/1,120 bytes; task 8,192 bytes; change key 1,024 bytes | Reject the interpreted fields/result before persistence |
 | Body-free run/audit metadata | 365 days by default | Purge/clear actor IDs per retention; deletion scrubs product-owned bodies immediately |
 
-Settings live in deployment/operator configuration and apply uniformly. They are not another user-facing authority layer. Schedule validation calculates the maximum number of occurrences in any rolling 24-hour window across the next 370 days, covering a full annual/DST cycle. Collision previews stay compact: at least the next three fires plus every hourly fire within 48 hours, refreshed as slots advance. Immediate conflicts are rejected before confirmation rather than silently changing an exact time; the same rolling-15-minute ceiling is rechecked transactionally for every actual occurrence. Tokens and provider/model cost estimates are recorded after execution; the pre-admission start/concurrency limits are the reliable cross-provider ceiling until a future monetary budget is specified.
+Settings live in deployment/operator configuration and apply uniformly. They are not another user-facing authority layer. Schedule validation calculates the maximum number of occurrences in any rolling 24-hour window across the next 370 days, covering a full annual/DST cycle. Collision previews stay compact: at least the next three fires plus every hourly fire within 48 hours, refreshed as slots advance. Immediate conflicts are rejected before persistence rather than silently changing an exact time; the same rolling-15-minute ceiling is rechecked transactionally for every actual occurrence. Tokens and provider/model cost estimates are recorded after execution; the pre-admission start/concurrency limits are the reliable cross-provider ceiling until a future monetary budget is specified.
 
 ### System-Wide Impact
 
 - **Configuration:** New routine limits/capability settings and Cloudflare trigger; no new secret is required.
 - **Storage:** Additive tables/indexes in the existing app-owned state store. Pre-feature code must continue to boot against them.
 - **Execution:** New discovered Workflow and shared channel runtime assembly. Interactive behavior must remain byte/semantics compatible except for intentional factoring.
-- **Slack:** New intent/draft/command routes and top-level delivery. Ordinary mentions pass a bounded lexical schedule-intent prefilter; only positive candidates pay for the tool-less structured parser, and all other mention/thread routing remains unchanged.
+- **Slack:** New intent/save/command routes and top-level delivery. Ordinary mentions pass a bounded lexical schedule-intent prefilter; only positive candidates pay for the tool-less structured parser, and all other mention/thread routing remains unchanged.
 - **Admin:** Activate the reserved Scheduled Work domain, API, and page; keep Audit Logs subordinate to current navigation.
 - **Security/privacy:** More unattended access increases consequence, not scope. Live scope checks, current credentials, memory distrust, bounded logging, and no fallback become launch gates.
 - **Operations:** Cron/admission/run/delivery metrics and failure notices become required. Node exposes a capability tier instead of a non-durable scheduler.
@@ -671,7 +670,7 @@ Launch quality targets:
 6. Keep the U3 Cron/admission capability flag default-off for existing installations while U7 adds operator settings, deploy verification, and the rollback drill. Node remains unavailable regardless of flag.
 7. Deploy the Cron Trigger with the capability still off, observe a healthy heartbeat after Cloudflare's propagation window, then enable an internal Cloudflare installation with a small deployment cap and one digest plus one reversible write routine.
 8. Require fresh Slack acceptance for create/edit/pause/resume/no-op/failure/revocation and a write against a disposable external target before broader release.
-9. Default-enable only after admission-crash, unknown-write, and duplicate-delivery observability show no unresolved correctness issue and the pilot review explains confirmed versus expired/abandoned drafts plus successful/no-op occurrences versus auto-pauses. Treat low pilot volume qualitatively; do not invent a percentage gate from an unrepresentative sample.
+9. Default-enable only after admission-crash, unknown-write, and duplicate-delivery observability show no unresolved correctness issue and the pilot review explains one-message creates/edits, expired/abandoned deletion confirmations, successful/no-op occurrences, and auto-pauses. Treat low pilot volume qualitatively; do not invent a percentage gate from an unrepresentative sample.
 
 Rollback disables the Cron/admission capability first, preserving definitions and run history. Active Flue runs are not force-retried. Older code must ignore additive tables; forward deployment resumes from stored `next_run_at` using no-catch-up policy.
 
@@ -679,7 +678,7 @@ Rollback disables the Cron/admission capability first, preserving definitions an
 
 | Requirements | Primary units | Required proof |
 | --- | --- | --- |
-| R1–R8, R16–R17 | U2, U3, U5 | Domain/revision/confirmation parity; schedule/DST goldens; Slack confirmation |
+| R1–R8, R16–R17 | U2, U3, U5 | Domain/revision/save parity; schedule/DST goldens; one-message Slack persistence and confirmed deletion |
 | R9–R15, R40–R43 | U1, U4, U7 | Live-auth matrix; generated-route denial; secret/credential/no-retry tests; resource bounds |
 | R18–R25 | U2, U3, U4 | Repeated-heartbeat and admission fault matrix; atomic begin; no retry after running |
 | R26–R32 | U5 | Signed fake-Slack create/control/context/delivery/no-op/failure matrix |
@@ -697,18 +696,18 @@ Rollback disables the Cron/admission capability first, preserving definitions an
 - **Test scenarios:** Generated default handler composition; scheduled event local endpoint; invoke admission; initializer timing; run input match and bounded absence proof; repeated candidate run IDs; external direct invoke/list/get/stream requests with no/wrong/internal token; transcript retention/deletion behavior; deadline cancellation; Slack success/timeout-before-response/timeout-after-submit/`429`; spring/fall DST golden schedules; pathological cron and sub-hour rejection.
 - **Verification:** Build and execute in actual workerd/local Wrangler, not Node mocks alone. Record selected APIs/library and any change to KTD-4/KTD-6/KTD-7. If authored scheduled-handler composition cannot be proven, stop and revise U3 to Scheduler Alternative B (a new partitioned Durable Object alarm class/migration) before any dependent unit; do not improvise a non-durable timer. No live external write is part of the spike.
 
-### U2. Add routine domain state, revisions, confirmations, audit, and RPC
+### U2. Add routine domain state, revisions, deletion confirmations, audit, and RPC
 
 - **Outcome:** Target-neutral, transactionally correct definition/run state is available before any scheduler or model call.
 - **Code paths:** Add `src/routines/types.ts`, `src/routines/store.ts`, `src/routines/service.ts`, `src/routines/validation.ts`, `src/routines/ids.ts`, and `src/routines/limits.ts`; extend `src/config/state-rpc.ts`, `src/config/cf-state-proxies.ts`, `src/config/state-backend.ts`, `src/cloudflare.ts`, `src/audit/types.ts`, and `src/audit/store.ts` only where the established contracts require it.
-- **Work:** Create additive tables/indexes, stable error codes, transaction methods, UTF-8/secret validation, optimistic versions, immutable revisions, confirmation receipts, tombstones, state transitions, unique occurrence keys, multi-attempt admission records with one winning primary run, leases, change-key hashes, missed counts, start/slot reservations, failure streaks, and sanitized scheduled-work events. Keep Node sibling SQLite and Cloudflare singleton DO semantics identical. Implement product-body scrubbing separately from body-free 365-day run/audit retention.
+- **Work:** Create additive tables/indexes, stable error codes, transaction methods, UTF-8/secret validation, optimistic versions, immutable revisions, direct create/edit saves, deletion-confirmation receipts, tombstones, state transitions, unique occurrence keys, multi-attempt admission records with one winning primary run, leases, change-key hashes, missed counts, start/slot reservations, failure streaks, and sanitized scheduled-work events. Keep Node sibling SQLite and Cloudflare singleton DO semantics identical. Implement product-body scrubbing separately from body-free 365-day run/audit retention.
 - **Test scenarios:** Fresh/existing DB boot; byte/code-point/control/secret validation and near misses; create/edit race; token 15-minute expiry/replay/wrong actor/channel/version and 24-hour purge; pause/resume/disable/delete; projected-start reservation conflict; unique due/run-now occurrences; active-run uniqueness; claim rollback with audit failure; invalid state transitions; change-key baseline update only after delivery; aggregate missed count; tombstone/body scrubbing/365-day metadata retention; public-error bounds; raw DB scan for forbidden secrets/output; Node/DO RPC parity.
 - **Test files:** Add `tests/routine-store.test.ts`, `tests/routine-service.test.ts`, and `tests/routine-state-rpc.test.ts`; extend audit/parity fixtures.
 - **Verification:** `npm run typecheck`; focused tests under Node 24; actual workerd state parity; pre-feature code boots against the additive DB fixture.
 
 ### U3. Implement deterministic normalization, heartbeat claims, bounds, and admission reconciliation
 
-- **Outcome:** Cloudflare can convert confirmed schedules to unique due occurrences and safely link each to at most one logical Workflow execution.
+- **Outcome:** Cloudflare can convert saved schedules to unique due occurrences and safely link each to at most one logical Workflow execution.
 - **Code paths:** Add `src/routines/schedule.ts`, `src/routines/scheduler.ts`, `src/routines/admission.ts`, and `src/routines/scheduler-adapter.ts`; add the chosen dependency; modify `src/cloudflare.ts` and `wrangler.jsonc`.
 - **Work:** Normalize schedules/time zones, calculate next instants plus the 370-day maximum rolling-day count, persist and refresh a compact 48-hour/next-three collision preview, recheck rolling-15-minute capacity at actual occurrence creation, enforce R4/R7/R14, claim indexed due rows oldest-first, aggregate missed slots, skip overlap, take a two-minute admission lease, call `invoke(...)`, attach run IDs, reconcile at most 100 recent 30-minute Workflow runs, and expose Cloudflare/Node capability responses. Add the deployment capability flag in this unit, default it off, and make `scheduled()` return before any claim while disabled. Do not call model or Slack from the claim transaction.
 - **Test scenarios:** UTC and zoned schedules; next-three preview; DST gaps/folds; 370-day rate validation; bounded reservation persistence and refresh; preview and actual-start rolling-15-minute enforcement without jitter; 240 scheduled/10 run-now/250 hard caps; invalid zone/expression; repeated/out-of-order heartbeat; 15-minute propagation/downtime; 25-row batches; oldest-due ordering; global/per-channel caps; overlap; edit/pause/delete during claim; invoke failure before/after admission; reconciliation attach/proven absence/ambiguous or unavailable scan; Node unavailability.
@@ -724,12 +723,12 @@ Rollback disables the Cron/admission capability first, preserving definitions an
 - **Test files:** Add `tests/routine-runtime.test.ts`, `tests/routine-workflow.test.ts`, and `tests/routine-prompt.test.ts`; extend `tests/flue-agent-model.test.ts`, `tests/memory-tool-policy.test.ts`, `tests/api-connection-runtime.test.ts`, `tests/slack-thread-snapshot.test.ts`, and sandbox tests.
 - **Verification:** Spies prove no Agent/tool construction before live auth and begin lock; interactive parity suite remains green; each occurrence has a fresh Agent identity and a linked Flue run.
 
-### U5. Add conversational drafts, exact channel controls, bounded context, and routine delivery
+### U5. Add conversational saves, exact channel controls, bounded context, and routine delivery
 
 - **Outcome:** Channel members can safely create/control routines and understand every visible result without Admin.
 - **Code paths:** Add `src/routines/intent.ts`, `src/routines/commands.ts`, `src/routines/slack-context.ts`, `src/routines/delivery.ts`, and `src/routines/message-format.ts`; integrate through `src/channels/slack.ts`, `src/slack/run-turn.ts`, `src/slack/message-format.ts`, and `src/slack/web-client-presenter.ts` factoring only.
-- **Work:** Add a bounded lexical schedule/create/edit prefilter before ordinary Agent dispatch; only a positive candidate calls the tool-less structured intent parser, and a parser non-match falls through to the unchanged interactive turn. Produce validated drafts and confirmation artifacts, route `!routines confirm/cancel` and all controls, enforce live current/mentioned-channel scope, render previews/lists/details/failures and deletion-retention disclosure, load bounded top-level channel history, compare hashed change keys, post structured Workflow results once, store delivery receipts, suppress no-op, and deduplicate terminal notices.
-- **Test scenarios:** Create/read/write/no-op/post-on-change prompts; examples/quotes/ambiguous chatter; omitted/explicit time zone; next-three preview; token expiry/replay/confirm/cancel; every command and alias; clone transfers the creator anchor through a new confirmation; mentioned public/private channel; absent versus cross-channel unauthorized ID produces the same response for show/control/run/delete; creator versus other member controls; run-now requesting actor; last-five safe outcomes; edit race; delete confirmation and body/Flue-retention copy; first/same/changed key; top-level post; Slack `429`; delivery timeout/unknown; over-4,000-character rejection; context paging/truncation; failure and auto-pause notice dedupe; Node unavailable text.
+- **Work:** Add a bounded lexical schedule/create/edit prefilter before ordinary Agent dispatch; only a positive candidate calls the tool-less structured intent parser, and a parser non-match falls through to the unchanged interactive turn. Persist validated create/edit requests directly through a deterministic state transaction, route deletion-only `!routines confirm/cancel` plus all controls, enforce live current/mentioned-channel scope, render saved receipts/lists/details/failures and deletion-retention disclosure, load bounded top-level channel history, compare hashed change keys, post structured Workflow results once, store delivery receipts, suppress no-op, and deduplicate terminal notices.
+- **Test scenarios:** One-message create/edit/clone for read/write/no-op/post-on-change prompts; examples/quotes/ambiguous chatter; omitted/explicit time zone; next-three saved receipt; deletion-token expiry/replay/confirm/cancel; every command and alias; clone transfers the creator anchor immediately; mentioned public/private channel; absent versus cross-channel unauthorized ID produces the same response for show/control/run/delete; creator versus other member controls; run-now requesting actor; last-five safe outcomes; edit race; delete confirmation and body/Flue-retention copy; first/same/changed key; top-level post; Slack `429`; delivery timeout/unknown; over-4,000-character rejection; context paging/truncation; failure and auto-pause notice dedupe; Node unavailable text.
 - **Test files:** Add `tests/routine-intent.test.ts`, `tests/routine-commands.test.ts`, `tests/routine-slack-context.test.ts`, and `tests/routine-delivery.test.ts`; extend `tests/slack-formatting.test.ts`, `tests/web-client-presenter.test.ts`, `tests/turn-normalization.test.ts`, and fake Slack parity scenarios.
 - **Verification:** Signed fake-Slack Node/workerd fixtures prove no model-produced direct mutation, no unauthorized enumeration, no duplicate post, no synthetic thread, and exact current-authority disclosure.
 
@@ -737,8 +736,8 @@ Rollback disables the Cron/admission capability first, preserving definitions an
 
 - **Outcome:** An operator can inspect and control every routine/run from the existing Audit Logs experience.
 - **Code paths:** Add `src/admin/routines-api.ts`; extend `src/admin/routes.ts`, `src/admin/page.ts`, `src/admin/memory-api.ts` shared helpers only if generalized cleanly, and `src/audit/store.ts` query support.
-- **Work:** Add authenticated paginated routine/run/detail/revision endpoints and control actions; activate `/admin/api/audit/scheduled_work/events`; enable the Scheduled Work tab with filters, state badges, next fires, live-authority disclosure, run timeline, usage/resources, safe failures, Slack delivery links, Flue run identifiers, confirmations, and target capability state.
-- **Test scenarios:** Auth absent/wrong/cookie/bearer; same-origin enforcement for cookie-authenticated unsafe methods; route validation; filter/pagination; private scope safe labels; routine/run/revision detail; pause/resume/disable/delete/version conflict; confirmation disclosure; access-hash-only view; no prompt/tool/output/secret leakage; generated Flue routes remain inaccessible; empty/unavailable/error states; deep link/popstate; narrow viewport/accessibility; no inert controls.
+- **Work:** Add authenticated paginated routine/run/detail/revision endpoints and control actions; activate `/admin/api/audit/scheduled_work/events`; enable the Scheduled Work tab with filters, state badges, next fires, live-authority disclosure, run timeline, usage/resources, safe failures, Slack delivery links, Flue run identifiers, deletion confirmations, and target capability state.
+- **Test scenarios:** Auth absent/wrong/cookie/bearer; same-origin enforcement for cookie-authenticated unsafe methods; route validation; filter/pagination; private scope safe labels; routine/run/revision detail; pause/resume/disable/delete/version conflict; deletion-confirmation disclosure; access-hash-only view; no prompt/tool/output/secret leakage; generated Flue routes remain inaccessible; empty/unavailable/error states; deep link/popstate; narrow viewport/accessibility; no inert controls.
 - **Test files:** Add `tests/admin-scheduled-work-routes.test.ts`; extend `tests/admin-routes.test.ts`, `tests/admin-page.test.ts`, and `scripts/verify-admin-ui.mjs`.
 - **Verification:** Headless DOM and API contract tests cover all states; capture scans show no forbidden content; control actions emit exactly one audit event and respect optimistic versioning.
 
@@ -746,7 +745,7 @@ Rollback disables the Cron/admission capability first, preserving definitions an
 
 - **Outcome:** Unattended work is bounded, observable, reversible, and honest on each deployment target.
 - **Code paths:** Add `src/routines/telemetry.ts` and retention/reconciliation service methods; extend `src/config/settings-store.ts`, `src/config/types.ts`, `src/config/runtime-target.ts`, `.env.example`, `README.md`, `scripts/verify-cf-smoke.mjs`, `scripts/verify-durability.mjs`, and deployment epilogue checks.
-- **Work:** Expose operator settings/defaults for the U3 capability and bounds, capacity reservations, auto-pause, safe notifications, cleanup of expired drafts/leases, 365-day body-free run/audit retention, structured metrics/log redaction, generated-route guards, Cron capability checks, rollback behavior, and Node messaging. Deployment verification must reject an enabled Cloudflare routine capability when Cron/Workflow/state binding or internal route protection is absent.
+- **Work:** Expose operator settings/defaults for the U3 capability and bounds, capacity reservations, auto-pause, safe notifications, cleanup of expired deletion confirmations and leases, 365-day body-free run/audit retention, structured metrics/log redaction, generated-route guards, Cron capability checks, rollback behavior, and Node messaging. Deployment verification must reject an enabled Cloudflare routine capability when Cron/Workflow/state binding or internal route protection is absent.
 - **Test scenarios:** Every limit/reservation; immediate unknown-outcome pause and three-failure auto-pause/reset/excluded infrastructure classes; access disable; stale lease retention; product body scrub versus separate Flue transcript; 365-day run/audit cleanup without orphaning required metadata; log redaction; settings validation; generated-route guard missing; disabled capability; Cloudflare binding/Cron mismatch; heartbeat health before enable after propagation; Node refusal; backward/forward DB compatibility; rollback/no-catch-up recovery.
 - **Test files:** Add `tests/routine-telemetry.test.ts` and `tests/routine-retention.test.ts`; extend `tests/settings-store.test.ts`, `tests/deploy-with-epilogue.test.ts`, `tests/parity/scenarios.ts`, and verification scripts.
 - **Verification:** Offline captured logs contain only approved identifiers/codes/counts; capability matrix and rollback drill pass; no product-changing live run occurs in automated deploy epilogue.
@@ -800,13 +799,13 @@ Focused pre-merge gates:
 3. **Admission fault matrix:** kill/fail before invoke, after invoke/before attach, after attach/before Workflow begin, after begin/before Agent, during idempotent and non-idempotent tool sends, after result/before delivery, and after delivery/before receipt. Assert the policy at each boundary and never blindly repeat execution.
 4. **Authority matrix:** channel/member/bot/assignment/profile/connection/repository/credential changes between create, claim, and Workflow begin. Assert live resolution and no fallback.
 5. **Schedule matrix:** zones, DST folds/gaps, repeated heartbeat, clock skew, downtime, edit/pause/delete races, overlap, grace, caps, and next-three previews.
-6. **Slack matrix:** signed create/confirm/list/edit/pause/resume/disable/run/delete; cross-channel membership; private non-enumeration; top-level delivery; no-op silence; failure dedupe; rate limit and ambiguous delivery.
-7. **Security/privacy:** malicious saved/context/memory/tool payloads, credential-pattern rejection, explicit-write boundary, shared-channel versus actor-personal credentials, confirmation checks, Admin auth/CSRF, unauthenticated generated Workflow/Agent/run routes, response/log/DB secret scans, product-body deletion disclosure, and access hashes not usable as authorization.
+6. **Slack matrix:** signed one-message create/edit/clone, list/pause/resume/disable/run, and confirmed delete; cross-channel membership; private non-enumeration; top-level delivery; no-op silence; failure dedupe; rate limit and ambiguous delivery.
+7. **Security/privacy:** malicious saved/context/memory/tool payloads, credential-pattern rejection, explicit-write boundary, shared-channel versus actor-personal credentials, deletion-confirmation checks, Admin auth/CSRF, unauthenticated generated Workflow/Agent/run routes, response/log/DB secret scans, product-body deletion disclosure, and access hashes not usable as authorization.
 8. **Node capability:** creation, edit, resume, and run-now fail with stable `routines_unavailable_on_target` messaging; list/show/pause/disable/delete remain available, and no in-process timer or Croner is bundled.
 
 Live acceptance is a later, separately authorized release gate, not part of this planning task. It must use a fresh Slack channel and disposable/reversible external targets and report separately:
 
-- creation/confirmation/control proof;
+- one-message creation/edit, confirmed deletion, and control proof;
 - one scheduled read and one scheduled write proof;
 - no-op proof;
 - credential revocation and creator-removal proof;
@@ -836,7 +835,7 @@ Each unit must include code, focused tests, cross-lane tests where applicable, f
 | --- | --- | --- |
 | Arbitrary write succeeds but response is lost | Duplicate external effect if blindly retried | No auto-retry after `running`; unknown-outcome state; provider idempotency/receipts where available; manual inspection |
 | Invoke succeeds before app stores run ID | Duplicate Workflow admission | Deterministic occurrence input, bounded Flue reconciliation, atomic Workflow begin |
-| Channel capability changes silently widen a routine | Surprising new ability | Intentional full-live-authority contract; confirmation/detail disclosure; access-hash changes and audit |
+| Channel capability changes silently widen a routine | Surprising new ability | Intentional full-live-authority contract; saved-receipt/detail disclosure; access-hash changes and audit |
 | Creator/channel access is stale | Unauthorized unattended work | Live fail-closed preflight immediately before Agent/tool construction; no cached credential fallback |
 | Heartbeat scan grows | Cron CPU/time or delayed work | Indexed due query, 25 batch, 100 active cap, measurements; later scheduler partition/DO alarm only on evidence |
 | Static Cron propagation/downtime misses jobs | Stale or bursty writes | No catch-up, 15-minute grace, skipped counts, next-future calculation |
@@ -844,7 +843,7 @@ Each unit must include code, focused tests, cross-lane tests where applicable, f
 | Existing Agent refactor regresses live tags | Core product breakage | Extract-only shared runtime unit, broad current Slack/parity suite before routine enablement |
 | Slack delivery ambiguity | Duplicate or absent result | U1 API proof, durable lease/receipt, no Workflow retry, `delivery_unknown` visibility |
 | Usage cost units differ by provider | Misleading spend/audit | Store tokens as authoritative; label cost estimate/unit/model; enforce starts/concurrency/runtime before run |
-| Model interprets schedule or management maliciously | Unauthorized persistence | Model only drafts; deterministic validation, live auth, one-time confirmation, optimistic version |
+| Model interprets schedule or management maliciously | Unauthorized persistence | Tool-less schema-bound interpretation, deterministic validation, live auth, idempotent save, and optimistic version; ambiguous intent does not persist |
 | Cloudflare-only feature looks portable | Node users assume durability | Explicit capability response, docs/admin banner, no in-process scheduler; target-neutral domain seam |
 
 ## Recommended Handoff

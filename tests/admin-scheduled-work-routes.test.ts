@@ -31,17 +31,12 @@ function definition(): RoutineDefinitionContent {
 async function seededRoutine(store: SqliteRoutineStore, now: () => number = () => NOW) {
   const service = new RoutineService(store, {
     now, routineId: () => 'routine_admin',
-    confirmationId: () => 'rconfirm_admin', token: () => 'confirm-admin',
   });
-  const confirmation = await service.createConfirmation({
+  return service.save({
     action: 'create', actorId: 'U_CREATOR', workspaceId: 'T_TEST', channelId: 'C_TEST',
     definition: definition(), nextRunAt: NOW + 3_600_000, projectedDailyStarts: 5,
     reservations: [{ windowStart: NOW + 3_600_000, count: 1 }],
-  });
-  return service.confirm({
-    token: confirmation.token, actorId: 'U_CREATOR', workspaceId: 'T_TEST', channelId: 'C_TEST',
-    previewHash: confirmation.previewHash, idempotencyKey: 'seed-routine-admin',
-  });
+  }, 'seed-routine-admin');
 }
 
 test('Scheduled Work APIs are admin-authenticated, body-safe, filterable, and controllable', async () => {

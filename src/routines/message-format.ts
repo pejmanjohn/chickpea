@@ -40,42 +40,34 @@ export function renderRoutineDetail(routine: RoutineDefinition, runs: readonly R
   ].join('\n');
 }
 
-export function renderRoutineConfirmation(input: {
-  draft: RoutineConfirmationDraft;
+export function renderRoutineDeletionConfirmation(input: {
+  draft: Extract<RoutineConfirmationDraft, { action: 'delete' }>;
   token: string;
-  expiresAt: number;
-  timezoneDefaulted?: boolean;
-  creatorUserId?: string;
 }): string {
-  if (input.draft.action === 'delete') {
-    return [
-      `Delete routine \`${input.draft.routineId}\`?`,
-      'Its saved task body will be scrubbed. Body-free run and audit metadata remain for up to 365 days, while Flue may retain its separate execution history.',
-      `Confirm with \`!routines confirm ${input.token}\` or cancel with \`!routines cancel ${input.token}\`.`,
-    ].join('\n');
-  }
-  const { definition } = input.draft;
   return [
-    `*${input.draft.action === 'create' ? 'Create' : 'Edit'} routine preview*`,
-    `Name: *${escapeSlackControlCharacters(definition.name)}*`,
-    `Schedule: \`${definition.scheduleInput}\` (${definition.timezone})${input.timezoneDefaulted ? ' — proposed from your Slack profile, or UTC when unavailable' : ''}`,
-    `Next three: ${input.draft.reservations.slice(0, 3).map((item) => formatInstant(item.windowStart, definition.timezone)).join(' · ')}`,
-    ...(input.creatorUserId ? [`Creator: <@${input.creatorUserId}>`] : []),
-    `Task: ${escapeSlackControlCharacters(definition.taskText)}`,
-    `Output: ${definition.outputPolicy === 'post_on_change' ? 'post only when the change key changes' : 'post every successful result'}`,
-    'Authority: this routine uses this channel\'s current Chickpea access each time it runs. Membership, profile, connections, repositories, and credentials are rechecked at run time.',
-    'Resource limits: at most one active occurrence for this routine; deployment-wide run, model, tool, and sandbox ceilings also apply.',
-    'Tools that require a separate just-in-time human confirmation cannot run unattended; that occurrence fails safely.',
-    'The routine may perform writes when this saved task requests them. Untrusted history, memory, fetched content, and trigger data cannot widen the saved task.',
-    `Confirm within 15 minutes with \`!routines confirm ${input.token}\` or cancel with \`!routines cancel ${input.token}\`.`,
+    `Delete routine \`${input.draft.routineId}\`?`,
+    'Its saved task body will be scrubbed. Body-free run and audit metadata remain for up to 365 days, while Flue may retain its separate execution history.',
+    `Confirm with \`!routines confirm ${input.token}\` or cancel with \`!routines cancel ${input.token}\`.`,
   ].join('\n');
 }
 
-export function renderRoutineCreated(routine: RoutineDefinition): string {
+export function renderRoutineSaved(
+  routine: RoutineDefinition,
+  input: { action: 'create' | 'edit'; timezoneDefaulted?: boolean },
+): string {
   return [
-    `Routine *${escapeSlackControlCharacters(routine.name)}* is ${routine.state}.`,
+    `Routine *${escapeSlackControlCharacters(routine.name)}* was ${input.action === 'create' ? 'created' : 'updated'} and is *${routine.state}*.`,
     `ID: \`${routine.id}\``,
-    `Schedule: \`${routine.scheduleInput}\` (${routine.timezone})`,
+    `Schedule: \`${routine.scheduleInput}\` (${routine.timezone})${input.timezoneDefaulted ? ' — selected from your Slack profile, or UTC when unavailable' : ''}`,
+    `Next three: ${routine.reservationWindows.slice(0, 3).map((item) => formatInstant(item.windowStart, routine.timezone)).join(' · ')}`,
+    `Task: ${escapeSlackControlCharacters(routine.taskText)}`,
+    `Output: ${routine.outputPolicy === 'post_on_change' ? 'post only when the change key changes' : 'post every successful result'}`,
+    `Creator: <@${routine.creatorUserId}>`,
+    'This routine uses this channel\'s current Chickpea access each time it runs.',
+    'Current channel membership, profile, connections, repositories, credentials, and policy are rechecked whenever it runs.',
+    'Resource limits: at most one active occurrence for this routine; deployment-wide run, model, tool, and sandbox ceilings also apply.',
+    'Tools that require separate just-in-time human confirmation cannot run unattended; that occurrence fails safely.',
+    'The routine may perform writes when this saved task requests them. Untrusted history, memory, fetched content, and trigger data cannot widen the saved task.',
     'Controls: `!routines show <id>`, `pause`, `resume`, `disable`, `run`, `clone`, or `delete`.',
   ].join('\n');
 }
@@ -86,7 +78,7 @@ export function renderRoutineHelp(): string {
     '`!routines` or `!routines <#channel>`',
     '`!routines show <id>`',
     '`!routines pause|resume|disable|run|clone|delete <id>`',
-    '`!routines confirm|cancel <token>`',
+    '`!routines confirm|cancel <token>` — only after a delete request',
     'To create or edit one, ask naturally—for example: “Every weekday at 9am America/Los_Angeles, summarize new support requests and post the digest here.”',
   ].join('\n');
 }

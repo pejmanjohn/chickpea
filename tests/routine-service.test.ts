@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { RoutineService } from '../src/routines/service.ts';
+import type { RoutineSaveRequest } from '../src/routines/service.ts';
 import { hashRoutineValue } from '../src/routines/ids.ts';
 import { SqliteRoutineStore } from '../src/routines/store.ts';
 import type { RoutineDefinitionContent } from '../src/routines/types.ts';
@@ -23,16 +24,21 @@ function definition(): RoutineDefinitionContent {
   };
 }
 
-test('service persists only a short-lived draft until the same actor confirms it', async () => {
+test('service saves a validated create in one operation without a user confirmation step', async () => {
   const store = new SqliteRoutineStore(':memory:', () => NOW);
+  let routineIds = 0;
+  let tokenCalls = 0;
   const service = new RoutineService(store, {
     now: () => NOW,
-    routineId: () => 'routine_service',
+    routineId: () => `routine_service_${routineIds++}`,
     confirmationId: () => 'rconfirm_service',
-    token: () => 'secret-confirmation-token',
+    token: () => {
+      tokenCalls += 1;
+      return 'secret-confirmation-token';
+    },
   });
   try {
-    const receipt = await service.createConfirmation({
+    const request: RoutineSaveRequest = {
       action: 'create',
       actorId: 'U_MEMBER',
       workspaceId: 'T_TEST',
@@ -41,27 +47,21 @@ test('service persists only a short-lived draft until the same actor confirms it
       nextRunAt: NEXT,
       projectedDailyStarts: 5,
       reservations: [{ windowStart: NEXT, count: 1 }],
-    });
+    };
+    const routine = await service.save(request, 'routine:service:create');
+    const replay = await service.save(request, 'routine:service:create');
 
-    assert.equal((await store.listRoutines()).length, 0);
-    assert.equal(receipt.token, 'secret-confirmation-token');
-    assert.equal(receipt.expiresAt, NOW + 15 * 60 * 1_000);
-    assert.equal(await store.getConfirmation(receipt.token), undefined);
+    assert.equal((await store.listRoutines()).length, 1);
     assert.equal(
-      (await store.getConfirmation(hashRoutineValue(receipt.token)))?.id,
-      receipt.confirmationId,
+      await store.getConfirmation(hashRoutineValue('secret-confirmation-token')),
+      undefined,
     );
-
-    const routine = await service.confirm({
-      token: receipt.token,
-      actorId: 'U_MEMBER',
-      workspaceId: 'T_TEST',
-      channelId: 'C_TEST',
-      previewHash: receipt.previewHash,
-      idempotencyKey: 'routine:service:confirm',
-    });
-    assert.equal(routine.id, 'routine_service');
+    assert.equal(tokenCalls, 0);
+    assert.equal(routine.id, 'routine_service_0');
+    assert.deepEqual(replay, routine);
     assert.equal(routine.outputPolicy, 'post_on_change');
+    assert.equal((await store.listRevisions(routine.id)).length, 1);
+    assert.equal((await store.listAuditEvents({ subjectId: routine.id })).length, 1);
   } finally {
     store.close();
   }
@@ -77,22 +77,18 @@ test('service binds edits and deletions to the current optimistic version', asyn
     token: () => `token-versioned-${confirmation}`,
   });
   try {
-    const create = await service.createConfirmation({
+    const routine = await service.save({
       action: 'create', actorId: 'U_MEMBER', workspaceId: 'T_TEST', channelId: 'C_TEST',
       definition: definition(), nextRunAt: NEXT, projectedDailyStarts: 5,
       reservations: [{ windowStart: NEXT, count: 1 }],
-    });
-    const routine = await service.confirm({
-      token: create.token, actorId: 'U_MEMBER', workspaceId: 'T_TEST', channelId: 'C_TEST',
-      previewHash: create.previewHash, idempotencyKey: 'create-versioned',
-    });
+    }, 'create-versioned');
     await assert.rejects(
-      () => service.createConfirmation({
+      () => service.save({
         action: 'edit', actorId: 'U_MEMBER', workspaceId: 'T_TEST', channelId: 'C_TEST',
         routineId: routine.id, expectedVersion: 99, definition: definition(),
         nextRunAt: NEXT, projectedDailyStarts: 5,
         reservations: [{ windowStart: NEXT, count: 1 }],
-      }),
+      }, 'edit-stale'),
       /changed/i,
     );
     const deletion = await service.createConfirmation({

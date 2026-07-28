@@ -61,6 +61,7 @@ import {
   type RoutineRunFilter,
   type RoutineMaintenanceResult,
   type RoutineStore,
+  type SaveRoutineInput,
   type ResolveRoutineAdmissionInput,
   type StartRoutineAdmissionInput,
   type TransitionRoutineRunInput,
@@ -497,6 +498,9 @@ export class CfRoutineStore implements RoutineStore {
   }
   async confirm(input: ConfirmRoutineInput): Promise<RoutineDefinition> {
     return this.requiredRoutine(await this.execute({ kind: 'confirm', input }));
+  }
+  async save(input: SaveRoutineInput): Promise<RoutineDefinition> {
+    return this.requiredRoutine(await this.execute({ kind: 'save', input }));
   }
   async purgeConfirmations(): Promise<number> {
     const response = await this.execute({ kind: 'purge_confirmations' });

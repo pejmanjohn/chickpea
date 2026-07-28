@@ -41,6 +41,7 @@ import {
   type RoutineRunStatus,
   type RoutineScheduleReservation,
   type RoutineStore,
+  type SaveRoutineInput,
   type ResolveRoutineAdmissionInput,
   type StartRoutineAdmissionInput,
   type TransitionRoutineRunInput,
@@ -215,6 +216,8 @@ export class RoutineStoreLogic {
         return { kind: 'boolean', value: this.cancelConfirmation(request.input) };
       case 'confirm':
         return { kind: 'routine', routine: this.confirm(request.input) };
+      case 'save':
+        return { kind: 'routine', routine: this.save(request.input) };
       case 'purge_confirmations':
         return { kind: 'purged', count: this.purgeConfirmations() };
       case 'cleanup_retention':
@@ -329,6 +332,25 @@ export class RoutineStoreLogic {
     });
   }
 
+  save(input: SaveRoutineInput): RoutineDefinition {
+    validateRoutineScope(input.workspaceId, input.channelId, input.actorId);
+    assertIdempotencyKey(input.idempotencyKey);
+    if (!['member', 'operator', 'system'].includes(input.actorClass)) {
+      throw routineError('routine_save_invalid', 'Routine save is invalid.');
+    }
+    const draft = validateDraft(input.draft);
+    if (draft.action === 'delete') {
+      throw routineError('routine_confirmation_required', 'Routine deletion requires confirmation.');
+    }
+    return this.db.transaction(() => {
+      const replay = this.audit.findByIdempotencyKey(input.idempotencyKey);
+      if (replay?.subjectId) {
+        return required(this.getRoutine(replay.subjectId), 'Saved routine replay was unavailable.');
+      }
+      return this.applySavedDraft(draft, input, null, this.now());
+    });
+  }
+
   confirm(input: ConfirmRoutineInput): RoutineDefinition {
     validateRoutineScope(input.workspaceId, input.channelId, input.actorId);
     assertIdempotencyKey(input.idempotencyKey);
@@ -356,109 +378,17 @@ export class RoutineStoreLogic {
       const at = this.now();
       const draft = confirmation.draft;
       let routine: RoutineDefinition;
-      if (draft.action === 'create') {
-        if (this.getRoutine(draft.routineId)) {
-          throw routineError('routine_exists', 'Routine already exists.');
-        }
-        this.assertCapacity(
-          input.workspaceId,
-          input.channelId,
-          draft.projectedDailyStarts,
-          draft.reservations,
-        );
-        const definition = validateRoutineDefinition(draft.definition);
-        this.insertRoutine({
-          id: draft.routineId,
-          workspaceId: input.workspaceId,
-          channelId: input.channelId,
-          creatorUserId: input.actorId,
-          definition,
-          nextRunAt: draft.nextRunAt,
-          projectedDailyStarts: draft.projectedDailyStarts,
-          reservations: draft.reservations,
-          actorId: input.actorId,
-          at,
-        });
-        this.replaceReservations(draft.routineId, draft.reservations);
-        this.insertRevision(
-          draft.routineId,
-          1,
-          definition,
-          input.actorId,
-          confirmation.actorClass,
+      if (draft.action !== 'delete') {
+        routine = this.applySavedDraft(
+          draft,
+          {
+            actorId: input.actorId,
+            actorClass: confirmation.actorClass,
+            workspaceId: input.workspaceId,
+            channelId: input.channelId,
+            idempotencyKey: input.idempotencyKey,
+          },
           confirmation.id,
-          at,
-        );
-        routine = required(this.getRoutine(draft.routineId), 'Routine was not readable after create.');
-        this.appendRoutineAudit(
-          input.idempotencyKey,
-          'routine.created',
-          routine,
-          input.actorId,
-          confirmation.actorClass,
-          null,
-          definitionHash(definition),
-          at,
-        );
-      } else if (draft.action === 'edit') {
-        const current = this.requiredMutableRoutine(draft.routineId, draft.expectedVersion);
-        if (current.workspaceId !== input.workspaceId || current.channelId !== input.channelId) {
-          throw confirmationError();
-        }
-        const definition = validateRoutineDefinition(draft.definition);
-        if (current.state === 'active') {
-          this.assertCapacity(
-            current.workspaceId,
-            current.channelId,
-            draft.projectedDailyStarts,
-            draft.reservations,
-            current.id,
-          );
-        }
-        const nextVersion = current.version + 1;
-        this.db.run(
-          `UPDATE routines SET name = ?, description = ?, task_text = ?, trigger_kind = ?,
-             schedule_input = ?, schedule_json = ?, timezone = ?, output_policy = ?,
-             authority_mode = ?, version = ?, next_run_at = ?, projected_daily_starts = ?,
-             reservation_windows_json = ?, updated_at = ?, updated_by = ?
-           WHERE id = ? AND version = ? AND deleted_at IS NULL`,
-          definition.name,
-          definition.description,
-          definition.taskText,
-          definition.triggerKind,
-          definition.scheduleInput,
-          definition.scheduleJson,
-          definition.timezone,
-          definition.outputPolicy,
-          definition.authorityMode,
-          nextVersion,
-          draft.nextRunAt,
-          draft.projectedDailyStarts,
-          JSON.stringify(draft.reservations),
-          at,
-          input.actorId,
-          current.id,
-          current.version,
-        );
-        if (current.state === 'active') this.replaceReservations(current.id, draft.reservations);
-        this.insertRevision(
-          current.id,
-          nextVersion,
-          definition,
-          input.actorId,
-          confirmation.actorClass,
-          confirmation.id,
-          at,
-        );
-        routine = required(this.getRoutine(current.id), 'Routine was not readable after edit.');
-        this.appendRoutineAudit(
-          input.idempotencyKey,
-          'routine.edited',
-          routine,
-          input.actorId,
-          confirmation.actorClass,
-          definitionHash(current),
-          definitionHash(definition),
           at,
         );
       } else {
@@ -526,6 +456,125 @@ export class RoutineStoreLogic {
       );
       return routine;
     });
+  }
+
+  private applySavedDraft(
+    draft: Exclude<RoutineConfirmationDraft, { action: 'delete' }>,
+    input: Pick<
+      SaveRoutineInput,
+      'actorId' | 'actorClass' | 'workspaceId' | 'channelId' | 'idempotencyKey'
+    >,
+    confirmationId: string | null,
+    at: number,
+  ): RoutineDefinition {
+    if (draft.action === 'create') {
+      if (this.getRoutine(draft.routineId)) {
+        throw routineError('routine_exists', 'Routine already exists.');
+      }
+      this.assertCapacity(
+        input.workspaceId,
+        input.channelId,
+        draft.projectedDailyStarts,
+        draft.reservations,
+      );
+      const definition = validateRoutineDefinition(draft.definition);
+      this.insertRoutine({
+        id: draft.routineId,
+        workspaceId: input.workspaceId,
+        channelId: input.channelId,
+        creatorUserId: input.actorId,
+        definition,
+        nextRunAt: draft.nextRunAt,
+        projectedDailyStarts: draft.projectedDailyStarts,
+        reservations: draft.reservations,
+        actorId: input.actorId,
+        at,
+      });
+      this.replaceReservations(draft.routineId, draft.reservations);
+      this.insertRevision(
+        draft.routineId,
+        1,
+        definition,
+        input.actorId,
+        input.actorClass,
+        confirmationId,
+        at,
+      );
+      const routine = required(this.getRoutine(draft.routineId), 'Routine was not readable after create.');
+      this.appendRoutineAudit(
+        input.idempotencyKey,
+        'routine.created',
+        routine,
+        input.actorId,
+        input.actorClass,
+        null,
+        definitionHash(definition),
+        at,
+      );
+      return routine;
+    }
+
+    const current = this.requiredMutableRoutine(draft.routineId, draft.expectedVersion);
+    if (current.workspaceId !== input.workspaceId || current.channelId !== input.channelId) {
+      throw routineError('routine_not_found', 'Routine was not found.');
+    }
+    const definition = validateRoutineDefinition(draft.definition);
+    if (current.state === 'active') {
+      this.assertCapacity(
+        current.workspaceId,
+        current.channelId,
+        draft.projectedDailyStarts,
+        draft.reservations,
+        current.id,
+      );
+    }
+    const nextVersion = current.version + 1;
+    this.db.run(
+      `UPDATE routines SET name = ?, description = ?, task_text = ?, trigger_kind = ?,
+         schedule_input = ?, schedule_json = ?, timezone = ?, output_policy = ?,
+         authority_mode = ?, version = ?, next_run_at = ?, projected_daily_starts = ?,
+         reservation_windows_json = ?, updated_at = ?, updated_by = ?
+       WHERE id = ? AND version = ? AND deleted_at IS NULL`,
+      definition.name,
+      definition.description,
+      definition.taskText,
+      definition.triggerKind,
+      definition.scheduleInput,
+      definition.scheduleJson,
+      definition.timezone,
+      definition.outputPolicy,
+      definition.authorityMode,
+      nextVersion,
+      draft.nextRunAt,
+      draft.projectedDailyStarts,
+      JSON.stringify(draft.reservations),
+      at,
+      input.actorId,
+      current.id,
+      current.version,
+    );
+    if (current.state === 'active') this.replaceReservations(current.id, draft.reservations);
+    this.insertRevision(
+      current.id,
+      nextVersion,
+      definition,
+      input.actorId,
+      input.actorClass,
+      confirmationId,
+      at,
+    );
+    const routine = required(this.getRoutine(current.id), 'Routine was not readable after edit.');
+    this.appendRoutineAudit(
+      input.idempotencyKey,
+      'routine.edited',
+      routine,
+      input.actorId,
+      input.actorClass,
+      definitionHash(current),
+      definitionHash(definition),
+      at,
+    );
+    return routine;
   }
 
   purgeConfirmations(): number {
@@ -2018,6 +2067,9 @@ export class SqliteRoutineStore implements RoutineStore {
   }
   async confirm(input: ConfirmRoutineInput): Promise<RoutineDefinition> {
     return this.logic.confirm(input);
+  }
+  async save(input: SaveRoutineInput): Promise<RoutineDefinition> {
+    return this.logic.save(input);
   }
   async purgeConfirmations(): Promise<number> {
     return this.logic.purgeConfirmations();

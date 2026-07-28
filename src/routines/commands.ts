@@ -11,11 +11,11 @@ import {
 import { parseRoutineIntent, isRoutineIntentCandidate, type RoutineIntent } from './intent.ts';
 import { ROUTINE_LIMITS } from './limits.ts';
 import {
-  renderRoutineConfirmation,
-  renderRoutineCreated,
+  renderRoutineDeletionConfirmation,
   renderRoutineDetail,
   renderRoutineHelp,
   renderRoutineList,
+  renderRoutineSaved,
 } from './message-format.ts';
 import { normalizeRoutineSchedule } from './schedule.ts';
 import {
@@ -23,7 +23,7 @@ import {
   resolveRoutineCapability,
   type RoutineCapability,
 } from './scheduler-adapter.ts';
-import { RoutineService, type RoutineDraftRequest } from './service.ts';
+import { RoutineService, type RoutineSaveRequest } from './service.ts';
 import { canManageRoutineChannel, parseSlackChannelMention } from './slack-context.ts';
 import {
   RoutineStateError,
@@ -72,7 +72,7 @@ export function parseRoutineCommand(rawText: string): RoutineCommand | undefined
   return undefined;
 }
 
-/** Exact controls first; positive natural-language candidates produce only a confirmation draft. */
+/** Exact controls first; clear natural-language create/edit requests persist in one turn. */
 export async function handleRoutineSlackRequest(
   turn: NormalizedSlackTurn,
   env: PlatformEnv | undefined,
@@ -82,20 +82,33 @@ export async function handleRoutineSlackRequest(
     resolveDefaultTimezone?: (turn: NormalizedSlackTurn, env: PlatformEnv | undefined) => Promise<string>;
     now?: () => number;
     capability?: RoutineCapability;
+    canManageChannel?: typeof canManageRoutineChannel;
   } = {},
 ): Promise<string | undefined> {
   const store = dependencies.store ?? getRoutineStore(env);
   const now = dependencies.now ?? Date.now;
   const capability = dependencies.capability ?? routineCapability(env);
+  const canManageChannel = dependencies.canManageChannel ?? canManageRoutineChannel;
   const command = parseRoutineCommand(turn.text);
   if (command) {
     try {
-      return await executeRoutineCommand(command, turn, store, env, capability, now);
+      return await executeRoutineCommand(
+        command,
+        turn,
+        store,
+        env,
+        capability,
+        now,
+        canManageChannel,
+      );
     } catch (error) {
       return routineErrorText(error);
     }
   }
   if (!isRoutineIntentCandidate(turn.text)) return undefined;
+  if (!(await canManageChannel(turn.workspaceId, turn.channelId, turn.userId, env))) {
+    return notFoundText();
+  }
   let intent: RoutineIntent | undefined;
   try {
     intent = await (dependencies.parseIntent ?? parseRoutineIntent)(
@@ -118,7 +131,7 @@ export async function handleRoutineSlackRequest(
     const defaultTimezone = intent.action === 'create' && (intent.timezoneWasDefaulted === true || !intent.timezone)
       ? await (dependencies.resolveDefaultTimezone ?? resolveRoutineDefaultTimezone)(turn, env)
       : undefined;
-    return await createIntentConfirmation(intent, turn, store, now, defaultTimezone);
+    return await saveRoutineIntent(intent, turn, store, now, defaultTimezone);
   } catch (error) {
     return routineErrorText(error);
   }
@@ -131,6 +144,7 @@ async function executeRoutineCommand(
   env: PlatformEnv | undefined,
   capability: RoutineCapability,
   now: () => number,
+  canManageChannel: typeof canManageRoutineChannel,
 ): Promise<string> {
   const service = new RoutineService(store, { now });
   if (command.kind === 'help' || command.kind === 'invalid') return renderRoutineHelp();
@@ -142,7 +156,7 @@ async function executeRoutineCommand(
     const channelId = mentionedId ?? turn.channelId;
     if (
       channelId !== turn.channelId &&
-      !(await canManageRoutineChannel(turn.workspaceId, channelId, turn.userId, env))
+      !(await canManageChannel(turn.workspaceId, channelId, turn.userId, env))
     ) {
       return notFoundText();
     }
@@ -151,9 +165,14 @@ async function executeRoutineCommand(
       : `\n\n_${capability.reason === 'unsupported_target' ? 'Scheduling is currently Cloudflare-only.' : 'Scheduling is disabled by the deployment operator.'}_`;
     return renderRoutineList(await store.listRoutines(turn.workspaceId, channelId), channelId) + suffix;
   }
+  if (!(await canManageChannel(turn.workspaceId, turn.channelId, turn.userId, env))) {
+    return notFoundText();
+  }
   if (command.kind === 'confirm') {
     const confirmation = await store.getConfirmation(hashRoutineValue(command.token));
     if (!confirmation) return 'That routine confirmation was not found or is no longer available.';
+    // New flows only create deletion confirmations. Accept any unexpired
+    // pre-upgrade create/edit receipt until normal retention removes it.
     if (confirmation.draft.action !== 'delete') requireRoutineScheduling(capability);
     const routine = await service.confirm({
       token: command.token,
@@ -165,7 +184,7 @@ async function executeRoutineCommand(
     });
     return confirmation.draft.action === 'delete'
       ? `Routine \`${routine.id}\` was deleted. Its saved body was scrubbed; body-free audit/run metadata is retained.`
-      : renderRoutineCreated(routine);
+      : renderRoutineSaved(routine, { action: confirmation.draft.action });
   }
   if (command.kind === 'cancel') {
     const cancelled = await store.cancelConfirmation({
@@ -216,7 +235,7 @@ async function executeRoutineCommand(
   if (command.kind === 'clone') {
     requireRoutineScheduling(capability);
     const projection = normalizeRoutineSchedule(routine.scheduleInput, routine.timezone, now());
-    const receipt = await service.createConfirmation({
+    const created = await service.save({
       action: 'create',
       actorId: turn.userId,
       workspaceId: turn.workspaceId,
@@ -228,8 +247,8 @@ async function executeRoutineCommand(
       nextRunAt: projection.nextRunAt,
       projectedDailyStarts: projection.projectedDailyStarts,
       reservations: projection.reservations,
-    });
-    return renderRoutineConfirmation({ ...receipt, creatorUserId: turn.userId });
+    }, `routine:slack:${turn.eventId}:clone:${routine.id}`);
+    return renderRoutineSaved(created, { action: 'create' });
   }
   const receipt = await service.createConfirmation({
     action: 'delete',
@@ -239,10 +258,10 @@ async function executeRoutineCommand(
     routineId: routine.id,
     expectedVersion: routine.version,
   });
-  return renderRoutineConfirmation({ ...receipt });
+  return renderRoutineDeletionConfirmation({ draft: receipt.draft, token: receipt.token });
 }
 
-async function createIntentConfirmation(
+async function saveRoutineIntent(
   intent: RoutineIntent,
   turn: NormalizedSlackTurn,
   store: RoutineStore,
@@ -274,22 +293,26 @@ async function createIntentConfirmation(
     outputPolicy: intent.outputPolicy ?? current?.outputPolicy ?? 'post',
     authorityMode: 'live_channel_v1',
   };
-  const request: RoutineDraftRequest = {
-    action: current ? 'edit' : 'create',
+  const shared = {
     actorId: turn.userId,
     workspaceId: turn.workspaceId,
     channelId: turn.channelId,
-    ...(current ? { routineId: current.id, expectedVersion: current.version } : {}),
     definition,
     nextRunAt: projection.nextRunAt,
     projectedDailyStarts: projection.projectedDailyStarts,
     reservations: projection.reservations,
   };
-  const receipt = await service.createConfirmation(request);
-  return renderRoutineConfirmation({
-    ...receipt,
+  const request: RoutineSaveRequest = current
+    ? { ...shared, action: 'edit', routineId: current.id, expectedVersion: current.version }
+    : { ...shared, action: 'create' };
+  const action = request.action;
+  const routine = await service.save(
+    request,
+    `routine:slack:${turn.eventId}:${action}:${request.routineId ?? 'new'}`,
+  );
+  return renderRoutineSaved(routine, {
+    action,
     timezoneDefaulted: !current && (intent.timezoneWasDefaulted === true || !intent.timezone),
-    creatorUserId: current?.creatorUserId ?? turn.userId,
   });
 }
 

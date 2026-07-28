@@ -33,7 +33,7 @@ The first DM answers with **zero model keys** on a fresh Cloudflare deploy: the 
 
 - Answers `@`-mentions, thread replies (no re-mention needed), and DMs with one streamed reply in the thread — falling back gracefully to a single durable final message if Slack rejects the streaming APIs, never a duplicate.
 - Fetches channel context only when asked, over a bounded prompt-derived window — no passive monitoring, ever.
-- Runs confirmed channel routines on Cloudflare schedules, including read and write work, with the same current channel authority as a live `@`-mention.
+- Runs saved channel routines on Cloudflare schedules, including read and write work, with the same current channel authority as a live `@`-mention.
 - Keeps explicit, team-owned channel memory: members can remember, inspect, correct, merge, report, and irreversibly forget small Markdown notes that carry across Slack threads.
 - Renders standard Markdown natively (tables, lists, blockquotes, fenced code/diff blocks) and signs every reply with the profile and model that answered.
 - Absorbs Slack's duplicate retries while an event claim is held, so normal redelivery produces one final reply and one provider call. If the provider succeeds but Slack rejects final delivery, the claim is released so Slack can retry the event; that recovery can call the provider again.
@@ -96,7 +96,7 @@ Canonical state is structured SQLite/Durable Object data projected deterministic
 
 ### Routines and scheduled work (Cloudflare)
 
-Routines are confirmed, channel-owned scheduled requests. Ask naturally in an assigned channel, review Chickpea's deterministic cron/time-zone preview and next three occurrences, then confirm within 15 minutes. A routine may read or write when its saved task asks it to: there is intentionally no second per-routine permission matrix. Every occurrence re-resolves the creator's channel membership, the bot's channel access, the current profile/model, connections and shared credentials, repository grants, memory scope, egress policy, spend bounds, and sandbox availability. That is the same authority a live `@`-mention has at that moment. Saved tasks, memory, channel history, fetched content, and tool output are untrusted inputs and can narrow work but cannot grant new authority.
+Routines are channel-owned scheduled requests. One clear natural-language request in an assigned channel creates or edits the routine immediately; Chickpea replies with the canonical cron schedule, explicit time zone, next three occurrences, saved task, output policy, and live-authority disclosure. Only irreversible deletion requires a second confirmation. A routine may read or write when its saved task asks it to: there is intentionally no second per-routine permission matrix. Every occurrence re-resolves the creator's channel membership, the bot's channel access, the current profile/model, connections and shared credentials, repository grants, memory scope, egress policy, spend bounds, and sandbox availability. That is the same authority a live `@`-mention has at that moment. Saved tasks, memory, channel history, fetched content, and tool output are untrusted inputs and can narrow work but cannot grant new authority.
 
 ```text
 Every weekday at 9am America/Los_Angeles, review open support requests, update the configured tracker, and post a summary here.
@@ -109,13 +109,13 @@ Every weekday at 9am America/Los_Angeles, review open support requests, update t
 !routines run <id>
 !routines clone <id>
 !routines delete <id>
-!routines confirm <one-time token>
-!routines cancel <one-time token>
+!routines confirm <deletion token>
+!routines cancel <deletion token>
 ```
 
 Any current member of the owning channel can list, inspect, edit, pause, resume, disable, run, clone, or delete its routines. Cross-channel listing first proves the requesting member and bot can access the mentioned channel and otherwise returns the same non-disclosing response as an unknown ID. If the creator leaves the organization but remains a channel member, the routine can continue; if the creator is removed from the channel, Chickpea disables it before constructing an Agent or tools. A profile, connection, credential, repository, or policy change takes effect at the next occurrence without editing the routine. Actor-personal credentials are never delegated to unattended work.
 
-The persisted schedule is a five-field cron expression plus an explicit IANA time zone. Omitted zones default visibly to UTC. Local-time schedules follow the pinned scheduler library's IANA/DST behavior. Schedules run at most hourly. A fixed one-minute Cloudflare Cron Trigger finds due definitions and admits one independent Flue Workflow run per occurrence; it never reuses a Slack thread or continuing Agent session. Downtime does not burst catch-up work: Chickpea records missed slots and considers only the latest slot, skips work more than 15 minutes late, and skips an overlap while the same routine is active. `post_on_change` routines suppress an unchanged result; an explicit no-op never posts.
+The persisted schedule is a five-field cron expression plus an explicit IANA time zone. If the request omits a zone, Chickpea uses the requesting member's Slack profile zone when available and otherwise UTC, and shows the selected value in the creation receipt. Local-time schedules follow the pinned scheduler library's IANA/DST behavior. Schedules run at most hourly. A fixed one-minute Cloudflare Cron Trigger finds due definitions and admits one independent Flue Workflow run per occurrence; it never reuses a Slack thread or continuing Agent session. Downtime does not burst catch-up work: Chickpea records missed slots and considers only the latest slot, skips work more than 15 minutes late, and skips an overlap while the same routine is active. `post_on_change` routines suppress an unchanged result; an explicit no-op never posts.
 
 Writes are not blindly retried after execution begins. A proven pre-submission admission failure may be retried inside its deadline; ambiguous Workflow admission is reconciled by persisted occurrence input. Slack delivery is one at-most-once attempt with a durable receipt. A delivery or tool outcome that may have succeeded but cannot be proven pauses the routine immediately for inspection. Three attributable failures pause it; live access failures disable it; infrastructure/capacity failures remain visible without pretending the saved task is bad. A successful occurrence resets the streak, and a deliberate resume resets it too. Terminal notices are sanitized and deduplicated.
 

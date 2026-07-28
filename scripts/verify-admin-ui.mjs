@@ -104,10 +104,8 @@ try {
   const routineService = new RoutineService(routines, {
     now: Date.now,
     routineId: () => ROUTINE_ID,
-    confirmationId: () => 'rconfirm_admin_ui_release',
-    token: () => 'confirm-admin-ui-release',
   });
-  const routineConfirmation = await routineService.createConfirmation({
+  const routine = await routineService.save({
     action: 'create',
     actorId: 'U_ADMIN_UI_MEMBER',
     workspaceId: WORKSPACE_ID,
@@ -126,15 +124,7 @@ try {
     nextRunAt: Date.now() + 3_600_000,
     projectedDailyStarts: 5,
     reservations: [{ windowStart: Date.now() + 3_600_000, count: 1 }],
-  });
-  const routine = await routineService.confirm({
-    token: routineConfirmation.token,
-    actorId: 'U_ADMIN_UI_MEMBER',
-    workspaceId: WORKSPACE_ID,
-    channelId: CHANNEL_ID,
-    previewHash: routineConfirmation.previewHash,
-    idempotencyKey: 'admin-ui-routine-create',
-  });
+  }, 'admin-ui-routine-create');
   await routines.createOccurrence({
     runId: 'rrun_admin_ui_release',
     idempotencyKey: 'admin-ui-routine-run',
