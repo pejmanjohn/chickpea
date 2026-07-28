@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 
 import type { BotIdentityConfig } from '../config/types.ts';
+import { readSlackIdentityProfile } from './identity-profile.ts';
 
 const DEFAULT_MANIFEST_URL = new URL('../../slack-app-manifest.json', import.meta.url);
 
@@ -98,15 +99,10 @@ export async function checkIdentity(
   }
 
   const userInfo = getRecord(await client.users.info({ user: botUserId }));
-  const user = getRecord(userInfo.user);
-  const profile = getRecord(user.profile);
-  const liveName = getString(profile.display_name) || getString(profile.real_name) || getString(user.name);
-  const iconUrl =
-    getString(profile.image_512) ||
-    getString(profile.image_192) ||
-    getString(profile.image_72) ||
-    undefined;
-  const appId = getString(auth.app_id) || getString(profile.api_app_id) || undefined;
+  const profile = readSlackIdentityProfile(userInfo.user);
+  const liveName = profile.displayName ?? '';
+  const iconUrl = profile.avatarUrl;
+  const appId = getString(auth.app_id) || profile.appId;
 
   return {
     // Users see the bot-user display name on messages; the Slack app manifest's

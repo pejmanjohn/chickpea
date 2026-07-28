@@ -75,9 +75,9 @@ credential access.
 8. **Add a channel.** In `/admin`, add the channel the bot should answer in
    (the picker lists channels by name). Chickpea joins an assigned public
    channel automatically. For a private channel, invite the bot first with
-   `/invite @Tag`, then refresh the picker and add it.
+   `/invite @Chickpea`, then refresh the picker and add it.
 
-9. **Verify.** Mention `@Tag` in the assigned channel with any question. One
+9. **Verify.** Mention `@Chickpea` in the assigned channel with any question. One
    streamed reply should arrive in a thread, footed with the profile and
    model that answered. If nothing arrives within a minute: `/admin` shows
    the connection state, and `npx wrangler tail <worker-name>` shows each

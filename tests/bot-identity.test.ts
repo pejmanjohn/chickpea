@@ -38,7 +38,7 @@ test('IdentityStore returns the seeded install-wide avatar path', () => {
   assert.equal(identity.avatarPath, 'assets/bot-avatar.png');
 });
 
-test('Slack manifest owns a non-empty bot display name', () => {
+test('Slack manifest defaults the app and bot display names to Chickpea', () => {
   const manifest = JSON.parse(readFileSync(MANIFEST_PATH, 'utf8')) as {
     display_information?: { name?: unknown; description?: unknown };
     features?: { bot_user?: { display_name?: unknown } };
@@ -47,14 +47,8 @@ test('Slack manifest owns a non-empty bot display name', () => {
   const botDisplayName = manifest.features?.bot_user?.display_name;
   const description = manifest.display_information?.description;
 
-  assert.ok(typeof displayName === 'string');
-  assert.notEqual(displayName.trim(), '');
-  // The Slack app name and the bot user's display name are independent fields:
-  // the app installs as "Chickpea" (marketplace/install identity) while the bot
-  // answers as "@Tag" (the mention handle). Both must be present and non-empty;
-  // they are intentionally NOT required to be equal.
-  assert.ok(typeof botDisplayName === 'string');
-  assert.notEqual(botDisplayName.trim(), '');
+  assert.equal(displayName, 'Chickpea');
+  assert.equal(botDisplayName, 'Chickpea');
   assert.ok(typeof description === 'string');
   assert.notEqual(description.trim(), '');
 });
@@ -89,7 +83,7 @@ test('checkIdentity compares manifest name and icon state through fake Slack', {
       identity: {
         appId: 'A_FLUE',
         botUserId: 'U_BOT',
-        displayName: 'Tag',
+        displayName: 'Chickpea',
         image512Url: CUSTOM_ICON_URL,
       },
     },
@@ -108,8 +102,8 @@ test('checkIdentity compares manifest name and icon state through fake Slack', {
     assert.equal(result.icon, 'custom');
     assert.equal(result.details.appId, 'A_FLUE');
     assert.equal(result.details.botUserId, 'U_BOT');
-    assert.equal(result.details.expectedName, 'Tag');
-    assert.equal(result.details.liveName, 'Tag');
+    assert.equal(result.details.expectedName, 'Chickpea');
+    assert.equal(result.details.liveName, 'Chickpea');
     assert.equal(result.details.iconUrl, CUSTOM_ICON_URL);
     assert.equal(result.details.consoleUrl, 'https://api.slack.com/apps/A_FLUE/general');
     assert.deepEqual(
@@ -143,7 +137,7 @@ test('checkIdentity reports a name mismatch from fake Slack', { skip: loopbackSk
     const result = await checkIdentity(client, defaultBotIdentity);
 
     assert.equal(result.name, 'mismatch');
-    assert.equal(result.details.expectedName, 'Tag');
+    assert.equal(result.details.expectedName, 'Chickpea');
     assert.equal(result.details.liveName, 'Drifted Bot Name');
   } finally {
     await server.close();
@@ -163,7 +157,7 @@ test('verify-identity-live reports custom, default, and unknown icon states agai
         identity: {
           appId: 'A_FLUE',
           botUserId: 'U_BOT',
-          displayName: 'Tag',
+          displayName: 'Chickpea',
           image512Url: iconUrl,
         },
       },

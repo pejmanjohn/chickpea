@@ -57,19 +57,33 @@ async function postCreds(app: Hono, body: unknown): Promise<Response> {
   });
 }
 
-/** Minimal fake Slack Web API answering only auth.test, with a canned body. */
-function listenFakeSlack(authTestBody: Record<string, unknown>): Promise<{
+/** Minimal fake Slack Web API answering auth.test and, optionally, users.info. */
+function listenFakeSlack(
+  authTestBody: Record<string, unknown>,
+  usersInfoBody?: Record<string, unknown> | ReadonlyArray<Record<string, unknown>>,
+): Promise<{
   server: Server;
   baseUrl: string;
   authHeaders: string[];
 }> {
   const authHeaders: string[] = [];
+  const usersInfoBodies = usersInfoBody
+    ? (Array.isArray(usersInfoBody) ? [...usersInfoBody] : [usersInfoBody])
+    : [];
   const server = createServer((req, res) => {
     res.setHeader('content-type', 'application/json');
     if (req.url?.endsWith('/auth.test')) {
       authHeaders.push(req.headers.authorization ?? '');
       res.end(JSON.stringify(authTestBody));
       return;
+    }
+    if (req.url?.endsWith('/users.info')) {
+      const nextUsersInfoBody = usersInfoBodies.shift();
+      if (nextUsersInfoBody) {
+        authHeaders.push(req.headers.authorization ?? '');
+        res.end(JSON.stringify(nextUsersInfoBody));
+        return;
+      }
     }
     res.statusCode = 404;
     res.end('{"ok":false,"error":"unknown_method"}');
@@ -175,6 +189,8 @@ test('slack-connection endpoints are 404 when TAG_ADMIN_TOKEN is unset (fail-clo
       headers: auth(),
     });
     assert.equal(testConnection.status, 404);
+    const identity = await app.request('/admin/api/slack-identity', { headers: auth() });
+    assert.equal(identity.status, 404);
     const disconnect = await app.request('/admin/api/slack-connection', {
       method: 'DELETE',
       headers: auth(),
@@ -189,6 +205,299 @@ test('slack-connection endpoints are 404 when TAG_ADMIN_TOKEN is unset (fail-clo
     });
     assert.equal(putBehavior.status, 404);
   } finally {
+    settings.close();
+  }
+});
+
+test('Slack identity returns the live bot name, avatar, and exact app settings link', async (t) => {
+  const skip = await loopbackListenSkipReason();
+  if (skip) {
+    t.skip(skip);
+    return;
+  }
+  const { server, baseUrl, authHeaders } = await listenFakeSlack(
+    {
+      ok: true,
+      app_id: 'A0CHICKPEA',
+      team_id: 'T_CURRENT',
+      user_id: 'U_CURRENT_BOT',
+    },
+    {
+      ok: true,
+      user: {
+        id: 'U_CURRENT_BOT',
+        name: 'chickpea',
+        profile: {
+          display_name: 'Chickpea Helper',
+          real_name: 'Chickpea',
+          image_512: 'https://avatars.slack-edge.com/2026-07-28/chickpea_512.png',
+          api_app_id: 'A0CHICKPEA',
+        },
+      },
+    },
+  );
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    await settings.setSetting(SLACK_SETTING_KEYS.botToken, 'xoxb-current');
+    await settings.setSetting(SLACK_SETTING_KEYS.botUserId, 'U_CURRENT_BOT');
+    await withEnv({ ...NO_SLACK_ENV, SLACK_API_URL: baseUrl }, async () => {
+      const response = await appWith(settings).request('/admin/api/slack-identity', {
+        headers: auth(),
+      });
+      assert.equal(response.status, 200);
+      assert.deepEqual(await response.json(), {
+        displayName: 'Chickpea Helper',
+        avatarUrl: 'https://avatars.slack-edge.com/2026-07-28/chickpea_512.png',
+        botUserId: 'U_CURRENT_BOT',
+        appId: 'A0CHICKPEA',
+        consoleUrl: 'https://api.slack.com/apps/A0CHICKPEA/general',
+      });
+      assert.deepEqual(authHeaders, ['Bearer xoxb-current']);
+    });
+  } finally {
+    invalidateStoredSlackCredentials();
+    settings.close();
+    await closeServer(server);
+  }
+});
+
+test('Slack identity resolves the bot user live when no bot user id is configured', async (t) => {
+  const skip = await loopbackListenSkipReason();
+  if (skip) {
+    t.skip(skip);
+    return;
+  }
+  const { server, baseUrl, authHeaders } = await listenFakeSlack(
+    {
+      ok: true,
+      app_id: 'A0FALLBACK',
+      user_id: 'U_FALLBACK_BOT',
+    },
+    {
+      ok: true,
+      user: {
+        id: 'U_FALLBACK_BOT',
+        name: 'chickpea',
+        profile: { display_name: 'Chickpea', image_72: 'https://avatars.slack-edge.com/fallback.png' },
+      },
+    },
+  );
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    await settings.setSetting(SLACK_SETTING_KEYS.botToken, 'xoxb-fallback');
+    await withEnv({ ...NO_SLACK_ENV, SLACK_API_URL: baseUrl }, async () => {
+      const response = await appWith(settings).request('/admin/api/slack-identity', {
+        headers: auth(),
+      });
+      assert.equal(response.status, 200);
+      const body = await response.json() as Record<string, unknown>;
+      assert.equal(body.botUserId, 'U_FALLBACK_BOT');
+      assert.equal(body.appId, 'A0FALLBACK');
+      assert.equal(body.consoleUrl, 'https://api.slack.com/apps/A0FALLBACK/general');
+      assert.deepEqual(authHeaders, ['Bearer xoxb-fallback', 'Bearer xoxb-fallback']);
+    });
+  } finally {
+    invalidateStoredSlackCredentials();
+    settings.close();
+    await closeServer(server);
+  }
+});
+
+test('Slack identity resolves the documented explicit-empty bot user ID without changing event credentials', async (t) => {
+  const skip = await loopbackListenSkipReason();
+  if (skip) {
+    t.skip(skip);
+    return;
+  }
+  const { server, baseUrl, authHeaders } = await listenFakeSlack(
+    { ok: true, app_id: 'A0EMPTY1', user_id: 'U_EMPTY_ID' },
+    {
+      ok: true,
+      user: {
+        id: 'U_EMPTY_ID',
+        profile: { display_name: 'Chickpea from Slack', image_72: 'https://avatars.slack-edge.com/empty.png' },
+      },
+    },
+  );
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    await settings.setSetting(SLACK_SETTING_KEYS.botToken, 'xoxb-empty-id');
+    await withEnv({ ...NO_SLACK_ENV, SLACK_API_URL: baseUrl, SLACK_BOT_USER_ID: '' }, async () => {
+      const response = await appWith(settings).request('/admin/api/slack-identity', { headers: auth() });
+      assert.equal(response.status, 200);
+      assert.deepEqual(await response.json(), {
+        displayName: 'Chickpea from Slack',
+        avatarUrl: 'https://avatars.slack-edge.com/empty.png',
+        botUserId: 'U_EMPTY_ID',
+        appId: 'A0EMPTY1',
+        consoleUrl: 'https://api.slack.com/apps/A0EMPTY1/general',
+      });
+      assert.deepEqual(authHeaders, ['Bearer xoxb-empty-id', 'Bearer xoxb-empty-id']);
+      assert.equal(process.env.SLACK_BOT_USER_ID, '');
+      assert.equal((await resolveSlackCredentials()).botUserId, '');
+    });
+  } finally {
+    invalidateStoredSlackCredentials();
+    settings.close();
+    await closeServer(server);
+  }
+});
+
+test('Slack identity retries a stale saved bot ID without persisting the replacement', async (t) => {
+  const skip = await loopbackListenSkipReason();
+  if (skip) {
+    t.skip(skip);
+    return;
+  }
+  const { server, baseUrl, authHeaders } = await listenFakeSlack(
+    { ok: true, app_id: 'A0REPLACED', user_id: 'U_REPLACED' },
+    [
+      { ok: false, error: 'user_not_found' },
+      {
+        ok: true,
+        user: {
+          id: 'U_REPLACED',
+          profile: { display_name: 'Replacement Chickpea', image_512: 'https://avatars.slack-edge.com/replaced.png' },
+        },
+      },
+    ],
+  );
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    await settings.setSetting(SLACK_SETTING_KEYS.botToken, 'xoxb-stale');
+    await settings.setSetting(SLACK_SETTING_KEYS.botUserId, 'U_STALE');
+    await withEnv({ ...NO_SLACK_ENV, SLACK_API_URL: baseUrl }, async () => {
+      const response = await appWith(settings).request('/admin/api/slack-identity', { headers: auth() });
+      assert.equal(response.status, 200);
+      const body = await response.json() as Record<string, unknown>;
+      assert.equal(body.botUserId, 'U_REPLACED');
+      assert.equal(body.consoleUrl, 'https://api.slack.com/apps/A0REPLACED/general');
+      assert.deepEqual(authHeaders, ['Bearer xoxb-stale', 'Bearer xoxb-stale', 'Bearer xoxb-stale']);
+      assert.equal(await settings.getSetting(SLACK_SETTING_KEYS.botUserId), 'U_STALE');
+    });
+  } finally {
+    invalidateStoredSlackCredentials();
+    settings.close();
+    await closeServer(server);
+  }
+});
+
+test('Slack identity recovers an exact settings link when a stored bot profile omits its app ID', async (t) => {
+  const skip = await loopbackListenSkipReason();
+  if (skip) {
+    t.skip(skip);
+    return;
+  }
+  const { server, baseUrl, authHeaders } = await listenFakeSlack(
+    { ok: true, app_id: 'A0LINKRECOVERY', user_id: 'U_LINK' },
+    {
+      ok: true,
+      user: {
+        id: 'U_LINK',
+        profile: { display_name: 'Link Chickpea', image_72: 'https://avatars.slack-edge.com/link.png' },
+      },
+    },
+  );
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    await settings.setSetting(SLACK_SETTING_KEYS.botToken, 'xoxb-link');
+    await settings.setSetting(SLACK_SETTING_KEYS.botUserId, 'U_LINK');
+    await withEnv({ ...NO_SLACK_ENV, SLACK_API_URL: baseUrl }, async () => {
+      const response = await appWith(settings).request('/admin/api/slack-identity', { headers: auth() });
+      assert.equal(response.status, 200);
+      const body = await response.json() as Record<string, unknown>;
+      assert.equal(body.appId, 'A0LINKRECOVERY');
+      assert.equal(body.consoleUrl, 'https://api.slack.com/apps/A0LINKRECOVERY/general');
+      assert.deepEqual(authHeaders, ['Bearer xoxb-link', 'Bearer xoxb-link']);
+      assert.equal(await settings.getSetting(SLACK_SETTING_KEYS.botUserId), 'U_LINK');
+    });
+  } finally {
+    invalidateStoredSlackCredentials();
+    settings.close();
+    await closeServer(server);
+  }
+});
+
+test('Slack identity sanitizes presentation URLs and degrades to the generic settings link', async (t) => {
+  const skip = await loopbackListenSkipReason();
+  if (skip) {
+    t.skip(skip);
+    return;
+  }
+  const { server, baseUrl } = await listenFakeSlack(
+    { ok: false, error: 'ratelimited' },
+    {
+      ok: true,
+      user: {
+        id: 'U_PRESENTATION',
+        profile: {
+          display_name: 'Chickpea',
+          image_512: 'javascript:alert(1)',
+          api_app_id: 'not/an/app-id',
+        },
+      },
+    },
+  );
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    await settings.setSetting(SLACK_SETTING_KEYS.botToken, 'xoxb-presentation');
+    await settings.setSetting(SLACK_SETTING_KEYS.botUserId, 'U_PRESENTATION');
+    await withEnv({ ...NO_SLACK_ENV, SLACK_API_URL: baseUrl }, async () => {
+      const response = await appWith(settings).request('/admin/api/slack-identity', { headers: auth() });
+      assert.equal(response.status, 200);
+      const body = await response.json() as Record<string, unknown>;
+      assert.equal(body.avatarUrl, null);
+      assert.equal(body.appId, null);
+      assert.equal(body.consoleUrl, 'https://api.slack.com/apps');
+    });
+  } finally {
+    invalidateStoredSlackCredentials();
+    settings.close();
+    await closeServer(server);
+  }
+});
+
+test('Slack identity normalizes users.info failures to its safe unavailable envelope', async (t) => {
+  const skip = await loopbackListenSkipReason();
+  if (skip) {
+    t.skip(skip);
+    return;
+  }
+  const { server, baseUrl } = await listenFakeSlack(
+    { ok: true, user_id: 'U_FAILURE' },
+    { ok: false, error: 'missing_scope' },
+  );
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    await settings.setSetting(SLACK_SETTING_KEYS.botToken, 'xoxb-failure');
+    await settings.setSetting(SLACK_SETTING_KEYS.botUserId, 'U_FAILURE');
+    await withEnv({ ...NO_SLACK_ENV, SLACK_API_URL: baseUrl }, async () => {
+      const response = await appWith(settings).request('/admin/api/slack-identity', { headers: auth() });
+      assert.equal(response.status, 502);
+      assert.deepEqual(await response.json(), {
+        error: 'slack_identity_unavailable',
+        message: 'Slack identity could not be loaded.',
+      });
+    });
+  } finally {
+    invalidateStoredSlackCredentials();
+    settings.close();
+    await closeServer(server);
+  }
+});
+
+test('Slack identity requires a configured bot token', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    await withEnv(NO_SLACK_ENV, async () => {
+      const response = await appWith(settings).request('/admin/api/slack-identity', {
+        headers: auth(),
+      });
+      assert.equal(response.status, 409);
+      assert.deepEqual(await response.json(), { error: 'slack_not_configured' });
+    });
+  } finally {
+    invalidateStoredSlackCredentials();
     settings.close();
   }
 });

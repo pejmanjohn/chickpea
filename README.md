@@ -45,7 +45,7 @@ The first DM answers with **zero model keys** on a fresh Cloudflare deploy: the 
 - Context windows are prompt-derived: a top-level mention like "summarize this week" pulls same-channel history over `today`, `yesterday`, `this week`, `last week`, `since Monday`, `last 2 days`; anything vague defaults to the last 24 hours. Thread reads cap at 50 human-authored messages, with bot and system replies filtered out.
 - Shows an Assistant status line ("…is checking context", then named tool stages) and clears it when Slack accepts status updates. If Slack rejects streaming status, its durable progress post can remain alongside the final answer.
 - The reply footer carries the profile name, the resolved model, and a Configure link into `/admin` when `SLACK_TAG_PUBLIC_URL` is set.
-- Posts one onboarding message when invited to an assigned channel: mention `@Tag` to start a thread, context is read only on request, and there is no passive monitoring.
+- Posts one onboarding message when invited to an assigned channel: mention `@Chickpea` to start a thread, context is read only on request, and there is no passive monitoring.
 
 </details>
 
@@ -123,7 +123,7 @@ Connect GitHub once in Settings through the GitHub App manifest flow, the only s
 - Workers AI has two runtime paths: the `cloudflare` provider uses the keyless Workers AI binding on Cloudflare, while `cloudflare-workers-ai` uses the REST API with `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID` on Node (or on Cloudflare when those separate REST credentials are supplied).
 - `local-stub` is an offline/dev-only OpenAI-completions-compatible provider registered when `LOCAL_STUB_URL` is set.
 - Each profile can pin its own model from `/admin`; the per-agent selection order is under Configuration below.
-- The Slack-visible identity stays one install-wide bot (`@Tag`) — the reply footer tells you which profile and model answered.
+- The Slack-visible identity stays one install-wide bot (`@Chickpea`) — the reply footer tells you which profile and model answered.
 
 ## Other ways to run it
 
@@ -168,7 +168,7 @@ For live Slack testing without a public tunnel, enable Socket Mode in the Slack 
 
 ### Bot identity
 
-`slack-app-manifest.json` owns the app name ("Chickpea"), the bot display name ("Tag"), and the description — the wizard's deep-link carries all of it, so a from-manifest install needs no manual field entry. The avatar is the one manual step: upload `assets/bot-avatar.png` (referenced by `src/config/identity.ts`) under the app's Display Information, then verify the live name and icon:
+`slack-app-manifest.json` owns both the app name and the default bot display name ("Chickpea"), plus the description — the wizard's deep-link carries all of it, so a from-manifest install needs no manual field entry. The avatar is the one manual step: upload `assets/bot-avatar.png` (referenced by `src/config/identity.ts`) under the app's Display Information, then verify the live name and icon:
 
 ```bash
 SLACK_BOT_TOKEN="<bot-token>" node scripts/verify-identity-live.mjs
@@ -189,7 +189,7 @@ It calls `auth.test` and `users.info`, compares the display name to the manifest
 | `SLACK_TAG_MODEL` | optional | Offline/dev fallback model specifier (`provider/model`) for an unpinned profile, mainly on the Node target. Pinned profiles always use their saved `agent.model`. |
 | `SLACK_TAG_ALLOW_DMS` | optional | DMs are on by default; `false` makes the bot reachable only in channels. |
 | `SLACK_TAG_UNASSIGNED_HINT` | optional | On by default: a mention in an unassigned channel sends the mentioner one rate-limited ephemeral hint linking to `/admin`. `false` disables the hint; the channel itself never sees anything either way. |
-| `SLACK_TAG_WELCOME_ON_JOIN` | optional | On by default: when @Tag joins an already-assigned channel, Chickpea posts one short welcome. `false` suppresses it. |
+| `SLACK_TAG_WELCOME_ON_JOIN` | optional | On by default: when @Chickpea joins an already-assigned channel, Chickpea posts one short welcome. `false` suppresses it. |
 | `TAG_AGENT_API_TOKEN` | optional | Shared internal token gating `POST /agents/slack-thread/:id` for external callers only — the app's own agent dispatch is in-process and needs no configuration. Unset is safe: the token falls back to a random per-process/per-isolate value, so the endpoint is closed to outsiders by default; set it only to authorize external callers deliberately. |
 | `TAG_ADMIN_TOKEN` | optional | Bearer token for `/admin` and `/admin/api/*`. If unset, every `/admin/*` route returns 404. Separate from `TAG_AGENT_API_TOKEN`. |
 | `TAG_DB_PATH` | optional | SQLite path for the durable agent transcript. Default `./tmp/flue.db`; use `:memory:` for ephemeral runs. The default `tmp/**` path is ignored by `flue dev` watch mode. |

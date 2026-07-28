@@ -391,6 +391,34 @@ button, input, textarea, select { font: inherit; }
 .workspace-icon .ic { height: 22px; width: 22px; }
 .workspace-name { color: var(--text); font-size: 0.9375rem; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .workspace-meta { color: var(--text-3); font-size: 0.75rem; overflow-wrap: anywhere; }
+.slack-identity-card {
+  align-items: center;
+  background: var(--well);
+  border-radius: 16px;
+  display: flex;
+  gap: 14px;
+  padding: 14px 16px;
+}
+.slack-identity-avatar {
+  align-items: center;
+  background: var(--bg);
+  border-radius: 14px;
+  box-shadow: inset 0 0 0 1.5px var(--line-strong);
+  color: var(--ember-press);
+  display: inline-flex;
+  flex-shrink: 0;
+  font-family: var(--display);
+  font-size: 1.25rem;
+  font-weight: 700;
+  height: 56px;
+  justify-content: center;
+  overflow: hidden;
+  width: 56px;
+}
+.slack-identity-avatar img { height: 100%; object-fit: cover; width: 100%; }
+.slack-identity-copy { display: flex; flex: 1; flex-direction: column; gap: 3px; min-width: 0; }
+.slack-identity-name { color: var(--text); font-family: var(--mono); font-size: 0.9375rem; font-weight: 700; overflow-wrap: anywhere; }
+.slack-identity-actions { align-items: center; display: flex; flex-shrink: 0; gap: 8px; }
 .behavior-list { background: var(--well); border-radius: 16px; overflow: hidden; }
 .behavior-row { align-items: center; display: flex; gap: 18px; padding: 13px 16px; }
 .behavior-row + .behavior-row { border-top: 1.5px solid var(--bg); }
@@ -851,7 +879,8 @@ details[open].advanced summary::before {
   .workspace-card { align-items: flex-start; grid-template-columns: 1fr; }
   .behavior-row { align-items: flex-start; }
   .behavior-row .toggle { margin-left: auto; }
-  .action-well, .danger-panel, .slack-overview-foot { align-items: stretch; flex-direction: column; }
+  .action-well, .danger-panel, .slack-identity-card, .slack-overview-foot { align-items: stretch; flex-direction: column; }
+  .slack-identity-actions { align-items: stretch; flex-direction: column; }
   .action-well .slack-console-link { margin-left: 0; }
   .bundle-row .b-name { max-width: 100%; }
   .save-note { margin-right: 0; }
@@ -1541,6 +1570,13 @@ details[open].advanced summary::before {
     slackBehavior: null,
     slackBehaviorError: "",
     slackBehaviorBusy: "",
+    // Slack owns this install-wide presentation. Keep the live profile
+    // separate from the stored connection card so a Slack API outage cannot
+    // make the underlying connection appear missing.
+    slackIdentity: null,
+    slackIdentityError: "",
+    slackIdentityLoading: false,
+    slackIdentityRequestId: 0,
     // One lock covers every Slack connection operation. The legacy per-action
     // booleans below still drive their specific labels, while this value keeps
     // test, credential replacement, disconnect, and navigation from racing.
@@ -2092,7 +2128,7 @@ details[open].advanced summary::before {
     return '<main class="main"><div class="main-inner">' + invite + addPanel +
       '<div class="main-head"><div style="display:flex; flex-direction:column; gap:2px;">' +
       '<h1 class="page-title mono-title">' + esc(channelLabel(assignment)) + '</h1>' +
-      '<p class="hint">What Chickpea can do in this channel. It answers mentions here, always as @Tag.</p>' +
+      '<p class="hint">What Chickpea can do in this channel. It answers mentions here, always as ' + slackMentionHtml() + '.</p>' +
       '</div><label style="display:flex; align-items:center; gap:10px;"><span class="hint">' + (enabled ? "Enabled" : "Disabled") + '</span>' +
       '<span class="toggle"><span class="thumb"></span><input type="checkbox" data-action="channel-enabled" ' + (enabled ? "checked" : "") + ' aria-label="Channel enabled"></span></label></div>' +
       profileSectionHtml(agent, assignment) +
@@ -2157,8 +2193,8 @@ details[open].advanced summary::before {
     }
     return '<div class="behavior-list">' +
       slackBehaviorRowHtml("allowDms", "Allow direct messages", "Chickpea answers Slack DMs with the install\'s Default profile and provider budget.") +
-      slackBehaviorRowHtml("unassignedHint", "Help people configure unassigned channels", "When someone mentions @Tag in an unassigned channel, Chickpea privately shares setup steps.") +
-      slackBehaviorRowHtml("welcomeOnJoin", "Post a welcome when @Tag joins an assigned channel", "Chickpea starts the conversation with a short welcome message.") +
+      slackBehaviorRowHtml("unassignedHint", "Help people configure unassigned channels", "When someone mentions " + slackMentionText() + " in an unassigned channel, Chickpea privately shares setup steps.") +
+      slackBehaviorRowHtml("welcomeOnJoin", "Post a welcome when " + slackMentionText() + " joins an assigned channel", "Chickpea starts the conversation with a short welcome message.") +
       '</div>' +
       (state.slackBehaviorError
         ? '<div class="inline-status error" role="alert">' + esc(state.slackBehaviorError) +
@@ -2188,6 +2224,27 @@ details[open].advanced summary::before {
       '<input id="slack-update-signing-secret" class="input mono" name="signingSecret" type="password" autocomplete="off" placeholder="Signing secret" value="' + esc(state.slackDraft.signingSecret) + '" data-action="slack-signing-secret"' + (state.slackConnectionBusy ? " disabled" : "") + '></div></div>' +
       '<div class="save-bar" style="justify-content:flex-start;">' + saveButton +
       (state.slackError ? '<span class="field-error" role="alert" aria-live="assertive" tabindex="-1" data-role="slack-connection-error">' + esc(state.slackError) + '</span>' : "") + '</div></form></div>';
+  }
+
+  function slackIdentityHtml() {
+    var identity = state.slackIdentity;
+    var displayName = slackDisplayName();
+    var avatar = identity && identity.avatarUrl
+      ? '<span class="slack-identity-avatar"><img src="' + esc(identity.avatarUrl) + '" alt="Slack avatar for @' + esc(displayName) + '"></span>'
+      : '<span class="slack-identity-avatar" aria-hidden="true">C</span>';
+    var consoleUrl = (identity && identity.consoleUrl) || "https://api.slack.com/apps";
+    var refresh = state.slackIdentityLoading
+      ? '<button type="button" class="btn btn-ghost btn-sm" disabled><span class="spinner"></span>Refreshing&hellip;</button>'
+      : '<button type="button" class="btn btn-ghost btn-sm" data-action="slack-identity-refresh">' + icon("arrow-path") + 'Refresh</button>';
+    return '<section class="section"><div class="section-head"><div><h2 class="section-title">Slack identity</h2>' +
+      '<p class="hint">Slack owns the name and avatar people see beside Chickpea&rsquo;s messages.</p></div></div>' +
+      '<div class="slack-identity-card">' + avatar +
+      '<div class="slack-identity-copy"><span class="slack-identity-name">@' + esc(displayName) + '</span>' +
+      '<span class="hint">Shared by every profile and channel in this Slack app.</span></div>' +
+      '<div class="slack-identity-actions"><a class="btn btn-soft btn-sm" href="' + esc(consoleUrl) + '" target="_blank" rel="noopener noreferrer">Change in Slack &nearr;</a>' + refresh + '</div></div>' +
+      (state.slackIdentityError
+        ? '<p class="inline-status error" role="status" aria-live="polite">' + esc(state.slackIdentityError) + '</p>'
+        : '') + '</section>';
   }
 
   function slackOverviewHtml() {
@@ -2221,7 +2278,6 @@ details[open].advanced summary::before {
     var connection = '<section class="section"><div class="section-head"><div><h2 class="section-title">Connection</h2>' +
       '<p class="hint">Manage this Slack workspace connection.</p></div></div>' +
       '<div class="action-well">' + testButton + updateButton +
-      '<a class="btn btn-ghost slack-console-link" href="https://api.slack.com/apps" target="_blank" rel="noopener noreferrer">Open Slack console &nearr;</a>' +
       slackConnectionStatusHtml() + '</div>' + slackUpdateCredentialsHtml() +
       '<div class="danger-panel"><div class="danger-copy"><span class="danger-title">Disconnect this workspace</span>' +
       '<span class="hint">Stops Chickpea from answering. Profiles and channel configuration stay saved so you can reconnect later. This does not uninstall the Slack app.</span>' +
@@ -2230,7 +2286,7 @@ details[open].advanced summary::before {
       '<button type="button" class="btn btn-danger" data-action="slack-disconnect-open"' + (mutable && !connectionBusy ? "" : " disabled") + '>Disconnect</button></div></section>';
     var foot = '<div class="slack-overview-foot"><button type="button" class="btn btn-primary i-lead" data-action="toggle-add-channel">' + icon("plus") + 'Add Slack channel</button>' +
       '<span class="hint">Choose a channel where Chickpea should answer.</span></div>';
-    return head + successToastHtml() + workspace + behavior + connection + foot;
+    return head + successToastHtml() + workspace + slackIdentityHtml() + behavior + connection + foot;
   }
 
   function slackDisconnectModalHtml() {
@@ -2291,7 +2347,7 @@ details[open].advanced summary::before {
   function successToastHtml() {
     if (!state.slackToast || state.slackToastDismissed) return "";
     var team = state.slackToast.team;
-    var botName = state.slackToast.botName || "Tag";
+    var botName = state.slackToast.botName || slackDisplayName();
     var who = team
       ? 'Connected to <b style="font-weight:500; color:var(--text);">' + esc(team) + '</b> as <span class="mono" style="color:var(--text);">@' + esc(botName) + '</span>'
       : 'Connected as <span class="mono" style="color:var(--text);">@' + esc(botName) + '</span>';
@@ -2307,7 +2363,7 @@ details[open].advanced summary::before {
       '<h1 class="page-title" style="font-size:1.1875rem;">Choose where Chickpea answers</h1>' +
       '<p class="hint" style="max-width:452px; font-size:0.875rem; line-height:1.55;">Chickpea only answers where you allow it. Pick a Slack channel to start &mdash; it comes with sensible defaults, and you can customize instructions, model, and tools per channel anytime.</p>' +
       '<button type="button" class="btn btn-primary" style="margin-top:4px; padding:9px 18px;" data-action="toggle-add-channel">Choose a channel</button>' +
-      '<p class="hint">Want proof right now? DM <span class="mono" style="color:var(--text-2);">@Tag</span> &mdash; direct messages already work.</p>' +
+      '<p class="hint">Want proof right now? DM <span class="mono" style="color:var(--text-2);">' + slackMentionHtml() + '</span> &mdash; direct messages already work.</p>' +
       '</div>';
   }
 
@@ -2322,6 +2378,21 @@ details[open].advanced summary::before {
 
   function isSlackConnected() {
     return !!(state.slack && state.slack.connected);
+  }
+
+  function slackDisplayName() {
+    var liveName = state.slackIdentity && typeof state.slackIdentity.displayName === "string"
+      ? state.slackIdentity.displayName.trim()
+      : "";
+    return liveName || "Chickpea";
+  }
+
+  function slackMentionText() {
+    return "@" + slackDisplayName();
+  }
+
+  function slackMentionHtml() {
+    return "@" + esc(slackDisplayName());
   }
 
   // The connected workspace id/name come from the channels proxy first (it
@@ -2363,14 +2434,14 @@ details[open].advanced summary::before {
 
   function inviteReminderHtml() {
     if (!state.addChannelInvite) return "";
-    return '<div class="empty" style="border-left:2px solid var(--ember);"><p class="field-label">Invite Tag to finish</p>' +
+    return '<div class="empty" style="border-left:2px solid var(--ember);"><p class="field-label">Invite the connected Slack app to finish</p>' +
       '<p class="hint">' + esc(state.addChannelInvite) + '</p></div>';
   }
 
   function channelOptionsHtml() {
     var channels = (state.slackChannels && state.slackChannels.channels) || [];
     if (channels.length === 0) {
-      return '<option value="">No channels found &mdash; invite @Tag, then Refresh</option>';
+      return '<option value="">No channels found &mdash; invite the connected Slack app, then Refresh</option>';
     }
     var selected = state.addChannelSelected || channels[0].id;
     // Grouped PUBLIC / PRIVATE (native optgroups). No lock emoji: privacy is
@@ -2432,7 +2503,7 @@ details[open].advanced summary::before {
         icon("chevron-down", "select-caret") + '</span>' +
         refreshBtn + '</div>' +
         truncated +
-        '<p class="hint">Don\\'t see it? Invite @Tag to the channel in Slack, then click Refresh. ' +
+        '<p class="hint">Don\\'t see it? Invite the connected Slack app to the channel, then click Refresh. ' +
         '<button type="button" class="link-btn" data-action="toggle-manual-channel">Enter ID manually</button></p></div>';
     }
     var foot = '<div class="save-bar" style="justify-content:flex-start;">' +
@@ -2565,6 +2636,10 @@ details[open].advanced summary::before {
       state.slackToastDismissed = false;
       state.slackStep = 1;
       state.slackUpdateOpen = false;
+      state.slackIdentity = null;
+      state.slackIdentityError = "";
+      state.slackIdentityLoading = false;
+      state.slackIdentityRequestId += 1;
       return refreshData();
     }).catch(function (error) {
       state.slackBusy = false;
@@ -2617,7 +2692,7 @@ details[open].advanced summary::before {
       // Provider, and Snapshot are diagnostic and move under Advanced (card 07).
       body = '<div class="well"><dl>' +
         '<div class="kv"><dt>Profile</dt><dd>' + esc(profile.name) + ' ' + enabledBadge(profile.enabled) + '</dd></div>' +
-        '<div class="kv"><dt>Replies as</dt><dd>Tag &mdash; the install-wide Slack identity shared by every channel</dd></div>' +
+        '<div class="kv"><dt>Replies as</dt><dd>' + slackMentionHtml() + ' &mdash; the install-wide Slack identity shared by every channel</dd></div>' +
         '<div class="kv"><dt>Instructions</dt><dd><div class="instructions-preview">' + instructionLayersHtml(state.effective.instructionLayers) + '</div></dd></div>' +
         '</dl></div>';
     }
@@ -2682,7 +2757,7 @@ details[open].advanced summary::before {
     var cards = state.agents.map(profileCardHtml).join("");
     return '<div class="main-head"><div style="display:flex; flex-direction:column; gap:6px;">' +
       '<h1 class="page-title">Profiles</h1>' +
-      '<p class="hint" style="max-width:58ch;">A profile is the reusable behavior you attach to a channel &mdash; its instructions, model, skills, and connections. One profile can answer in many channels, and it always replies as <b style="font-weight:500; color:var(--text);">@Tag</b> &mdash; a profile changes how Chickpea answers, never who it is.</p>' +
+      '<p class="hint" style="max-width:58ch;">A profile is the reusable behavior you attach to a channel &mdash; its instructions, model, skills, and connections. One profile can answer in many channels, and it always replies as <b style="font-weight:500; color:var(--text);">' + slackMentionHtml() + '</b> &mdash; a profile changes how Chickpea answers, never who it is.</p>' +
       '</div><button type="button" class="btn btn-primary" style="flex-shrink:0;" data-action="new-profile">New profile</button></div>' +
       '<section class="section"><div class="section-head"><div><h2 class="section-title">Your profiles</h2><p class="hint">Everything Chickpea can be in this workspace.</p></div></div>' +
       (cards || '<div class="empty"><p class="field-label">No profiles yet</p><p class="hint">Create one to give Chickpea a behavior you can attach to channels.</p></div>') +
@@ -4117,7 +4192,7 @@ details[open].advanced summary::before {
     var err = state.profileError === "Name is required.";
     return '<div class="field"><label class="field-label" for="p-name">Name</label>' +
       '<input class="input" id="p-name" name="name" type="text" value="' + esc(draft.name) + '"' + (err ? ' style="outline:2px solid var(--danger); outline-offset:-1px;"' : "") + ' data-action="profile-name">' +
-      '<p class="hint">Shown here in /admin only. Replies in Slack always post as @Tag.</p>' +
+      '<p class="hint">Shown here in /admin only. Replies in Slack always post as ' + slackMentionHtml() + '.</p>' +
       (err ? '<p class="field-error">Name is required.</p>' : "") + '</div>';
   }
 
@@ -4143,7 +4218,7 @@ details[open].advanced summary::before {
     return '<div style="display:flex; flex-direction:column; gap:6px;">' +
       '<button type="button" class="link-btn" style="align-self:flex-start;" data-action="profiles-back">&larr; Profiles</button>' +
       '<h1 class="page-title">New profile</h1>' +
-      '<p class="hint">Create a reusable behavior you can attach to channels. It always replies as <b style="font-weight:500; color:var(--text);">@Tag</b>.</p></div>' +
+      '<p class="hint">Create a reusable behavior you can attach to channels. It always replies as <b style="font-weight:500; color:var(--text);">' + slackMentionHtml() + '</b>.</p></div>' +
       '<section class="section"><div class="section-head"><div><h2 class="section-title">Details</h2></div></div>' +
       '<div class="form-grid">' +
       profileNameFieldHtml(draft) +
@@ -4168,7 +4243,7 @@ details[open].advanced summary::before {
     return '<div class="main-head"><div style="display:flex; flex-direction:column; gap:6px;">' +
       '<button type="button" class="link-btn" style="align-self:flex-start;" data-action="profiles-back">&larr; Profiles</button>' +
       titleRow +
-      '<p class="hint">Edit this reusable behavior. It always replies as <b style="font-weight:500; color:var(--text);">@Tag</b>.</p></div>' +
+      '<p class="hint">Edit this reusable behavior. It always replies as <b style="font-weight:500; color:var(--text);">' + slackMentionHtml() + '</b>.</p></div>' +
       '<label style="display:flex; align-items:center; gap:10px;"><span class="hint">' + (draft.enabled ? "Enabled" : "Disabled") + '</span>' +
       '<span class="toggle"><span class="thumb"></span><input type="checkbox" name="profile-enabled" data-action="profile-enable-toggle" ' + (draft.enabled ? "checked" : "") + ' aria-label="Profile enabled"></span></label></div>' +
       disableConfirmHtml(draft) +
@@ -4604,15 +4679,16 @@ details[open].advanced summary::before {
   }
 
   function memoryCommandCatalog() {
+    var mention = slackMentionText();
     return [
-      "@Chickpea !memory help",
-      "@Chickpea !memory",
-      "@Chickpea !memory show <slug>",
-      "@Chickpea !remember <name> — <description>",
-      "@Chickpea !memory update <slug> — <description>",
-      "@Chickpea !memory merge <slug-a> <slug-b> as <name> — <description>",
-      "@Chickpea !forget <slug>",
-      "@Chickpea !memory report <channel-id>/<slug> <stale|incorrect|unsafe|unclear>"
+      mention + " !memory help",
+      mention + " !memory",
+      mention + " !memory show <slug>",
+      mention + " !remember <name> — <description>",
+      mention + " !memory update <slug> — <description>",
+      mention + " !memory merge <slug-a> <slug-b> as <name> — <description>",
+      mention + " !forget <slug>",
+      mention + " !memory report <channel-id>/<slug> <stale|incorrect|unsafe|unclear>"
     ];
   }
 
@@ -4620,7 +4696,7 @@ details[open].advanced summary::before {
     var commands = memoryCommandCatalog().map(function (command) {
       return '<code>' + esc(command).replace(/—/g, "&mdash;") + '</code>';
     }).join(", ");
-    return '<div class="memory-help">Relevant saved memories are used automatically in replies. To save one naturally in Slack, say <code>@Chickpea please remember that &lt;what matters&gt;</code>. Commands: ' +
+    return '<div class="memory-help">Relevant saved memories are used automatically in replies. To save one naturally in Slack, say <code>' + slackMentionHtml() + ' please remember that &lt;what matters&gt;</code>. Commands: ' +
       commands + '. The merge command requires the replacement body on the next line. ' +
       'Generated <code>MEMORY.md</code> files are never edited directly. <button type="button" class="btn btn-ghost btn-sm" data-action="memory-copy-controls">Copy controls</button></div>';
   }
@@ -4838,14 +4914,15 @@ details[open].advanced summary::before {
   }
 
   function copyMemoryControls() {
+    var mention = slackMentionText();
     var commands = memoryCommandCatalog().map(function (command) {
-      return command.indexOf("@Chickpea !memory merge ") === 0
+      return command.indexOf(mention + " !memory merge ") === 0
         ? command + "\\n<replacement body on the next line>"
         : command;
     });
     var controls = [
-      "@Chickpea please remember that <what matters>",
-      "@Chickpea please update the memory <slug> to say that <new guidance>"
+      mention + " please remember that <what matters>",
+      mention + " please update the memory <slug> to say that <new guidance>"
     ].concat(commands).join("\\n");
     if (!navigator.clipboard || !navigator.clipboard.writeText) {
       state.memoryError = "Clipboard access is unavailable. Select the commands above to copy them.";
@@ -6284,7 +6361,7 @@ details[open].advanced summary::before {
     loadEffective().then(render);
   }
 
-  function refreshData() {
+  function refreshData(loadIdentityAfterRender) {
     return Promise.all([
       api("/admin/api/agents"),
       api("/admin/api/assignments"),
@@ -6320,7 +6397,10 @@ details[open].advanced summary::before {
       }
       syncChannelFormWorkspacePrefill();
       return loadEffective();
-    }).then(render).catch(function (error) {
+    }).then(function () {
+      render();
+      if (loadIdentityAfterRender !== false) loadSlackIdentityForCurrentView();
+    }).catch(function (error) {
       document.querySelector(".main-inner").innerHTML = '<div class="empty"><p class="field-label">Admin failed to load</p><p class="error">' + esc(error.message) + '</p></div>';
     });
   }
@@ -6523,6 +6603,7 @@ details[open].advanced summary::before {
     if (action === "toggle-add-channel") { openAddChannel(); }
     if (action === "cancel-add-channel") { state.addChannelOpen = false; state.addChannelManual = false; state.addChannelError = ""; state.addChannelAgentId = ""; render(); }
     if (action === "refresh-channels") { loadSlackChannels(true); }
+    if (action === "slack-identity-refresh") { loadSlackIdentity(true, true); }
     if (action === "slack-behavior-retry") { loadSlackBehavior(); }
     if (action === "slack-test") { testSlackConnection(); }
     if (action === "slack-update-open" && slackConnectionMutable()) { state.slackUpdateOpen = true; state.slackError = ""; render(); }
@@ -7419,6 +7500,7 @@ details[open].advanced summary::before {
       if (!state.slackChannels && !state.slackChannelsLoading) loadSlackChannels(false);
     }
     render();
+    loadSlackIdentityForCurrentView();
   }
 
   function openAddChannel(agentId) {
@@ -7447,6 +7529,49 @@ details[open].advanced summary::before {
       render();
       return null;
     });
+  }
+
+  function loadSlackIdentity(force, shouldRender) {
+    if (!isSlackConnected()) {
+      state.slackIdentity = null;
+      state.slackIdentityError = "";
+      state.slackIdentityLoading = false;
+      state.slackIdentityRequestId += 1;
+      return Promise.resolve(null);
+    }
+    if (!force && (state.slackIdentity || state.slackIdentityLoading)) {
+      return Promise.resolve(state.slackIdentity);
+    }
+    var requestId = ++state.slackIdentityRequestId;
+    state.slackIdentityLoading = true;
+    state.slackIdentityError = "";
+    if (shouldRender !== false) render();
+    return api("/admin/api/slack-identity").then(function (body) {
+      if (requestId !== state.slackIdentityRequestId) return null;
+      state.slackIdentity = body;
+      state.slackIdentityLoading = false;
+      if (shouldRender !== false) render();
+      return body;
+    }).catch(function (error) {
+      if (requestId !== state.slackIdentityRequestId) return null;
+      state.slackIdentity = null;
+      state.slackIdentityLoading = false;
+      state.slackIdentityError = error.serverMessage || "Slack identity could not be loaded.";
+      if (shouldRender !== false) render();
+      return null;
+    });
+  }
+
+  function loadSlackIdentityForCurrentView() {
+    if (
+      state.view === "channels" &&
+      state.channelScreen === "overview" &&
+      isSlackConnected() &&
+      !state.slackIdentity &&
+      !state.slackIdentityLoading
+    ) {
+      void loadSlackIdentity(false, true);
+    }
   }
 
   function saveSlackBehavior(key, value) {
@@ -7503,6 +7628,10 @@ details[open].advanced summary::before {
       state.slackDisconnectError = "";
       state.slackTestStatus = null;
       state.slackBehavior = null;
+      state.slackIdentity = null;
+      state.slackIdentityError = "";
+      state.slackIdentityLoading = false;
+      state.slackIdentityRequestId += 1;
       state.slackChannels = null;
       state.active = null;
       state.channelScreen = "overview";
@@ -7567,14 +7696,14 @@ details[open].advanced summary::before {
   function addChannelErrorText(error) {
     if (error && error.serverMessage) return error.serverMessage;
     var message = error && error.message;
-    if (message === "channel_not_found") return "Slack could not find that channel in the connected workspace. Check the ID, and invite @Tag if it is private.";
+    if (message === "channel_not_found") return "Slack could not find that channel in the connected workspace. Check the ID, and invite the connected Slack app if it is private.";
     if (message === "workspace_mismatch") return "That channel belongs to a different workspace than the one Chickpea is connected to.";
     if (message === "unknown_agent") return "The profile no longer exists. Reload and try again.";
     return message || "Could not add the channel.";
   }
 
   function channelInviteWarning(channelName) {
-    return "#" + channelName + " was added, but @Tag isn't a member of it yet, so it won't hear mentions there. Invite @Tag to #" + channelName + " in Slack — no need to come back here.";
+    return "#" + channelName + " was added, but the connected Slack app isn't a member of it yet, so it won't hear mentions there. Invite it to #" + channelName + " in Slack — no need to come back here.";
   }
 
   function addChannel(formData) {
@@ -9039,7 +9168,7 @@ details[open].advanced summary::before {
 
   var initialRoute = canNavigate ? location.pathname : "/admin";
   state.oauthReturn = canNavigate ? oauthReturnFromSearch(location.search || "") : null;
-  refreshData().then(function () {
+  refreshData(false).then(function () {
     if (initialRoute !== "/admin") applyRoute(initialRoute);
     if (state.oauthReturn && state.profileDraft && state.profileScreen === "edit") {
       state.oauthReturn.agentId = state.profileDraft.id;
@@ -9072,6 +9201,7 @@ details[open].advanced summary::before {
     }
     routeReady = true;
     syncUrl(true);
+    loadSlackIdentityForCurrentView();
   });
 })();
 </script>

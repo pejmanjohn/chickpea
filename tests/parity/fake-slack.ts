@@ -236,8 +236,8 @@ export class FakeSlackBackend {
       botUserId: slack.identity?.botUserId ?? 'U_BOT',
       teamId: slack.identity?.teamId ?? 'T_FAKE',
       teamName: slack.identity?.teamName ?? 'Fake Workspace',
-      displayName: slack.identity?.displayName ?? 'Tag',
-      realName: slack.identity?.realName ?? 'Tag',
+      displayName: slack.identity?.displayName ?? 'Chickpea',
+      realName: slack.identity?.realName ?? 'Chickpea',
       image512Url: slack.identity?.image512Url ?? 'https://avatars.slack-edge.com/fake/flue_512.png',
       image72Url: slack.identity?.image72Url ?? 'https://avatars.slack-edge.com/fake/flue_72.png',
     };
