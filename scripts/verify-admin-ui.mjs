@@ -174,7 +174,9 @@ try {
     'admin page carries live Scheduled Work and Memory audit domains',
     pageHtml.includes('Audit logs') &&
       pageHtml.includes('data-action="audit-tab-scheduled">Scheduled work') &&
-      pageHtml.includes('Generated <code>MEMORY.md</code> files are never edited directly') &&
+      pageHtml.includes('data-action="audit-tab-memory">Memory') &&
+      pageHtml.includes('aria-disabled="true" title="Coming later">Network events') &&
+      pageHtml.includes('Generated index · changes are made through individual files.') &&
       pageHtml.includes('Prior exports, Slack or provider logs, backups, and Flue transcripts may still retain copies'),
   );
 
