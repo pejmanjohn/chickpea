@@ -11,7 +11,15 @@
     "binding": "AI"
   },
   "vars": {
-    "SANDBOX_TRANSPORT": "rpc"
+    "SANDBOX_TRANSPORT": "rpc",
+    // Cloudflare-only routine kill switch. Keep "0" through deployment and
+    // workerd verification; set "1" only when the fixed Cron, TAG_STATE, Flue
+    // Workflow, and internal route guards are present. `npm run deploy` rejects
+    // an enabled artifact when any required seam is missing.
+    "TAG_ROUTINES_ENABLED": "0"
+  },
+  "triggers": {
+    "crons": ["* * * * *"]
   },
   // App-owned state Durable Object (src/cloudflare.ts): one singleton instance
   // hosts config agents/assignments, thread snapshots, claims, the thread
@@ -38,6 +46,14 @@
     {
       "tag": "v3",
       "new_sqlite_classes": ["Sandbox"]
+    },
+    {
+      "tag": "v4",
+      "new_sqlite_classes": ["FlueRoutineWorkflow"]
+    },
+    {
+      "tag": "v5",
+      "new_sqlite_classes": ["FlueRoutineIntentAgent"]
     }
   ],
   "containers": [

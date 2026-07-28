@@ -146,6 +146,8 @@ async function runServerTurn({ serverEntry, fakeUrl, dbPath, netGuardLog, payloa
 const { FakeSlackBackend } = await loadFake();
 const { SqliteMemoryStateStore } = await loadTsModule('src/memory/store.ts');
 const { SqliteConfigStore } = await loadTsModule('src/config/store.ts');
+const { SqliteRoutineStore } = await loadTsModule('src/routines/store.ts');
+const { hashRoutineValue } = await loadTsModule('src/routines/ids.ts');
 const backend = new FakeSlackBackend({
   slack: {
     identity: { teamId: 'T_DEMO' },
@@ -402,6 +404,80 @@ try {
       memoryStore?.close();
       if (priorLegacyFlag === undefined) delete process.env.SLACK_TAG_MEMORY_ENABLED;
       else process.env.SLACK_TAG_MEMORY_ENABLED = priorLegacyFlag;
+    }
+  }
+
+  // --- Scheduled work: definition/run/idempotency survive a state restart. ---
+  {
+    const routinePath = join(mkdtempSync(join(tmpdir(), 'flue-routine-dur-')), 'state.db');
+    const routineNow = Date.now();
+    const tokenHash = hashRoutineValue('routine-durability-confirmation');
+    const definition = {
+      name: 'Durability routine',
+      description: 'Proves scheduled-work restart behavior.',
+      taskText: 'Inspect current state and update the disposable acceptance record.',
+      triggerKind: 'schedule',
+      scheduleInput: '0 * * * *',
+      scheduleJson: JSON.stringify({ version: 1, kind: 'cron', expression: '0 * * * *' }),
+      timezone: 'UTC',
+      outputPolicy: 'post',
+      authorityMode: 'live_channel_v1',
+    };
+    const draft = {
+      action: 'create',
+      routineId: 'routine_durability',
+      definition,
+      nextRunAt: routineNow + 60 * 60_000,
+      projectedDailyStarts: 24,
+      reservations: [{ windowStart: routineNow + 60 * 60_000, count: 1 }],
+    };
+    const previewHash = hashRoutineValue(JSON.stringify(draft));
+    let routineStore = new SqliteRoutineStore(routinePath, () => routineNow);
+    try {
+      await routineStore.putConfirmation({
+        confirmationId: 'rconfirm_durability',
+        tokenHash,
+        actorId: 'U_ALICE',
+        actorClass: 'member',
+        workspaceId: 'T_DEMO',
+        channelId: EXEC_CHANNEL,
+        draft,
+        previewHash,
+        expiresAt: routineNow + 15 * 60_000,
+      });
+      const routine = await routineStore.confirm({
+        tokenHash,
+        actorId: 'U_ALICE',
+        workspaceId: 'T_DEMO',
+        channelId: EXEC_CHANNEL,
+        previewHash,
+        idempotencyKey: 'routine:durability:confirm',
+      });
+      const occurrenceInput = {
+        runId: 'rrun_durability',
+        idempotencyKey: 'routine:durability:occurrence',
+        routineId: routine.id,
+        routineVersion: routine.version,
+        scheduledFor: routineNow + 60 * 60_000,
+        triggerSource: 'schedule',
+        requestedBy: null,
+        queuedAt: routineNow,
+        deadlineAt: routineNow + 15 * 60_000,
+      };
+      await routineStore.createOccurrence(occurrenceInput);
+      routineStore.close();
+
+      routineStore = new SqliteRoutineStore(routinePath, () => routineNow);
+      const restarted = await routineStore.getRoutine(routine.id);
+      const replay = await routineStore.createOccurrence(occurrenceInput);
+      const runs = await routineStore.listRuns({ routineId: routine.id });
+      record(
+        'ROUTINE DURABILITY: definition and occurrence survive restart with one idempotent run',
+        restarted?.taskText === definition.taskText && replay.id === 'rrun_durability' && runs.length === 1,
+        `routine=${String(restarted?.id)} run=${replay.id} runs=${runs.length}`,
+      );
+    } finally {
+      routineStore.close();
     }
   }
 

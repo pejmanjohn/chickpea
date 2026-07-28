@@ -76,7 +76,7 @@ test('fake Slack serves bounded membership and user-directory fixtures for memor
       channels: [{ id: 'C_MEMORY', name: 'memory', isMember: true }],
       channelMembers: { C_MEMORY: ['U_MEMBER', 'U_BOT'] },
       workspaceUsers: [
-        { id: 'U_MEMBER', teamId: 'T_MEMORY' },
+        { id: 'U_MEMBER', teamId: 'T_MEMORY', timezone: 'America/Los_Angeles' },
         { id: 'U_BOT', teamId: 'T_MEMORY', isBot: true, isAppUser: true },
       ],
     },
@@ -107,6 +107,7 @@ test('fake Slack serves bounded membership and user-directory fixtures for memor
   const actorBody = await actor.json() as { user: Record<string, unknown> };
   assert.equal(actorBody.user.team_id, 'T_MEMORY');
   assert.equal(actorBody.user.is_restricted, false);
+  assert.equal(actorBody.user.tz, 'America/Los_Angeles');
 });
 
 test('fake Slack emits the raw scope flags used by memory privacy checks', async () => {

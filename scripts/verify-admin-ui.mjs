@@ -23,6 +23,7 @@ const MODEL_SPECIFIER = 'local-stub/admin-ui-model';
 const FIRST_ADDENDUM = 'ADMIN_UI_ADDENDUM_V1: prefer release readiness.';
 const SECOND_ADDENDUM = 'ADMIN_UI_ADDENDUM_V2: prefer launch-risk deltas.';
 const MEMORY_ENTRY_ID = 'mem_admin_ui_release';
+const ROUTINE_ID = 'routine_admin_ui_release';
 
 const results = [];
 
@@ -67,14 +68,18 @@ async function readEffectiveConfig(app) {
 
 let store;
 let memory;
+let routines;
 try {
   console.log(`node ${assertNodeVersion()}`);
   const { Hono } = await import('hono');
   const { createAdminRoutes } = await loadTsModule('src/admin/routes.ts');
   const { SqliteConfigStore } = await loadTsModule('src/config/store.ts');
   const { SqliteMemoryStateStore } = await loadTsModule('src/memory/store.ts');
+  const { SqliteRoutineStore } = await loadTsModule('src/routines/store.ts');
+  const { RoutineService } = await loadTsModule('src/routines/service.ts');
   store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   memory = new SqliteMemoryStateStore(':memory:');
+  routines = new SqliteRoutineStore(':memory:');
   const publicMemory = await memory.ensurePublicStore(WORKSPACE_ID);
   await memory.observeChannelScope({
     workspaceId: WORKSPACE_ID,
@@ -96,12 +101,48 @@ try {
     actorClass: 'member',
     idempotencyKey: 'admin-ui-memory-create',
   });
+  const routineService = new RoutineService(routines, {
+    now: Date.now,
+    routineId: () => ROUTINE_ID,
+  });
+  const routine = await routineService.save({
+    action: 'create',
+    actorId: 'U_ADMIN_UI_MEMBER',
+    workspaceId: WORKSPACE_ID,
+    channelId: CHANNEL_ID,
+    definition: {
+      name: 'Release readiness check',
+      description: 'Checks launch blockers every weekday.',
+      taskText: 'Review launch blockers and make safe progress.',
+      triggerKind: 'schedule',
+      scheduleInput: '0 9 * * 1-5',
+      scheduleJson: '{"version":1,"kind":"cron","expression":"0 9 * * 1-5"}',
+      timezone: 'America/Los_Angeles',
+      outputPolicy: 'post',
+      authorityMode: 'live_channel_v1',
+    },
+    nextRunAt: Date.now() + 3_600_000,
+    projectedDailyStarts: 5,
+    reservations: [{ windowStart: Date.now() + 3_600_000, count: 1 }],
+  }, 'admin-ui-routine-create');
+  await routines.createOccurrence({
+    runId: 'rrun_admin_ui_release',
+    idempotencyKey: 'admin-ui-routine-run',
+    routineId: routine.id,
+    routineVersion: routine.version,
+    scheduledFor: Date.now(),
+    triggerSource: 'run_now',
+    requestedBy: 'U_ADMIN_UI_MEMBER',
+    queuedAt: Date.now(),
+    deadlineAt: Date.now() + 900_000,
+  });
   const app = new Hono();
   app.route(
     '/',
     createAdminRoutes({
       store,
       memory,
+      routines,
       adminToken: ADMIN_TOKEN,
       knownProviders: new Set(['local-stub']),
     }),
@@ -130,10 +171,41 @@ try {
   );
 
   record(
-    'admin page carries the Memory workspace and irreversible-delete disclosure',
+    'admin page carries live Scheduled Work and Memory audit domains',
     pageHtml.includes('Audit logs') &&
+      pageHtml.includes('data-action="audit-tab-scheduled">Scheduled work') &&
       pageHtml.includes('Generated <code>MEMORY.md</code> files are never edited directly') &&
       pageHtml.includes('Prior exports, Slack or provider logs, backups, and Flue transcripts may still retain copies'),
+  );
+
+  const routineList = await adminJson(app, '/admin/api/audit/scheduled_work/routines?state=active');
+  const routineDetail = await adminJson(app, `/admin/api/audit/scheduled_work/routines/${ROUTINE_ID}`);
+  record(
+    'Scheduled Work lists definitions and safe occurrence detail through the real state store',
+    routineList.status === 200 &&
+      routineList.body?.routines?.[0]?.id === ROUTINE_ID &&
+      routineList.body?.routines?.[0]?.taskText === undefined &&
+      routineDetail.status === 200 &&
+      routineDetail.body?.routine?.taskText === 'Review launch blockers and make safe progress.' &&
+      routineDetail.body?.runs?.[0]?.id === 'rrun_admin_ui_release' &&
+      routineDetail.body?.runs?.[0]?.revision === undefined,
+    `list=${routineList.status} detail=${routineDetail.status}`,
+  );
+
+  const pausedRoutine = await adminJson(
+    app,
+    `/admin/api/audit/scheduled_work/routines/${ROUTINE_ID}/control`,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'idempotency-key': 'admin-ui-routine-pause' },
+      body: JSON.stringify({ action: 'pause', expectedVersion: 1 }),
+    },
+  );
+  record(
+    'Scheduled Work control uses optimistic versioning and appends audit state',
+    pausedRoutine.status === 200 && pausedRoutine.body?.routine?.state === 'paused' &&
+      (await routines.listAuditEvents({ subjectId: ROUTINE_ID, limit: 20 })).length >= 2,
+    `status=${pausedRoutine.status}`,
   );
 
   const created = await adminBody(app, 'POST', '/admin/api/agents', {
@@ -266,6 +338,7 @@ try {
 } finally {
   store?.close();
   memory?.close();
+  routines?.close();
 }
 
 const failed = results.filter((result) => !result.passed);

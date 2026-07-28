@@ -10,6 +10,11 @@ import type { ResolvedAssignment } from '../config/types.ts';
 import { parseMemoryCommand } from '../memory/commands.ts';
 import { handleMemoryCommand, prepareMemoryTurn } from '../memory/runtime.ts';
 import {
+  handleRoutineSlackRequest,
+  routineResponseVisibility,
+} from '../routines/commands.ts';
+import { isRoutineSlackTurn } from '../routines/slack-context.ts';
+import {
   AgentPromptFailure,
   promptSlackThreadAgent,
   releaseCloudflareSandboxTurn,
@@ -135,6 +140,28 @@ export async function runTurn(
   // pinned): on a button deploy nobody sets the env var, so without the stored
   // fallback the footer's "Configure" link would be dead.
   const publicUrl = await resolveSlackPublicUrl(platformEnv);
+  if (isRoutineSlackTurn(turn)) {
+    const routineText = await handleRoutineSlackRequest(turn, platformEnv);
+    if (routineText !== undefined) {
+      const routinePresenter = new WebClientPresenter(client, {
+        channelId: turn.channelId,
+        threadTs: turn.threadTs,
+        agentName: assignment.agent.name,
+        agentId: assignment.agent.id,
+        modelLabel: resolvedModel,
+        publicUrl,
+        userId: turn.userId,
+        workspaceId: turn.workspaceId,
+      });
+      if (routineResponseVisibility(turn.text, turn.channelId) === 'requester') {
+        await routinePresenter.deliverRequesterOnly(routineText, 'markdown');
+      } else {
+        await routinePresenter.deliverFinal(routineText, 'markdown');
+      }
+      await options.onDelivered?.();
+      return;
+    }
+  }
   const memoryCommand = parseMemoryCommand(turn.text);
   const preparedMemory = memoryCommand
     ? undefined
@@ -269,7 +296,7 @@ export async function runTurn(
   }
 }
 
-async function shouldUseCloudflareSandbox(
+export async function shouldUseCloudflareSandbox(
   assignment: ResolvedAssignment,
   env: PlatformEnv | undefined,
 ): Promise<boolean> {

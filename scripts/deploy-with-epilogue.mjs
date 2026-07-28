@@ -47,6 +47,69 @@ if (!skipBuild) {
   }
 }
 
+function builtConfigPath() {
+  try {
+    const redirectPath = path.join(projectRoot, '.wrangler', 'deploy', 'config.json');
+    const redirect = readFileSync(redirectPath, 'utf8');
+    const entry = redirect.match(/"configPath"\s*:\s*"([^"]+)"/);
+    if (entry) return path.resolve(path.dirname(redirectPath), entry[1]);
+  } catch {
+    /* a disabled or not-yet-built capability has nothing to validate */
+  }
+  return undefined;
+}
+
+function cliEnablesRoutines() {
+  return deployArgs.some((arg, index) => {
+    const value = arg === '--var' ? deployArgs[index + 1] : arg.startsWith('--var=') ? arg.slice(6) : '';
+    return /^TAG_ROUTINES_ENABLED[:=]1$/.test(value ?? '');
+  });
+}
+
+function validateEnabledRoutineArtifact() {
+  const configPath = builtConfigPath();
+  if (!configPath) {
+    if (cliEnablesRoutines()) throw new Error('Cannot enable routines without a built Cloudflare artifact.');
+    return;
+  }
+  const config = JSON.parse(readFileSync(configPath, 'utf8'));
+  if (config.vars?.TAG_ROUTINES_ENABLED !== '1' && !cliEnablesRoutines()) return;
+  const failures = [];
+  const crons = config.triggers?.crons ?? [];
+  if (crons.length !== 1 || crons[0] !== '* * * * *') failures.push('one * * * * * heartbeat Cron Trigger');
+  const bindings = config.durable_objects?.bindings ?? [];
+  if (!bindings.some((binding) => binding.name === 'TAG_STATE' && binding.class_name === 'TagStateStore')) {
+    failures.push('TAG_STATE/TagStateStore binding');
+  }
+  if (!bindings.some((binding) => binding.name === 'FLUE_ROUTINE_WORKFLOW' && binding.class_name === 'FlueRoutineWorkflow')) {
+    failures.push('FLUE_ROUTINE_WORKFLOW/FlueRoutineWorkflow binding');
+  }
+  const bundlePath = path.resolve(path.dirname(configPath), config.main ?? 'index.js');
+  const bundle = existsSync(bundlePath) ? readFileSync(bundlePath, 'utf8') : '';
+  if (!bundle.includes('scheduled(controller')) failures.push('composed scheduled handler');
+  if (
+    !bundle.includes('routine-intent') ||
+    !bundle.includes('slack-thread') ||
+    !bundle.includes('x-flue-internal-token') ||
+    !bundle.includes('error: "unauthorized"')
+  ) {
+    failures.push('internal-only generated Agent route guards');
+  }
+  if (failures.length) {
+    throw new Error(
+      'TAG_ROUTINES_ENABLED=1 is unsafe for this artifact; missing ' + failures.join(', ') + '. ' +
+      'Deploy with routines disabled, repair the artifact, and verify the heartbeat before enabling.',
+    );
+  }
+}
+
+try {
+  validateEnabledRoutineArtifact();
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(1);
+}
+
 const child = spawn(
   process.execPath,
   [wranglerBin, 'deploy', ...deployArgs],

@@ -435,6 +435,7 @@ export interface SlackConversationFacts {
 export interface SlackUserFacts {
   id: string;
   teamId: string | undefined;
+  timezone?: string | undefined;
   deleted: boolean;
   bot: boolean;
   appUser: boolean;
@@ -489,6 +490,7 @@ function toUserFacts(raw: unknown): SlackUserFacts | null {
   return {
     id: user.id,
     teamId: typeof user.team_id === 'string' ? user.team_id : undefined,
+    timezone: typeof user.tz === 'string' ? user.tz : undefined,
     deleted: user.deleted === true,
     bot: user.is_bot === true,
     appUser: user.is_app_user === true,

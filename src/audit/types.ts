@@ -45,6 +45,7 @@ export interface AuditEventFilter {
   eventType?: string;
   idempotencyKey?: string;
   subjectId?: string;
+  subjectIds?: string[];
   storeId?: string;
   channelId?: string;
   limit?: number;

@@ -118,6 +118,11 @@ export class AuditStoreLogic {
       clauses.push('subject_id = ?');
       params.push(filter.subjectId);
     }
+    if (filter.subjectIds?.length) {
+      const subjectIds = [...new Set(filter.subjectIds)].slice(0, 101);
+      clauses.push(`subject_id IN (${subjectIds.map(() => '?').join(', ')})`);
+      params.push(...subjectIds);
+    }
     if (filter.storeId) {
       clauses.push('store_id = ?');
       params.push(filter.storeId);
@@ -142,6 +147,14 @@ export class AuditStoreLogic {
     return this.db.run(
       `UPDATE audit_events SET actor_id = NULL
        WHERE actor_id IS NOT NULL AND created_at < ?`,
+      before,
+    ).changes;
+  }
+
+  deleteBefore(domain: AuditEvent['domain'], before: number): number {
+    return this.db.run(
+      'DELETE FROM audit_events WHERE domain = ? AND created_at < ?',
+      domain,
       before,
     ).changes;
   }

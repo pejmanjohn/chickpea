@@ -4,6 +4,14 @@ import {
   type DurableObjectState,
   type DurableObjectStorage,
 } from 'cloudflare:workers';
+import {
+  WorkflowInputSerializationError,
+  WorkflowInvocationNotConfiguredError,
+  WorkflowNotDiscoveredError,
+  getRun,
+  invoke,
+  listRuns,
+} from '@flue/runtime';
 import { getSandbox, Sandbox as CloudflareSandbox } from '@cloudflare/sandbox';
 import type { WebClient } from '@slack/web-api';
 
@@ -36,7 +44,7 @@ import type {
   TurnPullRequestProgress,
 } from './config/state-rpc.ts';
 import type { PlatformEnv } from './config/state-backend.ts';
-import { getSettingsStore } from './config/state-backend.ts';
+import { getRoutineStore, getSettingsStore } from './config/state-backend.ts';
 import {
   ConfigStoreLogic,
   type ConfigAgentPatch,
@@ -83,6 +91,20 @@ import type { SqlParam, StateDb } from './state/state-db.ts';
 import { registerCloudflareBindingProvider } from './cloudflare-provider.ts';
 import { MemoryStoreLogic } from './memory/store.ts';
 import { MemoryStateError, type MemoryRpcRequest, type MemoryRpcResponse } from './memory/types.ts';
+import { RoutineStoreLogic } from './routines/store.ts';
+import {
+  RoutineStateError,
+  type RoutineRpcRequest,
+  type RoutineRpcResponse,
+} from './routines/types.ts';
+import { createRoutineScheduledHandler } from './routines/scheduler-adapter.ts';
+import {
+  RoutineAdmissionController,
+  RoutineNotSubmittedError,
+  type RoutineAdmissionAdapter,
+} from './routines/admission.ts';
+import { RoutineScheduler } from './routines/scheduler.ts';
+import routineWorkflow from './workflows/routine.ts';
 
 // This module is imported only by Flue's Cloudflare entry. Register before
 // the generated entry's guarded default so `cloudflare/*` remains keyless but
@@ -407,6 +429,7 @@ interface TagStateStores {
   settings: SettingsStoreLogic;
   turnJobs: TurnJobStoreLogic;
   memory: MemoryStoreLogic;
+  routines: RoutineStoreLogic;
 }
 
 export class TagStateStore extends DurableObject implements TagStateRpc {
@@ -445,6 +468,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         settings: new SettingsStoreLogic(db),
         turnJobs: new TurnJobStoreLogic(db),
         memory: new MemoryStoreLogic(db),
+        routines: new RoutineStoreLogic(db),
       };
       this.initError = undefined;
       return stores;
@@ -604,6 +628,12 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     request: MemoryRpcRequest,
   ): Promise<StateRpcResult<MemoryRpcResponse>> {
     return this.call((stores) => stores.memory.execute(request));
+  }
+
+  async routinesExecute(
+    request: RoutineRpcRequest,
+  ): Promise<StateRpcResult<RoutineRpcResponse>> {
+    return this.call((stores) => stores.routines.execute(request));
   }
 
   // ── turn relay (Cloudflare turn-horizon fix) ─────────────────────────────
@@ -892,6 +922,12 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           ...err.details,
         });
       }
+      if (err instanceof RoutineStateError) {
+        return rpcError('routine', err.message, {
+          routineCode: err.code,
+          ...err.details,
+        });
+      }
       const message = err instanceof Error ? err.message : String(err);
       console.error('[chickpea] TagStateStore RPC failure:', message);
       return rpcError('internal', message);
@@ -900,9 +936,73 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
 }
 
 function rpcError(
-  code: 'unknown_agent' | 'agent_exists' | 'agent_still_assigned' | 'memory' | 'internal',
+  code: 'unknown_agent' | 'agent_exists' | 'agent_still_assigned' | 'memory' | 'routine' | 'internal',
   message: string,
   details?: Record<string, string>,
 ): { ok: false; error: { code: typeof code; message: string; details?: Record<string, string> } } {
   return { ok: false, error: { code, message, ...(details ? { details } : {}) } };
+}
+
+export default createRoutineScheduledHandler({
+  heartbeat: runRoutineHeartbeat,
+});
+
+async function runRoutineHeartbeat(
+  scheduledTime: number,
+  owner: string,
+  rawEnv: Record<string, unknown>,
+): Promise<void> {
+  const store = getRoutineStore(rawEnv);
+  const admissions = new RoutineAdmissionController(store, flueRoutineAdmissionAdapter());
+  await new RoutineScheduler(store, admissions).heartbeat(scheduledTime, owner);
+}
+
+function flueRoutineAdmissionAdapter(): RoutineAdmissionAdapter {
+  return {
+    async invoke(run) {
+      try {
+        return await invoke(routineWorkflow, { input: { occurrenceId: run.id } });
+      } catch (error) {
+        if (
+          error instanceof WorkflowNotDiscoveredError ||
+          error instanceof WorkflowInvocationNotConfiguredError ||
+          error instanceof WorkflowInputSerializationError
+        ) {
+          throw new RoutineNotSubmittedError('Routine Workflow was not submitted.');
+        }
+        throw error;
+      }
+    },
+    async scan({ workflowName, since, limit }) {
+      try {
+        const page = await listRuns({ workflowName, limit });
+        const relevant = page.runs.filter((pointer) => {
+          const startedAt = Date.parse(pointer.startedAt);
+          return Number.isFinite(startedAt) && startedAt >= since;
+        });
+        const records = await Promise.all(relevant.map(({ runId }) => getRun(runId)));
+        const completeRecords = records.every((record) => record !== null);
+        const oldest = page.runs.at(-1);
+        const completeWindow =
+          !page.nextCursor ||
+          (!!oldest && Number.isFinite(Date.parse(oldest.startedAt)) && Date.parse(oldest.startedAt) < since);
+        return {
+          available: true,
+          complete: completeRecords && completeWindow,
+          candidates: records.flatMap((record) =>
+            record
+              ? [{
+                  runId: record.runId,
+                  workflowName: record.workflowName,
+                  startedAt: Date.parse(record.startedAt),
+                  input: record.input,
+                }]
+              : [],
+          ),
+        };
+      } catch {
+        return { available: false, complete: false, candidates: [] };
+      }
+    },
+  };
 }

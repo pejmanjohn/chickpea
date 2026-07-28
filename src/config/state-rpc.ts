@@ -4,6 +4,7 @@ import type { ConfigAgentPatch, OAuthReauthorizationTarget } from './store.ts';
 import type { AgentSnapshot, ChannelAssignment, CustomAgentConfig, ResolvedAssignment } from './types.ts';
 import type { NormalizedSlackTurn } from '../slack/types.ts';
 import type { MemoryRpcRequest, MemoryRpcResponse } from '../memory/types.ts';
+import type { RoutineRpcRequest, RoutineRpcResponse } from '../routines/types.ts';
 
 /**
  * Wire contract between the Cloudflare store proxies and the TagStateStore
@@ -30,6 +31,7 @@ export type StateRpcErrorCode =
   | 'agent_exists'
   | 'agent_still_assigned'
   | 'memory'
+  | 'routine'
   | 'internal';
 
 export interface StateRpcError {
@@ -132,6 +134,8 @@ export interface TagStateRpc {
   ): Promise<StateRpcResult<string[]>>;
   // -- memory + generic audit envelope ------------------------------------
   memoryExecute(request: MemoryRpcRequest): Promise<StateRpcResult<MemoryRpcResponse>>;
+  // -- routines + scheduled-work audit ------------------------------------
+  routinesExecute(request: RoutineRpcRequest): Promise<StateRpcResult<RoutineRpcResponse>>;
   // -- turn relay (Cloudflare turn-horizon fix) ----------------------------
   /**
    * Persist a turn job and arm the alarm so `alarm()` runs it past the events

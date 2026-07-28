@@ -33,6 +33,7 @@ The first DM answers with **zero model keys** on a fresh Cloudflare deploy: the 
 
 - Answers `@`-mentions, thread replies (no re-mention needed), and DMs with one streamed reply in the thread — falling back gracefully to a single durable final message if Slack rejects the streaming APIs, never a duplicate.
 - Fetches channel context only when asked, over a bounded prompt-derived window — no passive monitoring, ever.
+- Runs saved channel routines on Cloudflare schedules, including read and write work, with the same current channel authority as a live `@`-mention.
 - Keeps explicit, team-owned channel memory: members can remember, inspect, correct, merge, report, and irreversibly forget small Markdown notes that carry across Slack threads.
 - Renders standard Markdown natively (tables, lists, blockquotes, fenced code/diff blocks) and signs every reply with the profile and model that answered.
 - Absorbs Slack's duplicate retries while an event claim is held, so normal redelivery produces one final reply and one provider call. If the provider succeeds but Slack rejects final delivery, the claim is released so Slack can retry the event; that recovery can call the provider again.
@@ -59,7 +60,7 @@ The first DM answers with **zero model keys** on a fresh Cloudflare deploy: the 
 - A read-only Access summary showing exactly what a new thread will use — profile, model, provider, enabled skills, approved MCP connections and tools, the layered instruction stack, and a config snapshot hash — resolved by the same code path the Slack agent uses.
 - The first-run Slack connection wizard described above, with live `auth.test` validation and per-credential provenance (environment / stored / missing).
 - Every edit applies to new threads without a restart.
-- Channels > Memory opens the workspace/channel memory browser with generated `MEMORY.md` indexes, escaped file previews, optimistic editing, revision history, review resolution, and irreversible deletion. Scheduled Work and Network Events remain reserved audit-domain labels rather than active features.
+- Audit Logs > Scheduled Work lists every routine and occurrence with filters, current authority, revisions, usage, safe failures, Slack receipts, Flue run IDs, and pause/resume/disable/delete controls. Audit Logs > Memory keeps the workspace/channel memory browser with generated `MEMORY.md` indexes, escaped file previews, optimistic editing, revision history, review resolution, and irreversible deletion. Network Events remains reserved.
 
 ### Channel memory
 
@@ -92,6 +93,39 @@ The bounded defaults are 64 entries per source channel; 512 entries/1 MiB in the
 Canonical state is structured SQLite/Durable Object data projected deterministically as portable Markdown and an uncompressed tar export; the filesystem is not required. The generated `MEMORY.md` files are read-only. Import is previewed, path/hash checked, bounded, and applied atomically. Admin edits use expected versions and preserve a draft across conflicts.
 
 `TAG_ADMIN_TOKEN` currently grants broad operator access to public and private retained memory, including view, edit, review, and delete in the admin UI. Deterministic export/import remain API-level portability and recovery capabilities rather than everyday admin controls. Forget/delete scrubs canonical entry and revision content and prevents it from being supplied again, while retaining body-free tombstones and audit facts. It cannot retract copies already present in Slack messages, model-provider processing/logs, prior exports, backups, or separate Flue transcripts; those systems keep their own retention controls.
+
+### Routines and scheduled work (Cloudflare)
+
+Routines are channel-owned recurring or one-time future requests. One clear natural-language request in an assigned channel creates or edits the scheduled work immediately; Chickpea replies with the normalized schedule, explicit time zone, saved task, output policy, and live-authority disclosure. Only irreversible deletion requires a second confirmation. The exact source Slack request is retained with each revision, and the normalized task is rejected if it adds an effect absent from that request or an inherited prior revision. A routine may read or write when its saved task asks it to: that saved request is the approval, using the same policy as a live tag, with no second per-routine permission matrix or token confirmation. Every occurrence re-resolves the creator's channel membership, the bot's channel access, the current profile/model, connections and shared credentials, repository grants, memory scope, egress policy, spend bounds, and sandbox availability. Saved tasks, memory, channel history, fetched content, and tool output are untrusted inputs and can narrow work but cannot grant new authority.
+
+```text
+Every weekday at 9am America/Los_Angeles, review open support requests, update the configured tracker, and post a summary here.
+Tomorrow at 2pm America/Los_Angeles, post the launch report here.
+Pause the routine "Support review".
+!routines
+!routines <#channel>
+!routines show <id>
+!routines pause <id>
+!routines resume <id>
+!routines disable <id>
+!routines run <id>
+!routines clone <id>
+!routines delete <id>
+!routines confirm <deletion token>
+!routines cancel <deletion token>
+```
+
+Any current member of the owning channel can list, inspect, edit, pause, resume, disable, run, clone, or delete its routines. Natural-language management resolves an exact name only when that name appears in the current message; duplicate names produce an ambiguity response with stable IDs and make no change. The `!routines` ID commands remain the deterministic fallback. One-time jobs cannot be run-now or cloned; create another future job instead. Cross-channel listing first proves the requesting member and bot can access the mentioned channel and otherwise returns the same non-disclosing response as an unknown ID. Its result or failure is an ephemeral message in the invoking channel that only the requester can see. If the creator leaves the organization but remains a channel member, the routine can continue; if the creator is removed from the channel, Chickpea disables it before constructing an Agent or tools. A profile, connection, credential, repository, or policy change takes effect at the next occurrence without editing the routine. Actor-personal credentials are never delegated to unattended work.
+
+The persisted schedule is either a five-field cron expression or one exact future local date/time, always paired with an explicit IANA time zone. People can use familiar phrases such as `10am PT` or `10am Pacific`; Chickpea normalizes those to an IANA zone before persistence. If the request omits a zone, Chickpea uses the requesting member's Slack profile zone when available and otherwise UTC, and shows the selected value in the receipt. Recurring schedules run no more often than every five minutes. Ambiguous fall-back times select the first instant; nonexistent spring-forward times are rejected instead of silently shifted. A fixed one-minute Cloudflare Cron Trigger finds due definitions and admits one independent Flue Workflow run per occurrence; it never reuses a Slack thread or continuing Agent session. Downtime does not burst catch-up work: Chickpea records missed recurring slots and considers only the latest slot, skips any work more than 15 minutes late, and skips an overlap while the same routine is active. A one-time job is claimed at most once and becomes `completed` after its terminal outcome, including a visible missed/skipped outcome. `post_on_change` routines suppress an unchanged result; an explicit no-op never posts.
+
+Writes are not blindly retried after execution begins. A proven pre-submission admission failure may be retried inside its deadline; ambiguous Workflow admission is reconciled by persisted occurrence input. Slack delivery is one at-most-once attempt with a durable receipt. A delivery or tool outcome that may have succeeded but cannot be proven pauses the routine immediately for inspection. Three attributable failures pause it; live access failures disable it; infrastructure/capacity failures remain visible without pretending the saved task is bad. A successful occurrence resets the streak, and a deliberate resume resets it too. Terminal notices are sanitized and deduplicated.
+
+The hard deployment defaults are 100 active routines, 20 per channel, 300 scheduled starts per routine per day, 600 scheduled starts per deployment per day, 10 run-now starts/day, 610 total starts per rolling day, eight starts per rolling 15 minutes, four concurrent runs deployment-wide, one active run per routine, a five-minute minimum recurring interval, a 15-minute admission grace/deadline, and 25 due claims per heartbeat. Recurring validation calculates the maximum rolling-day rate across 370 days; one-time jobs reserve only their single instant. Collision previews persist only the next three fires or 48 hours of five-minute fires and refresh as each slot advances. The eight-start rolling limit is enforced again transactionally when work is actually queued. Scheduled Work exposes these bounds, source-request provenance, completed one-time jobs, and occurrence history. Product-owned run and audit metadata is retained for 365 days; confirmed deletion immediately scrubs the saved task and source-request body from the routine revisions while retaining body-free hashes and audit facts. Slack messages, provider processing/logs, backups, and Flue's separate run history have their own retention and cannot be retracted by Chickpea.
+
+The feature is Cloudflare-only for now and deploys **off by default**. Set `TAG_ROUTINES_ENABLED` to `"1"` in `wrangler.jsonc` and deploy only after the normal offline/workerd gates pass. The deploy wrapper refuses an enabled artifact unless the heartbeat Cron, `TAG_STATE`, routine Workflow binding, composed scheduled handler, and internal Agent route guards are all present. To roll back, set the flag to `"0"` and deploy: definitions and audit history remain inspectable and controllable, but no heartbeat scans, model calls, or Slack work run. Do not remove the Cron, Workflow binding, Durable Object state, or migrations as a rollback shortcut. Node honestly rejects create/edit/resume/run-now while retaining list/show/pause/disable/delete and Admin inspection; it does not start an in-process timer.
+
+For troubleshooting, start in Audit Logs > Scheduled Work and inspect the safe failure class, Slack receipt, and Flue run ID. Repair current access for `creator_ineligible`, `channel_ineligible`, `assignment_missing`, `credential_unavailable`, or `access_denied`; Chickpea never falls back to another credential. Inspect Flue history before acting on `admission_unknown`, and inspect the external target before resuming `unknown_external_outcome` or `delivery_unknown`, because the write or post may already exist. Capacity and Slack-rate-limit failures remain visible and are not silently retried. Resume only after the cause is understood; it resets the failure streak without erasing history. Heartbeat logs contain stable event names, counts, maintenance totals, and duration only—never task text, prompts, channel content, credentials, model output, actor identifiers, or raw errors.
 
 ### Skills
 
@@ -148,6 +182,8 @@ npm run flue:build                       # flue build --target node -> dist/serv
 
 Run `dist/server.mjs` on any host. State is file-backed SQLite. Expose the port with a tunnel or reverse proxy and point Slack's Events Request URL at `https://<host>/channels/slack/events`. Both targets run the same source — `src/config/state-backend.ts` picks SQLite or the Durable Object state store at runtime.
 
+Scheduled routines are the one current capability-tier exception: Node can inspect and shut down existing routine state but cannot create, resume, run, or schedule it. A future persistent scheduler adapter can add another deployment target without changing the product-owned definition/run model.
+
 ### Local development
 
 ```bash
@@ -192,6 +228,7 @@ It calls `auth.test` and `users.info`, compares the display name to the manifest
 | `SLACK_TAG_WELCOME_ON_JOIN` | optional | On by default: when @Chickpea joins an already-assigned channel, Chickpea posts one short welcome. `false` suppresses it. |
 | `TAG_AGENT_API_TOKEN` | optional | Shared internal token gating `POST /agents/slack-thread/:id` for external callers only — the app's own agent dispatch is in-process and needs no configuration. Unset is safe: the token falls back to a random per-process/per-isolate value, so the endpoint is closed to outsiders by default; set it only to authorize external callers deliberately. |
 | `TAG_ADMIN_TOKEN` | optional | Bearer token for `/admin` and `/admin/api/*`. If unset, every `/admin/*` route returns 404. Separate from `TAG_AGENT_API_TOKEN`. |
+| `TAG_ROUTINES_ENABLED` | Cloudflare only, optional | Deployment kill switch for scheduled routine admission. `"0"` (the committed default) performs no heartbeat state scan or unattended work; `"1"` enables the fixed Cloudflare heartbeat after the deploy wrapper validates its bindings and guards. Unsupported on Node. |
 | `TAG_DB_PATH` | optional | SQLite path for the durable agent transcript. Default `./tmp/flue.db`; use `:memory:` for ephemeral runs. The default `tmp/**` path is ignored by `flue dev` watch mode. |
 | `SLACK_STATE_DB_PATH` | optional | SQLite path for app-owned state: runtime config, assignments, dedupe claims, joined-thread registry, per-thread config snapshots. Defaults to `<TAG_DB_PATH>.state`; a `:memory:` transcript DB implies a `:memory:` state store, so ephemeral runs stay fully ephemeral. |
 | `LOCAL_STUB_URL` / `LOCAL_STUB_API_KEY` | optional | Register the offline `local-stub` provider (OpenAI-completions wire; use `SLACK_TAG_MODEL=local-stub/<model>`). |
@@ -225,6 +262,7 @@ If neither exists, initialization fails with an error that tells the operator to
 - **No state backup/export on Cloudflare yet**, and the debug story is `wrangler tail`.
 - **Memory export is not a full state backup.** The authenticated Memory API can export deterministic Markdown archives on Cloudflare and Node, but there is not yet a one-click backup for transcripts, config, claims, or every Durable Object table; the debug story remains `wrangler tail`.
 - **The container coding sandbox is Cloudflare-only.** Node and other non-Cloudflare installs use the standard in-memory bash sandbox, not the container coding tier, and Chickpea never gives that sandbox the host filesystem or host git/SSH credentials.
+- **Scheduled routines are Cloudflare-only and off by default.** Node retains inspection and shutdown controls but has no scheduler. Enabling on Cloudflare requires the committed Cron/Workflow/state seams, which `npm run deploy` validates before upload.
 - **Remote MCP URLs are trusted operator configuration in v1.** Connections can be created only through token-gated `/admin`; Chickpea requires HTTPS and rejects literal local/private addresses at save, test, and turn time. It does not resolve and pin DNS before connecting, so an operator-approved hostname could still rebind to an internal address on the Node lane. Do not expose connection authoring to untrusted users, and use MCP endpoints you trust. Cloudflare Workers cannot directly reach localhost or RFC1918 networks, which narrows this risk there; DNS pinning is required before connection presets or broader connection authoring ship.
 
 ## Where this is heading
@@ -238,7 +276,7 @@ Direction, not commitment — open an issue if one of these matters to you; that
 - **More OpenAI-compatible endpoints in the `/admin` model picker**, such as Ollama and self-hosted gateways. Anthropic, OpenAI, OpenRouter, and both Workers AI paths are already supported.
 - **Usage visibility in `/admin`**: Workers AI Neuron and Durable Object write budgets, surfaced before the free-tier caps turn into errors.
 - **State export/backup and a documented post-v1 upgrade path** — release tags plus a template-sync flow, backed by append-only public migrations.
-- **Opt-in scheduled posts** (digests, standup summaries) via cron triggers — strictly opt-in per channel, so the no-passive-monitoring promise holds.
+- **Additional proactive triggers**, such as channel watches and GitHub subscriptions, behind the same product-owned routine/run/audit model. The current release supports explicit schedules only.
 
 ## Tests and verification
 

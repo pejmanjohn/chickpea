@@ -1412,6 +1412,61 @@ export const scenarios: Scenario[] = [
       assert.equal(instance.backend.finals().length, 1, 'assigned channel turns still run');
     },
   },
+  {
+    id: 'S41',
+    title: 'signed routine command is deterministic and honest on Node',
+    config: demoChannelConfig(),
+    async run(instance) {
+      const response = await instance.postEvent(
+        appMention({
+          event_id: 'Ev_S41_ROUTINES',
+          event: {
+            text: '<@U_BOT> !routines',
+            ts: '1782772100.000100',
+            event_ts: '1782772100.000100',
+          },
+        }),
+      );
+      assert.equal(response.status, 200, JSON.stringify(response.body));
+      await instance.quiesce();
+
+      const finals = instance.backend.finals();
+      assert.equal(finals.length, 1);
+      assert.match(finals[0]?.text ?? '', /Cloudflare-only/);
+      assert.equal(instance.backend.providerCalls().length, 0);
+    },
+  },
+  {
+    id: 'S42',
+    title: 'cross-channel routine listing is requester-only in the invoking channel',
+    config: demoChannelConfig({
+      slack: { identity: { teamId: 'T_DEMO', botUserId: 'U_BOT' } },
+    }),
+    async run(instance) {
+      const response = await instance.postEvent(
+        appMention({
+          event_id: 'Ev_S42_ROUTINES_OTHER_CHANNEL',
+          event: {
+            text: '<@U_BOT> !routines <#C_ENG|eng-releases>',
+            ts: '1782772200.000100',
+            event_ts: '1782772200.000100',
+          },
+        }),
+      );
+      assert.equal(response.status, 200, JSON.stringify(response.body));
+      await instance.quiesce();
+
+      const ephemeral = instance.backend.callsOfMethod('chat.postEphemeral');
+      assert.equal(ephemeral.length, 1);
+      assert.equal(ephemeral[0]?.body.channel, EXEC_CHANNEL);
+      assert.equal(ephemeral[0]?.body.user, 'U_ALICE');
+      assert.match(JSON.stringify(ephemeral[0]?.body), /C_ENG/);
+      assert.equal(instance.backend.finals().length, 0);
+      assert.equal(instance.backend.callsOfMethod('chat.postMessage').length, 0);
+      assert.equal(instance.backend.callsOfMethod('chat.startStream').length, 0);
+      assert.equal(instance.backend.providerCalls().length, 0);
+    },
+  },
 ];
 
 /**

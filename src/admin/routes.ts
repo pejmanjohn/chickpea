@@ -7,6 +7,7 @@ import * as v from 'valibot';
 
 import { renderAdminLogin, renderAdminPage } from './page.ts';
 import { createMemoryAdminApi } from './memory-api.ts';
+import { createRoutineAdminApi } from './routines-api.ts';
 // Build-time JSON import: the committed manifest is the single source of the
 // Slack app identity; the wizard deep-link below substitutes the request host
 // so users never hand-edit a request_url.
@@ -139,12 +140,14 @@ import type { SettingsStore } from '../config/settings-store.ts';
 import {
   getConfigStore,
   getMemoryStateStore,
+  getRoutineStore,
   getSettingsStore,
   isCloudflareTarget,
   type PlatformEnv,
 } from '../config/state-backend.ts';
 import type { ConfigStore } from '../config/store.ts';
 import type { MemoryStateStore } from '../memory/types.ts';
+import type { RoutineStore } from '../routines/types.ts';
 import type {
   ChannelAssignment,
   CustomAgentConfig,
@@ -185,6 +188,7 @@ interface AdminRoutesOptions {
   // Same seam for the Slack-connection wizard's settings persistence.
   settings?: SettingsStore | undefined;
   memory?: MemoryStateStore | undefined;
+  routines?: RoutineStore | undefined;
   adminToken?: string | undefined;
   knownProviders?: ReadonlySet<string> | undefined;
   // Injection seam for the MCP test-connection route, mirroring how the skills
@@ -681,6 +685,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     options.settings ?? getSettingsStore(c.env as PlatformEnv | undefined);
   const memory = (c: Context) =>
     options.memory ?? getMemoryStateStore(c.env as PlatformEnv | undefined);
+  const routines = (c: Context) =>
+    options.routines ?? getRoutineStore(c.env as PlatformEnv | undefined);
   const adminToken = () =>
     tokenFromOptions ? options.adminToken : process.env.TAG_ADMIN_TOKEN;
   const modelProviders = () =>
@@ -1139,6 +1145,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     store: memory,
     adminSecret: () => adminToken() ?? '',
   }));
+  app.route('/admin/api', createRoutineAdminApi({ store: routines }));
 
   app.get('/admin/api/agents', async (c) => {
     const platformEnv = c.env as PlatformEnv | undefined;
