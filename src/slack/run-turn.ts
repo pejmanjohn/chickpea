@@ -9,7 +9,10 @@ import type { PlatformEnv } from '../config/state-backend.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
 import { parseMemoryCommand } from '../memory/commands.ts';
 import { handleMemoryCommand, prepareMemoryTurn } from '../memory/runtime.ts';
-import { handleRoutineSlackRequest } from '../routines/commands.ts';
+import {
+  handleRoutineSlackRequest,
+  routineResponseVisibility,
+} from '../routines/commands.ts';
 import { isRoutineSlackTurn } from '../routines/slack-context.ts';
 import {
   AgentPromptFailure,
@@ -150,7 +153,11 @@ export async function runTurn(
         userId: turn.userId,
         workspaceId: turn.workspaceId,
       });
-      await routinePresenter.deliverFinal(routineText, 'markdown');
+      if (routineResponseVisibility(turn.text, turn.channelId) === 'requester') {
+        await routinePresenter.deliverRequesterOnly(routineText, 'markdown');
+      } else {
+        await routinePresenter.deliverFinal(routineText, 'markdown');
+      }
       await options.onDelivered?.();
       return;
     }

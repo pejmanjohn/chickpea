@@ -1,15 +1,19 @@
 export const ROUTINE_LIMITS = {
   activeDeployment: 100,
   activeChannel: 20,
-  scheduledStartsPerDay: 240,
+  // A five-minute routine consumes 288 starts/day. Keep a per-routine ceiling
+  // while leaving enough deployment headroom for that routine to coexist with
+  // ordinary hourly and daily work.
+  scheduledStartsPerRoutinePerDay: 300,
+  scheduledStartsPerDay: 600,
   runNowStartsPerDay: 10,
-  totalStartsRollingDay: 250,
-  startsPerRollingFifteenMinutes: 4,
+  totalStartsRollingDay: 610,
+  startsPerRollingFifteenMinutes: 8,
   reservationLookaheadMs: 48 * 60 * 60 * 1_000,
   dueClaimsPerHeartbeat: 25,
   concurrentDeploymentRuns: 4,
   concurrentRunsPerRoutine: 1,
-  minimumIntervalMs: 60 * 60 * 1_000,
+  minimumIntervalMs: 5 * 60 * 1_000,
   admissionGraceMs: 15 * 60 * 1_000,
   admissionLeaseMs: 2 * 60 * 1_000,
   deliveryLeaseMs: 2 * 60 * 1_000,
@@ -34,6 +38,7 @@ export function routineOperatorLimits(): Record<string, number> {
   return {
     activeDeployment: ROUTINE_LIMITS.activeDeployment,
     activeChannel: ROUTINE_LIMITS.activeChannel,
+    scheduledStartsPerRoutinePerDay: ROUTINE_LIMITS.scheduledStartsPerRoutinePerDay,
     scheduledStartsPerDay: ROUTINE_LIMITS.scheduledStartsPerDay,
     runNowStartsPerDay: ROUTINE_LIMITS.runNowStartsPerDay,
     totalStartsRollingDay: ROUTINE_LIMITS.totalStartsRollingDay,

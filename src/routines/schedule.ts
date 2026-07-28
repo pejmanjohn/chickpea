@@ -56,13 +56,32 @@ export function normalizeRoutineSchedule(
     kind: 'cron',
     expression: canonicalExpression,
   };
-  const occurrences = enumerateRoutineSchedule(schedule, timezone, from, from + PROJECTION_MS);
+  const fixedMinuteInterval = simpleMinuteInterval(canonicalExpression);
+  if (
+    fixedMinuteInterval &&
+    fixedMinuteInterval.minimumGapMinutes * 60_000 < ROUTINE_LIMITS.minimumIntervalMs
+  ) {
+    throw scheduleError(
+      'routine_schedule_too_frequent',
+      'Routine schedules must be at least five minutes apart.',
+    );
+  }
+  const occurrences = enumerateRoutineSchedule(
+    schedule,
+    timezone,
+    from,
+    from + (fixedMinuteInterval
+      ? ROUTINE_LIMITS.reservationLookaheadMs + 24 * 60 * 60 * 1_000
+      : PROJECTION_MS),
+  );
   if (occurrences.length === 0) {
     throw scheduleError('routine_schedule_out_of_range', 'Routine schedule has no occurrence in the next 370 days.');
   }
   assertMinimumInterval(occurrences);
-  const projectedDailyStarts = maximumInRollingWindow(occurrences, ROLLING_DAY_MS);
-  if (projectedDailyStarts > ROUTINE_LIMITS.scheduledStartsPerDay) {
+  const projectedDailyStarts = fixedMinuteInterval
+    ? fixedMinuteInterval.startsPerDay
+    : maximumInRollingWindow(occurrences, ROLLING_DAY_MS);
+  if (projectedDailyStarts > ROUTINE_LIMITS.scheduledStartsPerRoutinePerDay) {
     throw scheduleError('routine_scheduled_capacity', 'This schedule exceeds deployment capacity.');
   }
   return {
@@ -75,6 +94,29 @@ export function normalizeRoutineSchedule(
       windowStart,
       count: 1,
     })),
+  };
+}
+
+/**
+ * Exact fast path for the common "every N minutes" cron. Five-minute work
+ * would otherwise ask Croner to materialize more than 100,000 occurrences for
+ * the 370-day irregular-schedule proof. Minute steps reset at each hour, so the
+ * hour-boundary remainder is part of the real minimum gap (for example a
+ * seven-minute step has a four-minute 00:56 -> 01:00 gap and is rejected).
+ */
+function simpleMinuteInterval(expression: string): {
+  minimumGapMinutes: number;
+  startsPerDay: number;
+} | undefined {
+  const match = /^\*\/(\d+) \* \* \* \*$/.exec(expression);
+  if (!match) return undefined;
+  const step = Number(match[1]);
+  if (!Number.isInteger(step) || step <= 0) return undefined;
+  const startsPerHour = Math.ceil(60 / step);
+  const lastMinute = Math.floor(59 / step) * step;
+  return {
+    minimumGapMinutes: Math.min(step, 60 - lastMinute),
+    startsPerDay: startsPerHour * 24,
   };
 }
 
@@ -223,7 +265,7 @@ export function enumerateRoutineSchedule(
   if (occurrences.length > MAX_ENUMERATED_OCCURRENCES) {
     throw scheduleError(
       'routine_schedule_too_frequent',
-      'Routine schedules must be at least one hour apart.',
+      'Routine schedules must be at least five minutes apart.',
     );
   }
   return occurrences;
@@ -321,7 +363,7 @@ function assertMinimumInterval(occurrences: readonly number[]): void {
     if (occurrences[index]! - occurrences[index - 1]! < ROUTINE_LIMITS.minimumIntervalMs) {
       throw scheduleError(
         'routine_schedule_too_frequent',
-        'Routine schedules must be at least one hour apart.',
+        'Routine schedules must be at least five minutes apart.',
       );
     }
   }

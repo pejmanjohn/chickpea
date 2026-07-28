@@ -121,3 +121,42 @@ test('deliverFinal sanitizes emphasized URLs before streaming them to Slack', as
     'Done: https://github.com/octo-org/example-site/pull/4',
   );
 });
+
+test('deliverRequesterOnly posts an ephemeral response to the requesting member', async () => {
+  const calls: unknown[] = [];
+  const presenter = new WebClientPresenter(
+    {
+      chat: {
+        async postEphemeral(input: unknown) {
+          calls.push(input);
+          return { ok: true, message_ts: '1782770400.000400' };
+        },
+      },
+    } as unknown as WebClient,
+    {
+      channelId: 'C_INVOKING',
+      threadTs: '1782770400.000100',
+      userId: 'U_REQUESTER',
+      workspaceId: 'T_WORKSPACE',
+      agentName: 'Test agent',
+      agentId: 'agent_test',
+    },
+  );
+
+  await presenter.deliverRequesterOnly(
+    'Routines for **https://example.com/private-project**',
+    'markdown',
+  );
+
+  assert.equal(calls.length, 1);
+  const call = calls[0] as {
+    channel?: string;
+    user?: string;
+    thread_ts?: string;
+    text?: string;
+  };
+  assert.equal(call.channel, 'C_INVOKING');
+  assert.equal(call.user, 'U_REQUESTER');
+  assert.equal(call.thread_ts, undefined);
+  assert.doesNotMatch(call.text ?? '', /\*\*https:\/\//);
+});

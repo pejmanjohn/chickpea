@@ -77,8 +77,8 @@ test('one-time schedules choose the first fold instant and reject nonexistent lo
   );
 });
 
-test('rejects schedules with any sub-hour occurrence across the projection horizon', () => {
-  for (const expression of ['*/30 * * * *', '0,30 9 * * *']) {
+test('accepts five-minute schedules and rejects any shorter interval', () => {
+  for (const expression of ['*/4 * * * *', '*/7 * * * *', '0,4 9 * * *']) {
     assert.throws(
       () => normalizeRoutineSchedule(expression, 'UTC', Date.UTC(2026, 0, 1)),
       (error: unknown) =>
@@ -86,12 +86,12 @@ test('rejects schedules with any sub-hour occurrence across the projection horiz
     );
   }
   assert.equal(
-    normalizeRoutineSchedule('0 * * * *', 'UTC', Date.UTC(2026, 0, 1)).projectedDailyStarts,
-    24,
+    normalizeRoutineSchedule('*/5 * * * *', 'UTC', Date.UTC(2026, 0, 1)).projectedDailyStarts,
+    288,
   );
   assert.equal(
-    normalizeRoutineSchedule('0 * * * *', 'UTC', Date.UTC(2026, 0, 1)).reservations.length,
-    49,
+    normalizeRoutineSchedule('*/30 * * * *', 'UTC', Date.UTC(2026, 0, 1)).projectedDailyStarts,
+    48,
   );
 });
 

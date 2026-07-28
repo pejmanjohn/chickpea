@@ -2608,7 +2608,8 @@ function validateReservationInput(
 ): void {
   const validStartProjection = triggerKind === 'once'
     ? projectedDailyStarts === 0
-    : projectedDailyStarts >= 1 && projectedDailyStarts <= ROUTINE_LIMITS.scheduledStartsPerDay;
+    : projectedDailyStarts >= 1 &&
+      projectedDailyStarts <= ROUTINE_LIMITS.scheduledStartsPerRoutinePerDay;
   if (
     !Number.isSafeInteger(projectedDailyStarts) ||
     !validStartProjection ||

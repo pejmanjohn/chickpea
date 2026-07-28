@@ -189,6 +189,23 @@ export class WebClientPresenter {
     });
   }
 
+  /** Deliver channel-contextual information only to the requesting member. */
+  async deliverRequesterOnly(text: string, format: SlackReplyFormat): Promise<void> {
+    if (!this.target.userId) {
+      throw new Error('Requester-only Slack delivery requires a target user.');
+    }
+    const displayText = format === 'markdown' ? sanitizeSlackMarkdownLinks(text) : text;
+    const rendered = appendSlackReplyFooter(
+      renderSlackMessage(displayText, format),
+      this.replyFooter(),
+    );
+    await this.client.chat.postEphemeral({
+      channel: this.target.channelId,
+      user: this.target.userId,
+      ...rendered,
+    });
+  }
+
   private replyFooter(): SlackReplyFooter {
     return {
       profileName: this.target.agentName,

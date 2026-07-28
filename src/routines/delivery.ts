@@ -2,9 +2,12 @@ import { ErrorCode, WebClient, type ChatPostMessageResponse } from '@slack/web-a
 
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import {
+  appendSlackReplyFooter,
+  buildSlackAdminUrl,
   escapeSlackControlCharacters,
   renderSlackMessage,
   type RenderedSlackMessage,
+  type SlackReplyFooter,
 } from '../slack/message-format.ts';
 import { ROUTINE_LIMITS } from './limits.ts';
 import { RoutineRuntimeError, type RoutineRuntimeAccess } from './runtime.ts';
@@ -30,7 +33,11 @@ export async function deliverRoutineResult(
   },
   client: WebClient = createRoutineSlackClient(input.access.botToken),
 ): Promise<RoutineDeliveryReceipt> {
-  return deliverRoutineSlackMessage(input, renderRoutineDelivery(input.routine, input.run, input.message), client);
+  return deliverRoutineSlackMessage(
+    input,
+    renderRoutineDelivery(input.routine, input.run, input.message, routineReplyFooter(input.access)),
+    client,
+  );
 }
 
 export async function deliverRoutineFailureNotice(
@@ -45,16 +52,29 @@ export async function deliverRoutineFailureNotice(
   client: WebClient = createRoutineSlackClient(input.access.botToken),
 ): Promise<RoutineDeliveryReceipt> {
   const text = [
-    `*Routine needs attention: ${escapeSlackControlCharacters(input.routine.name)}*`,
+    `⚠️ **Routine needs attention**`,
+    `**${escapeSlackControlCharacters(input.routine.name)}**`,
+    '',
     escapeSlackControlCharacters(input.publicError),
     ...(input.routine.state === 'paused'
       ? ['Automatic scheduling is paused until a channel member reviews and resumes it.']
       : input.routine.state === 'disabled'
         ? ['This routine was disabled because its current channel authority is no longer eligible.']
         : []),
-    `Inspect the safe run history with \`!routines show ${input.routine.id}\`.`,
   ].join('\n');
-  return deliverRoutineSlackMessage({ ...input, changeKeyHash: null }, text, client);
+  return deliverRoutineSlackMessage(
+    { ...input, changeKeyHash: null },
+    appendSlackReplyFooter(
+      appendRoutineRunContext(
+        renderSlackMessage(text, 'markdown'),
+        input.routine,
+        input.run,
+        input.access.publicUrl,
+      ),
+      routineReplyFooter(input.access),
+    ),
+    client,
+  );
 }
 
 async function deliverRoutineSlackMessage(
@@ -129,28 +149,82 @@ async function deliverRoutineSlackMessage(
 }
 
 export function renderRoutineDelivery(
-  routine: Pick<RoutineDefinition, 'name' | 'id'>,
+  routine: Pick<RoutineDefinition, 'name' | 'id' | 'timezone'>,
   run: Pick<RoutineRun, 'id' | 'scheduledFor'>,
   message: string,
+  footer?: SlackReplyFooter,
 ): RenderedSlackMessage {
   const rendered = renderSlackMessage(
-    `**Routine: ${escapeSlackControlCharacters(routine.name)}**\n\n${message}`,
+    `✅ **Routine completed**\n**${escapeSlackControlCharacters(routine.name)}**\n\n${message}`,
     'markdown',
   );
-  const fallback = renderSlackMessage(`Routine: ${routine.name}\n\n${message}`, 'plain_text');
+  const fallback = renderSlackMessage(`Routine completed: ${routine.name}\n\n${message}`, 'plain_text');
+  const withRunContext = appendRoutineRunContext(
+    rendered,
+    routine,
+    run,
+    footer?.publicUrl,
+  );
+  const withFallback = { ...withRunContext, text: fallback.text };
+  return footer ? appendSlackReplyFooter(withFallback, footer) : withFallback;
+}
+
+function appendRoutineRunContext(
+  rendered: RenderedSlackMessage,
+  routine: Pick<RoutineDefinition, 'id' | 'timezone'>,
+  run: Pick<RoutineRun, 'scheduledFor'>,
+  publicUrl: string | undefined,
+): RenderedSlackMessage {
   return {
     ...rendered,
-    text: fallback.text,
     blocks: [
       ...(rendered.blocks ?? []),
       {
         type: 'context',
         elements: [{
           type: 'mrkdwn',
-          text: `Scheduled: ${new Date(run.scheduledFor).toISOString()} | Run: \`${run.id}\` | Details: \`!routines show ${routine.id}\``,
+          text: routineRunContext(routine, run, publicUrl),
         }],
       },
     ],
+  };
+}
+
+function routineRunContext(
+  routine: Pick<RoutineDefinition, 'id' | 'timezone'>,
+  run: Pick<RoutineRun, 'scheduledFor'>,
+  publicUrl: string | undefined,
+): string {
+  const scheduled = formatScheduledTime(run.scheduledFor, routine.timezone);
+  const adminBase = buildSlackAdminUrl(publicUrl);
+  if (!adminBase) return `Scheduled ${scheduled}`;
+  const detail = new URL(adminBase);
+  detail.pathname = `/admin/audit-logs/scheduled-work/${encodeURIComponent(routine.id)}`;
+  detail.search = '';
+  return `Scheduled ${scheduled} · <${detail.toString()}|View in Audit>`;
+}
+
+function formatScheduledTime(timestamp: number, timezone: string): string {
+  try {
+    return new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone,
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      timeZoneName: 'short',
+    }).format(timestamp).replace(/, (?=\d{1,2}:\d{2})/, ' at ');
+  } catch {
+    return new Date(timestamp).toISOString();
+  }
+}
+
+function routineReplyFooter(access: RoutineRuntimeAccess): SlackReplyFooter {
+  return {
+    profileName: access.config.agent.name,
+    modelLabel: access.config.model,
+    agentId: access.config.agentId,
+    publicUrl: access.publicUrl,
   };
 }
 

@@ -89,6 +89,25 @@ export function parseRoutineCommand(rawText: string): RoutineCommand | undefined
   return undefined;
 }
 
+export type RoutineResponseVisibility = 'channel' | 'requester';
+
+/**
+ * A current-channel routine list is channel-owned and safe to show there. A
+ * cross-channel list (including its non-disclosing failure) is visible only to
+ * the requester in the invoking channel, matching Slack's requester-only
+ * `chat.postEphemeral` surface.
+ */
+export function routineResponseVisibility(
+  rawText: string,
+  currentChannelId: string,
+): RoutineResponseVisibility {
+  const command = parseRoutineCommand(rawText);
+  if (command?.kind !== 'list' || !command.channelMention) return 'channel';
+  return parseSlackChannelMention(command.channelMention) === currentChannelId
+    ? 'channel'
+    : 'requester';
+}
+
 /** Exact controls first; clear natural-language create/edit requests persist in one turn. */
 export async function handleRoutineSlackRequest(
   turn: NormalizedSlackTurn,
@@ -121,6 +140,10 @@ export async function handleRoutineSlackRequest(
   if (!(await canManageChannel(turn.workspaceId, turn.channelId, turn.userId, env))) {
     return notFoundText();
   }
+  const explicitMutation = isExplicitRoutineMutationRequest(turn.text);
+  if (requestsSubminimumMinuteInterval(turn.text)) {
+    return 'Routine schedules must be at least five minutes apart.';
+  }
   const defaultTimezone = routineIntentNeedsDefaultTimezone(turn.text)
     ? await (dependencies.resolveDefaultTimezone ?? resolveRoutineDefaultTimezone)(turn, env)
     : 'UTC';
@@ -138,10 +161,13 @@ export async function handleRoutineSlackRequest(
     );
   } catch {
     // The classifier is advisory. Infrastructure failures must preserve the
-    // ordinary Slack turn instead of replacing it with routine-specific copy.
-    return undefined;
+    // ordinary Slack turn unless the user explicitly requested a routine
+    // mutation. Explicit routine work must never fall through to the
+    // tool-capable live agent, which could execute the task instead of saving
+    // or rejecting it.
+    return explicitMutation ? unclearRoutineIntentText() : undefined;
   }
-  if (!intent) return undefined;
+  if (!intent) return explicitMutation ? unclearRoutineIntentText() : undefined;
   try {
     if (intent.action === 'create' || intent.action === 'edit') {
       requireRoutineScheduling(capability);
@@ -198,7 +224,7 @@ async function executeRoutineCommand(
       idempotencyKey: `routine:slack:${turn.eventId}:confirm`,
     });
     return confirmation.draft.action === 'delete'
-      ? `Routine \`${routine.id}\` was deleted. Its saved body was scrubbed; body-free audit/run metadata is retained.`
+      ? `🗑️ **Routine deleted**\n**ID:** \`${routine.id}\`\nIts saved body was scrubbed; body-free audit and run metadata is retained.`
       : renderRoutineSaved(routine, { action: confirmation.draft.action });
   }
   if (command.kind === 'cancel') {
@@ -210,7 +236,7 @@ async function executeRoutineCommand(
       at: now(),
     });
     return cancelled
-      ? 'Routine confirmation cancelled.'
+      ? '**Routine deletion cancelled**'
       : 'That routine confirmation was not found or is no longer available.';
   }
 
@@ -234,7 +260,9 @@ async function executeRoutineCommand(
       actorClass: 'member',
       idempotencyKey: `routine:slack:${turn.eventId}:${command.action}:${routine.id}`,
     });
-    return `Routine *${updated.name}* is now *${updated.state}*.`;
+    const verb = command.action === 'pause' ? 'paused' : command.action === 'resume' ? 'resumed' : 'disabled';
+    const icon = command.action === 'pause' ? '⏸️' : command.action === 'resume' ? '▶️' : '⏹️';
+    return `${icon} **Routine ${verb}**\n**Name:** ${updated.name}\n**ID:** \`${updated.id}\``;
   }
   if (command.kind === 'run') {
     requireRoutineScheduling(capability);
@@ -245,7 +273,7 @@ async function executeRoutineCommand(
       );
     }
     const at = now();
-    const occurrence = await store.createOccurrence({
+    await store.createOccurrence({
       runId: createRoutineRunId(),
       idempotencyKey: runNowOccurrenceKey(routine.id, turn.eventId),
       routineId: routine.id,
@@ -256,7 +284,7 @@ async function executeRoutineCommand(
       queuedAt: at,
       deadlineAt: at + ROUTINE_LIMITS.occurrenceDeadlineMs,
     });
-    return `Queued one occurrence of *${routine.name}* (\`${occurrence.id}\`). It will use current channel authority.`;
+    return `▶️ **Routine queued**\n**Name:** ${routine.name}`;
   }
   if (command.kind === 'clone') {
     requireRoutineScheduling(capability);
@@ -324,18 +352,18 @@ async function saveRoutineIntent(
     intent.scheduleExpression ?? current?.scheduleInput,
     'A schedule is required.',
   );
-  const timezone = cleanRequired(
+  const timezone = normalizeRoutineTimezone(cleanRequired(
     intent.timezoneWasDefaulted === true
       ? current?.timezone ?? defaultTimezone ?? 'UTC'
       : intent.timezone ?? current?.timezone ?? defaultTimezone ?? 'UTC',
     'An IANA time zone is required.',
-  );
+  ));
   const projection = triggerKind === 'once'
     ? normalizeOneTimeSchedule(requestedSchedule, timezone, now())
     : normalizeRoutineSchedule(requestedSchedule, timezone, now());
   const taskText = cleanRequired(intent.taskText ?? current?.taskText, 'A routine task is required.');
   const definition: RoutineDefinitionContent = {
-    name: cleanName(intent.name ?? current?.name ?? taskText),
+    name: cleanName(explicitCreatedRoutineName(turn.text, intent.action) ?? intent.name ?? current?.name ?? taskText),
     description: cleanDescription(intent.description ?? current?.description ?? taskText),
     taskText,
     triggerKind,
@@ -493,8 +521,8 @@ function messageContainsRoutineName(message: string, normalizedName: string): bo
 
 function ambiguousNameText(name: string, routines: readonly RoutineDefinition[]): string {
   return [
-    `More than one routine is named *${name}*. No change was made:`,
-    ...routines.map((routine) => `• *${routine.name}* — \`${routine.id}\``),
+    `**More than one routine is named ${name}.** No change was made:`,
+    ...routines.map((routine) => `- **${routine.name}** · \`${routine.id}\``),
     'Use an exact ID, for example `!routines show <id>`.',
   ].join('\n');
 }
@@ -566,6 +594,62 @@ function cleanName(value: string): string {
 
 function cleanDescription(value: string): string {
   return [...value.trim().replace(/\s+/g, ' ')].slice(0, ROUTINE_LIMITS.maxDescriptionCodePoints).join('');
+}
+
+function explicitCreatedRoutineName(
+  requestText: string,
+  action: RoutineIntent['action'],
+): string | undefined {
+  if (action !== 'create') return undefined;
+  const text = requestText.replace(/^\s*(?:<@[^>\s]+>\s*)+/i, '');
+  const match = /\b(?:named|called)\s+["“]([^"”\n]{1,200})["”]/iu.exec(text);
+  return match?.[1]?.trim() || undefined;
+}
+
+function normalizeRoutineTimezone(value: string): string {
+  const aliases: Record<string, string> = {
+    pt: 'America/Los_Angeles',
+    pst: 'America/Los_Angeles',
+    pdt: 'America/Los_Angeles',
+    pacific: 'America/Los_Angeles',
+    'pacific time': 'America/Los_Angeles',
+    mt: 'America/Denver',
+    mst: 'America/Denver',
+    mdt: 'America/Denver',
+    mountain: 'America/Denver',
+    'mountain time': 'America/Denver',
+    ct: 'America/Chicago',
+    cst: 'America/Chicago',
+    cdt: 'America/Chicago',
+    central: 'America/Chicago',
+    'central time': 'America/Chicago',
+    et: 'America/New_York',
+    est: 'America/New_York',
+    edt: 'America/New_York',
+    eastern: 'America/New_York',
+    'eastern time': 'America/New_York',
+    gmt: 'UTC',
+    utc: 'UTC',
+  };
+  return aliases[value.trim().toLocaleLowerCase('en-US')] ?? value.trim();
+}
+
+function isExplicitRoutineMutationRequest(rawText: string): boolean {
+  const text = rawText.replace(/^\s*(?:<@[^>\s]+>\s*)+/i, '').trim();
+  return /\b(?:create|add|set\s*up|schedule|edit|update|change|pause|resume|enable|disable|run|clone|copy|delete|remove)\b[^.\n?!]{0,80}\b(?:routine|scheduled\s+(?:job|work))\b/i.test(text);
+}
+
+function requestsSubminimumMinuteInterval(rawText: string): boolean {
+  const text = rawText.replace(/^\s*(?:<@[^>\s]+>\s*)+/i, '').trim();
+  const match = /\bevery\s+(minute|one|two|three|four|\d+)\s*(?:minutes?|mins?)?\b/i.exec(text);
+  if (!match) return false;
+  const words: Record<string, number> = { minute: 1, one: 1, two: 2, three: 3, four: 4 };
+  const value = words[match[1]!.toLocaleLowerCase('en-US')] ?? Number(match[1]);
+  return Number.isFinite(value) && value > 0 && value < 5;
+}
+
+function unclearRoutineIntentText(): string {
+  return 'I could not safely understand that routine request. Try a clearer schedule and task, or use `!routines help`.';
 }
 
 function routineErrorText(error: unknown): string {

@@ -79,17 +79,17 @@ test('scheduled write crosses one-message creation, heartbeat, Workflow admissio
 
   try {
     const createdText = await handleRoutineSlackRequest(
-      turn('Every hour, update the tracker and post what changed.', 'Ev_ACCEPT_CREATE'),
+      turn(
+        'Every hour, Update the configured tracker with unresolved blockers and post what changed.',
+        'Ev_ACCEPT_CREATE',
+      ),
       undefined,
       commandOptions,
     );
-    assert.match(createdText ?? '', /was created and is \*active\*/i);
-    assert.match(
-      createdText ?? '',
-      /This routine uses this channel's current Chickpea access each time it runs\./,
-    );
-    assert.match(createdText ?? '', /Creator: <@U_CREATOR>/);
-    assert.match(createdText ?? '', /Resource limits:/);
+    assert.match(createdText ?? '', /Routine created/i);
+    assert.match(createdText ?? '', /\*\*Tracker steward\*\* · Active/);
+    assert.match(createdText ?? '', /\*\*Task:\*\* Update the configured tracker/);
+    assert.doesNotMatch(createdText ?? '', /Creator:|Resource limits:|current Chickpea access/i);
     assert.doesNotMatch(createdText ?? '', /!routines confirm/);
     const [routine] = await store.listRoutines('T_ACCEPT', 'C_ACCEPT');
     assert.ok(routine);

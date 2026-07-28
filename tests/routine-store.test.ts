@@ -6,6 +6,7 @@ import { test } from 'node:test';
 
 import { openStateDb } from '../src/state/node-state-db.ts';
 import { hashRoutineValue } from '../src/routines/ids.ts';
+import { ROUTINE_LIMITS } from '../src/routines/limits.ts';
 import { normalizeRoutineSchedule } from '../src/routines/schedule.ts';
 import { RoutineService } from '../src/routines/service.ts';
 import { RoutineStoreLogic, SqliteRoutineStore } from '../src/routines/store.ts';
@@ -368,34 +369,72 @@ test('schedule capacity and collision reservations fail atomically', async () =>
     await confirmDraft(
       store,
       createDraft('routine_capacity_a', {
-        projectedDailyStarts: 239,
-        reservations: [{ windowStart: NEXT_RUN, count: 4 }],
+        projectedDailyStarts: ROUTINE_LIMITS.scheduledStartsPerRoutinePerDay,
+        reservations: [{ windowStart: NEXT_RUN, count: ROUTINE_LIMITS.startsPerRollingFifteenMinutes }],
       }),
       'capacity-a',
+    );
+    await confirmDraft(
+      store,
+      createDraft('routine_capacity_b', {
+        projectedDailyStarts: ROUTINE_LIMITS.scheduledStartsPerDay -
+          ROUTINE_LIMITS.scheduledStartsPerRoutinePerDay - 1,
+        reservations: [{ windowStart: NEXT_RUN + 15 * 60_000, count: 1 }],
+      }),
+      'capacity-b',
     );
     await assert.rejects(
       () => confirmDraft(
         store,
-        createDraft('routine_capacity_b', {
+        createDraft('routine_capacity_c', {
           projectedDailyStarts: 2,
-          reservations: [{ windowStart: NEXT_RUN + 60_000, count: 1 }],
+          reservations: [{ windowStart: NEXT_RUN + 30 * 60_000, count: 1 }],
         }),
-        'capacity-b',
+        'capacity-c',
       ),
       (error: unknown) => error instanceof RoutineStateError && error.code === 'routine_scheduled_capacity',
     );
     await assert.rejects(
       () => confirmDraft(
         store,
-        createDraft('routine_capacity_c', {
+        createDraft('routine_capacity_collision', {
           projectedDailyStarts: 1,
           reservations: [{ windowStart: NEXT_RUN, count: 1 }],
         }),
-        'capacity-c',
+        'capacity-collision',
       ),
       (error: unknown) => error instanceof RoutineStateError && error.code === 'routine_cluster_capacity',
     );
-    assert.equal((await store.listRoutines()).length, 1);
+    assert.equal((await store.listRoutines()).length, 2);
+  } finally {
+    store.close();
+  }
+});
+
+test('one five-minute routine can coexist with ordinary scheduled work', async () => {
+  const store = new SqliteRoutineStore(':memory:', () => CREATED_AT);
+  try {
+    await confirmDraft(
+      store,
+      createDraft('routine_ordinary', {
+        projectedDailyStarts: 30,
+        reservations: [{ windowStart: NEXT_RUN, count: 1 }],
+      }),
+      'ordinary-work',
+    );
+    const fiveMinute = normalizeRoutineSchedule('*/5 * * * *', 'UTC', CREATED_AT);
+    const saved = await confirmDraft(
+      store,
+      createDraft('routine_five_minute', {
+        nextRunAt: fiveMinute.nextRunAt,
+        projectedDailyStarts: fiveMinute.projectedDailyStarts,
+        reservations: fiveMinute.reservations,
+      }),
+      'five-minute-work',
+    );
+
+    assert.equal(saved.projectedDailyStarts, 288);
+    assert.equal((await store.listRoutines()).length, 2);
   } finally {
     store.close();
   }
@@ -407,7 +446,7 @@ test('cluster reservations enforce every rolling half-open fifteen-minute window
     await confirmDraft(
       store,
       createDraft('routine_cluster_a', {
-        reservations: [{ windowStart: NEXT_RUN, count: 4 }],
+        reservations: [{ windowStart: NEXT_RUN, count: ROUTINE_LIMITS.startsPerRollingFifteenMinutes }],
       }),
       'cluster-a',
     );
@@ -583,8 +622,9 @@ test('the total rolling-day start ceiling protects reserved scheduled capacity',
   const store = new SqliteRoutineStore(':memory:', () => CREATED_AT);
   try {
     const routine = await confirmDraft(store, createDraft(), 'total-start-limit');
-    for (let index = 0; index < 250; index += 1) {
-      const queuedAt = CREATED_AT + Math.floor(index / 4) * 15 * 60 * 1_000 + (index % 4);
+    for (let index = 0; index < ROUTINE_LIMITS.totalStartsRollingDay; index += 1) {
+      const queuedAt = CREATED_AT + Math.floor(index / ROUTINE_LIMITS.startsPerRollingFifteenMinutes) *
+        15 * 60 * 1_000 + (index % ROUTINE_LIMITS.startsPerRollingFifteenMinutes);
       const run = await store.createOccurrence({
         runId: `rrun_total_${index}`,
         idempotencyKey: `routine:total:${index}`,
@@ -608,10 +648,10 @@ test('the total rolling-day start ceiling protects reserved scheduled capacity',
         idempotencyKey: 'routine:total:rejected',
         routineId: routine.id,
         routineVersion: routine.version,
-        scheduledFor: CREATED_AT + Math.floor(250 / 4) * 15 * 60 * 1_000 + (250 % 4),
+        scheduledFor: CREATED_AT + Math.floor(ROUTINE_LIMITS.totalStartsRollingDay / ROUTINE_LIMITS.startsPerRollingFifteenMinutes) * 15 * 60 * 1_000 + (ROUTINE_LIMITS.totalStartsRollingDay % ROUTINE_LIMITS.startsPerRollingFifteenMinutes),
         triggerSource: 'schedule',
-        queuedAt: CREATED_AT + Math.floor(250 / 4) * 15 * 60 * 1_000 + (250 % 4),
-        deadlineAt: CREATED_AT + Math.floor(250 / 4) * 15 * 60 * 1_000 + (250 % 4) + 15 * 60 * 1_000,
+        queuedAt: CREATED_AT + Math.floor(ROUTINE_LIMITS.totalStartsRollingDay / ROUTINE_LIMITS.startsPerRollingFifteenMinutes) * 15 * 60 * 1_000 + (ROUTINE_LIMITS.totalStartsRollingDay % ROUTINE_LIMITS.startsPerRollingFifteenMinutes),
+        deadlineAt: CREATED_AT + Math.floor(ROUTINE_LIMITS.totalStartsRollingDay / ROUTINE_LIMITS.startsPerRollingFifteenMinutes) * 15 * 60 * 1_000 + (ROUTINE_LIMITS.totalStartsRollingDay % ROUTINE_LIMITS.startsPerRollingFifteenMinutes) + 15 * 60 * 1_000,
       }),
       (error: unknown) => error instanceof RoutineStateError && error.code === 'routine_total_start_limit',
     );
@@ -624,7 +664,7 @@ test('actual occurrence starts enforce the rolling cluster ceiling after preview
   const store = new SqliteRoutineStore(':memory:', () => CREATED_AT);
   try {
     const routine = await confirmDraft(store, createDraft(), 'actual-cluster-limit');
-    for (let index = 0; index < 4; index += 1) {
+    for (let index = 0; index < ROUTINE_LIMITS.startsPerRollingFifteenMinutes; index += 1) {
       const run = await store.createOccurrence({
         runId: `rrun_actual_cluster_${index}`,
         idempotencyKey: `routine:actual-cluster:${index}`,
@@ -648,7 +688,7 @@ test('actual occurrence starts enforce the rolling cluster ceiling after preview
         idempotencyKey: 'routine:actual-cluster:rejected',
         routineId: routine.id,
         routineVersion: routine.version,
-        scheduledFor: CREATED_AT + 4,
+        scheduledFor: CREATED_AT + ROUTINE_LIMITS.startsPerRollingFifteenMinutes,
         triggerSource: 'schedule',
         queuedAt: CREATED_AT,
         deadlineAt: CREATED_AT + 15 * 60 * 1_000,

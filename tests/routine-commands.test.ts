@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import {
   handleRoutineSlackRequest,
   parseRoutineCommand,
+  routineResponseVisibility,
 } from '../src/routines/commands.ts';
 import { SqliteRoutineStore } from '../src/routines/store.ts';
 import type { RoutineCapability } from '../src/routines/scheduler-adapter.ts';
@@ -23,16 +24,13 @@ function turn(text: string, eventId = `Ev_${Math.random().toString(36).slice(2)}
   };
 }
 
-function assertSavedReceipt(text: string | undefined, creator = 'U_MEMBER'): void {
-  assert.match(text ?? '', /Next three:/);
-  assert.match(text ?? '', new RegExp(`Creator: <@${creator}>`));
-  assert.match(
-    text ?? '',
-    /This routine uses this channel's current Chickpea access each time it runs\./,
-  );
-  assert.match(text ?? '', /Resource limits:/);
-  assert.match(text ?? '', /may perform writes when this saved task requests them/i);
-  assert.match(text ?? '', /saved task is the approval for effects it explicitly requests/i);
+function assertSavedReceipt(text: string | undefined): void {
+  assert.match(text ?? '', /\*\*Next runs:\*\*/);
+  assert.match(text ?? '', /\*\*Task:\*\*/);
+  assert.match(text ?? '', /\*\*Output:\*\*/);
+  assert.match(text ?? '', /\*\*ID:\*\* `routine_/);
+  assert.doesNotMatch(text ?? '', /Creator:|Resource limits:|current Chickpea access/i);
+  assert.doesNotMatch(text ?? '', /Manage:/i);
   assert.doesNotMatch(text ?? '', /!routines confirm/);
 }
 
@@ -48,6 +46,20 @@ test('exact routine commands parse without model interpretation', () => {
     kind: 'confirm', token: 'abcdef',
   });
   assert.deepEqual(parseRoutineCommand('!routines nonsense'), { kind: 'invalid' });
+});
+
+test('only a cross-channel routine list is requester-only', () => {
+  assert.equal(routineResponseVisibility('!routines', 'C_TEST'), 'channel');
+  assert.equal(
+    routineResponseVisibility('!routines <#C_TEST|current>', 'C_TEST'),
+    'channel',
+  );
+  assert.equal(
+    routineResponseVisibility('!routines <#C_OTHER|private-project>', 'C_TEST'),
+    'requester',
+  );
+  assert.equal(routineResponseVisibility('!routines <#invalid mention>', 'C_TEST'), 'requester');
+  assert.equal(routineResponseVisibility('!routines show routine_one', 'C_TEST'), 'channel');
 });
 
 test('natural-language creation persists in one message while deletion stays confirmed', async () => {
@@ -74,7 +86,8 @@ test('natural-language creation persists in one message while deletion stays con
       undefined,
       options,
     );
-    assert.match(createdText ?? '', /was created and is \*active\*/);
+    assert.match(createdText ?? '', /✅ \*\*Routine created\*\*/);
+    assert.match(createdText ?? '', /\*\*Support steward\*\* · Active/);
     assertSavedReceipt(createdText);
     const replayText = await handleRoutineSlackRequest(
       turn('Every weekday, Triage new support requests and post a summary.', 'Ev_create'),
@@ -105,21 +118,21 @@ test('natural-language creation persists in one message while deletion stays con
     const detail = await handleRoutineSlackRequest(
       turn(`!routines show ${routine.id}`, 'Ev_show'), undefined, options,
     );
-    assert.match(detail ?? '', /Source request: Every weekday, Triage new support requests and post a summary\./);
+    assert.match(detail ?? '', /\*\*Source request:\*\* Every weekday, Triage new support requests and post a summary\./);
     const paused = await handleRoutineSlackRequest(
       turn(`!routines pause ${routine.id}`, 'Ev_pause'), undefined, options,
     );
-    assert.match(paused ?? '', /now \*paused\*/);
+    assert.match(paused ?? '', /Routine paused/);
     const runNow = await handleRoutineSlackRequest(
       turn(`!routines run ${routine.id}`, 'Ev_run'), undefined, options,
     );
-    assert.match(runNow ?? '', /Queued one occurrence/);
+    assert.match(runNow ?? '', /Routine queued/);
     assert.equal((await store.listRuns({ routineId: routine.id })).length, 1);
 
     const clonedText = await handleRoutineSlackRequest(
       turn(`!routines clone ${routine.id}`, 'Ev_clone'), undefined, options,
     );
-    assert.match(clonedText ?? '', /was created and is \*active\*/);
+    assert.match(clonedText ?? '', /✅ \*\*Routine created\*\*/);
     assertSavedReceipt(clonedText);
     assert.equal((await store.listRoutines('T_TEST', 'C_TEST')).length, 2);
     const cloned = (await store.listRoutines('T_TEST', 'C_TEST')).find((item) => item.id !== routine.id);
@@ -171,7 +184,7 @@ test('an omitted timezone proposes the Slack profile zone and an unrelated edit 
         }),
       },
     );
-    assert.match(createdText ?? '', /America\/New_York/);
+    assert.match(createdText ?? '', /Eastern/);
     assert.match(createdText ?? '', /selected from your Slack profile/);
     assertSavedReceipt(createdText);
     const [created] = await store.listRoutines('T_TEST', 'C_TEST');
@@ -193,11 +206,47 @@ test('an omitted timezone proposes the Slack profile zone and an unrelated edit 
         }),
       },
     );
-    assert.match(editedText ?? '', /was updated/);
-    assert.match(editedText ?? '', /America\/New_York/);
+    assert.match(editedText ?? '', /Routine updated/);
+    assert.match(editedText ?? '', /Eastern/);
     assert.doesNotMatch(editedText ?? '', /Europe\/London/);
     assertSavedReceipt(editedText);
     assert.equal((await store.getRoutine(created!.id))?.taskText, 'Post the support summary.');
+  } finally {
+    store.close();
+  }
+});
+
+test('an explicit quoted name and familiar timezone survive imperfect intent normalization', async () => {
+  const store = new SqliteRoutineStore(':memory:', () => NOW);
+  try {
+    const result = await handleRoutineSlackRequest(
+      turn(
+        'Create a routine named "Acceptance PT" for every Tuesday at 10am PT: post exactly PT-MARKER here.',
+        'Ev_explicit_name_zone',
+      ),
+      undefined,
+      {
+        store,
+        capability: enabled,
+        now: () => NOW,
+        canManageChannel,
+        parseIntent: async () => ({
+          action: 'create' as const,
+          // The source-anchored name must win over a model fallback.
+          name: 'post exactly PT-MARKER here.',
+          taskText: 'post exactly PT-MARKER here.',
+          scheduleExpression: '0 10 * * 2',
+          timezone: 'PT',
+          timezoneWasDefaulted: false,
+          outputPolicy: 'post' as const,
+        }),
+      },
+    );
+    assert.match(result ?? '', /\*\*Acceptance PT\*\* · Active/);
+    assert.match(result ?? '', /Every Tuesday at 10:00 AM Pacific/);
+    const [routine] = await store.listRoutines('T_TEST', 'C_TEST');
+    assert.equal(routine?.name, 'Acceptance PT');
+    assert.equal(routine?.timezone, 'America/Los_Angeles');
   } finally {
     store.close();
   }
@@ -353,7 +402,7 @@ test('an edit with omitted taskText inherits exactly the prior task', async () =
         }),
       },
     );
-    assert.match(create ?? '', /was created/);
+    assert.match(create ?? '', /Routine created/);
     const [routine] = await store.listRoutines('T_TEST', 'C_TEST');
     assert.ok(routine);
 
@@ -371,7 +420,7 @@ test('an edit with omitted taskText inherits exactly the prior task', async () =
         }),
       },
     );
-    assert.match(edited ?? '', /was updated/);
+    assert.match(edited ?? '', /Routine updated/);
     const revisions = await store.listRevisions(routine!.id);
     assert.equal((await store.getRoutine(routine!.id))?.taskText, 'Update PROJ-123.');
     const editedRevision = revisions.find((revision) => revision.version === 2);
@@ -407,7 +456,7 @@ test('one-time Slack requests save one future occurrence with an exact receipt',
       },
     );
     assert.match(result ?? '', /Scheduled for:/);
-    assert.doesNotMatch(result ?? '', /Next three:/);
+    assert.doesNotMatch(result ?? '', /Next runs:/);
     const [routine] = await store.listRoutines('T_TEST', 'C_TEST');
     assert.equal(routine?.triggerKind, 'once');
     assert.equal(routine?.projectedDailyStarts, 0);
@@ -461,7 +510,7 @@ test('natural-language controls resolve an exact quoted name and stop on ambigui
         parseIntent: async () => ({ action: 'pause' as const, routineName: 'Friday rollup' }),
       },
     );
-    assert.match(unique ?? '', /now \*paused\*/);
+    assert.match(unique ?? '', /Routine paused/);
 
     await create('Ev_name_two');
     const ambiguous = await handleRoutineSlackRequest(
@@ -599,7 +648,7 @@ test('routine saves and ID controls reauthorize current channel membership', asy
       undefined,
       options,
     );
-    assert.match(created ?? '', /was created/);
+    assert.match(created ?? '', /Routine created/);
     const [routine] = await store.listRoutines('T_TEST', 'C_TEST');
     assert.ok(routine);
 
@@ -639,6 +688,75 @@ test('intent parser infrastructure failures fall through to the ordinary Slack t
       },
     );
     assert.equal(result, undefined);
+  } finally {
+    store.close();
+  }
+});
+
+test('an explicit routine mutation never falls through to the tool-capable Slack agent', async () => {
+  const store = new SqliteRoutineStore(':memory:', () => NOW);
+  try {
+    const declined = await handleRoutineSlackRequest(
+      turn(
+        'Create a routine named "Declined" to run every hour: post the status.',
+        'Ev_explicit_declined',
+      ),
+      undefined,
+      {
+        store,
+        capability: enabled,
+        now: () => NOW,
+        canManageChannel,
+        parseIntent: async () => undefined,
+      },
+    );
+    assert.match(declined ?? '', /could not safely understand that routine request/i);
+
+    const unavailable = await handleRoutineSlackRequest(
+      turn(
+        'Create a routine named "Unavailable" to run every hour: post the status.',
+        'Ev_explicit_unavailable',
+      ),
+      undefined,
+      {
+        store,
+        capability: enabled,
+        now: () => NOW,
+        canManageChannel,
+        parseIntent: async () => { throw new Error('intent service unavailable'); },
+      },
+    );
+    assert.match(unavailable ?? '', /could not safely understand that routine request/i);
+    assert.equal((await store.listRoutines('T_TEST', 'C_TEST')).length, 0);
+  } finally {
+    store.close();
+  }
+});
+
+test('a sub-five-minute routine candidate is rejected before intent parsing', async () => {
+  const store = new SqliteRoutineStore(':memory:', () => NOW);
+  let parserCalls = 0;
+  try {
+    const result = await handleRoutineSlackRequest(
+      turn(
+        'Every 4 minutes, post the status.',
+        'Ev_too_frequent_candidate',
+      ),
+      undefined,
+      {
+        store,
+        capability: enabled,
+        now: () => NOW,
+        canManageChannel,
+        parseIntent: async () => {
+          parserCalls += 1;
+          return undefined;
+        },
+      },
+    );
+    assert.match(result ?? '', /at least five minutes apart/i);
+    assert.equal(parserCalls, 0);
+    assert.equal((await store.listRoutines('T_TEST', 'C_TEST')).length, 0);
   } finally {
     store.close();
   }

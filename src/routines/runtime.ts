@@ -3,6 +3,7 @@ import { NoAssignmentError } from '../config/errors.ts';
 import { getConfigStore, type PlatformEnv } from '../config/state-backend.ts';
 import {
   resolveSlackCredentials,
+  resolveSlackPublicUrl,
   slackAuthTest,
   slackConversationsInfo,
   slackConversationsMembers,
@@ -22,6 +23,7 @@ export interface RoutineRuntimeAccess {
   accessHash: string;
   botToken: string;
   botUserId: string;
+  publicUrl?: string | undefined;
 }
 
 export class RoutineRuntimeError extends Error {
@@ -151,6 +153,7 @@ export async function resolveRoutineRuntimeAccess(
     accessHash,
     botToken: credentials.botToken,
     botUserId: auth.botUserId,
+    publicUrl: await resolveSlackPublicUrl(env).catch(() => undefined),
   };
 }
 

@@ -2,12 +2,23 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { hashRoutineValue } from '../src/routines/ids.ts';
-import { normalizeRoutineModelResult } from '../src/routines/prompt.ts';
+import {
+  normalizeRoutineModelResult,
+  routineExecutionInstructions,
+} from '../src/routines/prompt.ts';
 import { RoutineRuntimeError } from '../src/routines/runtime.ts';
 import type { RoutineDefinition, RoutineRun } from '../src/routines/types.ts';
 
 const routine = { outputPolicy: 'post_on_change' } as RoutineDefinition;
 const run = { baselineChangeKeyHash: hashRoutineValue('same') } as RoutineRun;
+
+test('the unattended prompt makes host-owned Slack delivery explicit', () => {
+  const instructions = routineExecutionInstructions().join('\n');
+  assert.match(instructions, /Chickpea itself delivers your returned message/i);
+  assert.match(instructions, /do not use tools, sandbox commands, network calls, credentials, tokens, or Chickpea internals/i);
+  assert.match(instructions, /do not duplicate host delivery/i);
+  assert.match(instructions, /additional Slack side effect distinct from posting this routine result/i);
+});
 
 test('post-on-change hashes raw keys and suppresses an unchanged result', () => {
   assert.deepEqual(
