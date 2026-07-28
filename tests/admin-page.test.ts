@@ -540,6 +540,14 @@ function runAdminPageHarness(
       routineId: 'routine_release_digest', version: 2,
       definition: { name: 'Release readiness check' }, definitionHash: 'definition_hash_2',
       actorId: 'U_CREATOR', actorClass: 'member', createdAt: 1785000000000,
+      provenance: {
+        sourceKind: 'slack_request',
+        requestText: 'Every weekday, review launch blockers and resolve anything safe to change.',
+        requestHash: 'source_request_hash_2', eventId: 'Ev_release_routine',
+        messageTs: '1785000000.000100', threadTs: '1785000000.000100',
+        sourceRoutineId: null, sourceRoutineVersion: null,
+        authoritySource: 'current_request', definitionHash: 'definition_hash_2',
+      },
     }],
     events: [{
       eventId: 'audit_routine_update', eventType: 'routine_updated', outcome: 'succeeded',
@@ -6469,6 +6477,9 @@ test('Scheduled Work tab is live, deep-linked, inspectable, and controls durable
   assert.match(harness.app.innerHTML, /Release readiness check/);
   assert.match(harness.app.innerHTML, /weekdays at 9:00 AM/);
   assert.match(harness.app.innerHTML, /America\/Los_Angeles/);
+  assert.match(harness.app.innerHTML, /Source Slack request/);
+  assert.match(harness.app.innerHTML, /Every weekday, review launch blockers and resolve anything safe to change/);
+  assert.match(harness.app.innerHTML, /value="completed"/);
   assert.match(harness.app.innerHTML, /same authority as a live @mention/);
   assert.match(harness.app.innerHTML, /Review open launch blockers and resolve anything safe to change/);
   assert.match(harness.app.innerHTML, /flue_run_release_1/);

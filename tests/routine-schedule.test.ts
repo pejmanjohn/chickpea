@@ -3,6 +3,7 @@ import { test } from 'node:test';
 
 import {
   nextRoutineOccurrence,
+  normalizeOneTimeSchedule,
   normalizeRoutineSchedule,
   parseRoutineSchedule,
 } from '../src/routines/schedule.ts';
@@ -32,6 +33,47 @@ test('normalizes only five-field cron with an explicit IANA time zone', () => {
   assert.throws(
     () => normalizeRoutineSchedule('0 9 * * *', 'Pacific/Chickpea', from),
     (error: unknown) => error instanceof RoutineStateError && error.code === 'routine_invalid_timezone',
+  );
+});
+
+test('normalizes one-time local schedules to one future instant', () => {
+  const from = Date.UTC(2026, 6, 27, 12);
+  const projection = normalizeOneTimeSchedule(
+    '2026-07-28T09:30',
+    'America/Los_Angeles',
+    from,
+  );
+  assert.deepEqual(projection.schedule, {
+    version: 1,
+    kind: 'once',
+    localDateTime: '2026-07-28T09:30',
+    at: Date.UTC(2026, 6, 28, 16, 30),
+  });
+  assert.deepEqual(projection.preview, [Date.UTC(2026, 6, 28, 16, 30)]);
+  assert.equal(projection.projectedDailyStarts, 0);
+  assert.deepEqual(projection.reservations, [{ windowStart: Date.UTC(2026, 6, 28, 16, 30), count: 1 }]);
+  assert.deepEqual(parseRoutineSchedule(projection.scheduleJson), projection.schedule);
+
+  assert.throws(
+    () => normalizeOneTimeSchedule('2026-07-27T05:00', 'America/Los_Angeles', from),
+    (error: unknown) => error instanceof RoutineStateError && error.code === 'routine_schedule_in_past',
+  );
+});
+
+test('one-time schedules choose the first fold instant and reject nonexistent local time', () => {
+  const fall = normalizeOneTimeSchedule(
+    '2026-11-01T01:30',
+    'America/Los_Angeles',
+    Date.UTC(2026, 10, 1, 0),
+  );
+  assert.equal(new Date(fall.nextRunAt).toISOString(), '2026-11-01T08:30:00.000Z');
+  assert.throws(
+    () => normalizeOneTimeSchedule(
+      '2026-03-08T02:30',
+      'America/Los_Angeles',
+      Date.UTC(2026, 2, 7, 12),
+    ),
+    (error: unknown) => error instanceof RoutineStateError && error.code === 'routine_nonexistent_local_time',
   );
 });
 

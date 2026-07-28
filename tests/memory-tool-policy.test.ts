@@ -68,9 +68,10 @@ function turnRequest(promptText: string): FlueObservation {
 async function withSubmissionPolicy<T>(
   promptText: string | undefined,
   run: (context: FlueExecutionContext) => Promise<T>,
+  agentName = 'slack-thread',
 ): Promise<T> {
   const context: FlueExecutionContext = {
-    agentName: 'slack-thread',
+    agentName,
     submissionId: 'submission-1',
   };
   return memoryToolPolicyInterceptor(
@@ -80,13 +81,96 @@ async function withSubmissionPolicy<T>(
       if (promptText !== undefined) {
         observeMemoryToolPolicy(
           turnRequest(promptText),
-          { agentName: 'slack-thread' } as FlueEventContext,
+          { agentName } as FlueEventContext,
         );
       }
       return run(context);
     },
   );
 }
+
+test('routine submissions require explicit saved-task authority even without memory', async () => {
+  const readPrompt = assembleSlackPrompt(
+    turn(READ_ONLY_REQUEST),
+    {
+      mode: 'channel_history',
+      truncated: false,
+      degradations: [],
+      messages: [{ userId: 'U', text: READ_ONLY_REQUEST, ts: '2.0', isTrigger: true }],
+    },
+  );
+  await withSubmissionPolicy(readPrompt, async (context) => {
+    await assert.rejects(
+      callTool(context, 'mcp__asana__create_task', async () => 'created'),
+      (error: unknown) => error instanceof Error && error.name === 'CurrentRequestSideEffectDeniedError',
+    );
+  }, 'routine');
+
+  const writePrompt = assembleSlackPrompt(
+    turn('Update the connected project tracker with unresolved blockers.'),
+    {
+      mode: 'channel_history',
+      truncated: false,
+      degradations: [],
+      messages: [{
+        userId: 'U',
+        text: 'Update the connected project tracker with unresolved blockers.',
+        ts: '2.0',
+        isTrigger: true,
+      }],
+    },
+  );
+  await withSubmissionPolicy(writePrompt, async (context) => {
+    assert.equal(
+      await callTool(context, 'mcp__linear__update_project', async () => 'updated'),
+      'updated',
+    );
+  }, 'routine');
+});
+
+test('routine artifact delivery requires an explicit saved artifact task', async () => {
+  const routinePrompt = (text: string) => assembleSlackPrompt(
+    turn(text),
+    {
+      mode: 'channel_history',
+      truncated: false,
+      degradations: [],
+      messages: [{ userId: 'U', text, ts: '2.0', isTrigger: true }],
+    },
+  );
+
+  const artifactPrompt = routinePrompt(
+    'Build the release page, take a screenshot, and attach the screenshot to the saved routine result.',
+  );
+  assert.deepEqual(parseCurrentRequestEnvelope(artifactPrompt), {
+    schemaVersion: 1,
+    memoryInfluenced: false,
+    explicitExternalSideEffectIntent: false,
+    explicitArtifactDeliveryIntent: true,
+  });
+  await withSubmissionPolicy(artifactPrompt, async (context) => {
+    assert.equal(
+      await callTool(context, 'post_artifact', async () => 'uploaded'),
+      'uploaded',
+    );
+  }, 'routine');
+
+  const externalWritePrompt = routinePrompt(WRITE_REQUEST);
+  await withSubmissionPolicy(externalWritePrompt, async (context) => {
+    await assert.rejects(
+      callTool(context, 'post_artifact', async () => 'uploaded'),
+      (error: unknown) => error instanceof Error && error.name === 'CurrentRequestSideEffectDeniedError',
+    );
+  }, 'routine');
+
+  const readOnlyPrompt = routinePrompt(READ_ONLY_REQUEST);
+  await withSubmissionPolicy(readOnlyPrompt, async (context) => {
+    await assert.rejects(
+      callTool(context, 'post_artifact', async () => 'uploaded'),
+      (error: unknown) => error instanceof Error && error.name === 'CurrentRequestSideEffectDeniedError',
+    );
+  }, 'routine');
+});
 
 async function callTool<T>(
   context: FlueExecutionContext,

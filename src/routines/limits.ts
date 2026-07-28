@@ -22,6 +22,7 @@ export const ROUTINE_LIMITS = {
   maxDescriptionCodePoints: 280,
   maxDescriptionBytes: 1_120,
   maxTaskBytes: 8_192,
+  maxSourceRequestBytes: 8_192,
   maxChangeKeyBytes: 1_024,
   maxPublicErrorBytes: 512,
 } as const;

@@ -41,30 +41,24 @@ export function createRoutineAdminApi(options: RoutineAdminApiOptions): Hono {
       const workspaceId = optionalId(c.req.query('workspaceId'));
       const channelId = optionalId(c.req.query('channelId'));
       const state = c.req.query('state');
-      if (state && !['active', 'paused', 'disabled', 'deleted'].includes(state)) return invalid(c);
+      if (state && !['active', 'paused', 'disabled', 'completed', 'deleted'].includes(state)) return invalid(c);
       const status = c.req.query('status');
       const limit = parseLimit(c.req.query('limit'));
       const offset = parseCursor(c.req.query('cursor'));
-      let routines = await options.store(c).listRoutines(workspaceId, channelId);
-      if (state) {
-        routines = routines.filter((routine) =>
-          state === 'deleted' ? routine.deletedAt !== null : routine.deletedAt === null && routine.state === state,
-        );
+      if (status && !['queued', 'admitting', 'running', 'succeeded', 'no_op', 'failed', 'skipped', 'cancelled', 'superseded'].includes(status)) {
+        return invalid(c);
       }
-      if (status) {
-        if (!['queued', 'admitting', 'running', 'succeeded', 'no_op', 'failed', 'skipped', 'cancelled', 'superseded'].includes(status)) {
-          return invalid(c);
-        }
-        const matching = new Set(
-          (await options.store(c).listRuns({ statuses: [status as RoutineRun['status']], limit: 500 }))
-            .map((run) => run.routineId),
-        );
-        routines = routines.filter((routine) => matching.has(routine.id));
-      }
-      const page = routines.slice(offset, offset + limit);
+      const page = await options.store(c).listAdminRoutinePage({
+        ...(workspaceId ? { workspaceId } : {}),
+        ...(channelId ? { channelId } : {}),
+        ...(state ? { state: state as RoutineDefinition['state'] | 'deleted' } : {}),
+        ...(status ? { runStatus: status as RoutineRun['status'] } : {}),
+        cursor: offset,
+        limit,
+      });
       return c.json({
-        routines: page.map(routineSummary),
-        nextCursor: offset + limit < routines.length ? String(offset + limit) : null,
+        routines: page.routines.map(routineSummary),
+        nextCursor: page.nextCursor === null ? null : String(page.nextCursor),
         capability: capabilityFor(c, options),
         limits: routineOperatorLimits(),
       });
@@ -115,6 +109,7 @@ export function createRoutineAdminApi(options: RoutineAdminApiOptions): Hono {
           definitionHash: revision.definitionHash,
           actorId: revision.actorId,
           actorClass: revision.actorClass,
+          provenance: revision.provenance,
           createdAt: revision.createdAt,
         })),
         events: events.map(safeAuditEvent),
@@ -202,6 +197,7 @@ function routineSummary(routine: RoutineDefinition): Record<string, unknown> {
     description: routine.description,
     state: routine.deletedAt !== null ? 'deleted' : routine.state,
     version: routine.version,
+    triggerKind: routine.triggerKind,
     scheduleInput: routine.scheduleInput,
     timezone: routine.timezone,
     outputPolicy: routine.outputPolicy,

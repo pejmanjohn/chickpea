@@ -16,7 +16,7 @@ const DefinitionSchema = v.object({
   name: v.string(),
   description: v.string(),
   taskText: v.string(),
-  triggerKind: v.literal('schedule'),
+  triggerKind: v.picklist(['schedule', 'once']),
   scheduleInput: v.string(),
   scheduleJson: v.string(),
   timezone: v.string(),

@@ -13,6 +13,7 @@ import {
   type RoutineDefinition,
   type RoutineDefinitionContent,
   type RoutineScheduleReservation,
+  type RoutineRequestProvenanceInput,
   type SaveRoutineInput,
   type RoutineStore,
   RoutineStateError,
@@ -24,6 +25,7 @@ interface RoutineRequestBase {
   actorClass?: 'member' | 'operator';
   workspaceId: string;
   channelId: string;
+  provenance?: RoutineRequestProvenanceInput | null;
 }
 
 export type RoutineSaveRequest = RoutineRequestBase & (
@@ -129,6 +131,7 @@ export class RoutineService {
       workspaceId: request.workspaceId,
       channelId: request.channelId,
       draft,
+      provenance: request.provenance ?? null,
       idempotencyKey,
     };
     return this.store.save(input);

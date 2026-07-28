@@ -10,6 +10,11 @@ import {
 } from './ids.ts';
 import { ROUTINE_LIMITS } from './limits.ts';
 import {
+  assertRoutineTaskBoundToPrevious,
+  assertRoutineTaskBoundToSource,
+  validateRoutineRequestProvenanceInput,
+} from './provenance.ts';
+import {
   nextRoutineOccurrence,
   normalizeRoutineSchedule,
   parseRoutineSchedule,
@@ -27,6 +32,8 @@ import {
   type PutRoutineConfirmationInput,
   type RecordRoutineDeliveryInput,
   type RoutineAdmissionAttempt,
+  type RoutineAdminPage,
+  type RoutineAdminPageInput,
   type RoutineConfirmation,
   type RoutineConfirmationDraft,
   type RoutineDefinition,
@@ -34,6 +41,8 @@ import {
   type RoutineDueClaimBatch,
   type RoutineMaintenanceResult,
   type RoutineRevision,
+  type RoutineRequestProvenance,
+  type RoutineRequestProvenanceInput,
   type RoutineRpcRequest,
   type RoutineRpcResponse,
   type RoutineRun,
@@ -113,6 +122,16 @@ interface RevisionRow {
   actor_class: RoutineRevision['actorClass'];
   confirmation_id: string | null;
   created_at: number;
+  provenance_source_kind?: RoutineRequestProvenance['sourceKind'] | null;
+  provenance_request_text?: string | null;
+  provenance_request_hash?: string | null;
+  provenance_event_id?: string | null;
+  provenance_message_ts?: string | null;
+  provenance_thread_ts?: string | null;
+  provenance_authority_source?: RoutineRequestProvenance['authoritySource'] | null;
+  provenance_source_routine_id?: string | null;
+  provenance_source_routine_version?: number | null;
+  provenance_definition_hash?: string | null;
 }
 
 interface RunRow {
@@ -229,6 +248,8 @@ export class RoutineStoreLogic {
           kind: 'routines',
           routines: this.listRoutines(request.workspaceId, request.channelId),
         };
+      case 'list_admin_routine_page':
+        return { kind: 'admin_routine_page', page: this.listAdminRoutinePage(request.input) };
       case 'list_revisions':
         return { kind: 'revisions', revisions: this.listRevisions(request.routineId) };
       case 'control':
@@ -415,6 +436,10 @@ export class RoutineStoreLogic {
           `UPDATE routine_revisions SET definition_json = NULL WHERE routine_id = ?`,
           current.id,
         );
+        this.db.run(
+          `UPDATE routine_request_provenance SET request_text = NULL WHERE routine_id = ?`,
+          current.id,
+        );
         this.db.run(`UPDATE routine_runs SET revision_json = NULL WHERE routine_id = ?`, current.id);
         this.db.run(
           `DELETE FROM routine_confirmations
@@ -462,7 +487,7 @@ export class RoutineStoreLogic {
     draft: Exclude<RoutineConfirmationDraft, { action: 'delete' }>,
     input: Pick<
       SaveRoutineInput,
-      'actorId' | 'actorClass' | 'workspaceId' | 'channelId' | 'idempotencyKey'
+      'actorId' | 'actorClass' | 'workspaceId' | 'channelId' | 'idempotencyKey' | 'provenance'
     >,
     confirmationId: string | null,
     at: number,
@@ -474,6 +499,7 @@ export class RoutineStoreLogic {
       this.assertCapacity(
         input.workspaceId,
         input.channelId,
+        draft.definition.triggerKind,
         draft.projectedDailyStarts,
         draft.reservations,
       );
@@ -500,6 +526,13 @@ export class RoutineStoreLogic {
         confirmationId,
         at,
       );
+      this.insertRequestProvenance(
+        draft.routineId,
+        1,
+        definition,
+        input.provenance ?? null,
+        null,
+      );
       const routine = required(this.getRoutine(draft.routineId), 'Routine was not readable after create.');
       this.appendRoutineAudit(
         input.idempotencyKey,
@@ -518,21 +551,38 @@ export class RoutineStoreLogic {
     if (current.workspaceId !== input.workspaceId || current.channelId !== input.channelId) {
       throw routineError('routine_not_found', 'Routine was not found.');
     }
+    if (
+      current.triggerKind === 'once' &&
+      Number(
+        this.db.get(
+          `SELECT COUNT(*) AS count FROM routine_runs
+           WHERE routine_id = ? AND status IN ('queued', 'admitting', 'running')`,
+          current.id,
+        )?.count ?? 0,
+      ) > 0
+    ) {
+      throw routineError(
+        'routine_run_conflict',
+        'Wait for the active one-time occurrence to finish before editing it.',
+      );
+    }
     const definition = validateRoutineDefinition(draft.definition);
-    if (current.state === 'active') {
+    if (current.state === 'active' || current.state === 'completed') {
       this.assertCapacity(
         current.workspaceId,
         current.channelId,
+        draft.definition.triggerKind,
         draft.projectedDailyStarts,
         draft.reservations,
         current.id,
       );
     }
     const nextVersion = current.version + 1;
+    const nextState = current.state === 'completed' ? 'active' : current.state;
     this.db.run(
       `UPDATE routines SET name = ?, description = ?, task_text = ?, trigger_kind = ?,
          schedule_input = ?, schedule_json = ?, timezone = ?, output_policy = ?,
-         authority_mode = ?, version = ?, next_run_at = ?, projected_daily_starts = ?,
+         authority_mode = ?, state = ?, version = ?, next_run_at = ?, projected_daily_starts = ?,
          reservation_windows_json = ?, updated_at = ?, updated_by = ?
        WHERE id = ? AND version = ? AND deleted_at IS NULL`,
       definition.name,
@@ -544,6 +594,7 @@ export class RoutineStoreLogic {
       definition.timezone,
       definition.outputPolicy,
       definition.authorityMode,
+      nextState,
       nextVersion,
       draft.nextRunAt,
       draft.projectedDailyStarts,
@@ -553,7 +604,7 @@ export class RoutineStoreLogic {
       current.id,
       current.version,
     );
-    if (current.state === 'active') this.replaceReservations(current.id, draft.reservations);
+    if (nextState === 'active') this.replaceReservations(current.id, draft.reservations);
     this.insertRevision(
       current.id,
       nextVersion,
@@ -562,6 +613,13 @@ export class RoutineStoreLogic {
       input.actorClass,
       confirmationId,
       at,
+    );
+    this.insertRequestProvenance(
+      current.id,
+      nextVersion,
+      definition,
+      input.provenance ?? null,
+      current,
     );
     const routine = required(this.getRoutine(current.id), 'Routine was not readable after edit.');
     this.appendRoutineAudit(
@@ -726,10 +784,67 @@ export class RoutineStoreLogic {
       .map((row) => rowToRoutine(row as unknown as RoutineRow));
   }
 
+  listAdminRoutinePage(input: RoutineAdminPageInput): RoutineAdminPage {
+    validateAdminPageInput(input);
+    const clauses: string[] = [];
+    const params: SqlParam[] = [];
+    if (input.workspaceId) {
+      clauses.push('workspace_id = ?');
+      params.push(input.workspaceId);
+    }
+    if (input.channelId) {
+      clauses.push('channel_id = ?');
+      params.push(input.channelId);
+    }
+    if (input.state === 'deleted') {
+      clauses.push('deleted_at IS NOT NULL');
+    } else if (input.state) {
+      clauses.push('deleted_at IS NULL AND state = ?');
+      params.push(input.state);
+    }
+    if (input.runStatus) {
+      clauses.push(
+        `EXISTS (
+          SELECT 1 FROM routine_runs
+          WHERE routine_runs.routine_id = routines.id AND routine_runs.status = ?
+        )`,
+      );
+      params.push(input.runStatus);
+    }
+    const cursor = input.cursor ?? 0;
+    const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+    const rows = this.db.all(
+      `SELECT * FROM routines ${where}
+       ORDER BY created_at, id LIMIT ? OFFSET ?`,
+      ...params,
+      input.limit + 1,
+      cursor,
+    );
+    const hasNext = rows.length > input.limit;
+    return {
+      routines: rows.slice(0, input.limit).map((row) => rowToRoutine(row as unknown as RoutineRow)),
+      nextCursor: hasNext ? cursor + input.limit : null,
+    };
+  }
+
   listRevisions(routineId: string): RoutineRevision[] {
     return this.db
       .all(
-        `SELECT * FROM routine_revisions WHERE routine_id = ? ORDER BY version`,
+        `SELECT r.*,
+                p.source_kind AS provenance_source_kind,
+                p.request_text AS provenance_request_text,
+                p.request_hash AS provenance_request_hash,
+                p.event_id AS provenance_event_id,
+                p.message_ts AS provenance_message_ts,
+                p.thread_ts AS provenance_thread_ts,
+                p.authority_source AS provenance_authority_source,
+                p.source_routine_id AS provenance_source_routine_id,
+                p.source_routine_version AS provenance_source_routine_version,
+                p.definition_hash AS provenance_definition_hash
+         FROM routine_revisions r
+         LEFT JOIN routine_request_provenance p
+           ON p.routine_id = r.routine_id AND p.version = r.version
+         WHERE r.routine_id = ? ORDER BY r.version`,
         routineId,
       )
       .map((row) => rowToRevision(row as unknown as RevisionRow));
@@ -753,7 +868,7 @@ export class RoutineStoreLogic {
       if (routine.state === target) return routine;
       if (
         (input.action === 'pause' && routine.state !== 'active') ||
-        (input.action === 'disable' && routine.state === 'disabled') ||
+        (input.action === 'disable' && (routine.state === 'disabled' || routine.state === 'completed')) ||
         (input.action === 'resume' && routine.state === 'active')
       ) {
         throw routineError('routine_transition_invalid', 'Routine state transition is invalid.');
@@ -764,13 +879,26 @@ export class RoutineStoreLogic {
       let reservationWindows = routine.reservationWindows;
       if (input.action === 'resume') {
         const schedule = parseRoutineSchedule(routine.scheduleJson);
-        const projection = normalizeRoutineSchedule(schedule.expression, routine.timezone, at);
-        nextRunAt = projection.nextRunAt;
-        projectedDailyStarts = projection.projectedDailyStarts;
-        reservationWindows = projection.reservations;
+        if (schedule.kind === 'once') {
+          if (schedule.at <= at) {
+            throw routineError(
+              'routine_one_time_elapsed',
+              'That one-time schedule has passed. Edit it to a new future time.',
+            );
+          }
+          nextRunAt = schedule.at;
+          projectedDailyStarts = 0;
+          reservationWindows = [{ windowStart: schedule.at, count: 1 }];
+        } else {
+          const projection = normalizeRoutineSchedule(schedule.expression, routine.timezone, at);
+          nextRunAt = projection.nextRunAt;
+          projectedDailyStarts = projection.projectedDailyStarts;
+          reservationWindows = projection.reservations;
+        }
         this.assertCapacity(
           routine.workspaceId,
           routine.channelId,
+          routine.triggerKind,
           projectedDailyStarts,
           reservationWindows,
           routine.id,
@@ -813,6 +941,10 @@ export class RoutineStoreLogic {
         null,
         at,
       );
+      this.copyRequestProvenance(routine.id, routine.version, nextVersion, definitionContent(routine));
+      if (input.action === 'pause' || input.action === 'disable') {
+        this.cancelQueuedScheduledOccurrences(routine.id, input.action, at);
+      }
       const updated = required(this.getRoutine(routine.id), 'Routine was not readable after control.');
       this.appendRoutineAudit(
         input.idempotencyKey,
@@ -839,8 +971,10 @@ export class RoutineStoreLogic {
       if (replay) return replay;
       const routine = this.requiredMutableRoutine(input.routineId, input.routineVersion);
       if (
-        (input.triggerSource === 'schedule' && routine.state !== 'active') ||
-        (input.triggerSource === 'run_now' && routine.state === 'disabled')
+        ((input.triggerSource === 'schedule' || input.triggerSource === 'once') && routine.state !== 'active') ||
+        (input.triggerSource === 'schedule' && routine.triggerKind !== 'schedule') ||
+        (input.triggerSource === 'once' && routine.triggerKind !== 'once') ||
+        (input.triggerSource === 'run_now' && (routine.state === 'disabled' || routine.state === 'completed' || routine.triggerKind === 'once'))
       ) {
         throw routineError('routine_state_ineligible', 'Routine cannot create this occurrence.');
       }
@@ -962,7 +1096,9 @@ export class RoutineStoreLogic {
         let skipReason: string | undefined;
         if (due.count > 1) skipReason = 'missed_schedule';
         else if (activeForRoutine) skipReason = 'overlap';
-        else if (age > ROUTINE_LIMITS.admissionGraceMs) skipReason = 'admission_grace_expired';
+        else if (age > ROUTINE_LIMITS.admissionGraceMs) {
+          skipReason = routine.triggerKind === 'once' ? 'missed_one_time' : 'admission_grace_expired';
+        }
         else if (activeCount >= ROUTINE_LIMITS.concurrentDeploymentRuns) {
           deferredCount += 1;
           continue;
@@ -976,7 +1112,7 @@ export class RoutineStoreLogic {
             routineId: routine.id,
             routineVersion: routine.version,
             scheduledFor: due.latest,
-            triggerSource: 'schedule',
+            triggerSource: routine.triggerKind === 'once' ? 'once' : 'schedule',
             queuedAt: input.now,
             deadlineAt: due.latest + ROUTINE_LIMITS.admissionGraceMs,
             ...(skipReason ? { skipReason } : {}),
@@ -995,11 +1131,10 @@ export class RoutineStoreLogic {
           }
           throw error;
         }
-        const reservationWindows = projectRoutineReservationWindows(
-          routine.scheduleJson,
-          routine.timezone,
-          due.latest,
-        );
+        const oneTime = routine.triggerKind === 'once';
+        const reservationWindows = oneTime
+          ? []
+          : projectRoutineReservationWindows(routine.scheduleJson, routine.timezone, due.latest);
         this.db.run(
           `UPDATE routines SET next_run_at = ?, last_scheduled_at = ?,
              reservation_windows_json = ? WHERE id = ? AND version = ?`,
@@ -1010,6 +1145,9 @@ export class RoutineStoreLogic {
           routine.version,
         );
         this.replaceReservations(routine.id, reservationWindows);
+        if (oneTime && run.status === 'skipped') {
+          this.completeOneTimeRoutine(run, input.now, 'skipped');
+        }
         runs.push(run);
         if (!skipReason) activeCount += 1;
       }
@@ -1189,6 +1327,29 @@ export class RoutineStoreLogic {
       if (run.status === 'running' && run.flueRunId === input.flueRunId) return 'started';
       if (run.status !== 'admitting' || (run.flueRunId && run.flueRunId !== input.flueRunId)) {
         this.markAdmissionSuperseded(input.occurrenceId, input.flueRunId, input.startedAt);
+        return 'superseded';
+      }
+      const routine = this.getRoutine(run.routineId);
+      if (
+        (run.triggerSource === 'schedule' || run.triggerSource === 'once') &&
+        (!routine || routine.deletedAt !== null || routine.state !== 'active')
+      ) {
+        this.db.run(
+          `UPDATE routine_runs SET status = 'superseded', finished_at = COALESCE(finished_at, ?),
+             admission_owner = NULL, admission_lease_until = NULL
+           WHERE id = ? AND status = 'admitting'`,
+          input.startedAt,
+          run.id,
+        );
+        this.markAdmissionSuperseded(input.occurrenceId, input.flueRunId, input.startedAt);
+        const superseded = required(this.getRun(run.id), 'Routine occurrence was not readable.');
+        this.appendRunAudit(
+          'routine.occurrence_superseded',
+          superseded,
+          `routine:begin-superseded:${input.occurrenceId}:${input.flueRunId}`,
+          input.startedAt,
+          'routine_ineligible',
+        );
         return 'superseded';
       }
       try {
@@ -1451,6 +1612,15 @@ export class RoutineStoreLogic {
       )`,
     );
     this.db.exec(
+      `CREATE TABLE IF NOT EXISTS routine_request_provenance (
+        routine_id TEXT NOT NULL, version INTEGER NOT NULL, source_kind TEXT NOT NULL,
+        request_text TEXT, request_hash TEXT NOT NULL, event_id TEXT NOT NULL,
+        message_ts TEXT NOT NULL, thread_ts TEXT NOT NULL, authority_source TEXT NOT NULL,
+        source_routine_id TEXT, source_routine_version INTEGER, definition_hash TEXT NOT NULL,
+        PRIMARY KEY (routine_id, version)
+      )`,
+    );
+    this.db.exec(
       `CREATE TABLE IF NOT EXISTS routine_confirmations (
         id TEXT PRIMARY KEY, token_hash TEXT NOT NULL UNIQUE, actor_id TEXT NOT NULL,
         actor_class TEXT NOT NULL, workspace_id TEXT NOT NULL, channel_id TEXT NOT NULL,
@@ -1494,6 +1664,10 @@ export class RoutineStoreLogic {
     this.db.exec(
       `CREATE UNIQUE INDEX IF NOT EXISTS routine_runs_schedule_slot_unique
        ON routine_runs (routine_id, scheduled_for) WHERE trigger_source = 'schedule'`,
+    );
+    this.db.exec(
+      `CREATE UNIQUE INDEX IF NOT EXISTS routine_runs_once_slot_unique
+       ON routine_runs (routine_id, scheduled_for) WHERE trigger_source = 'once'`,
     );
     this.db.exec(
       `CREATE UNIQUE INDEX IF NOT EXISTS routine_runs_one_active
@@ -1582,10 +1756,13 @@ export class RoutineStoreLogic {
   private dueSlots(
     routine: RoutineDefinition,
     now: number,
-  ): { first: number; latest: number; next: number; count: number } | null {
+  ): { first: number; latest: number; next: number | null; count: number } | null {
     if (routine.nextRunAt === null || routine.nextRunAt > now) return null;
     try {
       const first = routine.nextRunAt;
+      if (routine.triggerKind === 'once') {
+        return { first, latest: first, next: null, count: 1 };
+      }
       let latest = first;
       let count = 1;
       let next = nextRoutineOccurrence(routine.scheduleJson, routine.timezone, latest);
@@ -1625,11 +1802,12 @@ export class RoutineStoreLogic {
   private assertCapacity(
     workspaceId: string,
     channelId: string,
+    triggerKind: RoutineDefinition['triggerKind'],
     projectedDailyStarts: number,
     reservations: RoutineScheduleReservation[],
     excludingRoutineId?: string,
   ): void {
-    validateReservationInput(projectedDailyStarts, reservations);
+    validateReservationInput(projectedDailyStarts, reservations, triggerKind);
     const exclusion = excludingRoutineId ? ' AND id <> ?' : '';
     const params: SqlParam[] = excludingRoutineId ? [excludingRoutineId] : [];
     const deployment = Number(
@@ -1809,6 +1987,133 @@ export class RoutineStoreLogic {
     );
   }
 
+  private insertRequestProvenance(
+    routineId: string,
+    version: number,
+    definition: RoutineDefinitionContent,
+    raw: RoutineRequestProvenanceInput | null,
+    previous: RoutineDefinition | null,
+  ): void {
+    if (!raw) return;
+    const provenance = validateRoutineRequestProvenanceInput(raw);
+    if (provenance.authoritySource === 'current_request') {
+      if (provenance.sourceKind !== 'slack_request' || provenance.sourceRoutineId != null) {
+        throw routineError('routine_provenance_invalid', 'Routine request provenance is invalid.');
+      }
+      assertRoutineTaskBoundToSource(definition.taskText, provenance.requestText);
+    } else if (provenance.authoritySource === 'previous_revision') {
+      if (
+        !previous ||
+        provenance.sourceKind !== 'slack_request' ||
+        provenance.sourceRoutineId !== previous.id ||
+        provenance.sourceRoutineVersion !== previous.version
+      ) {
+        throw routineError('routine_provenance_invalid', 'Routine request provenance is invalid.');
+      }
+      assertRoutineTaskBoundToPrevious(
+        definition.taskText,
+        previous.taskText,
+        provenance.requestText,
+      );
+    } else {
+      if (
+        previous !== null ||
+        provenance.sourceKind !== 'slack_clone' ||
+        provenance.sourceRoutineId == null ||
+        provenance.sourceRoutineVersion == null
+      ) {
+        throw routineError('routine_provenance_invalid', 'Routine request provenance is invalid.');
+      }
+      const source = this.getRevision(
+        provenance.sourceRoutineId,
+        provenance.sourceRoutineVersion,
+      );
+      if (!source?.definition || source.definition.taskText !== definition.taskText) {
+        throw routineError('routine_provenance_invalid', 'Routine clone provenance is invalid.');
+      }
+    }
+    const definitionDigest = definitionHash(definition);
+    this.db.run(
+      `INSERT INTO routine_request_provenance (
+        routine_id, version, source_kind, request_text, request_hash, event_id,
+        message_ts, thread_ts, authority_source, source_routine_id,
+        source_routine_version, definition_hash
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      routineId,
+      version,
+      provenance.sourceKind,
+      provenance.requestText,
+      hashRoutineValue(provenance.requestText),
+      provenance.eventId,
+      provenance.messageTs,
+      provenance.threadTs,
+      provenance.authoritySource,
+      provenance.sourceRoutineId ?? null,
+      provenance.sourceRoutineVersion ?? null,
+      definitionDigest,
+    );
+  }
+
+  /**
+   * Controls do not receive a new Slack request. Keep the prior authority
+   * evidence visible on their revision, but bind it to this revision's
+   * definition hash so the detail view remains internally consistent.
+   */
+  private copyRequestProvenance(
+    routineId: string,
+    fromVersion: number,
+    toVersion: number,
+    definition: RoutineDefinitionContent,
+  ): void {
+    this.db.run(
+      `INSERT INTO routine_request_provenance (
+         routine_id, version, source_kind, request_text, request_hash, event_id,
+         message_ts, thread_ts, authority_source, source_routine_id,
+         source_routine_version, definition_hash
+       )
+       SELECT routine_id, ?, source_kind, request_text, request_hash, event_id,
+              message_ts, thread_ts, authority_source, source_routine_id,
+              source_routine_version, ?
+       FROM routine_request_provenance
+       WHERE routine_id = ? AND version = ?`,
+      toVersion,
+      definitionHash(definition),
+      routineId,
+      fromVersion,
+    );
+  }
+
+  /** Only unsubmitted scheduled work is safely cancellable by a control transition. */
+  private cancelQueuedScheduledOccurrences(
+    routineId: string,
+    action: 'pause' | 'disable',
+    at: number,
+  ): void {
+    const queued = this.db.all(
+      `SELECT * FROM routine_runs
+       WHERE routine_id = ? AND status = 'queued' AND trigger_source IN ('schedule', 'once')`,
+      routineId,
+    ).map((row) => rowToRun(row as unknown as RunRow));
+    if (queued.length === 0) return;
+    this.db.run(
+      `UPDATE routine_runs SET status = 'cancelled', finished_at = ?,
+         admission_owner = NULL, admission_lease_until = NULL
+       WHERE routine_id = ? AND status = 'queued' AND trigger_source IN ('schedule', 'once')`,
+      at,
+      routineId,
+    );
+    for (const run of queued) {
+      const cancelled = required(this.getRun(run.id), 'Cancelled routine occurrence was not readable.');
+      this.appendRunAudit(
+        'routine.occurrence_cancelled',
+        cancelled,
+        `routine:control-cancel:${action}:${run.id}`,
+        at,
+        `routine_${action}`,
+      );
+    }
+  }
+
   private appendRoutineAudit(
     idempotencyKey: string,
     eventType: string,
@@ -1879,6 +2184,10 @@ export class RoutineStoreLogic {
     const routineId = run.routineId;
     const routine = this.getRoutine(routineId);
     if (!routine || routine.deletedAt !== null) return;
+    if (run.triggerSource === 'once' && routine.triggerKind === 'once') {
+      this.completeOneTimeRoutine(run, at, status);
+      return;
+    }
     if (status === 'succeeded' || status === 'no_op') {
       this.db.run(
         `UPDATE routines SET consecutive_failures = 0, last_finished_at = ? WHERE id = ?`,
@@ -1954,6 +2263,32 @@ export class RoutineStoreLogic {
       return;
     }
     this.db.run('UPDATE routines SET last_finished_at = ? WHERE id = ?', at, routineId);
+  }
+
+  private completeOneTimeRoutine(run: RoutineRun, at: number, outcome: RoutineRunStatus): void {
+    const routine = this.getRoutine(run.routineId);
+    if (!routine || routine.deletedAt !== null || routine.triggerKind !== 'once') return;
+    this.db.run(
+      `UPDATE routines SET state = 'completed', next_run_at = NULL,
+         reservation_windows_json = '[]', projected_daily_starts = 0,
+         last_finished_at = ?, updated_at = ? WHERE id = ?`,
+      at,
+      at,
+      routine.id,
+    );
+    this.db.run('DELETE FROM routine_schedule_reservations WHERE routine_id = ?', routine.id);
+    const completed = required(this.getRoutine(routine.id), 'Completed one-time routine was not readable.');
+    this.appendRoutineAudit(
+      `routine:completed:${run.id}`,
+      'routine.completed',
+      completed,
+      null,
+      'system',
+      definitionHash(routine),
+      definitionHash(completed),
+      at,
+      outcome,
+    );
   }
 
   private pauseRoutineForUnknownOutcome(
@@ -2083,6 +2418,9 @@ export class SqliteRoutineStore implements RoutineStore {
   async listRoutines(workspaceId?: string, channelId?: string): Promise<RoutineDefinition[]> {
     return this.logic.listRoutines(workspaceId, channelId);
   }
+  async listAdminRoutinePage(input: RoutineAdminPageInput): Promise<RoutineAdminPage> {
+    return this.logic.listAdminRoutinePage(input);
+  }
   async listRevisions(routineId: string): Promise<RoutineRevision[]> {
     return this.logic.listRevisions(routineId);
   }
@@ -2160,7 +2498,11 @@ function validateDraft(draft: RoutineConfirmationDraft): RoutineConfirmationDraf
   if (!Number.isSafeInteger(draft.nextRunAt) || draft.nextRunAt < 0) {
     throw routineError('routine_confirmation_invalid', 'Routine next occurrence is invalid.');
   }
-  validateReservationInput(draft.projectedDailyStarts, draft.reservations);
+  validateReservationInput(
+    draft.projectedDailyStarts,
+    draft.reservations,
+    definition.triggerKind,
+  );
   if (draft.action === 'edit' && (!Number.isSafeInteger(draft.expectedVersion) || draft.expectedVersion < 1)) {
     throw routineError('routine_confirmation_invalid', 'Routine confirmation is invalid.');
   }
@@ -2185,7 +2527,7 @@ function validateOccurrenceInput(input: CreateRoutineOccurrenceInput): void {
   }
   assertIdempotencyKey(input.idempotencyKey);
   if (
-    (input.triggerSource === 'schedule' && input.requestedBy != null) ||
+    ((input.triggerSource === 'schedule' || input.triggerSource === 'once') && input.requestedBy != null) ||
     (input.triggerSource === 'run_now' && !input.requestedBy)
   ) {
     throw routineError('routine_occurrence_invalid', 'Routine occurrence is invalid.');
@@ -2203,6 +2545,23 @@ function validateDueClaimInput(input: ClaimDueRoutinesInput): void {
     input.limit > ROUTINE_LIMITS.dueClaimsPerHeartbeat
   ) {
     throw routineError('routine_due_claim_invalid', 'Routine heartbeat claim is invalid.');
+  }
+}
+
+function validateAdminPageInput(input: RoutineAdminPageInput): void {
+  if (
+    !Number.isSafeInteger(input.limit) ||
+    input.limit < 1 ||
+    input.limit > 100 ||
+    (input.cursor !== undefined && (!Number.isSafeInteger(input.cursor) || input.cursor < 0 || input.cursor > 100_000)) ||
+    (input.workspaceId !== undefined && !isOpaqueRoutineId(input.workspaceId)) ||
+    (input.channelId !== undefined && !isOpaqueRoutineId(input.channelId)) ||
+    (input.state !== undefined && !['active', 'paused', 'disabled', 'completed', 'deleted'].includes(input.state)) ||
+    (input.runStatus !== undefined && ![
+      'queued', 'admitting', 'running', 'succeeded', 'no_op', 'failed', 'skipped', 'cancelled', 'superseded',
+    ].includes(input.runStatus))
+  ) {
+    throw routineError('routine_invalid_filter', 'Routine filter is invalid.');
   }
 }
 
@@ -2245,11 +2604,14 @@ function assertIdempotencyKey(value: string): void {
 function validateReservationInput(
   projectedDailyStarts: number,
   reservations: RoutineScheduleReservation[],
+  triggerKind: RoutineDefinition['triggerKind'],
 ): void {
+  const validStartProjection = triggerKind === 'once'
+    ? projectedDailyStarts === 0
+    : projectedDailyStarts >= 1 && projectedDailyStarts <= ROUTINE_LIMITS.scheduledStartsPerDay;
   if (
     !Number.isSafeInteger(projectedDailyStarts) ||
-    projectedDailyStarts < 1 ||
-    projectedDailyStarts > ROUTINE_LIMITS.scheduledStartsPerDay ||
+    !validStartProjection ||
     !Array.isArray(reservations) ||
     reservations.length < 1
   ) {
@@ -2329,6 +2691,22 @@ function rowToConfirmation(row: ConfirmationRow): RoutineConfirmation {
 }
 
 function rowToRevision(row: RevisionRow): RoutineRevision {
+  const provenance = row.provenance_source_kind && row.provenance_request_hash &&
+    row.provenance_event_id && row.provenance_message_ts && row.provenance_thread_ts &&
+    row.provenance_authority_source && row.provenance_definition_hash
+    ? {
+        sourceKind: row.provenance_source_kind,
+        requestText: row.provenance_request_text ?? null,
+        requestHash: row.provenance_request_hash,
+        eventId: row.provenance_event_id,
+        messageTs: row.provenance_message_ts,
+        threadTs: row.provenance_thread_ts,
+        authoritySource: row.provenance_authority_source,
+        sourceRoutineId: row.provenance_source_routine_id ?? null,
+        sourceRoutineVersion: row.provenance_source_routine_version ?? null,
+        definitionHash: row.provenance_definition_hash,
+      }
+    : null;
   return {
     routineId: row.routine_id,
     version: row.version,
@@ -2337,6 +2715,7 @@ function rowToRevision(row: RevisionRow): RoutineRevision {
     actorId: row.actor_id,
     actorClass: row.actor_class,
     confirmationId: row.confirmation_id,
+    provenance,
     createdAt: row.created_at,
   };
 }

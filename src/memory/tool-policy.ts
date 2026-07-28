@@ -21,6 +21,7 @@ export interface CurrentRequestEnvelope {
 
 interface SubmissionPolicyState {
   policy?: CurrentRequestEnvelope;
+  requireExplicitEffectIntent?: boolean;
 }
 
 const submissionPolicy = new AsyncLocalStorage<SubmissionPolicyState>();
@@ -69,13 +70,21 @@ const TARGETED_EXTERNAL_WRITE_VERBS = new Set([
   'update',
 ]);
 
-const EXTERNAL_TARGET =
-  /\b(?:account|branch|calendar|card|comment|deployment|document|event|file|folder|issue|item|job|meeting|member|message|order|page|payment|project|pull request|record|repo(?:sitory)?|row|task|ticket|user|workflow)\b/i;
+export const EXTERNAL_WRITE_VERB_PATTERN = [
+  ...INTRINSIC_EXTERNAL_WRITE_VERBS,
+  ...TARGETED_EXTERNAL_WRITE_VERBS,
+].sort((left, right) => right.length - left.length).join('|');
 
-const ARTIFACT_ACTION =
-  /\b(?:attach|capture|create|generate|give|include|make|post|render|send|share|show|screenshot|take|upload)\b/i;
-const ARTIFACT_TARGET =
-  /\b(?:artifact|document|file|image|report|screenshot|video)\b/i;
+export const EXTERNAL_TARGET_PATTERN =
+  'account|branch|calendar|card|comment|deployment|document|event|file|folder|issue|item|job|meeting|member|message|order|page|payment|project|pull request|record|repo(?:sitory)?|row|task|ticket|tracker|user|workflow';
+const EXTERNAL_TARGET = new RegExp(`\\b(?:${EXTERNAL_TARGET_PATTERN})\\b`, 'i');
+
+export const ARTIFACT_ACTION_PATTERN =
+  'attach|capture|create|generate|give|include|make|post|render|send|share|show|screenshot|take|upload';
+export const ARTIFACT_TARGET_PATTERN =
+  'artifact|document|file|image|report|screenshot|video';
+const ARTIFACT_ACTION = new RegExp(`\\b(?:${ARTIFACT_ACTION_PATTERN})\\b`, 'i');
+const ARTIFACT_TARGET = new RegExp(`\\b(?:${ARTIFACT_TARGET_PATTERN})\\b`, 'i');
 const DIRECT_TASK_START =
   /^(?:attach|build|capture|change|create|edit|generate|give|include|make|open|post|prepare|render|run|send|share|show|screenshot|take|test|update|upload|write)\b/i;
 
@@ -178,24 +187,45 @@ export function hasExplicitExternalSideEffectIntent(
   const request = normalizedCurrentRequest(currentRequest);
   if (!request) return false;
 
+  return explicitActionClauses(request).some(clauseHasExplicitExternalSideEffectIntent);
+}
+
+function clauseHasExplicitExternalSideEffectIntent(request: string): boolean {
+  if (!request) return false;
+
   if (/^open\s+(?:(?:a|the)\s+)?(?:pull request|pr)\b/i.test(stripRequestPreamble(request))) {
     return true;
   }
 
-  const verbs = [...INTRINSIC_EXTERNAL_WRITE_VERBS, ...TARGETED_EXTERNAL_WRITE_VERBS]
-    .sort((left, right) => right.length - left.length)
-    .join('|');
   const direct = new RegExp(
     `^(?:(?:please|kindly)\\s+|(?:can|could|would|will)\\s+you\\s+(?:please\\s+)?|` +
       `i(?:'d| would)?\\s+(?:like|want|need)\\s+you\\s+to\\s+|` +
-      `(?:go ahead|proceed)\\s+(?:and\\s+)?)?(${verbs})\\b`,
+      `(?:go ahead|proceed)\\s+(?:and\\s+)?)?(${EXTERNAL_WRITE_VERB_PATTERN})\\b`,
     'i',
   ).exec(request);
   if (!direct?.[1]) return false;
   if (/^(?:do not|don't|never)\b/i.test(request)) return false;
 
   const verb = direct[1].toLowerCase();
+  if (
+    ['attach', 'post', 'send', 'share', 'upload'].includes(verb) &&
+    ARTIFACT_TARGET.test(request) &&
+    !/\b(?:account|branch|calendar|card|comment|deployment|event|folder|issue|item|job|meeting|member|message|order|payment|project|pull request|record|repo(?:sitory)?|row|task|ticket|tracker|user|workflow)\b/i.test(request)
+  ) {
+    return false;
+  }
   return INTRINSIC_EXTERNAL_WRITE_VERBS.has(verb) || EXTERNAL_TARGET.test(request);
+}
+
+function explicitActionClauses(request: string): string[] {
+  return request
+    .split(new RegExp(
+      `(?:[.;]\\s*|,\\s+(?:and\\s+)?|\\b(?:and then|then)\\b|` +
+        `\\s+\\band\\b\\s+(?=(?:please\\s+)?(?:${EXTERNAL_WRITE_VERB_PATTERN})\\b))`,
+      'i',
+    ))
+    .map((clause) => clause.trim())
+    .filter(Boolean);
 }
 
 /**
@@ -237,10 +267,13 @@ export const memoryToolPolicyInterceptor: FlueExecutionInterceptor = async (
   const active = submissionPolicy.getStore();
   if (
     operation.type === 'agent' &&
-    context.agentName === 'slack-thread' &&
+    isManagedCurrentRequestAgent(context.agentName) &&
     active === undefined
   ) {
-    return submissionPolicy.run({}, next);
+    return submissionPolicy.run(
+      { requireExplicitEffectIntent: context.agentName === 'routine' },
+      next,
+    );
   }
 
   if (operation.type === 'tool' && active !== undefined) {
@@ -268,7 +301,7 @@ export function observeMemoryToolPolicy(
   if (
     observation.type !== 'turn_request' ||
     observation.purpose !== 'agent' ||
-    context.agentName !== 'slack-thread'
+    !isManagedCurrentRequestAgent(context.agentName)
   ) {
     return;
   }
@@ -286,7 +319,10 @@ export function observeMemoryToolPolicy(
  */
 export function assertCurrentRequestSideEffectAllowed(action: string): void {
   const state = submissionPolicy.getStore();
-  if (state === undefined || state.policy?.memoryInfluenced === false) return;
+  if (
+    state === undefined ||
+    (state.requireExplicitEffectIntent !== true && state.policy?.memoryInfluenced === false)
+  ) return;
   if (action === 'post_artifact') {
     if (state.policy?.explicitArtifactDeliveryIntent === true) return;
   } else if (state.policy?.explicitExternalSideEffectIntent === true) {
@@ -298,6 +334,10 @@ export function assertCurrentRequestSideEffectAllowed(action: string): void {
   );
   error.name = 'CurrentRequestSideEffectDeniedError';
   throw error;
+}
+
+function isManagedCurrentRequestAgent(agentName: string | undefined): boolean {
+  return agentName === 'slack-thread' || agentName === 'routine';
 }
 
 function normalizedCurrentRequest(currentRequest: string): string {

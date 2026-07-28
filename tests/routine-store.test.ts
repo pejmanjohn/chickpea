@@ -7,6 +7,7 @@ import { test } from 'node:test';
 import { openStateDb } from '../src/state/node-state-db.ts';
 import { hashRoutineValue } from '../src/routines/ids.ts';
 import { normalizeRoutineSchedule } from '../src/routines/schedule.ts';
+import { RoutineService } from '../src/routines/service.ts';
 import { RoutineStoreLogic, SqliteRoutineStore } from '../src/routines/store.ts';
 import {
   RoutineStateError,
@@ -246,6 +247,63 @@ test('pause releases reservations and resume reacquires them with optimistic ver
         actorClass: 'member', idempotencyKey: 'routine:disable:stale',
       }),
       (error: unknown) => error instanceof RoutineStateError && error.code === 'routine_version_conflict',
+    );
+  } finally {
+    store.close();
+  }
+});
+
+test('control revisions retain request provenance and deletion scrubs every copied request', async () => {
+  const store = new SqliteRoutineStore(':memory:', () => CREATED_AT);
+  try {
+    const sourceText = `Every day, ${definition().taskText}`;
+    const routine = await store.save({
+      actorId: 'U_MEMBER', actorClass: 'member', workspaceId: 'T_TEST', channelId: 'C_TEST',
+      draft: createDraft('routine_control_provenance'),
+      provenance: {
+        sourceKind: 'slack_request', requestText: sourceText, eventId: 'Ev_control_provenance',
+        messageTs: '1785000000.000100', threadTs: '1785000000.000100',
+        authoritySource: 'current_request',
+      },
+      idempotencyKey: 'routine:control-provenance:create',
+    });
+    const paused = await store.control({
+      routineId: routine.id, expectedVersion: routine.version, action: 'pause', actorId: 'U_MEMBER',
+      actorClass: 'member', idempotencyKey: 'routine:control-provenance:pause',
+    });
+    const resumed = await store.control({
+      routineId: routine.id, expectedVersion: paused.version, action: 'resume', actorId: 'U_MEMBER',
+      actorClass: 'member', idempotencyKey: 'routine:control-provenance:resume',
+    });
+    const disabled = await store.control({
+      routineId: routine.id, expectedVersion: resumed.version, action: 'disable', actorId: 'U_MEMBER',
+      actorClass: 'member', idempotencyKey: 'routine:control-provenance:disable',
+    });
+    const revisions = await store.listRevisions(routine.id);
+    assert.deepEqual(revisions.map((revision) => revision.provenance?.requestText), [
+      sourceText, sourceText, sourceText, sourceText,
+    ]);
+    assert.deepEqual(
+      revisions.map((revision) => revision.provenance?.definitionHash),
+      revisions.map((revision) => revision.definitionHash),
+    );
+
+    const service = new RoutineService(store, {
+      now: () => CREATED_AT,
+      confirmationId: () => 'rconfirm_control_provenance_delete',
+      token: () => 'token-control-provenance-delete',
+    });
+    const confirmation = await service.createConfirmation({
+      action: 'delete', routineId: routine.id, expectedVersion: disabled.version,
+      actorId: 'U_MEMBER', workspaceId: 'T_TEST', channelId: 'C_TEST',
+    });
+    await service.confirm({
+      token: confirmation.token, actorId: 'U_MEMBER', workspaceId: 'T_TEST', channelId: 'C_TEST',
+      previewHash: confirmation.previewHash, idempotencyKey: 'routine:control-provenance:delete',
+    });
+    assert.deepEqual(
+      (await store.listRevisions(routine.id)).map((revision) => revision.provenance?.requestText),
+      [null, null, null, null, undefined],
     );
   } finally {
     store.close();

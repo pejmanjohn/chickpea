@@ -36,7 +36,32 @@ async function seededRoutine(store: SqliteRoutineStore, now: () => number = () =
     action: 'create', actorId: 'U_CREATOR', workspaceId: 'T_TEST', channelId: 'C_TEST',
     definition: definition(), nextRunAt: NOW + 3_600_000, projectedDailyStarts: 5,
     reservations: [{ windowStart: NOW + 3_600_000, count: 1 }],
+    provenance: {
+      sourceKind: 'slack_request', requestText: `Every weekday, ${definition().taskText}`,
+      eventId: 'Ev_admin_seed', messageTs: '1785000000.000100', threadTs: '1785000000.000100',
+      authoritySource: 'current_request',
+    },
   }, 'seed-routine-admin');
+}
+
+async function seedCompletedOneTimeRoutine(store: SqliteRoutineStore, routineId: string) {
+  const scheduledFor = NOW - 60 * 60_000;
+  await store.save({
+    actorId: 'U_CREATOR', actorClass: 'member', workspaceId: 'T_TEST', channelId: 'C_TEST',
+    draft: {
+      action: 'create', routineId,
+      definition: {
+        ...definition(), name: `Completed ${routineId}`, triggerKind: 'once',
+        scheduleInput: '2026-07-27T11:00',
+        scheduleJson: JSON.stringify({
+          version: 1, kind: 'once', localDateTime: '2026-07-27T11:00', at: scheduledFor,
+        }),
+      },
+      nextRunAt: scheduledFor, projectedDailyStarts: 0,
+      reservations: [{ windowStart: scheduledFor, count: 1 }],
+    },
+    idempotencyKey: `seed-completed:${routineId}`,
+  });
 }
 
 test('Scheduled Work APIs are admin-authenticated, body-safe, filterable, and controllable', async () => {
@@ -66,11 +91,17 @@ test('Scheduled Work APIs are admin-authenticated, body-safe, filterable, and co
     const listBody = await list.json() as Record<string, any>;
     assert.equal(listBody.routines.length, 1);
     assert.equal(listBody.routines[0].id, routine.id);
+    assert.equal(listBody.routines[0].triggerKind, 'schedule');
     assert.equal(listBody.routines[0].taskText, undefined);
     assert.equal(listBody.capability.reason, 'unsupported_target');
     assert.equal(listBody.limits.concurrentDeploymentRuns, 4);
     assert.equal(listBody.limits.totalStartsRollingDay, 250);
     assert.equal(listBody.limits.retentionDays, 365);
+    const completedList = await app.request(
+      '/admin/api/audit/scheduled_work/routines?state=completed',
+      { headers },
+    );
+    assert.equal(completedList.status, 200);
 
     const detail = await app.request(
       `/admin/api/audit/scheduled_work/routines/${routine.id}`,
@@ -79,6 +110,10 @@ test('Scheduled Work APIs are admin-authenticated, body-safe, filterable, and co
     assert.equal(detail.status, 200);
     const detailBody = await detail.json() as Record<string, any>;
     assert.equal(detailBody.routine.taskText, definition().taskText);
+    assert.equal(
+      detailBody.revisions[0].provenance.requestText,
+      `Every weekday, ${definition().taskText}`,
+    );
     assert.equal(detailBody.runs[0].id, 'rrun_admin');
     assert.ok(detailBody.events.some((event: Record<string, unknown>) =>
       event.eventType === 'routine.occurrence_created'));
@@ -95,6 +130,15 @@ test('Scheduled Work APIs are admin-authenticated, body-safe, filterable, and co
     );
     assert.equal(paused.status, 200);
     assert.equal(((await paused.json()) as Record<string, any>).routine.state, 'paused');
+    const pausedDetail = await app.request(
+      `/admin/api/audit/scheduled_work/routines/${routine.id}`,
+      { headers },
+    );
+    const pausedDetailBody = await pausedDetail.json() as Record<string, any>;
+    assert.equal(
+      pausedDetailBody.revisions[1].provenance.requestText,
+      `Every weekday, ${definition().taskText}`,
+    );
 
     const events = await app.request('/admin/api/audit/scheduled_work/events?channelId=C_TEST', { headers });
     assert.equal(events.status, 200, await events.clone().text());
@@ -115,6 +159,44 @@ test('Scheduled Work APIs are admin-authenticated, body-safe, filterable, and co
     routines.close();
     config.close();
     settings.close();
+  }
+});
+
+test('Scheduled Work list pages completed one-time definitions and filters by retained run status', async () => {
+  const routines = new SqliteRoutineStore(':memory:', () => NOW);
+  try {
+    await Promise.all([
+      seedCompletedOneTimeRoutine(routines, 'routine_completed_0'),
+      seedCompletedOneTimeRoutine(routines, 'routine_completed_1'),
+      seedCompletedOneTimeRoutine(routines, 'routine_completed_2'),
+    ]);
+    await routines.claimDueSchedules({ now: NOW, owner: 'admin-pagination', limit: 25 });
+    const api = createRoutineAdminApi({ store: () => routines, now: () => NOW });
+
+    const first = await api.request('/audit/scheduled_work/routines?state=completed&limit=2');
+    assert.equal(first.status, 200);
+    const firstBody = await first.json() as Record<string, any>;
+    assert.equal(firstBody.routines.length, 2);
+    assert.equal(firstBody.nextCursor, '2');
+    assert.equal(firstBody.routines[0].state, 'completed');
+    assert.equal(firstBody.routines[0].triggerKind, 'once');
+
+    const second = await api.request(`/audit/scheduled_work/routines?state=completed&limit=2&cursor=${firstBody.nextCursor}`);
+    const secondBody = await second.json() as Record<string, any>;
+    assert.equal(secondBody.routines.length, 1);
+    assert.equal(secondBody.nextCursor, null);
+
+    const byStatus = await api.request('/audit/scheduled_work/routines?state=completed&status=skipped&limit=10');
+    const byStatusBody = await byStatus.json() as Record<string, any>;
+    assert.equal(byStatusBody.routines.length, 3);
+    const detail = await api.request(
+      `/audit/scheduled_work/routines/${firstBody.routines[0].id}`,
+    );
+    const detailBody = await detail.json() as Record<string, any>;
+    assert.equal(detailBody.routine.state, 'completed');
+    assert.equal(detailBody.routine.taskText, definition().taskText);
+  } finally {
+    routines.close();
   }
 });
 

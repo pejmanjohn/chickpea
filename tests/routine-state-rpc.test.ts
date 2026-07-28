@@ -76,6 +76,21 @@ test('Cloudflare routine proxy carries one-message saves across the RPC seam', a
   assert.deepEqual(requests, [{ kind: 'save', input }]);
 });
 
+test('Cloudflare routine proxy carries bounded admin routine pages across the RPC seam', async () => {
+  const requests: RoutineRpcRequest[] = [];
+  const stub = {
+    async routinesExecute(request: RoutineRpcRequest): Promise<StateRpcResult<RoutineRpcResponse>> {
+      requests.push(request);
+      return { ok: true, value: { kind: 'admin_routine_page', page: { routines: [routine], nextCursor: 2 } } };
+    },
+  } as unknown as TagStateRpc;
+  const store = new CfRoutineStore(stub);
+  const input = { workspaceId: 'T_TEST', state: 'completed' as const, runStatus: 'skipped' as const, cursor: 0, limit: 2 };
+
+  assert.deepEqual(await store.listAdminRoutinePage(input), { routines: [routine], nextCursor: 2 });
+  assert.deepEqual(requests, [{ kind: 'list_admin_routine_page', input }]);
+});
+
 test('Cloudflare routine proxy carries maintenance results across the RPC seam', async () => {
   const requests: RoutineRpcRequest[] = [];
   const result = {

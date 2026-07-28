@@ -51,6 +51,8 @@ import {
   type PutRoutineConfirmationInput,
   type RecordRoutineDeliveryInput,
   type RoutineAdmissionAttempt,
+  type RoutineAdminPage,
+  type RoutineAdminPageInput,
   type RoutineConfirmation,
   type RoutineDefinition,
   type RoutineDueClaimBatch,
@@ -525,6 +527,11 @@ export class CfRoutineStore implements RoutineStore {
     });
     if (response.kind !== 'routines') throw unexpectedRoutineResponse();
     return response.routines;
+  }
+  async listAdminRoutinePage(input: RoutineAdminPageInput): Promise<RoutineAdminPage> {
+    const response = await this.execute({ kind: 'list_admin_routine_page', input });
+    if (response.kind !== 'admin_routine_page') throw unexpectedRoutineResponse();
+    return response.page;
   }
   async listRevisions(routineId: string): Promise<RoutineRevision[]> {
     const response = await this.execute({ kind: 'list_revisions', routineId });

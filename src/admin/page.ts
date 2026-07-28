@@ -4600,7 +4600,7 @@ details[open].advanced summary::before {
       var active = routine.id === state.scheduledSelection;
       html += '<button type="button" class="chan-item' + (active ? " active" : "") + '" data-action="select-scheduled-routine" data-routine="' + esc(routine.id) + '">' +
         '<span class="chan-name">' + esc(routine.name) + '</span>' +
-        '<span class="chan-meta">' + esc(scheduledChannelLabel(routine.workspaceId, routine.channelId)) + ' · ' + esc(routine.state) + '</span></button>';
+        '<span class="chan-meta">' + esc(scheduledChannelLabel(routine.workspaceId, routine.channelId)) + ' · ' + esc(routine.state) + (routine.triggerKind === "once" ? ' · one time' : '') + '</span></button>';
     });
     return html + '</div></nav>';
   }
@@ -4643,7 +4643,7 @@ details[open].advanced summary::before {
     return '<div class="scheduled-filters" aria-label="Scheduled work filters">' +
       '<label class="field"><span class="field-label">Workspace</span><input class="input mono" data-action="scheduled-filter-workspace" value="' + esc(filters.workspaceId) + '" placeholder="All"></label>' +
       '<label class="field"><span class="field-label">Channel</span><input class="input mono" data-action="scheduled-filter-channel" value="' + esc(filters.channelId) + '" placeholder="All"></label>' +
-      '<label class="field"><span class="field-label">Routine state</span><span class="select-wrap"><select class="input" data-action="scheduled-filter-state">' + options(["", "active", "paused", "disabled", "deleted"], filters.state) + '</select><span class="select-caret">' + icon("chevron-down") + '</span></span></label>' +
+      '<label class="field"><span class="field-label">Routine state</span><span class="select-wrap"><select class="input" data-action="scheduled-filter-state">' + options(["", "active", "paused", "disabled", "completed", "deleted"], filters.state) + '</select><span class="select-caret">' + icon("chevron-down") + '</span></span></label>' +
       '<label class="field"><span class="field-label">Run status</span><span class="select-wrap"><select class="input" data-action="scheduled-filter-status">' + options(["", "queued", "admitting", "running", "succeeded", "no_op", "failed", "skipped", "cancelled", "superseded"], filters.status) + '</select><span class="select-caret">' + icon("chevron-down") + '</span></span></label>' +
       '<button type="button" class="btn btn-soft btn-sm" data-action="scheduled-apply-filters"' + (state.scheduledLoading ? " disabled" : "") + '>Apply filters</button></div>';
   }
@@ -4661,21 +4661,24 @@ details[open].advanced summary::before {
     }
     var detail = state.scheduledDetail;
     var routine = detail.routine;
+    var currentRevision = (detail.revisions || []).find(function (revision) { return Number(revision.version) === Number(routine.version); });
+    var provenance = currentRevision && currentRevision.provenance;
     var controls = '';
     if (routine.state === "active") controls += '<button type="button" class="btn btn-soft btn-sm" data-action="scheduled-control" data-control="pause">Pause</button>';
     if (routine.state === "paused") controls += '<button type="button" class="btn btn-primary btn-sm" data-action="scheduled-control" data-control="resume">Resume</button>';
-    if (routine.state !== "disabled" && routine.state !== "deleted") controls += '<button type="button" class="btn btn-soft btn-sm" data-action="scheduled-control" data-control="disable">Disable</button>';
+    if (routine.state !== "disabled" && routine.state !== "completed" && routine.state !== "deleted") controls += '<button type="button" class="btn btn-soft btn-sm" data-action="scheduled-control" data-control="disable">Disable</button>';
     if (routine.state !== "deleted") controls += '<button type="button" class="btn btn-danger btn-sm" data-action="scheduled-delete-open">Delete</button>';
     var definition = '<section class="scheduled-card"><div class="memory-editor-head"><div><h2 class="section-title">' + esc(routine.name) + '</h2><p class="hint">' + esc(routine.description || "No description") + '</p></div>' + scheduledStatusBadge(routine.state) + '</div>' +
       '<div class="scheduled-meta">' +
       scheduledMeta("Routine ID", routine.id, true) + scheduledMeta("Version", "v" + Number(routine.version), true) +
       scheduledMeta("Workspace", routine.workspaceId, true) + scheduledMeta("Channel", scheduledChannelLabel(routine.workspaceId, routine.channelId) + " (" + routine.channelId + ")", false) +
       scheduledMeta("Creator", routine.creatorUserId, true) + scheduledMeta("Trigger", routine.triggerKind, false) +
-      scheduledMeta("Schedule", routine.scheduleInput, false) + scheduledMeta("Timezone", routine.timezone, false) +
+      scheduledMeta(routine.triggerKind === "once" ? "Scheduled for" : "Schedule", routine.scheduleInput, false) + scheduledMeta("Timezone", routine.timezone, false) +
       scheduledMeta("Next run", formatScheduledDate(routine.nextRunAt), false) + scheduledMeta("Last finished", formatScheduledDate(routine.lastFinishedAt), false) +
       scheduledMeta("Output", routine.outputPolicy, false) + scheduledMeta("Daily starts", Number(routine.projectedDailyStarts || 0), false) + '</div>' +
       '<div class="memory-banner" style="margin-top:12px;"><strong>Authority</strong><br>' + esc(scheduledAuthorityCopy(routine)) + '</div>' +
       (routine.taskText == null ? '<p class="hint">The task body was removed with this routine.</p>' : '<div><span class="field-label" style="display:block; margin-top:12px;">Saved task</span><div class="scheduled-task">' + esc(routine.taskText) + '</div></div>') +
+      (provenance && provenance.requestText ? '<div><span class="field-label" style="display:block; margin-top:12px;">Source Slack request</span><div class="scheduled-task">' + esc(provenance.requestText) + '</div><p class="hint mono">' + esc(provenance.eventId) + ' · ' + esc(provenance.requestHash) + '</p></div>' : '<p class="hint" style="margin-top:12px;">Source request was not retained for this legacy revision.</p>') +
       '<div class="scheduled-actions">' + controls.replace(/<button /g, '<button ' + (state.scheduledBusy ? 'disabled ' : '')) + '</div></section>';
     var revisions = scheduledRevisionsHtml(detail.revisions || []);
     var runs = scheduledRunsHtml(detail.runs || [], routine);

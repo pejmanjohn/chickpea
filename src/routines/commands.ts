@@ -8,7 +8,12 @@ import {
   hashRoutineValue,
   runNowOccurrenceKey,
 } from './ids.ts';
-import { parseRoutineIntent, isRoutineIntentCandidate, type RoutineIntent } from './intent.ts';
+import {
+  parseRoutineIntent,
+  isRoutineIntentCandidate,
+  routineIntentNeedsDefaultTimezone,
+  type RoutineIntent,
+} from './intent.ts';
 import { ROUTINE_LIMITS } from './limits.ts';
 import {
   renderRoutineDeletionConfirmation,
@@ -17,7 +22,7 @@ import {
   renderRoutineList,
   renderRoutineSaved,
 } from './message-format.ts';
-import { normalizeRoutineSchedule } from './schedule.ts';
+import { normalizeOneTimeSchedule, normalizeRoutineSchedule } from './schedule.ts';
 import {
   requireRoutineScheduling,
   resolveRoutineCapability,
@@ -44,6 +49,18 @@ export type RoutineCommand =
   | { kind: 'clone'; routineId: string }
   | { kind: 'delete'; routineId: string }
   | { kind: 'invalid' };
+
+type RoutineManagementAction = 'show' | 'pause' | 'resume' | 'disable' | 'run' | 'clone' | 'delete';
+type RoutineManagementIntent = Omit<RoutineIntent, 'action'> & { action: RoutineManagementAction };
+
+interface RoutineCommandExecutionContext {
+  turn: NormalizedSlackTurn;
+  store: RoutineStore;
+  env: PlatformEnv | undefined;
+  capability: RoutineCapability;
+  now: () => number;
+  canManageChannel: typeof canManageRoutineChannel;
+}
 
 const OPAQUE = '[A-Za-z0-9_-]{1,200}';
 const TOKEN = '[A-Za-z0-9._-]{4,512}';
@@ -89,18 +106,13 @@ export async function handleRoutineSlackRequest(
   const now = dependencies.now ?? Date.now;
   const capability = dependencies.capability ?? routineCapability(env);
   const canManageChannel = dependencies.canManageChannel ?? canManageRoutineChannel;
+  const commandContext: RoutineCommandExecutionContext = {
+    turn, store, env, capability, now, canManageChannel,
+  };
   const command = parseRoutineCommand(turn.text);
   if (command) {
     try {
-      return await executeRoutineCommand(
-        command,
-        turn,
-        store,
-        env,
-        capability,
-        now,
-        canManageChannel,
-      );
+      return await executeRoutineCommand(command, commandContext);
     } catch (error) {
       return routineErrorText(error);
     }
@@ -109,6 +121,9 @@ export async function handleRoutineSlackRequest(
   if (!(await canManageChannel(turn.workspaceId, turn.channelId, turn.userId, env))) {
     return notFoundText();
   }
+  const defaultTimezone = routineIntentNeedsDefaultTimezone(turn.text)
+    ? await (dependencies.resolveDefaultTimezone ?? resolveRoutineDefaultTimezone)(turn, env)
+    : 'UTC';
   let intent: RoutineIntent | undefined;
   try {
     intent = await (dependencies.parseIntent ?? parseRoutineIntent)(
@@ -117,6 +132,7 @@ export async function handleRoutineSlackRequest(
         channelId: turn.channelId,
         eventId: turn.eventId,
         text: turn.text,
+        defaultTimezone,
       },
       env,
     );
@@ -127,11 +143,14 @@ export async function handleRoutineSlackRequest(
   }
   if (!intent) return undefined;
   try {
-    requireRoutineScheduling(capability);
-    const defaultTimezone = intent.action === 'create' && (intent.timezoneWasDefaulted === true || !intent.timezone)
-      ? await (dependencies.resolveDefaultTimezone ?? resolveRoutineDefaultTimezone)(turn, env)
-      : undefined;
-    return await saveRoutineIntent(intent, turn, store, now, defaultTimezone);
+    if (intent.action === 'create' || intent.action === 'edit') {
+      requireRoutineScheduling(capability);
+      return await saveRoutineIntent(intent, turn, store, now, defaultTimezone);
+    }
+    if (isRoutineManagementIntent(intent)) {
+      return await executeNaturalRoutineManagement(intent, commandContext);
+    }
+    return undefined;
   } catch (error) {
     return routineErrorText(error);
   }
@@ -139,13 +158,9 @@ export async function handleRoutineSlackRequest(
 
 async function executeRoutineCommand(
   command: RoutineCommand,
-  turn: NormalizedSlackTurn,
-  store: RoutineStore,
-  env: PlatformEnv | undefined,
-  capability: RoutineCapability,
-  now: () => number,
-  canManageChannel: typeof canManageRoutineChannel,
+  context: RoutineCommandExecutionContext,
 ): Promise<string> {
+  const { turn, store, env, capability, now, canManageChannel } = context;
   const service = new RoutineService(store, { now });
   if (command.kind === 'help' || command.kind === 'invalid') return renderRoutineHelp();
   if (command.kind === 'list') {
@@ -202,7 +217,12 @@ async function executeRoutineCommand(
   const routine = await scopedRoutine(store, command.routineId, turn);
   if (!routine) return notFoundText();
   if (command.kind === 'show') {
-    return renderRoutineDetail(routine, await store.listRuns({ routineId: routine.id, limit: 5 }));
+    const [runs, revisions] = await Promise.all([
+      store.listRuns({ routineId: routine.id, limit: 5 }),
+      store.listRevisions(routine.id),
+    ]);
+    const provenance = revisions.find((revision) => revision.version === routine.version)?.provenance ?? null;
+    return renderRoutineDetail(routine, runs, provenance);
   }
   if (command.kind === 'control') {
     if (command.action === 'resume') requireRoutineScheduling(capability);
@@ -218,6 +238,12 @@ async function executeRoutineCommand(
   }
   if (command.kind === 'run') {
     requireRoutineScheduling(capability);
+    if (routine.triggerKind === 'once') {
+      throw new RoutineStateError(
+        'routine_one_time_run_unsupported',
+        'A one-time job runs only at its scheduled time. Create another one-time job for a different time.',
+      );
+    }
     const at = now();
     const occurrence = await store.createOccurrence({
       runId: createRoutineRunId(),
@@ -234,6 +260,12 @@ async function executeRoutineCommand(
   }
   if (command.kind === 'clone') {
     requireRoutineScheduling(capability);
+    if (routine.triggerKind === 'once') {
+      throw new RoutineStateError(
+        'routine_one_time_clone_unsupported',
+        'Create a new one-time job with a future time instead of cloning this one.',
+      );
+    }
     const projection = normalizeRoutineSchedule(routine.scheduleInput, routine.timezone, now());
     const created = await service.save({
       action: 'create',
@@ -247,6 +279,16 @@ async function executeRoutineCommand(
       nextRunAt: projection.nextRunAt,
       projectedDailyStarts: projection.projectedDailyStarts,
       reservations: projection.reservations,
+      provenance: {
+        sourceKind: 'slack_clone',
+        requestText: turn.text,
+        eventId: turn.eventId,
+        messageTs: turn.messageTs,
+        threadTs: turn.threadTs,
+        authoritySource: 'cloned_revision',
+        sourceRoutineId: routine.id,
+        sourceRoutineVersion: routine.version,
+      },
     }, `routine:slack:${turn.eventId}:clone:${routine.id}`);
     return renderRoutineSaved(created, { action: 'create' });
   }
@@ -269,30 +311,46 @@ async function saveRoutineIntent(
   defaultTimezone?: string,
 ): Promise<string> {
   const service = new RoutineService(store, { now });
-  const current = intent.action === 'edit' && intent.routineId
-    ? await scopedRoutine(store, intent.routineId, turn)
-    : undefined;
+  const resolution = intent.action === 'edit'
+    ? await resolveIntentRoutine(intent, turn, store)
+    : { kind: 'missing' as const };
+  if (intent.action === 'edit' && resolution.kind === 'ambiguous') {
+    return ambiguousNameText(intent.routineName ?? '', resolution.routines);
+  }
+  const current = resolution.kind === 'found' ? resolution.routine : undefined;
   if (intent.action === 'edit' && !current) return notFoundText();
-  const scheduleInput = cleanRequired(intent.scheduleExpression ?? current?.scheduleInput, 'A recurring schedule is required.');
+  const triggerKind = intent.triggerKind ?? current?.triggerKind ?? 'schedule';
+  const requestedSchedule = cleanRequired(
+    intent.scheduleExpression ?? current?.scheduleInput,
+    'A schedule is required.',
+  );
   const timezone = cleanRequired(
     intent.timezoneWasDefaulted === true
       ? current?.timezone ?? defaultTimezone ?? 'UTC'
       : intent.timezone ?? current?.timezone ?? defaultTimezone ?? 'UTC',
     'An IANA time zone is required.',
   );
-  const projection = normalizeRoutineSchedule(scheduleInput, timezone, now());
+  const projection = triggerKind === 'once'
+    ? normalizeOneTimeSchedule(requestedSchedule, timezone, now())
+    : normalizeRoutineSchedule(requestedSchedule, timezone, now());
   const taskText = cleanRequired(intent.taskText ?? current?.taskText, 'A routine task is required.');
   const definition: RoutineDefinitionContent = {
     name: cleanName(intent.name ?? current?.name ?? taskText),
     description: cleanDescription(intent.description ?? current?.description ?? taskText),
     taskText,
-    triggerKind: 'schedule',
-    scheduleInput: projection.schedule.expression,
+    triggerKind,
+    scheduleInput: projection.schedule.kind === 'once'
+      ? projection.schedule.localDateTime
+      : projection.schedule.expression,
     scheduleJson: projection.scheduleJson,
     timezone,
     outputPolicy: intent.outputPolicy ?? current?.outputPolicy ?? 'post',
     authorityMode: 'live_channel_v1',
   };
+  // Prior authority applies only when the parser omitted the task entirely.
+  // A supplied task, even one equal to the prior task, must be grounded in
+  // this Slack request rather than inferred from effect-shaped text.
+  const inheritsAuthority = current !== undefined && intent.taskText === undefined;
   const shared = {
     actorId: turn.userId,
     workspaceId: turn.workspaceId,
@@ -301,6 +359,18 @@ async function saveRoutineIntent(
     nextRunAt: projection.nextRunAt,
     projectedDailyStarts: projection.projectedDailyStarts,
     reservations: projection.reservations,
+    provenance: {
+      sourceKind: 'slack_request' as const,
+      requestText: turn.text,
+      eventId: turn.eventId,
+      messageTs: turn.messageTs,
+      threadTs: turn.threadTs,
+      authoritySource: inheritsAuthority
+        ? 'previous_revision' as const
+        : 'current_request' as const,
+      sourceRoutineId: inheritsAuthority ? current!.id : null,
+      sourceRoutineVersion: inheritsAuthority ? current!.version : null,
+    },
   };
   const request: RoutineSaveRequest = current
     ? { ...shared, action: 'edit', routineId: current.id, expectedVersion: current.version }
@@ -314,6 +384,119 @@ async function saveRoutineIntent(
     action,
     timezoneDefaulted: !current && (intent.timezoneWasDefaulted === true || !intent.timezone),
   });
+}
+
+async function executeNaturalRoutineManagement(
+  intent: RoutineManagementIntent,
+  context: RoutineCommandExecutionContext,
+): Promise<string> {
+  const { turn, store } = context;
+  const resolution = await resolveIntentRoutine(intent, turn, store);
+  if (resolution.kind === 'ambiguous') {
+    return ambiguousNameText(intent.routineName ?? '', resolution.routines);
+  }
+  if (resolution.kind !== 'found') return notFoundText();
+  const requestAction = naturalRoutineManagementAction(turn.text, resolution.routine.name);
+  if (requestAction !== intent.action) {
+    throw new RoutineStateError(
+      'routine_natural_action_mismatch',
+      'The current Slack request does not unambiguously authorize that routine action.',
+    );
+  }
+  return executeRoutineCommand(
+    routineManagementCommand(intent.action, resolution.routine.id),
+    context,
+  );
+}
+
+function naturalRoutineManagementAction(
+  requestText: string,
+  routineName: string,
+): RoutineManagementAction | undefined {
+  const text = requestText
+    .replace(/^\s*(?:<@[^>\s]+>\s*)+/i, '')
+    .replace(routineNamePattern(routineName), ' ');
+  const actions: RoutineManagementAction[] = [];
+  if (/\b(?:show|view|inspect|details?)\b/i.test(text)) actions.push('show');
+  if (/\b(?:pause|suspend)\b/i.test(text)) actions.push('pause');
+  if (/\b(?:resume|unpause|enable)\b/i.test(text)) actions.push('resume');
+  if (/\bdisable\b|\bturn\s+off\b/i.test(text)) actions.push('disable');
+  if (/\b(?:run|execute|start)\b/i.test(text)) actions.push('run');
+  if (/\b(?:clone|copy|duplicate)\b/i.test(text)) actions.push('clone');
+  if (/\b(?:delete|remove)\b/i.test(text)) actions.push('delete');
+  return actions.length === 1 ? actions[0] : undefined;
+}
+
+function routineNamePattern(name: string): RegExp {
+  const normalizedName = normalizeRoutineName(name);
+  const escaped = normalizedName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+');
+  return new RegExp(`(?:^|[^\\p{L}\\p{N}_])${escaped}(?=$|[^\\p{L}\\p{N}_])`, 'giu');
+}
+
+function isRoutineManagementIntent(intent: RoutineIntent): intent is RoutineManagementIntent {
+  return ['show', 'pause', 'resume', 'disable', 'run', 'clone', 'delete'].includes(intent.action);
+}
+
+function routineManagementCommand(
+  action: RoutineManagementAction,
+  routineId: string,
+): RoutineCommand {
+  switch (action) {
+    case 'show': return { kind: 'show', routineId };
+    case 'pause':
+    case 'resume':
+    case 'disable':
+      return { kind: 'control', action, routineId };
+    case 'run':
+    case 'clone':
+    case 'delete':
+      return { kind: action, routineId };
+  }
+}
+
+type IntentRoutineResolution =
+  | { kind: 'found'; routine: RoutineDefinition }
+  | { kind: 'ambiguous'; routines: RoutineDefinition[] }
+  | { kind: 'missing' };
+
+async function resolveIntentRoutine(
+  intent: RoutineIntent,
+  turn: NormalizedSlackTurn,
+  store: RoutineStore,
+): Promise<IntentRoutineResolution> {
+  if (intent.routineId && turn.text.includes(intent.routineId)) {
+    const routine = await scopedRoutine(store, intent.routineId, turn);
+    return routine ? { kind: 'found', routine } : { kind: 'missing' };
+  }
+  const requestedName = intent.routineName;
+  if (!requestedName) return { kind: 'missing' };
+  const normalizedName = normalizeRoutineName(requestedName);
+  if (!normalizedName || !messageContainsRoutineName(turn.text, normalizedName)) {
+    return { kind: 'missing' };
+  }
+  const matches = (await store.listRoutines(turn.workspaceId, turn.channelId))
+    .filter((routine) => routine.deletedAt === null && normalizeRoutineName(routine.name) === normalizedName);
+  if (matches.length === 1) return { kind: 'found', routine: matches[0]! };
+  if (matches.length > 1) return { kind: 'ambiguous', routines: matches };
+  return { kind: 'missing' };
+}
+
+function normalizeRoutineName(value: string): string {
+  return value.normalize('NFC').trim().replace(/\s+/g, ' ').toLocaleLowerCase('en-US');
+}
+
+function messageContainsRoutineName(message: string, normalizedName: string): boolean {
+  const escaped = normalizedName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(?:^|[^\\p{L}\\p{N}_])${escaped}(?=$|[^\\p{L}\\p{N}_])`, 'u')
+    .test(normalizeRoutineName(message));
+}
+
+function ambiguousNameText(name: string, routines: readonly RoutineDefinition[]): string {
+  return [
+    `More than one routine is named *${name}*. No change was made:`,
+    ...routines.map((routine) => `• *${routine.name}* — \`${routine.id}\``),
+    'Use an exact ID, for example `!routines show <id>`.',
+  ].join('\n');
 }
 
 async function resolveRoutineDefaultTimezone(

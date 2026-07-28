@@ -1,7 +1,7 @@
 import type { AuditEvent, AuditEventFilter } from '../audit/types.ts';
 
-export type RoutineState = 'active' | 'paused' | 'disabled';
-export type RoutineTriggerKind = 'schedule';
+export type RoutineState = 'active' | 'paused' | 'disabled' | 'completed';
+export type RoutineTriggerKind = 'schedule' | 'once';
 export type RoutineOutputPolicy = 'post' | 'post_on_change';
 export type RoutineAuthorityMode = 'live_channel_v1';
 export type RoutineActorClass = 'member' | 'operator' | 'system';
@@ -16,7 +16,7 @@ export type RoutineRunStatus =
   | 'skipped'
   | 'cancelled'
   | 'superseded';
-export type RoutineTriggerSource = 'schedule' | 'run_now';
+export type RoutineTriggerSource = 'schedule' | 'once' | 'run_now';
 export type RoutineAdmissionStatus =
   | 'attempting'
   | 'attached'
@@ -97,8 +97,34 @@ export interface RoutineRevision {
   actorId: string | null;
   actorClass: RoutineActorClass;
   confirmationId: string | null;
+  provenance: RoutineRequestProvenance | null;
   createdAt: number;
 }
+
+export type RoutineRequestSourceKind = 'slack_request' | 'slack_clone';
+export type RoutineAuthoritySource = 'current_request' | 'previous_revision' | 'cloned_revision';
+
+export interface RoutineRequestProvenanceInput {
+  sourceKind: RoutineRequestSourceKind;
+  requestText: string;
+  eventId: string;
+  messageTs: string;
+  threadTs: string;
+  authoritySource: RoutineAuthoritySource;
+  sourceRoutineId?: string | null;
+  sourceRoutineVersion?: number | null;
+}
+
+export type RoutineRequestProvenance = Omit<
+  RoutineRequestProvenanceInput,
+  'requestText' | 'sourceRoutineId' | 'sourceRoutineVersion'
+> & {
+  requestHash: string;
+  sourceRoutineId: string | null;
+  sourceRoutineVersion: number | null;
+  definitionHash: string;
+  requestText: string | null;
+};
 
 export type RoutineConfirmationDraft =
   | {
@@ -170,6 +196,7 @@ export interface SaveRoutineInput {
   workspaceId: string;
   channelId: string;
   draft: Exclude<RoutineConfirmationDraft, { action: 'delete' }>;
+  provenance?: RoutineRequestProvenanceInput | null;
   idempotencyKey: string;
 }
 
@@ -342,6 +369,21 @@ export interface RoutineRunFilter {
   limit?: number;
 }
 
+/** Bounded operator-facing query. This intentionally differs from Slack's listRoutines. */
+export interface RoutineAdminPageInput {
+  workspaceId?: string;
+  channelId?: string;
+  state?: RoutineState | 'deleted';
+  runStatus?: RoutineRunStatus;
+  cursor?: number;
+  limit: number;
+}
+
+export interface RoutineAdminPage {
+  routines: RoutineDefinition[];
+  nextCursor: number | null;
+}
+
 export interface RoutineStore {
   putConfirmation(input: PutRoutineConfirmationInput): Promise<RoutineConfirmation>;
   getConfirmation(tokenHash: string): Promise<RoutineConfirmation | undefined>;
@@ -352,6 +394,7 @@ export interface RoutineStore {
   cleanupRetention(): Promise<RoutineMaintenanceResult>;
   getRoutine(routineId: string): Promise<RoutineDefinition | undefined>;
   listRoutines(workspaceId?: string, channelId?: string): Promise<RoutineDefinition[]>;
+  listAdminRoutinePage(input: RoutineAdminPageInput): Promise<RoutineAdminPage>;
   listRevisions(routineId: string): Promise<RoutineRevision[]>;
   control(input: ControlRoutineInput): Promise<RoutineDefinition>;
   createOccurrence(input: CreateRoutineOccurrenceInput): Promise<RoutineRun>;
@@ -395,6 +438,7 @@ export type RoutineRpcRequest =
   | { kind: 'cleanup_retention' }
   | { kind: 'get_routine'; routineId: string }
   | { kind: 'list_routines'; workspaceId?: string; channelId?: string }
+  | { kind: 'list_admin_routine_page'; input: RoutineAdminPageInput }
   | { kind: 'list_revisions'; routineId: string }
   | { kind: 'control'; input: ControlRoutineInput }
   | { kind: 'create_occurrence'; input: CreateRoutineOccurrenceInput }
@@ -421,6 +465,7 @@ export type RoutineRpcResponse =
   | { kind: 'confirmation'; confirmation: RoutineConfirmation | null }
   | { kind: 'routine'; routine: RoutineDefinition | null }
   | { kind: 'routines'; routines: RoutineDefinition[] }
+  | { kind: 'admin_routine_page'; page: RoutineAdminPage }
   | { kind: 'revisions'; revisions: RoutineRevision[] }
   | { kind: 'run'; run: RoutineRun | null }
   | { kind: 'runs'; runs: RoutineRun[] }

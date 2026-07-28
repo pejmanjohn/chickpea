@@ -10,14 +10,25 @@ const ROLLING_DAY_MS = 24 * 60 * 60 * 1_000;
 const MAX_ENUMERATED_OCCURRENCES =
   PROJECTION_DAYS * Math.ceil(ROLLING_DAY_MS / ROUTINE_LIMITS.minimumIntervalMs) + 2;
 
-export interface CanonicalRoutineSchedule {
+export interface CanonicalRecurringRoutineSchedule {
   version: 1;
   kind: 'cron';
   expression: string;
 }
 
-export interface RoutineScheduleProjection {
-  schedule: CanonicalRoutineSchedule;
+export interface CanonicalOneTimeRoutineSchedule {
+  version: 1;
+  kind: 'once';
+  localDateTime: string;
+  at: number;
+}
+
+export type CanonicalRoutineSchedule =
+  | CanonicalRecurringRoutineSchedule
+  | CanonicalOneTimeRoutineSchedule;
+
+export interface RoutineScheduleProjection<T extends CanonicalRoutineSchedule = CanonicalRoutineSchedule> {
+  schedule: T;
   scheduleJson: string;
   nextRunAt: number;
   preview: number[];
@@ -35,12 +46,12 @@ export function normalizeRoutineSchedule(
   expression: string,
   timezone: string,
   from: number = Date.now(),
-): RoutineScheduleProjection {
+): RoutineScheduleProjection<CanonicalRecurringRoutineSchedule> {
   if (!Number.isSafeInteger(from) || from < 0 || !isIanaTimeZone(timezone)) {
     throw scheduleError('routine_invalid_timezone', 'Routine time zone must be a valid IANA time zone.');
   }
   const canonicalExpression = canonicalCronExpression(expression);
-  const schedule: CanonicalRoutineSchedule = {
+  const schedule: CanonicalRecurringRoutineSchedule = {
     version: 1,
     kind: 'cron',
     expression: canonicalExpression,
@@ -67,6 +78,35 @@ export function normalizeRoutineSchedule(
   };
 }
 
+export function normalizeOneTimeSchedule(
+  localDateTime: string,
+  timezone: string,
+  from: number = Date.now(),
+): RoutineScheduleProjection<CanonicalOneTimeRoutineSchedule> {
+  if (!Number.isSafeInteger(from) || from < 0 || !isIanaTimeZone(timezone)) {
+    throw scheduleError('routine_invalid_timezone', 'Routine time zone must be a valid IANA time zone.');
+  }
+  const canonicalLocal = canonicalLocalDateTime(localDateTime);
+  const at = resolveLocalDateTime(canonicalLocal, timezone);
+  if (at <= from) {
+    throw scheduleError('routine_schedule_in_past', 'A one-time routine must be scheduled in the future.');
+  }
+  const schedule: CanonicalOneTimeRoutineSchedule = {
+    version: 1,
+    kind: 'once',
+    localDateTime: canonicalLocal,
+    at,
+  };
+  return {
+    schedule,
+    scheduleJson: JSON.stringify(schedule),
+    nextRunAt: at,
+    preview: [at],
+    projectedDailyStarts: 0,
+    reservations: [{ windowStart: at, count: 1 }],
+  };
+}
+
 /**
  * Rebuild the small, rolling collision-preview window after a due slot advances.
  * Full-year enumeration is retained only for validation and daily-rate
@@ -81,6 +121,9 @@ export function projectRoutineReservationWindows(
     throw scheduleError('routine_invalid_timezone', 'Routine time zone must be a valid IANA time zone.');
   }
   const schedule = parseRoutineSchedule(scheduleJson);
+  if (schedule.kind === 'once') {
+    return schedule.at > after ? [{ windowStart: schedule.at, count: 1 }] : [];
+  }
   const job = cron(schedule, timezone);
   const occurrences: number[] = [];
   let cursor = after;
@@ -108,6 +151,16 @@ export function parseRoutineSchedule(scheduleJson: string): CanonicalRoutineSche
   try {
     const value = JSON.parse(scheduleJson) as Partial<CanonicalRoutineSchedule>;
     if (
+      value.version === 1 &&
+      value.kind === 'once' &&
+      typeof value.localDateTime === 'string' &&
+      canonicalLocalDateTime(value.localDateTime) === value.localDateTime &&
+      Number.isSafeInteger(value.at) &&
+      Number(value.at) >= 0
+    ) {
+      return value as CanonicalOneTimeRoutineSchedule;
+    }
+    if (
       value.version !== 1 ||
       value.kind !== 'cron' ||
       typeof value.expression !== 'string' ||
@@ -128,6 +181,12 @@ export function nextRoutineOccurrence(
   after: number,
 ): number {
   const schedule = parseRoutineSchedule(scheduleJson);
+  if (schedule.kind === 'once') {
+    if (schedule.at <= after) {
+      throw scheduleError('routine_schedule_exhausted', 'One-time routine has no future occurrence.');
+    }
+    return schedule.at;
+  }
   const job = cron(schedule, timezone);
   try {
     const next = job.nextRun(new Date(after));
@@ -139,7 +198,7 @@ export function nextRoutineOccurrence(
 }
 
 export function enumerateRoutineSchedule(
-  schedule: CanonicalRoutineSchedule,
+  schedule: CanonicalRecurringRoutineSchedule,
   timezone: string,
   after: number,
   through: number,
@@ -184,7 +243,7 @@ function canonicalCronExpression(value: string): string {
   return expression;
 }
 
-function cron(schedule: CanonicalRoutineSchedule, timezone: string): Cron {
+function cron(schedule: CanonicalRecurringRoutineSchedule, timezone: string): Cron {
   try {
     return new Cron(schedule.expression, {
       timezone,
@@ -195,6 +254,66 @@ function cron(schedule: CanonicalRoutineSchedule, timezone: string): Cron {
   } catch {
     throw scheduleError('routine_invalid_schedule', 'Routine schedule is invalid.');
   }
+}
+
+function canonicalLocalDateTime(value: string): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(value.trim());
+  if (!match) {
+    throw scheduleError(
+      'routine_invalid_schedule',
+      'A one-time routine must use a local date and time like 2026-07-28T09:30.',
+    );
+  }
+  const [year, month, day, hour, minute] = match.slice(1).map(Number);
+  const roundTrip = new Date(Date.UTC(year!, month! - 1, day!, hour!, minute!));
+  if (
+    roundTrip.getUTCFullYear() !== year ||
+    roundTrip.getUTCMonth() !== month! - 1 ||
+    roundTrip.getUTCDate() !== day ||
+    roundTrip.getUTCHours() !== hour ||
+    roundTrip.getUTCMinutes() !== minute
+  ) {
+    throw scheduleError('routine_invalid_schedule', 'The one-time routine date and time is invalid.');
+  }
+  return value.trim();
+}
+
+function resolveLocalDateTime(localDateTime: string, timezone: string): number {
+  const [date, time] = localDateTime.split('T');
+  const [year, month, day] = date!.split('-').map(Number);
+  const [hour, minute] = time!.split(':').map(Number);
+  const center = Date.UTC(year!, month! - 1, day!, hour!, minute!);
+  const formatter = new Intl.DateTimeFormat('en-US-u-ca-iso8601', {
+    timeZone: timezone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  });
+  for (
+    let candidate = center - 16 * 60 * 60 * 1_000;
+    candidate <= center + 16 * 60 * 60 * 1_000;
+    candidate += 60_000
+  ) {
+    const parts = Object.fromEntries(
+      formatter.formatToParts(candidate).map((part) => [part.type, part.value]),
+    );
+    if (
+      Number(parts.year) === year &&
+      Number(parts.month) === month &&
+      Number(parts.day) === day &&
+      Number(parts.hour) === hour &&
+      Number(parts.minute) === minute
+    ) {
+      return candidate;
+    }
+  }
+  throw scheduleError(
+    'routine_nonexistent_local_time',
+    'That local time does not exist in the selected time zone. Choose another time.',
+  );
 }
 
 function assertMinimumInterval(occurrences: readonly number[]): void {
