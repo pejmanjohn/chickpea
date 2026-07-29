@@ -49,7 +49,7 @@ The product benefit is straightforward: operators can use an existing ChatGPT en
 
 ### Actors
 
-- A1. **Chickpea operator:** Connects or disconnects either credential, chooses the installation-wide OpenAI method, and controls preview access.
+- A1. **Chickpea operator:** Connects or disconnects either credential, chooses the installation-wide OpenAI method when both are connected, and controls preview access.
 - A2. **Slack user:** Invokes an OpenAI-backed profile and expects the installation's selected billing method to be honored.
 - A3. **Chickpea runtime:** Resolves credentials at the execution boundary, refreshes tokens, and routes through one explicit provider lane.
 - A4. **OpenAI authorization and Codex services:** Authorize the account, rotate tokens, enforce entitlement and quota, and execute subscription requests.
@@ -60,8 +60,8 @@ The product benefit is straightforward: operators can use an existing ChatGPT en
 
 - R1. Settings > Model providers presents two OpenAI methods: **Subscription (ChatGPT Plus/Pro)** and **API key**, with independent state and actions.
 - R2. Both methods may remain configured, but Settings stores one non-secret installation method: `subscription` or `api_key`. Profiles store only canonical models and never select billing lanes.
-- R3. Existing installations default to `api_key`; connection, reconnection, or key changes never silently change the selected method.
-- R4. Model discovery follows the selected installation method. Subscription selection exposes only the pinned compatible catalog and blocks switching while any saved OpenAI profile uses an incompatible model.
+- R3. Existing installations default to `api_key` before a credential is connected. With exactly one connected credential, Chickpea selects it automatically. When a second credential is connected for the first time, that newly connected method becomes active and the method selector appears; disconnecting either credential automatically selects the one that remains.
+- R4. Model discovery follows the selected installation method. Subscription selection exposes only the pinned compatible catalog; a pre-existing incompatible OpenAI model fails closed rather than falling back, while new profile saves reject incompatible models.
 - R5. A saved method change affects the next OpenAI model operation, including turns, routines, and auxiliary calls. Settings identifies the selected method directly; no extra acknowledgment or profile-level confirmation is required.
 
 **Strict billing-lane behavior**
@@ -104,7 +104,7 @@ The product benefit is straightforward: operators can use an existing ChatGPT en
 
 ### Key product decisions
 
-- PD1. **Keep both methods configured and select once in Settings.** This makes switching reversible while keeping billing intent obvious and consistent across every OpenAI profile. Governs R1-R7.
+- PD1. **Keep both methods configured and show selection only when it is useful.** One connected credential is used automatically. When both are connected, Settings shows one compact installation-wide selector, with the most recently added connection initially active. This keeps switching reversible without adding a redundant control to one-credential states. Governs R1-R7.
 - PD2. **Never fall back across billing methods.** A failed subscription operation remains failed rather than silently creating API spend. Governs R5-R9.
 - PD3. **Ship a direct experimental integration.** Public third-party operation is sufficient evidence to try the feature; formal public support is not a prerequisite for the preview. Governs R18-R23, R29-R31.
 - PD4. **Preserve Cloudflare as a first-class runtime.** Subscription auth and inference must work in Workers and Node through ordinary HTTP and shared state interfaces. Governs R10-R14, R20-R31.
@@ -450,13 +450,14 @@ flowchart TB
 - **Goal:** Give operators an explicit and honest control surface for both OpenAI methods.
 - **Requirements:** R1-R5, R10-R17, R21, R29-R31.
 - **Files:** `src/admin/routes.ts`, `src/admin/page.ts`, `tests/provider-settings.test.ts`, `tests/admin-page.test.ts`, `scripts/verify-admin-ui.mjs`, `scripts/verify-admin-browser.mjs` (new).
-- **Approach:** Extend provider summaries with API-key and Subscription cards plus one `Use for OpenAI calls` selector. Add start, poll, cancel, reconnect, disconnect, selection, and status routes that expose only safe DTOs. Keep the attempt capability only in the initiating page's memory, never in a URL, cookie, or persistent browser storage. Keep profile editing unchanged apart from method-aware model compatibility.
+- **Approach:** Extend provider summaries with API-key and Subscription cards. Show one compact `Use for OpenAI calls` selector only while both credentials are connected; select a sole credential automatically, make the newly added second credential active, and switch automatically to the remaining credential after disconnect. Add start, poll, cancel, reconnect, disconnect, selection, and status routes that expose only safe DTOs. Keep the attempt capability only in the initiating page's memory, never in a URL, cookie, or persistent browser storage. Keep profile editing unchanged apart from method-aware model compatibility.
 - **Test scenarios:**
   - API-key only, subscription only, both, neither, preview disabled, pending, connected, expired, reconnect-required, and changed-account states render correctly.
   - User code is shown only to the initiating admin session and disappears after completion or expiry.
   - Reloading, copying the Settings URL, or opening a second browser does not transfer the attempt capability.
-  - Connecting either credential never changes the selected method automatically.
-  - Switching to Subscription blocks while saved OpenAI profiles use incompatible models; profile saves reject new incompatible OpenAI models while Subscription is selected.
+  - Neither and one-credential states omit the selector; the second connection reveals it with the newly connected method active.
+  - Disconnecting one of two credentials hides the selector and automatically leaves the remaining credential active.
+  - Pre-existing incompatible OpenAI models fail closed after Subscription becomes active; profile saves reject new incompatible OpenAI models while Subscription is selected.
   - No profile-level auth selector or acknowledgment checkbox is present.
   - Browser accessibility covers keyboard flow, focus, status announcements, and code-copy feedback.
 - **Verification:** Offline browser tests prove every state and confirm no token or raw account id reaches HTML or JSON.
@@ -529,7 +530,7 @@ Live evidence must not record tokens, user codes, device auth ids, token-exchang
 - [ ] Pejman approves the five remaining launch details in the Product Contract.
 - [ ] The implementation imports no Codex package and launches or calls no app-server process/service.
 - [ ] Device authorization, refresh rotation, reconnect, disconnect, identity projection, and revocation guidance work on Node and Cloudflare.
-- [ ] Existing installations default to `api_key`; both methods can coexist and Settings selects exactly one for all OpenAI calls.
+- [ ] Existing installations default to `api_key` before connection; one credential is automatic, and when both coexist Settings selects exactly one for all OpenAI calls.
 - [ ] The direct provider is physically isolated from the API-key provider and all private endpoint access lives in one adapter.
 - [ ] Subscription success and every forced failure prove zero Platform API traffic with a valid API key present.
 - [ ] The first live gate accepts `originator: chickpea`; auth, entitlement, originator/client, quota, and protocol-drift states remain distinct and operator-visible.
@@ -537,7 +538,7 @@ Live evidence must not record tokens, user codes, device auth ids, token-exchang
 - [ ] Credentials and temporary authorization values remain outside model-visible, browser-readable, logged, audited, and exported state.
 - [ ] Concurrent refresh and mixed-lane tests pass through both Node and Durable Object storage paths.
 - [ ] Subscription usage is not presented as Platform spend.
-- [ ] Settings clearly identifies the selected method and connection state without adding an acknowledgment checkbox.
+- [ ] Settings shows connection state at all times and shows the method selector only when both credentials are connected, without adding an acknowledgment checkbox.
 - [ ] The preview flag, compatibility canary, runbook, and one-step removal path are complete.
 - [ ] OpenCode-derived implementation carries required MIT attribution.
 - [ ] All Verification Contract gates pass and are reported by target and validation lane.

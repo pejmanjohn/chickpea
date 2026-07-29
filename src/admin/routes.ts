@@ -158,6 +158,7 @@ import {
   getOpenAiSubscriptionAuthorizationStatus,
   pollOpenAiSubscriptionAuthorization,
   startOpenAiSubscriptionAuthorization,
+  wasOpenAiSubscriptionConnectedBeforeAuthorization,
   type OpenAiSubscriptionAuthorizationDependencies,
   type OpenAiSubscriptionAuthorizationProtocol,
 } from '../openai-subscription/device-auth.ts';
@@ -1328,17 +1329,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           message: 'Connect a ChatGPT subscription before selecting it.',
         }, 409);
       }
-      const incompatibleProfiles = (await store(c).listAgents())
-        .filter((agent) => agent.model?.startsWith('openai/'))
-        .filter((agent) => !openAiSubscriptionSupportsModel(agent.model))
-        .map(({ id, name, model }) => ({ id, name, model }));
-      if (incompatibleProfiles.length > 0) {
-        return c.json({
-          error: 'openai_subscription_models_incompatible',
-          message: 'Some OpenAI profiles use models that are not available through ChatGPT subscription.',
-          profiles: incompatibleProfiles,
-        }, 409);
-      }
     }
     return c.json({
       activeAuthMethod: await saveOpenAiAuthMethod(settingsStore, method),
@@ -1361,10 +1351,19 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (!parsed.success) return invalidRequest(c);
     try {
       requireSubscriptionEnabled(c);
-      return c.json(await pollOpenAiSubscriptionAuthorization(
+      const settingsStore = settings(c);
+      const wasConnected = await wasOpenAiSubscriptionConnectedBeforeAuthorization(
+        parsed.output,
+        settingsStore,
+      );
+      const result = await pollOpenAiSubscriptionAuthorization(
         parsed.output,
         openAiSubscriptionDependencies(c),
-      ));
+      );
+      if (result.state === 'connected' && !wasConnected) {
+        await saveOpenAiAuthMethod(settingsStore, 'subscription');
+      }
+      return c.json(result);
     } catch (error) {
       return openAiSubscriptionRouteError(c, error);
     }
@@ -1375,10 +1374,19 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (!parsed.success) return invalidRequest(c);
     try {
       requireSubscriptionEnabled(c);
-      return c.json(await confirmOpenAiSubscriptionAccountChange(
+      const settingsStore = settings(c);
+      const wasConnected = await wasOpenAiSubscriptionConnectedBeforeAuthorization(
+        parsed.output,
+        settingsStore,
+      );
+      const status = await confirmOpenAiSubscriptionAccountChange(
         parsed.output,
         openAiSubscriptionDependencies(c),
-      ));
+      );
+      if (status.state === 'connected' && !wasConnected) {
+        await saveOpenAiAuthMethod(settingsStore, 'subscription');
+      }
+      return c.json(status);
     } catch (error) {
       return openAiSubscriptionRouteError(c, error);
     }
@@ -1399,9 +1407,19 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
 
   app.delete('/admin/api/providers/openai/subscription', async (c) => {
     try {
-      return c.json({ status: await disconnectOpenAiSubscription(settings(c), {
+      const settingsStore = settings(c);
+      const status = await disconnectOpenAiSubscription(settingsStore, {
         ...(options.openAiSubscriptionNow ? { now: options.openAiSubscriptionNow } : {}),
-      }) });
+      });
+      const apiKey = await resolveProviderApiKey(
+        'openai',
+        c.env as PlatformEnv | undefined,
+        settingsStore,
+      );
+      if (apiKey.source !== 'missing') {
+        await saveOpenAiAuthMethod(settingsStore, 'api_key');
+      }
+      return c.json({ status });
     } catch (error) {
       return openAiSubscriptionRouteError(c, error);
     }
@@ -1427,6 +1445,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     try {
       const models = await validateProviderApiKey(id, apiKey);
       await saveProviderApiKey(id, apiKey, platformEnv, settingsStore);
+      if (id === 'openai' && current.source === 'missing') {
+        await saveOpenAiAuthMethod(settingsStore, 'api_key');
+      }
       primeProviderModelCache(id, models);
       return c.json({
         ok: true,
@@ -1461,7 +1482,15 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return c.json({ error: 'unknown_provider' }, 404);
     }
     const platformEnv = c.env as PlatformEnv | undefined;
-    const resolved = await deleteProviderApiKey(id, platformEnv, settings(c));
+    const settingsStore = settings(c);
+    const resolved = await deleteProviderApiKey(id, platformEnv, settingsStore);
+    if (
+      id === 'openai' &&
+      resolved.source === 'missing' &&
+      openAiSubscriptionIsReady(await getOpenAiSubscriptionAuthorizationStatus(settingsStore))
+    ) {
+      await saveOpenAiAuthMethod(settingsStore, 'subscription');
+    }
     return c.json({
       ok: true,
       provider: providerSummary(id, resolved.source),
@@ -3825,13 +3854,6 @@ function openAiModelCompatibilityError(
     return 'The selected ChatGPT subscription does not support this OpenAI model.';
   }
   return undefined;
-}
-
-function openAiSubscriptionSupportsModel(model: string | undefined): boolean {
-  return Boolean(
-    model?.startsWith('openai/') &&
-    (OPENAI_SUBSCRIPTION_MODELS as readonly string[]).includes(model.slice('openai/'.length)),
-  );
 }
 
 function openAiSubscriptionIsReady(

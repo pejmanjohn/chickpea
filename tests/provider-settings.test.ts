@@ -165,13 +165,43 @@ test('OpenAI subscription admin routes keep authorization capability browser-loc
     assert.doesNotMatch(connectedText, new RegExp(secret));
   }
 
-  const selected = await app.request('/admin/api/providers/openai/auth-method', {
-    method: 'PUT',
-    headers: { ...auth(), 'content-type': 'application/json' },
-    body: JSON.stringify({ method: 'subscription' }),
+  const subscriptionSelected = await app.request('/admin/api/providers', { headers: auth() });
+  assert.match(JSON.stringify(await subscriptionSelected.json()), /"activeAuthMethod":"subscription"/);
+
+  const fake = new FakeProvidersBackend();
+  await withEnv(
+    { OPENAI_API_KEY: undefined, OPENAI_API_URL: 'https://openai.fake/v1' },
+    () => withFetch(fake.asFetch(), async () => {
+      const apiConnected = await app.request('/admin/api/providers/openai/key', {
+        method: 'POST',
+        headers: { ...auth(), 'content-type': 'application/json' },
+        body: JSON.stringify({ apiKey: FAKE_PROVIDER_KEYS.openai }),
+      });
+      assert.equal(apiConnected.status, 200);
+    }),
+  );
+  const apiSelected = await app.request('/admin/api/providers', { headers: auth() });
+  assert.match(JSON.stringify(await apiSelected.json()), /"activeAuthMethod":"api_key"/);
+
+  const apiDisconnected = await app.request('/admin/api/providers/openai/key', {
+    method: 'DELETE',
+    headers: auth(),
   });
-  assert.equal(selected.status, 200);
-  assert.deepEqual(await selected.json(), { activeAuthMethod: 'subscription' });
+  assert.equal(apiDisconnected.status, 200);
+  const subscriptionReselected = await app.request('/admin/api/providers', { headers: auth() });
+  assert.match(JSON.stringify(await subscriptionReselected.json()), /"activeAuthMethod":"subscription"/);
+
+  await withEnv(
+    { OPENAI_API_KEY: undefined, OPENAI_API_URL: 'https://openai.fake/v1' },
+    () => withFetch(fake.asFetch(), async () => {
+      const apiReconnected = await app.request('/admin/api/providers/openai/key', {
+        method: 'POST',
+        headers: { ...auth(), 'content-type': 'application/json' },
+        body: JSON.stringify({ apiKey: FAKE_PROVIDER_KEYS.openai }),
+      });
+      assert.equal(apiReconnected.status, 200);
+    }),
+  );
 
   const disconnected = await app.request('/admin/api/providers/openai/subscription', {
     method: 'DELETE',
@@ -181,6 +211,8 @@ test('OpenAI subscription admin routes keep authorization capability browser-loc
   assert.deepEqual(await disconnected.json(), {
     status: { state: 'disconnected', updatedAt: currentTime },
   });
+  const apiReselected = await app.request('/admin/api/providers', { headers: auth() });
+  assert.match(JSON.stringify(await apiReselected.json()), /"activeAuthMethod":"api_key"/);
 });
 
 test('default-off preview gate blocks installation selection without deleting state or affecting profiles', async (t) => {
@@ -310,23 +342,6 @@ test('OpenAI method selection is installation-wide and validates connections and
     accountId: 'installation-account',
   }, { settings, randomBytes: (length) => new Uint8Array(length).fill(6) });
 
-  const blockedByModel = await app.request('/admin/api/providers/openai/auth-method', {
-    method: 'PUT',
-    headers: { ...auth(), 'content-type': 'application/json' },
-    body: JSON.stringify({ method: 'subscription' }),
-  });
-  assert.equal(blockedByModel.status, 409);
-  const blockedBody = await blockedByModel.json() as { error: string; profiles: Array<{ id: string }> };
-  assert.equal(blockedBody.error, 'openai_subscription_models_incompatible');
-  assert.deepEqual(blockedBody.profiles.map((profile) => profile.id), ['agent_incompatible']);
-
-  const supportedPatch = await app.request('/admin/api/agents/agent_incompatible', {
-    method: 'PATCH',
-    headers: { ...auth(), 'content-type': 'application/json' },
-    body: JSON.stringify({ model: 'openai/gpt-5.4' }),
-  });
-  assert.equal(supportedPatch.status, 200);
-
   const selectedSubscription = await app.request('/admin/api/providers/openai/auth-method', {
     method: 'PUT',
     headers: { ...auth(), 'content-type': 'application/json' },
@@ -334,6 +349,13 @@ test('OpenAI method selection is installation-wide and validates connections and
   });
   assert.equal(selectedSubscription.status, 200);
   assert.deepEqual(await selectedSubscription.json(), { activeAuthMethod: 'subscription' });
+
+  const supportedPatch = await app.request('/admin/api/agents/agent_incompatible', {
+    method: 'PATCH',
+    headers: { ...auth(), 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'openai/gpt-5.4' }),
+  });
+  assert.equal(supportedPatch.status, 200);
 
   const subscriptionModels = await app.request('/admin/api/providers/openai/models', {
     headers: auth(),

@@ -1290,7 +1290,12 @@ function runAdminPageHarness(
       const openAi = providerState.find((provider) => provider.id === 'openai');
       if (method === 'DELETE') {
         openAiSubscriptionDisconnects += 1;
-        if (openAi) openAi.subscription = { state: 'disconnected', updatedAt: 1_800_000_020_000 };
+        if (openAi) {
+          openAi.subscription = { state: 'disconnected', updatedAt: 1_800_000_020_000 };
+          if (openAi.status === 'stored' || openAi.status === 'env') {
+            openAi.activeAuthMethod = 'api_key';
+          }
+        }
         return Promise.resolve(jsonResponse({ status: openAi?.subscription }));
       }
       if (method === 'GET') {
@@ -1316,7 +1321,10 @@ function runAdminPageHarness(
           accountFingerprint: 'oas_safe_fixture',
           connectedAt: 1_800_000_005_000,
         };
-        if (openAi && result.state !== 'pending') openAi.subscription = result as OpenAiSubscriptionStatusFixture;
+        if (openAi && result.state !== 'pending') {
+          openAi.subscription = result as OpenAiSubscriptionStatusFixture;
+          if (result.state === 'connected') openAi.activeAuthMethod = 'subscription';
+        }
         return Promise.resolve(jsonResponse(result));
       }
       if (action === 'confirm-account') {
@@ -1326,7 +1334,10 @@ function runAdminPageHarness(
           accountFingerprint: 'oas_replacement_fixture',
           connectedAt: 1_800_000_010_000,
         };
-        if (openAi) openAi.subscription = connected;
+        if (openAi) {
+          openAi.subscription = connected;
+          openAi.activeAuthMethod = 'subscription';
+        }
         return Promise.resolve(jsonResponse(connected));
       }
       const restored = { state: 'disconnected' as const, updatedAt: 1_800_000_010_000 };
@@ -1342,6 +1353,12 @@ function runAdminPageHarness(
         if (entry) {
           entry.status = 'missing';
           entry.modelCount = null;
+          if (
+            id === 'openai' &&
+            (entry.subscription?.state === 'connected' || entry.subscription?.state === 'account_change_confirmation_required')
+          ) {
+            entry.activeAuthMethod = 'subscription';
+          }
         }
         return Promise.resolve(
           jsonResponse({ ok: true, provider: { id, status: 'missing', modelCount: null }, pinnedProfileCount: 0 }),
@@ -1362,9 +1379,11 @@ function runAdminPageHarness(
           ),
         );
       }
+      const wasMissing = entry?.status !== 'stored' && entry?.status !== 'env';
       if (entry) {
         entry.status = 'stored';
         entry.modelCount = 2;
+        if (id === 'openai' && wasMissing) entry.activeAuthMethod = 'api_key';
       }
       return Promise.resolve(
         jsonResponse({ ok: true, provider: { id, status: 'stored', modelCount: 2 }, models: [{ id: 'm1' }, { id: 'm2' }] }),
@@ -7219,8 +7238,8 @@ test('Settings renders the three key-provider rows and hides Workers AI on the N
   assert.match(html, /Stored<\/span><span class="hint">Saved here · 10 models available<\/span>/);
   assert.match(html, /<span class="prov-name">OpenAI<\/span>/);
   assert.match(html, /0 of 2 connected/);
-  assert.match(html, /Selected: API key · needs connection/);
-  assert.match(html, /Use for OpenAI calls/);
+  assert.doesNotMatch(html, /Selected:/);
+  assert.doesNotMatch(html, /Use for OpenAI calls/);
   assert.match(html, /<span class="openai-auth-title">API key<\/span>/);
   assert.match(html, /<span class="openai-auth-title">ChatGPT subscription<\/span>/);
   assert.match(html, /Not connected<\/span>/);
@@ -7264,8 +7283,11 @@ test('Settings selects one OpenAI method installation-wide while both connection
   click({ target: actionTarget({ 'data-action': 'open-settings' }) });
   await flushAsync();
 
-  assert.match(harness.app.innerHTML, /Selected: API key/);
-  assert.match(harness.app.innerHTML, /Every OpenAI call uses OpenAI API key/);
+  assert.doesNotMatch(harness.app.innerHTML, /Selected:/);
+  assert.match(harness.app.innerHTML, /Use for OpenAI calls/);
+  assert.match(harness.app.innerHTML, /class="select-wrap"><select class="input" id="openai-auth-method"/);
+  assert.match(harness.app.innerHTML, /class="ic select-caret"/);
+  assert.match(harness.app.innerHTML, /Applies to every OpenAI model and profile/);
   assert.equal((harness.app.innerHTML.match(/>Selected</g) || []).length, 1);
   change({
     target: {
@@ -7280,8 +7302,8 @@ test('Settings selects one OpenAI method installation-wide while both connection
   click({ target: actionTarget({ 'data-action': 'openai-auth-method-save' }) });
   await flushAsync();
   assert.deepEqual(harness.openAiAuthMethodPuts, ['subscription']);
-  assert.match(harness.app.innerHTML, /Selected: ChatGPT subscription/);
-  assert.match(harness.app.innerHTML, /This choice applies to every OpenAI model and profile/);
+  assert.doesNotMatch(harness.app.innerHTML, /Selected:/);
+  assert.match(harness.app.innerHTML, /Applies to every OpenAI model and profile/);
 });
 
 test('Settings renders the outbound-access mode control and allowlist domain input', async () => {
@@ -7365,10 +7387,47 @@ test('Settings validates a pasted key and collapses the row to a stored status',
   assert.match(harness.app.innerHTML, /<span class="prov-name">OpenAI<\/span>/);
   assert.match(harness.app.innerHTML, /1 of 2 connected/);
   assert.match(harness.app.innerHTML, /Saved in Chickpea/);
+  assert.doesNotMatch(harness.app.innerHTML, /Use for OpenAI calls/);
+});
+
+test('Settings omits the OpenAI method selector when Subscription is the only connection', async () => {
+  const harness = runAdminPageHarness({
+    providers: [
+      { id: 'anthropic', status: 'missing', modelCount: null },
+      {
+        id: 'openai',
+        status: 'missing',
+        modelCount: null,
+        activeAuthMethod: 'subscription',
+        subscriptionCapability: { enabled: true },
+        subscription: {
+          state: 'connected',
+          updatedAt: 1_800_000_005_000,
+          accountFingerprint: 'oas_safe_fixture',
+          connectedAt: 1_800_000_005_000,
+        },
+      },
+      { id: 'openrouter', status: 'missing', modelCount: null },
+      { id: 'workers-ai', status: 'missing', modelCount: null },
+    ],
+  });
+  await flushAsync();
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'open-settings' }) });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /1 of 2 connected/);
+  assert.doesNotMatch(harness.app.innerHTML, /Use for OpenAI calls|>Selected</);
 });
 
 test('Settings starts and completes Subscription authorization without rendering its browser capability', async () => {
-  const harness = runAdminPageHarness();
+  const harness = runAdminPageHarness({
+    providers: [
+      { id: 'anthropic', status: 'stored', modelCount: 10 },
+      { id: 'openai', status: 'stored', modelCount: 2, activeAuthMethod: 'api_key', subscriptionCapability: { enabled: true }, subscription: { state: 'disconnected', updatedAt: 0 } },
+      { id: 'openrouter', status: 'env', modelCount: null },
+      { id: 'workers-ai', status: 'missing', modelCount: null },
+    ],
+  });
   await flushAsync();
   const click = harness.listeners.click;
   assert.ok(click);
@@ -7376,6 +7435,7 @@ test('Settings starts and completes Subscription authorization without rendering
   click({ target: actionTarget({ 'data-action': 'open-settings' }) });
   await flushAsync();
   assert.match(harness.app.innerHTML, /one method selected for all OpenAI calls/);
+  assert.doesNotMatch(harness.app.innerHTML, /Use for OpenAI calls/);
   assert.doesNotMatch(harness.app.innerHTML, /openai-subscription-risk/);
   click({ target: actionTarget({ 'data-action': 'openai-subscription-start' }) });
   await flushAsync();
@@ -7399,6 +7459,10 @@ test('Settings starts and completes Subscription authorization without rendering
     body: { attemptCapability: 'browser-attempt-capability-1234567890' },
   });
   assert.match(harness.app.innerHTML, /Account <span class="mono">oas_safe_fixture<\/span>/);
+  assert.match(harness.app.innerHTML, /Use for OpenAI calls/);
+  assert.match(harness.app.innerHTML, /<option value="subscription" selected>ChatGPT subscription<\/option>/);
+  assert.equal((harness.app.innerHTML.match(/>Selected</g) || []).length, 1);
+  assert.doesNotMatch(harness.app.innerHTML, /Selected:/);
   assert.doesNotMatch(harness.app.innerHTML, /CHICK-PEA/);
   assert.doesNotMatch(harness.app.innerHTML, /browser-attempt-capability-1234567890/);
 });
@@ -7444,7 +7508,7 @@ test('Settings keeps an authorizing attempt non-resumable after reload and disco
   click({ target: actionTarget({ 'data-action': 'open-settings' }) });
   await flushAsync();
   click({ target: actionTarget({ 'data-action': 'openai-subscription-disconnect-open' }) });
-  assert.match(connected.app.innerHTML, /If Subscription is in use, every OpenAI call fails closed/);
+  assert.match(connected.app.innerHTML, /A connected API key becomes the OpenAI method automatically/);
   click({ target: actionTarget({ 'data-action': 'openai-subscription-disconnect-confirm' }) });
   await flushAsync();
 
@@ -7554,7 +7618,7 @@ test('Settings marks Subscription unavailable when the installation preview is d
   });
   await flushAsync();
 
-  assert.match(harness.app.innerHTML, /ChatGPT subscription &middot; Unavailable/);
+  assert.match(harness.app.innerHTML, /<option value="subscription" disabled>ChatGPT subscription<\/option>/);
   assert.doesNotMatch(harness.app.innerHTML, /profile-openai-auth/);
 });
 

@@ -262,6 +262,18 @@ export function getOpenAiSubscriptionAuthorizationStatus(
   return getOpenAiSubscriptionCredentialStatus(settings);
 }
 
+/**
+ * Lets the admin boundary distinguish a first connection from a reconnect
+ * without exposing the stored authorization attempt or account credentials.
+ */
+export async function wasOpenAiSubscriptionConnectedBeforeAuthorization(
+  input: { attemptCapability: string },
+  settings: SettingsStore,
+): Promise<boolean> {
+  const { pending } = await requireAuthorization(input.attemptCapability, settings);
+  return pending.previousStatus.state === 'connected';
+}
+
 async function requireAuthorization(
   attemptCapability: string,
   settings: SettingsStore,

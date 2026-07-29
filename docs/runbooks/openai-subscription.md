@@ -7,7 +7,7 @@ This is not a stable OpenAI Platform API contract. Public implementations show c
 ## Product and security boundary
 
 - One installation stores one personal ChatGPT account connection. When Subscription is selected, any workspace member allowed to invoke an OpenAI-backed profile consumes that shared account's quota.
-- API-key and Subscription credentials may coexist. Settings selects one method for every `openai/*` operation, resolved again immediately before Agent construction.
+- API-key and Subscription credentials may coexist. With one connected credential Chickpea selects it automatically; connecting the second makes that method active and reveals the Settings selector. Every `openai/*` operation resolves the saved method again immediately before Agent construction.
 - A Subscription-selected call never consults or falls back to `OPENAI_API_KEY`, including on revocation, quota exhaustion, entitlement rejection, timeout, 5xx, protocol drift, or preview disablement.
 - Subscription-routed content follows the connected account's consumer ChatGPT data controls and retention/training policy, not the Platform API policy lane.
 - Tokens, device authorization ids, verifiers, raw account ids, and attempt capabilities may exist only in the SettingsStore credential boundary or the exact outbound authorization/request boundary. They must not enter profiles, snapshots, prompts, tools, Slack, routines, audit facts, exports, URLs, cookies, HTML, or logs.
@@ -144,7 +144,7 @@ Monitor safe counts of route facts and categorized failures. Never add raw provi
 
 ## Disconnect, revocation, and suspected compromise
 
-Disconnect in Settings deletes Chickpea's pending authorization, token bundle, refresh lease, identity key, and capability state. Profiles retain `Subscription` and fail closed. The Platform API key is untouched.
+Disconnect in Settings deletes Chickpea's pending authorization, token bundle, refresh lease, identity key, and capability state. If a Platform API key remains connected, Chickpea selects it automatically; otherwise OpenAI operations fail closed. The Platform API key itself is untouched.
 
 Local deletion does not prove every provider session was revoked. OpenAI exposes no supported revocation endpoint for this exact direct flow in the pinned sources. For intentional offboarding or suspected compromise:
 
