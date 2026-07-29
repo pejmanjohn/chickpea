@@ -98,6 +98,9 @@ import {
   type RoutineRpcResponse,
 } from './routines/types.ts';
 import { createRoutineScheduledHandler } from './routines/scheduler-adapter.ts';
+import { UsageStoreLogic } from './usage/store.ts';
+import { UsageStateError } from './usage/store-error.ts';
+import type { UsageRpcRequest, UsageRpcResponse } from './usage/types.ts';
 import {
   RoutineAdmissionController,
   RoutineNotSubmittedError,
@@ -430,6 +433,7 @@ interface TagStateStores {
   turnJobs: TurnJobStoreLogic;
   memory: MemoryStoreLogic;
   routines: RoutineStoreLogic;
+  usage: UsageStoreLogic;
 }
 
 export class TagStateStore extends DurableObject implements TagStateRpc {
@@ -469,6 +473,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         turnJobs: new TurnJobStoreLogic(db),
         memory: new MemoryStoreLogic(db),
         routines: new RoutineStoreLogic(db),
+        usage: new UsageStoreLogic(db),
       };
       this.initError = undefined;
       return stores;
@@ -634,6 +639,12 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     request: RoutineRpcRequest,
   ): Promise<StateRpcResult<RoutineRpcResponse>> {
     return this.call((stores) => stores.routines.execute(request));
+  }
+
+  async usageExecute(
+    request: UsageRpcRequest,
+  ): Promise<StateRpcResult<UsageRpcResponse>> {
+    return this.call((stores) => stores.usage.execute(request));
   }
 
   // ── turn relay (Cloudflare turn-horizon fix) ─────────────────────────────
@@ -928,6 +939,12 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           ...err.details,
         });
       }
+      if (err instanceof UsageStateError) {
+        return rpcError('usage', err.message, {
+          usageCode: err.code,
+          ...err.details,
+        });
+      }
       const message = err instanceof Error ? err.message : String(err);
       console.error('[chickpea] TagStateStore RPC failure:', message);
       return rpcError('internal', message);
@@ -936,7 +953,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
 }
 
 function rpcError(
-  code: 'unknown_agent' | 'agent_exists' | 'agent_still_assigned' | 'memory' | 'routine' | 'internal',
+  code: 'unknown_agent' | 'agent_exists' | 'agent_still_assigned' | 'memory' | 'routine' | 'usage' | 'internal',
   message: string,
   details?: Record<string, string>,
 ): { ok: false; error: { code: typeof code; message: string; details?: Record<string, string> } } {

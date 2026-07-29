@@ -5,6 +5,7 @@ import {
   CfRoutineStore,
   CfSettingsStore,
   CfSlackStateStore,
+  CfUsageStore,
 } from './cf-state-proxies.ts';
 import { isCloudflareTarget } from './runtime-target.ts';
 import { SqliteSettingsStore, type SettingsStore } from './settings-store.ts';
@@ -17,6 +18,8 @@ import { SqliteMemoryStateStore } from '../memory/store.ts';
 import type { MemoryStateStore } from '../memory/types.ts';
 import { SqliteRoutineStore } from '../routines/store.ts';
 import type { RoutineStore } from '../routines/types.ts';
+import { SqliteUsageStore } from '../usage/store.ts';
+import type { UsageStore } from '../usage/types.ts';
 
 export { isCloudflareTarget } from './runtime-target.ts';
 
@@ -46,6 +49,7 @@ export interface AppStores {
   settings: SettingsStore;
   memory: MemoryStateStore;
   routines: RoutineStore;
+  usage: UsageStore;
 }
 
 // Node singletons, cached by resolved DB path exactly like the pre-refactor
@@ -62,6 +66,7 @@ let cachedSlackStateStore: CachedStore<SqliteSlackStateStore> | undefined;
 let cachedSettingsStore: CachedStore<SqliteSettingsStore> | undefined;
 let cachedMemoryStore: CachedStore<SqliteMemoryStateStore> | undefined;
 let cachedRoutineStore: CachedStore<SqliteRoutineStore> | undefined;
+let cachedUsageStore: CachedStore<SqliteUsageStore> | undefined;
 
 function nodeCached<T extends { close(): void }>(
   cached: CachedStore<T> | undefined,
@@ -141,6 +146,17 @@ export function getRoutineStore(env?: PlatformEnv): RoutineStore {
   return cachedRoutineStore.store;
 }
 
+export function getUsageStore(env?: PlatformEnv): UsageStore {
+  if (isCloudflareTarget()) {
+    return new CfUsageStore(tagStateStub(env));
+  }
+  cachedUsageStore = nodeCached(
+    cachedUsageStore,
+    (path) => new SqliteUsageStore(path),
+  );
+  return cachedUsageStore.store;
+}
+
 /**
  * Resolve every store a request handler needs in one call. Handlers pass their
  * platform env through (`c.env` in routes); on Node it is ignored.
@@ -153,5 +169,6 @@ export function resolveStores(env?: PlatformEnv): AppStores {
     settings: getSettingsStore(env),
     memory: getMemoryStateStore(env),
     routines: getRoutineStore(env),
+    usage: getUsageStore(env),
   };
 }

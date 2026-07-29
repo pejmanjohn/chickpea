@@ -40,6 +40,19 @@ import {
 } from '../memory/types.ts';
 import type { AuditEvent, AuditEventFilter } from '../audit/types.ts';
 import {
+  UsageStateError,
+  type AdmitUsageOperationInput,
+  type RecordUsageTerminalInput,
+  type UsageOperation,
+  type UsageOperationDetail,
+  type UsageOperationPage,
+  type UsageQuery,
+  type UsageRpcRequest,
+  type UsageRpcResponse,
+  type UsageStore,
+  type UsageSummary,
+} from '../usage/index.ts';
+import {
   RoutineStateError,
   type BeginRoutineOccurrenceInput,
   type CancelRoutineConfirmationInput,
@@ -120,6 +133,12 @@ function unwrap<T>(result: StateRpcResult<T>): T {
       const routineCode = routineDetails.routineCode ?? 'routine_state_error';
       delete routineDetails.routineCode;
       throw new RoutineStateError(routineCode, message, routineDetails);
+    }
+    case 'usage': {
+      const usageDetails = { ...(details ?? {}) };
+      const usageCode = usageDetails.usageCode ?? 'usage_state_error';
+      delete usageDetails.usageCode;
+      throw new UsageStateError(usageCode, message, usageDetails);
     }
     default:
       throw new Error(message);
@@ -619,10 +638,52 @@ export class CfRoutineStore implements RoutineStore {
   }
 }
 
+export class CfUsageStore implements UsageStore {
+  constructor(private readonly stub: TagStateRpc) {}
+
+  async admitOperation(input: AdmitUsageOperationInput): Promise<UsageOperation> {
+    const response = await this.execute({ kind: 'admit_operation', input });
+    if (response.kind !== 'operation') throw unexpectedUsageResponse();
+    return response.operation;
+  }
+
+  async recordTerminal(input: RecordUsageTerminalInput): Promise<UsageOperationDetail> {
+    const response = await this.execute({ kind: 'record_terminal', input });
+    if (response.kind !== 'detail' || !response.detail) throw unexpectedUsageResponse();
+    return response.detail;
+  }
+
+  async getOperation(operationId: string): Promise<UsageOperationDetail | undefined> {
+    const response = await this.execute({ kind: 'get_operation', operationId });
+    if (response.kind !== 'detail') throw unexpectedUsageResponse();
+    return orUndefined(response.detail);
+  }
+
+  async listOperations(query: UsageQuery): Promise<UsageOperationPage> {
+    const response = await this.execute({ kind: 'list_operations', query });
+    if (response.kind !== 'operation_page') throw unexpectedUsageResponse();
+    return response.page;
+  }
+
+  async summarize(query: UsageQuery): Promise<UsageSummary> {
+    const response = await this.execute({ kind: 'summarize', query });
+    if (response.kind !== 'summary') throw unexpectedUsageResponse();
+    return response.summary;
+  }
+
+  private async execute(request: UsageRpcRequest): Promise<UsageRpcResponse> {
+    return unwrap(await this.stub.usageExecute(request));
+  }
+}
+
 function unexpectedMemoryResponse(): Error {
   return new Error('Unexpected memory state response');
 }
 
 function unexpectedRoutineResponse(): Error {
   return new Error('Unexpected routine state response');
+}
+
+function unexpectedUsageResponse(): Error {
+  return new Error('Unexpected usage state response');
 }

@@ -558,6 +558,15 @@ async function main() {
       'representative Worker → TagStateStore transaction stays inside the usage write budget',
       `p95=${stateWrite.p95.toFixed(2)}ms n=${stateWrite.count} budget=${USAGE_PRE_DELIVERY_BUDGET_MS}ms`,
     );
+    const usageSummary = await adminFetch(
+      baseUrl,
+      `/admin/api/usage/summary?from=${Date.now() - 60_000}&to=${Date.now() + 60_000}`,
+    );
+    check(
+      usageSummary.status === 200 && usageSummary.body?.totals?.operationCount === 0,
+      'Usage summary queries the initialized TagStateStore ledger',
+      `HTTP ${usageSummary.status} operations=${String(usageSummary.body?.totals?.operationCount)}`,
+    );
 
     const wireBeforeHeartbeat = backend.wireLog.length;
     const disabledHeartbeat = await fetch(`${baseUrl}/cdn-cgi/handler/scheduled?cron=*+*+*+*+*`);
