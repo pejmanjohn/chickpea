@@ -72,7 +72,7 @@ if (before.status?.state === 'connected') {
 
 const started = await request('/admin/api/providers/openai/subscription/start', {
   method: 'POST',
-  body: JSON.stringify({ acknowledgedExperimentalRisk: true }),
+  body: '{}',
 });
 assert.equal(started.state, 'authorizing');
 assert.equal(typeof started.attemptCapability, 'string');

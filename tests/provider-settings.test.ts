@@ -106,17 +106,10 @@ test('OpenAI subscription admin routes keep authorization capability browser-loc
     openAiSubscriptionCapability: () => ({ enabled: true }),
   }));
 
-  const missingAck = await app.request('/admin/api/providers/openai/subscription/start', {
-    method: 'POST',
-    headers: { ...auth(), 'content-type': 'application/json' },
-    body: '{}',
-  });
-  assert.equal(missingAck.status, 400);
-
   const startedResponse = await app.request('/admin/api/providers/openai/subscription/start', {
     method: 'POST',
     headers: { ...auth(), 'content-type': 'application/json' },
-    body: JSON.stringify({ acknowledgedExperimentalRisk: true }),
+    body: '{}',
   });
   assert.equal(startedResponse.status, 200);
   const started = await startedResponse.json() as {
@@ -213,7 +206,7 @@ test('default-off preview gate blocks admission without deleting state or affect
   const started = await app.request('/admin/api/providers/openai/subscription/start', {
     method: 'POST',
     headers: { ...auth(), 'content-type': 'application/json' },
-    body: JSON.stringify({ acknowledgedExperimentalRisk: true }),
+    body: '{}',
   });
   assert.equal(started.status, 200);
   assert.equal(protocolStarts, 1);
@@ -222,7 +215,7 @@ test('default-off preview gate blocks admission without deleting state or affect
   const blocked = await app.request('/admin/api/providers/openai/subscription/start', {
     method: 'POST',
     headers: { ...auth(), 'content-type': 'application/json' },
-    body: JSON.stringify({ acknowledgedExperimentalRisk: true }),
+    body: '{}',
   });
   assert.equal(blocked.status, 409);
   assert.deepEqual(await blocked.json(), { error: 'preview_disabled' });

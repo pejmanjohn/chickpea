@@ -7202,15 +7202,16 @@ test('Settings renders the three key-provider rows and hides Workers AI on the N
   await flushAsync();
 
   const html = harness.app.innerHTML;
-  // Anthropic (stored) shows the Stored chip + model count; OpenAI (missing) offers Add key.
+  // Anthropic (stored) shows the Stored chip + model count; OpenAI exposes both connections.
   assert.match(html, /<span class="prov-name">Anthropic<\/span>/);
   assert.match(html, /Stored<\/span><span class="hint">Saved here · 10 models available<\/span>/);
   assert.match(html, /<span class="prov-name">OpenAI<\/span>/);
-  assert.match(html, /API key missing<\/span>/);
-  assert.match(html, /<span class="field-label">Subscription<\/span>/);
+  assert.match(html, /0 of 2 connected/);
+  assert.match(html, /<span class="openai-auth-title">API key<\/span>/);
+  assert.match(html, /<span class="openai-auth-title">ChatGPT subscription<\/span>/);
   assert.match(html, /Not connected<\/span>/);
-  assert.match(html, /data-action="openai-subscription-start" disabled/);
-  assert.match(html, /never charge the Platform API key as fallback/);
+  assert.match(html, /data-action="openai-subscription-start"/);
+  assert.doesNotMatch(html, /Acknowledge experimental|personal ChatGPT account/);
   assert.match(html, /data-action="prov-add-key" data-provider="openai"/);
   // OpenRouter (env) is read-only — no change/remove — with the favorites manager.
   assert.match(html, /Via environment<\/span><span class="hint">Read-only/);
@@ -7219,6 +7220,40 @@ test('Settings renders the three key-provider rows and hides Workers AI on the N
   assert.doesNotMatch(html, /data-action="prov-remove" data-provider="openrouter"/);
   // Workers AI is binding-only: absent on Node.
   assert.doesNotMatch(html, /<span class="prov-name">Workers AI<\/span>/);
+});
+
+test('Settings distinguishes both OpenAI connections and shows where each is active', async () => {
+  const harness = runAdminPageHarness({
+    agents: [
+      { id: 'agent_api', name: 'API profile', description: '', instructions: 'Use API.', enabled: true, model: 'openai/gpt-5.4', openaiAuthMethod: 'api_key' },
+      { id: 'agent_subscription', name: 'Subscription profile', description: '', instructions: 'Use subscription.', enabled: true, model: 'openai/gpt-5.4', openaiAuthMethod: 'subscription' },
+    ],
+    providers: [
+      { id: 'anthropic', status: 'missing', modelCount: null },
+      {
+        id: 'openai',
+        status: 'stored',
+        modelCount: 2,
+        subscriptionCapability: { enabled: true },
+        subscription: {
+          state: 'connected',
+          updatedAt: 1_800_000_005_000,
+          accountFingerprint: 'oas_safe_fixture',
+          connectedAt: 1_800_000_005_000,
+        },
+      },
+      { id: 'openrouter', status: 'missing', modelCount: null },
+      { id: 'workers-ai', status: 'missing', modelCount: null },
+    ],
+  });
+  await flushAsync();
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'open-settings' }) });
+  await flushAsync();
+
+  const html = harness.app.innerHTML;
+  assert.match(html, /2 of 2 connected/);
+  assert.equal((html.match(/Selected by 1 profile/g) || []).length, 2);
+  assert.match(html, /Each profile decides which one is active for its OpenAI calls/);
 });
 
 test('Settings renders the outbound-access mode control and allowlist domain input', async () => {
@@ -7298,38 +7333,27 @@ test('Settings validates a pasted key and collapses the row to a stored status',
   await flushAsync();
 
   assert.deepEqual(harness.providerKeyPosts, [{ id: 'openai', key: 'sk-live-openai' }]);
-  // The row collapsed: OpenAI now reports the API key separately from Subscription.
+  // The API-key connection collapses independently from the subscription connection.
   assert.match(harness.app.innerHTML, /<span class="prov-name">OpenAI<\/span>/);
-  assert.match(harness.app.innerHTML, /API key stored<\/span><span class="hint">Saved here · 2 models available<\/span>/);
+  assert.match(harness.app.innerHTML, /1 of 2 connected/);
+  assert.match(harness.app.innerHTML, /Saved in Chickpea/);
 });
 
 test('Settings starts and completes Subscription authorization without rendering its browser capability', async () => {
   const harness = runAdminPageHarness();
   await flushAsync();
   const click = harness.listeners.click;
-  const change = harness.listeners.change;
-  assert.ok(click && change);
+  assert.ok(click);
 
   click({ target: actionTarget({ 'data-action': 'open-settings' }) });
   await flushAsync();
-  assert.match(harness.app.innerHTML, /OpenAI supports two explicit, independent methods/);
-  assert.match(harness.app.innerHTML, /data-action="openai-subscription-start" disabled/);
-
-  change({
-    target: {
-      checked: true,
-      closest: () => null,
-      getAttribute(name: string) {
-        return name === 'data-action' ? 'openai-subscription-risk' : null;
-      },
-    } as unknown as FakeTarget,
-  });
-  assert.doesNotMatch(harness.app.innerHTML, /data-action="openai-subscription-start" disabled/);
+  assert.match(harness.app.innerHTML, /OpenAI supports an API key and ChatGPT subscription at the same time/);
+  assert.doesNotMatch(harness.app.innerHTML, /openai-subscription-risk/);
   click({ target: actionTarget({ 'data-action': 'openai-subscription-start' }) });
   await flushAsync();
 
   assert.deepEqual(harness.openAiSubscriptionPosts, [
-    { action: 'start', body: { acknowledgedExperimentalRisk: true } },
+    { action: 'start', body: {} },
   ]);
   assert.match(harness.app.innerHTML, /https:\/\/auth\.openai\.com\/codex\/device/);
   assert.match(harness.app.innerHTML, /CHICK-PEA/);
@@ -7346,7 +7370,7 @@ test('Settings starts and completes Subscription authorization without rendering
     action: 'poll',
     body: { attemptCapability: 'browser-attempt-capability-1234567890' },
   });
-  assert.match(harness.app.innerHTML, /Installation account <span class="mono">oas_safe_fixture<\/span>/);
+  assert.match(harness.app.innerHTML, /Account <span class="mono">oas_safe_fixture<\/span>/);
   assert.doesNotMatch(harness.app.innerHTML, /CHICK-PEA/);
   assert.doesNotMatch(harness.app.innerHTML, /browser-attempt-capability-1234567890/);
 });
@@ -7397,7 +7421,8 @@ test('Settings keeps an authorizing attempt non-resumable after reload and disco
   await flushAsync();
 
   assert.equal(connected.openAiSubscriptionDisconnects(), 1);
-  assert.match(connected.app.innerHTML, /API key stored/);
+  assert.match(connected.app.innerHTML, /Saved in Chickpea/);
+  assert.match(connected.app.innerHTML, /1 of 2 connected/);
   assert.match(connected.app.innerHTML, /Not connected/);
 });
 
@@ -7426,13 +7451,12 @@ test('Settings shows the disabled preview as fail-closed while preserving stored
   await flushAsync();
 
   assert.match(harness.app.innerHTML, /Preview disabled/);
-  assert.match(harness.app.innerHTML, /every subscription-selected model call are blocked/);
-  assert.match(harness.app.innerHTML, /profile intent are preserved/);
+  assert.match(harness.app.innerHTML, /ChatGPT subscription connections are disabled/);
   assert.match(harness.app.innerHTML, /Disconnect stored connection/);
   assert.doesNotMatch(harness.app.innerHTML, /data-action="openai-subscription-start"/);
 });
 
-test('profile OpenAI authentication changes require an impact acknowledgment and persist exactly one method', async () => {
+test('profile OpenAI authentication selector shows connection state and saves exactly one method', async () => {
   const harness = runAdminPageHarness({
     assignments: [
       { workspaceId: 'T_DESIGN', channelId: 'C_OPENAI', agentId: 'agent_openai', enabled: true },
@@ -7473,26 +7497,22 @@ test('profile OpenAI authentication changes require an impact acknowledgment and
   assert.ok(click && change);
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_openai' }) });
   await flushAsync();
-  assert.match(harness.app.innerHTML, /OpenAI authentication method/);
-  assert.match(harness.app.innerHTML, /aria-checked="true" data-action="profile-openai-auth" data-method="api_key"/);
-
-  click({ target: actionTarget({ 'data-action': 'profile-openai-auth', 'data-method': 'subscription' }) });
-  assert.match(harness.app.innerHTML, /Confirm this billing-authority change/);
-  assert.match(harness.app.innerHTML, /This affects 1 current channel assignment and all scheduled work/);
-  assert.match(harness.app.innerHTML, /there is no fallback/);
-  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
-  assert.equal(harness.agentPatchBodies.length, 0);
-  assert.match(harness.app.innerHTML, /Confirm the OpenAI authentication-method change before saving/);
+  assert.match(harness.app.innerHTML, /This profile uses/);
+  assert.match(harness.app.innerHTML, /<option value="subscription">ChatGPT subscription &middot; Connected<\/option>/);
+  assert.match(harness.app.innerHTML, /<option value="api_key" selected>OpenAI API key &middot; Connected<\/option>/);
+  assert.match(harness.app.innerHTML, /Every OpenAI call from this profile uses OpenAI API key/);
 
   change({
     target: {
-      checked: true,
+      value: 'subscription',
       closest: () => null,
       getAttribute(name: string) {
-        return name === 'data-action' ? 'profile-openai-auth-ack' : null;
+        return name === 'data-action' ? 'profile-openai-auth' : null;
       },
     } as unknown as FakeTarget,
   });
+  assert.match(harness.app.innerHTML, /Save to switch this profile to ChatGPT subscription/);
+  assert.doesNotMatch(harness.app.innerHTML, /Confirm this billing-authority change|profile-openai-auth-ack/);
   click({ target: actionTarget({ 'data-action': 'save-profile' }) });
   await flushAsync();
   assert.equal(harness.agentPatchBodies.length, 1);
@@ -7534,7 +7554,7 @@ test('profile picker cannot newly select Subscription while the preview is disab
 
   assert.match(
     harness.app.innerHTML,
-    /data-action="profile-openai-auth" data-method="subscription" disabled/,
+    /<option value="subscription" disabled>ChatGPT subscription &middot; Connected<\/option>/,
   );
 });
 

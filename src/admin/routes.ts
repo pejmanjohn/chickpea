@@ -264,9 +264,7 @@ const agentIdSchema = v.pipe(v.string(), v.regex(AGENT_ID_PATTERN));
 const openAiSubscriptionCapabilitySchema = v.object({
   attemptCapability: v.pipe(v.string(), v.minLength(32), v.maxLength(512)),
 });
-const openAiSubscriptionStartSchema = v.object({
-  acknowledgedExperimentalRisk: v.literal(true),
-});
+const openAiSubscriptionStartSchema = v.object({});
 
 // A profile skill. `name` must satisfy Flue's `defineSkill` rule so a stored
 // row can never become a turn-killing validation throw at runtime; description
