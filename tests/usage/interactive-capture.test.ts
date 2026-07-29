@@ -1,0 +1,213 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+
+import type { ResolvedAssignment } from '../../src/config/types.ts';
+import type { AgentDispatchResult } from '../../src/slack/agent-dispatch.ts';
+import type { NormalizedSlackTurn } from '../../src/slack/types.ts';
+import { SqliteUsageStore } from '../../src/usage/store.ts';
+import {
+  InteractiveUsageRecorder,
+  type UsagePersistenceEvent,
+} from '../../src/usage/runtime-recorder.ts';
+import type { UsageStore } from '../../src/usage/types.ts';
+
+const turn: NormalizedSlackTurn = {
+  workspaceId: 'T_USAGE',
+  channelId: 'C_USAGE',
+  eventId: 'Ev_USAGE',
+  text: 'content is deliberately not persisted',
+  userId: 'U_USAGE',
+  messageTs: '1000.0001',
+  threadTs: '1000.0001',
+  source: 'app_mention',
+  contextMode: 'thread',
+};
+
+const assignment: ResolvedAssignment = {
+  workspaceId: 'T_USAGE',
+  channelId: 'C_USAGE',
+  channelLabel: 'usage-lab',
+  agentId: 'agent_usage',
+  model: 'openai/gpt-4.1-mini',
+  modelCredential: {
+    credentialRefId: 'cred_openai_environment',
+    version: 7,
+    providerId: 'openai',
+    sourceKind: 'environment',
+    label: 'Production project',
+    scopeLabel: 'proj_usage',
+    unknownRotation: false,
+  },
+  agent: {
+    id: 'agent_usage',
+    name: 'Usage profile',
+    instructions: 'private instructions',
+    enabled: true,
+    skills: [],
+    mcpServers: [],
+    apiConnections: [],
+    repositories: [],
+  },
+};
+
+function success(overrides: Partial<AgentDispatchResult> = {}): AgentDispatchResult {
+  return {
+    text: 'private output',
+    requestedModel: 'openai/gpt-4.1-mini',
+    returnedModel: { provider: 'openai', id: 'gpt-4.1-mini-2025-04-14' },
+    reportedUsage: { inputTokens: 120, outputTokens: 30, totalTokens: 150 },
+    usageCompleteness: 'complete',
+    ...overrides,
+  };
+}
+
+test('interactive capture persists only bounded attribution and aggregate response usage', async () => {
+  const store = new SqliteUsageStore(':memory:');
+  try {
+    const recorder = new InteractiveUsageRecorder({
+      turn,
+      assignment,
+      requestedModel: assignment.model!,
+      operationId: 'msg:C_USAGE:1000.0001',
+      executionId: 'exec:msg:C_USAGE:1000.0001:1',
+      store,
+      processEnv: { CHICKPEA_INSTALLATION_ID: 'installation_usage' },
+      now: (() => { let now = 1_000_000; return () => now += 10; })(),
+    });
+    await recorder.admit();
+    await recorder.recordSuccess(success());
+
+    const detail = await store.getOperation('msg:C_USAGE:1000.0001');
+    assert.equal(detail?.operation.profileLabel, 'Usage profile');
+    assert.equal(detail?.operation.channelLabel, 'usage-lab');
+    assert.equal(detail?.operation.credentialVersion, 7);
+    assert.equal(detail?.measurements[0]?.totalTokens, 150);
+    assert.doesNotMatch(
+      JSON.stringify(detail),
+      /content is deliberately|private output|private instructions|Production project/,
+    );
+  } finally {
+    store.close();
+  }
+});
+
+test('operations-only success and provider failure remain explicit unknowns', async () => {
+  const store = new SqliteUsageStore(':memory:');
+  try {
+    const unmetered = new InteractiveUsageRecorder({
+      turn,
+      assignment,
+      requestedModel: assignment.model!,
+      operationId: 'msg_unmetered',
+      executionId: 'exec_unmetered',
+      store,
+      now: () => 2_000_000,
+    });
+    await unmetered.admit();
+    await unmetered.recordSuccess(success({
+      reportedUsage: null,
+      usageCompleteness: 'not_reported',
+    }));
+    const failed = new InteractiveUsageRecorder({
+      turn,
+      assignment,
+      requestedModel: assignment.model!,
+      operationId: 'msg_failed',
+      executionId: 'exec_failed',
+      store,
+      now: () => 3_000_000,
+    });
+    await failed.admit();
+    await failed.recordFailure();
+
+    assert.equal(
+      (await store.getOperation('msg_unmetered'))?.measurements[0]?.usageUnknownReason,
+      'usage_not_reported',
+    );
+    assert.equal((await store.getOperation('msg_failed'))?.operation.status, 'failed');
+    assert.equal(
+      (await store.getOperation('msg_failed'))?.measurements[0]?.usageUnknownReason,
+      'provider_request_unknown',
+    );
+  } finally {
+    store.close();
+  }
+});
+
+test('a real recovery invocation adds usage while one execution persistence retry is idempotent', async () => {
+  const store = new SqliteUsageStore(':memory:');
+  try {
+    for (const [executionId, input, output] of [
+      ['exec_retry_1', 100, 20],
+      ['exec_retry_2', 50, 10],
+    ] as const) {
+      const recorder = new InteractiveUsageRecorder({
+        turn,
+        assignment,
+        requestedModel: assignment.model!,
+        operationId: 'msg_retry',
+        executionId,
+        store,
+        now: () => executionId.endsWith('1') ? 4_000_000 : 5_000_000,
+      });
+      await recorder.admit();
+      await recorder.recordSuccess(success({
+        reportedUsage: { inputTokens: input, outputTokens: output, totalTokens: input + output },
+      }));
+      await recorder.repairAfterDelivery();
+    }
+    const detail = await store.getOperation('msg_retry');
+    assert.equal(detail?.measurements.length, 2);
+    assert.equal(detail?.measurements.reduce((sum, row) => sum + (row.totalTokens ?? 0), 0), 180);
+  } finally {
+    store.close();
+  }
+});
+
+test('slow telemetry cannot hold delivery beyond the budget and one repair records the same execution', async () => {
+  const durable = new SqliteUsageStore(':memory:');
+  const never = new Promise<never>(() => undefined);
+  let admissionCalls = 0;
+  let terminalCalls = 0;
+  const store: UsageStore = {
+    admitOperation: async (input) => (++admissionCalls === 1 ? never : durable.admitOperation(input)),
+    recordTerminal: async (input) => (++terminalCalls === 1 ? never : durable.recordTerminal(input)),
+    getOperation: (id) => durable.getOperation(id),
+    listOperations: (query) => durable.listOperations(query),
+    summarize: (query) => durable.summarize(query),
+    putCredential: (input) => durable.putCredential(input),
+    retireCredential: (ref, version, at) => durable.retireCredential(ref, version, at),
+    listCredentials: (provider) => durable.listCredentials(provider),
+  };
+  const events: UsagePersistenceEvent[] = [];
+  const originalWarn = console.warn;
+  console.warn = () => undefined;
+  try {
+    const recorder = new InteractiveUsageRecorder({
+      turn,
+      assignment,
+      requestedModel: assignment.model!,
+      operationId: 'msg_slow',
+      executionId: 'exec_slow_1',
+      store,
+      writeBudgetMs: 5,
+      now: () => 6_000_000,
+      onPersistence: (event) => events.push(event),
+    });
+    const started = performance.now();
+    await recorder.admit();
+    await recorder.recordSuccess(success());
+    const readyToDeliverMs = performance.now() - started;
+    assert.ok(readyToDeliverMs < 40, `telemetry delayed delivery ${readyToDeliverMs}ms`);
+    await recorder.repairAfterDelivery();
+    assert.deepEqual(events.map(({ phase, outcome }) => [phase, outcome]), [
+      ['admission', 'timed_out'],
+      ['terminal', 'timed_out'],
+      ['repair', 'recorded'],
+    ]);
+    assert.equal((await durable.getOperation('msg_slow'))?.measurements[0]?.executionId, 'exec_slow_1');
+  } finally {
+    console.warn = originalWarn;
+    durable.close();
+  }
+});

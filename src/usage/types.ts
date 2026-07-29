@@ -127,7 +127,7 @@ export interface UsageMeasurement extends Omit<RecordUsageTerminalInput, 'status
 
 export interface UsageOperationDetail {
   operation: UsageOperation;
-  measurement: UsageMeasurement | null;
+  measurements: UsageMeasurement[];
 }
 
 export const USAGE_GROUP_BY_VALUES = [

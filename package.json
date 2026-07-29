@@ -33,7 +33,7 @@
   "scripts": {
     "postinstall": "node scripts/patch-flue-runtime.mjs",
     "pretest": "node scripts/patch-flue-runtime.mjs && node scripts/preflight-node-lane.mjs",
-    "test": "npm run typecheck && node --test --import tsx tests/*.test.ts",
+    "test": "npm run typecheck && node --test --import tsx tests/*.test.ts tests/usage/*.test.ts",
     "test:ci": "TAG_REQUIRE_LOOPBACK=1 npm test",
     "typecheck": "tsc --noEmit",
     "flue:build": "node scripts/patch-flue-runtime.mjs && node scripts/preflight-node-lane.mjs && flue build --target node",

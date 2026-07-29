@@ -7,6 +7,7 @@ import {
 
 import { resolveEffectiveSlackConfig } from '../config/effective-config.ts';
 import { resolveModelCredentialAttribution } from '../config/model-credential-refs.ts';
+import { resolveAgentModel } from '../config/model-policy.ts';
 import { ModelResolutionError, NoAssignmentError } from '../config/errors.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import { resolveAssignment, type AssignmentSurface } from '../config/resolver.ts';
@@ -350,6 +351,24 @@ const handleSlackEvents: NonNullable<SlackChannelOptions['events']> = async ({ c
     }
   }
 
+  // Direct-message assignments are intentionally live rather than snapshotted,
+  // so attach the same non-secret credential attribution at admission time.
+  // A model-resolution error still follows the existing sanitized-failure path.
+  if (!assignment.modelCredential) {
+    try {
+      const model = assignment.model ?? resolveAgentModel(assignment.agent);
+      const modelCredential = await resolveModelCredentialAttribution(
+        model,
+        platformEnv,
+        stores.settings,
+        stores.usage,
+      );
+      if (modelCredential) assignment = { ...assignment, modelCredential };
+    } catch {
+      // Reporting enrichment cannot change whether the turn is admitted.
+    }
+  }
+
   // f. The old HTTP self-call — and the Host-derived origin trust it forced,
   //    since Slack signatures don't cover Host — is gone: the agent prompt
   //    now dispatches in-process (see slack/agent-dispatch.ts) with the
@@ -391,7 +410,10 @@ const handleSlackEvents: NonNullable<SlackChannelOptions['events']> = async ({ c
   }
   detach(
     c,
-    runTurn(turn, assignment, platformEnv).catch(async (err) => {
+    runTurn(turn, assignment, platformEnv, {
+      turnId: msgKey,
+      usageExecutionId: `exec:${msgKey}:1`,
+    }).catch(async (err) => {
       // Release on a genuine delivery failure so a Slack retry can re-drive
       // the turn. A completed turn (including a delivered provider-failure
       // final) returns normally and keeps its claim, so it never re-runs.

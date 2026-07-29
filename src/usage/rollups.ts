@@ -86,14 +86,14 @@ export function aggregateSelect(currency: string | null): { sql: string; params:
     : 'CASE WHEN m.estimate_completeness = \'complete\' THEN m.estimate_amount_micros END';
   return {
     sql: `
-      COUNT(*) AS operation_count,
-      SUM(CASE WHEN o.status = 'completed' THEN 1 ELSE 0 END) AS completed_operation_count,
-      SUM(CASE WHEN o.status = 'failed' THEN 1 ELSE 0 END) AS failed_operation_count,
-      SUM(CASE WHEN o.status IN ('interrupted', 'incomplete', 'admitted') THEN 1 ELSE 0 END) AS incomplete_operation_count,
-      SUM(CASE WHEN m.usage_completeness IN ('complete', 'partial') THEN 1 ELSE 0 END) AS metered_operation_count,
-      SUM(CASE WHEN m.estimate_completeness = 'complete' THEN 1 ELSE 0 END) AS priced_operation_count,
-      SUM(CASE WHEN m.execution_id IS NULL OR m.usage_completeness = 'not_reported' THEN 1 ELSE 0 END) AS unknown_usage_operation_count,
-      SUM(CASE WHEN m.execution_id IS NULL OR m.estimate_completeness != 'complete' THEN 1 ELSE 0 END) AS unknown_price_operation_count,
+      COUNT(DISTINCT o.operation_id) AS operation_count,
+      COUNT(DISTINCT CASE WHEN o.status = 'completed' THEN o.operation_id END) AS completed_operation_count,
+      COUNT(DISTINCT CASE WHEN o.status = 'failed' THEN o.operation_id END) AS failed_operation_count,
+      COUNT(DISTINCT CASE WHEN o.status IN ('interrupted', 'incomplete', 'admitted') THEN o.operation_id END) AS incomplete_operation_count,
+      COUNT(DISTINCT CASE WHEN m.usage_completeness IN ('complete', 'partial') THEN o.operation_id END) AS metered_operation_count,
+      COUNT(DISTINCT CASE WHEN m.estimate_completeness = 'complete' THEN o.operation_id END) AS priced_operation_count,
+      COUNT(DISTINCT o.operation_id) - COUNT(DISTINCT CASE WHEN m.usage_completeness IN ('complete', 'partial') THEN o.operation_id END) AS unknown_usage_operation_count,
+      COUNT(DISTINCT o.operation_id) - COUNT(DISTINCT CASE WHEN m.estimate_completeness = 'complete' THEN o.operation_id END) AS unknown_price_operation_count,
       SUM(m.input_tokens) AS input_tokens,
       SUM(m.output_tokens) AS output_tokens,
       SUM(m.total_tokens) AS total_tokens,

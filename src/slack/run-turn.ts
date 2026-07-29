@@ -4,7 +4,7 @@ import { resolveAgentModel } from '../config/model-policy.ts';
 import { getGithubConnection } from '../config/github-app.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import { resolveSandboxSettings } from '../config/sandbox-settings.ts';
-import { getSettingsStore } from '../config/state-backend.ts';
+import { getSettingsStore, getUsageStore } from '../config/state-backend.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
 import { parseMemoryCommand } from '../memory/commands.ts';
@@ -18,6 +18,7 @@ import {
   AgentPromptFailure,
   promptSlackThreadAgent,
   releaseCloudflareSandboxTurn,
+  type AgentDispatchResult,
 } from './agent-dispatch.ts';
 import { resolveSlackCredentials, resolveSlackPublicUrl } from './credentials.ts';
 import type { SlackStatusUpdate } from './replies.ts';
@@ -37,6 +38,12 @@ import {
   SANDBOX_SESSION_CAP_FAILURE_TEXT,
   WebClientPresenter,
 } from './web-client-presenter.ts';
+import {
+  InteractiveUsageRecorder,
+  usageRuntimeRecordingEnabled,
+  type UsagePersistenceEvent,
+} from '../usage/runtime-recorder.ts';
+import type { UsageStore } from '../usage/types.ts';
 
 /**
  * The turn lifecycle, factored out of the Slack channel so BOTH the node detach
@@ -112,6 +119,16 @@ export interface RunTurnOptions {
   beforeDelivery?: () => Promise<string | undefined>;
   /** Persist terminal delivery before post-delivery workspace teardown begins. */
   onDelivered?: () => void | Promise<void>;
+  /** Stable ID for one actual model invocation; persistence retries reuse it. */
+  usageExecutionId?: string;
+  /** Local override avoids a Durable Object calling its own Usage RPC. */
+  usageStore?: UsageStore;
+  /** Test/rollout override; otherwise USAGE_RUNTIME_RECORDING controls capture. */
+  usageRecordingEnabled?: boolean;
+  /** Test override, bounded to the product's 250 ms maximum. */
+  usageWriteBudgetMs?: number;
+  /** Durable turn-job denominator hook for persistence coverage. */
+  onUsagePersistence?: (event: UsagePersistenceEvent) => void;
 }
 
 /**
@@ -193,6 +210,13 @@ export async function runTurn(
     await statusTurn.drain();
   };
   let usedCloudflareSandbox = false;
+  let usageRecorder: InteractiveUsageRecorder | undefined;
+  const finishDelivery = async (): Promise<void> => {
+    // Delivery gets its durable tombstone before the best-effort repair so a
+    // slow reporting backend can never make Slack retry already-delivered work.
+    await options.onDelivered?.();
+    await usageRecorder?.repairAfterDelivery();
+  };
 
   // 1. Visible work: set status; if it is rejected, post a durable progress
   //    placeholder so the user still sees work in-flight before the final.
@@ -200,9 +224,29 @@ export async function runTurn(
     if (memoryCommand) {
       const handled = await handleMemoryCommand({ turn, platformEnv, client, presenter });
       if (handled) {
-        await options.onDelivered?.();
+        await finishDelivery();
         return;
       }
+    }
+    const recordingEnabled = options.usageRecordingEnabled ??
+      usageRuntimeRecordingEnabled(platformEnv);
+    if (recordingEnabled && options.replayText === undefined) {
+      usageRecorder = new InteractiveUsageRecorder({
+        turn,
+        assignment,
+        requestedModel: resolvedModel ?? null,
+        operationId: statusGeneration,
+        executionId: options.usageExecutionId ?? `exec:${statusGeneration}:1`,
+        store: options.usageStore ?? getUsageStore(platformEnv),
+        ...(platformEnv ? { platformEnv } : {}),
+        ...(options.usageWriteBudgetMs === undefined
+          ? {}
+          : { writeBudgetMs: options.usageWriteBudgetMs }),
+        ...(options.onUsagePersistence
+          ? { onPersistence: options.onUsagePersistence }
+          : {}),
+      });
+      await usageRecorder.admit();
     }
     const statusSet = await statusTurn.setStatus(readingThreadStatus());
     if (!statusSet) {
@@ -236,12 +280,13 @@ export async function runTurn(
       await statusTurn.setStatus(modelStatus(resolvedModel));
     }
     let text: string;
+    let agentResult: AgentDispatchResult | undefined;
     if (options.replayText !== undefined) {
       text = options.replayText;
     } else {
       try {
         usedCloudflareSandbox = await shouldUseCloudflareSandbox(assignment, platformEnv);
-        const agentResult = await promptSlackThreadAgent(
+        agentResult = await promptSlackThreadAgent(
           conversationKey,
           prompt,
           platformEnv,
@@ -250,18 +295,20 @@ export async function runTurn(
           resolvedModel ?? null,
         );
         text = agentResult.text;
+        await usageRecorder?.recordSuccess(agentResult);
       } catch (err) {
         console.error('[chickpea] agent run failed:', sanitizeError(err));
+        await usageRecorder?.recordFailure();
         const recoveredText = await options.beforeDelivery?.();
         await closeAndDrainStatus();
         if (recoveredText) {
           await preparedMemory?.confirmInjection();
           await presenter.deliverFinal(recoveredText, 'markdown');
-          await options.onDelivered?.();
+          await finishDelivery();
           return;
         }
         await presenter.deliverFinal(agentFailureText(err), 'plain_text');
-        await options.onDelivered?.();
+        await finishDelivery();
         return;
       }
     }
@@ -279,7 +326,10 @@ export async function runTurn(
     );
     await closeAndDrainStatus();
     await presenter.deliverFinal(text, 'markdown');
-    await options.onDelivered?.();
+    await finishDelivery();
+  } catch (err) {
+    await usageRecorder?.recordFailure();
+    throw err;
   } finally {
     // Also covers failures before the ordinary delivery boundary (hydration,
     // provider setup, or persistence). Idempotent after the success path.

@@ -183,24 +183,17 @@ export class UsageStoreLogic {
       if (input.finishedAt < operation.startedAt) {
         throw new UsageStateError('usage_invalid_input', 'Finish time precedes admission.');
       }
-      const existing = this.getMeasurementRowForOperation(input.operationId);
+      const existing = this.getMeasurementRow(input.executionId);
       if (existing) {
         const measurement = mapMeasurement(existing);
-        if (!sameTerminal(measurement, input) || operation.status !== input.status) {
+        if (!sameTerminal(measurement, input)) {
           throw new UsageStateError(
             'usage_measurement_conflict',
             'Usage operation already has a different terminal measurement.',
             { operationId: input.operationId, executionId: input.executionId },
           );
         }
-        return { operation, measurement };
-      }
-      if (operation.status !== 'admitted' && operation.status !== input.status) {
-        throw new UsageStateError(
-          'usage_operation_terminal',
-          'Usage operation is already terminal.',
-          { operationId: input.operationId },
-        );
+        return requiredDetail(this.getOperation(input.operationId));
       }
       const recordedAt = this.now();
       this.db.run(
@@ -231,7 +224,9 @@ export class UsageStoreLogic {
         recordedAt,
       );
       this.db.run(
-        'UPDATE usage_operations SET status = ?, finished_at = ?, updated_at = ? WHERE operation_id = ?',
+        `UPDATE usage_operations
+         SET status = ?, finished_at = MAX(COALESCE(finished_at, 0), ?), updated_at = ?
+         WHERE operation_id = ?`,
         input.status,
         input.finishedAt,
         recordedAt,
@@ -244,10 +239,9 @@ export class UsageStoreLogic {
   getOperation(operationId: string): UsageOperationDetail | undefined {
     const operationRow = this.getOperationRow(operationId);
     if (!operationRow) return undefined;
-    const measurementRow = this.getMeasurementRowForOperation(operationId);
     return {
       operation: mapOperation(operationRow),
-      measurement: measurementRow ? mapMeasurement(measurementRow) : null,
+      measurements: this.getMeasurementRowsForOperation(operationId).map(mapMeasurement),
     };
   }
 
@@ -255,7 +249,7 @@ export class UsageStoreLogic {
     const query = normalizeUsageQuery(rawQuery);
     const where = usageWhere(query, true);
     const rows = this.db.all(
-      `SELECT o.operation_id
+      `SELECT DISTINCT o.operation_id, o.started_at
        FROM usage_operations o
        LEFT JOIN usage_measurements m ON m.operation_id = o.operation_id
        WHERE ${where.sql}
@@ -469,11 +463,19 @@ export class UsageStoreLogic {
     ) as unknown as OperationRow | undefined;
   }
 
-  private getMeasurementRowForOperation(operationId: string): MeasurementRow | undefined {
+  private getMeasurementRow(executionId: string): MeasurementRow | undefined {
     return this.db.get(
-      `SELECT ${MEASUREMENT_COLUMNS} FROM usage_measurements WHERE operation_id = ?`,
-      operationId,
+      `SELECT ${MEASUREMENT_COLUMNS} FROM usage_measurements WHERE execution_id = ?`,
+      executionId,
     ) as unknown as MeasurementRow | undefined;
+  }
+
+  private getMeasurementRowsForOperation(operationId: string): MeasurementRow[] {
+    return this.db.all(
+      `SELECT ${MEASUREMENT_COLUMNS} FROM usage_measurements
+       WHERE operation_id = ? ORDER BY observed_at, execution_id`,
+      operationId,
+    ) as unknown as MeasurementRow[];
   }
 
   private getCredentialRow(credentialRefId: string, version: number): CredentialRow | undefined {
@@ -518,7 +520,7 @@ export class UsageStoreLogic {
     this.db.exec(
       `CREATE TABLE IF NOT EXISTS usage_measurements (
         execution_id TEXT PRIMARY KEY,
-        operation_id TEXT NOT NULL UNIQUE,
+        operation_id TEXT NOT NULL,
         operation_status TEXT NOT NULL,
         observed_at INTEGER NOT NULL,
         provider_route TEXT,
@@ -565,6 +567,7 @@ export class UsageStoreLogic {
       'CREATE INDEX IF NOT EXISTS usage_measurements_provider_idx ON usage_measurements (returned_provider, observed_at DESC)',
       'CREATE INDEX IF NOT EXISTS usage_measurements_model_idx ON usage_measurements (returned_model, observed_at DESC)',
       'CREATE INDEX IF NOT EXISTS usage_measurements_credential_idx ON usage_measurements (credential_ref_id, observed_at DESC)',
+      'CREATE INDEX IF NOT EXISTS usage_measurements_operation_idx ON usage_measurements (operation_id, observed_at, execution_id)',
       'CREATE INDEX IF NOT EXISTS usage_credentials_provider_idx ON usage_credentials (provider_id, retired_at, credential_ref_id, version)',
     ]) this.db.exec(sql);
   }

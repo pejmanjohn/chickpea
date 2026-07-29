@@ -89,6 +89,32 @@ test('recordAttempt advances the counter the alarm caps on', () => {
   assert.equal(store.listPending()[0]?.attempts, MAX_TURN_ATTEMPTS);
 });
 
+test('usage persistence outcomes survive relay restart as a coverage denominator', () => {
+  const store = newStore();
+  store.enqueue(job('usage'));
+  store.recordUsagePersistence('usage', {
+    executionId: 'exec:usage:1',
+    phase: 'admission',
+    outcome: 'recorded',
+  });
+  store.recordUsagePersistence('usage', {
+    executionId: 'exec:usage:1',
+    phase: 'terminal',
+    outcome: 'timed_out',
+  });
+  store.recordUsagePersistence('usage', {
+    executionId: 'exec:usage:1',
+    phase: 'repair',
+    outcome: 'recorded',
+  });
+  assert.deepEqual(store.listPending()[0]?.progress.usageTelemetry, {
+    executionId: 'exec:usage:1',
+    admission: 'recorded',
+    terminal: 'timed_out',
+    repair: 'recorded',
+  });
+});
+
 test('recorded PR progress makes a retry replay instead of opening another PR', () => {
   const store = newStore();
   store.enqueue(job('msg:C1:1'));

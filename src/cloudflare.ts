@@ -100,7 +100,7 @@ import {
 import { createRoutineScheduledHandler } from './routines/scheduler-adapter.ts';
 import { UsageStoreLogic } from './usage/store.ts';
 import { UsageStateError } from './usage/store-error.ts';
-import type { UsageRpcRequest, UsageRpcResponse } from './usage/types.ts';
+import type { UsageRpcRequest, UsageRpcResponse, UsageStore } from './usage/types.ts';
 import {
   RoutineAdmissionController,
   RoutineNotSubmittedError,
@@ -711,6 +711,17 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     // credential resolution never RPCs into this same object (a self-call while
     // the alarm holds the thread). runTurn takes it as an override.
     const client = await this.resolveAlarmClient(stores);
+    const usageStore: UsageStore = {
+      admitOperation: async (input) => stores.usage.admitOperation(input),
+      recordTerminal: async (input) => stores.usage.recordTerminal(input),
+      getOperation: async (operationId) => stores.usage.getOperation(operationId),
+      listOperations: async (query) => stores.usage.listOperations(query),
+      summarize: async (query) => stores.usage.summarize(query),
+      putCredential: async (input) => stores.usage.putCredential(input),
+      retireCredential: async (credentialRefId, version, retiredAt) =>
+        stores.usage.retireCredential(credentialRefId, version, retiredAt),
+      listCredentials: async (providerId) => stores.usage.listCredentials(providerId),
+    };
     let needsRetry = false;
     // The resolver's store contract is async; the DO's logic classes are sync.
     // A tiny async adapter bridges them for the fail-closed re-check below.
@@ -785,6 +796,11 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         await runTurn(job.turn, job.assignment, this.env as PlatformEnv, {
           client,
           turnId: job.id,
+          usageExecutionId: `exec:${job.id}:${attempt}`,
+          usageStore,
+          onUsagePersistence: (event) => {
+            stores.turnJobs.recordUsagePersistence(job.id, event);
+          },
           ...(replayText === undefined ? {} : { replayText }),
           beforeDelivery: persistSandboxProgress,
           // Record terminal delivery before runTurn's post-delivery Sandbox

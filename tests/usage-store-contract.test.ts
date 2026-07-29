@@ -74,7 +74,7 @@ test('usage admission and terminal recording are idempotent and immutable', asyn
 
     const recorded = await store.recordTerminal(terminal('op_1'));
     assert.equal(recorded.operation.status, 'completed');
-    assert.equal(recorded.measurement?.inputTokens, 100);
+    assert.equal(recorded.measurements[0]?.inputTokens, 100);
     assert.deepEqual(await store.recordTerminal(terminal('op_1')), recorded);
 
     await assert.rejects(
@@ -114,8 +114,8 @@ test('missing usage remains null with an explicit reason and direct messages sta
 
     const detail = await store.getOperation('op_dm');
     assert.equal(detail?.operation.channelLabel, null);
-    assert.equal(detail?.measurement?.totalTokens, null);
-    assert.equal(detail?.measurement?.usageUnknownReason, 'usage_not_reported');
+    assert.equal(detail?.measurements[0]?.totalTokens, null);
+    assert.equal(detail?.measurements[0]?.usageUnknownReason, 'usage_not_reported');
     assert.doesNotMatch(JSON.stringify(detail), /prompt|resultText|authorization|apiKey/i);
 
     const grouped = await store.summarize({
@@ -125,6 +125,36 @@ test('missing usage remains null with an explicit reason and direct messages sta
     });
     assert.equal(grouped.groups[0]?.key, 'direct_message');
     assert.equal(grouped.groups[0]?.label, 'Direct message');
+  } finally {
+    store.close();
+  }
+});
+
+test('a recovered work instance retains each distinct model execution without double-counting work', async () => {
+  const store = new SqliteUsageStore(':memory:');
+  try {
+    await store.admitOperation(operation('op_retry'));
+    await store.recordTerminal(terminal('op_retry', {
+      executionId: 'exec_retry_1',
+      inputTokens: 80,
+      outputTokens: 20,
+      totalTokens: 100,
+    }));
+    await store.recordTerminal(terminal('op_retry', {
+      executionId: 'exec_retry_2',
+      finishedAt: START + 3_000,
+      observedAt: START + 3_000,
+      inputTokens: 40,
+      outputTokens: 10,
+      totalTokens: 50,
+    }));
+
+    const detail = await store.getOperation('op_retry');
+    assert.equal(detail?.measurements.length, 2);
+    const summary = await store.summarize({ from: START - 1, to: START + 10_000 });
+    assert.equal(summary.totals.operationCount, 1);
+    assert.equal(summary.totals.meteredOperationCount, 1);
+    assert.equal(summary.totals.totalTokens, 150);
   } finally {
     store.close();
   }

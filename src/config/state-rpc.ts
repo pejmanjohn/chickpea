@@ -76,6 +76,12 @@ export interface TurnPullRequestProgress {
 
 export interface TurnProgress {
   pullRequest?: TurnPullRequestProgress;
+  usageTelemetry?: {
+    executionId: string;
+    admission?: 'recorded' | 'timed_out' | 'failed';
+    terminal?: 'recorded' | 'timed_out' | 'failed';
+    repair?: 'recorded' | 'timed_out' | 'failed';
+  };
 }
 
 /**
