@@ -106,7 +106,7 @@ button, input, textarea, select { font: inherit; }
   text-decoration: none;
 }
 .btn:disabled { cursor: not-allowed; opacity: 0.55; }
-.btn:focus-visible, .x-btn:focus-visible, .rail-add:focus-visible, .chan-item:focus-visible {
+.btn:focus-visible, .x-btn:focus-visible, .rail-add:focus-visible, .chan-item:focus-visible, .section-nav-item:focus-visible {
   outline: 2px solid var(--ember-press);
   outline-offset: 2px;
 }
@@ -283,6 +283,14 @@ button, input, textarea, select { font: inherit; }
   flex-shrink: 0;
   width: clamp(248px, 22vw, 314px);
 }
+.rail-context {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 0;
+  overflow-y: auto;
+  padding-bottom: 10px;
+}
 .rail-head { align-items: center; display: flex; justify-content: space-between; padding: 0 10px 10px; }
 .platform-row {
   align-items: center;
@@ -347,7 +355,31 @@ button, input, textarea, select { font: inherit; }
 }
 .ws-row .ic { color: var(--text-3); }
 .rail-add:hover:not(:disabled) { background: #f6eedc; color: var(--text-2); }
+.rail-add.active { background: var(--ember-tint); color: var(--text); }
 .rail-add:disabled { cursor: not-allowed; opacity: 0.5; }
+.section-switcher {
+  border-top: 1.5px solid rgba(59, 50, 32, .15);
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  gap: 2px;
+  margin-top: auto;
+  padding: 14px 2px 0;
+}
+.section-nav-item {
+  background: transparent;
+  border: 0;
+  border-radius: 11px;
+  color: var(--text-2);
+  cursor: pointer;
+  font-size: .8125rem;
+  font-weight: 500;
+  padding: 8px 10px;
+  text-align: left;
+  width: 100%;
+}
+.section-nav-item:hover { background: #f6eedc; color: var(--text); }
+.section-nav-item.active { background: var(--ember-tint); color: var(--text); }
 .chan-opt-note { color: var(--text-3); font-size: 0.71875rem; }
 .link-btn { background: none; border: 0; color: var(--ember-press); cursor: pointer; font-size: 0.8125rem; font-weight: 600; padding: 0; text-decoration: underline; }
 .link-btn:hover { color: var(--ember); }
@@ -451,7 +483,7 @@ button, input, textarea, select { font: inherit; }
 .inline-status.error { color: var(--danger); font-weight: 700; }
 .slack-overview-foot { align-items: center; display: flex; flex-wrap: wrap; gap: 12px; }
 .main-head { align-items: flex-start; display: flex; gap: 12px; justify-content: space-between; }
-.section { border-top: 1.5px dashed rgba(59, 50, 32, 0.15); display: flex; flex-direction: column; gap: 13px; padding-top: 18px; }
+.section { border-top: 1.5px solid rgba(59, 50, 32, 0.15); display: flex; flex-direction: column; gap: 13px; padding-top: 18px; }
 .section:first-child { border-top: 0; padding-top: 0; }
 .section-head { align-items: baseline; display: flex; gap: 10px; justify-content: space-between; }
 .section-title { color: var(--text); font-family: var(--display); font-size: 1rem; font-weight: 700; text-wrap: balance; }
@@ -527,7 +559,7 @@ button, input, textarea, select { font: inherit; }
 }
 .layer-tag.ember { color: var(--ember-press); }
 .from-addendum { border-left: 3px solid var(--ember); margin-left: -16px; padding-left: 13px; }
-details.advanced { border-top: 1.5px dashed rgba(59, 50, 32, 0.15); padding-top: 4px; }
+details.advanced { border-top: 1.5px solid rgba(59, 50, 32, 0.15); padding-top: 4px; }
 details.advanced summary {
   align-items: center;
   color: var(--text-2);
@@ -871,6 +903,8 @@ details[open].advanced summary::before {
 @media (max-width: 720px) {
   .body { flex-direction: column; }
   .rail { border-bottom: 0; width: 100%; }
+  .rail-context { max-height: 46vh; }
+  .section-switcher { display: none; }
   .main { padding: 20px; }
   .form-grid { grid-template-columns: 1fr; }
   .prov-actions { margin-left: 0; width: 100%; }
@@ -917,6 +951,13 @@ details[open].advanced summary::before {
     top: 54px;
     z-index: 30;
   }
+}
+
+@media (min-width: 721px) {
+  .frame { height: 100dvh; overflow: hidden; }
+  .body { overflow: hidden; }
+  .rail, .main { max-height: 100%; }
+  .topbar .topbar-menu, .topbar .actions-list { display: none; }
 }
 
 /* ---- action buttons never wrap their label ---- */
@@ -1073,7 +1114,7 @@ details[open].advanced summary::before {
 
 /* ---- profile capability tabs (Instructions / Skills / Connections / Repositories) ----
    "Ringed tray": the tab bar and its visible panel read as ONE cream container
-   outlined by a 1.5px ring, with a dashed seam under the tabs. The active tab
+   outlined by a 1.5px ring, with a solid seam under the tabs. The active tab
    is a solid cocoa pill (same idiom as the topbar's active nav). Pills INSIDE
    panels stay clay, like every other row on the page.
 
@@ -1087,7 +1128,7 @@ details[open].advanced summary::before {
   align-self: stretch;
   background: var(--bg);
   border: 1.5px solid rgba(59, 50, 32, 0.14);
-  border-bottom: 1.5px dashed rgba(59, 50, 32, 0.13);
+  border-bottom: 1.5px solid rgba(59, 50, 32, 0.13);
   border-radius: 18px 18px 0 0;
   display: flex;
   gap: 3px;
@@ -1234,7 +1275,7 @@ details[open].advanced summary::before {
 .repo-picker-row input { accent-color: var(--ember-press); flex-shrink: 0; }
 .repo-picker-row .repo-name { flex: 1; }
 .repo-picker-foot { border-top: 1.5px solid var(--well); padding-top: 11px; }
-.repo-footer { border-top: 1.5px dashed rgba(59, 50, 32, 0.13); flex-wrap: wrap; margin-top: 2px; padding-top: 12px; }
+.repo-footer { border-top: 1.5px solid rgba(59, 50, 32, 0.13); flex-wrap: wrap; margin-top: 2px; padding-top: 12px; }
 .repo-footer .hint { margin-right: auto; }
 @media (max-width: 720px) {
   .repo-panel-head, .repo-picker-foot, .repo-footer { align-items: stretch; flex-direction: column; }
@@ -1350,7 +1391,7 @@ details[open].advanced summary::before {
 }
 
 /* ---- profile footer (delete / add-to-channels / usage) ---- */
-.profile-foot { align-items: center; border-top: 1.5px dashed rgba(59, 50, 32, 0.15); display: flex; flex-wrap: wrap; gap: 10px; padding-top: 20px; }
+.profile-foot { align-items: center; border-top: 1.5px solid rgba(59, 50, 32, 0.15); display: flex; flex-wrap: wrap; gap: 10px; padding-top: 20px; }
 
 /* ---- Audit logs: Scheduled Work and Memory domains ---- */
 .audit-rail { gap: 2px; }
@@ -1376,14 +1417,14 @@ details[open].advanced summary::before {
 .audit-tab:disabled { cursor: not-allowed; opacity: 0.52; }
 .scheduled-filters { align-items: flex-end; display: flex; flex-wrap: wrap; gap: 9px; }
 .scheduled-filters .field { min-width: 220px; }
-.scheduled-capability { background: transparent; border-top: 1.5px dashed var(--line-strong); margin-top: 2px; padding-top: 13px; }
+.scheduled-capability { background: transparent; border-top: 1.5px solid var(--line-strong); margin-top: 2px; padding-top: 13px; }
 .scheduled-capability > summary { align-items: center; cursor: pointer; display: flex; gap: 10px; list-style: none; }
 .scheduled-capability > summary::-webkit-details-marker { display: none; }
 .scheduled-capability > summary::before { color: var(--text-3); content: "▸"; font-size: 0.72rem; }
 .scheduled-capability[open] > summary::before { content: "▾"; }
 .scheduled-capability-summary { display: flex; flex: 1; flex-direction: column; gap: 2px; min-width: 0; }
 .scheduled-capability-copy { background: var(--well); border-radius: 13px; margin-top: 10px; padding: 13px 15px; }
-.scheduled-capability-limits { border-top: 1px dashed var(--line-strong); margin-top: 9px; padding-top: 8px; }
+.scheduled-capability-limits { border-top: 1px solid var(--line-strong); margin-top: 9px; padding-top: 8px; }
 .scheduled-capability-limits summary, .scheduled-technical summary { color: var(--text-2); cursor: pointer; font-size: 0.75rem; font-weight: 700; }
 .scheduled-capability-limits .hint { margin: 7px 0 0; }
 .scheduled-page-intro { margin: -10px 0 0; }
@@ -1431,7 +1472,7 @@ details[open].advanced summary::before {
 .scheduled-meta-item .mono { overflow-wrap: anywhere; }
 .scheduled-definition-grid { display: grid; gap: 14px; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 15px; }
 .scheduled-definition-panel { min-width: 0; }
-.scheduled-technical { border-top: 1px dashed var(--line-strong); margin-top: 15px; padding-top: 10px; }
+.scheduled-technical { border-top: 1px solid var(--line-strong); margin-top: 15px; padding-top: 10px; }
 .scheduled-technical .scheduled-meta { margin-top: 10px; }
 .scheduled-task { background: var(--bg); border-radius: 12px; color: var(--text-2); font-size: 0.8125rem; line-height: 1.55; margin: 10px 0 0; padding: 12px; white-space: pre-wrap; }
 .scheduled-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 13px; }
@@ -1446,7 +1487,7 @@ details[open].advanced summary::before {
 .scheduled-run-item { min-width: 0; }
 .scheduled-run-item .field-label { display: block; margin-bottom: 2px; }
 .scheduled-run-value { color: var(--text-2); font-size: 0.75rem; overflow-wrap: anywhere; }
-.scheduled-run-tech { border-top: 1px dashed var(--line-strong); margin-top: 3px; padding-top: 7px; }
+.scheduled-run-tech { border-top: 1px solid var(--line-strong); margin-top: 3px; padding-top: 7px; }
 .scheduled-run-tech .scheduled-run-grid { margin-top: 8px; }
 .scheduled-revisions { display: flex; flex-direction: column; gap: 6px; }
 .scheduled-revision { align-items: baseline; background: var(--bg); border-radius: 10px; display: flex; flex-wrap: wrap; gap: 7px; padding: 8px 10px; }
@@ -1511,11 +1552,15 @@ details[open].advanced summary::before {
 
 /* ---- usage and estimated spend ---------------------------------------- */
 .usage-main { gap: 22px; max-width: 1100px; }
-.usage-head { align-items: flex-start; display: flex; flex-wrap: wrap; gap: 16px; justify-content: space-between; }
+.usage-head { display: flex; flex-direction: column; }
 .usage-head-copy { display: flex; flex-direction: column; gap: 4px; max-width: 720px; }
-.usage-controls { align-items: end; display: flex; flex-wrap: wrap; gap: 10px; }
-.usage-controls .field { min-width: 150px; }
-.usage-contract { background: var(--well); border-left: 4px solid var(--ember); border-radius: 12px; padding: 12px 14px; }
+.usage-controls { container-type: inline-size; min-width: 0; width: 100%; }
+.usage-control-row { align-items: end; display: grid; gap: 12px; grid-template-columns: repeat(2, minmax(150px, 200px)); }
+.usage-control-row.has-custom { grid-template-columns: repeat(4, minmax(0, 1fr)) auto; }
+.usage-controls .field { min-width: 0; }
+.usage-apply { min-height: 37px; white-space: nowrap; }
+.usage-custom-error { grid-column: 1 / -1; margin: 0; }
+.usage-contract { align-items: center; background: var(--well); border-left: 4px solid var(--ember); border-radius: 12px; display: flex; gap: 14px; justify-content: space-between; padding: 12px 14px; }
 .usage-grid { display: grid; gap: 12px; grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .usage-card { background: var(--well); border-radius: 14px; display: flex; flex-direction: column; gap: 3px; min-width: 0; padding: 14px; }
 .usage-card-primary { background: var(--text); color: #fff8e8; }
@@ -1523,11 +1568,8 @@ details[open].advanced summary::before {
 .usage-card-primary .usage-card-label, .usage-card-primary .hint { color: #d9cdb5; }
 .usage-card-value { color: var(--text); font-family: var(--display); font-size: 1.55rem; font-variant-numeric: tabular-nums; font-weight: 700; line-height: 1.15; overflow-wrap: anywhere; }
 .usage-card-primary .usage-card-value { color: #fff8e8; }
-.usage-coverage { display: grid; gap: 8px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
-.usage-coverage-item { background: var(--bg); border: 1.5px solid var(--line); border-radius: 12px; padding: 10px 12px; }
-.usage-coverage-track { background: var(--line); border-radius: 999px; height: 6px; margin-top: 7px; overflow: hidden; }
-.usage-coverage-fill { background: var(--ok-solid); height: 100%; }
-.usage-section { border-top: 1.5px dashed rgba(59, 50, 32, .15); display: flex; flex-direction: column; gap: 12px; padding-top: 18px; }
+.usage-data-note { color: var(--text-3); font-size: .75rem; }
+.usage-section { border-top: 1.5px solid rgba(59, 50, 32, .15); display: flex; flex-direction: column; gap: 12px; padding-top: 18px; }
 .usage-section-head { align-items: baseline; display: flex; flex-wrap: wrap; gap: 10px; justify-content: space-between; }
 .usage-table-wrap { border: 1.5px solid var(--line); border-radius: 14px; overflow-x: auto; }
 .usage-table { border-collapse: collapse; font-size: .75rem; width: 100%; }
@@ -1536,23 +1578,67 @@ details[open].advanced summary::before {
 .usage-table .number { font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
 .usage-row-action { background: none; border: 0; color: var(--ember-press); cursor: pointer; font-weight: 700; padding: 0; text-align: left; }
 .usage-row-action:hover { text-decoration: underline; }
+.usage-work-label { color: var(--text); display: block; font-weight: 700; }
+.usage-term-help, .usage-token-total {
+  cursor: help;
+  display: inline-block;
+  position: relative;
+  text-decoration-color: rgba(59, 50, 32, .35);
+  text-decoration-line: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+.usage-term-help::after, .usage-token-total::after {
+  background: var(--text);
+  border-radius: 8px;
+  bottom: calc(100% + 8px);
+  box-shadow: 0 6px 18px rgba(59, 50, 32, .18);
+  color: #fff8e8;
+  content: attr(data-tooltip);
+  font-family: var(--body);
+  font-size: .6875rem;
+  font-weight: 600;
+  left: 50%;
+  letter-spacing: 0;
+  line-height: 1.4;
+  opacity: 0;
+  padding: 7px 9px;
+  pointer-events: none;
+  position: absolute;
+  text-align: left;
+  text-transform: none;
+  transform: translate(-50%, 4px);
+  transition: opacity .12s ease, transform .12s ease;
+  white-space: normal;
+  width: 280px;
+  z-index: 60;
+}
+.usage-token-total::after { max-width: 240px; white-space: nowrap; width: max-content; }
+.usage-term-help:hover::after, .usage-term-help:focus-visible::after,
+.usage-token-total:hover::after, .usage-token-total:focus-visible::after { opacity: 1; transform: translate(-50%, 0); }
+.usage-table .usage-term-help::after, .usage-table .usage-token-total::after {
+  bottom: auto;
+  top: calc(100% + 8px);
+  transform: translate(-50%, -4px);
+}
+.usage-table .usage-term-help:hover::after, .usage-table .usage-term-help:focus-visible::after,
+.usage-table .usage-token-total:hover::after, .usage-table .usage-token-total:focus-visible::after { transform: translate(-50%, 0); }
+.usage-term-help:focus-visible, .usage-token-total:focus-visible { outline: 2px solid var(--ember-press); outline-offset: 2px; }
 .usage-filter-chip { align-items: center; background: var(--ember-tint); border-radius: 999px; color: var(--ember-deep); display: inline-flex; font-size: .71875rem; font-weight: 700; gap: 6px; padding: 5px 9px; }
-.usage-detail { background: var(--well); border-radius: 14px; display: flex; flex-direction: column; gap: 12px; padding: 16px; }
-.usage-detail-grid { display: grid; gap: 8px 16px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
-.usage-detail-item { min-width: 0; }
-.usage-detail-item strong { color: var(--text); display: block; font-size: .75rem; overflow-wrap: anywhere; }
-.usage-guidance-grid { display: grid; gap: 12px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.usage-guidance-card { border: 1.5px solid var(--line); border-radius: 14px; display: flex; flex-direction: column; gap: 7px; padding: 14px; }
-.usage-guidance-links { display: flex; flex-wrap: wrap; gap: 12px; }
-.usage-source { color: var(--ember-deep); font-size: .6875rem; font-weight: 700; text-transform: uppercase; }
 @media (max-width: 900px) {
   .usage-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .usage-guidance-grid { grid-template-columns: 1fr; }
+}
+@container (max-width: 820px) {
+  .usage-control-row.has-custom { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .usage-apply { justify-self: start; }
+}
+@container (max-width: 520px) {
+  .usage-control-row, .usage-control-row.has-custom { grid-template-columns: 1fr; }
+  .usage-apply { justify-self: stretch; width: 100%; }
 }
 @media (max-width: 720px) {
-  .usage-grid, .usage-coverage, .usage-detail-grid { grid-template-columns: 1fr; }
-  .usage-controls, .usage-controls .field { align-items: stretch; width: 100%; }
-  .usage-controls .field { min-width: 0; }
+  .usage-grid { grid-template-columns: 1fr; }
+  .usage-contract { align-items: flex-start; flex-direction: column; }
 }
 
 </style>
@@ -1620,6 +1706,7 @@ details[open].advanced summary::before {
     view: "channels",
     channelScreen: "overview",
     profileScreen: "list",
+    profileLastAgentId: null,
     profileDirty: false,
     disableConfirm: false,
     editingAgentId: null,
@@ -1722,6 +1809,7 @@ details[open].advanced summary::before {
     // providerModels cache the loaded arrays so the managers render without a
     // round trip per keystroke.
     settings: null,
+    settingsSection: "providers",
     settingsLoaded: false,
     settingsError: "",
     // App-level GitHub credentials and installations. Secrets never enter this
@@ -1796,10 +1884,14 @@ details[open].advanced summary::before {
     usageLoading: false,
     usageLoadingMore: false,
     usageError: "",
-    usageRangeDays: 30,
-    usageGroupBy: "provider",
+    usagePeriod: "last_30_days",
+    usageCustomFrom: "",
+    usageCustomTo: "",
+    usageCustomDraftFrom: "",
+    usageCustomDraftTo: "",
+    usageCustomError: "",
+    usageGroupBy: "channel",
     usageOperationFilter: null,
-    usageSelected: null,
     usageRequestId: 0,
     // Channel detail keeps a small, independently filtered scheduled-work
     // summary. It must not reuse the Audit tab's pageable/filterable list.
@@ -2016,6 +2108,7 @@ details[open].advanced summary::before {
     state.view = "profiles";
     state.profileScreen = "edit";
     state.editingAgentId = selected.id;
+    state.profileLastAgentId = selected.id;
     state.profileDraft = cloneAgent(selected);
     resetProfileTransientState();
     render();
@@ -2042,7 +2135,7 @@ details[open].advanced summary::before {
 
   function canonicalPath() {
     if (state.view === "usage") return "/admin/usage";
-    if (state.view === "settings") return "/admin/settings";
+    if (state.view === "settings") return "/admin/settings/" + encodeURIComponent(state.settingsSection);
     if (state.view === "audit") {
       if (state.auditDomain === "scheduled-work") {
         return "/admin/audit-logs/scheduled-work" + (state.scheduledSelection ? "/" + encodeURIComponent(state.scheduledSelection) : "");
@@ -2079,7 +2172,7 @@ details[open].advanced summary::before {
     });
     state.leavePrompt = null;
     if (parts[1] === "usage" && USAGE_ADMIN_UI) { applyUsageQuery(location.search || ""); openUsage(); return; }
-    if (parts[1] === "settings") { openSettings(); return; }
+    if (parts[1] === "settings") { openSettings(parts[2] || "providers"); return; }
     if (parts[1] === "audit-logs") {
       if (parts[2] === "scheduled-work") {
         openScheduledWork(parts[3] || "");
@@ -2192,12 +2285,8 @@ details[open].advanced summary::before {
   }
 
   function topbarHtml() {
-    // The connection indicator flips to the header once Slack is live (the
-    // stepper's section badge disappears with the stepper). The actions live in
-    // a normal .actions row that is always visible on desktop; the <details>
-    // hamburger is a mobile-only sibling that reveals the SAME row via the
-    // "[open] ~ .actions-list" rule (a closed <details> would UA-hide its own
-    // children on every viewport, so the actions must not live inside it).
+    // Desktop section navigation lives persistently at the bottom of the rail.
+    // This duplicate action row is mobile-only and is revealed by the hamburger.
     var connectedBadge = isSlackConnected()
       ? '<span class="badge badge-on"><span class="dot"></span>Connected</span>'
       : "";
@@ -2206,11 +2295,31 @@ details[open].advanced summary::before {
       '<div class="brand"><button type="button" class="brand-home" data-action="go-home" aria-label="Home"><span class="avatar">T<svg class="pea" viewBox="0 0 48 48" aria-hidden="true" focusable="false"><circle cx="24" cy="25" r="15.5" fill="#E3AC45"></circle><circle cx="17" cy="17.5" r="4.2" fill="#F4D084"></circle><g class="pea-eyes"><circle class="pea-eye" cx="18.5" cy="24" r="1.9" fill="#3B3220"></circle><circle class="pea-eye" cx="29.5" cy="24" r="1.9" fill="#3B3220"></circle></g><g class="pea-lids"><path d="M16.4 24.2 Q18.5 22 20.6 24.2" fill="none" stroke="#3B3220" stroke-width="1.8" stroke-linecap="round"></path><path d="M27.4 24.2 Q29.5 22 31.6 24.2" fill="none" stroke="#3B3220" stroke-width="1.8" stroke-linecap="round"></path></g><path class="pea-smile" d="M19 29 Q24 32.5 29 29" fill="none" stroke="#3B3220" stroke-width="1.8" stroke-linecap="round"></path><path class="pea-grin" d="M18.5 28.5 Q24 35.5 29.5 28.5 Z" fill="#3B3220"></path><circle class="pea-blush" cx="15.5" cy="28.5" r="2" fill="#DC8A4F"></circle><circle class="pea-blush" cx="32.5" cy="28.5" r="2" fill="#DC8A4F"></circle></svg></span><span class="brand-name">Chickpea</span></button><span class="chip">${targetChip}</span></div>' +
       '<details class="topbar-menu"><summary aria-label="Menu">' + icon("bars-3") + '</summary></details>' +
       '<div class="actions actions-list">' + connectedBadge +
-      '<button type="button" class="btn btn-soft' + (state.view === "channels" || state.view === "audit" ? " nav-active" : "") + '" data-action="open-channels">Channels</button>' +
-      '<button type="button" class="btn btn-soft' + (state.view === "profiles" ? " nav-active" : "") + '" data-action="open-profiles">Profiles</button>' +
-      (USAGE_ADMIN_UI ? '<button type="button" class="btn btn-soft' + (state.view === "usage" ? " nav-active" : "") + '" data-action="open-usage">Usage</button>' : '') +
-      '<button type="button" class="btn btn-soft' + (state.view === "settings" ? " nav-active" : "") + '" data-action="open-settings">Settings</button></div>' +
+      '<button type="button" class="btn btn-soft' + (primarySection() === "channels" ? " nav-active" : "") + '" data-action="open-channels" data-section-switcher="true">Channels</button>' +
+      '<button type="button" class="btn btn-soft' + (primarySection() === "profiles" ? " nav-active" : "") + '" data-action="open-profiles" data-section-switcher="true">Profiles</button>' +
+      (USAGE_ADMIN_UI ? '<button type="button" class="btn btn-soft' + (primarySection() === "usage" ? " nav-active" : "") + '" data-action="open-usage" data-section-switcher="true">Usage</button>' : '') +
+      '<button type="button" class="btn btn-soft' + (primarySection() === "settings" ? " nav-active" : "") + '" data-action="open-settings" data-section-switcher="true">Settings</button></div>' +
       "</header>";
+  }
+
+  function primarySection() {
+    return state.view === "audit" ? "channels" : state.view;
+  }
+
+  function sectionSwitcherHtml() {
+    var active = primarySection();
+    var sections = [
+      { id: "channels", label: "Channels", action: "open-channels" },
+      { id: "profiles", label: "Profiles", action: "open-profiles" }
+    ];
+    if (USAGE_ADMIN_UI) sections.push({ id: "usage", label: "Usage", action: "open-usage" });
+    sections.push({ id: "settings", label: "Settings", action: "open-settings" });
+    return '<nav class="section-switcher" aria-label="Admin navigation">' +
+      sections.map(function (section) {
+        var selected = active === section.id;
+        return '<button type="button" class="section-nav-item' + (selected ? " active" : "") + '" data-action="' + section.action + '" data-section-switcher="true"' +
+          (selected ? ' aria-current="page"' : '') + '>' + section.label + '</button>';
+      }).join("") + '</nav>';
   }
 
   // The connected workspace's display name for a rail group header: the friendly
@@ -2223,10 +2332,13 @@ details[open].advanced summary::before {
 
   function railHtml() {
     if (state.view === "usage") return usageRailHtml();
+    if (state.view === "profiles") return profilesRailHtml();
+    if (state.view === "settings") return settingsRailHtml();
     if (state.view === "audit") return state.auditDomain === "scheduled-work" ? scheduledWorkRailHtml() : auditRailHtml();
-    // Not connected → the whole screen is the Connect stepper; the rail (and its
-    // add affordance) stay gated off until Slack is live.
-    if (state.slack && !state.slack.connected) return "";
+    return channelsRailHtml();
+  }
+
+  function channelsRailHtml() {
     var channels = concreteAssignments();
     var groups = [];
     channels.forEach(function (assignment) {
@@ -2237,7 +2349,7 @@ details[open].advanced summary::before {
       }
       group.assignments.push(assignment);
     });
-    var html = '<nav class="rail" aria-label="Channels">' +
+    var html = '<nav class="rail" aria-label="Channels"><div class="rail-context">' +
       '<div class="rail-head"><span class="section-eyebrow">Channels</span></div>' +
       '<button type="button" class="platform-row' + (state.view === "channels" && state.channelScreen === "overview" ? " active" : "") + '" data-action="open-channels">' +
       '<span class="platform-logo slack-logo-image" aria-hidden="true"></span>Slack' +
@@ -2266,36 +2378,162 @@ details[open].advanced summary::before {
     if (addDisabled) {
       html += '<p class="hint" style="margin-left:12px; padding:0 10px;">Connect Slack first</p>';
     }
-    return html + '</nav>';
+    return html + '</div>' + sectionSwitcherHtml() + '</nav>';
   }
 
   function usageRailHtml() {
-    return '<nav class="rail" aria-label="Usage">' +
+    return '<nav class="rail" aria-label="Usage"><div class="rail-context">' +
       '<div class="rail-head"><span class="section-eyebrow">Usage</span></div>' +
-      '<button type="button" class="chan-item active" data-action="open-usage"><span class="chan-name">Overview</span><span class="chan-meta">Spend and work</span></button>' +
-      '<div class="ws-row">Provider controls</div>' +
-      '<button type="button" class="chan-item" data-action="usage-open-settings"><span class="chan-name">Model settings</span><span class="chan-meta">Keys and routes</span></button>' +
-      '<p class="hint" style="margin:8px 12px;">Caps and quotas stay with each provider.</p>' +
-      '</nav>';
+      '<button type="button" class="chan-item active" data-action="open-usage"><span class="chan-name">Overview</span><span class="chan-meta">Spend and usage</span></button>' +
+      '</div>' + sectionSwitcherHtml() + '</nav>';
+  }
+
+  function profilesRailHtml() {
+    var html = '<nav class="rail" aria-label="Profiles"><div class="rail-context">' +
+      '<div class="rail-head"><span class="section-eyebrow">Profiles</span></div>' +
+      '<button type="button" class="rail-add' + (state.profileScreen === "create" ? " active" : "") + '" data-action="new-profile">' + icon("plus") + 'New profile</button>' +
+      '<div class="ws-row">Your profiles</div>';
+    if (!state.agents.length) {
+      html += '<div class="empty" style="margin:8px; padding:12px;"><p class="hint">No profiles yet</p></div>';
+    } else {
+      state.agents.forEach(function (agent) {
+        var active = state.profileScreen === "edit" && state.editingAgentId === agent.id;
+        var meta = (agent.model || "No model pinned") + " · " + (agent.enabled ? "Enabled" : "Disabled");
+        html += '<button type="button" class="chan-item' + (active ? " active" : "") + '" data-action="edit-profile" data-agent="' + esc(agent.id) + '">' +
+          '<span class="chan-name">' + esc(agent.name) + '</span><span class="chan-meta">' + esc(meta) + '</span></button>';
+      });
+    }
+    return html + '</div>' + sectionSwitcherHtml() + '</nav>';
+  }
+
+  function settingsRailHtml() {
+    var sections = [
+      { id: "providers", name: "Model providers", meta: "Keys and models" },
+      { id: "github", name: "GitHub", meta: "Accounts and access" },
+      { id: "sandbox", name: "Coding sandbox", meta: "Workspace runtime" },
+      { id: "outbound", name: "Outbound access", meta: "Network policy" }
+    ];
+    var html = '<nav class="rail" aria-label="Settings"><div class="rail-context">' +
+      '<div class="rail-head"><span class="section-eyebrow">Settings</span></div>';
+    sections.forEach(function (section) {
+      var active = state.settingsSection === section.id;
+      html += '<button type="button" class="chan-item' + (active ? " active" : "") + '" data-action="settings-section" data-section="' + section.id + '"' +
+        (active ? ' aria-current="page"' : '') + '><span class="chan-name">' + section.name + '</span><span class="chan-meta">' + section.meta + '</span></button>';
+    });
+    return html + '</div>' + sectionSwitcherHtml() + '</nav>';
+  }
+
+  function usageDateValue(date) {
+    return String(date.getFullYear()).padStart(4, "0") + "-" + String(date.getMonth() + 1).padStart(2, "0") + "-" + String(date.getDate()).padStart(2, "0");
+  }
+
+  function parseUsageDate(value) {
+    var match = /^([0-9]{4})-([0-9]{2})-([0-9]{2})$/.exec(String(value || ""));
+    if (!match) return null;
+    var date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+    if (date.getFullYear() !== Number(match[1]) || date.getMonth() !== Number(match[2]) - 1 || date.getDate() !== Number(match[3])) return null;
+    return date;
+  }
+
+  function usageCustomRange(fromValue, toValue) {
+    if (!fromValue || !toValue) return { error: "Choose a start and end date." };
+    var fromDate = parseUsageDate(fromValue);
+    var endDate = parseUsageDate(toValue);
+    if (!fromDate || !endDate) return { error: "Choose valid dates." };
+    var todayValue = usageDateValue(new Date());
+    if (String(toValue) > todayValue) return { error: "End date cannot be in the future." };
+    var to = String(toValue) === todayValue
+      ? Date.now() + 1
+      : new Date(endDate.getFullYear(), endDate.getMonth(), endDate.getDate() + 1).getTime();
+    var from = fromDate.getTime();
+    if (to <= from) return { error: "Start date must be on or before end date." };
+    if (to - from > 366 * 24 * 60 * 60 * 1000) return { error: "Choose a range of 366 days or less." };
+    return { from: from, to: to, error: "" };
+  }
+
+  function usageDefaultCustomDates() {
+    var to = new Date();
+    var from = new Date(to.getFullYear(), to.getMonth(), to.getDate() - 29);
+    return { from: usageDateValue(from), to: usageDateValue(to) };
+  }
+
+  function usageStartOfWeek(date) {
+    var start = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+    start.setDate(start.getDate() - ((start.getDay() + 6) % 7));
+    return start;
   }
 
   function usageRange() {
-    var to = Date.now() + 1;
-    return { from: to - state.usageRangeDays * 24 * 60 * 60 * 1000, to: to };
+    var now = new Date();
+    var to = now.getTime() + 1;
+    if (state.usagePeriod === "custom") {
+      var custom = usageCustomRange(state.usageCustomFrom, state.usageCustomTo);
+      if (!custom.error) return { from: custom.from, to: custom.to };
+    }
+    if (state.usagePeriod === "this_month") return { from: new Date(now.getFullYear(), now.getMonth(), 1).getTime(), to: to };
+    if (state.usagePeriod === "last_month") return { from: new Date(now.getFullYear(), now.getMonth() - 1, 1).getTime(), to: new Date(now.getFullYear(), now.getMonth(), 1).getTime() };
+    if (state.usagePeriod === "this_week") return { from: usageStartOfWeek(now).getTime(), to: to };
+    if (state.usagePeriod === "last_week") {
+      var thisWeek = usageStartOfWeek(now);
+      var lastWeek = new Date(thisWeek.getFullYear(), thisWeek.getMonth(), thisWeek.getDate() - 7);
+      return { from: lastWeek.getTime(), to: thisWeek.getTime() };
+    }
+    var rollingDays = state.usagePeriod === "last_7_days" ? 7 : state.usagePeriod === "last_90_days" ? 90 : 30;
+    return { from: to - rollingDays * 24 * 60 * 60 * 1000, to: to };
   }
 
   function applyUsageQuery(search) {
     if (!search) return;
     var params = new URLSearchParams(search);
-    var days = Number(params.get("days"));
+    var allowedPeriods = ["last_7_days", "last_30_days", "last_90_days", "this_month", "last_month", "this_week", "last_week", "custom"];
+    var period = params.get("period");
+    var legacyDays = Number(params.get("days"));
+    if (!allowedPeriods.includes(period) && [7, 30, 90].includes(legacyDays)) period = "last_" + legacyDays + "_days";
+    if (allowedPeriods.includes(period)) {
+      if (period === "custom") {
+        var customFrom = params.get("from") || "";
+        var customTo = params.get("to") || "";
+        var custom = usageCustomRange(customFrom, customTo);
+        if (!custom.error) {
+          state.usagePeriod = period;
+          state.usageCustomFrom = customFrom;
+          state.usageCustomTo = customTo;
+          state.usageCustomDraftFrom = customFrom;
+          state.usageCustomDraftTo = customTo;
+        }
+      } else {
+        state.usagePeriod = period;
+      }
+    }
     var group = params.get("groupBy");
-    if ([7, 30, 90].includes(days)) state.usageRangeDays = days;
-    if (["profile", "channel", "work_kind", "routine", "provider", "credential", "model", "status"].includes(group)) state.usageGroupBy = group;
+    if (["channel", "profile", "provider", "model"].includes(group)) state.usageGroupBy = group;
   }
 
   function syncUsageQueryUrl() {
     if (!canNavigate || !routeReady || state.view !== "usage") return;
-    history.replaceState(null, "", "/admin/usage?days=" + state.usageRangeDays + "&groupBy=" + encodeURIComponent(state.usageGroupBy));
+    var params = new URLSearchParams();
+    params.set("period", state.usagePeriod);
+    if (state.usagePeriod === "custom") {
+      params.set("from", state.usageCustomFrom);
+      params.set("to", state.usageCustomTo);
+    }
+    params.set("groupBy", state.usageGroupBy);
+    history.replaceState(null, "", "/admin/usage?" + params.toString());
+  }
+
+  function applyCustomUsageRange() {
+    var custom = usageCustomRange(state.usageCustomDraftFrom, state.usageCustomDraftTo);
+    if (custom.error) {
+      state.usageCustomError = custom.error;
+      render();
+      return;
+    }
+    state.usageCustomFrom = state.usageCustomDraftFrom;
+    state.usageCustomTo = state.usageCustomDraftTo;
+    state.usageCustomError = "";
+    state.usageOperationFilter = null;
+    syncUsageQueryUrl();
+    loadUsage(true);
   }
 
   function usageQueryPath(path, includeGroup, includeOperationFilter, cursor) {
@@ -2373,7 +2611,7 @@ details[open].advanced summary::before {
       render();
     }).catch(function (error) {
       state.usageLoadingMore = false;
-      state.usageError = error.serverMessage || error.message || "Recent work could not be loaded.";
+      state.usageError = error.serverMessage || error.message || "Recent activity could not be loaded.";
       render();
     });
   }
@@ -2390,12 +2628,10 @@ details[open].advanced summary::before {
   function usageMoney(micros, currency) {
     if (micros == null) return "Unknown";
     var amount = Number(micros) / 1000000;
-    return (currency || "USD") + " " + amount.toLocaleString("en-US", { minimumFractionDigits: amount < 1 ? 4 : 2, maximumFractionDigits: amount < 0.01 ? 6 : amount < 1 ? 4 : 2 });
-  }
-
-  function usagePercent(numerator, denominator) {
-    if (!denominator) return "0%";
-    return Math.round(Number(numerator || 0) / Number(denominator) * 100) + "%";
+    var currencyCode = currency || "USD";
+    if (amount > 0 && amount < 0.01) return currencyCode === "USD" ? "<$0.01" : "<" + currencyCode + " 0.01";
+    if (currencyCode === "USD") return amount.toLocaleString("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return currencyCode + " " + amount.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   }
 
   function usageDelta(current, previous, formatter) {
@@ -2403,13 +2639,6 @@ details[open].advanced summary::before {
     if (Number(previous) === 0) return Number(current) === 0 ? "No change from prior period" : "New in this period";
     var change = (Number(current) - Number(previous)) / Number(previous) * 100;
     return (change >= 0 ? "+" : "") + change.toFixed(0) + "% vs prior period" + (formatter ? " · " + formatter(previous) + " prior" : "");
-  }
-
-  function usageCoverageItem(label, count, total, unknownLabel) {
-    var percent = usagePercent(count, total);
-    return '<div class="usage-coverage-item"><strong>' + esc(label) + ': ' + esc(percent) + '</strong>' +
-      '<p class="hint">' + usageInt(count) + ' of ' + usageInt(total) + ' work instances' + (Number(total) - Number(count) > 0 ? ' · ' + usageInt(Number(total) - Number(count)) + ' ' + esc(unknownLabel) : '') + '</p>' +
-      '<div class="usage-coverage-track" aria-label="' + esc(label + " " + percent) + '"><div class="usage-coverage-fill" style="width:' + esc(percent) + '"></div></div></div>';
   }
 
   function usageOperationAmount(detail) {
@@ -2446,86 +2675,81 @@ details[open].advanced summary::before {
     return '<span class="badge ' + (good ? "badge-on" : "badge-off") + '">' + (good ? '<span class="dot"></span>' : '') + esc(String(status || "unknown").replace(/_/g, " ")) + '</span>';
   }
 
-  function usageDetailHtml() {
-    var detail = state.usageSelected;
-    if (!detail) return "";
-    var operation = detail.operation;
-    var amount = usageOperationAmount(detail);
-    var input = usageOperationTokens(detail, "inputTokens");
-    var output = usageOperationTokens(detail, "outputTokens");
-    var total = usageOperationTokens(detail, "totalTokens");
-    var executions = (detail.measurements || []).map(function (measurement) {
-      var source = measurement.estimateCompleteness === "complete" ? "Estimated from " + (measurement.priceVersionId || "catalog") : "Cost " + (measurement.priceUnknownReason || "unknown").replace(/_/g, " ");
-      return '<tr><td class="mono">' + esc(measurement.executionId) + '</td><td>' + esc(usageOperationProvider({ operation: operation, measurements: [measurement] })) + '</td><td class="number">' + usageInt(measurement.totalTokens) + '</td><td class="number">' + usageMoney(measurement.estimateAmountMicros, measurement.estimateCurrency) + '</td><td>' + esc(source) + '</td></tr>';
-    }).join("");
-    return '<section class="usage-detail" aria-label="Work instance detail"><div class="usage-section-head"><div><span class="usage-source">Work instance</span><h2 class="section-title">' + esc(usageWorkLabel(operation)) + '</h2></div><button type="button" class="btn btn-ghost btn-sm" data-action="usage-clear-operation">Close</button></div>' +
-      '<div class="usage-detail-grid">' +
-      '<div class="usage-detail-item"><span class="hint">Status</span><strong>' + usageStatusBadge(operation.status) + '</strong></div>' +
-      '<div class="usage-detail-item"><span class="hint">Profile</span><strong>' + esc(operation.profileLabel || operation.profileId || "Unknown") + '</strong></div>' +
-      '<div class="usage-detail-item"><span class="hint">Provider / model</span><strong>' + esc(usageOperationProvider(detail) + " / " + usageOperationModel(detail)) + '</strong></div>' +
-      '<div class="usage-detail-item"><span class="hint">Input / output / total</span><strong>' + usageInt(input) + ' / ' + usageInt(output) + ' / ' + usageInt(total) + '</strong></div>' +
-      '<div class="usage-detail-item"><span class="hint">Chickpea estimated spend</span><strong>' + usageMoney(amount, "USD") + '</strong></div>' +
-      '<div class="usage-detail-item"><span class="hint">Started</span><strong>' + esc(new Date(operation.startedAt).toLocaleString()) + '</strong></div></div>' +
-      (executions ? '<div class="usage-table-wrap"><table class="usage-table"><thead><tr><th>Execution</th><th>Provider</th><th class="number">Tokens</th><th class="number">Estimate</th><th>Provenance</th></tr></thead><tbody>' + executions + '</tbody></table></div>' : '<p class="hint">No model-response usage was reported for this work instance.</p>') +
-      '<p class="hint mono">Operation ' + esc(operation.operationId) + '</p></section>';
+  function usageActivityLabelHtml(label) {
+    var explanation = "Activity includes each Slack message Chickpea responds to and each scheduled routine run.";
+    return '<span class="usage-term-help" tabindex="0" data-tooltip="' + esc(explanation) + '" aria-label="' + esc(label) + '. ' + esc(explanation) + '">' + esc(label) + '</span>';
+  }
+
+  function usageActivityNoun(value) {
+    return Number(value) === 1 ? "activity" : "activities";
+  }
+
+  function usageCoverageHtml(totals) {
+    var activityCount = Number(totals.operationCount || 0);
+    var pricedCount = Number(totals.pricedOperationCount || 0);
+    var meteredCount = Number(totals.meteredOperationCount || 0);
+    if (activityCount <= 0 || (pricedCount >= activityCount && meteredCount >= activityCount)) return "";
+    if (pricedCount === meteredCount) {
+      var missingCount = Math.max(0, activityCount - pricedCount);
+      var missingCopy = missingCount === 1
+        ? "One activity did not report token usage and could not be priced."
+        : usageInt(missingCount) + " activities did not report token usage and could not be priced.";
+      return '<p class="usage-data-note"><strong>Totals include ' + usageInt(pricedCount) + ' of ' + usageInt(activityCount) + ' ' + usageActivityNoun(activityCount) + '.</strong> ' + missingCopy + '</p>';
+    }
+    return '<p class="usage-data-note"><strong>Some activity is missing usage data.</strong> Cost estimates include ' + usageInt(pricedCount) + ' of ' + usageInt(activityCount) + ' ' + usageActivityNoun(activityCount) + '; token totals include ' + usageInt(meteredCount) + ' of ' + usageInt(activityCount) + '.</p>';
+  }
+
+  function usageTokenTotalHtml(input, output, total) {
+    var totalLabel = usageInt(total);
+    if (input == null && output == null) return totalLabel;
+    var split = usageInt(input) + " input · " + usageInt(output) + " output";
+    return '<span class="usage-token-total" tabindex="0" data-tooltip="' + esc(split) + '" aria-label="' + esc(totalLabel + " total tokens; " + split) + '">' + totalLabel + '</span>';
   }
 
   function usageGroupsHtml(summary) {
     var groups = summary.groups || [];
     if (!groups.length) return '<div class="empty"><p class="hint">No breakdown data for this period.</p></div>';
     var rows = groups.map(function (group) {
-      return '<tr><td><button type="button" class="usage-row-action" data-action="usage-group-filter" data-value="' + esc(group.key) + '" data-label="' + esc(group.label) + '">' + esc(group.label) + '</button></td>' +
-        '<td class="number">' + usageInt(group.operationCount) + '</td><td class="number">' + usageInt(group.totalTokens) + '</td>' +
-        '<td class="number">' + usageMoney(group.estimateAmountMicros, summary.currency) + '</td><td class="number">' + usagePercent(group.pricedOperationCount, group.operationCount) + '</td></tr>';
+      var label = state.usageGroupBy === "channel" && group.label !== "Direct message" && !String(group.label).startsWith("#") ? "#" + group.label : group.label;
+      return '<tr><td><button type="button" class="usage-row-action" data-action="usage-group-filter" data-value="' + esc(group.key) + '" data-label="' + esc(label) + '">' + esc(label) + '</button></td>' +
+        '<td class="number">' + usageInt(group.operationCount) + '</td><td class="number">' + usageInt(group.inputTokens) + '</td>' +
+        '<td class="number">' + usageInt(group.outputTokens) + '</td><td class="number">' + usageInt(group.totalTokens) + '</td>' +
+        '<td class="number">' + usageMoney(group.estimateAmountMicros, summary.currency) + '</td></tr>';
     }).join("");
-    return '<div class="usage-table-wrap"><table class="usage-table"><thead><tr><th>' + esc(state.usageGroupBy.replace(/_/g, " ")) + '</th><th class="number">Work</th><th class="number">Tokens</th><th class="number">Known estimate</th><th class="number">Priced</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
+    return '<div class="usage-table-wrap"><table class="usage-table"><thead><tr><th>' + esc(state.usageGroupBy.replace(/_/g, " ")) + '</th><th class="number">' + usageActivityLabelHtml("Activity") + '</th><th class="number">Input tokens</th><th class="number">Output tokens</th><th class="number">Total tokens</th><th class="number">Spend</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
   }
 
   function usageOperationsHtml() {
-    if (!state.usageOperations) return '<div class="empty"><p class="hint">Loading work instances&hellip;</p></div>';
-    if (!state.usageOperations.length) return '<div class="empty"><p class="hint">No work instances match this period' + (state.usageOperationFilter ? ' and filter' : '') + '.</p></div>';
+    if (!state.usageOperations) return '<div class="empty"><p class="hint">Loading activity&hellip;</p></div>';
+    if (!state.usageOperations.length) return '<div class="empty"><p class="hint">No activity matches this period' + (state.usageOperationFilter ? ' and filter' : '') + '.</p></div>';
     var rows = state.usageOperations.map(function (detail) {
       var operation = detail.operation;
-      return '<tr><td><button type="button" class="usage-row-action" data-action="usage-select-operation" data-operation="' + esc(operation.operationId) + '">' + esc(usageWorkLabel(operation)) + '</button><div class="hint">' + esc(new Date(operation.startedAt).toLocaleString()) + '</div></td>' +
+      var input = usageOperationTokens(detail, "inputTokens");
+      var output = usageOperationTokens(detail, "outputTokens");
+      var total = usageOperationTokens(detail, "totalTokens");
+      return '<tr><td><strong class="usage-work-label">' + esc(usageWorkLabel(operation)) + '</strong><div class="hint">' + esc(new Date(operation.startedAt).toLocaleString()) + '</div></td>' +
         '<td>' + esc(operation.profileLabel || operation.profileId || "Unknown") + '</td><td>' + esc(usageOperationProvider(detail)) + '</td><td>' + esc(usageOperationModel(detail)) + '</td>' +
-        '<td>' + usageStatusBadge(operation.status) + '</td><td class="number">' + usageInt(usageOperationTokens(detail, "totalTokens")) + '</td><td class="number">' + usageMoney(usageOperationAmount(detail), "USD") + '</td></tr>';
+        '<td>' + usageStatusBadge(operation.status) + '</td><td class="number">' + usageTokenTotalHtml(input, output, total) + '</td><td class="number">' + usageMoney(usageOperationAmount(detail), "USD") + '</td></tr>';
     }).join("");
-    return '<div class="usage-table-wrap"><table class="usage-table"><thead><tr><th>Work instance</th><th>Profile</th><th>Provider</th><th>Model</th><th>Status</th><th class="number">Tokens</th><th class="number">Estimate</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+    return '<div class="usage-table-wrap"><table class="usage-table"><thead><tr><th>Channel or routine</th><th>Profile</th><th>Provider</th><th>Model</th><th>Status</th><th class="number">Tokens</th><th class="number">Spend</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
       (state.usageNextCursor ? '<button type="button" class="btn btn-ghost" data-action="usage-load-more"' + (state.usageLoadingMore ? ' disabled' : '') + '>' + (state.usageLoadingMore ? 'Loading&hellip;' : 'Load more') + '</button>' : '');
   }
 
-  function usageGuidanceHtml(metadata) {
-    var credentials = metadata.credentials || [];
-    var cards = (metadata.guidance || []).map(function (provider) {
-      var providerCredentials = credentials.filter(function (credential) { return credential.providerId === provider.providerId && credential.retiredAt == null; });
-      var coverage = provider.runtimeCoverage === "metered" ? "Metered aggregate usage" : provider.runtimeCoverage === "mixed" ? "Mixed usage coverage" : "Work status only";
-      var credentialText = providerCredentials.length ? providerCredentials.map(function (credential) { return credential.label + " (epoch " + credential.version + ")"; }).join(", ") : "No active credential reference recorded";
-      return '<article class="usage-guidance-card"><div class="usage-section-head"><h3 class="section-title">' + esc(provider.displayName) + '</h3><span class="badge badge-off">' + esc(coverage) + '</span></div>' +
-        '<p>' + esc(provider.scopeGuidance) + '</p><p class="hint">' + esc(provider.accountBoundary) + '</p><p class="hint"><strong>Chickpea reference:</strong> ' + esc(credentialText) + '</p>' +
-        '<div class="usage-guidance-links">' + (provider.limitsUrl ? '<a class="link-btn" href="' + esc(provider.limitsUrl) + '" target="_blank" rel="noopener noreferrer">Provider limits</a>' : '') + (provider.pricingUrl ? '<a class="link-btn" href="' + esc(provider.pricingUrl) + '" target="_blank" rel="noopener noreferrer">Provider pricing</a>' : '<span class="hint">No universal pricing source</span>') + '</div></article>';
-    }).join("");
-    return '<div class="usage-guidance-grid">' + cards + '</div>';
-  }
-
-  function usageLifecycleHtml(metadata) {
-    var retention = metadata.retention || {};
-    var events = metadata.lifecycleEvents || [];
-    var latest = events.slice(0, 8).map(function (event) {
-      return '<tr><td>' + esc(String(event.eventType || "").replace(/^usage\./, "").replace(/_/g, " ")) + '</td><td class="mono">' + esc(event.subjectId || "usage-ledger") + '</td><td>' + esc(new Date(event.createdAt).toLocaleString()) + '</td></tr>';
-    }).join("");
-    return '<details class="advanced"><summary>Retention and lifecycle</summary><div class="adv-rows"><p class="hint">Work-instance metadata is retained for ' + Number(retention.rawRetentionDays || 90) + ' days. Daily aggregate facts are preserved for ' + Number(retention.aggregateRetentionMonths || 13) + ' months. Prompts, outputs, tool payloads, and secrets are never part of this ledger.</p>' +
-      '<p class="hint">Last retention check: ' + (retention.lastRunAt ? esc(new Date(retention.lastRunAt).toLocaleString()) : 'Not run yet') + '.</p>' +
-      (latest ? '<div class="usage-table-wrap"><table class="usage-table"><thead><tr><th>Lifecycle event</th><th>Subject</th><th>Time</th></tr></thead><tbody>' + latest + '</tbody></table></div>' : '') + '</div></details>';
-  }
-
   function usageMainHtml() {
-    var controls = '<div class="usage-controls"><label class="field"><span class="field-label">Period</span><span class="select-wrap"><select class="input" data-action="usage-range">' +
-      [7, 30, 90].map(function (days) { return '<option value="' + days + '"' + (state.usageRangeDays === days ? ' selected' : '') + '>Last ' + days + ' days</option>'; }).join("") +
-      '</select><span class="select-caret">' + icon("chevron-down") + '</span></span></label><label class="field"><span class="field-label">Break down by</span><span class="select-wrap"><select class="input" data-action="usage-group">' +
-      [["provider", "Provider"], ["channel", "Channel"], ["profile", "Profile"], ["work_kind", "Work kind"], ["routine", "Routine"], ["credential", "Credential"], ["model", "Model"], ["status", "Status"]].map(function (option) { return '<option value="' + option[0] + '"' + (state.usageGroupBy === option[0] ? ' selected' : '') + '>' + option[1] + '</option>'; }).join("") +
-      '</select><span class="select-caret">' + icon("chevron-down") + '</span></span></label></div>';
-    var head = '<div class="usage-head"><div class="usage-head-copy"><span class="section-eyebrow">Reporting</span><h1 class="page-title">Usage</h1><p class="hint">See what Chickpea work costs, where usage is concentrated, and which work instances deserve a closer look.</p></div>' + controls + '</div>' +
-      '<div class="usage-contract"><strong>Chickpea reports usage and estimated spend for work it runs.</strong><p class="hint">Configure caps, credits, quotas, and rate limits with your model provider. Provider consoles can include work outside Chickpea; Chickpea estimates use reviewed list prices and are not invoices.</p></div>';
+    var periods = [["last_7_days", "Last 7 days"], ["last_30_days", "Last 30 days"], ["last_90_days", "Last 90 days"], ["this_month", "This month"], ["last_month", "Last month"], ["this_week", "This week"], ["last_week", "Last week"], ["custom", "Custom"]];
+    var customControls = state.usagePeriod === "custom"
+      ? '<label class="field" for="usage-custom-from"><span class="field-label">From</span><input class="input" id="usage-custom-from" name="usage-custom-from" type="date" max="' + usageDateValue(new Date()) + '" value="' + esc(state.usageCustomDraftFrom) + '" data-action="usage-custom-from"></label>' +
+        '<label class="field" for="usage-custom-to"><span class="field-label">To</span><input class="input" id="usage-custom-to" name="usage-custom-to" type="date" max="' + usageDateValue(new Date()) + '" value="' + esc(state.usageCustomDraftTo) + '" data-action="usage-custom-to"></label>' +
+        '<button type="button" class="btn btn-soft usage-apply" data-action="usage-custom-apply">Apply dates</button>' +
+        (state.usageCustomError ? '<p class="field-error usage-custom-error" role="alert">' + esc(state.usageCustomError) + '</p>' : '')
+      : '';
+    var controls = '<div class="usage-controls"><div class="usage-control-row' + (state.usagePeriod === "custom" ? ' has-custom' : '') + '"><label class="field"><span class="field-label">Period</span><span class="select-wrap"><select class="input" name="usage-period" data-action="usage-range">' +
+      periods.map(function (period) { return '<option value="' + period[0] + '"' + (state.usagePeriod === period[0] ? ' selected' : '') + '>' + period[1] + '</option>'; }).join("") +
+      '</select><span class="select-caret">' + icon("chevron-down") + '</span></span></label><label class="field"><span class="field-label">Break down by</span><span class="select-wrap"><select class="input" name="usage-group" data-action="usage-group">' +
+      [["channel", "Channel"], ["profile", "Profile"], ["provider", "Provider"], ["model", "Model"]].map(function (option) { return '<option value="' + option[0] + '"' + (state.usageGroupBy === option[0] ? ' selected' : '') + '>' + option[1] + '</option>'; }).join("") +
+      '</select><span class="select-caret">' + icon("chevron-down") + '</span></span></label>' + customControls + '</div></div>';
+    var head = '<div class="usage-head"><div class="usage-head-copy"><span class="section-eyebrow">Reporting</span><h1 class="page-title">Usage</h1><p class="hint">See token usage and spend across channels, profiles, providers, and recent activity.</p></div></div>' + controls +
+      '<div class="usage-contract"><p><strong>Set spending limits with each model provider;</strong> Chickpea reports estimated spend for activity it handles.</p><button type="button" class="btn btn-ghost btn-sm" data-action="usage-open-settings">Model settings</button></div>';
     if (state.usageLoading && !state.usageOverview) return head + '<div class="empty"><p class="hint">Loading usage and estimated spend&hellip;</p></div>';
     if (state.usageError && !state.usageOverview) return head + '<div class="empty"><p class="field-error">' + esc(state.usageError) + '</p><button type="button" class="btn btn-ghost" data-action="usage-retry">Retry</button></div>';
     if (!state.usageOverview || !state.usageMetadata) return head;
@@ -2534,26 +2758,20 @@ details[open].advanced summary::before {
     var totals = current.totals;
     var prior = previous.totals;
     var estimate = current.mixedCurrency ? "Multiple currencies" : usageMoney(totals.estimateAmountMicros, current.currency || "USD");
-    var denominator = Number(totals.completedPricedOperationCount || totals.pricedOperationCount || 0);
+    var denominator = Number(totals.pricedOperationCount || 0);
     var perPriced = denominator > 0 && totals.estimateAmountMicros != null ? usageMoney(Math.round(Number(totals.estimateAmountMicros) / denominator), current.currency || "USD") : "Unknown";
-    var summary = '<div class="usage-grid"><div class="usage-card usage-card-primary"><span class="usage-card-label">Chickpea estimated spend</span><span class="usage-card-value">' + esc(estimate) + '</span><span class="hint">' + esc(usageDelta(totals.estimateAmountMicros, prior.estimateAmountMicros)) + '</span></div>' +
-      '<div class="usage-card"><span class="usage-card-label">Work instances</span><span class="usage-card-value">' + usageInt(totals.operationCount) + '</span><span class="hint">' + esc(usageDelta(totals.operationCount, prior.operationCount)) + '</span></div>' +
-      '<div class="usage-card"><span class="usage-card-label">Aggregate tokens</span><span class="usage-card-value">' + usageInt(totals.totalTokens) + '</span><span class="hint">' + usageInt(totals.inputTokens) + ' input · ' + usageInt(totals.outputTokens) + ' output</span></div>' +
-      '<div class="usage-card"><span class="usage-card-label">Per completed priced work</span><span class="usage-card-value">' + esc(perPriced) + '</span><span class="hint">Known estimates only · ' + usageInt(denominator) + ' work instances</span></div></div>';
-    var coverage = '<div class="usage-coverage"><div class="usage-coverage-item"><strong>Recorded work: ' + usageInt(totals.operationCount) + '</strong><p class="hint">Ledger work in this period. A telemetry-store failure can create an unmeasurable gap; Chickpea never invents missing work.</p></div>' + usageCoverageItem("Metered", totals.meteredOperationCount, totals.operationCount, "usage unknown") + usageCoverageItem("Priced", totals.pricedOperationCount, totals.operationCount, "cost unknown") + '</div>';
-    var pricedCoverageNow = totals.operationCount ? totals.pricedOperationCount / totals.operationCount : 0;
-    var pricedCoveragePrior = prior.operationCount ? prior.pricedOperationCount / prior.operationCount : 0;
-    var coverageWarning = Math.abs(pricedCoverageNow - pricedCoveragePrior) >= 0.1 ? '<p class="field-error">Pricing coverage differs materially from the prior period, so spend changes are not directly comparable.</p>' : '';
+    var summary = '<div class="usage-grid"><div class="usage-card usage-card-primary"><span class="usage-card-label">Estimated spend</span><span class="usage-card-value">' + esc(estimate) + '</span><span class="hint">' + esc(usageDelta(totals.estimateAmountMicros, prior.estimateAmountMicros)) + '</span></div>' +
+      '<div class="usage-card"><span class="usage-card-label">' + usageActivityLabelHtml("Activity") + '</span><span class="usage-card-value">' + usageInt(totals.operationCount) + '</span><span class="hint">' + esc(usageDelta(totals.operationCount, prior.operationCount)) + '</span></div>' +
+      '<div class="usage-card"><span class="usage-card-label">Tokens</span><span class="usage-card-value">' + usageInt(totals.totalTokens) + '</span><span class="hint">' + usageInt(totals.inputTokens) + ' input · ' + usageInt(totals.outputTokens) + ' output</span></div>' +
+      '<div class="usage-card"><span class="usage-card-label">Average spend</span><span class="usage-card-value">' + esc(perPriced) + '</span><span class="hint">Across ' + usageInt(denominator) + ' priced ' + usageActivityNoun(denominator) + '</span></div></div>';
+    var coverage = usageCoverageHtml(totals);
     var staleCatalogs = (state.usageMetadata.catalogs || []).filter(function (catalog) { return Date.now() >= catalog.staleAfter; });
-    var freshness = staleCatalogs.length ? '<p class="field-error">' + staleCatalogs.length + ' price catalog' + (staleCatalogs.length === 1 ? ' is' : 's are') + ' stale. New unsupported estimates remain unknown until a reviewed release updates them.</p>' : '<p class="hint">Price catalog reviewed ' + esc(new Date(Math.max.apply(null, state.usageMetadata.catalogs.map(function (catalog) { return catalog.reviewedAt; }))).toISOString().slice(0, 10)) + '.</p>';
-    var filter = state.usageOperationFilter ? '<span class="usage-filter-chip">Recent work: ' + esc(state.usageOperationFilter.label) + ' <button type="button" class="x-btn" data-action="usage-clear-filter" aria-label="Clear work filter">&times;</button></span>' : '';
-    var crossExecutionNote = ["provider", "credential", "model"].includes(state.usageGroupBy) ? ' One work instance can appear in more than one row after a retry or failover; tokens and estimates stay with the execution that reported them.' : '';
-    return head + summary + coverage + coverageWarning + freshness +
-      '<section class="usage-section"><div class="usage-section-head"><div><h2 class="section-title">Spend drivers</h2><p class="hint">Known estimates and aggregate model-response usage, grouped one way at a time.' + crossExecutionNote + '</p></div></div>' + usageGroupsHtml(current) + '</section>' +
-      usageDetailHtml() +
-      '<section class="usage-section"><div class="usage-section-head"><div><h2 class="section-title">Recent work</h2><p class="hint">Open a work instance to inspect attribution, usage, estimate provenance, and unknown reasons.</p></div>' + filter + '</div>' + usageOperationsHtml() + '</section>' +
-      '<section class="usage-section"><div class="usage-section-head"><div><h2 class="section-title">Provider setup</h2><p class="hint">Scope provider credentials narrowly and set enforceable limits at the provider.</p></div><button type="button" class="btn btn-ghost btn-sm" data-action="usage-open-settings">Model settings</button></div>' + usageGuidanceHtml(state.usageMetadata) + '</section>' +
-      usageLifecycleHtml(state.usageMetadata);
+    var freshness = staleCatalogs.length ? '<p class="field-error">Spend estimates need a pricing update for ' + staleCatalogs.length + ' provider' + (staleCatalogs.length === 1 ? '' : 's') + '.</p>' : '';
+    var filter = state.usageOperationFilter ? '<span class="usage-filter-chip">Recent activity: ' + esc(state.usageOperationFilter.label) + ' <button type="button" class="x-btn" data-action="usage-clear-filter" aria-label="Clear activity filter">&times;</button></span>' : '';
+    var groupLabel = state.usageGroupBy === "channel" ? "channel" : state.usageGroupBy;
+    return head + summary + coverage + freshness +
+      '<section class="usage-section"><div class="usage-section-head"><div><h2 class="section-title">Spend by ' + esc(groupLabel) + '</h2><p class="hint">Compare where token usage and spend are concentrated.</p></div></div>' + usageGroupsHtml(current) + '</section>' +
+      '<section class="usage-section"><div class="usage-section-head"><div><h2 class="section-title">Recent ' + usageActivityLabelHtml("activity") + '</h2><p class="hint">Hover over total tokens to see the input and output split.</p></div>' + filter + '</div>' + usageOperationsHtml() + '</section>';
   }
 
   function mainHtml() {
@@ -5068,17 +5286,17 @@ details[open].advanced summary::before {
 
   function auditRailHtml() {
     var scopes = memoryScopes();
-    var html = '<nav class="rail audit-rail" aria-label="Memory scopes">' +
+    var html = '<nav class="rail audit-rail" aria-label="Memory scopes"><div class="rail-context">' +
       '<div class="rail-head"><span class="section-eyebrow">Audit logs</span></div>' +
       '<div class="platform-row active"><span class="platform-logo slack-logo-image" aria-hidden="true"></span>Slack</div>';
     if (state.memoryScopesLoading && !state.memoryScopes) {
-      return html + '<div class="empty" style="margin:8px; padding:12px;"><p class="hint">Loading memory scopes&hellip;</p></div></nav>';
+      return html + '<div class="empty" style="margin:8px; padding:12px;"><p class="hint">Loading memory scopes&hellip;</p></div></div>' + sectionSwitcherHtml() + '</nav>';
     }
     if (state.memoryScopesError) {
-      return html + '<div class="empty" style="margin:8px; padding:12px;"><p class="field-error">' + esc(state.memoryScopesError) + '</p><button type="button" class="btn btn-ghost btn-sm" data-action="memory-retry-scopes">Retry</button></div></nav>';
+      return html + '<div class="empty" style="margin:8px; padding:12px;"><p class="field-error">' + esc(state.memoryScopesError) + '</p><button type="button" class="btn btn-ghost btn-sm" data-action="memory-retry-scopes">Retry</button></div></div>' + sectionSwitcherHtml() + '</nav>';
     }
     if (!scopes.length) {
-      return html + '<div class="ws-row">Workspace</div><div class="empty" style="margin:8px; padding:12px;"><p class="hint">No channel memories yet</p></div></nav>';
+      return html + '<div class="ws-row">Workspace</div><div class="empty" style="margin:8px; padding:12px;"><p class="hint">No channel memories yet</p></div></div>' + sectionSwitcherHtml() + '</nav>';
     }
     var workspaces = [];
     scopes.forEach(function (scope) {
@@ -5098,7 +5316,7 @@ details[open].advanced summary::before {
           (scope.privacy === "private" ? '<span class="audit-lock" aria-label="Private">' + icon("lock-closed") + '</span>' : '') + '</button>';
       });
     });
-    return html + '</nav>';
+    return html + '</div>' + sectionSwitcherHtml() + '</nav>';
   }
 
   function auditTabsHtml() {
@@ -5111,20 +5329,20 @@ details[open].advanced summary::before {
   }
 
   function scheduledWorkRailHtml() {
-    var html = '<nav class="rail audit-rail" aria-label="Scheduled routines">' +
+    var html = '<nav class="rail audit-rail" aria-label="Scheduled routines"><div class="rail-context">' +
       '<div class="rail-head"><span class="section-eyebrow">Audit logs</span></div>' +
       '<div class="platform-row active"><span class="platform-logo slack-logo-image" aria-hidden="true"></span>Slack</div>';
     if (state.scheduledLoading && !state.scheduledRoutines) {
-      return html + '<div class="empty" style="margin:8px; padding:12px;"><p class="hint">Loading routines&hellip;</p></div></nav>';
+      return html + '<div class="empty" style="margin:8px; padding:12px;"><p class="hint">Loading routines&hellip;</p></div></div>' + sectionSwitcherHtml() + '</nav>';
     }
     if (state.scheduledError && !state.scheduledRoutines) {
-      return html + '<div class="empty" style="margin:8px; padding:12px;"><p class="field-error">' + esc(state.scheduledError) + '</p><button type="button" class="btn btn-ghost btn-sm" data-action="scheduled-retry">Retry</button></div></nav>';
+      return html + '<div class="empty" style="margin:8px; padding:12px;"><p class="field-error">' + esc(state.scheduledError) + '</p><button type="button" class="btn btn-ghost btn-sm" data-action="scheduled-retry">Retry</button></div></div>' + sectionSwitcherHtml() + '</nav>';
     }
     var routines = state.scheduledRoutines || [];
     html += '<div class="ws-row">Scheduled work</div>' +
       '<button type="button" class="chan-item active" data-action="scheduled-back-list">' +
       '<span class="chan-name">All routines</span><span class="chan-meta">' + Number(routines.length) + ' matching</span></button>';
-    return html + '</nav>';
+    return html + '</div>' + sectionSwitcherHtml() + '</nav>';
   }
 
   function scheduledChannelLabel(workspaceId, channelId) {
@@ -6201,7 +6419,15 @@ details[open].advanced summary::before {
         rows +
         '<p class="hint">More providers appear here as this install registers them in <span class="mono" style="color:var(--text-2);">src/app.ts</span>.</p></section>';
     }
-    return head + githubSectionHtml() + sandboxSectionHtml() + providerSection + egressSectionHtml();
+    return head +
+      settingsPanelHtml("providers", providerSection) +
+      settingsPanelHtml("github", githubSectionHtml()) +
+      settingsPanelHtml("sandbox", sandboxSectionHtml()) +
+      settingsPanelHtml("outbound", egressSectionHtml());
+  }
+
+  function settingsPanelHtml(id, body) {
+    return '<div class="settings-panel" data-settings-panel="' + id + '"' + (state.settingsSection === id ? '' : ' hidden') + '>' + body + '</div>';
   }
 
   function egressSectionHtml() {
@@ -6462,8 +6688,20 @@ details[open].advanced summary::before {
 
   // ---- Settings: data loading + actions ------------------------------------
 
+  function normalizeSettingsSection(value) {
+    var aliases = {
+      "model-settings": "providers",
+      "github-settings": "github",
+      "sandbox-settings": "sandbox",
+      "egress-settings": "outbound"
+    };
+    var section = aliases[String(value || "")] || String(value || "");
+    return ["providers", "github", "sandbox", "outbound"].includes(section) ? section : "providers";
+  }
+
   function openSettings(sectionId) {
     state.view = "settings";
+    state.settingsSection = normalizeSettingsSection(sectionId || state.settingsSection);
     state.profileScreen = "list";
     state.disableConfirm = false;
     state.githubStatus = null;
@@ -6472,10 +6710,6 @@ details[open].advanced summary::before {
     state.egressLoaded = false;
     state.sandboxLoaded = false;
     render();
-    if (sectionId) {
-      var section = document.getElementById(sectionId);
-      if (section && section.scrollIntoView) section.scrollIntoView({ block: "start" });
-    }
     loadSettings().then(render);
     loadGithubStatus().then(render);
     loadEgress().then(render);
@@ -7602,6 +7836,7 @@ details[open].advanced summary::before {
       return;
     }
     if (state.leavePrompt) { return; }
+    if (action === "edit-profile" && state.profileScreen === "edit" && target.getAttribute("data-agent") === state.editingAgentId) return;
     if (state.profileScreen === "edit" && state.profileDirty && isEditLeaveAction(action)) {
       state.leavePrompt = {
         action: action,
@@ -7618,7 +7853,13 @@ details[open].advanced summary::before {
     // Profiles is now a main-panel destination — open lands on the overview,
     // or (with a data-agent) directly on that profile's edit detail (the
     // channel-page Profile row's Edit affordance).
-    if (action === "open-profiles") { enterProfiles(target.getAttribute("data-agent")); }
+    if (action === "open-profiles") {
+      var requestedProfileId = target.getAttribute("data-agent") || "";
+      if (!requestedProfileId && target.getAttribute("data-section-switcher") === "true") {
+        requestedProfileId = state.editingAgentId || state.profileLastAgentId || (state.agents[0] && state.agents[0].id) || "";
+      }
+      enterProfiles(requestedProfileId);
+    }
     if (action === "open-usage" && USAGE_ADMIN_UI) { openUsage(); }
     if (action === "open-audit") { openAuditLogs("", "", ""); }
     // Brand-as-home: the reliable exit back to the Channels overview.
@@ -7693,22 +7934,20 @@ details[open].advanced summary::before {
     // Settings (model-providers) is a separate destination that lands with its
     // own build; the affordance is present per the approved model-field design.
     if (action === "open-settings") { openSettings(target.getAttribute("data-section") || ""); }
+    if (action === "settings-section") {
+      state.settingsSection = normalizeSettingsSection(target.getAttribute("data-section") || "providers");
+      render();
+    }
     if (action === "usage-retry") { loadUsage(true); }
     if (action === "usage-load-more") { loadMoreUsageOperations(); }
-    if (action === "usage-clear-filter") { state.usageOperationFilter = null; state.usageOperations = null; state.usageSelected = null; loadUsageOperations(true); }
+    if (action === "usage-custom-apply") { applyCustomUsageRange(); }
+    if (action === "usage-clear-filter") { state.usageOperationFilter = null; state.usageOperations = null; loadUsageOperations(true); }
     if (action === "usage-group-filter") {
       state.usageOperationFilter = { groupBy: state.usageGroupBy, value: target.getAttribute("data-value") || "", label: target.getAttribute("data-label") || "" };
       state.usageOperations = null;
-      state.usageSelected = null;
       loadUsageOperations(true);
     }
-    if (action === "usage-select-operation") {
-      var operationId = target.getAttribute("data-operation") || "";
-      state.usageSelected = (state.usageOperations || []).find(function (item) { return item.operation.operationId === operationId; }) || null;
-      render();
-    }
-    if (action === "usage-clear-operation") { state.usageSelected = null; render(); }
-    if (action === "usage-open-settings") { openSettings(""); }
+    if (action === "usage-open-settings") { openSettings("providers"); }
     if (action === "audit-tab-scheduled" && state.auditDomain !== "scheduled-work") { openScheduledWork(""); }
     if (action === "audit-tab-memory" && state.auditDomain !== "memory") { openAuditLogs("", "", ""); }
     if (action === "scheduled-retry") { loadScheduledRoutines(); }
@@ -8240,18 +8479,36 @@ details[open].advanced summary::before {
     var target = event.target;
     var action = target.getAttribute && target.getAttribute("data-action");
     if (action === "usage-range") {
-      var usageDays = Number(target.value);
-      state.usageRangeDays = [7, 30, 90].includes(usageDays) ? usageDays : 30;
+      var usagePeriod = String(target.value || "last_30_days");
+      var allowedUsagePeriods = ["last_7_days", "last_30_days", "last_90_days", "this_month", "last_month", "this_week", "last_week", "custom"];
+      state.usagePeriod = allowedUsagePeriods.includes(usagePeriod) ? usagePeriod : "last_30_days";
+      if (state.usagePeriod === "custom") {
+        var appliedCustom = usageCustomRange(state.usageCustomFrom, state.usageCustomTo);
+        if (appliedCustom.error) {
+          var customDefaults = usageDefaultCustomDates();
+          state.usageCustomFrom = customDefaults.from;
+          state.usageCustomTo = customDefaults.to;
+        }
+        state.usageCustomDraftFrom = state.usageCustomFrom;
+        state.usageCustomDraftTo = state.usageCustomTo;
+      }
+      state.usageCustomError = "";
       state.usageOperationFilter = null;
-      state.usageSelected = null;
       syncUsageQueryUrl();
       loadUsage(true);
     }
+    if (action === "usage-custom-from") {
+      state.usageCustomDraftFrom = String(target.value || "");
+      state.usageCustomError = "";
+    }
+    if (action === "usage-custom-to") {
+      state.usageCustomDraftTo = String(target.value || "");
+      state.usageCustomError = "";
+    }
     if (action === "usage-group") {
-      var usageGroup = String(target.value || "provider");
-      state.usageGroupBy = ["profile", "channel", "work_kind", "routine", "provider", "credential", "model", "status"].includes(usageGroup) ? usageGroup : "provider";
+      var usageGroup = String(target.value || "channel");
+      state.usageGroupBy = ["channel", "profile", "provider", "model"].includes(usageGroup) ? usageGroup : "channel";
       state.usageOperationFilter = null;
-      state.usageSelected = null;
       syncUsageQueryUrl();
       loadUsage(true);
     }
@@ -8605,6 +8862,7 @@ details[open].advanced summary::before {
     if (target) {
       state.profileScreen = "edit";
       state.editingAgentId = target.id;
+      state.profileLastAgentId = target.id;
       state.profileDraft = cloneAgent(target);
     } else {
       state.profileScreen = "list";
@@ -10058,7 +10316,8 @@ details[open].advanced summary::before {
   // the brand-home logo, and the "<- Profiles" back link.
   function isEditLeaveAction(action) {
     return action === "open-channels" || action === "open-profiles" || action === "open-settings" ||
-      action === "open-audit" || action === "open-usage" || action === "go-home" || action === "profiles-back";
+      action === "open-audit" || action === "open-usage" || action === "go-home" || action === "profiles-back" ||
+      action === "edit-profile" || action === "new-profile";
   }
 
   // Perform a confirmed leave — the edit draft is dropped and the pending
@@ -10092,6 +10351,14 @@ details[open].advanced summary::before {
       openUsage();
     } else if (action === "go-home" || action === "open-channels") {
       openChannels();
+    } else if (action === "edit-profile") {
+      var selected = agentById((pending && pending.agent) || "");
+      if (selected) openProfileEditor(selected);
+      else enterProfiles(state.profileLastAgentId || ((state.agents[0] && state.agents[0].id) || ""));
+    } else if (action === "new-profile") {
+      openNewProfile();
+    } else if (action === "open-profiles") {
+      enterProfiles((pending && pending.agent) || state.profileLastAgentId || ((state.agents[0] && state.agents[0].id) || ""));
     } else {
       state.view = "profiles";
       state.profileScreen = "list";

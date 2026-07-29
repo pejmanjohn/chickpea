@@ -253,7 +253,7 @@ It calls `auth.test` and `users.info`, compares the display name to the manifest
 
 `.env.example` lists the offline-safe defaults for the Node lane.
 
-**Starter profile.** One seeded profile, `Default` — a neutral, general-purpose assistant with no channel assignments, so a fresh install's `/admin` shows only your real channels and first-run onboarding has no profile decision to make. `Default` answers DMs and App Home (it is the direct-message default) and is pre-selected for every new channel unless you pick another. Any additional profile you create in the Profiles modal starts from blank fields.
+**Starter profile.** One seeded profile, `Default` — a neutral, general-purpose assistant with no channel assignments, so a fresh install's `/admin` shows only your real channels and first-run onboarding has no profile decision to make. `Default` answers DMs and App Home (it is the direct-message default) and is pre-selected for every new channel unless you pick another. Any additional profile you create in the Profiles section starts from blank fields.
 
 **Model selection, per agent:**
 
@@ -270,7 +270,7 @@ The three layers are independently disabled by default:
 
 - `USAGE_RUNTIME_RECORDING=1` records aggregate usage and work status. Writes are bounded and fail open so reporting cannot block a reply or routine.
 - `USAGE_ESTIMATES=1` attaches reviewed input/output list-price estimates to new measurements without rewriting history.
-- `USAGE_ADMIN_UI=1` reveals the authenticated **Usage** destination with 7/30/90-day comparison, provider/channel/profile/work/routine/credential/model/status breakdowns, coverage, and work-instance detail.
+- `USAGE_ADMIN_UI=1` reveals the authenticated **Usage** destination with rolling 7/30/90-day, calendar week/month, and custom date ranges; channel-first spend reporting; profile/provider/model breakdowns; and a privacy-safe recent-activity ledger. Activity means a Slack message Chickpea responds to or a scheduled routine run. Custom ranges are inclusive and limited to 366 days.
 
 “Chickpea estimated spend” is not charged cost or an invoice. Unsupported routes, models, billing dimensions, interrupted streams, and stale price catalogs remain explicitly unknown rather than becoming zero. V1 deliberately excludes cache rates, batch or priority tiers, images/audio/tool units, credits, taxes, negotiated rates, subscriptions, OpenRouter routing adjustments, and work outside Chickpea.
 

@@ -1,75 +1,79 @@
 **Comparison Target**
 
-- Source visual truth: local reference image used during QA (not included in the repository)
-- Browser-rendered implementation: `http://localhost:3583/admin/channels`
-- Implementation screenshot: `/private/tmp/chickpea-channels-desktop-final-3.jpg`
-- Mobile screenshot: `/private/tmp/chickpea-channels-mobile-final.jpg`
-- Desktop viewport: `1487x1058`
-- Mobile viewport: `390x844`
-- State: signed-in local Node admin, Slack connected to the seeded Acme workspace with three assigned channels, Slack behavior settings enabled
+- Source visual truth: `/Users/pejman/.codex/generated_images/019faae1-7b73-77a1-9bfd-4c490f6462af/exec-de9fcbee-b175-424c-864b-d905dc29b424.png`
+- Browser-rendered implementation: `http://127.0.0.1:3591/admin/usage`
+- Implementation screenshot: `/Users/pejman/.codex/visualizations/2026/07/28/019faae1-7b73-77a1-9bfd-4c490f6462af/admin-navigation/usage-desktop.png`
+- Desktop viewport and CSS size: `1487x1058`
+- Source pixels: `1487x1058`; implementation pixels: `1487x1058`; device scale factor: `1`. No density normalization was needed.
+- State: signed-in local Node Admin, Usage enabled, channel breakdown selected, realistic four-activity usage fixture loaded, desktop section switcher active on Usage.
 
 **Full-view Comparison Evidence**
 
-- Same-input comparison: `/private/tmp/chickpea-channels-comparison-final-3.png`
-- The implementation preserves the source hierarchy, frame proportions, warm palette, two-column composition, workspace card, behavior rows, connection actions, destructive action, and add-channel affordance.
-- The top-level Channels count and global Open Slack console action intentionally differ from the source at the user's request. The implementation omits the count and places the single console link inside the Connection section.
+- Same-input comparison: `/Users/pejman/.codex/visualizations/2026/07/28/019faae1-7b73-77a1-9bfd-4c490f6462af/admin-navigation/usage-comparison-final.png`
+- The implementation preserves the selected mockup's hierarchy, warm palette, rail/main proportions, text-only section switcher, active states, usage controls, guidance, summary cards, channel-first tables, and compact density.
+- The implementation is slightly roomier inside the main content card because it uses the existing Admin layout tokens. This is an acceptable product-system constraint and does not change hierarchy, wrapping, or above-the-fold information.
 
 **Focused Region Comparison Evidence**
 
-- Same-input focused comparison: `/private/tmp/chickpea-channels-focus-comparison-3.png`
-- The top navigation, uncounted Channels rail, Slack/workspace nesting, workspace metadata, behavior rows, typography, controls, and spacing are readable at native scale in this comparison.
+- Navigation comparison: `/Users/pejman/.codex/visualizations/2026/07/28/019faae1-7b73-77a1-9bfd-4c490f6462af/admin-navigation/navigation-focus-comparison.png`
+- Usage-header comparison: `/Users/pejman/.codex/visualizations/2026/07/28/019faae1-7b73-77a1-9bfd-4c490f6462af/admin-navigation/usage-top-focus-comparison.png`
+- These native-density crops make the section hierarchy, labels, typography, active treatments, controls, guidance, cards, and spacing readable without relying only on the full-page view.
 
 **Required Fidelity Surfaces**
 
-- Fonts and typography: the implementation keeps the product's existing rounded UI typography, clear weight hierarchy, compact metadata, and readable wrapping. No actionable hierarchy or truncation drift remains.
-- Spacing and layout rhythm: frame width, rail/main proportions, section rules, card padding, control density, radii, and vertical rhythm match the source closely. Desktop and mobile have no horizontal overflow.
-- Colors and visual tokens: the warm cream surfaces, green connection state, gold primary action, red destructive treatment, muted metadata, and subtle borders/shadows stay consistent with the source and existing product tokens.
-- Image quality and asset fidelity: Slack uses a sharp real raster logo asset embedded by the page. It is not approximated with CSS, text, emoji, or handcrafted SVG.
-- Copy and content: Slack behavior, credential replacement, reconnect consequences, and channel assignment copy are explicit and truthful. Workspace/channel values differ only because the implementation uses the seeded QA state.
+- Fonts and typography: the implementation uses the existing Chickpea display, body, and mono families with the same optical hierarchy as the mockup. Eyebrows, labels, values, metadata, and navigation remain readable with no unexpected wrapping or truncation.
+- Spacing and layout rhythm: the rail and main card retain the mockup's rounded two-column frame and measured vertical rhythm. On desktop the rail remains within the `1058px` viewport (`top 68`, `bottom 1042`), the section switcher remains visible (`top 840`, `bottom 1028`), and only the main panel scrolls.
+- Colors and visual tokens: cream canvas, white surfaces, ember active tint, dark spend card, muted metadata, green statuses, subtle dividers, shadows, and borders remain consistent with the mockup and existing Admin tokens.
+- Image quality and asset fidelity: this screen contains no content imagery. The Chickpea brand mark is the product's existing sharp inline asset used by the Admin rather than a new placeholder or substitute.
+- Copy and content: Usage keeps concise provider-limit guidance, plain dollar formatting, channel-first reporting, and activity language. Profiles, Settings categories, and mobile menu labels are short and standalone.
 
 **Findings**
 
-- No actionable P0, P1, or P2 visual or interaction findings remain.
+- No actionable P0, P1, or P2 visual, interaction, accessibility, or responsive findings remain.
 
 **Comparison History**
 
-- Earlier comparison: `/private/tmp/chickpea-channels-comparison-2.png`
-  - [P2] The mobile connected-workspace badge stretched to the full card width.
-  - [P2] Returning to the Slack overview could leave a channel visually selected in the rail.
-- Fixes made:
-  - Scoped the workspace badge to its intrinsic width on narrow layouts.
-  - Applied the active channel style only while the channel detail screen is open.
+- Pass 1 comparison: `/Users/pejman/.codex/visualizations/2026/07/28/019faae1-7b73-77a1-9bfd-4c490f6462af/admin-navigation/usage-comparison-pass-1.png`
+  - [P1] The section switcher was placed at the end of the rail but the overall desktop frame was not viewport-constrained, so long Usage content pushed the supposedly persistent section controls below the visible viewport.
+- Fix made:
+  - Constrained the desktop frame to `100dvh`, kept the body from expanding beyond the frame, and made the main panel the scrolling region while the rail stays fixed.
 - Post-fix evidence:
-  - `/private/tmp/chickpea-channels-mobile-final.jpg` shows the corrected intrinsic badge and no stale selected channel.
-  - `/private/tmp/chickpea-channels-comparison-final-3.png` and `/private/tmp/chickpea-channels-focus-comparison-3.png` show the final desktop state with no actionable P0/P1/P2 mismatch.
+  - `/Users/pejman/.codex/visualizations/2026/07/28/019faae1-7b73-77a1-9bfd-4c490f6462af/admin-navigation/usage-desktop.png` shows all four section controls visible while the long main table continues below the fold.
+  - Browser measurements confirmed no horizontal overflow and a scrollable main panel (`clientHeight 974`, `scrollHeight 1140`).
+  - `/Users/pejman/.codex/visualizations/2026/07/28/019faae1-7b73-77a1-9bfd-4c490f6462af/admin-navigation/usage-comparison-final.png` is the same-state post-fix comparison.
+
+**Additional Screen and Responsive Evidence**
+
+- Profiles: `/Users/pejman/.codex/visualizations/2026/07/28/019faae1-7b73-77a1-9bfd-4c490f6462af/admin-navigation/profiles-desktop.png`
+- Settings: `/Users/pejman/.codex/visualizations/2026/07/28/019faae1-7b73-77a1-9bfd-4c490f6462af/admin-navigation/settings-desktop.png`
+- Mobile Usage: `/Users/pejman/.codex/visualizations/2026/07/28/019faae1-7b73-77a1-9bfd-4c490f6462af/admin-navigation/usage-mobile.png` at `390x844`
+- Mobile menu: `/Users/pejman/.codex/visualizations/2026/07/28/019faae1-7b73-77a1-9bfd-4c490f6462af/admin-navigation/mobile-menu.png` at `390x844`
+- The mobile layout has no document or main-panel horizontal overflow. The desktop switcher correctly yields to the existing mobile hamburger, which exposes Channels, Profiles, Usage, and Settings with one active section.
 
 **Primary Interactions Tested**
 
-- Open `/admin/channels` and deep-link to `/admin/channels/:workspace/:channel`.
-- Drill into `#product` and return to the Slack overview; selection state follows the route.
-- Toggle Slack behavior and verify the saved state through the real admin API.
-- Open and cancel credential update.
-- Open and cancel disconnect; background content becomes inert, Tab and Shift+Tab stay in the dialog, and focus returns to Disconnect.
-- Resolve an unrelated background channel request while disconnect is open; the re-render keeps focus inside the modal.
-- Use Browser Back while the confirmation is open; the dialog closes before the prior route is applied.
-- Verify credential replacement and disconnect operations cannot overlap, and async failures announce and receive focus through live error regions.
-- Confirm Open Slack console exists exactly once under Connection, opens in a safe new tab, and is absent from the top navigation.
-- Check desktop and mobile overflow.
+- Switched from Usage to the last-used/first Profile and confirmed the selected profile appears in the contextual rail and main editor.
+- Opened Settings and confirmed Model providers is the default category.
+- Switched Settings to GitHub and confirmed the route changed to `/admin/settings/github`, only the GitHub panel remained visible, and the contextual active state followed it.
+- Verified direct URLs, active section state, realistic Usage tables, disconnected-Slack navigation, and feature-gated Usage behavior in the browser/unit harness.
+- Verified the mobile hamburger exposes all primary sections and hides the redundant desktop section switcher.
 
 **Console Errors Checked**
 
-- Browser console after the final interaction pass: no errors (`[]`).
+- Browser warnings/errors after the final desktop and mobile interaction pass: none (`[]`).
 
 **Implementation Checklist**
 
-- [x] Remove the ambiguous top-level Channels count.
-- [x] Move Open Slack console from the global navigation into Slack Connection settings.
-- [x] Preserve Slack-first hierarchy while leaving room for future channel types.
-- [x] Keep workspace-specific behavior and channel-to-profile mapping at the correct levels.
-- [x] Verify desktop, mobile, deep-link, persistence, dialog, accessibility, and failure states.
+- [x] Remove desktop top navigation and add a persistent text-only section switcher.
+- [x] Keep Channels visible and active for channel-owned audit screens.
+- [x] Add profile-specific contextual navigation and retain the selected profile.
+- [x] Split Settings into Model providers, GitHub, Coding sandbox, and Outbound access routes with one visible panel at a time.
+- [x] Preserve the existing mobile hamburger and responsive layout.
+- [x] Keep direct links, dirty-profile guards, and disconnected onboarding coherent.
+- [x] Verify desktop persistence, mobile overflow, console health, focused tests, full tests, build, and Admin UI verification.
 
 **Follow-up Polish**
 
-- No blocking polish remains. Seeded workspace and channel names may be swapped for production values without layout changes.
+- No blocking polish remains. Additional Settings categories can use the same contextual-rail contract without changing primary navigation.
 
 final result: passed

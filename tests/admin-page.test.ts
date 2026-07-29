@@ -296,6 +296,7 @@ function runAdminPageHarness(
     initialSearch?: string;
     usageAdminUi?: boolean;
     usageApiError?: boolean;
+    usageCoverage?: { pricedOperationCount: number; meteredOperationCount: number };
   } = {},
 ): {
   app: FakeElement;
@@ -317,6 +318,7 @@ function runAdminPageHarness(
   popstate(path: string): void;
   historyPushes: string[];
   historyReplaces: string[];
+  usageApiCalls: string[];
   channelListCalls: string[];
   providerKeyPosts: Array<{ id: string; key: string }>;
   providerKeyDeletes: string[];
@@ -414,6 +416,7 @@ function runAdminPageHarness(
   const slackIdentityResolvers: Array<((response: FakeResponse) => void) | undefined> = [];
   let slackDisconnectCalls = 0;
   const channelListCalls: string[] = [];
+  const usageApiCalls: string[] = [];
   const providerKeyPosts: Array<{ id: string; key: string }> = [];
   const providerKeyDeletes: string[] = [];
   const favoritesPuts: Array<{ id: string; favorites: string[] }> = [];
@@ -599,14 +602,19 @@ function runAdminPageHarness(
   };
   const historyPushes: string[] = [];
   const historyReplaces: string[] = [];
+  const applyHistoryPath = (path: string) => {
+    const next = new URL(String(path), 'http://admin.test');
+    location.pathname = next.pathname;
+    location.search = next.search;
+  };
   const history = {
     pushState(_state: unknown, _title: string, path: string) {
-      location.pathname = String(path);
-      historyPushes.push(location.pathname);
+      applyHistoryPath(path);
+      historyPushes.push(String(path));
     },
     replaceState(_state: unknown, _title: string, path: string) {
-      location.pathname = String(path);
-      historyReplaces.push(location.pathname);
+      applyHistoryPath(path);
+      historyReplaces.push(String(path));
     },
   };
   const windowListeners: Record<string, (event: Record<string, unknown>) => void> = {};
@@ -735,8 +743,8 @@ function runAdminPageHarness(
     completedOperationCount: 2,
     failedOperationCount: 1,
     incompleteOperationCount: 0,
-    meteredOperationCount: 2,
-    pricedOperationCount: 1,
+    meteredOperationCount: options.usageCoverage?.meteredOperationCount ?? 2,
+    pricedOperationCount: options.usageCoverage?.pricedOperationCount ?? 1,
     completedPricedOperationCount: 1,
     unknownUsageOperationCount: 1,
     unknownPriceOperationCount: 2,
@@ -778,6 +786,7 @@ function runAdminPageHarness(
   const fetch = (path: string, options?: { method?: string; body?: string; headers?: Record<string, string> }): Promise<FakeResponse> => {
     const method = options?.method ?? 'GET';
     if (path.startsWith('/admin/api/usage/')) {
+      usageApiCalls.push(path);
       if (harnessOptions.usageApiError) return Promise.resolve(jsonResponse({ error: 'usage_unavailable' }, 503));
       if (path.startsWith('/admin/api/usage/overview')) {
         return Promise.resolve(jsonResponse({
@@ -1526,11 +1535,12 @@ function runAdminPageHarness(
     focusedAction: () => focusedAction,
     locationPath: () => location.pathname,
     popstate(path: string) {
-      location.pathname = path;
+      applyHistoryPath(path);
       windowListeners.popstate?.({});
     },
     historyPushes,
     historyReplaces,
+    usageApiCalls,
     channelListCalls,
     providerKeyPosts,
     providerKeyDeletes,
@@ -1769,7 +1779,7 @@ test('Channels opens a Slack overview with an uncounted platform rail and explic
   const topbar = html.match(/<header class="topbar">[\s\S]*?<\/header>/)?.[0] ?? '';
   assert.equal(harness.locationPath(), '/admin/channels');
   assert.deepEqual(harness.historyReplaces, ['/admin/channels']);
-  assert.match(html, /class="btn btn-soft nav-active" data-action="open-channels">Channels<\/button>/);
+  assert.match(html, /class="section-nav-item active" data-action="open-channels"[^>]*aria-current="page">Channels<\/button>/);
   assert.doesNotMatch(topbar, /Audit logs/);
   assert.doesNotMatch(topbar, /data-action="open-audit"/);
   assert.match(html, /<div class="rail-head"><span class="section-eyebrow">Channels<\/span><\/div>/);
@@ -1811,7 +1821,7 @@ test('Channels opens a Slack overview with an uncounted platform rail and explic
   });
   await flushAsync();
   assert.equal(harness.locationPath(), '/admin/audit-logs/memory/store_public_T_DESIGN/C0EXR3L9T');
-  assert.match(harness.app.innerHTML, /class="btn btn-soft nav-active" data-action="open-channels">Channels<\/button>/);
+  assert.match(harness.app.innerHTML, /class="section-nav-item active" data-action="open-channels"[^>]*aria-current="page">Channels<\/button>/);
   assert.match(harness.app.innerHTML, /<h1 class="page-title">Audit logs<\/h1>/);
 
   click({ target: actionTarget({ 'data-action': 'open-channels' }) });
@@ -6439,18 +6449,20 @@ test('add-channel submit PUTs the connected workspace id and surfaces the invite
   assert.match(harness.app.innerHTML, /Invite it to #secret-room in Slack/);
 });
 
-test('the rail and add-channel affordance stay gated until Slack is connected', async () => {
+test('the navigation rail stays available while channel setup waits for Slack', async () => {
   const harness = runAdminPageHarness({
     assignments: [],
     slackConnection: disconnectedSlackFixture(),
   });
   await flushAsync();
 
-  // Disconnected: the whole screen is the Connect stepper — no rail, no
-  // add-channel affordance anywhere, and no channel-list fetch.
+  // Disconnected: setup stays focused, but the stable section switcher remains
+  // available and the Slack-specific add affordance is visibly disabled.
   assert.match(harness.app.innerHTML, /Connect Slack/);
-  assert.doesNotMatch(harness.app.innerHTML, /data-action="toggle-add-channel"/);
-  assert.doesNotMatch(harness.app.innerHTML, /class="rail"/);
+  assert.match(harness.app.innerHTML, /class="rail" aria-label="Channels"/);
+  assert.match(harness.app.innerHTML, /data-action="toggle-add-channel" disabled title="Connect Slack first"/);
+  assert.match(harness.app.innerHTML, /class="section-nav-item" data-action="open-profiles"[^>]*>Profiles<\/button>/);
+  assert.match(harness.app.innerHTML, /class="section-nav-item" data-action="open-settings"[^>]*>Settings<\/button>/);
   assert.equal(harness.channelListCalls.length, 0);
 });
 
@@ -6613,12 +6625,11 @@ function inputTarget(attributes: Record<string, string>, value: string): FakeTar
   };
 }
 
-test('admin topbar exposes a Settings destination that lands on the model-providers page', async () => {
+test('the persistent section switcher opens Settings on the model-providers page', async () => {
   const harness = runAdminPageHarness();
   await flushAsync();
 
-  // The Settings sibling sits next to Profiles in the topbar (inactive until opened).
-  assert.match(harness.app.innerHTML, /data-action="open-settings">Settings<\/button>/);
+  assert.match(harness.app.innerHTML, /class="section-nav-item" data-action="open-settings"[^>]*>Settings<\/button>/);
 
   const click = harness.listeners.click;
   assert.ok(click);
@@ -6627,8 +6638,47 @@ test('admin topbar exposes a Settings destination that lands on the model-provid
 
   assert.match(harness.app.innerHTML, /<h1 class="page-title">Settings<\/h1>/);
   assert.match(harness.app.innerHTML, /<h2 class="section-title">Model providers<\/h2>/);
-  // The active-state styling is the soft ember tint (.nav-active), no weight change.
-  assert.match(harness.app.innerHTML, /class="btn btn-soft nav-active" data-action="open-settings">Settings<\/button>/);
+  assert.equal(harness.locationPath(), '/admin/settings/providers');
+  assert.match(harness.app.innerHTML, /class="section-nav-item active" data-action="open-settings"[^>]*aria-current="page">Settings<\/button>/);
+  assert.match(harness.app.innerHTML, /data-settings-panel="providers"><section/);
+  assert.match(harness.app.innerHTML, /data-settings-panel="github" hidden>/);
+});
+
+test('the left rail keeps one coherent section switcher and section-specific navigation', async () => {
+  const harness = runAdminPageHarness({ usageAdminUi: true });
+  await flushAsync();
+
+  const initialSwitcher = harness.app.innerHTML.match(/<nav class="section-switcher" aria-label="Admin navigation">[\s\S]*?<\/nav>/)?.[0] ?? '';
+  assert.doesNotMatch(initialSwitcher, />Sections</);
+  assert.ok(initialSwitcher.indexOf('>Channels</button>') < initialSwitcher.indexOf('>Profiles</button>'));
+  assert.ok(initialSwitcher.indexOf('>Profiles</button>') < initialSwitcher.indexOf('>Usage</button>'));
+  assert.ok(initialSwitcher.indexOf('>Usage</button>') < initialSwitcher.indexOf('>Settings</button>'));
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'open-profiles', 'data-section-switcher': 'true' }) });
+  assert.equal(harness.locationPath(), '/admin/profiles/agent_release');
+  assert.match(harness.app.innerHTML, /<nav class="rail" aria-label="Profiles">/);
+  assert.match(harness.app.innerHTML, /class="chan-item active" data-action="edit-profile" data-agent="agent_release"/);
+  assert.match(harness.app.innerHTML, /class="section-nav-item active" data-action="open-profiles"/);
+
+  click({ target: actionTarget({ 'data-action': 'open-usage', 'data-section-switcher': 'true' }) });
+  await flushAsync();
+  assert.equal(harness.locationPath(), '/admin/usage');
+  assert.match(harness.app.innerHTML, /<nav class="rail" aria-label="Usage">/);
+  assert.match(harness.app.innerHTML, /<span class="chan-name">Overview<\/span>/);
+  assert.doesNotMatch(harness.app.innerHTML, /<span class="chan-name">Model settings<\/span>/);
+
+  click({ target: actionTarget({ 'data-action': 'open-settings', 'data-section-switcher': 'true' }) });
+  await flushAsync();
+  assert.equal(harness.locationPath(), '/admin/settings/providers');
+  assert.match(harness.app.innerHTML, /class="chan-item active" data-action="settings-section" data-section="providers"/);
+
+  click({ target: actionTarget({ 'data-action': 'settings-section', 'data-section': 'github' }) });
+  assert.equal(harness.locationPath(), '/admin/settings/github');
+  assert.match(harness.app.innerHTML, /class="chan-item active" data-action="settings-section" data-section="github"/);
+  assert.match(harness.app.innerHTML, /data-settings-panel="providers" hidden>/);
+  assert.match(harness.app.innerHTML, /data-settings-panel="github"><section/);
 });
 
 test('Settings renders the off-by-default Coding sandbox card with cost and collapsed advanced controls', async () => {
@@ -7185,29 +7235,60 @@ test('Usage navigation is feature-gated off by default', async () => {
   assert.match(html, /var USAGE_ADMIN_UI = false/);
 });
 
-test('Usage shows honest estimates, coverage, provider guidance, and privacy-safe work detail', async () => {
+test('Usage shows concise spend, expanded token columns, and non-interactive activity rows', async () => {
   const harness = runAdminPageHarness({ usageAdminUi: true, initialPath: '/admin/usage' });
   await flushAsync();
 
   const html = harness.app.innerHTML;
-  assert.match(html, /Chickpea estimated spend/);
-  assert.match(html, /USD 0\.0125/);
-  assert.match(html, /Metered: 67%/);
-  assert.match(html, /Priced: 33%/);
-  assert.match(html, /Configure caps, credits, quotas, and rate limits with your model provider/);
-  assert.match(html, /Provider totals can include work outside Chickpea/);
-  assert.match(html, /Provider limits/);
-  assert.match(html, /One work instance can appear in more than one row after a retry or failover/);
+  assert.match(html, /Estimated spend/);
+  assert.match(html, /\$0\.01/);
+  assert.match(html, /Some activity is missing usage data\./);
+  assert.match(html, /Cost estimates include 1 of 3 activities; token totals include 2 of 3\./);
+  assert.match(html, /Set spending limits with each model provider/);
+  assert.match(html, /<option value="channel" selected>Channel<\/option>/);
+  assert.match(html, /Spend by channel/);
+  assert.match(html, /Recent <span class="usage-term-help"[^>]*>activity<\/span>/);
+  assert.match(html, /data-tooltip="Activity includes each Slack message Chickpea responds to and each scheduled routine run\."/);
+  assert.match(html, />Input tokens<\/th><th class="number">Output tokens<\/th><th class="number">Total tokens<\/th>/);
+  assert.match(html, /<td class="number">1,200<\/td><td class="number">300<\/td><td class="number">1,500<\/td>/);
+  assert.match(html, /class="usage-token-total" tabindex="0" data-tooltip="1,000 input · 250 output"[^>]*>1,250<\/span>/);
+  assert.match(html, /Direct message/);
+  assert.doesNotMatch(html, /data-action="usage-select-operation"|Activity details|data-operation="op_usage_fixture"/);
+  assert.doesNotMatch(html, /Provider setup|Provider limits|Known estimate|Work instance|Retention and lifecycle/);
   assert.doesNotMatch(html, /<script>alert\(1\)<\/script>/);
   assert.match(html, /Release &lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+  assert.doesNotMatch(html, /authorization: Bearer|apiKey|clientSecret/i);
+});
 
-  harness.listeners.click?.({
-    target: actionTarget({ 'data-action': 'usage-select-operation', 'data-operation': 'op_usage_fixture' }),
+test('Usage combines matching coverage gaps and hides the note when coverage is complete', async () => {
+  const partial = runAdminPageHarness({
+    usageAdminUi: true,
+    initialPath: '/admin/usage',
+    usageCoverage: { pricedOperationCount: 2, meteredOperationCount: 2 },
   });
-  assert.match(harness.app.innerHTML, /Work instance detail/);
-  assert.match(harness.app.innerHTML, /Direct message/);
-  assert.match(harness.app.innerHTML, /Estimated from openai_2026-07-28/);
-  assert.doesNotMatch(harness.app.innerHTML, /authorization: Bearer|apiKey|clientSecret/i);
+  await flushAsync();
+  assert.match(partial.app.innerHTML, /Totals include 2 of 3 activities\./);
+  assert.match(partial.app.innerHTML, /One activity did not report token usage and could not be priced\./);
+
+  const complete = runAdminPageHarness({
+    usageAdminUi: true,
+    initialPath: '/admin/usage',
+    usageCoverage: { pricedOperationCount: 3, meteredOperationCount: 3 },
+  });
+  await flushAsync();
+  assert.doesNotMatch(complete.app.innerHTML, /class="usage-data-note"/);
+  assert.doesNotMatch(complete.app.innerHTML, /missing usage data|did not report token usage/);
+});
+
+test('Admin dividers use solid rules', () => {
+  assert.doesNotMatch(renderAdminPage(), /\b(?:dashed|dotted)\b/);
+});
+
+test('Usage tooltips render on hover and keyboard focus without relying on native title text', () => {
+  const html = renderAdminPage();
+  assert.match(html, /\.usage-term-help:hover::after, \.usage-term-help:focus-visible::after/);
+  assert.match(html, /content: attr\(data-tooltip\)/);
+  assert.doesNotMatch(html, /class="usage-term-help"[^>]*\stitle=/);
 });
 
 test('Usage renders an explicit query error and retry action', async () => {
@@ -7224,9 +7305,91 @@ test('Usage restores its bounded period and single breakdown from the URL', asyn
     initialSearch: '?days=90&groupBy=channel',
   });
   await flushAsync();
-  assert.match(harness.app.innerHTML, /<option value="90" selected>Last 90 days<\/option>/);
+  assert.match(harness.app.innerHTML, /<option value="last_90_days" selected>Last 90 days<\/option>/);
   assert.match(harness.app.innerHTML, /<option value="channel" selected>Channel<\/option>/);
   assert.match(harness.app.innerHTML, /<th>channel<\/th>/);
+});
+
+test('Usage offers rolling and calendar periods in a clear order', async () => {
+  const harness = runAdminPageHarness({ usageAdminUi: true, initialPath: '/admin/usage' });
+  await flushAsync();
+
+  const periodSelect = harness.app.innerHTML.match(/<select class="input" name="usage-period"[\s\S]*?<\/select>/)?.[0] ?? '';
+  const labels = ['Last 7 days', 'Last 30 days', 'Last 90 days', 'This month', 'Last month', 'This week', 'Last week', 'Custom'];
+  labels.forEach((label) => assert.match(periodSelect, new RegExp(`>${label}<`)));
+  labels.slice(1).forEach((label, index) => {
+    assert.ok(periodSelect.indexOf(labels[index] as string) < periodSelect.indexOf(label));
+  });
+});
+
+test('Usage restores an inclusive custom range and sends its calendar boundaries to reporting APIs', async () => {
+  const harness = runAdminPageHarness({
+    usageAdminUi: true,
+    initialPath: '/admin/usage',
+    initialSearch: '?period=custom&from=2026-07-01&to=2026-07-05&groupBy=profile',
+  });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /<option value="custom" selected>Custom<\/option>/);
+  assert.match(harness.app.innerHTML, /id="usage-custom-from"[^>]*value="2026-07-01"/);
+  assert.match(harness.app.innerHTML, /id="usage-custom-to"[^>]*value="2026-07-05"/);
+  assert.match(harness.app.innerHTML, /<option value="profile" selected>Profile<\/option>/);
+
+  const overviewPath = harness.usageApiCalls.filter((path) => path.startsWith('/admin/api/usage/overview')).at(-1);
+  assert.ok(overviewPath);
+  const overviewUrl = new URL(overviewPath, 'http://admin.test');
+  assert.equal(overviewUrl.searchParams.get('from'), String(new Date(2026, 6, 1).getTime()));
+  assert.equal(overviewUrl.searchParams.get('to'), String(new Date(2026, 6, 6).getTime()));
+  assert.equal(overviewUrl.searchParams.get('groupBy'), 'profile');
+});
+
+test('Usage reveals and applies custom dates without querying half-edited values', async () => {
+  const harness = runAdminPageHarness({ usageAdminUi: true, initialPath: '/admin/usage' });
+  await flushAsync();
+  const change = harness.listeners.change;
+  const click = harness.listeners.click;
+  assert.ok(change);
+  assert.ok(click);
+
+  change({ target: inputTarget({ 'data-action': 'usage-range' }, 'custom') });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /id="usage-custom-from"/);
+  assert.match(harness.app.innerHTML, /id="usage-custom-to"/);
+  assert.match(harness.app.innerHTML, /data-action="usage-custom-apply">Apply dates<\/button>/);
+  assert.match(harness.app.innerHTML, /class="usage-control-row has-custom"/);
+  assert.doesNotMatch(harness.app.innerHTML, /class="usage-custom-range"/);
+
+  const callsAfterOpening = harness.usageApiCalls.length;
+  change({ target: inputTarget({ 'data-action': 'usage-custom-from' }, '2026-07-01') });
+  change({ target: inputTarget({ 'data-action': 'usage-custom-to' }, '2026-07-05') });
+  assert.equal(harness.usageApiCalls.length, callsAfterOpening);
+
+  click({ target: actionTarget({ 'data-action': 'usage-custom-apply' }) });
+  await flushAsync();
+  assert.ok(harness.historyReplaces.includes('/admin/usage?period=custom&from=2026-07-01&to=2026-07-05&groupBy=channel'));
+  const overviewPath = harness.usageApiCalls.filter((path) => path.startsWith('/admin/api/usage/overview')).at(-1);
+  assert.ok(overviewPath);
+  const overviewUrl = new URL(overviewPath, 'http://admin.test');
+  assert.equal(overviewUrl.searchParams.get('from'), String(new Date(2026, 6, 1).getTime()));
+  assert.equal(overviewUrl.searchParams.get('to'), String(new Date(2026, 6, 6).getTime()));
+});
+
+test('Usage keeps an invalid custom range in place and explains what to fix', async () => {
+  const harness = runAdminPageHarness({
+    usageAdminUi: true,
+    initialPath: '/admin/usage',
+    initialSearch: '?period=custom&from=2026-07-01&to=2026-07-05&groupBy=channel',
+  });
+  await flushAsync();
+  const callsBeforeEdit = harness.usageApiCalls.length;
+
+  harness.listeners.change?.({ target: inputTarget({ 'data-action': 'usage-custom-from' }, '2026-07-10') });
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'usage-custom-apply' }) });
+  await flushAsync();
+
+  assert.equal(harness.usageApiCalls.length, callsBeforeEdit);
+  assert.match(harness.app.innerHTML, /role="alert">Start date must be on or before end date\.<\/p>/);
+  assert.match(harness.app.innerHTML, /id="usage-custom-from"[^>]*value="2026-07-10"/);
 });
 
 test('Settings renders the three key-provider rows and hides Workers AI on the Node target', async () => {
