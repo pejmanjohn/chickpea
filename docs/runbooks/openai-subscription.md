@@ -94,6 +94,23 @@ response. Chickpea accepts the missing header only at its pinned endpoint,
 normalizes it to `text/event-stream`, and still rejects an explicitly
 contradictory success type before the provider parser.
 
+The next Node gate drives a signed app mention through the built Chickpea
+server, the real profile resolver and subscription provider, and a loopback
+fake Slack backend. It copies the authorized credential boundary into a
+temporary state database, deletes that database on exit, installs an invalid
+Platform API key, and permits external traffic only to the ChatGPT subscription
+authorization/request hosts:
+
+```sh
+TAG_OPENAI_SUBSCRIPTION_ENABLED=1 \
+npm run verify:openai-subscription-slack:live -- \
+  --live --source-state-db ./tmp/openai-subscription-live.state.db
+```
+
+A pass proves local signed-Slack adapter and final-delivery integration with no
+observed Platform API fallback. Slack itself remains fake, so this is not a
+fresh real-Slack or deployed-Worker acceptance result.
+
 ## Runtime acceptance matrix
 
 Record only target, build commit, timestamp, safe account fingerprint, account class without PII, model, safe auth route, destination host, outcome, and error category.
