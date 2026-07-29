@@ -7,6 +7,7 @@ import {
   usageWhere,
 } from './rollups.ts';
 import { UsageStateError } from './store-error.ts';
+import { installReleasePriceCatalogs } from './pricing/catalog.ts';
 import {
   USAGE_TELEMETRY_SCHEMA_VERSION,
   type AdmitUsageOperationInput,
@@ -570,6 +571,7 @@ export class UsageStoreLogic {
       'CREATE INDEX IF NOT EXISTS usage_measurements_operation_idx ON usage_measurements (operation_id, observed_at, execution_id)',
       'CREATE INDEX IF NOT EXISTS usage_credentials_provider_idx ON usage_credentials (provider_id, retired_at, credential_ref_id, version)',
     ]) this.db.exec(sql);
+    installReleasePriceCatalogs(this.db);
   }
 }
 

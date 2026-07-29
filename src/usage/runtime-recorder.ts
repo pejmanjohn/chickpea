@@ -9,6 +9,11 @@ import type {
   UsageUnknownReason,
   UsageTerminalStatus,
 } from './types.ts';
+import {
+  estimateUsage,
+  notPriced,
+  usageEstimatesEnabled,
+} from './pricing/estimate.ts';
 
 export const DEFAULT_USAGE_WRITE_BUDGET_MS = 100;
 
@@ -163,7 +168,7 @@ export class InteractiveUsageRecorder {
     >,
   ): RecordUsageTerminalInput {
     const finishedAt = this.now();
-    return {
+    const terminal = {
       operationId: this.admission.operationId,
       executionId: this.options.executionId,
       finishedAt,
@@ -172,12 +177,11 @@ export class InteractiveUsageRecorder {
       requestedModel: this.admission.requestedModel,
       credentialRefId: this.admission.credentialRefId,
       credentialVersion: this.admission.credentialVersion,
-      estimateCompleteness: 'not_priced',
-      estimateAmountMicros: null,
-      estimateCurrency: null,
-      priceVersionId: null,
-      priceUnknownReason: 'price_unknown',
       ...fields,
+    };
+    return {
+      ...terminal,
+      ...estimateForRuntime(terminal, this.options.platformEnv, this.options.processEnv),
     };
   }
 }
@@ -263,8 +267,11 @@ export class RoutineUsageRecorder {
   }): Promise<void> {
     if (this.terminalInput) return;
     const usage = normalizeRoutineUsage(input.usage ?? null);
+    const usageCompleteness: RecordUsageTerminalInput['usageCompleteness'] = usage
+      ? 'complete'
+      : 'not_reported';
     const finishedAt = this.now();
-    this.terminalInput = {
+    const terminal = {
       operationId: this.admission.operationId,
       executionId: this.options.executionId,
       status: input.status,
@@ -277,19 +284,19 @@ export class RoutineUsageRecorder {
       returnedModel: input.returnedModel?.id ?? null,
       credentialRefId: this.admission.credentialRefId,
       credentialVersion: this.admission.credentialVersion,
-      usageCompleteness: usage ? 'complete' : 'not_reported',
+      usageCompleteness,
       inputTokens: usage?.input ?? null,
       outputTokens: usage?.output ?? null,
       totalTokens: usage?.totalTokens ?? null,
       usageUnknownReason: usage ? null : (input.unknownReason ?? 'usage_not_reported'),
-      estimateCompleteness: 'not_priced',
-      estimateAmountMicros: null,
-      estimateCurrency: null,
-      priceVersionId: null,
-      priceUnknownReason: 'price_unknown',
     };
+    const terminalInput: RecordUsageTerminalInput = {
+      ...terminal,
+      ...estimateForRuntime(terminal, this.options.platformEnv, this.options.processEnv),
+    };
+    this.terminalInput = terminalInput;
     const outcome = await persistUsage(
-      this.options.store.recordTerminal(this.terminalInput),
+      this.options.store.recordTerminal(terminalInput),
       this.budgetMs,
       'terminal',
       this.options.executionId,
@@ -389,4 +396,25 @@ function normalizeRoutineUsage(usage: RoutineReportedUsage | null): RoutineRepor
   const values = [usage.input, usage.output, usage.totalTokens];
   if (!values.every((value) => Number.isSafeInteger(value) && value >= 0)) return null;
   return values.every((value) => value === 0) ? null : usage;
+}
+
+function estimateForRuntime(
+  terminal: Pick<
+    RecordUsageTerminalInput,
+    | 'observedAt'
+    | 'providerRoute'
+    | 'returnedProvider'
+    | 'requestedProvider'
+    | 'returnedModel'
+    | 'requestedModel'
+    | 'usageCompleteness'
+    | 'inputTokens'
+    | 'outputTokens'
+  >,
+  platformEnv: PlatformEnv | undefined,
+  processEnv: NodeJS.ProcessEnv | undefined,
+) {
+  return usageEstimatesEnabled(platformEnv, processEnv ?? process.env)
+    ? estimateUsage(terminal)
+    : notPriced();
 }

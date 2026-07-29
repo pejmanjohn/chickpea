@@ -134,6 +134,32 @@ test('operations-only success and provider failure remain explicit unknowns', as
   }
 });
 
+test('runtime estimates are independently flagged and retain immutable price provenance', async () => {
+  const store = new SqliteUsageStore(':memory:');
+  try {
+    const pricedTurn = { ...turn, messageTs: '1785240000.0001', threadTs: '1785240000.0001' };
+    const recorder = new InteractiveUsageRecorder({
+      turn: pricedTurn,
+      assignment,
+      requestedModel: assignment.model!,
+      operationId: 'msg_priced',
+      executionId: 'exec_priced',
+      store,
+      processEnv: { USAGE_ESTIMATES: '1' },
+      now: () => Date.UTC(2026, 6, 28, 13),
+    });
+    await recorder.admit();
+    await recorder.recordSuccess(success({
+      reportedUsage: { inputTokens: 13, outputTokens: 7, totalTokens: 20 },
+    }));
+    const estimate = (await store.getOperation('msg_priced'))?.measurements[0];
+    assert.equal(estimate?.estimateAmountMicros, 16);
+    assert.equal(estimate?.priceVersionId, 'openai_2026-07-28');
+  } finally {
+    store.close();
+  }
+});
+
 test('a real recovery invocation adds usage while one execution persistence retry is idempotent', async () => {
   const store = new SqliteUsageStore(':memory:');
   try {
