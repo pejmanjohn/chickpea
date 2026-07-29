@@ -115,10 +115,10 @@ test('Granola identity discovery keeps only the connected email and active works
     assert.deepEqual(probe, { name: 'get_account_info', arguments: {} });
     return {
       structuredContent: {
-        email: '  pejman@example.com  ',
+        email: '  alex@example.com  ',
         active_workspace: {
           id: 'workspace-secret-id',
-          name: '  Magoosh   Leadership  ',
+          name: '  Example   Leadership  ',
         },
         access_token: 'must-not-enter-profile',
       },
@@ -126,8 +126,8 @@ test('Granola identity discovery keeps only the connected email and active works
   });
 
   assert.deepEqual(identity, {
-    workspaceName: 'Magoosh Leadership',
-    accountName: 'pejman@example.com',
+    workspaceName: 'Example Leadership',
+    accountName: 'alex@example.com',
   });
   assert.doesNotMatch(JSON.stringify(identity), /secret-id|access_token|must-not-enter-profile/);
 });

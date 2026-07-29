@@ -7,8 +7,8 @@ Node 24.16.0, and `@slack/web-api` 8.0.0-rc.1.
 Run the hermetic gate with:
 
 ```sh
-PATH=/opt/homebrew/opt/node@24/bin:$PATH \
-FLUE_NODE_BIN=/opt/homebrew/opt/node@24/bin/node \
+PATH=/path/to/node/bin:$PATH \
+FLUE_NODE_BIN=/path/to/node/bin/node \
 npm run verify:routines-runtime
 ```
 
