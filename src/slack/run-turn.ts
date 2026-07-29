@@ -241,13 +241,15 @@ export async function runTurn(
     } else {
       try {
         usedCloudflareSandbox = await shouldUseCloudflareSandbox(assignment, platformEnv);
-        text = await promptSlackThreadAgent(
+        const agentResult = await promptSlackThreadAgent(
           conversationKey,
           prompt,
           platformEnv,
           statusGeneration,
           usedCloudflareSandbox,
+          resolvedModel ?? null,
         );
+        text = agentResult.text;
       } catch (err) {
         console.error('[chickpea] agent run failed:', sanitizeError(err));
         const recoveredText = await options.beforeDelivery?.();

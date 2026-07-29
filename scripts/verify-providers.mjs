@@ -2,10 +2,10 @@
 /**
  * Offline multi-provider verification through Flue's registry.
  *
- * The SAME signed app_mention fixture is answered twice through the built app —
- * once via the `anthropic` provider (anthropic-messages wire protocol) and once
- * via `cloudflare-workers-ai` (openai-completions wire protocol) — proving one
- * agent reaches two providers by only swapping SLACK_TAG_MODEL.
+ * The SAME signed app_mention fixture is answered through every current
+ * API-backed provider route in the built app. Each route is also prompted
+ * directly through Flue's guarded agent endpoint so the exact returned model
+ * and aggregate usage envelope are verified before Slack delivery.
  *
  * This offline harness intentionally runs against local fake provider
  * endpoints, and every corresponding assertion is explicitly labeled STUB.
@@ -26,6 +26,7 @@ import {
   buildNodeServer,
   getFreePort,
   loadFake,
+  postAgentPrompt,
   postSignedEvent,
   seedOfflineDemoChannelConfig,
   spawnServer,
@@ -37,6 +38,8 @@ import {
 const APP_MENTION = JSON.parse(readFileSync(join(REPO_ROOT, 'fixtures', 'slack', 'app-mention.json'), 'utf8'));
 
 const ANTHROPIC_MARKER = 'ANTHROPIC_STUB_REPLY::haiku-4-5::exec-priorities-ack';
+const OPENAI_MARKER = 'OPENAI_STUB_REPLY::gpt-4.1-mini::exec-priorities-ack';
+const OPENROUTER_MARKER = 'OPENROUTER_STUB_REPLY::gpt-4.1::exec-priorities-ack';
 const WORKERS_AI_MARKER = 'WORKERS_AI_STUB_REPLY::glm-5.2::exec-priorities-ack';
 
 const results = [];
@@ -68,8 +71,14 @@ async function runProvider({ serverEntry, fake, backend, netGuardLog, model, rep
       ...env,
     },
   });
+  let directResult;
   try {
     await waitForReady(spawned.child, spawned.eventsUrl, spawned.getOutput);
+    directResult = await postAgentPrompt(spawned.baseUrl, {
+      conversationKey: 'T_DEMO:C_EXEC:telemetry-probe',
+      message: 'Return the configured fixture reply.',
+      internalToken: 'providers-internal-token',
+    });
     await postSignedEvent(spawned.eventsUrl, APP_MENTION);
     await waitForFinals(backend, 1, 20_000);
   } finally {
@@ -79,9 +88,28 @@ async function runProvider({ serverEntry, fake, backend, netGuardLog, model, rep
   const providerCalls = backend.providerCalls();
   return {
     finalText,
+    directResult,
     wireMethods: providerCalls.map((call) => call.method),
     serverOutput: spawned.getOutput(),
   };
+}
+
+function hasMeteredCore(directResult, provider) {
+  if (directResult?.status !== 200 || typeof directResult.body !== 'object' || !directResult.body) {
+    return false;
+  }
+  const result = directResult.body.result;
+  if (typeof result !== 'object' || !result) return false;
+  const usage = result.usage;
+  const model = result.model;
+  return Boolean(
+    typeof usage === 'object' && usage &&
+      Number.isSafeInteger(usage.input) && usage.input > 0 &&
+      Number.isSafeInteger(usage.output) && usage.output > 0 &&
+      Number.isSafeInteger(usage.totalTokens) && usage.totalTokens > 0 &&
+      typeof model === 'object' && model && model.provider === provider &&
+      typeof model.id === 'string' && model.id.length > 0,
+  );
 }
 
 const netGuardLog = join(mkdtempSync(join(tmpdir(), 'flue-prov-guard-')), 'external-hosts.log');
@@ -116,6 +144,69 @@ try {
     anthropic.wireMethods.includes('messages'),
     `wireMethods=${anthropic.wireMethods.join(',')}`,
   );
+  record(
+    'anthropic (STUB): direct Flue result carries non-zero aggregate usage and returned model',
+    hasMeteredCore(anthropic.directResult, 'anthropic'),
+    `status=${anthropic.directResult?.status ?? 'missing'}`,
+  );
+
+  // --- openai (STUB: local fake endpoint) — openai-responses wire protocol. ---
+  const openai = await runProvider({
+    serverEntry,
+    fake,
+    backend,
+    netGuardLog,
+    model: 'openai/gpt-4.1-mini',
+    replyText: OPENAI_MARKER,
+    env: {
+      OPENAI_BASE_URL: `${fake.url}/openai/v1`,
+      OPENAI_API_KEY: 'offline-stub-key',
+    },
+  });
+  record(
+    'openai (STUB): final on the wire carries the OpenAI stub reply',
+    openai.finalText.includes(OPENAI_MARKER),
+    `wire=${openai.wireMethods.join(',')} markerInFinal=${openai.finalText.includes(OPENAI_MARKER)}`,
+  );
+  record(
+    'openai (STUB): request used the openai-responses wire protocol',
+    openai.wireMethods.includes('responses'),
+    `wireMethods=${openai.wireMethods.join(',')}`,
+  );
+  record(
+    'openai (STUB): direct Flue result carries non-zero aggregate usage and returned model',
+    hasMeteredCore(openai.directResult, 'openai'),
+    `status=${openai.directResult?.status ?? 'missing'}`,
+  );
+
+  // --- openrouter (STUB: local fake endpoint) — openai-completions wire protocol. ---
+  const openrouter = await runProvider({
+    serverEntry,
+    fake,
+    backend,
+    netGuardLog,
+    model: 'openrouter/openai/gpt-4.1',
+    replyText: OPENROUTER_MARKER,
+    env: {
+      OPENROUTER_BASE_URL: `${fake.url}/openrouter/v1`,
+      OPENROUTER_API_KEY: 'offline-stub-key',
+    },
+  });
+  record(
+    'openrouter (STUB): final on the wire carries the OpenRouter stub reply',
+    openrouter.finalText.includes(OPENROUTER_MARKER),
+    `wire=${openrouter.wireMethods.join(',')} markerInFinal=${openrouter.finalText.includes(OPENROUTER_MARKER)}`,
+  );
+  record(
+    'openrouter (STUB): request used the openai-completions wire protocol',
+    openrouter.wireMethods.includes('chat/completions'),
+    `wireMethods=${openrouter.wireMethods.join(',')}`,
+  );
+  record(
+    'openrouter (STUB): direct Flue result carries non-zero aggregate usage and returned model',
+    hasMeteredCore(openrouter.directResult, 'openrouter'),
+    `status=${openrouter.directResult?.status ?? 'missing'}`,
+  );
 
   // --- cloudflare-workers-ai (STUB: local fake endpoint) — openai-completions. ---
   const workersAi = await runProvider({
@@ -140,6 +231,11 @@ try {
     'cloudflare-workers-ai (STUB): request used the openai-completions wire protocol',
     workersAi.wireMethods.includes('chat/completions'),
     `wireMethods=${workersAi.wireMethods.join(',')}`,
+  );
+  record(
+    'cloudflare-workers-ai (STUB): direct Flue result carries non-zero aggregate usage and returned model',
+    hasMeteredCore(workersAi.directResult, 'cloudflare-workers-ai'),
+    `status=${workersAi.directResult?.status ?? 'missing'}`,
   );
 
   // --- Net guard. ---

@@ -1,0 +1,156 @@
+{
+  "schemaVersion": 1,
+  "routes": [
+    {
+      "id": "anthropic-api-key",
+      "provider": "anthropic",
+      "authMode": "api_key",
+      "classification": "metered",
+      "priceability": "priceable",
+      "confidence": "high",
+      "reason": "Flue returns a PromptResponse with provider, model, and non-zero aggregate usage; the existing offline provider harness exercises the Anthropic Messages route.",
+      "requestedModel": "anthropic/claude-haiku-4-5",
+      "envelope": {
+        "result": {
+          "text": "anthropic fixture reply",
+          "model": { "provider": "anthropic", "id": "claude-haiku-4-5" },
+          "usage": {
+            "input": 11,
+            "output": 5,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 16,
+            "cost": { "input": 0.000011, "output": 0.000025, "cacheRead": 0, "cacheWrite": 0, "total": 0.000036 }
+          }
+        },
+        "streamUrl": "https://fixture.invalid/agents/slack-thread/thread",
+        "offset": "12",
+        "submissionId": "sub_anthropic_fixture"
+      },
+      "expectedUsage": { "inputTokens": 11, "outputTokens": 5, "totalTokens": 16 }
+    },
+    {
+      "id": "openai-api-key",
+      "provider": "openai",
+      "authMode": "api_key",
+      "classification": "metered",
+      "priceability": "priceable",
+      "confidence": "high",
+      "reason": "The hermetic built-app provider harness exercises the OpenAI Responses route and receives non-zero aggregate usage plus returned model through the exact Flue result boundary; live-provider verification remains credential-gated.",
+      "requestedModel": "openai/gpt-4.1-mini",
+      "envelope": {
+        "result": {
+          "text": "openai fixture reply",
+          "model": { "provider": "openai", "id": "gpt-4.1-mini" },
+          "usage": {
+            "input": 13,
+            "output": 7,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 20,
+            "cost": { "input": 0.0000052, "output": 0.0000112, "cacheRead": 0, "cacheWrite": 0, "total": 0.0000164 }
+          }
+        },
+        "submissionId": "sub_openai_fixture"
+      },
+      "expectedUsage": { "inputTokens": 13, "outputTokens": 7, "totalTokens": 20 }
+    },
+    {
+      "id": "openrouter-api-key",
+      "provider": "openrouter",
+      "authMode": "api_key",
+      "classification": "metered",
+      "priceability": "priceable",
+      "confidence": "high",
+      "reason": "The hermetic built-app provider harness exercises the OpenRouter OpenAI-compatible route and receives non-zero aggregate usage plus returned model through the exact Flue result boundary; provider-specific charged cost is deliberately excluded.",
+      "requestedModel": "openrouter/openai/gpt-4.1",
+      "envelope": {
+        "result": {
+          "text": "openrouter fixture reply",
+          "model": { "provider": "openrouter", "id": "openai/gpt-4.1" },
+          "usage": {
+            "input": 17,
+            "output": 9,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 26,
+            "cost": { "input": 0.000034, "output": 0.000072, "cacheRead": 0, "cacheWrite": 0, "total": 0.000106 },
+            "providerReportedCost": 0.00012
+          }
+        },
+        "submissionId": "sub_openrouter_fixture"
+      },
+      "expectedUsage": { "inputTokens": 17, "outputTokens": 9, "totalTokens": 26 }
+    },
+    {
+      "id": "workers-ai-rest-api-token",
+      "provider": "cloudflare-workers-ai",
+      "authMode": "api_token",
+      "classification": "metered",
+      "priceability": "priceable",
+      "confidence": "high",
+      "reason": "The existing offline provider harness exercises the OpenAI-compatible Workers AI REST route and receives a non-zero Flue PromptUsage result for the configured model.",
+      "requestedModel": "cloudflare-workers-ai/@cf/zai-org/glm-5.2",
+      "envelope": {
+        "result": {
+          "text": "workers ai rest fixture reply",
+          "model": { "provider": "cloudflare-workers-ai", "id": "@cf/zai-org/glm-5.2" },
+          "usage": {
+            "input": 19,
+            "output": 11,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 30,
+            "cost": { "input": 0.0000266, "output": 0.0000484, "cacheRead": 0, "cacheWrite": 0, "total": 0.000075 }
+          }
+        },
+        "submissionId": "sub_workers_rest_fixture"
+      },
+      "expectedUsage": { "inputTokens": 19, "outputTokens": 11, "totalTokens": 30 }
+    },
+    {
+      "id": "workers-ai-binding",
+      "provider": "cloudflare",
+      "authMode": "workers_binding",
+      "classification": "operations_only",
+      "priceability": "price_unknown",
+      "confidence": "high",
+      "reason": "The binding adapter initializes usage to zero and not every model is proven to emit a usage chunk, so zeros cannot yet be distinguished from unreported usage at the Chickpea boundary.",
+      "requestedModel": "cloudflare/@cf/zai-org/glm-5.2",
+      "envelope": {
+        "result": {
+          "text": "workers ai binding fixture reply",
+          "model": { "provider": "cloudflare", "id": "@cf/zai-org/glm-5.2" },
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0 }
+          }
+        },
+        "submissionId": "sub_workers_binding_fixture"
+      },
+      "expectedUsage": null
+    },
+    {
+      "id": "local-custom-compatible",
+      "provider": "custom",
+      "authMode": "operator_supplied",
+      "classification": "operations_only",
+      "priceability": "price_unknown",
+      "confidence": "high",
+      "reason": "The compatibility contract does not require usage metadata or a trustworthy price identifier.",
+      "requestedModel": "custom/local-model",
+      "envelope": {
+        "result": {
+          "text": "custom fixture reply",
+          "model": { "provider": "custom", "id": "local-model" }
+        },
+        "submissionId": "sub_custom_fixture"
+      },
+      "expectedUsage": null
+    }
+  ]
+}

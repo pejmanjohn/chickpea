@@ -507,6 +507,8 @@ export class FakeSlackBackend {
     // `cloudflare-workers-ai` providers. The official OpenAI SDK posts to
     // `<base>/chat/completions` and streams SSE.
     const isOpenAiCompletions = !isSlack && pathname.endsWith('/chat/completions');
+    // OpenAI Responses surface used by current catalog-backed OpenAI models.
+    const isOpenAiResponses = !isSlack && pathname.endsWith('/responses');
     // Anthropic-messages surface. The official Anthropic SDK
     // posts to `<base>/v1/messages` and pi-ai parses the SSE event stream.
     const isAnthropicMessages = !isSlack && pathname.endsWith('/v1/messages');
@@ -515,6 +517,8 @@ export class FakeSlackBackend {
       method = pathname.slice(apiIndex + '/api/'.length);
     } else if (isOpenAiCompletions) {
       method = 'chat/completions';
+    } else if (isOpenAiResponses) {
+      method = 'responses';
     } else if (isAnthropicMessages) {
       method = 'messages';
     } else if (this.isProviderModelsPath(pathname)) {
@@ -536,6 +540,9 @@ export class FakeSlackBackend {
       }
       if (isOpenAiCompletions) {
         return this.openAiCompletionsResponse();
+      }
+      if (isOpenAiResponses) {
+        return this.openAiResponsesResponse();
       }
       if (isAnthropicMessages) {
         return this.anthropicMessagesResponse();
@@ -882,6 +889,29 @@ export class FakeSlackBackend {
     return { status: 200, contentType: 'text/event-stream', rawBody: openAiTextStreamBody(text) };
   }
 
+  /** OpenAI Responses SSE stream with one assistant text item and final usage. */
+  private openAiResponsesResponse(): RouteResult {
+    if (this.providerMode === 'http_500') {
+      return {
+        status: 500,
+        contentType: 'application/json',
+        rawBody: JSON.stringify({
+          error: {
+            message: `${RAW_PROVIDER_ERROR_MARKER} upstream failure`,
+            type: 'server_error',
+            code: 'server_error',
+          },
+        }),
+      };
+    }
+
+    return {
+      status: 200,
+      contentType: 'text/event-stream',
+      rawBody: openAiResponsesStreamBody(this.replyText),
+    };
+  }
+
   /**
    * Anthropic-messages streaming response. pi-ai's anthropic
    * client posts to `<base>/v1/messages` and parses the SSE event stream
@@ -982,6 +1012,58 @@ function openAiTextStreamBody(text: string): string {
     { ...base, choices: [], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } },
   ];
   return `${chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join('')}data: [DONE]\n\n`;
+}
+
+function openAiResponsesStreamBody(text: string): string {
+  const item = {
+    id: 'msg_parity',
+    type: 'message',
+    status: 'completed',
+    role: 'assistant',
+    content: [{ type: 'output_text', text, annotations: [] }],
+  };
+  const events: Record<string, unknown>[] = [
+    {
+      type: 'response.created',
+      response: { id: 'resp_parity', status: 'in_progress', output: [], usage: null },
+    },
+    {
+      type: 'response.output_item.added',
+      output_index: 0,
+      item: { ...item, status: 'in_progress', content: [] },
+    },
+    {
+      type: 'response.content_part.added',
+      item_id: item.id,
+      output_index: 0,
+      content_index: 0,
+      part: { type: 'output_text', text: '', annotations: [] },
+    },
+    {
+      type: 'response.output_text.delta',
+      item_id: item.id,
+      output_index: 0,
+      content_index: 0,
+      delta: text,
+    },
+    { type: 'response.output_item.done', output_index: 0, item },
+    {
+      type: 'response.completed',
+      response: {
+        id: 'resp_parity',
+        status: 'completed',
+        output: [item],
+        usage: {
+          input_tokens: 1,
+          input_tokens_details: { cached_tokens: 0 },
+          output_tokens: 1,
+          output_tokens_details: { reasoning_tokens: 0 },
+          total_tokens: 2,
+        },
+      },
+    },
+  ];
+  return events.map((event) => `event: ${String(event.type)}\ndata: ${JSON.stringify(event)}\n\n`).join('');
 }
 
 export function isMarkdownPost(body: Record<string, unknown>): boolean {

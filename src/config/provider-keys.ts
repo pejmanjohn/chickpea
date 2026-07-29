@@ -18,6 +18,12 @@ export const PROVIDER_KEY_ENV_VARS = {
   openrouter: 'OPENROUTER_API_KEY',
 } as const;
 
+export const PROVIDER_BASE_URL_ENV_VARS = {
+  anthropic: 'ANTHROPIC_BASE_URL',
+  openai: 'OPENAI_BASE_URL',
+  openrouter: 'OPENROUTER_BASE_URL',
+} as const;
+
 export const PROVIDER_KEY_IDS = ['anthropic', 'openai', 'openrouter'] as const;
 
 export type ProviderKeyId = (typeof PROVIDER_KEY_IDS)[number];
@@ -173,11 +179,9 @@ function providerRegistrationOptions(
   apiKey: string | undefined,
 ): ProviderRegistrationOptions {
   const options: ProviderRegistrationOptions = {};
-  if (id === 'anthropic') {
-    const baseUrl = nonEmpty(process.env.ANTHROPIC_BASE_URL);
-    if (baseUrl) {
-      options.baseUrl = baseUrl;
-    }
+  const baseUrl = nonEmpty(process.env[PROVIDER_BASE_URL_ENV_VARS[id]]);
+  if (baseUrl) {
+    options.baseUrl = baseUrl;
   }
   if (apiKey) {
     options.apiKey = apiKey;

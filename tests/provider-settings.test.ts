@@ -2,11 +2,13 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { Hono } from 'hono';
+import { resolveModel } from '@flue/runtime/internal';
 
 import { createAdminRoutes } from '../src/admin/routes.ts';
 import {
   invalidateProviderKeyCache,
   PROVIDER_KEY_SETTING_KEYS,
+  rebindBuiltinProvider,
   resolveProviderApiKey,
 } from '../src/config/provider-keys.ts';
 import {
@@ -126,6 +128,47 @@ test('provider key resolution prefers environment keys over stored settings', as
   } finally {
     settings.close();
     invalidateProviderKeyCache();
+  }
+});
+
+test('built-in provider runtime overrides honor explicit OpenAI-compatible base URLs', async () => {
+  try {
+    await withEnv(
+      {
+        OPENAI_API_KEY: 'openai-fixture-key',
+        OPENAI_BASE_URL: 'http://127.0.0.1:40101/openai/v1',
+        OPENROUTER_API_KEY: 'openrouter-fixture-key',
+        OPENROUTER_BASE_URL: 'http://127.0.0.1:40101/openrouter/v1',
+      },
+      () => {
+        invalidateProviderKeyCache();
+        rebindBuiltinProvider('openai', process.env.OPENAI_API_KEY);
+        rebindBuiltinProvider('openrouter', process.env.OPENROUTER_API_KEY);
+
+        assert.equal(
+          resolveModel('openai/gpt-4.1-mini').baseUrl,
+          'http://127.0.0.1:40101/openai/v1',
+        );
+        assert.equal(
+          resolveModel('openrouter/openai/gpt-4.1').baseUrl,
+          'http://127.0.0.1:40101/openrouter/v1',
+        );
+      },
+    );
+  } finally {
+    await withEnv(
+      {
+        OPENAI_API_KEY: undefined,
+        OPENAI_BASE_URL: undefined,
+        OPENROUTER_API_KEY: undefined,
+        OPENROUTER_BASE_URL: undefined,
+      },
+      () => {
+        invalidateProviderKeyCache();
+        rebindBuiltinProvider('openai', undefined);
+        rebindBuiltinProvider('openrouter', undefined);
+      },
+    );
   }
 });
 

@@ -15,6 +15,32 @@ export type AgentPromptFailureKind =
   | 'sandbox'
   | 'sandbox-session-cap';
 
+export type AgentUsageCompleteness = 'complete' | 'partial' | 'not_reported';
+
+export interface AgentReportedUsage {
+  inputTokens: number | null;
+  outputTokens: number | null;
+  totalTokens: number | null;
+}
+
+export interface AgentReturnedModel {
+  provider: string;
+  id: string;
+}
+
+/**
+ * Content-bounded result crossing from Flue execution into the Slack relay.
+ * Provider-specific usage fields, registry cost, stream coordinates, and raw
+ * envelopes deliberately stop at the parser below.
+ */
+export interface AgentDispatchResult {
+  text: string;
+  requestedModel: string | null;
+  returnedModel: AgentReturnedModel | null;
+  reportedUsage: AgentReportedUsage | null;
+  usageCompleteness: AgentUsageCompleteness;
+}
+
 /** Carries only a public-safe category across the Slack presentation seam. */
 export class AgentPromptFailure extends Error {
   constructor(
@@ -67,7 +93,8 @@ export async function promptSlackThreadAgent(
   env: PlatformEnv | undefined,
   turnId: string,
   useCloudflareSandbox: boolean,
-): Promise<string> {
+  requestedModel: string | null,
+): Promise<AgentDispatchResult> {
   if (useCloudflareSandbox) {
     try {
       await prepareCloudflareSandboxTurn(env, conversationKey, turnId);
@@ -100,12 +127,35 @@ export async function promptSlackThreadAgent(
     );
   }
 
-  const body = (await response.json()) as { result?: unknown };
-  const text = extractResultText(body.result);
+  return parseAgentDispatchEnvelope(await response.json(), requestedModel);
+}
+
+/**
+ * Reduce Flue's synchronous result envelope to Chickpea's minimum reporting
+ * contract. A successful response containing only zero usage is treated as
+ * unreported: some provider adapters initialize an empty accumulator to zero,
+ * so accepting it as measured usage would incorrectly present work as free.
+ */
+export function parseAgentDispatchEnvelope(
+  envelope: unknown,
+  requestedModel: string | null,
+): AgentDispatchResult {
+  const body = asRecord(envelope);
+  const result = body?.result;
+  const text = extractResultText(result);
   if (!text) {
     throw new Error('agent prompt returned no result text');
   }
-  return text;
+
+  const record = asRecord(result);
+  const usage = parseReportedUsage(record?.usage);
+  return {
+    text,
+    requestedModel: nonEmptyString(requestedModel),
+    returnedModel: parseReturnedModel(record?.model),
+    reportedUsage: usage.reportedUsage,
+    usageCompleteness: usage.completeness,
+  };
 }
 
 /**
@@ -169,6 +219,61 @@ function extractResultText(result: unknown): string {
     if (typeof record.data === 'string') return record.data;
   }
   return '';
+}
+
+function parseReturnedModel(value: unknown): AgentReturnedModel | null {
+  const record = asRecord(value);
+  const provider = nonEmptyString(record?.provider);
+  const id = nonEmptyString(record?.id);
+  return provider && id ? { provider, id } : null;
+}
+
+function parseReportedUsage(value: unknown): {
+  reportedUsage: AgentReportedUsage | null;
+  completeness: AgentUsageCompleteness;
+} {
+  const record = asRecord(value);
+  if (!record) {
+    return { reportedUsage: null, completeness: 'not_reported' };
+  }
+
+  const rawValues = [record.input, record.output, record.totalTokens];
+  const presentValues = rawValues.filter((raw) => raw !== undefined && raw !== null);
+  if (presentValues.length === 0 || presentValues.some((raw) => !isTokenCount(raw))) {
+    return { reportedUsage: null, completeness: 'not_reported' };
+  }
+
+  const reportedUsage: AgentReportedUsage = {
+    inputTokens: isTokenCount(record.input) ? record.input : null,
+    outputTokens: isTokenCount(record.output) ? record.output : null,
+    totalTokens: isTokenCount(record.totalTokens) ? record.totalTokens : null,
+  };
+  const values = [
+    reportedUsage.inputTokens,
+    reportedUsage.outputTokens,
+    reportedUsage.totalTokens,
+  ];
+  if (values.every((tokenCount) => tokenCount === 0)) {
+    return { reportedUsage: null, completeness: 'not_reported' };
+  }
+  return {
+    reportedUsage,
+    completeness: values.every((tokenCount) => tokenCount !== null) ? 'complete' : 'partial',
+  };
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object'
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function nonEmptyString(value: unknown): string | null {
+  return typeof value === 'string' && value.trim().length > 0 ? value : null;
+}
+
+function isTokenCount(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 0;
 }
 
 export async function prepareCloudflareSandboxTurn(
