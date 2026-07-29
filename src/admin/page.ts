@@ -2,6 +2,7 @@ import { isCloudflareTarget } from '../config/runtime-target.ts';
 import { CONNECTOR_LOGOS } from '../config/connector-logos.ts';
 import { CONNECTOR_PRESETS, GOOGLE_WORKSPACE_SERVICE_PRESETS } from '../config/presets.ts';
 import { GOOGLE_WORKSPACE_SCOPE_OPTIONS } from '../config/api-oauth-policy.ts';
+import { OPENAI_SUBSCRIPTION_MODELS } from '../openai-subscription/protocol.ts';
 
 const ADMIN_FAVICON = `<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='8 9 32 32'%3E%3Ccircle cx='24' cy='25' r='15.5' fill='%23E3AC45'/%3E%3Ccircle cx='17' cy='17.5' r='4.2' fill='%23F4D084'/%3E%3Ccircle cx='18.5' cy='24' r='1.9' fill='%233B3220'/%3E%3Ccircle cx='29.5' cy='24' r='1.9' fill='%233B3220'/%3E%3Cpath d='M19 29 Q24 32.5 29 29' fill='none' stroke='%233B3220' stroke-width='1.8' stroke-linecap='round'/%3E%3Ccircle cx='15.5' cy='28.5' r='2' fill='%23DC8A4F' opacity='0.4'/%3E%3Ccircle cx='32.5' cy='28.5' r='2' fill='%23DC8A4F' opacity='0.4'/%3E%3C/svg%3E">`;
 const SLACK_LOGO_DATA_URL =
@@ -1543,6 +1544,7 @@ details[open].advanced summary::before {
   var CONNECTOR_LOGOS = ${JSON.stringify(CONNECTOR_LOGOS).replace(/</g, '\\u003c')};
   var API_CONNECTION_METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"];
   var GOOGLE_WORKSPACE_SCOPES = ${JSON.stringify(GOOGLE_WORKSPACE_SCOPE_OPTIONS)};
+  var OPENAI_SUBSCRIPTION_MODELS = ${JSON.stringify(OPENAI_SUBSCRIPTION_MODELS)};
   var state = {
     agents: [],
     assignments: [],
@@ -1676,6 +1678,15 @@ details[open].advanced summary::before {
     settings: null,
     settingsLoaded: false,
     settingsError: "",
+    // The device user code and attempt capability exist only in this page's
+    // memory. Reloading or opening Settings elsewhere can observe the safe
+    // authorizing status, but cannot display, poll, cancel, or confirm this attempt.
+    openAiSubscriptionAttempt: null,
+    openAiSubscriptionBusy: "",
+    openAiSubscriptionError: "",
+    openAiSubscriptionRiskAcknowledged: false,
+    openAiSubscriptionDisconnectConfirm: false,
+    openAiSubscriptionCopyStatus: "",
     // App-level GitHub credentials and installations. Secrets never enter this
     // object: status is write-only metadata plus profile references for the
     // pre-disconnect warning.
@@ -2927,7 +2938,40 @@ details[open].advanced summary::before {
       '<p class="hint">Suggestions come from your providers in <button type="button" class="link-btn" data-action="open-settings">Settings &nearr;</button></p>' +
       (warning ? '<p class="field-error">' + esc(warning) + '</p>' : "") +
       (caveat ? '<p class="hint warn-accent">' + caveat + '</p>' : "") +
-      '</div>';
+      '</div>' + openAiProfileAuthMethodHtml(draft);
+  }
+
+  function openAiProfileAuthMethodHtml(draft) {
+    var model = String(draft.model || "");
+    if (model.indexOf("openai/") !== 0) return "";
+    var method = draft.openaiAuthMethod === "subscription" ? "subscription" : "api_key";
+    var provider = (state.models.providers || []).find(function (entry) { return entry.id === "openai"; }) || {};
+    var authMethods = provider.authMethods || {};
+    var subscription = authMethods.subscription || openAiSubscriptionSummary();
+    var subscriptionReady = subscription.state === "connected" || subscription.state === "account_change_confirmation_required" || (subscription.state === "authorizing" && subscription.accountFingerprint);
+    var compatible = OPENAI_SUBSCRIPTION_MODELS.indexOf(model.slice("openai/".length)) >= 0;
+    var changed = method !== (draft.originalOpenAiAuthMethod || "api_key");
+    var affected = allAssignmentsForAgent(draft.id || "").length;
+    var warning = "";
+    if (method === "api_key" && authMethods.apiKeyConfigured === false) {
+      warning = "No OpenAI API key is configured. This profile will fail closed until one is added; it will not use Subscription.";
+    }
+    if (method === "subscription" && !compatible) {
+      warning = "This model is not in the pinned Subscription model allowlist. Choose a supported GPT model or use API key.";
+    } else if (method === "subscription" && !subscriptionReady) {
+      warning = "The Subscription connection is not ready. This profile keeps its Subscription choice and fails closed; it never uses API-key billing.";
+    }
+    var confirm = changed
+      ? '<label class="conn-tool"><span class="import-check' + (draft.openaiAuthChangeAcknowledged ? " on" : "") + '"><input type="checkbox" data-action="profile-openai-auth-ack" ' + (draft.openaiAuthChangeAcknowledged ? "checked " : "") + 'aria-label="Confirm OpenAI authentication method change"></span>' +
+        '<span class="tool-body"><span class="tool-name">Confirm this billing-authority change</span><span class="tool-desc">This affects ' + affected + ' current channel assignment' + (affected === 1 ? "" : "s") + ' and all scheduled work using this profile. Running and future calls use only ' + (method === "subscription" ? "the installation ChatGPT subscription" : "the Platform API key") + '; there is no fallback.</span></span></label>'
+      : "";
+    return '<div class="field"><span class="field-label">OpenAI authentication method</span>' +
+      '<div class="seg" role="radiogroup" aria-label="OpenAI authentication method">' +
+      '<button type="button" class="' + (method === "subscription" ? "on" : "") + '" role="radio" aria-checked="' + (method === "subscription" ? "true" : "false") + '" data-action="profile-openai-auth" data-method="subscription">Subscription</button>' +
+      '<button type="button" class="' + (method === "api_key" ? "on" : "") + '" role="radio" aria-checked="' + (method === "api_key" ? "true" : "false") + '" data-action="profile-openai-auth" data-method="api_key">API key</button></div>' +
+      '<p class="hint">Subscription uses shared installation ChatGPT quota and consumer data handling. API key uses Platform billing. Both credentials may remain configured, but this profile selects exactly one.</p>' +
+      (method === "subscription" ? '<p class="hint warn-accent">Experimental private interface: OpenAI may change or reject it. Quota, revocation, policy rejection, and protocol drift stop the call without API fallback.</p>' : "") +
+      (warning ? '<p class="field-error" role="alert">' + esc(warning) + '</p>' : "") + confirm + '</div>';
   }
 
   function modelCompactionCaveat(model) {
@@ -5843,7 +5887,7 @@ details[open].advanced summary::before {
       });
       var rows = providers.map(providerRowHtml).join("");
       providerSection = '<section class="section"><div class="section-head"><div><h2 class="section-title">Model providers</h2>' +
-        '<p class="hint">A key lets Chickpea run that provider\\'s models. Environment variables always win over keys stored here &mdash; same rule as the Slack connection. Validating a key makes one live call to the provider\\'s models endpoint, which also loads its model list.</p></div></div>' +
+        '<p class="hint">Configure each provider\\'s authentication. OpenAI supports two explicit, independent methods: ChatGPT Subscription and Platform API key. Environment variables always win over keys stored here.</p></div></div>' +
         rows +
         '<p class="hint">More providers appear here as this install registers them in <span class="mono" style="color:var(--text-2);">src/app.ts</span>.</p></section>';
     }
@@ -5887,6 +5931,11 @@ details[open].advanced summary::before {
     if (ui.removeOpen) body = removeConfirmHtml(id, summary);
     else if (ui.open) body = pasteBodyHtml(id, ui, meta);
     else if (isFavoriteProvider(id)) body = favManagerHtml(id);
+    if (id === "openai") {
+      body = '<div class="well"><span class="field-label">API key</span><p class="hint">Platform API billing. Existing behavior stays available independently of Subscription.</p>' +
+        (body || '<p class="hint">Use the controls above to add, change, or remove the API key.</p>') + '</div>' +
+        openAiSubscriptionHtml(summary.subscription || { state: "disconnected", updatedAt: 0 });
+    }
     var head = '<div class="prov-head">' +
       '<div class="prov-id"><span class="prov-name">' + esc(meta.name) + '</span>' +
       '<span class="prov-sub">' + esc(meta.sub) + ' &middot; <span class="mono-frag">' + esc(meta.frag) + '</span>' + (meta.suffix ? esc(meta.suffix) : "") + '</span></div>' +
@@ -5907,20 +5956,86 @@ details[open].advanced summary::before {
         chip = '<span class="badge badge-on"><span class="dot"></span>Always available</span>';
         parts = ["Keyless", "billed in Neurons"];
       } else {
-        chip = '<span class="badge badge-on"><span class="dot"></span>Via environment</span>';
+        chip = '<span class="badge badge-on"><span class="dot"></span>' + (id === "openai" ? "API key via environment" : "Via environment") + '</span>';
         parts = ["Read-only"];
       }
       if (count != null) parts.push(count + " models");
       if (favCount != null) parts.push(favCount + " in your picker");
     } else if (status === "stored") {
-      chip = '<span class="badge badge-on"><span class="dot"></span>Stored</span>';
+      chip = '<span class="badge badge-on"><span class="dot"></span>' + (id === "openai" ? "API key stored" : "Stored") + '</span>';
       parts = ["Saved here"];
       if (count != null) parts.push(count + " models available");
       if (favCount != null) parts.push(favCount + " in your picker");
     } else {
-      return '<div class="prov-status"><span class="badge badge-off"><span class="dot"></span>Missing</span></div>';
+      return '<div class="prov-status"><span class="badge badge-off"><span class="dot"></span>' + (id === "openai" ? "API key missing" : "Missing") + '</span></div>';
     }
     return '<div class="prov-status">' + chip + '<span class="hint">' + esc(parts.join(" · ")) + '</span></div>';
+  }
+
+  function openAiSubscriptionSummary() {
+    return providerSummaryById("openai").subscription || { state: "disconnected", updatedAt: 0 };
+  }
+
+  function openAiSubscriptionFailureText(code) {
+    if (code === "auth_reconnect_required") return "Authorization expired or was revoked. Reconnect before subscription profiles can answer.";
+    if (code === "authorization_expired") return "The authorization window expired. Start again when you are ready.";
+    if (code === "entitlement_denied") return "This ChatGPT account is not entitled to the requested model.";
+    if (code === "subscription_quota_exhausted") return "The ChatGPT subscription quota is exhausted. Chickpea will not switch to API billing.";
+    if (code === "client_rejected" || code === "originator_rejected") return "OpenAI rejected Chickpea's experimental client identity. Subscription calls are stopped.";
+    if (code === "protocol_drift" || code === "invalid_response") return "OpenAI's private interface changed. Subscription calls are stopped until Chickpea is updated.";
+    if (code === "request_timeout" || code === "provider_unavailable") return "OpenAI subscription service is temporarily unavailable. Try again without changing billing methods.";
+    return "Subscription authorization needs attention.";
+  }
+
+  function openAiSubscriptionHtml(status) {
+    var attempt = state.openAiSubscriptionAttempt;
+    var busy = state.openAiSubscriptionBusy;
+    var stateName = status.state || "disconnected";
+    var badge = stateName === "connected"
+      ? '<span class="badge badge-on"><span class="dot"></span>Connected</span>'
+      : stateName === "authorizing"
+        ? '<span class="badge badge-off"><span class="dot"></span>Authorizing</span>'
+        : stateName === "account_change_confirmation_required"
+          ? '<span class="badge badge-off"><span class="dot"></span>Confirm account change</span>'
+          : stateName === "reconnect_required"
+            ? '<span class="badge badge-off"><span class="dot"></span>Reconnect required</span>'
+            : '<span class="badge badge-off"><span class="dot"></span>Not connected</span>';
+    var actions = "";
+    var detail = "";
+    if (stateName === "authorizing" && attempt) {
+      detail = '<div class="callout"><span><b>Open the authorization page, then enter this one-time code:</b><br>' +
+        '<a href="' + esc(attempt.verificationUri) + '" target="_blank" rel="noopener noreferrer">' + esc(attempt.verificationUri) + ' &nearr;</a><br>' +
+        '<span class="mono" style="font-size:1.15rem; letter-spacing:.08em;">' + esc(attempt.userCode) + '</span> ' +
+        '<button type="button" class="btn btn-ghost btn-sm" data-action="openai-subscription-copy-code">Copy code</button>' +
+        (state.openAiSubscriptionCopyStatus ? '<span class="inline-status" role="status">' + esc(state.openAiSubscriptionCopyStatus) + '</span>' : "") +
+        '</span></div>';
+      actions = '<button type="button" class="btn btn-soft btn-sm" data-action="openai-subscription-poll"' + (busy ? " disabled" : "") + '>' + (busy === "poll" ? "Checking&hellip;" : "Check connection") + '</button>' +
+        '<button type="button" class="btn btn-ghost btn-sm" data-action="openai-subscription-cancel"' + (busy ? " disabled" : "") + '>Cancel</button>';
+    } else if (stateName === "authorizing") {
+      detail = '<p class="hint">Authorization was started in another page or before this reload. The code and browser capability cannot be recovered here; wait for that page to finish, or retry after the attempt expires.</p>';
+    } else if (stateName === "account_change_confirmation_required" && attempt) {
+      detail = '<div class="callout">This would replace the connected ChatGPT account with <span class="mono">' + esc(status.accountFingerprint || "a different account") + '</span>. Existing subscription profiles stay on the current account until you confirm.</div>';
+      actions = '<button type="button" class="btn btn-primary btn-sm" data-action="openai-subscription-confirm-account"' + (busy ? " disabled" : "") + '>Confirm account change</button>' +
+        '<button type="button" class="btn btn-ghost btn-sm" data-action="openai-subscription-cancel"' + (busy ? " disabled" : "") + '>Keep current account</button>';
+    } else if (stateName === "connected") {
+      detail = '<p class="hint">Installation account <span class="mono">' + esc(status.accountFingerprint || "connected") + '</span>. API-key profiles remain separate, and subscription quota never falls back to API billing.</p>';
+      actions = '<button type="button" class="btn btn-soft btn-sm" data-action="openai-subscription-start"' + (busy ? " disabled" : "") + '>Reconnect</button>' +
+        '<button type="button" class="btn btn-danger btn-sm" data-action="openai-subscription-disconnect-open"' + (busy ? " disabled" : "") + '>Disconnect</button>';
+    } else {
+      if (status.failureCode) detail = '<p class="field-error" role="alert">' + esc(openAiSubscriptionFailureText(status.failureCode)) + '</p>';
+      actions = '<label class="conn-tool" style="margin-bottom:10px;"><span class="import-check' + (state.openAiSubscriptionRiskAcknowledged ? " on" : "") + '"><input type="checkbox" data-action="openai-subscription-risk" ' + (state.openAiSubscriptionRiskAcknowledged ? "checked " : "") + (busy ? "disabled " : "") + 'aria-label="Acknowledge experimental ChatGPT subscription access"></span>' +
+        '<span class="tool-body"><span class="tool-name">I understand this experimental, installation-wide connection uses a personal ChatGPT account.</span><span class="tool-desc">Prompts and files use ChatGPT consumer data handling and subscription quotas. OpenAI may change or reject this private interface. Chickpea will stop, never charge the Platform API key as fallback.</span></span></label>' +
+        '<button type="button" class="btn btn-primary btn-sm" data-action="openai-subscription-start"' + (!state.openAiSubscriptionRiskAcknowledged || busy ? " disabled" : "") + '>' + (busy === "start" ? "Starting&hellip;" : stateName === "reconnect_required" ? "Reconnect subscription" : "Connect subscription") + '</button>';
+    }
+    if (state.openAiSubscriptionDisconnectConfirm) {
+      detail += '<div class="danger-panel"><div class="danger-copy"><span class="danger-title">Disconnect the ChatGPT subscription?</span><span class="hint">Stored tokens and account identity are deleted immediately. Profiles that selected Subscription keep that intent and fail closed until reconnected; API-key billing is not used.</span></div>' +
+        '<button type="button" class="btn btn-soft btn-sm" data-action="openai-subscription-disconnect-cancel">Keep connected</button>' +
+        '<button type="button" class="btn btn-danger btn-sm" data-action="openai-subscription-disconnect-confirm"' + (busy ? " disabled" : "") + '>Disconnect</button></div>';
+      actions = "";
+    }
+    return '<div class="well" style="margin-top:12px;"><div class="prov-head"><div class="prov-id"><span class="field-label">Subscription</span><span class="hint">ChatGPT Plus/Pro quota &middot; direct Codex transport &middot; experimental</span></div>' + badge + '</div>' +
+      detail + (state.openAiSubscriptionError ? '<p class="field-error" role="alert">' + esc(state.openAiSubscriptionError) + '</p>' : "") +
+      (actions ? '<div class="prov-actions" style="margin-left:0; margin-top:10px;">' + actions + '</div>' : "") + '</div>';
   }
 
   function providerActionsHtml(id, summary, ui) {
@@ -6456,6 +6571,155 @@ details[open].advanced summary::before {
     });
   }
 
+  function setOpenAiSubscriptionStatus(status) {
+    var summary = providerSummaryById("openai");
+    summary.subscription = status;
+  }
+
+  function scheduleOpenAiSubscriptionPoll() {
+    var attempt = state.openAiSubscriptionAttempt;
+    if (!attempt || typeof setTimeout !== "function") return;
+    var capability = attempt.attemptCapability;
+    var delay = Math.max(0, Math.min(60000, Number(attempt.nextPollAt || Date.now()) - Date.now()));
+    setTimeout(function () {
+      if (state.openAiSubscriptionAttempt && state.openAiSubscriptionAttempt.attemptCapability === capability) {
+        pollOpenAiSubscription();
+      }
+    }, delay);
+  }
+
+  function startOpenAiSubscription() {
+    if (state.openAiSubscriptionBusy) return;
+    var current = openAiSubscriptionSummary();
+    if (current.state !== "connected" && !state.openAiSubscriptionRiskAcknowledged) {
+      state.openAiSubscriptionError = "Acknowledge the experimental personal-account and data-policy consequences first.";
+      render();
+      return;
+    }
+    state.openAiSubscriptionBusy = "start";
+    state.openAiSubscriptionError = "";
+    state.openAiSubscriptionDisconnectConfirm = false;
+    render();
+    postJson("/admin/api/providers/openai/subscription/start", "POST", {
+      acknowledgedExperimentalRisk: true
+    }).then(function (started) {
+      state.openAiSubscriptionBusy = "";
+      state.openAiSubscriptionAttempt = started;
+      state.openAiSubscriptionCopyStatus = "";
+      setOpenAiSubscriptionStatus({ state: "authorizing", updatedAt: Date.now() });
+      render();
+      scheduleOpenAiSubscriptionPoll();
+    }).catch(function (error) {
+      state.openAiSubscriptionBusy = "";
+      state.openAiSubscriptionError = openAiSubscriptionFailureText(error && error.message);
+      render();
+    });
+  }
+
+  function pollOpenAiSubscription() {
+    var attempt = state.openAiSubscriptionAttempt;
+    if (!attempt || state.openAiSubscriptionBusy) return;
+    state.openAiSubscriptionBusy = "poll";
+    state.openAiSubscriptionError = "";
+    render();
+    postJson("/admin/api/providers/openai/subscription/poll", "POST", {
+      attemptCapability: attempt.attemptCapability
+    }).then(function (result) {
+      state.openAiSubscriptionBusy = "";
+      if (result.state === "pending") {
+        attempt.expiresAt = result.expiresAt;
+        attempt.nextPollAt = result.nextPollAt;
+        render();
+        scheduleOpenAiSubscriptionPoll();
+        return;
+      }
+      setOpenAiSubscriptionStatus(result);
+      if (result.state === "connected") state.openAiSubscriptionAttempt = null;
+      render();
+      refreshModels();
+    }).catch(function (error) {
+      state.openAiSubscriptionBusy = "";
+      state.openAiSubscriptionError = openAiSubscriptionFailureText(error && error.message);
+      if (error && (error.message === "authorization_expired" || error.message === "authorization_missing" || error.message === "attempt_forbidden")) {
+        state.openAiSubscriptionAttempt = null;
+      }
+      render();
+    });
+  }
+
+  function cancelOpenAiSubscription() {
+    var attempt = state.openAiSubscriptionAttempt;
+    if (!attempt || state.openAiSubscriptionBusy) return;
+    state.openAiSubscriptionBusy = "cancel";
+    state.openAiSubscriptionError = "";
+    render();
+    postJson("/admin/api/providers/openai/subscription/cancel", "POST", {
+      attemptCapability: attempt.attemptCapability
+    }).then(function (status) {
+      state.openAiSubscriptionBusy = "";
+      state.openAiSubscriptionAttempt = null;
+      setOpenAiSubscriptionStatus(status);
+      render();
+    }).catch(function (error) {
+      state.openAiSubscriptionBusy = "";
+      state.openAiSubscriptionError = openAiSubscriptionFailureText(error && error.message);
+      render();
+    });
+  }
+
+  function confirmOpenAiSubscriptionAccount() {
+    var attempt = state.openAiSubscriptionAttempt;
+    if (!attempt || state.openAiSubscriptionBusy) return;
+    state.openAiSubscriptionBusy = "confirm";
+    state.openAiSubscriptionError = "";
+    render();
+    postJson("/admin/api/providers/openai/subscription/confirm-account", "POST", {
+      attemptCapability: attempt.attemptCapability
+    }).then(function (status) {
+      state.openAiSubscriptionBusy = "";
+      state.openAiSubscriptionAttempt = null;
+      setOpenAiSubscriptionStatus(status);
+      render();
+      refreshModels();
+    }).catch(function (error) {
+      state.openAiSubscriptionBusy = "";
+      state.openAiSubscriptionError = openAiSubscriptionFailureText(error && error.message);
+      render();
+    });
+  }
+
+  function disconnectOpenAiSubscriptionConnection() {
+    if (state.openAiSubscriptionBusy) return;
+    state.openAiSubscriptionBusy = "disconnect";
+    state.openAiSubscriptionError = "";
+    render();
+    api("/admin/api/providers/openai/subscription", { method: "DELETE" }).then(function (body) {
+      state.openAiSubscriptionBusy = "";
+      state.openAiSubscriptionAttempt = null;
+      state.openAiSubscriptionDisconnectConfirm = false;
+      state.openAiSubscriptionRiskAcknowledged = false;
+      setOpenAiSubscriptionStatus(body.status);
+      render();
+      refreshModels();
+    }).catch(function (error) {
+      state.openAiSubscriptionBusy = "";
+      state.openAiSubscriptionError = openAiSubscriptionFailureText(error && error.message);
+      render();
+    });
+  }
+
+  function copyOpenAiSubscriptionCode() {
+    var code = state.openAiSubscriptionAttempt && state.openAiSubscriptionAttempt.userCode;
+    if (!code || !navigator.clipboard || !navigator.clipboard.writeText) return;
+    navigator.clipboard.writeText(code).then(function () {
+      state.openAiSubscriptionCopyStatus = "Copied";
+      render();
+    }).catch(function () {
+      state.openAiSubscriptionCopyStatus = "Copy failed — select the code manually";
+      render();
+    });
+  }
+
   function seedEgressDraft(policy) {
     var domains = (policy.domains || []).slice();
     if (policy.mode === "allowlist" && domains.length === 0) domains.push("");
@@ -6779,6 +7043,9 @@ details[open].advanced summary::before {
       instructions: "",
       enabled: true,
       model: "",
+      openaiAuthMethod: "api_key",
+      originalOpenAiAuthMethod: "api_key",
+      openaiAuthChangeAcknowledged: true,
       // New profiles carry no custom skills; the array is what the API persists.
       skills: [],
       // New profiles carry no Connections either; the array is what the API persists.
@@ -6799,6 +7066,9 @@ details[open].advanced summary::before {
       instructions: agent.instructions,
       enabled: agent.enabled,
       model: agent.model || "",
+      openaiAuthMethod: agent.openaiAuthMethod || "api_key",
+      originalOpenAiAuthMethod: agent.openaiAuthMethod || "api_key",
+      openaiAuthChangeAcknowledged: true,
       // Deep-copy each skill so the inline editor never mutates the shared
       // state.agents entry — a discard/reopen must show the persisted values.
       skills: (agent.skills || []).map(function (skill) {
@@ -7425,12 +7695,27 @@ details[open].advanced summary::before {
     if (action === "prov-remove") { openProviderRemove(target.getAttribute("data-provider")); }
     if (action === "prov-remove-cancel") { closeProviderRemove(target.getAttribute("data-provider")); }
     if (action === "prov-remove-confirm") { removeProviderKey(target.getAttribute("data-provider")); }
+    if (action === "openai-subscription-start") { startOpenAiSubscription(); }
+    if (action === "openai-subscription-poll") { pollOpenAiSubscription(); }
+    if (action === "openai-subscription-cancel") { cancelOpenAiSubscription(); }
+    if (action === "openai-subscription-confirm-account") { confirmOpenAiSubscriptionAccount(); }
+    if (action === "openai-subscription-copy-code") { copyOpenAiSubscriptionCode(); }
+    if (action === "openai-subscription-disconnect-open") { state.openAiSubscriptionDisconnectConfirm = true; state.openAiSubscriptionError = ""; render(); }
+    if (action === "openai-subscription-disconnect-cancel") { state.openAiSubscriptionDisconnectConfirm = false; render(); }
+    if (action === "openai-subscription-disconnect-confirm") { disconnectOpenAiSubscriptionConnection(); }
     if (action === "fav-star") { toggleFavorite(target.getAttribute("data-provider"), target.getAttribute("data-model")); }
     // Open the Model combobox (F6) when the input is clicked/focused. The input
     // carries data-action="profile-model"; the same action feeds keystrokes to
     // the filter in the input listener below.
     if (action === "profile-model") { openModelPicker(); }
     if (action === "pick-model") { var modelInput = document.getElementById("p-model"); if (modelInput) modelInput.value = target.getAttribute("data-model") || ""; collectProfileDraft(); state.profileDirty = true; closeModelPicker(); }
+    if (action === "profile-openai-auth" && state.profileDraft) {
+      var nextOpenAiMethod = target.getAttribute("data-method") === "subscription" ? "subscription" : "api_key";
+      state.profileDraft.openaiAuthMethod = nextOpenAiMethod;
+      state.profileDraft.openaiAuthChangeAcknowledged = nextOpenAiMethod === state.profileDraft.originalOpenAiAuthMethod;
+      markProfileDirty();
+      render();
+    }
     if (action === "save-profile") { saveProfile(); }
     if (action === "discard-profile") { discardProfile(); }
     if (action === "delete-profile") { deleteProfile(); }
@@ -7905,6 +8190,17 @@ details[open].advanced summary::before {
       if (target.checked && sandboxHostIndex < 0) sandboxDraft.allowedHosts.push(sandboxHost);
       if (!target.checked && sandboxHostIndex >= 0) sandboxDraft.allowedHosts.splice(sandboxHostIndex, 1);
       state.sandboxError = "";
+      render();
+    }
+    if (action === "openai-subscription-risk" && !state.openAiSubscriptionBusy) {
+      state.openAiSubscriptionRiskAcknowledged = !!target.checked;
+      state.openAiSubscriptionError = "";
+      render();
+    }
+    if (action === "profile-openai-auth-ack" && state.profileDraft) {
+      state.profileDraft.openaiAuthChangeAcknowledged = !!target.checked;
+      state.profileError = "";
+      markProfileDirty();
       render();
     }
     if (action === "channel-enabled") {
@@ -9725,6 +10021,20 @@ details[open].advanced summary::before {
     if (!commitOpenApiConnectionEditor()) { showProfileTab("connections"); if (onFailed) onFailed(); return; }
     if (!draft.name) { state.profileError = "Name is required."; render(); if (onFailed) onFailed(); return; }
     if (!draft.instructions) { state.profileError = "Profile instructions are required."; state.profileTab = "instructions"; render(); if (onFailed) onFailed(); return; }
+    var isOpenAiModel = String(draft.model || "").indexOf("openai/") === 0;
+    var openAiMethod = draft.openaiAuthMethod === "subscription" ? "subscription" : "api_key";
+    if (isOpenAiModel && openAiMethod === "subscription" && OPENAI_SUBSCRIPTION_MODELS.indexOf(String(draft.model).slice("openai/".length)) < 0) {
+      state.profileError = "Choose a Subscription-supported OpenAI model or switch this profile to API key.";
+      render();
+      if (onFailed) onFailed();
+      return;
+    }
+    if (isOpenAiModel && openAiMethod !== (draft.originalOpenAiAuthMethod || "api_key") && !draft.openaiAuthChangeAcknowledged) {
+      state.profileError = "Confirm the OpenAI authentication-method change before saving.";
+      render();
+      if (onFailed) onFailed();
+      return;
+    }
     // An open repository picker holds checkbox changes the user has made but
     // not yet Applied; saving must not silently serialize the stale grant
     // list. Committing equals clicking Apply — which is what the checked
@@ -9741,6 +10051,7 @@ details[open].advanced summary::before {
       apiConnections: draft.apiConnections || [],
       repositories: draft.repositories || []
     };
+    if (isOpenAiModel) body.openaiAuthMethod = openAiMethod;
     var isEdit = !!draft.id;
     // Capture the draft carrying the transient secrets + removals BEFORE the
     // post-save re-clone wipes them, so the secret PUT/DELETE still run.

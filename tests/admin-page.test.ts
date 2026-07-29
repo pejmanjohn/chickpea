@@ -189,12 +189,28 @@ function defaultAssignments(): AssignmentFixture[] {
   ];
 }
 
-type ProviderSummaryFixture = { id: string; status: 'env' | 'stored' | 'missing'; modelCount: number | null };
+type OpenAiSubscriptionStatusFixture = {
+  state: 'disconnected' | 'authorizing' | 'connected' | 'account_change_confirmation_required' | 'reconnect_required' | 'error';
+  updatedAt: number;
+  accountFingerprint?: string;
+  connectedAt?: number;
+  failureCode?: string;
+};
+type ProviderSummaryFixture = {
+  id: string;
+  status: 'env' | 'stored' | 'missing';
+  modelCount: number | null;
+  subscription?: OpenAiSubscriptionStatusFixture;
+};
 type ModelProviderFixture = {
   id: string;
   configured: boolean;
   source: string;
   suggestions: string[];
+  authMethods?: {
+    apiKeyConfigured: boolean;
+    subscription: OpenAiSubscriptionStatusFixture;
+  };
 };
 type EgressPolicyFixture = {
   mode: 'allowlist' | 'open' | 'off';
@@ -261,6 +277,7 @@ function runAdminPageHarness(
     openaiModels?: Array<{ id: string }>;
     providerKeyReject?: { status: number; detail: string };
     providerSettingsError?: { status: number; error: string };
+    openAiSubscriptionPollResult?: Record<string, unknown>;
     egressPolicy?: EgressPolicyFixture;
     sandboxStatus?: SandboxStatusFixture;
     modelProviders?: ModelProviderFixture[];
@@ -318,6 +335,8 @@ function runAdminPageHarness(
   channelListCalls: string[];
   providerKeyPosts: Array<{ id: string; key: string }>;
   providerKeyDeletes: string[];
+  openAiSubscriptionPosts: Array<{ action: string; body: Record<string, unknown> }>;
+  openAiSubscriptionDisconnects(): number;
   favoritesPuts: Array<{ id: string; favorites: string[] }>;
   egressPuts: EgressPolicyFixture[];
   sandboxPuts: Array<{
@@ -414,6 +433,8 @@ function runAdminPageHarness(
   const channelListCalls: string[] = [];
   const providerKeyPosts: Array<{ id: string; key: string }> = [];
   const providerKeyDeletes: string[] = [];
+  const openAiSubscriptionPosts: Array<{ action: string; body: Record<string, unknown> }> = [];
+  let openAiSubscriptionDisconnects = 0;
   const favoritesPuts: Array<{ id: string; favorites: string[] }> = [];
   const egressPuts: EgressPolicyFixture[] = [];
   const sandboxPuts: Array<{
@@ -619,7 +640,7 @@ function runAdminPageHarness(
   const providerState: ProviderSummaryFixture[] =
     options.providers ?? [
       { id: 'anthropic', status: 'stored', modelCount: 10 },
-      { id: 'openai', status: 'missing', modelCount: null },
+      { id: 'openai', status: 'missing', modelCount: null, subscription: { state: 'disconnected', updatedAt: 0 } },
       { id: 'openrouter', status: 'env', modelCount: null },
       { id: 'workers-ai', status: options.cloudflare ? 'env' : 'missing', modelCount: null },
     ];
@@ -1250,6 +1271,55 @@ function runAdminPageHarness(
       const id = modelsMatch[1] as string;
       return Promise.resolve(jsonResponse({ provider: id, models: modelsState[id] ?? [], cached: false }));
     }
+    const subscriptionMatch = path.match(/^\/admin\/api\/providers\/openai\/subscription(?:\/(start|poll|cancel|confirm-account))?$/);
+    if (subscriptionMatch) {
+      const action = subscriptionMatch[1] ?? 'connection';
+      const openAi = providerState.find((provider) => provider.id === 'openai');
+      if (method === 'DELETE') {
+        openAiSubscriptionDisconnects += 1;
+        if (openAi) openAi.subscription = { state: 'disconnected', updatedAt: 1_800_000_020_000 };
+        return Promise.resolve(jsonResponse({ status: openAi?.subscription }));
+      }
+      if (method === 'GET') {
+        return Promise.resolve(jsonResponse({ status: openAi?.subscription ?? { state: 'disconnected', updatedAt: 0 } }));
+      }
+      const body = JSON.parse(options?.body ?? '{}') as Record<string, unknown>;
+      openAiSubscriptionPosts.push({ action, body });
+      if (action === 'start') {
+        if (openAi) openAi.subscription = { state: 'authorizing', updatedAt: 1_800_000_000_000 };
+        return Promise.resolve(jsonResponse({
+          state: 'authorizing',
+          verificationUri: 'https://auth.openai.com/codex/device',
+          userCode: 'CHICK-PEA',
+          expiresAt: 1_800_000_060_000,
+          nextPollAt: 1_800_000_005_000,
+          attemptCapability: 'browser-attempt-capability-1234567890',
+        }));
+      }
+      if (action === 'poll') {
+        const result = harnessOptions.openAiSubscriptionPollResult ?? {
+          state: 'connected',
+          updatedAt: 1_800_000_005_000,
+          accountFingerprint: 'oas_safe_fixture',
+          connectedAt: 1_800_000_005_000,
+        };
+        if (openAi && result.state !== 'pending') openAi.subscription = result as OpenAiSubscriptionStatusFixture;
+        return Promise.resolve(jsonResponse(result));
+      }
+      if (action === 'confirm-account') {
+        const connected = {
+          state: 'connected' as const,
+          updatedAt: 1_800_000_010_000,
+          accountFingerprint: 'oas_replacement_fixture',
+          connectedAt: 1_800_000_010_000,
+        };
+        if (openAi) openAi.subscription = connected;
+        return Promise.resolve(jsonResponse(connected));
+      }
+      const restored = { state: 'disconnected' as const, updatedAt: 1_800_000_010_000 };
+      if (openAi) openAi.subscription = restored;
+      return Promise.resolve(jsonResponse(restored));
+    }
     const keyMatch = path.match(/^\/admin\/api\/providers\/([^/]+)\/key$/);
     if (keyMatch) {
       const id = keyMatch[1] as string;
@@ -1476,6 +1546,8 @@ function runAdminPageHarness(
     channelListCalls,
     providerKeyPosts,
     providerKeyDeletes,
+    openAiSubscriptionPosts,
+    openAiSubscriptionDisconnects: () => openAiSubscriptionDisconnects,
     favoritesPuts,
     egressPuts,
     sandboxPuts,
@@ -7132,7 +7204,11 @@ test('Settings renders the three key-provider rows and hides Workers AI on the N
   assert.match(html, /<span class="prov-name">Anthropic<\/span>/);
   assert.match(html, /Stored<\/span><span class="hint">Saved here · 10 models available<\/span>/);
   assert.match(html, /<span class="prov-name">OpenAI<\/span>/);
-  assert.match(html, /Missing<\/span>/);
+  assert.match(html, /API key missing<\/span>/);
+  assert.match(html, /<span class="field-label">Subscription<\/span>/);
+  assert.match(html, /Not connected<\/span>/);
+  assert.match(html, /data-action="openai-subscription-start" disabled/);
+  assert.match(html, /never charge the Platform API key as fallback/);
   assert.match(html, /data-action="prov-add-key" data-provider="openai"/);
   // OpenRouter (env) is read-only — no change/remove — with the favorites manager.
   assert.match(html, /Via environment<\/span><span class="hint">Read-only/);
@@ -7220,9 +7296,172 @@ test('Settings validates a pasted key and collapses the row to a stored status',
   await flushAsync();
 
   assert.deepEqual(harness.providerKeyPosts, [{ id: 'openai', key: 'sk-live-openai' }]);
-  // The row collapsed: OpenAI now reports Stored with the primed model count.
+  // The row collapsed: OpenAI now reports the API key separately from Subscription.
   assert.match(harness.app.innerHTML, /<span class="prov-name">OpenAI<\/span>/);
-  assert.match(harness.app.innerHTML, /Stored<\/span><span class="hint">Saved here · 2 models available<\/span>/);
+  assert.match(harness.app.innerHTML, /API key stored<\/span><span class="hint">Saved here · 2 models available<\/span>/);
+});
+
+test('Settings starts and completes Subscription authorization without rendering its browser capability', async () => {
+  const harness = runAdminPageHarness();
+  await flushAsync();
+  const click = harness.listeners.click;
+  const change = harness.listeners.change;
+  assert.ok(click && change);
+
+  click({ target: actionTarget({ 'data-action': 'open-settings' }) });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /OpenAI supports two explicit, independent methods/);
+  assert.match(harness.app.innerHTML, /data-action="openai-subscription-start" disabled/);
+
+  change({
+    target: {
+      checked: true,
+      closest: () => null,
+      getAttribute(name: string) {
+        return name === 'data-action' ? 'openai-subscription-risk' : null;
+      },
+    } as unknown as FakeTarget,
+  });
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="openai-subscription-start" disabled/);
+  click({ target: actionTarget({ 'data-action': 'openai-subscription-start' }) });
+  await flushAsync();
+
+  assert.deepEqual(harness.openAiSubscriptionPosts, [
+    { action: 'start', body: { acknowledgedExperimentalRisk: true } },
+  ]);
+  assert.match(harness.app.innerHTML, /https:\/\/auth\.openai\.com\/codex\/device/);
+  assert.match(harness.app.innerHTML, /CHICK-PEA/);
+  assert.doesNotMatch(harness.app.innerHTML, /browser-attempt-capability-1234567890/);
+
+  click({ target: actionTarget({ 'data-action': 'openai-subscription-copy-code' }) });
+  await flushAsync();
+  assert.deepEqual(harness.clipboardWrites, ['CHICK-PEA']);
+  assert.match(harness.app.innerHTML, /Copied/);
+
+  click({ target: actionTarget({ 'data-action': 'openai-subscription-poll' }) });
+  await flushAsync();
+  assert.deepEqual(harness.openAiSubscriptionPosts[1], {
+    action: 'poll',
+    body: { attemptCapability: 'browser-attempt-capability-1234567890' },
+  });
+  assert.match(harness.app.innerHTML, /Installation account <span class="mono">oas_safe_fixture<\/span>/);
+  assert.doesNotMatch(harness.app.innerHTML, /CHICK-PEA/);
+  assert.doesNotMatch(harness.app.innerHTML, /browser-attempt-capability-1234567890/);
+});
+
+test('Settings keeps an authorizing attempt non-resumable after reload and disconnects without changing the API key', async () => {
+  const authorizing = runAdminPageHarness({
+    providers: [
+      { id: 'anthropic', status: 'stored', modelCount: 10 },
+      { id: 'openai', status: 'stored', modelCount: 2, subscription: { state: 'authorizing', updatedAt: 1_800_000_000_000 } },
+      { id: 'openrouter', status: 'env', modelCount: null },
+      { id: 'workers-ai', status: 'missing', modelCount: null },
+    ],
+  });
+  await flushAsync();
+  authorizing.listeners.click?.({ target: actionTarget({ 'data-action': 'open-settings' }) });
+  await flushAsync();
+  assert.match(authorizing.app.innerHTML, /started in another page or before this reload/);
+  assert.doesNotMatch(authorizing.app.innerHTML, /CHICK-PEA/);
+  assert.doesNotMatch(authorizing.app.innerHTML, /openai-subscription-poll/);
+
+  const connected = runAdminPageHarness({
+    providers: [
+      { id: 'anthropic', status: 'stored', modelCount: 10 },
+      {
+        id: 'openai',
+        status: 'stored',
+        modelCount: 2,
+        subscription: {
+          state: 'connected',
+          updatedAt: 1_800_000_005_000,
+          accountFingerprint: 'oas_safe_fixture',
+          connectedAt: 1_800_000_005_000,
+        },
+      },
+      { id: 'openrouter', status: 'env', modelCount: null },
+      { id: 'workers-ai', status: 'missing', modelCount: null },
+    ],
+  });
+  await flushAsync();
+  const click = connected.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'open-settings' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'openai-subscription-disconnect-open' }) });
+  assert.match(connected.app.innerHTML, /Profiles that selected Subscription keep that intent and fail closed/);
+  click({ target: actionTarget({ 'data-action': 'openai-subscription-disconnect-confirm' }) });
+  await flushAsync();
+
+  assert.equal(connected.openAiSubscriptionDisconnects(), 1);
+  assert.match(connected.app.innerHTML, /API key stored/);
+  assert.match(connected.app.innerHTML, /Not connected/);
+});
+
+test('profile OpenAI authentication changes require an impact acknowledgment and persist exactly one method', async () => {
+  const harness = runAdminPageHarness({
+    assignments: [
+      { workspaceId: 'T_DESIGN', channelId: 'C_OPENAI', agentId: 'agent_openai', enabled: true },
+    ],
+    agents: [
+      {
+        id: 'agent_openai',
+        name: 'OpenAI profile',
+        description: '',
+        instructions: 'Use OpenAI.',
+        enabled: true,
+        model: 'openai/gpt-5.4',
+        openaiAuthMethod: 'api_key',
+      },
+    ],
+    modelProviders: [
+      {
+        id: 'openai',
+        configured: true,
+        source: 'subscription or API key',
+        suggestions: ['openai/gpt-5.4'],
+        authMethods: {
+          apiKeyConfigured: true,
+          subscription: {
+            state: 'connected',
+            updatedAt: 1_800_000_005_000,
+            accountFingerprint: 'oas_safe_fixture',
+            connectedAt: 1_800_000_005_000,
+          },
+        },
+      },
+    ],
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  const change = harness.listeners.change;
+  assert.ok(click && change);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_openai' }) });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /OpenAI authentication method/);
+  assert.match(harness.app.innerHTML, /aria-checked="true" data-action="profile-openai-auth" data-method="api_key"/);
+
+  click({ target: actionTarget({ 'data-action': 'profile-openai-auth', 'data-method': 'subscription' }) });
+  assert.match(harness.app.innerHTML, /Confirm this billing-authority change/);
+  assert.match(harness.app.innerHTML, /This affects 1 current channel assignment and all scheduled work/);
+  assert.match(harness.app.innerHTML, /there is no fallback/);
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  assert.equal(harness.agentPatchBodies.length, 0);
+  assert.match(harness.app.innerHTML, /Confirm the OpenAI authentication-method change before saving/);
+
+  change({
+    target: {
+      checked: true,
+      closest: () => null,
+      getAttribute(name: string) {
+        return name === 'data-action' ? 'profile-openai-auth-ack' : null;
+      },
+    } as unknown as FakeTarget,
+  });
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+  assert.equal(harness.agentPatchBodies.length, 1);
+  assert.equal(harness.agentPatchBodies[0]?.body.openaiAuthMethod, 'subscription');
 });
 
 test('Settings surfaces a rejected key verbatim in the raw-error block and stores nothing', async () => {

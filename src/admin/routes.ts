@@ -148,6 +148,18 @@ import {
 import type { ConfigStore } from '../config/store.ts';
 import type { MemoryStateStore } from '../memory/types.ts';
 import type { RoutineStore } from '../routines/types.ts';
+import {
+  cancelOpenAiSubscriptionAuthorization,
+  confirmOpenAiSubscriptionAccountChange,
+  getOpenAiSubscriptionAuthorizationStatus,
+  pollOpenAiSubscriptionAuthorization,
+  startOpenAiSubscriptionAuthorization,
+  type OpenAiSubscriptionAuthorizationDependencies,
+  type OpenAiSubscriptionAuthorizationProtocol,
+} from '../openai-subscription/device-auth.ts';
+import { disconnectOpenAiSubscription } from '../openai-subscription/credentials.ts';
+import { OpenAiSubscriptionError } from '../openai-subscription/errors.ts';
+import { OPENAI_SUBSCRIPTION_MODELS } from '../openai-subscription/protocol.ts';
 import type {
   ChannelAssignment,
   CustomAgentConfig,
@@ -230,6 +242,9 @@ interface AdminRoutesOptions {
     state: string,
     dependencies: ApiOAuthDependencies,
   ) => ReturnType<typeof cancelApiOAuthAuthorization>) | undefined;
+  openAiSubscriptionProtocol?: OpenAiSubscriptionAuthorizationProtocol | undefined;
+  openAiSubscriptionNow?: (() => number) | undefined;
+  openAiSubscriptionRandomBytes?: ((length: number) => Uint8Array) | undefined;
 }
 
 const ADMIN_COOKIE = 'flue_admin';
@@ -240,6 +255,12 @@ const modelSpecifier = v.pipe(v.string(), v.regex(/^[^/]+\/.+$/));
 const AGENT_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,127}$/;
 const MCP_CONNECTION_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const agentIdSchema = v.pipe(v.string(), v.regex(AGENT_ID_PATTERN));
+const openAiSubscriptionCapabilitySchema = v.object({
+  attemptCapability: v.pipe(v.string(), v.minLength(32), v.maxLength(512)),
+});
+const openAiSubscriptionStartSchema = v.object({
+  acknowledgedExperimentalRisk: v.literal(true),
+});
 
 // A profile skill. `name` must satisfy Flue's `defineSkill` rule so a stored
 // row can never become a turn-killing validation throw at runtime; description
@@ -508,6 +529,7 @@ const agentSchema = v.object({
   instructions: nonEmptyString,
   enabled: v.boolean(),
   model: v.optional(modelSpecifier),
+  openaiAuthMethod: v.optional(v.picklist(['api_key', 'subscription'])),
   skills: v.optional(skillsSchema, []),
   mcpServers: v.optional(mcpServersSchema, []),
   apiConnections: v.optional(apiConnectionsSchema, []),
@@ -520,6 +542,7 @@ const agentPatchSchema = v.partial(
     instructions: nonEmptyString,
     enabled: v.boolean(),
     model: v.nullable(modelSpecifier),
+    openaiAuthMethod: v.picklist(['api_key', 'subscription']),
     skills: skillsSchema,
     mcpServers: mcpServersSchema,
     apiConnections: apiConnectionsSchema,
@@ -733,6 +756,18 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         provider,
       });
     },
+  });
+  const openAiSubscriptionDependencies = (
+    c: Context,
+  ): OpenAiSubscriptionAuthorizationDependencies => ({
+    settings: settings(c),
+    ...(options.openAiSubscriptionProtocol
+      ? { protocol: options.openAiSubscriptionProtocol }
+      : {}),
+    ...(options.openAiSubscriptionNow ? { now: options.openAiSubscriptionNow } : {}),
+    ...(options.openAiSubscriptionRandomBytes
+      ? { randomBytes: options.openAiSubscriptionRandomBytes }
+      : {}),
   });
   const adminLoginBodyLimit = bodyLimit({
     maxSize: MAX_ADMIN_LOGIN_BODY_BYTES,
@@ -1165,8 +1200,34 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   // suggestions — the per-provider search/favorites endpoints stay the editors.
   app.get('/admin/api/models', async (c) => {
     const settingsStore = settings(c);
+    const subscription = await getOpenAiSubscriptionAuthorizationStatus(settingsStore);
     const providers = await Promise.all(
       modelProviders().map(async (provider) => {
+        if (provider.id === 'openai') {
+          const subscriptionConfigured =
+            subscription.state === 'connected' ||
+            subscription.state === 'account_change_confirmation_required' ||
+            (subscription.state === 'authorizing' && Boolean(subscription.accountFingerprint));
+          return {
+            ...provider,
+            configured: provider.configured || subscriptionConfigured,
+            source: provider.configured && subscriptionConfigured
+              ? `${provider.source} + ChatGPT subscription`
+              : subscriptionConfigured
+                ? 'ChatGPT subscription'
+                : provider.source,
+            suggestions: [...new Set([
+              ...provider.suggestions,
+              ...(subscriptionConfigured
+                ? OPENAI_SUBSCRIPTION_MODELS.map((model) => `openai/${model}`)
+                : []),
+            ])],
+            authMethods: {
+              apiKeyConfigured: provider.configured,
+              subscription,
+            },
+          };
+        }
         if (provider.id === 'openrouter') {
           const favorites = await getProviderFavorites('openrouter', settingsStore);
           return { ...provider, suggestions: favorites.map((model) => `openrouter/${model}`) };
@@ -1186,13 +1247,81 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   app.get('/admin/api/providers', async (c) => {
     const platformEnv = c.env as PlatformEnv | undefined;
     const settingsStore = settings(c);
-    const sources = await describeProviderKeySources(platformEnv, settingsStore);
+    const [sources, subscription] = await Promise.all([
+      describeProviderKeySources(platformEnv, settingsStore),
+      getOpenAiSubscriptionAuthorizationStatus(settingsStore),
+    ]);
     return c.json({
       providers: [
-        ...PROVIDER_KEY_IDS.map((id) => providerSummary(id, sources[id])),
+        ...PROVIDER_KEY_IDS.map((id) => ({
+          ...providerSummary(id, sources[id]),
+          ...(id === 'openai' ? { subscription } : {}),
+        })),
         providerSummary('workers-ai', workersAiStatus(platformEnv)),
       ],
     });
+  });
+
+  app.get('/admin/api/providers/openai/subscription', async (c) =>
+    c.json({ status: await getOpenAiSubscriptionAuthorizationStatus(settings(c)) }));
+
+  app.post('/admin/api/providers/openai/subscription/start', async (c) => {
+    const parsed = v.safeParse(openAiSubscriptionStartSchema, await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
+    try {
+      return c.json(await startOpenAiSubscriptionAuthorization(openAiSubscriptionDependencies(c)));
+    } catch (error) {
+      return openAiSubscriptionRouteError(c, error);
+    }
+  });
+
+  app.post('/admin/api/providers/openai/subscription/poll', async (c) => {
+    const parsed = v.safeParse(openAiSubscriptionCapabilitySchema, await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
+    try {
+      return c.json(await pollOpenAiSubscriptionAuthorization(
+        parsed.output,
+        openAiSubscriptionDependencies(c),
+      ));
+    } catch (error) {
+      return openAiSubscriptionRouteError(c, error);
+    }
+  });
+
+  app.post('/admin/api/providers/openai/subscription/confirm-account', async (c) => {
+    const parsed = v.safeParse(openAiSubscriptionCapabilitySchema, await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
+    try {
+      return c.json(await confirmOpenAiSubscriptionAccountChange(
+        parsed.output,
+        openAiSubscriptionDependencies(c),
+      ));
+    } catch (error) {
+      return openAiSubscriptionRouteError(c, error);
+    }
+  });
+
+  app.post('/admin/api/providers/openai/subscription/cancel', async (c) => {
+    const parsed = v.safeParse(openAiSubscriptionCapabilitySchema, await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
+    try {
+      return c.json(await cancelOpenAiSubscriptionAuthorization(
+        parsed.output,
+        openAiSubscriptionDependencies(c),
+      ));
+    } catch (error) {
+      return openAiSubscriptionRouteError(c, error);
+    }
+  });
+
+  app.delete('/admin/api/providers/openai/subscription', async (c) => {
+    try {
+      return c.json({ status: await disconnectOpenAiSubscription(settings(c), {
+        ...(options.openAiSubscriptionNow ? { now: options.openAiSubscriptionNow } : {}),
+      }) });
+    } catch (error) {
+      return openAiSubscriptionRouteError(c, error);
+    }
   });
 
   app.post('/admin/api/providers/:id/key', async (c) => {
@@ -1575,6 +1704,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return invalidRequest(c, githubApiConnectionValidationMessage(parsed.issues));
     }
     let agent = toAgentConfig(parsed.output);
+    const openAiAuthError = openAiAuthenticationMethodError(
+      agent.model,
+      agent.openaiAuthMethod,
+    );
+    if (openAiAuthError) return invalidRequest(c, openAiAuthError);
     const modelError = modelResolutionError(agent);
     if (modelError) {
       return modelNotResolvable(c, modelError);
@@ -2105,6 +2239,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         ...patch,
         id: agentId,
       };
+      const openAiAuthError = openAiAuthenticationMethodError(
+        next.model,
+        patch.openaiAuthMethod,
+      );
+      if (openAiAuthError) return invalidRequest(c, openAiAuthError);
       const modelError = modelResolutionError(next);
       if (modelError) {
         return modelNotResolvable(c, modelError);
@@ -3278,6 +3417,9 @@ function toAgentConfig(input: v.InferOutput<typeof agentSchema>): CustomAgentCon
     instructions: input.instructions,
     enabled: input.enabled,
     ...(input.model !== undefined ? { model: input.model } : {}),
+    ...(input.openaiAuthMethod !== undefined
+      ? { openaiAuthMethod: input.openaiAuthMethod }
+      : {}),
     skills: input.skills,
     mcpServers: toMcpServers(input.mcpServers),
     apiConnections: toApiConnections(input.apiConnections),
@@ -3422,6 +3564,9 @@ function toAgentPatch(input: v.InferOutput<typeof agentPatchSchema>): AgentPatch
   if (input.instructions !== undefined) patch.instructions = input.instructions;
   if (input.enabled !== undefined) patch.enabled = input.enabled;
   if (input.model !== undefined) patch.model = input.model;
+  if (input.openaiAuthMethod !== undefined) {
+    patch.openaiAuthMethod = input.openaiAuthMethod;
+  }
   if (input.skills !== undefined) patch.skills = input.skills;
   if (input.mcpServers !== undefined) patch.mcpServers = toMcpServers(input.mcpServers);
   if (input.apiConnections !== undefined) {
@@ -3539,6 +3684,31 @@ function invalidRequest(
   );
 }
 
+function openAiSubscriptionRouteError(c: Context, error: unknown): Response {
+  if (!(error instanceof OpenAiSubscriptionError)) return internalError(c, error);
+  const body = {
+    error: error.code,
+    ...(error.retryAfterMs === undefined ? {} : { retryAfterMs: error.retryAfterMs }),
+  };
+  switch (error.code) {
+    case 'attempt_forbidden':
+      return c.json(body, 403);
+    case 'authorization_expired':
+      return c.json(body, 410);
+    case 'authorization_rate_limited':
+      return c.json(body, 429);
+    case 'authorization_missing':
+    case 'authorization_pending':
+    case 'account_change_confirmation_required':
+    case 'auth_reconnect_required':
+      return c.json(body, 409);
+    case 'unsupported_model':
+      return c.json(body, 422);
+    default:
+      return c.json(body, 502);
+  }
+}
+
 // Free text accepts any provider/model specifier (locked model-picker
 // decision: warn, never block — the registry approximates Flue/Pi's real
 // provider surface, so an unknown prefix may still work at runtime). A warning
@@ -3555,6 +3725,16 @@ function providerWarnings(
   return {
     warnings: [{ code: 'unknown_provider', provider: prefix, knownProviders: [...known].sort() }],
   };
+}
+
+function openAiAuthenticationMethodError(
+  model: string | null | undefined,
+  method: CustomAgentConfig['openaiAuthMethod'],
+): string | undefined {
+  if (method && !model?.startsWith('openai/')) {
+    return 'OpenAI authentication methods require an openai/* model.';
+  }
+  return undefined;
 }
 
 interface ProviderSummary {

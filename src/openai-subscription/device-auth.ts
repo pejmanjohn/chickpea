@@ -24,7 +24,7 @@ import type {
 } from './types.ts';
 import { isOpenAiSubscriptionFailureCode } from './types.ts';
 
-interface OpenAiSubscriptionAuthorizationProtocol {
+export interface OpenAiSubscriptionAuthorizationProtocol {
   start(): Promise<OpenAiDeviceAuthorizationPending>;
   poll(pending: OpenAiDeviceAuthorizationPending): Promise<OpenAiDeviceAuthorizationPoll>;
   exchange(

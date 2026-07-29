@@ -21,6 +21,9 @@ import type { PlatformEnv } from '../src/config/state-backend.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import { FAKE_PROVIDER_KEYS, FakeProvidersBackend } from './helpers/fake-providers.ts';
 import { withEnv } from './helpers/env.ts';
+import type {
+  OpenAiSubscriptionAuthorizationProtocol,
+} from '../src/openai-subscription/device-auth.ts';
 
 const ADMIN_TOKEN = 'provider-admin-token';
 
@@ -60,6 +63,181 @@ function appWithProviderAdmin(): {
     },
   };
 }
+
+test('OpenAI subscription admin routes keep authorization capability browser-local and return safe status', async (t) => {
+  let currentTime = 1_800_000_000_000;
+  let polls = 0;
+  const protocol: OpenAiSubscriptionAuthorizationProtocol = {
+    start: async () => ({
+      deviceAuthId: 'provider-device-secret',
+      userCode: 'CHICK-PEA',
+      verificationUri: 'https://auth.openai.com/codex/device',
+      intervalMs: 5_000,
+      expiresAt: currentTime + 60_000,
+    }),
+    poll: async () => {
+      polls += 1;
+      return {
+        state: 'approved',
+        authorizationCode: 'provider-authorization-secret',
+        codeVerifier: 'provider-verifier-secret',
+      };
+    },
+    exchange: async () => ({
+      accessToken: 'provider-access-secret',
+      refreshToken: 'provider-refresh-secret',
+      idToken: 'provider-identity-secret',
+      expiresAt: currentTime + 3_600_000,
+      accountId: 'provider-account-secret',
+    }),
+  };
+  const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  t.after(() => { config.close(); settings.close(); });
+  const app = new Hono();
+  app.route('/', createAdminRoutes({
+    store: config,
+    settings,
+    adminToken: ADMIN_TOKEN,
+    openAiSubscriptionProtocol: protocol,
+    openAiSubscriptionNow: () => currentTime,
+    openAiSubscriptionRandomBytes: (length) => new Uint8Array(length).fill(9),
+  }));
+
+  const missingAck = await app.request('/admin/api/providers/openai/subscription/start', {
+    method: 'POST',
+    headers: { ...auth(), 'content-type': 'application/json' },
+    body: '{}',
+  });
+  assert.equal(missingAck.status, 400);
+
+  const startedResponse = await app.request('/admin/api/providers/openai/subscription/start', {
+    method: 'POST',
+    headers: { ...auth(), 'content-type': 'application/json' },
+    body: JSON.stringify({ acknowledgedExperimentalRisk: true }),
+  });
+  assert.equal(startedResponse.status, 200);
+  const started = await startedResponse.json() as {
+    state: string;
+    userCode: string;
+    verificationUri: string;
+    expiresAt: number;
+    nextPollAt: number;
+    attemptCapability: string;
+  };
+  assert.equal(started.state, 'authorizing');
+  assert.equal(started.userCode, 'CHICK-PEA');
+  assert.ok(started.attemptCapability.length >= 32);
+
+  const observer = await app.request('/admin/api/providers/openai/subscription', { headers: auth() });
+  assert.deepEqual(await observer.json(), { status: { state: 'authorizing', updatedAt: currentTime } });
+  const providerSummary = await app.request('/admin/api/providers', { headers: auth() });
+  const summaryJson = JSON.stringify(await providerSummary.json());
+  assert.match(summaryJson, /"subscription":\{"state":"authorizing"/);
+  assert.doesNotMatch(summaryJson, /CHICK-PEA|attemptCapability|provider-device-secret/);
+
+  const earlyPoll = await app.request('/admin/api/providers/openai/subscription/poll', {
+    method: 'POST',
+    headers: { ...auth(), 'content-type': 'application/json' },
+    body: JSON.stringify({ attemptCapability: started.attemptCapability }),
+  });
+  assert.equal(earlyPoll.status, 200);
+  assert.equal(polls, 0);
+
+  currentTime += 5_000;
+  const connectedResponse = await app.request('/admin/api/providers/openai/subscription/poll', {
+    method: 'POST',
+    headers: { ...auth(), 'content-type': 'application/json' },
+    body: JSON.stringify({ attemptCapability: started.attemptCapability }),
+  });
+  assert.equal(connectedResponse.status, 200);
+  const connectedText = await connectedResponse.text();
+  assert.match(connectedText, /"state":"connected"/);
+  for (const secret of [
+    'provider-access-secret',
+    'provider-refresh-secret',
+    'provider-identity-secret',
+    'provider-account-secret',
+    'provider-authorization-secret',
+    'provider-verifier-secret',
+  ]) {
+    assert.doesNotMatch(connectedText, new RegExp(secret));
+  }
+
+  const disconnected = await app.request('/admin/api/providers/openai/subscription', {
+    method: 'DELETE',
+    headers: auth(),
+  });
+  assert.equal(disconnected.status, 200);
+  assert.deepEqual(await disconnected.json(), {
+    status: { state: 'disconnected', updatedAt: currentTime },
+  });
+});
+
+test('profile writes persist explicit OpenAI methods and reject explicit model-method mismatches', async (t) => {
+  const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  t.after(() => { config.close(); settings.close(); });
+  const app = new Hono();
+  app.route('/', createAdminRoutes({
+    store: config,
+    settings,
+    adminToken: ADMIN_TOKEN,
+    knownProviders: new Set(['openai', 'anthropic']),
+  }));
+
+  const created = await app.request('/admin/api/agents', {
+    method: 'POST',
+    headers: { ...auth(), 'content-type': 'application/json' },
+    body: JSON.stringify({
+      id: 'agent_subscription',
+      name: 'Subscription profile',
+      instructions: 'Use the selected OpenAI billing lane.',
+      enabled: true,
+      model: 'openai/gpt-5.4',
+      openaiAuthMethod: 'subscription',
+    }),
+  });
+  assert.equal(created.status, 201);
+  const createdBody = await created.json() as { agent: Record<string, unknown> };
+  assert.equal(createdBody.agent.openaiAuthMethod, 'subscription');
+  assert.equal(createdBody.agent.openaiSubscriptionBindingId, 'installation');
+
+  const mismatchedCreate = await app.request('/admin/api/agents', {
+    method: 'POST',
+    headers: { ...auth(), 'content-type': 'application/json' },
+    body: JSON.stringify({
+      id: 'agent_mismatch',
+      name: 'Mismatch',
+      instructions: 'This should be rejected.',
+      enabled: true,
+      model: 'anthropic/claude-sonnet-4-6',
+      openaiAuthMethod: 'subscription',
+    }),
+  });
+  assert.equal(mismatchedCreate.status, 400);
+  assert.deepEqual(await mismatchedCreate.json(), {
+    error: 'invalid_request',
+    message: 'OpenAI authentication methods require an openai/* model.',
+  });
+
+  const movedAway = await app.request('/admin/api/agents/agent_subscription', {
+    method: 'PATCH',
+    headers: { ...auth(), 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'anthropic/claude-sonnet-4-6' }),
+  });
+  assert.equal(movedAway.status, 200);
+  const movedBody = await movedAway.json() as { agent: Record<string, unknown> };
+  assert.equal(movedBody.agent.openaiAuthMethod, undefined);
+  assert.equal(movedBody.agent.openaiSubscriptionBindingId, undefined);
+
+  const mismatchedPatch = await app.request('/admin/api/agents/agent_subscription', {
+    method: 'PATCH',
+    headers: { ...auth(), 'content-type': 'application/json' },
+    body: JSON.stringify({ openaiAuthMethod: 'subscription' }),
+  });
+  assert.equal(mismatchedPatch.status, 400);
+});
 
 function providerSettingsAgent(id: string, model: string) {
   return {
