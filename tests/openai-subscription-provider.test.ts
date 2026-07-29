@@ -38,10 +38,13 @@ test('the subscription boundary replaces caller credentials at the exact Codex e
     randomUUID: () => 'request-session-id',
     fetch: async (input, init) => {
       captured = new Request(input, init);
-      return new Response('data: [DONE]\n\n', {
-        status: 200,
-        headers: { 'content-type': 'text/event-stream' },
-      });
+      const bytes = new TextEncoder().encode('data: [DONE]\n\n');
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(bytes);
+          controller.close();
+        },
+      }), { status: 200 });
     },
   });
 
@@ -69,6 +72,27 @@ test('the subscription boundary replaces caller credentials at the exact Codex e
   assert.equal(captured.headers.get('x-client-request-id'), 'request-session-id');
   assert.equal(captured.headers.get(OPENAI_SUBSCRIPTION_TRANSPORT_MARKER), null);
   assert.deepEqual(await captured.json(), JSON.parse(REQUEST_BODY));
+  assert.equal(response.headers.get('content-type'), 'text/event-stream');
+});
+
+test('the subscription boundary rejects an explicitly non-SSE success type', async () => {
+  const boundary = createOpenAiSubscriptionFetchBoundary({
+    credentials: () => ({ accessToken: 'subscription-token', accountId: 'subscription-account' }),
+    fetch: async () => new Response('{}', {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }),
+  });
+
+  await assert.rejects(
+    boundary('https://chatgpt.com/backend-api/codex/responses', {
+      method: 'POST',
+      headers: { [OPENAI_SUBSCRIPTION_TRANSPORT_MARKER]: 'v1' },
+      body: REQUEST_BODY,
+    }),
+    (error: unknown) =>
+      error instanceof OpenAiSubscriptionProtocolError && error.code === 'invalid_response',
+  );
 });
 
 test('the subscription boundary leaves unrelated OpenAI API traffic untouched', async () => {

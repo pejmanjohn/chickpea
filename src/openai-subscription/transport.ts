@@ -147,7 +147,14 @@ export function createOpenAiSubscriptionFetchBoundary(
       if (response.status === 401) await options.onAuthenticationFailure?.();
       return safeFailureResponse(response, code);
     }
-    if (!response.body || !response.headers.get('content-type')?.toLowerCase().includes('text/event-stream')) {
+    const contentType = response.headers.get('content-type');
+    // The exact ChatGPT Codex endpoint was observed returning a valid SSE body
+    // with no Content-Type header. Normalize that omission for the downstream
+    // SSE parser, but reject any explicitly contradictory success type.
+    if (
+      !response.body ||
+      (contentType !== null && !contentType.toLowerCase().includes('text/event-stream'))
+    ) {
       await discardResponseBody(response);
       timeout.clear();
       throw new OpenAiSubscriptionProtocolError('invalid_response', { status: response.status });

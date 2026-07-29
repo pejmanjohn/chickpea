@@ -48,6 +48,7 @@
     "verify:providers:live": "node scripts/verify-providers-live.mjs",
     "verify:openai-subscription-protocol": "node --import tsx scripts/verify-openai-subscription-protocol.mjs",
     "verify:openai-subscription:live": "node scripts/verify-openai-subscription-live.mjs",
+    "verify:openai-subscription-runtime:live": "node --import tsx scripts/verify-openai-subscription-runtime-live.mjs",
     "verify:oss-export": "node scripts/verify-oss-export.mjs",
     "slack:bridge": "node scripts/slack-socket-bridge.mjs",
     "reset:test-env": "node scripts/reset-test-env.mjs"

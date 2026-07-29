@@ -76,6 +76,24 @@ npm run verify:openai-subscription:live -- \
 
 The script uses Bearer admin auth, holds the attempt capability in memory, and prints the provider user code only to the initiating terminal. It does not send a model request and does not disconnect an existing connection. A passing authorization check is not runtime acceptance.
 
+For an authorized local Node settings database, the product-path verifier sends
+one minimal prompt through Chickpea's real profile resolver and internal
+subscription provider. It deliberately installs an invalid Platform API key and
+fails unless the request succeeds at `chatgpt.com` with no `api.openai.com`
+traffic:
+
+```sh
+TAG_OPENAI_SUBSCRIPTION_ENABLED=1 \
+npm run verify:openai-subscription-runtime:live -- \
+  --live --state-db ./tmp/openai-subscription-live.state.db
+```
+
+This is a Node runtime/no-fallback gate, not Slack or deployed-Worker acceptance.
+The exact ChatGPT Codex endpoint may omit `Content-Type` on a successful SSE
+response. Chickpea accepts the missing header only at its pinned endpoint,
+normalizes it to `text/event-stream`, and still rejects an explicitly
+contradictory success type before the provider parser.
+
 ## Runtime acceptance matrix
 
 Record only target, build commit, timestamp, safe account fingerprint, account class without PII, model, safe auth route, destination host, outcome, and error category.
