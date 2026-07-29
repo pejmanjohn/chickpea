@@ -32,6 +32,7 @@ import {
 } from './web-client-context.ts';
 import {
   AGENT_FAILURE_TEXT,
+  OPENAI_SUBSCRIPTION_DISABLED_TEXT,
   OPENAI_SUBSCRIPTION_POLICY_TEXT,
   OPENAI_SUBSCRIPTION_QUOTA_TEXT,
   OPENAI_SUBSCRIPTION_RECONNECT_TEXT,
@@ -341,6 +342,7 @@ export function resolveMemoryDeliveryText(
 export function agentFailureText(err: unknown): string {
   if (!(err instanceof AgentPromptFailure)) return AGENT_FAILURE_TEXT;
   if (err.kind === 'provider') return PROVIDER_FAILURE_TEXT;
+  if (err.kind === 'openai-subscription-disabled') return OPENAI_SUBSCRIPTION_DISABLED_TEXT;
   if (err.kind === 'openai-subscription-reconnect') return OPENAI_SUBSCRIPTION_RECONNECT_TEXT;
   if (err.kind === 'openai-subscription-quota') return OPENAI_SUBSCRIPTION_QUOTA_TEXT;
   if (err.kind === 'openai-subscription-policy') return OPENAI_SUBSCRIPTION_POLICY_TEXT;

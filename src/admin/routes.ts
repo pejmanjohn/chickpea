@@ -159,6 +159,11 @@ import {
 } from '../openai-subscription/device-auth.ts';
 import { disconnectOpenAiSubscription } from '../openai-subscription/credentials.ts';
 import { OpenAiSubscriptionError } from '../openai-subscription/errors.ts';
+import {
+  openAiSubscriptionCapability,
+  requireOpenAiSubscriptionEnabled,
+  type OpenAiSubscriptionCapability,
+} from '../openai-subscription/feature.ts';
 import { OPENAI_SUBSCRIPTION_MODELS } from '../openai-subscription/protocol.ts';
 import type {
   ChannelAssignment,
@@ -245,6 +250,7 @@ interface AdminRoutesOptions {
   openAiSubscriptionProtocol?: OpenAiSubscriptionAuthorizationProtocol | undefined;
   openAiSubscriptionNow?: (() => number) | undefined;
   openAiSubscriptionRandomBytes?: ((length: number) => Uint8Array) | undefined;
+  openAiSubscriptionCapability?: ((env?: PlatformEnv) => OpenAiSubscriptionCapability) | undefined;
 }
 
 const ADMIN_COOKIE = 'flue_admin';
@@ -769,6 +775,19 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       ? { randomBytes: options.openAiSubscriptionRandomBytes }
       : {}),
   });
+  const subscriptionCapability = (c: Context): OpenAiSubscriptionCapability =>
+    (options.openAiSubscriptionCapability ?? openAiSubscriptionCapability)(
+      c.env as PlatformEnv | undefined,
+    );
+  const requireSubscriptionEnabled = (c: Context): void => {
+    if (options.openAiSubscriptionCapability) {
+      if (!subscriptionCapability(c).enabled) {
+        throw new OpenAiSubscriptionError('preview_disabled');
+      }
+      return;
+    }
+    requireOpenAiSubscriptionEnabled(c.env as PlatformEnv | undefined);
+  };
   const adminLoginBodyLimit = bodyLimit({
     maxSize: MAX_ADMIN_LOGIN_BODY_BYTES,
     onError: (c) =>
@@ -1201,13 +1220,15 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   app.get('/admin/api/models', async (c) => {
     const settingsStore = settings(c);
     const subscription = await getOpenAiSubscriptionAuthorizationStatus(settingsStore);
+    const capability = subscriptionCapability(c);
     const providers = await Promise.all(
       modelProviders().map(async (provider) => {
         if (provider.id === 'openai') {
-          const subscriptionConfigured =
+          const subscriptionConfigured = capability.enabled && (
             subscription.state === 'connected' ||
             subscription.state === 'account_change_confirmation_required' ||
-            (subscription.state === 'authorizing' && Boolean(subscription.accountFingerprint));
+            (subscription.state === 'authorizing' && Boolean(subscription.accountFingerprint))
+          );
           return {
             ...provider,
             configured: provider.configured || subscriptionConfigured,
@@ -1225,6 +1246,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
             authMethods: {
               apiKeyConfigured: provider.configured,
               subscription,
+              subscriptionCapability: capability,
             },
           };
         }
@@ -1251,11 +1273,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       describeProviderKeySources(platformEnv, settingsStore),
       getOpenAiSubscriptionAuthorizationStatus(settingsStore),
     ]);
+    const capability = subscriptionCapability(c);
     return c.json({
       providers: [
         ...PROVIDER_KEY_IDS.map((id) => ({
           ...providerSummary(id, sources[id]),
-          ...(id === 'openai' ? { subscription } : {}),
+          ...(id === 'openai' ? { subscription, subscriptionCapability: capability } : {}),
         })),
         providerSummary('workers-ai', workersAiStatus(platformEnv)),
       ],
@@ -1263,12 +1286,16 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   });
 
   app.get('/admin/api/providers/openai/subscription', async (c) =>
-    c.json({ status: await getOpenAiSubscriptionAuthorizationStatus(settings(c)) }));
+    c.json({
+      status: await getOpenAiSubscriptionAuthorizationStatus(settings(c)),
+      capability: subscriptionCapability(c),
+    }));
 
   app.post('/admin/api/providers/openai/subscription/start', async (c) => {
     const parsed = v.safeParse(openAiSubscriptionStartSchema, await readJson(c.req));
     if (!parsed.success) return invalidRequest(c);
     try {
+      requireSubscriptionEnabled(c);
       return c.json(await startOpenAiSubscriptionAuthorization(openAiSubscriptionDependencies(c)));
     } catch (error) {
       return openAiSubscriptionRouteError(c, error);
@@ -1279,6 +1306,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const parsed = v.safeParse(openAiSubscriptionCapabilitySchema, await readJson(c.req));
     if (!parsed.success) return invalidRequest(c);
     try {
+      requireSubscriptionEnabled(c);
       return c.json(await pollOpenAiSubscriptionAuthorization(
         parsed.output,
         openAiSubscriptionDependencies(c),
@@ -1292,6 +1320,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const parsed = v.safeParse(openAiSubscriptionCapabilitySchema, await readJson(c.req));
     if (!parsed.success) return invalidRequest(c);
     try {
+      requireSubscriptionEnabled(c);
       return c.json(await confirmOpenAiSubscriptionAccountChange(
         parsed.output,
         openAiSubscriptionDependencies(c),
@@ -1709,6 +1738,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       agent.openaiAuthMethod,
     );
     if (openAiAuthError) return invalidRequest(c, openAiAuthError);
+    if (agent.openaiAuthMethod === 'subscription' && !subscriptionCapability(c).enabled) {
+      return invalidRequest(
+        c,
+        'OpenAI Subscription preview is disabled for this installation.',
+      );
+    }
     const modelError = modelResolutionError(agent);
     if (modelError) {
       return modelNotResolvable(c, modelError);
@@ -2244,6 +2279,16 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         patch.openaiAuthMethod,
       );
       if (openAiAuthError) return invalidRequest(c, openAiAuthError);
+      if (
+        current.openaiAuthMethod !== 'subscription' &&
+        patch.openaiAuthMethod === 'subscription' &&
+        !subscriptionCapability(c).enabled
+      ) {
+        return invalidRequest(
+          c,
+          'OpenAI Subscription preview is disabled for this installation.',
+        );
+      }
       const modelError = modelResolutionError(next);
       if (modelError) {
         return modelNotResolvable(c, modelError);
@@ -3701,6 +3746,7 @@ function openAiSubscriptionRouteError(c: Context, error: unknown): Response {
     case 'authorization_pending':
     case 'account_change_confirmation_required':
     case 'auth_reconnect_required':
+    case 'preview_disabled':
       return c.json(body, 409);
     case 'unsupported_model':
       return c.json(body, 422);

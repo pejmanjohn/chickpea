@@ -34,6 +34,7 @@ test('subscription routing maps to the isolated provider without resolving the P
       agents,
       settings,
       applyProviderKey: async (id) => { applied.push(id); },
+      requireSubscriptionEnabled: () => {},
       bindSubscription: async () => { subscriptionBinds += 1; },
     });
 
@@ -86,6 +87,7 @@ test('a frozen OpenAI model follows the live profile method on the next Agent co
       agents,
       settings,
       applyProviderKey: async (id) => { events.push(`key:${id}`); },
+      requireSubscriptionEnabled: () => {},
       bindSubscription: async () => { events.push('subscription'); },
     });
 
@@ -109,6 +111,7 @@ test('subscription failures and unsupported models fail closed without crossing 
         agents,
         settings,
         applyProviderKey: async (id) => { applied.push(id); },
+        requireSubscriptionEnabled: () => {},
         bindSubscription: async () => {
           binds += 1;
           throw new OpenAiSubscriptionError('auth_reconnect_required');
@@ -122,6 +125,7 @@ test('subscription failures and unsupported models fail closed without crossing 
         agents,
         settings,
         applyProviderKey: async (id) => { applied.push(id); },
+        requireSubscriptionEnabled: () => {},
         bindSubscription: async () => { binds += 1; },
       }),
       (error: unknown) =>
@@ -130,6 +134,33 @@ test('subscription failures and unsupported models fail closed without crossing 
 
     assert.equal(binds, 1, 'the invalid model must fail before credential binding');
     assert.deepEqual(applied, [], 'neither failure may resolve the Platform API key');
+  } finally {
+    settings.close();
+    agents.close();
+  }
+});
+
+test('the default-off preview gate blocks Subscription before either credential lane', async () => {
+  const agents = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  const events: string[] = [];
+  try {
+    const agent = await agents.createAgent(profile());
+    await assert.rejects(
+      () => resolveRuntimeModel(agent.id, 'openai/gpt-5.4', {
+        agents,
+        settings,
+        applyProviderKey: async (id) => { events.push(`key:${id}`); },
+        requireSubscriptionEnabled: () => {
+          events.push('gate');
+          throw new OpenAiSubscriptionError('preview_disabled');
+        },
+        bindSubscription: async () => { events.push('subscription'); },
+      }),
+      (error: unknown) =>
+        error instanceof OpenAiSubscriptionError && error.code === 'preview_disabled',
+    );
+    assert.deepEqual(events, ['gate']);
   } finally {
     settings.close();
     agents.close();

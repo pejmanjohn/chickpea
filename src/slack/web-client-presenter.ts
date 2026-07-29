@@ -21,6 +21,9 @@ export const PROVIDER_FAILURE_TEXT =
 export const OPENAI_SUBSCRIPTION_RECONNECT_TEXT =
   'The ChatGPT subscription connection needs attention in Settings before this profile can answer. I did not use OpenAI API-key billing as fallback.';
 
+export const OPENAI_SUBSCRIPTION_DISABLED_TEXT =
+  'The ChatGPT Subscription preview is disabled for this installation, so this profile cannot answer. I did not use OpenAI API-key billing as fallback.';
+
 export const OPENAI_SUBSCRIPTION_QUOTA_TEXT =
   'The ChatGPT subscription quota could not serve this request. I did not switch to OpenAI API-key billing.';
 

@@ -51,6 +51,7 @@ function appWithProviderAdmin(): {
       settings,
       adminToken: ADMIN_TOKEN,
       knownProviders: new Set(['anthropic', 'openai', 'openrouter', 'workers-ai']),
+      openAiSubscriptionCapability: () => ({ enabled: true }),
     }),
   );
   return {
@@ -102,6 +103,7 @@ test('OpenAI subscription admin routes keep authorization capability browser-loc
     openAiSubscriptionProtocol: protocol,
     openAiSubscriptionNow: () => currentTime,
     openAiSubscriptionRandomBytes: (length) => new Uint8Array(length).fill(9),
+    openAiSubscriptionCapability: () => ({ enabled: true }),
   }));
 
   const missingAck = await app.request('/admin/api/providers/openai/subscription/start', {
@@ -130,7 +132,10 @@ test('OpenAI subscription admin routes keep authorization capability browser-loc
   assert.ok(started.attemptCapability.length >= 32);
 
   const observer = await app.request('/admin/api/providers/openai/subscription', { headers: auth() });
-  assert.deepEqual(await observer.json(), { status: { state: 'authorizing', updatedAt: currentTime } });
+  assert.deepEqual(await observer.json(), {
+    status: { state: 'authorizing', updatedAt: currentTime },
+    capability: { enabled: true },
+  });
   const providerSummary = await app.request('/admin/api/providers', { headers: auth() });
   const summaryJson = JSON.stringify(await providerSummary.json());
   assert.match(summaryJson, /"subscription":\{"state":"authorizing"/);
@@ -174,6 +179,96 @@ test('OpenAI subscription admin routes keep authorization capability browser-loc
   });
 });
 
+test('default-off preview gate blocks admission without deleting state or affecting API-key profiles', async (t) => {
+  let enabled = true;
+  let protocolStarts = 0;
+  const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  t.after(() => { config.close(); settings.close(); });
+  const app = new Hono();
+  app.route('/', createAdminRoutes({
+    store: config,
+    settings,
+    adminToken: ADMIN_TOKEN,
+    knownProviders: new Set(['openai']),
+    openAiSubscriptionCapability: () => ({ enabled }),
+    openAiSubscriptionProtocol: {
+      start: async () => {
+        protocolStarts += 1;
+        return {
+          deviceAuthId: 'pending-device-secret',
+          userCode: 'PREVIEW-CODE',
+          verificationUri: 'https://auth.openai.com/codex/device',
+          intervalMs: 5_000,
+          expiresAt: 1_800_000_060_000,
+        };
+      },
+      poll: async () => ({ state: 'pending' }),
+      exchange: async () => { throw new Error('must not exchange'); },
+    },
+    openAiSubscriptionNow: () => 1_800_000_000_000,
+    openAiSubscriptionRandomBytes: (length) => new Uint8Array(length).fill(3),
+  }));
+
+  const started = await app.request('/admin/api/providers/openai/subscription/start', {
+    method: 'POST',
+    headers: { ...auth(), 'content-type': 'application/json' },
+    body: JSON.stringify({ acknowledgedExperimentalRisk: true }),
+  });
+  assert.equal(started.status, 200);
+  assert.equal(protocolStarts, 1);
+  enabled = false;
+
+  const blocked = await app.request('/admin/api/providers/openai/subscription/start', {
+    method: 'POST',
+    headers: { ...auth(), 'content-type': 'application/json' },
+    body: JSON.stringify({ acknowledgedExperimentalRisk: true }),
+  });
+  assert.equal(blocked.status, 409);
+  assert.deepEqual(await blocked.json(), { error: 'preview_disabled' });
+  assert.equal(protocolStarts, 1);
+
+  const status = await app.request('/admin/api/providers/openai/subscription', { headers: auth() });
+  assert.deepEqual(await status.json(), {
+    status: { state: 'authorizing', updatedAt: 1_800_000_000_000 },
+    capability: { enabled: false },
+  });
+
+  const subscriptionProfile = await app.request('/admin/api/agents', {
+    method: 'POST',
+    headers: { ...auth(), 'content-type': 'application/json' },
+    body: JSON.stringify({
+      id: 'blocked_subscription',
+      name: 'Blocked subscription',
+      instructions: 'Stay on the selected lane.',
+      enabled: true,
+      model: 'openai/gpt-5.4',
+      openaiAuthMethod: 'subscription',
+    }),
+  });
+  assert.equal(subscriptionProfile.status, 400);
+
+  const apiKeyProfile = await app.request('/admin/api/agents', {
+    method: 'POST',
+    headers: { ...auth(), 'content-type': 'application/json' },
+    body: JSON.stringify({
+      id: 'still_api_key',
+      name: 'Still API key',
+      instructions: 'Use Platform billing only.',
+      enabled: true,
+      model: 'openai/gpt-5.4',
+      openaiAuthMethod: 'api_key',
+    }),
+  });
+  assert.equal(apiKeyProfile.status, 201);
+
+  const disconnected = await app.request('/admin/api/providers/openai/subscription', {
+    method: 'DELETE',
+    headers: auth(),
+  });
+  assert.equal(disconnected.status, 200, 'disconnect remains available while disabled');
+});
+
 test('profile writes persist explicit OpenAI methods and reject explicit model-method mismatches', async (t) => {
   const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   const settings = new SqliteSettingsStore(':memory:');
@@ -184,6 +279,7 @@ test('profile writes persist explicit OpenAI methods and reject explicit model-m
     settings,
     adminToken: ADMIN_TOKEN,
     knownProviders: new Set(['openai', 'anthropic']),
+    openAiSubscriptionCapability: () => ({ enabled: true }),
   }));
 
   const created = await app.request('/admin/api/agents', {

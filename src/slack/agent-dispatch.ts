@@ -12,6 +12,7 @@ import { activityStatusTraceHeaders } from './activity-publisher.ts';
 export type AgentPromptFailureKind =
   | 'agent'
   | 'provider'
+  | 'openai-subscription-disabled'
   | 'openai-subscription-reconnect'
   | 'openai-subscription-quota'
   | 'openai-subscription-policy'
@@ -125,6 +126,9 @@ export function classifyAgentPromptFailure(
   const message = error.message.toLowerCase();
   const searchable = `${type} ${message}`;
 
+  if (message.includes('openai subscription operation failed (preview_disabled)')) {
+    return 'openai-subscription-disabled';
+  }
   if (
     message.includes('openai subscription operation failed (auth_reconnect_required)') ||
     message.includes('openai subscription operation failed (authorization_missing)') ||

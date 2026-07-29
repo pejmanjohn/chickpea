@@ -242,6 +242,7 @@ It calls `auth.test` and `users.info`, compares the display name to the manifest
 | `LOCAL_STUB_URL` / `LOCAL_STUB_API_KEY` | optional | Register the offline `local-stub` provider (OpenAI-completions wire; use `SLACK_TAG_MODEL=local-stub/<model>`). |
 | `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` | optional | Enable the `anthropic` provider; `ANTHROPIC_BASE_URL` overrides its runtime inference endpoint. The key can instead be stored in Settings. |
 | `OPENAI_API_KEY` | optional | Enable the built-in `openai` provider. The key can instead be stored in Settings. |
+| `TAG_OPENAI_SUBSCRIPTION_ENABLED` | optional, experimental | Default-off gate for the direct ChatGPT Subscription adapter on both Node and Cloudflare. Exact `"1"` enables authorization and subscription-selected inference; all other values block them without deleting stored credentials or changing profile intent. API-key profiles are unaffected and are never used as fallback. See the [operator runbook](docs/runbooks/openai-subscription.md). |
 | `OPENROUTER_API_KEY` | optional | Enable the built-in `openrouter` provider. The key can instead be stored in Settings. |
 | `ANTHROPIC_API_URL` / `OPENAI_API_URL` / `OPENROUTER_API_URL` | optional | Override the vendor API roots used by `/admin` key validation and model discovery. These are catalog/validation endpoints, distinct from runtime inference overrides such as `ANTHROPIC_BASE_URL`. |
 | `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_WORKERS_AI_BASE_URL` | optional | Enable the REST `cloudflare-workers-ai` provider; the base URL controls runtime inference. Not required for the keyless `cloudflare` binding provider on Cloudflare. |
@@ -257,6 +258,8 @@ It calls `auth.test` and `users.info`, compares the display name to the manifest
 2. `SLACK_TAG_MODEL` only when the profile is unpinned, as an offline/dev fallback.
 
 If neither exists, initialization fails with an error that tells the operator to pin a model in `/admin`. Seed config is written once into an empty state DB; existing installs are not migrated. On first boot, Cloudflare seeds Default pinned to `cloudflare/@cf/zai-org/glm-5.2`; Node seeds Default unpinned so local operators pick a model or set the fallback.
+
+**OpenAI authentication, per profile.** OpenAI profiles explicitly select either `API key` (Platform API billing) or the experimental `Subscription` method (the installation's connected personal ChatGPT account and consumer data controls). Both credentials may remain configured, but one profile operation uses exactly one lane. Subscription calls use Chickpea's direct Worker-compatible adapter; Chickpea does not install or call Codex app-server. The preview is off by default, unsupported by a stable Platform API contract, and removable if OpenAI rejects the client posture or changes the private interface. A disabled, disconnected, quota-limited, revoked, or incompatible Subscription lane fails closed and never crosses to API-key billing. Read the [risk, rollout, recovery, and removal runbook](docs/runbooks/openai-subscription.md) before enabling it.
 
 ## Good to know
 

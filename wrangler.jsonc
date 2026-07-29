@@ -16,7 +16,11 @@
     // workerd verification; set "1" only when the fixed Cron, TAG_STATE, Flue
     // Workflow, and internal route guards are present. `npm run deploy` rejects
     // an enabled artifact when any required seam is missing.
-    "TAG_ROUTINES_ENABLED": "0"
+    "TAG_ROUTINES_ENABLED": "0",
+    // Experimental direct ChatGPT Subscription adapter. Keep "0" until the
+    // live protocol, Worker, no-fallback, redaction, and rollback gates in
+    // docs/runbooks/openai-subscription.md have passed for this exact build.
+    "TAG_OPENAI_SUBSCRIPTION_ENABLED": "0"
   },
   "triggers": {
     "crons": ["* * * * *"]

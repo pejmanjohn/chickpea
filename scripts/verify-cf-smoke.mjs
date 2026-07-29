@@ -144,6 +144,10 @@ function verifyBuildArtifacts() {
     'routine admission remains off by default in the built artifact',
   );
   check(
+    config.vars?.TAG_OPENAI_SUBSCRIPTION_ENABLED === '0',
+    'OpenAI Subscription admission remains off by default in the built artifact',
+  );
+  check(
     bundle.includes('scheduled(controller') &&
       bundle.includes('routine-intent') &&
       bundle.includes('x-flue-internal-token') &&

@@ -8,6 +8,7 @@ export type OpenAiSubscriptionErrorCode =
   | 'authorization_pending'
   | 'authorization_rate_limited'
   | 'attempt_forbidden'
+  | 'preview_disabled'
   | 'storage_invalid';
 
 export class OpenAiSubscriptionError extends Error {

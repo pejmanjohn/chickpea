@@ -201,6 +201,7 @@ type ProviderSummaryFixture = {
   status: 'env' | 'stored' | 'missing';
   modelCount: number | null;
   subscription?: OpenAiSubscriptionStatusFixture;
+  subscriptionCapability?: { enabled: boolean };
 };
 type ModelProviderFixture = {
   id: string;
@@ -210,6 +211,7 @@ type ModelProviderFixture = {
   authMethods?: {
     apiKeyConfigured: boolean;
     subscription: OpenAiSubscriptionStatusFixture;
+    subscriptionCapability?: { enabled: boolean };
   };
 };
 type EgressPolicyFixture = {
@@ -640,7 +642,7 @@ function runAdminPageHarness(
   const providerState: ProviderSummaryFixture[] =
     options.providers ?? [
       { id: 'anthropic', status: 'stored', modelCount: 10 },
-      { id: 'openai', status: 'missing', modelCount: null, subscription: { state: 'disconnected', updatedAt: 0 } },
+      { id: 'openai', status: 'missing', modelCount: null, subscriptionCapability: { enabled: true }, subscription: { state: 'disconnected', updatedAt: 0 } },
       { id: 'openrouter', status: 'env', modelCount: null },
       { id: 'workers-ai', status: options.cloudflare ? 'env' : 'missing', modelCount: null },
     ];
@@ -7353,7 +7355,7 @@ test('Settings keeps an authorizing attempt non-resumable after reload and disco
   const authorizing = runAdminPageHarness({
     providers: [
       { id: 'anthropic', status: 'stored', modelCount: 10 },
-      { id: 'openai', status: 'stored', modelCount: 2, subscription: { state: 'authorizing', updatedAt: 1_800_000_000_000 } },
+      { id: 'openai', status: 'stored', modelCount: 2, subscriptionCapability: { enabled: true }, subscription: { state: 'authorizing', updatedAt: 1_800_000_000_000 } },
       { id: 'openrouter', status: 'env', modelCount: null },
       { id: 'workers-ai', status: 'missing', modelCount: null },
     ],
@@ -7372,6 +7374,7 @@ test('Settings keeps an authorizing attempt non-resumable after reload and disco
         id: 'openai',
         status: 'stored',
         modelCount: 2,
+        subscriptionCapability: { enabled: true },
         subscription: {
           state: 'connected',
           updatedAt: 1_800_000_005_000,
@@ -7398,6 +7401,37 @@ test('Settings keeps an authorizing attempt non-resumable after reload and disco
   assert.match(connected.app.innerHTML, /Not connected/);
 });
 
+test('Settings shows the disabled preview as fail-closed while preserving stored connection controls', async () => {
+  const harness = runAdminPageHarness({
+    providers: [
+      { id: 'anthropic', status: 'missing', modelCount: null },
+      {
+        id: 'openai',
+        status: 'stored',
+        modelCount: 2,
+        subscriptionCapability: { enabled: false },
+        subscription: {
+          state: 'connected',
+          updatedAt: 1_800_000_005_000,
+          accountFingerprint: 'oas_safe_fixture',
+          connectedAt: 1_800_000_005_000,
+        },
+      },
+      { id: 'openrouter', status: 'missing', modelCount: null },
+      { id: 'workers-ai', status: 'missing', modelCount: null },
+    ],
+  });
+  await flushAsync();
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'open-settings' }) });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /Preview disabled/);
+  assert.match(harness.app.innerHTML, /every subscription-selected model call are blocked/);
+  assert.match(harness.app.innerHTML, /profile intent are preserved/);
+  assert.match(harness.app.innerHTML, /Disconnect stored connection/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="openai-subscription-start"/);
+});
+
 test('profile OpenAI authentication changes require an impact acknowledgment and persist exactly one method', async () => {
   const harness = runAdminPageHarness({
     assignments: [
@@ -7422,6 +7456,7 @@ test('profile OpenAI authentication changes require an impact acknowledgment and
         suggestions: ['openai/gpt-5.4'],
         authMethods: {
           apiKeyConfigured: true,
+          subscriptionCapability: { enabled: true },
           subscription: {
             state: 'connected',
             updatedAt: 1_800_000_005_000,
@@ -7462,6 +7497,45 @@ test('profile OpenAI authentication changes require an impact acknowledgment and
   await flushAsync();
   assert.equal(harness.agentPatchBodies.length, 1);
   assert.equal(harness.agentPatchBodies[0]?.body.openaiAuthMethod, 'subscription');
+});
+
+test('profile picker cannot newly select Subscription while the preview is disabled', async () => {
+  const harness = runAdminPageHarness({
+    agents: [
+      {
+        id: 'agent_openai_disabled',
+        name: 'OpenAI API profile',
+        description: '',
+        instructions: 'Use OpenAI.',
+        enabled: true,
+        model: 'openai/gpt-5.4',
+        openaiAuthMethod: 'api_key',
+      },
+    ],
+    modelProviders: [
+      {
+        id: 'openai',
+        configured: true,
+        source: 'API key',
+        suggestions: ['openai/gpt-5.4'],
+        authMethods: {
+          apiKeyConfigured: true,
+          subscription: { state: 'connected', updatedAt: 1_800_000_005_000 },
+          subscriptionCapability: { enabled: false },
+        },
+      },
+    ],
+  });
+  await flushAsync();
+  harness.listeners.click?.({
+    target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_openai_disabled' }),
+  });
+  await flushAsync();
+
+  assert.match(
+    harness.app.innerHTML,
+    /data-action="profile-openai-auth" data-method="subscription" disabled/,
+  );
 });
 
 test('Settings surfaces a rejected key verbatim in the raw-error block and stores nothing', async () => {

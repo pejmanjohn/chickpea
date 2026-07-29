@@ -206,6 +206,7 @@ test('slack-thread constructs an isolated subscription model while a Platform ke
       {
         SLACK_STATE_DB_PATH: dbPath,
         SLACK_TAG_MODEL: undefined,
+        TAG_OPENAI_SUBSCRIPTION_ENABLED: '1',
         OPENAI_API_KEY: undefined,
         ANTHROPIC_API_KEY: undefined,
         CLOUDFLARE_API_TOKEN: undefined,

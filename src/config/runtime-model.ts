@@ -14,6 +14,7 @@ import {
   bindOpenAiSubscriptionProvider,
   openAiSubscriptionModelSpecifier,
 } from '../openai-subscription/provider.ts';
+import { requireOpenAiSubscriptionEnabled } from '../openai-subscription/feature.ts';
 
 export type ProviderAuthRoute = 'openai_api_key' | 'openai_subscription';
 
@@ -35,6 +36,7 @@ interface RuntimeModelDependencies {
     settings: SettingsStore,
   ) => Promise<void>;
   bindSubscription?: typeof bindOpenAiSubscriptionProvider;
+  requireSubscriptionEnabled?: (env?: PlatformEnv) => void;
 }
 
 /**
@@ -73,6 +75,14 @@ export async function resolveRuntimeModel(
     );
     return { model: canonicalModel, providerAuthRoute: 'openai_api_key' };
   }
+
+  // The rollout switch is checked after resolving the profile's explicit
+  // billing authority but before touching either credential lane. Disabling
+  // the preview therefore preserves profile intent and stored tokens while
+  // making every subscription-selected operation fail closed.
+  (dependencies.requireSubscriptionEnabled ?? requireOpenAiSubscriptionEnabled)(
+    dependencies.env,
+  );
 
   // Validate the allowlist before resolving credentials or registering a live
   // transport. A malformed/unsupported profile fails without touching either

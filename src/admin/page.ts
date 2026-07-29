@@ -2948,6 +2948,7 @@ details[open].advanced summary::before {
     var provider = (state.models.providers || []).find(function (entry) { return entry.id === "openai"; }) || {};
     var authMethods = provider.authMethods || {};
     var subscription = authMethods.subscription || openAiSubscriptionSummary();
+    var subscriptionCapability = authMethods.subscriptionCapability || { enabled: false };
     var subscriptionReady = subscription.state === "connected" || subscription.state === "account_change_confirmation_required" || (subscription.state === "authorizing" && subscription.accountFingerprint);
     var compatible = OPENAI_SUBSCRIPTION_MODELS.indexOf(model.slice("openai/".length)) >= 0;
     var changed = method !== (draft.originalOpenAiAuthMethod || "api_key");
@@ -2956,7 +2957,9 @@ details[open].advanced summary::before {
     if (method === "api_key" && authMethods.apiKeyConfigured === false) {
       warning = "No OpenAI API key is configured. This profile will fail closed until one is added; it will not use Subscription.";
     }
-    if (method === "subscription" && !compatible) {
+    if (method === "subscription" && !subscriptionCapability.enabled) {
+      warning = "The Subscription preview is disabled for this installation. This profile keeps its Subscription choice and fails closed; it never uses API-key billing.";
+    } else if (method === "subscription" && !compatible) {
       warning = "This model is not in the pinned Subscription model allowlist. Choose a supported GPT model or use API key.";
     } else if (method === "subscription" && !subscriptionReady) {
       warning = "The Subscription connection is not ready. This profile keeps its Subscription choice and fails closed; it never uses API-key billing.";
@@ -2967,7 +2970,7 @@ details[open].advanced summary::before {
       : "";
     return '<div class="field"><span class="field-label">OpenAI authentication method</span>' +
       '<div class="seg" role="radiogroup" aria-label="OpenAI authentication method">' +
-      '<button type="button" class="' + (method === "subscription" ? "on" : "") + '" role="radio" aria-checked="' + (method === "subscription" ? "true" : "false") + '" data-action="profile-openai-auth" data-method="subscription">Subscription</button>' +
+      '<button type="button" class="' + (method === "subscription" ? "on" : "") + '" role="radio" aria-checked="' + (method === "subscription" ? "true" : "false") + '" data-action="profile-openai-auth" data-method="subscription"' + (!subscriptionCapability.enabled && method !== "subscription" ? " disabled" : "") + '>Subscription</button>' +
       '<button type="button" class="' + (method === "api_key" ? "on" : "") + '" role="radio" aria-checked="' + (method === "api_key" ? "true" : "false") + '" data-action="profile-openai-auth" data-method="api_key">API key</button></div>' +
       '<p class="hint">Subscription uses shared installation ChatGPT quota and consumer data handling. API key uses Platform billing. Both credentials may remain configured, but this profile selects exactly one.</p>' +
       (method === "subscription" ? '<p class="hint warn-accent">Experimental private interface: OpenAI may change or reject it. Quota, revocation, policy rejection, and protocol drift stop the call without API fallback.</p>' : "") +
@@ -5934,7 +5937,10 @@ details[open].advanced summary::before {
     if (id === "openai") {
       body = '<div class="well"><span class="field-label">API key</span><p class="hint">Platform API billing. Existing behavior stays available independently of Subscription.</p>' +
         (body || '<p class="hint">Use the controls above to add, change, or remove the API key.</p>') + '</div>' +
-        openAiSubscriptionHtml(summary.subscription || { state: "disconnected", updatedAt: 0 });
+        openAiSubscriptionHtml(
+          summary.subscription || { state: "disconnected", updatedAt: 0 },
+          summary.subscriptionCapability || { enabled: false }
+        );
     }
     var head = '<div class="prov-head">' +
       '<div class="prov-id"><span class="prov-name">' + esc(meta.name) + '</span>' +
@@ -5987,11 +5993,14 @@ details[open].advanced summary::before {
     return "Subscription authorization needs attention.";
   }
 
-  function openAiSubscriptionHtml(status) {
+  function openAiSubscriptionHtml(status, capability) {
     var attempt = state.openAiSubscriptionAttempt;
     var busy = state.openAiSubscriptionBusy;
     var stateName = status.state || "disconnected";
-    var badge = stateName === "connected"
+    var previewEnabled = !capability || capability.enabled === true;
+    var badge = !previewEnabled
+      ? '<span class="badge badge-off"><span class="dot"></span>Preview disabled</span>'
+      : stateName === "connected"
       ? '<span class="badge badge-on"><span class="dot"></span>Connected</span>'
       : stateName === "authorizing"
         ? '<span class="badge badge-off"><span class="dot"></span>Authorizing</span>'
@@ -6002,7 +6011,15 @@ details[open].advanced summary::before {
             : '<span class="badge badge-off"><span class="dot"></span>Not connected</span>';
     var actions = "";
     var detail = "";
-    if (stateName === "authorizing" && attempt) {
+    if (!previewEnabled) {
+      detail = '<div class="callout"><b>Subscription preview is disabled by the installation operator.</b><br>New authorization attempts and every subscription-selected model call are blocked. Stored connection state and profile intent are preserved; API-key billing is never used as fallback.</div>';
+      if (stateName === "connected" || stateName === "reconnect_required" || stateName === "account_change_confirmation_required") {
+        detail += status.accountFingerprint ? '<p class="hint">Stored installation account <span class="mono">' + esc(status.accountFingerprint) + '</span>.</p>' : "";
+        actions = '<button type="button" class="btn btn-danger btn-sm" data-action="openai-subscription-disconnect-open"' + (busy ? " disabled" : "") + '>Disconnect stored connection</button>';
+      } else if (stateName === "authorizing" && attempt) {
+        actions = '<button type="button" class="btn btn-ghost btn-sm" data-action="openai-subscription-cancel"' + (busy ? " disabled" : "") + '>Cancel authorization</button>';
+      }
+    } else if (stateName === "authorizing" && attempt) {
       detail = '<div class="callout"><span><b>Open the authorization page, then enter this one-time code:</b><br>' +
         '<a href="' + esc(attempt.verificationUri) + '" target="_blank" rel="noopener noreferrer">' + esc(attempt.verificationUri) + ' &nearr;</a><br>' +
         '<span class="mono" style="font-size:1.15rem; letter-spacing:.08em;">' + esc(attempt.userCode) + '</span> ' +
