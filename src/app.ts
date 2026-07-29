@@ -13,6 +13,7 @@ import {
   activityStatusGenerationInterceptor,
   publishActivityStatus,
 } from './slack/activity-publisher.ts';
+import { registerOpenAiSubscriptionApi } from './openai-subscription/provider.ts';
 
 // Provider registrations run at module scope so they are in place before any
 // agent resolves its model. On the Cloudflare target the seeded Workers AI
@@ -45,6 +46,11 @@ registerProvider('cloudflare-workers-ai', {
   maxTokens: 2048,
 });
 recordRegisteredProvider('cloudflare-workers-ai');
+
+// The wire handler is credential-free and safe to install at module boot.
+// A subscription profile binds live credentials and the internal provider
+// immediately before use; until then no `openai-subscription/*` model exists.
+registerOpenAiSubscriptionApi();
 
 // The catalog `anthropic` provider works from ANTHROPIC_API_KEY alone; only
 // override it when an explicit base URL is configured.

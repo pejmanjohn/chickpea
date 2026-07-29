@@ -6,6 +6,7 @@ import { isCloudflareTarget } from './runtime-target.ts';
 // registration (ANTHROPIC_API_KEY / OPENAI_API_KEY / OPENROUTER_API_KEY alone
 // enable them).
 const appRegistered = new Set<string>();
+const INTERNAL_PROVIDER_IDS = new Set(['openai-subscription']);
 
 export function recordRegisteredProvider(id: string): void {
   appRegistered.add(id);
@@ -80,7 +81,11 @@ export function listRuntimeModelProviders({
     ? [...BUILTIN_ENV_PROVIDERS, CF_BINDING_PROVIDER]
     : BUILTIN_ENV_PROVIDERS;
   const catalogById = new Map(catalog.map((entry) => [entry.id, entry]));
-  const ids = new Set([...catalogById.keys(), ...registeredProviders]);
+  const ids = new Set(
+    [...catalogById.keys(), ...registeredProviders].filter(
+      (id) => !INTERNAL_PROVIDER_IDS.has(id),
+    ),
+  );
 
   return [...ids]
     .sort((a, b) => a.localeCompare(b))

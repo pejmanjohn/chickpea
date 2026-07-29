@@ -14,6 +14,7 @@ import type {
   OpenAiSubscriptionTokenBundle,
 } from './types.ts';
 import { isOpenAiSubscriptionFailureCode } from './types.ts';
+import { clearOpenAiSubscriptionTransport } from './transport.ts';
 
 const REFRESH_SKEW_MS = 60_000;
 const REFRESH_LEASE_TTL_MS = 20_000;
@@ -216,7 +217,10 @@ export async function recordOpenAiSubscriptionAuthenticationFailure(
         ? { delete: [SETTING_KEYS.tokens, SETTING_KEYS.refreshLease] }
         : {}),
     });
-    if (applied) return reconnectRequired;
+    if (applied) {
+      if (reconnectRequired) clearOpenAiSubscriptionTransport();
+      return reconnectRequired;
+    }
   }
   throw new OpenAiSubscriptionError('provider_unavailable');
 }
@@ -239,6 +243,7 @@ export async function disconnectOpenAiSubscription(
       SETTING_KEYS.identityKey,
     ],
   });
+  clearOpenAiSubscriptionTransport();
   return publicStatus(status);
 }
 
@@ -308,11 +313,13 @@ async function markReconnectRequired(
     connectedAt: current.connectedAt,
     failureCode,
   };
-  return dependencies.settings.applySettingsPatch({
+  const applied = await dependencies.settings.applySettingsPatch({
     expected: { key: SETTING_KEYS.tokens, value: expectedRaw },
     set: [{ key: SETTING_KEYS.status, value: JSON.stringify(status) }],
     delete: [SETTING_KEYS.tokens, SETTING_KEYS.refreshLease],
   });
+  if (applied) clearOpenAiSubscriptionTransport();
+  return applied;
 }
 
 async function validateStoredIdentity(
