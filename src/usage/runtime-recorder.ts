@@ -7,6 +7,7 @@ import type {
   RecordUsageTerminalInput,
   UsageStore,
   UsageUnknownReason,
+  UsageTerminalStatus,
 } from './types.ts';
 
 export const DEFAULT_USAGE_WRITE_BUDGET_MS = 100;
@@ -181,6 +182,139 @@ export class InteractiveUsageRecorder {
   }
 }
 
+export interface RoutineUsageRecorderOptions {
+  operationId: string;
+  executionId: string;
+  startedAt: number;
+  workspaceId: string;
+  channelId: string;
+  channelLabel?: string;
+  profileId: string | null;
+  profileLabel: string | null;
+  routineId: string;
+  routineLabel: string;
+  requestedModel: string | null;
+  credentialRefId: string | null;
+  credentialVersion: number | null;
+  store: UsageStore;
+  platformEnv?: PlatformEnv;
+  processEnv?: NodeJS.ProcessEnv;
+  writeBudgetMs?: number;
+  now?: () => number;
+  onPersistence?: (event: UsagePersistenceEvent) => void;
+}
+
+export interface RoutineReportedUsage {
+  input: number;
+  output: number;
+  totalTokens: number;
+}
+
+export class RoutineUsageRecorder {
+  private readonly admission: AdmitUsageOperationInput;
+  private readonly budgetMs: number;
+  private readonly now: () => number;
+  private terminalInput: RecordUsageTerminalInput | undefined;
+  private repairAttempted = false;
+  private needsRepair = false;
+
+  constructor(private readonly options: RoutineUsageRecorderOptions) {
+    this.now = options.now ?? Date.now;
+    this.budgetMs = boundedBudget(options.writeBudgetMs);
+    const requested = splitModelSpecifier(options.requestedModel);
+    this.admission = {
+      operationId: options.operationId,
+      operationKind: 'routine_run',
+      sourceId: options.operationId,
+      startedAt: options.startedAt,
+      installationId: installationId(options.platformEnv, options.processEnv),
+      workspaceId: options.workspaceId,
+      profileId: options.profileId,
+      profileLabel: options.profileLabel,
+      channelId: options.channelId,
+      channelLabel: options.channelLabel ?? options.channelId,
+      conversationKind: 'named_channel',
+      routineId: options.routineId,
+      routineLabel: options.routineLabel,
+      routineRunId: options.operationId,
+      requestedProvider: requested.provider,
+      requestedModel: requested.model,
+      credentialRefId: options.credentialRefId,
+      credentialVersion: options.credentialVersion,
+    };
+  }
+
+  async admit(): Promise<void> {
+    const outcome = await persistUsage(
+      this.options.store.admitOperation(this.admission),
+      this.budgetMs,
+      'admission',
+      this.options.executionId,
+      this.options.onPersistence,
+    );
+    this.needsRepair ||= outcome !== 'recorded';
+  }
+
+  async recordTerminal(input: {
+    status: UsageTerminalStatus;
+    usage?: RoutineReportedUsage | null;
+    returnedModel?: { provider: string; id: string } | null;
+    unknownReason?: UsageUnknownReason;
+  }): Promise<void> {
+    if (this.terminalInput) return;
+    const usage = normalizeRoutineUsage(input.usage ?? null);
+    const finishedAt = this.now();
+    this.terminalInput = {
+      operationId: this.admission.operationId,
+      executionId: this.options.executionId,
+      status: input.status,
+      finishedAt,
+      observedAt: finishedAt,
+      providerRoute: input.returnedModel?.provider ?? this.admission.requestedProvider,
+      requestedProvider: this.admission.requestedProvider,
+      requestedModel: this.admission.requestedModel,
+      returnedProvider: input.returnedModel?.provider ?? null,
+      returnedModel: input.returnedModel?.id ?? null,
+      credentialRefId: this.admission.credentialRefId,
+      credentialVersion: this.admission.credentialVersion,
+      usageCompleteness: usage ? 'complete' : 'not_reported',
+      inputTokens: usage?.input ?? null,
+      outputTokens: usage?.output ?? null,
+      totalTokens: usage?.totalTokens ?? null,
+      usageUnknownReason: usage ? null : (input.unknownReason ?? 'usage_not_reported'),
+      estimateCompleteness: 'not_priced',
+      estimateAmountMicros: null,
+      estimateCurrency: null,
+      priceVersionId: null,
+      priceUnknownReason: 'price_unknown',
+    };
+    const outcome = await persistUsage(
+      this.options.store.recordTerminal(this.terminalInput),
+      this.budgetMs,
+      'terminal',
+      this.options.executionId,
+      this.options.onPersistence,
+    );
+    this.needsRepair ||= outcome !== 'recorded';
+  }
+
+  async repairAfterTerminal(): Promise<void> {
+    if (!this.terminalInput || !this.needsRepair || this.repairAttempted) return;
+    this.repairAttempted = true;
+    const outcome = await persistUsage(
+      (async () => {
+        await this.options.store.admitOperation(this.admission);
+        await this.options.store.recordTerminal(this.terminalInput!);
+      })(),
+      this.budgetMs,
+      'repair',
+      this.options.executionId,
+      this.options.onPersistence,
+    );
+    if (outcome === 'recorded') this.needsRepair = false;
+  }
+}
+
 export function usageRuntimeRecordingEnabled(
   platformEnv?: PlatformEnv,
   processEnv: NodeJS.ProcessEnv = process.env,
@@ -233,4 +367,26 @@ async function withinBudget(
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+
+async function persistUsage(
+  promise: Promise<unknown>,
+  budgetMs: number,
+  phase: UsagePersistencePhase,
+  executionId: string,
+  onPersistence?: (event: UsagePersistenceEvent) => void,
+): Promise<UsagePersistenceOutcome> {
+  const outcome = await withinBudget(promise, budgetMs);
+  onPersistence?.({ phase, outcome, executionId });
+  if (outcome !== 'recorded') {
+    console.warn(`[usage] ${phase} persistence ${outcome}; model execution will continue`);
+  }
+  return outcome;
+}
+
+function normalizeRoutineUsage(usage: RoutineReportedUsage | null): RoutineReportedUsage | null {
+  if (!usage) return null;
+  const values = [usage.input, usage.output, usage.totalTokens];
+  if (!values.every((value) => Number.isSafeInteger(value) && value >= 0)) return null;
+  return values.every((value) => value === 0) ? null : usage;
 }

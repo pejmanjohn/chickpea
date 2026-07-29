@@ -1151,7 +1151,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     store: memory,
     adminSecret: () => adminToken() ?? '',
   }));
-  app.route('/admin/api', createRoutineAdminApi({ store: routines }));
+  app.route('/admin/api', createRoutineAdminApi({ store: routines, usage }));
   app.route('/admin/api', createUsageAdminApi({ store: usage }));
 
   app.get('/admin/api/agents', async (c) => {

@@ -16,12 +16,14 @@ import {
   type RoutineRun,
   type RoutineStore,
 } from '../routines/types.ts';
+import type { UsageStore } from '../usage/types.ts';
 
 interface RoutineAdminApiOptions {
   store: (c: Context) => RoutineStore;
   now?: () => number;
   id?: () => string;
   capability?: (c: Context) => RoutineCapability;
+  usage?: (c: Context) => UsageStore;
 }
 
 const opaqueId = v.pipe(v.string(), v.regex(/^[A-Za-z0-9_-]{1,200}$/));
@@ -99,9 +101,10 @@ export function createRoutineAdminApi(options: RoutineAdminApiOptions): Hono {
         subjectIds: [routineId, ...runs.map((run) => run.id)],
         limit: 500,
       });
+      const usage = options.usage?.(c);
       return c.json({
         routine: routineDetail(routine),
-        runs: runs.map(runDetail),
+        runs: await Promise.all(runs.map((run) => runDetail(run, usage))),
         revisions: revisions.map((revision) => ({
           routineId: revision.routineId,
           version: revision.version,
@@ -125,7 +128,7 @@ export function createRoutineAdminApi(options: RoutineAdminApiOptions): Hono {
     try {
       const run = await options.store(c).getRun(parseId(c.req.param('runId')));
       if (!run) return c.json({ error: 'routine_run_not_found' }, 404);
-      return c.json({ run: runDetail(run) });
+      return c.json({ run: await runDetail(run, options.usage?.(c)) });
     } catch (error) {
       return routineError(c, error);
     }
@@ -226,7 +229,14 @@ function routineDetail(routine: RoutineDefinition): Record<string, unknown> {
   };
 }
 
-function runDetail(run: RoutineRun): Record<string, unknown> {
+async function runDetail(
+  run: RoutineRun,
+  usageStore?: UsageStore,
+): Promise<Record<string, unknown>> {
+  const operationId = run.usageLedgerOperationId ?? null;
+  const ledger = operationId && usageStore
+    ? await usageStore.getOperation(operationId)
+    : undefined;
   return {
     id: run.id,
     routineId: run.routineId,
@@ -250,6 +260,29 @@ function runDetail(run: RoutineRun): Record<string, unknown> {
     cacheWriteTokens: run.cacheWriteTokens,
     costEstimate: run.costEstimate,
     costUnit: run.costUnit,
+    usageLedgerOperationId: operationId,
+    usageProvenance: run.usageProvenance ?? 'legacy_routine',
+    usageCompleteness: run.usageCompleteness ?? (
+      run.inputTokens !== null || run.outputTokens !== null ? 'partial' : 'not_reported'
+    ),
+    usage: ledger
+      ? { source: 'usage_ledger', available: true, ...ledger }
+      : operationId
+        ? {
+            source: 'usage_ledger',
+            available: false,
+            operationId,
+            reason: 'ledger_record_unavailable',
+          }
+        : {
+            source: 'legacy_routine',
+            available: run.inputTokens !== null || run.outputTokens !== null,
+            inputTokens: run.inputTokens,
+            outputTokens: run.outputTokens,
+            costEstimate: run.costEstimate,
+            costUnit: run.costUnit,
+            limitation: 'No provider or credential attribution is available for this historical row.',
+          },
     toolCallCount: run.toolCallCount,
     deliveryStatus: run.deliveryStatus,
     deliveryChannelId: run.deliveryChannelId,

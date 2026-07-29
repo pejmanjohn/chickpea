@@ -11,7 +11,14 @@ import {
 import * as v from 'valibot';
 
 import { createSlackAgentRuntime, resolveAgentPlatformEnv } from '../agents/slack-thread.ts';
-import { getRoutineStore, type PlatformEnv } from '../config/state-backend.ts';
+import {
+  getRoutineStore,
+  getSettingsStore,
+  getUsageStore,
+  type PlatformEnv,
+} from '../config/state-backend.ts';
+import { resolveModelCredentialAttribution } from '../config/model-credential-refs.ts';
+import type { SettingsStore } from '../config/settings-store.ts';
 import {
   RoutineModelResultSchema,
   normalizeRoutineModelResult,
@@ -37,6 +44,11 @@ import {
   releaseCloudflareSandboxTurn,
 } from '../slack/agent-dispatch.ts';
 import { shouldUseCloudflareSandbox } from '../slack/run-turn.ts';
+import {
+  RoutineUsageRecorder,
+  usageRuntimeRecordingEnabled,
+} from '../usage/runtime-recorder.ts';
+import type { UsageStore } from '../usage/types.ts';
 
 const InputSchema = v.object({
   occurrenceId: v.pipe(v.string(), v.regex(/^rrun_[A-Za-z0-9_-]+$/)),
@@ -58,6 +70,7 @@ export interface RoutineWorkflowRuntime {
   access: RoutineRuntimeAccess;
   agentInstanceId: string;
   usedCloudflareSandbox: boolean;
+  usageRecorder?: RoutineUsageRecorder;
 }
 
 const runtimeByOccurrence = new Map<string, RoutineWorkflowRuntime>();
@@ -68,6 +81,11 @@ interface RoutineWorkflowInitializerDependencies {
   prepareSandbox?: typeof prepareCloudflareSandboxTurn;
   releaseSandbox?: typeof releaseCloudflareSandboxTurn;
   createAgent?: typeof createSlackAgentRuntime;
+  usageStore?: UsageStore;
+  settingsStore?: SettingsStore;
+  resolveCredential?: typeof resolveModelCredentialAttribution;
+  usageRecordingEnabled?: boolean;
+  now?: () => number;
 }
 
 interface InterruptedRoutineWorkflowDependencies {
@@ -75,6 +93,8 @@ interface InterruptedRoutineWorkflowDependencies {
   store?: RoutineStore;
   now?: () => number;
   releaseSandbox?: typeof releaseCloudflareSandboxTurn;
+  usageStore?: UsageStore;
+  usageRecordingEnabled?: boolean;
 }
 
 const routineAgent = defineAgent(async ({ id, env }) => {
@@ -129,6 +149,7 @@ export async function initializeRoutineWorkflowRuntime(
   const prepareSandbox = dependencies.prepareSandbox ?? prepareCloudflareSandboxTurn;
   const releaseSandbox = dependencies.releaseSandbox ?? releaseCloudflareSandboxTurn;
   const createAgent = dependencies.createAgent ?? createSlackAgentRuntime;
+  const now = dependencies.now ?? Date.now;
   let access: RoutineRuntimeAccess;
   try {
     access = await resolveAccess(input.run, input.routine, input.env);
@@ -137,10 +158,11 @@ export async function initializeRoutineWorkflowRuntime(
     await failBeforeStart(input.store, input.run, failure.failureClass, failure.publicError);
     throw new Error(failure.publicError);
   }
+  const startedAt = now();
   const began = await input.store.beginOccurrence({
     occurrenceId: input.run.id,
     flueRunId: input.flueRunId,
-    startedAt: Date.now(),
+    startedAt,
     resolvedAccessHash: access.accessHash,
     resolvedAgentId: access.config.agentId,
     model: access.config.model,
@@ -148,6 +170,41 @@ export async function initializeRoutineWorkflowRuntime(
   });
   if (began === 'superseded') {
     throw new Error('Routine Workflow admission was superseded.');
+  }
+
+  let usageRecorder: RoutineUsageRecorder | undefined;
+  const recordingEnabled = dependencies.usageRecordingEnabled ??
+    usageRuntimeRecordingEnabled(input.env);
+  if (recordingEnabled) {
+    const usageStore = dependencies.usageStore ?? getUsageStore(input.env);
+    const resolveCredential = dependencies.resolveCredential ?? resolveModelCredentialAttribution;
+    const modelCredential = access.config.modelCredential ?? await resolveCredential(
+      access.config.model,
+      input.env,
+      dependencies.settingsStore ?? getSettingsStore(input.env),
+      usageStore,
+    ).catch(() => null);
+    if (modelCredential && !access.config.modelCredential) {
+      access = { ...access, config: { ...access.config, modelCredential } };
+    }
+    usageRecorder = new RoutineUsageRecorder({
+      operationId: input.run.id,
+      executionId: `exec:${input.run.id}:${input.flueRunId}`,
+      startedAt,
+      workspaceId: input.routine.workspaceId,
+      channelId: input.routine.channelId,
+      profileId: access.config.agentId,
+      profileLabel: access.config.agent.name,
+      routineId: input.routine.id,
+      routineLabel: input.routine.name,
+      requestedModel: access.config.model,
+      credentialRefId: modelCredential?.credentialRefId ?? null,
+      credentialVersion: modelCredential?.version ?? null,
+      store: usageStore,
+      platformEnv: input.env,
+      now,
+    });
+    await usageRecorder.admit();
   }
 
   const agentInstanceId = routineAgentInstanceId(input.flueRunId, input.routine);
@@ -175,12 +232,25 @@ export async function initializeRoutineWorkflowRuntime(
       access,
       agentInstanceId,
       usedCloudflareSandbox,
+      ...(usageRecorder ? { usageRecorder } : {}),
       config,
     };
   } catch (error) {
     await releaseSandbox(input.env, agentInstanceId, usedCloudflareSandbox);
     const failure = runtimeFailure(error, false);
-    await failAfterStart(input.store, input.run, failure.failureClass, failure.publicError, 0);
+    await usageRecorder?.recordTerminal({
+      status: 'failed',
+      unknownReason: 'provider_request_unknown',
+    });
+    await failAfterStart(
+      input.store,
+      input.run,
+      failure.failureClass,
+      failure.publicError,
+      0,
+      usageRecorder ? usageTransitionMetadata(input.run.id, 'not_reported') : undefined,
+    );
+    await usageRecorder?.repairAfterTerminal();
     throw new Error(failure.publicError);
   }
 }
@@ -203,6 +273,8 @@ export default defineWorkflow({
       throw new Error('The routine Workflow was interrupted before execution could resume safely.');
     }
     let toolCallCount = 0;
+    let promptUsage: PromptUsage | undefined;
+    let promptModel: { provider: string; id: string } | undefined;
     const unsubscribe = observe((event) => {
       if (event.runId === runtime.flueRunId && event.type === 'tool_start') {
         toolCallCount += 1;
@@ -227,6 +299,8 @@ export default defineWorkflow({
         result: RoutineModelResultSchema,
         signal: AbortSignal.timeout(remainingMs),
       });
+      promptUsage = response.usage;
+      promptModel = response.model;
       if (!(await prepared.validateMemoryLease())) {
         throw new RoutineRuntimeError(
           toolCallCount > 0 ? 'unknown_external_outcome' : 'access_denied',
@@ -251,6 +325,11 @@ export default defineWorkflow({
         });
         delivered = true;
       }
+      await runtime.usageRecorder?.recordTerminal({
+        status: 'completed',
+        usage: response.usage,
+        returnedModel: response.model,
+      });
       try {
         await runtime.store.transitionRun({
           occurrenceId: runtime.run.id,
@@ -262,6 +341,9 @@ export default defineWorkflow({
           toolCallCount,
           changeKeyHash: result.changeKeyHash,
           suppressedAsNoOp: result.suppressedAsNoOp,
+          ...(runtime.usageRecorder
+            ? usageTransitionMetadata(runtime.run.id, routineUsageCompleteness(response.usage))
+            : {}),
         });
       } catch (error) {
         if (delivered) {
@@ -272,6 +354,7 @@ export default defineWorkflow({
         }
         throw error;
       }
+      await runtime.usageRecorder?.repairAfterTerminal();
       return {
         occurrenceId: runtime.run.id,
         status: result.status,
@@ -280,13 +363,26 @@ export default defineWorkflow({
       };
     } catch (error) {
       const failure = runtimeFailure(error, toolCallCount > 0);
+      const completeness = routineUsageCompleteness(promptUsage);
+      await runtime.usageRecorder?.recordTerminal({
+        status: failure.failureClass === 'workflow_interrupted' ? 'interrupted' : 'failed',
+        ...(promptUsage ? { usage: promptUsage } : {}),
+        ...(promptModel ? { returnedModel: promptModel } : {}),
+        unknownReason: failure.failureClass === 'deadline_exceeded'
+          ? 'stream_interrupted'
+          : 'provider_request_unknown',
+      });
       await failAfterStart(
         runtime.store,
         runtime.run,
         failure.failureClass,
         failure.publicError,
         toolCallCount,
+        runtime.usageRecorder
+          ? usageTransitionMetadata(runtime.run.id, completeness)
+          : undefined,
       );
+      await runtime.usageRecorder?.repairAfterTerminal();
       await deliverFailureNoticeBestEffort(runtime, failure.publicError);
       throw new Error(failure.publicError);
     } finally {
@@ -317,7 +413,32 @@ export async function failInterruptedRoutineWorkflow(
   const run = await store.getRun(occurrenceId);
   if (!run || (run.status !== 'admitting' && run.status !== 'running')) return;
   const routine = await store.getRoutine(run.routineId);
+  const recordingEnabled = dependencies.usageRecordingEnabled ?? usageRuntimeRecordingEnabled(env);
+  const usageRecorder = recordingEnabled && routine
+    ? new RoutineUsageRecorder({
+        operationId: run.id,
+        executionId: `exec:${run.id}:${run.flueRunId ?? 'interrupted'}`,
+        startedAt: run.startedAt ?? run.admittedAt ?? run.queuedAt,
+        workspaceId: routine.workspaceId,
+        channelId: routine.channelId,
+        profileId: run.resolvedAgentId,
+        profileLabel: run.resolvedAgentId,
+        routineId: routine.id,
+        routineLabel: routine.name,
+        requestedModel: run.model,
+        credentialRefId: null,
+        credentialVersion: null,
+        store: dependencies.usageStore ?? getUsageStore(env),
+        ...(env ? { platformEnv: env } : {}),
+        now,
+      })
+    : undefined;
   try {
+    await usageRecorder?.admit();
+    await usageRecorder?.recordTerminal({
+      status: 'interrupted',
+      unknownReason: 'stream_interrupted',
+    });
     await store.transitionRun({
       occurrenceId,
       from: [run.status],
@@ -326,8 +447,10 @@ export async function failInterruptedRoutineWorkflow(
       failureClass: 'workflow_interrupted',
       publicError: 'The routine Workflow was interrupted before execution could resume safely.',
       toolCallCount: run.toolCallCount,
+      ...(usageRecorder ? usageTransitionMetadata(run.id, 'not_reported') : {}),
     });
   } finally {
+    await usageRecorder?.repairAfterTerminal();
     if (routine && run.flueRunId) {
       await releaseSandbox(
         env,
@@ -383,6 +506,10 @@ async function failAfterStart(
   failureClass: RoutineFailureClass,
   publicError: string,
   toolCallCount: number,
+  usage?: Pick<
+    Parameters<RoutineStore['transitionRun']>[0],
+    'usageLedgerOperationId' | 'usageProvenance' | 'usageCompleteness'
+  >,
 ): Promise<void> {
   const current = await store.getRun(run.id);
   if (current?.status !== 'running') return;
@@ -394,6 +521,7 @@ async function failAfterStart(
     failureClass,
     publicError,
     toolCallCount,
+    ...usage,
   });
 }
 
@@ -440,6 +568,30 @@ function usageMetadata(usage: PromptUsage): {
     cacheWriteTokens: usage.cacheWrite,
     costEstimate: usage.cost.total,
     costUnit: 'model_registry_unit',
+  };
+}
+
+function routineUsageCompleteness(
+  usage: Pick<PromptUsage, 'input' | 'output' | 'totalTokens'> | undefined,
+): 'complete' | 'not_reported' {
+  if (!usage) return 'not_reported';
+  return usage.input === 0 && usage.output === 0 && usage.totalTokens === 0
+    ? 'not_reported'
+    : 'complete';
+}
+
+function usageTransitionMetadata(
+  operationId: string,
+  completeness: 'complete' | 'partial' | 'not_reported',
+): {
+  usageLedgerOperationId: string;
+  usageProvenance: 'usage_ledger';
+  usageCompleteness: 'complete' | 'partial' | 'not_reported';
+} {
+  return {
+    usageLedgerOperationId: operationId,
+    usageProvenance: 'usage_ledger',
+    usageCompleteness: completeness,
   };
 }
 

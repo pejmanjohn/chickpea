@@ -237,6 +237,10 @@ export interface RoutineRun {
   cacheWriteTokens: number | null;
   costEstimate: number | null;
   costUnit: string | null;
+  /** Present on dual-written rows; absent on older fixture/consumer shapes. */
+  usageLedgerOperationId?: string | null;
+  usageProvenance?: 'usage_ledger' | 'legacy_routine';
+  usageCompleteness?: 'complete' | 'partial' | 'not_reported' | null;
   deadlineAt: number;
   sandboxSessionId: string | null;
   toolCallCount: number;
@@ -343,6 +347,9 @@ export interface TransitionRoutineRunInput {
   cacheWriteTokens?: number;
   costEstimate?: number;
   costUnit?: string;
+  usageLedgerOperationId?: string;
+  usageProvenance?: 'usage_ledger' | 'legacy_routine';
+  usageCompleteness?: 'complete' | 'partial' | 'not_reported';
   toolCallCount?: number;
   changeKeyHash?: string | null;
   suppressedAsNoOp?: boolean;
