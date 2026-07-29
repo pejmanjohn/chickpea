@@ -24,6 +24,8 @@ import { withEnv } from './helpers/env.ts';
 import type {
   OpenAiSubscriptionAuthorizationProtocol,
 } from '../src/openai-subscription/device-auth.ts';
+import { commitOpenAiSubscriptionCredentials } from '../src/openai-subscription/credentials.ts';
+import { OPENAI_SUBSCRIPTION_MODELS } from '../src/openai-subscription/protocol.ts';
 
 const ADMIN_TOKEN = 'provider-admin-token';
 
@@ -131,6 +133,7 @@ test('OpenAI subscription admin routes keep authorization capability browser-loc
   });
   const providerSummary = await app.request('/admin/api/providers', { headers: auth() });
   const summaryJson = JSON.stringify(await providerSummary.json());
+  assert.match(summaryJson, /"activeAuthMethod":"api_key"/);
   assert.match(summaryJson, /"subscription":\{"state":"authorizing"/);
   assert.doesNotMatch(summaryJson, /CHICK-PEA|attemptCapability|provider-device-secret/);
 
@@ -162,6 +165,14 @@ test('OpenAI subscription admin routes keep authorization capability browser-loc
     assert.doesNotMatch(connectedText, new RegExp(secret));
   }
 
+  const selected = await app.request('/admin/api/providers/openai/auth-method', {
+    method: 'PUT',
+    headers: { ...auth(), 'content-type': 'application/json' },
+    body: JSON.stringify({ method: 'subscription' }),
+  });
+  assert.equal(selected.status, 200);
+  assert.deepEqual(await selected.json(), { activeAuthMethod: 'subscription' });
+
   const disconnected = await app.request('/admin/api/providers/openai/subscription', {
     method: 'DELETE',
     headers: auth(),
@@ -172,7 +183,7 @@ test('OpenAI subscription admin routes keep authorization capability browser-loc
   });
 });
 
-test('default-off preview gate blocks admission without deleting state or affecting API-key profiles', async (t) => {
+test('default-off preview gate blocks installation selection without deleting state or affecting profiles', async (t) => {
   let enabled = true;
   let protocolStarts = 0;
   const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
@@ -227,19 +238,12 @@ test('default-off preview gate blocks admission without deleting state or affect
     capability: { enabled: false },
   });
 
-  const subscriptionProfile = await app.request('/admin/api/agents', {
-    method: 'POST',
+  const blockedSelection = await app.request('/admin/api/providers/openai/auth-method', {
+    method: 'PUT',
     headers: { ...auth(), 'content-type': 'application/json' },
-    body: JSON.stringify({
-      id: 'blocked_subscription',
-      name: 'Blocked subscription',
-      instructions: 'Stay on the selected lane.',
-      enabled: true,
-      model: 'openai/gpt-5.4',
-      openaiAuthMethod: 'subscription',
-    }),
+    body: JSON.stringify({ method: 'subscription' }),
   });
-  assert.equal(subscriptionProfile.status, 400);
+  assert.equal(blockedSelection.status, 409);
 
   const apiKeyProfile = await app.request('/admin/api/agents', {
     method: 'POST',
@@ -250,7 +254,6 @@ test('default-off preview gate blocks admission without deleting state or affect
       instructions: 'Use Platform billing only.',
       enabled: true,
       model: 'openai/gpt-5.4',
-      openaiAuthMethod: 'api_key',
     }),
   });
   assert.equal(apiKeyProfile.status, 201);
@@ -262,7 +265,7 @@ test('default-off preview gate blocks admission without deleting state or affect
   assert.equal(disconnected.status, 200, 'disconnect remains available while disabled');
 });
 
-test('profile writes persist explicit OpenAI methods and reject explicit model-method mismatches', async (t) => {
+test('OpenAI method selection is installation-wide and validates connections and models', async (t) => {
   const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   const settings = new SqliteSettingsStore(':memory:');
   t.after(() => { config.close(); settings.close(); });
@@ -275,82 +278,121 @@ test('profile writes persist explicit OpenAI methods and reject explicit model-m
     openAiSubscriptionCapability: () => ({ enabled: true }),
   }));
 
-  const created = await app.request('/admin/api/agents', {
+  const incompatible = await app.request('/admin/api/agents', {
     method: 'POST',
     headers: { ...auth(), 'content-type': 'application/json' },
     body: JSON.stringify({
-      id: 'agent_subscription',
-      name: 'Subscription profile',
-      instructions: 'Use the selected OpenAI billing lane.',
-      enabled: true,
-      model: 'openai/gpt-5.4',
-      openaiAuthMethod: 'subscription',
-    }),
-  });
-  assert.equal(created.status, 201);
-  const createdBody = await created.json() as { agent: Record<string, unknown> };
-  assert.equal(createdBody.agent.openaiAuthMethod, 'subscription');
-  assert.equal(createdBody.agent.openaiSubscriptionBindingId, 'installation');
-
-  const unsupportedSubscription = await app.request('/admin/api/agents', {
-    method: 'POST',
-    headers: { ...auth(), 'content-type': 'application/json' },
-    body: JSON.stringify({
-      id: 'agent_unsupported_subscription',
-      name: 'Unsupported subscription model',
-      instructions: 'This should be rejected before runtime.',
+      id: 'agent_incompatible',
+      name: 'Incompatible profile',
+      instructions: 'Use a Platform-only OpenAI model.',
       enabled: true,
       model: 'openai/gpt-4.1',
-      openaiAuthMethod: 'subscription',
     }),
   });
-  assert.equal(unsupportedSubscription.status, 400);
-  assert.deepEqual(await unsupportedSubscription.json(), {
-    error: 'invalid_request',
-    message: 'OpenAI Subscription requires a model in the pinned Subscription allowlist.',
+  assert.equal(incompatible.status, 201);
+
+  const missingSubscription = await app.request('/admin/api/providers/openai/auth-method', {
+    method: 'PUT',
+    headers: { ...auth(), 'content-type': 'application/json' },
+    body: JSON.stringify({ method: 'subscription' }),
+  });
+  assert.equal(missingSubscription.status, 409);
+  assert.deepEqual(await missingSubscription.json(), {
+    error: 'openai_subscription_missing',
+    message: 'Connect a ChatGPT subscription before selecting it.',
   });
 
-  const unsupportedSubscriptionPatch = await app.request('/admin/api/agents/agent_subscription', {
+  await commitOpenAiSubscriptionCredentials({
+    accessToken: 'installation-subscription-access',
+    refreshToken: 'installation-subscription-refresh',
+    idToken: undefined,
+    expiresAt: Date.now() + 3_600_000,
+    accountId: 'installation-account',
+  }, { settings, randomBytes: (length) => new Uint8Array(length).fill(6) });
+
+  const blockedByModel = await app.request('/admin/api/providers/openai/auth-method', {
+    method: 'PUT',
+    headers: { ...auth(), 'content-type': 'application/json' },
+    body: JSON.stringify({ method: 'subscription' }),
+  });
+  assert.equal(blockedByModel.status, 409);
+  const blockedBody = await blockedByModel.json() as { error: string; profiles: Array<{ id: string }> };
+  assert.equal(blockedBody.error, 'openai_subscription_models_incompatible');
+  assert.deepEqual(blockedBody.profiles.map((profile) => profile.id), ['agent_incompatible']);
+
+  const supportedPatch = await app.request('/admin/api/agents/agent_incompatible', {
     method: 'PATCH',
     headers: { ...auth(), 'content-type': 'application/json' },
-    body: JSON.stringify({ model: 'openai/gpt-4.1' }),
+    body: JSON.stringify({ model: 'openai/gpt-5.4' }),
   });
-  assert.equal(unsupportedSubscriptionPatch.status, 400);
+  assert.equal(supportedPatch.status, 200);
 
-  const mismatchedCreate = await app.request('/admin/api/agents', {
+  const selectedSubscription = await app.request('/admin/api/providers/openai/auth-method', {
+    method: 'PUT',
+    headers: { ...auth(), 'content-type': 'application/json' },
+    body: JSON.stringify({ method: 'subscription' }),
+  });
+  assert.equal(selectedSubscription.status, 200);
+  assert.deepEqual(await selectedSubscription.json(), { activeAuthMethod: 'subscription' });
+
+  const subscriptionModels = await app.request('/admin/api/providers/openai/models', {
+    headers: auth(),
+  });
+  assert.equal(subscriptionModels.status, 200);
+  assert.deepEqual(await subscriptionModels.json(), {
+    provider: 'openai',
+    models: OPENAI_SUBSCRIPTION_MODELS.map((id) => ({ id })),
+    cached: true,
+  });
+
+  const modelPicker = await app.request('/admin/api/models', { headers: auth() });
+  assert.equal(modelPicker.status, 200);
+  const openAiProvider = ((await modelPicker.json()) as {
+    providers: Array<{
+      id: string;
+      configured: boolean;
+      source: string;
+      suggestions: string[];
+      authMethods?: { activeMethod?: string };
+    }>;
+  }).providers.find((provider) => provider.id === 'openai');
+  assert.equal(openAiProvider?.configured, true);
+  assert.equal(openAiProvider?.source, 'ChatGPT subscription');
+  assert.equal(openAiProvider?.authMethods?.activeMethod, 'subscription');
+  assert.deepEqual(
+    openAiProvider?.suggestions,
+    OPENAI_SUBSCRIPTION_MODELS.map((id) => `openai/${id}`),
+  );
+
+  const unsupportedCreate = await app.request('/admin/api/agents', {
     method: 'POST',
     headers: { ...auth(), 'content-type': 'application/json' },
     body: JSON.stringify({
-      id: 'agent_mismatch',
-      name: 'Mismatch',
-      instructions: 'This should be rejected.',
+      id: 'agent_unsupported',
+      name: 'Unsupported profile',
+      instructions: 'Reject this while Subscription is selected.',
       enabled: true,
-      model: 'anthropic/claude-sonnet-4-6',
-      openaiAuthMethod: 'subscription',
+      model: 'openai/gpt-4.1',
     }),
   });
-  assert.equal(mismatchedCreate.status, 400);
-  assert.deepEqual(await mismatchedCreate.json(), {
-    error: 'invalid_request',
-    message: 'OpenAI authentication methods require an openai/* model.',
-  });
+  assert.equal(unsupportedCreate.status, 400);
 
-  const movedAway = await app.request('/admin/api/agents/agent_subscription', {
-    method: 'PATCH',
+  const missingApiKey = await app.request('/admin/api/providers/openai/auth-method', {
+    method: 'PUT',
     headers: { ...auth(), 'content-type': 'application/json' },
-    body: JSON.stringify({ model: 'anthropic/claude-sonnet-4-6' }),
+    body: JSON.stringify({ method: 'api_key' }),
   });
-  assert.equal(movedAway.status, 200);
-  const movedBody = await movedAway.json() as { agent: Record<string, unknown> };
-  assert.equal(movedBody.agent.openaiAuthMethod, undefined);
-  assert.equal(movedBody.agent.openaiSubscriptionBindingId, undefined);
+  assert.equal(missingApiKey.status, 409);
 
-  const mismatchedPatch = await app.request('/admin/api/agents/agent_subscription', {
-    method: 'PATCH',
+  await settings.setSetting(PROVIDER_KEY_SETTING_KEYS.openai, 'stored-openai-key');
+  invalidateProviderKeyCache();
+  const selectedApiKey = await app.request('/admin/api/providers/openai/auth-method', {
+    method: 'PUT',
     headers: { ...auth(), 'content-type': 'application/json' },
-    body: JSON.stringify({ openaiAuthMethod: 'subscription' }),
+    body: JSON.stringify({ method: 'api_key' }),
   });
-  assert.equal(mismatchedPatch.status, 400);
+  assert.equal(selectedApiKey.status, 200);
+  assert.deepEqual(await selectedApiKey.json(), { activeAuthMethod: 'api_key' });
 });
 
 function providerSettingsAgent(id: string, model: string) {

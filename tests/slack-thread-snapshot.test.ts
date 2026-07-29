@@ -8,11 +8,9 @@ import { test } from 'node:test';
 import slackThreadAgent, {
   intersectFrozenRepositoryGrants,
 } from '../src/agents/slack-thread.ts';
-import {
-  resolveLiveOpenAiAuthorization,
-  type EffectiveSlackConfig,
-} from '../src/config/effective-config.ts';
+import type { EffectiveSlackConfig } from '../src/config/effective-config.ts';
 import { GITHUB_SETTING_KEYS } from '../src/config/github-app.ts';
+import { resolveOpenAiAuthMethod, saveOpenAiAuthMethod } from '../src/config/openai-auth.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { PROVIDER_KEY_SETTING_KEYS } from '../src/config/provider-keys.ts';
 import {
@@ -147,12 +145,12 @@ test('agent snapshots freeze repository grants with the effective profile', () =
   assert.deepEqual(snapshot.repositories, repositories);
 });
 
-test('OpenAI method authority resolves live while the thread model remains frozen', async () => {
+test('OpenAI method authority resolves installation-wide while the thread model remains frozen', async () => {
   const configStore = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const settings = new SqliteSettingsStore(':memory:');
   try {
     const created = await configStore.createAgent(agent({
       model: 'openai/gpt-5.4',
-      openaiAuthMethod: 'api_key',
     }));
     const config = effConfig('C_OPENAI_AUTH');
     config.agent = created;
@@ -160,17 +158,14 @@ test('OpenAI method authority resolves live while the thread model remains froze
     config.provider = 'openai';
     const snapshot = snapshotFromEffectiveConfig(config, 1_000);
 
-    await configStore.updateAgent(created.id, { openaiAuthMethod: 'subscription' });
-    assert.equal(snapshot.agent.openaiAuthMethod, 'api_key');
-    assert.deepEqual(
-      await resolveLiveOpenAiAuthorization(snapshot.agentId, snapshot.model, configStore),
-      { method: 'subscription', bindingId: 'installation' },
-    );
+    await saveOpenAiAuthMethod(settings, 'subscription');
+    assert.equal(await resolveOpenAiAuthMethod(settings), 'subscription');
     assert.doesNotMatch(
       JSON.stringify(snapshot),
       /accessToken|refreshToken|idToken|accountId|identityKey|attemptCapability/,
     );
   } finally {
+    settings.close();
     configStore.close();
   }
 });
@@ -185,11 +180,11 @@ test('slack-thread constructs an isolated subscription model while a Platform ke
     const configStore = new SqliteConfigStore(dbPath, { agents: [], assignments: [] });
     await configStore.createAgent(agent({
       model: 'openai/gpt-5.4',
-      openaiAuthMethod: 'subscription',
     }));
     await configStore.putAssignment(assignment({ channelId: 'C_OPENAI_RUNTIME' }));
     configStore.close();
     settings = new SqliteSettingsStore(dbPath);
+    await saveOpenAiAuthMethod(settings, 'subscription');
     await settings.setSetting(PROVIDER_KEY_SETTING_KEYS.openai, apiKey);
     await commitOpenAiSubscriptionCredentials(
       {

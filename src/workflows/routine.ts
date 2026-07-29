@@ -17,7 +17,6 @@ import {
   type ProviderAuthRoute,
 } from '../config/runtime-model.ts';
 import {
-  getConfigStore,
   getRoutineStore,
   getSettingsStore,
   type PlatformEnv,
@@ -154,7 +153,6 @@ export async function initializeRoutineWorkflowRuntime(
   let runtimeModel;
   try {
     runtimeModel = await resolveModel(access.config.agentId, access.config.model, {
-      agents: getConfigStore(input.env),
       settings: getSettingsStore(input.env),
       env: input.env,
     });

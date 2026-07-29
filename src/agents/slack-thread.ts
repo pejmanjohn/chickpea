@@ -526,7 +526,6 @@ export async function createSlackAgentRuntime(
     config.agentId,
     config.model,
     {
-      agents: store,
       settings: settingsStore,
       ...(env ? { env } : {}),
     },

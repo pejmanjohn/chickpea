@@ -12,6 +12,7 @@ import { resolveModel } from '@flue/runtime/internal';
 import { getApiProvider } from '@earendil-works/pi-ai/compat';
 
 import { resolveRuntimeModel } from '../src/config/runtime-model.ts';
+import { saveOpenAiAuthMethod } from '../src/config/openai-auth.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 
 const args = new Map();
@@ -61,8 +62,6 @@ const profile = {
   instructions: 'Return only the requested compatibility marker.',
   enabled: true,
   model: 'openai/gpt-5.3-codex-spark',
-  openaiAuthMethod: 'subscription',
-  openaiSubscriptionBindingId: 'installation',
   skills: [],
   mcpServers: [],
   apiConnections: [],
@@ -71,8 +70,8 @@ const profile = {
 const settings = new SqliteSettingsStore(statePath);
 
 try {
+  await saveOpenAiAuthMethod(settings, 'subscription');
   const route = await resolveRuntimeModel(profile.id, profile.model, {
-    agents: { getAgent: async () => profile },
     settings,
   });
   assert.deepEqual(route, {

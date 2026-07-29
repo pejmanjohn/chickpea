@@ -1,7 +1,4 @@
-import {
-  resolveLiveOpenAiAuthorization,
-  type LiveOpenAiAuthorization,
-} from './effective-config.ts';
+import { resolveOpenAiAuthMethod } from './openai-auth.ts';
 import {
   applyResolvedProviderKey,
   isProviderKeyId,
@@ -9,7 +6,6 @@ import {
 } from './provider-keys.ts';
 import type { SettingsStore } from './settings-store.ts';
 import type { PlatformEnv } from './state-backend.ts';
-import type { CustomAgentConfig } from './types.ts';
 import {
   bindOpenAiSubscriptionProvider,
   openAiSubscriptionModelSpecifier,
@@ -26,10 +22,9 @@ export interface ResolvedRuntimeModel {
 }
 
 interface RuntimeModelDependencies {
-  agents: { getAgent(id: string): Promise<CustomAgentConfig> };
   settings: SettingsStore;
   env?: PlatformEnv;
-  resolveOpenAiAuthorization?: typeof resolveLiveOpenAiAuthorization;
+  resolveOpenAiAuthorization?: typeof resolveOpenAiAuthMethod;
   applyProviderKey?: (
     id: ProviderKeyId,
     env: PlatformEnv | undefined,
@@ -45,7 +40,7 @@ interface RuntimeModelDependencies {
  * subscription failure escapes directly and cannot cross lanes.
  */
 export async function resolveRuntimeModel(
-  agentId: string,
+  _agentId: string,
   canonicalModel: string,
   dependencies: RuntimeModelDependencies,
 ): Promise<ResolvedRuntimeModel> {
@@ -62,12 +57,9 @@ export async function resolveRuntimeModel(
   }
 
   const authorization = await (
-    dependencies.resolveOpenAiAuthorization ?? resolveLiveOpenAiAuthorization
-  )(agentId, canonicalModel, dependencies.agents);
-  if (!authorization) {
-    throw new Error('OpenAI billing authority could not be resolved');
-  }
-  if (authorization.method === 'api_key') {
+    dependencies.resolveOpenAiAuthorization ?? resolveOpenAiAuthMethod
+  )(dependencies.settings);
+  if (authorization === 'api_key') {
     await (dependencies.applyProviderKey ?? applyResolvedProviderKey)(
       'openai',
       dependencies.env,
@@ -76,10 +68,10 @@ export async function resolveRuntimeModel(
     return { model: canonicalModel, providerAuthRoute: 'openai_api_key' };
   }
 
-  // The rollout switch is checked after resolving the profile's explicit
+  // The rollout switch is checked after resolving the installation-wide
   // billing authority but before touching either credential lane. Disabling
-  // the preview therefore preserves profile intent and stored tokens while
-  // making every subscription-selected operation fail closed.
+  // the preview preserves the setting and stored tokens while making every
+  // OpenAI operation fail closed.
   (dependencies.requireSubscriptionEnabled ?? requireOpenAiSubscriptionEnabled)(
     dependencies.env,
   );
@@ -95,7 +87,7 @@ export async function resolveRuntimeModel(
   });
   return {
     model: internalModel,
-    providerAuthRoute: routeForOpenAiAuthorization(authorization),
+    providerAuthRoute: 'openai_subscription',
   };
 }
 
@@ -103,14 +95,6 @@ export function canonicalRuntimeModel(model: string): string {
   return model.startsWith('openai-subscription/')
     ? `openai/${model.slice('openai-subscription/'.length)}`
     : model;
-}
-
-function routeForOpenAiAuthorization(
-  authorization: LiveOpenAiAuthorization,
-): ProviderAuthRoute {
-  return authorization.method === 'subscription'
-    ? 'openai_subscription'
-    : 'openai_api_key';
 }
 
 function providerPrefix(model: string): string {

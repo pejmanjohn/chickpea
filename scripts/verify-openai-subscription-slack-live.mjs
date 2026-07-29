@@ -78,11 +78,12 @@ let spawned;
 try {
   await seedOfflineDemoChannelConfig(stateDbPath);
 
-  const [{ SqliteConfigStore }, { SqliteSettingsStore }, { openAiSubscriptionSettingKeys }] =
+  const [{ SqliteConfigStore }, { SqliteSettingsStore }, { openAiSubscriptionSettingKeys }, { saveOpenAiAuthMethod }] =
     await Promise.all([
       loadTsModule('src/config/store.ts'),
       loadTsModule('src/config/settings-store.ts'),
       loadTsModule('src/openai-subscription/credentials.ts'),
+      loadTsModule('src/config/openai-auth.ts'),
     ]);
 
   const config = new SqliteConfigStore(stateDbPath);
@@ -92,7 +93,6 @@ try {
     await config.updateAgent('agent_default', {
       instructions: `For this compatibility check, return exactly ${EXPECTED_MARKER} and nothing else.`,
       model: 'openai/gpt-5.3-codex-spark',
-      openaiAuthMethod: 'subscription',
     });
 
     const keys = openAiSubscriptionSettingKeys();
@@ -107,6 +107,7 @@ try {
       set: boundaryKeys.map((key, index) => ({ key, value: boundaryValues[index] })),
       delete: [keys.pending, keys.refreshLease],
     });
+    await saveOpenAiAuthMethod(targetSettings, 'subscription');
   } finally {
     config.close();
     sourceSettings.close();

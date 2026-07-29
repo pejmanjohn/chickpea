@@ -98,19 +98,12 @@ export interface RepositoryGrant {
 
 export type OpenAiAuthMethod = 'api_key' | 'subscription';
 
-/** First-slice account binding; non-secret and intentionally future-compatible. */
-export const OPENAI_SUBSCRIPTION_INSTALLATION_BINDING_ID = 'installation';
-
 export interface CustomAgentConfig {
   id: string;
   name: string;
   instructions: string;
   enabled: boolean;
   model?: string;
-  /** Billing authority only; OpenAI credentials always resolve outside config. */
-  openaiAuthMethod?: OpenAiAuthMethod;
-  /** Safe logical binding id; never an OpenAI account id or credential. */
-  openaiSubscriptionBindingId?: string;
   skills: SkillConfig[];
   mcpServers: McpConnectionConfig[];
   apiConnections: ApiConnectionConfig[];

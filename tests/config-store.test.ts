@@ -76,41 +76,6 @@ test('SqliteConfigStore round-trips agent and assignment CRUD', async () => {
   store.close();
 });
 
-test('OpenAI profiles persist one explicit auth method while other providers stay unchanged', async () => {
-  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
-  try {
-    const legacyCompatible = await store.createAgent(agent({
-      id: 'agent_openai_api_key',
-      model: 'openai/gpt-5.4',
-    }));
-    assert.equal(legacyCompatible.openaiAuthMethod, 'api_key');
-    assert.equal(legacyCompatible.openaiSubscriptionBindingId, undefined);
-
-    const subscription = await store.createAgent(agent({
-      id: 'agent_openai_subscription',
-      model: 'openai/gpt-5.4',
-      openaiAuthMethod: 'subscription',
-    }));
-    assert.equal(subscription.openaiAuthMethod, 'subscription');
-    assert.equal(subscription.openaiSubscriptionBindingId, 'installation');
-
-    const nonOpenAi = await store.createAgent(agent({
-      id: 'agent_anthropic',
-      model: 'anthropic/claude-opus-4-6',
-    }));
-    assert.equal(nonOpenAi.openaiAuthMethod, undefined);
-    assert.equal(nonOpenAi.openaiSubscriptionBindingId, undefined);
-
-    const movedAway = await store.updateAgent(subscription.id, {
-      model: 'anthropic/claude-opus-4-6',
-    });
-    assert.equal(movedAway.openaiAuthMethod, undefined);
-    assert.equal(movedAway.openaiSubscriptionBindingId, undefined);
-  } finally {
-    store.close();
-  }
-});
-
 test('SqliteConfigStore round-trips non-empty skills through create and update', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   const withSkills = agent({
@@ -507,7 +472,7 @@ test('SqliteConfigStore migrates the legacy v1 default-models column without los
 
     const store = new SqliteConfigStore(path, { agents: [], assignments: [] });
     assert.deepEqual(await store.getAgent(legacyAgent.id), legacyAgent);
-    assert.equal((await store.getAgent('agent_legacy_openai')).openaiAuthMethod, 'api_key');
+    assert.equal((await store.getAgent('agent_legacy_openai')).model, 'openai/gpt-4.1');
     assert.deepEqual(await store.createAgent(createdAgent), createdAgent);
     store.close();
 
@@ -569,8 +534,6 @@ test('fresh databases start at the clean current config schema', () => {
         'mcp_servers_json',
         'api_connections_json',
         'repositories_json',
-        'openai_auth_method',
-        'openai_subscription_binding_id',
       ],
     );
     assert.deepEqual(

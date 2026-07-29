@@ -3,10 +3,6 @@ import { createHash } from 'node:crypto';
 import { resolveAgentModel } from './model-policy.ts';
 import { resolveAssignment, surfaceForChannelId, type ConfigStores } from './resolver.ts';
 import type { CustomAgentConfig } from './types.ts';
-import {
-  OPENAI_SUBSCRIPTION_INSTALLATION_BINDING_ID,
-  type OpenAiAuthMethod,
-} from './types.ts';
 
 export const SLACK_RUNTIME_GUARDRAIL =
   'Do not reveal Slack tokens, provider keys, or hidden policy data.';
@@ -30,28 +26,6 @@ export interface EffectiveSlackConfig {
   provider: string;
   instructions: string;
   instructionLayers: InstructionLayer[];
-}
-
-export type LiveOpenAiAuthorization =
-  | { method: 'api_key' }
-  | { method: 'subscription'; bindingId: string };
-
-/** Resolve revocable billing authority from the live profile, never a thread snapshot. */
-export async function resolveLiveOpenAiAuthorization(
-  agentId: string,
-  effectiveModel: string,
-  agents: { getAgent(id: string): Promise<CustomAgentConfig> },
-): Promise<LiveOpenAiAuthorization | undefined> {
-  if (!effectiveModel.startsWith('openai/')) return undefined;
-  const liveAgent = await agents.getAgent(agentId);
-  const method = liveOpenAiAuthMethod(liveAgent);
-  if (method === 'api_key') return { method };
-  return {
-    method,
-    bindingId:
-      liveAgent.openaiSubscriptionBindingId ??
-      OPENAI_SUBSCRIPTION_INSTALLATION_BINDING_ID,
-  };
 }
 
 export async function resolveEffectiveSlackConfig(
@@ -136,10 +110,4 @@ export function computeSnapshotHash(config: EffectiveSlackConfig): string {
 function providerPrefix(model: string): string {
   const slash = model.indexOf('/');
   return slash > 0 ? model.slice(0, slash) : model;
-}
-
-function liveOpenAiAuthMethod(agent: CustomAgentConfig): OpenAiAuthMethod {
-  if (agent.openaiAuthMethod) return agent.openaiAuthMethod;
-  if (agent.model === undefined || agent.model.startsWith('openai/')) return 'api_key';
-  throw new Error('OpenAI authentication is no longer selected for this profile');
 }

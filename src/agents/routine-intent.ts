@@ -25,7 +25,6 @@ export default defineAgent(async ({ id, env }): Promise<AgentRuntimeConfig> => {
     assignments: store,
   });
   const runtimeModel = await resolveRuntimeModel(config.agentId, config.model, {
-    agents: store,
     settings,
     env: platformEnv,
   });

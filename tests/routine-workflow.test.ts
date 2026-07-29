@@ -125,7 +125,6 @@ test('a routine records the selected OpenAI lane before using the isolated runti
     agent: {
       ...config.agent,
       model: 'openai/gpt-5.4',
-      openaiAuthMethod: 'subscription',
     },
     model: 'openai/gpt-5.4',
     provider: 'openai',
@@ -209,7 +208,6 @@ test('a routine subscription credential failure is categorized before Agent cons
     agent: {
       ...config.agent,
       model: 'openai/gpt-5.4',
-      openaiAuthMethod: 'subscription',
     },
     model: 'openai/gpt-5.4',
     provider: 'openai',

@@ -14,7 +14,7 @@ baseline_commit: d9ce1b70cfff36877b22cc7c1bae56d40e328999
 
 ## Goal Capsule
 
-- **Objective:** Let an operator connect a ChatGPT Plus/Pro subscription or retain an OpenAI Platform API key, then bind each OpenAI profile to exactly one billing lane with no implicit fallback.
+- **Objective:** Let an operator connect a ChatGPT Plus/Pro subscription or retain an OpenAI Platform API key, then choose one installation-wide OpenAI billing lane with no implicit fallback.
 - **Chosen architecture:** Implement the small direct OAuth and ChatGPT Codex HTTP path demonstrated by OpenCode. Keep Flue as Chickpea's only agent runtime and support the same integration in Cloudflare Workers and Node.
 - **Explicit boundary:** Chickpea does not bundle, install, launch, or call Codex app-server. Reconsidering app-server requires a separate discussion and approval.
 - **Risk posture:** Public implementations demonstrate current technical viability and are evidence of present tolerance, not formal approval. The direct endpoint is undocumented, so the feature launches as a default-off experimental capability with isolated protocol code, pinned fixtures, monitoring, and a kill switch.
@@ -34,7 +34,7 @@ No public OpenAI source found in this research expressly forbids this exact inte
 
 The thin path fits Chickpea better than app-server. It uses ordinary `fetch`, Web Crypto, and the existing target-neutral SettingsStore and Flue provider APIs, so Cloudflare Workers and Node can share one logical implementation. Flue remains responsible for tools, memory, routines, streaming, cancellation, and delivery.
 
-The product benefit is straightforward: operators can use an existing ChatGPT entitlement for explicitly selected profiles without provisioning a separate Platform key or incurring silent API spend. Without this feature, Chickpea remains functional but requires separate Platform credentials, billing, and account administration for every OpenAI profile.
+The product benefit is straightforward: operators can use an existing ChatGPT entitlement for all OpenAI-backed work without provisioning a separate Platform key or incurring silent API spend. Without this feature, Chickpea remains functional but requires separate Platform credentials, billing, and account administration for OpenAI models.
 
 | Finding | Verdict | Confidence | Product consequence |
 | --- | --- | --- | --- |
@@ -43,26 +43,26 @@ The product benefit is straightforward: operators can use an existing ChatGPT en
 | The direct OAuth and Codex HTTP surfaces are public supported APIs | No | High | Isolate every unstable constant and response shape behind one adapter. |
 | The exact pattern is expressly prohibited | No compelling evidence found | Medium-high | Proceed experimentally; disable on an explicit objection or technical rejection. |
 | The direct path can run in Cloudflare Workers | Feasible | High | Authorization polling, token exchange, refresh, and inference are HTTP/Web Crypto operations. |
-| One connection can remain separate from an API key | Feasible | High | Use distinct provider IDs and an explicit per-profile method. |
+| One connection can remain separate from an API key | Feasible | High | Use distinct provider IDs and one explicit installation-wide method. |
 | App-server adds essential Chickpea capability | No for this slice | High | It duplicates much of Flue and cannot run inside a Worker. Keep it out of scope. |
 | One subscription account serving a wider Slack workspace is formally guaranteed | No | High | Launch behind an operator-controlled preview flag and disclose the experimental account-use posture. |
 
 ### Actors
 
-- A1. **Chickpea operator:** Connects or disconnects the subscription, chooses profile billing methods, and controls preview access.
-- A2. **Slack user:** Invokes an assigned profile and expects its selected billing method to be honored.
+- A1. **Chickpea operator:** Connects or disconnects either credential, chooses the installation-wide OpenAI method, and controls preview access.
+- A2. **Slack user:** Invokes an OpenAI-backed profile and expects the installation's selected billing method to be honored.
 - A3. **Chickpea runtime:** Resolves credentials at the execution boundary, refreshes tokens, and routes through one explicit provider lane.
 - A4. **OpenAI authorization and Codex services:** Authorize the account, rotate tokens, enforce entitlement and quota, and execute subscription requests.
 
 ### Requirements
 
-**Authentication methods and profile selection**
+**Authentication methods and installation selection**
 
 - R1. Settings > Model providers presents two OpenAI methods: **Subscription (ChatGPT Plus/Pro)** and **API key**, with independent state and actions.
-- R2. Both methods may remain configured, but every `openai/*` profile stores exactly one non-secret method: `subscription` or `api_key`.
-- R3. Existing OpenAI profiles migrate to `api_key`; connection, reconnection, or key changes never switch a profile automatically.
-- R4. The profile editor offers only the models allowed for its selected method, shows compatibility-harness coverage for required auxiliary operations, and rejects or clearly warns about an unavailable model/capability combination before saving.
-- R5. Method changes affect the next new model operation, including routines and auxiliary calls, after an impact confirmation that names the billing and data-policy lane change.
+- R2. Both methods may remain configured, but Settings stores one non-secret installation method: `subscription` or `api_key`. Profiles store only canonical models and never select billing lanes.
+- R3. Existing installations default to `api_key`; connection, reconnection, or key changes never silently change the selected method.
+- R4. Model discovery follows the selected installation method. Subscription selection exposes only the pinned compatible catalog and blocks switching while any saved OpenAI profile uses an incompatible model.
+- R5. A saved method change affects the next OpenAI model operation, including turns, routines, and auxiliary calls. Settings identifies the selected method directly; no extra acknowledgment or profile-level confirmation is required.
 
 **Strict billing-lane behavior**
 
@@ -80,7 +80,7 @@ The product benefit is straightforward: operators can use an existing ChatGPT en
 - R14. Refresh uses an existing-style compare-and-swap lease so concurrent Worker or Node turns share one rotation. A rotated refresh token replaces the old value atomically; an omitted replacement retains the prior token.
 - R15. `invalid_grant`, missing account identity, or repeated authentication failures clear usable access, preserve safe status, and require reconnect without API-key fallback. Entitlement, client, originator, quota, and protocol failures retain distinct safe categories and do not masquerade as expired authentication.
 - R16. U1 checks whether the pinned auth surface exposes a supported revocation endpoint. If it does, disconnect attempts best-effort provider revocation before deleting pending and token records plus cached capability; either way the UI links to OpenAI account controls and never claims local deletion revoked every server-side session.
-- R17. Reconnect to a different stable account identity requires confirmation naming the affected profiles before the new identity becomes active.
+- R17. Reconnect to a different stable account identity requires explicit account-change confirmation before the new identity becomes active installation-wide.
 
 **Direct transport**
 
@@ -94,43 +94,43 @@ The product benefit is straightforward: operators can use an existing ChatGPT en
 **Credential, audit, and platform boundaries**
 
 - R24. Access tokens, refresh tokens, ID tokens, raw account ids, device authorization ids, user codes, authorization codes, token-exchange code verifiers, attempt capabilities, and full authorization URLs never enter profiles, snapshots, prompts, tools, exports, logs, audits, telemetry, or returned status DTOs after their one-time UI purpose. Provider registration fields and outgoing auth/account headers are explicitly excluded from Flue and Chickpea instrumentation.
-- R25. Credential storage follows Chickpea's existing stored API-key and OAuth trust boundary: Node SQLite with restrictive file ownership and Cloudflare Durable Object storage. Product configuration contains only safe method, state, account hash, and timestamps.
+- R25. Credential storage follows Chickpea's existing stored API-key and OAuth trust boundary: Node SQLite with restrictive file ownership and Cloudflare Durable Object storage. Installation configuration contains only the safe selected method, state, account hash, and timestamps.
 - R26. The raw opaque account id required by the transport is stored only inside the write-only credential bundle. A high-entropy HMAC key is generated once, persisted through the same credential facade, and never exported or logged; product state, account-change checks, audits, and UI use its derived fingerprint. Losing or deliberately rotating that key invalidates saved fingerprints and forces explicit reconnect confirmation. The first slice does not persist or display email or plan claims.
 - R27. Cloudflare and Node expose the same saved configuration, auth states, error classes, and route semantics. Neither target depends on a local binary or remote app-server service.
 - R28. Subscription usage is labeled as quota/activity, never Platform API cost. Unknown monetary cost remains unset. Provider quota/rate-limit responses preserve credentials, honor safe retry timing, and surface `subscription_quota_exhausted` without method, model, or account fallback.
-- R29. A default-off capability flag and one isolated adapter provide immediate rollback. Disabling the flag blocks subscription admissions without changing profiles to API key or deleting recoverable credentials.
-- R30. Before the first profile assignment, Settings requires acknowledgment that the direct method is experimental; uses OpenAI's published Codex native-client identifier rather than a separately registered Chickpea client; submits every authorized invoker's profile traffic through one connected personal ChatGPT account; follows the consumer ChatGPT data controls and retention/training policies rather than the Platform API policies; consumes shared subscription quota; and may expose that account to throttling or enforcement. The UI displays only the safe account fingerprint and capability state.
+- R29. A default-off capability flag and one isolated adapter provide immediate rollback. Disabling the flag blocks subscription admissions without changing the saved installation method or deleting recoverable credentials.
+- R30. Settings keeps the normal connection surface concise. Documentation records that the direct method uses OpenAI's published Codex native-client identifier, sends all OpenAI traffic through one connected ChatGPT account, follows consumer ChatGPT data controls, and consumes shared subscription quota. The UI displays only connection state and the safe account fingerprint.
 - R31. The adapter emits safe, operator-visible health state for categorized auth expiry, entitlement denial, client/originator rejection, quota exhaustion, response-schema drift, and repeated provider failure. Recurring non-auth failures make the stop conditions actionable without exposing raw responses or credentials.
 
 ### Key product decisions
 
-- PD1. **Keep both methods configured and select per profile.** This makes switching reversible while preserving explicit billing intent. Governs R1-R7.
+- PD1. **Keep both methods configured and select once in Settings.** This makes switching reversible while keeping billing intent obvious and consistent across every OpenAI profile. Governs R1-R7.
 - PD2. **Never fall back across billing methods.** A failed subscription operation remains failed rather than silently creating API spend. Governs R5-R9.
 - PD3. **Ship a direct experimental integration.** Public third-party operation is sufficient evidence to try the feature; formal public support is not a prerequisite for the preview. Governs R18-R23, R29-R31.
 - PD4. **Preserve Cloudflare as a first-class runtime.** Subscription auth and inference must work in Workers and Node through ordinary HTTP and shared state interfaces. Governs R10-R14, R20-R31.
 - PD5. **Keep Flue as the only agent runtime.** Subscription auth changes model transport, not Chickpea's tools, memory, routines, approvals, or delivery architecture. Governs R6-R9, R20-R23.
-- PD6. **Use one installation-level subscription connection in the first slice.** Multiple accounts and per-user account assignment are deferred; any workspace member already authorized to invoke an explicitly subscription-selected profile may consume the shared connection and quota. Governs R2-R5, R17, R20-R21, R30.
+- PD6. **Use one installation-level subscription connection and one installation-level method in the first slice.** Multiple accounts and per-user/profile/channel assignment are deferred; any workspace member already authorized to invoke an OpenAI-backed profile may consume the selected shared connection and quota. Governs R2-R5, R17, R20-R21, R30.
 
 ### Key flows
 
 - F1. **Connect subscription**
   - **Trigger:** A1 selects Connect.
   - **Steps:** Chickpea starts device authorization, displays the provider URL and one-time code, polls through bounded admin requests, exchanges the returned authorization code, stores the credential bundle, validates account identity and one allowed model, then records connected status.
-  - **Outcome:** Subscription is available for explicit profile assignment; no profile changes automatically.
+  - **Outcome:** Subscription is available as an installation credential; the selected OpenAI method does not change automatically.
   - **Covers:** R10-R15, R18, R21, R24-R26.
 - F2. **Run a subscription-backed turn**
-  - **Trigger:** A2 invokes a profile whose method is `subscription`.
-  - **Steps:** Chickpea resolves the live method, obtains or refreshes the subscription token, maps the model to the internal subscription provider, sends the request to the Codex endpoint, streams it through Flue, and records a safe route fact.
+  - **Trigger:** A2 invokes an OpenAI-backed profile while the installation method is `subscription`.
+  - **Steps:** Chickpea resolves the live installation method, obtains or refreshes the subscription token, maps the model to the internal subscription provider, sends the request to the Codex endpoint, streams it through Flue, and records a safe route fact.
   - **Outcome:** The operation uses subscription quota or fails without Platform traffic.
   - **Covers:** R5-R9, R14-R15, R19-R23, R27-R31.
 - F3. **Disconnect or reconnect**
   - **Trigger:** A1 disconnects, or an auth failure requires reconnection.
-  - **Steps:** Chickpea clears local credentials and capability cache, retains subscription profile selections as blocked, and requires an explicit new device authorization. A changed account requires impact confirmation.
-  - **Outcome:** No stale token remains usable and no profile silently crosses billing lanes.
+  - **Steps:** Chickpea clears local credentials and capability cache, retains the installation method as blocked, and requires an explicit new device authorization. A changed account requires explicit confirmation.
+  - **Outcome:** No stale token remains usable and no OpenAI call silently crosses billing lanes.
   - **Covers:** R15-R17, R24-R26, R29.
 - F4. **Disable the experiment**
   - **Trigger:** Operator choice, provider objection, or protocol incompatibility.
-  - **Steps:** Disable the capability flag, reject new subscription operations, preserve safe status and explicit profile intent, and leave API-key profiles unchanged.
+  - **Steps:** Disable the capability flag, reject new subscription operations, preserve safe status and the installation method, and leave the API-key credential untouched.
   - **Outcome:** The feature is removed from execution without emergency migration or accidental billing.
   - **Covers:** R3, R6-R9, R23, R29.
 
@@ -138,7 +138,7 @@ The product benefit is straightforward: operators can use an existing ChatGPT en
 
 - AE1. **Subscription wins by explicit choice**
   - **Given:** A valid API key and connected subscription both exist.
-  - **When:** A subscription-selected profile runs a Slack turn and compaction.
+  - **When:** An OpenAI-backed profile runs a Slack turn and compaction while Subscription is selected in Settings.
   - **Then:** Only the Codex endpoint receives requests and the route fact is `openai_subscription`.
   - **Covers:** R2, R5-R9, R20.
 - AE2. **Cloudflare parity**
@@ -154,7 +154,7 @@ The product benefit is straightforward: operators can use an existing ChatGPT en
 - AE4. **Kill switch is reversible**
   - **Given:** Subscription profiles and credentials exist.
   - **When:** The capability flag is disabled and later re-enabled.
-  - **Then:** Subscription operations are blocked while disabled, API-key profiles continue, and no billing method changes automatically.
+  - **Then:** Subscription operations are blocked while disabled, the selected method remains visible in Settings, and no fallback to API key occurs.
   - **Covers:** R3, R7-R9, R29.
 - AE5. **Quota exhaustion is not an auth failure**
   - **Given:** A valid API key exists and the connected subscription returns a quota/rate-limit response.
@@ -170,7 +170,7 @@ The product benefit is straightforward: operators can use an existing ChatGPT en
 - Auth expiry, entitlement/client/originator rejection, quota exhaustion, and protocol drift produce distinct safe operator-visible states.
 - Existing OpenAI API-key tests and live provider behavior remain unchanged.
 - Token-shaped fixtures appear only in the dedicated credential store and outgoing authorization boundary.
-- Disabling one flag prevents all new direct subscription traffic without deleting profiles or affecting API-key turns.
+- Disabling one flag prevents all new direct subscription traffic without deleting profiles or rewriting the saved OpenAI method.
 - No Codex app-server package, binary, process, service, configuration directory, or deployment dependency is introduced.
 
 ### Scope boundaries
@@ -180,13 +180,13 @@ The product benefit is straightforward: operators can use an existing ChatGPT en
 - One subscription connection per installation.
 - Device authorization, token exchange, refresh rotation, reconnect, local disconnect, identity projection, and safe error states.
 - A curated subscription-model allowlist.
-- Profile-level Subscription versus API key selection.
+- Installation-wide Subscription versus API key selection in Settings.
 - Node and Cloudflare execution through the same logical direct adapter.
 - Slack turns, routines, compaction, streaming, cancellation, usage labels, audits, and removal controls.
 
 **Deferred to follow-up work**
 
-- Multiple subscription accounts, per-user/profile/channel account assignment, and subscription-specific user/channel quota allowlists.
+- Multiple subscription accounts, per-user/profile/channel account assignment, mixed per-profile billing methods, and subscription-specific user/channel quota allowlists.
 - Browser loopback callback authorization.
 - WebSocket transport optimization.
 - Automatic private model discovery.
@@ -204,7 +204,7 @@ The product benefit is straightforward: operators can use an existing ChatGPT en
 
 Pejman's direction settles the core architecture: direct integration, no app-server, Cloudflare first-class, and willingness to remove the feature if the experiment stops working. Before implementation, confirm these remaining launch details:
 
-1. Approve the first slice's one subscription account per installation, available to any existing workspace member who can invoke a profile the operator explicitly marks Subscription; finer subscription-only user/channel gates are deferred.
+1. Approve the first slice's one subscription account per installation, available to any existing workspace member who can invoke an OpenAI-backed profile while Subscription is selected in Settings; finer subscription-only user/channel gates are deferred.
 2. Approve device authorization as the only initial connect flow.
 3. Approve a curated model allowlist rather than private model discovery.
 4. Approve explicit experimental, shared-account, possible-enforcement, and consumer-data-policy disclosure in Settings.
@@ -223,26 +223,26 @@ Pejman's direction settles the core architecture: direct integration, no app-ser
 | Provider catalog | `src/config/providers.ts` treats OpenAI as one API-key-backed provider. | Report two methods without presenting subscription as a second user-facing provider. |
 | API-key boundary | `src/config/provider-keys.ts` resolves environment before stored keys and re-registers Flue's `openai` provider. | Preserve unchanged; add an isolated `openai-subscription` internal provider. |
 | Flue provider API | `@flue/runtime@1.0.0-beta.8` accepts custom provider ids, `openai-responses`, base URL, API key, and headers. | Register the direct Codex route with its own provider id, token, account header, and originator. |
-| Profile schema | `src/config/types.ts` and `src/config/store.ts` persist a model but no auth method. | Add `openaiAuthMethod` with legacy migration to `api_key`. |
+| Installation settings | `src/config/settings-store.ts` persists target-neutral operator settings. | Add one non-secret OpenAI method setting that defaults to `api_key`. |
 | Effective config | `src/config/effective-config.ts` derives provider from the model prefix. | Resolve a secret-free billing route and internal runtime model specifier. |
 | Runtime assembly | `src/agents/slack-thread.ts` applies provider keys globally before creating Flue config. | Resolve and register the selected lane before each new model operation; different provider ids prevent cross-lane replacement. |
 | Routines | `src/workflows/routine.ts` constructs the same Flue agent shape and records cost units. | Reuse the same route resolver and mark subscription cost unavailable. |
 | OAuth | `src/config/api-oauth.ts` and `src/config/mcp-oauth.ts` already implement bounded pending state, refresh leases, CAS invalidation, and reconnect-required. | Reuse those concurrency and lifecycle patterns for device auth and token rotation. |
 | Secret storage | `src/config/settings-store.ts` provides target-neutral Node SQLite and Durable Object-backed writes. | Add typed write-only subscription credential keys and safe status projections. |
-| Admin | `src/admin/routes.ts` and `src/admin/page.ts` expose API-key status, save/delete, and model selection. | Add subscription connect/poll/disconnect/status and method-specific profile controls. |
+| Admin | `src/admin/routes.ts` and `src/admin/page.ts` expose API-key status, save/delete, and model selection. | Add subscription connect/poll/disconnect/status plus one installation-wide method selector in Settings. |
 | Audit | `src/audit/types.ts` lacks provider-auth events. | Add bounded provider-auth lifecycle and route metadata. |
 | Verification | Provider, admin, Slack, routine, durability, and Worker smoke scripts already separate validation lanes. | Add direct-protocol fixtures, live subscription gates, destination assertions, and kill-switch proof. |
 
 ### Key technical decisions
 
 - KTD1. **Use a direct target-neutral adapter, not Codex app-server.** `(session-settled: user-directed — chosen over bundling or remotely operating app-server: Chickpea must remain thin and run directly on Cloudflare Workers.)` The adapter implements the OpenCode-observed device OAuth and Codex Responses flow behind Chickpea interfaces. Governs R10-R23, R27.
-- KTD2. **Keep separate internal provider identities.** `openai` remains the Platform lane and `openai-subscription` is the direct subscription lane. Profiles continue storing canonical `openai/<model>` plus the method. Subscription resolution must produce a token before Flue provider construction so the underlying OpenAI protocol cannot consult `OPENAI_API_KEY`. Governs R2-R9, R20.
+- KTD2. **Keep separate internal provider identities.** `openai` remains the Platform lane and `openai-subscription` is the direct subscription lane. Profiles store only canonical `openai/<model>` values; the installation setting chooses the lane. Subscription resolution must produce a token before Flue provider construction so the underlying OpenAI protocol cannot consult `OPENAI_API_KEY`. Governs R2-R9, R20.
 - KTD3. **Use device authorization first.** Admin UI polling drives one provider poll per request, which survives remote browsers, Worker duration limits, restarts, and multi-instance execution. A per-attempt capability prevents one authenticated admin browser from reading or completing another browser's pending flow when installations share one admin credential. Governs R10-R13, R24.
 - KTD4. **Store tokens and the identity-fingerprint key through a typed credential facade over SettingsStore.** Reuse the existing secret-at-boundary and refresh-lease patterns rather than adding another database or encryption service. This consciously gives a personal-account refresh token the existing credential store's at-rest protection and requires the runbook to treat suspected store compromise as an immediate remote-revocation event. The personal-account blast radius differs from a separately managed Platform credential and is explicit preview risk. Governs R13-R17, R24-R27.
 - KTD5. **Pin protocol behavior to public source and local fixtures.** One module owns endpoints, client id, scopes, claim parsing, headers, request adjustments, error mapping, redaction, and operator-safe drift signals. Meaningful OpenCode-derived code retains MIT attribution. Governs R18-R24, R29-R31.
 - KTD6. **Prefer a curated allowlist over private discovery.** The live harness proves each enabled model and rollout changes the allowlist intentionally. Governs R4, R21.
 - KTD7. **Use one installation account in the first slice.** A global provider registration is safe within an isolate because every subscription operation resolves the same credential; multi-account work requires a different per-request credential design. Governs R13-R17, R20-R21.
-- KTD8. **Treat the feature as removable infrastructure.** A default-off flag gates authorization and inference, the API-key lane has no dependency on the adapter, and deletion of the adapter leaves migrated profiles blocked rather than re-billed. Governs R3, R6-R9, R23, R29.
+- KTD8. **Treat the feature as removable infrastructure.** A default-off flag gates authorization and inference, the API-key lane has no dependency on the adapter, and disabling the adapter leaves the saved installation method blocked rather than re-billed. Governs R3, R6-R9, R23, R29.
 
 ### High-level technical design
 
@@ -250,8 +250,8 @@ Pejman's direction settles the core architecture: direct integration, no app-ser
 
 ```mermaid
 flowchart TB
-  UI["Settings and profile editor"] --> CFG["Non-secret method and status"]
-  CFG --> ROUTE{"Resolve profile lane"}
+  UI["Settings"] --> CFG["Installation method and safe status"]
+  CFG --> ROUTE{"Resolve installation lane"}
   ROUTE -->|api_key| APIKEY["Existing openai provider"]
   ROUTE -->|subscription| DIRECT["openai-subscription adapter"]
   APIKEY --> PLATFORM["api.openai.com"]
@@ -368,7 +368,7 @@ flowchart TB
 | Device polling exceeds Worker limits | P1 | One provider poll per admin request; persist interval and pending state between requests. |
 | Model or request schema drifts | P1 | Curated allowlist, recorded sanitized fixtures, startup/live compatibility probe, and kill switch. |
 | OpenAI objects to Chickpea's use | P0 | Identify as `chickpea`, avoid impersonation or bypass, disable immediately on direct objection, and retain API-key behavior. |
-| A shared personal account is throttled, restricted, or suspended | P0 | Explicit acknowledgment, distinct quota/enforcement state, operator-selected profiles, kill switch, and remote-revocation runbook. |
+| A shared personal account is throttled, restricted, or suspended | P0 | Distinct quota/enforcement state, explicit installation selection, kill switch, and remote-revocation runbook. |
 | Workspace content moves to consumer ChatGPT data controls | P0 | Method-change impact confirmation and explicit operator disclosure before first assignment. |
 | Operator mistakes subscription activity for API spend | P1 | Method-aware usage schema and copy; monetary cost remains unset. |
 
@@ -415,17 +415,17 @@ flowchart TB
 - **Verification:** Node and Durable Object proxy tests prove identical lifecycle behavior and negative secret serialization.
 - **Dependencies:** U1.
 
-### U3. Add profile method and migration
+### U3. Add the installation method setting
 
-- **Goal:** Represent explicit API-key versus subscription billing authority without changing existing profiles.
+- **Goal:** Represent explicit API-key versus subscription billing authority once per installation without changing profile configuration.
 - **Requirements:** R1-R9, R20-R21, R29-R30; PD1-PD2, KTD2.
-- **Files:** `src/config/types.ts`, `src/config/store.ts`, `src/config/effective-config.ts`, `src/config/snapshot-store.ts`, `src/config/cf-state-proxies.ts`, `src/config/state-rpc.ts`, `src/cloudflare.ts`, `tests/config-store.test.ts`, `tests/slack-thread-snapshot.test.ts`.
-- **Approach:** Add `openaiAuthMethod` and a future-compatible non-secret binding id. Migrate existing `openai/*` profiles to `api_key`. Resolve method as live revocable authority while retaining current snapshot behavior for model and instructions. Keep imported subscription profiles blocked when the preview flag or credential is absent.
+- **Files:** `src/config/openai-auth.ts`, `src/config/settings-store.ts`, `src/config/runtime-model.ts`, `tests/openai-subscription-routing.test.ts`, `tests/slack-thread-snapshot.test.ts`.
+- **Approach:** Add a non-secret setting that defaults to `api_key`. Resolve it live immediately before every OpenAI provider construction while retaining current snapshot behavior for model and instructions. Profiles and snapshots never carry billing authority.
 - **Test scenarios:**
-  - Existing OpenAI, non-OpenAI, fresh, imported, deleted, and recreated profiles round-trip through Node and Durable Object state.
+  - Fresh and existing installations default to API key until Settings explicitly changes the method.
   - A method change affects the next operation without rewriting historical route facts.
   - Missing, disabled, or disconnected subscription state fails without changing the saved method.
-  - Serialized profiles and snapshots contain no credential fields.
+  - Serialized profiles and snapshots contain neither credentials nor an auth-method override.
 - **Verification:** Existing API-key fixtures preserve semantics and all target-neutral state parity tests pass.
 - **Dependencies:** U1.
 
@@ -445,19 +445,19 @@ flowchart TB
 - **Verification:** A fake destination observer proves subscription traffic reaches only the Codex endpoint and API-key traffic reaches only Platform.
 - **Dependencies:** U1-U2.
 
-### U5. Add method-specific Settings and profile UX
+### U5. Add method-specific Settings UX
 
 - **Goal:** Give operators an explicit and honest control surface for both OpenAI methods.
 - **Requirements:** R1-R5, R10-R17, R21, R29-R31.
 - **Files:** `src/admin/routes.ts`, `src/admin/page.ts`, `tests/provider-settings.test.ts`, `tests/admin-page.test.ts`, `scripts/verify-admin-ui.mjs`, `scripts/verify-admin-browser.mjs` (new).
-- **Approach:** Extend provider summaries with API-key and Subscription cards. Add start, poll, cancel, reconnect, disconnect, and status routes that expose only safe DTOs. Keep the attempt capability only in the initiating page's memory, never in a URL, cookie, or persistent browser storage. Add a profile method control, compatibility state, experimental/shared-account/data-policy acknowledgment, impact confirmation, and complete pending/error/quota/drift/disabled states.
+- **Approach:** Extend provider summaries with API-key and Subscription cards plus one `Use for OpenAI calls` selector. Add start, poll, cancel, reconnect, disconnect, selection, and status routes that expose only safe DTOs. Keep the attempt capability only in the initiating page's memory, never in a URL, cookie, or persistent browser storage. Keep profile editing unchanged apart from method-aware model compatibility.
 - **Test scenarios:**
   - API-key only, subscription only, both, neither, preview disabled, pending, connected, expired, reconnect-required, and changed-account states render correctly.
   - User code is shown only to the initiating admin session and disappears after completion or expiry.
   - Reloading, copying the Settings URL, or opening a second browser does not transfer the attempt capability.
-  - Subscription connection never changes any profile automatically.
-  - Profile save rejects a method/model mismatch and confirms affected assignments and routines.
-  - The first assignment and every method change disclose the shared personal-account, consumer-data-policy, quota, and possible-enforcement consequences.
+  - Connecting either credential never changes the selected method automatically.
+  - Switching to Subscription blocks while saved OpenAI profiles use incompatible models; profile saves reject new incompatible OpenAI models while Subscription is selected.
+  - No profile-level auth selector or acknowledgment checkbox is present.
   - Browser accessibility covers keyboard flow, focus, status announcements, and code-copy feedback.
 - **Verification:** Offline browser tests prove every state and confirm no token or raw account id reaches HTML or JSON.
 - **Dependencies:** U2-U3.
@@ -482,7 +482,7 @@ flowchart TB
 - **Goal:** Prove Cloudflare and Node behavior separately, then enable a reversible preview.
 - **Requirements:** R6-R9, R21-R31; KTD5-KTD8.
 - **Files:** `src/config/runtime-target.ts`, `src/admin/routes.ts`, `src/admin/page.ts`, `scripts/verify-openai-subscription-live.mjs` (new), `scripts/verify-providers.mjs`, `scripts/verify-providers-live.mjs`, `scripts/verify-cf-smoke.mjs`, `README.md`, `docs/runbooks/openai-subscription.md`.
-- **Approach:** Add a default-off capability flag shared by Node and Worker builds. Run fake protocol, live Node, deployed Worker, fresh Slack, routine, refresh/reconnect, destination, redaction, health-state, and kill-switch gates separately. Document how to disable the feature, remove the adapter, clear credentials, preserve blocked profile intent, respond to suspected credential compromise, and monitor upstream drift. Record OpenCode attribution and the accepted unsupported-interface posture.
+- **Approach:** Add a default-off capability flag shared by Node and Worker builds. Run fake protocol, live Node, deployed Worker, fresh Slack, routine, refresh/reconnect, destination, redaction, health-state, and kill-switch gates separately. Document how to disable the feature, remove the adapter, clear credentials, preserve the blocked installation method, respond to suspected credential compromise, and monitor upstream drift. Record OpenCode attribution and the accepted unsupported-interface posture.
 - **Test scenarios:**
   - Covers AE2 and AE4 on independent Node and Worker targets.
   - A fresh live Slack turn and routine complete with subscription while a valid Platform key is present and unused.
@@ -503,7 +503,7 @@ Use the repository's Node 24 lane for static and Node verification; keep Worker 
 | Static/unit | `npm test`, `npm run typecheck`, `npm run flue:build`, `npm run build` | Existing and new suites pass with no Codex dependency added. |
 | Direct protocol | `scripts/verify-openai-subscription-protocol.mjs` | Pinned direct fixtures and one approved live account first prove acceptance of `originator: chickpea` and the published client id, then auth, refresh, Responses streaming, tools, and safe failures. |
 | Provider regression | `npm run verify:providers` and `npm run verify:providers:live` | Existing API-key behavior and environment precedence are unchanged. |
-| Admin/config | `npm run verify:admin-ui` plus browser verification | Both methods, device flow, profile selection, shared-account/data-policy disclosure, and categorized health states work without secret reflection. |
+| Admin/config | `npm run verify:admin-ui` plus browser verification | Both methods, device flow, installation-wide selection, and categorized health states work without secret reflection. |
 | Node subscription | `scripts/verify-openai-subscription-live.mjs --target node` | Connect, refresh, turn, routine, reconnect, and kill switch pass through the direct adapter. |
 | Cloudflare subscription | Deployed Worker run plus `npm run verify:cf-smoke` | The same flow passes without a process, binary, or app-server network dependency. |
 | No fallback | Valid Platform key present during subscription success, forced 401, `invalid_grant`, 429, 5xx, and protocol drift | Destination capture shows no `api.openai.com` request and no model/account substitution. |
@@ -529,7 +529,7 @@ Live evidence must not record tokens, user codes, device auth ids, token-exchang
 - [ ] Pejman approves the five remaining launch details in the Product Contract.
 - [ ] The implementation imports no Codex package and launches or calls no app-server process/service.
 - [ ] Device authorization, refresh rotation, reconnect, disconnect, identity projection, and revocation guidance work on Node and Cloudflare.
-- [ ] Existing OpenAI profiles migrate to `api_key`; both methods can coexist and each OpenAI profile selects exactly one.
+- [ ] Existing installations default to `api_key`; both methods can coexist and Settings selects exactly one for all OpenAI calls.
 - [ ] The direct provider is physically isolated from the API-key provider and all private endpoint access lives in one adapter.
 - [ ] Subscription success and every forced failure prove zero Platform API traffic with a valid API key present.
 - [ ] The first live gate accepts `originator: chickpea`; auth, entitlement, originator/client, quota, and protocol-drift states remain distinct and operator-visible.
@@ -537,7 +537,7 @@ Live evidence must not record tokens, user codes, device auth ids, token-exchang
 - [ ] Credentials and temporary authorization values remain outside model-visible, browser-readable, logged, audited, and exported state.
 - [ ] Concurrent refresh and mixed-lane tests pass through both Node and Durable Object storage paths.
 - [ ] Subscription usage is not presented as Platform spend.
-- [ ] Settings discloses the shared personal-account, consumer-data-policy, quota, and enforcement posture before assignment or method change.
+- [ ] Settings clearly identifies the selected method and connection state without adding an acknowledgment checkbox.
 - [ ] The preview flag, compatibility canary, runbook, and one-step removal path are complete.
 - [ ] OpenCode-derived implementation carries required MIT attribution.
 - [ ] All Verification Contract gates pass and are reported by target and validation lane.
