@@ -102,12 +102,17 @@ export async function applyResolvedProviderKeys(
   env?: PlatformEnv,
   store?: SettingsStore,
 ): Promise<void> {
-  await Promise.all(
-    PROVIDER_KEY_IDS.map(async (id) => {
-      const { apiKey } = await resolveProviderApiKey(id, env, store);
-      rebindBuiltinProvider(id, apiKey);
-    }),
-  );
+  await Promise.all(PROVIDER_KEY_IDS.map((id) => applyResolvedProviderKey(id, env, store)));
+}
+
+/** Resolve and bind only the provider selected for this model operation. */
+export async function applyResolvedProviderKey(
+  id: ProviderKeyId,
+  env?: PlatformEnv,
+  store?: SettingsStore,
+): Promise<void> {
+  const { apiKey } = await resolveProviderApiKey(id, env, store);
+  rebindBuiltinProvider(id, apiKey);
 }
 
 /**

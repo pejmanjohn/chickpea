@@ -1,8 +1,8 @@
 import { defineAgent, type AgentRouteHandler, type AgentRuntimeConfig } from '@flue/runtime';
 
 import { resolveEffectiveSlackConfig } from '../config/effective-config.ts';
-import { applyResolvedProviderKeys } from '../config/provider-keys.ts';
-import { getConfigStore, type PlatformEnv } from '../config/state-backend.ts';
+import { resolveRuntimeModel } from '../config/runtime-model.ts';
+import { getConfigStore, getSettingsStore, type PlatformEnv } from '../config/state-backend.ts';
 import { INTERNAL_AGENT_TOKEN_HEADER, isValidInternalAgentToken } from '../slack/internal-auth.ts';
 
 const INTENT_ID = /^routine-intent:([A-Za-z0-9_-]{1,200}):([A-Za-z0-9_-]{1,200}):/;
@@ -18,14 +18,19 @@ export default defineAgent(async ({ id, env }): Promise<AgentRuntimeConfig> => {
   const match = id.match(INTENT_ID);
   if (!match) throw new Error('Routine intent scope is invalid.');
   const platformEnv = env as PlatformEnv;
-  await applyResolvedProviderKeys(platformEnv);
   const store = getConfigStore(platformEnv);
+  const settings = getSettingsStore(platformEnv);
   const config = await resolveEffectiveSlackConfig(match[1]!, match[2]!, {
     agents: store,
     assignments: store,
   });
+  const runtimeModel = await resolveRuntimeModel(config.agentId, config.model, {
+    agents: store,
+    settings,
+    env: platformEnv,
+  });
   return {
-    model: config.model,
+    model: runtimeModel.model,
     tools: [],
     instructions: [
       'Classify and normalize one Slack message that may create, edit, or manage scheduled Chickpea work.',

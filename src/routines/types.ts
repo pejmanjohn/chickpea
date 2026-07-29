@@ -1,4 +1,5 @@
 import type { AuditEvent, AuditEventFilter } from '../audit/types.ts';
+import type { ProviderAuthRoute } from '../config/runtime-model.ts';
 
 export type RoutineState = 'active' | 'paused' | 'disabled' | 'completed';
 export type RoutineTriggerKind = 'schedule' | 'once';
@@ -231,6 +232,7 @@ export interface RoutineRun {
   resolvedAccessHash: string | null;
   resolvedAgentId: string | null;
   model: string | null;
+  providerAuthRoute: ProviderAuthRoute | null;
   inputTokens: number | null;
   outputTokens: number | null;
   cacheReadTokens: number | null;
@@ -326,6 +328,7 @@ export interface BeginRoutineOccurrenceInput {
   resolvedAccessHash?: string;
   resolvedAgentId?: string;
   model?: string;
+  providerAuthRoute?: ProviderAuthRoute;
   traceId?: string;
 }
 

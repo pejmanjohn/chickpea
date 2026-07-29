@@ -3,11 +3,14 @@ import { test } from 'node:test';
 
 import type { EffectiveSlackConfig } from '../src/config/effective-config.ts';
 import { RoutineRuntimeError } from '../src/routines/runtime.ts';
+import { OpenAiSubscriptionError } from '../src/openai-subscription/errors.ts';
 import type { RoutineDefinition, RoutineRun, RoutineStore } from '../src/routines/types.ts';
 import {
   failInterruptedRoutineWorkflow,
   initializeRoutineWorkflowRuntime,
   routineAgentInstanceId,
+  routineModelLabel,
+  routineUsageMetadata,
 } from '../src/workflows/routine.ts';
 
 const config = {
@@ -37,6 +40,7 @@ const run = {
   failureClass: null, publicError: null, admissionOwner: 'heartbeat', admissionLeaseUntil: 2,
   flueRunId: 'run_flue', queuedAt: 1, admittedAt: 1, startedAt: null, finishedAt: null,
   resolvedAccessHash: null, resolvedAgentId: null, model: null, inputTokens: null,
+  providerAuthRoute: null,
   outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null, costEstimate: null,
   costUnit: null, deadlineAt: 9999999999999, sandboxSessionId: null, toolCallCount: 0,
   deliveryStatus: 'none', deliveryLeaseUntil: null, deliveryChannelId: null,
@@ -68,6 +72,7 @@ test('live access and atomic begin precede all Agent and sandbox construction', 
         events.push('live-access');
         return { config, accessHash: 'a'.repeat(64), botToken: 'xoxb-test', botUserId: 'U_BOT' };
       },
+      resolveModel: async () => ({ model: config.model }),
       useCloudflareSandbox: async () => { events.push('sandbox-check'); return false; },
       createAgent: async ({ id }) => {
         events.push(`agent:${id}`);
@@ -104,6 +109,7 @@ test('failed authorization and superseded begin construct no Agent', async () =>
             }
             return { config, accessHash: 'a'.repeat(64), botToken: 'xoxb-test', botUserId: 'U_BOT' };
           },
+          resolveModel: async () => ({ model: config.model }),
           createAgent: async () => { events.push('agent'); throw new Error('must not run'); },
         },
       ),
@@ -111,6 +117,130 @@ test('failed authorization and superseded begin construct no Agent', async () =>
     assert.ok(!events.includes('agent'));
     assert.equal(events.includes('begin'), scenario === 'superseded');
   }
+});
+
+test('a routine records the selected OpenAI lane before using the isolated runtime model', async () => {
+  const openAiConfig: EffectiveSlackConfig = {
+    ...config,
+    agent: {
+      ...config.agent,
+      model: 'openai/gpt-5.4',
+      openaiAuthMethod: 'subscription',
+    },
+    model: 'openai/gpt-5.4',
+    provider: 'openai',
+  };
+  const begins: unknown[] = [];
+  const store = {
+    ...fakeStore([]),
+    beginOccurrence: async (input: unknown) => { begins.push(input); return 'started' as const; },
+  } as unknown as RoutineStore;
+  const runtime = await initializeRoutineWorkflowRuntime(
+    { flueRunId: 'run_subscription', env: {}, store, run, routine },
+    {
+      resolveAccess: async () => ({
+        config: openAiConfig,
+        accessHash: 'b'.repeat(64),
+        botToken: 'xoxb-test',
+        botUserId: 'U_BOT',
+      }),
+      resolveModel: async () => ({
+        model: 'openai-subscription/gpt-5.4',
+        providerAuthRoute: 'openai_subscription',
+      }),
+      useCloudflareSandbox: async () => false,
+      createAgent: async (input) => {
+        assert.deepEqual(input.runtimeModel, {
+          model: 'openai-subscription/gpt-5.4',
+          providerAuthRoute: 'openai_subscription',
+        });
+        return { model: input.runtimeModel!.model, instructions: 'test', tools: [] };
+      },
+    },
+  );
+
+  assert.equal(runtime.providerAuthRoute, 'openai_subscription');
+  assert.deepEqual(begins, [{
+    occurrenceId: run.id,
+    flueRunId: 'run_subscription',
+    startedAt: (begins[0] as { startedAt: number }).startedAt,
+    resolvedAccessHash: 'b'.repeat(64),
+    resolvedAgentId: openAiConfig.agentId,
+    model: 'openai/gpt-5.4',
+    providerAuthRoute: 'openai_subscription',
+    traceId: 'run_subscription',
+  }]);
+});
+
+test('subscription routine usage keeps canonical model identity and does not invent Platform spend', () => {
+  const usage = {
+    input: 100,
+    output: 20,
+    cacheRead: 5,
+    cacheWrite: 2,
+    cost: { total: 0.42 },
+  } as Parameters<typeof routineUsageMetadata>[0];
+
+  assert.equal(
+    routineModelLabel({ provider: 'openai-subscription', id: 'gpt-5.4' }),
+    'openai/gpt-5.4',
+  );
+  assert.deepEqual(routineUsageMetadata(usage, 'openai_subscription'), {
+    inputTokens: 100,
+    outputTokens: 20,
+    cacheReadTokens: 5,
+    cacheWriteTokens: 2,
+    costUnit: 'chatgpt_subscription_quota',
+  });
+  assert.equal(routineUsageMetadata(usage, 'openai_api_key').costEstimate, 0.42);
+});
+
+test('a routine subscription credential failure is categorized before Agent construction with no fallback', async () => {
+  const transitions: Array<Record<string, unknown>> = [];
+  const store = {
+    ...fakeStore([]),
+    transitionRun: async (input: Record<string, unknown>) => {
+      transitions.push(input);
+      return { ...run, status: 'failed' as const };
+    },
+  } as unknown as RoutineStore;
+  const openAiConfig: EffectiveSlackConfig = {
+    ...config,
+    agent: {
+      ...config.agent,
+      model: 'openai/gpt-5.4',
+      openaiAuthMethod: 'subscription',
+    },
+    model: 'openai/gpt-5.4',
+    provider: 'openai',
+  };
+  let agentConstructions = 0;
+
+  await assert.rejects(
+    () => initializeRoutineWorkflowRuntime(
+      { flueRunId: 'run_reconnect', env: {}, store, run, routine },
+      {
+        resolveAccess: async () => ({
+          config: openAiConfig,
+          accessHash: 'c'.repeat(64),
+          botToken: 'xoxb-test',
+          botUserId: 'U_BOT',
+        }),
+        resolveModel: async () => {
+          throw new OpenAiSubscriptionError('auth_reconnect_required');
+        },
+        createAgent: async () => {
+          agentConstructions += 1;
+          throw new Error('must not construct');
+        },
+      },
+    ),
+    /ChatGPT subscription connection needs attention in Settings/,
+  );
+  assert.equal(agentConstructions, 0);
+  assert.equal(transitions[0]?.failureClass, 'credential_unavailable');
+  assert.equal(transitions[0]?.publicError,
+    'The ChatGPT subscription connection needs attention in Settings. API-key billing was not used.');
 });
 
 test('every Flue run receives a fresh Agent identity', () => {

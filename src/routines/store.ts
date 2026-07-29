@@ -155,6 +155,7 @@ interface RunRow {
   resolved_access_hash: string | null;
   resolved_agent_id: string | null;
   model: string | null;
+  provider_auth_route: RoutineRun['providerAuthRoute'];
   input_tokens: number | null;
   output_tokens: number | null;
   cache_read_tokens: number | null;
@@ -1318,6 +1319,8 @@ export class RoutineStoreLogic {
       (input.resolvedAccessHash !== undefined && !/^[a-f0-9]{64}$/.test(input.resolvedAccessHash)) ||
       (input.resolvedAgentId !== undefined && !isOpaqueRoutineId(input.resolvedAgentId)) ||
       (input.model !== undefined && (!input.model || input.model.length > 500)) ||
+      (input.providerAuthRoute !== undefined &&
+        !['openai_api_key', 'openai_subscription'].includes(input.providerAuthRoute)) ||
       (input.traceId !== undefined && !isOpaqueRoutineId(input.traceId))
     ) {
       throw routineError('routine_admission_invalid', 'Routine admission is invalid.');
@@ -1356,7 +1359,8 @@ export class RoutineStoreLogic {
         this.db.run(
           `UPDATE routine_runs SET status = 'running', flue_run_id = ?, admitted_at = COALESCE(admitted_at, ?),
              started_at = ?, resolved_access_hash = ?, resolved_agent_id = ?, model = ?,
-             trace_id = ?, admission_owner = NULL, admission_lease_until = NULL
+             provider_auth_route = ?, trace_id = ?,
+             admission_owner = NULL, admission_lease_until = NULL
            WHERE id = ? AND status = 'admitting'`,
           input.flueRunId,
           input.startedAt,
@@ -1364,6 +1368,7 @@ export class RoutineStoreLogic {
           input.resolvedAccessHash ?? null,
           input.resolvedAgentId ?? null,
           input.model ?? null,
+          input.providerAuthRoute ?? null,
           input.traceId ?? null,
           input.occurrenceId,
         );
@@ -1651,6 +1656,7 @@ export class RoutineStoreLogic {
         admission_lease_until INTEGER, flue_run_id TEXT UNIQUE, queued_at INTEGER NOT NULL,
         admitted_at INTEGER, started_at INTEGER, finished_at INTEGER,
         resolved_access_hash TEXT, resolved_agent_id TEXT, model TEXT,
+        provider_auth_route TEXT,
         input_tokens INTEGER, output_tokens INTEGER, cache_read_tokens INTEGER,
         cache_write_tokens INTEGER, cost_estimate REAL, cost_unit TEXT,
         deadline_at INTEGER NOT NULL, sandbox_session_id TEXT, tool_call_count INTEGER NOT NULL,
@@ -1661,6 +1667,10 @@ export class RoutineStoreLogic {
         last_missed_at INTEGER, trace_id TEXT, revision_json TEXT, revision_hash TEXT NOT NULL
       )`,
     );
+    const runColumns = this.db.all('PRAGMA table_info(routine_runs)');
+    if (!runColumns.some((row) => row.name === 'provider_auth_route')) {
+      this.db.exec('ALTER TABLE routine_runs ADD COLUMN provider_auth_route TEXT');
+    }
     this.db.exec(
       `CREATE UNIQUE INDEX IF NOT EXISTS routine_runs_schedule_slot_unique
        ON routine_runs (routine_id, scheduled_for) WHERE trigger_source = 'schedule'`,
@@ -2170,6 +2180,7 @@ export class RoutineStoreLogic {
         routineId: run.routineId,
         status: run.status,
         triggerSource: run.triggerSource,
+        ...(run.providerAuthRoute ? { providerAuthRoute: run.providerAuthRoute } : {}),
       }),
       idempotencyKey,
     });
@@ -2743,6 +2754,7 @@ function rowToRun(row: RunRow): RoutineRun {
     resolvedAccessHash: row.resolved_access_hash,
     resolvedAgentId: row.resolved_agent_id,
     model: row.model,
+    providerAuthRoute: row.provider_auth_route,
     inputTokens: row.input_tokens,
     outputTokens: row.output_tokens,
     cacheReadTokens: row.cache_read_tokens,

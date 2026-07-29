@@ -12,6 +12,9 @@ import { activityStatusTraceHeaders } from './activity-publisher.ts';
 export type AgentPromptFailureKind =
   | 'agent'
   | 'provider'
+  | 'openai-subscription-reconnect'
+  | 'openai-subscription-quota'
+  | 'openai-subscription-policy'
   | 'sandbox'
   | 'sandbox-session-cap';
 
@@ -121,6 +124,24 @@ export function classifyAgentPromptFailure(
   const type = error.type.toLowerCase();
   const message = error.message.toLowerCase();
   const searchable = `${type} ${message}`;
+
+  if (
+    message.includes('openai subscription operation failed (auth_reconnect_required)') ||
+    message.includes('openai subscription operation failed (authorization_missing)') ||
+    message.includes('openai subscription operation failed (storage_invalid)')
+  ) {
+    return 'openai-subscription-reconnect';
+  }
+  if (message.includes('openai subscription operation failed (subscription_quota_exhausted)')) {
+    return 'openai-subscription-quota';
+  }
+  if (
+    message.includes('openai subscription operation failed (entitlement_denied)') ||
+    message.includes('openai subscription operation failed (client_rejected)') ||
+    message.includes('openai subscription operation failed (originator_rejected)')
+  ) {
+    return 'openai-subscription-policy';
+  }
 
   if (
     type === 'sandbox_session_cap_reached' ||

@@ -4,6 +4,10 @@ import { Hono } from 'hono';
 
 import { createAdminRoutes } from './admin/routes.ts';
 import { activityStatusForObservation } from './activity/status.ts';
+import {
+  observeProviderAuthRoute,
+  providerAuthRouteInterceptor,
+} from './audit/provider-auth.ts';
 import { recordRegisteredProvider } from './config/providers.ts';
 import {
   memoryToolPolicyInterceptor,
@@ -96,6 +100,17 @@ instrument({
   key: Symbol.for('chickpea.memory-tool-policy'),
   interceptor: memoryToolPolicyInterceptor,
   observe: observeMemoryToolPolicy,
+  dispose() {},
+});
+
+// Flue emits one turn_request for every main, structured-output, retry, and
+// compaction model operation. Its provider id is already credential-free; add
+// the exact product route fact to the same trace without prompts, account data,
+// tokens, or billing guesses.
+instrument({
+  key: Symbol.for('chickpea.provider-auth-route'),
+  interceptor: providerAuthRouteInterceptor,
+  observe: observeProviderAuthRoute,
   dispose() {},
 });
 

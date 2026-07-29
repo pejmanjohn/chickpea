@@ -47,7 +47,10 @@ import {
   resolveProfileMcpTools,
 } from '../config/profile-mcp.ts';
 import { resolveProfileSkills } from '../config/profile-skills.ts';
-import { applyResolvedProviderKeys } from '../config/provider-keys.ts';
+import {
+  resolveRuntimeModel,
+  type ResolvedRuntimeModel,
+} from '../config/runtime-model.ts';
 import { resolveSandboxSettings } from '../config/sandbox-settings.ts';
 import { SEED_CLOUDFLARE_MODEL_PIN } from '../config/seed.ts';
 import { surfaceForChannelId } from '../config/resolver.ts';
@@ -481,6 +484,7 @@ export interface SlackAgentRuntimeInput {
   workspaceId?: string;
   channelId?: string;
   liveConfig?: EffectiveSlackConfig;
+  runtimeModel?: ResolvedRuntimeModel;
   freezeChannel?: boolean;
   artifactThreadTs?: string | null;
 }
@@ -491,7 +495,6 @@ export async function createSlackAgentRuntime(
 ): Promise<AgentRuntimeConfig> {
   const id = input.id;
   const env = input.platformEnv ?? (await resolveAgentPlatformEnv());
-  await applyResolvedProviderKeys(env);
   const store = getConfigStore(env);
   const settingsStore = getSettingsStore(env);
   const stores = { agents: store, assignments: store };
@@ -518,6 +521,15 @@ export async function createSlackAgentRuntime(
         baseSlackThreadKey(id),
         resolve,
       )
+  );
+  const runtimeModel = input.runtimeModel ?? await resolveRuntimeModel(
+    config.agentId,
+    config.model,
+    {
+      agents: store,
+      settings: settingsStore,
+      ...(env ? { env } : {}),
+    },
   );
 
   // A channel snapshot is a ceiling, not a revocation lease. Intersect its
@@ -734,7 +746,7 @@ export async function createSlackAgentRuntime(
 
   const thinkingLevel = thinkingLevelForModel(config.model);
   return {
-    model: config.model,
+    model: runtimeModel.model,
     // Flue defaults reasoning-capable models to medium effort. The keyless
     // GLM-5.2 binding can reach Workers AI's response deadline before its first
     // tool call even at low effort, so disable extra reasoning only for this

@@ -41,6 +41,7 @@ const run = {
   failureClass: null, publicError: null, admissionOwner: 'heartbeat', admissionLeaseUntil: 2,
   flueRunId: 'run_test', queuedAt: 1, admittedAt: 1, startedAt: null, finishedAt: null,
   resolvedAccessHash: null, resolvedAgentId: null, model: null, inputTokens: null,
+  providerAuthRoute: null,
   outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null, costEstimate: null,
   costUnit: null, deadlineAt: 9999999999999, sandboxSessionId: null, toolCallCount: 0,
   deliveryStatus: 'none', deliveryLeaseUntil: null, deliveryChannelId: null,
