@@ -721,6 +721,9 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       retireCredential: async (credentialRefId, version, retiredAt) =>
         stores.usage.retireCredential(credentialRefId, version, retiredAt),
       listCredentials: async (providerId) => stores.usage.listCredentials(providerId),
+      cleanupRetention: async (at) => stores.usage.cleanupRetention(at),
+      getRetentionStatus: async () => stores.usage.getRetentionStatus(),
+      listUsageAuditEvents: async (limit) => stores.usage.listUsageAuditEvents(limit),
     };
     let needsRetry = false;
     // The resolver's store contract is async; the DO's logic classes are sync.

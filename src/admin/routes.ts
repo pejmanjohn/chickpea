@@ -193,6 +193,7 @@ interface AdminRoutesOptions {
   memory?: MemoryStateStore | undefined;
   routines?: RoutineStore | undefined;
   usage?: UsageStore | undefined;
+  usageAdminUi?: boolean | undefined;
   adminToken?: string | undefined;
   knownProviders?: ReadonlySet<string> | undefined;
   // Injection seam for the MCP test-connection route, mirroring how the skills
@@ -693,6 +694,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     options.routines ?? getRoutineStore(c.env as PlatformEnv | undefined);
   const usage = (c: Context) =>
     options.usage ?? getUsageStore(c.env as PlatformEnv | undefined);
+  const usageAdminUi = (c: Context): boolean => {
+    if (options.usageAdminUi !== undefined) return options.usageAdminUi;
+    const platformValue = (c.env as PlatformEnv | undefined)?.USAGE_ADMIN_UI;
+    const value = platformValue ?? process.env.USAGE_ADMIN_UI;
+    return value === '1' || value === 'true';
+  };
   const adminToken = () =>
     tokenFromOptions ? options.adminToken : process.env.TAG_ADMIN_TOKEN;
   const modelProviders = () =>
@@ -1145,7 +1152,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
   });
 
-  app.get('/admin', (c) => c.html(renderAdminPage()));
+  app.get('/admin', (c) => c.html(renderAdminPage({ usageAdminUi: usageAdminUi(c) })));
 
   app.route('/admin/api', createMemoryAdminApi({
     store: memory,
@@ -2818,7 +2825,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   app.get('/admin/*', (c) => {
     const pathname = new URL(c.req.url).pathname;
     if (pathname.startsWith('/admin/api/')) return c.notFound();
-    return c.html(renderAdminPage());
+    return c.html(renderAdminPage({ usageAdminUi: usageAdminUi(c) }));
   });
 
   return app;

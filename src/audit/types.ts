@@ -1,4 +1,4 @@
-export type AuditDomain = 'memory' | 'scheduled_work' | 'network_event';
+export type AuditDomain = 'memory' | 'scheduled_work' | 'network_event' | 'usage';
 
 export interface AuditEvent {
   eventId: string;

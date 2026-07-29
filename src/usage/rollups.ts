@@ -12,13 +12,13 @@ export interface UsageWhereClause {
 
 const FILTER_COLUMNS = {
   workspace: 'o.workspace_id',
-  profile: 'o.profile_id',
-  channel: 'o.channel_id',
+  profile: "COALESCE(o.profile_id, 'unknown')",
+  channel: "CASE WHEN o.conversation_kind = 'direct_message' THEN 'direct_message' ELSE COALESCE(o.channel_id, 'unknown') END",
   workKind: 'o.operation_kind',
-  routine: 'o.routine_id',
-  provider: 'COALESCE(m.returned_provider, m.provider_route, o.requested_provider)',
-  credential: 'COALESCE(m.credential_ref_id, o.credential_ref_id)',
-  model: 'COALESCE(m.returned_model, m.requested_model, o.requested_model)',
+  routine: "COALESCE(o.routine_id, 'not_routine')",
+  provider: "COALESCE(m.returned_provider, m.provider_route, o.requested_provider, 'unknown')",
+  credential: "COALESCE(m.credential_ref_id, o.credential_ref_id, 'unknown')",
+  model: "COALESCE(m.returned_model, m.requested_model, o.requested_model, 'unknown')",
   status: 'o.status',
 } as const;
 
@@ -92,6 +92,7 @@ export function aggregateSelect(currency: string | null): { sql: string; params:
       COUNT(DISTINCT CASE WHEN o.status IN ('interrupted', 'incomplete', 'admitted') THEN o.operation_id END) AS incomplete_operation_count,
       COUNT(DISTINCT CASE WHEN m.usage_completeness IN ('complete', 'partial') THEN o.operation_id END) AS metered_operation_count,
       COUNT(DISTINCT CASE WHEN m.estimate_completeness = 'complete' THEN o.operation_id END) AS priced_operation_count,
+      COUNT(DISTINCT CASE WHEN o.status = 'completed' AND m.estimate_completeness = 'complete' THEN o.operation_id END) AS completed_priced_operation_count,
       COUNT(DISTINCT o.operation_id) - COUNT(DISTINCT CASE WHEN m.usage_completeness IN ('complete', 'partial') THEN o.operation_id END) AS unknown_usage_operation_count,
       COUNT(DISTINCT o.operation_id) - COUNT(DISTINCT CASE WHEN m.estimate_completeness = 'complete' THEN o.operation_id END) AS unknown_price_operation_count,
       SUM(m.input_tokens) AS input_tokens,
@@ -110,6 +111,7 @@ export function mapRollupRow(row: Record<string, unknown>): UsageRollupValues {
     incompleteOperationCount: integer(row.incomplete_operation_count),
     meteredOperationCount: integer(row.metered_operation_count),
     pricedOperationCount: integer(row.priced_operation_count),
+    completedPricedOperationCount: integer(row.completed_priced_operation_count),
     unknownUsageOperationCount: integer(row.unknown_usage_operation_count),
     unknownPriceOperationCount: integer(row.unknown_price_operation_count),
     inputTokens: nullableInteger(row.input_tokens),

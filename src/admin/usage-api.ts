@@ -1,6 +1,8 @@
 import { Hono, type Context } from 'hono';
 
 import { UsageStateError } from '../usage/store.ts';
+import { USAGE_PROVIDER_GUIDANCE } from '../usage/provider-guidance.ts';
+import { RELEASE_PRICE_CATALOGS } from '../usage/pricing/catalog.ts';
 import type {
   UsageFilters,
   UsageGroupBy,
@@ -25,6 +27,60 @@ export function createUsageAdminApi(options: UsageAdminApiOptions): Hono {
   app.get('/usage/summary', async (c) => {
     try {
       return c.json(await options.store(c).summarize(parseUsageQuery(c, true)));
+    } catch (error) {
+      return usageError(c, error);
+    }
+  });
+
+  app.get('/usage/overview', async (c) => {
+    try {
+      const query = parseUsageQuery(c, true);
+      const duration = query.to - query.from;
+      const previousFrom = Math.max(0, query.from - duration);
+      const [current, previous] = await Promise.all([
+        options.store(c).summarize(query),
+        options.store(c).summarize({
+          ...query,
+          from: previousFrom,
+          to: query.from,
+        }),
+      ]);
+      return c.json({ current, previous });
+    } catch (error) {
+      return usageError(c, error);
+    }
+  });
+
+  app.get('/usage/metadata', async (c) => {
+    try {
+      const store = options.store(c);
+      const [credentials, retention, lifecycleEvents] = await Promise.all([
+        store.listCredentials(),
+        store.getRetentionStatus(),
+        store.listUsageAuditEvents(50),
+      ]);
+      return c.json({
+        generatedAt: Date.now(),
+        contract: {
+          usageSource: 'model_response_aggregate',
+          monetarySource: 'chickpea_list_price_estimate',
+          providerBillingIncluded: false,
+          limitsManagedByChickpea: false,
+        },
+        guidance: USAGE_PROVIDER_GUIDANCE,
+        catalogs: RELEASE_PRICE_CATALOGS.map((catalog) => ({
+          id: catalog.id,
+          providerId: catalog.providerId,
+          sourceUrl: catalog.sourceUrl,
+          reviewedAt: catalog.reviewedAt,
+          staleAfter: catalog.staleAfter,
+          currency: catalog.currency,
+          models: catalog.rates.map((rate) => rate.modelId),
+        })),
+        credentials,
+        retention,
+        lifecycleEvents,
+      });
     } catch (error) {
       return usageError(c, error);
     }

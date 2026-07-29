@@ -1,3 +1,5 @@
+import type { AuditEvent } from '../audit/types.ts';
+
 export const USAGE_TELEMETRY_SCHEMA_VERSION = 1;
 
 export const USAGE_OPERATION_KINDS = ['interactive_turn', 'routine_run'] as const;
@@ -186,6 +188,7 @@ export interface UsageRollupValues {
   incompleteOperationCount: number;
   meteredOperationCount: number;
   pricedOperationCount: number;
+  completedPricedOperationCount: number;
   unknownUsageOperationCount: number;
   unknownPriceOperationCount: number;
   inputTokens: number | null;
@@ -213,6 +216,20 @@ export interface UsageSummary {
 export interface UsageOperationPage {
   items: UsageOperationDetail[];
   nextCursor: UsageCursor | null;
+}
+
+export interface UsageRetentionStatus {
+  rawRetentionDays: number;
+  aggregateRetentionMonths: number;
+  lastRunAt: number | null;
+  rawRetainedFrom: number | null;
+  aggregateRetainedFrom: number | null;
+}
+
+export interface UsageRetentionResult extends UsageRetentionStatus {
+  operationsDeleted: number;
+  measurementsDeleted: number;
+  aggregateDaysDeleted: number;
 }
 
 export const MODEL_CREDENTIAL_SOURCE_KINDS = [
@@ -246,7 +263,10 @@ export type UsageRpcRequest =
   | { kind: 'summarize'; query: UsageQuery }
   | { kind: 'put_credential'; input: PutModelCredentialInput }
   | { kind: 'retire_credential'; credentialRefId: string; version: number; retiredAt: number }
-  | { kind: 'list_credentials'; providerId?: string };
+  | { kind: 'list_credentials'; providerId?: string }
+  | { kind: 'cleanup_retention'; at?: number }
+  | { kind: 'retention_status' }
+  | { kind: 'list_usage_audit_events'; limit?: number };
 
 export type UsageRpcResponse =
   | { kind: 'operation'; operation: UsageOperation }
@@ -254,7 +274,10 @@ export type UsageRpcResponse =
   | { kind: 'operation_page'; page: UsageOperationPage }
   | { kind: 'summary'; summary: UsageSummary }
   | { kind: 'credential'; credential: ModelCredentialRecord }
-  | { kind: 'credentials'; credentials: ModelCredentialRecord[] };
+  | { kind: 'credentials'; credentials: ModelCredentialRecord[] }
+  | { kind: 'retention'; result: UsageRetentionResult }
+  | { kind: 'retention_status'; status: UsageRetentionStatus }
+  | { kind: 'audit_events'; events: AuditEvent[] };
 
 export interface UsageStore {
   admitOperation(input: AdmitUsageOperationInput): Promise<UsageOperation>;
@@ -269,5 +292,8 @@ export interface UsageStore {
     retiredAt: number,
   ): Promise<ModelCredentialRecord>;
   listCredentials(providerId?: string): Promise<ModelCredentialRecord[]>;
+  cleanupRetention(at?: number): Promise<UsageRetentionResult>;
+  getRetentionStatus(): Promise<UsageRetentionStatus>;
+  listUsageAuditEvents(limit?: number): Promise<AuditEvent[]>;
   close?(): void;
 }

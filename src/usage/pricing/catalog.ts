@@ -5,7 +5,7 @@ import type { UsagePriceRate, UsagePriceVersion } from './types.ts';
 
 export { RELEASE_PRICE_CATALOGS } from './catalogs/2026-07-28.ts';
 
-export function installReleasePriceCatalogs(db: StateDb): void {
+export function installReleasePriceCatalogs(db: StateDb): UsagePriceVersion[] {
   db.exec(
     `CREATE TABLE IF NOT EXISTS usage_price_versions (
       price_version_id TEXT PRIMARY KEY,
@@ -32,7 +32,11 @@ export function installReleasePriceCatalogs(db: StateDb): void {
       PRIMARY KEY (price_version_id, provider_id, model_id)
     )`,
   );
-  for (const catalog of RELEASE_PRICE_CATALOGS) installVersion(db, catalog);
+  const installed: UsagePriceVersion[] = [];
+  for (const catalog of RELEASE_PRICE_CATALOGS) {
+    if (installVersion(db, catalog)) installed.push(catalog);
+  }
+  return installed;
 }
 
 export function priceCatalogFor(
@@ -50,7 +54,7 @@ export function priceCatalogFor(
   return null;
 }
 
-function installVersion(db: StateDb, version: UsagePriceVersion): void {
+function installVersion(db: StateDb, version: UsagePriceVersion): boolean {
   const existing = db.get(
     'SELECT content_hash FROM usage_price_versions WHERE price_version_id = ?',
     version.id,
@@ -62,6 +66,7 @@ function installVersion(db: StateDb, version: UsagePriceVersion): void {
       { priceVersionId: version.id },
     );
   }
+  if (existing) return false;
   db.run(
     `INSERT OR IGNORE INTO usage_price_versions (
       price_version_id, provider_id, source_url, effective_from, reviewed_at,
@@ -93,4 +98,5 @@ function installVersion(db: StateDb, version: UsagePriceVersion): void {
       rate.basis,
     );
   }
+  return true;
 }

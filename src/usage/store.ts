@@ -1,5 +1,7 @@
 import { openStateDb, resolveStateDbPath, type NodeStateDb } from '../state/node-state-db.ts';
 import type { StateDb } from '../state/state-db.ts';
+import { AuditStoreLogic } from '../audit/store.ts';
+import type { AuditEvent } from '../audit/types.ts';
 import {
   aggregateSelect,
   mapRollupRow,
@@ -8,6 +10,12 @@ import {
 } from './rollups.ts';
 import { UsageStateError } from './store-error.ts';
 import { installReleasePriceCatalogs } from './pricing/catalog.ts';
+import {
+  USAGE_AGGREGATE_RETENTION_MONTHS,
+  USAGE_RAW_RETENTION_DAYS,
+  USAGE_RETENTION_CHECK_INTERVAL_MS,
+  usageRetentionCutoffs,
+} from './retention.ts';
 import {
   USAGE_TELEMETRY_SCHEMA_VERSION,
   type AdmitUsageOperationInput,
@@ -20,6 +28,8 @@ import {
   type UsageOperationDetail,
   type UsageOperationPage,
   type UsageQuery,
+  type UsageRetentionResult,
+  type UsageRetentionStatus,
   type UsageRpcRequest,
   type UsageRpcResponse,
   type UsageStore,
@@ -115,15 +125,19 @@ const MEASUREMENT_COLUMNS = `
   price_unknown_reason, recorded_at`;
 
 export class UsageStoreLogic {
+  private readonly audit: AuditStoreLogic;
+
   constructor(
     private readonly db: StateDb,
     private readonly now: () => number = Date.now,
   ) {
+    this.audit = new AuditStoreLogic(db);
     this.initializeSchema();
   }
 
   admitOperation(raw: AdmitUsageOperationInput): UsageOperation {
     const input = normalizeAdmitUsageOperation(raw);
+    this.maybeCleanupRetention();
     return this.db.transaction(() => {
       const existing = this.getOperationRow(input.operationId);
       if (existing) {
@@ -337,7 +351,20 @@ export class UsageStoreLogic {
         input.unknownRotation ? 1 : 0,
         input.activeFrom,
       );
-      return requiredCredential(this.getCredentialRow(input.credentialRefId, input.version));
+      const credential = requiredCredential(this.getCredentialRow(input.credentialRefId, input.version));
+      this.appendUsageAudit({
+        eventId: `usage:credential:${input.credentialRefId}:${input.version}:created`,
+        eventType: 'usage.credential_created',
+        subjectId: input.credentialRefId,
+        subjectVersion: input.version,
+        createdAt: input.activeFrom,
+        metadata: {
+          providerId: input.providerId,
+          sourceKind: input.sourceKind,
+          unknownRotation: input.unknownRotation,
+        },
+      });
+      return credential;
     });
   }
 
@@ -376,6 +403,14 @@ export class UsageStoreLogic {
           retirement.credentialRefId,
           retirement.version,
         );
+        this.appendUsageAudit({
+          eventId: `usage:credential:${retirement.credentialRefId}:${retirement.version}:retired`,
+          eventType: 'usage.credential_retired',
+          subjectId: retirement.credentialRefId,
+          subjectVersion: retirement.version,
+          createdAt: retirement.retiredAt,
+          metadata: {},
+        });
       }
       return requiredCredential(this.getCredentialRow(
         retirement.credentialRefId,
@@ -399,6 +434,125 @@ export class UsageStoreLogic {
            FROM usage_credentials ORDER BY provider_id, credential_ref_id, version`,
         );
     return rows.map((row) => mapCredential(row as unknown as CredentialRow));
+  }
+
+  cleanupRetention(at: number = this.now()): UsageRetentionResult {
+    const cutoffs = usageRetentionCutoffs(at);
+    return this.db.transaction(() => {
+      const expiringOperations = Number(this.db.get(
+        'SELECT COUNT(*) AS count FROM usage_operations WHERE started_at < ?',
+        cutoffs.rawBefore,
+      )?.count ?? 0);
+      let measurementsDeleted = 0;
+      let operationsDeleted = 0;
+      if (expiringOperations > 0) {
+        this.db.run(
+          `INSERT INTO usage_daily_rollups (
+            day_start, operation_count, completed_operation_count,
+            failed_operation_count, incomplete_operation_count,
+            metered_operation_count, priced_operation_count, completed_priced_operation_count,
+            unknown_usage_operation_count, unknown_price_operation_count,
+            input_tokens, output_tokens, total_tokens,
+            estimate_amount_micros_usd, updated_at
+          )
+          SELECT CAST(o.started_at / 86400000 AS INTEGER) * 86400000,
+            COUNT(DISTINCT o.operation_id),
+            COUNT(DISTINCT CASE WHEN o.status = 'completed' THEN o.operation_id END),
+            COUNT(DISTINCT CASE WHEN o.status = 'failed' THEN o.operation_id END),
+            COUNT(DISTINCT CASE WHEN o.status IN ('interrupted', 'incomplete', 'admitted') THEN o.operation_id END),
+            COUNT(DISTINCT CASE WHEN m.usage_completeness IN ('complete', 'partial') THEN o.operation_id END),
+            COUNT(DISTINCT CASE WHEN m.estimate_completeness = 'complete' AND m.estimate_currency = 'USD' THEN o.operation_id END),
+            COUNT(DISTINCT CASE WHEN o.status = 'completed' AND m.estimate_completeness = 'complete' AND m.estimate_currency = 'USD' THEN o.operation_id END),
+            COUNT(DISTINCT o.operation_id) - COUNT(DISTINCT CASE WHEN m.usage_completeness IN ('complete', 'partial') THEN o.operation_id END),
+            COUNT(DISTINCT o.operation_id) - COUNT(DISTINCT CASE WHEN m.estimate_completeness = 'complete' AND m.estimate_currency = 'USD' THEN o.operation_id END),
+            COALESCE(SUM(m.input_tokens), 0), COALESCE(SUM(m.output_tokens), 0),
+            COALESCE(SUM(m.total_tokens), 0),
+            COALESCE(SUM(CASE WHEN m.estimate_completeness = 'complete' AND m.estimate_currency = 'USD' THEN m.estimate_amount_micros END), 0),
+            ?
+          FROM usage_operations o
+          LEFT JOIN usage_measurements m ON m.operation_id = o.operation_id
+          WHERE o.started_at < ?
+          GROUP BY CAST(o.started_at / 86400000 AS INTEGER) * 86400000
+          ON CONFLICT(day_start) DO UPDATE SET
+            operation_count = operation_count + excluded.operation_count,
+            completed_operation_count = completed_operation_count + excluded.completed_operation_count,
+            failed_operation_count = failed_operation_count + excluded.failed_operation_count,
+            incomplete_operation_count = incomplete_operation_count + excluded.incomplete_operation_count,
+            metered_operation_count = metered_operation_count + excluded.metered_operation_count,
+            priced_operation_count = priced_operation_count + excluded.priced_operation_count,
+            completed_priced_operation_count = completed_priced_operation_count + excluded.completed_priced_operation_count,
+            unknown_usage_operation_count = unknown_usage_operation_count + excluded.unknown_usage_operation_count,
+            unknown_price_operation_count = unknown_price_operation_count + excluded.unknown_price_operation_count,
+            input_tokens = input_tokens + excluded.input_tokens,
+            output_tokens = output_tokens + excluded.output_tokens,
+            total_tokens = total_tokens + excluded.total_tokens,
+            estimate_amount_micros_usd = estimate_amount_micros_usd + excluded.estimate_amount_micros_usd,
+            updated_at = excluded.updated_at`,
+          at,
+          cutoffs.rawBefore,
+        );
+        measurementsDeleted = this.db.run(
+          `DELETE FROM usage_measurements WHERE operation_id IN (
+            SELECT operation_id FROM usage_operations WHERE started_at < ?
+          )`,
+          cutoffs.rawBefore,
+        ).changes;
+        operationsDeleted = this.db.run(
+          'DELETE FROM usage_operations WHERE started_at < ?',
+          cutoffs.rawBefore,
+        ).changes;
+      }
+      const aggregateDaysDeleted = this.db.run(
+        'DELETE FROM usage_daily_rollups WHERE day_start < ?',
+        cutoffs.aggregatesBefore,
+      ).changes;
+      this.db.run(
+        `INSERT INTO usage_retention_state (
+          singleton, last_run_at, raw_retained_from, aggregate_retained_from
+        ) VALUES (1, ?, ?, ?)
+        ON CONFLICT(singleton) DO UPDATE SET
+          last_run_at = excluded.last_run_at,
+          raw_retained_from = excluded.raw_retained_from,
+          aggregate_retained_from = excluded.aggregate_retained_from`,
+        at,
+        cutoffs.rawBefore,
+        cutoffs.aggregatesBefore,
+      );
+      if (operationsDeleted > 0 || aggregateDaysDeleted > 0) {
+        this.appendUsageAudit({
+          eventId: `usage:retention:${at}`,
+          eventType: 'usage.retention_applied',
+          subjectId: 'usage-ledger',
+          subjectVersion: 1,
+          createdAt: at,
+          metadata: { operationsDeleted, measurementsDeleted, aggregateDaysDeleted },
+        });
+      }
+      return {
+        ...this.getRetentionStatus(),
+        operationsDeleted,
+        measurementsDeleted,
+        aggregateDaysDeleted,
+      };
+    });
+  }
+
+  getRetentionStatus(): UsageRetentionStatus {
+    const row = this.db.get(
+      `SELECT last_run_at, raw_retained_from, aggregate_retained_from
+       FROM usage_retention_state WHERE singleton = 1`,
+    );
+    return {
+      rawRetentionDays: USAGE_RAW_RETENTION_DAYS,
+      aggregateRetentionMonths: USAGE_AGGREGATE_RETENTION_MONTHS,
+      lastRunAt: row ? Number(row.last_run_at) : null,
+      rawRetainedFrom: row ? Number(row.raw_retained_from) : null,
+      aggregateRetainedFrom: row ? Number(row.aggregate_retained_from) : null,
+    };
+  }
+
+  listUsageAuditEvents(limit = 100): AuditEvent[] {
+    return this.audit.list({ domain: 'usage', limit });
   }
 
   execute(request: UsageRpcRequest): UsageRpcResponse {
@@ -426,7 +580,47 @@ export class UsageStoreLogic {
         };
       case 'list_credentials':
         return { kind: 'credentials', credentials: this.listCredentials(request.providerId) };
+      case 'cleanup_retention':
+        return { kind: 'retention', result: this.cleanupRetention(request.at) };
+      case 'retention_status':
+        return { kind: 'retention_status', status: this.getRetentionStatus() };
+      case 'list_usage_audit_events':
+        return { kind: 'audit_events', events: this.listUsageAuditEvents(request.limit) };
     }
+  }
+
+  private maybeCleanupRetention(): void {
+    const lastRunAt = this.getRetentionStatus().lastRunAt;
+    if (lastRunAt !== null && this.now() - lastRunAt < USAGE_RETENTION_CHECK_INTERVAL_MS) return;
+    try {
+      this.cleanupRetention(this.now());
+    } catch (error) {
+      console.warn('[usage] retention cleanup failed; usage admission will continue');
+    }
+  }
+
+  private appendUsageAudit(input: {
+    eventId: string;
+    eventType: string;
+    subjectId: string;
+    subjectVersion: number;
+    createdAt: number;
+    metadata: Record<string, unknown>;
+  }): void {
+    const idempotencyKey = input.eventId;
+    if (this.audit.findByIdempotencyKey(idempotencyKey)) return;
+    this.audit.append({
+      eventId: input.eventId,
+      domain: 'usage',
+      eventType: input.eventType,
+      outcome: 'success',
+      actorClass: 'system',
+      subjectId: input.subjectId,
+      subjectVersion: input.subjectVersion,
+      createdAt: input.createdAt,
+      metadataJson: JSON.stringify(input.metadata),
+      idempotencyKey,
+    });
   }
 
   private groupedSummary(
@@ -558,6 +752,33 @@ export class UsageStoreLogic {
         PRIMARY KEY (credential_ref_id, version)
       )`,
     );
+    this.db.exec(
+      `CREATE TABLE IF NOT EXISTS usage_daily_rollups (
+        day_start INTEGER PRIMARY KEY,
+        operation_count INTEGER NOT NULL,
+        completed_operation_count INTEGER NOT NULL,
+        failed_operation_count INTEGER NOT NULL,
+        incomplete_operation_count INTEGER NOT NULL,
+        metered_operation_count INTEGER NOT NULL,
+        priced_operation_count INTEGER NOT NULL,
+        completed_priced_operation_count INTEGER NOT NULL,
+        unknown_usage_operation_count INTEGER NOT NULL,
+        unknown_price_operation_count INTEGER NOT NULL,
+        input_tokens INTEGER NOT NULL,
+        output_tokens INTEGER NOT NULL,
+        total_tokens INTEGER NOT NULL,
+        estimate_amount_micros_usd INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      )`,
+    );
+    this.db.exec(
+      `CREATE TABLE IF NOT EXISTS usage_retention_state (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+        last_run_at INTEGER NOT NULL,
+        raw_retained_from INTEGER NOT NULL,
+        aggregate_retained_from INTEGER NOT NULL
+      )`,
+    );
     for (const sql of [
       'CREATE INDEX IF NOT EXISTS usage_operations_time_idx ON usage_operations (started_at DESC, operation_id DESC)',
       'CREATE INDEX IF NOT EXISTS usage_operations_workspace_idx ON usage_operations (workspace_id, started_at DESC)',
@@ -571,7 +792,17 @@ export class UsageStoreLogic {
       'CREATE INDEX IF NOT EXISTS usage_measurements_operation_idx ON usage_measurements (operation_id, observed_at, execution_id)',
       'CREATE INDEX IF NOT EXISTS usage_credentials_provider_idx ON usage_credentials (provider_id, retired_at, credential_ref_id, version)',
     ]) this.db.exec(sql);
-    installReleasePriceCatalogs(this.db);
+    const installedCatalogs = installReleasePriceCatalogs(this.db);
+    for (const catalog of installedCatalogs) {
+      this.appendUsageAudit({
+        eventId: `usage:catalog:${catalog.id}:installed`,
+        eventType: 'usage.catalog_installed',
+        subjectId: catalog.id,
+        subjectVersion: 1,
+        createdAt: catalog.reviewedAt,
+        metadata: { providerId: catalog.providerId, contentHash: catalog.contentHash },
+      });
+    }
   }
 }
 
@@ -622,6 +853,18 @@ export class SqliteUsageStore implements UsageStore {
 
   async listCredentials(providerId?: string): Promise<ModelCredentialRecord[]> {
     return this.logic.listCredentials(providerId);
+  }
+
+  async cleanupRetention(at?: number): Promise<UsageRetentionResult> {
+    return this.logic.cleanupRetention(at);
+  }
+
+  async getRetentionStatus(): Promise<UsageRetentionStatus> {
+    return this.logic.getRetentionStatus();
+  }
+
+  async listUsageAuditEvents(limit?: number): Promise<AuditEvent[]> {
+    return this.logic.listUsageAuditEvents(limit);
   }
 }
 

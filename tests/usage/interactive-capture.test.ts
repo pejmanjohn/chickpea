@@ -204,6 +204,9 @@ test('slow telemetry cannot hold delivery beyond the budget and one repair recor
     putCredential: (input) => durable.putCredential(input),
     retireCredential: (ref, version, at) => durable.retireCredential(ref, version, at),
     listCredentials: (provider) => durable.listCredentials(provider),
+    cleanupRetention: (at) => durable.cleanupRetention(at),
+    getRetentionStatus: () => durable.getRetentionStatus(),
+    listUsageAuditEvents: (limit) => durable.listUsageAuditEvents(limit),
   };
   const events: UsagePersistenceEvent[] = [];
   const originalWarn = console.warn;

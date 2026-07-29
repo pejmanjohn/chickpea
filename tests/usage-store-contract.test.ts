@@ -125,6 +125,12 @@ test('missing usage remains null with an explicit reason and direct messages sta
     });
     assert.equal(grouped.groups[0]?.key, 'direct_message');
     assert.equal(grouped.groups[0]?.label, 'Direct message');
+    const filtered = await store.listOperations({
+      from: START - 1,
+      to: START + 10_000,
+      filters: { channel: ['direct_message'] },
+    });
+    assert.equal(filtered.items[0]?.operation.operationId, 'op_dm');
   } finally {
     store.close();
   }

@@ -69,6 +69,7 @@ async function readEffectiveConfig(app) {
 let store;
 let memory;
 let routines;
+let usage;
 try {
   console.log(`node ${assertNodeVersion()}`);
   const { Hono } = await import('hono');
@@ -77,9 +78,53 @@ try {
   const { SqliteMemoryStateStore } = await loadTsModule('src/memory/store.ts');
   const { SqliteRoutineStore } = await loadTsModule('src/routines/store.ts');
   const { RoutineService } = await loadTsModule('src/routines/service.ts');
+  const { SqliteUsageStore } = await loadTsModule('src/usage/store.ts');
   store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   memory = new SqliteMemoryStateStore(':memory:');
   routines = new SqliteRoutineStore(':memory:');
+  usage = new SqliteUsageStore(':memory:');
+  const usageNow = Date.now();
+  await usage.admitOperation({
+    operationId: 'usage_admin_ui_release',
+    operationKind: 'interactive_turn',
+    sourceId: 'slack:C_ADMIN_UI:usage',
+    startedAt: usageNow - 10_000,
+    installationId: 'admin-ui-installation',
+    workspaceId: WORKSPACE_ID,
+    profileId: AGENT_ID,
+    profileLabel: 'Admin UI Profile',
+    channelId: CHANNEL_ID,
+    channelLabel: CHANNEL_LABEL,
+    conversationKind: 'named_channel',
+    requestedProvider: 'openai',
+    requestedModel: 'gpt-4.1-mini',
+    credentialRefId: 'cred_openai_admin_ui',
+    credentialVersion: 1,
+  });
+  await usage.recordTerminal({
+    operationId: 'usage_admin_ui_release',
+    executionId: 'usage_exec_admin_ui_release',
+    status: 'completed',
+    finishedAt: usageNow - 5_000,
+    observedAt: usageNow - 5_000,
+    providerRoute: 'openai',
+    requestedProvider: 'openai',
+    requestedModel: 'gpt-4.1-mini',
+    returnedProvider: 'openai',
+    returnedModel: 'gpt-4.1-mini',
+    credentialRefId: 'cred_openai_admin_ui',
+    credentialVersion: 1,
+    usageCompleteness: 'complete',
+    inputTokens: 1_000,
+    outputTokens: 250,
+    totalTokens: 1_250,
+    usageUnknownReason: null,
+    estimateCompleteness: 'complete',
+    estimateAmountMicros: 800,
+    estimateCurrency: 'USD',
+    priceVersionId: 'openai_2026-07-28',
+    priceUnknownReason: null,
+  });
   const publicMemory = await memory.ensurePublicStore(WORKSPACE_ID);
   await memory.observeChannelScope({
     workspaceId: WORKSPACE_ID,
@@ -143,6 +188,8 @@ try {
       store,
       memory,
       routines,
+      usage,
+      usageAdminUi: true,
       adminToken: ADMIN_TOKEN,
       knownProviders: new Set(['local-stub']),
     }),
@@ -178,6 +225,30 @@ try {
       pageHtml.includes('aria-disabled="true" title="Coming later">Network events') &&
       pageHtml.includes('Generated index · changes are made through individual files.') &&
       pageHtml.includes('Prior exports, Slack or provider logs, backups, and Flue transcripts may still retain copies'),
+  );
+
+  const usageOverview = await adminJson(
+    app,
+    `/admin/api/usage/overview?from=${usageNow - 86_400_000}&to=${usageNow + 1}&groupBy=channel&currency=USD`,
+  );
+  const usageMetadata = await adminJson(app, '/admin/api/usage/metadata');
+  const usageOperations = await adminJson(
+    app,
+    `/admin/api/usage/operations?from=${usageNow - 86_400_000}&to=${usageNow + 1}&limit=20`,
+  );
+  record(
+    'Usage exposes estimated spend, channel attribution, work detail, and provider-owned limits',
+    pageHtml.includes('var USAGE_ADMIN_UI = true') &&
+      usageOverview.status === 200 &&
+      usageOverview.body?.current?.totals?.operationCount === 1 &&
+      usageOverview.body?.current?.totals?.estimateAmountMicros === 800 &&
+      usageOverview.body?.current?.groups?.[0]?.label === CHANNEL_LABEL &&
+      usageMetadata.status === 200 &&
+      usageMetadata.body?.contract?.providerBillingIncluded === false &&
+      usageMetadata.body?.contract?.limitsManagedByChickpea === false &&
+      usageOperations.status === 200 &&
+      usageOperations.body?.items?.[0]?.operation?.operationId === 'usage_admin_ui_release',
+    `overview=${usageOverview.status} metadata=${usageMetadata.status} operations=${usageOperations.status}`,
   );
 
   const routineList = await adminJson(app, '/admin/api/audit/scheduled_work/routines?state=active');
@@ -341,6 +412,7 @@ try {
   store?.close();
   memory?.close();
   routines?.close();
+  usage?.close();
 }
 
 const failed = results.filter((result) => !result.passed);

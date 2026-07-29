@@ -107,8 +107,8 @@ const opsAgent = {
   model: 'local-stub/ops',
 };
 
-function inlineScript(): string {
-  const script = renderAdminPage().match(/<script>([\s\S]*?)<\/script>/)?.[1];
+function inlineScript(usageAdminUi = false): string {
+  const script = renderAdminPage({ usageAdminUi }).match(/<script>([\s\S]*?)<\/script>/)?.[1];
   assert.ok(script, 'admin page should include one inline script');
   return script;
 }
@@ -294,6 +294,8 @@ function runAdminPageHarness(
     apiOAuthStartError?: { status: number; error: string; message?: string };
     deferAgentPatch?: boolean;
     initialSearch?: string;
+    usageAdminUi?: boolean;
+    usageApiError?: boolean;
   } = {},
 ): {
   app: FakeElement;
@@ -727,6 +729,39 @@ function runAdminPageHarness(
     (agent) => ({ ...(agent as Record<string, unknown>) }),
   );
   const harnessOptions = options;
+  const usageNow = Date.now();
+  const usageTotals = {
+    operationCount: 3,
+    completedOperationCount: 2,
+    failedOperationCount: 1,
+    incompleteOperationCount: 0,
+    meteredOperationCount: 2,
+    pricedOperationCount: 1,
+    completedPricedOperationCount: 1,
+    unknownUsageOperationCount: 1,
+    unknownPriceOperationCount: 2,
+    inputTokens: 1200,
+    outputTokens: 300,
+    totalTokens: 1500,
+    estimateAmountMicros: 12500,
+  };
+  const usageOperation = {
+    operation: {
+      operationId: 'op_usage_fixture', operationKind: 'interactive_turn', sourceId: 'source_usage', status: 'completed',
+      startedAt: usageNow - 60_000, finishedAt: usageNow - 55_000, installationId: 'chickpea', workspaceId: 'T_DESIGN',
+      profileId: 'agent_release', profileLabel: 'Release <script>alert(1)</script>', channelId: 'D_PRIVATE', channelLabel: null,
+      conversationKind: 'direct_message', routineId: null, routineLabel: null, routineRunId: null,
+      requestedProvider: 'openai', requestedModel: 'gpt-4.1-mini', credentialRefId: 'cred_openai_environment', credentialVersion: 1,
+      coverage: 'aggregate_only', telemetrySchemaVersion: 1, createdAt: usageNow - 60_000, updatedAt: usageNow - 55_000,
+    },
+    measurements: [{
+      executionId: 'exec_usage_fixture', operationId: 'op_usage_fixture', operationStatus: 'completed', observedAt: usageNow - 55_000,
+      providerRoute: 'openai', requestedProvider: 'openai', requestedModel: 'gpt-4.1-mini', returnedProvider: 'openai', returnedModel: 'gpt-4.1-mini',
+      credentialRefId: 'cred_openai_environment', credentialVersion: 1, usageCompleteness: 'complete', inputTokens: 1000, outputTokens: 250,
+      totalTokens: 1250, usageUnknownReason: null, estimateCompleteness: 'complete', estimateAmountMicros: 12500, estimateCurrency: 'USD',
+      priceVersionId: 'openai_2026-07-28', priceUnknownReason: null, recordedAt: usageNow - 55_000,
+    }],
+  };
   const slackIdentityResponse = (result: SlackIdentityResultFixture): FakeResponse => {
     if ('status' in result) {
       return jsonResponse(
@@ -742,6 +777,29 @@ function runAdminPageHarness(
 
   const fetch = (path: string, options?: { method?: string; body?: string; headers?: Record<string, string> }): Promise<FakeResponse> => {
     const method = options?.method ?? 'GET';
+    if (path.startsWith('/admin/api/usage/')) {
+      if (harnessOptions.usageApiError) return Promise.resolve(jsonResponse({ error: 'usage_unavailable' }, 503));
+      if (path.startsWith('/admin/api/usage/overview')) {
+        return Promise.resolve(jsonResponse({
+          current: { from: usageNow - 30 * 86400000, to: usageNow, groupBy: 'provider', currency: 'USD', mixedCurrency: false, availableCurrencies: ['USD'], totals: usageTotals, groups: [{ key: 'openai', label: 'OpenAI <unsafe>', ...usageTotals }] },
+          previous: { from: usageNow - 60 * 86400000, to: usageNow - 30 * 86400000, groupBy: 'provider', currency: 'USD', mixedCurrency: false, availableCurrencies: ['USD'], totals: { ...usageTotals, operationCount: 2, estimateAmountMicros: 10000 }, groups: [] },
+        }));
+      }
+      if (path.startsWith('/admin/api/usage/operations')) {
+        return Promise.resolve(jsonResponse({ items: [usageOperation], nextCursor: null }));
+      }
+      if (path === '/admin/api/usage/metadata') {
+        return Promise.resolve(jsonResponse({
+          generatedAt: usageNow,
+          contract: { usageSource: 'model_response_aggregate', monetarySource: 'chickpea_list_price_estimate', providerBillingIncluded: false, limitsManagedByChickpea: false },
+          guidance: [{ providerId: 'openai', displayName: 'OpenAI', authModes: ['API key'], runtimeCoverage: 'metered', priceCoverage: 'release_pinned', scopeGuidance: 'Use a dedicated project key.', accountBoundary: 'Provider totals can include work outside Chickpea.', limitsUrl: 'https://platform.openai.com/docs/guides/production-best-practices/managing-billing-limits', pricingUrl: 'https://developers.openai.com/api/docs/pricing', reviewedAt: usageNow }],
+          catalogs: [{ id: 'openai_2026-07-28', providerId: 'openai', sourceUrl: 'https://developers.openai.com/api/docs/models/gpt-4.1-mini', reviewedAt: usageNow, staleAfter: usageNow + 86400000, currency: 'USD', models: ['gpt-4.1-mini'] }],
+          credentials: [{ credentialRefId: 'cred_openai_environment', version: 1, providerId: 'openai', sourceKind: 'environment', label: 'OpenAI environment key', scopeLabel: null, unknownRotation: true, activeFrom: usageNow - 86400000, retiredAt: null }],
+          retention: { rawRetentionDays: 90, aggregateRetentionMonths: 13, lastRunAt: usageNow, rawRetainedFrom: usageNow - 90 * 86400000, aggregateRetainedFrom: usageNow - 395 * 86400000 },
+          lifecycleEvents: [{ eventId: 'usage:catalog:test', domain: 'usage', eventType: 'usage.catalog_installed', outcome: 'success', actorClass: 'system', actorId: null, workspaceId: null, channelId: null, storeId: null, subjectId: 'openai_2026-07-28', subjectVersion: 1, createdAt: usageNow, reasonCode: null, beforeHash: null, afterHash: null, metadataJson: '{}', idempotencyKey: 'usage:catalog:test' }],
+        }));
+      }
+    }
     if (path.startsWith('/admin/api/audit/scheduled_work/routines') && method === 'GET') {
       const detailMatch = path.match(/^\/admin\/api\/audit\/scheduled_work\/routines\/([^/?]+)$/);
       if (detailMatch) {
@@ -1412,7 +1470,7 @@ function runAdminPageHarness(
   };
 
   vm.runInNewContext(
-    inlineScriptFor(options.cloudflare ?? false),
+    inlineScriptFor(options.cloudflare ?? false, options.usageAdminUi ?? false),
     {
       document,
       fetch,
@@ -1536,15 +1594,15 @@ async function openReleaseAttachPicker(
 // isCloudflareTarget() (globalThis.navigator.userAgent). The Workers AI row is
 // binding-only, so a Cloudflare-target harness renders it by masquerading the
 // navigator just for the renderAdminPage() call, then restoring it.
-function inlineScriptFor(cloudflare: boolean): string {
-  if (!cloudflare) return inlineScript();
+function inlineScriptFor(cloudflare: boolean, usageAdminUi = false): string {
+  if (!cloudflare) return inlineScript(usageAdminUi);
   const previous = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
   Object.defineProperty(globalThis, 'navigator', {
     value: { userAgent: 'Cloudflare-Workers' },
     configurable: true,
   });
   try {
-    return inlineScript();
+    return inlineScript(usageAdminUi);
   } finally {
     if (previous) Object.defineProperty(globalThis, 'navigator', previous);
     else delete (globalThis as { navigator?: unknown }).navigator;
@@ -7117,6 +7175,58 @@ test('GitHub settings exposes only the required GitHub App authentication path',
     html,
     /Use a personal access token|github-pat|GITHUB_PAT|patSource|\/admin\/api\/github\/pat/,
   );
+});
+
+test('Usage navigation is feature-gated off by default', async () => {
+  const html = renderAdminPage();
+  const harness = runAdminPageHarness();
+  await flushAsync();
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="open-usage"/);
+  assert.match(html, /var USAGE_ADMIN_UI = false/);
+});
+
+test('Usage shows honest estimates, coverage, provider guidance, and privacy-safe work detail', async () => {
+  const harness = runAdminPageHarness({ usageAdminUi: true, initialPath: '/admin/usage' });
+  await flushAsync();
+
+  const html = harness.app.innerHTML;
+  assert.match(html, /Chickpea estimated spend/);
+  assert.match(html, /USD 0\.0125/);
+  assert.match(html, /Metered: 67%/);
+  assert.match(html, /Priced: 33%/);
+  assert.match(html, /Configure caps, credits, quotas, and rate limits with your model provider/);
+  assert.match(html, /Provider totals can include work outside Chickpea/);
+  assert.match(html, /Provider limits/);
+  assert.match(html, /One work instance can appear in more than one row after a retry or failover/);
+  assert.doesNotMatch(html, /<script>alert\(1\)<\/script>/);
+  assert.match(html, /Release &lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+
+  harness.listeners.click?.({
+    target: actionTarget({ 'data-action': 'usage-select-operation', 'data-operation': 'op_usage_fixture' }),
+  });
+  assert.match(harness.app.innerHTML, /Work instance detail/);
+  assert.match(harness.app.innerHTML, /Direct message/);
+  assert.match(harness.app.innerHTML, /Estimated from openai_2026-07-28/);
+  assert.doesNotMatch(harness.app.innerHTML, /authorization: Bearer|apiKey|clientSecret/i);
+});
+
+test('Usage renders an explicit query error and retry action', async () => {
+  const harness = runAdminPageHarness({ usageAdminUi: true, initialPath: '/admin/usage', usageApiError: true });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /usage_unavailable/);
+  assert.match(harness.app.innerHTML, /data-action="usage-retry"/);
+});
+
+test('Usage restores its bounded period and single breakdown from the URL', async () => {
+  const harness = runAdminPageHarness({
+    usageAdminUi: true,
+    initialPath: '/admin/usage',
+    initialSearch: '?days=90&groupBy=channel',
+  });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /<option value="90" selected>Last 90 days<\/option>/);
+  assert.match(harness.app.innerHTML, /<option value="channel" selected>Channel<\/option>/);
+  assert.match(harness.app.innerHTML, /<th>channel<\/th>/);
 });
 
 test('Settings renders the three key-provider rows and hides Workers AI on the Node target', async () => {

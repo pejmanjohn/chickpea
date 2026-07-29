@@ -246,6 +246,7 @@ It calls `auth.test` and `users.info`, compares the display name to the manifest
 | `<PROVIDER>_CREDENTIAL_ALIAS` / `<PROVIDER>_CREDENTIAL_EPOCH` | optional | Non-secret usage-reporting identity for environment-managed inference credentials. Increment the positive epoch when the underlying key rotates; if omitted, Usage reports rotation as unknown. `CHICKPEA_DEPLOYMENT_EPOCH` serves the keyless Workers AI binding. |
 | `USAGE_RUNTIME_RECORDING` / `CHICKPEA_INSTALLATION_ID` | optional | Set recording to `1` to persist fail-open aggregate usage telemetry. The installation ID is a stable, non-secret accounting label; it defaults to `chickpea`. |
 | `USAGE_ESTIMATES` | optional | Set to `1` to attach release-pinned standard-rate estimates to newly recorded usage. Unknown, stale, or unsupported prices stay null. This does not read invoices or enforce a cap. |
+| `USAGE_ADMIN_UI` | optional | Set to `1` to show the authenticated Admin Usage dashboard. This is independent of runtime recording and estimates; the committed default is `0`. |
 | `ANTHROPIC_API_URL` / `OPENAI_API_URL` / `OPENROUTER_API_URL` | optional | Override the vendor API roots used by `/admin` key validation and model discovery. These are catalog/validation endpoints, distinct from runtime inference overrides such as `ANTHROPIC_BASE_URL`. |
 | `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_WORKERS_AI_BASE_URL` | optional | Enable the REST `cloudflare-workers-ai` provider; the base URL controls runtime inference. Not required for the keyless `cloudflare` binding provider on Cloudflare. |
 | `CLOUDFLARE_API_URL` | optional | Override the Cloudflare API root used by `/admin` Workers AI model discovery. |
@@ -260,6 +261,22 @@ It calls `auth.test` and `users.info`, compares the display name to the manifest
 2. `SLACK_TAG_MODEL` only when the profile is unpinned, as an offline/dev fallback.
 
 If neither exists, initialization fails with an error that tells the operator to pin a model in `/admin`. Seed config is written once into an empty state DB; existing installs are not migrated. On first boot, Cloudflare seeds Default pinned to `cloudflare/@cf/zai-org/glm-5.2`; Node seeds Default unpinned so local operators pick a model or set the fallback.
+
+### Usage and estimated spend
+
+Chickpea can report aggregate model-response usage and release-pinned list-price estimates for work it runs. It does not read provider invoices, credits, subscriptions, account balances, or quota state, and it does not enforce a monetary cap. Configure caps and rate limits with the model provider, ideally on a dedicated project, workspace, account boundary, or API key for each Chickpea installation. Provider-console totals can include work outside Chickpea when credentials are shared.
+
+The three layers are independently disabled by default:
+
+- `USAGE_RUNTIME_RECORDING=1` records aggregate usage and work status. Writes are bounded and fail open so reporting cannot block a reply or routine.
+- `USAGE_ESTIMATES=1` attaches reviewed input/output list-price estimates to new measurements without rewriting history.
+- `USAGE_ADMIN_UI=1` reveals the authenticated **Usage** destination with 7/30/90-day comparison, provider/channel/profile/work/routine/credential/model/status breakdowns, coverage, and work-instance detail.
+
+“Chickpea estimated spend” is not charged cost or an invoice. Unsupported routes, models, billing dimensions, interrupted streams, and stale price catalogs remain explicitly unknown rather than becoming zero. V1 deliberately excludes cache rates, batch or priority tiers, images/audio/tool units, credits, taxes, negotiated rates, subscriptions, OpenRouter routing adjustments, and work outside Chickpea.
+
+Use provider-owned controls: [Anthropic rate and spend limits](https://platform.claude.com/docs/en/api/rate-limits), [OpenAI production limits](https://developers.openai.com/api/docs/guides/production-best-practices), [OpenRouter key limits](https://openrouter.ai/docs/api/api-reference/api-keys/create-keys), or [Workers AI limits](https://developers.cloudflare.com/workers-ai/platform/limits/). Local/custom routes have no universal billing or limit contract.
+
+The ledger stores bounded attribution labels, statuses, aggregate token counts, and price provenance—not prompts, outputs, Slack message text, tool payloads, raw provider responses, headers, API keys, or OAuth tokens. Work/execution detail is retained for 90 days. On a later usage admission, expired detail is rolled into daily aggregate facts retained for 13 months. Disable the UI, estimates, or recording independently with the corresponding `0` flag; existing immutable records remain intact.
 
 ## Good to know
 
@@ -285,7 +302,7 @@ Direction, not commitment — open an issue if one of these matters to you; that
 - **Multi-workspace Slack OAuth distribution**, so one deploy can serve several workspaces with per-workspace tokens.
 - **Connection and network audit visibility.** The connection gallery, OAuth lifecycle, API scopes, and DNS-pinned Node transport have shipped; the reserved Network Events audit domain is the next place to expose connector, tool, and egress history without leaking credentials or payloads.
 - **More OpenAI-compatible endpoints in the `/admin` model picker**, such as Ollama and self-hosted gateways. Anthropic, OpenAI, OpenRouter, and both Workers AI paths are already supported.
-- **Usage visibility in `/admin`**: Workers AI Neuron and Durable Object write budgets, surfaced before the free-tier caps turn into errors.
+- **Broader operational telemetry in `/admin`**, building on the shipped model usage and estimated-spend report without turning Chickpea into a provider billing or quota system.
 - **State export/backup and a documented post-v1 upgrade path** — release tags plus a template-sync flow, backed by append-only public migrations.
 - **Additional proactive triggers**, such as channel watches and GitHub subscriptions, behind the same product-owned routine/run/audit model. The current release supports explicit schedules only.
 

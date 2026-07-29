@@ -49,6 +49,8 @@ import {
   type UsageOperationDetail,
   type UsageOperationPage,
   type UsageQuery,
+  type UsageRetentionResult,
+  type UsageRetentionStatus,
   type UsageRpcRequest,
   type UsageRpcResponse,
   type UsageStore,
@@ -701,6 +703,30 @@ export class CfUsageStore implements UsageStore {
     });
     if (response.kind !== 'credentials') throw unexpectedUsageResponse();
     return response.credentials;
+  }
+
+  async cleanupRetention(at?: number): Promise<UsageRetentionResult> {
+    const response = await this.execute({
+      kind: 'cleanup_retention',
+      ...(at === undefined ? {} : { at }),
+    });
+    if (response.kind !== 'retention') throw unexpectedUsageResponse();
+    return response.result;
+  }
+
+  async getRetentionStatus(): Promise<UsageRetentionStatus> {
+    const response = await this.execute({ kind: 'retention_status' });
+    if (response.kind !== 'retention_status') throw unexpectedUsageResponse();
+    return response.status;
+  }
+
+  async listUsageAuditEvents(limit?: number): Promise<AuditEvent[]> {
+    const response = await this.execute({
+      kind: 'list_usage_audit_events',
+      ...(limit === undefined ? {} : { limit }),
+    });
+    if (response.kind !== 'audit_events') throw unexpectedUsageResponse();
+    return response.events;
   }
 
   private async execute(request: UsageRpcRequest): Promise<UsageRpcResponse> {

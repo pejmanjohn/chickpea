@@ -7,7 +7,7 @@ const ADMIN_FAVICON = `<link rel="icon" type="image/svg+xml" href="data:image/sv
 const SLACK_LOGO_DATA_URL =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAAA/CAMAAABnwz74AAAAn1BMVEX///+j3++a2+rw5M3n2tOk0K7L3L54xrXI0sftyHSPxZqLwZSp07HI6/RkzOpz0uyJ09tmtHlirnNwtH59z+ZZyOpdrXFbqm1dsnOPxppNxej23qjupqThYIDldY3yr7rodJPx0Ibz0YreSW3dO2XjMV7kVnv43qzzyXbvuE/ttUXyyHfjNmPjKVrbJVXwsTvusj3aG1DbLFLhH1PvscJL5pvlAAAAAXRSTlMAQObYZgAABDtJREFUSMe9lw1vokAQhvkQVsFCEUFbRVBEQUWl9v//tpuZ3QU8bW97l9ybaAI4z843UdOeSTdAendtDizLGtiaonSdIYAN5Y2R7TjMdZyxIuDF8FD+q7zhsmACCl01wnDqRREhXqX9JI4n8Ww2USNMo0gAvNch2ccxegCEwDUVMmBEkhD5L5o2tlg8D8AHAMwchUTqfhQJROQZNgACHsCPAcgAwNAhQDxDF5QAxj1gDACKABkqAE2nInQhOAFo8gOAZvh3HlhBIBCqgDfm9T0QACCoAjAP0+nUgC/jrQOgD6qAvsZWOBGEvwZ0Hrj/Aph8DdC/0O+ALonmeDx+M+Vg6FNMehR1Q8THear3AZMewHVcFrqOZQr76F0q6nVh5BEBhknYI4BMYD/MQYFr0Xi39tG9wAlca48Al83JHggI0L0HU+lC5Bsm9sGE1gEAZrgPbAdMA/jM5yEzNZ1Fz+17rRz3AablzmVrBY6lDYwo+haA44ze0z5wTRkSKgwB8PI9wETALIbDSU8ANL0U8KPePUoihBtz+8DhgDDkpeUAn6+vR/P3d6yCbmHS+UoMGVUlZGHI0A/Xxq3LvD4ASwIfqqvPsMy2C/kWDoxFWUMeAeOdyHzqvN7JBHn3xHObcQLkHAALCiFgjLmunAV6k5GmrXx/yuRzeLO5ILKHMuKFA+oNFkQyBOEXXQ6H+os+7J6PRvB+tEfixyO41OjrOw21/ytzuVyaZjvg2jJJlnfPzQXIvFPv8WiVZlmWghJ+YwWX2aoNMllvnmidyMdplm9BeV5k/N4qL0DbneDty+pwqB51PCbCfou/L06nekd3VkVd10VRn3MOPFYX0BV1aMUR+DzJ8uJEJ54KAqxOaA6AuqHrdXW4cKMegOwP1RoykeyKFoAnJjtuD4QmX0HnYQAPElGUezAQDqDwxCSXgKLZpuYXACIcDuVGS7PWvKj7gHNRfOQc8JQADAIMskIeWNxagMgCepCUPN5WkJCrJAAgWW0loOY5yG91TWUoaulBHyAKcqHEUg52wgWwx+5K8kYS6lNqYxWqPgId4IDLpTpiFdIcCfWt2KXUF9sOkCNAEEQl5fmo6rgQnXQ6QRtlqSYAzRn18SEA2roUgF4rgQdVuRCjkHymaZaI1n4C0OzNppTqhmG/6E9bO1w9wFkCNPOpnk82AhoOaFrAT9TzoAPgOvg7AHeT9oEqoQWcOWCxL49i/uW++QMg/w2wkW1QlUqEFiBCSEo5vNC5KmEAAM1rBJw6wAEBlRrgXNcIgO4WgIvYAIdqo/CPRQLqFnDhk0cAhb5IdgRAUQiLEidYbEUlD7LzTQLyzwSrcJGEaj36M0DLtjdOaM601vcQw5UvIaUq4HuhaW44EGLA9yXN8fVaKXbjKNuhB9tM9k3KF7OqPRA+6d2YtH23WMIiWC+UOplkDkB3P98PBs+P/wV/Ze9+4cPjFgAAAABJRU5ErkJggg==';
 
-export function renderAdminPage(): string {
+export function renderAdminPage(options: { usageAdminUi?: boolean } = {}): string {
   // Target-aware chrome: the header chip and the provider-hint copy differ
   // between the Node and Cloudflare runtimes. Resolved server-side (the inline
   // script has no runtime-target check of its own) and interpolated as plain
@@ -17,6 +17,7 @@ export function renderAdminPage(): string {
   const providerHint = isCloudflare
     ? 'Read-only &mdash; the Workers AI binding is always available; configure others via wrangler secrets (built-ins) or src/app.ts (custom).'
     : 'Read-only &mdash; configured via .env (built-ins) or src/app.ts (custom).';
+  const usageAdminUi = options.usageAdminUi === true;
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -1508,6 +1509,52 @@ details[open].advanced summary::before {
   .scheduled-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
+/* ---- usage and estimated spend ---------------------------------------- */
+.usage-main { gap: 22px; max-width: 1100px; }
+.usage-head { align-items: flex-start; display: flex; flex-wrap: wrap; gap: 16px; justify-content: space-between; }
+.usage-head-copy { display: flex; flex-direction: column; gap: 4px; max-width: 720px; }
+.usage-controls { align-items: end; display: flex; flex-wrap: wrap; gap: 10px; }
+.usage-controls .field { min-width: 150px; }
+.usage-contract { background: var(--well); border-left: 4px solid var(--ember); border-radius: 12px; padding: 12px 14px; }
+.usage-grid { display: grid; gap: 12px; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.usage-card { background: var(--well); border-radius: 14px; display: flex; flex-direction: column; gap: 3px; min-width: 0; padding: 14px; }
+.usage-card-primary { background: var(--text); color: #fff8e8; }
+.usage-card-label { color: var(--text-3); font-size: 0.6875rem; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; }
+.usage-card-primary .usage-card-label, .usage-card-primary .hint { color: #d9cdb5; }
+.usage-card-value { color: var(--text); font-family: var(--display); font-size: 1.55rem; font-variant-numeric: tabular-nums; font-weight: 700; line-height: 1.15; overflow-wrap: anywhere; }
+.usage-card-primary .usage-card-value { color: #fff8e8; }
+.usage-coverage { display: grid; gap: 8px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.usage-coverage-item { background: var(--bg); border: 1.5px solid var(--line); border-radius: 12px; padding: 10px 12px; }
+.usage-coverage-track { background: var(--line); border-radius: 999px; height: 6px; margin-top: 7px; overflow: hidden; }
+.usage-coverage-fill { background: var(--ok-solid); height: 100%; }
+.usage-section { border-top: 1.5px dashed rgba(59, 50, 32, .15); display: flex; flex-direction: column; gap: 12px; padding-top: 18px; }
+.usage-section-head { align-items: baseline; display: flex; flex-wrap: wrap; gap: 10px; justify-content: space-between; }
+.usage-table-wrap { border: 1.5px solid var(--line); border-radius: 14px; overflow-x: auto; }
+.usage-table { border-collapse: collapse; font-size: .75rem; width: 100%; }
+.usage-table th { background: var(--well); color: var(--text-3); font-size: .65625rem; letter-spacing: .05em; padding: 9px 10px; text-align: left; text-transform: uppercase; white-space: nowrap; }
+.usage-table td { border-top: 1px solid var(--line); color: var(--text-2); padding: 10px; vertical-align: top; }
+.usage-table .number { font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+.usage-row-action { background: none; border: 0; color: var(--ember-press); cursor: pointer; font-weight: 700; padding: 0; text-align: left; }
+.usage-row-action:hover { text-decoration: underline; }
+.usage-filter-chip { align-items: center; background: var(--ember-tint); border-radius: 999px; color: var(--ember-deep); display: inline-flex; font-size: .71875rem; font-weight: 700; gap: 6px; padding: 5px 9px; }
+.usage-detail { background: var(--well); border-radius: 14px; display: flex; flex-direction: column; gap: 12px; padding: 16px; }
+.usage-detail-grid { display: grid; gap: 8px 16px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.usage-detail-item { min-width: 0; }
+.usage-detail-item strong { color: var(--text); display: block; font-size: .75rem; overflow-wrap: anywhere; }
+.usage-guidance-grid { display: grid; gap: 12px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.usage-guidance-card { border: 1.5px solid var(--line); border-radius: 14px; display: flex; flex-direction: column; gap: 7px; padding: 14px; }
+.usage-guidance-links { display: flex; flex-wrap: wrap; gap: 12px; }
+.usage-source { color: var(--ember-deep); font-size: .6875rem; font-weight: 700; text-transform: uppercase; }
+@media (max-width: 900px) {
+  .usage-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .usage-guidance-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 720px) {
+  .usage-grid, .usage-coverage, .usage-detail-grid { grid-template-columns: 1fr; }
+  .usage-controls, .usage-controls .field { align-items: stretch; width: 100%; }
+  .usage-controls .field { min-width: 0; }
+}
+
 </style>
 </head>
 <body>
@@ -1538,6 +1585,7 @@ details[open].advanced summary::before {
   // shown on Cloudflare and hidden on Node (the inline script has no target check
   // of its own — this is interpolated as a literal boolean at render time).
   var IS_CLOUDFLARE = ${isCloudflare};
+  var USAGE_ADMIN_UI = ${usageAdminUi};
   var CONNECTOR_PRESETS = ${JSON.stringify(CONNECTOR_PRESETS).replace(/</g, '\\u003c')};
   var GOOGLE_WORKSPACE_SERVICE_PRESETS = ${JSON.stringify(GOOGLE_WORKSPACE_SERVICE_PRESETS).replace(/</g, '\\u003c')};
   var CONNECTOR_LOGOS = ${JSON.stringify(CONNECTOR_LOGOS).replace(/</g, '\\u003c')};
@@ -1741,6 +1789,18 @@ details[open].advanced summary::before {
     scheduledLimits: null,
     scheduledFilters: { workspaceId: "", channelId: "", state: "", status: "" },
     scheduledDeleteConfirm: false,
+    usageOverview: null,
+    usageMetadata: null,
+    usageOperations: null,
+    usageNextCursor: null,
+    usageLoading: false,
+    usageLoadingMore: false,
+    usageError: "",
+    usageRangeDays: 30,
+    usageGroupBy: "provider",
+    usageOperationFilter: null,
+    usageSelected: null,
+    usageRequestId: 0,
     // Channel detail keeps a small, independently filtered scheduled-work
     // summary. It must not reuse the Audit tab's pageable/filterable list.
     channelScheduledRoutines: null,
@@ -1981,6 +2041,7 @@ details[open].advanced summary::before {
   var routeReady = false;
 
   function canonicalPath() {
+    if (state.view === "usage") return "/admin/usage";
     if (state.view === "settings") return "/admin/settings";
     if (state.view === "audit") {
       if (state.auditDomain === "scheduled-work") {
@@ -2017,6 +2078,7 @@ details[open].advanced summary::before {
       try { return decodeURIComponent(part); } catch (err) { return part; }
     });
     state.leavePrompt = null;
+    if (parts[1] === "usage" && USAGE_ADMIN_UI) { applyUsageQuery(location.search || ""); openUsage(); return; }
     if (parts[1] === "settings") { openSettings(); return; }
     if (parts[1] === "audit-logs") {
       if (parts[2] === "scheduled-work") {
@@ -2146,6 +2208,7 @@ details[open].advanced summary::before {
       '<div class="actions actions-list">' + connectedBadge +
       '<button type="button" class="btn btn-soft' + (state.view === "channels" || state.view === "audit" ? " nav-active" : "") + '" data-action="open-channels">Channels</button>' +
       '<button type="button" class="btn btn-soft' + (state.view === "profiles" ? " nav-active" : "") + '" data-action="open-profiles">Profiles</button>' +
+      (USAGE_ADMIN_UI ? '<button type="button" class="btn btn-soft' + (state.view === "usage" ? " nav-active" : "") + '" data-action="open-usage">Usage</button>' : '') +
       '<button type="button" class="btn btn-soft' + (state.view === "settings" ? " nav-active" : "") + '" data-action="open-settings">Settings</button></div>' +
       "</header>";
   }
@@ -2159,6 +2222,7 @@ details[open].advanced summary::before {
   }
 
   function railHtml() {
+    if (state.view === "usage") return usageRailHtml();
     if (state.view === "audit") return state.auditDomain === "scheduled-work" ? scheduledWorkRailHtml() : auditRailHtml();
     // Not connected → the whole screen is the Connect stepper; the rail (and its
     // add affordance) stay gated off until Slack is live.
@@ -2205,7 +2269,297 @@ details[open].advanced summary::before {
     return html + '</nav>';
   }
 
+  function usageRailHtml() {
+    return '<nav class="rail" aria-label="Usage">' +
+      '<div class="rail-head"><span class="section-eyebrow">Usage</span></div>' +
+      '<button type="button" class="chan-item active" data-action="open-usage"><span class="chan-name">Overview</span><span class="chan-meta">Spend and work</span></button>' +
+      '<div class="ws-row">Provider controls</div>' +
+      '<button type="button" class="chan-item" data-action="usage-open-settings"><span class="chan-name">Model settings</span><span class="chan-meta">Keys and routes</span></button>' +
+      '<p class="hint" style="margin:8px 12px;">Caps and quotas stay with each provider.</p>' +
+      '</nav>';
+  }
+
+  function usageRange() {
+    var to = Date.now() + 1;
+    return { from: to - state.usageRangeDays * 24 * 60 * 60 * 1000, to: to };
+  }
+
+  function applyUsageQuery(search) {
+    if (!search) return;
+    var params = new URLSearchParams(search);
+    var days = Number(params.get("days"));
+    var group = params.get("groupBy");
+    if ([7, 30, 90].includes(days)) state.usageRangeDays = days;
+    if (["profile", "channel", "work_kind", "routine", "provider", "credential", "model", "status"].includes(group)) state.usageGroupBy = group;
+  }
+
+  function syncUsageQueryUrl() {
+    if (!canNavigate || !routeReady || state.view !== "usage") return;
+    history.replaceState(null, "", "/admin/usage?days=" + state.usageRangeDays + "&groupBy=" + encodeURIComponent(state.usageGroupBy));
+  }
+
+  function usageQueryPath(path, includeGroup, includeOperationFilter, cursor) {
+    var range = usageRange();
+    var params = new URLSearchParams();
+    params.set("from", String(range.from));
+    params.set("to", String(range.to));
+    params.set("currency", "USD");
+    if (includeGroup) params.set("groupBy", state.usageGroupBy);
+    if (cursor) params.set("cursor", cursor);
+    if (path.indexOf("operations") >= 0) params.set("limit", "50");
+    if (includeOperationFilter && state.usageOperationFilter) {
+      var filterNames = {
+        profile: "profile", channel: "channel", work_kind: "workKind",
+        routine: "routine", provider: "provider", credential: "credential",
+        model: "model", status: "status"
+      };
+      var filterName = filterNames[state.usageOperationFilter.groupBy];
+      if (filterName) params.set(filterName, state.usageOperationFilter.value);
+    }
+    return path + "?" + params.toString();
+  }
+
+  function openUsage() {
+    state.view = "usage";
+    state.profileScreen = "list";
+    state.disableConfirm = false;
+    render();
+    if (!state.usageOverview || !state.usageOperations) loadUsage(false);
+  }
+
+  function loadUsage(forceMetadata) {
+    var requestId = ++state.usageRequestId;
+    state.usageLoading = true;
+    state.usageError = "";
+    state.usageOperations = null;
+    state.usageNextCursor = null;
+    render();
+    var metadataPromise = state.usageMetadata && !forceMetadata
+      ? Promise.resolve(state.usageMetadata)
+      : api("/admin/api/usage/metadata");
+    return Promise.all([
+      api(usageQueryPath("/admin/api/usage/overview", true, false, "")),
+      api(usageQueryPath("/admin/api/usage/operations", false, true, "")),
+      metadataPromise
+    ]).then(function (parts) {
+      if (requestId !== state.usageRequestId) return;
+      state.usageOverview = parts[0];
+      state.usageOperations = parts[1].items || [];
+      state.usageNextCursor = parts[1].nextCursor || null;
+      state.usageMetadata = parts[2];
+      state.usageLoading = false;
+      render();
+    }).catch(function (error) {
+      if (requestId !== state.usageRequestId) return;
+      state.usageLoading = false;
+      state.usageError = error.serverMessage || error.message || "Usage reporting is unavailable.";
+      render();
+    });
+  }
+
+  function loadUsageOperations(reset) {
+    if (reset) {
+      state.usageOperations = null;
+      state.usageNextCursor = null;
+    }
+    state.usageLoadingMore = true;
+    state.usageError = "";
+    render();
+    return api(usageQueryPath("/admin/api/usage/operations", false, true, reset ? "" : state.usageNextCursor || "")).then(function (body) {
+      var items = body.items || [];
+      state.usageOperations = reset ? items : (state.usageOperations || []).concat(items);
+      state.usageNextCursor = body.nextCursor || null;
+      state.usageLoadingMore = false;
+      render();
+    }).catch(function (error) {
+      state.usageLoadingMore = false;
+      state.usageError = error.serverMessage || error.message || "Recent work could not be loaded.";
+      render();
+    });
+  }
+
+  function loadMoreUsageOperations() {
+    if (!state.usageNextCursor || state.usageLoadingMore) return;
+    loadUsageOperations(false);
+  }
+
+  function usageInt(value) {
+    return value == null ? "Unknown" : Number(value).toLocaleString("en-US");
+  }
+
+  function usageMoney(micros, currency) {
+    if (micros == null) return "Unknown";
+    var amount = Number(micros) / 1000000;
+    return (currency || "USD") + " " + amount.toLocaleString("en-US", { minimumFractionDigits: amount < 1 ? 4 : 2, maximumFractionDigits: amount < 0.01 ? 6 : amount < 1 ? 4 : 2 });
+  }
+
+  function usagePercent(numerator, denominator) {
+    if (!denominator) return "0%";
+    return Math.round(Number(numerator || 0) / Number(denominator) * 100) + "%";
+  }
+
+  function usageDelta(current, previous, formatter) {
+    if (current == null || previous == null) return "Prior period unavailable";
+    if (Number(previous) === 0) return Number(current) === 0 ? "No change from prior period" : "New in this period";
+    var change = (Number(current) - Number(previous)) / Number(previous) * 100;
+    return (change >= 0 ? "+" : "") + change.toFixed(0) + "% vs prior period" + (formatter ? " · " + formatter(previous) + " prior" : "");
+  }
+
+  function usageCoverageItem(label, count, total, unknownLabel) {
+    var percent = usagePercent(count, total);
+    return '<div class="usage-coverage-item"><strong>' + esc(label) + ': ' + esc(percent) + '</strong>' +
+      '<p class="hint">' + usageInt(count) + ' of ' + usageInt(total) + ' work instances' + (Number(total) - Number(count) > 0 ? ' · ' + usageInt(Number(total) - Number(count)) + ' ' + esc(unknownLabel) : '') + '</p>' +
+      '<div class="usage-coverage-track" aria-label="' + esc(label + " " + percent) + '"><div class="usage-coverage-fill" style="width:' + esc(percent) + '"></div></div></div>';
+  }
+
+  function usageOperationAmount(detail) {
+    var amounts = (detail.measurements || []).filter(function (measurement) {
+      return measurement.estimateCompleteness === "complete" && measurement.estimateCurrency === "USD" && measurement.estimateAmountMicros != null;
+    });
+    if (!amounts.length) return null;
+    return amounts.reduce(function (sum, measurement) { return sum + Number(measurement.estimateAmountMicros); }, 0);
+  }
+
+  function usageOperationTokens(detail, field) {
+    var values = (detail.measurements || []).map(function (measurement) { return measurement[field]; }).filter(function (value) { return value != null; });
+    return values.length ? values.reduce(function (sum, value) { return sum + Number(value); }, 0) : null;
+  }
+
+  function usageOperationProvider(detail) {
+    var measurement = (detail.measurements || []).at(-1);
+    return measurement && (measurement.returnedProvider || measurement.providerRoute || measurement.requestedProvider) || detail.operation.requestedProvider || "Unknown";
+  }
+
+  function usageOperationModel(detail) {
+    var measurement = (detail.measurements || []).at(-1);
+    return measurement && (measurement.returnedModel || measurement.requestedModel) || detail.operation.requestedModel || "Unknown";
+  }
+
+  function usageWorkLabel(operation) {
+    if (operation.operationKind === "routine_run") return operation.routineLabel || operation.routineId || "Scheduled work";
+    if (operation.conversationKind === "direct_message") return "Direct message";
+    return operation.channelLabel ? "#" + operation.channelLabel : operation.channelId || "Interactive turn";
+  }
+
+  function usageStatusBadge(status) {
+    var good = status === "completed";
+    return '<span class="badge ' + (good ? "badge-on" : "badge-off") + '">' + (good ? '<span class="dot"></span>' : '') + esc(String(status || "unknown").replace(/_/g, " ")) + '</span>';
+  }
+
+  function usageDetailHtml() {
+    var detail = state.usageSelected;
+    if (!detail) return "";
+    var operation = detail.operation;
+    var amount = usageOperationAmount(detail);
+    var input = usageOperationTokens(detail, "inputTokens");
+    var output = usageOperationTokens(detail, "outputTokens");
+    var total = usageOperationTokens(detail, "totalTokens");
+    var executions = (detail.measurements || []).map(function (measurement) {
+      var source = measurement.estimateCompleteness === "complete" ? "Estimated from " + (measurement.priceVersionId || "catalog") : "Cost " + (measurement.priceUnknownReason || "unknown").replace(/_/g, " ");
+      return '<tr><td class="mono">' + esc(measurement.executionId) + '</td><td>' + esc(usageOperationProvider({ operation: operation, measurements: [measurement] })) + '</td><td class="number">' + usageInt(measurement.totalTokens) + '</td><td class="number">' + usageMoney(measurement.estimateAmountMicros, measurement.estimateCurrency) + '</td><td>' + esc(source) + '</td></tr>';
+    }).join("");
+    return '<section class="usage-detail" aria-label="Work instance detail"><div class="usage-section-head"><div><span class="usage-source">Work instance</span><h2 class="section-title">' + esc(usageWorkLabel(operation)) + '</h2></div><button type="button" class="btn btn-ghost btn-sm" data-action="usage-clear-operation">Close</button></div>' +
+      '<div class="usage-detail-grid">' +
+      '<div class="usage-detail-item"><span class="hint">Status</span><strong>' + usageStatusBadge(operation.status) + '</strong></div>' +
+      '<div class="usage-detail-item"><span class="hint">Profile</span><strong>' + esc(operation.profileLabel || operation.profileId || "Unknown") + '</strong></div>' +
+      '<div class="usage-detail-item"><span class="hint">Provider / model</span><strong>' + esc(usageOperationProvider(detail) + " / " + usageOperationModel(detail)) + '</strong></div>' +
+      '<div class="usage-detail-item"><span class="hint">Input / output / total</span><strong>' + usageInt(input) + ' / ' + usageInt(output) + ' / ' + usageInt(total) + '</strong></div>' +
+      '<div class="usage-detail-item"><span class="hint">Chickpea estimated spend</span><strong>' + usageMoney(amount, "USD") + '</strong></div>' +
+      '<div class="usage-detail-item"><span class="hint">Started</span><strong>' + esc(new Date(operation.startedAt).toLocaleString()) + '</strong></div></div>' +
+      (executions ? '<div class="usage-table-wrap"><table class="usage-table"><thead><tr><th>Execution</th><th>Provider</th><th class="number">Tokens</th><th class="number">Estimate</th><th>Provenance</th></tr></thead><tbody>' + executions + '</tbody></table></div>' : '<p class="hint">No model-response usage was reported for this work instance.</p>') +
+      '<p class="hint mono">Operation ' + esc(operation.operationId) + '</p></section>';
+  }
+
+  function usageGroupsHtml(summary) {
+    var groups = summary.groups || [];
+    if (!groups.length) return '<div class="empty"><p class="hint">No breakdown data for this period.</p></div>';
+    var rows = groups.map(function (group) {
+      return '<tr><td><button type="button" class="usage-row-action" data-action="usage-group-filter" data-value="' + esc(group.key) + '" data-label="' + esc(group.label) + '">' + esc(group.label) + '</button></td>' +
+        '<td class="number">' + usageInt(group.operationCount) + '</td><td class="number">' + usageInt(group.totalTokens) + '</td>' +
+        '<td class="number">' + usageMoney(group.estimateAmountMicros, summary.currency) + '</td><td class="number">' + usagePercent(group.pricedOperationCount, group.operationCount) + '</td></tr>';
+    }).join("");
+    return '<div class="usage-table-wrap"><table class="usage-table"><thead><tr><th>' + esc(state.usageGroupBy.replace(/_/g, " ")) + '</th><th class="number">Work</th><th class="number">Tokens</th><th class="number">Known estimate</th><th class="number">Priced</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
+  }
+
+  function usageOperationsHtml() {
+    if (!state.usageOperations) return '<div class="empty"><p class="hint">Loading work instances&hellip;</p></div>';
+    if (!state.usageOperations.length) return '<div class="empty"><p class="hint">No work instances match this period' + (state.usageOperationFilter ? ' and filter' : '') + '.</p></div>';
+    var rows = state.usageOperations.map(function (detail) {
+      var operation = detail.operation;
+      return '<tr><td><button type="button" class="usage-row-action" data-action="usage-select-operation" data-operation="' + esc(operation.operationId) + '">' + esc(usageWorkLabel(operation)) + '</button><div class="hint">' + esc(new Date(operation.startedAt).toLocaleString()) + '</div></td>' +
+        '<td>' + esc(operation.profileLabel || operation.profileId || "Unknown") + '</td><td>' + esc(usageOperationProvider(detail)) + '</td><td>' + esc(usageOperationModel(detail)) + '</td>' +
+        '<td>' + usageStatusBadge(operation.status) + '</td><td class="number">' + usageInt(usageOperationTokens(detail, "totalTokens")) + '</td><td class="number">' + usageMoney(usageOperationAmount(detail), "USD") + '</td></tr>';
+    }).join("");
+    return '<div class="usage-table-wrap"><table class="usage-table"><thead><tr><th>Work instance</th><th>Profile</th><th>Provider</th><th>Model</th><th>Status</th><th class="number">Tokens</th><th class="number">Estimate</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+      (state.usageNextCursor ? '<button type="button" class="btn btn-ghost" data-action="usage-load-more"' + (state.usageLoadingMore ? ' disabled' : '') + '>' + (state.usageLoadingMore ? 'Loading&hellip;' : 'Load more') + '</button>' : '');
+  }
+
+  function usageGuidanceHtml(metadata) {
+    var credentials = metadata.credentials || [];
+    var cards = (metadata.guidance || []).map(function (provider) {
+      var providerCredentials = credentials.filter(function (credential) { return credential.providerId === provider.providerId && credential.retiredAt == null; });
+      var coverage = provider.runtimeCoverage === "metered" ? "Metered aggregate usage" : provider.runtimeCoverage === "mixed" ? "Mixed usage coverage" : "Work status only";
+      var credentialText = providerCredentials.length ? providerCredentials.map(function (credential) { return credential.label + " (epoch " + credential.version + ")"; }).join(", ") : "No active credential reference recorded";
+      return '<article class="usage-guidance-card"><div class="usage-section-head"><h3 class="section-title">' + esc(provider.displayName) + '</h3><span class="badge badge-off">' + esc(coverage) + '</span></div>' +
+        '<p>' + esc(provider.scopeGuidance) + '</p><p class="hint">' + esc(provider.accountBoundary) + '</p><p class="hint"><strong>Chickpea reference:</strong> ' + esc(credentialText) + '</p>' +
+        '<div class="usage-guidance-links">' + (provider.limitsUrl ? '<a class="link-btn" href="' + esc(provider.limitsUrl) + '" target="_blank" rel="noopener noreferrer">Provider limits</a>' : '') + (provider.pricingUrl ? '<a class="link-btn" href="' + esc(provider.pricingUrl) + '" target="_blank" rel="noopener noreferrer">Provider pricing</a>' : '<span class="hint">No universal pricing source</span>') + '</div></article>';
+    }).join("");
+    return '<div class="usage-guidance-grid">' + cards + '</div>';
+  }
+
+  function usageLifecycleHtml(metadata) {
+    var retention = metadata.retention || {};
+    var events = metadata.lifecycleEvents || [];
+    var latest = events.slice(0, 8).map(function (event) {
+      return '<tr><td>' + esc(String(event.eventType || "").replace(/^usage\./, "").replace(/_/g, " ")) + '</td><td class="mono">' + esc(event.subjectId || "usage-ledger") + '</td><td>' + esc(new Date(event.createdAt).toLocaleString()) + '</td></tr>';
+    }).join("");
+    return '<details class="advanced"><summary>Retention and lifecycle</summary><div class="adv-rows"><p class="hint">Work-instance metadata is retained for ' + Number(retention.rawRetentionDays || 90) + ' days. Daily aggregate facts are preserved for ' + Number(retention.aggregateRetentionMonths || 13) + ' months. Prompts, outputs, tool payloads, and secrets are never part of this ledger.</p>' +
+      '<p class="hint">Last retention check: ' + (retention.lastRunAt ? esc(new Date(retention.lastRunAt).toLocaleString()) : 'Not run yet') + '.</p>' +
+      (latest ? '<div class="usage-table-wrap"><table class="usage-table"><thead><tr><th>Lifecycle event</th><th>Subject</th><th>Time</th></tr></thead><tbody>' + latest + '</tbody></table></div>' : '') + '</div></details>';
+  }
+
+  function usageMainHtml() {
+    var controls = '<div class="usage-controls"><label class="field"><span class="field-label">Period</span><span class="select-wrap"><select class="input" data-action="usage-range">' +
+      [7, 30, 90].map(function (days) { return '<option value="' + days + '"' + (state.usageRangeDays === days ? ' selected' : '') + '>Last ' + days + ' days</option>'; }).join("") +
+      '</select><span class="select-caret">' + icon("chevron-down") + '</span></span></label><label class="field"><span class="field-label">Break down by</span><span class="select-wrap"><select class="input" data-action="usage-group">' +
+      [["provider", "Provider"], ["channel", "Channel"], ["profile", "Profile"], ["work_kind", "Work kind"], ["routine", "Routine"], ["credential", "Credential"], ["model", "Model"], ["status", "Status"]].map(function (option) { return '<option value="' + option[0] + '"' + (state.usageGroupBy === option[0] ? ' selected' : '') + '>' + option[1] + '</option>'; }).join("") +
+      '</select><span class="select-caret">' + icon("chevron-down") + '</span></span></label></div>';
+    var head = '<div class="usage-head"><div class="usage-head-copy"><span class="section-eyebrow">Reporting</span><h1 class="page-title">Usage</h1><p class="hint">See what Chickpea work costs, where usage is concentrated, and which work instances deserve a closer look.</p></div>' + controls + '</div>' +
+      '<div class="usage-contract"><strong>Chickpea reports usage and estimated spend for work it runs.</strong><p class="hint">Configure caps, credits, quotas, and rate limits with your model provider. Provider consoles can include work outside Chickpea; Chickpea estimates use reviewed list prices and are not invoices.</p></div>';
+    if (state.usageLoading && !state.usageOverview) return head + '<div class="empty"><p class="hint">Loading usage and estimated spend&hellip;</p></div>';
+    if (state.usageError && !state.usageOverview) return head + '<div class="empty"><p class="field-error">' + esc(state.usageError) + '</p><button type="button" class="btn btn-ghost" data-action="usage-retry">Retry</button></div>';
+    if (!state.usageOverview || !state.usageMetadata) return head;
+    var current = state.usageOverview.current;
+    var previous = state.usageOverview.previous;
+    var totals = current.totals;
+    var prior = previous.totals;
+    var estimate = current.mixedCurrency ? "Multiple currencies" : usageMoney(totals.estimateAmountMicros, current.currency || "USD");
+    var denominator = Number(totals.completedPricedOperationCount || totals.pricedOperationCount || 0);
+    var perPriced = denominator > 0 && totals.estimateAmountMicros != null ? usageMoney(Math.round(Number(totals.estimateAmountMicros) / denominator), current.currency || "USD") : "Unknown";
+    var summary = '<div class="usage-grid"><div class="usage-card usage-card-primary"><span class="usage-card-label">Chickpea estimated spend</span><span class="usage-card-value">' + esc(estimate) + '</span><span class="hint">' + esc(usageDelta(totals.estimateAmountMicros, prior.estimateAmountMicros)) + '</span></div>' +
+      '<div class="usage-card"><span class="usage-card-label">Work instances</span><span class="usage-card-value">' + usageInt(totals.operationCount) + '</span><span class="hint">' + esc(usageDelta(totals.operationCount, prior.operationCount)) + '</span></div>' +
+      '<div class="usage-card"><span class="usage-card-label">Aggregate tokens</span><span class="usage-card-value">' + usageInt(totals.totalTokens) + '</span><span class="hint">' + usageInt(totals.inputTokens) + ' input · ' + usageInt(totals.outputTokens) + ' output</span></div>' +
+      '<div class="usage-card"><span class="usage-card-label">Per completed priced work</span><span class="usage-card-value">' + esc(perPriced) + '</span><span class="hint">Known estimates only · ' + usageInt(denominator) + ' work instances</span></div></div>';
+    var coverage = '<div class="usage-coverage"><div class="usage-coverage-item"><strong>Recorded work: ' + usageInt(totals.operationCount) + '</strong><p class="hint">Ledger work in this period. A telemetry-store failure can create an unmeasurable gap; Chickpea never invents missing work.</p></div>' + usageCoverageItem("Metered", totals.meteredOperationCount, totals.operationCount, "usage unknown") + usageCoverageItem("Priced", totals.pricedOperationCount, totals.operationCount, "cost unknown") + '</div>';
+    var pricedCoverageNow = totals.operationCount ? totals.pricedOperationCount / totals.operationCount : 0;
+    var pricedCoveragePrior = prior.operationCount ? prior.pricedOperationCount / prior.operationCount : 0;
+    var coverageWarning = Math.abs(pricedCoverageNow - pricedCoveragePrior) >= 0.1 ? '<p class="field-error">Pricing coverage differs materially from the prior period, so spend changes are not directly comparable.</p>' : '';
+    var staleCatalogs = (state.usageMetadata.catalogs || []).filter(function (catalog) { return Date.now() >= catalog.staleAfter; });
+    var freshness = staleCatalogs.length ? '<p class="field-error">' + staleCatalogs.length + ' price catalog' + (staleCatalogs.length === 1 ? ' is' : 's are') + ' stale. New unsupported estimates remain unknown until a reviewed release updates them.</p>' : '<p class="hint">Price catalog reviewed ' + esc(new Date(Math.max.apply(null, state.usageMetadata.catalogs.map(function (catalog) { return catalog.reviewedAt; }))).toISOString().slice(0, 10)) + '.</p>';
+    var filter = state.usageOperationFilter ? '<span class="usage-filter-chip">Recent work: ' + esc(state.usageOperationFilter.label) + ' <button type="button" class="x-btn" data-action="usage-clear-filter" aria-label="Clear work filter">&times;</button></span>' : '';
+    var crossExecutionNote = ["provider", "credential", "model"].includes(state.usageGroupBy) ? ' One work instance can appear in more than one row after a retry or failover; tokens and estimates stay with the execution that reported them.' : '';
+    return head + summary + coverage + coverageWarning + freshness +
+      '<section class="usage-section"><div class="usage-section-head"><div><h2 class="section-title">Spend drivers</h2><p class="hint">Known estimates and aggregate model-response usage, grouped one way at a time.' + crossExecutionNote + '</p></div></div>' + usageGroupsHtml(current) + '</section>' +
+      usageDetailHtml() +
+      '<section class="usage-section"><div class="usage-section-head"><div><h2 class="section-title">Recent work</h2><p class="hint">Open a work instance to inspect attribution, usage, estimate provenance, and unknown reasons.</p></div>' + filter + '</div>' + usageOperationsHtml() + '</section>' +
+      '<section class="usage-section"><div class="usage-section-head"><div><h2 class="section-title">Provider setup</h2><p class="hint">Scope provider credentials narrowly and set enforceable limits at the provider.</p></div><button type="button" class="btn btn-ghost btn-sm" data-action="usage-open-settings">Model settings</button></div>' + usageGuidanceHtml(state.usageMetadata) + '</section>' +
+      usageLifecycleHtml(state.usageMetadata);
+  }
+
   function mainHtml() {
+    if (state.view === "usage") {
+      return '<main class="main"><div class="main-inner usage-main">' + usageMainHtml() + '</div></main>';
+    }
     // Profiles is a first-class main-panel destination (master-detail, per cards
     // 09-12) that takes precedence over the channel chrome — reachable from the
     // topbar and the channel page's Manage-profiles affordance, connected or not.
@@ -7213,7 +7567,7 @@ details[open].advanced summary::before {
     }
     if (state.view === "audit" && state.memoryDirty && (
       action === "open-channels" || action === "open-profiles" || action === "open-settings" ||
-      action === "open-audit" || action === "go-home" || action === "audit-tab-scheduled"
+      action === "open-audit" || action === "open-usage" || action === "go-home" || action === "audit-tab-scheduled"
     )) {
       state.memoryError = "Save or discard the current memory draft before navigating away.";
       render();
@@ -7265,6 +7619,7 @@ details[open].advanced summary::before {
     // or (with a data-agent) directly on that profile's edit detail (the
     // channel-page Profile row's Edit affordance).
     if (action === "open-profiles") { enterProfiles(target.getAttribute("data-agent")); }
+    if (action === "open-usage" && USAGE_ADMIN_UI) { openUsage(); }
     if (action === "open-audit") { openAuditLogs("", "", ""); }
     // Brand-as-home: the reliable exit back to the Channels overview.
     if (action === "go-home") { openChannels(); }
@@ -7338,6 +7693,22 @@ details[open].advanced summary::before {
     // Settings (model-providers) is a separate destination that lands with its
     // own build; the affordance is present per the approved model-field design.
     if (action === "open-settings") { openSettings(target.getAttribute("data-section") || ""); }
+    if (action === "usage-retry") { loadUsage(true); }
+    if (action === "usage-load-more") { loadMoreUsageOperations(); }
+    if (action === "usage-clear-filter") { state.usageOperationFilter = null; state.usageOperations = null; state.usageSelected = null; loadUsageOperations(true); }
+    if (action === "usage-group-filter") {
+      state.usageOperationFilter = { groupBy: state.usageGroupBy, value: target.getAttribute("data-value") || "", label: target.getAttribute("data-label") || "" };
+      state.usageOperations = null;
+      state.usageSelected = null;
+      loadUsageOperations(true);
+    }
+    if (action === "usage-select-operation") {
+      var operationId = target.getAttribute("data-operation") || "";
+      state.usageSelected = (state.usageOperations || []).find(function (item) { return item.operation.operationId === operationId; }) || null;
+      render();
+    }
+    if (action === "usage-clear-operation") { state.usageSelected = null; render(); }
+    if (action === "usage-open-settings") { openSettings(""); }
     if (action === "audit-tab-scheduled" && state.auditDomain !== "scheduled-work") { openScheduledWork(""); }
     if (action === "audit-tab-memory" && state.auditDomain !== "memory") { openAuditLogs("", "", ""); }
     if (action === "scheduled-retry") { loadScheduledRoutines(); }
@@ -7868,6 +8239,22 @@ details[open].advanced summary::before {
   document.addEventListener("change", function (event) {
     var target = event.target;
     var action = target.getAttribute && target.getAttribute("data-action");
+    if (action === "usage-range") {
+      var usageDays = Number(target.value);
+      state.usageRangeDays = [7, 30, 90].includes(usageDays) ? usageDays : 30;
+      state.usageOperationFilter = null;
+      state.usageSelected = null;
+      syncUsageQueryUrl();
+      loadUsage(true);
+    }
+    if (action === "usage-group") {
+      var usageGroup = String(target.value || "provider");
+      state.usageGroupBy = ["profile", "channel", "work_kind", "routine", "provider", "credential", "model", "status"].includes(usageGroup) ? usageGroup : "provider";
+      state.usageOperationFilter = null;
+      state.usageSelected = null;
+      syncUsageQueryUrl();
+      loadUsage(true);
+    }
     if (action === "memory-type" && state.memoryDraft) {
       state.memoryDraft.type = target.value;
       markMemoryDirty();
@@ -9671,7 +10058,7 @@ details[open].advanced summary::before {
   // the brand-home logo, and the "<- Profiles" back link.
   function isEditLeaveAction(action) {
     return action === "open-channels" || action === "open-profiles" || action === "open-settings" ||
-      action === "open-audit" || action === "go-home" || action === "profiles-back";
+      action === "open-audit" || action === "open-usage" || action === "go-home" || action === "profiles-back";
   }
 
   // Perform a confirmed leave — the edit draft is dropped and the pending
@@ -9701,6 +10088,8 @@ details[open].advanced summary::before {
       openSettings((pending && pending.section) || "");
     } else if (action === "open-audit") {
       openAuditLogs("", "", "");
+    } else if (action === "open-usage") {
+      openUsage();
     } else if (action === "go-home" || action === "open-channels") {
       openChannels();
     } else {
@@ -9907,6 +10296,7 @@ details[open].advanced summary::before {
   }
 
   var initialRoute = canNavigate ? location.pathname : "/admin";
+  if (USAGE_ADMIN_UI && initialRoute === "/admin/usage") applyUsageQuery(location.search || "");
   state.oauthReturn = canNavigate ? oauthReturnFromSearch(location.search || "") : null;
   refreshData(false).then(function () {
     if (initialRoute !== "/admin") applyRoute(initialRoute);
