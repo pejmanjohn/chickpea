@@ -2274,9 +2274,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         ...patch,
         id: agentId,
       };
+      const nextOpenAiAuthMethod = patch.openaiAuthMethod ?? (
+        next.model?.startsWith('openai/') ? current.openaiAuthMethod : undefined
+      );
       const openAiAuthError = openAiAuthenticationMethodError(
         next.model,
-        patch.openaiAuthMethod,
+        nextOpenAiAuthMethod,
       );
       if (openAiAuthError) return invalidRequest(c, openAiAuthError);
       if (
@@ -3779,6 +3782,12 @@ function openAiAuthenticationMethodError(
 ): string | undefined {
   if (method && !model?.startsWith('openai/')) {
     return 'OpenAI authentication methods require an openai/* model.';
+  }
+  if (
+    method === 'subscription' &&
+    !(OPENAI_SUBSCRIPTION_MODELS as readonly string[]).includes(model?.slice('openai/'.length) ?? '')
+  ) {
+    return 'OpenAI Subscription requires a model in the pinned Subscription allowlist.';
   }
   return undefined;
 }

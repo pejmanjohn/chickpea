@@ -262,6 +262,23 @@ async function boundedFetch(
       signal,
     });
   } catch (cause) {
+    clearTimeout(timer);
+    throw new OpenAiSubscriptionProtocolError(
+      timedOut ? 'request_timeout' : 'provider_unavailable',
+      { cause },
+    );
+  }
+  try {
+    if (response.status >= 300 && response.status < 400) {
+      throw new OpenAiSubscriptionProtocolError('protocol_drift', { status: response.status });
+    }
+    const text = await readBoundedText(
+      response,
+      options.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES,
+    );
+    return { response, text };
+  } catch (cause) {
+    if (cause instanceof OpenAiSubscriptionProtocolError) throw cause;
     throw new OpenAiSubscriptionProtocolError(
       timedOut ? 'request_timeout' : 'provider_unavailable',
       { cause },
@@ -269,14 +286,6 @@ async function boundedFetch(
   } finally {
     clearTimeout(timer);
   }
-  if (response.status >= 300 && response.status < 400) {
-    throw new OpenAiSubscriptionProtocolError('protocol_drift', { status: response.status });
-  }
-  const text = await readBoundedText(
-    response,
-    options.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES,
-  );
-  return { response, text };
 }
 
 async function readBoundedText(response: Response, maxBytes: number): Promise<string> {

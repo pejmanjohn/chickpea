@@ -16,9 +16,9 @@ export interface OpenAiSubscriptionCapability {
 export function openAiSubscriptionCapability(
   env?: PlatformEnv,
 ): OpenAiSubscriptionCapability {
-  const bound = env?.[OPENAI_SUBSCRIPTION_ENABLED_FLAG];
-  const raw = typeof bound === 'string'
-    ? bound
+  const hasBinding = env !== undefined && Object.hasOwn(env, OPENAI_SUBSCRIPTION_ENABLED_FLAG);
+  const raw = hasBinding
+    ? env[OPENAI_SUBSCRIPTION_ENABLED_FLAG]
     : process.env[OPENAI_SUBSCRIPTION_ENABLED_FLAG];
   return { enabled: raw === '1' };
 }

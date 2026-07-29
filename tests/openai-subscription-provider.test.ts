@@ -91,6 +91,28 @@ test('the subscription boundary leaves unrelated OpenAI API traffic untouched', 
   assert.equal(captured?.url, 'https://api.openai.com/v1/responses');
 });
 
+test('the subscription boundary rejects marked traffic when its endpoint drifts', async () => {
+  let forwarded = false;
+  const boundary = createOpenAiSubscriptionFetchBoundary({
+    credentials: () => ({ accessToken: 'subscription-token', accountId: 'subscription-account' }),
+    fetch: async () => {
+      forwarded = true;
+      return new Response('{}');
+    },
+  });
+
+  await assert.rejects(
+    boundary('https://api.openai.com/v1/responses', {
+      method: 'POST',
+      headers: { [OPENAI_SUBSCRIPTION_TRANSPORT_MARKER]: 'v1' },
+      body: REQUEST_BODY,
+    }),
+    (error: unknown) =>
+      error instanceof OpenAiSubscriptionProtocolError && error.code === 'protocol_drift',
+  );
+  assert.equal(forwarded, false);
+});
+
 test('the subscription boundary fails closed for unmarked, malformed, and redirected requests', async () => {
   const boundary = createOpenAiSubscriptionFetchBoundary({
     credentials: () => ({ accessToken: 'subscription-token', accountId: 'subscription-account' }),
@@ -165,6 +187,38 @@ test('the subscription boundary enforces its response-header timeout', async () 
     (error: unknown) =>
       error instanceof OpenAiSubscriptionProtocolError && error.code === 'request_timeout',
   );
+});
+
+test('caller cancellation remains attached after subscription response headers arrive', async () => {
+  const caller = new AbortController();
+  let upstreamAborted = false;
+  const boundary = createOpenAiSubscriptionFetchBoundary({
+    credentials: () => ({ accessToken: 'subscription-token', accountId: 'subscription-account' }),
+    timeoutMs: 60_000,
+    fetch: async (_input, init) => new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          init?.signal?.addEventListener('abort', () => {
+            upstreamAborted = true;
+            controller.error(init.signal?.reason);
+          }, { once: true });
+        },
+      }),
+      { status: 200, headers: { 'content-type': 'text/event-stream' } },
+    ),
+  });
+
+  const response = await boundary('https://chatgpt.com/backend-api/codex/responses', {
+    method: 'POST',
+    headers: { [OPENAI_SUBSCRIPTION_TRANSPORT_MARKER]: 'v1' },
+    body: REQUEST_BODY,
+    signal: caller.signal,
+  });
+  const pendingRead = response.body?.getReader().read();
+  caller.abort(new Error('caller cancelled'));
+
+  await assert.rejects(pendingRead ?? Promise.resolve());
+  assert.equal(upstreamAborted, true);
 });
 
 test('the registered wire handler streams through the boundary and ignores caller overrides', async (t) => {

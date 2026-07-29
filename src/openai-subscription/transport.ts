@@ -80,7 +80,16 @@ export function createOpenAiSubscriptionFetchBoundary(
   const upstream = options.fetch ?? globalThis.fetch;
   return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const requestUrl = requestUrlFor(input);
+    const callerHeaders = new Headers(
+      init?.headers ?? (input instanceof Request ? input.headers : undefined),
+    );
     if (requestUrl !== OPENAI_SUBSCRIPTION_ENDPOINTS.responses) {
+      // The marker is private to the subscription provider. If its upstream
+      // endpoint drifts, fail closed instead of forwarding model-visible data
+      // to whatever URL the dependency selected.
+      if (callerHeaders.get(OPENAI_SUBSCRIPTION_TRANSPORT_MARKER) === 'v1') {
+        throw new OpenAiSubscriptionProtocolError('protocol_drift');
+      }
       return upstream(input, init);
     }
 
@@ -117,30 +126,33 @@ export function createOpenAiSubscriptionFetchBoundary(
         signal: timeout.signal,
       });
     } catch (error) {
+      timeout.clear();
       if (timeout.timedOut()) {
         throw new OpenAiSubscriptionProtocolError('request_timeout', { cause: error });
       }
       if (error instanceof OpenAiSubscriptionProtocolError) throw error;
       throw new OpenAiSubscriptionProtocolError('provider_unavailable', { cause: error });
-    } finally {
-      timeout.clear();
     }
+    timeout.clearHeaderTimer();
 
     if (response.status >= 300 && response.status < 400) {
       await discardResponseBody(response);
+      timeout.clear();
       throw new OpenAiSubscriptionProtocolError('protocol_drift', { status: response.status });
     }
     if (!response.ok) {
       const providerText = await readBoundedText(response, 64 * 1024);
+      timeout.clear();
       const code = classifyProviderFailure(response.status, providerText);
       if (response.status === 401) await options.onAuthenticationFailure?.();
       return safeFailureResponse(response, code);
     }
     if (!response.body || !response.headers.get('content-type')?.toLowerCase().includes('text/event-stream')) {
       await discardResponseBody(response);
+      timeout.clear();
       throw new OpenAiSubscriptionProtocolError('invalid_response', { status: response.status });
     }
-    return new Response(limitResponseBody(response.body, MAX_RESPONSE_BYTES), {
+    return new Response(limitResponseBody(response.body, MAX_RESPONSE_BYTES, timeout.clear), {
       status: response.status,
       headers: safeSuccessHeaders(response.headers),
     });
@@ -214,6 +226,7 @@ function safeSuccessHeaders(source: Headers): Headers {
 
 function timeoutSignal(timeoutMs: number, callerSignal: AbortSignal): {
   signal: AbortSignal;
+  clearHeaderTimer: () => void;
   clear: () => void;
   timedOut: () => boolean;
 } {
@@ -228,6 +241,7 @@ function timeoutSignal(timeoutMs: number, callerSignal: AbortSignal): {
   }, Math.max(1, timeoutMs));
   return {
     signal: controller.signal,
+    clearHeaderTimer: () => clearTimeout(timer),
     clear: () => {
       clearTimeout(timer);
       callerSignal.removeEventListener('abort', abortFromCaller);
@@ -236,25 +250,45 @@ function timeoutSignal(timeoutMs: number, callerSignal: AbortSignal): {
   };
 }
 
-function limitResponseBody(body: ReadableStream<Uint8Array>, maximumBytes: number): ReadableStream<Uint8Array> {
+function limitResponseBody(
+  body: ReadableStream<Uint8Array>,
+  maximumBytes: number,
+  onFinished: () => void = () => {},
+): ReadableStream<Uint8Array> {
   const reader = body.getReader();
   let bytes = 0;
+  let finished = false;
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    onFinished();
+  };
   return new ReadableStream<Uint8Array>({
     async pull(controller) {
-      const next = await reader.read();
+      let next: ReadableStreamReadResult<Uint8Array>;
+      try {
+        next = await reader.read();
+      } catch (error) {
+        finish();
+        controller.error(error);
+        return;
+      }
       if (next.done) {
+        finish();
         controller.close();
         return;
       }
       bytes += next.value.byteLength;
       if (bytes > maximumBytes) {
         await reader.cancel();
+        finish();
         controller.error(new OpenAiSubscriptionProtocolError('invalid_response'));
         return;
       }
       controller.enqueue(next.value);
     },
     cancel(reason) {
+      finish();
       return reader.cancel(reason);
     },
   });

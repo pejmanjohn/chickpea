@@ -299,6 +299,31 @@ test('profile writes persist explicit OpenAI methods and reject explicit model-m
   assert.equal(createdBody.agent.openaiAuthMethod, 'subscription');
   assert.equal(createdBody.agent.openaiSubscriptionBindingId, 'installation');
 
+  const unsupportedSubscription = await app.request('/admin/api/agents', {
+    method: 'POST',
+    headers: { ...auth(), 'content-type': 'application/json' },
+    body: JSON.stringify({
+      id: 'agent_unsupported_subscription',
+      name: 'Unsupported subscription model',
+      instructions: 'This should be rejected before runtime.',
+      enabled: true,
+      model: 'openai/gpt-4.1',
+      openaiAuthMethod: 'subscription',
+    }),
+  });
+  assert.equal(unsupportedSubscription.status, 400);
+  assert.deepEqual(await unsupportedSubscription.json(), {
+    error: 'invalid_request',
+    message: 'OpenAI Subscription requires a model in the pinned Subscription allowlist.',
+  });
+
+  const unsupportedSubscriptionPatch = await app.request('/admin/api/agents/agent_subscription', {
+    method: 'PATCH',
+    headers: { ...auth(), 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'openai/gpt-4.1' }),
+  });
+  assert.equal(unsupportedSubscriptionPatch.status, 400);
+
   const mismatchedCreate = await app.request('/admin/api/agents', {
     method: 'POST',
     headers: { ...auth(), 'content-type': 'application/json' },

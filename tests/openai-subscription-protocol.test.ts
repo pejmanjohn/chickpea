@@ -205,6 +205,26 @@ test('protocol maps safe failures and rejects redirects, oversized bodies, and b
   );
 });
 
+test('protocol timeout remains active while reading a response body', async () => {
+  await assert.rejects(
+    () => startOpenAiDeviceAuthorization({
+      timeoutMs: 1,
+      fetch: async (_input, init) => new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            init?.signal?.addEventListener('abort', () => {
+              controller.error(init.signal?.reason);
+            }, { once: true });
+          },
+        }),
+        { headers: { 'content-type': 'application/json' } },
+      ),
+    }),
+    (error: unknown) =>
+      error instanceof OpenAiSubscriptionProtocolError && error.code === 'request_timeout',
+  );
+});
+
 test('subscription request headers override caller credentials and use a curated catalog', () => {
   const headers = buildOpenAiSubscriptionHeaders({
     accessToken: 'access-secret',

@@ -31,6 +31,10 @@ test('Cloudflare binding wins and the disabled gate returns a stable safe code',
       openAiSubscriptionCapability({ [OPENAI_SUBSCRIPTION_ENABLED_FLAG]: '0' }),
       { enabled: false },
     );
+    assert.deepEqual(
+      openAiSubscriptionCapability({ [OPENAI_SUBSCRIPTION_ENABLED_FLAG]: 1 }),
+      { enabled: false },
+    );
     assert.throws(
       () => requireOpenAiSubscriptionEnabled({ [OPENAI_SUBSCRIPTION_ENABLED_FLAG]: '0' }),
       (error: unknown) =>

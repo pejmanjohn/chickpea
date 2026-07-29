@@ -129,6 +129,11 @@ export async function commitOpenAiSubscriptionCredentials(
     delete: [SETTING_KEYS.pending, SETTING_KEYS.refreshLease],
   });
   if (!applied) throw new OpenAiSubscriptionError('authorization_missing');
+  // A reconnect or confirmed account replacement must not leave a runtime
+  // holding the prior account's bearer. Calls that have not crossed the fetch
+  // boundary yet fail closed until their next runtime construction rebinds the
+  // newly committed installation credential.
+  clearOpenAiSubscriptionTransport();
   return publicStatus(status);
 }
 
