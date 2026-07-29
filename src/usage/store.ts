@@ -10,8 +10,10 @@ import { UsageStateError } from './store-error.ts';
 import {
   USAGE_TELEMETRY_SCHEMA_VERSION,
   type AdmitUsageOperationInput,
+  type ModelCredentialRecord,
   type NormalizedUsageQuery,
   type RecordUsageTerminalInput,
+  type PutModelCredentialInput,
   type UsageMeasurement,
   type UsageOperation,
   type UsageOperationDetail,
@@ -24,6 +26,8 @@ import {
 } from './types.ts';
 import {
   normalizeAdmitUsageOperation,
+  normalizeCredentialRetirement,
+  normalizeModelCredential,
   normalizeRecordUsageTerminal,
   normalizeUsageQuery,
 } from './validation.ts';
@@ -80,6 +84,18 @@ interface MeasurementRow {
   price_version_id: string | null;
   price_unknown_reason: UsageMeasurement['priceUnknownReason'];
   recorded_at: number;
+}
+
+interface CredentialRow {
+  credential_ref_id: string;
+  version: number;
+  provider_id: string;
+  source_kind: ModelCredentialRecord['sourceKind'];
+  label: string;
+  scope_label: string | null;
+  unknown_rotation: number;
+  active_from: number;
+  retired_at: number | null;
 }
 
 const OPERATION_COLUMNS = `
@@ -297,6 +313,99 @@ export class UsageStoreLogic {
     };
   }
 
+  putCredential(raw: PutModelCredentialInput): ModelCredentialRecord {
+    const input = normalizeModelCredential(raw);
+    return this.db.transaction(() => {
+      const existing = this.getCredentialRow(input.credentialRefId, input.version);
+      if (existing) {
+        const credential = mapCredential(existing);
+        if (!sameCredential(credential, input)) {
+          throw new UsageStateError(
+            'usage_credential_conflict',
+            'Credential reference epoch already has different metadata.',
+            { credentialRefId: input.credentialRefId, version: String(input.version) },
+          );
+        }
+        return credential;
+      }
+      this.db.run(
+        `INSERT INTO usage_credentials (
+          credential_ref_id, version, provider_id, source_kind, label, scope_label,
+          unknown_rotation, active_from, retired_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+        input.credentialRefId,
+        input.version,
+        input.providerId,
+        input.sourceKind,
+        input.label,
+        input.scopeLabel,
+        input.unknownRotation ? 1 : 0,
+        input.activeFrom,
+      );
+      return requiredCredential(this.getCredentialRow(input.credentialRefId, input.version));
+    });
+  }
+
+  retireCredential(
+    credentialRefId: string,
+    version: number,
+    retiredAt: number,
+  ): ModelCredentialRecord {
+    const retirement = normalizeCredentialRetirement(credentialRefId, version, retiredAt);
+    return this.db.transaction(() => {
+      const existing = this.getCredentialRow(
+        retirement.credentialRefId,
+        retirement.version,
+      );
+      if (!existing) {
+        throw new UsageStateError(
+          'usage_credential_not_found',
+          'Credential reference epoch was not found.',
+          {
+            credentialRefId: retirement.credentialRefId,
+            version: String(retirement.version),
+          },
+        );
+      }
+      if (retirement.retiredAt < existing.active_from) {
+        throw new UsageStateError(
+          'usage_invalid_input',
+          'Credential retirement time precedes activation.',
+        );
+      }
+      if (existing.retired_at === null) {
+        this.db.run(
+          `UPDATE usage_credentials SET retired_at = ?
+           WHERE credential_ref_id = ? AND version = ? AND retired_at IS NULL`,
+          retirement.retiredAt,
+          retirement.credentialRefId,
+          retirement.version,
+        );
+      }
+      return requiredCredential(this.getCredentialRow(
+        retirement.credentialRefId,
+        retirement.version,
+      ));
+    });
+  }
+
+  listCredentials(providerId?: string): ModelCredentialRecord[] {
+    const rows = providerId
+      ? this.db.all(
+          `SELECT credential_ref_id, version, provider_id, source_kind, label,
+                  scope_label, unknown_rotation, active_from, retired_at
+           FROM usage_credentials WHERE provider_id = ?
+           ORDER BY credential_ref_id, version`,
+          providerId,
+        )
+      : this.db.all(
+          `SELECT credential_ref_id, version, provider_id, source_kind, label,
+                  scope_label, unknown_rotation, active_from, retired_at
+           FROM usage_credentials ORDER BY provider_id, credential_ref_id, version`,
+        );
+    return rows.map((row) => mapCredential(row as unknown as CredentialRow));
+  }
+
   execute(request: UsageRpcRequest): UsageRpcResponse {
     switch (request.kind) {
       case 'admit_operation':
@@ -309,6 +418,19 @@ export class UsageStoreLogic {
         return { kind: 'operation_page', page: this.listOperations(request.query) };
       case 'summarize':
         return { kind: 'summary', summary: this.summarize(request.query) };
+      case 'put_credential':
+        return { kind: 'credential', credential: this.putCredential(request.input) };
+      case 'retire_credential':
+        return {
+          kind: 'credential',
+          credential: this.retireCredential(
+            request.credentialRefId,
+            request.version,
+            request.retiredAt,
+          ),
+        };
+      case 'list_credentials':
+        return { kind: 'credentials', credentials: this.listCredentials(request.providerId) };
     }
   }
 
@@ -352,6 +474,16 @@ export class UsageStoreLogic {
       `SELECT ${MEASUREMENT_COLUMNS} FROM usage_measurements WHERE operation_id = ?`,
       operationId,
     ) as unknown as MeasurementRow | undefined;
+  }
+
+  private getCredentialRow(credentialRefId: string, version: number): CredentialRow | undefined {
+    return this.db.get(
+      `SELECT credential_ref_id, version, provider_id, source_kind, label,
+              scope_label, unknown_rotation, active_from, retired_at
+       FROM usage_credentials WHERE credential_ref_id = ? AND version = ?`,
+      credentialRefId,
+      version,
+    ) as unknown as CredentialRow | undefined;
   }
 
   private initializeSchema(): void {
@@ -409,6 +541,20 @@ export class UsageStoreLogic {
         recorded_at INTEGER NOT NULL
       )`,
     );
+    this.db.exec(
+      `CREATE TABLE IF NOT EXISTS usage_credentials (
+        credential_ref_id TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        provider_id TEXT NOT NULL,
+        source_kind TEXT NOT NULL,
+        label TEXT NOT NULL,
+        scope_label TEXT,
+        unknown_rotation INTEGER NOT NULL,
+        active_from INTEGER NOT NULL,
+        retired_at INTEGER,
+        PRIMARY KEY (credential_ref_id, version)
+      )`,
+    );
     for (const sql of [
       'CREATE INDEX IF NOT EXISTS usage_operations_time_idx ON usage_operations (started_at DESC, operation_id DESC)',
       'CREATE INDEX IF NOT EXISTS usage_operations_workspace_idx ON usage_operations (workspace_id, started_at DESC)',
@@ -419,6 +565,7 @@ export class UsageStoreLogic {
       'CREATE INDEX IF NOT EXISTS usage_measurements_provider_idx ON usage_measurements (returned_provider, observed_at DESC)',
       'CREATE INDEX IF NOT EXISTS usage_measurements_model_idx ON usage_measurements (returned_model, observed_at DESC)',
       'CREATE INDEX IF NOT EXISTS usage_measurements_credential_idx ON usage_measurements (credential_ref_id, observed_at DESC)',
+      'CREATE INDEX IF NOT EXISTS usage_credentials_provider_idx ON usage_credentials (provider_id, retired_at, credential_ref_id, version)',
     ]) this.db.exec(sql);
   }
 }
@@ -454,6 +601,22 @@ export class SqliteUsageStore implements UsageStore {
 
   async summarize(query: UsageQuery): Promise<UsageSummary> {
     return this.logic.summarize(query);
+  }
+
+  async putCredential(input: PutModelCredentialInput): Promise<ModelCredentialRecord> {
+    return this.logic.putCredential(input);
+  }
+
+  async retireCredential(
+    credentialRefId: string,
+    version: number,
+    retiredAt: number,
+  ): Promise<ModelCredentialRecord> {
+    return this.logic.retireCredential(credentialRefId, version, retiredAt);
+  }
+
+  async listCredentials(providerId?: string): Promise<ModelCredentialRecord[]> {
+    return this.logic.listCredentials(providerId);
   }
 }
 
@@ -513,6 +676,20 @@ function mapMeasurement(row: MeasurementRow): UsageMeasurement {
   };
 }
 
+function mapCredential(row: CredentialRow): ModelCredentialRecord {
+  return {
+    credentialRefId: row.credential_ref_id,
+    version: Number(row.version),
+    providerId: row.provider_id,
+    sourceKind: row.source_kind,
+    label: row.label,
+    scopeLabel: row.scope_label,
+    unknownRotation: Boolean(row.unknown_rotation),
+    activeFrom: Number(row.active_from),
+    retiredAt: nullableNumber(row.retired_at),
+  };
+}
+
 function sameAdmission(operation: UsageOperation, input: AdmitUsageOperationInput): boolean {
   return operation.operationId === input.operationId &&
     operation.operationKind === input.operationKind &&
@@ -558,6 +735,20 @@ function sameTerminal(measurement: UsageMeasurement, input: RecordUsageTerminalI
     measurement.priceUnknownReason === input.priceUnknownReason;
 }
 
+function sameCredential(
+  credential: ModelCredentialRecord,
+  input: PutModelCredentialInput,
+): boolean {
+  return credential.credentialRefId === input.credentialRefId &&
+    credential.version === input.version &&
+    credential.providerId === input.providerId &&
+    credential.sourceKind === input.sourceKind &&
+    credential.label === input.label &&
+    credential.scopeLabel === input.scopeLabel &&
+    credential.unknownRotation === input.unknownRotation &&
+    credential.activeFrom === input.activeFrom;
+}
+
 function nullableNumber(value: number | null): number | null {
   return value === null ? null : Number(value);
 }
@@ -570,4 +761,9 @@ function requiredOperation(row: OperationRow | undefined): UsageOperation {
 function requiredDetail(detail: UsageOperationDetail | undefined): UsageOperationDetail {
   if (!detail) throw new Error('Usage terminal write did not materialize.');
   return detail;
+}
+
+function requiredCredential(row: CredentialRow | undefined): ModelCredentialRecord {
+  if (!row) throw new Error('Usage credential write did not materialize.');
+  return mapCredential(row);
 }

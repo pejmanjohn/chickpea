@@ -243,6 +243,7 @@ It calls `auth.test` and `users.info`, compares the display name to the manifest
 | `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` | optional | Enable the `anthropic` provider; `ANTHROPIC_BASE_URL` overrides its runtime inference endpoint. The key can instead be stored in Settings. |
 | `OPENAI_API_KEY` | optional | Enable the built-in `openai` provider. The key can instead be stored in Settings. |
 | `OPENROUTER_API_KEY` | optional | Enable the built-in `openrouter` provider. The key can instead be stored in Settings. |
+| `<PROVIDER>_CREDENTIAL_ALIAS` / `<PROVIDER>_CREDENTIAL_EPOCH` | optional | Non-secret usage-reporting identity for environment-managed inference credentials. Increment the positive epoch when the underlying key rotates; if omitted, Usage reports rotation as unknown. `CHICKPEA_DEPLOYMENT_EPOCH` serves the keyless Workers AI binding. |
 | `ANTHROPIC_API_URL` / `OPENAI_API_URL` / `OPENROUTER_API_URL` | optional | Override the vendor API roots used by `/admin` key validation and model discovery. These are catalog/validation endpoints, distinct from runtime inference overrides such as `ANTHROPIC_BASE_URL`. |
 | `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_WORKERS_AI_BASE_URL` | optional | Enable the REST `cloudflare-workers-ai` provider; the base URL controls runtime inference. Not required for the keyless `cloudflare` binding provider on Cloudflare. |
 | `CLOUDFLARE_API_URL` | optional | Override the Cloudflare API root used by `/admin` Workers AI model discovery. |

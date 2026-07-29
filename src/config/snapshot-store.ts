@@ -155,6 +155,7 @@ export function snapshotFromEffectiveConfig(
       : {}),
     agent: config.agent,
     model: config.model,
+    ...(config.modelCredential ? { modelCredential: config.modelCredential } : {}),
     providerId: config.provider,
     instructions: config.instructions,
     repositories: config.agent.repositories,

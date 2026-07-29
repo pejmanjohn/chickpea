@@ -42,6 +42,8 @@ import type { AuditEvent, AuditEventFilter } from '../audit/types.ts';
 import {
   UsageStateError,
   type AdmitUsageOperationInput,
+  type ModelCredentialRecord,
+  type PutModelCredentialInput,
   type RecordUsageTerminalInput,
   type UsageOperation,
   type UsageOperationDetail,
@@ -669,6 +671,36 @@ export class CfUsageStore implements UsageStore {
     const response = await this.execute({ kind: 'summarize', query });
     if (response.kind !== 'summary') throw unexpectedUsageResponse();
     return response.summary;
+  }
+
+  async putCredential(input: PutModelCredentialInput): Promise<ModelCredentialRecord> {
+    const response = await this.execute({ kind: 'put_credential', input });
+    if (response.kind !== 'credential') throw unexpectedUsageResponse();
+    return response.credential;
+  }
+
+  async retireCredential(
+    credentialRefId: string,
+    version: number,
+    retiredAt: number,
+  ): Promise<ModelCredentialRecord> {
+    const response = await this.execute({
+      kind: 'retire_credential',
+      credentialRefId,
+      version,
+      retiredAt,
+    });
+    if (response.kind !== 'credential') throw unexpectedUsageResponse();
+    return response.credential;
+  }
+
+  async listCredentials(providerId?: string): Promise<ModelCredentialRecord[]> {
+    const response = await this.execute({
+      kind: 'list_credentials',
+      ...(providerId ? { providerId } : {}),
+    });
+    if (response.kind !== 'credentials') throw unexpectedUsageResponse();
+    return response.credentials;
   }
 
   private async execute(request: UsageRpcRequest): Promise<UsageRpcResponse> {

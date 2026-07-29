@@ -6,6 +6,7 @@ import {
 } from '@flue/slack';
 
 import { resolveEffectiveSlackConfig } from '../config/effective-config.ts';
+import { resolveModelCredentialAttribution } from '../config/model-credential-refs.ts';
 import { ModelResolutionError, NoAssignmentError } from '../config/errors.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import { resolveAssignment, type AssignmentSurface } from '../config/resolver.ts';
@@ -294,7 +295,20 @@ const handleSlackEvents: NonNullable<SlackChannelOptions['events']> = async ({ c
     assignment =
       surface === 'channel'
         ? await getOrCreateSnapshot(stores.snapshots, threadKey, () =>
-            resolveEffectiveSlackConfig(turn.workspaceId, turn.channelId, configStores),
+            resolveEffectiveSlackConfig(turn.workspaceId, turn.channelId, configStores).then(
+              async (config) => {
+                const modelCredential = await resolveModelCredentialAttribution(
+                  config.model,
+                  platformEnv,
+                  stores.settings,
+                  stores.usage,
+                );
+                return {
+                  ...config,
+                  ...(modelCredential ? { modelCredential } : {}),
+                };
+              },
+            ),
           )
         : await resolveAssignment(turn.workspaceId, turn.channelId, configStores, { surface });
   } catch (err) {

@@ -1221,7 +1221,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
 
     try {
       const models = await validateProviderApiKey(id, apiKey);
-      await saveProviderApiKey(id, apiKey, platformEnv, settingsStore);
+      await saveProviderApiKey(id, apiKey, platformEnv, settingsStore, usage(c));
       primeProviderModelCache(id, models);
       return c.json({
         ok: true,
@@ -1256,7 +1256,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return c.json({ error: 'unknown_provider' }, 404);
     }
     const platformEnv = c.env as PlatformEnv | undefined;
-    const resolved = await deleteProviderApiKey(id, platformEnv, settings(c));
+    const resolved = await deleteProviderApiKey(id, platformEnv, settings(c), usage(c));
     return c.json({
       ok: true,
       provider: providerSummary(id, resolved.source),

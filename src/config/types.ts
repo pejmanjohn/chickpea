@@ -121,6 +121,16 @@ export interface BotIdentityConfig {
   avatarPath: string;
 }
 
+export interface ModelCredentialAttribution {
+  credentialRefId: string;
+  version: number;
+  providerId: string;
+  sourceKind: 'stored' | 'environment' | 'cloudflare_binding' | 'custom';
+  label: string;
+  scopeLabel: string | null;
+  unknownRotation: boolean;
+}
+
 export interface ResolvedAssignment {
   workspaceId: string;
   channelId: string;
@@ -132,6 +142,7 @@ export interface ResolvedAssignment {
   // from a frozen thread snapshot; undefined means resolve from the agent via
   // model policy at turn time.
   model?: string;
+  modelCredential?: ModelCredentialAttribution;
 }
 
 // A snapshot IS a resolved assignment frozen at a thread's first turn, plus the

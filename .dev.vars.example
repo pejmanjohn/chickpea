@@ -21,3 +21,8 @@ TAG_ADMIN_TOKEN=""
 #   npx wrangler secret put ANTHROPIC_API_KEY
 #   npx wrangler secret put OPENAI_API_KEY
 #   npx wrangler secret put OPENROUTER_API_KEY
+# Optional plain vars can label those environment credentials without exposing
+# them and identify rotations: <PROVIDER>_CREDENTIAL_ALIAS and
+# <PROVIDER>_CREDENTIAL_EPOCH. CHICKPEA_DEPLOYMENT_EPOCH identifies a keyless
+# Workers AI binding deployment. Increment epochs when the underlying route is
+# rotated; omit them to report "rotation unknown" honestly.

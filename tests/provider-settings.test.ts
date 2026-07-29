@@ -21,6 +21,7 @@ import { forgetRegisteredProvider } from '../src/config/providers.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import type { PlatformEnv } from '../src/config/state-backend.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { SqliteUsageStore } from '../src/usage/store.ts';
 import { FAKE_PROVIDER_KEYS, FakeProvidersBackend } from './helpers/fake-providers.ts';
 import { withEnv } from './helpers/env.ts';
 
@@ -43,11 +44,13 @@ function appWithProviderAdmin(): {
   const app = new Hono();
   const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   const settings = new SqliteSettingsStore(':memory:');
+  const usage = new SqliteUsageStore(':memory:');
   app.route(
     '/',
     createAdminRoutes({
       store: config,
       settings,
+      usage,
       adminToken: ADMIN_TOKEN,
       knownProviders: new Set(['anthropic', 'openai', 'openrouter', 'workers-ai']),
     }),
@@ -59,6 +62,7 @@ function appWithProviderAdmin(): {
     close: () => {
       config.close();
       settings.close();
+      usage.close();
     },
   };
 }

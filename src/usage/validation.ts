@@ -1,5 +1,6 @@
 import {
   ESTIMATE_COMPLETENESS_VALUES,
+  MODEL_CREDENTIAL_SOURCE_KINDS,
   PRICE_UNKNOWN_REASONS,
   USAGE_COMPLETENESS_VALUES,
   USAGE_CONVERSATION_KINDS,
@@ -9,6 +10,7 @@ import {
   USAGE_UNKNOWN_REASONS,
   type AdmitUsageOperationInput,
   type NormalizedUsageQuery,
+  type PutModelCredentialInput,
   type RecordUsageTerminalInput,
   type UsageFilters,
   type UsageQuery,
@@ -118,6 +120,33 @@ export function normalizeRecordUsageTerminal(
   validateUsage(normalized);
   validateEstimate(normalized);
   return normalized;
+}
+
+export function normalizeModelCredential(
+  input: PutModelCredentialInput,
+): PutModelCredentialInput {
+  return {
+    credentialRefId: opaqueId(input.credentialRefId, 'credential reference'),
+    version: positiveInteger(input.version, 'credential version'),
+    providerId: opaqueId(input.providerId, 'credential provider'),
+    sourceKind: enumValue(input.sourceKind, MODEL_CREDENTIAL_SOURCE_KINDS, 'credential source'),
+    label: requiredLabel(input.label, 'credential label'),
+    scopeLabel: optionalLabel(input.scopeLabel, 'credential scope'),
+    unknownRotation: Boolean(input.unknownRotation),
+    activeFrom: timestamp(input.activeFrom, 'credential activation time'),
+  };
+}
+
+export function normalizeCredentialRetirement(
+  credentialRefId: string,
+  version: number,
+  retiredAt: number,
+): { credentialRefId: string; version: number; retiredAt: number } {
+  return {
+    credentialRefId: opaqueId(credentialRefId, 'credential reference'),
+    version: positiveInteger(version, 'credential version'),
+    retiredAt: timestamp(retiredAt, 'credential retirement time'),
+  };
 }
 
 export function normalizeUsageQuery(input: UsageQuery): NormalizedUsageQuery {
@@ -265,6 +294,12 @@ function optionalLabel(value: unknown, label: string): string | null {
   return result;
 }
 
+function requiredLabel(value: unknown, label: string): string {
+  const normalized = optionalLabel(value, label);
+  if (normalized === null) invalid(`${label} is required.`);
+  return normalized;
+}
+
 function timestamp(value: unknown, label: string, query = false): number {
   if (!Number.isSafeInteger(value) || (value as number) < 0) fail(`${label} is invalid.`, query);
   return value as number;
@@ -274,6 +309,12 @@ function optionalPositiveInteger(value: unknown, label: string): number | null {
   if (value === null || value === undefined) return null;
   if (!Number.isSafeInteger(value) || (value as number) < 1) invalid(`${label} is invalid.`);
   return value as number;
+}
+
+function positiveInteger(value: unknown, label: string): number {
+  const normalized = optionalPositiveInteger(value, label);
+  if (normalized === null) invalid(`${label} is required.`);
+  return normalized;
 }
 
 function optionalTokenCount(value: unknown, label: string): number | null {

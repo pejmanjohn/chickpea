@@ -215,18 +215,46 @@ export interface UsageOperationPage {
   nextCursor: UsageCursor | null;
 }
 
+export const MODEL_CREDENTIAL_SOURCE_KINDS = [
+  'stored',
+  'environment',
+  'cloudflare_binding',
+  'custom',
+] as const;
+export type ModelCredentialSourceKind = (typeof MODEL_CREDENTIAL_SOURCE_KINDS)[number];
+
+export interface PutModelCredentialInput {
+  credentialRefId: string;
+  version: number;
+  providerId: string;
+  sourceKind: ModelCredentialSourceKind;
+  label: string;
+  scopeLabel: string | null;
+  unknownRotation: boolean;
+  activeFrom: number;
+}
+
+export interface ModelCredentialRecord extends PutModelCredentialInput {
+  retiredAt: number | null;
+}
+
 export type UsageRpcRequest =
   | { kind: 'admit_operation'; input: AdmitUsageOperationInput }
   | { kind: 'record_terminal'; input: RecordUsageTerminalInput }
   | { kind: 'get_operation'; operationId: string }
   | { kind: 'list_operations'; query: UsageQuery }
-  | { kind: 'summarize'; query: UsageQuery };
+  | { kind: 'summarize'; query: UsageQuery }
+  | { kind: 'put_credential'; input: PutModelCredentialInput }
+  | { kind: 'retire_credential'; credentialRefId: string; version: number; retiredAt: number }
+  | { kind: 'list_credentials'; providerId?: string };
 
 export type UsageRpcResponse =
   | { kind: 'operation'; operation: UsageOperation }
   | { kind: 'detail'; detail: UsageOperationDetail | null }
   | { kind: 'operation_page'; page: UsageOperationPage }
-  | { kind: 'summary'; summary: UsageSummary };
+  | { kind: 'summary'; summary: UsageSummary }
+  | { kind: 'credential'; credential: ModelCredentialRecord }
+  | { kind: 'credentials'; credentials: ModelCredentialRecord[] };
 
 export interface UsageStore {
   admitOperation(input: AdmitUsageOperationInput): Promise<UsageOperation>;
@@ -234,5 +262,12 @@ export interface UsageStore {
   getOperation(operationId: string): Promise<UsageOperationDetail | undefined>;
   listOperations(query: UsageQuery): Promise<UsageOperationPage>;
   summarize(query: UsageQuery): Promise<UsageSummary>;
+  putCredential(input: PutModelCredentialInput): Promise<ModelCredentialRecord>;
+  retireCredential(
+    credentialRefId: string,
+    version: number,
+    retiredAt: number,
+  ): Promise<ModelCredentialRecord>;
+  listCredentials(providerId?: string): Promise<ModelCredentialRecord[]>;
   close?(): void;
 }
