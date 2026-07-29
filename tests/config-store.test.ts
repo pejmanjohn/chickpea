@@ -76,6 +76,41 @@ test('SqliteConfigStore round-trips agent and assignment CRUD', async () => {
   store.close();
 });
 
+test('OpenAI profiles persist one explicit auth method while other providers stay unchanged', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  try {
+    const legacyCompatible = await store.createAgent(agent({
+      id: 'agent_openai_api_key',
+      model: 'openai/gpt-5.4',
+    }));
+    assert.equal(legacyCompatible.openaiAuthMethod, 'api_key');
+    assert.equal(legacyCompatible.openaiSubscriptionBindingId, undefined);
+
+    const subscription = await store.createAgent(agent({
+      id: 'agent_openai_subscription',
+      model: 'openai/gpt-5.4',
+      openaiAuthMethod: 'subscription',
+    }));
+    assert.equal(subscription.openaiAuthMethod, 'subscription');
+    assert.equal(subscription.openaiSubscriptionBindingId, 'installation');
+
+    const nonOpenAi = await store.createAgent(agent({
+      id: 'agent_anthropic',
+      model: 'anthropic/claude-opus-4-6',
+    }));
+    assert.equal(nonOpenAi.openaiAuthMethod, undefined);
+    assert.equal(nonOpenAi.openaiSubscriptionBindingId, undefined);
+
+    const movedAway = await store.updateAgent(subscription.id, {
+      model: 'anthropic/claude-opus-4-6',
+    });
+    assert.equal(movedAway.openaiAuthMethod, undefined);
+    assert.equal(movedAway.openaiSubscriptionBindingId, undefined);
+  } finally {
+    store.close();
+  }
+});
+
 test('SqliteConfigStore round-trips non-empty skills through create and update', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   const withSkills = agent({
@@ -451,10 +486,28 @@ test('SqliteConfigStore migrates the legacy v1 default-models column without los
         '[]',
         '[]',
       );
+    legacyDb
+      .prepare(
+        `INSERT INTO config_agents (
+          id, name, instructions, enabled, model,
+          default_models_json, skills_json, mcp_servers_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        'agent_legacy_openai',
+        'Legacy OpenAI',
+        'Legacy OpenAI instructions.',
+        1,
+        'openai/gpt-4.1',
+        '[]',
+        '[]',
+        '[]',
+      );
     legacyDb.close();
 
     const store = new SqliteConfigStore(path, { agents: [], assignments: [] });
     assert.deepEqual(await store.getAgent(legacyAgent.id), legacyAgent);
+    assert.equal((await store.getAgent('agent_legacy_openai')).openaiAuthMethod, 'api_key');
     assert.deepEqual(await store.createAgent(createdAgent), createdAgent);
     store.close();
 
@@ -470,14 +523,14 @@ test('SqliteConfigStore migrates the legacy v1 default-models column without los
       .all() as Array<{ id: string }>;
     migratedDb.close();
 
-    assert.equal(version.value, '4');
+    assert.equal(version.value, '5');
     assert.equal(
       agentColumns.some(({ name }) => name === 'default_models_json'),
       false,
     );
     assert.deepEqual(
       persistedAgentIds.map(({ id }) => id),
-      ['agent_created_after_v2', 'agent_legacy'],
+      ['agent_created_after_v2', 'agent_legacy', 'agent_legacy_openai'],
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -503,7 +556,7 @@ test('fresh databases start at the clean current config schema', () => {
       .all('config_assignments') as Array<{ name: string }>;
     db.close();
 
-    assert.equal(version.value, '4');
+    assert.equal(version.value, '5');
     assert.deepEqual(
       agentColumns.map(({ name }) => name),
       [
@@ -516,6 +569,8 @@ test('fresh databases start at the clean current config schema', () => {
         'mcp_servers_json',
         'api_connections_json',
         'repositories_json',
+        'openai_auth_method',
+        'openai_subscription_binding_id',
       ],
     );
     assert.deepEqual(

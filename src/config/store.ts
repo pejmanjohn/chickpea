@@ -1,7 +1,12 @@
 import { AgentExistsError, AgentStillAssignedError, UnknownAgentError } from './errors.ts';
 import type { AssignmentLookupOptions } from './resolver.ts';
 import { seededAgents, seededAssignments } from './seed.ts';
-import type { ChannelAssignment, CustomAgentConfig } from './types.ts';
+import {
+  OPENAI_SUBSCRIPTION_INSTALLATION_BINDING_ID,
+  type ChannelAssignment,
+  type CustomAgentConfig,
+  type OpenAiAuthMethod,
+} from './types.ts';
 import { openStateDb, resolveStateDbPath, type NodeStateDb } from '../state/node-state-db.ts';
 import type { StateDb } from '../state/state-db.ts';
 
@@ -24,6 +29,8 @@ interface AgentRow {
   instructions: string;
   enabled: number;
   model: string | null;
+  openai_auth_method?: string | null;
+  openai_subscription_binding_id?: string | null;
   skills_json: string;
   mcp_servers_json: string;
   api_connections_json?: string | null;
@@ -142,16 +149,29 @@ export class ConfigStoreLogic {
   updateAgent(agentId: string, patch: ConfigAgentPatch): CustomAgentConfig {
     const current = this.getAgent(agentId);
     const model = patch.model === undefined ? (current.model ?? null) : patch.model;
-    const next = { ...current, ...patch, id: agentId };
+    const openAiAuth = normalizedOpenAiAuth(
+      model ?? undefined,
+      patch.openaiAuthMethod ?? current.openaiAuthMethod,
+      patch.openaiSubscriptionBindingId ?? current.openaiSubscriptionBindingId,
+    );
+    const {
+      openaiAuthMethod: _currentMethod,
+      openaiSubscriptionBindingId: _currentBinding,
+      ...withoutOpenAiAuth
+    } = { ...current, ...patch, id: agentId };
+    const next = { ...withoutOpenAiAuth, ...openAiAuth };
     this.db.run(
       `UPDATE config_agents
        SET name = ?, instructions = ?, enabled = ?, model = ?,
+           openai_auth_method = ?, openai_subscription_binding_id = ?,
            skills_json = ?, mcp_servers_json = ?, api_connections_json = ?, repositories_json = ?
        WHERE id = ?`,
       next.name,
       next.instructions,
       next.enabled ? 1 : 0,
       model,
+      openAiAuth.openaiAuthMethod ?? null,
+      openAiAuth.openaiSubscriptionBindingId ?? null,
       JSON.stringify(next.skills),
       JSON.stringify(next.mcpServers),
       JSON.stringify(next.apiConnections),
@@ -340,16 +360,24 @@ export class ConfigStoreLogic {
   }
 
   private insertAgent(agent: CustomAgentConfig): { changes: number } {
+    const openAiAuth = normalizedOpenAiAuth(
+      agent.model,
+      agent.openaiAuthMethod,
+      agent.openaiSubscriptionBindingId,
+    );
     return this.db.run(
       `INSERT INTO config_agents (
         id, name, instructions, enabled, model,
+        openai_auth_method, openai_subscription_binding_id,
         skills_json, mcp_servers_json, api_connections_json, repositories_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       agent.id,
       agent.name,
       agent.instructions,
       agent.enabled ? 1 : 0,
       agent.model ?? null,
+      openAiAuth.openaiAuthMethod ?? null,
+      openAiAuth.openaiSubscriptionBindingId ?? null,
       JSON.stringify(agent.skills ?? []),
       JSON.stringify(agent.mcpServers ?? []),
       JSON.stringify(agent.apiConnections ?? []),
@@ -359,7 +387,7 @@ export class ConfigStoreLogic {
 
   // Fresh databases start from the clean v1 schema. Migration v2 bridges the
   // pre-release default_models_json column; v3 adds API connection policy;
-  // v4 adds per-profile repository grants.
+  // v4 adds per-profile repository grants; v5 adds explicit OpenAI billing authority.
   private runMigrations(): void {
     const MIGRATIONS: Array<{ version: number; up: (db: StateDb) => void }> = [
       {
@@ -426,6 +454,22 @@ export class ConfigStoreLogic {
               "ALTER TABLE config_agents ADD COLUMN repositories_json TEXT NOT NULL DEFAULT '[]'",
             );
           }
+        },
+      },
+      {
+        version: 5,
+        up: (db) => {
+          const columns = db.all('PRAGMA table_info(config_agents)');
+          if (!columns.some((column) => column.name === 'openai_auth_method')) {
+            db.exec('ALTER TABLE config_agents ADD COLUMN openai_auth_method TEXT');
+          }
+          if (!columns.some((column) => column.name === 'openai_subscription_binding_id')) {
+            db.exec('ALTER TABLE config_agents ADD COLUMN openai_subscription_binding_id TEXT');
+          }
+          db.exec(
+            "UPDATE config_agents SET openai_auth_method = 'api_key' " +
+            "WHERE model LIKE 'openai/%' AND openai_auth_method IS NULL",
+          );
         },
       },
     ];
@@ -542,17 +586,55 @@ function isConstraintViolation(err: unknown): boolean {
 }
 
 function rowToAgent(row: AgentRow): CustomAgentConfig {
+  const openAiAuth = storedOpenAiAuth(row);
   return {
     id: row.id,
     name: row.name,
     instructions: row.instructions,
     enabled: Boolean(row.enabled),
     ...(row.model ? { model: row.model } : {}),
+    ...openAiAuth,
     skills: JSON.parse(row.skills_json) as CustomAgentConfig['skills'],
     mcpServers: JSON.parse(row.mcp_servers_json) as CustomAgentConfig['mcpServers'],
     apiConnections: parseApiConnections(row.api_connections_json),
     repositories: parseRepositories(row.repositories_json),
   };
+}
+
+function normalizedOpenAiAuth(
+  model: string | undefined,
+  method: OpenAiAuthMethod | undefined,
+  bindingId: string | undefined,
+): Pick<CustomAgentConfig, 'openaiAuthMethod' | 'openaiSubscriptionBindingId'> {
+  if (!model?.startsWith('openai/')) return {};
+  const resolvedMethod = method ?? 'api_key';
+  if (resolvedMethod !== 'api_key' && resolvedMethod !== 'subscription') {
+    throw new Error('OpenAI authentication method is invalid');
+  }
+  if (resolvedMethod === 'api_key') return { openaiAuthMethod: 'api_key' };
+  const resolvedBinding = bindingId ?? OPENAI_SUBSCRIPTION_INSTALLATION_BINDING_ID;
+  if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(resolvedBinding)) {
+    throw new Error('OpenAI subscription binding id is invalid');
+  }
+  return {
+    openaiAuthMethod: 'subscription',
+    openaiSubscriptionBindingId: resolvedBinding,
+  };
+}
+
+function storedOpenAiAuth(
+  row: AgentRow,
+): Pick<CustomAgentConfig, 'openaiAuthMethod' | 'openaiSubscriptionBindingId'> {
+  if (!row.model?.startsWith('openai/')) return {};
+  const method = row.openai_auth_method ?? 'api_key';
+  if (method !== 'api_key' && method !== 'subscription') {
+    throw new Error('Stored OpenAI authentication method is invalid');
+  }
+  return normalizedOpenAiAuth(
+    row.model,
+    method,
+    row.openai_subscription_binding_id ?? undefined,
+  );
 }
 
 function parseApiConnections(raw: string | null | undefined): CustomAgentConfig['apiConnections'] {
