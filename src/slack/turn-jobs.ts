@@ -7,6 +7,7 @@ import type { ResolvedAssignment } from '../config/types.ts';
 import type { StateDb } from '../state/state-db.ts';
 import { CLAIM_TTL_MS } from './claim-store.ts';
 import type { NormalizedSlackTurn } from './types.ts';
+import type { UsagePersistenceEvent } from '../usage/runtime-recorder.ts';
 
 /**
  * Durable queue of Slack turns for the Cloudflare turn-relay (see state-rpc.ts
@@ -158,6 +159,27 @@ export class TurnJobStoreLogic {
     });
   }
 
+  /** Durable denominator state for fail-open usage persistence. */
+  recordUsagePersistence(id: string, event: UsagePersistenceEvent): TurnProgress | undefined {
+    return this.db.transaction(() => {
+      const current = this.getProgress(id);
+      if (!current) return undefined;
+      const usageTelemetry = {
+        ...(current.usageTelemetry?.executionId === event.executionId
+          ? current.usageTelemetry
+          : { executionId: event.executionId }),
+        [event.phase]: event.outcome,
+      };
+      const progress: TurnProgress = { ...current, usageTelemetry };
+      this.db.run(
+        'UPDATE turn_jobs SET progress_json = ? WHERE id = ?',
+        JSON.stringify(progress),
+        id,
+      );
+      return progress;
+    });
+  }
+
   /** Tombstone a delivered job so no later scan re-delivers it. */
   markDelivered(id: string): void {
     this.db.run("UPDATE turn_jobs SET delivered = 1, status = 'done' WHERE id = ?", id);
@@ -182,6 +204,7 @@ export function replayTextForTurnProgress(progress: TurnProgress): string | unde
 function parseTurnProgress(raw: string): TurnProgress {
   try {
     const parsed = JSON.parse(raw) as TurnProgress;
+    const progress: TurnProgress = {};
     const pullRequest = parsed?.pullRequest;
     if (
       pullRequest &&
@@ -191,8 +214,21 @@ function parseTurnProgress(raw: string): TurnProgress {
       typeof pullRequest.repository === 'string' &&
       (pullRequest.branch === undefined || typeof pullRequest.branch === 'string')
     ) {
-      return { pullRequest: { ...pullRequest } };
+      progress.pullRequest = { ...pullRequest };
     }
+    const usage = parsed?.usageTelemetry;
+    if (
+      usage &&
+      typeof usage.executionId === 'string' &&
+      ['admission', 'terminal', 'repair'].every((phase) => {
+        const outcome = usage[phase as keyof Omit<typeof usage, 'executionId'>];
+        return outcome === undefined ||
+          outcome === 'recorded' || outcome === 'timed_out' || outcome === 'failed';
+      })
+    ) {
+      progress.usageTelemetry = { ...usage };
+    }
+    return progress;
   } catch {
     // Malformed progress is treated as absent so it can never suppress work.
   }

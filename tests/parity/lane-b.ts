@@ -92,6 +92,10 @@ export const laneB: Lane = {
     const ambientEnv = { ...process.env };
     delete ambientEnv.ANTHROPIC_API_KEY;
     delete ambientEnv.ANTHROPIC_BASE_URL;
+    delete ambientEnv.OPENAI_API_KEY;
+    delete ambientEnv.OPENAI_BASE_URL;
+    delete ambientEnv.OPENROUTER_API_KEY;
+    delete ambientEnv.OPENROUTER_BASE_URL;
     delete ambientEnv.CLOUDFLARE_API_TOKEN;
     delete ambientEnv.CLOUDFLARE_ACCOUNT_ID;
     delete ambientEnv.CLOUDFLARE_WORKERS_AI_BASE_URL;

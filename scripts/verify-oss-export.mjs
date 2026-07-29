@@ -18,7 +18,7 @@ const scratch = mkdtempSync(join(tmpdir(), 'chickpea-export-'));
 const term = (...parts) => parts.join('');
 const exportPath = (...parts) => posix.join(...parts);
 const localUserPathPattern = new RegExp(
-  term('\\/', 'users', '\\/', '[^\\/\\s]+', '\\/'),
+  term('(?<![-A-Za-z0-9._/])', '\\/', 'users', '\\/', '[^\\/\\s]+', '\\/'),
   'i',
 );
 
@@ -31,8 +31,8 @@ const denyPatterns = [
   ['private company name', new RegExp(term('mag', 'oosh'), 'i')],
   ['private channel name', new RegExp(term('all-', 'paper', 'plane-', 'labs'), 'i')],
   // Require both a home-directory owner and a following path segment. This
-  // catches case-insensitive macOS paths while allowing API route terminals
-  // such as `/users/me` and `/users/me.json`.
+  // catches case-insensitive macOS paths while allowing `/users/...` API route
+  // segments whose preceding character is part of a URL path.
   ['local user path', localUserPathPattern],
   ['live rehearsal marker', new RegExp(term('can', 'ary'), 'i')],
 ];
@@ -48,6 +48,7 @@ for (const value of [
 for (const value of [
   term('/api/1.0/', 'users', '/', 'me'),
   term('/api/v2/', 'users', '/', 'me.json'),
+  term('https://gmail.googleapis.com/gmail/v1/', 'users', '/', 'me/messages'),
 ]) {
   if (localUserPathPattern.test(value)) {
     throw new Error(`API route allow fixture matched local user path pattern: ${value}`);

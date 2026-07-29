@@ -139,6 +139,24 @@ test('agent snapshots freeze repository grants with the effective profile', () =
   assert.deepEqual(snapshot.repositories, repositories);
 });
 
+test('agent snapshots freeze only non-secret model credential attribution', () => {
+  const config = effConfig('C_CREDENTIAL');
+  config.modelCredential = {
+    credentialRefId: 'cred_openai_environment',
+    version: 3,
+    providerId: 'openai',
+    sourceKind: 'environment',
+    label: 'Production project',
+    scopeLabel: 'project-chickpea',
+    unknownRotation: false,
+  };
+
+  const snapshot = snapshotFromEffectiveConfig(config, 1_000);
+
+  assert.deepEqual(snapshot.modelCredential, config.modelCredential);
+  assert.doesNotMatch(JSON.stringify(snapshot), /apiKey|authorization|secret/i);
+});
+
 test('frozen repository grant removed from the live profile is excluded', () => {
   const frozen = {
     id: 'repo-frozen',

@@ -3,8 +3,10 @@ import { createHash } from 'node:crypto';
 import { registerProvider } from '@flue/runtime';
 
 import { forgetRegisteredProvider, recordRegisteredProvider } from './providers.ts';
+import { rotateStoredModelCredential } from './model-credential-refs.ts';
 import type { SettingsStore } from './settings-store.ts';
-import { getSettingsStore, type PlatformEnv } from './state-backend.ts';
+import { getSettingsStore, getUsageStore, type PlatformEnv } from './state-backend.ts';
+import type { UsageStore } from '../usage/types.ts';
 
 export const PROVIDER_KEY_SETTING_KEYS = {
   anthropic: 'provider.anthropic.apiKey',
@@ -16,6 +18,12 @@ export const PROVIDER_KEY_ENV_VARS = {
   anthropic: 'ANTHROPIC_API_KEY',
   openai: 'OPENAI_API_KEY',
   openrouter: 'OPENROUTER_API_KEY',
+} as const;
+
+export const PROVIDER_BASE_URL_ENV_VARS = {
+  anthropic: 'ANTHROPIC_BASE_URL',
+  openai: 'OPENAI_BASE_URL',
+  openrouter: 'OPENROUTER_BASE_URL',
 } as const;
 
 export const PROVIDER_KEY_IDS = ['anthropic', 'openai', 'openrouter'] as const;
@@ -77,9 +85,15 @@ export async function saveProviderApiKey(
   apiKey: string,
   env?: PlatformEnv,
   store?: SettingsStore,
+  usageStore?: UsageStore,
 ): Promise<void> {
   const settings = store ?? getSettingsStore(env);
-  await settings.setSetting(PROVIDER_KEY_SETTING_KEYS[id], apiKey);
+  await rotateStoredModelCredential(
+    id,
+    { kind: 'save', apiKey },
+    settings,
+    usageStore ?? getUsageStore(env),
+  );
   await primeStoredProviderKeysFromStore(env, settings);
   const resolved = await resolveProviderApiKey(id, env, settings);
   rebindBuiltinProvider(id, resolved.apiKey);
@@ -89,9 +103,15 @@ export async function deleteProviderApiKey(
   id: ProviderKeyId,
   env?: PlatformEnv,
   store?: SettingsStore,
+  usageStore?: UsageStore,
 ): Promise<ResolvedProviderApiKey> {
   const settings = store ?? getSettingsStore(env);
-  await settings.deleteSetting(PROVIDER_KEY_SETTING_KEYS[id]);
+  await rotateStoredModelCredential(
+    id,
+    { kind: 'delete' },
+    settings,
+    usageStore ?? getUsageStore(env),
+  );
   await primeStoredProviderKeysFromStore(env, settings);
   const resolved = await resolveProviderApiKey(id, env, settings);
   rebindBuiltinProvider(id, resolved.apiKey);
@@ -173,11 +193,9 @@ function providerRegistrationOptions(
   apiKey: string | undefined,
 ): ProviderRegistrationOptions {
   const options: ProviderRegistrationOptions = {};
-  if (id === 'anthropic') {
-    const baseUrl = nonEmpty(process.env.ANTHROPIC_BASE_URL);
-    if (baseUrl) {
-      options.baseUrl = baseUrl;
-    }
+  const baseUrl = nonEmpty(process.env[PROVIDER_BASE_URL_ENV_VARS[id]]);
+  if (baseUrl) {
+    options.baseUrl = baseUrl;
   }
   if (apiKey) {
     options.apiKey = apiKey;

@@ -98,6 +98,9 @@ import {
   type RoutineRpcResponse,
 } from './routines/types.ts';
 import { createRoutineScheduledHandler } from './routines/scheduler-adapter.ts';
+import { UsageStoreLogic } from './usage/store.ts';
+import { UsageStateError } from './usage/store-error.ts';
+import type { UsageRpcRequest, UsageRpcResponse, UsageStore } from './usage/types.ts';
 import {
   RoutineAdmissionController,
   RoutineNotSubmittedError,
@@ -430,6 +433,7 @@ interface TagStateStores {
   turnJobs: TurnJobStoreLogic;
   memory: MemoryStoreLogic;
   routines: RoutineStoreLogic;
+  usage: UsageStoreLogic;
 }
 
 export class TagStateStore extends DurableObject implements TagStateRpc {
@@ -469,6 +473,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         turnJobs: new TurnJobStoreLogic(db),
         memory: new MemoryStoreLogic(db),
         routines: new RoutineStoreLogic(db),
+        usage: new UsageStoreLogic(db),
       };
       this.initError = undefined;
       return stores;
@@ -636,6 +641,12 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     return this.call((stores) => stores.routines.execute(request));
   }
 
+  async usageExecute(
+    request: UsageRpcRequest,
+  ): Promise<StateRpcResult<UsageRpcResponse>> {
+    return this.call((stores) => stores.usage.execute(request));
+  }
+
   // ── turn relay (Cloudflare turn-horizon fix) ─────────────────────────────
 
   async enqueueTurn(job: TurnJob): Promise<StateRpcResult<null>> {
@@ -700,6 +711,20 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     // credential resolution never RPCs into this same object (a self-call while
     // the alarm holds the thread). runTurn takes it as an override.
     const client = await this.resolveAlarmClient(stores);
+    const usageStore: UsageStore = {
+      admitOperation: async (input) => stores.usage.admitOperation(input),
+      recordTerminal: async (input) => stores.usage.recordTerminal(input),
+      getOperation: async (operationId) => stores.usage.getOperation(operationId),
+      listOperations: async (query) => stores.usage.listOperations(query),
+      summarize: async (query) => stores.usage.summarize(query),
+      putCredential: async (input) => stores.usage.putCredential(input),
+      retireCredential: async (credentialRefId, version, retiredAt) =>
+        stores.usage.retireCredential(credentialRefId, version, retiredAt),
+      listCredentials: async (providerId) => stores.usage.listCredentials(providerId),
+      cleanupRetention: async (at) => stores.usage.cleanupRetention(at),
+      getRetentionStatus: async () => stores.usage.getRetentionStatus(),
+      listUsageAuditEvents: async (limit) => stores.usage.listUsageAuditEvents(limit),
+    };
     let needsRetry = false;
     // The resolver's store contract is async; the DO's logic classes are sync.
     // A tiny async adapter bridges them for the fail-closed re-check below.
@@ -774,6 +799,11 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         await runTurn(job.turn, job.assignment, this.env as PlatformEnv, {
           client,
           turnId: job.id,
+          usageExecutionId: `exec:${job.id}:${attempt}`,
+          usageStore,
+          onUsagePersistence: (event) => {
+            stores.turnJobs.recordUsagePersistence(job.id, event);
+          },
           ...(replayText === undefined ? {} : { replayText }),
           beforeDelivery: persistSandboxProgress,
           // Record terminal delivery before runTurn's post-delivery Sandbox
@@ -928,6 +958,12 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           ...err.details,
         });
       }
+      if (err instanceof UsageStateError) {
+        return rpcError('usage', err.message, {
+          usageCode: err.code,
+          ...err.details,
+        });
+      }
       const message = err instanceof Error ? err.message : String(err);
       console.error('[chickpea] TagStateStore RPC failure:', message);
       return rpcError('internal', message);
@@ -936,7 +972,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
 }
 
 function rpcError(
-  code: 'unknown_agent' | 'agent_exists' | 'agent_still_assigned' | 'memory' | 'routine' | 'internal',
+  code: 'unknown_agent' | 'agent_exists' | 'agent_still_assigned' | 'memory' | 'routine' | 'usage' | 'internal',
   message: string,
   details?: Record<string, string>,
 ): { ok: false; error: { code: typeof code; message: string; details?: Record<string, string> } } {

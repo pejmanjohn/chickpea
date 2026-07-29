@@ -6,6 +6,8 @@ import {
 } from '@flue/slack';
 
 import { resolveEffectiveSlackConfig } from '../config/effective-config.ts';
+import { resolveModelCredentialAttribution } from '../config/model-credential-refs.ts';
+import { resolveAgentModel } from '../config/model-policy.ts';
 import { ModelResolutionError, NoAssignmentError } from '../config/errors.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import { resolveAssignment, type AssignmentSurface } from '../config/resolver.ts';
@@ -294,7 +296,20 @@ const handleSlackEvents: NonNullable<SlackChannelOptions['events']> = async ({ c
     assignment =
       surface === 'channel'
         ? await getOrCreateSnapshot(stores.snapshots, threadKey, () =>
-            resolveEffectiveSlackConfig(turn.workspaceId, turn.channelId, configStores),
+            resolveEffectiveSlackConfig(turn.workspaceId, turn.channelId, configStores).then(
+              async (config) => {
+                const modelCredential = await resolveModelCredentialAttribution(
+                  config.model,
+                  platformEnv,
+                  stores.settings,
+                  stores.usage,
+                );
+                return {
+                  ...config,
+                  ...(modelCredential ? { modelCredential } : {}),
+                };
+              },
+            ),
           )
         : await resolveAssignment(turn.workspaceId, turn.channelId, configStores, { surface });
   } catch (err) {
@@ -333,6 +348,24 @@ const handleSlackEvents: NonNullable<SlackChannelOptions['events']> = async ({ c
         );
       }
       return;
+    }
+  }
+
+  // Direct-message assignments are intentionally live rather than snapshotted,
+  // so attach the same non-secret credential attribution at admission time.
+  // A model-resolution error still follows the existing sanitized-failure path.
+  if (!assignment.modelCredential) {
+    try {
+      const model = assignment.model ?? resolveAgentModel(assignment.agent);
+      const modelCredential = await resolveModelCredentialAttribution(
+        model,
+        platformEnv,
+        stores.settings,
+        stores.usage,
+      );
+      if (modelCredential) assignment = { ...assignment, modelCredential };
+    } catch {
+      // Reporting enrichment cannot change whether the turn is admitted.
     }
   }
 
@@ -377,7 +410,10 @@ const handleSlackEvents: NonNullable<SlackChannelOptions['events']> = async ({ c
   }
   detach(
     c,
-    runTurn(turn, assignment, platformEnv).catch(async (err) => {
+    runTurn(turn, assignment, platformEnv, {
+      turnId: msgKey,
+      usageExecutionId: `exec:${msgKey}:1`,
+    }).catch(async (err) => {
       // Release on a genuine delivery failure so a Slack retry can re-drive
       // the turn. A completed turn (including a delivered provider-failure
       // final) returns normally and keeps its claim, so it never re-runs.

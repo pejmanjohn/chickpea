@@ -8,6 +8,7 @@ import * as v from 'valibot';
 import { renderAdminLogin, renderAdminPage } from './page.ts';
 import { createMemoryAdminApi } from './memory-api.ts';
 import { createRoutineAdminApi } from './routines-api.ts';
+import { createUsageAdminApi } from './usage-api.ts';
 // Build-time JSON import: the committed manifest is the single source of the
 // Slack app identity; the wizard deep-link below substitutes the request host
 // so users never hand-edit a request_url.
@@ -142,12 +143,14 @@ import {
   getMemoryStateStore,
   getRoutineStore,
   getSettingsStore,
+  getUsageStore,
   isCloudflareTarget,
   type PlatformEnv,
 } from '../config/state-backend.ts';
 import type { ConfigStore } from '../config/store.ts';
 import type { MemoryStateStore } from '../memory/types.ts';
 import type { RoutineStore } from '../routines/types.ts';
+import type { UsageStore } from '../usage/types.ts';
 import type {
   ChannelAssignment,
   CustomAgentConfig,
@@ -189,6 +192,8 @@ interface AdminRoutesOptions {
   settings?: SettingsStore | undefined;
   memory?: MemoryStateStore | undefined;
   routines?: RoutineStore | undefined;
+  usage?: UsageStore | undefined;
+  usageAdminUi?: boolean | undefined;
   adminToken?: string | undefined;
   knownProviders?: ReadonlySet<string> | undefined;
   // Injection seam for the MCP test-connection route, mirroring how the skills
@@ -687,6 +692,14 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     options.memory ?? getMemoryStateStore(c.env as PlatformEnv | undefined);
   const routines = (c: Context) =>
     options.routines ?? getRoutineStore(c.env as PlatformEnv | undefined);
+  const usage = (c: Context) =>
+    options.usage ?? getUsageStore(c.env as PlatformEnv | undefined);
+  const usageAdminUi = (c: Context): boolean => {
+    if (options.usageAdminUi !== undefined) return options.usageAdminUi;
+    const platformValue = (c.env as PlatformEnv | undefined)?.USAGE_ADMIN_UI;
+    const value = platformValue ?? process.env.USAGE_ADMIN_UI;
+    return value === '1' || value === 'true';
+  };
   const adminToken = () =>
     tokenFromOptions ? options.adminToken : process.env.TAG_ADMIN_TOKEN;
   const modelProviders = () =>
@@ -1139,13 +1152,14 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
   });
 
-  app.get('/admin', (c) => c.html(renderAdminPage()));
+  app.get('/admin', (c) => c.html(renderAdminPage({ usageAdminUi: usageAdminUi(c) })));
 
   app.route('/admin/api', createMemoryAdminApi({
     store: memory,
     adminSecret: () => adminToken() ?? '',
   }));
-  app.route('/admin/api', createRoutineAdminApi({ store: routines }));
+  app.route('/admin/api', createRoutineAdminApi({ store: routines, usage }));
+  app.route('/admin/api', createUsageAdminApi({ store: usage }));
 
   app.get('/admin/api/agents', async (c) => {
     const platformEnv = c.env as PlatformEnv | undefined;
@@ -1214,7 +1228,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
 
     try {
       const models = await validateProviderApiKey(id, apiKey);
-      await saveProviderApiKey(id, apiKey, platformEnv, settingsStore);
+      await saveProviderApiKey(id, apiKey, platformEnv, settingsStore, usage(c));
       primeProviderModelCache(id, models);
       return c.json({
         ok: true,
@@ -1249,7 +1263,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return c.json({ error: 'unknown_provider' }, 404);
     }
     const platformEnv = c.env as PlatformEnv | undefined;
-    const resolved = await deleteProviderApiKey(id, platformEnv, settings(c));
+    const resolved = await deleteProviderApiKey(id, platformEnv, settings(c), usage(c));
     return c.json({
       ok: true,
       provider: providerSummary(id, resolved.source),
@@ -2811,7 +2825,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   app.get('/admin/*', (c) => {
     const pathname = new URL(c.req.url).pathname;
     if (pathname.startsWith('/admin/api/')) return c.notFound();
-    return c.html(renderAdminPage());
+    return c.html(renderAdminPage({ usageAdminUi: usageAdminUi(c) }));
   });
 
   return app;

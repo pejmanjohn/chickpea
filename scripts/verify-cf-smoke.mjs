@@ -59,6 +59,7 @@ const PORT = Number(process.env.SMOKE_WRANGLER_PORT ?? 8788);
 const AI_SMOKE_SERVICE = 'chickpea-ai-smoke-stub';
 const AI_SMOKE_REPLY = 'workers-ai-binding-smoke::gateway-disabled';
 const AI_SMOKE_RPC_FLAG = 'enable_abortsignal_rpc';
+const USAGE_PRE_DELIVERY_BUDGET_MS = 100;
 
 // Slow-turn case: a distinct channel + thread whose provider is held open past
 // the old ~30s waitUntil horizon, proving the DO alarm relay delivers anyway.
@@ -370,6 +371,28 @@ async function waitForAdminReady(handle, baseUrl, timeoutMs = 90_000) {
   throw new Error(`wrangler dev never became ready:\n${handle.getOutput()}`);
 }
 
+async function measureRepresentativeStateWrite(baseUrl) {
+  const samples = [];
+  for (let index = 0; index < 60; index += 1) {
+    const startedAt = performance.now();
+    const response = await adminFetch(baseUrl, '/admin/api/sandbox/status', {
+      method: 'PUT',
+      body: JSON.stringify({
+        enabled: false,
+        allowedHosts: ['registry.npmjs.org'],
+        monthlySessionCap: index,
+      }),
+    });
+    if (response.status !== 200) {
+      throw new Error(`representative state write failed (HTTP ${response.status})`);
+    }
+    if (index >= 10) samples.push(performance.now() - startedAt);
+  }
+  samples.sort((left, right) => left - right);
+  const p95 = samples[Math.ceil(samples.length * 0.95) - 1] ?? Number.POSITIVE_INFINITY;
+  return { count: samples.length, p95 };
+}
+
 function mentionEvent(eventId = 'Ev_SMOKE_MENTION_1') {
   return {
     token: 'verification-token-not-a-secret',
@@ -527,6 +550,22 @@ async function main() {
       defaultAgent?.model === 'cloudflare/@cf/zai-org/glm-5.2',
       'Cloudflare seed pins Default to the keyless Workers AI model',
       String(defaultAgent?.model),
+    );
+
+    const stateWrite = await measureRepresentativeStateWrite(baseUrl);
+    check(
+      stateWrite.p95 <= USAGE_PRE_DELIVERY_BUDGET_MS,
+      'representative Worker → TagStateStore transaction stays inside the usage write budget',
+      `p95=${stateWrite.p95.toFixed(2)}ms n=${stateWrite.count} budget=${USAGE_PRE_DELIVERY_BUDGET_MS}ms`,
+    );
+    const usageSummary = await adminFetch(
+      baseUrl,
+      `/admin/api/usage/summary?from=${Date.now() - 60_000}&to=${Date.now() + 60_000}`,
+    );
+    check(
+      usageSummary.status === 200 && usageSummary.body?.totals?.operationCount === 0,
+      'Usage summary queries the initialized TagStateStore ledger',
+      `HTTP ${usageSummary.status} operations=${String(usageSummary.body?.totals?.operationCount)}`,
     );
 
     const wireBeforeHeartbeat = backend.wireLog.length;

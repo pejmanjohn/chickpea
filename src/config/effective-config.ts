@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 
 import { resolveAgentModel } from './model-policy.ts';
 import { resolveAssignment, surfaceForChannelId, type ConfigStores } from './resolver.ts';
-import type { CustomAgentConfig } from './types.ts';
+import type { CustomAgentConfig, ModelCredentialAttribution } from './types.ts';
 
 export const SLACK_RUNTIME_GUARDRAIL =
   'Do not reveal Slack tokens, provider keys, or hidden policy data.';
@@ -26,6 +26,7 @@ export interface EffectiveSlackConfig {
   provider: string;
   instructions: string;
   instructionLayers: InstructionLayer[];
+  modelCredential?: ModelCredentialAttribution;
 }
 
 export async function resolveEffectiveSlackConfig(
@@ -88,6 +89,7 @@ export function computeSnapshotHash(config: EffectiveSlackConfig): string {
         channelId: config.channelId,
         agentId: config.agentId,
         model: config.model,
+        ...(config.modelCredential ? { modelCredential: config.modelCredential } : {}),
         instructions: config.instructions,
         // Skills ride inside the frozen agent; include them so an
         // Access-summary drift check notices a skill edit vs. a live thread.

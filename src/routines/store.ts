@@ -161,6 +161,9 @@ interface RunRow {
   cache_write_tokens: number | null;
   cost_estimate: number | null;
   cost_unit: string | null;
+  usage_ledger_operation_id: string | null;
+  usage_provenance: 'usage_ledger' | 'legacy_routine';
+  usage_completeness: 'complete' | 'partial' | 'not_reported' | null;
   deadline_at: number;
   sandbox_session_id: string | null;
   tool_call_count: number;
@@ -1440,6 +1443,9 @@ export class RoutineStoreLogic {
            cache_read_tokens = COALESCE(?, cache_read_tokens),
            cache_write_tokens = COALESCE(?, cache_write_tokens),
            cost_estimate = COALESCE(?, cost_estimate), cost_unit = COALESCE(?, cost_unit),
+           usage_ledger_operation_id = COALESCE(?, usage_ledger_operation_id),
+           usage_provenance = COALESCE(?, usage_provenance),
+           usage_completeness = COALESCE(?, usage_completeness),
            tool_call_count = COALESCE(?, tool_call_count),
            change_key_hash = COALESCE(?, change_key_hash),
            suppressed_as_no_op = COALESCE(?, suppressed_as_no_op)
@@ -1455,6 +1461,9 @@ export class RoutineStoreLogic {
         input.cacheWriteTokens ?? null,
         input.costEstimate ?? null,
         input.costUnit ?? null,
+        input.usageLedgerOperationId ?? null,
+        input.usageProvenance ?? null,
+        input.usageCompleteness ?? null,
         input.toolCallCount ?? null,
         input.changeKeyHash ?? null,
         input.suppressedAsNoOp === undefined ? null : (input.suppressedAsNoOp ? 1 : 0),
@@ -1653,6 +1662,8 @@ export class RoutineStoreLogic {
         resolved_access_hash TEXT, resolved_agent_id TEXT, model TEXT,
         input_tokens INTEGER, output_tokens INTEGER, cache_read_tokens INTEGER,
         cache_write_tokens INTEGER, cost_estimate REAL, cost_unit TEXT,
+        usage_ledger_operation_id TEXT,
+        usage_provenance TEXT NOT NULL DEFAULT 'legacy_routine', usage_completeness TEXT,
         deadline_at INTEGER NOT NULL, sandbox_session_id TEXT, tool_call_count INTEGER NOT NULL,
         delivery_status TEXT NOT NULL, delivery_lease_until INTEGER,
         delivery_channel_id TEXT, delivery_message_ts TEXT, change_key_hash TEXT,
@@ -1661,6 +1672,16 @@ export class RoutineStoreLogic {
         last_missed_at INTEGER, trace_id TEXT, revision_json TEXT, revision_hash TEXT NOT NULL
       )`,
     );
+    const runColumns = this.db.all('PRAGMA table_info(routine_runs)');
+    for (const [name, definition] of [
+      ['usage_ledger_operation_id', 'TEXT'],
+      ['usage_provenance', "TEXT NOT NULL DEFAULT 'legacy_routine'"],
+      ['usage_completeness', 'TEXT'],
+    ] as const) {
+      if (!runColumns.some((column) => column.name === name)) {
+        this.db.exec(`ALTER TABLE routine_runs ADD COLUMN ${name} ${definition}`);
+      }
+    }
     this.db.exec(
       `CREATE UNIQUE INDEX IF NOT EXISTS routine_runs_schedule_slot_unique
        ON routine_runs (routine_id, scheduled_for) WHERE trigger_source = 'schedule'`,
@@ -2581,6 +2602,11 @@ function validResultMetadata(input: TransitionRoutineRunInput): boolean {
       (!Number.isFinite(input.costEstimate) || input.costEstimate < 0)) ||
     (input.model !== undefined && (!input.model || input.model.length > 500)) ||
     (input.costUnit !== undefined && (!input.costUnit || input.costUnit.length > 40)) ||
+    (input.usageLedgerOperationId !== undefined && !isOpaqueRoutineId(input.usageLedgerOperationId)) ||
+    (input.usageProvenance !== undefined &&
+      !['usage_ledger', 'legacy_routine'].includes(input.usageProvenance)) ||
+    (input.usageCompleteness !== undefined &&
+      !['complete', 'partial', 'not_reported'].includes(input.usageCompleteness)) ||
     (input.changeKeyHash !== undefined &&
       input.changeKeyHash !== null &&
       !/^[a-f0-9]{64}$/.test(input.changeKeyHash))
@@ -2749,6 +2775,9 @@ function rowToRun(row: RunRow): RoutineRun {
     cacheWriteTokens: row.cache_write_tokens,
     costEstimate: row.cost_estimate,
     costUnit: row.cost_unit,
+    usageLedgerOperationId: row.usage_ledger_operation_id,
+    usageProvenance: row.usage_provenance,
+    usageCompleteness: row.usage_completeness,
     deadlineAt: row.deadline_at,
     sandboxSessionId: row.sandbox_session_id,
     toolCallCount: row.tool_call_count,

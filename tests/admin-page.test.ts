@@ -107,8 +107,8 @@ const opsAgent = {
   model: 'local-stub/ops',
 };
 
-function inlineScript(): string {
-  const script = renderAdminPage().match(/<script>([\s\S]*?)<\/script>/)?.[1];
+function inlineScript(usageAdminUi = false): string {
+  const script = renderAdminPage({ usageAdminUi }).match(/<script>([\s\S]*?)<\/script>/)?.[1];
   assert.ok(script, 'admin page should include one inline script');
   return script;
 }
@@ -294,6 +294,9 @@ function runAdminPageHarness(
     apiOAuthStartError?: { status: number; error: string; message?: string };
     deferAgentPatch?: boolean;
     initialSearch?: string;
+    usageAdminUi?: boolean;
+    usageApiError?: boolean;
+    usageCoverage?: { pricedOperationCount: number; meteredOperationCount: number };
   } = {},
 ): {
   app: FakeElement;
@@ -315,6 +318,7 @@ function runAdminPageHarness(
   popstate(path: string): void;
   historyPushes: string[];
   historyReplaces: string[];
+  usageApiCalls: string[];
   channelListCalls: string[];
   providerKeyPosts: Array<{ id: string; key: string }>;
   providerKeyDeletes: string[];
@@ -412,6 +416,7 @@ function runAdminPageHarness(
   const slackIdentityResolvers: Array<((response: FakeResponse) => void) | undefined> = [];
   let slackDisconnectCalls = 0;
   const channelListCalls: string[] = [];
+  const usageApiCalls: string[] = [];
   const providerKeyPosts: Array<{ id: string; key: string }> = [];
   const providerKeyDeletes: string[] = [];
   const favoritesPuts: Array<{ id: string; favorites: string[] }> = [];
@@ -597,14 +602,19 @@ function runAdminPageHarness(
   };
   const historyPushes: string[] = [];
   const historyReplaces: string[] = [];
+  const applyHistoryPath = (path: string) => {
+    const next = new URL(String(path), 'http://admin.test');
+    location.pathname = next.pathname;
+    location.search = next.search;
+  };
   const history = {
     pushState(_state: unknown, _title: string, path: string) {
-      location.pathname = String(path);
-      historyPushes.push(location.pathname);
+      applyHistoryPath(path);
+      historyPushes.push(String(path));
     },
     replaceState(_state: unknown, _title: string, path: string) {
-      location.pathname = String(path);
-      historyReplaces.push(location.pathname);
+      applyHistoryPath(path);
+      historyReplaces.push(String(path));
     },
   };
   const windowListeners: Record<string, (event: Record<string, unknown>) => void> = {};
@@ -727,6 +737,39 @@ function runAdminPageHarness(
     (agent) => ({ ...(agent as Record<string, unknown>) }),
   );
   const harnessOptions = options;
+  const usageNow = Date.now();
+  const usageTotals = {
+    operationCount: 3,
+    completedOperationCount: 2,
+    failedOperationCount: 1,
+    incompleteOperationCount: 0,
+    meteredOperationCount: options.usageCoverage?.meteredOperationCount ?? 2,
+    pricedOperationCount: options.usageCoverage?.pricedOperationCount ?? 1,
+    completedPricedOperationCount: 1,
+    unknownUsageOperationCount: 1,
+    unknownPriceOperationCount: 2,
+    inputTokens: 1200,
+    outputTokens: 300,
+    totalTokens: 1500,
+    estimateAmountMicros: 12500,
+  };
+  const usageOperation = {
+    operation: {
+      operationId: 'op_usage_fixture', operationKind: 'interactive_turn', sourceId: 'source_usage', status: 'completed',
+      startedAt: usageNow - 60_000, finishedAt: usageNow - 55_000, installationId: 'chickpea', workspaceId: 'T_DESIGN',
+      profileId: 'agent_release', profileLabel: 'Release <script>alert(1)</script>', channelId: 'D_PRIVATE', channelLabel: null,
+      conversationKind: 'direct_message', routineId: null, routineLabel: null, routineRunId: null,
+      requestedProvider: 'openai', requestedModel: 'gpt-4.1-mini', credentialRefId: 'cred_openai_environment', credentialVersion: 1,
+      coverage: 'aggregate_only', telemetrySchemaVersion: 1, createdAt: usageNow - 60_000, updatedAt: usageNow - 55_000,
+    },
+    measurements: [{
+      executionId: 'exec_usage_fixture', operationId: 'op_usage_fixture', operationStatus: 'completed', observedAt: usageNow - 55_000,
+      providerRoute: 'openai', requestedProvider: 'openai', requestedModel: 'gpt-4.1-mini', returnedProvider: 'openai', returnedModel: 'gpt-4.1-mini',
+      credentialRefId: 'cred_openai_environment', credentialVersion: 1, usageCompleteness: 'complete', inputTokens: 1000, outputTokens: 250,
+      totalTokens: 1250, usageUnknownReason: null, estimateCompleteness: 'complete', estimateAmountMicros: 12500, estimateCurrency: 'USD',
+      priceVersionId: 'openai_2026-07-28', priceUnknownReason: null, recordedAt: usageNow - 55_000,
+    }],
+  };
   const slackIdentityResponse = (result: SlackIdentityResultFixture): FakeResponse => {
     if ('status' in result) {
       return jsonResponse(
@@ -742,6 +785,30 @@ function runAdminPageHarness(
 
   const fetch = (path: string, options?: { method?: string; body?: string; headers?: Record<string, string> }): Promise<FakeResponse> => {
     const method = options?.method ?? 'GET';
+    if (path.startsWith('/admin/api/usage/')) {
+      usageApiCalls.push(path);
+      if (harnessOptions.usageApiError) return Promise.resolve(jsonResponse({ error: 'usage_unavailable' }, 503));
+      if (path.startsWith('/admin/api/usage/overview')) {
+        return Promise.resolve(jsonResponse({
+          current: { from: usageNow - 30 * 86400000, to: usageNow, groupBy: 'provider', currency: 'USD', mixedCurrency: false, availableCurrencies: ['USD'], totals: usageTotals, groups: [{ key: 'openai', label: 'OpenAI <unsafe>', ...usageTotals }] },
+          previous: { from: usageNow - 60 * 86400000, to: usageNow - 30 * 86400000, groupBy: 'provider', currency: 'USD', mixedCurrency: false, availableCurrencies: ['USD'], totals: { ...usageTotals, operationCount: 2, estimateAmountMicros: 10000 }, groups: [] },
+        }));
+      }
+      if (path.startsWith('/admin/api/usage/operations')) {
+        return Promise.resolve(jsonResponse({ items: [usageOperation], nextCursor: null }));
+      }
+      if (path === '/admin/api/usage/metadata') {
+        return Promise.resolve(jsonResponse({
+          generatedAt: usageNow,
+          contract: { usageSource: 'model_response_aggregate', monetarySource: 'chickpea_list_price_estimate', providerBillingIncluded: false, limitsManagedByChickpea: false },
+          guidance: [{ providerId: 'openai', displayName: 'OpenAI', authModes: ['API key'], runtimeCoverage: 'metered', priceCoverage: 'release_pinned', scopeGuidance: 'Use a dedicated project key.', accountBoundary: 'Provider totals can include work outside Chickpea.', limitsUrl: 'https://platform.openai.com/docs/guides/production-best-practices/managing-billing-limits', pricingUrl: 'https://developers.openai.com/api/docs/pricing', reviewedAt: usageNow }],
+          catalogs: [{ id: 'openai_2026-07-28', providerId: 'openai', sourceUrl: 'https://developers.openai.com/api/docs/models/gpt-4.1-mini', reviewedAt: usageNow, staleAfter: usageNow + 86400000, currency: 'USD', models: ['gpt-4.1-mini'] }],
+          credentials: [{ credentialRefId: 'cred_openai_environment', version: 1, providerId: 'openai', sourceKind: 'environment', label: 'OpenAI environment key', scopeLabel: null, unknownRotation: true, activeFrom: usageNow - 86400000, retiredAt: null }],
+          retention: { rawRetentionDays: 90, aggregateRetentionMonths: 13, lastRunAt: usageNow, rawRetainedFrom: usageNow - 90 * 86400000, aggregateRetainedFrom: usageNow - 395 * 86400000 },
+          lifecycleEvents: [{ eventId: 'usage:catalog:test', domain: 'usage', eventType: 'usage.catalog_installed', outcome: 'success', actorClass: 'system', actorId: null, workspaceId: null, channelId: null, storeId: null, subjectId: 'openai_2026-07-28', subjectVersion: 1, createdAt: usageNow, reasonCode: null, beforeHash: null, afterHash: null, metadataJson: '{}', idempotencyKey: 'usage:catalog:test' }],
+        }));
+      }
+    }
     if (path.startsWith('/admin/api/audit/scheduled_work/routines') && method === 'GET') {
       const detailMatch = path.match(/^\/admin\/api\/audit\/scheduled_work\/routines\/([^/?]+)$/);
       if (detailMatch) {
@@ -1412,7 +1479,7 @@ function runAdminPageHarness(
   };
 
   vm.runInNewContext(
-    inlineScriptFor(options.cloudflare ?? false),
+    inlineScriptFor(options.cloudflare ?? false, options.usageAdminUi ?? false),
     {
       document,
       fetch,
@@ -1468,11 +1535,12 @@ function runAdminPageHarness(
     focusedAction: () => focusedAction,
     locationPath: () => location.pathname,
     popstate(path: string) {
-      location.pathname = path;
+      applyHistoryPath(path);
       windowListeners.popstate?.({});
     },
     historyPushes,
     historyReplaces,
+    usageApiCalls,
     channelListCalls,
     providerKeyPosts,
     providerKeyDeletes,
@@ -1536,15 +1604,15 @@ async function openReleaseAttachPicker(
 // isCloudflareTarget() (globalThis.navigator.userAgent). The Workers AI row is
 // binding-only, so a Cloudflare-target harness renders it by masquerading the
 // navigator just for the renderAdminPage() call, then restoring it.
-function inlineScriptFor(cloudflare: boolean): string {
-  if (!cloudflare) return inlineScript();
+function inlineScriptFor(cloudflare: boolean, usageAdminUi = false): string {
+  if (!cloudflare) return inlineScript(usageAdminUi);
   const previous = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
   Object.defineProperty(globalThis, 'navigator', {
     value: { userAgent: 'Cloudflare-Workers' },
     configurable: true,
   });
   try {
-    return inlineScript();
+    return inlineScript(usageAdminUi);
   } finally {
     if (previous) Object.defineProperty(globalThis, 'navigator', previous);
     else delete (globalThis as { navigator?: unknown }).navigator;
@@ -1711,7 +1779,7 @@ test('Channels opens a Slack overview with an uncounted platform rail and explic
   const topbar = html.match(/<header class="topbar">[\s\S]*?<\/header>/)?.[0] ?? '';
   assert.equal(harness.locationPath(), '/admin/channels');
   assert.deepEqual(harness.historyReplaces, ['/admin/channels']);
-  assert.match(html, /class="btn btn-soft nav-active" data-action="open-channels">Channels<\/button>/);
+  assert.match(html, /class="section-nav-item active" data-action="open-channels"[^>]*aria-current="page">Channels<\/button>/);
   assert.doesNotMatch(topbar, /Audit logs/);
   assert.doesNotMatch(topbar, /data-action="open-audit"/);
   assert.match(html, /<div class="rail-head"><span class="section-eyebrow">Channels<\/span><\/div>/);
@@ -1753,7 +1821,7 @@ test('Channels opens a Slack overview with an uncounted platform rail and explic
   });
   await flushAsync();
   assert.equal(harness.locationPath(), '/admin/audit-logs/memory/store_public_T_DESIGN/C0EXR3L9T');
-  assert.match(harness.app.innerHTML, /class="btn btn-soft nav-active" data-action="open-channels">Channels<\/button>/);
+  assert.match(harness.app.innerHTML, /class="section-nav-item active" data-action="open-channels"[^>]*aria-current="page">Channels<\/button>/);
   assert.match(harness.app.innerHTML, /<h1 class="page-title">Audit logs<\/h1>/);
 
   click({ target: actionTarget({ 'data-action': 'open-channels' }) });
@@ -6381,18 +6449,20 @@ test('add-channel submit PUTs the connected workspace id and surfaces the invite
   assert.match(harness.app.innerHTML, /Invite it to #secret-room in Slack/);
 });
 
-test('the rail and add-channel affordance stay gated until Slack is connected', async () => {
+test('the navigation rail stays available while channel setup waits for Slack', async () => {
   const harness = runAdminPageHarness({
     assignments: [],
     slackConnection: disconnectedSlackFixture(),
   });
   await flushAsync();
 
-  // Disconnected: the whole screen is the Connect stepper — no rail, no
-  // add-channel affordance anywhere, and no channel-list fetch.
+  // Disconnected: setup stays focused, but the stable section switcher remains
+  // available and the Slack-specific add affordance is visibly disabled.
   assert.match(harness.app.innerHTML, /Connect Slack/);
-  assert.doesNotMatch(harness.app.innerHTML, /data-action="toggle-add-channel"/);
-  assert.doesNotMatch(harness.app.innerHTML, /class="rail"/);
+  assert.match(harness.app.innerHTML, /class="rail" aria-label="Channels"/);
+  assert.match(harness.app.innerHTML, /data-action="toggle-add-channel" disabled title="Connect Slack first"/);
+  assert.match(harness.app.innerHTML, /class="section-nav-item" data-action="open-profiles"[^>]*>Profiles<\/button>/);
+  assert.match(harness.app.innerHTML, /class="section-nav-item" data-action="open-settings"[^>]*>Settings<\/button>/);
   assert.equal(harness.channelListCalls.length, 0);
 });
 
@@ -6555,12 +6625,11 @@ function inputTarget(attributes: Record<string, string>, value: string): FakeTar
   };
 }
 
-test('admin topbar exposes a Settings destination that lands on the model-providers page', async () => {
+test('the persistent section switcher opens Settings on the model-providers page', async () => {
   const harness = runAdminPageHarness();
   await flushAsync();
 
-  // The Settings sibling sits next to Profiles in the topbar (inactive until opened).
-  assert.match(harness.app.innerHTML, /data-action="open-settings">Settings<\/button>/);
+  assert.match(harness.app.innerHTML, /class="section-nav-item" data-action="open-settings"[^>]*>Settings<\/button>/);
 
   const click = harness.listeners.click;
   assert.ok(click);
@@ -6569,8 +6638,47 @@ test('admin topbar exposes a Settings destination that lands on the model-provid
 
   assert.match(harness.app.innerHTML, /<h1 class="page-title">Settings<\/h1>/);
   assert.match(harness.app.innerHTML, /<h2 class="section-title">Model providers<\/h2>/);
-  // The active-state styling is the soft ember tint (.nav-active), no weight change.
-  assert.match(harness.app.innerHTML, /class="btn btn-soft nav-active" data-action="open-settings">Settings<\/button>/);
+  assert.equal(harness.locationPath(), '/admin/settings/providers');
+  assert.match(harness.app.innerHTML, /class="section-nav-item active" data-action="open-settings"[^>]*aria-current="page">Settings<\/button>/);
+  assert.match(harness.app.innerHTML, /data-settings-panel="providers"><section/);
+  assert.match(harness.app.innerHTML, /data-settings-panel="github" hidden>/);
+});
+
+test('the left rail keeps one coherent section switcher and section-specific navigation', async () => {
+  const harness = runAdminPageHarness({ usageAdminUi: true });
+  await flushAsync();
+
+  const initialSwitcher = harness.app.innerHTML.match(/<nav class="section-switcher" aria-label="Admin navigation">[\s\S]*?<\/nav>/)?.[0] ?? '';
+  assert.doesNotMatch(initialSwitcher, />Sections</);
+  assert.ok(initialSwitcher.indexOf('>Channels</button>') < initialSwitcher.indexOf('>Profiles</button>'));
+  assert.ok(initialSwitcher.indexOf('>Profiles</button>') < initialSwitcher.indexOf('>Usage</button>'));
+  assert.ok(initialSwitcher.indexOf('>Usage</button>') < initialSwitcher.indexOf('>Settings</button>'));
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'open-profiles', 'data-section-switcher': 'true' }) });
+  assert.equal(harness.locationPath(), '/admin/profiles/agent_release');
+  assert.match(harness.app.innerHTML, /<nav class="rail" aria-label="Profiles">/);
+  assert.match(harness.app.innerHTML, /class="chan-item active" data-action="edit-profile" data-agent="agent_release"/);
+  assert.match(harness.app.innerHTML, /class="section-nav-item active" data-action="open-profiles"/);
+
+  click({ target: actionTarget({ 'data-action': 'open-usage', 'data-section-switcher': 'true' }) });
+  await flushAsync();
+  assert.equal(harness.locationPath(), '/admin/usage');
+  assert.match(harness.app.innerHTML, /<nav class="rail" aria-label="Usage">/);
+  assert.match(harness.app.innerHTML, /<span class="chan-name">Overview<\/span>/);
+  assert.doesNotMatch(harness.app.innerHTML, /<span class="chan-name">Model settings<\/span>/);
+
+  click({ target: actionTarget({ 'data-action': 'open-settings', 'data-section-switcher': 'true' }) });
+  await flushAsync();
+  assert.equal(harness.locationPath(), '/admin/settings/providers');
+  assert.match(harness.app.innerHTML, /class="chan-item active" data-action="settings-section" data-section="providers"/);
+
+  click({ target: actionTarget({ 'data-action': 'settings-section', 'data-section': 'github' }) });
+  assert.equal(harness.locationPath(), '/admin/settings/github');
+  assert.match(harness.app.innerHTML, /class="chan-item active" data-action="settings-section" data-section="github"/);
+  assert.match(harness.app.innerHTML, /data-settings-panel="providers" hidden>/);
+  assert.match(harness.app.innerHTML, /data-settings-panel="github"><section/);
 });
 
 test('Settings renders the off-by-default Coding sandbox card with cost and collapsed advanced controls', async () => {
@@ -7117,6 +7225,171 @@ test('GitHub settings exposes only the required GitHub App authentication path',
     html,
     /Use a personal access token|github-pat|GITHUB_PAT|patSource|\/admin\/api\/github\/pat/,
   );
+});
+
+test('Usage navigation is feature-gated off by default', async () => {
+  const html = renderAdminPage();
+  const harness = runAdminPageHarness();
+  await flushAsync();
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="open-usage"/);
+  assert.match(html, /var USAGE_ADMIN_UI = false/);
+});
+
+test('Usage shows concise spend, expanded token columns, and non-interactive activity rows', async () => {
+  const harness = runAdminPageHarness({ usageAdminUi: true, initialPath: '/admin/usage' });
+  await flushAsync();
+
+  const html = harness.app.innerHTML;
+  assert.match(html, /Estimated spend/);
+  assert.match(html, /\$0\.01/);
+  assert.match(html, /Some activity is missing usage data\./);
+  assert.match(html, /Cost estimates include 1 of 3 activities; token totals include 2 of 3\./);
+  assert.match(html, /Set spending limits with each model provider/);
+  assert.match(html, /<option value="channel" selected>Channel<\/option>/);
+  assert.match(html, /Spend by channel/);
+  assert.match(html, /Recent <span class="usage-term-help"[^>]*>activity<\/span>/);
+  assert.match(html, /data-tooltip="Activity includes each Slack message Chickpea responds to and each scheduled routine run\."/);
+  assert.match(html, />Input tokens<\/th><th class="number">Output tokens<\/th><th class="number">Total tokens<\/th>/);
+  assert.match(html, /<td class="number">1,200<\/td><td class="number">300<\/td><td class="number">1,500<\/td>/);
+  assert.match(html, /class="usage-token-total" tabindex="0" data-tooltip="1,000 input · 250 output"[^>]*>1,250<\/span>/);
+  assert.match(html, /Direct message/);
+  assert.doesNotMatch(html, /data-action="usage-select-operation"|Activity details|data-operation="op_usage_fixture"/);
+  assert.doesNotMatch(html, /Provider setup|Provider limits|Known estimate|Work instance|Retention and lifecycle/);
+  assert.doesNotMatch(html, /<script>alert\(1\)<\/script>/);
+  assert.match(html, /Release &lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+  assert.doesNotMatch(html, /authorization: Bearer|apiKey|clientSecret/i);
+});
+
+test('Usage combines matching coverage gaps and hides the note when coverage is complete', async () => {
+  const partial = runAdminPageHarness({
+    usageAdminUi: true,
+    initialPath: '/admin/usage',
+    usageCoverage: { pricedOperationCount: 2, meteredOperationCount: 2 },
+  });
+  await flushAsync();
+  assert.match(partial.app.innerHTML, /Totals include 2 of 3 activities\./);
+  assert.match(partial.app.innerHTML, /One activity did not report token usage and could not be priced\./);
+
+  const complete = runAdminPageHarness({
+    usageAdminUi: true,
+    initialPath: '/admin/usage',
+    usageCoverage: { pricedOperationCount: 3, meteredOperationCount: 3 },
+  });
+  await flushAsync();
+  assert.doesNotMatch(complete.app.innerHTML, /class="usage-data-note"/);
+  assert.doesNotMatch(complete.app.innerHTML, /missing usage data|did not report token usage/);
+});
+
+test('Admin dividers use solid rules', () => {
+  assert.doesNotMatch(renderAdminPage(), /\b(?:dashed|dotted)\b/);
+});
+
+test('Usage tooltips render on hover and keyboard focus without relying on native title text', () => {
+  const html = renderAdminPage();
+  assert.match(html, /\.usage-term-help:hover::after, \.usage-term-help:focus-visible::after/);
+  assert.match(html, /content: attr\(data-tooltip\)/);
+  assert.doesNotMatch(html, /class="usage-term-help"[^>]*\stitle=/);
+});
+
+test('Usage renders an explicit query error and retry action', async () => {
+  const harness = runAdminPageHarness({ usageAdminUi: true, initialPath: '/admin/usage', usageApiError: true });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /usage_unavailable/);
+  assert.match(harness.app.innerHTML, /data-action="usage-retry"/);
+});
+
+test('Usage restores its bounded period and single breakdown from the URL', async () => {
+  const harness = runAdminPageHarness({
+    usageAdminUi: true,
+    initialPath: '/admin/usage',
+    initialSearch: '?days=90&groupBy=channel',
+  });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /<option value="last_90_days" selected>Last 90 days<\/option>/);
+  assert.match(harness.app.innerHTML, /<option value="channel" selected>Channel<\/option>/);
+  assert.match(harness.app.innerHTML, /<th>channel<\/th>/);
+});
+
+test('Usage offers rolling and calendar periods in a clear order', async () => {
+  const harness = runAdminPageHarness({ usageAdminUi: true, initialPath: '/admin/usage' });
+  await flushAsync();
+
+  const periodSelect = harness.app.innerHTML.match(/<select class="input" name="usage-period"[\s\S]*?<\/select>/)?.[0] ?? '';
+  const labels = ['Last 7 days', 'Last 30 days', 'Last 90 days', 'This month', 'Last month', 'This week', 'Last week', 'Custom'];
+  labels.forEach((label) => assert.match(periodSelect, new RegExp(`>${label}<`)));
+  labels.slice(1).forEach((label, index) => {
+    assert.ok(periodSelect.indexOf(labels[index] as string) < periodSelect.indexOf(label));
+  });
+});
+
+test('Usage restores an inclusive custom range and sends its calendar boundaries to reporting APIs', async () => {
+  const harness = runAdminPageHarness({
+    usageAdminUi: true,
+    initialPath: '/admin/usage',
+    initialSearch: '?period=custom&from=2026-07-01&to=2026-07-05&groupBy=profile',
+  });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /<option value="custom" selected>Custom<\/option>/);
+  assert.match(harness.app.innerHTML, /id="usage-custom-from"[^>]*value="2026-07-01"/);
+  assert.match(harness.app.innerHTML, /id="usage-custom-to"[^>]*value="2026-07-05"/);
+  assert.match(harness.app.innerHTML, /<option value="profile" selected>Profile<\/option>/);
+
+  const overviewPath = harness.usageApiCalls.filter((path) => path.startsWith('/admin/api/usage/overview')).at(-1);
+  assert.ok(overviewPath);
+  const overviewUrl = new URL(overviewPath, 'http://admin.test');
+  assert.equal(overviewUrl.searchParams.get('from'), String(new Date(2026, 6, 1).getTime()));
+  assert.equal(overviewUrl.searchParams.get('to'), String(new Date(2026, 6, 6).getTime()));
+  assert.equal(overviewUrl.searchParams.get('groupBy'), 'profile');
+});
+
+test('Usage reveals and applies custom dates without querying half-edited values', async () => {
+  const harness = runAdminPageHarness({ usageAdminUi: true, initialPath: '/admin/usage' });
+  await flushAsync();
+  const change = harness.listeners.change;
+  const click = harness.listeners.click;
+  assert.ok(change);
+  assert.ok(click);
+
+  change({ target: inputTarget({ 'data-action': 'usage-range' }, 'custom') });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /id="usage-custom-from"/);
+  assert.match(harness.app.innerHTML, /id="usage-custom-to"/);
+  assert.match(harness.app.innerHTML, /data-action="usage-custom-apply">Apply dates<\/button>/);
+  assert.match(harness.app.innerHTML, /class="usage-control-row has-custom"/);
+  assert.doesNotMatch(harness.app.innerHTML, /class="usage-custom-range"/);
+
+  const callsAfterOpening = harness.usageApiCalls.length;
+  change({ target: inputTarget({ 'data-action': 'usage-custom-from' }, '2026-07-01') });
+  change({ target: inputTarget({ 'data-action': 'usage-custom-to' }, '2026-07-05') });
+  assert.equal(harness.usageApiCalls.length, callsAfterOpening);
+
+  click({ target: actionTarget({ 'data-action': 'usage-custom-apply' }) });
+  await flushAsync();
+  assert.ok(harness.historyReplaces.includes('/admin/usage?period=custom&from=2026-07-01&to=2026-07-05&groupBy=channel'));
+  const overviewPath = harness.usageApiCalls.filter((path) => path.startsWith('/admin/api/usage/overview')).at(-1);
+  assert.ok(overviewPath);
+  const overviewUrl = new URL(overviewPath, 'http://admin.test');
+  assert.equal(overviewUrl.searchParams.get('from'), String(new Date(2026, 6, 1).getTime()));
+  assert.equal(overviewUrl.searchParams.get('to'), String(new Date(2026, 6, 6).getTime()));
+});
+
+test('Usage keeps an invalid custom range in place and explains what to fix', async () => {
+  const harness = runAdminPageHarness({
+    usageAdminUi: true,
+    initialPath: '/admin/usage',
+    initialSearch: '?period=custom&from=2026-07-01&to=2026-07-05&groupBy=channel',
+  });
+  await flushAsync();
+  const callsBeforeEdit = harness.usageApiCalls.length;
+
+  harness.listeners.change?.({ target: inputTarget({ 'data-action': 'usage-custom-from' }, '2026-07-10') });
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'usage-custom-apply' }) });
+  await flushAsync();
+
+  assert.equal(harness.usageApiCalls.length, callsBeforeEdit);
+  assert.match(harness.app.innerHTML, /role="alert">Start date must be on or before end date\.<\/p>/);
+  assert.match(harness.app.innerHTML, /id="usage-custom-from"[^>]*value="2026-07-10"/);
 });
 
 test('Settings renders the three key-provider rows and hides Workers AI on the Node target', async () => {

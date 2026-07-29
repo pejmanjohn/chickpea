@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "chosenPreDeliveryBudgetMs": 100,
+  "maximumAllowedBudgetMs": 250,
+  "measuredAt": "2026-07-28",
+  "probes": [
+    {
+      "target": "node-sqlite-memory",
+      "operation": "three-setting transaction plus coherent three-setting read",
+      "warmupCount": 10,
+      "sampleCount": 500,
+      "p95Ms": 0.044,
+      "maxMs": 1.097
+    },
+    {
+      "target": "local-workerd-tag-state",
+      "operation": "authenticated Worker request, one TagStateStore RPC transaction with three writes, then three reads",
+      "warmupCount": 10,
+      "sampleCount": 50,
+      "p95Ms": 3.4,
+      "runtime": "wrangler dev local workerd"
+    }
+  ],
+  "limitations": [
+    "Local measurements establish a conservative application budget but do not replace the deployed-Worker U1 capacity gate.",
+    "The representative operation is intentionally heavier than one planned usage-ledger transaction but is not the final U1 schema."
+  ]
+}
