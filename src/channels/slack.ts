@@ -16,6 +16,9 @@ import { resolveStores, type AppStores, type PlatformEnv } from '../config/state
 import { tagStateStub, type TurnJob } from '../config/state-rpc.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
 import { resolveSlackBehaviorSettings } from '../slack/behavior-settings.ts';
+import { parseMemoryCommand } from '../memory/commands.ts';
+import { parseRoutineCommand } from '../routines/commands.ts';
+import { isRoutineSlackTurn } from '../routines/slack-context.ts';
 import type { SlackClaimStore } from '../slack/claim-store.ts';
 import {
   resolveSlackCredentials,
@@ -40,6 +43,7 @@ import {
 import { slackThreadKey } from '../slack/thread-key.ts';
 import { normalizeSlackTurn } from '../slack/turn-normalization.ts';
 import { wakeNodeTurnRelay } from '../slack/node-turn-relay.ts';
+import { selectSlackExecutionAuthority } from '../work/authority.ts';
 import {
   isSlackMemberJoinedChannelEvent,
   type NormalizedSlackTurn,
@@ -396,11 +400,21 @@ const handleSlackEvents: NonNullable<SlackChannelOptions['events']> = async ({ c
   let canonicalRunId: string | undefined;
   let canonicalTurnJob: TurnJob | undefined;
   if (admissionTruth.eligible) {
+    const selectedExecution = selectSlackExecutionAuthority({
+      workspaceId: turn.workspaceId,
+      channelId: turn.channelId,
+      assignment,
+      legacyOnlyTurn:
+        Boolean(parseMemoryCommand(turn.text)) ||
+        (isRoutineSlackTurn(turn) && Boolean(parseRoutineCommand(turn.text))),
+      ...(platformEnv ? { env: platformEnv } : {}),
+    });
     const admission = prepareSlackShadowAdmission({
       turn,
       assignment,
       sourceVisibility: admissionTruth.sourceVisibility,
       admittedAt: Date.now(),
+      executionAuthority: selectedExecution.authority,
     });
     canonicalTurnJob = {
       id: msgKey,
@@ -409,6 +423,7 @@ const handleSlackEvents: NonNullable<SlackChannelOptions['events']> = async ({ c
       turn,
       assignment,
       runId: admission.run.id,
+      executionAuthority: admission.run.executionAuthority,
     };
     try {
       const result = await state.admitCanonical({
@@ -422,6 +437,12 @@ const handleSlackEvents: NonNullable<SlackChannelOptions['events']> = async ({ c
       claimsHeldByCanonicalAdmission = true;
       canonicalRunId = result.admission.run.id;
     } catch (err) {
+      if (admission.run.executionAuthority === 'ledger') {
+        // A selected canary must never fall back across authority lanes. The
+        // transaction rolled its claims back, so Slack may safely redeliver.
+        console.error('[chickpea] ledger Work admission failed:', sanitizeError(err));
+        return;
+      }
       // U3 is deliberately observational. Preserve the existing product path
       // while surfacing a body-free operator gap for follow-up.
       console.error('[chickpea] shadow Work admission failed:', sanitizeError(err));

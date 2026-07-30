@@ -847,7 +847,10 @@ export class WorkStoreLogic {
           'Run execution requires durable prepared input.',
         );
       }
-      if (input.fencingToken <= run.fencingToken) {
+      const fenceIsCurrent = run.executionAuthority === 'ledger'
+        ? input.fencingToken === run.fencingToken
+        : input.fencingToken > run.fencingToken;
+      if (!fenceIsCurrent) {
         throw workError('work_fence_stale', 'Run execution fencing token is stale.');
       }
       this.db.run(
@@ -870,14 +873,24 @@ export class WorkStoreLogic {
         input.canonicalModel,
         input.startedAt,
       );
-      this.db.run(
-        `UPDATE runs SET status = 'executing', fencing_token = ?, updated_at = ?
-         WHERE id = ? AND status = 'input_ready' AND fencing_token < ?`,
-        input.fencingToken,
-        input.startedAt,
-        input.runId,
-        input.fencingToken,
-      );
+      if (run.executionAuthority === 'ledger') {
+        this.db.run(
+          `UPDATE runs SET status = 'executing', updated_at = ?
+           WHERE id = ? AND status = 'input_ready' AND fencing_token = ?`,
+          input.startedAt,
+          input.runId,
+          input.fencingToken,
+        );
+      } else {
+        this.db.run(
+          `UPDATE runs SET status = 'executing', fencing_token = ?, updated_at = ?
+           WHERE id = ? AND status = 'input_ready' AND fencing_token < ?`,
+          input.fencingToken,
+          input.startedAt,
+          input.runId,
+          input.fencingToken,
+        );
+      }
       this.appendLifecycleAudit(
         'work.execution_created',
         input.runId,
@@ -1232,8 +1245,7 @@ export class WorkStoreLogic {
         );
       } else {
         this.db.run(
-          `UPDATE runs SET delivery_status = 'failed', safe_failure_code = ?,
-             lease_owner = NULL, lease_until = NULL, updated_at = ?
+          `UPDATE runs SET delivery_status = 'failed', safe_failure_code = ?, updated_at = ?
            WHERE id = ? AND fencing_token = ? AND delivery_status = 'pending'`,
           input.safeFailureCode ?? 'delivery_failed',
           input.finalizedAt,
@@ -2573,7 +2585,11 @@ function assertSafeRef(value: unknown, label: string): asserts value is string {
 }
 
 function assertSafeModel(value: unknown): asserts value is string {
-  if (typeof value !== 'string' || !/^[a-z0-9][a-z0-9._-]{0,63}\/[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value)) {
+  if (
+    typeof value !== 'string' ||
+    value.length > 255 ||
+    !/^[a-z0-9][a-z0-9._-]{0,63}(?:\/[A-Za-z0-9@][A-Za-z0-9@._:-]{0,127}){1,6}$/.test(value)
+  ) {
     throw workError('work_config_invalid', 'Canonical model is invalid.');
   }
   if (/chickpea-openai-subscription|internal/i.test(value)) {

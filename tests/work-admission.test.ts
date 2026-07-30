@@ -116,6 +116,33 @@ test('Slack canonical identities are scoped by workspace', () => {
   assert.notEqual(first.run.id, other.run.id);
 });
 
+test('selector rollback changes only future Run authority on the same Binding', () => {
+  const db = openStateDb(':memory:');
+  try {
+    const store = new WorkStoreLogic(db, { now: () => NOW });
+    const ledger = store.admitShadowRun(prepareSlackShadowAdmission({
+      turn: turn(),
+      assignment: assignment(),
+      sourceVisibility: 'public',
+      executionAuthority: 'ledger',
+      admittedAt: NOW,
+    }));
+    const legacy = store.admitShadowRun(prepareSlackShadowAdmission({
+      turn: turn({ eventId: 'Ev_rollback', messageTs: '100.002' }),
+      assignment: assignment(),
+      sourceVisibility: 'public',
+      executionAuthority: 'legacy',
+      admittedAt: NOW + 1,
+    }));
+    assert.equal(ledger.binding.id, legacy.binding.id);
+    assert.equal(ledger.run.executionAuthority, 'ledger');
+    assert.equal(legacy.run.executionAuthority, 'legacy');
+    assert.equal(store.getRun(ledger.run.id)?.executionAuthority, 'ledger');
+  } finally {
+    db.close();
+  }
+});
+
 test('Slack truth admits only a positively verified same-workspace active human', async () => {
   const eligible = await resolveSlackAdmissionTruth(turn(), 'U_bot', {
     async user() {
@@ -266,6 +293,38 @@ test('failed canonical admission rolls back Slack claims and all ledger writes',
     assert.equal(slack.claim('msg:bad'), true);
     assert.equal(db.get('SELECT COUNT(*) AS count FROM runs')?.count, 0);
     assert.equal(db.get('SELECT COUNT(*) AS count FROM ledger_content')?.count, 0);
+  } finally {
+    db.close();
+  }
+});
+
+test('a TurnJob authority mismatch rolls back claims, Run, and relay payload', () => {
+  const db = openStateDb(':memory:');
+  try {
+    const slack = new SlackStateLogic(db, () => NOW);
+    const turns = new TurnJobStoreLogic(db, () => NOW);
+    const work = new WorkStoreLogic(db, { now: () => NOW });
+    const normalized = turn();
+    const resolved = assignment();
+    const admission = prepareSlackShadowAdmission({
+      turn: normalized,
+      assignment: resolved,
+      sourceVisibility: 'public',
+      executionAuthority: 'ledger',
+      admittedAt: NOW,
+    });
+    assert.throws(() => slack.admitCanonical({
+      evtKey: 'evt:mismatch', msgKey: 'msg:mismatch', threadKey: 'thread:mismatch',
+      admission,
+      turnJob: {
+        id: 'msg:mismatch', evtKey: 'evt:mismatch', msgKey: 'msg:mismatch',
+        turn: normalized, assignment: resolved, runId: admission.run.id,
+        executionAuthority: 'legacy',
+      },
+    }, work, turns), /authority does not match/i);
+    assert.equal(slack.claim('evt:mismatch'), true);
+    assert.equal(db.get('SELECT COUNT(*) AS count FROM runs')?.count, 0);
+    assert.equal(db.get('SELECT COUNT(*) AS count FROM turn_jobs')?.count, 0);
   } finally {
     db.close();
   }

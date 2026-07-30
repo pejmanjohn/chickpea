@@ -288,6 +288,14 @@ export class CfSlackStateStore implements SlackStateStore {
   async admitCanonical(input: SlackCanonicalAdmissionInput) {
     return unwrap(await this.stub.admitSlackTurn(input));
   }
+
+  async putAgentExecutionContext(input: Parameters<SlackStateStore['putAgentExecutionContext']>[0]) {
+    return unwrap(await this.stub.slackAgentExecutionContextPut(input));
+  }
+
+  async getAgentExecutionContext(continuityKey: string) {
+    return orUndefined(unwrap(await this.stub.slackAgentExecutionContextGet(continuityKey)));
+  }
 }
 
 export class CfSettingsStore implements SettingsStore {

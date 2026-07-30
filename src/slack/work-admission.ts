@@ -4,6 +4,7 @@ import { prepareSubmitRun } from '../work/submit-run.ts';
 import type {
   AdmitShadowRunInput,
   SourceVisibility,
+  RunExecutionAuthority,
 } from '../work/types.ts';
 import {
   slackConversationsInfo,
@@ -114,6 +115,7 @@ export function prepareSlackShadowAdmission(input: {
   assignment: ResolvedAssignment;
   sourceVisibility: Exclude<SourceVisibility, 'unknown'>;
   admittedAt: number;
+  executionAuthority?: RunExecutionAuthority;
 }): AdmitShadowRunInput {
   const { turn, assignment, sourceVisibility, admittedAt } = input;
   const direct = isDirectTurn(turn);
@@ -162,7 +164,7 @@ export function prepareSlackShadowAdmission(input: {
     ),
     safeConfig,
     execution: {
-      authority: 'legacy',
+      authority: input.executionAuthority ?? 'legacy',
       coordinatorKind: 'interactive',
       authorityEpoch: 1,
     },

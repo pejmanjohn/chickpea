@@ -55,6 +55,7 @@ export interface WorkExecutionBoundary {
 export interface WorkExecutionBoundaryOptions {
   now?: () => number;
   onGap?: ConstructorParameters<typeof ShadowWorkLifecycle>[0]['onGap'];
+  mode?: ConstructorParameters<typeof ShadowWorkLifecycle>[0]['mode'];
 }
 
 /**
@@ -99,6 +100,7 @@ export async function createWorkExecutionBoundary(
     ...(descriptor.deferRoute ? { deferRoute: true } : {}),
     now,
     ...(options.onGap ? { onGap: options.onGap } : {}),
+    ...(options.mode ? { mode: options.mode } : {}),
   });
   const receiptBase = {
     runId: run.id,

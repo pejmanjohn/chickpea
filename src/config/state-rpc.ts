@@ -10,7 +10,7 @@ import type {
   SlackCanonicalAdmissionInput,
   SlackCanonicalAdmissionResult,
 } from '../slack/claim-store.ts';
-import type { TurnJob } from '../slack/turn-job-types.ts';
+import type { SlackAgentExecutionContext, TurnJob } from '../slack/turn-job-types.ts';
 
 export type { TurnJob } from '../slack/turn-job-types.ts';
 
@@ -133,6 +133,12 @@ export interface TagStateRpc {
   admitSlackTurn(
     input: SlackCanonicalAdmissionInput,
   ): Promise<StateRpcResult<SlackCanonicalAdmissionResult>>;
+  slackAgentExecutionContextPut(
+    input: SlackAgentExecutionContext,
+  ): Promise<StateRpcResult<SlackAgentExecutionContext>>;
+  slackAgentExecutionContextGet(
+    continuityKey: string,
+  ): Promise<StateRpcResult<SlackAgentExecutionContext | null>>;
   // -- operator settings ---------------------------------------------------
   settingGet(key: string): Promise<StateRpcResult<string | null>>;
   settingGetMany(keys: readonly string[]): Promise<StateRpcResult<(string | null)[]>>;

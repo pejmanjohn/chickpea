@@ -234,6 +234,28 @@ test('safe configuration canonicalizes equivalent policy and rejects unknown or 
     assert.equal(equivalent.canonicalJson, first.canonicalJson);
     assert.deepEqual(JSON.parse(first.canonicalJson).skillNames, ['asana', 'github']);
 
+    for (const configuredModel of [
+      'cloudflare/@cf/zai-org/glm-5.2',
+      'openrouter/openai/gpt-4.1',
+    ]) {
+      const nested = store.putConfigRevision(safeConfig({ configuredModel }), NOW + 1);
+      assert.equal(JSON.parse(nested.canonicalJson).configuredModel, configuredModel);
+    }
+
+    for (const configuredModel of [
+      'https://models.example.invalid/private',
+      'cloudflare//glm-5.2',
+      'cloudflare/@cf/../glm-5.2',
+      'cloudflare/@cf/zai-org/glm-5.2/',
+    ]) {
+      assert.throws(
+        () => store.putConfigRevision(safeConfig({ configuredModel }), NOW + 1),
+        (error: unknown) =>
+          error instanceof WorkStateError &&
+          (error.code === 'work_config_invalid' || error.code === 'work_secret_rejected'),
+      );
+    }
+
     assert.throws(
       () => store.putConfigRevision({ ...safeConfig(), apiKey: 'sk-not-allowed' } as never),
       (error: unknown) =>

@@ -98,7 +98,8 @@ test('lease expiry is safe before submit, ambiguous after submit, and stale fenc
   const lifecycle = new ShadowWorkLifecycle({
     store,
     runId: admission.run.id,
-    attemptNumber: 3,
+    attemptNumber: second!.fencingToken,
+    fencingToken: second!.fencingToken,
     agentName: 'agent_driver',
     canonicalModel: 'anthropic/claude-sonnet-4-6',
     sensitivity: 'public',
@@ -140,10 +141,17 @@ test('a response-ready Run enters delivery-only handling and never calls execute
   const store = new SqliteWorkStore(':memory:', { now: () => clock });
   t.after(() => store.close());
   const admission = await submitRun(store, submission('delivery'));
+  const executionClaim = await store.claimNextInteractiveRun({
+    ownerId: 'driver_delivery_execution',
+    authorityEpoch: 1,
+    leaseDurationMs: 30_000,
+    claimedAt: ++clock,
+  });
   const lifecycle = new ShadowWorkLifecycle({
     store,
     runId: admission.run.id,
-    attemptNumber: 1,
+    attemptNumber: executionClaim!.fencingToken,
+    fencingToken: executionClaim!.fencingToken,
     agentName: 'agent_driver',
     canonicalModel: 'anthropic/claude-sonnet-4-6',
     sensitivity: 'public',
@@ -162,6 +170,14 @@ test('a response-ready Run enters delivery-only handling and never calls execute
     attemptId,
     outcome: 'failed',
     safeFailureCode: 'fixture_delivery_failed',
+  });
+  await store.releaseRunLease({
+    runId: admission.run.id,
+    ownerId: executionClaim!.leaseOwner,
+    fencingToken: executionClaim!.fencingToken,
+    outcome: 'requeue',
+    reasonCode: 'fixture_delivery_retry',
+    releasedAt: ++clock,
   });
 
   let executions = 0;

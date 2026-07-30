@@ -1,7 +1,8 @@
 import type { TurnProgress, TurnPullRequestProgress } from '../config/state-rpc.ts';
-import type { TurnJob } from './turn-job-types.ts';
+import type { SlackAgentExecutionContext, TurnJob } from './turn-job-types.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
 import type { StateDb } from '../state/state-db.ts';
+import type { RunExecutionAuthority } from '../work/types.ts';
 import { CLAIM_TTL_MS } from './state-limits.ts';
 import type { NormalizedSlackTurn } from './types.ts';
 import type { UsagePersistenceEvent } from '../usage/runtime-recorder.ts';
@@ -46,6 +47,7 @@ export interface PendingTurnJob {
   turn: NormalizedSlackTurn;
   assignment: ResolvedAssignment;
   runId?: string;
+  executionAuthority: RunExecutionAuthority;
   /** Deliveries already attempted (0 before the alarm has ever run it). */
   attempts: number;
   progress: TurnProgress;
@@ -58,6 +60,7 @@ interface TurnJobRow {
   turn_json: string;
   assignment_json: string;
   run_id?: string | null;
+  execution_authority: RunExecutionAuthority;
   attempts: number;
   progress_json: string;
 }
@@ -75,6 +78,7 @@ export class TurnJobStoreLogic {
         turn_json TEXT NOT NULL,
         assignment_json TEXT NOT NULL,
         run_id TEXT,
+        execution_authority TEXT NOT NULL DEFAULT 'legacy',
         attempts INTEGER NOT NULL DEFAULT 0,
         delivered INTEGER NOT NULL DEFAULT 0,
         status TEXT NOT NULL DEFAULT 'pending',
@@ -89,6 +93,19 @@ export class TurnJobStoreLogic {
     if (!columns.some((column) => column.name === 'run_id')) {
       db.exec('ALTER TABLE turn_jobs ADD COLUMN run_id TEXT');
     }
+    if (!columns.some((column) => column.name === 'execution_authority')) {
+      db.exec("ALTER TABLE turn_jobs ADD COLUMN execution_authority TEXT NOT NULL DEFAULT 'legacy'");
+    }
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS slack_agent_execution_contexts (
+        continuity_key TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL,
+        workspace_id TEXT NOT NULL,
+        channel_id TEXT NOT NULL,
+        thread_ts TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      )`,
+    );
   }
 
   /**
@@ -100,28 +117,36 @@ export class TurnJobStoreLogic {
     this.purgeExpired();
     const inserted = this.db.run(
       `INSERT OR IGNORE INTO turn_jobs (
-        id, evt_key, msg_key, turn_json, assignment_json, run_id,
+        id, evt_key, msg_key, turn_json, assignment_json, run_id, execution_authority,
         attempts, delivered, status, enqueued_at
-      ) VALUES (?, ?, ?, ?, ?, ?, 0, 0, 'pending', ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 'pending', ?)`,
       job.id,
       job.evtKey,
       job.msgKey,
       JSON.stringify(job.turn),
       JSON.stringify(job.assignment),
       job.runId ?? null,
+      job.executionAuthority ?? 'legacy',
       this.now(),
     );
     return inserted.changes === 1;
   }
 
   /** Undelivered jobs in enqueue order — the alarm's work list. */
-  listPending(limit = 100): PendingTurnJob[] {
+  listPending(
+    limit = 100,
+    executionAuthority: RunExecutionAuthority = 'legacy',
+  ): PendingTurnJob[] {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
       throw new Error('Turn job limit must be between 1 and 100.');
     }
     const rows = this.db.all(
-      `SELECT id, evt_key, msg_key, turn_json, assignment_json, run_id, attempts, progress_json
-       FROM turn_jobs WHERE delivered = 0 ORDER BY enqueued_at LIMIT ?`,
+      `SELECT id, evt_key, msg_key, turn_json, assignment_json, run_id,
+              execution_authority, attempts, progress_json
+       FROM turn_jobs
+       WHERE delivered = 0 AND execution_authority = ?
+       ORDER BY enqueued_at LIMIT ?`,
+      executionAuthority,
       limit,
     ) as unknown as TurnJobRow[];
     return rows.map((row) => ({
@@ -131,13 +156,68 @@ export class TurnJobStoreLogic {
       turn: JSON.parse(row.turn_json) as NormalizedSlackTurn,
       assignment: JSON.parse(row.assignment_json) as ResolvedAssignment,
       ...(row.run_id ? { runId: row.run_id } : {}),
+      executionAuthority: row.execution_authority,
       attempts: Number(row.attempts),
       progress: parseTurnProgress(row.progress_json),
     }));
   }
 
-  hasPending(): boolean {
-    return this.db.get('SELECT 1 AS pending FROM turn_jobs WHERE delivered = 0 LIMIT 1') !== undefined;
+  getPendingByRunId(runId: string): PendingTurnJob | undefined {
+    const row = this.db.get(
+      `SELECT id, evt_key, msg_key, turn_json, assignment_json, run_id,
+              execution_authority, attempts, progress_json
+       FROM turn_jobs
+       WHERE delivered = 0 AND execution_authority = 'ledger' AND run_id = ?
+       LIMIT 1`,
+      runId,
+    ) as unknown as TurnJobRow | undefined;
+    return row ? this.decodeRow(row) : undefined;
+  }
+
+  putAgentExecutionContext(input: SlackAgentExecutionContext): SlackAgentExecutionContext {
+    validateAgentExecutionContext(input);
+    this.purgeExpired();
+    this.db.run(
+      `INSERT OR IGNORE INTO slack_agent_execution_contexts (
+        continuity_key, run_id, workspace_id, channel_id, thread_ts, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?)`,
+      input.continuityKey,
+      input.runId,
+      input.workspaceId,
+      input.channelId,
+      input.threadTs,
+      input.createdAt,
+    );
+    const persisted = this.getAgentExecutionContext(input.continuityKey);
+    if (!persisted || !sameAgentExecutionContext(persisted, input)) {
+      throw new Error('Slack agent execution context identity belongs to another binding or Run.');
+    }
+    return persisted;
+  }
+
+  getAgentExecutionContext(continuityKey: string): SlackAgentExecutionContext | undefined {
+    const row = this.db.get(
+      `SELECT continuity_key, run_id, workspace_id, channel_id, thread_ts, created_at
+       FROM slack_agent_execution_contexts WHERE continuity_key = ?`,
+      continuityKey,
+    );
+    return row
+      ? {
+          continuityKey: String(row.continuity_key),
+          runId: String(row.run_id),
+          workspaceId: String(row.workspace_id),
+          channelId: String(row.channel_id),
+          threadTs: String(row.thread_ts),
+          createdAt: Number(row.created_at),
+        }
+      : undefined;
+  }
+
+  hasPending(executionAuthority: RunExecutionAuthority = 'legacy'): boolean {
+    return this.db.get(
+      'SELECT 1 AS pending FROM turn_jobs WHERE delivered = 0 AND execution_authority = ? LIMIT 1',
+      executionAuthority,
+    ) !== undefined;
   }
 
   /** Record that an attempt is being made (before running the turn). */
@@ -212,7 +292,60 @@ export class TurnJobStoreLogic {
 
   private purgeExpired(): void {
     this.db.run('DELETE FROM turn_jobs WHERE enqueued_at < ?', this.now() - TURN_JOB_TTL_MS);
+    this.db.run(
+      'DELETE FROM slack_agent_execution_contexts WHERE created_at < ?',
+      this.now() - TURN_JOB_TTL_MS,
+    );
   }
+
+  private decodeRow(row: TurnJobRow): PendingTurnJob {
+    return {
+      id: row.id,
+      evtKey: row.evt_key,
+      msgKey: row.msg_key,
+      turn: JSON.parse(row.turn_json) as NormalizedSlackTurn,
+      assignment: JSON.parse(row.assignment_json) as ResolvedAssignment,
+      ...(row.run_id ? { runId: row.run_id } : {}),
+      executionAuthority: row.execution_authority,
+      attempts: Number(row.attempts),
+      progress: parseTurnProgress(row.progress_json),
+    };
+  }
+}
+
+function validateAgentExecutionContext(input: SlackAgentExecutionContext): void {
+  if (!/^agent_[a-f0-9]{40}$/.test(input.continuityKey)) {
+    throw new Error('Slack agent continuity key is invalid.');
+  }
+  if (!/^run_[a-f0-9]{40}$/.test(input.runId)) {
+    throw new Error('Slack agent Run identity is invalid.');
+  }
+  for (const [label, value] of [
+    ['workspace', input.workspaceId],
+    ['channel', input.channelId],
+  ] as const) {
+    if (!/^[A-Za-z0-9_-]{2,80}$/.test(value)) {
+      throw new Error(`Slack agent ${label} identity is invalid.`);
+    }
+  }
+  if (!/^\d{1,20}\.\d{1,10}$/.test(input.threadTs)) {
+    throw new Error('Slack agent thread timestamp is invalid.');
+  }
+  if (!Number.isSafeInteger(input.createdAt) || input.createdAt < 0) {
+    throw new Error('Slack agent context creation time is invalid.');
+  }
+}
+
+function sameAgentExecutionContext(
+  left: SlackAgentExecutionContext,
+  right: SlackAgentExecutionContext,
+): boolean {
+  return left.continuityKey === right.continuityKey &&
+    left.runId === right.runId &&
+    left.workspaceId === right.workspaceId &&
+    left.channelId === right.channelId &&
+    left.threadTs === right.threadTs &&
+    left.createdAt === right.createdAt;
 }
 
 export function replayTextForTurnProgress(progress: TurnProgress): string | undefined {

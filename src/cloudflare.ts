@@ -76,6 +76,7 @@ import {
 } from './sandbox/progress.ts';
 import { SlackStateLogic } from './slack/claim-store.ts';
 import type { SlackCanonicalAdmissionInput } from './slack/claim-store.ts';
+import { createLedgerSlackRunHandler } from './slack/ledger-turn-driver.ts';
 import { resolveSlackCredentials } from './slack/credentials.ts';
 import { setObservedSlackStatus } from './slack/status-registry.ts';
 import {
@@ -613,6 +614,18 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     );
   }
 
+  async slackAgentExecutionContextPut(
+    input: Parameters<TagStateRpc['slackAgentExecutionContextPut']>[0],
+  ) {
+    return this.call((stores) => stores.turnJobs.putAgentExecutionContext(input));
+  }
+
+  async slackAgentExecutionContextGet(continuityKey: string) {
+    return this.call((stores) =>
+      stores.turnJobs.getAgentExecutionContext(continuityKey) ?? null,
+    );
+  }
+
   // ── operator settings ────────────────────────────────────────────────────
 
   async settingGet(key: string): Promise<StateRpcResult<string | null>> {
@@ -682,10 +695,9 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     }
     const result = this.call((stores) => {
       stores.work.purgeContent(at, 100);
-      return stores.turnJobs.listPending().length > 0;
+      return stores.turnJobs.hasPending('legacy') || stores.turnJobs.hasPending('ledger');
     });
     if (!result.ok) return result;
-    if (this.stores) await drainDarkLedgerRuns(this.stores.work);
     if (result.value && (await this.ctx.storage.getAlarm()) === null) {
       await this.ctx.storage.setAlarm(Date.now() + RELAY_BATCH_WINDOW_MS);
     }
@@ -750,28 +762,22 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     const stores = this.stores;
     const pending = stores.turnJobs.listPending(MAX_TURN_DRAIN_BATCH);
     if (pending.length === 0) {
-      await drainDarkLedgerRuns(stores.work);
+      const ledgerPending = stores.turnJobs.hasPending('ledger');
+      await drainLedgerRuns(
+        stores,
+        this.env as PlatformEnv,
+        ledgerPending ? await this.resolveAlarmClient(stores) : undefined,
+      );
+      if (stores.turnJobs.hasPending('ledger')) {
+        await this.ctx.storage.setAlarm(Date.now() + RELAY_RETRY_BACKOFF_MS);
+      }
       return;
     }
     // One client per alarm firing, resolved from THIS DO's LOCAL settings so
     // credential resolution never RPCs into this same object (a self-call while
     // the alarm holds the thread). runTurn takes it as an override.
     const client = await this.resolveAlarmClient(stores);
-    const usageStore: UsageStore = {
-      admitOperation: async (input) => stores.usage.admitOperation(input),
-      recordTerminal: async (input) => stores.usage.recordTerminal(input),
-      getOperation: async (operationId) => stores.usage.getOperation(operationId),
-      getOperationByRunId: async (runId) => stores.usage.getOperationByRunId(runId),
-      listOperations: async (query) => stores.usage.listOperations(query),
-      summarize: async (query) => stores.usage.summarize(query),
-      putCredential: async (input) => stores.usage.putCredential(input),
-      retireCredential: async (credentialRefId, version, retiredAt) =>
-        stores.usage.retireCredential(credentialRefId, version, retiredAt),
-      listCredentials: async (providerId) => stores.usage.listCredentials(providerId),
-      cleanupRetention: async (at) => stores.usage.cleanupRetention(at),
-      getRetentionStatus: async () => stores.usage.getRetentionStatus(),
-      listUsageAuditEvents: async (limit) => stores.usage.listUsageAuditEvents(limit),
-    };
+    const usageStore = localUsageStore(stores);
     let needsRetry = false;
     // The resolver's store contract is async; the DO's logic classes are sync.
     // A tiny async adapter bridges them for the fail-closed re-check below.
@@ -929,8 +935,8 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         }
       }),
     );
-    await drainDarkLedgerRuns(stores.work);
-    needsRetry ||= stores.turnJobs.hasPending();
+    await drainLedgerRuns(stores, this.env as PlatformEnv, client);
+    needsRetry ||= stores.turnJobs.hasPending('legacy') || stores.turnJobs.hasPending('ledger');
     if (needsRetry) {
       // Re-arm (do NOT throw) so this invocation returns normally and its
       // attempt-count writes commit; the next firing re-drives the leftover
@@ -947,15 +953,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
    * same Durable Object while the alarm is executing.
    */
   private async resolveAlarmClient(stores: TagStateStores): Promise<WebClient> {
-    const localSettings: SettingsStore = {
-      getSetting: async (key) => stores.settings.getSetting(key),
-      getSettings: async (keys) => stores.settings.getSettings(keys),
-      setSetting: async (key, value) => stores.settings.setSetting(key, value),
-      deleteSetting: async (key) => stores.settings.deleteSetting(key),
-      applySettingsPatch: async (patch) => stores.settings.applySettingsPatch(patch),
-      mergeSettingStringSet: async (key, values) =>
-        stores.settings.mergeSettingStringSet(key, values),
-    };
+    const localSettings = localSettingsStore(stores);
     const { botToken } = await resolveSlackCredentials(this.env as PlatformEnv, localSettings);
     return createSlackWebClient(botToken);
   }
@@ -1027,17 +1025,56 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
   }
 }
 
-async function drainDarkLedgerRuns(work: WorkStoreLogic): Promise<void> {
-  await new DurableRunDriver(work, {
-    ownerId: 'cloudflare_dark_run_driver',
+async function drainLedgerRuns(
+  stores: TagStateStores,
+  platformEnv: PlatformEnv,
+  client?: WebClient,
+): Promise<void> {
+  await new DurableRunDriver(stores.work, {
+    ownerId: 'cloudflare_ledger_run_driver',
     authorityEpoch: 1,
     leaseDurationMs: 30_000,
     maxClaims: 4,
     concurrency: 4,
-    // U7 is observational: current Slack admissions remain legacy-owned and
-    // this target-neutral lane performs no Flue call or external delivery.
-    handle: async () => ({ kind: 'requeue', reasonCode: 'dark_driver_observed' }),
+    handle: createLedgerSlackRunHandler({
+      work: stores.work,
+      turns: stores.turnJobs,
+      ...(client ? { client } : {}),
+      platformEnv,
+      settingsStore: localSettingsStore(stores),
+      usageStore: localUsageStore(stores),
+    }),
   }).drain();
+}
+
+function localSettingsStore(stores: TagStateStores): SettingsStore {
+  return {
+    getSetting: async (key) => stores.settings.getSetting(key),
+    getSettings: async (keys) => stores.settings.getSettings(keys),
+    setSetting: async (key, value) => stores.settings.setSetting(key, value),
+    deleteSetting: async (key) => stores.settings.deleteSetting(key),
+    applySettingsPatch: async (patch) => stores.settings.applySettingsPatch(patch),
+    mergeSettingStringSet: async (key, values) =>
+      stores.settings.mergeSettingStringSet(key, values),
+  };
+}
+
+function localUsageStore(stores: TagStateStores): UsageStore {
+  return {
+    admitOperation: async (input) => stores.usage.admitOperation(input),
+    recordTerminal: async (input) => stores.usage.recordTerminal(input),
+    getOperation: async (operationId) => stores.usage.getOperation(operationId),
+    getOperationByRunId: async (runId) => stores.usage.getOperationByRunId(runId),
+    listOperations: async (query) => stores.usage.listOperations(query),
+    summarize: async (query) => stores.usage.summarize(query),
+    putCredential: async (input) => stores.usage.putCredential(input),
+    retireCredential: async (credentialRefId, version, retiredAt) =>
+      stores.usage.retireCredential(credentialRefId, version, retiredAt),
+    listCredentials: async (providerId) => stores.usage.listCredentials(providerId),
+    cleanupRetention: async (at) => stores.usage.cleanupRetention(at),
+    getRetentionStatus: async () => stores.usage.getRetentionStatus(),
+    listUsageAuditEvents: async (limit) => stores.usage.listUsageAuditEvents(limit),
+  };
 }
 
 function rpcError(

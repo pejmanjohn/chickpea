@@ -5,6 +5,7 @@ import {
   type PlatformEnv,
 } from '../config/state-backend.ts';
 import { DurableRunDriver } from '../work/driver.ts';
+import { createLedgerSlackRunHandler } from './ledger-turn-driver.ts';
 import { runTurn, sanitizeError } from './run-turn.ts';
 
 const NODE_RECONCILE_INTERVAL_MS = 30_000;
@@ -13,8 +14,8 @@ let started = false;
 let draining: Promise<void> | undefined;
 
 /** Start the independent, unref'ed recovery heartbeat for compatibility jobs
- * and the channel-neutral ledger driver. Ledger execution remains dark until
- * future admissions are explicitly assigned ledger authority. */
+ * and the channel-neutral ledger driver. Ledger execution remains default-off
+ * until an exact workspace/channel canary assigns future admissions. */
 export function startNodeTurnRelay(): void {
   if (started || isCloudflareTarget()) return;
   started = true;
@@ -70,20 +71,35 @@ async function drain(env?: PlatformEnv): Promise<void> {
       }
     }));
   }
-  await drainDarkLedgerRuns(env);
+  await drainLedgerRuns(env);
 }
 
-async function drainDarkLedgerRuns(env?: PlatformEnv): Promise<void> {
-  const driver = new DurableRunDriver(getWorkStore(env), {
-    ownerId: 'node_dark_run_driver',
+async function drainLedgerRuns(env?: PlatformEnv): Promise<void> {
+  const work = getWorkStore(env);
+  const state = getSlackStateStore(env);
+  if (
+    !state.getPendingTurnByRunId ||
+    !state.recordTurnAttempt ||
+    !state.markTurnDelivered ||
+    !state.markTurnError
+  ) return;
+  const driver = new DurableRunDriver(work, {
+    ownerId: 'node_ledger_run_driver',
     authorityEpoch: 1,
     leaseDurationMs: 30_000,
     maxClaims: 4,
     concurrency: 4,
-    // U7 proves the durable lane without changing product execution. Current
-    // adapters admit legacy authority, so this handler is reachable only by
-    // explicit synthetic/future ledger admissions and performs no delivery.
-    handle: async () => ({ kind: 'requeue', reasonCode: 'dark_driver_observed' }),
+    handle: createLedgerSlackRunHandler({
+      work,
+      turns: {
+        getPendingByRunId: state.getPendingTurnByRunId.bind(state),
+        putAgentExecutionContext: state.putAgentExecutionContext.bind(state),
+        recordAttempt: state.recordTurnAttempt.bind(state),
+        markDelivered: state.markTurnDelivered.bind(state),
+        markError: state.markTurnError.bind(state),
+      },
+      ...(env ? { platformEnv: env } : {}),
+    }),
   });
   await driver.drain();
 }

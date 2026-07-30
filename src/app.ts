@@ -122,8 +122,8 @@ instrument({
 
 const app = new Hono();
 // Starts the shared startup/periodic wake for durable compatibility TurnJobs
-// and ledger-authoritative interactive Runs. The ledger handler remains dark
-// until U8 assigns future admissions to it.
+// and ledger-authoritative interactive Runs. Ledger admission stays default-off
+// and exact-channel scoped by SLACK_TAG_LEDGER_CANARY_CHANNELS.
 startNodeTurnRelay();
 app.route('/', createAdminRoutes());
 app.route('/', flue());

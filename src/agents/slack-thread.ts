@@ -60,6 +60,7 @@ import {
   getAgentSnapshotStore,
   getConfigStore,
   getSettingsStore,
+  getSlackStateStore,
   type PlatformEnv,
 } from '../config/state-backend.ts';
 import type { ApiConnectionConfig, RepositoryGrant, SkillConfig } from '../config/types.ts';
@@ -94,11 +95,7 @@ import { createWorkspaceArtifactCapability } from '../sandbox/artifact-tool.ts';
 import { workspaceSkillForSandbox } from '../sandbox/workspace-skill.ts';
 import { INTERNAL_AGENT_TOKEN_HEADER, isValidInternalAgentToken } from '../slack/internal-auth.ts';
 import { publishActivityStatus } from '../slack/activity-publisher.ts';
-import {
-  baseSlackThreadKey,
-  parseSlackThreadKey,
-  slackArtifactThreadTs,
-} from '../slack/thread-key.ts';
+import { parseSlackThreadKey } from '../slack/thread-key.ts';
 import { getClient } from '../slack/run-turn.ts';
 import { WebClientPresenter } from '../slack/web-client-presenter.ts';
 
@@ -498,13 +495,11 @@ export async function createSlackAgentRuntime(
   const store = getConfigStore(env);
   const settingsStore = getSettingsStore(env);
   const stores = { agents: store, assignments: store };
-  const parsed = input.workspaceId && input.channelId
-    ? { workspaceId: input.workspaceId, channelId: input.channelId }
-    : parseSlackThreadKey(id);
-  const { workspaceId, channelId } = parsed;
+  const adapterContext = await resolveSlackAgentAdapterContext(input, env);
+  const { workspaceId, channelId } = adapterContext;
   const artifactThreadTs = input.artifactThreadTs === null
     ? undefined
-    : (input.artifactThreadTs ?? slackArtifactThreadTs(id));
+    : (input.artifactThreadTs ?? adapterContext.threadTs);
   const resolve = () => resolveEffectiveSlackConfig(workspaceId, channelId, stores);
 
   // Channel threads are frozen (the channel handler wrote the snapshot at the
@@ -518,7 +513,7 @@ export async function createSlackAgentRuntime(
       ? await resolve()
       : await getOrCreateSnapshot(
         getAgentSnapshotStore(env),
-        baseSlackThreadKey(id),
+        adapterContext.threadKey,
         resolve,
       )
   );
@@ -755,6 +750,47 @@ export async function createSlackAgentRuntime(
     tools,
     sandbox,
     ...(skills.length > 0 ? { skills } : {}),
+  };
+}
+
+interface SlackAgentAdapterContext {
+  workspaceId: string;
+  channelId: string;
+  threadTs: string;
+  threadKey: string;
+}
+
+async function resolveSlackAgentAdapterContext(
+  input: SlackAgentRuntimeInput,
+  env: PlatformEnv | undefined,
+): Promise<SlackAgentAdapterContext> {
+  let parsed: { workspaceId: string; channelId: string; threadTs: string } | undefined;
+  try {
+    parsed = parseSlackThreadKey(input.id);
+  } catch {
+    const persisted = await getSlackStateStore(env).getAgentExecutionContext(input.id);
+    if (!persisted) {
+      throw new Error('Opaque agent execution context is unavailable.');
+    }
+    parsed = {
+      workspaceId: persisted.workspaceId,
+      channelId: persisted.channelId,
+      threadTs: persisted.threadTs,
+    };
+  }
+  const workspaceId = input.workspaceId ?? parsed.workspaceId;
+  const channelId = input.channelId ?? parsed.channelId;
+  if (
+    (input.workspaceId && input.workspaceId !== parsed.workspaceId) ||
+    (input.channelId && input.channelId !== parsed.channelId)
+  ) {
+    throw new Error('Agent execution context does not match the requested Slack binding.');
+  }
+  return {
+    workspaceId,
+    channelId,
+    threadTs: parsed.threadTs,
+    threadKey: `${workspaceId}:${channelId}:${parsed.threadTs}`,
   };
 }
 

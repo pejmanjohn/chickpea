@@ -24,6 +24,8 @@ export interface ShadowWorkLifecycleOptions {
   flueInstanceRef?: string;
   now?: () => number;
   onGap?: (stage: ShadowLifecycleStage) => void;
+  /** Legacy observes gaps; ledger authority must fail closed on every gap. */
+  mode?: 'observe' | 'enforce';
 }
 
 export type ShadowLifecycleStage =
@@ -43,9 +45,9 @@ export function shadowRunExecutionId(runId: RunId, attemptNumber: number): RunEx
 }
 
 /**
- * Best-effort observer for the legacy-authoritative execution lane. Every
- * store mutation is fenced and atomic, while failures are reduced to a safe
- * stage marker so ledger availability cannot change Slack behavior.
+ * Fenced lifecycle shared by both authority lanes. Legacy runs use observational
+ * mode so ledger availability cannot change Slack behavior; ledger-owned Runs
+ * use enforcement mode and fail closed before crossing an unrecorded boundary.
  */
 export class ShadowWorkLifecycle {
   readonly executionId: RunExecutionId;
@@ -78,6 +80,9 @@ export class ShadowWorkLifecycle {
     if (!preparedContent?.body) {
       this.usable = false;
       this.options.onGap?.('prepare_input');
+      if (this.options.mode === 'enforce') {
+        throw new Error('Ledger prepared input could not be read after persistence.');
+      }
       return undefined;
     }
     if (!await this.observe('create_execution', () => this.options.store.createRunExecution({
@@ -225,9 +230,10 @@ export class ShadowWorkLifecycle {
     try {
       await write();
       return true;
-    } catch {
+    } catch (error) {
       this.usable = false;
       this.options.onGap?.(stage);
+      if (this.options.mode === 'enforce') throw error;
       console.warn(`[work] shadow lifecycle gap at ${stage}; legacy execution will continue`);
       return false;
     }

@@ -8,6 +8,7 @@ import {
   type PendingTurnJob,
 } from './turn-jobs.ts';
 import type { TurnJob } from './turn-job-types.ts';
+import type { SlackAgentExecutionContext } from './turn-job-types.ts';
 import { CLAIM_TTL_MS, THREAD_TTL_MS } from './state-limits.ts';
 
 export { CLAIM_TTL_MS, THREAD_TTL_MS } from './state-limits.ts';
@@ -59,8 +60,15 @@ export interface SlackThreadRegistry {
 /** The combined claims + thread-registry surface the Slack channel consumes. */
 export interface SlackStateStore extends SlackClaimStore, SlackThreadRegistry {
   admitCanonical(input: SlackCanonicalAdmissionInput): Promise<SlackCanonicalAdmissionResult>;
+  putAgentExecutionContext(
+    input: SlackAgentExecutionContext,
+  ): Promise<SlackAgentExecutionContext>;
+  getAgentExecutionContext(
+    continuityKey: string,
+  ): Promise<SlackAgentExecutionContext | undefined>;
   /** Node-only durable legacy relay operations; Cloudflare owns these in its DO alarm. */
   listPendingTurns?(): Promise<PendingTurnJob[]>;
+  getPendingTurnByRunId?(runId: string): Promise<PendingTurnJob | undefined>;
   recordTurnAttempt?(id: string, attempts: number): Promise<void>;
   markTurnDelivered?(id: string): Promise<void>;
   markTurnError?(id: string): Promise<void>;
@@ -141,7 +149,16 @@ export class SlackStateLogic {
       }
       const admission = work.admitShadowRunInTransaction(input.admission);
       this.start(input.threadKey);
-      if (input.turnJob && turnJobs) turnJobs.enqueue(input.turnJob);
+      if (input.turnJob && turnJobs) {
+        const jobAuthority = input.turnJob.executionAuthority ?? 'legacy';
+        if (
+          input.turnJob.runId !== admission.run.id ||
+          jobAuthority !== admission.run.executionAuthority
+        ) {
+          throw new Error('Turn job authority does not match its canonical Run.');
+        }
+        turnJobs.enqueue(input.turnJob);
+      }
       return { claimed: true, admission };
     });
   }
@@ -193,8 +210,20 @@ export class SqliteSlackStateStore implements SlackStateStore {
     return this.logic.admitCanonical(input, this.work, this.turnJobs);
   }
 
+  async putAgentExecutionContext(input: SlackAgentExecutionContext) {
+    return this.turnJobs.putAgentExecutionContext(input);
+  }
+
+  async getAgentExecutionContext(continuityKey: string) {
+    return this.turnJobs.getAgentExecutionContext(continuityKey);
+  }
+
   async listPendingTurns() {
     return this.turnJobs.listPending(MAX_TURN_DRAIN_BATCH);
+  }
+
+  async getPendingTurnByRunId(runId: string) {
+    return this.turnJobs.getPendingByRunId(runId);
   }
 
   async recordTurnAttempt(id: string, attempts: number) {
