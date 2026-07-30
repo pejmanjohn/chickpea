@@ -148,6 +148,14 @@ test('Work state proxy preserves clone-safe request and response shapes', async 
     });
     assert.equal(delivered.status, 'settled');
     assert.equal((await proxy.getRunExecution(execution.id))?.flueSubmissionRef, 'fluesubmission_rpc');
+    const runPage = await proxy.listRuns({ limit: 10, kind: 'interactive', status: 'settled' });
+    assert.equal(runPage.items.length, 1);
+    assert.equal(runPage.items[0]?.run.id, input.run.id);
+    assert.equal(runPage.items[0]?.work.id, workId);
+    assert.equal(runPage.items[0]?.binding.id, bindingId);
+    assert.equal(runPage.nextCursor, null);
+    const executions = await proxy.listRunExecutions(input.run.id);
+    assert.deepEqual(executions.map((item) => item.id), [execution.id]);
     assert.deepEqual(await proxy.verifyIntegrity(), {
       foreignKeysEnabled: true,
       foreignKeyViolationCount: 0,

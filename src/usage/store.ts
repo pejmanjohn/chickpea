@@ -264,6 +264,18 @@ export class UsageStoreLogic {
     };
   }
 
+  getOperationByRunId(runId: string): UsageOperationDetail | undefined {
+    if (!/^[A-Za-z0-9_-]{1,200}$/.test(runId)) {
+      throw new UsageStateError('usage_invalid_input', 'Run identifier is invalid.');
+    }
+    const row = this.db.get(
+      `SELECT operation_id FROM usage_operations WHERE run_id = ?
+       ORDER BY started_at DESC, operation_id DESC LIMIT 1`,
+      runId,
+    );
+    return row ? this.getOperation(String(row.operation_id)) : undefined;
+  }
+
   listOperations(rawQuery: UsageQuery): UsageOperationPage {
     const query = normalizeUsageQuery(rawQuery);
     const where = usageWhere(query, true);
@@ -567,6 +579,8 @@ export class UsageStoreLogic {
         return { kind: 'detail', detail: this.recordTerminal(request.input) };
       case 'get_operation':
         return { kind: 'detail', detail: this.getOperation(request.operationId) ?? null };
+      case 'get_operation_by_run':
+        return { kind: 'detail', detail: this.getOperationByRunId(request.runId) ?? null };
       case 'list_operations':
         return { kind: 'operation_page', page: this.listOperations(request.query) };
       case 'summarize':
@@ -849,6 +863,10 @@ export class SqliteUsageStore implements UsageStore {
 
   async getOperation(operationId: string): Promise<UsageOperationDetail | undefined> {
     return this.logic.getOperation(operationId);
+  }
+
+  async getOperationByRunId(runId: string): Promise<UsageOperationDetail | undefined> {
+    return this.logic.getOperationByRunId(runId);
   }
 
   async listOperations(query: UsageQuery): Promise<UsageOperationPage> {

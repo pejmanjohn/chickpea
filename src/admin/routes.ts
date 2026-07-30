@@ -9,6 +9,7 @@ import { renderAdminLogin, renderAdminPage } from './page.ts';
 import { createMemoryAdminApi } from './memory-api.ts';
 import { createRoutineAdminApi } from './routines-api.ts';
 import { createUsageAdminApi } from './usage-api.ts';
+import { createWorkAdminApi } from './work-api.ts';
 // Build-time JSON import: the committed manifest is the single source of the
 // Slack app identity; the wizard deep-link below substitutes the request host
 // so users never hand-edit a request_url.
@@ -148,6 +149,7 @@ import {
   getRoutineStore,
   getSettingsStore,
   getUsageStore,
+  getWorkStore,
   isCloudflareTarget,
   type PlatformEnv,
 } from '../config/state-backend.ts';
@@ -155,6 +157,7 @@ import type { ConfigStore } from '../config/store.ts';
 import type { MemoryStateStore } from '../memory/types.ts';
 import type { RoutineStore } from '../routines/types.ts';
 import type { UsageStore } from '../usage/types.ts';
+import type { WorkStore } from '../work/types.ts';
 import {
   cancelOpenAiSubscriptionAuthorization,
   confirmOpenAiSubscriptionAccountChange,
@@ -225,6 +228,7 @@ interface AdminRoutesOptions {
   memory?: MemoryStateStore | undefined;
   routines?: RoutineStore | undefined;
   usage?: UsageStore | undefined;
+  work?: WorkStore | undefined;
   usageAdminUi?: boolean | undefined;
   adminToken?: string | undefined;
   knownProviders?: ReadonlySet<string> | undefined;
@@ -750,6 +754,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     options.routines ?? getRoutineStore(c.env as PlatformEnv | undefined);
   const usage = (c: Context) =>
     options.usage ?? getUsageStore(c.env as PlatformEnv | undefined);
+  const work = (c: Context) =>
+    options.work ?? getWorkStore(c.env as PlatformEnv | undefined);
   const usageAdminUi = (c: Context): boolean => {
     if (options.usageAdminUi !== undefined) return options.usageAdminUi;
     const platformValue = (c.env as PlatformEnv | undefined)?.USAGE_ADMIN_UI;
@@ -1263,8 +1269,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     store: memory,
     adminSecret: () => adminToken() ?? '',
   }));
-  app.route('/admin/api', createRoutineAdminApi({ store: routines, usage }));
-  app.route('/admin/api', createUsageAdminApi({ store: usage }));
+  app.route('/admin/api', createRoutineAdminApi({ store: routines, usage, work }));
+  app.route('/admin/api', createUsageAdminApi({ store: usage, work }));
+  app.route('/admin/api', createWorkAdminApi({ store: work, usage }));
 
   app.get('/admin/api/agents', async (c) => {
     const platformEnv = c.env as PlatformEnv | undefined;

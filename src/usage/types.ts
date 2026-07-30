@@ -264,6 +264,7 @@ export type UsageRpcRequest =
   | { kind: 'admit_operation'; input: AdmitUsageOperationInput }
   | { kind: 'record_terminal'; input: RecordUsageTerminalInput }
   | { kind: 'get_operation'; operationId: string }
+  | { kind: 'get_operation_by_run'; runId: string }
   | { kind: 'list_operations'; query: UsageQuery }
   | { kind: 'summarize'; query: UsageQuery }
   | { kind: 'put_credential'; input: PutModelCredentialInput }
@@ -288,6 +289,7 @@ export interface UsageStore {
   admitOperation(input: AdmitUsageOperationInput): Promise<UsageOperation>;
   recordTerminal(input: RecordUsageTerminalInput): Promise<UsageOperationDetail>;
   getOperation(operationId: string): Promise<UsageOperationDetail | undefined>;
+  getOperationByRunId(runId: string): Promise<UsageOperationDetail | undefined>;
   listOperations(query: UsageQuery): Promise<UsageOperationPage>;
   summarize(query: UsageQuery): Promise<UsageSummary>;
   putCredential(input: PutModelCredentialInput): Promise<ModelCredentialRecord>;

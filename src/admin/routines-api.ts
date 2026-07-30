@@ -17,6 +17,7 @@ import {
   type RoutineStore,
 } from '../routines/types.ts';
 import type { UsageStore } from '../usage/types.ts';
+import type { WorkStore } from '../work/types.ts';
 
 interface RoutineAdminApiOptions {
   store: (c: Context) => RoutineStore;
@@ -24,6 +25,7 @@ interface RoutineAdminApiOptions {
   id?: () => string;
   capability?: (c: Context) => RoutineCapability;
   usage?: (c: Context) => UsageStore;
+  work?: (c: Context) => WorkStore;
 }
 
 const opaqueId = v.pipe(v.string(), v.regex(/^[A-Za-z0-9_-]{1,200}$/));
@@ -59,7 +61,12 @@ export function createRoutineAdminApi(options: RoutineAdminApiOptions): Hono {
         limit,
       });
       return c.json({
-        routines: page.routines.map(routineSummary),
+        routines: await Promise.all(page.routines.map(async (routine) => {
+          const access = await routineAccess(options.work?.(c), routine);
+          return access === 'public'
+            ? publicRoutineSummary(routine)
+            : redactedRoutineSummary(routine, access);
+        })),
         nextCursor: page.nextCursor === null ? null : String(page.nextCursor),
         capability: capabilityFor(c, options),
         limits: routineOperatorLimits(),
@@ -102,19 +109,15 @@ export function createRoutineAdminApi(options: RoutineAdminApiOptions): Hono {
         limit: 500,
       });
       const usage = options.usage?.(c);
+      const access = await routineAccess(options.work?.(c), routine);
+      const isPublic = access === 'public';
       return c.json({
-        routine: routineDetail(routine),
-        runs: await Promise.all(runs.map((run) => runDetail(run, usage))),
-        revisions: revisions.map((revision) => ({
-          routineId: revision.routineId,
-          version: revision.version,
-          definition: revision.definition,
-          definitionHash: revision.definitionHash,
-          actorId: revision.actorId,
-          actorClass: revision.actorClass,
-          provenance: revision.provenance,
-          createdAt: revision.createdAt,
-        })),
+        projection: isPublic ? 'public' : 'redacted',
+        routine: isPublic ? publicRoutineDetail(routine) : redactedRoutineDetail(routine, access),
+        runs: await Promise.all(runs.map((run) => runDetail(run, usage, isPublic))),
+        revisions: revisions.map((revision) => isPublic
+          ? publicRoutineRevision(revision)
+          : redactedRoutineRevision(revision)),
         events: events.map(safeAuditEvent),
         capability: capabilityFor(c, options),
         limits: routineOperatorLimits(),
@@ -128,7 +131,14 @@ export function createRoutineAdminApi(options: RoutineAdminApiOptions): Hono {
     try {
       const run = await options.store(c).getRun(parseId(c.req.param('runId')));
       if (!run) return c.json({ error: 'routine_run_not_found' }, 404);
-      return c.json({ run: await runDetail(run, options.usage?.(c)) });
+      const routine = await options.store(c).getRoutine(run.routineId);
+      const isPublic = routine
+        ? await routineAccess(options.work?.(c), routine) === 'public'
+        : false;
+      return c.json({
+        projection: isPublic ? 'public' : 'redacted',
+        run: await runDetail(run, options.usage?.(c), isPublic),
+      });
     } catch (error) {
       return routineError(c, error);
     }
@@ -170,7 +180,13 @@ export function createRoutineAdminApi(options: RoutineAdminApiOptions): Hono {
           previewHash: confirmation.previewHash,
           idempotencyKey: `admin:routine:delete:${idempotencyKey}`,
         });
-        return c.json({ routine: routineDetail(deleted), irreversible: true });
+        const access = await routineAccess(options.work?.(c), deleted);
+        const isPublic = access === 'public';
+        return c.json({
+          projection: isPublic ? 'public' : 'redacted',
+          routine: isPublic ? publicRoutineDetail(deleted) : redactedRoutineDetail(deleted, access),
+          irreversible: true,
+        });
       }
       const updated = await service.control({
         routineId,
@@ -181,7 +197,12 @@ export function createRoutineAdminApi(options: RoutineAdminApiOptions): Hono {
         reasonCode: 'admin_control',
         idempotencyKey: `admin:routine:${parsed.output.action}:${idempotencyKey}`,
       });
-      return c.json({ routine: routineDetail(updated) });
+      const access = await routineAccess(options.work?.(c), updated);
+      const isPublic = access === 'public';
+      return c.json({
+        projection: isPublic ? 'public' : 'redacted',
+        routine: isPublic ? publicRoutineDetail(updated) : redactedRoutineDetail(updated, access),
+      });
     } catch (error) {
       return routineError(c, error);
     }
@@ -190,14 +211,14 @@ export function createRoutineAdminApi(options: RoutineAdminApiOptions): Hono {
   return app;
 }
 
-function routineSummary(routine: RoutineDefinition): Record<string, unknown> {
+function routineSafeIdentity(routine: RoutineDefinition): Record<string, unknown> {
   return {
     id: routine.id,
+    workId: routine.workId ?? null,
+    bindingId: routine.bindingId ?? null,
     workspaceId: routine.workspaceId,
     channelId: routine.channelId,
     creatorUserId: routine.creatorUserId,
-    name: routine.name,
-    description: routine.description,
     state: routine.deletedAt !== null ? 'deleted' : routine.state,
     version: routine.version,
     triggerKind: routine.triggerKind,
@@ -213,9 +234,29 @@ function routineSummary(routine: RoutineDefinition): Record<string, unknown> {
   };
 }
 
-function routineDetail(routine: RoutineDefinition): Record<string, unknown> {
+function publicRoutineSummary(routine: RoutineDefinition): Record<string, unknown> {
   return {
-    ...routineSummary(routine),
+    ...routineSafeIdentity(routine),
+    name: routine.name,
+    description: routine.description,
+  };
+}
+
+function redactedRoutineSummary(
+  routine: RoutineDefinition,
+  access: Exclude<RoutineContentAccess, 'public'>,
+): Record<string, unknown> {
+  return {
+    ...routineSafeIdentity(routine),
+    name: null,
+    description: null,
+    contentAccess: access,
+  };
+}
+
+function publicRoutineDetail(routine: RoutineDefinition): Record<string, unknown> {
+  return {
+    ...publicRoutineSummary(routine),
     taskText: routine.deletedAt === null ? routine.taskText : null,
     triggerKind: routine.triggerKind,
     scheduleJson: routine.scheduleJson,
@@ -229,9 +270,58 @@ function routineDetail(routine: RoutineDefinition): Record<string, unknown> {
   };
 }
 
+function redactedRoutineDetail(
+  routine: RoutineDefinition,
+  access: Exclude<RoutineContentAccess, 'public'>,
+): Record<string, unknown> {
+  return {
+    ...redactedRoutineSummary(routine, access),
+    taskText: null,
+    scheduleJson: routine.scheduleJson,
+    authorityMode: routine.authorityMode,
+    projectedDailyStarts: routine.projectedDailyStarts,
+    pausedAt: routine.pausedAt,
+    pausedReason: routine.pausedReason,
+    disabledAt: routine.disabledAt,
+    disabledReason: routine.disabledReason,
+    deletedAt: routine.deletedAt,
+  };
+}
+
+function publicRoutineRevision(
+  revision: Awaited<ReturnType<RoutineStore['listRevisions']>>[number],
+): Record<string, unknown> {
+  return {
+    routineId: revision.routineId,
+    version: revision.version,
+    definition: revision.definition,
+    definitionHash: revision.definitionHash,
+    actorId: revision.actorId,
+    actorClass: revision.actorClass,
+    provenance: revision.provenance,
+    createdAt: revision.createdAt,
+  };
+}
+
+function redactedRoutineRevision(
+  revision: Awaited<ReturnType<RoutineStore['listRevisions']>>[number],
+): Record<string, unknown> {
+  return {
+    routineId: revision.routineId,
+    version: revision.version,
+    definition: null,
+    definitionHash: revision.definitionHash,
+    actorId: revision.actorId,
+    actorClass: revision.actorClass,
+    provenance: null,
+    createdAt: revision.createdAt,
+  };
+}
+
 async function runDetail(
   run: RoutineRun,
   usageStore?: UsageStore,
+  publicContent = false,
 ): Promise<Record<string, unknown>> {
   const operationId = run.usageLedgerOperationId ?? null;
   const ledger = operationId && usageStore
@@ -239,6 +329,8 @@ async function runDetail(
     : undefined;
   return {
     id: run.id,
+    canonicalRunId: run.canonicalRunId ?? null,
+    sessionDeepLink: run.canonicalRunId ? `/admin/sessions/${encodeURIComponent(run.canonicalRunId)}` : null,
     routineId: run.routineId,
     routineVersion: run.routineVersion,
     scheduledFor: run.scheduledFor,
@@ -246,7 +338,7 @@ async function runDetail(
     requestedBy: run.requestedBy,
     status: run.status,
     failureClass: run.failureClass,
-    publicError: run.publicError,
+    publicError: publicContent ? run.publicError : null,
     queuedAt: run.queuedAt,
     admittedAt: run.admittedAt,
     startedAt: run.startedAt,
@@ -266,7 +358,7 @@ async function runDetail(
       run.inputTokens !== null || run.outputTokens !== null ? 'partial' : 'not_reported'
     ),
     usage: ledger
-      ? { source: 'usage_ledger', available: true, ...ledger }
+      ? { source: 'usage_ledger', available: true, ...safeRoutineUsage(ledger, publicContent) }
       : operationId
         ? {
             source: 'usage_ledger',
@@ -293,6 +385,89 @@ async function runDetail(
     flueRunId: run.flueRunId,
     traceId: run.traceId,
   };
+}
+
+function safeRoutineUsage(
+  detail: NonNullable<Awaited<ReturnType<UsageStore['getOperation']>>>,
+  publicLabels: boolean,
+): Record<string, unknown> {
+  const operation = detail.operation;
+  return {
+    operation: {
+      operationId: operation.operationId,
+      runId: operation.runId ?? null,
+      operationKind: operation.operationKind,
+      sourceId: operation.sourceId,
+      status: operation.status,
+      startedAt: operation.startedAt,
+      finishedAt: operation.finishedAt,
+      installationId: operation.installationId,
+      workspaceId: operation.workspaceId,
+      profileId: operation.profileId,
+      profileLabel: publicLabels ? operation.profileLabel : null,
+      channelId: operation.channelId,
+      channelLabel: publicLabels ? operation.channelLabel : null,
+      conversationKind: operation.conversationKind,
+      routineId: operation.routineId,
+      routineLabel: publicLabels ? operation.routineLabel : null,
+      routineRunId: operation.routineRunId,
+      requestedProvider: operation.requestedProvider,
+      requestedModel: operation.requestedModel,
+      coverage: operation.coverage,
+      telemetrySchemaVersion: operation.telemetrySchemaVersion,
+      createdAt: operation.createdAt,
+      updatedAt: operation.updatedAt,
+    },
+    measurements: detail.measurements.map((measurement) => ({
+      executionId: measurement.executionId,
+      runExecutionId: measurement.runExecutionId ?? null,
+      operationId: measurement.operationId,
+      operationStatus: measurement.operationStatus,
+      observedAt: measurement.observedAt,
+      providerRoute: measurement.providerRoute,
+      requestedProvider: measurement.requestedProvider,
+      requestedModel: measurement.requestedModel,
+      returnedProvider: measurement.returnedProvider,
+      returnedModel: measurement.returnedModel,
+      usageCompleteness: measurement.usageCompleteness,
+      inputTokens: measurement.inputTokens,
+      outputTokens: measurement.outputTokens,
+      totalTokens: measurement.totalTokens,
+      usageUnknownReason: measurement.usageUnknownReason,
+      estimateCompleteness: measurement.estimateCompleteness,
+      estimateAmountMicros: measurement.estimateAmountMicros,
+      estimateCurrency: measurement.estimateCurrency,
+      priceVersionId: measurement.priceVersionId,
+      priceUnknownReason: measurement.priceUnknownReason,
+      recordedAt: measurement.recordedAt,
+    })),
+  };
+}
+
+type RoutineContentAccess = 'public' | 'private' | 'authorization_unknown';
+
+async function routineAccess(
+  store: WorkStore | undefined,
+  routine: RoutineDefinition,
+): Promise<RoutineContentAccess> {
+  if (!store || !routine.workId || !routine.bindingId) return 'authorization_unknown';
+  try {
+    const [work, binding] = await Promise.all([
+      store.getWork(routine.workId as Parameters<WorkStore['getWork']>[0]),
+      store.getBinding(routine.bindingId as Parameters<WorkStore['getBinding']>[0]),
+    ]);
+    if (!work || !binding || binding.workId !== work.id ||
+        work.id !== routine.workId || binding.id !== routine.bindingId) {
+      return 'authorization_unknown';
+    }
+    if (work.maximumSensitivity === 'public' && binding.sourceVisibility === 'public') {
+      return 'public';
+    }
+    if (binding.sourceVisibility === 'private') return 'private';
+    return 'authorization_unknown';
+  } catch {
+    return 'authorization_unknown';
+  }
 }
 
 function safeAuditEvent(event: Awaited<ReturnType<RoutineStore['listAuditEvents']>>[number]): Record<string, unknown> {

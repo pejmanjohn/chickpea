@@ -115,6 +115,9 @@ const FOCUSED_TESTS = [
   'tests/work-state-rpc.test.ts',
   'tests/routine-store.test.ts',
   'tests/usage-store-contract.test.ts',
+  'tests/admin-work-routes.test.ts',
+  'tests/admin-scheduled-work-routes.test.ts',
+  'tests/admin-usage-routes.test.ts',
 ];
 
 function run(label, command, args) {

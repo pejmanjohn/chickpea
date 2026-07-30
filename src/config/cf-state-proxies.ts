@@ -17,6 +17,7 @@ import {
   type CreateWorkGraphInput,
   type EffectiveConfigRevisionId,
   type LedgerContentRef,
+  type ListWorkRunsInput,
   type PutLedgerContentInput,
   type PrepareRunInput,
   type QuarantineRunInput,
@@ -704,6 +705,12 @@ export class CfUsageStore implements UsageStore {
     return orUndefined(response.detail);
   }
 
+  async getOperationByRunId(runId: string): Promise<UsageOperationDetail | undefined> {
+    const response = await this.execute({ kind: 'get_operation_by_run', runId });
+    if (response.kind !== 'detail') throw unexpectedUsageResponse();
+    return orUndefined(response.detail);
+  }
+
   async listOperations(query: UsageQuery): Promise<UsageOperationPage> {
     const response = await this.execute({ kind: 'list_operations', query });
     if (response.kind !== 'operation_page') throw unexpectedUsageResponse();
@@ -850,6 +857,22 @@ export class CfWorkStore implements WorkStore {
     const response = await this.execute({ kind: 'get_run', runId });
     if (response.kind !== 'run') throw unexpectedWorkResponse();
     return orUndefined(response.run);
+  }
+
+  async listRuns(input: ListWorkRunsInput) {
+    const response = await this.execute({ kind: 'list_runs', input });
+    if (response.kind !== 'run_page') throw unexpectedWorkResponse();
+    return response.page;
+  }
+
+  async listRunExecutions(runId: RunId, limit?: number) {
+    const response = await this.execute({
+      kind: 'list_run_executions',
+      runId,
+      ...(limit === undefined ? {} : { limit }),
+    });
+    if (response.kind !== 'executions') throw unexpectedWorkResponse();
+    return response.executions;
   }
 
   async createRunExecution(input: CreateRunExecutionInput) {

@@ -99,6 +99,11 @@ test('usage observations retain optional canonical Run and RunExecution links', 
     }));
     assert.equal(recorded.operation.runId, 'run_usage_linked');
     assert.equal(recorded.measurements[0]?.runExecutionId, 'execution_usage_linked');
+    assert.equal(
+      (await store.getOperationByRunId('run_usage_linked'))?.operation.operationId,
+      'op_linked',
+    );
+    assert.equal(await store.getOperationByRunId('run_missing'), undefined);
   } finally {
     store.close();
   }

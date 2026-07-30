@@ -199,6 +199,7 @@ test('slow telemetry cannot hold delivery beyond the budget and one repair recor
     admitOperation: async (input) => (++admissionCalls === 1 ? never : durable.admitOperation(input)),
     recordTerminal: async (input) => (++terminalCalls === 1 ? never : durable.recordTerminal(input)),
     getOperation: (id) => durable.getOperation(id),
+    getOperationByRunId: (runId) => durable.getOperationByRunId(runId),
     listOperations: (query) => durable.listOperations(query),
     summarize: (query) => durable.summarize(query),
     putCredential: (input) => durable.putCredential(input),

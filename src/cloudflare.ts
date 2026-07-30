@@ -757,6 +757,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       admitOperation: async (input) => stores.usage.admitOperation(input),
       recordTerminal: async (input) => stores.usage.recordTerminal(input),
       getOperation: async (operationId) => stores.usage.getOperation(operationId),
+      getOperationByRunId: async (runId) => stores.usage.getOperationByRunId(runId),
       listOperations: async (query) => stores.usage.listOperations(query),
       summarize: async (query) => stores.usage.summarize(query),
       putCredential: async (input) => stores.usage.putCredential(input),

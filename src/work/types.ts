@@ -275,6 +275,31 @@ export interface ShadowRunAdmission {
   replayed: boolean;
 }
 
+export interface WorkRunCursor {
+  createdAt: number;
+  runId: RunId;
+}
+
+export interface ListWorkRunsInput {
+  limit?: number;
+  cursor?: WorkRunCursor | null;
+  kind?: RunKind | null;
+  status?: RunStatus | null;
+  workId?: WorkId | null;
+  bindingId?: BindingId | null;
+}
+
+export interface WorkRunListItem {
+  work: WorkRecord;
+  binding: BindingRecord;
+  run: RunRecord;
+}
+
+export interface WorkRunPage {
+  items: WorkRunListItem[];
+  nextCursor: WorkRunCursor | null;
+}
+
 export interface EnsureWorkBindingInput {
   work: CreateWorkInput;
   binding: CreateBindingInput;
@@ -423,6 +448,8 @@ export type WorkRpcRequest =
   | { kind: 'get_work'; workId: WorkId }
   | { kind: 'get_binding'; bindingId: BindingId }
   | { kind: 'get_run'; runId: RunId }
+  | { kind: 'list_runs'; input: ListWorkRunsInput }
+  | { kind: 'list_run_executions'; runId: RunId; limit?: number }
   | { kind: 'create_execution'; input: CreateRunExecutionInput }
   | { kind: 'record_execution_route'; input: RunExecutionRouteInput }
   | { kind: 'prepare_run_input'; input: PrepareRunInput }
@@ -448,7 +475,9 @@ export type WorkRpcResponse =
   | { kind: 'work'; work: WorkRecord | null }
   | { kind: 'binding'; binding: BindingRecord | null }
   | { kind: 'run'; run: RunRecord | null }
+  | { kind: 'run_page'; page: WorkRunPage }
   | { kind: 'execution'; execution: RunExecutionRecord | null }
+  | { kind: 'executions'; executions: RunExecutionRecord[] }
   | { kind: 'audit_events'; events: AuditEvent[] }
   | { kind: 'integrity'; report: WorkIntegrityReport };
 
@@ -467,6 +496,8 @@ export interface WorkStore {
   getWork(id: WorkId): Promise<WorkRecord | undefined>;
   getBinding(id: BindingId): Promise<BindingRecord | undefined>;
   getRun(id: RunId): Promise<RunRecord | undefined>;
+  listRuns(input: ListWorkRunsInput): Promise<WorkRunPage>;
+  listRunExecutions(runId: RunId, limit?: number): Promise<RunExecutionRecord[]>;
   createRunExecution(input: CreateRunExecutionInput): Promise<RunExecutionRecord>;
   recordRunExecutionRoute(input: RunExecutionRouteInput): Promise<RunExecutionRecord>;
   prepareRunInput(input: PrepareRunInput): Promise<RunRecord>;

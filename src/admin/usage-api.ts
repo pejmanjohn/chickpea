@@ -8,12 +8,15 @@ import type {
   UsageGroupBy,
   UsageOperationKind,
   UsageOperationStatus,
+  UsageOperationDetail,
   UsageQuery,
   UsageStore,
 } from '../usage/types.ts';
+import type { WorkStore } from '../work/types.ts';
 
 interface UsageAdminApiOptions {
   store: (c: Context) => UsageStore;
+  work?: (c: Context) => WorkStore;
 }
 
 export function createUsageAdminApi(options: UsageAdminApiOptions): Hono {
@@ -26,7 +29,11 @@ export function createUsageAdminApi(options: UsageAdminApiOptions): Hono {
 
   app.get('/usage/summary', async (c) => {
     try {
-      return c.json(await options.store(c).summarize(parseUsageQuery(c, true)));
+      const query = parseUsageQuery(c, true);
+      return c.json(redactAggregateLabels(
+        await options.store(c).summarize(query),
+        query.groupBy,
+      ));
     } catch (error) {
       return usageError(c, error);
     }
@@ -45,7 +52,10 @@ export function createUsageAdminApi(options: UsageAdminApiOptions): Hono {
           to: query.from,
         }),
       ]);
-      return c.json({ current, previous });
+      return c.json({
+        current: redactAggregateLabels(current, query.groupBy),
+        previous: redactAggregateLabels(previous, query.groupBy),
+      });
     } catch (error) {
       return usageError(c, error);
     }
@@ -90,7 +100,10 @@ export function createUsageAdminApi(options: UsageAdminApiOptions): Hono {
     try {
       const page = await options.store(c).listOperations(parseUsageQuery(c, false));
       return c.json({
-        items: page.items,
+        items: await Promise.all(page.items.map((detail) => usageDetailProjection(
+          options.work?.(c),
+          detail,
+        ))),
         nextCursor: page.nextCursor ? encodeCursor(page.nextCursor) : null,
       });
     } catch (error) {
@@ -101,13 +114,127 @@ export function createUsageAdminApi(options: UsageAdminApiOptions): Hono {
   app.get('/usage/operations/:operationId', async (c) => {
     try {
       const detail = await options.store(c).getOperation(c.req.param('operationId'));
-      return detail ? c.json(detail) : c.json({ error: 'usage_operation_not_found' }, 404);
+      return detail
+        ? c.json(await usageDetailProjection(options.work?.(c), detail))
+        : c.json({ error: 'usage_operation_not_found' }, 404);
     } catch (error) {
       return usageError(c, error);
     }
   });
 
   return app;
+}
+
+function redactAggregateLabels<T extends { groups: Array<{ key: string; label: string | null }> }>(
+  report: T,
+  groupBy: UsageGroupBy | undefined,
+): T {
+  if (!groupBy || !['workspace', 'profile', 'channel', 'routine'].includes(groupBy)) return report;
+  return {
+    ...report,
+    groups: report.groups.map((group) => ({ ...group, label: null })),
+  };
+}
+
+async function usageDetailProjection(
+  store: WorkStore | undefined,
+  detail: UsageOperationDetail,
+): Promise<Record<string, unknown>> {
+  const publicLabels = await usageRunIsPublic(store, detail);
+  return publicLabels ? publicUsageDetail(detail) : redactedUsageDetail(detail);
+}
+
+function publicUsageDetail(detail: UsageOperationDetail): Record<string, unknown> {
+  return {
+    projection: 'public',
+    sessionDeepLink: detail.operation.runId
+      ? `/admin/sessions/${encodeURIComponent(detail.operation.runId)}`
+      : null,
+    operation: publicUsageOperation(detail),
+    measurements: detail.measurements,
+  };
+}
+
+function redactedUsageDetail(detail: UsageOperationDetail): Record<string, unknown> {
+  return {
+    projection: 'redacted',
+    sessionDeepLink: detail.operation.runId
+      ? `/admin/sessions/${encodeURIComponent(detail.operation.runId)}`
+      : null,
+    operation: redactedUsageOperation(detail),
+    measurements: detail.measurements,
+  };
+}
+
+function usageOperationBase(detail: UsageOperationDetail): Record<string, unknown> {
+  const operation = detail.operation;
+  return {
+    operationId: operation.operationId,
+    runId: operation.runId ?? null,
+    operationKind: operation.operationKind,
+    sourceId: operation.sourceId,
+    status: operation.status,
+    startedAt: operation.startedAt,
+    finishedAt: operation.finishedAt,
+    installationId: operation.installationId,
+    workspaceId: operation.workspaceId,
+    profileId: operation.profileId,
+    channelId: operation.channelId,
+    conversationKind: operation.conversationKind,
+    routineId: operation.routineId,
+    routineRunId: operation.routineRunId,
+    requestedProvider: operation.requestedProvider,
+    requestedModel: operation.requestedModel,
+    credentialRefId: operation.credentialRefId,
+    credentialVersion: operation.credentialVersion,
+    coverage: operation.coverage,
+    telemetrySchemaVersion: operation.telemetrySchemaVersion,
+    createdAt: operation.createdAt,
+    updatedAt: operation.updatedAt,
+  };
+}
+
+function publicUsageOperation(detail: UsageOperationDetail): Record<string, unknown> {
+  return {
+    ...usageOperationBase(detail),
+    profileLabel: detail.operation.profileLabel,
+    channelLabel: detail.operation.channelLabel,
+    routineLabel: detail.operation.routineLabel,
+  };
+}
+
+function redactedUsageOperation(detail: UsageOperationDetail): Record<string, unknown> {
+  return {
+    ...usageOperationBase(detail),
+    profileLabel: null,
+    channelLabel: null,
+    routineLabel: null,
+  };
+}
+
+async function usageRunIsPublic(
+  store: WorkStore | undefined,
+  detail: UsageOperationDetail,
+): Promise<boolean> {
+  const runId = detail.operation.runId;
+  if (!store || !runId) return false;
+  try {
+    const run = await store.getRun(runId as Parameters<WorkStore['getRun']>[0]);
+    if (!run) return false;
+    const [work, binding] = await Promise.all([
+      store.getWork(run.workId),
+      store.getBinding(run.bindingId),
+    ]);
+    return Boolean(
+      work &&
+      binding &&
+      binding.workId === work.id &&
+      work.maximumSensitivity === 'public' &&
+      binding.sourceVisibility === 'public',
+    );
+  } catch {
+    return false;
+  }
 }
 
 function parseUsageQuery(c: Context, includeGroup: boolean): UsageQuery {

@@ -21,6 +21,7 @@ import {
   type EnsureWorkBindingInput,
   type LedgerContentRecord,
   type LedgerContentRef,
+  type ListWorkRunsInput,
   type PutLedgerContentInput,
   type PrepareRunInput,
   type QuarantineRunInput,
@@ -42,6 +43,7 @@ import {
   type WorkIntegrityReport,
   type WorkPurgeResult,
   type WorkRecord,
+  type WorkRunPage,
   type WorkRpcRequest,
   type WorkRpcResponse,
   type WorkStore,
@@ -117,6 +119,13 @@ export class WorkStoreLogic {
         return { kind: 'binding', binding: this.getBinding(request.bindingId) ?? null };
       case 'get_run':
         return { kind: 'run', run: this.getRun(request.runId) ?? null };
+      case 'list_runs':
+        return { kind: 'run_page', page: this.listRuns(request.input) };
+      case 'list_run_executions':
+        return {
+          kind: 'executions',
+          executions: this.listRunExecutions(request.runId, request.limit),
+        };
       case 'create_execution':
         return { kind: 'execution', execution: this.createRunExecution(request.input) };
       case 'record_execution_route':
@@ -507,6 +516,69 @@ export class WorkStoreLogic {
   getRun(id: RunId): RunRecord | undefined {
     const row = this.db.get('SELECT * FROM runs WHERE id = ?', id);
     return row ? rowToRun(row) : undefined;
+  }
+
+  listRuns(input: ListWorkRunsInput): WorkRunPage {
+    validateListRunsInput(input);
+    const limit = input.limit ?? 50;
+    const clauses: string[] = [];
+    const params: Array<string | number> = [];
+    if (input.cursor) {
+      clauses.push('(created_at < ? OR (created_at = ? AND id < ?))');
+      params.push(input.cursor.createdAt, input.cursor.createdAt, input.cursor.runId);
+    }
+    if (input.kind) {
+      clauses.push('kind = ?');
+      params.push(input.kind);
+    }
+    if (input.status) {
+      clauses.push('status = ?');
+      params.push(input.status);
+    }
+    if (input.workId) {
+      clauses.push('work_id = ?');
+      params.push(input.workId);
+    }
+    if (input.bindingId) {
+      clauses.push('binding_id = ?');
+      params.push(input.bindingId);
+    }
+    const where = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '';
+    const rows = this.db.all(
+      `SELECT * FROM runs ${where}
+       ORDER BY created_at DESC, id DESC LIMIT ?`,
+      ...params,
+      limit + 1,
+    );
+    const pageRows = rows.slice(0, limit);
+    const items = pageRows.map((row) => {
+      const run = rowToRun(row);
+      return {
+        run,
+        work: requiredWork(this.getWork(run.workId)),
+        binding: requiredBinding(this.getBinding(run.bindingId)),
+      };
+    });
+    const last = pageRows.at(-1);
+    return {
+      items,
+      nextCursor: rows.length > limit && last
+        ? { createdAt: Number(last.created_at), runId: String(last.id) as RunId }
+        : null,
+    };
+  }
+
+  listRunExecutions(runId: RunId, limit = 50): RunExecutionRecord[] {
+    assertOpaqueId(runId, 'Run ID');
+    boundedInteger(limit, 1, 100, 'Run execution limit');
+    return this.db
+      .all(
+        `SELECT * FROM run_executions WHERE run_id = ?
+         ORDER BY attempt_number, id LIMIT ?`,
+        runId,
+        limit,
+      )
+      .map(rowToExecution);
   }
 
   createRunExecution(input: CreateRunExecutionInput): RunExecutionRecord {
@@ -1399,6 +1471,12 @@ export class SqliteWorkStore implements WorkStore {
   async getRun(id: RunId) {
     return this.logic.getRun(id);
   }
+  async listRuns(input: ListWorkRunsInput) {
+    return this.logic.listRuns(input);
+  }
+  async listRunExecutions(runId: RunId, limit?: number) {
+    return this.logic.listRunExecutions(runId, limit);
+  }
   async createRunExecution(input: CreateRunExecutionInput) {
     return this.logic.createRunExecution(input);
   }
@@ -1648,6 +1726,37 @@ function validateBindingInput(input: CreateBindingInput): void {
   }
   assertSafeRef(input.orderingKey, 'Binding ordering key');
   assertTimestamp(input.createdAt, 'Binding creation time');
+}
+
+function validateListRunsInput(input: ListWorkRunsInput): void {
+  assertExactKeys(
+    input,
+    ['limit', 'cursor', 'kind', 'status', 'workId', 'bindingId'],
+    'Run list',
+  );
+  if (input.limit !== undefined) boundedInteger(input.limit, 1, 100, 'Run list limit');
+  if (input.cursor !== undefined && input.cursor !== null) {
+    assertExactKeys(input.cursor, ['createdAt', 'runId'], 'Run list cursor');
+    assertTimestamp(input.cursor.createdAt, 'Run list cursor time');
+    assertOpaqueId(input.cursor.runId, 'Run list cursor ID');
+  }
+  if (input.kind !== undefined && input.kind !== null &&
+      !['interactive', 'routine', 'operator'].includes(input.kind)) {
+    throw workError('work_input_invalid', 'Run list kind is invalid.');
+  }
+  if (input.status !== undefined && input.status !== null &&
+      ![
+        'admitted', 'queued', 'preparing_input', 'input_ready', 'executing',
+        'response_ready', 'settled', 'recovery_required',
+      ].includes(input.status)) {
+    throw workError('work_input_invalid', 'Run list status is invalid.');
+  }
+  if (input.workId !== undefined && input.workId !== null) {
+    assertOpaqueId(input.workId, 'Run list Work ID');
+  }
+  if (input.bindingId !== undefined && input.bindingId !== null) {
+    assertOpaqueId(input.bindingId, 'Run list Binding ID');
+  }
 }
 
 function validateRunInput(input: AdmitRunInput): void {

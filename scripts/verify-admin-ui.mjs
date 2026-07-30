@@ -13,6 +13,9 @@ import {
   assertNodeVersion,
   loadTsModule,
 } from './lib/offline-harness.mjs';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const ADMIN_TOKEN = 'admin-ui-admin-token';
 const WORKSPACE_ID = 'T_ADMIN_UI';
@@ -70,6 +73,7 @@ let store;
 let memory;
 let routines;
 let usage;
+let work;
 try {
   console.log(`node ${assertNodeVersion()}`);
   const { Hono } = await import('hono');
@@ -79,13 +83,47 @@ try {
   const { SqliteRoutineStore } = await loadTsModule('src/routines/store.ts');
   const { RoutineService } = await loadTsModule('src/routines/service.ts');
   const { SqliteUsageStore } = await loadTsModule('src/usage/store.ts');
-  store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
-  memory = new SqliteMemoryStateStore(':memory:');
-  routines = new SqliteRoutineStore(':memory:');
-  usage = new SqliteUsageStore(':memory:');
+  const { SqliteWorkStore } = await loadTsModule('src/work/store.ts');
+  const statePath = join(mkdtempSync(join(tmpdir(), 'chickpea-admin-ui-')), 'state.db');
+  store = new SqliteConfigStore(statePath, { agents: [], assignments: [] });
+  memory = new SqliteMemoryStateStore(statePath);
+  routines = new SqliteRoutineStore(statePath);
+  usage = new SqliteUsageStore(statePath);
+  work = new SqliteWorkStore(statePath);
   const usageNow = Date.now();
+  await work.admitShadowRun({
+    work: {
+      id: 'work_admin_ui_release', kind: 'conversation', maximumSensitivity: 'public',
+      createdAt: usageNow - 10_000,
+    },
+    binding: {
+      id: 'binding_admin_ui_release', workId: 'work_admin_ui_release', adapterKind: 'slack',
+      externalAccountId: 'account_admin_ui_release',
+      externalConversationId: 'conversation_admin_ui_release', generation: 1,
+      sourceVisibility: 'public', configMode: 'frozen_on_open',
+      orderingKey: 'ordering_admin_ui_release', createdAt: usageNow - 10_000,
+    },
+    run: {
+      id: 'run_admin_ui_release', workId: 'work_admin_ui_release',
+      bindingId: 'binding_admin_ui_release', kind: 'interactive',
+      triggerKind: 'admin_ui_verifier', triggerRef: 'trigger_admin_ui_release',
+      dedupeKey: 'dedupe_admin_ui_release', actorTrustTier: 'system',
+      effectiveCapabilityDigest: 'b'.repeat(64), executionAuthority: 'legacy',
+      coordinatorKind: 'interactive', authorityEpoch: 1, createdAt: usageNow - 10_000,
+    },
+    safeConfig: {
+      schemaVersion: 1, profileId: AGENT_ID, configuredModel: MODEL_SPECIFIER,
+      snapshotDigest: 'a'.repeat(64), capabilityDigest: 'b'.repeat(64),
+      skillNames: [], connectionIds: [], repositoryIds: [], memoryMode: 'public',
+      ceilings: { maxModelAttempts: 3, maxToolCalls: 20, maxActionAttempts: 0, timeoutMs: 120_000 },
+    },
+    triggerContent: { sensitivity: 'public', body: 'Admin UI Run trigger' },
+    auditEventId: 'audit_admin_ui_release',
+    auditIdempotencyKey: 'auditkey_admin_ui_release',
+  });
   await usage.admitOperation({
     operationId: 'usage_admin_ui_release',
+    runId: 'run_admin_ui_release',
     operationKind: 'interactive_turn',
     sourceId: 'slack:C_ADMIN_UI:usage',
     startedAt: usageNow - 10_000,
@@ -169,6 +207,7 @@ try {
     nextRunAt: Date.now() + 3_600_000,
     projectedDailyStarts: 5,
     reservations: [{ windowStart: Date.now() + 3_600_000, count: 1 }],
+    sourceVisibility: 'public',
   }, 'admin-ui-routine-create');
   await routines.createOccurrence({
     runId: 'rrun_admin_ui_release',
@@ -189,6 +228,7 @@ try {
       memory,
       routines,
       usage,
+      work,
       usageAdminUi: true,
       adminToken: ADMIN_TOKEN,
       knownProviders: new Set(['local-stub']),
@@ -220,6 +260,7 @@ try {
   record(
     'admin page carries live Scheduled Work and Memory audit domains',
     pageHtml.includes('Audit logs') &&
+      pageHtml.includes('data-action="open-sessions"') &&
       pageHtml.includes('data-action="audit-tab-scheduled">Scheduled work') &&
       pageHtml.includes('data-action="audit-tab-memory">Memory') &&
       pageHtml.includes('aria-disabled="true" title="Coming later">Network events') &&
@@ -242,13 +283,30 @@ try {
       usageOverview.status === 200 &&
       usageOverview.body?.current?.totals?.operationCount === 1 &&
       usageOverview.body?.current?.totals?.estimateAmountMicros === 800 &&
-      usageOverview.body?.current?.groups?.[0]?.label === CHANNEL_LABEL &&
+      usageOverview.body?.current?.groups?.[0]?.key === CHANNEL_ID &&
+      usageOverview.body?.current?.groups?.[0]?.label === null &&
       usageMetadata.status === 200 &&
       usageMetadata.body?.contract?.providerBillingIncluded === false &&
       usageMetadata.body?.contract?.limitsManagedByChickpea === false &&
       usageOperations.status === 200 &&
-      usageOperations.body?.items?.[0]?.operation?.operationId === 'usage_admin_ui_release',
+      usageOperations.body?.items?.[0]?.operation?.operationId === 'usage_admin_ui_release' &&
+      usageOperations.body?.items?.[0]?.sessionDeepLink === '/admin/sessions/run_admin_ui_release',
     `overview=${usageOverview.status} metadata=${usageMetadata.status} operations=${usageOperations.status}`,
+  );
+
+  const sessions = await adminJson(app, '/admin/api/sessions?limit=20');
+  const sessionDetail = await adminJson(app, '/admin/api/sessions/run_admin_ui_release');
+  record(
+    'Sessions lists and reconstructs the public canonical Run without Usage authority',
+    sessions.status === 200 &&
+      sessions.body?.items?.[0]?.runId === 'run_admin_ui_release' &&
+      sessions.body?.items?.[0]?.deepLink === '/admin/sessions/run_admin_ui_release' &&
+      sessionDetail.status === 200 &&
+      sessionDetail.body?.projection === 'public' &&
+      sessionDetail.body?.session?.status === 'admitted' &&
+      sessionDetail.body?.content?.trigger?.body === 'Admin UI Run trigger' &&
+      sessionDetail.body?.usage?.state === 'reported',
+    `list=${sessions.status} detail=${sessionDetail.status}`,
   );
 
   const routineList = await adminJson(app, '/admin/api/audit/scheduled_work/routines?state=active');
@@ -413,6 +471,7 @@ try {
   memory?.close();
   routines?.close();
   usage?.close();
+  work?.close();
 }
 
 const failed = results.filter((result) => !result.passed);
