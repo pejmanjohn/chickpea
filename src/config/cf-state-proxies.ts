@@ -5,10 +5,14 @@ import type { AgentSnapshotStore } from './snapshot-store.ts';
 import type { StateRpcResult, TagStateRpc } from './state-rpc.ts';
 import type { ConfigAgentPatch, ConfigStore, OAuthReauthorizationTarget } from './store.ts';
 import type { AgentSnapshot, ChannelAssignment, CustomAgentConfig } from './types.ts';
-import type { SlackStateStore } from '../slack/claim-store.ts';
+import type {
+  SlackCanonicalAdmissionInput,
+  SlackStateStore,
+} from '../slack/claim-store.ts';
 import {
   WorkStateError,
   type BindingId,
+  type AdmitShadowRunInput,
   type CreateRunExecutionInput,
   type CreateWorkGraphInput,
   type EffectiveConfigRevisionId,
@@ -267,6 +271,10 @@ export class CfSlackStateStore implements SlackStateStore {
 
   async has(key: string): Promise<boolean> {
     return unwrap(await this.stub.threadHas(key));
+  }
+
+  async admitCanonical(input: SlackCanonicalAdmissionInput) {
+    return unwrap(await this.stub.admitSlackTurn(input));
   }
 }
 
@@ -810,6 +818,12 @@ export class CfWorkStore implements WorkStore {
     const response = await this.execute({ kind: 'create_graph', input });
     if (response.kind !== 'graph') throw unexpectedWorkResponse();
     return { work: response.work, binding: response.binding, run: response.run };
+  }
+
+  async admitShadowRun(input: AdmitShadowRunInput) {
+    const response = await this.execute({ kind: 'admit_shadow_run', input });
+    if (response.kind !== 'shadow_admission') throw unexpectedWorkResponse();
+    return response.admission;
   }
 
   async getWork(workId: WorkId) {

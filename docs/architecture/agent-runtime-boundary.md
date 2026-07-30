@@ -134,3 +134,50 @@ known-private bodies. Chickpea purge does not delete Flue transcripts; Flue
 conversation retention must be operated as a separate policy. Deployments that
 cannot accept this at-rest trust boundary must add reviewed envelope encryption
 before release rather than treating it as implied by the ledger.
+
+## Shadow admission and compatibility
+
+Slack and Scheduled Work now dual-write this ledger without transferring
+execution authority. A positively verified, active same-workspace Slack member
+on a supported conversation creates one deterministic, workspace-scoped Run.
+The Slack event/message claims, Work/Binding resolution, retained trigger body,
+initial audit event, thread registration, and Cloudflare relay row commit on one
+StateDb connection. Mirrored `app_mention` and `message` deliveries converge on
+the message identity. Channel Bindings freeze their safe configuration revision
+when opened; DM Bindings resolve a safe revision for each Run.
+
+Slack truth that is missing, foreign, guest, bot/app, deleted, shared, or
+otherwise unsupported creates no canonical Run or body. During the U3 shadow
+phase only, that classification does not gate the established legacy turn: the
+old claim and `runTurn` path continues so the foundation rollout cannot silently
+change current Slack behavior. Authority cutover must make the typed policy
+decision enforceable only after the explicit-vs-implicit unavailable response,
+quota, and parity gates are proven.
+
+Ingress truth reads run in parallel with a 750 ms per-call deadline so this
+observational phase stays inside Slack's acknowledgement budget. A deadline is
+an unavailable-truth shadow gap, not permission to persist a body or a reason to
+delay/block the existing legacy turn.
+
+Node stores an authorized turn in the same durable relay table and wakes it at
+admission, process startup, and every 30 seconds. Cloudflare stores the relay row
+inside admission and then arms the existing singleton alarm; the one-minute Cron
+repairs a missing alarm and purges expired Work content. The Cron performs this
+generic maintenance even when Routines are disabled, but it does not scan
+Routine definitions, submit Workflows, call a model, or deliver Slack output.
+
+Routine definitions receive deterministic Work/Binding links and a fail-closed
+public/private/unknown Slack visibility. Each newly queued occurrence attempts
+to create one linked legacy-authority Run with the existing Workflow coordinator
+and zero RunExecutions. Definition/occurrence state and the canonical linkage
+share the target's outer transaction, so a write failure leaves neither a
+partial legacy occurrence nor an orphan ledger record and the existing
+heartbeat/idempotency path can retry. Routine task text remains standing
+definition content under the Routine retention policy; it is not copied into a
+30-day Run body.
+
+The remaining authority boundary is intentional: legacy `runTurn` and the
+existing Routine Workflow are the only components allowed to execute these
+Runs. The ledger does not dispatch them, and current Slack rendering, response
+counts, Routine controls, and APIs remain compatibility surfaces until the
+later coordinator and Sessions units pass their rollout gates.

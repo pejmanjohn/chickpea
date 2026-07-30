@@ -75,7 +75,10 @@ export function openStateDb(path: string): NodeStateDb {
   if (path !== ':memory:') {
     mkdirSync(dirname(path), { recursive: true });
   }
-  const db = new DatabaseSync(path);
+  // Configure the busy handler at open time so it is active for the very first
+  // journal-mode statement. Setting PRAGMA busy_timeout afterward is too late
+  // when several fresh processes race to initialize WAL.
+  const db = new DatabaseSync(path, { timeout: 5_000 });
   // The canonical Work ledger depends on relational ownership constraints.
   // Keep this explicit even though current Node 24 builds enable it by
   // default, and wait briefly for another process applying an app migration.

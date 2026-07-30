@@ -49,3 +49,25 @@ test('Cloudflare scheduled handler returns before heartbeat work while default-o
   await Promise.all(waited);
   assert.equal(calls, 1);
 });
+
+test('Cloudflare scheduled handler runs generic Work maintenance while Routines stay disabled', async () => {
+  let routineCalls = 0;
+  let maintenanceCalls = 0;
+  const waited: Promise<unknown>[] = [];
+  const handler = createRoutineScheduledHandler({
+    heartbeat: async () => {
+      routineCalls += 1;
+    },
+    maintenance: async () => {
+      maintenanceCalls += 1;
+    },
+  });
+  handler.scheduled(
+    { scheduledTime: Date.UTC(2026, 6, 27, 12) },
+    { TAG_ROUTINES_ENABLED: '0' },
+    { waitUntil: (promise) => waited.push(promise) },
+  );
+  await Promise.all(waited);
+  assert.equal(maintenanceCalls, 1);
+  assert.equal(routineCalls, 0);
+});

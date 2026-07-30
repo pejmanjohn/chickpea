@@ -18,6 +18,7 @@ import {
   type RoutineStore,
   RoutineStateError,
 } from './types.ts';
+import type { SourceVisibility } from '../work/types.ts';
 import { validateRoutineDefinition, validateRoutineScope } from './validation.ts';
 
 interface RoutineRequestBase {
@@ -26,6 +27,7 @@ interface RoutineRequestBase {
   workspaceId: string;
   channelId: string;
   provenance?: RoutineRequestProvenanceInput | null;
+  sourceVisibility?: SourceVisibility;
 }
 
 export type RoutineSaveRequest = RoutineRequestBase & (
@@ -133,6 +135,7 @@ export class RoutineService {
       draft,
       provenance: request.provenance ?? null,
       idempotencyKey,
+      sourceVisibility: request.sourceVisibility ?? 'unknown',
     };
     return this.store.save(input);
   }

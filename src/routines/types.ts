@@ -1,5 +1,6 @@
 import type { AuditEvent, AuditEventFilter } from '../audit/types.ts';
 import type { ProviderAuthRoute } from '../config/runtime-model.ts';
+import type { SourceVisibility } from '../work/types.ts';
 
 export type RoutineState = 'active' | 'paused' | 'disabled' | 'completed';
 export type RoutineTriggerKind = 'schedule' | 'once';
@@ -202,6 +203,8 @@ export interface SaveRoutineInput {
   draft: Exclude<RoutineConfirmationDraft, { action: 'delete' }>;
   provenance?: RoutineRequestProvenanceInput | null;
   idempotencyKey: string;
+  /** Resolved at Slack creation time; omitted callers fail closed to unknown. */
+  sourceVisibility?: SourceVisibility;
 }
 
 export interface ControlRoutineInput {

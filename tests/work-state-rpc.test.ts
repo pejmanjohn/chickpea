@@ -5,7 +5,14 @@ import { CfWorkStore } from '../src/config/cf-state-proxies.ts';
 import type { TagStateRpc } from '../src/config/state-rpc.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
 import { WorkStoreLogic } from '../src/work/store.ts';
-import { WorkStateError, type SafeEffectiveConfigInput } from '../src/work/types.ts';
+import {
+  WorkStateError,
+  type AdmitShadowRunInput,
+  type BindingId,
+  type RunId,
+  type SafeEffectiveConfigInput,
+  type WorkId,
+} from '../src/work/types.ts';
 
 const CONFIG: SafeEffectiveConfigInput = {
   schemaVersion: 1,
@@ -37,6 +44,46 @@ test('Work state proxy preserves clone-safe request and response shapes', async 
     const proxy = new CfWorkStore(stub);
     const config = await proxy.putConfigRevision(CONFIG, 1_800_000_000_000);
     assert.equal((await proxy.getConfigRevision(config.id))?.id, config.id);
+    const workId = 'work_rpc_shadow' as WorkId;
+    const bindingId = 'binding_rpc_shadow' as BindingId;
+    const input: AdmitShadowRunInput = {
+      work: { id: workId, kind: 'conversation', maximumSensitivity: 'public', createdAt: 1_800_000_000_000 },
+      binding: {
+        id: bindingId,
+        workId,
+        adapterKind: 'conformance',
+        externalAccountId: 'account_rpc',
+        externalConversationId: 'conversation_rpc',
+        generation: 1,
+        sourceVisibility: 'public',
+        configMode: 'resolve_each_run',
+        orderingKey: 'ordering_rpc',
+        createdAt: 1_800_000_000_000,
+      },
+      run: {
+        id: 'run_rpc_shadow' as RunId,
+        workId,
+        bindingId,
+        kind: 'interactive',
+        triggerKind: 'conformance',
+        triggerRef: 'trigger_rpc',
+        dedupeKey: 'dedupe_rpc',
+        actorTrustTier: 'system',
+        effectiveCapabilityDigest: CONFIG.capabilityDigest,
+        executionAuthority: 'legacy',
+        coordinatorKind: 'interactive',
+        authorityEpoch: 1,
+        createdAt: 1_800_000_000_000,
+      },
+      safeConfig: CONFIG,
+      triggerContent: { sensitivity: 'public', body: 'RPC admission proof' },
+      auditEventId: 'audit_rpc_shadow',
+      auditIdempotencyKey: 'auditkey_rpc_shadow',
+    };
+    const admitted = await proxy.admitShadowRun(input);
+    assert.equal(admitted.run.id, input.run.id);
+    assert.equal(admitted.replayed, false);
+    assert.equal((await proxy.admitShadowRun(input)).replayed, true);
     assert.deepEqual(await proxy.verifyIntegrity(), {
       foreignKeysEnabled: true,
       foreignKeyViolationCount: 0,

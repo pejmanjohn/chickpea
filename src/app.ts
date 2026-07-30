@@ -19,6 +19,7 @@ import {
 } from './slack/activity-publisher.ts';
 import { registerOpenAiSubscriptionApi } from './openai-subscription/provider.ts';
 import { registerModelCompatibilityApis } from './model-compat/provider.ts';
+import { startNodeTurnRelay } from './slack/node-turn-relay.ts';
 
 // Provider registrations run at module scope so they are in place before any
 // agent resolves its model. On the Cloudflare target the seeded Workers AI
@@ -120,6 +121,7 @@ instrument({
 });
 
 const app = new Hono();
+startNodeTurnRelay();
 app.route('/', createAdminRoutes());
 app.route('/', flue());
 

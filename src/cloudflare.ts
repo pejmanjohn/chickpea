@@ -43,6 +43,7 @@ import type {
   TurnProgress,
   TurnPullRequestProgress,
 } from './config/state-rpc.ts';
+import { tagStateStub } from './config/state-rpc.ts';
 import type { PlatformEnv } from './config/state-backend.ts';
 import { getRoutineStore, getSettingsStore } from './config/state-backend.ts';
 import {
@@ -74,6 +75,7 @@ import {
   pullRequestProgressFromGithubResponse,
 } from './sandbox/progress.ts';
 import { SlackStateLogic } from './slack/claim-store.ts';
+import type { SlackCanonicalAdmissionInput } from './slack/claim-store.ts';
 import { resolveSlackCredentials } from './slack/credentials.ts';
 import { setObservedSlackStatus } from './slack/status-registry.ts';
 import {
@@ -603,6 +605,12 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     return this.call((stores) => stores.slack.has(key));
   }
 
+  async admitSlackTurn(input: SlackCanonicalAdmissionInput) {
+    return this.call((stores) =>
+      stores.slack.admitCanonical(input, stores.work, stores.turnJobs),
+    );
+  }
+
   // ── operator settings ────────────────────────────────────────────────────
 
   async settingGet(key: string): Promise<StateRpcResult<string | null>> {
@@ -662,6 +670,23 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     request: WorkRpcRequest,
   ): Promise<StateRpcResult<WorkRpcResponse>> {
     return this.call((stores) => stores.work.execute(request));
+  }
+
+  async maintainWork(at: number): Promise<StateRpcResult<null>> {
+    if (!Number.isSafeInteger(at) || at < 0) {
+      return rpcError('work', 'Work maintenance time is invalid.', {
+        workCode: 'work_maintenance_invalid',
+      });
+    }
+    const result = this.call((stores) => {
+      stores.work.purgeContent(at, 100);
+      return stores.turnJobs.listPending().length > 0;
+    });
+    if (!result.ok) return result;
+    if (result.value && (await this.ctx.storage.getAlarm()) === null) {
+      await this.ctx.storage.setAlarm(Date.now() + RELAY_BATCH_WINDOW_MS);
+    }
+    return { ok: true, value: null };
   }
 
   // ── turn relay (Cloudflare turn-horizon fix) ─────────────────────────────
@@ -1004,7 +1029,18 @@ function rpcError(
 
 export default createRoutineScheduledHandler({
   heartbeat: runRoutineHeartbeat,
+  maintenance: runWorkMaintenance,
 });
+
+async function runWorkMaintenance(
+  scheduledTime: number,
+  rawEnv: Record<string, unknown>,
+): Promise<void> {
+  const result = await tagStateStub(rawEnv).maintainWork(scheduledTime);
+  if (!result.ok) {
+    throw new Error(`Work maintenance failed: ${result.error.message}`);
+  }
+}
 
 async function runRoutineHeartbeat(
   scheduledTime: number,

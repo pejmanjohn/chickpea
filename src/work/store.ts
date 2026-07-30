@@ -10,6 +10,7 @@ import { runBodyExpiry } from './retention.ts';
 import {
   WorkStateError,
   type AdmitRunInput,
+  type AdmitShadowRunInput,
   type BindingRecord,
   type CreateBindingInput,
   type CreateRunExecutionInput,
@@ -17,6 +18,7 @@ import {
   type CreateWorkInput,
   type EffectiveConfigRevision,
   type EffectiveConfigRevisionId,
+  type EnsureWorkBindingInput,
   type LedgerContentRecord,
   type LedgerContentRef,
   type PutLedgerContentInput,
@@ -26,6 +28,7 @@ import {
   type RunExecutionRouteInput,
   type RunId,
   type RunRecord,
+  type ShadowRunAdmission,
   type SafeEffectiveConfigInput,
   type WorkId,
   type WorkIntegrityReport,
@@ -98,6 +101,8 @@ export class WorkStoreLogic {
         const graph = this.createGraph(request.input);
         return { kind: 'graph', ...graph };
       }
+      case 'admit_shadow_run':
+        return { kind: 'shadow_admission', admission: this.admitShadowRun(request.input) };
       case 'get_work':
         return { kind: 'work', work: this.getWork(request.workId) ?? null };
       case 'get_binding':
@@ -309,6 +314,160 @@ export class WorkStoreLogic {
         run: requiredRun(this.getRun(input.run.id)),
       };
     });
+  }
+
+  admitShadowRun(input: AdmitShadowRunInput): ShadowRunAdmission {
+    validateShadowAdmission(input);
+    return this.db.transaction(() => this.admitShadowRunInTransaction(input));
+  }
+
+  ensureWorkBindingInTransaction(input: EnsureWorkBindingInput): {
+    work: WorkRecord;
+    binding: BindingRecord;
+  } {
+    validateWorkInput(input.work);
+    validateBindingInput(input.binding);
+    if (input.binding.workId !== input.work.id) {
+      throw workError('work_reference_invalid', 'Binding does not reference its Work.');
+    }
+    if (
+      input.binding.sourceVisibility !== 'public' &&
+      input.work.maximumSensitivity !== 'private'
+    ) {
+      throw workError(
+        'work_sensitivity_invalid',
+        'Non-public Bindings require a private Work sensitivity ceiling.',
+      );
+    }
+    const existingWork = this.getWork(input.work.id);
+    const existingBinding = this.getBinding(input.binding.id);
+    if (existingWork || existingBinding) {
+      if (
+        !existingWork ||
+        !existingBinding ||
+        !sameReusableWork(existingWork, input.work) ||
+        !sameReusableBinding(existingBinding, input.binding)
+      ) {
+        throw workError('work_binding_conflict', 'Binding identity belongs to different work.');
+      }
+      return { work: existingWork, binding: existingBinding };
+    }
+    this.insertWork(input.work);
+    this.insertBinding(input.binding);
+    return {
+      work: requiredWork(this.getWork(input.work.id)),
+      binding: requiredBinding(this.getBinding(input.binding.id)),
+    };
+  }
+
+  /**
+   * Composite-admission primitive for an adapter operation that already owns
+   * this StateDb transaction (Slack claims/relay and Routine slot claims).
+   */
+  admitShadowRunInTransaction(input: AdmitShadowRunInput): ShadowRunAdmission {
+    validateShadowAdmission(input);
+    const existingRun = this.getRun(input.run.id);
+    if (existingRun) {
+      const work = this.getWork(existingRun.workId);
+      const binding = this.getBinding(existingRun.bindingId);
+      const audit = this.audit.findByIdempotencyKey(input.auditIdempotencyKey);
+      if (
+        work &&
+        binding &&
+        audit?.eventId === input.auditEventId &&
+        work.id === input.work.id &&
+        binding.id === input.binding.id &&
+        existingRun.triggerRef === input.run.triggerRef &&
+        existingRun.dedupeKey === input.run.dedupeKey
+      ) {
+        return { work, binding, run: existingRun, replayed: true };
+      }
+      throw workError('work_admission_conflict', 'Run identity belongs to different work.');
+    }
+
+    const revision = this.putConfigRevisionInTransaction(input.safeConfig, input.run.createdAt);
+    let work = this.getWork(input.work.id);
+    let binding = this.getBinding(input.binding.id);
+    if (work || binding) {
+      if (
+        !work ||
+        !binding ||
+        binding.workId !== work.id ||
+        !sameReusableWork(work, input.work) ||
+        !sameReusableBinding(binding, {
+          ...input.binding,
+          pinnedConfigRevisionId:
+            input.binding.configMode === 'frozen_on_open'
+              ? revision.id
+              : (input.binding.pinnedConfigRevisionId ?? null),
+        })
+      ) {
+        throw workError('work_binding_conflict', 'Binding identity belongs to different work.');
+      }
+    } else {
+      this.insertWork(input.work);
+      this.insertBinding({
+        ...input.binding,
+        pinnedConfigRevisionId:
+          input.binding.configMode === 'frozen_on_open'
+            ? revision.id
+            : (input.binding.pinnedConfigRevisionId ?? null),
+      });
+      work = requiredWork(this.getWork(input.work.id));
+      binding = requiredBinding(this.getBinding(input.binding.id));
+    }
+
+    const triggerContent = input.triggerContent
+      ? this.putContentInTransaction({ ...input.triggerContent, createdAt: input.run.createdAt })
+      : undefined;
+    if (
+      triggerContent?.sensitivity === 'private' &&
+      work.maximumSensitivity !== 'private'
+    ) {
+      throw workError(
+        'work_sensitivity_invalid',
+        'Private content requires a private Work sensitivity ceiling.',
+      );
+    }
+    const sequenceRow = this.db.get(
+      'SELECT COALESCE(MAX(admission_sequence), 0) AS sequence FROM runs WHERE binding_id = ?',
+      binding.id,
+    );
+    const runInput: AdmitRunInput = {
+      ...input.run,
+      workId: work.id,
+      bindingId: binding.id,
+      admissionSequence: Number(sequenceRow?.sequence ?? 0) + 1,
+      triggerContentRef: triggerContent?.ref ?? null,
+      configRevisionId:
+        binding.configMode === 'frozen_on_open'
+          ? requiredConfigId(binding.pinnedConfigRevisionId)
+          : revision.id,
+    };
+    this.insertRun(runInput);
+    this.audit.append({
+      eventId: input.auditEventId,
+      domain: 'work',
+      eventType: 'work.run_admitted',
+      outcome: 'success',
+      actorClass: runInput.actorTrustTier,
+      actorId: runInput.actorRef ?? null,
+      subjectId: runInput.id,
+      subjectVersion: 1,
+      createdAt: runInput.createdAt,
+      metadataJson: JSON.stringify({
+        bindingId: binding.id,
+        runId: runInput.id,
+        workId: work.id,
+      }),
+      idempotencyKey: input.auditIdempotencyKey,
+    });
+    return {
+      work,
+      binding,
+      run: requiredRun(this.getRun(runInput.id)),
+      replayed: false,
+    };
   }
 
   getWork(id: WorkId): WorkRecord | undefined {
@@ -657,6 +816,44 @@ export class WorkStoreLogic {
       input.createdAt,
     );
   }
+
+  private putConfigRevisionInTransaction(
+    input: SafeEffectiveConfigInput,
+    createdAt: number,
+  ): EffectiveConfigRevision {
+    const canonicalJson = canonicalSafeConfig(input);
+    const digest = sha256(canonicalJson);
+    const id = `config_${digest}` as EffectiveConfigRevisionId;
+    assertTimestamp(createdAt, 'Config revision creation time');
+    const byDigest = this.db.get(
+      'SELECT * FROM effective_config_revisions WHERE digest = ?',
+      digest,
+    );
+    if (byDigest) {
+      const existing = rowToConfig(byDigest);
+      if (existing.canonicalJson !== canonicalJson || existing.id !== id) {
+        throw workError(
+          'work_config_digest_conflict',
+          'Safe configuration digest belongs to different canonical bytes.',
+        );
+      }
+      return existing;
+    }
+    this.db.run(
+      `INSERT INTO effective_config_revisions (
+        id, canonical_json, digest, schema_version, created_at
+      ) VALUES (?, ?, ?, 1, ?)`,
+      id,
+      canonicalJson,
+      digest,
+      createdAt,
+    );
+    return requiredConfig(this.getConfigRevision(id));
+  }
+
+  private putContentInTransaction(input: PutLedgerContentInput): LedgerContentRecord {
+    return this.putContent(input);
+  }
 }
 
 export class SqliteWorkStore implements WorkStore {
@@ -692,6 +889,9 @@ export class SqliteWorkStore implements WorkStore {
   }
   async createGraph(input: CreateWorkGraphInput) {
     return this.logic.createGraph(input);
+  }
+  async admitShadowRun(input: AdmitShadowRunInput) {
+    return this.logic.admitShadowRun(input);
   }
   async getWork(id: WorkId) {
     return this.logic.getWork(id);
@@ -808,6 +1008,66 @@ function validateGraph(input: CreateWorkGraphInput): void {
   if (
     (input.binding.sourceVisibility === 'unknown' || input.run.actorTrustTier === 'unknown') &&
     input.run.triggerContentRef
+  ) {
+    throw workError(
+      'work_content_forbidden',
+      'Unknown source or actor authority cannot persist trigger content.',
+    );
+  }
+  assertSafeRef(input.auditEventId, 'Audit event ID');
+  assertSafeRef(input.auditIdempotencyKey, 'Audit idempotency key');
+}
+
+function validateShadowAdmission(input: AdmitShadowRunInput): void {
+  assertExactKeys(
+    input,
+    [
+      'work',
+      'binding',
+      'run',
+      'safeConfig',
+      'triggerContent',
+      'auditEventId',
+      'auditIdempotencyKey',
+    ],
+    'Shadow Work admission',
+  );
+  validateWorkInput(input.work);
+  validateBindingInput(input.binding);
+  if (input.binding.workId !== input.work.id || input.run.workId !== input.work.id) {
+    throw workError('work_reference_invalid', 'Shadow admission IDs do not share one Work.');
+  }
+  if (input.run.bindingId !== input.binding.id) {
+    throw workError('work_reference_invalid', 'Shadow Run does not reference its Binding.');
+  }
+  validateRunInput({
+    ...input.run,
+    admissionSequence: 1,
+    triggerContentRef: null,
+    configRevisionId: 'config_00000000' as EffectiveConfigRevisionId,
+  });
+  canonicalSafeConfig(input.safeConfig);
+  if (input.triggerContent !== undefined && input.triggerContent !== null) {
+    assertExactKeys(input.triggerContent, ['sensitivity', 'body'], 'Shadow trigger content');
+    if (!['public', 'private'].includes(input.triggerContent.sensitivity)) {
+      throw workError('work_content_invalid', 'Shadow trigger sensitivity is invalid.');
+    }
+    if (typeof input.triggerContent.body !== 'string') {
+      throw workError('work_content_invalid', 'Shadow trigger body is invalid.');
+    }
+  }
+  if (
+    input.binding.sourceVisibility !== 'public' &&
+    input.work.maximumSensitivity !== 'private'
+  ) {
+    throw workError(
+      'work_sensitivity_invalid',
+      'Non-public Bindings require a private Work sensitivity ceiling.',
+    );
+  }
+  if (
+    (input.binding.sourceVisibility === 'unknown' || input.run.actorTrustTier === 'unknown') &&
+    input.triggerContent
   ) {
     throw workError(
       'work_content_forbidden',
@@ -1210,6 +1470,15 @@ function sameWork(record: WorkRecord, input: CreateWorkInput): boolean {
   );
 }
 
+function sameReusableWork(record: WorkRecord, input: CreateWorkInput): boolean {
+  return (
+    record.id === input.id &&
+    record.kind === input.kind &&
+    record.maximumSensitivity === input.maximumSensitivity &&
+    record.lifecycle === 'open'
+  );
+}
+
 function sameBinding(record: BindingRecord, input: CreateBindingInput): boolean {
   return (
     record.id === input.id &&
@@ -1223,6 +1492,22 @@ function sameBinding(record: BindingRecord, input: CreateBindingInput): boolean 
     record.pinnedConfigRevisionId === (input.pinnedConfigRevisionId ?? null) &&
     record.orderingKey === input.orderingKey &&
     record.createdAt === input.createdAt
+  );
+}
+
+function sameReusableBinding(record: BindingRecord, input: CreateBindingInput): boolean {
+  return (
+    record.id === input.id &&
+    record.workId === input.workId &&
+    record.adapterKind === input.adapterKind &&
+    record.externalAccountId === input.externalAccountId &&
+    record.externalConversationId === input.externalConversationId &&
+    record.generation === input.generation &&
+    record.lifecycle === 'active' &&
+    record.sourceVisibility === input.sourceVisibility &&
+    record.configMode === input.configMode &&
+    record.pinnedConfigRevisionId === (input.pinnedConfigRevisionId ?? null) &&
+    record.orderingKey === input.orderingKey
   );
 }
 
@@ -1432,6 +1717,15 @@ function requiredExecution(value: RunExecutionRecord | undefined): RunExecutionR
 
 function requiredConfig(value: EffectiveConfigRevision | undefined): EffectiveConfigRevision {
   if (!value) throw workError('work_config_not_found', 'Config revision was not found.');
+  return value;
+}
+
+function requiredConfigId(
+  value: EffectiveConfigRevisionId | null,
+): EffectiveConfigRevisionId {
+  if (!value) {
+    throw workError('work_reference_invalid', 'Frozen Binding has no config revision.');
+  }
   return value;
 }
 

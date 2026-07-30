@@ -1,5 +1,24 @@
 import { openStateDb, type NodeStateDb } from '../state/node-state-db.ts';
 import type { StateDb } from '../state/state-db.ts';
+import { WorkStoreLogic } from '../work/store.ts';
+import type { AdmitShadowRunInput, ShadowRunAdmission } from '../work/types.ts';
+import { TurnJobStoreLogic, type PendingTurnJob } from './turn-jobs.ts';
+import type { TurnJob } from './turn-job-types.ts';
+import { CLAIM_TTL_MS, THREAD_TTL_MS } from './state-limits.ts';
+
+export { CLAIM_TTL_MS, THREAD_TTL_MS } from './state-limits.ts';
+
+export interface SlackCanonicalAdmissionInput {
+  evtKey: string;
+  msgKey: string;
+  threadKey: string;
+  admission: AdmitShadowRunInput;
+  turnJob?: TurnJob;
+}
+
+export type SlackCanonicalAdmissionResult =
+  | { claimed: false }
+  | { claimed: true; admission: ShadowRunAdmission };
 
 /**
  * Application-owned duplicate-admission store.
@@ -35,6 +54,13 @@ export interface SlackThreadRegistry {
 
 /** The combined claims + thread-registry surface the Slack channel consumes. */
 export interface SlackStateStore extends SlackClaimStore, SlackThreadRegistry {
+  admitCanonical(input: SlackCanonicalAdmissionInput): Promise<SlackCanonicalAdmissionResult>;
+  /** Node-only durable legacy relay operations; Cloudflare owns these in its DO alarm. */
+  listPendingTurns?(): Promise<PendingTurnJob[]>;
+  recordTurnAttempt?(id: string, attempts: number): Promise<void>;
+  markTurnDelivered?(id: string): Promise<void>;
+  markTurnError?(id: string): Promise<void>;
+  discardTurn?(id: string): Promise<void>;
   /** Node backend only (closes the SQLite handle); absent on RPC proxies. */
   close?(): void;
 }
@@ -44,12 +70,10 @@ export interface SlackStateStore extends SlackClaimStore, SlackThreadRegistry {
 // Exported so the turn-relay job table (turn-jobs.ts) purges on the SAME
 // horizon: past it Slack no longer redelivers the originating event, so a
 // leftover job row can no longer matter.
-export const CLAIM_TTL_MS = 2 * 60 * 60 * 1000;
 // Joined threads stay continuable for much longer, but not forever — expiring
 // them bounds the table and matches how stale a weeks-old thread really is. A
 // thread's config snapshot is bounded to the same horizon (see snapshot-store):
 // past it, an implicit reply is no longer admitted, so the snapshot is dead.
-export const THREAD_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 /**
  * Target-neutral claims + thread-registry logic over the StateDb
@@ -100,6 +124,24 @@ export class SlackStateLogic {
     return row !== undefined;
   }
 
+  admitCanonical(
+    input: SlackCanonicalAdmissionInput,
+    work: WorkStoreLogic,
+    turnJobs?: TurnJobStoreLogic,
+  ): SlackCanonicalAdmissionResult {
+    return this.db.transaction(() => {
+      if (!this.claim(input.evtKey)) return { claimed: false };
+      if (!this.claim(input.msgKey)) {
+        this.release(input.evtKey);
+        return { claimed: false };
+      }
+      const admission = work.admitShadowRunInTransaction(input.admission);
+      this.start(input.threadKey);
+      if (input.turnJob && turnJobs) turnJobs.enqueue(input.turnJob);
+      return { claimed: true, admission };
+    });
+  }
+
   private purgeExpired(): void {
     this.db.run('DELETE FROM slack_claims WHERE claimed_at < ?', this.now() - CLAIM_TTL_MS);
     this.db.run('DELETE FROM slack_threads WHERE started_at < ?', this.now() - THREAD_TTL_MS);
@@ -117,10 +159,14 @@ export class SlackStateLogic {
 export class SqliteSlackStateStore implements SlackStateStore {
   private readonly db: NodeStateDb;
   private readonly logic: SlackStateLogic;
+  private readonly work: WorkStoreLogic;
+  private readonly turnJobs: TurnJobStoreLogic;
 
   constructor(path: string, now: () => number = Date.now) {
     this.db = openStateDb(path);
     this.logic = new SlackStateLogic(this.db, now);
+    this.turnJobs = new TurnJobStoreLogic(this.db, now);
+    this.work = new WorkStoreLogic(this.db, { now });
   }
 
   async claim(key: string): Promise<boolean> {
@@ -137,6 +183,30 @@ export class SqliteSlackStateStore implements SlackStateStore {
 
   async has(key: string): Promise<boolean> {
     return this.logic.has(key);
+  }
+
+  async admitCanonical(input: SlackCanonicalAdmissionInput) {
+    return this.logic.admitCanonical(input, this.work, this.turnJobs);
+  }
+
+  async listPendingTurns() {
+    return this.turnJobs.listPending();
+  }
+
+  async recordTurnAttempt(id: string, attempts: number) {
+    this.turnJobs.recordAttempt(id, attempts);
+  }
+
+  async markTurnDelivered(id: string) {
+    this.turnJobs.markDelivered(id);
+  }
+
+  async markTurnError(id: string) {
+    this.turnJobs.markError(id);
+  }
+
+  async discardTurn(id: string) {
+    this.turnJobs.discard(id);
   }
 
   close(): void {

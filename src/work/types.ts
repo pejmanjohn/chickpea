@@ -249,6 +249,37 @@ export interface CreateWorkGraphInput {
   auditIdempotencyKey: string;
 }
 
+/**
+ * Target-neutral composite admission used by channel and schedule adapters.
+ * Adapter code prepares opaque external identities and a safe configuration;
+ * the Work store owns revision dedupe, Binding reuse, content retention, Run
+ * sequencing, and the initial audit event in one database transaction.
+ */
+export interface AdmitShadowRunInput {
+  work: CreateWorkInput;
+  binding: CreateBindingInput;
+  run: Omit<AdmitRunInput, 'admissionSequence' | 'triggerContentRef' | 'configRevisionId'>;
+  safeConfig: SafeEffectiveConfigInput;
+  triggerContent?: {
+    sensitivity: ContentSensitivity;
+    body: string;
+  } | null;
+  auditEventId: string;
+  auditIdempotencyKey: string;
+}
+
+export interface ShadowRunAdmission {
+  work: WorkRecord;
+  binding: BindingRecord;
+  run: RunRecord;
+  replayed: boolean;
+}
+
+export interface EnsureWorkBindingInput {
+  work: CreateWorkInput;
+  binding: CreateBindingInput;
+}
+
 export interface CreateRunExecutionInput {
   id: RunExecutionId;
   runId: RunId;
@@ -308,6 +339,7 @@ export type WorkRpcRequest =
   | { kind: 'get_content'; ref: LedgerContentRef; at?: number }
   | { kind: 'purge_content'; at?: number; limit?: number }
   | { kind: 'create_graph'; input: CreateWorkGraphInput }
+  | { kind: 'admit_shadow_run'; input: AdmitShadowRunInput }
   | { kind: 'get_work'; workId: WorkId }
   | { kind: 'get_binding'; bindingId: BindingId }
   | { kind: 'get_run'; runId: RunId }
@@ -324,6 +356,7 @@ export type WorkRpcResponse =
   | { kind: 'content'; content: LedgerContentRecord | null }
   | { kind: 'purge'; result: WorkPurgeResult }
   | { kind: 'graph'; work: WorkRecord; binding: BindingRecord; run: RunRecord }
+  | { kind: 'shadow_admission'; admission: ShadowRunAdmission }
   | { kind: 'work'; work: WorkRecord | null }
   | { kind: 'binding'; binding: BindingRecord | null }
   | { kind: 'run'; run: RunRecord | null }
@@ -342,6 +375,7 @@ export interface WorkStore {
     binding: BindingRecord;
     run: RunRecord;
   }>;
+  admitShadowRun(input: AdmitShadowRunInput): Promise<ShadowRunAdmission>;
   getWork(id: WorkId): Promise<WorkRecord | undefined>;
   getBinding(id: BindingId): Promise<BindingRecord | undefined>;
   getRun(id: RunId): Promise<RunRecord | undefined>;

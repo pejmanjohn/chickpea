@@ -1,11 +1,8 @@
-import type {
-  TurnJob,
-  TurnProgress,
-  TurnPullRequestProgress,
-} from '../config/state-rpc.ts';
+import type { TurnProgress, TurnPullRequestProgress } from '../config/state-rpc.ts';
+import type { TurnJob } from './turn-job-types.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
 import type { StateDb } from '../state/state-db.ts';
-import { CLAIM_TTL_MS } from './claim-store.ts';
+import { CLAIM_TTL_MS } from './state-limits.ts';
 import type { NormalizedSlackTurn } from './types.ts';
 import type { UsagePersistenceEvent } from '../usage/runtime-recorder.ts';
 
@@ -47,6 +44,7 @@ export interface PendingTurnJob {
   msgKey: string;
   turn: NormalizedSlackTurn;
   assignment: ResolvedAssignment;
+  runId?: string;
   /** Deliveries already attempted (0 before the alarm has ever run it). */
   attempts: number;
   progress: TurnProgress;
@@ -58,6 +56,7 @@ interface TurnJobRow {
   msg_key: string;
   turn_json: string;
   assignment_json: string;
+  run_id?: string | null;
   attempts: number;
   progress_json: string;
 }
@@ -74,6 +73,7 @@ export class TurnJobStoreLogic {
         msg_key TEXT NOT NULL,
         turn_json TEXT NOT NULL,
         assignment_json TEXT NOT NULL,
+        run_id TEXT,
         attempts INTEGER NOT NULL DEFAULT 0,
         delivered INTEGER NOT NULL DEFAULT 0,
         status TEXT NOT NULL DEFAULT 'pending',
@@ -84,6 +84,9 @@ export class TurnJobStoreLogic {
     const columns = db.all('PRAGMA table_info(turn_jobs)');
     if (!columns.some((column) => column.name === 'progress_json')) {
       db.exec("ALTER TABLE turn_jobs ADD COLUMN progress_json TEXT NOT NULL DEFAULT '{}'");
+    }
+    if (!columns.some((column) => column.name === 'run_id')) {
+      db.exec('ALTER TABLE turn_jobs ADD COLUMN run_id TEXT');
     }
   }
 
@@ -96,13 +99,15 @@ export class TurnJobStoreLogic {
     this.purgeExpired();
     const inserted = this.db.run(
       `INSERT OR IGNORE INTO turn_jobs (
-        id, evt_key, msg_key, turn_json, assignment_json, attempts, delivered, status, enqueued_at
-      ) VALUES (?, ?, ?, ?, ?, 0, 0, 'pending', ?)`,
+        id, evt_key, msg_key, turn_json, assignment_json, run_id,
+        attempts, delivered, status, enqueued_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 0, 0, 'pending', ?)`,
       job.id,
       job.evtKey,
       job.msgKey,
       JSON.stringify(job.turn),
       JSON.stringify(job.assignment),
+      job.runId ?? null,
       this.now(),
     );
     return inserted.changes === 1;
@@ -111,7 +116,7 @@ export class TurnJobStoreLogic {
   /** Undelivered jobs in enqueue order — the alarm's work list. */
   listPending(): PendingTurnJob[] {
     const rows = this.db.all(
-      `SELECT id, evt_key, msg_key, turn_json, assignment_json, attempts, progress_json
+      `SELECT id, evt_key, msg_key, turn_json, assignment_json, run_id, attempts, progress_json
        FROM turn_jobs WHERE delivered = 0 ORDER BY enqueued_at`,
     ) as unknown as TurnJobRow[];
     return rows.map((row) => ({
@@ -120,6 +125,7 @@ export class TurnJobStoreLogic {
       msgKey: row.msg_key,
       turn: JSON.parse(row.turn_json) as NormalizedSlackTurn,
       assignment: JSON.parse(row.assignment_json) as ResolvedAssignment,
+      ...(row.run_id ? { runId: row.run_id } : {}),
       attempts: Number(row.attempts),
       progress: parseTurnProgress(row.progress_json),
     }));
@@ -188,6 +194,11 @@ export class TurnJobStoreLogic {
   /** Tombstone a job that exhausted its attempts (terminal failure). */
   markError(id: string): void {
     this.db.run("UPDATE turn_jobs SET delivered = 1, status = 'error' WHERE id = ?", id);
+  }
+
+  /** Node legacy failures release Slack claims, so remove the row for redrive. */
+  discard(id: string): void {
+    this.db.run('DELETE FROM turn_jobs WHERE id = ?', id);
   }
 
   private purgeExpired(): void {
