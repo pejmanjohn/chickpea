@@ -105,3 +105,32 @@ Flue owns its canonical conversation, raw model/tool facts, compaction, and raw
 settlement. Chickpea owns the product Run/RunExecution classification. A raw
 Flue fact may drive a guarded Chickpea transition; neither record rewrites the
 other system's history or becomes a competing lifecycle authority.
+
+## Work ledger storage and retention
+
+The canonical product ledger is application SQLite in the isolated Node
+process or singleton realm Durable Object. `works`, `bindings`, `runs`,
+`run_executions`, `effective_config_revisions`, and `ledger_content` are
+additive application tables; there is deliberately no persisted Session model.
+Session is a safe projection over this ledger. Work identity contains no queue
+lease or executor identity, and adapter coordinates live only on Binding.
+
+Known-public and known-private execution/delivery bodies may be stored behind a
+fresh random `ledger_content` reference. Unknown visibility stores no body.
+Ordinary Session queries receive no content-body operation, so private content
+is structurally unavailable there rather than conditionally redacted after a
+read. Equivalent bodies do not share a ref or body-derived digest.
+
+`TAG_RUN_BODY_RETENTION_DAYS` is validated at each content write and accepts an
+integer from 1 through 365, defaulting to 30. The resulting exact expiry is
+immutable for that row. Reads fail closed at expiry; bounded idempotent purge
+then nulls the body and byte size while retaining body-free referential and
+audit evidence. A later retention change or identical body cannot revive a
+purged row.
+
+This is a retention boundary, not application-layer encryption. The isolated
+runtime/operator and underlying provider storage controls are trusted for
+known-private bodies. Chickpea purge does not delete Flue transcripts; Flue
+conversation retention must be operated as a separate policy. Deployments that
+cannot accept this at-rest trust boundary must add reviewed envelope encryption
+before release rather than treating it as implied by the ledger.

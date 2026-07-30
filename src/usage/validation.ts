@@ -43,6 +43,7 @@ export function normalizeAdmitUsageOperation(input: AdmitUsageOperationInput): A
     operationId: opaqueId(input.operationId, 'operation ID'),
     operationKind,
     sourceId: opaqueId(input.sourceId, 'source ID'),
+    ...(input.runId ? { runId: opaqueId(input.runId, 'Run ID') } : {}),
     startedAt: timestamp(input.startedAt, 'started time'),
     installationId: opaqueId(input.installationId, 'installation ID'),
     workspaceId: optionalId(input.workspaceId, 'workspace ID'),
@@ -87,6 +88,9 @@ export function normalizeRecordUsageTerminal(
   const normalized: RecordUsageTerminalInput = {
     operationId: opaqueId(input.operationId, 'operation ID'),
     executionId: opaqueId(input.executionId, 'execution ID'),
+    ...(input.runExecutionId
+      ? { runExecutionId: opaqueId(input.runExecutionId, 'Run execution ID') }
+      : {}),
     status: terminalStatus(input.status),
     finishedAt: timestamp(input.finishedAt, 'finished time'),
     observedAt: timestamp(input.observedAt, 'observed time'),

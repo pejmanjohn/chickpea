@@ -101,6 +101,12 @@ import { createRoutineScheduledHandler } from './routines/scheduler-adapter.ts';
 import { UsageStoreLogic } from './usage/store.ts';
 import { UsageStateError } from './usage/store-error.ts';
 import type { UsageRpcRequest, UsageRpcResponse, UsageStore } from './usage/types.ts';
+import { WorkStoreLogic } from './work/store.ts';
+import {
+  WorkStateError,
+  type WorkRpcRequest,
+  type WorkRpcResponse,
+} from './work/types.ts';
 import {
   RoutineAdmissionController,
   RoutineNotSubmittedError,
@@ -434,6 +440,7 @@ interface TagStateStores {
   memory: MemoryStoreLogic;
   routines: RoutineStoreLogic;
   usage: UsageStoreLogic;
+  work: WorkStoreLogic;
 }
 
 export class TagStateStore extends DurableObject implements TagStateRpc {
@@ -465,7 +472,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       // Same construction order as the node backend: each logic class creates
       // its own tables (and the config store runs migrations + seedOnce), so a
       // fresh DO is fully seeded before it answers its first RPC.
-      const stores: TagStateStores = {
+      const stores = {
         config: new ConfigStoreLogic(db),
         snapshots: new SnapshotStoreLogic(db),
         slack: new SlackStateLogic(db),
@@ -474,9 +481,13 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         memory: new MemoryStoreLogic(db),
         routines: new RoutineStoreLogic(db),
         usage: new UsageStoreLogic(db),
+      } as Omit<TagStateStores, 'work'>;
+      const completeStores: TagStateStores = {
+        ...stores,
+        work: new WorkStoreLogic(db),
       };
       this.initError = undefined;
-      return stores;
+      return completeStores;
     } catch (err) {
       this.initError = err instanceof Error ? err.message : String(err);
       console.error('[chickpea] TagStateStore init failed:', this.initError);
@@ -645,6 +656,12 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     request: UsageRpcRequest,
   ): Promise<StateRpcResult<UsageRpcResponse>> {
     return this.call((stores) => stores.usage.execute(request));
+  }
+
+  async workExecute(
+    request: WorkRpcRequest,
+  ): Promise<StateRpcResult<WorkRpcResponse>> {
+    return this.call((stores) => stores.work.execute(request));
   }
 
   // ── turn relay (Cloudflare turn-horizon fix) ─────────────────────────────
@@ -964,6 +981,12 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           ...err.details,
         });
       }
+      if (err instanceof WorkStateError) {
+        return rpcError('work', err.message, {
+          workCode: err.code,
+          ...err.details,
+        });
+      }
       const message = err instanceof Error ? err.message : String(err);
       console.error('[chickpea] TagStateStore RPC failure:', message);
       return rpcError('internal', message);
@@ -972,7 +995,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
 }
 
 function rpcError(
-  code: 'unknown_agent' | 'agent_exists' | 'agent_still_assigned' | 'memory' | 'routine' | 'usage' | 'internal',
+  code: 'unknown_agent' | 'agent_exists' | 'agent_still_assigned' | 'memory' | 'routine' | 'usage' | 'work' | 'internal',
   message: string,
   details?: Record<string, string>,
 ): { ok: false; error: { code: typeof code; message: string; details?: Record<string, string> } } {

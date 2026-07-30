@@ -87,6 +87,23 @@ test('usage admission and terminal recording are idempotent and immutable', asyn
   }
 });
 
+test('usage observations retain optional canonical Run and RunExecution links', async () => {
+  const store = new SqliteUsageStore(':memory:');
+  try {
+    const admitted = await store.admitOperation(operation('op_linked', {
+      runId: 'run_usage_linked',
+    }));
+    assert.equal(admitted.runId, 'run_usage_linked');
+    const recorded = await store.recordTerminal(terminal('op_linked', {
+      runExecutionId: 'execution_usage_linked',
+    }));
+    assert.equal(recorded.operation.runId, 'run_usage_linked');
+    assert.equal(recorded.measurements[0]?.runExecutionId, 'execution_usage_linked');
+  } finally {
+    store.close();
+  }
+});
+
 test('missing usage remains null with an explicit reason and direct messages stay generic', async () => {
   const store = new SqliteUsageStore(':memory:');
   try {

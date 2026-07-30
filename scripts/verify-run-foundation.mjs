@@ -110,6 +110,11 @@ const FOCUSED_TESTS = [
   'tests/openai-subscription-routing.test.ts',
   'tests/model-catalog-routing.test.ts',
   'tests/provider-auth-audit.test.ts',
+  'tests/work-store.test.ts',
+  'tests/work-retention.test.ts',
+  'tests/work-state-rpc.test.ts',
+  'tests/routine-store.test.ts',
+  'tests/usage-store-contract.test.ts',
 ];
 
 function run(label, command, args) {
@@ -143,7 +148,7 @@ async function main() {
   const matrixOnly = process.argv.includes('--matrix');
   if (!matrixOnly) {
     run('Flue patch verification', process.execPath, ['scripts/patch-flue-runtime.mjs']);
-    run('U1 focused contract tests', process.execPath, [
+    run('run foundation focused contract tests', process.execPath, [
       '--test',
       '--import',
       'tsx',

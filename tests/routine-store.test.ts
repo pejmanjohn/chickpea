@@ -98,6 +98,16 @@ test('routine schema is additive and portable across the target-neutral StateDb 
 
   assert.doesNotThrow(() => new RoutineStoreLogic(portable, () => CREATED_AT));
   assert.equal(sqlite.get('SELECT id FROM existing_fixture')?.id, 'preserved');
+  assert.ok(
+    sqlite.all('PRAGMA table_info(routines)').some((column) => column.name === 'work_id'),
+  );
+  assert.ok(
+    sqlite.all('PRAGMA table_info(routines)').some((column) => column.name === 'binding_id'),
+  );
+  assert.ok(
+    sqlite.all('PRAGMA table_info(routine_runs)')
+      .some((column) => column.name === 'canonical_run_id'),
+  );
   sqlite.close();
 });
 

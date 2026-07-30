@@ -7,6 +7,25 @@ import type { ConfigAgentPatch, ConfigStore, OAuthReauthorizationTarget } from '
 import type { AgentSnapshot, ChannelAssignment, CustomAgentConfig } from './types.ts';
 import type { SlackStateStore } from '../slack/claim-store.ts';
 import {
+  WorkStateError,
+  type BindingId,
+  type CreateRunExecutionInput,
+  type CreateWorkGraphInput,
+  type EffectiveConfigRevisionId,
+  type LedgerContentRef,
+  type PutLedgerContentInput,
+  type QuarantineRunInput,
+  type RequireRunRecoveryInput,
+  type RunExecutionId,
+  type RunExecutionRouteInput,
+  type RunId,
+  type SafeEffectiveConfigInput,
+  type WorkId,
+  type WorkRpcRequest,
+  type WorkRpcResponse,
+  type WorkStore,
+} from '../work/types.ts';
+import {
   MemoryStateError,
   MemoryRateLimitError,
   MemoryVersionConflictError,
@@ -143,6 +162,12 @@ function unwrap<T>(result: StateRpcResult<T>): T {
       const usageCode = usageDetails.usageCode ?? 'usage_state_error';
       delete usageDetails.usageCode;
       throw new UsageStateError(usageCode, message, usageDetails);
+    }
+    case 'work': {
+      const workDetails = { ...(details ?? {}) };
+      const workCode = workDetails.workCode ?? 'work_state_error';
+      delete workDetails.workCode;
+      throw new WorkStateError(workCode, message, workDetails);
     }
     default:
       throw new Error(message);
@@ -734,6 +759,132 @@ export class CfUsageStore implements UsageStore {
   }
 }
 
+export class CfWorkStore implements WorkStore {
+  constructor(private readonly stub: TagStateRpc) {}
+
+  async putConfigRevision(input: SafeEffectiveConfigInput, createdAt?: number) {
+    const response = await this.execute({
+      kind: 'put_config_revision',
+      input,
+      ...(createdAt === undefined ? {} : { createdAt }),
+    });
+    if (response.kind !== 'config_revision' || !response.revision) {
+      throw unexpectedWorkResponse();
+    }
+    return response.revision;
+  }
+
+  async getConfigRevision(revisionId: EffectiveConfigRevisionId) {
+    const response = await this.execute({ kind: 'get_config_revision', revisionId });
+    if (response.kind !== 'config_revision') throw unexpectedWorkResponse();
+    return orUndefined(response.revision);
+  }
+
+  async putContent(input: PutLedgerContentInput) {
+    const response = await this.execute({ kind: 'put_content', input });
+    if (response.kind !== 'content' || !response.content) throw unexpectedWorkResponse();
+    return response.content;
+  }
+
+  async getContent(ref: LedgerContentRef, at?: number) {
+    const response = await this.execute({
+      kind: 'get_content',
+      ref,
+      ...(at === undefined ? {} : { at }),
+    });
+    if (response.kind !== 'content') throw unexpectedWorkResponse();
+    return orUndefined(response.content);
+  }
+
+  async purgeContent(at?: number, limit?: number) {
+    const response = await this.execute({
+      kind: 'purge_content',
+      ...(at === undefined ? {} : { at }),
+      ...(limit === undefined ? {} : { limit }),
+    });
+    if (response.kind !== 'purge') throw unexpectedWorkResponse();
+    return response.result;
+  }
+
+  async createGraph(input: CreateWorkGraphInput) {
+    const response = await this.execute({ kind: 'create_graph', input });
+    if (response.kind !== 'graph') throw unexpectedWorkResponse();
+    return { work: response.work, binding: response.binding, run: response.run };
+  }
+
+  async getWork(workId: WorkId) {
+    const response = await this.execute({ kind: 'get_work', workId });
+    if (response.kind !== 'work') throw unexpectedWorkResponse();
+    return orUndefined(response.work);
+  }
+
+  async getBinding(bindingId: BindingId) {
+    const response = await this.execute({ kind: 'get_binding', bindingId });
+    if (response.kind !== 'binding') throw unexpectedWorkResponse();
+    return orUndefined(response.binding);
+  }
+
+  async getRun(runId: RunId) {
+    const response = await this.execute({ kind: 'get_run', runId });
+    if (response.kind !== 'run') throw unexpectedWorkResponse();
+    return orUndefined(response.run);
+  }
+
+  async createRunExecution(input: CreateRunExecutionInput) {
+    const response = await this.execute({ kind: 'create_execution', input });
+    if (response.kind !== 'execution' || !response.execution) {
+      throw unexpectedWorkResponse();
+    }
+    return response.execution;
+  }
+
+  async recordRunExecutionRoute(input: RunExecutionRouteInput) {
+    const response = await this.execute({ kind: 'record_execution_route', input });
+    if (response.kind !== 'execution' || !response.execution) {
+      throw unexpectedWorkResponse();
+    }
+    return response.execution;
+  }
+
+  async getRunExecution(executionId: RunExecutionId) {
+    const response = await this.execute({ kind: 'get_execution', executionId });
+    if (response.kind !== 'execution') throw unexpectedWorkResponse();
+    return orUndefined(response.execution);
+  }
+
+  async requireRecovery(input: RequireRunRecoveryInput) {
+    const response = await this.execute({ kind: 'require_recovery', input });
+    if (response.kind !== 'run' || !response.run) throw unexpectedWorkResponse();
+    return response.run;
+  }
+
+  async quarantineRun(input: QuarantineRunInput) {
+    const response = await this.execute({ kind: 'quarantine_run', input });
+    if (response.kind !== 'run' || !response.run) throw unexpectedWorkResponse();
+    return response.run;
+  }
+
+  async listAuditEvents(runId: RunId, limit?: number) {
+    const response = await this.execute({
+      kind: 'list_audit_events',
+      runId,
+      ...(limit === undefined ? {} : { limit }),
+    });
+    if (response.kind !== 'audit_events') throw unexpectedWorkResponse();
+    return response.events;
+  }
+
+  async verifyIntegrity() {
+    const response = await this.execute({ kind: 'verify_integrity' });
+    if (response.kind !== 'integrity') throw unexpectedWorkResponse();
+    return response.report;
+  }
+
+  private async execute(request: WorkRpcRequest): Promise<WorkRpcResponse> {
+    return unwrap(await this.stub.workExecute(request));
+  }
+}
+
 function unexpectedMemoryResponse(): Error {
   return new Error('Unexpected memory state response');
 }
@@ -744,4 +895,8 @@ function unexpectedRoutineResponse(): Error {
 
 function unexpectedUsageResponse(): Error {
   return new Error('Unexpected usage state response');
+}
+
+function unexpectedWorkResponse(): Error {
+  return new Error('Unexpected Work state response');
 }

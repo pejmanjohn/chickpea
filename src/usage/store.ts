@@ -49,6 +49,7 @@ interface OperationRow {
   operation_id: string;
   operation_kind: UsageOperation['operationKind'];
   source_id: string;
+  run_id: string | null;
   status: UsageOperation['status'];
   started_at: number;
   finished_at: number | null;
@@ -75,6 +76,7 @@ interface OperationRow {
 interface MeasurementRow {
   execution_id: string;
   operation_id: string;
+  run_execution_id: string | null;
   operation_status: UsageMeasurement['operationStatus'];
   observed_at: number;
   provider_route: string | null;
@@ -110,14 +112,14 @@ interface CredentialRow {
 }
 
 const OPERATION_COLUMNS = `
-  operation_id, operation_kind, source_id, status, started_at, finished_at,
+  operation_id, operation_kind, source_id, run_id, status, started_at, finished_at,
   installation_id, workspace_id, profile_id, profile_label, channel_id,
   channel_label, conversation_kind, routine_id, routine_label, routine_run_id,
   requested_provider, requested_model, credential_ref_id, credential_version,
   coverage, telemetry_schema_version, created_at, updated_at`;
 
 const MEASUREMENT_COLUMNS = `
-  execution_id, operation_id, operation_status, observed_at, provider_route,
+  execution_id, operation_id, run_execution_id, operation_status, observed_at, provider_route,
   requested_provider, requested_model, returned_provider, returned_model,
   credential_ref_id, credential_version, usage_completeness, input_tokens,
   output_tokens, total_tokens, usage_unknown_reason, estimate_completeness,
@@ -154,12 +156,13 @@ export class UsageStoreLogic {
       const recordedAt = this.now();
       this.db.run(
         `INSERT INTO usage_operations (${OPERATION_COLUMNS}) VALUES (
-          ?, ?, ?, 'admitted', ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+          ?, ?, ?, ?, 'admitted', ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
           'aggregate_only', ?, ?, ?
         )`,
         input.operationId,
         input.operationKind,
         input.sourceId,
+        input.runId ?? null,
         input.startedAt,
         input.installationId,
         input.workspaceId,
@@ -213,10 +216,11 @@ export class UsageStoreLogic {
       const recordedAt = this.now();
       this.db.run(
         `INSERT INTO usage_measurements (${MEASUREMENT_COLUMNS}) VALUES (
-          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
         )`,
         input.executionId,
         input.operationId,
+        input.runExecutionId ?? null,
         input.status,
         input.observedAt,
         input.providerRoute,
@@ -689,6 +693,7 @@ export class UsageStoreLogic {
         operation_id TEXT PRIMARY KEY,
         operation_kind TEXT NOT NULL,
         source_id TEXT NOT NULL,
+        run_id TEXT,
         status TEXT NOT NULL,
         started_at INTEGER NOT NULL,
         finished_at INTEGER,
@@ -716,6 +721,7 @@ export class UsageStoreLogic {
       `CREATE TABLE IF NOT EXISTS usage_measurements (
         execution_id TEXT PRIMARY KEY,
         operation_id TEXT NOT NULL,
+        run_execution_id TEXT,
         operation_status TEXT NOT NULL,
         observed_at INTEGER NOT NULL,
         provider_route TEXT,
@@ -792,6 +798,20 @@ export class UsageStoreLogic {
       'CREATE INDEX IF NOT EXISTS usage_measurements_operation_idx ON usage_measurements (operation_id, observed_at, execution_id)',
       'CREATE INDEX IF NOT EXISTS usage_credentials_provider_idx ON usage_credentials (provider_id, retired_at, credential_ref_id, version)',
     ]) this.db.exec(sql);
+    const operationColumns = this.db.all('PRAGMA table_info(usage_operations)');
+    if (!operationColumns.some((row) => row.name === 'run_id')) {
+      this.db.exec('ALTER TABLE usage_operations ADD COLUMN run_id TEXT');
+    }
+    const measurementColumns = this.db.all('PRAGMA table_info(usage_measurements)');
+    if (!measurementColumns.some((row) => row.name === 'run_execution_id')) {
+      this.db.exec('ALTER TABLE usage_measurements ADD COLUMN run_execution_id TEXT');
+    }
+    this.db.exec(
+      'CREATE INDEX IF NOT EXISTS usage_operations_run_idx ON usage_operations (run_id) WHERE run_id IS NOT NULL',
+    );
+    this.db.exec(
+      'CREATE INDEX IF NOT EXISTS usage_measurements_run_execution_idx ON usage_measurements (run_execution_id) WHERE run_execution_id IS NOT NULL',
+    );
     const installedCatalogs = installReleasePriceCatalogs(this.db);
     for (const catalog of installedCatalogs) {
       this.appendUsageAudit({
@@ -873,6 +893,7 @@ function mapOperation(row: OperationRow): UsageOperation {
     operationId: row.operation_id,
     operationKind: row.operation_kind,
     sourceId: row.source_id,
+    ...(row.run_id ? { runId: row.run_id } : {}),
     status: row.status,
     startedAt: Number(row.started_at),
     finishedAt: nullableNumber(row.finished_at),
@@ -901,6 +922,7 @@ function mapMeasurement(row: MeasurementRow): UsageMeasurement {
   return {
     executionId: row.execution_id,
     operationId: row.operation_id,
+    ...(row.run_execution_id ? { runExecutionId: row.run_execution_id } : {}),
     operationStatus: row.operation_status,
     observedAt: Number(row.observed_at),
     providerRoute: row.provider_route,
@@ -942,6 +964,7 @@ function sameAdmission(operation: UsageOperation, input: AdmitUsageOperationInpu
   return operation.operationId === input.operationId &&
     operation.operationKind === input.operationKind &&
     operation.sourceId === input.sourceId &&
+    (operation.runId ?? null) === (input.runId ?? null) &&
     operation.startedAt === input.startedAt &&
     operation.installationId === input.installationId &&
     operation.workspaceId === input.workspaceId &&
@@ -962,6 +985,7 @@ function sameAdmission(operation: UsageOperation, input: AdmitUsageOperationInpu
 function sameTerminal(measurement: UsageMeasurement, input: RecordUsageTerminalInput): boolean {
   return measurement.executionId === input.executionId &&
     measurement.operationId === input.operationId &&
+    (measurement.runExecutionId ?? null) === (input.runExecutionId ?? null) &&
     measurement.operationStatus === input.status &&
     measurement.observedAt === input.observedAt &&
     measurement.providerRoute === input.providerRoute &&

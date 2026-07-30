@@ -63,6 +63,8 @@ import {
 
 interface RoutineRow {
   id: string;
+  work_id?: string | null;
+  binding_id?: string | null;
   workspace_id: string;
   channel_id: string;
   creator_user_id: string;
@@ -136,6 +138,7 @@ interface RevisionRow {
 
 interface RunRow {
   id: string;
+  canonical_run_id?: string | null;
   idempotency_key: string;
   routine_id: string;
   routine_version: number;
@@ -1040,7 +1043,10 @@ export class RoutineStoreLogic {
   }
 
   getRun(occurrenceId: string): RoutineRun | undefined {
-    const row = this.db.get('SELECT * FROM routine_runs WHERE id = ?', occurrenceId);
+    const row = this.db.get(
+      `${this.routineRunProjection()} WHERE rr.id = ?`,
+      occurrenceId,
+    );
     return row ? rowToRun(row as unknown as RunRow) : undefined;
   }
 
@@ -1059,7 +1065,7 @@ export class RoutineStoreLogic {
     const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
     return this.db
       .all(
-        `SELECT * FROM routine_runs ${where}
+        `${this.routineRunProjection()} ${where}
          ORDER BY scheduled_for DESC, id DESC LIMIT ?`,
         ...params,
         limit,
@@ -1595,7 +1601,8 @@ export class RoutineStoreLogic {
   private initializeSchema(): void {
     this.db.exec(
       `CREATE TABLE IF NOT EXISTS routines (
-        id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, channel_id TEXT NOT NULL,
+        id TEXT PRIMARY KEY, work_id TEXT, binding_id TEXT,
+        workspace_id TEXT NOT NULL, channel_id TEXT NOT NULL,
         creator_user_id TEXT NOT NULL, name TEXT NOT NULL, description TEXT NOT NULL,
         task_text TEXT NOT NULL, trigger_kind TEXT NOT NULL, schedule_input TEXT NOT NULL,
         schedule_json TEXT NOT NULL, timezone TEXT NOT NULL, output_policy TEXT NOT NULL,
@@ -1658,7 +1665,7 @@ export class RoutineStoreLogic {
     );
     this.db.exec(
       `CREATE TABLE IF NOT EXISTS routine_runs (
-        id TEXT PRIMARY KEY, idempotency_key TEXT NOT NULL UNIQUE, routine_id TEXT NOT NULL,
+        id TEXT PRIMARY KEY, canonical_run_id TEXT, idempotency_key TEXT NOT NULL UNIQUE, routine_id TEXT NOT NULL,
         routine_version INTEGER NOT NULL, scheduled_for INTEGER NOT NULL,
         trigger_source TEXT NOT NULL, requested_by TEXT, status TEXT NOT NULL,
         failure_class TEXT, public_error TEXT, admission_owner TEXT,
@@ -1691,6 +1698,25 @@ export class RoutineStoreLogic {
     if (!runColumns.some((row) => row.name === 'provider_auth_route')) {
       this.db.exec('ALTER TABLE routine_runs ADD COLUMN provider_auth_route TEXT');
     }
+    if (!runColumns.some((row) => row.name === 'canonical_run_id')) {
+      this.db.exec('ALTER TABLE routine_runs ADD COLUMN canonical_run_id TEXT');
+    }
+    const routineColumns = this.db.all('PRAGMA table_info(routines)');
+    if (!routineColumns.some((row) => row.name === 'work_id')) {
+      this.db.exec('ALTER TABLE routines ADD COLUMN work_id TEXT');
+    }
+    if (!routineColumns.some((row) => row.name === 'binding_id')) {
+      this.db.exec('ALTER TABLE routines ADD COLUMN binding_id TEXT');
+    }
+    this.db.exec(
+      'CREATE UNIQUE INDEX IF NOT EXISTS routines_work_link_unique ON routines (work_id) WHERE work_id IS NOT NULL',
+    );
+    this.db.exec(
+      'CREATE UNIQUE INDEX IF NOT EXISTS routines_binding_link_unique ON routines (binding_id) WHERE binding_id IS NOT NULL',
+    );
+    this.db.exec(
+      'CREATE UNIQUE INDEX IF NOT EXISTS routine_runs_canonical_link_unique ON routine_runs (canonical_run_id) WHERE canonical_run_id IS NOT NULL',
+    );
     this.db.exec(
       `CREATE UNIQUE INDEX IF NOT EXISTS routine_runs_schedule_slot_unique
        ON routine_runs (routine_id, scheduled_for) WHERE trigger_source = 'schedule'`,
@@ -2356,10 +2382,29 @@ export class RoutineStoreLogic {
 
   private runByIdempotencyKey(idempotencyKey: string): RoutineRun | undefined {
     const row = this.db.get(
-      'SELECT * FROM routine_runs WHERE idempotency_key = ?',
+      `${this.routineRunProjection()} WHERE rr.idempotency_key = ?`,
       idempotencyKey,
     );
     return row ? rowToRun(row as unknown as RunRow) : undefined;
+  }
+
+  private routineRunProjection(): string {
+    const hasExecutions = Boolean(
+      this.db.get(
+        "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'run_executions'",
+      ),
+    );
+    if (!hasExecutions) return 'SELECT rr.* FROM routine_runs rr';
+    return `SELECT rr.*,
+      COALESCE((
+        SELECT execution.provider_auth_route
+        FROM run_executions execution
+        WHERE execution.run_id = rr.canonical_run_id
+          AND execution.provider_auth_route IS NOT NULL
+        ORDER BY execution.attempt_number DESC
+        LIMIT 1
+      ), rr.provider_auth_route) AS provider_auth_route
+      FROM routine_runs rr`;
   }
 
   private nextAdmissionNumber(occurrenceId: string): number {
@@ -2673,6 +2718,8 @@ function validateReservationInput(
 function rowToRoutine(row: RoutineRow): RoutineDefinition {
   return {
     id: row.id,
+    ...(row.work_id ? { workId: row.work_id } : {}),
+    ...(row.binding_id ? { bindingId: row.binding_id } : {}),
     workspaceId: row.workspace_id,
     channelId: row.channel_id,
     creatorUserId: row.creator_user_id,
@@ -2760,6 +2807,7 @@ function rowToRevision(row: RevisionRow): RoutineRevision {
 function rowToRun(row: RunRow): RoutineRun {
   return {
     id: row.id,
+    ...(row.canonical_run_id ? { canonicalRunId: row.canonical_run_id } : {}),
     idempotencyKey: row.idempotency_key,
     routineId: row.routine_id,
     routineVersion: row.routine_version,

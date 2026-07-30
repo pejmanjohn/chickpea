@@ -64,6 +64,9 @@ export interface RoutineScheduleReservation {
 
 export interface RoutineDefinition extends RoutineDefinitionContent {
   id: string;
+  /** Canonical Work links are present only on dual-written rows. */
+  workId?: string | null;
+  bindingId?: string | null;
   workspaceId: string;
   channelId: string;
   creatorUserId: string;
@@ -213,6 +216,8 @@ export interface ControlRoutineInput {
 
 export interface RoutineRun {
   id: string;
+  /** Canonical Run link is absent on historical/legacy occurrences. */
+  canonicalRunId?: string | null;
   idempotencyKey: string;
   routineId: string;
   routineVersion: number;

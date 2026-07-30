@@ -53,6 +53,8 @@ export interface AdmitUsageOperationInput {
   operationId: string;
   operationKind: UsageOperationKind;
   sourceId: string;
+  /** Canonical Run correlation; absent on historical/legacy observations. */
+  runId?: string | null;
   startedAt: number;
   installationId: string;
   workspaceId: string | null;
@@ -74,6 +76,7 @@ export interface UsageOperation {
   operationId: string;
   operationKind: UsageOperationKind;
   sourceId: string;
+  runId?: string | null;
   status: UsageOperationStatus;
   startedAt: number;
   finishedAt: number | null;
@@ -100,6 +103,8 @@ export interface UsageOperation {
 export interface RecordUsageTerminalInput {
   operationId: string;
   executionId: string;
+  /** Canonical RunExecution correlation; absent on historical observations. */
+  runExecutionId?: string | null;
   status: UsageTerminalStatus;
   finishedAt: number;
   observedAt: number;

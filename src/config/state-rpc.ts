@@ -6,6 +6,7 @@ import type { NormalizedSlackTurn } from '../slack/types.ts';
 import type { MemoryRpcRequest, MemoryRpcResponse } from '../memory/types.ts';
 import type { RoutineRpcRequest, RoutineRpcResponse } from '../routines/types.ts';
 import type { UsageRpcRequest, UsageRpcResponse } from '../usage/types.ts';
+import type { WorkRpcRequest, WorkRpcResponse } from '../work/types.ts';
 
 /**
  * Wire contract between the Cloudflare store proxies and the TagStateStore
@@ -34,6 +35,7 @@ export type StateRpcErrorCode =
   | 'memory'
   | 'routine'
   | 'usage'
+  | 'work'
   | 'internal';
 
 export interface StateRpcError {
@@ -146,6 +148,8 @@ export interface TagStateRpc {
   routinesExecute(request: RoutineRpcRequest): Promise<StateRpcResult<RoutineRpcResponse>>;
   // -- usage observability ------------------------------------------------
   usageExecute(request: UsageRpcRequest): Promise<StateRpcResult<UsageRpcResponse>>;
+  // -- canonical Work ledger ----------------------------------------------
+  workExecute(request: WorkRpcRequest): Promise<StateRpcResult<WorkRpcResponse>>;
   // -- turn relay (Cloudflare turn-horizon fix) ----------------------------
   /**
    * Persist a turn job and arm the alarm so `alarm()` runs it past the events

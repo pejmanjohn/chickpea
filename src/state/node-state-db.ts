@@ -76,6 +76,11 @@ export function openStateDb(path: string): NodeStateDb {
     mkdirSync(dirname(path), { recursive: true });
   }
   const db = new DatabaseSync(path);
+  // The canonical Work ledger depends on relational ownership constraints.
+  // Keep this explicit even though current Node 24 builds enable it by
+  // default, and wait briefly for another process applying an app migration.
+  db.exec('PRAGMA foreign_keys = ON;');
+  db.exec('PRAGMA busy_timeout = 5000;');
   if (path !== ':memory:') {
     db.exec('PRAGMA journal_mode = WAL;');
   }

@@ -13,6 +13,8 @@ interface RoutineStateSpikeStub {
     foreignKeysEnabled: boolean;
     orphanRejected: boolean;
     foreignKeyViolationCount: number;
+    workRunStatus: string;
+    workInvariantViolationCount: number;
   }>;
 }
 

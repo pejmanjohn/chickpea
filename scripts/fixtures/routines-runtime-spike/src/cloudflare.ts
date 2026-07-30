@@ -8,6 +8,12 @@ import {
 import routineSpike from './workflows/routine-spike.ts';
 import { hashRoutineValue } from '../../../../src/routines/ids.ts';
 import { RoutineStoreLogic } from '../../../../src/routines/store.ts';
+import { WorkStoreLogic } from '../../../../src/work/store.ts';
+import type {
+  BindingId,
+  RunId,
+  WorkId,
+} from '../../../../src/work/types.ts';
 import type { SqlParam, StateDb } from '../../../../src/state/state-db.ts';
 
 interface SpikeScheduledController {
@@ -73,11 +79,13 @@ class SpikeStateDb implements StateDb {
 export class RoutineStateSpike extends DurableObject {
   private readonly db: SpikeStateDb;
   private readonly routines: RoutineStoreLogic;
+  private readonly work: WorkStoreLogic;
 
   constructor(ctx: DurableObjectState, env: unknown) {
     super(ctx, env);
     this.db = new SpikeStateDb(ctx.storage);
     this.routines = new RoutineStoreLogic(this.db);
+    this.work = new WorkStoreLogic(this.db, { now: () => 1_800_000_000_000 });
   }
 
   exercise(suffix: string, at: number): {
@@ -88,6 +96,8 @@ export class RoutineStateSpike extends DurableObject {
     foreignKeysEnabled: boolean;
     orphanRejected: boolean;
     foreignKeyViolationCount: number;
+    workRunStatus: string;
+    workInvariantViolationCount: number;
   } {
     const routineId = `routine_workerd_${suffix}`;
     const tokenHash = hashRoutineValue(`token-${suffix}`);
@@ -144,6 +154,67 @@ export class RoutineStateSpike extends DurableObject {
     } catch {
       orphanRejected = true;
     }
+    const workId = `work_${suffix}` as WorkId;
+    const bindingId = `binding_${suffix}` as BindingId;
+    const canonicalRunId = `run_${suffix}` as RunId;
+    const config = this.work.putConfigRevision({
+      schemaVersion: 1,
+      profileId: 'profile_spike',
+      configuredModel: 'openai/gpt-5.6-sol',
+      snapshotDigest: 'a'.repeat(64),
+      capabilityDigest: 'b'.repeat(64),
+      skillNames: [],
+      connectionIds: [],
+      repositoryIds: [],
+      memoryMode: 'disabled',
+      ceilings: {
+        maxModelAttempts: 2,
+        maxToolCalls: 10,
+        maxActionAttempts: 0,
+        timeoutMs: 60_000,
+      },
+    });
+    const graph = this.work.createGraph({
+      work: {
+        id: workId,
+        kind: 'conversation',
+        maximumSensitivity: 'public',
+        createdAt: 1_800_000_000_000,
+      },
+      binding: {
+        id: bindingId,
+        workId,
+        adapterKind: 'conformance',
+        externalAccountId: `account_${suffix}`,
+        externalConversationId: `conversation_${suffix}`,
+        generation: 1,
+        sourceVisibility: 'public',
+        configMode: 'frozen_on_open',
+        pinnedConfigRevisionId: config.id,
+        orderingKey: `conformance:${suffix}`,
+        createdAt: 1_800_000_000_000,
+      },
+      run: {
+        id: canonicalRunId,
+        workId,
+        bindingId,
+        kind: 'interactive',
+        admissionSequence: 1,
+        triggerKind: 'conformance',
+        triggerRef: `trigger:${suffix}`,
+        dedupeKey: `dedupe:${suffix}`,
+        actorTrustTier: 'system',
+        configRevisionId: config.id,
+        effectiveCapabilityDigest: 'b'.repeat(64),
+        executionAuthority: 'legacy',
+        coordinatorKind: 'interactive',
+        authorityEpoch: 1,
+        createdAt: 1_800_000_000_000,
+      },
+      auditEventId: `work:admit:${suffix}`,
+      auditIdempotencyKey: `work:admit:${suffix}`,
+    });
+    const workIntegrity = this.work.verifyIntegrity();
     return {
       routineId: routine.id,
       version: routine.version,
@@ -152,6 +223,8 @@ export class RoutineStateSpike extends DurableObject {
       foreignKeysEnabled: Number(this.db.get('PRAGMA foreign_keys')?.foreign_keys) === 1,
       orphanRejected,
       foreignKeyViolationCount: this.db.all('PRAGMA foreign_key_check').length,
+      workRunStatus: graph.run.status,
+      workInvariantViolationCount: workIntegrity.invariantViolationCount,
     };
   }
 }
