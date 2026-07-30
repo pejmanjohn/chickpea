@@ -71,11 +71,13 @@ class SpikeStateDb implements StateDb {
 
 /** Runs the production RoutineStoreLogic over real Durable Object SQLite. */
 export class RoutineStateSpike extends DurableObject {
+  private readonly db: SpikeStateDb;
   private readonly routines: RoutineStoreLogic;
 
   constructor(ctx: DurableObjectState, env: unknown) {
     super(ctx, env);
-    this.routines = new RoutineStoreLogic(new SpikeStateDb(ctx.storage));
+    this.db = new SpikeStateDb(ctx.storage);
+    this.routines = new RoutineStoreLogic(this.db);
   }
 
   exercise(suffix: string, at: number): {
@@ -83,6 +85,9 @@ export class RoutineStateSpike extends DurableObject {
     version: number;
     auditCount: number;
     revisionCount: number;
+    foreignKeysEnabled: boolean;
+    orphanRejected: boolean;
+    foreignKeyViolationCount: number;
   } {
     const routineId = `routine_workerd_${suffix}`;
     const tokenHash = hashRoutineValue(`token-${suffix}`);
@@ -124,11 +129,29 @@ export class RoutineStateSpike extends DurableObject {
       previewHash,
       idempotencyKey: `routine:workerd:${suffix}`,
     });
+    this.db.exec('CREATE TABLE IF NOT EXISTS spike_fk_parent (id TEXT PRIMARY KEY)');
+    this.db.exec(
+      'CREATE TABLE IF NOT EXISTS spike_fk_child (' +
+        'id TEXT PRIMARY KEY, parent_id TEXT NOT NULL REFERENCES spike_fk_parent(id))',
+    );
+    let orphanRejected = false;
+    try {
+      this.db.run(
+        'INSERT INTO spike_fk_child (id, parent_id) VALUES (?, ?)',
+        `child-${suffix}`,
+        `missing-${suffix}`,
+      );
+    } catch {
+      orphanRejected = true;
+    }
     return {
       routineId: routine.id,
       version: routine.version,
       auditCount: this.routines.listAuditEvents({ subjectId: routine.id }).length,
       revisionCount: this.routines.listRevisions(routine.id).length,
+      foreignKeysEnabled: Number(this.db.get('PRAGMA foreign_keys')?.foreign_keys) === 1,
+      orphanRejected,
+      foreignKeyViolationCount: this.db.all('PRAGMA foreign_key_check').length,
     };
   }
 }
