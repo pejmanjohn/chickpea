@@ -321,6 +321,7 @@ function runAdminPageHarness(
     memoryDeleteError?: { status: number; error: string };
     memoryReviewError?: { status: number; error: string };
     scheduledWork?: ScheduledWorkFixture;
+    redactScheduledName?: boolean;
     scheduledControlError?: { status: number; error: string; message?: string };
     oauthStartResult?: { authorizationUrl: string };
     oauthStartError?: { status: number; error: string; message?: string };
@@ -353,6 +354,7 @@ function runAdminPageHarness(
   historyPushes: string[];
   historyReplaces: string[];
   usageApiCalls: string[];
+  scheduledApiCalls: string[];
   channelListCalls: string[];
   providerKeyPosts: Array<{ id: string; key: string }>;
   providerKeyDeletes: string[];
@@ -456,6 +458,7 @@ function runAdminPageHarness(
   let slackDisconnectCalls = 0;
   const channelListCalls: string[] = [];
   const usageApiCalls: string[] = [];
+  const scheduledApiCalls: string[] = [];
   const providerKeyPosts: Array<{ id: string; key: string }> = [];
   const providerKeyDeletes: string[] = [];
   const openAiSubscriptionPosts: Array<{ action: string; body: Record<string, unknown> }> = [];
@@ -865,12 +868,13 @@ function runAdminPageHarness(
       }
     }
     if (path.startsWith('/admin/api/audit/scheduled_work/routines') && method === 'GET') {
+      scheduledApiCalls.push(path);
       const detailMatch = path.match(/^\/admin\/api\/audit\/scheduled_work\/routines\/([^/?]+)$/);
       if (detailMatch) {
         const routineId = decodeURIComponent(detailMatch[1] as string);
         if (routineId !== scheduledFixture.routine.id) return Promise.resolve(jsonResponse({ error: 'routine_not_found' }, 404));
         return Promise.resolve(jsonResponse({
-          routine: { ...scheduledFixture.routine },
+          routine: { ...scheduledFixture.routine, ...(harnessOptions.redactScheduledName ? { name: null, description: null } : {}) },
           runs: scheduledFixture.runs.map((run) => ({ ...run })),
           revisions: scheduledFixture.revisions.map((revision) => ({ ...revision })),
           events: scheduledFixture.events.map((event) => ({ ...event })),
@@ -883,11 +887,19 @@ function runAdminPageHarness(
       const channelFilter = url.searchParams.get('channelId');
       const workspaceFilter = url.searchParams.get('workspaceId');
       const routine = scheduledFixture.routine;
-      const included = (!stateFilter || routine.state === stateFilter) &&
+      const stateMatches = !stateFilter ||
+        (stateFilter === 'current' && ['active', 'paused'].includes(String(routine.state))) ||
+        (stateFilter === 'all' && routine.state !== 'deleted') ||
+        routine.state === stateFilter;
+      const included = stateMatches &&
         (!channelFilter || routine.channelId === channelFilter) &&
         (!workspaceFilter || routine.workspaceId === workspaceFilter);
       const summary = { ...routine };
       delete summary.taskText;
+      if (harnessOptions.redactScheduledName) {
+        summary.name = null;
+        summary.description = null;
+      }
       return Promise.resolve(jsonResponse({
         routines: included ? [summary] : [],
         nextCursor: null,
@@ -1711,6 +1723,7 @@ function runAdminPageHarness(
     historyPushes,
     historyReplaces,
     usageApiCalls,
+    scheduledApiCalls,
     channelListCalls,
     providerKeyPosts,
     providerKeyDeletes,
@@ -7059,6 +7072,36 @@ test('Audit logs deep link renders the real Memory scope, generated index, edito
   assert.doesNotMatch(harness.app.innerHTML, />Import</);
 });
 
+test('Memory scope rail uses Slack-style leading markers for public and private channels', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/audit-logs/memory/store_public_T_DESIGN/C0EXR3L9T/MEMORY.md',
+    memoryScopes: [
+      {
+        workspaceId: 'T_DESIGN', channelId: 'C0EXR3L9T', displayName: 'eng-releases',
+        privacy: 'public', lifecycle: 'active', storeId: 'store_public_T_DESIGN',
+        generation: null, entryCount: 1,
+      },
+      {
+        workspaceId: 'T_DESIGN', channelId: 'C_PRIVATE', displayName: 'memory-private-acceptance',
+        privacy: 'private', lifecycle: 'active', storeId: 'store_private_T_DESIGN',
+        generation: null, entryCount: 0,
+      },
+    ],
+  });
+  await flushAsync();
+
+  assert.match(
+    harness.app.innerHTML,
+    /<span class="audit-channel-marker" aria-hidden="true">#<\/span><span>eng-releases<\/span>/,
+  );
+  assert.match(
+    harness.app.innerHTML,
+    /<span class="audit-channel-marker" aria-hidden="true"><svg[^>]*>.*<\/svg><\/span><span>memory-private-acceptance<\/span>/,
+  );
+  assert.doesNotMatch(harness.app.innerHTML, /#memory-private-acceptance/);
+  assert.doesNotMatch(harness.app.innerHTML, /audit-lock/);
+});
+
 test('Scheduled Work matches the compact audit inventory before loading routine-specific detail', async () => {
   const harness = runAdminPageHarness({
     initialPath: '/admin/audit-logs/scheduled-work',
@@ -7069,8 +7112,11 @@ test('Scheduled Work matches the compact audit inventory before loading routine-
   assert.match(harness.app.innerHTML, /View scheduled routines and keep track of all scheduled work/);
   assert.match(harness.app.innerHTML, /<th>Name<\/th><th>Scope<\/th><th>Schedule<\/th><th>Status<\/th><th>Last run<\/th><th>Next run<\/th>/);
   assert.match(harness.app.innerHTML, /data-action="scheduled-filter-scope"/);
+  assert.match(harness.app.innerHTML, /data-action="scheduled-filter-state"/);
+  assert.match(harness.app.innerHTML, /<option value="current" selected>Current<\/option>/);
+  assert.match(harness.app.innerHTML, /<span class="chan-name">Current routines<\/span>/);
+  assert.ok(harness.scheduledApiCalls.some((path) => path.includes('state=current')));
   assert.doesNotMatch(harness.app.innerHTML, /data-action="scheduled-filter-workspace"/);
-  assert.doesNotMatch(harness.app.innerHTML, /data-action="scheduled-filter-state"/);
   assert.match(harness.app.innerHTML, /Release readiness check/);
   assert.match(harness.app.innerHTML, /Channel: #eng-releases/);
   assert.match(harness.app.innerHTML, /weekdays at 9:00 AM/);
@@ -7101,9 +7147,56 @@ test('Scheduled Work matches the compact audit inventory before loading routine-
   assert.match(harness.app.innerHTML, /<span class="field-label">Last run<\/span>/);
   assert.match(harness.app.innerHTML, /<span class="field-label">Next run<\/span>/);
   assert.match(harness.app.innerHTML, /<span class="field-label">Created<\/span>/);
-  assert.match(harness.app.innerHTML, /View runs and activity/);
+  assert.match(harness.app.innerHTML, /View run history and activity/);
   assert.doesNotMatch(harness.app.innerHTML, /Source Slack request/);
   assert.doesNotMatch(harness.app.innerHTML, /One independent Flue Workflow run per trigger/);
+});
+
+test('Scheduled Work status filter defaults to Current and reloads explicit states', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/audit-logs/scheduled-work',
+  });
+  await flushAsync();
+
+  harness.listeners.change?.({
+    target: inputTarget({ 'data-action': 'scheduled-filter-state' }, 'paused'),
+  });
+  await flushAsync();
+
+  assert.ok(harness.scheduledApiCalls.at(-1)?.includes('state=paused'));
+  assert.match(harness.app.innerHTML, /<option value="paused" selected>Paused<\/option>/);
+  assert.match(harness.app.innerHTML, /<span class="chan-name">Paused routines<\/span>/);
+  assert.match(harness.app.innerHTML, /No scheduled work yet/);
+
+  harness.listeners.change?.({
+    target: inputTarget({ 'data-action': 'scheduled-filter-state' }, 'all'),
+  });
+  await flushAsync();
+
+  assert.ok(harness.scheduledApiCalls.at(-1)?.includes('state=all'));
+  assert.match(harness.app.innerHTML, /<option value="all" selected>All<\/option>/);
+  assert.match(harness.app.innerHTML, /Release readiness check/);
+});
+
+test('Scheduled Work explains legacy names that cannot be safely projected', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/audit-logs/scheduled-work',
+    redactScheduledName: true,
+  });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, />Name unavailable<\/button>/);
+  assert.match(harness.app.innerHTML, /The name is unavailable for this legacy routine/);
+
+  harness.listeners.click?.({
+    target: actionTarget({
+      'data-action': 'select-scheduled-routine',
+      'data-routine': 'routine_release_digest',
+    }),
+  });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /id="scheduled-summary-title">Name unavailable<\/h2>/);
 });
 
 test('Scheduled Work detail separates overview, routine runs, and routine activity', async () => {
@@ -7120,7 +7213,7 @@ test('Scheduled Work detail separates overview, routine runs, and routine activi
   assert.match(harness.app.innerHTML, /Release readiness check/);
   assert.match(harness.app.innerHTML, /weekdays at 9:00 AM/);
   assert.match(harness.app.innerHTML, /Review open launch blockers and resolve anything safe to change/);
-  assert.match(harness.app.innerHTML, /View runs and activity/);
+  assert.match(harness.app.innerHTML, /View run history and activity/);
   assert.doesNotMatch(harness.app.innerHTML, /America\/Los_Angeles/);
   assert.doesNotMatch(harness.app.innerHTML, /Source Slack request/);
   assert.doesNotMatch(harness.app.innerHTML, /same authority as a live @mention/);
@@ -7148,7 +7241,7 @@ test('Scheduled Work detail separates overview, routine runs, and routine activi
   harness.listeners.click?.({
     target: actionTarget({ 'data-action': 'scheduled-detail-tab', 'data-tab': 'runs' }),
   });
-  assert.match(harness.app.innerHTML, /Runs for this routine/);
+  assert.match(harness.app.innerHTML, /Run history for this routine/);
   assert.match(harness.app.innerHTML, /flue_run_release_1/);
   assert.match(harness.app.innerHTML, /access_hash_123/);
   assert.match(harness.app.innerHTML, /1500 input \+ output tokens/);
@@ -7194,7 +7287,8 @@ test('Scheduled Work detail separates overview, routine runs, and routine activi
   });
   assert.equal(harness.locationPath(), '/admin/audit-logs/scheduled-work');
   assert.match(harness.app.innerHTML, /Routine deleted\. The saved task was irreversibly removed\./);
-  assert.match(harness.app.innerHTML, /<span class="scheduled-table-state deleted">deleted<\/span>/);
+  assert.match(harness.app.innerHTML, /No scheduled work yet/);
+  assert.doesNotMatch(harness.app.innerHTML, /<span class="scheduled-table-state deleted">deleted<\/span>/);
   assert.doesNotMatch(harness.app.innerHTML, /Review open launch blockers and resolve anything safe to change/);
 });
 

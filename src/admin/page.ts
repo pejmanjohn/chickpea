@@ -1415,7 +1415,9 @@ details[open].advanced summary::before {
 /* ---- Audit logs: Scheduled Work and Memory domains ---- */
 .audit-rail { gap: 2px; }
 .audit-rail .ws-row { margin-top: 5px; }
-.audit-lock { color: var(--text-3); margin-left: auto; }
+.audit-channel-name { align-items: center; display: flex; gap: 8px; }
+.audit-channel-marker { align-items: center; color: var(--text-3); display: inline-flex; flex: 0 0 16px; font-size: 0.9375rem; justify-content: center; line-height: 1; width: 16px; }
+.audit-channel-marker .ic { height: 16px; width: 16px; }
 .audit-main { gap: 18px; max-width: none; }
 .audit-main-head { align-items: flex-start; display: flex; flex-wrap: wrap; gap: 12px; justify-content: space-between; }
 .audit-tabs { border-bottom: 1.5px solid var(--line-strong); display: flex; gap: 4px; overflow-x: auto; }
@@ -1454,6 +1456,7 @@ details[open].advanced summary::before {
 .scheduled-table tr:hover td { background: var(--well); }
 .scheduled-name-button { background: transparent; border: 0; color: var(--text); cursor: pointer; font: inherit; font-weight: 800; padding: 0; text-align: left; }
 .scheduled-name-button:hover { color: var(--ember-press); text-decoration: underline; text-underline-offset: 2px; }
+.scheduled-name-button.unavailable { color: var(--text-3); font-weight: 650; }
 .scheduled-table-state { background: var(--well); border-radius: 99px; color: var(--text-2); display: inline-block; font-size: 0.6875rem; font-weight: 750; padding: 3px 8px; text-transform: capitalize; white-space: nowrap; }
 .scheduled-table-state.active, .scheduled-table-state.running, .scheduled-table-state.succeeded { background: var(--ok-tint); color: var(--ok); }
 .scheduled-table-footer { align-items: center; color: var(--text-3); display: flex; font-size: 0.6875rem; justify-content: space-between; padding: 10px 2px 0; }
@@ -1911,7 +1914,7 @@ details[open].advanced summary::before {
     scheduledNotice: "",
     scheduledCapability: null,
     scheduledLimits: null,
-    scheduledFilters: { workspaceId: "", channelId: "", state: "", status: "" },
+    scheduledFilters: { workspaceId: "", channelId: "", state: "current", status: "" },
     scheduledDeleteConfirm: false,
     usageOverview: null,
     usageMetadata: null,
@@ -5348,12 +5351,16 @@ details[open].advanced summary::before {
         var privacy = scope.privacy === "private" ? "Private" : "Workspace shared";
         if (scope.lifecycle !== "active") privacy += " · " + scope.lifecycle;
         html += '<button type="button" class="chan-item' + (active ? " active" : "") + '" data-action="select-memory-scope" data-store="' + esc(scope.storeId) + '" data-channel="' + esc(scope.channelId) + '">' +
-          '<span class="chan-name">#' + esc(scope.displayName || scope.channelId) + '</span>' +
-          '<span class="chan-meta">' + esc(privacy) + ' · ' + Number(scope.entryCount || 0) + '</span>' +
-          (scope.privacy === "private" ? '<span class="audit-lock" aria-label="Private">' + icon("lock-closed") + '</span>' : '') + '</button>';
+          '<span class="chan-name audit-channel-name">' + auditChannelMarkerHtml(scope.privacy) + '<span>' + esc(scope.displayName || scope.channelId) + '</span></span>' +
+          '<span class="chan-meta">' + esc(privacy) + ' · ' + Number(scope.entryCount || 0) + '</span></button>';
       });
     });
     return html + '</div>' + sectionSwitcherHtml() + '</nav>';
+  }
+
+  function auditChannelMarkerHtml(privacy) {
+    if (privacy !== "private") return '<span class="audit-channel-marker" aria-hidden="true">#</span>';
+    return '<span class="audit-channel-marker" aria-hidden="true"><svg class="ic" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M5.25 7V4.75a2.75 2.75 0 0 1 5.5 0V7m-6.5 0h7.5A1.25 1.25 0 0 1 13 8.25v5a1.25 1.25 0 0 1-1.25 1.25h-7.5A1.25 1.25 0 0 1 3 13.25v-5A1.25 1.25 0 0 1 4.25 7Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>';
   }
 
   function auditTabsHtml() {
@@ -5376,9 +5383,10 @@ details[open].advanced summary::before {
       return html + '<div class="empty" style="margin:8px; padding:12px;"><p class="field-error">' + esc(state.scheduledError) + '</p><button type="button" class="btn btn-ghost btn-sm" data-action="scheduled-retry">Retry</button></div></div>' + sectionSwitcherHtml() + '</nav>';
     }
     var routines = state.scheduledRoutines || [];
+    var filterLabel = scheduledStateFilterLabel(state.scheduledFilters.state);
     html += '<div class="ws-row">Scheduled work</div>' +
       '<button type="button" class="chan-item active" data-action="scheduled-back-list">' +
-      '<span class="chan-name">All routines</span><span class="chan-meta">' + Number(routines.length) + ' matching</span></button>';
+      '<span class="chan-name">' + esc(filterLabel) + '</span><span class="chan-meta">' + Number(routines.length) + ' matching</span></button>';
     return html + '</div>' + sectionSwitcherHtml() + '</nav>';
   }
 
@@ -5444,8 +5452,30 @@ details[open].advanced summary::before {
       }
       return workspaceOption + channelOptions;
     }).join("");
+    var selectedState = filters.state || "current";
+    var stateOptions = [
+      ["current", "Current"],
+      ["active", "Active"],
+      ["paused", "Paused"],
+      ["completed", "Completed"],
+      ["disabled", "Disabled"],
+      ["all", "All"]
+    ].map(function (option) {
+      return '<option value="' + option[0] + '"' + (selectedState === option[0] ? ' selected' : '') + '>' + option[1] + '</option>';
+    }).join("");
     return '<div class="scheduled-filters" aria-label="Scheduled work filters">' +
+      '<label class="field"><span class="field-label">Status</span><span class="select-wrap"><select class="input" data-action="scheduled-filter-state">' + stateOptions + '</select><span class="select-caret">' + icon("chevron-down") + '</span></span></label>' +
       '<label class="field"><span class="field-label">Scope</span><span class="select-wrap"><select class="input" data-action="scheduled-filter-scope">' + options + '</select><span class="select-caret">' + icon("chevron-down") + '</span></span></label></div>';
+  }
+
+  function scheduledStateFilterLabel(value) {
+    var labels = { current: "Current routines", active: "Active routines", paused: "Paused routines", completed: "Completed routines", disabled: "Disabled routines", all: "All routines" };
+    return labels[value] || labels.current;
+  }
+
+  function scheduledRoutineName(routine) {
+    var name = String(routine && routine.name || "").trim();
+    return name || "Name unavailable";
   }
 
   function scheduledWorkMainHtml() {
@@ -5461,7 +5491,7 @@ details[open].advanced summary::before {
     var detail = state.scheduledDetail;
     var routine = detail.routine;
     var detailHead = '<button type="button" class="btn btn-ghost btn-sm scheduled-detail-back" data-action="scheduled-back-summary">&larr; Back to routine summary</button>' +
-      '<div class="scheduled-detail-head"><div><span class="section-eyebrow">Routine detail</span><h2 class="page-title" style="margin-top:4px;">' + esc(routine.name) + '</h2><p class="hint">' + esc(scheduledChannelLabel(routine.workspaceId, routine.channelId)) + ' · ' + esc(routine.description || "No description") + '</p></div>' + scheduledStatusBadge(routine.state) + '</div>' +
+      '<div class="scheduled-detail-head"><div><span class="section-eyebrow">Routine detail</span><h2 class="page-title" style="margin-top:4px;">' + esc(scheduledRoutineName(routine)) + '</h2><p class="hint">' + esc(scheduledChannelLabel(routine.workspaceId, routine.channelId)) + ' · ' + esc(routine.description || "No description available") + '</p></div>' + scheduledStatusBadge(routine.state) + '</div>' +
       scheduledDetailTabsHtml(detail);
     var tab = state.scheduledDetailTab;
     var content = tab === "runs"
@@ -5477,6 +5507,8 @@ details[open].advanced summary::before {
       return '<section aria-label="Scheduled work"><div class="scheduled-table-wrap"><table class="scheduled-table"><thead><tr><th>Name</th><th>Scope</th><th>Schedule</th><th>Status</th><th>Last run</th><th>Next run</th><th aria-label="Actions"></th></tr></thead><tbody><tr><td colspan="7" style="text-align:center; color:var(--text-3);">No scheduled work yet.</td></tr></tbody></table></div></section>';
     }
     var rows = routines.map(function (routine) {
+      var routineName = scheduledRoutineName(routine);
+      var nameUnavailable = routineName === "Name unavailable";
       var schedule = routine.triggerKind === "once"
         ? "One time" + (routine.nextRunAt ? " · " + formatScheduledDate(routine.nextRunAt, routine.timezone) : routine.lastScheduledAt ? " · " + formatScheduledDate(routine.lastScheduledAt, routine.timezone) : "")
         : formatScheduledSchedule(routine);
@@ -5485,7 +5517,7 @@ details[open].advanced summary::before {
         : routine.state === "paused"
           ? '<button type="button" class="btn btn-ghost btn-sm" role="menuitem" data-action="scheduled-list-control" data-control="resume" data-routine="' + esc(routine.id) + '">Resume</button>'
           : '';
-      return '<tr><td><button type="button" class="scheduled-name-button" data-action="select-scheduled-routine" data-routine="' + esc(routine.id) + '">' + esc(routine.name) + '</button></td>' +
+      return '<tr><td><button type="button" class="scheduled-name-button' + (nameUnavailable ? ' unavailable' : '') + '" data-action="select-scheduled-routine" data-routine="' + esc(routine.id) + '"' + (nameUnavailable ? ' title="The name is unavailable for this legacy routine."' : '') + '>' + esc(routineName) + '</button></td>' +
         '<td>Channel: ' + esc(scheduledChannelLabel(routine.workspaceId, routine.channelId)) + '</td>' +
         '<td>' + esc(schedule) + '</td>' +
         '<td><span class="scheduled-table-state ' + esc(routine.state) + '">' + esc(String(routine.state || "unknown").replace(/_/g, " ")) + '</span></td>' +
@@ -5507,7 +5539,7 @@ details[open].advanced summary::before {
     }
     var routine = state.scheduledDetail.routine;
     return '<div class="modal-backdrop"><div class="modal-card scheduled-summary-modal" role="dialog" aria-modal="true" aria-labelledby="scheduled-summary-title">' +
-      '<div class="scheduled-summary-head"><div><h2 class="modal-title" id="scheduled-summary-title">' + esc(routine.name) + '</h2><p class="scheduled-summary-scope">Channel: ' + esc(scheduledChannelLabel(routine.workspaceId, routine.channelId)) + '</p></div><button type="button" class="scheduled-summary-close" data-action="scheduled-summary-close" aria-label="Close">&times;</button></div>' +
+      '<div class="scheduled-summary-head"><div><h2 class="modal-title" id="scheduled-summary-title">' + esc(scheduledRoutineName(routine)) + '</h2><p class="scheduled-summary-scope">Channel: ' + esc(scheduledChannelLabel(routine.workspaceId, routine.channelId)) + '</p></div><button type="button" class="scheduled-summary-close" data-action="scheduled-summary-close" aria-label="Close">&times;</button></div>' +
       '<div class="scheduled-summary-section"><span class="field-label">Prompt</span><p class="scheduled-summary-prompt">' + esc(routine.taskText == null ? "The task body was removed with this routine." : routine.taskText) + '</p></div>' +
       '<div class="scheduled-summary-section"><span class="field-label">Schedule</span><p class="scheduled-summary-prompt">' + esc(formatScheduledSchedule(routine)) + '</p></div>' +
       '<div class="scheduled-summary-grid">' +
@@ -5515,7 +5547,7 @@ details[open].advanced summary::before {
       scheduledMeta("Last run", routine.lastFinishedAt ? formatScheduledDate(routine.lastFinishedAt, routine.timezone) : "Never", false) +
       scheduledMeta("Next run", routine.nextRunAt ? formatScheduledDate(routine.nextRunAt, routine.timezone) : "—", false) +
       scheduledMeta("Created", formatScheduledDay(routine.createdAt, routine.timezone), false) + '</div>' +
-      '<div class="scheduled-summary-foot"><button type="button" class="btn btn-ghost btn-sm" data-action="scheduled-open-inspector">View runs and activity</button><span class="spacer"></span><button type="button" class="btn btn-soft btn-sm" data-action="scheduled-summary-close">Close</button></div></div></div>';
+      '<div class="scheduled-summary-foot"><button type="button" class="btn btn-ghost btn-sm" data-action="scheduled-open-inspector">View run history and activity</button><span class="spacer"></span><button type="button" class="btn btn-soft btn-sm" data-action="scheduled-summary-close">Close</button></div></div></div>';
   }
 
   function scheduledDetailTabsHtml(detail) {
@@ -5525,7 +5557,7 @@ details[open].advanced summary::before {
       var active = state.scheduledDetailTab === value;
       return '<button type="button" class="scheduled-detail-tab' + (active ? " active" : "") + '" role="tab" aria-selected="' + (active ? "true" : "false") + '" data-action="scheduled-detail-tab" data-tab="' + value + '">' + label + (count == null ? '' : ' <span class="scheduled-detail-count">' + Number(count) + '</span>') + '</button>';
     }
-    return '<div class="scheduled-detail-tabs" role="tablist" aria-label="Routine detail sections">' + tab("overview", "Overview", null) + tab("runs", "Runs", runCount) + tab("activity", "Activity", activityCount) + '</div>';
+    return '<div class="scheduled-detail-tabs" role="tablist" aria-label="Routine detail sections">' + tab("overview", "Overview", null) + tab("runs", "Run history", runCount) + tab("activity", "Activity", activityCount) + '</div>';
   }
 
   function scheduledOverviewHtml(detail) {
@@ -5557,7 +5589,7 @@ details[open].advanced summary::before {
   }
 
   function scheduledActivityHtml(detail) {
-    return '<div class="scheduled-activity-intro"><h3 class="section-title">History for this routine</h3><p class="hint">Definition revisions and audit events below belong only to ' + esc(detail.routine.name) + '.</p></div>' +
+    return '<div class="scheduled-activity-intro"><h3 class="section-title">History for this routine</h3><p class="hint">Definition revisions and audit events below belong only to ' + esc(scheduledRoutineName(detail.routine)) + '.</p></div>' +
       scheduledRevisionsHtml(detail.revisions || []) + scheduledEventsHtml(detail.events || []);
   }
 
@@ -5602,7 +5634,7 @@ details[open].advanced summary::before {
         scheduledRunMeta("Flue run", run.flueRunId || "not admitted", true) + scheduledRunMeta("Trace", run.traceId || "unavailable", true) +
         '</div></details></article>';
     }).join("");
-    return '<section class="scheduled-card"><div class="memory-editor-head"><div><h3 class="section-title">Runs for this routine</h3><p class="hint">Each row is one triggered execution of ' + esc(routine.name) + '.</p></div><span class="badge badge-off">' + Number(runs.length) + '</span></div>' + body + '</section>';
+    return '<section class="scheduled-card"><div class="memory-editor-head"><div><h3 class="section-title">Run history for this routine</h3><p class="hint">Each row is one triggered execution of ' + esc(scheduledRoutineName(routine)) + '.</p></div><span class="badge badge-off">' + Number(runs.length) + '</span></div>' + body + '</section>';
   }
 
   function scheduledRunMeta(label, value, mono, htmlValue) {
@@ -5812,7 +5844,7 @@ details[open].advanced summary::before {
     state.scheduledFilters = {
       workspaceId: workspaceId || "",
       channelId: channelId || "",
-      state: "",
+      state: "current",
       status: ""
     };
     state.scheduledRoutines = null;
@@ -5861,11 +5893,6 @@ details[open].advanced summary::before {
       state.scheduledCapability = body.capability || null;
       state.scheduledLimits = body.limits || null;
       state.scheduledLoading = false;
-      if (state.scheduledSelection && !state.scheduledRoutines.some(function (routine) { return routine.id === state.scheduledSelection; })) {
-        state.scheduledSelection = "";
-        state.scheduledDetail = null;
-        state.scheduledInspector = false;
-      }
       render();
       if (state.scheduledSelection) return loadScheduledDetail(state.scheduledSelection);
     }).catch(function (error) {
@@ -8958,7 +8985,6 @@ details[open].advanced summary::before {
       var scopeParts = String(target.value || "").split("|");
       state.scheduledFilters.workspaceId = scopeParts[0] === "workspace" || scopeParts[0] === "channel" ? scopeParts[1] || "" : "";
       state.scheduledFilters.channelId = scopeParts[0] === "channel" ? scopeParts[2] || "" : "";
-      state.scheduledFilters.state = "";
       state.scheduledFilters.status = "";
       state.scheduledSelection = "";
       state.scheduledDetail = null;
@@ -8966,7 +8992,16 @@ details[open].advanced summary::before {
       state.scheduledRoutines = null;
       loadScheduledRoutines();
     }
-    if (action === "scheduled-filter-state") state.scheduledFilters.state = target.value;
+    if (action === "scheduled-filter-state") {
+      var scheduledState = String(target.value || "current");
+      state.scheduledFilters.state = ["current", "active", "paused", "completed", "disabled", "all"].includes(scheduledState) ? scheduledState : "current";
+      state.scheduledFilters.status = "";
+      state.scheduledSelection = "";
+      state.scheduledDetail = null;
+      state.scheduledInspector = false;
+      state.scheduledRoutines = null;
+      loadScheduledRoutines();
+    }
     if (action === "scheduled-filter-status") state.scheduledFilters.status = target.value;
     if (action === "sandbox-enabled" && !state.sandboxSaving) {
       sandboxDraft.enabled = !!target.checked;

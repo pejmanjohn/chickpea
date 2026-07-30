@@ -840,6 +840,10 @@ export class RoutineStoreLogic {
     }
     if (input.state === 'deleted') {
       clauses.push('deleted_at IS NOT NULL');
+    } else if (input.state === 'current') {
+      clauses.push("deleted_at IS NULL AND state IN ('active', 'paused')");
+    } else if (input.state === 'all') {
+      clauses.push('deleted_at IS NULL');
     } else if (input.state) {
       clauses.push('deleted_at IS NULL AND state = ?');
       params.push(input.state);
@@ -857,7 +861,19 @@ export class RoutineStoreLogic {
     const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
     const rows = this.db.all(
       `SELECT * FROM routines ${where}
-       ORDER BY created_at, id LIMIT ? OFFSET ?`,
+       ORDER BY
+         CASE
+           WHEN deleted_at IS NOT NULL THEN 4
+           WHEN state = 'active' THEN 0
+           WHEN state = 'paused' THEN 1
+           WHEN state = 'completed' THEN 2
+           ELSE 3
+         END,
+         CASE WHEN state = 'active' AND next_run_at IS NULL THEN 1 ELSE 0 END,
+         CASE WHEN state = 'active' THEN next_run_at END,
+         CASE WHEN state <> 'active' THEN updated_at END DESC,
+         id
+       LIMIT ? OFFSET ?`,
       ...params,
       input.limit + 1,
       cursor,
@@ -2817,7 +2833,7 @@ function validateAdminPageInput(input: RoutineAdminPageInput): void {
     (input.cursor !== undefined && (!Number.isSafeInteger(input.cursor) || input.cursor < 0 || input.cursor > 100_000)) ||
     (input.workspaceId !== undefined && !isOpaqueRoutineId(input.workspaceId)) ||
     (input.channelId !== undefined && !isOpaqueRoutineId(input.channelId)) ||
-    (input.state !== undefined && !['active', 'paused', 'disabled', 'completed', 'deleted'].includes(input.state)) ||
+    (input.state !== undefined && !['active', 'paused', 'disabled', 'completed', 'current', 'all', 'deleted'].includes(input.state)) ||
     (input.runStatus !== undefined && ![
       'queued', 'admitting', 'running', 'succeeded', 'no_op', 'failed', 'skipped', 'cancelled', 'superseded',
     ].includes(input.runStatus))

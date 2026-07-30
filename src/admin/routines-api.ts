@@ -45,7 +45,7 @@ export function createRoutineAdminApi(options: RoutineAdminApiOptions): Hono {
       const workspaceId = optionalId(c.req.query('workspaceId'));
       const channelId = optionalId(c.req.query('channelId'));
       const state = c.req.query('state');
-      if (state && !['active', 'paused', 'disabled', 'completed', 'deleted'].includes(state)) return invalid(c);
+      if (state && !['active', 'paused', 'disabled', 'completed', 'current', 'all', 'deleted'].includes(state)) return invalid(c);
       const status = c.req.query('status');
       const limit = parseLimit(c.req.query('limit'));
       const offset = parseCursor(c.req.query('cursor'));
@@ -55,7 +55,7 @@ export function createRoutineAdminApi(options: RoutineAdminApiOptions): Hono {
       const page = await options.store(c).listAdminRoutinePage({
         ...(workspaceId ? { workspaceId } : {}),
         ...(channelId ? { channelId } : {}),
-        ...(state ? { state: state as RoutineDefinition['state'] | 'deleted' } : {}),
+        ...(state ? { state: state as RoutineDefinition['state'] | 'current' | 'all' | 'deleted' } : {}),
         ...(status ? { runStatus: status as RoutineRun['status'] } : {}),
         cursor: offset,
         limit,

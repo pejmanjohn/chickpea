@@ -75,6 +75,20 @@ async function seedCompletedOneTimeRoutine(store: SqliteRoutineStore, routineId:
   });
 }
 
+async function seedActiveRoutine(store: SqliteRoutineStore, routineId: string, nextRunAt: number) {
+  await store.save({
+    actorId: 'U_CREATOR', actorClass: 'member', workspaceId: 'T_TEST', channelId: 'C_TEST',
+    draft: {
+      action: 'create', routineId,
+      definition: { ...definition(), name: routineId },
+      nextRunAt, projectedDailyStarts: 5,
+      reservations: [{ windowStart: nextRunAt, count: 1 }],
+    },
+    idempotencyKey: `seed-active:${routineId}`,
+    sourceVisibility: 'public',
+  });
+}
+
 test('Scheduled Work APIs are admin-authenticated, body-safe, filterable, and controllable', async () => {
   const path = join(mkdtempSync(join(tmpdir(), 'chickpea-admin-routine-')), 'state.db');
   const routines = new SqliteRoutineStore(path);
@@ -130,6 +144,18 @@ test('Scheduled Work APIs are admin-authenticated, body-safe, filterable, and co
     assert.equal(listBody.limits.scheduledStartsPerDay, 600);
     assert.equal(listBody.limits.totalStartsRollingDay, 610);
     assert.equal(listBody.limits.retentionDays, 365);
+    const currentList = await app.request(
+      '/admin/api/audit/scheduled_work/routines?workspaceId=T_TEST&state=current&limit=10',
+      { headers },
+    );
+    assert.equal(currentList.status, 200);
+    assert.equal(((await currentList.json()) as Record<string, any>).routines[0].state, 'active');
+    const allList = await app.request(
+      '/admin/api/audit/scheduled_work/routines?workspaceId=T_TEST&state=all&limit=10',
+      { headers },
+    );
+    assert.equal(allList.status, 200);
+    assert.equal(((await allList.json()) as Record<string, any>).routines.length, 1);
     const completedList = await app.request(
       '/admin/api/audit/scheduled_work/routines?state=completed',
       { headers },
@@ -165,6 +191,12 @@ test('Scheduled Work APIs are admin-authenticated, body-safe, filterable, and co
     );
     assert.equal(paused.status, 200);
     assert.equal(((await paused.json()) as Record<string, any>).routine.state, 'paused');
+    const pausedCurrentList = await app.request(
+      '/admin/api/audit/scheduled_work/routines?workspaceId=T_TEST&state=current&limit=10',
+      { headers },
+    );
+    assert.equal(pausedCurrentList.status, 200);
+    assert.equal(((await pausedCurrentList.json()) as Record<string, any>).routines[0].state, 'paused');
     const pausedDetail = await app.request(
       `/admin/api/audit/scheduled_work/routines/${routine.id}`,
       { headers },
@@ -190,6 +222,11 @@ test('Scheduled Work APIs are admin-authenticated, body-safe, filterable, and co
     assert.equal(deletion.status, 200, await deletion.clone().text());
     assert.equal(((await deletion.json()) as Record<string, any>).irreversible, true);
     assert.notEqual((await routines.getRoutine(routine.id))?.deletedAt, null);
+    const allAfterDeletion = await app.request(
+      '/admin/api/audit/scheduled_work/routines?workspaceId=T_TEST&state=all&limit=10',
+      { headers },
+    );
+    assert.equal(((await allAfterDeletion.json()) as Record<string, any>).routines.length, 0);
   } finally {
     routines.close();
     config.close();
@@ -236,6 +273,29 @@ test('Scheduled Work list pages completed one-time definitions and filters by re
   } finally {
     routines.close();
     work.close();
+  }
+});
+
+test('Scheduled Work Current filter orders active schedules by next run before paused schedules', async () => {
+  const routines = new SqliteRoutineStore(':memory:', () => NOW);
+  try {
+    await Promise.all([
+      seedActiveRoutine(routines, 'routine_active_later', NOW + 2 * 3_600_000),
+      seedActiveRoutine(routines, 'routine_paused', NOW + 30 * 60_000),
+      seedActiveRoutine(routines, 'routine_active_soon', NOW + 3_600_000),
+    ]);
+    await routines.control({
+      action: 'pause', routineId: 'routine_paused', expectedVersion: 1,
+      actorId: 'U_CREATOR', actorClass: 'member', idempotencyKey: 'pause-current-ordering',
+    });
+
+    const current = await routines.listAdminRoutinePage({ state: 'current', limit: 10 });
+    assert.deepEqual(
+      current.routines.map((routine) => routine.id),
+      ['routine_active_soon', 'routine_active_later', 'routine_paused'],
+    );
+  } finally {
+    routines.close();
   }
 });
 
