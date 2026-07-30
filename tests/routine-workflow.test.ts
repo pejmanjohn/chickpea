@@ -84,9 +84,10 @@ test('live access and atomic begin precede all Agent and sandbox construction', 
     'live-access',
     'begin',
     'sandbox-check',
-    'agent:routine:run_one:T_TEST:C_TEST',
+    `agent:${routineAgentInstanceId('run_one')}`,
   ]);
-  assert.equal(runtime.agentInstanceId, 'routine:run_one:T_TEST:C_TEST');
+  assert.equal(runtime.agentInstanceId, routineAgentInstanceId('run_one'));
+  assert.doesNotMatch(runtime.agentInstanceId, /T_TEST|C_TEST/);
 });
 
 test('failed authorization and superseded begin construct no Agent', async () => {
@@ -243,8 +244,8 @@ test('a routine subscription credential failure is categorized before Agent cons
 
 test('every Flue run receives a fresh Agent identity', () => {
   assert.notEqual(
-    routineAgentInstanceId('run_one', routine),
-    routineAgentInstanceId('run_two', routine),
+    routineAgentInstanceId('run_one'),
+    routineAgentInstanceId('run_two'),
   );
 });
 
@@ -274,5 +275,5 @@ test('cold Workflow context fails persisted state without replaying model or too
     publicError: 'The routine Workflow was interrupted before execution could resume safely.',
     toolCallCount: 2,
   }]);
-  assert.deepEqual(releases, [[{}, 'routine:run_flue:T_TEST:C_TEST', true]]);
+  assert.deepEqual(releases, [[{}, routineAgentInstanceId('run_flue'), true]]);
 });

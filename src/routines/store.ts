@@ -63,11 +63,10 @@ import {
   validateRoutineScope,
 } from './validation.ts';
 import { opaqueId, safeConfigForAssignment } from '../work/admission.ts';
+import { prepareSubmitRun } from '../work/submit-run.ts';
 import { WorkStoreLogic } from '../work/store.ts';
 import type {
-  AdmitShadowRunInput,
   BindingId,
-  RunId,
   SourceVisibility,
   WorkId,
 } from '../work/types.ts';
@@ -1915,17 +1914,15 @@ export class RoutineStoreLogic {
     } catch {
       return;
     }
-    const canonicalRunId = opaqueId('run', `routine:${run.id}`) as RunId;
-    const admission: AdmitShadowRunInput = {
+    const canonicalRunId = opaqueId('run', `routine:${run.id}`);
+    const admission = prepareSubmitRun({
       work: {
-        id: routine.workId as WorkId,
+        id: routine.workId,
         kind: 'routine',
-        maximumSensitivity: visibility === 'public' ? 'public' : 'private',
         createdAt: routine.createdAt,
       },
       binding: {
-        id: routine.bindingId as BindingId,
-        workId: routine.workId as WorkId,
+        id: routine.bindingId,
         adapterKind: 'routine',
         externalAccountId: opaqueId('account', `slack:${routine.workspaceId}`),
         externalConversationId: opaqueId(
@@ -1938,33 +1935,36 @@ export class RoutineStoreLogic {
         orderingKey: opaqueId('ordering', `routine:${routine.id}`),
         createdAt: routine.createdAt,
       },
-      run: {
-        id: canonicalRunId,
-        workId: routine.workId as WorkId,
-        bindingId: routine.bindingId as BindingId,
-        kind: 'routine',
-        triggerKind: `routine_${run.triggerSource}`,
-        triggerRef: opaqueId('trigger', `routine:${run.id}`),
+      trigger: {
+        runId: canonicalRunId,
+        runKind: 'routine',
+        kind: `routine_${run.triggerSource}`,
+        ref: opaqueId('trigger', `routine:${run.id}`),
         dedupeKey: opaqueId('dedupe', `routine:${run.idempotencyKey}`),
-        actorRef: run.requestedBy
-          ? opaqueId('actor', `slack:${routine.workspaceId}:${run.requestedBy}`)
-          : opaqueId('actor', `routine:${routine.id}:system`),
-        actorTrustTier: run.requestedBy ? 'member' : 'system',
-        sourceContextWatermark: opaqueId(
-          'watermark',
-          `routine:${routine.id}:${run.routineVersion}:${run.scheduledFor}`,
-        ),
-        effectiveCapabilityDigest: safeConfig.capabilityDigest,
-        executionAuthority: 'legacy',
-        coordinatorKind: 'flue_workflow',
-        authorityEpoch: 1,
+        body: null,
         createdAt: run.queuedAt,
       },
+      actor: {
+        ref: run.requestedBy
+          ? opaqueId('actor', `slack:${routine.workspaceId}:${run.requestedBy}`)
+          : opaqueId('actor', `routine:${routine.id}:system`),
+        trustTier: run.requestedBy ? 'member' : 'system',
+      },
+      sourceContextWatermark: opaqueId(
+        'watermark',
+        `routine:${routine.id}:${run.routineVersion}:${run.scheduledFor}`,
+      ),
       safeConfig,
-      triggerContent: null,
-      auditEventId: opaqueId('audit', `admit:routine:${run.id}`),
-      auditIdempotencyKey: opaqueId('auditkey', `admit:routine:${run.id}`),
-    };
+      execution: {
+        authority: 'legacy',
+        coordinatorKind: 'flue_workflow',
+        authorityEpoch: 1,
+      },
+      audit: {
+        eventId: opaqueId('audit', `admit:routine:${run.id}`),
+        idempotencyKey: opaqueId('auditkey', `admit:routine:${run.id}`),
+      },
+    });
     const admitted = this.work.admitShadowRunInTransaction(admission);
     this.db.run(
       `UPDATE routine_runs SET canonical_run_id = ?

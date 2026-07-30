@@ -52,9 +52,9 @@ import {
   type UsagePersistenceEvent,
 } from '../usage/runtime-recorder.ts';
 import type { UsageStore } from '../usage/types.ts';
-import { ShadowWorkLifecycle } from '../work/lifecycle.ts';
 import { opaqueId } from '../work/admission.ts';
-import type { RunId } from '../work/types.ts';
+import { createWorkExecutionLifecycle } from '../work/executor.ts';
+import type { ShadowWorkLifecycle } from '../work/lifecycle.ts';
 
 /**
  * The turn lifecycle, factored out of the Slack channel so BOTH the node detach
@@ -408,22 +408,17 @@ async function createSlackShadowLifecycle(input: {
 }): Promise<ShadowWorkLifecycle | undefined> {
   try {
     const store = getWorkStore(input.platformEnv);
-    const run = await store.getRun(input.runId as RunId);
-    if (!run) return undefined;
-    const binding = await store.getBinding(run.bindingId);
-    if (!binding || binding.sourceVisibility === 'unknown') return undefined;
     const providerAuthRoute = await resolveProviderAuthRoute(
       input.canonicalModel,
       getSettingsStore(input.platformEnv),
     );
-    return new ShadowWorkLifecycle({
-      store,
-      runId: run.id,
+    return createWorkExecutionLifecycle(store, {
+      runId: input.runId,
       attemptNumber: input.attemptNumber,
+      executorKind: 'agent',
       agentName: input.assignment.agent.id,
       canonicalModel: input.canonicalModel,
       flueInstanceRef: input.flueInstanceRef,
-      sensitivity: binding.sourceVisibility,
       routeEvidence: safeRuntimeModelRouteEvidence(
         input.canonicalModel,
         providerAuthRoute,

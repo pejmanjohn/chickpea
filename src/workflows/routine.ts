@@ -58,10 +58,9 @@ import {
   usageRuntimeRecordingEnabled,
 } from '../usage/runtime-recorder.ts';
 import type { UsageStore } from '../usage/types.ts';
-import {
-  ShadowWorkLifecycle,
-  shadowRunExecutionId,
-} from '../work/lifecycle.ts';
+import { createWorkExecutionLifecycle } from '../work/executor.ts';
+import { shadowRunExecutionId } from '../work/lifecycle.ts';
+import type { ShadowWorkLifecycle } from '../work/lifecycle.ts';
 import type { RunId } from '../work/types.ts';
 import { opaqueId } from '../work/admission.ts';
 
@@ -254,7 +253,7 @@ export async function initializeRoutineWorkflowRuntime(
     await usageRecorder.admit();
   }
 
-  const agentInstanceId = routineAgentInstanceId(input.flueRunId, input.routine);
+  const agentInstanceId = routineAgentInstanceId(input.flueRunId);
   let usedCloudflareSandbox = false;
   try {
     usedCloudflareSandbox = await useCloudflareSandbox(access.config, input.env);
@@ -309,9 +308,8 @@ export async function initializeRoutineWorkflowRuntime(
 
 export function routineAgentInstanceId(
   flueRunId: string,
-  routine: Pick<RoutineDefinition, 'workspaceId' | 'channelId'>,
 ): string {
-  return `routine:${flueRunId}:${routine.workspaceId}:${routine.channelId}`;
+  return opaqueId('routineagent', flueRunId);
 }
 
 async function createRoutineShadowLifecycle(
@@ -321,18 +319,13 @@ async function createRoutineShadowLifecycle(
   if (!runtime.run.canonicalRunId) return undefined;
   try {
     const store = getWorkStore(runtime.env);
-    const run = await store.getRun(runtime.run.canonicalRunId as RunId);
-    if (!run) return undefined;
-    const binding = await store.getBinding(run.bindingId);
-    if (!binding || binding.sourceVisibility === 'unknown') return undefined;
-    const lifecycle = new ShadowWorkLifecycle({
-      store,
-      runId: run.id,
+    const lifecycle = await createWorkExecutionLifecycle(store, {
+      runId: runtime.run.canonicalRunId,
       attemptNumber: 1,
+      executorKind: 'workflow',
       agentName: runtime.access.config.agentId,
       canonicalModel: runtime.access.config.model,
       flueInstanceRef: opaqueId('flueinstance', runtime.agentInstanceId),
-      sensitivity: binding.sourceVisibility,
       routeEvidence: runtime.routeEvidence,
     });
     return await lifecycle.prepareExecution(preparedInput) ? lifecycle : undefined;
@@ -564,7 +557,7 @@ export async function failInterruptedRoutineWorkflow(
     if (routine && run.flueRunId) {
       await releaseSandbox(
         env,
-        routineAgentInstanceId(run.flueRunId, routine),
+        routineAgentInstanceId(run.flueRunId),
         true,
       );
     }

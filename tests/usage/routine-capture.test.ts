@@ -171,6 +171,7 @@ test('Scheduled Work detail prefers linked ledger facts and labels historical ro
     const legacy = { ...linked, id: 'rrun_legacy', usageLedgerOperationId: null, usageProvenance: 'legacy_routine' as const };
     const routines = {
       getRun: async (id: string) => id === linked.id ? linked : id === legacy.id ? legacy : undefined,
+      getRoutine: async (id: string) => id === routine.id ? routine : undefined,
     } as unknown as RoutineStore;
     const api = createRoutineAdminApi({ store: () => routines, usage: () => usage });
 

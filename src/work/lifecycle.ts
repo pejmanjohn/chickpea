@@ -13,6 +13,7 @@ export interface ShadowWorkLifecycleOptions {
   store: WorkStore;
   runId: RunId;
   attemptNumber: number;
+  executorKind?: 'agent' | 'workflow';
   agentName: string;
   canonicalModel: string;
   sensitivity: ContentSensitivity;
@@ -83,7 +84,7 @@ export class ShadowWorkLifecycle {
       runId: this.options.runId,
       attemptNumber: this.options.attemptNumber,
       fencingToken: this.fencingToken,
-      executorKind: 'agent',
+      executorKind: this.options.executorKind ?? 'agent',
       agentName: this.options.agentName,
       canonicalModel: this.options.canonicalModel,
       ...(this.options.flueInstanceRef

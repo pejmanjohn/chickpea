@@ -1,12 +1,9 @@
 import type { ResolvedAssignment } from '../config/types.ts';
 import { opaqueId, safeConfigForAssignment } from '../work/admission.ts';
+import { prepareSubmitRun } from '../work/submit-run.ts';
 import type {
   AdmitShadowRunInput,
-  BindingId,
-  ContentSensitivity,
-  RunId,
   SourceVisibility,
-  WorkId,
 } from '../work/types.ts';
 import {
   slackConversationsInfo,
@@ -125,21 +122,18 @@ export function prepareSlackShadowAdmission(input: {
     : `thread:${turn.channelId}:${turn.threadTs}`;
   const scope = `slack:${turn.workspaceId}:${conversationIdentity}:1`;
   const messageScope = `slack:${turn.workspaceId}:${turn.channelId}:${turn.messageTs}`;
-  const workId = opaqueId('work', scope) as WorkId;
-  const bindingId = opaqueId('binding', scope) as BindingId;
-  const runId = opaqueId('run', messageScope) as RunId;
+  const workId = opaqueId('work', scope);
+  const bindingId = opaqueId('binding', scope);
+  const runId = opaqueId('run', messageScope);
   const safeConfig = safeConfigForAssignment(assignment, sourceVisibility);
-  const sensitivity = sourceVisibility as ContentSensitivity;
-  return {
+  return prepareSubmitRun({
     work: {
       id: workId,
       kind: 'conversation',
-      maximumSensitivity: sourceVisibility === 'public' ? 'public' : 'private',
       createdAt: admittedAt,
     },
     binding: {
       id: bindingId,
-      workId,
       adapterKind: 'slack',
       externalAccountId: opaqueId('account', `slack:${turn.workspaceId}`),
       externalConversationId: opaqueId('conversation', scope),
@@ -149,31 +143,34 @@ export function prepareSlackShadowAdmission(input: {
       orderingKey: opaqueId('ordering', scope),
       createdAt: admittedAt,
     },
-    run: {
-      id: runId,
-      workId,
-      bindingId,
-      kind: 'interactive',
-      triggerKind: `slack_${turn.source}`,
-      triggerRef: opaqueId('trigger', messageScope),
+    trigger: {
+      runId,
+      runKind: 'interactive',
+      kind: `slack_${turn.source}`,
+      ref: opaqueId('trigger', messageScope),
       dedupeKey: opaqueId('dedupe', messageScope),
-      actorRef: opaqueId('actor', `slack:${turn.workspaceId}:${turn.userId}`),
-      actorTrustTier: 'member',
-      sourceContextWatermark: opaqueId(
-        'watermark',
-        `${turn.workspaceId}:${turn.channelId}:${turn.threadTs}:${turn.messageTs}`,
-      ),
-      effectiveCapabilityDigest: safeConfig.capabilityDigest,
-      executionAuthority: 'legacy',
-      coordinatorKind: 'interactive',
-      authorityEpoch: 1,
+      body: turn.text,
       createdAt: admittedAt,
     },
+    actor: {
+      ref: opaqueId('actor', `slack:${turn.workspaceId}:${turn.userId}`),
+      trustTier: 'member',
+    },
+    sourceContextWatermark: opaqueId(
+      'watermark',
+      `${turn.workspaceId}:${turn.channelId}:${turn.threadTs}:${turn.messageTs}`,
+    ),
     safeConfig,
-    triggerContent: { sensitivity, body: turn.text },
-    auditEventId: opaqueId('audit', `admit:${messageScope}`),
-    auditIdempotencyKey: opaqueId('auditkey', `admit:${messageScope}`),
-  };
+    execution: {
+      authority: 'legacy',
+      coordinatorKind: 'interactive',
+      authorityEpoch: 1,
+    },
+    audit: {
+      eventId: opaqueId('audit', `admit:${messageScope}`),
+      idempotencyKey: opaqueId('auditkey', `admit:${messageScope}`),
+    },
+  });
 }
 
 function denied(
