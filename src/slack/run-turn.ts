@@ -338,7 +338,6 @@ export async function runTurn(
     } else {
       try {
         usedCloudflareSandbox = await shouldUseCloudflareSandbox(assignment, platformEnv);
-        await workLifecycle?.markInvoked();
         agentResult = await promptSlackThreadAgent(
           agentConversationKey,
           executionPrompt,
@@ -350,6 +349,7 @@ export async function runTurn(
             ? {
                 runId: options.runId,
                 runExecutionId: workLifecycle.executionId,
+                mode: ledgerAuthority ? 'enforce' : 'observe',
               }
             : undefined,
         );
@@ -451,7 +451,6 @@ async function createSlackShadowLifecycle(input: {
         providerAuthRoute,
         input.assignment.modelCredential,
       ),
-      deferRoute: true,
     }, {
       mode: input.mode,
     });

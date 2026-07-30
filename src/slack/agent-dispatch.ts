@@ -9,6 +9,7 @@ import { sandboxThreadKey } from '../sandbox/thread-key.ts';
 import { prepareSandboxTurn, type SandboxTurnContext } from '../sandbox/turn-context.ts';
 import { activityStatusTraceHeaders } from './activity-publisher.ts';
 import { opaqueId } from '../work/admission.ts';
+import type { WorkTraceCorrelation } from '../work/trace-correlation.ts';
 
 export type AgentPromptFailureKind =
   | 'agent'
@@ -100,7 +101,7 @@ export async function promptSlackThreadAgent(
   turnId: string,
   useCloudflareSandbox: boolean,
   requestedModel: string | null,
-  workCorrelation?: { runId: string; runExecutionId: string },
+  workCorrelation?: WorkTraceCorrelation,
 ): Promise<AgentDispatchResult> {
   if (useCloudflareSandbox) {
     try {

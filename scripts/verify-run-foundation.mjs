@@ -58,8 +58,8 @@ export const RUN_FOUNDATION_CAPABILITIES = Object.freeze([
   Object.freeze({
     id: 'interactive_execution_descriptor',
     status: 'proven',
-    evidence: 'Direct submissions persist traceCarrier and restore it on the outer agent execution interceptor.',
-    releaseDecision: 'opaque_trace_key_to_durable_mapping',
+    evidence: 'Direct submissions persist traceCarrier; an AsyncLocal interceptor restores it and marks canonical invocation at the first Flue model operation.',
+    releaseDecision: 'mark_after_agent_policy_before_provider',
   }),
   Object.freeze({
     id: 'workflow_execution_descriptor',
@@ -133,6 +133,8 @@ const FOCUSED_TESTS = [
   'tests/run-driver.test.ts',
   'tests/run-ordering.test.ts',
   'tests/run-recovery.test.ts',
+  'tests/node-turn-relay.test.ts',
+  'tests/work-model-invocation.test.ts',
   'tests/non-slack-adapter-contract.test.ts',
   'tests/turn-jobs.test.ts',
   'tests/status-relay.test.ts',

@@ -20,6 +20,7 @@ import {
 import { registerOpenAiSubscriptionApi } from './openai-subscription/provider.ts';
 import { registerModelCompatibilityApis } from './model-compat/provider.ts';
 import { startNodeTurnRelay } from './slack/node-turn-relay.ts';
+import { workModelInvocationInterceptor } from './work/model-invocation.ts';
 
 // Provider registrations run at module scope so they are in place before any
 // agent resolves its model. On the Cloudflare target the seeded Workers AI
@@ -117,6 +118,15 @@ instrument({
   key: Symbol.for('chickpea.provider-auth-route'),
   interceptor: providerAuthRouteInterceptor,
   observe: observeProviderAuthRoute,
+  dispose() {},
+});
+
+// Canonical invocation state changes at Flue's first model operation, after
+// agent initialization and live policy resolution but before provider work.
+instrument({
+  key: Symbol.for('chickpea.work-model-invocation'),
+  interceptor: workModelInvocationInterceptor,
+  observe() {},
   dispose() {},
 });
 

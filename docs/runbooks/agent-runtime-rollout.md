@@ -19,6 +19,9 @@ web sessions are not part of this release.
 - A profile with enabled MCP tools, API connections, or repositories is not
   canary-eligible until paired action receipts and finite attempt ceilings ship
   on every relevant execution path.
+- Open internet egress or a non-empty installation domain allowlist also makes
+  a Run ineligible; the selector fails closed to legacy when live egress policy
+  cannot be read.
 
 Do not describe an empty-selector deploy as a ledger-authority cutover. It is a
 foundation/shadow release that preserves current Slack execution behavior.
@@ -89,8 +92,10 @@ SLACK_TAG_LEDGER_CANARY_CHANNELS=T123/C456,T123/C789
 The deploy wrapper rejects malformed or oversized selectors and an artifact
 without the durable driver seams. Do not canary a channel whose profile has an
 enabled MCP tool, API connection, or repository. Do not use natural-language
-Routine creation in a canary channel; the current canary intentionally bypasses
-that Slack pre-parser. Explicit Memory and Routine commands continue on legacy.
+Routine creation in a canary channel. Confirm installation egress is either
+`off` or the default empty allowlist; open or domain-allowlisted egress stays on
+legacy. The current canary intentionally bypasses that Slack pre-parser.
+Explicit Memory and Routine commands continue on legacy.
 
 Run at least 25 authoritative Runs for at least 24 hours. Verify one RunExecution
 per model attempt, one delivered Slack response, persisted approved output and

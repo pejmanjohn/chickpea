@@ -44,6 +44,7 @@ import { slackThreadKey } from '../slack/thread-key.ts';
 import { normalizeSlackTurn } from '../slack/turn-normalization.ts';
 import { wakeNodeTurnRelay } from '../slack/node-turn-relay.ts';
 import { selectSlackExecutionAuthority } from '../work/authority.ts';
+import { EGRESS_SETTING_KEY, parseEgressPolicy } from '../config/egress.ts';
 import {
   isSlackMemberJoinedChannelEvent,
   type NormalizedSlackTurn,
@@ -400,10 +401,20 @@ const handleSlackEvents: NonNullable<SlackChannelOptions['events']> = async ({ c
   let canonicalRunId: string | undefined;
   let canonicalTurnJob: TurnJob | undefined;
   if (admissionTruth.eligible) {
+    let egressPolicy;
+    try {
+      egressPolicy = parseEgressPolicy(
+        await stores.settings.getSetting(EGRESS_SETTING_KEY),
+      );
+    } catch {
+      // Canary eligibility is fail-closed. A settings read failure still uses
+      // the established legacy lane and must not change Slack availability.
+    }
     const selectedExecution = selectSlackExecutionAuthority({
       workspaceId: turn.workspaceId,
       channelId: turn.channelId,
       assignment,
+      ...(egressPolicy ? { egressPolicy } : {}),
       legacyOnlyTurn:
         Boolean(parseMemoryCommand(turn.text)) ||
         (isRoutineSlackTurn(turn) && Boolean(parseRoutineCommand(turn.text))),

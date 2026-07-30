@@ -1,4 +1,5 @@
 import type { ResolvedAssignment } from '../config/types.ts';
+import type { EgressPolicy } from '../config/egress.ts';
 import type { RunCoordinatorKind, RunExecutionAuthority } from './types.ts';
 
 export const LEDGER_CANARY_CHANNELS_KEY = 'SLACK_TAG_LEDGER_CANARY_CHANNELS';
@@ -16,6 +17,8 @@ export interface SlackExecutionAuthorityInput {
   workspaceId: string;
   channelId: string;
   assignment: ResolvedAssignment;
+  /** Live installation-wide network policy. Missing policy must never opt in. */
+  egressPolicy?: EgressPolicy;
   /** Explicit Memory/Routine controls still use their established legacy coordinators. */
   legacyOnlyTurn?: boolean;
   env?: Record<string, unknown>;
@@ -36,7 +39,8 @@ export function selectSlackExecutionAuthority(
     authorityEpoch: 1,
   };
   if (input.legacyOnlyTurn) return legacy;
-  if (!ledgerCanarySupportsAssignment(input.assignment)) return legacy;
+  if (!input.egressPolicy ||
+      !ledgerCanarySupportsAssignment(input.assignment, input.egressPolicy)) return legacy;
   const configured = environmentValue(input.env, LEDGER_CANARY_CHANNELS_KEY);
   if (!configured) return legacy;
   const selected = configured
@@ -62,9 +66,16 @@ export function selectSlackExecutionAuthority(
  * paired durable action receipts. The receipt boundary exists, but enabling a
  * connector or coding workspace before it is wired would make recovery unsafe.
  */
-export function ledgerCanarySupportsAssignment(assignment: ResolvedAssignment): boolean {
+export function ledgerCanarySupportsAssignment(
+  assignment: ResolvedAssignment,
+  egressPolicy: EgressPolicy,
+): boolean {
   const agent = assignment.agent;
-  return !agent.mcpServers.some((connection) =>
+  // Any configured internet reach can cross an unreceipted external effect
+  // boundary (the base network includes POST in open mode). Keep the v1 canary
+  // limited to the default empty allowlist or fully-off network policy.
+  return egressPolicy.mode !== 'open' && egressPolicy.domains.length === 0 &&
+    !agent.mcpServers.some((connection) =>
     connection.enabled && connection.allowedTools.length > 0
   ) &&
     !agent.apiConnections.some((connection) => connection.enabled) &&

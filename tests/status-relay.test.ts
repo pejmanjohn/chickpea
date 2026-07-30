@@ -14,9 +14,11 @@ test('activity trace carries only opaque Run correlation beside the status gener
   const headers = activityStatusTraceHeaders(GENERATION, {
     runId: 'run_opaque_alpha',
     runExecutionId: 'execution_opaque_alpha',
+    mode: 'enforce',
   });
   assert.match(headers.tracestate, /chickpea-run=run_opaque_alpha/);
   assert.match(headers.tracestate, /chickpea-exec=execution_opaque_alpha/);
+  assert.match(headers.tracestate, /chickpea-work-mode=enforce/);
   assert.doesNotMatch(headers.tracestate, /prompt|approved|token|secret/);
 });
 

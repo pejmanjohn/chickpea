@@ -111,6 +111,7 @@ import {
   WorkStateError,
   type WorkRpcRequest,
   type WorkRpcResponse,
+  type WorkStore,
 } from './work/types.ts';
 import {
   RoutineAdmissionController,
@@ -1037,7 +1038,10 @@ async function drainLedgerRuns(
     maxClaims: 4,
     concurrency: 4,
     handle: createLedgerSlackRunHandler({
-      work: stores.work,
+      // WorkStoreLogic is the in-DO synchronous implementation of every
+      // WorkStore operation; awaiting its return values preserves the same
+      // handler contract without a self-RPC through CfWorkStore.
+      work: stores.work as unknown as WorkStore,
       turns: stores.turnJobs,
       ...(client ? { client } : {}),
       platformEnv,

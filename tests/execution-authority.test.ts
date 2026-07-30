@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import type { ResolvedAssignment } from '../src/config/types.ts';
+import { DEFAULT_EGRESS_POLICY } from '../src/config/egress.ts';
 import {
   LEDGER_CANARY_CHANNELS_KEY,
   selectSlackExecutionAuthority,
@@ -12,6 +13,7 @@ test('the scoped selector defaults legacy and matches only an exact workspace/ch
     workspaceId: 'T_acme',
     channelId: 'C_canary',
     assignment: assignment(),
+    egressPolicy: DEFAULT_EGRESS_POLICY,
   };
   assert.deepEqual(selectSlackExecutionAuthority(input), {
     authority: 'legacy', coordinatorKind: 'interactive', authorityEpoch: 1,
@@ -37,6 +39,7 @@ test('tool-capable profiles stay on legacy until paired action receipts are enfo
   const selected = { [LEDGER_CANARY_CHANNELS_KEY]: 'T_acme/C_canary' };
   const base = {
     workspaceId: 'T_acme', channelId: 'C_canary', env: selected,
+    egressPolicy: DEFAULT_EGRESS_POLICY,
   };
   assert.equal(selectSlackExecutionAuthority({ ...base, assignment: assignment() }).authority, 'ledger');
   assert.equal(
@@ -63,10 +66,23 @@ test('tool-capable profiles stay on legacy until paired action receipts are enfo
       },
     },
   }).authority, 'legacy');
+  assert.equal(selectSlackExecutionAuthority({
+    ...base,
+    assignment: assignment(),
+    egressPolicy: { mode: 'open', domains: [] },
+  }).authority, 'legacy');
+  assert.equal(selectSlackExecutionAuthority({
+    ...base,
+    assignment: assignment(),
+    egressPolicy: { mode: 'allowlist', domains: ['example.com'] },
+  }).authority, 'legacy');
 });
 
 test('selector rollback changes only future admission decisions', () => {
-  const input = { workspaceId: 'T_acme', channelId: 'C_canary', assignment: assignment() };
+  const input = {
+    workspaceId: 'T_acme', channelId: 'C_canary', assignment: assignment(),
+    egressPolicy: DEFAULT_EGRESS_POLICY,
+  };
   const enabled = selectSlackExecutionAuthority({
     ...input,
     env: { [LEDGER_CANARY_CHANNELS_KEY]: 'T_acme/C_canary' },

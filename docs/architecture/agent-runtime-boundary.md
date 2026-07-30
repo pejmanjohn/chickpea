@@ -38,7 +38,7 @@ policy, product lifecycle, retention, safe audit evidence, and operator views.
 | Safe detailed history | Absent | Do not ship detailed Flue activity in Sessions. Flue history includes reasoning and tool bodies. |
 | Instance abort | Proven, instance-wide | Treat abort as a control request, not evidence that an external effect did or did not happen. |
 | Instance list/delete | Absent | Keep continuity generations opaque. Do not make cleanup or enumeration a release dependency. |
-| Interactive execution descriptor | Proven | Carry an opaque RunExecution lookup key in the persisted trace carrier and resolve a durable Chickpea mapping inside the outer execution interceptor. |
+| Interactive execution descriptor | Proven | Carry opaque Run/RunExecution correlation in the persisted trace carrier, restore it in execution-local context, and mark invocation at the first Flue model operation. |
 | Workflow execution descriptor | Proven | Carry an opaque coordinator descriptor in Workflow input. Create RunExecution only after prepared input is durable. |
 | Tool/action interception | Proven | Use a Chickpea interceptor around Flue tool execution for policy checks and durable pre/post receipts. |
 | Finite action-attempt ceiling | Absent | Side-effectful release capabilities stay disabled until Chickpea enforces and tests a finite per-RunExecution ceiling. |
@@ -55,12 +55,15 @@ valuable evidence, but a connection loss before that response is inherently
 ambiguous. Chickpea must not attempt the same direct submission again.
 
 The outer Flue agent interceptor receives the durable `traceCarrier`,
-`submissionId`, instance ID, and agent name. Interactive execution will put only
-an opaque, bounded RunExecution lookup key in `tracestate`; the full immutable
-descriptor remains in Chickpea state. The interceptor resolves that mapping and
-keeps it in execution-local context across agent initialization, model calls,
-tools, retries, and compaction. A missing, expired, or digest-mismatched mapping
-fails before model or tool execution.
+`submissionId`, instance ID, and agent name. Interactive execution puts only
+opaque, bounded Run and RunExecution lookup keys in `tracestate`; the full
+immutable descriptor remains in Chickpea state. The interceptor restores that
+correlation in execution-local context around the durable Agent submission.
+Immediately before the first Flue model operation it verifies the persisted
+RunExecution and marks it invoked. Agent initialization, live policy, sandbox,
+and route failures happen before this seam and remain provably not submitted.
+A missing or mismatched mapping fails closed for ledger authority while legacy
+shadow observation preserves the established execution path.
 
 Flue's instance abort covers the active submission and every queued submission
 for that instance. It is useful for operator control, but it is not a
@@ -212,12 +215,15 @@ back to legacy; already-owned Runs drain under the same dual-lane artifact.
 Explicit Memory and Routine commands stay with their existing coordinators.
 Profiles with enabled MCP tools, API connections, or repositories also remain
 legacy until paired action receipts and attempt ceilings are enforced on every
-execution path. A selected canary currently treats natural-language scheduling
-as an ordinary agent prompt, so only dedicated validation channels qualify.
+execution path. Open internet egress and non-empty installation domain
+allowlists are likewise ineligible, and failure to read the live egress policy
+falls back to legacy. A selected canary currently treats natural-language
+scheduling as an ordinary agent prompt, so only dedicated validation channels
+qualify.
 
 The ledger driver persists approved output and the exact rendered Slack payload
 before delivery. Recovery may redeliver that payload, but never reruns the model
-after response-ready. Binding ordering, authority epoch, leases, fencing, and
+after response-ready. Binding ordering, authority epoch, renewable leases, fencing, and
 delivery finalization remain durable across process or alarm recovery. Legacy
 and ledger queues cannot claim each other's Runs.
 

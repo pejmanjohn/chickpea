@@ -6,6 +6,10 @@ import type {
 } from '@flue/runtime';
 
 import type { ActivityStatus } from '../activity/status.ts';
+import {
+  workTraceStateEntries,
+  type WorkTraceCorrelation,
+} from '../work/trace-correlation.ts';
 import { setObservedSlackStatus } from './status-registry.ts';
 import { relayObservedStatus } from './status-relay.ts';
 
@@ -26,8 +30,6 @@ const relayQueues = new Map<string, Map<string, RelayQueue>>();
 const activityStatusGeneration = new AsyncLocalStorage<string>();
 
 const ACTIVITY_STATUS_TRACESTATE_KEY = 'chickpea-status';
-const WORK_RUN_TRACESTATE_KEY = 'chickpea-run';
-const WORK_EXECUTION_TRACESTATE_KEY = 'chickpea-exec';
 
 /**
  * Encode the application-owned turn generation into Flue's persisted trace
@@ -36,7 +38,7 @@ const WORK_EXECUTION_TRACESTATE_KEY = 'chickpea-exec';
  */
 export function activityStatusTraceHeaders(
   generation: string,
-  correlation: { runId: string; runExecutionId: string } | undefined = undefined,
+  correlation: WorkTraceCorrelation | undefined = undefined,
 ): {
   traceparent: string;
   tracestate: string;
@@ -47,12 +49,7 @@ export function activityStatusTraceHeaders(
     traceparent: `00-${traceId}-${spanId}-01`,
     tracestate: [
       `${ACTIVITY_STATUS_TRACESTATE_KEY}=${encodeURIComponent(generation)}`,
-      ...(correlation
-        ? [
-            `${WORK_RUN_TRACESTATE_KEY}=${encodeURIComponent(correlation.runId)}`,
-            `${WORK_EXECUTION_TRACESTATE_KEY}=${encodeURIComponent(correlation.runExecutionId)}`,
-          ]
-        : []),
+      ...(correlation ? workTraceStateEntries(correlation) : []),
     ].join(','),
   };
 }

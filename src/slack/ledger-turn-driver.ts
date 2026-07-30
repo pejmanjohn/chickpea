@@ -6,15 +6,7 @@ import type { UsageStore } from '../usage/types.ts';
 import { opaqueId } from '../work/admission.ts';
 import type { RunDriverHandlerResult } from '../work/driver.ts';
 import type {
-  FinalizeRunDeliveryInput,
   InteractiveRunClaim,
-  LedgerContentRecord,
-  LedgerContentRef,
-  RunExecutionRecord,
-  RunId,
-  RunRecord,
-  SettleRunWithoutDeliveryInput,
-  StartRunDeliveryInput,
   WorkStore,
 } from '../work/types.ts';
 import { getClient, runTurn, type RunTurnOptions } from './run-turn.ts';
@@ -28,18 +20,6 @@ import type { ResolvedAssignment } from '../config/types.ts';
 import type { SlackAgentExecutionContext } from './turn-job-types.ts';
 
 type MaybePromise<T> = T | Promise<T>;
-
-export interface LedgerSlackWorkStore {
-  getRun(runId: RunId): MaybePromise<RunRecord | undefined>;
-  getContent(
-    ref: LedgerContentRef,
-    at?: number,
-  ): MaybePromise<LedgerContentRecord | undefined>;
-  listRunExecutions(runId: RunId, limit?: number): MaybePromise<RunExecutionRecord[]>;
-  startRunDelivery(input: StartRunDeliveryInput): MaybePromise<RunRecord>;
-  finalizeRunDelivery(input: FinalizeRunDeliveryInput): MaybePromise<RunRecord>;
-  settleRunWithoutDelivery(input: SettleRunWithoutDeliveryInput): MaybePromise<RunRecord>;
-}
 
 export interface LedgerSlackTurnStore {
   getPendingByRunId(runId: string): MaybePromise<PendingTurnJob | undefined>;
@@ -59,7 +39,7 @@ export type LedgerSlackTurnExecutor = (
 ) => Promise<void>;
 
 export interface LedgerSlackRunHandlerOptions {
-  work: LedgerSlackWorkStore;
+  work: WorkStore;
   turns: LedgerSlackTurnStore;
   client?: WebClient;
   platformEnv?: PlatformEnv;
@@ -115,7 +95,7 @@ export function createLedgerSlackRunHandler(
         runFencingToken: claim.fencingToken,
         executionAuthority: 'ledger',
         continuityKey,
-        workStore: options.work as unknown as WorkStore,
+        workStore: options.work,
         ...(options.settingsStore ? { settingsStore: options.settingsStore } : {}),
         ...(options.usageStore ? { usageStore: options.usageStore } : {}),
         onDelivered: () => options.turns.markDelivered(job.id),
@@ -256,10 +236,16 @@ async function classifyExecutionFailure(
     return { kind: 'requeue', reasonCode: 'confirmed_delivery_failure' };
   }
   if (run.status === 'preparing_input' || run.status === 'input_ready' || run.status === 'executing') {
-    const executions = await options.work.listRunExecutions(claim.run.id, 1);
-    const latest = executions[0];
+    // Presentation APIs keep executions in chronological order. Classify from
+    // the newest bounded attempt, never the first historical pre-submit row.
+    const executions = await options.work.listRunExecutions(claim.run.id, 50);
+    const latest = executions.at(-1);
     if (!latest || latest.modelInvocationStatus === 'ready' ||
         latest.modelInvocationStatus === 'not_invoked' || latest.outcome === 'not_submitted') {
+      if (attempt >= MAX_TURN_ATTEMPTS) {
+        await options.turns.markError(job.id);
+        return { kind: 'recovery_required', reasonCode: 'ledger_turn_attempts_exhausted' };
+      }
       return { kind: 'requeue', reasonCode: 'ledger_turn_failed_before_submit' };
     }
   }

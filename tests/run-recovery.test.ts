@@ -68,7 +68,7 @@ test('delivery-only recovery replays the exact persisted Slack payload without e
     const sent: unknown[] = [];
     let executions = 0;
     const handler = createLedgerSlackRunHandler({
-      work,
+      work: work as unknown as WorkStore,
       turns,
       client: {
         chat: {
@@ -125,7 +125,7 @@ test('an ambiguous persisted Slack retry enters recovery and cannot be claimed a
       ownerId: 'second_worker', authorityEpoch: 1, leaseDurationMs: 30_000, claimedAt: ++clock,
     })!;
     const handler = createLedgerSlackRunHandler({
-      work,
+      work: work as unknown as WorkStore,
       turns,
       client: {
         chat: { postMessage: async () => { throw new Error('socket closed after send'); } },
@@ -156,7 +156,7 @@ test('a pre-submit executor failure is safely requeued instead of quarantined', 
       ownerId: 'worker', authorityEpoch: 1, leaseDurationMs: 30_000, claimedAt: clock,
     })!;
     const handler = createLedgerSlackRunHandler({
-      work,
+      work: work as unknown as WorkStore,
       turns,
       client: {} as WebClient,
       executeTurn: (async () => { throw new Error('hydration unavailable'); }) as LedgerSlackTurnExecutor,
@@ -171,7 +171,7 @@ test('a pre-submit executor failure is safely requeued instead of quarantined', 
   }
 });
 
-test('a proven not-submitted retry gets a new fence and immutable RunExecution', async () => {
+test('failure classification uses the newest immutable RunExecution', async () => {
   let clock = NOW;
   const db = openStateDb(':memory:');
   try {
@@ -190,11 +190,21 @@ test('a proven not-submitted retry gets a new fence and immutable RunExecution',
     });
     const continuityKeys: string[] = [];
     const handler = createLedgerSlackRunHandler({
-      work,
+      work: work as unknown as WorkStore,
       turns,
       client: {} as WebClient,
       executeTurn: (async (_turn, _assignment, _env, options) => {
         continuityKeys.push(options?.continuityKey ?? 'missing');
+        if (options?.runFencingToken === 2) {
+          const secondLifecycle = lifecycleFor(
+            work,
+            admission.run.id,
+            options.runFencingToken,
+            () => ++clock,
+          );
+          await secondLifecycle.prepareExecution('Prepared input');
+          await secondLifecycle.markInvoked();
+        }
         throw new Error('known safe refusal');
       }) as LedgerSlackTurnExecutor,
       now: () => ++clock,
@@ -210,10 +220,8 @@ test('a proven not-submitted retry gets a new fence and immutable RunExecution',
       ownerId: 'second_worker', authorityEpoch: 1, leaseDurationMs: 30_000, claimedAt: ++clock,
     })!;
     assert.deepEqual(await handler(second), {
-      kind: 'requeue', reasonCode: 'ledger_turn_failed_before_submit',
+      kind: 'recovery_required', reasonCode: 'ledger_turn_outcome_ambiguous',
     });
-    const secondLifecycle = lifecycleFor(work, admission.run.id, second.fencingToken, () => ++clock);
-    await secondLifecycle.prepareExecution('Prepared input');
     const executions = work.listRunExecutions(admission.run.id, 10);
     assert.equal(second.fencingToken, first.fencingToken + 1);
     assert.equal(executions.length, 2);
@@ -223,6 +231,53 @@ test('a proven not-submitted retry gets a new fence and immutable RunExecution',
     assert.equal(continuityKeys.length, 2);
     assert.notEqual(continuityKeys[0], continuityKeys[1]);
     assert.doesNotMatch(continuityKeys.join(' '), /T_canary|C_canary|100\.001/);
+  } finally {
+    db.close();
+  }
+});
+
+test('known-safe pre-submit failures stop at the bounded turn-attempt ceiling', async () => {
+  let clock = NOW;
+  const db = openStateDb(':memory:');
+  try {
+    const work = new WorkStoreLogic(db, { now: () => clock });
+    const turns = new TurnJobStoreLogic(db, () => clock);
+    const admission = work.admitShadowRun(prepareSubmitRun(submission('safe-retry-ceiling')));
+    turns.enqueue(turnJob(admission.run.id, 'safe-retry-ceiling'));
+    const handler = createLedgerSlackRunHandler({
+      work: work as unknown as WorkStore,
+      turns,
+      client: {} as WebClient,
+      executeTurn: (async (_turn, _assignment, _env, options) => {
+        const fencingToken = options?.runFencingToken ?? 0;
+        const lifecycle = lifecycleFor(work, admission.run.id, fencingToken, () => ++clock);
+        await lifecycle.prepareExecution('Prepared input');
+        await lifecycle.settleExecution({
+          outcome: 'not_submitted',
+          rawStatus: 'credential_unavailable',
+          safeFailureCode: 'credential_unavailable',
+        });
+        throw new Error('known safe refusal');
+      }) as LedgerSlackTurnExecutor,
+      now: () => ++clock,
+    });
+    const first = work.claimNextInteractiveRun({
+      ownerId: 'first_worker', authorityEpoch: 1, leaseDurationMs: 30_000, claimedAt: clock,
+    })!;
+    assert.deepEqual(await handler(first), {
+      kind: 'requeue', reasonCode: 'ledger_turn_failed_before_submit',
+    });
+    work.releaseRunLease({
+      runId: admission.run.id, ownerId: first.leaseOwner, fencingToken: first.fencingToken,
+      outcome: 'requeue', reasonCode: 'ledger_turn_failed_before_submit', releasedAt: ++clock,
+    });
+    const second = work.claimNextInteractiveRun({
+      ownerId: 'second_worker', authorityEpoch: 1, leaseDurationMs: 30_000, claimedAt: ++clock,
+    })!;
+    assert.deepEqual(await handler(second), {
+      kind: 'recovery_required', reasonCode: 'ledger_turn_attempts_exhausted',
+    });
+    assert.equal(await turns.getPendingByRunId(admission.run.id), undefined);
   } finally {
     db.close();
   }

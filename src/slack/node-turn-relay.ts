@@ -1,11 +1,18 @@
+import type { WebClient } from '@slack/web-api';
+
 import {
   getSlackStateStore,
   getWorkStore,
   isCloudflareTarget,
   type PlatformEnv,
 } from '../config/state-backend.ts';
+import type { SlackStateStore } from './claim-store.ts';
+import type { WorkStore } from '../work/types.ts';
 import { DurableRunDriver } from '../work/driver.ts';
-import { createLedgerSlackRunHandler } from './ledger-turn-driver.ts';
+import {
+  createLedgerSlackRunHandler,
+  type LedgerSlackTurnExecutor,
+} from './ledger-turn-driver.ts';
 import { runTurn, sanitizeError } from './run-turn.ts';
 
 const NODE_RECONCILE_INTERVAL_MS = 30_000;
@@ -32,14 +39,27 @@ export function startNodeTurnRelay(): void {
 export async function wakeNodeTurnRelay(env?: PlatformEnv): Promise<void> {
   if (isCloudflareTarget()) return;
   if (draining) return draining;
-  draining = drain(env).finally(() => {
+  draining = drainNodeTurnRelayOnce({ ...(env ? { env } : {}) }).finally(() => {
     draining = undefined;
   });
   return draining;
 }
 
-async function drain(env?: PlatformEnv): Promise<void> {
-  const state = getSlackStateStore(env);
+export interface NodeTurnRelayDrainOptions {
+  env?: PlatformEnv;
+  /** Test seam for proving the real Node relay wiring without global stores. */
+  state?: SlackStateStore;
+  work?: WorkStore;
+  client?: WebClient;
+  executeTurn?: LedgerSlackTurnExecutor;
+}
+
+export async function drainNodeTurnRelayOnce(
+  options: NodeTurnRelayDrainOptions = {},
+): Promise<void> {
+  const env = options.env;
+  const state = options.state ?? getSlackStateStore(env);
+  const executeTurn = options.executeTurn ?? runTurn;
   if (
     state.listPendingTurns &&
     state.recordTurnAttempt &&
@@ -55,7 +75,7 @@ async function drain(env?: PlatformEnv): Promise<void> {
       const attempt = job.attempts + 1;
       await recordTurnAttempt(job.id, attempt);
       try {
-        await runTurn(job.turn, job.assignment, env, {
+        await executeTurn(job.turn, job.assignment, env, {
           turnId: job.id,
           usageExecutionId: `exec:${job.id}:${attempt}`,
           ...(job.runId ? { runId: job.runId, runAttempt: attempt } : {}),
@@ -71,12 +91,23 @@ async function drain(env?: PlatformEnv): Promise<void> {
       }
     }));
   }
-  await drainLedgerRuns(env);
+  await drainLedgerRuns({
+    state,
+    work: options.work ?? getWorkStore(env),
+    executeTurn,
+    ...(options.client ? { client: options.client } : {}),
+    ...(env ? { env } : {}),
+  });
 }
 
-async function drainLedgerRuns(env?: PlatformEnv): Promise<void> {
-  const work = getWorkStore(env);
-  const state = getSlackStateStore(env);
+async function drainLedgerRuns(input: {
+  state: SlackStateStore;
+  work: WorkStore;
+  executeTurn: LedgerSlackTurnExecutor;
+  client?: WebClient;
+  env?: PlatformEnv;
+}): Promise<void> {
+  const { state, work } = input;
   if (
     !state.getPendingTurnByRunId ||
     !state.recordTurnAttempt ||
@@ -98,7 +129,9 @@ async function drainLedgerRuns(env?: PlatformEnv): Promise<void> {
         markDelivered: state.markTurnDelivered.bind(state),
         markError: state.markTurnError.bind(state),
       },
-      ...(env ? { platformEnv: env } : {}),
+      executeTurn: input.executeTurn,
+      ...(input.client ? { client: input.client } : {}),
+      ...(input.env ? { platformEnv: input.env } : {}),
     }),
   });
   await driver.drain();

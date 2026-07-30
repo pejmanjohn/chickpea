@@ -151,7 +151,7 @@ test('Flue has no finite tool-attempt ceiling, so side effects stay disabled unt
   assert.equal(capability?.releaseDecision, 'disable_side_effects_until_bounded');
 });
 
-test('trace carrier survives into execution context for an opaque descriptor mapping', async () => {
+test('trace carrier survives into execution context for model-boundary invocation evidence', async () => {
   const runtime = await readDistPrefix('conversation-stream-store-');
   const execution = runtime.slice(
     runtime.indexOf('const run = () => interceptExecution({'),
@@ -165,7 +165,7 @@ test('trace carrier survives into execution context for an opaque descriptor map
     (candidate) => candidate.id === 'interactive_execution_descriptor',
   );
   assert.equal(capability?.status, 'proven');
-  assert.equal(capability?.releaseDecision, 'opaque_trace_key_to_durable_mapping');
+  assert.equal(capability?.releaseDecision, 'mark_after_agent_policy_before_provider');
 });
 
 test('catalog routing can derive an immutable allowlisted attempt snapshot without internal aliases', () => {

@@ -1,5 +1,6 @@
 import type {
   InteractiveRunClaim,
+  RenewRunLeaseInput,
   ReleaseRunLeaseInput,
   RunDisposition,
   RunRecord,
@@ -12,6 +13,7 @@ export interface RunDriverStore {
   claimNextInteractiveRun(
     input: ClaimNextInteractiveRunInput,
   ): MaybePromise<InteractiveRunClaim | undefined>;
+  renewRunLease(input: RenewRunLeaseInput): MaybePromise<RunRecord>;
   releaseRunLease(input: ReleaseRunLeaseInput): MaybePromise<RunRecord>;
 }
 
@@ -33,6 +35,8 @@ export interface DurableRunDriverOptions {
   concurrency: number;
   handle(claim: InteractiveRunClaim): Promise<RunDriverHandlerResult>;
   now?: () => number;
+  /** Test/target override; production defaults to one third of the lease. */
+  leaseRenewalIntervalMs?: number;
 }
 
 export interface RunDriverDrainResult {
@@ -59,6 +63,17 @@ export class DurableRunDriver {
     }
     if (!Number.isSafeInteger(options.concurrency) || options.concurrency < 1 || options.concurrency > 16) {
       throw new Error('Run driver concurrency must be between 1 and 16.');
+    }
+    if (!Number.isSafeInteger(options.leaseDurationMs) || options.leaseDurationMs < 3) {
+      throw new Error('Run driver leaseDurationMs must be at least 3 milliseconds.');
+    }
+    if (
+      options.leaseRenewalIntervalMs !== undefined &&
+      (!Number.isSafeInteger(options.leaseRenewalIntervalMs) ||
+        options.leaseRenewalIntervalMs < 1 ||
+        options.leaseRenewalIntervalMs >= options.leaseDurationMs)
+    ) {
+      throw new Error('Run driver lease renewal interval must be positive and shorter than its lease.');
     }
     this.now = options.now ?? Date.now;
   }
@@ -90,14 +105,18 @@ export class DurableRunDriver {
       }
       if (batch.length === 0) break;
       await Promise.all(batch.map(async (claim) => {
-        let outcome: RunDriverHandlerResult;
-        try {
-          outcome = await this.options.handle(claim);
-        } catch {
-          outcome = { kind: 'recovery_required', reasonCode: 'driver_handler_failed' };
-        }
+        const handled = await this.handleWithLeaseRenewal(claim);
+        const outcome = handled.outcome;
         if (outcome.kind === 'completed') {
           result.completed += 1;
+          return;
+        }
+        if (handled.leaseRenewalFailed) {
+          // Do not release through a lease whose ownership could not be
+          // renewed. Its durable expiry reconciliation will classify the Run;
+          // attempting a stale release would only hide the original failure.
+          result.recoveryRequired += 1;
+          stopAfterBatch = true;
           return;
         }
         if (outcome.kind === 'requeue') {
@@ -139,5 +158,41 @@ export class DurableRunDriver {
       if (stopAfterBatch) break;
     }
     return result;
+  }
+
+  private async handleWithLeaseRenewal(claim: InteractiveRunClaim): Promise<{
+    outcome: RunDriverHandlerResult;
+    leaseRenewalFailed: boolean;
+  }> {
+    const intervalMs = this.options.leaseRenewalIntervalMs ??
+      Math.max(1, Math.floor(this.options.leaseDurationMs / 3));
+    let leaseRenewalFailed = false;
+    let pendingRenewal: Promise<void> = Promise.resolve();
+    const timer = setInterval(() => {
+      pendingRenewal = pendingRenewal.then(async () => {
+        if (leaseRenewalFailed) return;
+        await this.store.renewRunLease({
+          runId: claim.run.id,
+          ownerId: claim.leaseOwner,
+          fencingToken: claim.fencingToken,
+          leaseDurationMs: this.options.leaseDurationMs,
+          renewedAt: this.now(),
+        });
+      }).catch(() => {
+        leaseRenewalFailed = true;
+      });
+    }, intervalMs);
+    timer.unref();
+
+    let outcome: RunDriverHandlerResult;
+    try {
+      outcome = await this.options.handle(claim);
+    } catch {
+      outcome = { kind: 'recovery_required', reasonCode: 'driver_handler_failed' };
+    } finally {
+      clearInterval(timer);
+      await pendingRenewal;
+    }
+    return { outcome, leaseRenewalFailed };
   }
 }

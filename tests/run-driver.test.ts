@@ -225,6 +225,31 @@ test('a file-backed driver recovers a queued Run after a Node restart', async ()
   }
 });
 
+test('the active driver renews its lease while a handler is still running', async (t) => {
+  const store = new SqliteWorkStore(':memory:');
+  t.after(() => store.close());
+  const admission = await submitRun(store, submission('heartbeat'));
+  const driver = new DurableRunDriver(store, {
+    ownerId: 'driver_heartbeat',
+    authorityEpoch: 1,
+    leaseDurationMs: 1_000,
+    leaseRenewalIntervalMs: 5,
+    maxClaims: 1,
+    concurrency: 1,
+    handle: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      return { kind: 'requeue', reasonCode: 'heartbeat_observed' };
+    },
+  });
+
+  assert.deepEqual(await driver.drain(), {
+    claimed: 1, completed: 0, requeued: 1, recoveryRequired: 0,
+  });
+  const renewals = (await store.listAuditEvents(admission.run.id, 100))
+    .filter((event) => event.eventType === 'work.run_lease_renewed');
+  assert.ok(renewals.length >= 1);
+});
+
 function submission(
   suffix: string,
   overrides: {

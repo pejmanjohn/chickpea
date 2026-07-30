@@ -19,7 +19,7 @@ export interface WorkExecutionDescriptor {
   canonicalModel: string;
   flueInstanceRef: string;
   routeEvidence: SafeRuntimeModelRouteEvidence;
-  /** Interactive Flue resolves inside its agent factory. */
+  /** Defer only when a later runtime seam will persist the resolved route. */
   deferRoute?: boolean;
 }
 
