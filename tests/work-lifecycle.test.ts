@@ -4,10 +4,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
+import { openStateDb } from '../src/state/node-state-db.ts';
 import { ShadowWorkLifecycle } from '../src/work/lifecycle.ts';
-import { SqliteWorkStore } from '../src/work/store.ts';
+import { SqliteWorkStore, WorkStoreLogic } from '../src/work/store.ts';
 import {
   WorkStateError,
+  type AdmitShadowRunInput,
   type BindingId,
   type RunId,
   type WorkStore,
@@ -41,6 +43,47 @@ test('legacy shadow writes stop blocking after their bounded observer budget', a
     assert.deepEqual(gaps, ['prepare_input']);
   } finally {
     console.warn = originalWarn;
+  }
+});
+
+test('legacy shadow lifecycle settles through the synchronous in-isolate store', async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const store = new WorkStoreLogic(db, { now: () => NOW });
+    const runId = 'run_lifecycle_alpha' as RunId;
+    store.admitShadowRun(lifecycleAdmission('public'));
+    const lifecycle = new ShadowWorkLifecycle({
+      store: store as unknown as WorkStore,
+      runId,
+      attemptNumber: 1,
+      agentName: 'profile_sync_in_isolate',
+      canonicalModel: 'cloudflare/@cf/zai-org/glm-5.2',
+      sensitivity: 'public',
+      routeEvidence: {},
+      mode: 'observe',
+      now: () => NOW,
+    });
+
+    assert.equal(await lifecycle.prepareExecution('prepared prompt'), 'prepared prompt');
+    await lifecycle.markInvoked();
+    await lifecycle.settleExecution({ outcome: 'succeeded', rawStatus: 'flue_succeeded' });
+    const attemptId = await lifecycle.beforeDelivery({
+      method: 'slack_chat_post_message',
+      approvedOutput: 'accepted answer',
+      renderedPayload: '{"text":"accepted answer"}',
+    });
+    await lifecycle.afterDelivery({
+      attemptId,
+      outcome: 'delivered',
+      deliveryRef: 'slack:C123:1900000000.000004',
+    });
+
+    assert.ok(attemptId);
+    assert.equal(store.getRun(runId)?.status, 'settled');
+    assert.equal(store.getRun(runId)?.deliveryStatus, 'delivered');
+    assert.equal(store.getRunExecution(lifecycle.executionId)?.outcome, 'succeeded');
+  } finally {
+    db.close();
   }
 });
 
@@ -289,10 +332,44 @@ async function lifecycleFixture(
 ) {
   const directory = mkdtempSync(join(tmpdir(), 'chickpea-work-lifecycle-'));
   const store = new SqliteWorkStore(join(directory, 'state.sqlite'), { now: () => NOW });
+  const runId = 'run_lifecycle_alpha' as RunId;
+  await store.admitShadowRun(lifecycleAdmission(sensitivity));
+  let tick = 0;
+  const lifecycle = new ShadowWorkLifecycle({
+    store,
+    runId,
+    attemptNumber: 1,
+    agentName: 'profile_alpha',
+    canonicalModel: 'openai/gpt-5.6-sol',
+    sensitivity,
+    routeEvidence: {
+      providerAuthRoute: 'openai_api_key',
+      catalogSource: 'bundled',
+      catalogRevision: '0',
+      catalogDigest: 'c'.repeat(64),
+      compiledProfile: 'openai-platform-responses-sol-tier@1',
+      modelCredentialRef: 'cred_openai_alpha',
+      modelCredentialVersion: 1,
+    },
+    ...(deferRoute ? { deferRoute: true } : {}),
+    now: () => NOW + (++tick),
+  });
+  return {
+    store,
+    runId,
+    lifecycle,
+    close() {
+      store.close();
+      rmSync(directory, { recursive: true, force: true });
+    },
+  };
+}
+
+function lifecycleAdmission(sensitivity: 'public' | 'private'): AdmitShadowRunInput {
   const workId = 'work_lifecycle_alpha' as WorkId;
   const bindingId = 'binding_lifecycle_alpha' as BindingId;
   const runId = 'run_lifecycle_alpha' as RunId;
-  await store.admitShadowRun({
+  return {
     work: {
       id: workId,
       kind: 'conversation',
@@ -348,34 +425,5 @@ async function lifecycleFixture(
     triggerContent: { sensitivity, body: 'trigger' },
     auditEventId: 'audit_lifecycle_alpha',
     auditIdempotencyKey: 'auditkey_lifecycle_alpha',
-  });
-  let tick = 0;
-  const lifecycle = new ShadowWorkLifecycle({
-    store,
-    runId,
-    attemptNumber: 1,
-    agentName: 'profile_alpha',
-    canonicalModel: 'openai/gpt-5.6-sol',
-    sensitivity,
-    routeEvidence: {
-      providerAuthRoute: 'openai_api_key',
-      catalogSource: 'bundled',
-      catalogRevision: '0',
-      catalogDigest: 'c'.repeat(64),
-      compiledProfile: 'openai-platform-responses-sol-tier@1',
-      modelCredentialRef: 'cred_openai_alpha',
-      modelCredentialVersion: 1,
-    },
-    ...(deferRoute ? { deferRoute: true } : {}),
-    now: () => NOW + (++tick),
-  });
-  return {
-    store,
-    runId,
-    lifecycle,
-    close() {
-      store.close();
-      rmSync(directory, { recursive: true, force: true });
-    },
   };
 }

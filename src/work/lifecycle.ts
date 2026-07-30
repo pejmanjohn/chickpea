@@ -254,11 +254,14 @@ export class ShadowWorkLifecycle {
   }
 }
 
-async function withinBudget(promise: Promise<unknown>, budgetMs: number): Promise<boolean> {
+async function withinBudget(value: unknown, budgetMs: number): Promise<boolean> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
+    // Cloudflare's in-isolate SQLite store is synchronous, so its write has
+    // already completed here. Promise normalization keeps that valid local
+    // store compatible; the timer bounds only genuinely asynchronous writes.
     return await Promise.race([
-      promise.then(() => true, () => false),
+      Promise.resolve(value).then(() => true, () => false),
       new Promise<false>((resolve) => {
         timer = setTimeout(() => resolve(false), budgetMs);
       }),
