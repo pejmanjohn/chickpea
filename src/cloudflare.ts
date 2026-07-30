@@ -86,6 +86,7 @@ import {
 } from './slack/run-turn.ts';
 import {
   MAX_TURN_ATTEMPTS,
+  MAX_TURN_DRAIN_BATCH,
   replayTextForTurnProgress,
   TurnJobStoreLogic,
 } from './slack/turn-jobs.ts';
@@ -104,6 +105,7 @@ import { UsageStoreLogic } from './usage/store.ts';
 import { UsageStateError } from './usage/store-error.ts';
 import type { UsageRpcRequest, UsageRpcResponse, UsageStore } from './usage/types.ts';
 import { WorkStoreLogic } from './work/store.ts';
+import { DurableRunDriver } from './work/driver.ts';
 import {
   WorkStateError,
   type WorkRpcRequest,
@@ -683,6 +685,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       return stores.turnJobs.listPending().length > 0;
     });
     if (!result.ok) return result;
+    if (this.stores) await drainDarkLedgerRuns(this.stores.work);
     if (result.value && (await this.ctx.storage.getAlarm()) === null) {
       await this.ctx.storage.setAlarm(Date.now() + RELAY_BATCH_WINDOW_MS);
     }
@@ -745,8 +748,9 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       throw new Error(`state store unavailable in alarm: ${this.initError ?? 'unknown'}`);
     }
     const stores = this.stores;
-    const pending = stores.turnJobs.listPending();
+    const pending = stores.turnJobs.listPending(MAX_TURN_DRAIN_BATCH);
     if (pending.length === 0) {
+      await drainDarkLedgerRuns(stores.work);
       return;
     }
     // One client per alarm firing, resolved from THIS DO's LOCAL settings so
@@ -925,6 +929,8 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         }
       }),
     );
+    await drainDarkLedgerRuns(stores.work);
+    needsRetry ||= stores.turnJobs.hasPending();
     if (needsRetry) {
       // Re-arm (do NOT throw) so this invocation returns normally and its
       // attempt-count writes commit; the next firing re-drives the leftover
@@ -1019,6 +1025,19 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       return rpcError('internal', message);
     }
   }
+}
+
+async function drainDarkLedgerRuns(work: WorkStoreLogic): Promise<void> {
+  await new DurableRunDriver(work, {
+    ownerId: 'cloudflare_dark_run_driver',
+    authorityEpoch: 1,
+    leaseDurationMs: 30_000,
+    maxClaims: 4,
+    concurrency: 4,
+    // U7 is observational: current Slack admissions remain legacy-owned and
+    // this target-neutral lane performs no Flue call or external delivery.
+    handle: async () => ({ kind: 'requeue', reasonCode: 'dark_driver_observed' }),
+  }).drain();
 }
 
 function rpcError(

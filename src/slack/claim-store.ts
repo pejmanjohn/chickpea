@@ -2,7 +2,11 @@ import { openStateDb, type NodeStateDb } from '../state/node-state-db.ts';
 import type { StateDb } from '../state/state-db.ts';
 import { WorkStoreLogic } from '../work/store.ts';
 import type { AdmitShadowRunInput, ShadowRunAdmission } from '../work/types.ts';
-import { TurnJobStoreLogic, type PendingTurnJob } from './turn-jobs.ts';
+import {
+  MAX_TURN_DRAIN_BATCH,
+  TurnJobStoreLogic,
+  type PendingTurnJob,
+} from './turn-jobs.ts';
 import type { TurnJob } from './turn-job-types.ts';
 import { CLAIM_TTL_MS, THREAD_TTL_MS } from './state-limits.ts';
 
@@ -190,7 +194,7 @@ export class SqliteSlackStateStore implements SlackStateStore {
   }
 
   async listPendingTurns() {
-    return this.turnJobs.listPending();
+    return this.turnJobs.listPending(MAX_TURN_DRAIN_BATCH);
   }
 
   async recordTurnAttempt(id: string, attempts: number) {

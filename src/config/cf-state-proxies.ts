@@ -12,6 +12,7 @@ import type {
 import {
   WorkStateError,
   type BindingId,
+  type ClaimNextInteractiveRunInput,
   type AdmitShadowRunInput,
   type CreateRunExecutionInput,
   type CreateWorkGraphInput,
@@ -21,9 +22,11 @@ import {
   type PutLedgerContentInput,
   type PrepareRunInput,
   type QuarantineRunInput,
+  type ReleaseRunLeaseInput,
   type RecordRunResponseInput,
   type RecordWorkActionInput,
   type RequireRunRecoveryInput,
+  type RenewRunLeaseInput,
   type MarkRunExecutionInvokedInput,
   type SettleRunExecutionInput,
   type StartRunDeliveryInput,
@@ -857,6 +860,24 @@ export class CfWorkStore implements WorkStore {
     const response = await this.execute({ kind: 'get_run', runId });
     if (response.kind !== 'run') throw unexpectedWorkResponse();
     return orUndefined(response.run);
+  }
+
+  async claimNextInteractiveRun(input: ClaimNextInteractiveRunInput) {
+    const response = await this.execute({ kind: 'claim_next_interactive_run', input });
+    if (response.kind !== 'run_claim') throw unexpectedWorkResponse();
+    return orUndefined(response.claim);
+  }
+
+  async renewRunLease(input: RenewRunLeaseInput) {
+    const response = await this.execute({ kind: 'renew_run_lease', input });
+    if (response.kind !== 'run' || !response.run) throw unexpectedWorkResponse();
+    return response.run;
+  }
+
+  async releaseRunLease(input: ReleaseRunLeaseInput) {
+    const response = await this.execute({ kind: 'release_run_lease', input });
+    if (response.kind !== 'run' || !response.run) throw unexpectedWorkResponse();
+    return response.run;
   }
 
   async listRuns(input: ListWorkRunsInput) {

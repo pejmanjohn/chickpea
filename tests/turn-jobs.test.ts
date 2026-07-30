@@ -174,6 +174,19 @@ test('pending jobs come back in enqueue order', () => {
   );
 });
 
+test('bounded pending scans preserve the remaining compatibility queue', () => {
+  let clock = 1;
+  const store = newStore(() => clock++);
+  for (const id of ['first', 'second', 'third']) store.enqueue(job(id));
+  assert.deepEqual(store.listPending(2).map((row) => row.id), ['first', 'second']);
+  assert.equal(store.hasPending(), true);
+  store.markDelivered('first');
+  store.markDelivered('second');
+  assert.deepEqual(store.listPending(2).map((row) => row.id), ['third']);
+  store.markDelivered('third');
+  assert.equal(store.hasPending(), false);
+});
+
 test('existing turn job tables gain progress storage without losing pending rows', () => {
   const db = openStateDb(':memory:');
   try {

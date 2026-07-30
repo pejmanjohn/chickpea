@@ -121,6 +121,9 @@ instrument({
 });
 
 const app = new Hono();
+// Starts the shared startup/periodic wake for durable compatibility TurnJobs
+// and ledger-authoritative interactive Runs. The ledger handler remains dark
+// until U8 assigns future admissions to it.
 startNodeTurnRelay();
 app.route('/', createAdminRoutes());
 app.route('/', flue());

@@ -31,6 +31,7 @@ import type { UsagePersistenceEvent } from '../usage/runtime-recorder.ts';
 
 /** Attempts (inclusive) the alarm makes to deliver a turn before giving up. */
 export const MAX_TURN_ATTEMPTS = 2;
+export const MAX_TURN_DRAIN_BATCH = 16;
 
 // Job rows live no longer than the claim TTL: past it Slack no longer
 // redelivers the originating event, so neither the idempotency key nor the
@@ -114,10 +115,14 @@ export class TurnJobStoreLogic {
   }
 
   /** Undelivered jobs in enqueue order — the alarm's work list. */
-  listPending(): PendingTurnJob[] {
+  listPending(limit = 100): PendingTurnJob[] {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+      throw new Error('Turn job limit must be between 1 and 100.');
+    }
     const rows = this.db.all(
       `SELECT id, evt_key, msg_key, turn_json, assignment_json, run_id, attempts, progress_json
-       FROM turn_jobs WHERE delivered = 0 ORDER BY enqueued_at`,
+       FROM turn_jobs WHERE delivered = 0 ORDER BY enqueued_at LIMIT ?`,
+      limit,
     ) as unknown as TurnJobRow[];
     return rows.map((row) => ({
       id: row.id,
@@ -129,6 +134,10 @@ export class TurnJobStoreLogic {
       attempts: Number(row.attempts),
       progress: parseTurnProgress(row.progress_json),
     }));
+  }
+
+  hasPending(): boolean {
+    return this.db.get('SELECT 1 AS pending FROM turn_jobs WHERE delivered = 0 LIMIT 1') !== undefined;
   }
 
   /** Record that an attempt is being made (before running the turn). */

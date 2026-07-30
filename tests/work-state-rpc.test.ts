@@ -156,6 +156,54 @@ test('Work state proxy preserves clone-safe request and response shapes', async 
     assert.equal(runPage.nextCursor, null);
     const executions = await proxy.listRunExecutions(input.run.id);
     assert.deepEqual(executions.map((item) => item.id), [execution.id]);
+    const ledgerWorkId = 'work_rpc_driver' as WorkId;
+    const ledgerBindingId = 'binding_rpc_driver' as BindingId;
+    const ledgerRunId = 'run_rpc_driver' as RunId;
+    await proxy.admitShadowRun({
+      ...input,
+      work: { ...input.work, id: ledgerWorkId },
+      binding: {
+        ...input.binding,
+        id: ledgerBindingId,
+        workId: ledgerWorkId,
+        externalConversationId: 'conversation_rpc_driver',
+        orderingKey: 'ordering_rpc_driver',
+      },
+      run: {
+        ...input.run,
+        id: ledgerRunId,
+        workId: ledgerWorkId,
+        bindingId: ledgerBindingId,
+        triggerRef: 'trigger_rpc_driver',
+        dedupeKey: 'dedupe_rpc_driver',
+        executionAuthority: 'ledger',
+      },
+      auditEventId: 'audit_rpc_driver',
+      auditIdempotencyKey: 'auditkey_rpc_driver',
+    });
+    const claim = await proxy.claimNextInteractiveRun({
+      ownerId: 'driver_rpc',
+      authorityEpoch: 1,
+      leaseDurationMs: 1_000,
+      claimedAt: 1_800_000_000_010,
+    });
+    assert.equal(claim?.run.id, ledgerRunId);
+    assert.equal((await proxy.renewRunLease({
+      runId: ledgerRunId,
+      ownerId: 'driver_rpc',
+      fencingToken: claim!.fencingToken,
+      leaseDurationMs: 1_000,
+      renewedAt: 1_800_000_000_011,
+    })).leaseUntil, 1_800_000_001_011);
+    assert.equal((await proxy.releaseRunLease({
+      runId: ledgerRunId,
+      ownerId: 'driver_rpc',
+      fencingToken: claim!.fencingToken,
+      outcome: 'settled',
+      terminalDisposition: 'skipped',
+      reasonCode: 'rpc_driver_complete',
+      releasedAt: 1_800_000_000_012,
+    })).terminalDisposition, 'skipped');
     assert.deepEqual(await proxy.verifyIntegrity(), {
       foreignKeysEnabled: true,
       foreignKeyViolationCount: 0,

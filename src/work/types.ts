@@ -275,6 +275,41 @@ export interface ShadowRunAdmission {
   replayed: boolean;
 }
 
+export interface ClaimNextInteractiveRunInput {
+  ownerId: string;
+  authorityEpoch: number;
+  leaseDurationMs: number;
+  claimedAt: number;
+}
+
+export interface InteractiveRunClaim {
+  work: WorkRecord;
+  binding: BindingRecord;
+  run: RunRecord;
+  phase: 'execute' | 'delivery';
+  fencingToken: number;
+  leaseOwner: string;
+  leaseUntil: number;
+}
+
+export interface RenewRunLeaseInput {
+  runId: RunId;
+  ownerId: string;
+  fencingToken: number;
+  leaseDurationMs: number;
+  renewedAt: number;
+}
+
+export interface ReleaseRunLeaseInput {
+  runId: RunId;
+  ownerId: string;
+  fencingToken: number;
+  outcome: 'requeue' | 'settled' | 'recovery_required';
+  terminalDisposition?: Extract<RunDisposition, 'skipped' | 'cancelled' | 'superseded'>;
+  reasonCode: string;
+  releasedAt: number;
+}
+
 export interface WorkRunCursor {
   createdAt: number;
   runId: RunId;
@@ -448,6 +483,9 @@ export type WorkRpcRequest =
   | { kind: 'get_work'; workId: WorkId }
   | { kind: 'get_binding'; bindingId: BindingId }
   | { kind: 'get_run'; runId: RunId }
+  | { kind: 'claim_next_interactive_run'; input: ClaimNextInteractiveRunInput }
+  | { kind: 'renew_run_lease'; input: RenewRunLeaseInput }
+  | { kind: 'release_run_lease'; input: ReleaseRunLeaseInput }
   | { kind: 'list_runs'; input: ListWorkRunsInput }
   | { kind: 'list_run_executions'; runId: RunId; limit?: number }
   | { kind: 'create_execution'; input: CreateRunExecutionInput }
@@ -475,6 +513,7 @@ export type WorkRpcResponse =
   | { kind: 'work'; work: WorkRecord | null }
   | { kind: 'binding'; binding: BindingRecord | null }
   | { kind: 'run'; run: RunRecord | null }
+  | { kind: 'run_claim'; claim: InteractiveRunClaim | null }
   | { kind: 'run_page'; page: WorkRunPage }
   | { kind: 'execution'; execution: RunExecutionRecord | null }
   | { kind: 'executions'; executions: RunExecutionRecord[] }
@@ -496,6 +535,9 @@ export interface WorkStore {
   getWork(id: WorkId): Promise<WorkRecord | undefined>;
   getBinding(id: BindingId): Promise<BindingRecord | undefined>;
   getRun(id: RunId): Promise<RunRecord | undefined>;
+  claimNextInteractiveRun(input: ClaimNextInteractiveRunInput): Promise<InteractiveRunClaim | undefined>;
+  renewRunLease(input: RenewRunLeaseInput): Promise<RunRecord>;
+  releaseRunLease(input: ReleaseRunLeaseInput): Promise<RunRecord>;
   listRuns(input: ListWorkRunsInput): Promise<WorkRunPage>;
   listRunExecutions(runId: RunId, limit?: number): Promise<RunExecutionRecord[]>;
   createRunExecution(input: CreateRunExecutionInput): Promise<RunExecutionRecord>;

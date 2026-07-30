@@ -13,6 +13,7 @@ export interface ShadowWorkLifecycleOptions {
   store: WorkStore;
   runId: RunId;
   attemptNumber: number;
+  fencingToken?: number;
   executorKind?: 'agent' | 'workflow';
   agentName: string;
   canonicalModel: string;
@@ -56,7 +57,7 @@ export class ShadowWorkLifecycle {
 
   constructor(private readonly options: ShadowWorkLifecycleOptions) {
     this.now = options.now ?? Date.now;
-    this.fencingToken = options.attemptNumber;
+    this.fencingToken = options.fencingToken ?? options.attemptNumber;
     this.executionId = shadowRunExecutionId(options.runId, options.attemptNumber);
   }
 

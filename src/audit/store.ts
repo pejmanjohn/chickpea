@@ -183,6 +183,9 @@ const SAFE_WORK_METADATA_VALUE = /^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,255}$/;
 function validateWorkMetadata(eventType: string, metadata: Record<string, unknown>): void {
   const shapes: Record<string, { keys: readonly string[]; status?: string }> = {
     'work.run_admitted': { keys: ['bindingId', 'runId', 'workId'] },
+    'work.run_claimed': { keys: ['fencingToken', 'phase', 'runId'] },
+    'work.run_lease_renewed': { keys: ['fencingToken', 'runId'] },
+    'work.run_requeued': { keys: ['fencingToken', 'runId'] },
     'work.run_recovery_required': { keys: ['runId'] },
     'work.run_quarantined': {
       keys: ['adminCredentialId', 'authOrigin', 'operatorLabel', 'requestId', 'runId'],

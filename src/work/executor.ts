@@ -13,6 +13,7 @@ const OPAQUE_REF = /^[a-z][a-z0-9_-]{7,127}$/;
 export interface WorkExecutionDescriptor {
   runId: RunId | string;
   attemptNumber: number;
+  fencingToken?: number;
   executorKind: 'agent' | 'workflow';
   agentName: string;
   canonicalModel: string;
@@ -86,6 +87,9 @@ export async function createWorkExecutionBoundary(
     store,
     runId: run.id,
     attemptNumber: descriptor.attemptNumber,
+    ...(descriptor.fencingToken === undefined
+      ? {}
+      : { fencingToken: descriptor.fencingToken }),
     executorKind: descriptor.executorKind,
     agentName: descriptor.agentName,
     canonicalModel: descriptor.canonicalModel,
@@ -146,6 +150,15 @@ function validateDescriptor(descriptor: WorkExecutionDescriptor): void {
     throw new WorkStateError(
       'work_execution_descriptor_invalid',
       'The execution attempt number is invalid.',
+    );
+  }
+  if (
+    descriptor.fencingToken !== undefined &&
+    (!Number.isSafeInteger(descriptor.fencingToken) || descriptor.fencingToken < 1)
+  ) {
+    throw new WorkStateError(
+      'work_execution_descriptor_invalid',
+      'The execution fencing token is invalid.',
     );
   }
   if (!OPAQUE_REF.test(descriptor.flueInstanceRef)) {

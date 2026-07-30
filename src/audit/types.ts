@@ -2,6 +2,9 @@ export type AuditDomain = 'memory' | 'scheduled_work' | 'network_event' | 'usage
 
 export type WorkAuditEventType =
   | 'work.run_admitted'
+  | 'work.run_claimed'
+  | 'work.run_lease_renewed'
+  | 'work.run_requeued'
   | 'work.run_recovery_required'
   | 'work.run_quarantined'
   | 'work.input_prepared'

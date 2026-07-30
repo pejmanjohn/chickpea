@@ -12,6 +12,7 @@ import {
   type AdmitRunInput,
   type AdmitShadowRunInput,
   type BindingRecord,
+  type ClaimNextInteractiveRunInput,
   type CreateBindingInput,
   type CreateRunExecutionInput,
   type CreateWorkGraphInput,
@@ -19,15 +20,18 @@ import {
   type EffectiveConfigRevision,
   type EffectiveConfigRevisionId,
   type EnsureWorkBindingInput,
+  type InteractiveRunClaim,
   type LedgerContentRecord,
   type LedgerContentRef,
   type ListWorkRunsInput,
   type PutLedgerContentInput,
   type PrepareRunInput,
   type QuarantineRunInput,
+  type ReleaseRunLeaseInput,
   type RecordRunResponseInput,
   type RecordWorkActionInput,
   type RequireRunRecoveryInput,
+  type RenewRunLeaseInput,
   type MarkRunExecutionInvokedInput,
   type SettleRunExecutionInput,
   type StartRunDeliveryInput,
@@ -119,6 +123,12 @@ export class WorkStoreLogic {
         return { kind: 'binding', binding: this.getBinding(request.bindingId) ?? null };
       case 'get_run':
         return { kind: 'run', run: this.getRun(request.runId) ?? null };
+      case 'claim_next_interactive_run':
+        return { kind: 'run_claim', claim: this.claimNextInteractiveRun(request.input) ?? null };
+      case 'renew_run_lease':
+        return { kind: 'run', run: this.renewRunLease(request.input) };
+      case 'release_run_lease':
+        return { kind: 'run', run: this.releaseRunLease(request.input) };
       case 'list_runs':
         return { kind: 'run_page', page: this.listRuns(request.input) };
       case 'list_run_executions':
@@ -421,32 +431,29 @@ export class WorkStoreLogic {
     const revision = this.putConfigRevisionInTransaction(input.safeConfig, input.run.createdAt);
     let work = this.getWork(input.work.id);
     let binding = this.getBinding(input.binding.id);
-    if (work || binding) {
-      if (
-        !work ||
-        !binding ||
-        binding.workId !== work.id ||
-        !sameReusableWork(work, input.work) ||
-        !sameReusableBinding(binding, {
-          ...input.binding,
-          pinnedConfigRevisionId:
-            input.binding.configMode === 'frozen_on_open'
-              ? revision.id
-              : (input.binding.pinnedConfigRevisionId ?? null),
-        })
-      ) {
-        throw workError('work_binding_conflict', 'Binding identity belongs to different work.');
-      }
-    } else {
+    const reusableBinding = {
+      ...input.binding,
+      pinnedConfigRevisionId:
+        input.binding.configMode === 'frozen_on_open'
+          ? revision.id
+          : (input.binding.pinnedConfigRevisionId ?? null),
+    };
+    if (work && !sameReusableWork(work, input.work)) {
+      throw workError('work_binding_conflict', 'Work identity belongs to different work.');
+    }
+    if (binding && (!work || binding.workId !== work.id ||
+        !sameReusableBinding(binding, reusableBinding))) {
+      throw workError('work_binding_conflict', 'Binding identity belongs to different work.');
+    }
+    if (!work && binding) {
+      throw workError('work_binding_conflict', 'Binding identity belongs to missing work.');
+    }
+    if (!work) {
       this.insertWork(input.work);
-      this.insertBinding({
-        ...input.binding,
-        pinnedConfigRevisionId:
-          input.binding.configMode === 'frozen_on_open'
-            ? revision.id
-            : (input.binding.pinnedConfigRevisionId ?? null),
-      });
       work = requiredWork(this.getWork(input.work.id));
+    }
+    if (!binding) {
+      this.insertBinding(reusableBinding);
       binding = requiredBinding(this.getBinding(input.binding.id));
     }
 
@@ -516,6 +523,247 @@ export class WorkStoreLogic {
   getRun(id: RunId): RunRecord | undefined {
     const row = this.db.get('SELECT * FROM runs WHERE id = ?', id);
     return row ? rowToRun(row) : undefined;
+  }
+
+  claimNextInteractiveRun(input: ClaimNextInteractiveRunInput): InteractiveRunClaim | undefined {
+    validateClaimNextInput(input);
+    return this.db.transaction(() => {
+      this.reconcileExpiredInteractiveLeases(input.claimedAt, input.authorityEpoch);
+      const row = this.db.get(
+        `SELECT r.id
+         FROM runs r
+         INNER JOIN bindings b ON b.id = r.binding_id
+         WHERE r.execution_authority = 'ledger'
+           AND r.coordinator_kind = 'interactive'
+           AND r.authority_epoch = ?
+           AND r.status IN ('admitted', 'queued', 'input_ready', 'response_ready')
+           AND r.lease_owner IS NULL
+           AND b.lifecycle = 'active'
+           AND NOT EXISTS (
+             SELECT 1
+             FROM runs prior
+             INNER JOIN bindings prior_binding ON prior_binding.id = prior.binding_id
+             WHERE prior.id <> r.id
+               AND prior_binding.ordering_key = b.ordering_key
+               AND prior.status <> 'settled'
+               AND (
+                 prior.created_at < r.created_at OR
+                 (prior.created_at = r.created_at AND prior.id < r.id)
+               )
+           )
+         ORDER BY r.created_at, r.id
+         LIMIT 1`,
+        input.authorityEpoch,
+      );
+      if (!row) return undefined;
+      const run = requiredRun(this.getRun(String(row.id) as RunId));
+      const phase = run.status === 'response_ready' ? 'delivery' : 'execute';
+      const fencingToken = run.fencingToken + 1;
+      const leaseUntil = input.claimedAt + input.leaseDurationMs;
+      const nextStatus = run.status === 'admitted' || run.status === 'queued'
+        ? 'preparing_input'
+        : run.status;
+      const updated = this.db.run(
+        `UPDATE runs
+         SET status = ?, lease_owner = ?, lease_until = ?, fencing_token = ?, updated_at = ?
+         WHERE id = ? AND fencing_token = ? AND lease_owner IS NULL`,
+        nextStatus,
+        input.ownerId,
+        leaseUntil,
+        fencingToken,
+        input.claimedAt,
+        run.id,
+        run.fencingToken,
+      );
+      if (updated.changes !== 1) return undefined;
+      const claimed = requiredRun(this.getRun(run.id));
+      this.appendLifecycleAudit(
+        'work.run_claimed',
+        claimed.id,
+        input.claimedAt,
+        {
+          runId: claimed.id,
+          phase,
+          fencingToken: String(fencingToken),
+        },
+        `${claimed.id}:${fencingToken}`,
+      );
+      return {
+        work: requiredWork(this.getWork(claimed.workId)),
+        binding: requiredBinding(this.getBinding(claimed.bindingId)),
+        run: claimed,
+        phase,
+        fencingToken,
+        leaseOwner: input.ownerId,
+        leaseUntil,
+      };
+    });
+  }
+
+  renewRunLease(input: RenewRunLeaseInput): RunRecord {
+    validateRenewRunLeaseInput(input);
+    return this.db.transaction(() => {
+      const run = requiredRun(this.getRun(input.runId));
+      if (
+        run.leaseOwner !== input.ownerId ||
+        run.fencingToken !== input.fencingToken ||
+        run.leaseUntil === null ||
+        run.leaseUntil < input.renewedAt ||
+        run.status === 'settled' ||
+        run.status === 'recovery_required'
+      ) {
+        throw workError('work_lease_lost', 'Run lease is no longer owned by this worker.');
+      }
+      const leaseUntil = input.renewedAt + input.leaseDurationMs;
+      this.db.run(
+        `UPDATE runs SET lease_until = ?, updated_at = ?
+         WHERE id = ? AND lease_owner = ? AND fencing_token = ?`,
+        leaseUntil,
+        input.renewedAt,
+        input.runId,
+        input.ownerId,
+        input.fencingToken,
+      );
+      this.appendLifecycleAudit(
+        'work.run_lease_renewed',
+        input.runId,
+        input.renewedAt,
+        { runId: input.runId, fencingToken: String(input.fencingToken) },
+        `${input.runId}:${input.fencingToken}:${input.renewedAt}`,
+      );
+      return requiredRun(this.getRun(input.runId));
+    });
+  }
+
+  releaseRunLease(input: ReleaseRunLeaseInput): RunRecord {
+    validateReleaseRunLeaseInput(input);
+    return this.db.transaction(() => {
+      const run = requiredRun(this.getRun(input.runId));
+      if (
+        run.leaseOwner !== input.ownerId ||
+        run.fencingToken !== input.fencingToken ||
+        run.leaseUntil === null ||
+        run.leaseUntil < input.releasedAt ||
+        run.status === 'settled' ||
+        run.status === 'recovery_required'
+      ) {
+        throw workError('work_lease_lost', 'Run lease is no longer owned by this worker.');
+      }
+      let status: RunRecord['status'];
+      let disposition: RunRecord['terminalDisposition'] = null;
+      let deliveryStatus = run.deliveryStatus;
+      if (input.outcome === 'settled') {
+        status = 'settled';
+        disposition = input.terminalDisposition ?? 'skipped';
+        if (deliveryStatus === 'not_ready') deliveryStatus = 'not_applicable';
+      } else if (input.outcome === 'recovery_required') {
+        status = 'recovery_required';
+      } else if (run.status === 'response_ready') {
+        status = 'response_ready';
+      } else {
+        status = run.preparedInputRef ? 'input_ready' : 'queued';
+      }
+      this.db.run(
+        `UPDATE runs
+         SET status = ?, terminal_disposition = ?, delivery_status = ?,
+             lease_owner = NULL, lease_until = NULL, safe_failure_code = ?,
+             settled_at = ?, updated_at = ?
+         WHERE id = ? AND lease_owner = ? AND fencing_token = ?`,
+        status,
+        disposition,
+        deliveryStatus,
+        input.outcome === 'recovery_required'
+          ? input.reasonCode
+          : input.outcome === 'requeue'
+            ? run.safeFailureCode
+            : null,
+        input.outcome === 'settled' ? input.releasedAt : null,
+        input.releasedAt,
+        input.runId,
+        input.ownerId,
+        input.fencingToken,
+      );
+      const eventType = input.outcome === 'recovery_required'
+        ? 'work.run_recovery_required'
+        : input.outcome === 'requeue'
+          ? 'work.run_requeued'
+          : 'work.run_settled_without_delivery';
+      this.appendLifecycleAudit(
+        eventType,
+        input.runId,
+        input.releasedAt,
+        input.outcome === 'requeue'
+          ? { runId: input.runId, fencingToken: String(input.fencingToken) }
+          : { runId: input.runId },
+        `${input.runId}:${input.fencingToken}:${input.outcome}`,
+        input.reasonCode,
+        input.outcome === 'recovery_required' ? 'failure' : 'success',
+      );
+      return requiredRun(this.getRun(input.runId));
+    });
+  }
+
+  private reconcileExpiredInteractiveLeases(at: number, authorityEpoch: number): void {
+    const expired = this.db.all(
+      `SELECT id, status, prepared_input_ref
+       FROM runs
+       WHERE execution_authority = 'ledger'
+         AND coordinator_kind = 'interactive'
+         AND authority_epoch = ?
+         AND lease_owner IS NOT NULL
+         AND lease_until < ?
+         AND status IN ('preparing_input', 'input_ready', 'executing', 'response_ready')`,
+      authorityEpoch,
+      at,
+    );
+    for (const row of expired) {
+      const runId = String(row.id) as RunId;
+      let ambiguous = false;
+      if (row.status === 'executing') {
+        const execution = this.db.get(
+          `SELECT model_invocation_status, outcome
+           FROM run_executions WHERE run_id = ?
+           ORDER BY attempt_number DESC, id DESC LIMIT 1`,
+          runId,
+        );
+        ambiguous = execution?.model_invocation_status === 'invoked' ||
+          execution?.model_invocation_status === 'settled' ||
+          (execution?.outcome !== undefined && execution.outcome !== 'pending');
+      }
+      if (ambiguous) {
+        this.db.run(
+          `UPDATE runs SET status = 'recovery_required', lease_owner = NULL,
+             lease_until = NULL, safe_failure_code = 'execution_lease_expired_after_submit',
+             updated_at = ? WHERE id = ? AND lease_until < ?`,
+          at,
+          runId,
+          at,
+        );
+        this.appendLifecycleAudit(
+          'work.run_recovery_required',
+          runId,
+          at,
+          { runId },
+          `${runId}:expired-after-submit:${at}`,
+          'execution_lease_expired_after_submit',
+          'failure',
+        );
+        continue;
+      }
+      const nextStatus = row.status === 'response_ready'
+        ? 'response_ready'
+        : row.prepared_input_ref
+          ? 'input_ready'
+          : 'queued';
+      this.db.run(
+        `UPDATE runs SET status = ?, lease_owner = NULL, lease_until = NULL, updated_at = ?
+         WHERE id = ? AND lease_until < ?`,
+        nextStatus,
+        at,
+        runId,
+        at,
+      );
+    }
   }
 
   listRuns(input: ListWorkRunsInput): WorkRunPage {
@@ -960,7 +1208,8 @@ export class WorkStoreLogic {
         this.db.run(
           `UPDATE runs SET delivery_status = 'delivered', delivery_ref = ?,
              delivery_finalized_at = ?, status = 'settled', terminal_disposition = ?,
-             safe_failure_code = ?, settled_at = ?, updated_at = ?
+             safe_failure_code = ?, settled_at = ?, lease_owner = NULL,
+             lease_until = NULL, updated_at = ?
            WHERE id = ? AND fencing_token = ? AND delivery_status = 'pending'`,
           input.deliveryRef!,
           input.finalizedAt,
@@ -974,7 +1223,7 @@ export class WorkStoreLogic {
       } else if (unknown) {
         this.db.run(
           `UPDATE runs SET delivery_status = 'unknown', status = 'recovery_required',
-             safe_failure_code = ?, updated_at = ?
+             safe_failure_code = ?, lease_owner = NULL, lease_until = NULL, updated_at = ?
            WHERE id = ? AND fencing_token = ? AND delivery_status = 'pending'`,
           input.safeFailureCode ?? 'delivery_unknown',
           input.finalizedAt,
@@ -983,7 +1232,8 @@ export class WorkStoreLogic {
         );
       } else {
         this.db.run(
-          `UPDATE runs SET delivery_status = 'failed', safe_failure_code = ?, updated_at = ?
+          `UPDATE runs SET delivery_status = 'failed', safe_failure_code = ?,
+             lease_owner = NULL, lease_until = NULL, updated_at = ?
            WHERE id = ? AND fencing_token = ? AND delivery_status = 'pending'`,
           input.safeFailureCode ?? 'delivery_failed',
           input.finalizedAt,
@@ -1029,7 +1279,8 @@ export class WorkStoreLogic {
         `UPDATE runs SET status = 'settled', terminal_disposition = ?,
            delivery_status = 'not_applicable', delivery_method = NULL,
            delivery_attempt_id = NULL, delivery_ref = NULL, delivery_finalized_at = NULL,
-           safe_failure_code = ?, settled_at = ?, updated_at = ?
+           safe_failure_code = ?, settled_at = ?, lease_owner = NULL,
+           lease_until = NULL, updated_at = ?
          WHERE id = ? AND fencing_token = ? AND status <> 'settled'`,
         input.terminalDisposition,
         input.safeFailureCode ?? null,
@@ -1091,7 +1342,8 @@ export class WorkStoreLogic {
       if (input.status === 'unknown') {
         this.db.run(
           `UPDATE runs SET status = 'recovery_required', safe_failure_code = 'action_unknown',
-             updated_at = ? WHERE id = ? AND status <> 'settled'`,
+             lease_owner = NULL, lease_until = NULL, updated_at = ?
+           WHERE id = ? AND status <> 'settled'`,
           input.createdAt,
           input.runId,
         );
@@ -1471,6 +1723,15 @@ export class SqliteWorkStore implements WorkStore {
   async getRun(id: RunId) {
     return this.logic.getRun(id);
   }
+  async claimNextInteractiveRun(input: ClaimNextInteractiveRunInput) {
+    return this.logic.claimNextInteractiveRun(input);
+  }
+  async renewRunLease(input: RenewRunLeaseInput) {
+    return this.logic.renewRunLease(input);
+  }
+  async releaseRunLease(input: ReleaseRunLeaseInput) {
+    return this.logic.releaseRunLease(input);
+  }
   async listRuns(input: ListWorkRunsInput) {
     return this.logic.listRuns(input);
   }
@@ -1847,6 +2108,66 @@ function validateExecutionInput(input: CreateRunExecutionInput): void {
     assertSafeRef(input.flueInstanceRef, 'Flue instance ref');
   }
   assertTimestamp(input.startedAt, 'Execution start time');
+}
+
+function validateClaimNextInput(input: ClaimNextInteractiveRunInput): void {
+  assertExactKeys(
+    input,
+    ['ownerId', 'authorityEpoch', 'leaseDurationMs', 'claimedAt'],
+    'Interactive Run claim',
+  );
+  assertSafeRef(input.ownerId, 'Run lease owner');
+  boundedInteger(input.authorityEpoch, 1, Number.MAX_SAFE_INTEGER, 'Authority epoch');
+  boundedInteger(input.leaseDurationMs, 100, 15 * 60_000, 'Run lease duration');
+  assertTimestamp(input.claimedAt, 'Run claim time');
+}
+
+function validateRenewRunLeaseInput(input: RenewRunLeaseInput): void {
+  assertExactKeys(
+    input,
+    ['runId', 'ownerId', 'fencingToken', 'leaseDurationMs', 'renewedAt'],
+    'Run lease renewal',
+  );
+  assertOpaqueId(input.runId, 'Lease Run ID');
+  assertSafeRef(input.ownerId, 'Run lease owner');
+  boundedInteger(input.fencingToken, 1, Number.MAX_SAFE_INTEGER, 'Run fencing token');
+  boundedInteger(input.leaseDurationMs, 100, 15 * 60_000, 'Run lease duration');
+  assertTimestamp(input.renewedAt, 'Run lease renewal time');
+}
+
+function validateReleaseRunLeaseInput(input: ReleaseRunLeaseInput): void {
+  assertExactKeys(
+    input,
+    [
+      'runId',
+      'ownerId',
+      'fencingToken',
+      'outcome',
+      'terminalDisposition',
+      'reasonCode',
+      'releasedAt',
+    ],
+    'Run lease release',
+  );
+  assertOpaqueId(input.runId, 'Lease Run ID');
+  assertSafeRef(input.ownerId, 'Run lease owner');
+  boundedInteger(input.fencingToken, 1, Number.MAX_SAFE_INTEGER, 'Run fencing token');
+  if (!['requeue', 'settled', 'recovery_required'].includes(input.outcome)) {
+    throw workError('work_lease_invalid', 'Run lease outcome is invalid.');
+  }
+  if (
+    input.terminalDisposition !== undefined &&
+    !['skipped', 'cancelled', 'superseded'].includes(input.terminalDisposition)
+  ) {
+    throw workError('work_lease_invalid', 'Run lease terminal disposition is invalid.');
+  }
+  if (input.outcome !== 'settled' && input.terminalDisposition !== undefined) {
+    throw workError('work_lease_invalid', 'Only a settled lease may set a disposition.');
+  }
+  if (!SAFE_REASON.test(input.reasonCode)) {
+    throw workError('work_lease_invalid', 'Run lease reason is invalid.');
+  }
+  assertTimestamp(input.releasedAt, 'Run lease release time');
 }
 
 function validateRouteInput(input: RunExecutionRouteInput): void {
