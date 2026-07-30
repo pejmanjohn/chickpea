@@ -10,6 +10,7 @@ import {
 } from './rollups.ts';
 import { UsageStateError } from './store-error.ts';
 import { installReleasePriceCatalogs } from './pricing/catalog.ts';
+import { estimateUsage } from './pricing/estimate.ts';
 import {
   USAGE_AGGREGATE_RETENTION_MONTHS,
   USAGE_RAW_RETENTION_DAYS,
@@ -49,6 +50,7 @@ interface OperationRow {
   operation_id: string;
   operation_kind: UsageOperation['operationKind'];
   source_id: string;
+  run_id: string | null;
   status: UsageOperation['status'];
   started_at: number;
   finished_at: number | null;
@@ -75,6 +77,7 @@ interface OperationRow {
 interface MeasurementRow {
   execution_id: string;
   operation_id: string;
+  run_execution_id: string | null;
   operation_status: UsageMeasurement['operationStatus'];
   observed_at: number;
   provider_route: string | null;
@@ -110,14 +113,14 @@ interface CredentialRow {
 }
 
 const OPERATION_COLUMNS = `
-  operation_id, operation_kind, source_id, status, started_at, finished_at,
+  operation_id, operation_kind, source_id, run_id, status, started_at, finished_at,
   installation_id, workspace_id, profile_id, profile_label, channel_id,
   channel_label, conversation_kind, routine_id, routine_label, routine_run_id,
   requested_provider, requested_model, credential_ref_id, credential_version,
   coverage, telemetry_schema_version, created_at, updated_at`;
 
 const MEASUREMENT_COLUMNS = `
-  execution_id, operation_id, operation_status, observed_at, provider_route,
+  execution_id, operation_id, run_execution_id, operation_status, observed_at, provider_route,
   requested_provider, requested_model, returned_provider, returned_model,
   credential_ref_id, credential_version, usage_completeness, input_tokens,
   output_tokens, total_tokens, usage_unknown_reason, estimate_completeness,
@@ -154,12 +157,13 @@ export class UsageStoreLogic {
       const recordedAt = this.now();
       this.db.run(
         `INSERT INTO usage_operations (${OPERATION_COLUMNS}) VALUES (
-          ?, ?, ?, 'admitted', ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+          ?, ?, ?, ?, 'admitted', ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
           'aggregate_only', ?, ?, ?
         )`,
         input.operationId,
         input.operationKind,
         input.sourceId,
+        input.runId ?? null,
         input.startedAt,
         input.installationId,
         input.workspaceId,
@@ -213,10 +217,11 @@ export class UsageStoreLogic {
       const recordedAt = this.now();
       this.db.run(
         `INSERT INTO usage_measurements (${MEASUREMENT_COLUMNS}) VALUES (
-          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
         )`,
         input.executionId,
         input.operationId,
+        input.runExecutionId ?? null,
         input.status,
         input.observedAt,
         input.providerRoute,
@@ -258,6 +263,18 @@ export class UsageStoreLogic {
       operation: mapOperation(operationRow),
       measurements: this.getMeasurementRowsForOperation(operationId).map(mapMeasurement),
     };
+  }
+
+  getOperationByRunId(runId: string): UsageOperationDetail | undefined {
+    if (!/^[A-Za-z0-9_-]{1,200}$/.test(runId)) {
+      throw new UsageStateError('usage_invalid_input', 'Run identifier is invalid.');
+    }
+    const row = this.db.get(
+      `SELECT operation_id FROM usage_operations WHERE run_id = ?
+       ORDER BY started_at DESC, operation_id DESC LIMIT 1`,
+      runId,
+    );
+    return row ? this.getOperation(String(row.operation_id)) : undefined;
   }
 
   listOperations(rawQuery: UsageQuery): UsageOperationPage {
@@ -563,6 +580,8 @@ export class UsageStoreLogic {
         return { kind: 'detail', detail: this.recordTerminal(request.input) };
       case 'get_operation':
         return { kind: 'detail', detail: this.getOperation(request.operationId) ?? null };
+      case 'get_operation_by_run':
+        return { kind: 'detail', detail: this.getOperationByRunId(request.runId) ?? null };
       case 'list_operations':
         return { kind: 'operation_page', page: this.listOperations(request.query) };
       case 'summarize':
@@ -689,6 +708,7 @@ export class UsageStoreLogic {
         operation_id TEXT PRIMARY KEY,
         operation_kind TEXT NOT NULL,
         source_id TEXT NOT NULL,
+        run_id TEXT,
         status TEXT NOT NULL,
         started_at INTEGER NOT NULL,
         finished_at INTEGER,
@@ -716,6 +736,7 @@ export class UsageStoreLogic {
       `CREATE TABLE IF NOT EXISTS usage_measurements (
         execution_id TEXT PRIMARY KEY,
         operation_id TEXT NOT NULL,
+        run_execution_id TEXT,
         operation_status TEXT NOT NULL,
         observed_at INTEGER NOT NULL,
         provider_route TEXT,
@@ -790,8 +811,23 @@ export class UsageStoreLogic {
       'CREATE INDEX IF NOT EXISTS usage_measurements_model_idx ON usage_measurements (returned_model, observed_at DESC)',
       'CREATE INDEX IF NOT EXISTS usage_measurements_credential_idx ON usage_measurements (credential_ref_id, observed_at DESC)',
       'CREATE INDEX IF NOT EXISTS usage_measurements_operation_idx ON usage_measurements (operation_id, observed_at, execution_id)',
+      "CREATE INDEX IF NOT EXISTS usage_measurements_unknown_price_idx ON usage_measurements (observed_at, execution_id) WHERE estimate_completeness = 'unknown'",
       'CREATE INDEX IF NOT EXISTS usage_credentials_provider_idx ON usage_credentials (provider_id, retired_at, credential_ref_id, version)',
     ]) this.db.exec(sql);
+    const operationColumns = this.db.all('PRAGMA table_info(usage_operations)');
+    if (!operationColumns.some((row) => row.name === 'run_id')) {
+      this.db.exec('ALTER TABLE usage_operations ADD COLUMN run_id TEXT');
+    }
+    const measurementColumns = this.db.all('PRAGMA table_info(usage_measurements)');
+    if (!measurementColumns.some((row) => row.name === 'run_execution_id')) {
+      this.db.exec('ALTER TABLE usage_measurements ADD COLUMN run_execution_id TEXT');
+    }
+    this.db.exec(
+      'CREATE INDEX IF NOT EXISTS usage_operations_run_idx ON usage_operations (run_id) WHERE run_id IS NOT NULL',
+    );
+    this.db.exec(
+      'CREATE INDEX IF NOT EXISTS usage_measurements_run_execution_idx ON usage_measurements (run_execution_id) WHERE run_execution_id IS NOT NULL',
+    );
     const installedCatalogs = installReleasePriceCatalogs(this.db);
     for (const catalog of installedCatalogs) {
       this.appendUsageAudit({
@@ -803,6 +839,74 @@ export class UsageStoreLogic {
         metadata: { providerId: catalog.providerId, contentHash: catalog.contentHash },
       });
     }
+    this.backfillUnknownEstimates();
+  }
+
+  /**
+   * Price catalogs are immutable, but missing price coverage can improve in a
+   * later release. Enrich only measurements that already have complete usage
+   * and an explicitly unknown/stale price; never replace a prior estimate or
+   * manufacture tokens. Raw detail is retained for only 30 days, so the
+   * candidate scan remains bounded. The update and its audit commit together;
+   * a crash retries safely on the next store initialization.
+   */
+  private backfillUnknownEstimates(): number {
+    const rows = this.db.all(
+      `SELECT ${MEASUREMENT_COLUMNS} FROM usage_measurements
+       WHERE usage_completeness = 'complete'
+         AND estimate_completeness = 'unknown'
+         AND estimate_amount_micros IS NULL
+         AND estimate_currency IS NULL
+         AND price_version_id IS NULL
+         AND price_unknown_reason IN ('price_unknown', 'price_stale')`,
+    ) as unknown as MeasurementRow[];
+    return this.db.transaction(() => {
+      let changed = 0;
+      const catalogIds = new Set<string>();
+      for (const row of rows) {
+        const estimate = estimateUsage({
+          observedAt: row.observed_at,
+          providerRoute: row.provider_route,
+          requestedProvider: row.requested_provider,
+          requestedModel: row.requested_model,
+          returnedProvider: row.returned_provider,
+          returnedModel: row.returned_model,
+          usageCompleteness: row.usage_completeness,
+          inputTokens: row.input_tokens,
+          outputTokens: row.output_tokens,
+        });
+        if (estimate.estimateCompleteness !== 'complete') continue;
+        const updated = this.db.run(
+          `UPDATE usage_measurements
+           SET estimate_completeness = 'complete', estimate_amount_micros = ?,
+               estimate_currency = ?, price_version_id = ?, price_unknown_reason = NULL
+           WHERE execution_id = ?
+             AND estimate_completeness = 'unknown'
+             AND estimate_amount_micros IS NULL
+             AND estimate_currency IS NULL
+             AND price_version_id IS NULL
+             AND price_unknown_reason IN ('price_unknown', 'price_stale')`,
+          estimate.estimateAmountMicros,
+          estimate.estimateCurrency,
+          estimate.priceVersionId,
+          row.execution_id,
+        ).changes;
+        changed += updated;
+        if (updated > 0 && estimate.priceVersionId) catalogIds.add(estimate.priceVersionId);
+      }
+      if (changed > 0) {
+        const ids = [...catalogIds].sort();
+        this.appendUsageAudit({
+          eventId: `usage:estimates:${ids.join('+')}:backfilled`,
+          eventType: 'usage.estimates_backfilled',
+          subjectId: ids.join(','),
+          subjectVersion: 1,
+          createdAt: this.now(),
+          metadata: { catalogIds: ids, measurementCount: changed },
+        });
+      }
+      return changed;
+    });
   }
 }
 
@@ -829,6 +933,10 @@ export class SqliteUsageStore implements UsageStore {
 
   async getOperation(operationId: string): Promise<UsageOperationDetail | undefined> {
     return this.logic.getOperation(operationId);
+  }
+
+  async getOperationByRunId(runId: string): Promise<UsageOperationDetail | undefined> {
+    return this.logic.getOperationByRunId(runId);
   }
 
   async listOperations(query: UsageQuery): Promise<UsageOperationPage> {
@@ -873,6 +981,7 @@ function mapOperation(row: OperationRow): UsageOperation {
     operationId: row.operation_id,
     operationKind: row.operation_kind,
     sourceId: row.source_id,
+    ...(row.run_id ? { runId: row.run_id } : {}),
     status: row.status,
     startedAt: Number(row.started_at),
     finishedAt: nullableNumber(row.finished_at),
@@ -901,6 +1010,7 @@ function mapMeasurement(row: MeasurementRow): UsageMeasurement {
   return {
     executionId: row.execution_id,
     operationId: row.operation_id,
+    ...(row.run_execution_id ? { runExecutionId: row.run_execution_id } : {}),
     operationStatus: row.operation_status,
     observedAt: Number(row.observed_at),
     providerRoute: row.provider_route,
@@ -942,6 +1052,7 @@ function sameAdmission(operation: UsageOperation, input: AdmitUsageOperationInpu
   return operation.operationId === input.operationId &&
     operation.operationKind === input.operationKind &&
     operation.sourceId === input.sourceId &&
+    (operation.runId ?? null) === (input.runId ?? null) &&
     operation.startedAt === input.startedAt &&
     operation.installationId === input.installationId &&
     operation.workspaceId === input.workspaceId &&
@@ -962,6 +1073,7 @@ function sameAdmission(operation: UsageOperation, input: AdmitUsageOperationInpu
 function sameTerminal(measurement: UsageMeasurement, input: RecordUsageTerminalInput): boolean {
   return measurement.executionId === input.executionId &&
     measurement.operationId === input.operationId &&
+    (measurement.runExecutionId ?? null) === (input.runExecutionId ?? null) &&
     measurement.operationStatus === input.status &&
     measurement.observedAt === input.observedAt &&
     measurement.providerRoute === input.providerRoute &&
@@ -976,11 +1088,34 @@ function sameTerminal(measurement: UsageMeasurement, input: RecordUsageTerminalI
     measurement.outputTokens === input.outputTokens &&
     measurement.totalTokens === input.totalTokens &&
     measurement.usageUnknownReason === input.usageUnknownReason &&
+    sameEstimate(measurement, input);
+}
+
+function sameEstimate(
+  measurement: UsageMeasurement,
+  input: RecordUsageTerminalInput,
+): boolean {
+  if (
     measurement.estimateCompleteness === input.estimateCompleteness &&
     measurement.estimateAmountMicros === input.estimateAmountMicros &&
     measurement.estimateCurrency === input.estimateCurrency &&
     measurement.priceVersionId === input.priceVersionId &&
-    measurement.priceUnknownReason === input.priceUnknownReason;
+    measurement.priceUnknownReason === input.priceUnknownReason
+  ) return true;
+  if (
+    input.estimateCompleteness !== 'unknown' ||
+    input.estimateAmountMicros !== null ||
+    input.estimateCurrency !== null ||
+    input.priceVersionId !== null ||
+    (input.priceUnknownReason !== 'price_unknown' && input.priceUnknownReason !== 'price_stale')
+  ) return false;
+  const enriched = estimateUsage(input);
+  return enriched.estimateCompleteness === 'complete' &&
+    measurement.estimateCompleteness === enriched.estimateCompleteness &&
+    measurement.estimateAmountMicros === enriched.estimateAmountMicros &&
+    measurement.estimateCurrency === enriched.estimateCurrency &&
+    measurement.priceVersionId === enriched.priceVersionId &&
+    measurement.priceUnknownReason === enriched.priceUnknownReason;
 }
 
 function sameCredential(

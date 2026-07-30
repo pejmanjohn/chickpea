@@ -188,11 +188,27 @@ async function verifyRuntime(baseUrl, handle) {
     state.body.routineId === 'routine_workerd_parity' &&
     state.body.version === 1 &&
     state.body.revisionCount === 1 &&
-    state.body.auditCount === 1;
+    state.body.auditCount === 1 &&
+    state.body.foreignKeysEnabled === true &&
+    state.body.orphanRejected === true &&
+    state.body.foreignKeyViolationCount === 0 &&
+    state.body.workRunStatus === 'admitted' &&
+    state.body.workInvariantViolationCount === 0;
   if (!statePassed) {
     throw new Error(`DO state parity failed (${state.status}): ${JSON.stringify(state.body)}`);
   }
   check(true, 'production RoutineStoreLogic preserves definition, revision, and audit atomicity on DO SQLite');
+  check(
+    state.body.foreignKeysEnabled === true &&
+      state.body.orphanRejected === true &&
+      state.body.foreignKeyViolationCount === 0,
+    'Durable Object SQLite enforces foreign keys and reports no orphan rows',
+  );
+  check(
+    state.body.workRunStatus === 'admitted' &&
+      state.body.workInvariantViolationCount === 0,
+    'canonical Work ledger migrates and persists on Durable Object SQLite',
+  );
 
   await trigger(baseUrl);
   const firstRuns = await waitForRuns(baseUrl, 1);

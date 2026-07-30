@@ -10,6 +10,18 @@ import { relayObservedStatus } from '../src/slack/status-relay.ts';
 
 const GENERATION = 'msg:C_CHAN:1782770400.000100 / retry=1';
 
+test('activity trace carries only opaque Run correlation beside the status generation', () => {
+  const headers = activityStatusTraceHeaders(GENERATION, {
+    runId: 'run_opaque_alpha',
+    runExecutionId: 'execution_opaque_alpha',
+    mode: 'enforce',
+  });
+  assert.match(headers.tracestate, /chickpea-run=run_opaque_alpha/);
+  assert.match(headers.tracestate, /chickpea-exec=execution_opaque_alpha/);
+  assert.match(headers.tracestate, /chickpea-work-mode=enforce/);
+  assert.doesNotMatch(headers.tracestate, /prompt|approved|token|secret/);
+});
+
 async function withCloudflareUserAgent<T>(run: () => Promise<T>): Promise<T> {
   const prototype = Object.getPrototypeOf(globalThis.navigator) as object;
   const original = Object.getOwnPropertyDescriptor(prototype, 'userAgent');

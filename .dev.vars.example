@@ -9,10 +9,11 @@
 # Deliberately empty: the Deploy to Cloudflare button pre-fills its prompt with
 # the value written here, and a placeholder would deploy as the real token.
 TAG_ADMIN_TOKEN=""
-USAGE_RUNTIME_RECORDING="0"
-USAGE_ESTIMATES="0"
-USAGE_ADMIN_UI="0"
+USAGE_RUNTIME_RECORDING="1"
+USAGE_ESTIMATES="1"
+USAGE_ADMIN_UI="1"
 CHICKPEA_INSTALLATION_ID="chickpea"
+TAG_RUN_BODY_RETENTION_DAYS="30"
 
 # Channel memory is always on for eligible assigned channels. There is no
 # memory feature flag or opt-out secret to configure.

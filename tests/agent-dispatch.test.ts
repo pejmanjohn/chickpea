@@ -8,7 +8,6 @@ import {
 import { agentFailureText } from '../src/slack/run-turn.ts';
 import {
   AGENT_FAILURE_TEXT,
-  OPENAI_SUBSCRIPTION_DISABLED_TEXT,
   OPENAI_SUBSCRIPTION_POLICY_TEXT,
   OPENAI_SUBSCRIPTION_QUOTA_TEXT,
   OPENAI_SUBSCRIPTION_RECONNECT_TEXT,
@@ -22,13 +21,6 @@ function envelope(type: string, message: string): string {
 }
 
 test('agent prompt failure classification distinguishes provider, sandbox, and unknown errors', () => {
-  assert.equal(
-    classifyAgentPromptFailure(
-      500,
-      envelope('operation_failed', 'OpenAI subscription operation failed (preview_disabled).'),
-    ),
-    'openai-subscription-disabled',
-  );
   assert.equal(
     classifyAgentPromptFailure(
       500,
@@ -90,10 +82,6 @@ test('agent prompt failure classification distinguishes provider, sandbox, and u
 
 test('Slack failure copy uses only the public-safe failure category', () => {
   assert.equal(agentFailureText(new AgentPromptFailure('provider', 500)), PROVIDER_FAILURE_TEXT);
-  assert.equal(
-    agentFailureText(new AgentPromptFailure('openai-subscription-disabled', 500)),
-    OPENAI_SUBSCRIPTION_DISABLED_TEXT,
-  );
   assert.equal(
     agentFailureText(new AgentPromptFailure('openai-subscription-reconnect', 500)),
     OPENAI_SUBSCRIPTION_RECONNECT_TEXT,

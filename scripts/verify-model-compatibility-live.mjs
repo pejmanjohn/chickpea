@@ -49,11 +49,6 @@ const hostedCatalog = typeof catalogFile === 'string'
 const statePath = lane === 'subscription' ? String(args.get('--state-db') ?? '') : ':memory:';
 if (lane === 'subscription') {
   assert.ok(statePath, '--state-db is required for a subscription check');
-  assert.equal(
-    process.env.TAG_OPENAI_SUBSCRIPTION_ENABLED,
-    '1',
-    'TAG_OPENAI_SUBSCRIPTION_ENABLED must be exactly 1',
-  );
 } else {
   const keyName = provider === 'openai' ? 'OPENAI_API_KEY' : 'ANTHROPIC_API_KEY';
   assert.ok(process.env[keyName], `${keyName} is required`);

@@ -10,7 +10,7 @@ test('Cloudflare usage proxy preserves clone-safe requests and typed domain fail
   const stub = {
     async usageExecute(request: UsageRpcRequest): Promise<StateRpcResult<UsageRpcResponse>> {
       requests.push(request);
-      if (request.kind === 'get_operation') {
+      if (request.kind === 'get_operation' || request.kind === 'get_operation_by_run') {
         return { ok: true, value: { kind: 'detail', detail: null } };
       }
       return {
@@ -27,6 +27,8 @@ test('Cloudflare usage proxy preserves clone-safe requests and typed domain fail
 
   assert.equal(await store.getOperation('op_missing'), undefined);
   assert.deepEqual(requests[0], { kind: 'get_operation', operationId: 'op_missing' });
+  assert.equal(await store.getOperationByRunId('run_missing'), undefined);
+  assert.deepEqual(requests[1], { kind: 'get_operation_by_run', runId: 'run_missing' });
   await assert.rejects(
     store.admitOperation({
       operationId: 'op_conflict',

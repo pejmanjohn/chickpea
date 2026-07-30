@@ -1,5 +1,6 @@
 import type { AuditEvent, AuditEventFilter } from '../audit/types.ts';
 import type { ProviderAuthRoute } from '../config/runtime-model.ts';
+import type { SourceVisibility } from '../work/types.ts';
 
 export type RoutineState = 'active' | 'paused' | 'disabled' | 'completed';
 export type RoutineTriggerKind = 'schedule' | 'once';
@@ -64,6 +65,9 @@ export interface RoutineScheduleReservation {
 
 export interface RoutineDefinition extends RoutineDefinitionContent {
   id: string;
+  /** Canonical Work links are present only on dual-written rows. */
+  workId?: string | null;
+  bindingId?: string | null;
   workspaceId: string;
   channelId: string;
   creatorUserId: string;
@@ -199,6 +203,8 @@ export interface SaveRoutineInput {
   draft: Exclude<RoutineConfirmationDraft, { action: 'delete' }>;
   provenance?: RoutineRequestProvenanceInput | null;
   idempotencyKey: string;
+  /** Resolved at Slack creation time; omitted callers fail closed to unknown. */
+  sourceVisibility?: SourceVisibility;
 }
 
 export interface ControlRoutineInput {
@@ -213,6 +219,8 @@ export interface ControlRoutineInput {
 
 export interface RoutineRun {
   id: string;
+  /** Canonical Run link is absent on historical/legacy occurrences. */
+  canonicalRunId?: string | null;
   idempotencyKey: string;
   routineId: string;
   routineVersion: number;
@@ -383,7 +391,7 @@ export interface RoutineRunFilter {
 export interface RoutineAdminPageInput {
   workspaceId?: string;
   channelId?: string;
-  state?: RoutineState | 'deleted';
+  state?: RoutineState | 'current' | 'all' | 'deleted';
   runStatus?: RoutineRunStatus;
   cursor?: number;
   limit: number;

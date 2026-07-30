@@ -8,12 +8,15 @@ import type {
   UsageGroupBy,
   UsageOperationKind,
   UsageOperationStatus,
+  UsageOperationDetail,
   UsageQuery,
   UsageStore,
 } from '../usage/types.ts';
+import type { WorkStore } from '../work/types.ts';
 
 interface UsageAdminApiOptions {
   store: (c: Context) => UsageStore;
+  work?: (c: Context) => WorkStore;
 }
 
 export function createUsageAdminApi(options: UsageAdminApiOptions): Hono {
@@ -26,7 +29,11 @@ export function createUsageAdminApi(options: UsageAdminApiOptions): Hono {
 
   app.get('/usage/summary', async (c) => {
     try {
-      return c.json(await options.store(c).summarize(parseUsageQuery(c, true)));
+      const query = parseUsageQuery(c, true);
+      return c.json(redactAggregateLabels(
+        await options.store(c).summarize(query),
+        query.groupBy,
+      ));
     } catch (error) {
       return usageError(c, error);
     }
@@ -45,7 +52,10 @@ export function createUsageAdminApi(options: UsageAdminApiOptions): Hono {
           to: query.from,
         }),
       ]);
-      return c.json({ current, previous });
+      return c.json({
+        current: redactAggregateLabels(current, query.groupBy),
+        previous: redactAggregateLabels(previous, query.groupBy),
+      });
     } catch (error) {
       return usageError(c, error);
     }
@@ -89,8 +99,12 @@ export function createUsageAdminApi(options: UsageAdminApiOptions): Hono {
   app.get('/usage/operations', async (c) => {
     try {
       const page = await options.store(c).listOperations(parseUsageQuery(c, false));
+      const visibility = await usageRunVisibility(options.work?.(c), page.items);
       return c.json({
-        items: page.items,
+        items: page.items.map((detail) => usageDetailProjection(
+          detail,
+          visibility.get(detail.operation.runId ?? '') ?? false,
+        )),
         nextCursor: page.nextCursor ? encodeCursor(page.nextCursor) : null,
       });
     } catch (error) {
@@ -101,13 +115,116 @@ export function createUsageAdminApi(options: UsageAdminApiOptions): Hono {
   app.get('/usage/operations/:operationId', async (c) => {
     try {
       const detail = await options.store(c).getOperation(c.req.param('operationId'));
-      return detail ? c.json(detail) : c.json({ error: 'usage_operation_not_found' }, 404);
+      if (!detail) return c.json({ error: 'usage_operation_not_found' }, 404);
+      const visibility = await usageRunVisibility(options.work?.(c), [detail]);
+      return c.json(usageDetailProjection(
+        detail,
+        visibility.get(detail.operation.runId ?? '') ?? false,
+      ));
     } catch (error) {
       return usageError(c, error);
     }
   });
 
   return app;
+}
+
+function redactAggregateLabels<T extends { groups: Array<{ key: string; label: string | null }> }>(
+  report: T,
+  groupBy: UsageGroupBy | undefined,
+): T {
+  if (!groupBy || !['workspace', 'profile', 'channel', 'routine'].includes(groupBy)) return report;
+  return {
+    ...report,
+    groups: report.groups.map((group) => ({ ...group, label: null })),
+  };
+}
+
+function usageDetailProjection(
+  detail: UsageOperationDetail,
+  publicLabels: boolean,
+): Record<string, unknown> {
+  return publicLabels ? publicUsageDetail(detail) : redactedUsageDetail(detail);
+}
+
+function publicUsageDetail(detail: UsageOperationDetail): Record<string, unknown> {
+  return {
+    projection: 'public',
+    operation: publicUsageOperation(detail),
+    measurements: detail.measurements,
+  };
+}
+
+function redactedUsageDetail(detail: UsageOperationDetail): Record<string, unknown> {
+  return {
+    projection: 'redacted',
+    operation: redactedUsageOperation(detail),
+    measurements: detail.measurements,
+  };
+}
+
+function usageOperationBase(detail: UsageOperationDetail): Record<string, unknown> {
+  const operation = detail.operation;
+  return {
+    operationId: operation.operationId,
+    runId: operation.runId ?? null,
+    operationKind: operation.operationKind,
+    sourceId: operation.sourceId,
+    status: operation.status,
+    startedAt: operation.startedAt,
+    finishedAt: operation.finishedAt,
+    installationId: operation.installationId,
+    workspaceId: operation.workspaceId,
+    profileId: operation.profileId,
+    channelId: operation.channelId,
+    conversationKind: operation.conversationKind,
+    routineId: operation.routineId,
+    routineRunId: operation.routineRunId,
+    requestedProvider: operation.requestedProvider,
+    requestedModel: operation.requestedModel,
+    credentialRefId: operation.credentialRefId,
+    credentialVersion: operation.credentialVersion,
+    coverage: operation.coverage,
+    telemetrySchemaVersion: operation.telemetrySchemaVersion,
+    createdAt: operation.createdAt,
+    updatedAt: operation.updatedAt,
+  };
+}
+
+function publicUsageOperation(detail: UsageOperationDetail): Record<string, unknown> {
+  return {
+    ...usageOperationBase(detail),
+    profileLabel: detail.operation.profileLabel,
+    channelLabel: detail.operation.channelLabel,
+    routineLabel: detail.operation.routineLabel,
+  };
+}
+
+function redactedUsageOperation(detail: UsageOperationDetail): Record<string, unknown> {
+  return {
+    ...usageOperationBase(detail),
+    profileLabel: null,
+    channelLabel: null,
+    routineLabel: null,
+  };
+}
+
+async function usageRunVisibility(
+  store: WorkStore | undefined,
+  details: UsageOperationDetail[],
+): Promise<Map<string, boolean>> {
+  const runIds = [...new Set(details.flatMap((detail) =>
+    detail.operation.runId ? [detail.operation.runId] : [],
+  ))];
+  if (!store || runIds.length === 0) return new Map();
+  try {
+    const visibilities = await store.getRunVisibilities(
+      runIds as Parameters<WorkStore['getRunVisibilities']>[0],
+    );
+    return new Map(visibilities.map((item) => [item.runId, item.public]));
+  } catch {
+    return new Map();
+  }
 }
 
 function parseUsageQuery(c: Context, includeGroup: boolean): UsageQuery {

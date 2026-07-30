@@ -7,7 +7,9 @@ const ADMIN_FAVICON = `<link rel="icon" type="image/svg+xml" href="data:image/sv
 const SLACK_LOGO_DATA_URL =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAAA/CAMAAABnwz74AAAAn1BMVEX///+j3++a2+rw5M3n2tOk0K7L3L54xrXI0sftyHSPxZqLwZSp07HI6/RkzOpz0uyJ09tmtHlirnNwtH59z+ZZyOpdrXFbqm1dsnOPxppNxej23qjupqThYIDldY3yr7rodJPx0Ibz0YreSW3dO2XjMV7kVnv43qzzyXbvuE/ttUXyyHfjNmPjKVrbJVXwsTvusj3aG1DbLFLhH1PvscJL5pvlAAAAAXRSTlMAQObYZgAABDtJREFUSMe9lw1vokAQhvkQVsFCEUFbRVBEQUWl9v//tpuZ3QU8bW97l9ybaAI4z843UdOeSTdAendtDizLGtiaonSdIYAN5Y2R7TjMdZyxIuDF8FD+q7zhsmACCl01wnDqRREhXqX9JI4n8Ww2USNMo0gAvNch2ccxegCEwDUVMmBEkhD5L5o2tlg8D8AHAMwchUTqfhQJROQZNgACHsCPAcgAwNAhQDxDF5QAxj1gDACKABkqAE2nInQhOAFo8gOAZvh3HlhBIBCqgDfm9T0QACCoAjAP0+nUgC/jrQOgD6qAvsZWOBGEvwZ0Hrj/Aph8DdC/0O+ALonmeDx+M+Vg6FNMehR1Q8THear3AZMewHVcFrqOZQr76F0q6nVh5BEBhknYI4BMYD/MQYFr0Xi39tG9wAlca48Al83JHggI0L0HU+lC5Bsm9sGE1gEAZrgPbAdMA/jM5yEzNZ1Fz+17rRz3AablzmVrBY6lDYwo+haA44ze0z5wTRkSKgwB8PI9wETALIbDSU8ANL0U8KPePUoihBtz+8DhgDDkpeUAn6+vR/P3d6yCbmHS+UoMGVUlZGHI0A/Xxq3LvD4ASwIfqqvPsMy2C/kWDoxFWUMeAeOdyHzqvN7JBHn3xHObcQLkHAALCiFgjLmunAV6k5GmrXx/yuRzeLO5ILKHMuKFA+oNFkQyBOEXXQ6H+os+7J6PRvB+tEfixyO41OjrOw21/ytzuVyaZjvg2jJJlnfPzQXIvFPv8WiVZlmWghJ+YwWX2aoNMllvnmidyMdplm9BeV5k/N4qL0DbneDty+pwqB51PCbCfou/L06nekd3VkVd10VRn3MOPFYX0BV1aMUR+DzJ8uJEJ54KAqxOaA6AuqHrdXW4cKMegOwP1RoykeyKFoAnJjtuD4QmX0HnYQAPElGUezAQDqDwxCSXgKLZpuYXACIcDuVGS7PWvKj7gHNRfOQc8JQADAIMskIeWNxagMgCepCUPN5WkJCrJAAgWW0loOY5yG91TWUoaulBHyAKcqHEUg52wgWwx+5K8kYS6lNqYxWqPgId4IDLpTpiFdIcCfWt2KXUF9sOkCNAEEQl5fmo6rgQnXQ6QRtlqSYAzRn18SEA2roUgF4rgQdVuRCjkHymaZaI1n4C0OzNppTqhmG/6E9bO1w9wFkCNPOpnk82AhoOaFrAT9TzoAPgOvg7AHeT9oEqoQWcOWCxL49i/uW++QMg/w2wkW1QlUqEFiBCSEo5vNC5KmEAAM1rBJw6wAEBlRrgXNcIgO4WgIvYAIdqo/CPRQLqFnDhk0cAhb5IdgRAUQiLEidYbEUlD7LzTQLyzwSrcJGEaj36M0DLtjdOaM601vcQw5UvIaUq4HuhaW44EGLA9yXN8fVaKXbjKNuhB9tM9k3KF7OqPRA+6d2YtH23WMIiWC+UOplkDkB3P98PBs+P/wV/Ze9+4cPjFgAAAABJRU5ErkJggg==';
 
-export function renderAdminPage(options: { usageAdminUi?: boolean } = {}): string {
+export function renderAdminPage(
+  options: { usageAdminUi?: boolean } = {},
+): string {
   // Target-aware chrome: the header chip and the provider-hint copy differ
   // between the Node and Cloudflare runtimes. Resolved server-side (the inline
   // script has no runtime-target check of its own) and interpolated as plain
@@ -1413,7 +1415,9 @@ details[open].advanced summary::before {
 /* ---- Audit logs: Scheduled Work and Memory domains ---- */
 .audit-rail { gap: 2px; }
 .audit-rail .ws-row { margin-top: 5px; }
-.audit-lock { color: var(--text-3); margin-left: auto; }
+.audit-channel-name { align-items: center; display: flex; gap: 8px; }
+.audit-channel-marker { align-items: center; color: var(--text-3); display: inline-flex; flex: 0 0 16px; font-size: 0.9375rem; justify-content: center; line-height: 1; width: 16px; }
+.audit-channel-marker .ic { height: 16px; width: 16px; }
 .audit-main { gap: 18px; max-width: none; }
 .audit-main-head { align-items: flex-start; display: flex; flex-wrap: wrap; gap: 12px; justify-content: space-between; }
 .audit-tabs { border-bottom: 1.5px solid var(--line-strong); display: flex; gap: 4px; overflow-x: auto; }
@@ -1452,6 +1456,7 @@ details[open].advanced summary::before {
 .scheduled-table tr:hover td { background: var(--well); }
 .scheduled-name-button { background: transparent; border: 0; color: var(--text); cursor: pointer; font: inherit; font-weight: 800; padding: 0; text-align: left; }
 .scheduled-name-button:hover { color: var(--ember-press); text-decoration: underline; text-underline-offset: 2px; }
+.scheduled-name-button.unavailable { color: var(--text-3); font-weight: 650; }
 .scheduled-table-state { background: var(--well); border-radius: 99px; color: var(--text-2); display: inline-block; font-size: 0.6875rem; font-weight: 750; padding: 3px 8px; text-transform: capitalize; white-space: nowrap; }
 .scheduled-table-state.active, .scheduled-table-state.running, .scheduled-table-state.succeeded { background: var(--ok-tint); color: var(--ok); }
 .scheduled-table-footer { align-items: center; color: var(--text-3); display: flex; font-size: 0.6875rem; justify-content: space-between; padding: 10px 2px 0; }
@@ -1909,7 +1914,7 @@ details[open].advanced summary::before {
     scheduledNotice: "",
     scheduledCapability: null,
     scheduledLimits: null,
-    scheduledFilters: { workspaceId: "", channelId: "", state: "", status: "" },
+    scheduledFilters: { workspaceId: "", channelId: "", state: "current", status: "" },
     scheduledDeleteConfirm: false,
     usageOverview: null,
     usageMetadata: null,
@@ -2744,7 +2749,8 @@ details[open].advanced summary::before {
     var groups = summary.groups || [];
     if (!groups.length) return '<div class="empty"><p class="hint">No breakdown data for this period.</p></div>';
     var rows = groups.map(function (group) {
-      var label = state.usageGroupBy === "channel" && group.label !== "Direct message" && !String(group.label).startsWith("#") ? "#" + group.label : group.label;
+      var label = group.label || (state.usageGroupBy === "channel" && group.key === "direct_message" ? "Direct message" : group.key) || "Unknown";
+      label = state.usageGroupBy === "channel" && label !== "Direct message" && !String(label).startsWith("#") ? "#" + label : label;
       return '<tr><td><button type="button" class="usage-row-action" data-action="usage-group-filter" data-value="' + esc(group.key) + '" data-label="' + esc(label) + '">' + esc(label) + '</button></td>' +
         '<td class="number">' + usageInt(group.operationCount) + '</td><td class="number">' + usageInt(group.inputTokens) + '</td>' +
         '<td class="number">' + usageInt(group.outputTokens) + '</td><td class="number">' + usageInt(group.totalTokens) + '</td>' +
@@ -5345,12 +5351,16 @@ details[open].advanced summary::before {
         var privacy = scope.privacy === "private" ? "Private" : "Workspace shared";
         if (scope.lifecycle !== "active") privacy += " · " + scope.lifecycle;
         html += '<button type="button" class="chan-item' + (active ? " active" : "") + '" data-action="select-memory-scope" data-store="' + esc(scope.storeId) + '" data-channel="' + esc(scope.channelId) + '">' +
-          '<span class="chan-name">#' + esc(scope.displayName || scope.channelId) + '</span>' +
-          '<span class="chan-meta">' + esc(privacy) + ' · ' + Number(scope.entryCount || 0) + '</span>' +
-          (scope.privacy === "private" ? '<span class="audit-lock" aria-label="Private">' + icon("lock-closed") + '</span>' : '') + '</button>';
+          '<span class="chan-name audit-channel-name">' + auditChannelMarkerHtml(scope.privacy) + '<span>' + esc(scope.displayName || scope.channelId) + '</span></span>' +
+          '<span class="chan-meta">' + esc(privacy) + ' · ' + Number(scope.entryCount || 0) + '</span></button>';
       });
     });
     return html + '</div>' + sectionSwitcherHtml() + '</nav>';
+  }
+
+  function auditChannelMarkerHtml(privacy) {
+    if (privacy !== "private") return '<span class="audit-channel-marker" aria-hidden="true">#</span>';
+    return '<span class="audit-channel-marker" aria-hidden="true"><svg class="ic" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M5.25 7V4.75a2.75 2.75 0 0 1 5.5 0V7m-6.5 0h7.5A1.25 1.25 0 0 1 13 8.25v5a1.25 1.25 0 0 1-1.25 1.25h-7.5A1.25 1.25 0 0 1 3 13.25v-5A1.25 1.25 0 0 1 4.25 7Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>';
   }
 
   function auditTabsHtml() {
@@ -5373,9 +5383,10 @@ details[open].advanced summary::before {
       return html + '<div class="empty" style="margin:8px; padding:12px;"><p class="field-error">' + esc(state.scheduledError) + '</p><button type="button" class="btn btn-ghost btn-sm" data-action="scheduled-retry">Retry</button></div></div>' + sectionSwitcherHtml() + '</nav>';
     }
     var routines = state.scheduledRoutines || [];
+    var filterLabel = scheduledStateFilterLabel(state.scheduledFilters.state);
     html += '<div class="ws-row">Scheduled work</div>' +
       '<button type="button" class="chan-item active" data-action="scheduled-back-list">' +
-      '<span class="chan-name">All routines</span><span class="chan-meta">' + Number(routines.length) + ' matching</span></button>';
+      '<span class="chan-name">' + esc(filterLabel) + '</span><span class="chan-meta">' + Number(routines.length) + ' matching</span></button>';
     return html + '</div>' + sectionSwitcherHtml() + '</nav>';
   }
 
@@ -5441,8 +5452,30 @@ details[open].advanced summary::before {
       }
       return workspaceOption + channelOptions;
     }).join("");
+    var selectedState = filters.state || "current";
+    var stateOptions = [
+      ["current", "Current"],
+      ["active", "Active"],
+      ["paused", "Paused"],
+      ["completed", "Completed"],
+      ["disabled", "Disabled"],
+      ["all", "All"]
+    ].map(function (option) {
+      return '<option value="' + option[0] + '"' + (selectedState === option[0] ? ' selected' : '') + '>' + option[1] + '</option>';
+    }).join("");
     return '<div class="scheduled-filters" aria-label="Scheduled work filters">' +
+      '<label class="field"><span class="field-label">Status</span><span class="select-wrap"><select class="input" data-action="scheduled-filter-state">' + stateOptions + '</select><span class="select-caret">' + icon("chevron-down") + '</span></span></label>' +
       '<label class="field"><span class="field-label">Scope</span><span class="select-wrap"><select class="input" data-action="scheduled-filter-scope">' + options + '</select><span class="select-caret">' + icon("chevron-down") + '</span></span></label></div>';
+  }
+
+  function scheduledStateFilterLabel(value) {
+    var labels = { current: "Current routines", active: "Active routines", paused: "Paused routines", completed: "Completed routines", disabled: "Disabled routines", all: "All routines" };
+    return labels[value] || labels.current;
+  }
+
+  function scheduledRoutineName(routine) {
+    var name = String(routine && routine.name || "").trim();
+    return name || "Name unavailable";
   }
 
   function scheduledWorkMainHtml() {
@@ -5458,7 +5491,7 @@ details[open].advanced summary::before {
     var detail = state.scheduledDetail;
     var routine = detail.routine;
     var detailHead = '<button type="button" class="btn btn-ghost btn-sm scheduled-detail-back" data-action="scheduled-back-summary">&larr; Back to routine summary</button>' +
-      '<div class="scheduled-detail-head"><div><span class="section-eyebrow">Routine detail</span><h2 class="page-title" style="margin-top:4px;">' + esc(routine.name) + '</h2><p class="hint">' + esc(scheduledChannelLabel(routine.workspaceId, routine.channelId)) + ' · ' + esc(routine.description || "No description") + '</p></div>' + scheduledStatusBadge(routine.state) + '</div>' +
+      '<div class="scheduled-detail-head"><div><span class="section-eyebrow">Routine detail</span><h2 class="page-title" style="margin-top:4px;">' + esc(scheduledRoutineName(routine)) + '</h2><p class="hint">' + esc(scheduledChannelLabel(routine.workspaceId, routine.channelId)) + ' · ' + esc(routine.description || "No description available") + '</p></div>' + scheduledStatusBadge(routine.state) + '</div>' +
       scheduledDetailTabsHtml(detail);
     var tab = state.scheduledDetailTab;
     var content = tab === "runs"
@@ -5474,6 +5507,8 @@ details[open].advanced summary::before {
       return '<section aria-label="Scheduled work"><div class="scheduled-table-wrap"><table class="scheduled-table"><thead><tr><th>Name</th><th>Scope</th><th>Schedule</th><th>Status</th><th>Last run</th><th>Next run</th><th aria-label="Actions"></th></tr></thead><tbody><tr><td colspan="7" style="text-align:center; color:var(--text-3);">No scheduled work yet.</td></tr></tbody></table></div></section>';
     }
     var rows = routines.map(function (routine) {
+      var routineName = scheduledRoutineName(routine);
+      var nameUnavailable = routineName === "Name unavailable";
       var schedule = routine.triggerKind === "once"
         ? "One time" + (routine.nextRunAt ? " · " + formatScheduledDate(routine.nextRunAt, routine.timezone) : routine.lastScheduledAt ? " · " + formatScheduledDate(routine.lastScheduledAt, routine.timezone) : "")
         : formatScheduledSchedule(routine);
@@ -5482,7 +5517,7 @@ details[open].advanced summary::before {
         : routine.state === "paused"
           ? '<button type="button" class="btn btn-ghost btn-sm" role="menuitem" data-action="scheduled-list-control" data-control="resume" data-routine="' + esc(routine.id) + '">Resume</button>'
           : '';
-      return '<tr><td><button type="button" class="scheduled-name-button" data-action="select-scheduled-routine" data-routine="' + esc(routine.id) + '">' + esc(routine.name) + '</button></td>' +
+      return '<tr><td><button type="button" class="scheduled-name-button' + (nameUnavailable ? ' unavailable' : '') + '" data-action="select-scheduled-routine" data-routine="' + esc(routine.id) + '"' + (nameUnavailable ? ' title="The name is unavailable for this legacy routine."' : '') + '>' + esc(routineName) + '</button></td>' +
         '<td>Channel: ' + esc(scheduledChannelLabel(routine.workspaceId, routine.channelId)) + '</td>' +
         '<td>' + esc(schedule) + '</td>' +
         '<td><span class="scheduled-table-state ' + esc(routine.state) + '">' + esc(String(routine.state || "unknown").replace(/_/g, " ")) + '</span></td>' +
@@ -5504,7 +5539,7 @@ details[open].advanced summary::before {
     }
     var routine = state.scheduledDetail.routine;
     return '<div class="modal-backdrop"><div class="modal-card scheduled-summary-modal" role="dialog" aria-modal="true" aria-labelledby="scheduled-summary-title">' +
-      '<div class="scheduled-summary-head"><div><h2 class="modal-title" id="scheduled-summary-title">' + esc(routine.name) + '</h2><p class="scheduled-summary-scope">Channel: ' + esc(scheduledChannelLabel(routine.workspaceId, routine.channelId)) + '</p></div><button type="button" class="scheduled-summary-close" data-action="scheduled-summary-close" aria-label="Close">&times;</button></div>' +
+      '<div class="scheduled-summary-head"><div><h2 class="modal-title" id="scheduled-summary-title">' + esc(scheduledRoutineName(routine)) + '</h2><p class="scheduled-summary-scope">Channel: ' + esc(scheduledChannelLabel(routine.workspaceId, routine.channelId)) + '</p></div><button type="button" class="scheduled-summary-close" data-action="scheduled-summary-close" aria-label="Close">&times;</button></div>' +
       '<div class="scheduled-summary-section"><span class="field-label">Prompt</span><p class="scheduled-summary-prompt">' + esc(routine.taskText == null ? "The task body was removed with this routine." : routine.taskText) + '</p></div>' +
       '<div class="scheduled-summary-section"><span class="field-label">Schedule</span><p class="scheduled-summary-prompt">' + esc(formatScheduledSchedule(routine)) + '</p></div>' +
       '<div class="scheduled-summary-grid">' +
@@ -5512,7 +5547,7 @@ details[open].advanced summary::before {
       scheduledMeta("Last run", routine.lastFinishedAt ? formatScheduledDate(routine.lastFinishedAt, routine.timezone) : "Never", false) +
       scheduledMeta("Next run", routine.nextRunAt ? formatScheduledDate(routine.nextRunAt, routine.timezone) : "—", false) +
       scheduledMeta("Created", formatScheduledDay(routine.createdAt, routine.timezone), false) + '</div>' +
-      '<div class="scheduled-summary-foot"><button type="button" class="btn btn-ghost btn-sm" data-action="scheduled-open-inspector">View runs and activity</button><span class="spacer"></span><button type="button" class="btn btn-soft btn-sm" data-action="scheduled-summary-close">Close</button></div></div></div>';
+      '<div class="scheduled-summary-foot"><button type="button" class="btn btn-ghost btn-sm" data-action="scheduled-open-inspector">View run history and activity</button><span class="spacer"></span><button type="button" class="btn btn-soft btn-sm" data-action="scheduled-summary-close">Close</button></div></div></div>';
   }
 
   function scheduledDetailTabsHtml(detail) {
@@ -5522,7 +5557,7 @@ details[open].advanced summary::before {
       var active = state.scheduledDetailTab === value;
       return '<button type="button" class="scheduled-detail-tab' + (active ? " active" : "") + '" role="tab" aria-selected="' + (active ? "true" : "false") + '" data-action="scheduled-detail-tab" data-tab="' + value + '">' + label + (count == null ? '' : ' <span class="scheduled-detail-count">' + Number(count) + '</span>') + '</button>';
     }
-    return '<div class="scheduled-detail-tabs" role="tablist" aria-label="Routine detail sections">' + tab("overview", "Overview", null) + tab("runs", "Runs", runCount) + tab("activity", "Activity", activityCount) + '</div>';
+    return '<div class="scheduled-detail-tabs" role="tablist" aria-label="Routine detail sections">' + tab("overview", "Overview", null) + tab("runs", "Run history", runCount) + tab("activity", "Activity", activityCount) + '</div>';
   }
 
   function scheduledOverviewHtml(detail) {
@@ -5554,7 +5589,7 @@ details[open].advanced summary::before {
   }
 
   function scheduledActivityHtml(detail) {
-    return '<div class="scheduled-activity-intro"><h3 class="section-title">History for this routine</h3><p class="hint">Definition revisions and audit events below belong only to ' + esc(detail.routine.name) + '.</p></div>' +
+    return '<div class="scheduled-activity-intro"><h3 class="section-title">History for this routine</h3><p class="hint">Definition revisions and audit events below belong only to ' + esc(scheduledRoutineName(detail.routine)) + '.</p></div>' +
       scheduledRevisionsHtml(detail.revisions || []) + scheduledEventsHtml(detail.events || []);
   }
 
@@ -5599,7 +5634,7 @@ details[open].advanced summary::before {
         scheduledRunMeta("Flue run", run.flueRunId || "not admitted", true) + scheduledRunMeta("Trace", run.traceId || "unavailable", true) +
         '</div></details></article>';
     }).join("");
-    return '<section class="scheduled-card"><div class="memory-editor-head"><div><h3 class="section-title">Runs for this routine</h3><p class="hint">Each row is one triggered execution of ' + esc(routine.name) + '.</p></div><span class="badge badge-off">' + Number(runs.length) + '</span></div>' + body + '</section>';
+    return '<section class="scheduled-card"><div class="memory-editor-head"><div><h3 class="section-title">Run history for this routine</h3><p class="hint">Each row is one triggered execution of ' + esc(scheduledRoutineName(routine)) + '.</p></div><span class="badge badge-off">' + Number(runs.length) + '</span></div>' + body + '</section>';
   }
 
   function scheduledRunMeta(label, value, mono, htmlValue) {
@@ -5809,7 +5844,7 @@ details[open].advanced summary::before {
     state.scheduledFilters = {
       workspaceId: workspaceId || "",
       channelId: channelId || "",
-      state: "",
+      state: "current",
       status: ""
     };
     state.scheduledRoutines = null;
@@ -5858,11 +5893,6 @@ details[open].advanced summary::before {
       state.scheduledCapability = body.capability || null;
       state.scheduledLimits = body.limits || null;
       state.scheduledLoading = false;
-      if (state.scheduledSelection && !state.scheduledRoutines.some(function (routine) { return routine.id === state.scheduledSelection; })) {
-        state.scheduledSelection = "";
-        state.scheduledDetail = null;
-        state.scheduledInspector = false;
-      }
       render();
       if (state.scheduledSelection) return loadScheduledDetail(state.scheduledSelection);
     }).catch(function (error) {
@@ -6529,7 +6559,6 @@ details[open].advanced summary::before {
 
   function openAiProviderRowHtml(summary, ui, apiEditor, meta) {
     var subscription = summary.subscription || { state: "disconnected", updatedAt: 0 };
-    var capability = summary.subscriptionCapability || { enabled: false };
     var apiConnected = summary.status === "stored" || summary.status === "env";
     var subscriptionConnected = subscription.state === "connected" || subscription.state === "account_change_confirmation_required";
     var activeMethod = summary.activeAuthMethod === "subscription" ? "subscription" : "api_key";
@@ -6548,26 +6577,22 @@ details[open].advanced summary::before {
       '<div class="prov-status"><span class="hint">' + connectedCount + ' of 2 connected</span></div></div>';
     return '<div class="prov-row">' + head + '<div class="prov-body">' +
       openAiAuthMethodControlHtml(summary, apiConnected, subscriptionConnected) +
-      '<div class="openai-auth-list">' + apiOption + openAiSubscriptionHtml(subscription, capability, activeMethod, showSelection) + '</div></div></div>';
+      '<div class="openai-auth-list">' + apiOption + openAiSubscriptionHtml(subscription, activeMethod, showSelection) + '</div></div></div>';
   }
 
   function openAiAuthMethodControlHtml(summary, apiConnected, subscriptionConnected) {
     if (!apiConnected || !subscriptionConnected) return "";
-    var capability = summary.subscriptionCapability || { enabled: false };
     var saved = summary.activeAuthMethod === "subscription" ? "subscription" : "api_key";
     var draft = state.openAiAuthMethodDraft === "subscription" ? "subscription" : "api_key";
     var changed = draft !== saved;
-    var ready = draft === "api_key" || capability.enabled;
     var selectedLabel = draft === "subscription" ? "ChatGPT subscription" : "OpenAI API key";
     var hint = changed
-      ? ready
-        ? "Save to use " + selectedLabel + " for every OpenAI call."
-        : "Subscription is unavailable while the preview is disabled."
+      ? "Save to use " + selectedLabel + " for every OpenAI call."
       : "Applies to every OpenAI model and profile.";
-    var disabled = state.openAiAuthMethodBusy || !changed || !ready;
+    var disabled = state.openAiAuthMethodBusy || !changed;
     return '<div class="openai-auth-choice"><label class="field-label" for="openai-auth-method">Use for OpenAI calls</label>' +
       '<div class="openai-auth-choice-row"><span class="select-wrap"><select class="input" id="openai-auth-method" data-action="openai-auth-method"' + (state.openAiAuthMethodBusy ? " disabled" : "") + '>' +
-      '<option value="subscription"' + (draft === "subscription" ? " selected" : "") + (!capability.enabled && draft !== "subscription" ? " disabled" : "") + '>ChatGPT subscription</option>' +
+      '<option value="subscription"' + (draft === "subscription" ? " selected" : "") + '>ChatGPT subscription</option>' +
       '<option value="api_key"' + (draft === "api_key" ? " selected" : "") + '>OpenAI API key</option></select>' + icon("chevron-down", "select-caret") + '</span>' +
       '<button type="button" class="btn btn-primary" data-action="openai-auth-method-save"' + (disabled ? " disabled" : "") + '>' + (state.openAiAuthMethodBusy ? "Saving&hellip;" : "Save") + '</button></div>' +
       '<p class="hint">' + esc(hint) + '</p>' +
@@ -6616,14 +6641,11 @@ details[open].advanced summary::before {
     return "Subscription authorization needs attention.";
   }
 
-  function openAiSubscriptionHtml(status, capability, activeMethod, showSelection) {
+  function openAiSubscriptionHtml(status, activeMethod, showSelection) {
     var attempt = state.openAiSubscriptionAttempt;
     var busy = state.openAiSubscriptionBusy;
     var stateName = status.state || "disconnected";
-    var previewEnabled = !capability || capability.enabled === true;
-    var badge = !previewEnabled
-      ? '<span class="badge badge-off"><span class="dot"></span>Preview disabled</span>'
-      : stateName === "connected"
+    var badge = stateName === "connected"
       ? '<span class="badge badge-on"><span class="dot"></span>Connected</span>'
       : stateName === "authorizing"
         ? '<span class="badge badge-off"><span class="dot"></span>Authorizing</span>'
@@ -6634,15 +6656,7 @@ details[open].advanced summary::before {
             : '<span class="badge badge-off"><span class="dot"></span>Not connected</span>';
     var actions = "";
     var detail = "";
-    if (!previewEnabled) {
-      detail = '<p class="hint">ChatGPT subscription connections are disabled for this installation.</p>';
-      if (stateName === "connected" || stateName === "reconnect_required" || stateName === "account_change_confirmation_required") {
-        detail += status.accountFingerprint ? '<p class="hint">Stored installation account <span class="mono">' + esc(status.accountFingerprint) + '</span>.</p>' : "";
-        actions = '<button type="button" class="btn btn-danger btn-sm" data-action="openai-subscription-disconnect-open"' + (busy ? " disabled" : "") + '>Disconnect stored connection</button>';
-      } else if (stateName === "authorizing" && attempt) {
-        actions = '<button type="button" class="btn btn-ghost btn-sm" data-action="openai-subscription-cancel"' + (busy ? " disabled" : "") + '>Cancel authorization</button>';
-      }
-    } else if (stateName === "authorizing" && attempt) {
+    if (stateName === "authorizing" && attempt) {
       detail = '<div class="callout"><span><b>Open the authorization page, then enter this one-time code:</b><br>' +
         '<a href="' + esc(attempt.verificationUri) + '" target="_blank" rel="noopener noreferrer">' + esc(attempt.verificationUri) + ' &nearr;</a><br>' +
         '<span class="mono" style="font-size:1.15rem; letter-spacing:.08em;">' + esc(attempt.userCode) + '</span> ' +
@@ -8955,7 +8969,6 @@ details[open].advanced summary::before {
       var scopeParts = String(target.value || "").split("|");
       state.scheduledFilters.workspaceId = scopeParts[0] === "workspace" || scopeParts[0] === "channel" ? scopeParts[1] || "" : "";
       state.scheduledFilters.channelId = scopeParts[0] === "channel" ? scopeParts[2] || "" : "";
-      state.scheduledFilters.state = "";
       state.scheduledFilters.status = "";
       state.scheduledSelection = "";
       state.scheduledDetail = null;
@@ -8963,7 +8976,16 @@ details[open].advanced summary::before {
       state.scheduledRoutines = null;
       loadScheduledRoutines();
     }
-    if (action === "scheduled-filter-state") state.scheduledFilters.state = target.value;
+    if (action === "scheduled-filter-state") {
+      var scheduledState = String(target.value || "current");
+      state.scheduledFilters.state = ["current", "active", "paused", "completed", "disabled", "all"].includes(scheduledState) ? scheduledState : "current";
+      state.scheduledFilters.status = "";
+      state.scheduledSelection = "";
+      state.scheduledDetail = null;
+      state.scheduledInspector = false;
+      state.scheduledRoutines = null;
+      loadScheduledRoutines();
+    }
     if (action === "scheduled-filter-status") state.scheduledFilters.status = target.value;
     if (action === "sandbox-enabled" && !state.sandboxSaving) {
       sandboxDraft.enabled = !!target.checked;

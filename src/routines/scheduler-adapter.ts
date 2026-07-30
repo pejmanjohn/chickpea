@@ -17,6 +17,7 @@ export interface RoutineExecutionContext {
 
 export function createRoutineScheduledHandler(input: {
   heartbeat: (scheduledTime: number, owner: string, env: Record<string, unknown>) => Promise<unknown>;
+  maintenance?: (scheduledTime: number, env: Record<string, unknown>) => Promise<unknown>;
 }): {
   scheduled(
     controller: RoutineScheduledController,
@@ -31,12 +32,17 @@ export function createRoutineScheduledHandler(input: {
         cloudflare: true,
         ...(typeof flag === 'string' ? { enabledFlag: flag } : {}),
       });
-      // Existing installations receive the Cron event after deploy, but do no
-      // state scan, Workflow admission, model call, or Slack work until the
-      // operator flag is explicitly enabled.
-      if (!capability.enabled) return;
       const owner = `heartbeat:${controller.scheduledTime}`;
-      context.waitUntil(input.heartbeat(controller.scheduledTime, owner, env));
+      const tasks: Promise<unknown>[] = [];
+      // Generic Work recovery/retention is independent from proactive Routine
+      // enablement and cannot submit a Workflow, model call, or Slack delivery.
+      if (input.maintenance) {
+        tasks.push(input.maintenance(controller.scheduledTime, env));
+      }
+      if (capability.enabled) {
+        tasks.push(input.heartbeat(controller.scheduledTime, owner, env));
+      }
+      if (tasks.length > 0) context.waitUntil(Promise.all(tasks));
     },
   };
 }

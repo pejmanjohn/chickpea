@@ -95,6 +95,30 @@ function writeRoutineArtifact(
   );
 }
 
+function writeCanaryArtifact(
+  harness: ReturnType<typeof createHarness>,
+  options: { selector?: string; complete?: boolean } = {},
+) {
+  const builtDir = path.join(harness.root, 'dist-cf', 'chickpea');
+  const redirectDir = path.join(harness.root, '.wrangler', 'deploy');
+  mkdirSync(builtDir, { recursive: true });
+  mkdirSync(redirectDir, { recursive: true });
+  writeFileSync(path.join(redirectDir, 'config.json'), JSON.stringify({
+    configPath: '../../dist-cf/chickpea/wrangler.json',
+  }));
+  writeFileSync(path.join(builtDir, 'wrangler.json'), JSON.stringify({
+    name: 'chickpea',
+    main: 'index.js',
+    vars: { SLACK_TAG_LEDGER_CANARY_CHANNELS: options.selector ?? 'T_ACME/C_AGENT_TEST' },
+  }));
+  writeFileSync(
+    path.join(builtDir, 'index.js'),
+    options.complete === false
+      ? 'SLACK_TAG_LEDGER_CANARY_CHANNELS'
+      : 'SLACK_TAG_LEDGER_CANARY_CHANNELS delivery_receipt_persist_unknown slack_agent_execution_contexts',
+  );
+}
+
 test('deploy builds by default before forwarding dry-run to Wrangler', (context) => {
   const harness = createHarness();
   context.after(() => rmSync(harness.root, { recursive: true, force: true }));
@@ -141,5 +165,56 @@ test('deploy refuses an enabled routines artifact with a missing heartbeat', (co
   assert.equal(result.status, 1);
   assert.match(result.stderr, /TAG_ROUTINES_ENABLED=1 is unsafe/);
   assert.match(result.stderr, /heartbeat Cron Trigger/);
+  assert.equal(existsSync(harness.logPath), false);
+});
+
+test('deploy accepts an exact-channel ledger canary only with durable driver seams', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+  writeCanaryArtifact(harness);
+
+  const result = runHarness(harness, ['--skip-build', '--dry-run']);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(commands(harness.logPath), ['wrangler:["deploy","--dry-run"]']);
+});
+
+test('deploy refuses malformed or oversized ledger canary selectors', (context) => {
+  const malformed = createHarness();
+  const oversized = createHarness();
+  context.after(() => {
+    rmSync(malformed.root, { recursive: true, force: true });
+    rmSync(oversized.root, { recursive: true, force: true });
+  });
+  writeCanaryArtifact(malformed, { selector: 'T_ACME/*' });
+  writeCanaryArtifact(oversized, {
+    selector: Array.from({ length: 21 }, (_, index) => `T_ACME/C_${index}`).join(','),
+  });
+
+  const malformedResult = runHarness(malformed, ['--skip-build', '--dry-run']);
+  const oversizedResult = runHarness(oversized, ['--skip-build', '--dry-run']);
+
+  assert.equal(malformedResult.status, 1);
+  assert.match(malformedResult.stderr, /1-20 exact workspace\/channel pairs/);
+  assert.equal(oversizedResult.status, 1);
+  assert.match(oversizedResult.stderr, /1-20 exact workspace\/channel pairs/);
+  assert.equal(existsSync(malformed.logPath), false);
+  assert.equal(existsSync(oversized.logPath), false);
+});
+
+test('deploy refuses a ledger canary override on an artifact without driver seams', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+  writeCanaryArtifact(harness, { selector: '', complete: false });
+
+  const result = runHarness(harness, [
+    '--skip-build',
+    '--dry-run',
+    '--var',
+    'SLACK_TAG_LEDGER_CANARY_CHANNELS:T_ACME/C_AGENT_TEST',
+  ]);
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /missing durable driver seams/);
   assert.equal(existsSync(harness.logPath), false);
 });

@@ -75,6 +75,7 @@ test('Flue result envelopes reduce to the bounded Chickpea telemetry contract', 
     assert.deepEqual(
       Object.keys(result).sort(),
       [
+        'flueSubmissionRef',
         'reportedUsage',
         'requestedModel',
         'returnedModel',
@@ -142,6 +143,7 @@ test('legacy text-only and replayed results preserve honest completeness', () =>
   assert.equal(first.reportedUsage, null);
   assert.equal(first.usageCompleteness, 'not_reported');
   assert.doesNotMatch(JSON.stringify(first), /private-id/);
+  assert.match(first.flueSubmissionRef ?? '', /^fluesubmission_[a-f0-9]{40}$/);
 });
 
 test('failed result envelopes do not become successful zero-usage operations', () => {

@@ -6,6 +6,7 @@ import {
   CfSettingsStore,
   CfSlackStateStore,
   CfUsageStore,
+  CfWorkStore,
 } from './cf-state-proxies.ts';
 import { isCloudflareTarget } from './runtime-target.ts';
 import { SqliteSettingsStore, type SettingsStore } from './settings-store.ts';
@@ -20,6 +21,8 @@ import { SqliteRoutineStore } from '../routines/store.ts';
 import type { RoutineStore } from '../routines/types.ts';
 import { SqliteUsageStore } from '../usage/store.ts';
 import type { UsageStore } from '../usage/types.ts';
+import { SqliteWorkStore } from '../work/store.ts';
+import type { WorkStore } from '../work/types.ts';
 
 export { isCloudflareTarget } from './runtime-target.ts';
 
@@ -50,6 +53,7 @@ export interface AppStores {
   memory: MemoryStateStore;
   routines: RoutineStore;
   usage: UsageStore;
+  work: WorkStore;
 }
 
 // Node singletons, cached by resolved DB path exactly like the pre-refactor
@@ -67,6 +71,7 @@ let cachedSettingsStore: CachedStore<SqliteSettingsStore> | undefined;
 let cachedMemoryStore: CachedStore<SqliteMemoryStateStore> | undefined;
 let cachedRoutineStore: CachedStore<SqliteRoutineStore> | undefined;
 let cachedUsageStore: CachedStore<SqliteUsageStore> | undefined;
+let cachedWorkStore: CachedStore<SqliteWorkStore> | undefined;
 
 function nodeCached<T extends { close(): void }>(
   cached: CachedStore<T> | undefined,
@@ -157,6 +162,17 @@ export function getUsageStore(env?: PlatformEnv): UsageStore {
   return cachedUsageStore.store;
 }
 
+export function getWorkStore(env?: PlatformEnv): WorkStore {
+  if (isCloudflareTarget()) {
+    return new CfWorkStore(tagStateStub(env));
+  }
+  cachedWorkStore = nodeCached(
+    cachedWorkStore,
+    (path) => new SqliteWorkStore(path),
+  );
+  return cachedWorkStore.store;
+}
+
 /**
  * Resolve every store a request handler needs in one call. Handlers pass their
  * platform env through (`c.env` in routes); on Node it is ignored.
@@ -170,5 +186,6 @@ export function resolveStores(env?: PlatformEnv): AppStores {
     memory: getMemoryStateStore(env),
     routines: getRoutineStore(env),
     usage: getUsageStore(env),
+    work: getWorkStore(env),
   };
 }

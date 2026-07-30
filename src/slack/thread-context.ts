@@ -153,6 +153,13 @@ export function orderMessages(messages: SlackContextMessage[]): SlackContextMess
   return [...messages].sort((left, right) => parseSlackTs(left.ts) - parseSlackTs(right.ts));
 }
 
+/** Reject rows newer than the admitted trigger even if Slack returns them. */
+export function atOrBeforeSlackWatermark(timestamp: string, watermark: string): boolean {
+  const value = slackTimestampUnits(timestamp);
+  const maximum = slackTimestampUnits(watermark);
+  return value !== null && maximum !== null && value <= maximum;
+}
+
 export function ensureTriggerMessage(
   messages: SlackContextMessage[],
   turn: NormalizedSlackTurn,
@@ -180,6 +187,12 @@ function triggerMessage(turn: NormalizedSlackTurn): SlackContextMessage {
 function parseSlackTs(ts: string): number {
   const parsed = Number(ts);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function slackTimestampUnits(timestamp: string): bigint | null {
+  const match = /^(\d+)(?:\.(\d{1,6}))?$/.exec(timestamp);
+  if (!match?.[1]) return null;
+  return BigInt(match[1]) * 1_000_000n + BigInt((match[2] ?? '').padEnd(6, '0'));
 }
 
 function formatSlackTs(seconds: number): string {

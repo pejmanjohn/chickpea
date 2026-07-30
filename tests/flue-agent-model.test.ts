@@ -19,6 +19,7 @@ import {
   OPENAI_PLATFORM_COMPAT_PROVIDER_ID,
 } from '../src/model-compat/provider.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { getSlackStateStore } from '../src/config/state-backend.ts';
 import slackThreadAgent, {
   resolveAgentModel,
   thinkingLevelForModel,
@@ -276,7 +277,7 @@ test('slack-thread initializes from the SQLite config store for the current stat
   store.close();
 
   try {
-    const config = await withEnv(
+    const [config, opaqueConfig] = await withEnv(
       {
         SLACK_STATE_DB_PATH: dbPath,
         SLACK_TAG_MODEL: 'local-stub/runtime-fallback',
@@ -286,7 +287,23 @@ test('slack-thread initializes from the SQLite config store for the current stat
         CLOUDFLARE_API_TOKEN: undefined,
         CLOUDFLARE_ACCOUNT_ID: undefined,
       },
-      () => slackThreadAgent.initialize({ id: 'T_RUNTIME:C_RUNTIME:1782770400.000100', env: {} }),
+      async () => {
+        const config = await slackThreadAgent.initialize({
+          id: 'T_RUNTIME:C_RUNTIME:1782770400.000100',
+          env: {},
+        });
+        const continuityKey = `agent_${'a'.repeat(40)}`;
+        await getSlackStateStore().putAgentExecutionContext({
+          continuityKey,
+          runId: `run_${'b'.repeat(40)}`,
+          workspaceId: 'T_RUNTIME',
+          channelId: 'C_RUNTIME',
+          threadTs: '1782770400.000100',
+          createdAt: Date.now(),
+        });
+        const opaqueConfig = await slackThreadAgent.initialize({ id: continuityKey, env: {} });
+        return [config, opaqueConfig] as const;
+      },
     );
 
     assert.equal(config.model, 'local-stub/runtime-pinned');
@@ -297,6 +314,8 @@ test('slack-thread initializes from the SQLite config store for the current stat
       (config.skills ?? []).map((skill) => skill.name),
       ['runtime-skill'],
     );
+    assert.equal(opaqueConfig.model, config.model);
+    assert.equal(opaqueConfig.instructions, config.instructions);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

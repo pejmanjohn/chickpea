@@ -1,11 +1,18 @@
 import type { AssignmentLookupOptions } from './resolver.ts';
 import type { SettingsPatch } from './settings-store.ts';
 import type { ConfigAgentPatch, OAuthReauthorizationTarget } from './store.ts';
-import type { AgentSnapshot, ChannelAssignment, CustomAgentConfig, ResolvedAssignment } from './types.ts';
-import type { NormalizedSlackTurn } from '../slack/types.ts';
+import type { AgentSnapshot, ChannelAssignment, CustomAgentConfig } from './types.ts';
 import type { MemoryRpcRequest, MemoryRpcResponse } from '../memory/types.ts';
 import type { RoutineRpcRequest, RoutineRpcResponse } from '../routines/types.ts';
 import type { UsageRpcRequest, UsageRpcResponse } from '../usage/types.ts';
+import type { WorkRpcRequest, WorkRpcResponse } from '../work/types.ts';
+import type {
+  SlackCanonicalAdmissionInput,
+  SlackCanonicalAdmissionResult,
+} from '../slack/claim-store.ts';
+import type { SlackAgentExecutionContext, TurnJob } from '../slack/turn-job-types.ts';
+
+export type { TurnJob } from '../slack/turn-job-types.ts';
 
 /**
  * Wire contract between the Cloudflare store proxies and the TagStateStore
@@ -34,6 +41,7 @@ export type StateRpcErrorCode =
   | 'memory'
   | 'routine'
   | 'usage'
+  | 'work'
   | 'internal';
 
 export interface StateRpcError {
@@ -59,14 +67,6 @@ export type StateRpcResult<T> = { ok: true; value: T } | { ok: false; error: Sta
  * in the alarm could drift), and `id` is the idempotency key (the message
  * claim key) so a duplicate enqueue is ignored.
  */
-export interface TurnJob {
-  id: string;
-  evtKey: string;
-  msgKey: string;
-  turn: NormalizedSlackTurn;
-  assignment: ResolvedAssignment;
-}
-
 export interface TurnPullRequestProgress {
   number: number;
   url: string;
@@ -130,6 +130,15 @@ export interface TagStateRpc {
   release(key: string): Promise<StateRpcResult<null>>;
   threadStart(key: string): Promise<StateRpcResult<null>>;
   threadHas(key: string): Promise<StateRpcResult<boolean>>;
+  admitSlackTurn(
+    input: SlackCanonicalAdmissionInput,
+  ): Promise<StateRpcResult<SlackCanonicalAdmissionResult>>;
+  slackAgentExecutionContextPut(
+    input: SlackAgentExecutionContext,
+  ): Promise<StateRpcResult<SlackAgentExecutionContext>>;
+  slackAgentExecutionContextGet(
+    continuityKey: string,
+  ): Promise<StateRpcResult<SlackAgentExecutionContext | null>>;
   // -- operator settings ---------------------------------------------------
   settingGet(key: string): Promise<StateRpcResult<string | null>>;
   settingGetMany(keys: readonly string[]): Promise<StateRpcResult<(string | null)[]>>;
@@ -146,6 +155,9 @@ export interface TagStateRpc {
   routinesExecute(request: RoutineRpcRequest): Promise<StateRpcResult<RoutineRpcResponse>>;
   // -- usage observability ------------------------------------------------
   usageExecute(request: UsageRpcRequest): Promise<StateRpcResult<UsageRpcResponse>>;
+  // -- canonical Work ledger ----------------------------------------------
+  workExecute(request: WorkRpcRequest): Promise<StateRpcResult<WorkRpcResponse>>;
+  maintainWork(at: number): Promise<StateRpcResult<null>>;
   // -- turn relay (Cloudflare turn-horizon fix) ----------------------------
   /**
    * Persist a turn job and arm the alarm so `alarm()` runs it past the events

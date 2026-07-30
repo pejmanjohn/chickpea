@@ -1,4 +1,4 @@
-import type { WebClient } from '@slack/web-api';
+import { ErrorCode, type WebClient } from '@slack/web-api';
 
 import {
   appendSlackReplyFooter,
@@ -20,9 +20,6 @@ export const PROVIDER_FAILURE_TEXT =
 
 export const OPENAI_SUBSCRIPTION_RECONNECT_TEXT =
   'The ChatGPT subscription connection needs attention in Settings before this profile can answer. I did not use OpenAI API-key billing as fallback.';
-
-export const OPENAI_SUBSCRIPTION_DISABLED_TEXT =
-  'The ChatGPT Subscription preview is disabled for this installation, so this profile cannot answer. I did not use OpenAI API-key billing as fallback.';
 
 export const OPENAI_SUBSCRIPTION_QUOTA_TEXT =
   'The ChatGPT subscription quota could not serve this request. I did not switch to OpenAI API-key billing.';
@@ -65,6 +62,34 @@ export type SlackArtifactResult =
   | { uploaded: true }
   | { uploaded: false; reason: 'missing-scope' };
 
+export interface SlackDeliveryObserver {
+  beforeDelivery(input: {
+    method: string;
+    approvedOutput: string;
+    renderedPayload: string;
+  }): Promise<string | undefined>;
+  afterDelivery(input: {
+    attemptId: string | undefined;
+    outcome: 'delivered' | 'failed' | 'unknown';
+    deliveryRef?: string;
+    safeFailureCode?: string;
+  }): Promise<void>;
+}
+
+export interface SlackPresenterOptions {
+  deliverySafety?: 'legacy' | 'ledger';
+}
+
+export class PersistedSlackDeliveryError extends Error {
+  constructor(
+    readonly outcome: 'failed' | 'unknown',
+    readonly safeFailureCode: string,
+  ) {
+    super(`Persisted Slack delivery ${outcome}.`);
+    this.name = 'PersistedSlackDeliveryError';
+  }
+}
+
 /**
  * Slack presentation over a `@slack/web-api` WebClient. This is the sole Slack
  * presentation path and owns the complete fallback ordering.
@@ -85,6 +110,8 @@ export class WebClientPresenter {
   constructor(
     private readonly client: WebClient,
     private readonly target: SlackPresenterTarget,
+    private readonly deliveryObserver?: SlackDeliveryObserver,
+    private readonly options: SlackPresenterOptions = {},
   ) {}
 
   /** Attempt to set the Assistant thread status. Returns whether it stuck. */
@@ -170,35 +197,92 @@ export class WebClientPresenter {
     const displayText = format === 'markdown' ? sanitizeSlackMarkdownLinks(text) : text;
 
     if (this.target.userId && this.target.workspaceId) {
+      const startPayload = {
+        channel: this.target.channelId,
+        thread_ts: this.target.threadTs,
+        recipient_user_id: this.target.userId,
+        recipient_team_id: this.target.workspaceId,
+        markdown_text: displayText,
+      };
+      const stopBlocks = [renderSlackReplyFooterBlock(footer)];
+      const attemptId = await this.observeBeforeDelivery({
+        method: 'slack_chat_stream',
+        approvedOutput: text,
+        renderedPayload: JSON.stringify({
+          method: 'slack_chat_stream',
+          start: startPayload,
+          stop: { blocks: stopBlocks },
+        }),
+      });
+      let started: Awaited<ReturnType<WebClient['chat']['startStream']>>;
       try {
-        const started = await this.client.chat.startStream({
-          channel: this.target.channelId,
-          thread_ts: this.target.threadTs,
-          recipient_user_id: this.target.userId,
-          recipient_team_id: this.target.workspaceId,
-          markdown_text: displayText,
+        started = await this.client.chat.startStream(startPayload);
+      } catch (error) {
+        const outcome = this.deliveryOutcome(error);
+        await this.observeAfterDelivery({
+          attemptId,
+          outcome,
+          safeFailureCode: outcome === 'failed'
+            ? 'slack_stream_not_started'
+            : 'slack_stream_start_unknown',
         });
+        if (outcome === 'unknown') throw error;
+        // A confirmed start rejection may use the documented post fallback.
+        started = undefined as never;
+      }
+      if (started) {
         try {
           await this.client.chat.stopStream({
             channel: this.target.channelId,
             ts: started.ts as string,
-            blocks: [renderSlackReplyFooterBlock(footer)],
+            blocks: stopBlocks,
           });
-        } catch {
+        } catch (error) {
           // A stopStream failure must not trigger a duplicate final (S18).
+          await this.observeAfterDelivery({
+            attemptId,
+            outcome: 'unknown',
+            safeFailureCode: 'slack_stream_finalize_unknown',
+          });
+          if (this.options.deliverySafety === 'ledger') throw error;
+          return;
         }
+        await this.observeAfterDelivery({
+          attemptId,
+          outcome: 'delivered',
+          deliveryRef: slackDeliveryRef(this.target.channelId, started.ts),
+        });
         return;
-      } catch {
-        // startStream rejected -> fall through to the post fallback.
       }
     }
 
     const rendered = appendSlackReplyFooter(renderSlackMessage(displayText, format), footer);
-    await this.client.chat.postMessage({
+    const postPayload = {
       channel: this.target.channelId,
       thread_ts: this.target.threadTs,
       ...rendered,
+    };
+    const attemptId = await this.observeBeforeDelivery({
+      method: 'slack_chat_post_message',
+      approvedOutput: text,
+      renderedPayload: JSON.stringify({ method: 'slack_chat_post_message', payload: postPayload }),
     });
+    try {
+      const posted = await this.client.chat.postMessage(postPayload);
+      await this.observeAfterDelivery({
+        attemptId,
+        outcome: 'delivered',
+        deliveryRef: slackDeliveryRef(this.target.channelId, posted.ts),
+      });
+    } catch (error) {
+      const outcome = this.deliveryOutcome(error);
+      await this.observeAfterDelivery({
+        attemptId,
+        outcome,
+        safeFailureCode: outcome === 'failed' ? 'slack_post_failed' : 'slack_post_unknown',
+      });
+      throw error;
+    }
   }
 
   /** Deliver channel-contextual information only to the requesting member. */
@@ -211,11 +295,63 @@ export class WebClientPresenter {
       renderSlackMessage(displayText, format),
       this.replyFooter(),
     );
-    await this.client.chat.postEphemeral({
+    const payload = {
       channel: this.target.channelId,
       user: this.target.userId,
       ...rendered,
+    };
+    const attemptId = await this.observeBeforeDelivery({
+      method: 'slack_chat_post_ephemeral',
+      approvedOutput: text,
+      renderedPayload: JSON.stringify({ method: 'slack_chat_post_ephemeral', payload }),
     });
+    try {
+      const posted = await this.client.chat.postEphemeral(payload);
+      await this.observeAfterDelivery({
+        attemptId,
+        outcome: 'delivered',
+        deliveryRef: slackDeliveryRef(this.target.channelId, posted.message_ts),
+      });
+    } catch (error) {
+      const outcome = this.deliveryOutcome(error);
+      await this.observeAfterDelivery({
+        attemptId,
+        outcome,
+        safeFailureCode: outcome === 'failed'
+          ? 'slack_ephemeral_failed'
+          : 'slack_ephemeral_unknown',
+      });
+      throw error;
+    }
+  }
+
+  private async observeBeforeDelivery(
+    input: Parameters<SlackDeliveryObserver['beforeDelivery']>[0],
+  ): Promise<string | undefined> {
+    try {
+      return await this.deliveryObserver?.beforeDelivery(input);
+    } catch (error) {
+      if (this.options.deliverySafety === 'ledger') throw error;
+      console.warn('[work] Slack delivery observation failed; delivery will continue');
+      return undefined;
+    }
+  }
+
+  private async observeAfterDelivery(
+    input: Parameters<SlackDeliveryObserver['afterDelivery']>[0],
+  ): Promise<void> {
+    try {
+      await this.deliveryObserver?.afterDelivery(input);
+    } catch (error) {
+      if (this.options.deliverySafety === 'ledger') throw error;
+      console.warn('[work] Slack delivery outcome observation failed');
+    }
+  }
+
+  private deliveryOutcome(error: unknown): 'failed' | 'unknown' {
+    return this.options.deliverySafety === 'ledger'
+      ? slackDeliveryFailureOutcome(error)
+      : 'failed';
   }
 
   private replyFooter(): SlackReplyFooter {
@@ -227,6 +363,142 @@ export class WebClientPresenter {
       memoryItems: this.target.memoryFooterItems,
     };
   }
+}
+
+/** Replay a previously persisted adapter render without invoking the agent or
+ * re-rendering from mutable profile/config state. */
+export async function deliverPersistedSlackPayload(
+  client: WebClient,
+  renderedPayload: string,
+): Promise<{ method: string; deliveryRef: string }> {
+  const envelope = parsePersistedEnvelope(renderedPayload);
+  if (envelope.method === 'slack_chat_post_message') {
+    try {
+      const response = await client.chat.postMessage(
+        envelope.payload as unknown as Parameters<WebClient['chat']['postMessage']>[0],
+      );
+      const channel = stringField(response, 'channel') ?? stringField(envelope.payload, 'channel');
+      const ts = stringField(response, 'ts');
+      if (!channel || !ts) throw new PersistedSlackDeliveryError(
+        'unknown',
+        'slack_delivery_receipt_incomplete',
+      );
+      return { method: envelope.method, deliveryRef: slackDeliveryRef(channel, ts) };
+    } catch (error) {
+      throw persistedDeliveryError(error, 'slack_post_failed', 'slack_post_unknown');
+    }
+  }
+  if (envelope.method === 'slack_chat_post_ephemeral') {
+    try {
+      const response = await client.chat.postEphemeral(
+        envelope.payload as unknown as Parameters<WebClient['chat']['postEphemeral']>[0],
+      );
+      const channel = stringField(envelope.payload, 'channel');
+      const ts = stringField(response, 'message_ts');
+      if (!channel || !ts) throw new PersistedSlackDeliveryError(
+        'unknown',
+        'slack_delivery_receipt_incomplete',
+      );
+      return { method: envelope.method, deliveryRef: slackDeliveryRef(channel, ts) };
+    } catch (error) {
+      throw persistedDeliveryError(error, 'slack_ephemeral_failed', 'slack_ephemeral_unknown');
+    }
+  }
+  try {
+    const started = await client.chat.startStream(
+      envelope.start as unknown as Parameters<WebClient['chat']['startStream']>[0],
+    );
+    const channel = stringField(envelope.start, 'channel');
+    const ts = stringField(started, 'ts');
+    if (!channel || !ts) throw new PersistedSlackDeliveryError(
+      'unknown',
+      'slack_delivery_receipt_incomplete',
+    );
+    try {
+      await client.chat.stopStream({ channel, ts, ...envelope.stop });
+    } catch {
+      throw new PersistedSlackDeliveryError('unknown', 'slack_stream_finalize_unknown');
+    }
+    return { method: envelope.method, deliveryRef: slackDeliveryRef(channel, ts) };
+  } catch (error) {
+    throw persistedDeliveryError(error, 'slack_stream_not_started', 'slack_stream_start_unknown');
+  }
+}
+
+export function slackDeliveryFailureOutcome(error: unknown): 'failed' | 'unknown' {
+  const code = error && typeof error === 'object'
+    ? (error as { code?: unknown }).code
+    : undefined;
+  return code === ErrorCode.PlatformError || code === ErrorCode.RateLimitedError
+    ? 'failed'
+    : 'unknown';
+}
+
+function persistedDeliveryError(
+  error: unknown,
+  failedCode: string,
+  unknownCode: string,
+): PersistedSlackDeliveryError {
+  if (error instanceof PersistedSlackDeliveryError) return error;
+  const outcome = slackDeliveryFailureOutcome(error);
+  return new PersistedSlackDeliveryError(
+    outcome,
+    outcome === 'failed' ? failedCode : unknownCode,
+  );
+}
+
+type PersistedEnvelope =
+  | { method: 'slack_chat_post_message'; payload: Record<string, unknown> }
+  | { method: 'slack_chat_post_ephemeral'; payload: Record<string, unknown> }
+  | {
+      method: 'slack_chat_stream';
+      start: Record<string, unknown>;
+      stop: Record<string, unknown>;
+    };
+
+function parsePersistedEnvelope(raw: string): PersistedEnvelope {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new PersistedSlackDeliveryError('unknown', 'slack_render_invalid');
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new PersistedSlackDeliveryError('unknown', 'slack_render_invalid');
+  }
+  const record = parsed as Record<string, unknown>;
+  if (
+    (record.method === 'slack_chat_post_message' ||
+      record.method === 'slack_chat_post_ephemeral') &&
+    isRecord(record.payload)
+  ) {
+    return { method: record.method, payload: record.payload };
+  }
+  if (
+    record.method === 'slack_chat_stream' &&
+    isRecord(record.start) &&
+    isRecord(record.stop)
+  ) {
+    return { method: record.method, start: record.start, stop: record.stop };
+  }
+  throw new PersistedSlackDeliveryError('unknown', 'slack_render_invalid');
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function stringField(value: unknown, key: string): string | undefined {
+  return isRecord(value) && typeof value[key] === 'string' && value[key]
+    ? value[key]
+    : undefined;
+}
+
+function slackDeliveryRef(channelId: string, messageTs: unknown): string {
+  const safeTs = typeof messageTs === 'string' && /^[0-9]+(?:\.[0-9]+)?$/.test(messageTs)
+    ? messageTs
+    : 'acknowledged';
+  return `slack:${channelId}:${safeTs}`;
 }
 
 function isMissingFilesScopeError(err: unknown): boolean {

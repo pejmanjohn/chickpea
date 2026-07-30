@@ -160,3 +160,145 @@ test('deliverRequesterOnly posts an ephemeral response to the requesting member'
   assert.equal(call.thread_ts, undefined);
   assert.doesNotMatch(call.text ?? '', /\*\*https:\/\//);
 });
+
+test('stream rejection records confirmed non-delivery before the exact fallback render', async () => {
+  const events: Array<Record<string, unknown>> = [];
+  const presenter = new WebClientPresenter(
+    {
+      chat: {
+        async startStream() {
+          throw new Error('confirmed start rejection');
+        },
+        async postMessage() {
+          return { ok: true, ts: '1782770400.000500' };
+        },
+      },
+    } as unknown as WebClient,
+    {
+      channelId: 'C_BOUND',
+      threadTs: '1782770400.000100',
+      userId: 'U_REQUESTER',
+      workspaceId: 'T_WORKSPACE',
+      agentName: 'Test agent',
+      agentId: 'agent_test',
+    },
+    {
+      async beforeDelivery(input) {
+        events.push({ phase: 'before', ...input });
+        return `attempt-${events.length}`;
+      },
+      async afterDelivery(input) {
+        events.push({ phase: 'after', ...input });
+      },
+    },
+  );
+
+  await presenter.deliverFinal('approved answer', 'markdown');
+  assert.deepEqual(events.map((event) => [event.phase, event.method, event.outcome]), [
+    ['before', 'slack_chat_stream', undefined],
+    ['after', undefined, 'failed'],
+    ['before', 'slack_chat_post_message', undefined],
+    ['after', undefined, 'delivered'],
+  ]);
+  assert.match(String(events[0]?.renderedPayload), /slack_chat_stream/);
+  assert.match(String(events[2]?.renderedPayload), /slack_chat_post_message/);
+});
+
+test('stream finalization ambiguity records unknown and never falls back', async () => {
+  const outcomes: string[] = [];
+  let fallbackPosts = 0;
+  const presenter = new WebClientPresenter(
+    {
+      chat: {
+        async startStream() {
+          return { ok: true, ts: '1782770400.000600' };
+        },
+        async stopStream() {
+          throw new Error('finalization receipt unavailable');
+        },
+        async postMessage() {
+          fallbackPosts += 1;
+          return { ok: true };
+        },
+      },
+    } as unknown as WebClient,
+    {
+      channelId: 'C_BOUND',
+      threadTs: '1782770400.000100',
+      userId: 'U_REQUESTER',
+      workspaceId: 'T_WORKSPACE',
+      agentName: 'Test agent',
+      agentId: 'agent_test',
+    },
+    {
+      async beforeDelivery() {
+        return 'attempt-stream';
+      },
+      async afterDelivery(input) {
+        outcomes.push(input.outcome);
+      },
+    },
+  );
+
+  await presenter.deliverFinal('approved answer', 'markdown');
+  assert.deepEqual(outcomes, ['unknown']);
+  assert.equal(fallbackPosts, 0);
+});
+
+test('ledger delivery treats a transport-level stream start failure as unknown', async () => {
+  const outcomes: string[] = [];
+  let fallbackPosts = 0;
+  const presenter = new WebClientPresenter(
+    {
+      chat: {
+        async startStream() {
+          throw new Error('socket closed after send');
+        },
+        async postMessage() {
+          fallbackPosts += 1;
+          return { ok: true };
+        },
+      },
+    } as unknown as WebClient,
+    {
+      channelId: 'C_BOUND', threadTs: '1782770400.000100',
+      userId: 'U_REQUESTER', workspaceId: 'T_WORKSPACE',
+      agentName: 'Test agent', agentId: 'agent_test',
+    },
+    {
+      async beforeDelivery() { return 'attempt-stream'; },
+      async afterDelivery(input) { outcomes.push(input.outcome); },
+    },
+    { deliverySafety: 'ledger' },
+  );
+
+  await assert.rejects(() => presenter.deliverFinal('approved answer', 'markdown'));
+  assert.deepEqual(outcomes, ['unknown']);
+  assert.equal(fallbackPosts, 0);
+});
+
+test('ledger delivery never calls Slack before its durable start receipt', async () => {
+  let externalCalls = 0;
+  const presenter = new WebClientPresenter(
+    {
+      chat: {
+        async postMessage() {
+          externalCalls += 1;
+          return { ok: true, ts: '1782770400.000700' };
+        },
+      },
+    } as unknown as WebClient,
+    {
+      channelId: 'C_BOUND', threadTs: '1782770400.000100',
+      agentName: 'Test agent', agentId: 'agent_test',
+    },
+    {
+      async beforeDelivery() { throw new Error('ledger unavailable'); },
+      async afterDelivery() {},
+    },
+    { deliverySafety: 'ledger' },
+  );
+
+  await assert.rejects(() => presenter.deliverFinal('approved answer', 'markdown'));
+  assert.equal(externalCalls, 0);
+});

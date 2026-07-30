@@ -43,6 +43,7 @@ import type {
   TurnProgress,
   TurnPullRequestProgress,
 } from './config/state-rpc.ts';
+import { tagStateStub } from './config/state-rpc.ts';
 import type { PlatformEnv } from './config/state-backend.ts';
 import { getRoutineStore, getSettingsStore } from './config/state-backend.ts';
 import {
@@ -74,6 +75,8 @@ import {
   pullRequestProgressFromGithubResponse,
 } from './sandbox/progress.ts';
 import { SlackStateLogic } from './slack/claim-store.ts';
+import type { SlackCanonicalAdmissionInput } from './slack/claim-store.ts';
+import { createLedgerSlackRunHandler } from './slack/ledger-turn-driver.ts';
 import { resolveSlackCredentials } from './slack/credentials.ts';
 import { setObservedSlackStatus } from './slack/status-registry.ts';
 import {
@@ -84,6 +87,7 @@ import {
 } from './slack/run-turn.ts';
 import {
   MAX_TURN_ATTEMPTS,
+  MAX_TURN_DRAIN_BATCH,
   replayTextForTurnProgress,
   TurnJobStoreLogic,
 } from './slack/turn-jobs.ts';
@@ -101,6 +105,14 @@ import { createRoutineScheduledHandler } from './routines/scheduler-adapter.ts';
 import { UsageStoreLogic } from './usage/store.ts';
 import { UsageStateError } from './usage/store-error.ts';
 import type { UsageRpcRequest, UsageRpcResponse, UsageStore } from './usage/types.ts';
+import { WorkStoreLogic } from './work/store.ts';
+import { DurableRunDriver } from './work/driver.ts';
+import {
+  WorkStateError,
+  type WorkRpcRequest,
+  type WorkRpcResponse,
+  type WorkStore,
+} from './work/types.ts';
 import {
   RoutineAdmissionController,
   RoutineNotSubmittedError,
@@ -434,6 +446,7 @@ interface TagStateStores {
   memory: MemoryStoreLogic;
   routines: RoutineStoreLogic;
   usage: UsageStoreLogic;
+  work: WorkStoreLogic;
 }
 
 export class TagStateStore extends DurableObject implements TagStateRpc {
@@ -465,7 +478,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       // Same construction order as the node backend: each logic class creates
       // its own tables (and the config store runs migrations + seedOnce), so a
       // fresh DO is fully seeded before it answers its first RPC.
-      const stores: TagStateStores = {
+      const stores = {
         config: new ConfigStoreLogic(db),
         snapshots: new SnapshotStoreLogic(db),
         slack: new SlackStateLogic(db),
@@ -474,9 +487,20 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         memory: new MemoryStoreLogic(db),
         routines: new RoutineStoreLogic(db),
         usage: new UsageStoreLogic(db),
+      } as Omit<TagStateStores, 'work'>;
+      const completeStores: TagStateStores = {
+        ...stores,
+        work: new WorkStoreLogic(db, {
+          env: {
+            TAG_RUN_BODY_RETENTION_DAYS:
+              typeof (this.env as PlatformEnv).TAG_RUN_BODY_RETENTION_DAYS === 'string'
+                ? (this.env as PlatformEnv).TAG_RUN_BODY_RETENTION_DAYS as string
+                : undefined,
+          },
+        }),
       };
       this.initError = undefined;
-      return stores;
+      return completeStores;
     } catch (err) {
       this.initError = err instanceof Error ? err.message : String(err);
       console.error('[chickpea] TagStateStore init failed:', this.initError);
@@ -592,6 +616,24 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     return this.call((stores) => stores.slack.has(key));
   }
 
+  async admitSlackTurn(input: SlackCanonicalAdmissionInput) {
+    return this.call((stores) =>
+      stores.slack.admitCanonical(input, stores.work, stores.turnJobs),
+    );
+  }
+
+  async slackAgentExecutionContextPut(
+    input: Parameters<TagStateRpc['slackAgentExecutionContextPut']>[0],
+  ) {
+    return this.call((stores) => stores.turnJobs.putAgentExecutionContext(input));
+  }
+
+  async slackAgentExecutionContextGet(continuityKey: string) {
+    return this.call((stores) =>
+      stores.turnJobs.getAgentExecutionContext(continuityKey) ?? null,
+    );
+  }
+
   // ── operator settings ────────────────────────────────────────────────────
 
   async settingGet(key: string): Promise<StateRpcResult<string | null>> {
@@ -645,6 +687,29 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     request: UsageRpcRequest,
   ): Promise<StateRpcResult<UsageRpcResponse>> {
     return this.call((stores) => stores.usage.execute(request));
+  }
+
+  async workExecute(
+    request: WorkRpcRequest,
+  ): Promise<StateRpcResult<WorkRpcResponse>> {
+    return this.call((stores) => stores.work.execute(request));
+  }
+
+  async maintainWork(at: number): Promise<StateRpcResult<null>> {
+    if (!Number.isSafeInteger(at) || at < 0) {
+      return rpcError('work', 'Work maintenance time is invalid.', {
+        workCode: 'work_maintenance_invalid',
+      });
+    }
+    const result = this.call((stores) => {
+      stores.work.purgeContent(at, 100);
+      return stores.turnJobs.hasPending('legacy') || stores.turnJobs.hasPending('ledger');
+    });
+    if (!result.ok) return result;
+    if (result.value && (await this.ctx.storage.getAlarm()) === null) {
+      await this.ctx.storage.setAlarm(Date.now() + RELAY_BATCH_WINDOW_MS);
+    }
+    return { ok: true, value: null };
   }
 
   // ── turn relay (Cloudflare turn-horizon fix) ─────────────────────────────
@@ -703,28 +768,24 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       throw new Error(`state store unavailable in alarm: ${this.initError ?? 'unknown'}`);
     }
     const stores = this.stores;
-    const pending = stores.turnJobs.listPending();
+    const pending = stores.turnJobs.listPending(MAX_TURN_DRAIN_BATCH);
     if (pending.length === 0) {
+      const ledgerPending = stores.turnJobs.hasPending('ledger');
+      await drainLedgerRuns(
+        stores,
+        this.env as PlatformEnv,
+        ledgerPending ? await this.resolveAlarmClient(stores) : undefined,
+      );
+      if (stores.turnJobs.hasPending('ledger')) {
+        await this.ctx.storage.setAlarm(Date.now() + RELAY_RETRY_BACKOFF_MS);
+      }
       return;
     }
     // One client per alarm firing, resolved from THIS DO's LOCAL settings so
     // credential resolution never RPCs into this same object (a self-call while
     // the alarm holds the thread). runTurn takes it as an override.
     const client = await this.resolveAlarmClient(stores);
-    const usageStore: UsageStore = {
-      admitOperation: async (input) => stores.usage.admitOperation(input),
-      recordTerminal: async (input) => stores.usage.recordTerminal(input),
-      getOperation: async (operationId) => stores.usage.getOperation(operationId),
-      listOperations: async (query) => stores.usage.listOperations(query),
-      summarize: async (query) => stores.usage.summarize(query),
-      putCredential: async (input) => stores.usage.putCredential(input),
-      retireCredential: async (credentialRefId, version, retiredAt) =>
-        stores.usage.retireCredential(credentialRefId, version, retiredAt),
-      listCredentials: async (providerId) => stores.usage.listCredentials(providerId),
-      cleanupRetention: async (at) => stores.usage.cleanupRetention(at),
-      getRetentionStatus: async () => stores.usage.getRetentionStatus(),
-      listUsageAuditEvents: async (limit) => stores.usage.listUsageAuditEvents(limit),
-    };
+    const usageStore = localUsageStore(stores);
     let needsRetry = false;
     // The resolver's store contract is async; the DO's logic classes are sync.
     // A tiny async adapter bridges them for the fail-closed re-check below.
@@ -800,6 +861,9 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           client,
           turnId: job.id,
           usageExecutionId: `exec:${job.id}:${attempt}`,
+          ...(job.runId ? { runId: job.runId, runAttempt: attempt } : {}),
+          workStore: stores.work as unknown as WorkStore,
+          settingsStore: localSettingsStore(stores),
           usageStore,
           onUsagePersistence: (event) => {
             stores.turnJobs.recordUsagePersistence(job.id, event);
@@ -881,6 +945,8 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         }
       }),
     );
+    await drainLedgerRuns(stores, this.env as PlatformEnv, client);
+    needsRetry ||= stores.turnJobs.hasPending('legacy') || stores.turnJobs.hasPending('ledger');
     if (needsRetry) {
       // Re-arm (do NOT throw) so this invocation returns normally and its
       // attempt-count writes commit; the next firing re-drives the leftover
@@ -897,15 +963,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
    * same Durable Object while the alarm is executing.
    */
   private async resolveAlarmClient(stores: TagStateStores): Promise<WebClient> {
-    const localSettings: SettingsStore = {
-      getSetting: async (key) => stores.settings.getSetting(key),
-      getSettings: async (keys) => stores.settings.getSettings(keys),
-      setSetting: async (key, value) => stores.settings.setSetting(key, value),
-      deleteSetting: async (key) => stores.settings.deleteSetting(key),
-      applySettingsPatch: async (patch) => stores.settings.applySettingsPatch(patch),
-      mergeSettingStringSet: async (key, values) =>
-        stores.settings.mergeSettingStringSet(key, values),
-    };
+    const localSettings = localSettingsStore(stores);
     const { botToken } = await resolveSlackCredentials(this.env as PlatformEnv, localSettings);
     return createSlackWebClient(botToken);
   }
@@ -964,6 +1022,12 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           ...err.details,
         });
       }
+      if (err instanceof WorkStateError) {
+        return rpcError('work', err.message, {
+          workCode: err.code,
+          ...err.details,
+        });
+      }
       const message = err instanceof Error ? err.message : String(err);
       console.error('[chickpea] TagStateStore RPC failure:', message);
       return rpcError('internal', message);
@@ -971,8 +1035,63 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
   }
 }
 
+async function drainLedgerRuns(
+  stores: TagStateStores,
+  platformEnv: PlatformEnv,
+  client?: WebClient,
+): Promise<void> {
+  await new DurableRunDriver(stores.work, {
+    ownerId: 'cloudflare_ledger_run_driver',
+    authorityEpoch: 1,
+    leaseDurationMs: 30_000,
+    maxClaims: 4,
+    concurrency: 4,
+    handle: createLedgerSlackRunHandler({
+      // WorkStoreLogic is the in-DO synchronous implementation of every
+      // WorkStore operation; awaiting its return values preserves the same
+      // handler contract without a self-RPC through CfWorkStore.
+      work: stores.work as unknown as WorkStore,
+      turns: stores.turnJobs,
+      ...(client ? { client } : {}),
+      platformEnv,
+      settingsStore: localSettingsStore(stores),
+      usageStore: localUsageStore(stores),
+    }),
+  }).drain();
+}
+
+function localSettingsStore(stores: TagStateStores): SettingsStore {
+  return {
+    getSetting: async (key) => stores.settings.getSetting(key),
+    getSettings: async (keys) => stores.settings.getSettings(keys),
+    setSetting: async (key, value) => stores.settings.setSetting(key, value),
+    deleteSetting: async (key) => stores.settings.deleteSetting(key),
+    applySettingsPatch: async (patch) => stores.settings.applySettingsPatch(patch),
+    mergeSettingStringSet: async (key, values) =>
+      stores.settings.mergeSettingStringSet(key, values),
+  };
+}
+
+function localUsageStore(stores: TagStateStores): UsageStore {
+  return {
+    admitOperation: async (input) => stores.usage.admitOperation(input),
+    recordTerminal: async (input) => stores.usage.recordTerminal(input),
+    getOperation: async (operationId) => stores.usage.getOperation(operationId),
+    getOperationByRunId: async (runId) => stores.usage.getOperationByRunId(runId),
+    listOperations: async (query) => stores.usage.listOperations(query),
+    summarize: async (query) => stores.usage.summarize(query),
+    putCredential: async (input) => stores.usage.putCredential(input),
+    retireCredential: async (credentialRefId, version, retiredAt) =>
+      stores.usage.retireCredential(credentialRefId, version, retiredAt),
+    listCredentials: async (providerId) => stores.usage.listCredentials(providerId),
+    cleanupRetention: async (at) => stores.usage.cleanupRetention(at),
+    getRetentionStatus: async () => stores.usage.getRetentionStatus(),
+    listUsageAuditEvents: async (limit) => stores.usage.listUsageAuditEvents(limit),
+  };
+}
+
 function rpcError(
-  code: 'unknown_agent' | 'agent_exists' | 'agent_still_assigned' | 'memory' | 'routine' | 'usage' | 'internal',
+  code: 'unknown_agent' | 'agent_exists' | 'agent_still_assigned' | 'memory' | 'routine' | 'usage' | 'work' | 'internal',
   message: string,
   details?: Record<string, string>,
 ): { ok: false; error: { code: typeof code; message: string; details?: Record<string, string> } } {
@@ -981,7 +1100,18 @@ function rpcError(
 
 export default createRoutineScheduledHandler({
   heartbeat: runRoutineHeartbeat,
+  maintenance: runWorkMaintenance,
 });
+
+async function runWorkMaintenance(
+  scheduledTime: number,
+  rawEnv: Record<string, unknown>,
+): Promise<void> {
+  const result = await tagStateStub(rawEnv).maintainWork(scheduledTime);
+  if (!result.ok) {
+    throw new Error(`Work maintenance failed: ${result.error.message}`);
+  }
+}
 
 async function runRoutineHeartbeat(
   scheduledTime: number,

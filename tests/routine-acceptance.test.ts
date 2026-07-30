@@ -16,7 +16,10 @@ import { SqliteRoutineStore } from '../src/routines/store.ts';
 import type { RoutineCapability } from '../src/routines/scheduler-adapter.ts';
 import type { RoutineRun, RoutineStore } from '../src/routines/types.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
-import { initializeRoutineWorkflowRuntime } from '../src/workflows/routine.ts';
+import {
+  initializeRoutineWorkflowRuntime,
+  routineAgentInstanceId,
+} from '../src/workflows/routine.ts';
 
 const enabled: RoutineCapability = {
   target: 'cloudflare', available: true, enabled: true, reason: 'enabled',
@@ -144,7 +147,7 @@ test('scheduled write crosses one-message creation, heartbeat, Workflow admissio
     );
     assert.deepEqual(lifecycle, [
       'live-access',
-      `agent:routine:${admitted.flueRunId}:T_ACCEPT:C_ACCEPT`,
+      `agent:${routineAgentInstanceId(admitted.flueRunId)}`,
     ]);
 
     const slackBodies: URLSearchParams[] = [];

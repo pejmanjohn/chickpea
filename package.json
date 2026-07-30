@@ -42,6 +42,7 @@
     "build": "npm run flue:build:cf",
     "deploy": "node scripts/deploy-with-epilogue.mjs",
     "verify:cf-smoke": "node scripts/verify-cf-smoke.mjs",
+    "verify:run-foundation": "node scripts/verify-run-foundation.mjs",
     "verify:routines-runtime": "node scripts/verify-routines-runtime-spike.mjs",
     "verify:admin-ui": "node scripts/verify-admin-ui.mjs",
     "verify:durability": "node scripts/verify-durability.mjs",

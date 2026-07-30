@@ -174,6 +174,56 @@ test('pending jobs come back in enqueue order', () => {
   );
 });
 
+test('bounded pending scans preserve the remaining compatibility queue', () => {
+  let clock = 1;
+  const store = newStore(() => clock++);
+  for (const id of ['first', 'second', 'third']) store.enqueue(job(id));
+  assert.deepEqual(store.listPending(2).map((row) => row.id), ['first', 'second']);
+  assert.equal(store.hasPending(), true);
+  store.markDelivered('first');
+  store.markDelivered('second');
+  assert.deepEqual(store.listPending(2).map((row) => row.id), ['third']);
+  store.markDelivered('third');
+  assert.equal(store.hasPending(), false);
+});
+
+test('legacy and ledger authority lanes never drain each other', () => {
+  const store = newStore();
+  store.enqueue(job('legacy'));
+  store.enqueue({
+    ...job('ledger'),
+    runId: 'run_ledger_fixture',
+    executionAuthority: 'ledger',
+  });
+  assert.deepEqual(store.listPending().map((row) => row.id), ['legacy']);
+  assert.deepEqual(store.listPending(10, 'ledger').map((row) => row.id), ['ledger']);
+  assert.equal(store.getPendingByRunId('run_ledger_fixture')?.id, 'ledger');
+  assert.equal(store.hasPending('legacy'), true);
+  assert.equal(store.hasPending('ledger'), true);
+});
+
+test('opaque Flue identities resolve through adapter-owned Slack execution context', () => {
+  const store = newStore(() => 1_800_000_000_000);
+  const context = {
+    continuityKey: `agent_${'a'.repeat(40)}`,
+    runId: `run_${'b'.repeat(40)}`,
+    workspaceId: 'T_HOME',
+    channelId: 'C_TEAM',
+    threadTs: '1782770100.000100',
+    createdAt: 1_800_000_000_000,
+  };
+  assert.deepEqual(store.putAgentExecutionContext(context), context);
+  assert.deepEqual(store.getAgentExecutionContext(context.continuityKey), context);
+  assert.throws(
+    () => store.putAgentExecutionContext({ ...context, channelId: 'C_OTHER' }),
+    /another binding or Run/,
+  );
+  assert.throws(
+    () => store.putAgentExecutionContext({ ...context, continuityKey: 'T_HOME:C_TEAM:1.0' }),
+    /continuity key/i,
+  );
+});
+
 test('existing turn job tables gain progress storage without losing pending rows', () => {
   const db = openStateDb(':memory:');
   try {
@@ -205,6 +255,7 @@ test('existing turn job tables gain progress storage without losing pending rows
     const store = new TurnJobStoreLogic(db);
     const pending = store.listPending();
     assert.equal(pending[0]?.id, 'before-migration');
+    assert.equal(pending[0]?.executionAuthority, 'legacy');
     assert.deepEqual(pending[0]?.progress, {});
   } finally {
     db.close();

@@ -28,6 +28,9 @@ test('provider guidance covers every current route without introducing provider 
     USAGE_PROVIDER_GUIDANCE.find((provider) => provider.providerId === 'openrouter')?.limitsUrl,
     'https://openrouter.ai/docs/api/api-reference/api-keys/create-keys',
   );
+  const binding = USAGE_PROVIDER_GUIDANCE.find((provider) => provider.providerId === 'cloudflare');
+  assert.equal(binding?.runtimeCoverage, 'mixed');
+  assert.equal(binding?.priceCoverage, 'release_pinned');
   const serialized = JSON.stringify(USAGE_PROVIDER_GUIDANCE);
   assert.doesNotMatch(serialized, /clientSecret|adminKey|billingCredential|syncNow|setLimit|updateLimit/);
 });

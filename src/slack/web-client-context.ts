@@ -9,6 +9,7 @@ import {
   ensureTriggerMessage,
   orderMessages,
   toContextMessages,
+  atOrBeforeSlackWatermark,
   type SlackContextMessage,
   type SlackTurnContext,
   type SlackWebApiMessage,
@@ -78,7 +79,14 @@ async function fetchHistory(
 
   const rawMessages = (response.messages ?? []) as unknown as SlackWebApiMessage[];
   const hasCursor = Boolean(response.response_metadata?.next_cursor?.trim());
-  const messages = ensureTriggerMessage(orderMessages(toContextMessages(rawMessages)), turn);
+  const messages = ensureTriggerMessage(
+    orderMessages(
+      toContextMessages(rawMessages).filter((message) =>
+        atOrBeforeSlackWatermark(message.ts, turn.messageTs)
+      ),
+    ),
+    turn,
+  );
   const degradations = hasCursor ? [`slack_context.${turn.contextMode}:truncated`] : [];
 
   return {
@@ -114,7 +122,11 @@ async function fetchThread(
     });
 
     const rawMessages = (response.messages ?? []) as unknown as SlackWebApiMessage[];
-    collected.push(...toContextMessages(rawMessages));
+    collected.push(
+      ...toContextMessages(rawMessages).filter((message) =>
+        atOrBeforeSlackWatermark(message.ts, turn.messageTs)
+      ),
+    );
     // Keep only the newest maxMessages so an early page never crowds out the
     // recent tail; slicing each round bounds memory on very long threads.
     if (collected.length > maxMessages) {

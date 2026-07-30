@@ -202,7 +202,6 @@ type ProviderSummaryFixture = {
   modelCount: number | null;
   activeAuthMethod?: 'api_key' | 'subscription';
   subscription?: OpenAiSubscriptionStatusFixture;
-  subscriptionCapability?: { enabled: boolean };
 };
 type ModelProviderFixture = {
   id: string;
@@ -213,7 +212,6 @@ type ModelProviderFixture = {
     activeMethod?: 'api_key' | 'subscription';
     apiKeyConfigured: boolean;
     subscription: OpenAiSubscriptionStatusFixture;
-    subscriptionCapability?: { enabled: boolean };
   };
 };
 type EgressPolicyFixture = {
@@ -321,6 +319,7 @@ function runAdminPageHarness(
     memoryDeleteError?: { status: number; error: string };
     memoryReviewError?: { status: number; error: string };
     scheduledWork?: ScheduledWorkFixture;
+    redactScheduledName?: boolean;
     scheduledControlError?: { status: number; error: string; message?: string };
     oauthStartResult?: { authorizationUrl: string };
     oauthStartError?: { status: number; error: string; message?: string };
@@ -353,6 +352,7 @@ function runAdminPageHarness(
   historyPushes: string[];
   historyReplaces: string[];
   usageApiCalls: string[];
+  scheduledApiCalls: string[];
   channelListCalls: string[];
   providerKeyPosts: Array<{ id: string; key: string }>;
   providerKeyDeletes: string[];
@@ -456,6 +456,7 @@ function runAdminPageHarness(
   let slackDisconnectCalls = 0;
   const channelListCalls: string[] = [];
   const usageApiCalls: string[] = [];
+  const scheduledApiCalls: string[] = [];
   const providerKeyPosts: Array<{ id: string; key: string }> = [];
   const providerKeyDeletes: string[] = [];
   const openAiSubscriptionPosts: Array<{ action: string; body: Record<string, unknown> }> = [];
@@ -675,7 +676,7 @@ function runAdminPageHarness(
   const providerState: ProviderSummaryFixture[] =
     options.providers ?? [
       { id: 'anthropic', status: 'stored', modelCount: 10 },
-      { id: 'openai', status: 'missing', modelCount: null, activeAuthMethod: 'api_key', subscriptionCapability: { enabled: true }, subscription: { state: 'disconnected', updatedAt: 0 } },
+      { id: 'openai', status: 'missing', modelCount: null, activeAuthMethod: 'api_key', subscription: { state: 'disconnected', updatedAt: 0 } },
       { id: 'openrouter', status: 'env', modelCount: null },
       { id: 'workers-ai', status: options.cloudflare ? 'env' : 'missing', modelCount: null },
     ];
@@ -845,8 +846,8 @@ function runAdminPageHarness(
       if (harnessOptions.usageApiError) return Promise.resolve(jsonResponse({ error: 'usage_unavailable' }, 503));
       if (path.startsWith('/admin/api/usage/overview')) {
         return Promise.resolve(jsonResponse({
-          current: { from: usageNow - 30 * 86400000, to: usageNow, groupBy: 'provider', currency: 'USD', mixedCurrency: false, availableCurrencies: ['USD'], totals: usageTotals, groups: [{ key: 'openai', label: 'OpenAI <unsafe>', ...usageTotals }] },
-          previous: { from: usageNow - 60 * 86400000, to: usageNow - 30 * 86400000, groupBy: 'provider', currency: 'USD', mixedCurrency: false, availableCurrencies: ['USD'], totals: { ...usageTotals, operationCount: 2, estimateAmountMicros: 10000 }, groups: [] },
+          current: { from: usageNow - 30 * 86400000, to: usageNow, groupBy: 'channel', currency: 'USD', mixedCurrency: false, availableCurrencies: ['USD'], totals: usageTotals, groups: [{ key: 'direct_message', label: null, ...usageTotals }] },
+          previous: { from: usageNow - 60 * 86400000, to: usageNow - 30 * 86400000, groupBy: 'channel', currency: 'USD', mixedCurrency: false, availableCurrencies: ['USD'], totals: { ...usageTotals, operationCount: 2, estimateAmountMicros: 10000 }, groups: [] },
         }));
       }
       if (path.startsWith('/admin/api/usage/operations')) {
@@ -865,12 +866,13 @@ function runAdminPageHarness(
       }
     }
     if (path.startsWith('/admin/api/audit/scheduled_work/routines') && method === 'GET') {
+      scheduledApiCalls.push(path);
       const detailMatch = path.match(/^\/admin\/api\/audit\/scheduled_work\/routines\/([^/?]+)$/);
       if (detailMatch) {
         const routineId = decodeURIComponent(detailMatch[1] as string);
         if (routineId !== scheduledFixture.routine.id) return Promise.resolve(jsonResponse({ error: 'routine_not_found' }, 404));
         return Promise.resolve(jsonResponse({
-          routine: { ...scheduledFixture.routine },
+          routine: { ...scheduledFixture.routine, ...(harnessOptions.redactScheduledName ? { name: null, description: null } : {}) },
           runs: scheduledFixture.runs.map((run) => ({ ...run })),
           revisions: scheduledFixture.revisions.map((revision) => ({ ...revision })),
           events: scheduledFixture.events.map((event) => ({ ...event })),
@@ -883,11 +885,19 @@ function runAdminPageHarness(
       const channelFilter = url.searchParams.get('channelId');
       const workspaceFilter = url.searchParams.get('workspaceId');
       const routine = scheduledFixture.routine;
-      const included = (!stateFilter || routine.state === stateFilter) &&
+      const stateMatches = !stateFilter ||
+        (stateFilter === 'current' && ['active', 'paused'].includes(String(routine.state))) ||
+        (stateFilter === 'all' && routine.state !== 'deleted') ||
+        routine.state === stateFilter;
+      const included = stateMatches &&
         (!channelFilter || routine.channelId === channelFilter) &&
         (!workspaceFilter || routine.workspaceId === workspaceFilter);
       const summary = { ...routine };
       delete summary.taskText;
+      if (harnessOptions.redactScheduledName) {
+        summary.name = null;
+        summary.description = null;
+      }
       return Promise.resolve(jsonResponse({
         routines: included ? [summary] : [],
         nextCursor: null,
@@ -1646,7 +1656,10 @@ function runAdminPageHarness(
   };
 
   vm.runInNewContext(
-    inlineScriptFor(options.cloudflare ?? false, options.usageAdminUi ?? false),
+    inlineScriptFor(
+      options.cloudflare ?? false,
+      options.usageAdminUi ?? false,
+    ),
     {
       document,
       fetch,
@@ -1708,6 +1721,7 @@ function runAdminPageHarness(
     historyPushes,
     historyReplaces,
     usageApiCalls,
+    scheduledApiCalls,
     channelListCalls,
     providerKeyPosts,
     providerKeyDeletes,
@@ -1781,7 +1795,10 @@ async function openReleaseAttachPicker(
 // isCloudflareTarget() (globalThis.navigator.userAgent). The Workers AI row is
 // binding-only, so a Cloudflare-target harness renders it by masquerading the
 // navigator just for the renderAdminPage() call, then restoring it.
-function inlineScriptFor(cloudflare: boolean, usageAdminUi = false): string {
+function inlineScriptFor(
+  cloudflare: boolean,
+  usageAdminUi = false,
+): string {
   if (!cloudflare) return inlineScript(usageAdminUi);
   const previous = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
   Object.defineProperty(globalThis, 'navigator', {
@@ -6827,6 +6844,7 @@ test('the left rail keeps one coherent section switcher and section-specific nav
 
   const initialSwitcher = harness.app.innerHTML.match(/<nav class="section-switcher" aria-label="Admin navigation">[\s\S]*?<\/nav>/)?.[0] ?? '';
   assert.doesNotMatch(initialSwitcher, />Sections</);
+  assert.doesNotMatch(initialSwitcher, /Sessions|open-sessions/);
   assert.ok(initialSwitcher.indexOf('>Channels</button>') < initialSwitcher.indexOf('>Profiles</button>'));
   assert.ok(initialSwitcher.indexOf('>Profiles</button>') < initialSwitcher.indexOf('>Usage</button>'));
   assert.ok(initialSwitcher.indexOf('>Usage</button>') < initialSwitcher.indexOf('>Settings</button>'));
@@ -6856,6 +6874,15 @@ test('the left rail keeps one coherent section switcher and section-specific nav
   assert.match(harness.app.innerHTML, /class="chan-item active" data-action="settings-section" data-section="github"/);
   assert.match(harness.app.innerHTML, /data-settings-panel="providers" hidden>/);
   assert.match(harness.app.innerHTML, /data-settings-panel="github"><section/);
+});
+
+test('legacy Sessions page URLs return to Channels without loading Run data', async () => {
+  const harness = runAdminPageHarness({ initialPath: '/admin/sessions/run_session_fixture' });
+  await flushAsync();
+
+  assert.equal(harness.locationPath(), '/admin/channels');
+  assert.match(harness.app.innerHTML, /<nav class="rail" aria-label="Channels">/);
+  assert.doesNotMatch(harness.app.innerHTML, /Sessions|open-sessions|Run inspector/);
 });
 
 test('Settings shows an unobtrusive model-list status and refreshes it on demand', async () => {
@@ -7043,6 +7070,36 @@ test('Audit logs deep link renders the real Memory scope, generated index, edito
   assert.doesNotMatch(harness.app.innerHTML, />Import</);
 });
 
+test('Memory scope rail uses Slack-style leading markers for public and private channels', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/audit-logs/memory/store_public_T_DESIGN/C0EXR3L9T/MEMORY.md',
+    memoryScopes: [
+      {
+        workspaceId: 'T_DESIGN', channelId: 'C0EXR3L9T', displayName: 'eng-releases',
+        privacy: 'public', lifecycle: 'active', storeId: 'store_public_T_DESIGN',
+        generation: null, entryCount: 1,
+      },
+      {
+        workspaceId: 'T_DESIGN', channelId: 'C_PRIVATE', displayName: 'memory-private-acceptance',
+        privacy: 'private', lifecycle: 'active', storeId: 'store_private_T_DESIGN',
+        generation: null, entryCount: 0,
+      },
+    ],
+  });
+  await flushAsync();
+
+  assert.match(
+    harness.app.innerHTML,
+    /<span class="audit-channel-marker" aria-hidden="true">#<\/span><span>eng-releases<\/span>/,
+  );
+  assert.match(
+    harness.app.innerHTML,
+    /<span class="audit-channel-marker" aria-hidden="true"><svg[^>]*>.*<\/svg><\/span><span>memory-private-acceptance<\/span>/,
+  );
+  assert.doesNotMatch(harness.app.innerHTML, /#memory-private-acceptance/);
+  assert.doesNotMatch(harness.app.innerHTML, /audit-lock/);
+});
+
 test('Scheduled Work matches the compact audit inventory before loading routine-specific detail', async () => {
   const harness = runAdminPageHarness({
     initialPath: '/admin/audit-logs/scheduled-work',
@@ -7053,8 +7110,11 @@ test('Scheduled Work matches the compact audit inventory before loading routine-
   assert.match(harness.app.innerHTML, /View scheduled routines and keep track of all scheduled work/);
   assert.match(harness.app.innerHTML, /<th>Name<\/th><th>Scope<\/th><th>Schedule<\/th><th>Status<\/th><th>Last run<\/th><th>Next run<\/th>/);
   assert.match(harness.app.innerHTML, /data-action="scheduled-filter-scope"/);
+  assert.match(harness.app.innerHTML, /data-action="scheduled-filter-state"/);
+  assert.match(harness.app.innerHTML, /<option value="current" selected>Current<\/option>/);
+  assert.match(harness.app.innerHTML, /<span class="chan-name">Current routines<\/span>/);
+  assert.ok(harness.scheduledApiCalls.some((path) => path.includes('state=current')));
   assert.doesNotMatch(harness.app.innerHTML, /data-action="scheduled-filter-workspace"/);
-  assert.doesNotMatch(harness.app.innerHTML, /data-action="scheduled-filter-state"/);
   assert.match(harness.app.innerHTML, /Release readiness check/);
   assert.match(harness.app.innerHTML, /Channel: #eng-releases/);
   assert.match(harness.app.innerHTML, /weekdays at 9:00 AM/);
@@ -7085,9 +7145,56 @@ test('Scheduled Work matches the compact audit inventory before loading routine-
   assert.match(harness.app.innerHTML, /<span class="field-label">Last run<\/span>/);
   assert.match(harness.app.innerHTML, /<span class="field-label">Next run<\/span>/);
   assert.match(harness.app.innerHTML, /<span class="field-label">Created<\/span>/);
-  assert.match(harness.app.innerHTML, /View runs and activity/);
+  assert.match(harness.app.innerHTML, /View run history and activity/);
   assert.doesNotMatch(harness.app.innerHTML, /Source Slack request/);
   assert.doesNotMatch(harness.app.innerHTML, /One independent Flue Workflow run per trigger/);
+});
+
+test('Scheduled Work status filter defaults to Current and reloads explicit states', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/audit-logs/scheduled-work',
+  });
+  await flushAsync();
+
+  harness.listeners.change?.({
+    target: inputTarget({ 'data-action': 'scheduled-filter-state' }, 'paused'),
+  });
+  await flushAsync();
+
+  assert.ok(harness.scheduledApiCalls.at(-1)?.includes('state=paused'));
+  assert.match(harness.app.innerHTML, /<option value="paused" selected>Paused<\/option>/);
+  assert.match(harness.app.innerHTML, /<span class="chan-name">Paused routines<\/span>/);
+  assert.match(harness.app.innerHTML, /No scheduled work yet/);
+
+  harness.listeners.change?.({
+    target: inputTarget({ 'data-action': 'scheduled-filter-state' }, 'all'),
+  });
+  await flushAsync();
+
+  assert.ok(harness.scheduledApiCalls.at(-1)?.includes('state=all'));
+  assert.match(harness.app.innerHTML, /<option value="all" selected>All<\/option>/);
+  assert.match(harness.app.innerHTML, /Release readiness check/);
+});
+
+test('Scheduled Work explains legacy names that cannot be safely projected', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/audit-logs/scheduled-work',
+    redactScheduledName: true,
+  });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, />Name unavailable<\/button>/);
+  assert.match(harness.app.innerHTML, /The name is unavailable for this legacy routine/);
+
+  harness.listeners.click?.({
+    target: actionTarget({
+      'data-action': 'select-scheduled-routine',
+      'data-routine': 'routine_release_digest',
+    }),
+  });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /id="scheduled-summary-title">Name unavailable<\/h2>/);
 });
 
 test('Scheduled Work detail separates overview, routine runs, and routine activity', async () => {
@@ -7104,7 +7211,7 @@ test('Scheduled Work detail separates overview, routine runs, and routine activi
   assert.match(harness.app.innerHTML, /Release readiness check/);
   assert.match(harness.app.innerHTML, /weekdays at 9:00 AM/);
   assert.match(harness.app.innerHTML, /Review open launch blockers and resolve anything safe to change/);
-  assert.match(harness.app.innerHTML, /View runs and activity/);
+  assert.match(harness.app.innerHTML, /View run history and activity/);
   assert.doesNotMatch(harness.app.innerHTML, /America\/Los_Angeles/);
   assert.doesNotMatch(harness.app.innerHTML, /Source Slack request/);
   assert.doesNotMatch(harness.app.innerHTML, /same authority as a live @mention/);
@@ -7132,7 +7239,7 @@ test('Scheduled Work detail separates overview, routine runs, and routine activi
   harness.listeners.click?.({
     target: actionTarget({ 'data-action': 'scheduled-detail-tab', 'data-tab': 'runs' }),
   });
-  assert.match(harness.app.innerHTML, /Runs for this routine/);
+  assert.match(harness.app.innerHTML, /Run history for this routine/);
   assert.match(harness.app.innerHTML, /flue_run_release_1/);
   assert.match(harness.app.innerHTML, /access_hash_123/);
   assert.match(harness.app.innerHTML, /1500 input \+ output tokens/);
@@ -7178,7 +7285,8 @@ test('Scheduled Work detail separates overview, routine runs, and routine activi
   });
   assert.equal(harness.locationPath(), '/admin/audit-logs/scheduled-work');
   assert.match(harness.app.innerHTML, /Routine deleted\. The saved task was irreversibly removed\./);
-  assert.match(harness.app.innerHTML, /<span class="scheduled-table-state deleted">deleted<\/span>/);
+  assert.match(harness.app.innerHTML, /No scheduled work yet/);
+  assert.doesNotMatch(harness.app.innerHTML, /<span class="scheduled-table-state deleted">deleted<\/span>/);
   assert.doesNotMatch(harness.app.innerHTML, /Review open launch blockers and resolve anything safe to change/);
 });
 
@@ -7491,6 +7599,9 @@ test('Usage shows concise spend, expanded token columns, and non-interactive act
   assert.match(html, /Set spending limits with each model provider/);
   assert.match(html, /<option value="channel" selected>Channel<\/option>/);
   assert.match(html, /Spend by channel/);
+  assert.match(html, /data-value="direct_message" data-label="Direct message">Direct message<\/button>/);
+  assert.doesNotMatch(html, /#direct_message/);
+  assert.doesNotMatch(html, />#null<\/button>/);
   assert.match(html, /Recent <span class="usage-term-help"[^>]*>activity<\/span>/);
   assert.match(html, /data-tooltip="Activity includes each Slack message Chickpea responds to and each scheduled routine run\."/);
   assert.match(html, />Input tokens<\/th><th class="number">Output tokens<\/th><th class="number">Total tokens<\/th>/);
@@ -7676,7 +7787,6 @@ test('Settings selects one OpenAI method installation-wide while both connection
         status: 'stored',
         modelCount: 2,
         activeAuthMethod: 'api_key',
-        subscriptionCapability: { enabled: true },
         subscription: {
           state: 'connected',
           updatedAt: 1_800_000_005_000,
@@ -7727,7 +7837,6 @@ test('switching the OpenAI authentication method invalidates the profile picker 
         status: 'stored',
         modelCount: 1,
         activeAuthMethod: 'api_key',
-        subscriptionCapability: { enabled: true },
         subscription: {
           state: 'connected',
           updatedAt: 1_800_000_005_000,
@@ -7871,7 +7980,6 @@ test('Settings omits the OpenAI method selector when Subscription is the only co
         status: 'missing',
         modelCount: null,
         activeAuthMethod: 'subscription',
-        subscriptionCapability: { enabled: true },
         subscription: {
           state: 'connected',
           updatedAt: 1_800_000_005_000,
@@ -7895,7 +8003,7 @@ test('Settings starts and completes Subscription authorization without rendering
   const harness = runAdminPageHarness({
     providers: [
       { id: 'anthropic', status: 'stored', modelCount: 10 },
-      { id: 'openai', status: 'stored', modelCount: 2, activeAuthMethod: 'api_key', subscriptionCapability: { enabled: true }, subscription: { state: 'disconnected', updatedAt: 0 } },
+      { id: 'openai', status: 'stored', modelCount: 2, activeAuthMethod: 'api_key', subscription: { state: 'disconnected', updatedAt: 0 } },
       { id: 'openrouter', status: 'env', modelCount: null },
       { id: 'workers-ai', status: 'missing', modelCount: null },
     ],
@@ -7943,7 +8051,7 @@ test('Settings keeps an authorizing attempt non-resumable after reload and disco
   const authorizing = runAdminPageHarness({
     providers: [
       { id: 'anthropic', status: 'stored', modelCount: 10 },
-      { id: 'openai', status: 'stored', modelCount: 2, subscriptionCapability: { enabled: true }, subscription: { state: 'authorizing', updatedAt: 1_800_000_000_000 } },
+      { id: 'openai', status: 'stored', modelCount: 2, subscription: { state: 'authorizing', updatedAt: 1_800_000_000_000 } },
       { id: 'openrouter', status: 'env', modelCount: null },
       { id: 'workers-ai', status: 'missing', modelCount: null },
     ],
@@ -7962,7 +8070,6 @@ test('Settings keeps an authorizing attempt non-resumable after reload and disco
         id: 'openai',
         status: 'stored',
         modelCount: 2,
-        subscriptionCapability: { enabled: true },
         subscription: {
           state: 'connected',
           updatedAt: 1_800_000_005_000,
@@ -7990,36 +8097,6 @@ test('Settings keeps an authorizing attempt non-resumable after reload and disco
   assert.match(connected.app.innerHTML, /Not connected/);
 });
 
-test('Settings shows the disabled preview as fail-closed while preserving stored connection controls', async () => {
-  const harness = runAdminPageHarness({
-    providers: [
-      { id: 'anthropic', status: 'missing', modelCount: null },
-      {
-        id: 'openai',
-        status: 'stored',
-        modelCount: 2,
-        subscriptionCapability: { enabled: false },
-        subscription: {
-          state: 'connected',
-          updatedAt: 1_800_000_005_000,
-          accountFingerprint: 'oas_safe_fixture',
-          connectedAt: 1_800_000_005_000,
-        },
-      },
-      { id: 'openrouter', status: 'missing', modelCount: null },
-      { id: 'workers-ai', status: 'missing', modelCount: null },
-    ],
-  });
-  await flushAsync();
-  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'open-settings' }) });
-  await flushAsync();
-
-  assert.match(harness.app.innerHTML, /Preview disabled/);
-  assert.match(harness.app.innerHTML, /ChatGPT subscription connections are disabled/);
-  assert.match(harness.app.innerHTML, /Disconnect stored connection/);
-  assert.doesNotMatch(harness.app.innerHTML, /data-action="openai-subscription-start"/);
-});
-
 test('OpenAI profiles contain only the model choice and do not carry an auth-method selector', async () => {
   const harness = runAdminPageHarness({
     assignments: [
@@ -8044,7 +8121,6 @@ test('OpenAI profiles contain only the model choice and do not carry an auth-met
         authMethods: {
           activeMethod: 'subscription',
           apiKeyConfigured: true,
-          subscriptionCapability: { enabled: true },
           subscription: {
             state: 'connected',
             updatedAt: 1_800_000_005_000,
@@ -8066,32 +8142,6 @@ test('OpenAI profiles contain only the model choice and do not carry an auth-met
   await flushAsync();
   assert.equal(harness.agentPatchBodies.length, 1);
   assert.equal(harness.agentPatchBodies[0]?.body.openaiAuthMethod, undefined);
-});
-
-test('Settings marks Subscription unavailable when the installation preview is disabled', async () => {
-  const harness = runAdminPageHarness({
-    providers: [
-      { id: 'anthropic', status: 'missing', modelCount: null },
-      {
-        id: 'openai',
-        status: 'stored',
-        modelCount: 2,
-        activeAuthMethod: 'api_key',
-        subscription: { state: 'connected', updatedAt: 1_800_000_005_000 },
-        subscriptionCapability: { enabled: false },
-      },
-      { id: 'openrouter', status: 'missing', modelCount: null },
-      { id: 'workers-ai', status: 'missing', modelCount: null },
-    ],
-  });
-  await flushAsync();
-  harness.listeners.click?.({
-    target: actionTarget({ 'data-action': 'open-settings' }),
-  });
-  await flushAsync();
-
-  assert.match(harness.app.innerHTML, /<option value="subscription" disabled>ChatGPT subscription<\/option>/);
-  assert.doesNotMatch(harness.app.innerHTML, /profile-openai-auth/);
 });
 
 test('Settings surfaces a rejected key verbatim in the raw-error block and stores nothing', async () => {

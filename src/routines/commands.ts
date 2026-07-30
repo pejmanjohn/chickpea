@@ -29,7 +29,11 @@ import {
   type RoutineCapability,
 } from './scheduler-adapter.ts';
 import { RoutineService, type RoutineSaveRequest } from './service.ts';
-import { canManageRoutineChannel, parseSlackChannelMention } from './slack-context.ts';
+import {
+  canManageRoutineChannel,
+  parseSlackChannelMention,
+  resolveRoutineSourceVisibility,
+} from './slack-context.ts';
 import {
   RoutineStateError,
   type RoutineDefinition,
@@ -171,7 +175,7 @@ export async function handleRoutineSlackRequest(
   try {
     if (intent.action === 'create' || intent.action === 'edit') {
       requireRoutineScheduling(capability);
-      return await saveRoutineIntent(intent, turn, store, now, defaultTimezone);
+      return await saveRoutineIntent(intent, turn, store, now, defaultTimezone, env);
     }
     if (isRoutineManagementIntent(intent)) {
       return await executeNaturalRoutineManagement(intent, commandContext);
@@ -317,6 +321,11 @@ async function executeRoutineCommand(
         sourceRoutineId: routine.id,
         sourceRoutineVersion: routine.version,
       },
+      sourceVisibility: await resolveRoutineSourceVisibility(
+        turn.workspaceId,
+        turn.channelId,
+        env,
+      ),
     }, `routine:slack:${turn.eventId}:clone:${routine.id}`);
     return renderRoutineSaved(created, { action: 'create' });
   }
@@ -337,6 +346,7 @@ async function saveRoutineIntent(
   store: RoutineStore,
   now: () => number,
   defaultTimezone?: string,
+  env?: PlatformEnv,
 ): Promise<string> {
   const service = new RoutineService(store, { now });
   const resolution = intent.action === 'edit'
@@ -387,6 +397,11 @@ async function saveRoutineIntent(
     nextRunAt: projection.nextRunAt,
     projectedDailyStarts: projection.projectedDailyStarts,
     reservations: projection.reservations,
+    sourceVisibility: await resolveRoutineSourceVisibility(
+      turn.workspaceId,
+      turn.channelId,
+      env,
+    ),
     provenance: {
       sourceKind: 'slack_request' as const,
       requestText: turn.text,

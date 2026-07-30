@@ -17,13 +17,18 @@
     // Workflow, and internal route guards are present. `npm run deploy` rejects
     // an enabled artifact when any required seam is missing.
     "TAG_ROUTINES_ENABLED": "0",
-    "USAGE_RUNTIME_RECORDING": "0",
-    "USAGE_ESTIMATES": "0",
-    "USAGE_ADMIN_UI": "0",
-    // Experimental direct ChatGPT Subscription adapter. Keep "0" until the
-    // live protocol, Worker, no-fallback, redaction, and rollback gates in
-    // docs/runbooks/openai-subscription.md have passed for this exact build.
-    "TAG_OPENAI_SUBSCRIPTION_ENABLED": "0"
+    // Usage is a fail-open observer of canonical Run/RunExecution records. It
+    // never controls admission or delivery, so the release artifact can keep
+    // capture, estimates, and the authenticated dashboard enabled by default.
+    "USAGE_RUNTIME_RECORDING": "1",
+    "USAGE_ESTIMATES": "1",
+    "USAGE_ADMIN_UI": "1",
+    // Immutable expiry for newly written canonical Run bodies. Existing rows
+    // keep the expiry captured when they were written.
+    "TAG_RUN_BODY_RETENTION_DAYS": "30",
+    // Exact workspace/channel pairs (`T123/C456`) for the internal interactive
+    // ledger canary. Empty keeps every future Slack admission on legacy.
+    "SLACK_TAG_LEDGER_CANARY_CHANNELS": ""
   },
   "triggers": {
     "crons": ["* * * * *"]

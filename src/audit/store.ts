@@ -55,7 +55,7 @@ export class AuditStoreLogic {
   }
 
   append(input: AppendAuditEvent): AuditEvent {
-    validateSafeMetadata(input.metadataJson ?? '{}');
+    validateSafeMetadata(input, input.metadataJson ?? '{}');
     this.db.run(
       `INSERT INTO audit_events (
         event_id, domain, event_type, outcome, actor_class, actor_id,
@@ -160,7 +160,7 @@ export class AuditStoreLogic {
   }
 }
 
-function validateSafeMetadata(raw: string): void {
+function validateSafeMetadata(input: AppendAuditEvent, raw: string): void {
   if (Buffer.byteLength(raw, 'utf8') > 4_096) {
     throw new Error('Audit metadata exceeds 4096 bytes');
   }
@@ -173,6 +173,90 @@ function validateSafeMetadata(raw: string): void {
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
     throw new Error('Audit metadata must be a JSON object');
   }
+  if (input.domain === 'work') {
+    validateWorkMetadata(input.eventType, parsed as Record<string, unknown>);
+  }
+}
+
+const SAFE_WORK_METADATA_VALUE = /^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,255}$/;
+
+function validateWorkMetadata(eventType: string, metadata: Record<string, unknown>): void {
+  const shapes: Record<string, { keys: readonly string[]; status?: string }> = {
+    'work.run_admitted': { keys: ['bindingId', 'runId', 'workId'] },
+    'work.run_claimed': { keys: ['fencingToken', 'phase', 'runId'] },
+    'work.run_lease_renewed': { keys: ['fencingToken', 'runId'] },
+    'work.run_requeued': { keys: ['fencingToken', 'runId'] },
+    'work.run_recovery_required': { keys: ['runId'] },
+    'work.run_quarantined': {
+      keys: ['adminCredentialId', 'authOrigin', 'operatorLabel', 'requestId', 'runId'],
+    },
+    'work.input_prepared': { keys: ['runId'] },
+    'work.execution_created': { keys: ['runExecutionId', 'runId'] },
+    'work.execution_route_recorded': { keys: ['runExecutionId', 'runId'] },
+    'work.execution_invoked': { keys: ['runExecutionId', 'runId'] },
+    'work.execution_settled': { keys: ['runExecutionId', 'runId'] },
+    'work.response_recorded': { keys: ['runId'] },
+    'work.delivery_started': { keys: ['deliveryAttemptId', 'runId'] },
+    'work.delivery_delivered': { keys: ['deliveryAttemptId', 'runId'] },
+    'work.delivery_failed': { keys: ['deliveryAttemptId', 'runId'] },
+    'work.delivery_unknown': { keys: ['deliveryAttemptId', 'runId'] },
+    'work.run_settled_without_delivery': { keys: ['runId'] },
+    'work.action_denied': {
+      keys: actionMetadataKeys(),
+      status: 'denied',
+    },
+    'work.action_started': {
+      keys: actionMetadataKeys(),
+      status: 'started',
+    },
+    'work.action_succeeded': {
+      keys: actionMetadataKeys(),
+      status: 'succeeded',
+    },
+    'work.action_failed': {
+      keys: actionMetadataKeys(),
+      status: 'failed',
+    },
+    'work.action_unknown': {
+      keys: actionMetadataKeys(),
+      status: 'unknown',
+    },
+  };
+  const shape = shapes[eventType];
+  if (!shape) throw new Error('Work audit event type is not allowlisted');
+  const keys = Object.keys(metadata).sort();
+  if (JSON.stringify(keys) !== JSON.stringify([...shape.keys].sort())) {
+    throw new Error('Work audit metadata shape is invalid');
+  }
+  for (const [key, value] of Object.entries(metadata)) {
+    if (typeof value !== 'string' || value.length === 0 || value.length > 256) {
+      throw new Error(`Work audit metadata ${key} is invalid`);
+    }
+    if (key === 'operatorLabel') {
+      if (value.trim() !== value || /[\u0000-\u001f\u007f]/.test(value)) {
+        throw new Error('Work audit operator label is invalid');
+      }
+      continue;
+    }
+    if (!SAFE_WORK_METADATA_VALUE.test(value)) {
+      throw new Error(`Work audit metadata ${key} is invalid`);
+    }
+  }
+  if (shape.status && metadata.status !== shape.status) {
+    throw new Error('Work action audit status does not match its event type');
+  }
+}
+
+function actionMetadataKeys(): readonly string[] {
+  return [
+    'actionAttemptId',
+    'actionClass',
+    'flueCorrelation',
+    'runExecutionId',
+    'runId',
+    'status',
+    'targetKind',
+  ];
 }
 
 function rowToAudit(row: AuditRow): AuditEvent {

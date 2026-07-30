@@ -14,12 +14,15 @@ import { createSlackAgentRuntime, resolveAgentPlatformEnv } from '../agents/slac
 import {
   canonicalRuntimeModel,
   resolveRuntimeModel,
+  safeRuntimeModelRouteEvidence,
   type ProviderAuthRoute,
+  type SafeRuntimeModelRouteEvidence,
 } from '../config/runtime-model.ts';
 import {
   getRoutineStore,
   getSettingsStore,
   getUsageStore,
+  getWorkStore,
   type PlatformEnv,
 } from '../config/state-backend.ts';
 import { resolveModelCredentialAttribution } from '../config/model-credential-refs.ts';
@@ -55,6 +58,10 @@ import {
   usageRuntimeRecordingEnabled,
 } from '../usage/runtime-recorder.ts';
 import type { UsageStore } from '../usage/types.ts';
+import { createWorkExecutionLifecycle } from '../work/executor.ts';
+import type { ShadowWorkLifecycle } from '../work/lifecycle.ts';
+import type { RunId } from '../work/types.ts';
+import { opaqueId } from '../work/admission.ts';
 
 const InputSchema = v.object({
   occurrenceId: v.pipe(v.string(), v.regex(/^rrun_[A-Za-z0-9_-]+$/)),
@@ -76,8 +83,10 @@ export interface RoutineWorkflowRuntime {
   access: RoutineRuntimeAccess;
   agentInstanceId: string;
   providerAuthRoute?: ProviderAuthRoute;
+  routeEvidence: SafeRuntimeModelRouteEvidence;
   usedCloudflareSandbox: boolean;
   usageRecorder?: RoutineUsageRecorder;
+  workLifecycle?: ShadowWorkLifecycle;
 }
 
 const runtimeByOccurrence = new Map<string, RoutineWorkflowRuntime>();
@@ -195,24 +204,32 @@ export async function initializeRoutineWorkflowRuntime(
     throw new Error('Routine Workflow admission was superseded.');
   }
 
+  const usageStore = dependencies.usageStore ?? getUsageStore(input.env);
+  const resolveCredential = dependencies.resolveCredential ?? resolveModelCredentialAttribution;
+  const modelCredential = access.config.modelCredential ?? await resolveCredential(
+    access.config.model,
+    input.env,
+    dependencies.settingsStore ?? getSettingsStore(input.env),
+    usageStore,
+  ).catch(() => null);
+  if (modelCredential && !access.config.modelCredential) {
+    access = { ...access, config: { ...access.config, modelCredential } };
+  }
+  const routeEvidence = safeRuntimeModelRouteEvidence(
+    access.config.model,
+    runtimeModel.providerAuthRoute,
+    modelCredential ?? undefined,
+  );
+
   let usageRecorder: RoutineUsageRecorder | undefined;
   const recordingEnabled = dependencies.usageRecordingEnabled ??
     usageRuntimeRecordingEnabled(input.env);
   if (recordingEnabled) {
-    const usageStore = dependencies.usageStore ?? getUsageStore(input.env);
-    const resolveCredential = dependencies.resolveCredential ?? resolveModelCredentialAttribution;
-    const modelCredential = access.config.modelCredential ?? await resolveCredential(
-      access.config.model,
-      input.env,
-      dependencies.settingsStore ?? getSettingsStore(input.env),
-      usageStore,
-    ).catch(() => null);
-    if (modelCredential && !access.config.modelCredential) {
-      access = { ...access, config: { ...access.config, modelCredential } };
-    }
+    const canonicalRunId = input.run.canonicalRunId as RunId | null | undefined;
     usageRecorder = new RoutineUsageRecorder({
       operationId: input.run.id,
       executionId: `exec:${input.run.id}:${input.flueRunId}`,
+      ...(canonicalRunId ? { runId: canonicalRunId } : {}),
       startedAt,
       workspaceId: input.routine.workspaceId,
       channelId: input.routine.channelId,
@@ -230,7 +247,7 @@ export async function initializeRoutineWorkflowRuntime(
     await usageRecorder.admit();
   }
 
-  const agentInstanceId = routineAgentInstanceId(input.flueRunId, input.routine);
+  const agentInstanceId = routineAgentInstanceId(input.flueRunId);
   let usedCloudflareSandbox = false;
   try {
     usedCloudflareSandbox = await useCloudflareSandbox(access.config, input.env);
@@ -258,6 +275,7 @@ export async function initializeRoutineWorkflowRuntime(
       ...(runtimeModel.providerAuthRoute
         ? { providerAuthRoute: runtimeModel.providerAuthRoute }
         : {}),
+      routeEvidence,
       usedCloudflareSandbox,
       ...(usageRecorder ? { usageRecorder } : {}),
       config,
@@ -284,9 +302,38 @@ export async function initializeRoutineWorkflowRuntime(
 
 export function routineAgentInstanceId(
   flueRunId: string,
-  routine: Pick<RoutineDefinition, 'workspaceId' | 'channelId'>,
 ): string {
-  return `routine:${flueRunId}:${routine.workspaceId}:${routine.channelId}`;
+  return opaqueId('routineagent', flueRunId);
+}
+
+async function createRoutineShadowLifecycle(
+  runtime: RoutineWorkflowRuntime,
+  preparedInput: string,
+): Promise<ShadowWorkLifecycle | undefined> {
+  if (!runtime.run.canonicalRunId) return undefined;
+  try {
+    const store = getWorkStore(runtime.env);
+    const lifecycle = await createWorkExecutionLifecycle(store, {
+      runId: runtime.run.canonicalRunId,
+      attemptNumber: 1,
+      executorKind: 'workflow',
+      agentName: runtime.access.config.agentId,
+      canonicalModel: runtime.access.config.model,
+      flueInstanceRef: opaqueId('flueinstance', runtime.agentInstanceId),
+      routeEvidence: runtime.routeEvidence,
+    });
+    return await lifecycle.prepareExecution(preparedInput) ? lifecycle : undefined;
+  } catch {
+    console.warn('[work] Routine shadow lifecycle initialization failed; Workflow will continue');
+    return undefined;
+  }
+}
+
+function routineLifecycleFailureCode(failureClass: RoutineFailureClass): string {
+  const normalized = failureClass.replace(/[^a-z0-9_]/g, '_');
+  return normalized.length >= 3 && normalized.length <= 63
+    ? normalized
+    : 'routine_failed';
 }
 
 export default defineWorkflow({
@@ -300,6 +347,7 @@ export default defineWorkflow({
       throw new Error('The routine Workflow was interrupted before execution could resume safely.');
     }
     let toolCallCount = 0;
+    let modelSettled = false;
     let promptUsage: PromptUsage | undefined;
     let promptModel: { provider: string; id: string } | undefined;
     const unsubscribe = observe((event) => {
@@ -314,6 +362,11 @@ export default defineWorkflow({
         runtime.access,
         runtime.env,
       );
+      const workLifecycle = await createRoutineShadowLifecycle(runtime, prepared.prompt);
+      if (workLifecycle) {
+        runtime.workLifecycle = workLifecycle;
+        runtime.usageRecorder?.linkRunExecution(workLifecycle.executionId);
+      }
       const remainingMs = runtime.run.deadlineAt - Date.now();
       if (remainingMs <= 0) {
         throw new RoutineRuntimeError(
@@ -322,12 +375,19 @@ export default defineWorkflow({
         );
       }
       const session = await harness.session();
+      await runtime.workLifecycle?.markInvoked();
       const response = await session.prompt(prepared.prompt, {
         result: RoutineModelResultSchema,
         signal: AbortSignal.timeout(remainingMs),
       });
       promptUsage = response.usage;
       promptModel = response.model;
+      await runtime.workLifecycle?.settleExecution({
+        outcome: 'succeeded',
+        rawStatus: 'flue_succeeded',
+        flueSubmissionRef: opaqueId('fluesubmission', runtime.flueRunId),
+      });
+      modelSettled = true;
       if (!(await prepared.validateMemoryLease())) {
         throw new RoutineRuntimeError(
           toolCallCount > 0 ? 'unknown_external_outcome' : 'access_denied',
@@ -349,8 +409,13 @@ export default defineWorkflow({
           access: runtime.access,
           message: result.message,
           changeKeyHash: result.changeKeyHash,
+          ...(runtime.workLifecycle ? { workLifecycle: runtime.workLifecycle } : {}),
         });
         delivered = true;
+      } else {
+        await runtime.workLifecycle?.settleWithoutDelivery({
+          terminalDisposition: 'no_op',
+        });
       }
       await runtime.usageRecorder?.recordTerminal({
         status: 'completed',
@@ -390,6 +455,14 @@ export default defineWorkflow({
       };
     } catch (error) {
       const failure = runtimeFailure(error, toolCallCount > 0);
+      if (!modelSettled) {
+        await runtime.workLifecycle?.settleExecution({
+          outcome: toolCallCount > 0 ? 'ambiguous' : 'failed',
+          rawStatus: toolCallCount > 0 ? 'flue_ambiguous' : 'flue_failed',
+          safeFailureCode: routineLifecycleFailureCode(failure.failureClass),
+          flueSubmissionRef: opaqueId('fluesubmission', runtime.flueRunId),
+        });
+      }
       const completeness = routineUsageCompleteness(promptUsage);
       await runtime.usageRecorder?.recordTerminal({
         status: failure.failureClass === 'workflow_interrupted' ? 'interrupted' : 'failed',
@@ -445,6 +518,7 @@ export async function failInterruptedRoutineWorkflow(
     ? new RoutineUsageRecorder({
         operationId: run.id,
         executionId: `exec:${run.id}:${run.flueRunId ?? 'interrupted'}`,
+        ...(run.canonicalRunId ? { runId: run.canonicalRunId } : {}),
         startedAt: run.startedAt ?? run.admittedAt ?? run.queuedAt,
         workspaceId: routine.workspaceId,
         channelId: routine.channelId,
@@ -481,7 +555,7 @@ export async function failInterruptedRoutineWorkflow(
     if (routine && run.flueRunId) {
       await releaseSandbox(
         env,
-        routineAgentInstanceId(run.flueRunId, routine),
+        routineAgentInstanceId(run.flueRunId),
         true,
       );
     }
@@ -520,6 +594,7 @@ async function deliverFailureNoticeBestEffort(
       routine,
       access: runtime.access,
       publicError,
+      ...(runtime.workLifecycle ? { workLifecycle: runtime.workLifecycle } : {}),
     });
   } catch {
     // Terminal notices are one best-effort attempt. The run remains visible in
@@ -566,12 +641,6 @@ function runtimeFailure(
     return { failureClass: error.failureClass, publicError: error.publicError };
   }
   if (error instanceof OpenAiSubscriptionError) {
-    if (error.code === 'preview_disabled') {
-      return {
-        failureClass: 'policy_denied',
-        publicError: 'The ChatGPT Subscription preview is disabled for this installation. API-key billing was not used.',
-      };
-    }
     if (
       error.code === 'auth_reconnect_required' ||
       error.code === 'authorization_missing' ||

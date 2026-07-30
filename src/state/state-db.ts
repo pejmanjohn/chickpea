@@ -31,3 +31,20 @@ export interface StateDb {
    */
   transaction<T>(fn: () => T): T;
 }
+
+export interface StateDbIntegrity {
+  foreignKeysEnabled: boolean;
+  foreignKeyViolationCount: number;
+}
+
+/**
+ * Cross-target relational integrity probe. Node and Durable Object SQLite both
+ * support these PRAGMAs; canonical stores call this on construction and release
+ * verification calls it again after migration/fixture writes.
+ */
+export function inspectStateDbIntegrity(db: StateDb): StateDbIntegrity {
+  return {
+    foreignKeysEnabled: Number(db.get('PRAGMA foreign_keys')?.foreign_keys) === 1,
+    foreignKeyViolationCount: db.all('PRAGMA foreign_key_check').length,
+  };
+}

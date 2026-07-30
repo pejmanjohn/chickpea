@@ -88,3 +88,25 @@ test('short thread (single page) is returned intact', async () => {
   assert.ok(texts.includes('msg 2'));
   assert.equal(client.calls(), 1);
 });
+
+test('thread hydration rejects messages newer than the admitted trigger watermark', async () => {
+  const client = fakeClientWithReplyPages([
+    {
+      messages: [
+        humanMsg(1, '1999.999999'),
+        humanMsg(2, '2000.000000'),
+        humanMsg(3, '2000.000001'),
+        humanMsg(4, '2001.000000'),
+      ],
+    },
+  ]);
+  const context = await hydrateSlackContextViaWebClient(
+    client as never,
+    threadTurn({ messageTs: '2000.000000' }),
+  );
+  const texts = context.messages.map((message) => message.text);
+  assert.ok(texts.includes('msg 1'));
+  assert.ok(texts.includes('msg 2'));
+  assert.ok(!texts.includes('msg 3'));
+  assert.ok(!texts.includes('msg 4'));
+});

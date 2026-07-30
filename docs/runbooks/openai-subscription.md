@@ -1,35 +1,25 @@
-# OpenAI Subscription Preview
+# OpenAI Subscription
 
 Chickpea's OpenAI Subscription method is a direct, experimental integration with OpenAI's published Codex native-client authorization flow and the private ChatGPT Codex Responses transport. It uses ordinary HTTP and Web Crypto on Node and Cloudflare Workers. It does not install, launch, proxy through, or call Codex app-server.
 
 When Subscription is selected, the model picker starts with Chickpea's seven-model bundled compatibility catalog: `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, and `gpt-5.3-codex-spark`. All seven passed live subscription inference on 2026-07-29. A validated hosted snapshot may add a reviewed model only by mapping it to the already-compiled subscription contract; Chickpea never queries or caches an account-specific private model endpoint. The hosted data cannot change transport behavior or the selected billing lane. See [Model Catalog Operations](model-catalog.md).
 
-This is not a stable OpenAI Platform API contract. Public implementations show current technical precedent, not an SLA or irrevocable permission for Chickpea. Keep the preview default-off until every live acceptance gate below passes for the exact build and account posture.
+This is not a stable OpenAI Platform API contract. Public implementations show current technical precedent, not an SLA or irrevocable permission for Chickpea. Treat every live acceptance gate below as release evidence for the exact build and account posture.
 
 ## Product and security boundary
 
 - One installation stores one personal ChatGPT account connection. When Subscription is selected, any workspace member allowed to invoke an OpenAI-backed profile consumes that shared account's quota.
 - API-key and Subscription credentials may coexist. With one connected credential Chickpea selects it automatically; connecting the second makes that method active and reveals the Settings selector. Every `openai/*` operation resolves the saved method again immediately before Agent construction.
-- A Subscription-selected call never consults or falls back to `OPENAI_API_KEY`, including on revocation, quota exhaustion, entitlement rejection, timeout, 5xx, protocol drift, or preview disablement.
+- A Subscription-selected call never consults or falls back to `OPENAI_API_KEY`, including on revocation, quota exhaustion, entitlement rejection, timeout, 5xx, or protocol drift.
 - Subscription-routed content follows the connected account's consumer ChatGPT data controls and retention/training policy, not the Platform API policy lane.
 - Tokens, device authorization ids, verifiers, raw account ids, and attempt capabilities may exist only in the SettingsStore credential boundary or the exact outbound authorization/request boundary. They must not enter profiles, snapshots, prompts, tools, Slack, routines, audit facts, exports, URLs, cookies, HTML, or logs.
 - The Settings UI exposes only a keyed account fingerprint and safe state/error categories. It cannot prove remote revocation.
 
-Stop the preview if OpenAI objects, rejects `originator: chickpea`, rejects use of the published native client id/account posture, restricts the account for this use, or requires impersonation, concealment, or restriction bypass. Do not change the originator to `codex`, `opencode`, or another accepted client.
+Stop offering the connection if OpenAI objects, rejects `originator: chickpea`, rejects use of the published native client id/account posture, restricts the account for this use, or requires impersonation, concealment, or restriction bypass. Do not change the originator to `codex`, `opencode`, or another accepted client.
 
-## Default-off switch
+## Availability
 
-`TAG_OPENAI_SUBSCRIPTION_ENABLED` is evaluated at authorization and inference admission. Exact string `"1"` is enabled; missing, `"0"`, `"true"`, malformed, and every other value are disabled.
-
-Node:
-
-```sh
-TAG_OPENAI_SUBSCRIPTION_ENABLED=1 npm run flue:build
-```
-
-Cloudflare: keep the committed `wrangler.jsonc` value at `"0"` through build and smoke verification. Enable an explicitly reviewed deployment with the corresponding Worker variable only after the gates below pass. Confirm the resulting binding is exactly `"1"`; do not infer it from the Settings page alone.
-
-Disabling the switch immediately blocks new authorization, account-change confirmation, polling, and every newly constructed subscription operation. It does not delete stored credentials or rewrite the selected installation method. Status, cancellation, and disconnect remain available. If Subscription is selected, all OpenAI calls fail closed; Chickpea never falls back to the API key. Re-enabling resumes a still-valid connected credential or surfaces reconnect-required.
+ChatGPT subscription is a normal installation-wide OpenAI connection method on Node and Cloudflare. It has no preview or deployment flag. The Settings connection state and the installation's explicit OpenAI billing-method selection are the product controls. A disconnected or unhealthy Subscription-selected installation fails closed and never falls back to the API key.
 
 ## Offline prerequisites
 
@@ -64,7 +54,7 @@ If this gate rejects the client id or originator, stop. Do not enable the produc
 
 ## Target authorization checks
 
-After starting the exact candidate build with the flag enabled, run one authorization check per target:
+After starting the exact candidate build, run one authorization check per target:
 
 ```sh
 TAG_ADMIN_TOKEN='<local-admin-token>' \
@@ -85,7 +75,6 @@ fails unless the request succeeds at `chatgpt.com` with no `api.openai.com`
 traffic:
 
 ```sh
-TAG_OPENAI_SUBSCRIPTION_ENABLED=1 \
 npm run verify:openai-subscription-runtime:live -- \
   --live --state-db ./tmp/openai-subscription-live.state.db
 ```
@@ -95,7 +84,6 @@ to exercise a specific model. Add `--catalog-file <path>` to exercise a reviewed
 hosted snapshot before publishing it. The canonical equivalent is:
 
 ```sh
-TAG_OPENAI_SUBSCRIPTION_ENABLED=1 \
 npm run verify:model-compatibility:live -- \
   --live --lane subscription --model gpt-5.3-codex-spark \
   --state-db ./tmp/openai-subscription-live.state.db
@@ -115,7 +103,6 @@ Platform API key, and permits external traffic only to the ChatGPT subscription
 authorization/request hosts:
 
 ```sh
-TAG_OPENAI_SUBSCRIPTION_ENABLED=1 \
 npm run verify:openai-subscription-slack:live -- \
   --live --source-state-db ./tmp/openai-subscription-live.state.db
 ```
@@ -136,21 +123,20 @@ Record only target, build commit, timestamp, safe account fingerprint, account c
 6. Exercise a tool call, structured output, retry/compaction path, streaming cancellation, and concurrent API-key/Subscription operations.
 7. Force or fixture refresh rotation, expired/revoked refresh, 429/quota, entitlement rejection, timeout/5xx, malformed response/SSE, unsupported model, redirect, and originator/client rejection.
 8. For every Subscription success and failure, capture the outbound destination. There must be no request to `api.openai.com` and no API-key provider registration/use.
-9. Disable the flag while Subscription is selected and both credentials remain connected. A new OpenAI turn and routine must fail with `preview_disabled`; no API-key fallback may occur. Re-enable and confirm the stored connection either resumes or asks for reconnect.
+9. Force revocation, quota exhaustion, entitlement rejection, and provider failure while Subscription is selected and both credentials remain connected. Every new OpenAI turn and routine must fail closed; no API-key fallback may occur.
 10. Scan state projections, HTML/JSON, Slack replies, routine records, audits, logs, prompts, tool payloads, and exports using token-shaped fixtures. Secrets may appear only in credential storage and the exact outbound boundary.
 
-Do not call the preview ready based on Settings connection state, local protocol success, or one model response. Node, deployed Worker, fresh Slack, routine, no-fallback, redaction, refresh, and kill-switch evidence are independent gates.
+Do not call the feature release-ready based on Settings connection state, local protocol success, or one model response. Node, deployed Worker, fresh Slack, routine, no-fallback, redaction, and refresh evidence are independent gates.
 
 ## Expected failure states
 
 | State/code | Operator action | Billing behavior |
 | --- | --- | --- |
-| `preview_disabled` | Review this runbook; deliberately enable only after gates pass. | Subscription is blocked; no API fallback. |
 | `auth_reconnect_required`, `authorization_missing`, `storage_invalid` | Reconnect in Settings. If unexpected, revoke remotely first. | No API fallback. |
 | `subscription_quota_exhausted` | Wait for quota recovery or explicitly change the installation method in Settings. | No automatic method change. |
 | `entitlement_denied` | Choose an entitled allowlisted model or explicitly use API key. | No automatic method change. |
-| `client_rejected`, `originator_rejected` | Disable the preview and investigate. Do not impersonate. | No API fallback. |
-| `protocol_drift`, `invalid_response` | Disable the preview, compare current primary sources, update fixtures, and rerun all gates. | No API fallback. |
+| `client_rejected`, `originator_rejected` | Stop offering the connection and investigate. Do not impersonate. | No API fallback. |
+| `protocol_drift`, `invalid_response` | Stop offering the connection, compare current primary sources, update fixtures, and rerun all gates. | No API fallback. |
 | `provider_unavailable`, `request_timeout` | Retry later without changing billing authority. | No API fallback. |
 
 Monitor safe counts of route facts and categorized failures. Never add raw provider bodies or token/account fields to observability to improve debugging.
@@ -161,25 +147,23 @@ Disconnect in Settings deletes Chickpea's pending authorization, token bundle, r
 
 Local deletion does not prove every provider session was revoked. OpenAI exposes no supported revocation endpoint for this exact direct flow in the pinned sources. For intentional offboarding or suspected compromise:
 
-1. Disable `TAG_OPENAI_SUBSCRIPTION_ENABLED`.
+1. Disconnect locally in Settings. For a fleet-wide incident, deploy an authorization block or remove the adapter before proceeding.
 2. Use OpenAI account controls to sign out/revoke sessions and, when warranted, rotate the account password and review account activity.
-3. Disconnect locally in Settings.
-4. Inspect only safe route/failure audit facts for the affected interval; do not retrieve or log token material.
-5. Reconnect only after the account is considered safe and the product gates still pass.
+3. Inspect only safe route/failure audit facts for the affected interval; do not retrieve or log token material.
+4. Reconnect only after the account is considered safe and the product gates still pass.
 
 ## Rollback and removal
 
-Operational rollback is one variable change: set the flag to `"0"` and deploy/restart. Verify a new Subscription Slack turn and routine fail closed, an API-key turn succeeds, no `api.openai.com` request was triggered by the Subscription attempt, and status/disconnect still work.
+Rollback requires a code deploy that blocks new authorization and inference while preserving status and disconnect, or full adapter removal. Verify a new Subscription Slack turn and routine fail closed, an API-key turn succeeds, no `api.openai.com` request was triggered by the Subscription attempt, and status/disconnect still work.
 
-Code removal is intentionally localized:
+Full code removal is intentionally localized:
 
-1. Keep the flag disabled.
-2. Remove `src/openai-subscription/`, its tests/fixtures, and both subscription verification scripts.
-3. Remove the internal provider registration and exact fetch boundary from `src/app.ts` and `src/config/providers.ts`.
-4. Remove Subscription routing from `src/config/runtime-model.ts`, the Settings routes and UI, and safe subscription failure presentation.
-5. Remove the installation method route and setting only through an explicit migration; never silently rewrite `subscription` to `api_key` while removing the adapter.
-6. Remove the Worker/Node flag and this runbook only after the last connection has been intentionally disconnected or the credential keys have been explicitly scrubbed.
-7. Run the full static, API-key provider, Node build, Worker build/smoke, Slack, routine, export/redaction, and deploy-artifact checks.
+1. Remove `src/openai-subscription/`, its tests/fixtures, and both subscription verification scripts.
+2. Remove the internal provider registration and exact fetch boundary from `src/app.ts` and `src/config/providers.ts`.
+3. Remove Subscription routing from `src/config/runtime-model.ts`, the Settings routes and UI, and safe subscription failure presentation.
+4. Remove the installation method route and setting only through an explicit migration; never silently rewrite `subscription` to `api_key` while removing the adapter.
+5. Remove this runbook only after the last connection has been intentionally disconnected or the credential keys have been explicitly scrubbed.
+6. Run the full static, API-key provider, Node build, Worker build/smoke, Slack, routine, export/redaction, and deploy-artifact checks.
 
 Do not introduce Codex app-server as a rollback or compatibility workaround. That would be a separate architecture decision.
 

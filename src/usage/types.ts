@@ -53,6 +53,8 @@ export interface AdmitUsageOperationInput {
   operationId: string;
   operationKind: UsageOperationKind;
   sourceId: string;
+  /** Canonical Run correlation; absent on historical/legacy observations. */
+  runId?: string | null;
   startedAt: number;
   installationId: string;
   workspaceId: string | null;
@@ -74,6 +76,7 @@ export interface UsageOperation {
   operationId: string;
   operationKind: UsageOperationKind;
   sourceId: string;
+  runId?: string | null;
   status: UsageOperationStatus;
   startedAt: number;
   finishedAt: number | null;
@@ -100,6 +103,8 @@ export interface UsageOperation {
 export interface RecordUsageTerminalInput {
   operationId: string;
   executionId: string;
+  /** Canonical RunExecution correlation; absent on historical observations. */
+  runExecutionId?: string | null;
   status: UsageTerminalStatus;
   finishedAt: number;
   observedAt: number;
@@ -259,6 +264,7 @@ export type UsageRpcRequest =
   | { kind: 'admit_operation'; input: AdmitUsageOperationInput }
   | { kind: 'record_terminal'; input: RecordUsageTerminalInput }
   | { kind: 'get_operation'; operationId: string }
+  | { kind: 'get_operation_by_run'; runId: string }
   | { kind: 'list_operations'; query: UsageQuery }
   | { kind: 'summarize'; query: UsageQuery }
   | { kind: 'put_credential'; input: PutModelCredentialInput }
@@ -283,6 +289,7 @@ export interface UsageStore {
   admitOperation(input: AdmitUsageOperationInput): Promise<UsageOperation>;
   recordTerminal(input: RecordUsageTerminalInput): Promise<UsageOperationDetail>;
   getOperation(operationId: string): Promise<UsageOperationDetail | undefined>;
+  getOperationByRunId(runId: string): Promise<UsageOperationDetail | undefined>;
   listOperations(query: UsageQuery): Promise<UsageOperationPage>;
   summarize(query: UsageQuery): Promise<UsageSummary>;
   putCredential(input: PutModelCredentialInput): Promise<ModelCredentialRecord>;

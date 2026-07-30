@@ -16,12 +16,21 @@ import { resolveStores, type AppStores, type PlatformEnv } from '../config/state
 import { tagStateStub, type TurnJob } from '../config/state-rpc.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
 import { resolveSlackBehaviorSettings } from '../slack/behavior-settings.ts';
+import { parseMemoryCommand } from '../memory/commands.ts';
+import { parseRoutineCommand } from '../routines/commands.ts';
+import { isRoutineSlackTurn } from '../routines/slack-context.ts';
 import type { SlackClaimStore } from '../slack/claim-store.ts';
 import {
   resolveSlackCredentials,
   resolveSlackPublicUrl,
   slackAuthTest,
 } from '../slack/credentials.ts';
+import {
+  prepareSlackShadowAdmission,
+  resolveSlackAdmissionTruth,
+  slackAdmissionTruthReader,
+  type SlackAdmissionTruth,
+} from '../slack/work-admission.ts';
 import {
   renderChannelOnboarding,
   renderUnassignedChannelHint,
@@ -33,6 +42,9 @@ import {
 } from '../slack/run-turn.ts';
 import { slackThreadKey } from '../slack/thread-key.ts';
 import { normalizeSlackTurn } from '../slack/turn-normalization.ts';
+import { wakeNodeTurnRelay } from '../slack/node-turn-relay.ts';
+import { selectSlackExecutionAuthority } from '../work/authority.ts';
+import { EGRESS_SETTING_KEY, parseEgressPolicy } from '../config/egress.ts';
 import {
   isSlackMemberJoinedChannelEvent,
   type NormalizedSlackTurn,
@@ -268,15 +280,10 @@ const handleSlackEvents: NonNullable<SlackChannelOptions['events']> = async ({ c
   //    app_mention + message fan-out for a single mention replies once.
   const evtKey = `evt:${payload.event_id}`;
   const msgKey = `msg:${turn.channelId}:${turn.messageTs}`;
-  if (!(await state.claim(evtKey))) return;
-  if (!(await state.claim(msgKey))) {
-    await state.release(evtKey);
-    return;
-  }
 
-  // e. Resolve the config for this turn — inside a try so any failure releases
-  //    the claims (a Slack retry can then re-drive the turn) rather than
-  //    leaking them and dropping the message.
+  // e. Resolve the config for this turn before canonical admission acquires
+  //    the claims. A failure here must not release keys owned by a concurrent
+  //    sibling event or Slack retry.
   //    - CHANNELS freeze at the first turn: the gate resolves the effective
   //      config ONCE and writes the write-once snapshot, so the presenter and
   //      the durable agent both serve that same row (no first-turn attribution
@@ -317,7 +324,7 @@ const handleSlackEvents: NonNullable<SlackChannelOptions['events']> = async ({ c
     // assignment so the turn still delivers the sanitized provider-failure
     // final (no snapshot is written — a misconfigured-model thread has no
     // usable config to freeze). Everything else (unassigned/disabled channel,
-    // disabled DM default) is fail-closed: release the claims and stay silent.
+    // disabled DM default) is fail-closed and stays silent.
     const store = stores.config;
     if (err instanceof ModelResolutionError) {
       assignment = await resolveAssignment(
@@ -327,8 +334,6 @@ const handleSlackEvents: NonNullable<SlackChannelOptions['events']> = async ({ c
         { surface },
       );
     } else {
-      await state.release(evtKey);
-      await state.release(msgKey);
       console.error('[chickpea] no assignment for turn:', sanitizeError(err));
       // Fail-closed with feedback: the channel stays silent, but the person
       // who explicitly mentioned the bot gets an ephemeral pointer at /admin.
@@ -369,6 +374,101 @@ const handleSlackEvents: NonNullable<SlackChannelOptions['events']> = async ({ c
     }
   }
 
+  // Resolve actor/source truth only after assignment succeeds. This keeps an
+  // unassigned channel's established zero-Slack-API behavior intact while
+  // still authorizing before any canonical content or Run is written.
+  const { botToken } = await resolveSlackCredentials(platformEnv, stores.settings);
+  let admissionTruth: SlackAdmissionTruth = {
+    eligible: false,
+    reason: 'slack_truth_unavailable',
+  };
+  if (botToken && resolvedBotUserId) {
+    try {
+      admissionTruth = await resolveSlackAdmissionTruth(
+        turn,
+        resolvedBotUserId,
+        slackAdmissionTruthReader(botToken),
+      );
+    } catch {
+      // Shadow truth is observational in U3. A transient resolver failure must
+      // not change the established Slack execution path before authority cutover.
+    }
+  }
+
+  let claimsHeldByCanonicalAdmission = false;
+  let canonicalRunId: string | undefined;
+  let canonicalTurnJob: TurnJob | undefined;
+  if (admissionTruth.eligible) {
+    let egressPolicy;
+    try {
+      egressPolicy = parseEgressPolicy(
+        await stores.settings.getSetting(EGRESS_SETTING_KEY),
+      );
+    } catch {
+      // Canary eligibility is fail-closed. A settings read failure still uses
+      // the established legacy lane and must not change Slack availability.
+    }
+    const selectedExecution = selectSlackExecutionAuthority({
+      workspaceId: turn.workspaceId,
+      channelId: turn.channelId,
+      assignment,
+      ...(egressPolicy ? { egressPolicy } : {}),
+      legacyOnlyTurn:
+        Boolean(parseMemoryCommand(turn.text)) ||
+        (isRoutineSlackTurn(turn) && Boolean(parseRoutineCommand(turn.text))),
+      ...(platformEnv ? { env: platformEnv } : {}),
+    });
+    const admission = prepareSlackShadowAdmission({
+      turn,
+      assignment,
+      sourceVisibility: admissionTruth.sourceVisibility,
+      admittedAt: Date.now(),
+      executionAuthority: selectedExecution.authority,
+    });
+    canonicalTurnJob = {
+      id: msgKey,
+      evtKey,
+      msgKey,
+      turn,
+      assignment,
+      runId: admission.run.id,
+      executionAuthority: admission.run.executionAuthority,
+    };
+    try {
+      const result = await state.admitCanonical({
+        evtKey,
+        msgKey,
+        threadKey,
+        admission,
+        turnJob: canonicalTurnJob,
+      });
+      if (!result.claimed) return;
+      claimsHeldByCanonicalAdmission = true;
+      canonicalRunId = result.admission.run.id;
+    } catch (err) {
+      if (admission.run.executionAuthority === 'ledger') {
+        // A selected canary must never fall back across authority lanes. The
+        // transaction rolled its claims back, so Slack may safely redeliver.
+        console.error('[chickpea] ledger Work admission failed:', sanitizeError(err));
+        return;
+      }
+      // U3 is deliberately observational. Preserve the existing product path
+      // while surfacing a body-free operator gap for follow-up.
+      console.error('[chickpea] shadow Work admission failed:', sanitizeError(err));
+      if (!(await state.claim(evtKey))) return;
+      if (!(await state.claim(msgKey))) {
+        await state.release(evtKey);
+        return;
+      }
+    }
+  } else {
+    if (!(await state.claim(evtKey))) return;
+    if (!(await state.claim(msgKey))) {
+      await state.release(evtKey);
+      return;
+    }
+  }
+
   // f. The old HTTP self-call — and the Host-derived origin trust it forced,
   //    since Slack signatures don't cover Host — is gone: the agent prompt
   //    now dispatches in-process (see slack/agent-dispatch.ts) with the
@@ -381,7 +481,7 @@ const handleSlackEvents: NonNullable<SlackChannelOptions['events']> = async ({ c
   //    arrive while the root turn is still in flight, matching the old lane's
   //    session-created-before-provider-call semantics. A failed turn leaves
   //    the thread registered (only the claims are released, for retry).
-  await state.start(threadKey);
+  if (!claimsHeldByCanonicalAdmission) await state.start(threadKey);
 
   // h. Run the turn past the fast events ack.
   //    - NODE runs it inline as a floating promise: node has no waitUntil
@@ -397,7 +497,8 @@ const handleSlackEvents: NonNullable<SlackChannelOptions['events']> = async ({ c
   if (isCloudflareTarget()) {
     // id = msgKey: the message claim key already dedupes the app_mention +
     // message fan-out, so keying the job by it makes the enqueue idempotent.
-    const job: TurnJob = { id: msgKey, evtKey, msgKey, turn, assignment };
+    const job: TurnJob =
+      canonicalTurnJob ?? { id: msgKey, evtKey, msgKey, turn, assignment, ...(canonicalRunId ? { runId: canonicalRunId } : {}) };
     const enqueued = await tagStateStub(platformEnv).enqueueTurn(job);
     if (!enqueued.ok) {
       // Enqueue failed before anything ran: free the claims so a Slack
@@ -406,6 +507,15 @@ const handleSlackEvents: NonNullable<SlackChannelOptions['events']> = async ({ c
       await state.release(msgKey);
       console.error('[chickpea] enqueue turn failed:', enqueued.error.message);
     }
+    return;
+  }
+  if (canonicalRunId && canonicalTurnJob) {
+    detach(
+      c,
+      wakeNodeTurnRelay(platformEnv).catch((err) => {
+        console.error('[chickpea] node turn wake failed:', sanitizeError(err));
+      }),
+    );
     return;
   }
   detach(

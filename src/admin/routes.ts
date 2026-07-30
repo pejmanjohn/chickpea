@@ -9,6 +9,7 @@ import { renderAdminLogin, renderAdminPage } from './page.ts';
 import { createMemoryAdminApi } from './memory-api.ts';
 import { createRoutineAdminApi } from './routines-api.ts';
 import { createUsageAdminApi } from './usage-api.ts';
+import { createWorkAdminApi } from './work-api.ts';
 // Build-time JSON import: the committed manifest is the single source of the
 // Slack app identity; the wizard deep-link below substitutes the request host
 // so users never hand-edit a request_url.
@@ -148,6 +149,7 @@ import {
   getRoutineStore,
   getSettingsStore,
   getUsageStore,
+  getWorkStore,
   isCloudflareTarget,
   type PlatformEnv,
 } from '../config/state-backend.ts';
@@ -155,6 +157,7 @@ import type { ConfigStore } from '../config/store.ts';
 import type { MemoryStateStore } from '../memory/types.ts';
 import type { RoutineStore } from '../routines/types.ts';
 import type { UsageStore } from '../usage/types.ts';
+import type { WorkStore } from '../work/types.ts';
 import {
   cancelOpenAiSubscriptionAuthorization,
   confirmOpenAiSubscriptionAccountChange,
@@ -166,11 +169,6 @@ import {
 } from '../openai-subscription/device-auth.ts';
 import { disconnectOpenAiSubscription } from '../openai-subscription/credentials.ts';
 import { OpenAiSubscriptionError } from '../openai-subscription/errors.ts';
-import {
-  openAiSubscriptionCapability,
-  requireOpenAiSubscriptionEnabled,
-  type OpenAiSubscriptionCapability,
-} from '../openai-subscription/feature.ts';
 import {
   MODEL_CATALOG_SETTING_KEYS,
   activateBundledModelCatalog,
@@ -225,6 +223,7 @@ interface AdminRoutesOptions {
   memory?: MemoryStateStore | undefined;
   routines?: RoutineStore | undefined;
   usage?: UsageStore | undefined;
+  work?: WorkStore | undefined;
   usageAdminUi?: boolean | undefined;
   adminToken?: string | undefined;
   knownProviders?: ReadonlySet<string> | undefined;
@@ -270,7 +269,6 @@ interface AdminRoutesOptions {
   openAiSubscriptionProtocol?: OpenAiSubscriptionAuthorizationProtocol | undefined;
   openAiSubscriptionNow?: (() => number) | undefined;
   openAiSubscriptionRandomBytes?: ((length: number) => Uint8Array) | undefined;
-  openAiSubscriptionCapability?: ((env?: PlatformEnv) => OpenAiSubscriptionCapability) | undefined;
   // Catalog refresh stays deterministic in route tests without weakening the
   // immutable production origin: tests inject the transport/clock, never a URL.
   modelCatalogRefresh?: ((
@@ -291,7 +289,7 @@ const modelSpecifier = v.pipe(v.string(), v.regex(/^[^/]+\/.+$/));
 const AGENT_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,127}$/;
 const MCP_CONNECTION_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const agentIdSchema = v.pipe(v.string(), v.regex(AGENT_ID_PATTERN));
-const openAiSubscriptionCapabilitySchema = v.object({
+const openAiSubscriptionAttemptSchema = v.object({
   attemptCapability: v.pipe(v.string(), v.minLength(32), v.maxLength(512)),
 });
 const openAiSubscriptionStartSchema = v.object({});
@@ -750,6 +748,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     options.routines ?? getRoutineStore(c.env as PlatformEnv | undefined);
   const usage = (c: Context) =>
     options.usage ?? getUsageStore(c.env as PlatformEnv | undefined);
+  const work = (c: Context) =>
+    options.work ?? getWorkStore(c.env as PlatformEnv | undefined);
   const usageAdminUi = (c: Context): boolean => {
     if (options.usageAdminUi !== undefined) return options.usageAdminUi;
     const platformValue = (c.env as PlatformEnv | undefined)?.USAGE_ADMIN_UI;
@@ -815,19 +815,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       ? { randomBytes: options.openAiSubscriptionRandomBytes }
       : {}),
   });
-  const subscriptionCapability = (c: Context): OpenAiSubscriptionCapability =>
-    (options.openAiSubscriptionCapability ?? openAiSubscriptionCapability)(
-      c.env as PlatformEnv | undefined,
-    );
-  const requireSubscriptionEnabled = (c: Context): void => {
-    if (options.openAiSubscriptionCapability) {
-      if (!subscriptionCapability(c).enabled) {
-        throw new OpenAiSubscriptionError('preview_disabled');
-      }
-      return;
-    }
-    requireOpenAiSubscriptionEnabled(c.env as PlatformEnv | undefined);
-  };
   const refreshCatalog = async (
     c: Context,
     force: boolean,
@@ -1257,14 +1244,22 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
   });
 
-  app.get('/admin', (c) => c.html(renderAdminPage({ usageAdminUi: usageAdminUi(c) })));
+  const adminPage = (c: Context): Response => {
+    // The shell contains the full inline application. Never let a browser keep
+    // an older deployment's JavaScript after the Worker has been updated.
+    c.header('Cache-Control', 'no-store');
+    return c.html(renderAdminPage({ usageAdminUi: usageAdminUi(c) }));
+  };
+
+  app.get('/admin', adminPage);
 
   app.route('/admin/api', createMemoryAdminApi({
     store: memory,
     adminSecret: () => adminToken() ?? '',
   }));
-  app.route('/admin/api', createRoutineAdminApi({ store: routines, usage }));
-  app.route('/admin/api', createUsageAdminApi({ store: usage }));
+  app.route('/admin/api', createRoutineAdminApi({ store: routines, usage, work }));
+  app.route('/admin/api', createUsageAdminApi({ store: usage, work }));
+  app.route('/admin/api', createWorkAdminApi({ store: work, usage }));
 
   app.get('/admin/api/agents', async (c) => {
     const platformEnv = c.env as PlatformEnv | undefined;
@@ -1320,7 +1315,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       getOpenAiSubscriptionAuthorizationStatus(settingsStore),
       resolveOpenAiAuthMethod(settingsStore),
     ]);
-    const capability = subscriptionCapability(c);
     const subscriptionModels = activeCatalogModels('openai_subscription');
     const openAiApiModels = activeCatalogModels('openai_api_key');
     const anthropicApiModels = activeCatalogModels('anthropic_api_key');
@@ -1336,7 +1330,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           return {
             ...provider,
             configured: subscriptionActive
-              ? capability.enabled && subscriptionConfigured
+              ? subscriptionConfigured
               : provider.configured,
             source: subscriptionActive ? 'ChatGPT subscription' : provider.source,
             suggestions: subscriptionActive
@@ -1349,7 +1343,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
               activeMethod: activeAuthMethod,
               apiKeyConfigured: provider.configured,
               subscription,
-              subscriptionCapability: capability,
             },
           };
         }
@@ -1386,13 +1379,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       getOpenAiSubscriptionAuthorizationStatus(settingsStore),
       resolveOpenAiAuthMethod(settingsStore),
     ]);
-    const capability = subscriptionCapability(c);
     return c.json({
       providers: [
         ...PROVIDER_KEY_IDS.map((id) => ({
           ...providerSummary(id, sources[id]),
           ...(id === 'openai'
-            ? { activeAuthMethod, subscription, subscriptionCapability: capability }
+            ? { activeAuthMethod, subscription }
             : {}),
         })),
         providerSummary('workers-ai', workersAiStatus(platformEnv)),
@@ -1403,7 +1395,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   app.get('/admin/api/providers/openai/subscription', async (c) =>
     c.json({
       status: await getOpenAiSubscriptionAuthorizationStatus(settings(c)),
-      capability: subscriptionCapability(c),
     }));
 
   app.put('/admin/api/providers/openai/auth-method', async (c) => {
@@ -1424,12 +1415,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         }, 409);
       }
     } else {
-      if (!subscriptionCapability(c).enabled) {
-        return c.json({
-          error: 'preview_disabled',
-          message: 'ChatGPT subscription connections are disabled for this installation.',
-        }, 409);
-      }
       const subscription = await getOpenAiSubscriptionAuthorizationStatus(settingsStore);
       if (!openAiSubscriptionIsReady(subscription)) {
         return c.json({
@@ -1447,7 +1432,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const parsed = v.safeParse(openAiSubscriptionStartSchema, await readJson(c.req));
     if (!parsed.success) return invalidRequest(c);
     try {
-      requireSubscriptionEnabled(c);
       return c.json(await startOpenAiSubscriptionAuthorization(openAiSubscriptionDependencies(c)));
     } catch (error) {
       return openAiSubscriptionRouteError(c, error);
@@ -1455,10 +1439,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   });
 
   app.post('/admin/api/providers/openai/subscription/poll', async (c) => {
-    const parsed = v.safeParse(openAiSubscriptionCapabilitySchema, await readJson(c.req));
+    const parsed = v.safeParse(openAiSubscriptionAttemptSchema, await readJson(c.req));
     if (!parsed.success) return invalidRequest(c);
     try {
-      requireSubscriptionEnabled(c);
       const result = await pollOpenAiSubscriptionAuthorization(
         parsed.output,
         openAiSubscriptionDependencies(c),
@@ -1470,10 +1453,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   });
 
   app.post('/admin/api/providers/openai/subscription/confirm-account', async (c) => {
-    const parsed = v.safeParse(openAiSubscriptionCapabilitySchema, await readJson(c.req));
+    const parsed = v.safeParse(openAiSubscriptionAttemptSchema, await readJson(c.req));
     if (!parsed.success) return invalidRequest(c);
     try {
-      requireSubscriptionEnabled(c);
       const status = await confirmOpenAiSubscriptionAccountChange(
         parsed.output,
         openAiSubscriptionDependencies(c),
@@ -1485,7 +1467,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   });
 
   app.post('/admin/api/providers/openai/subscription/cancel', async (c) => {
-    const parsed = v.safeParse(openAiSubscriptionCapabilitySchema, await readJson(c.req));
+    const parsed = v.safeParse(openAiSubscriptionAttemptSchema, await readJson(c.req));
     if (!parsed.success) return invalidRequest(c);
     try {
       return c.json(await cancelOpenAiSubscriptionAuthorization(
@@ -3177,10 +3159,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   // SPA catch-all, registered LAST: every client-routed page path
   // (/admin/profiles, /admin/channels/T/C, ...) serves the same page so deep
   // links and refreshes work. Unmatched /admin/api/* stays a 404, never HTML.
+  app.get('/admin/sessions', (c) => c.redirect('/admin/channels'));
+  app.get('/admin/sessions/*', (c) => c.redirect('/admin/channels'));
   app.get('/admin/*', (c) => {
     const pathname = new URL(c.req.url).pathname;
     if (pathname.startsWith('/admin/api/')) return c.notFound();
-    return c.html(renderAdminPage({ usageAdminUi: usageAdminUi(c) }));
+    return adminPage(c);
   });
 
   return app;
@@ -3925,7 +3909,6 @@ function openAiSubscriptionRouteError(c: Context, error: unknown): Response {
     case 'authorization_pending':
     case 'account_change_confirmation_required':
     case 'auth_reconnect_required':
-    case 'preview_disabled':
       return c.json(body, 409);
     case 'unsupported_model':
       return c.json(body, 422);

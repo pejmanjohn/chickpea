@@ -1,4 +1,38 @@
-export type AuditDomain = 'memory' | 'scheduled_work' | 'network_event' | 'usage';
+export type AuditDomain = 'memory' | 'scheduled_work' | 'network_event' | 'usage' | 'work';
+
+export type WorkAuditEventType =
+  | 'work.run_admitted'
+  | 'work.run_claimed'
+  | 'work.run_lease_renewed'
+  | 'work.run_requeued'
+  | 'work.run_recovery_required'
+  | 'work.run_quarantined'
+  | 'work.input_prepared'
+  | 'work.execution_created'
+  | 'work.execution_route_recorded'
+  | 'work.execution_invoked'
+  | 'work.execution_settled'
+  | 'work.response_recorded'
+  | 'work.delivery_started'
+  | 'work.delivery_delivered'
+  | 'work.delivery_failed'
+  | 'work.delivery_unknown'
+  | 'work.run_settled_without_delivery'
+  | 'work.action_denied'
+  | 'work.action_started'
+  | 'work.action_succeeded'
+  | 'work.action_failed'
+  | 'work.action_unknown';
+
+export interface WorkActionAuditMetadata {
+  actionAttemptId: string;
+  runId: string;
+  runExecutionId: string;
+  actionClass: string;
+  targetKind: string;
+  flueCorrelation: string;
+  status: 'denied' | 'started' | 'succeeded' | 'failed' | 'unknown';
+}
 
 export interface AuditEvent {
   eventId: string;

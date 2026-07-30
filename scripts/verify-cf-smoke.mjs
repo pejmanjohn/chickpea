@@ -145,8 +145,12 @@ function verifyBuildArtifacts() {
     'routine admission remains off by default in the built artifact',
   );
   check(
-    config.vars?.TAG_OPENAI_SUBSCRIPTION_ENABLED === '0',
-    'OpenAI Subscription admission remains off by default in the built artifact',
+    !Object.hasOwn(config.vars ?? {}, 'TAG_OPENAI_SUBSCRIPTION_ENABLED'),
+    'built artifact exposes no OpenAI Subscription preview gate',
+  );
+  check(
+    config.vars?.SLACK_TAG_LEDGER_CANARY_CHANNELS === '',
+    'interactive ledger admission remains off by default in the built artifact',
   );
   check(
     bundle.includes('scheduled(controller') &&
@@ -167,6 +171,12 @@ function writeSmokeWranglerConfigs() {
   ];
   const smokeConfig = {
     ...productionConfig,
+    vars: {
+      ...(productionConfig.vars ?? {}),
+      // Exercise exactly one internal workspace/channel through the enforced
+      // ledger lane while the ordinary and slow channels remain legacy.
+      SLACK_TAG_LEDGER_CANARY_CHANNELS: `${WORKSPACE}/${AI_CHANNEL}`,
+    },
     dev: { ...(productionConfig.dev ?? {}), enable_containers: false },
     compatibility_flags: smokeCompatibilityFlags,
     services: [
@@ -515,10 +525,10 @@ async function main() {
     slack: {
       identity: { teamId: WORKSPACE, teamName: 'Smoke Workspace' },
       channels: [
-        { id: CHANNEL, name: 'smoke-mentions', isMember: true },
-        { id: AI_CHANNEL, name: 'smoke-workers-ai', isMember: true },
-        { id: SLOW_CHANNEL, name: 'smoke-slow', isMember: true },
-        { id: 'C_SMOKE_EXTRA', name: 'general', isMember: false },
+        { id: CHANNEL, name: 'smoke-mentions', isMember: true, teamId: WORKSPACE },
+        { id: AI_CHANNEL, name: 'smoke-workers-ai', isMember: true, teamId: WORKSPACE },
+        { id: SLOW_CHANNEL, name: 'smoke-slow', isMember: true, teamId: WORKSPACE },
+        { id: 'C_SMOKE_EXTRA', name: 'general', isMember: false, teamId: WORKSPACE },
       ],
       channelMembers: {
         [CHANNEL]: ['U_ALICE', 'U_BOT'],
@@ -962,6 +972,22 @@ async function main() {
       'built Cloudflare entry resolves env.AI without a default gateway',
       aiFinal?.text ?? 'no Workers AI final',
     );
+    const canarySessions = await adminFetch(baseUrl, '/admin/api/sessions?limit=10');
+    const canaryRunId = canarySessions.body?.items?.find(
+      (item) => item.adapterKind === 'slack' && item.status === 'settled',
+    )?.runId;
+    const canaryDetail = canaryRunId
+      ? await adminFetch(baseUrl, `/admin/api/sessions/${encodeURIComponent(canaryRunId)}`)
+      : { status: 0, body: undefined };
+    check(
+      canarySessions.status === 200 &&
+        canaryDetail.status === 200 &&
+        canaryDetail.body?.session?.executionAuthority === 'ledger' &&
+        canaryDetail.body?.session?.deliveryStatus === 'delivered' &&
+        canaryDetail.body?.executions?.length === 1,
+      'exact-channel workerd canary executes and settles through ledger authority',
+      `list=${canarySessions.status} detail=${canaryDetail.status} authority=${String(canaryDetail.body?.session?.executionAuthority)}`,
+    );
     if (!aiBindingProofPassed) {
       throw new Error('Workers AI binding privacy proof failed');
     }
@@ -1209,6 +1235,13 @@ async function main() {
     );
   } catch (err) {
     console.error(`\nFAIL cf-smoke: ${err instanceof Error ? err.message : String(err)}`);
+    const chickpeaDiagnostics = wrangler.getOutput()
+      .split('\n')
+      .filter((line) => line.includes('[chickpea]') || line.includes('[work]'));
+    if (chickpeaDiagnostics.length > 0) {
+      console.error('\n--- Chickpea diagnostics ---');
+      console.error(chickpeaDiagnostics.join('\n'));
+    }
     console.error('\n--- wrangler dev output (tail) ---');
     console.error(wrangler.getOutput().split('\n').slice(-60).join('\n'));
     console.error('\n--- fake Slack wire log (methods) ---');

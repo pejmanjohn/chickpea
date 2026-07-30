@@ -1,5 +1,7 @@
 import { AuditStoreLogic } from '../audit/store.ts';
 import type { AuditEvent, AuditEventFilter } from '../audit/types.ts';
+import { ConfigStoreLogic } from '../config/store.ts';
+import type { ResolvedAssignment } from '../config/types.ts';
 import { openStateDb, resolveStateDbPath, type NodeStateDb } from '../state/node-state-db.ts';
 import type { SqlParam, StateDb } from '../state/state-db.ts';
 import {
@@ -60,9 +62,20 @@ import {
   validateRoutineDefinition,
   validateRoutineScope,
 } from './validation.ts';
+import { opaqueId, safeConfigForAssignment } from '../work/admission.ts';
+import { prepareSubmitRun } from '../work/submit-run.ts';
+import { WorkStoreLogic } from '../work/store.ts';
+import type {
+  BindingId,
+  SourceVisibility,
+  WorkId,
+} from '../work/types.ts';
 
 interface RoutineRow {
   id: string;
+  work_id?: string | null;
+  binding_id?: string | null;
+  source_visibility?: SourceVisibility;
   workspace_id: string;
   channel_id: string;
   creator_user_id: string;
@@ -136,6 +149,7 @@ interface RevisionRow {
 
 interface RunRow {
   id: string;
+  canonical_run_id?: string | null;
   idempotency_key: string;
   routine_id: string;
   routine_version: number;
@@ -220,6 +234,8 @@ const ACCESS_FAILURES = new Set<RoutineRun['failureClass']>([
 /** Target-neutral routine state logic used by Node SQLite and TagStateStore. */
 export class RoutineStoreLogic {
   private readonly audit: AuditStoreLogic;
+  private readonly work: WorkStoreLogic;
+  private readonly config: ConfigStoreLogic;
 
   constructor(
     private readonly db: StateDb,
@@ -227,6 +243,8 @@ export class RoutineStoreLogic {
   ) {
     this.audit = new AuditStoreLogic(db);
     this.initializeSchema();
+    this.config = new ConfigStoreLogic(db);
+    this.work = new WorkStoreLogic(db, { now });
   }
 
   execute(request: RoutineRpcRequest): RoutineRpcResponse {
@@ -363,6 +381,12 @@ export class RoutineStoreLogic {
     if (!['member', 'operator', 'system'].includes(input.actorClass)) {
       throw routineError('routine_save_invalid', 'Routine save is invalid.');
     }
+    if (
+      input.sourceVisibility !== undefined &&
+      !['public', 'private', 'unknown'].includes(input.sourceVisibility)
+    ) {
+      throw routineError('routine_save_invalid', 'Routine source visibility is invalid.');
+    }
     const draft = validateDraft(input.draft);
     if (draft.action === 'delete') {
       throw routineError('routine_confirmation_required', 'Routine deletion requires confirmation.');
@@ -491,7 +515,13 @@ export class RoutineStoreLogic {
     draft: Exclude<RoutineConfirmationDraft, { action: 'delete' }>,
     input: Pick<
       SaveRoutineInput,
-      'actorId' | 'actorClass' | 'workspaceId' | 'channelId' | 'idempotencyKey' | 'provenance'
+      | 'actorId'
+      | 'actorClass'
+      | 'workspaceId'
+      | 'channelId'
+      | 'idempotencyKey'
+      | 'provenance'
+      | 'sourceVisibility'
     >,
     confirmationId: string | null,
     at: number,
@@ -519,7 +549,15 @@ export class RoutineStoreLogic {
         reservations: draft.reservations,
         actorId: input.actorId,
         at,
+        sourceVisibility: input.sourceVisibility ?? 'unknown',
       });
+      this.ensureRoutineWorkBinding(
+        draft.routineId,
+        input.workspaceId,
+        input.channelId,
+        input.sourceVisibility ?? 'unknown',
+        at,
+      );
       this.replaceReservations(draft.routineId, draft.reservations);
       this.insertRevision(
         draft.routineId,
@@ -802,6 +840,10 @@ export class RoutineStoreLogic {
     }
     if (input.state === 'deleted') {
       clauses.push('deleted_at IS NOT NULL');
+    } else if (input.state === 'current') {
+      clauses.push("deleted_at IS NULL AND state IN ('active', 'paused')");
+    } else if (input.state === 'all') {
+      clauses.push('deleted_at IS NULL');
     } else if (input.state) {
       clauses.push('deleted_at IS NULL AND state = ?');
       params.push(input.state);
@@ -819,7 +861,19 @@ export class RoutineStoreLogic {
     const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
     const rows = this.db.all(
       `SELECT * FROM routines ${where}
-       ORDER BY created_at, id LIMIT ? OFFSET ?`,
+       ORDER BY
+         CASE
+           WHEN deleted_at IS NOT NULL THEN 4
+           WHEN state = 'active' THEN 0
+           WHEN state = 'paused' THEN 1
+           WHEN state = 'completed' THEN 2
+           ELSE 3
+         END,
+         CASE WHEN state = 'active' AND next_run_at IS NULL THEN 1 ELSE 0 END,
+         CASE WHEN state = 'active' THEN next_run_at END,
+         CASE WHEN state <> 'active' THEN updated_at END DESC,
+         id
+       LIMIT ? OFFSET ?`,
       ...params,
       input.limit + 1,
       cursor,
@@ -1036,11 +1090,15 @@ export class RoutineStoreLogic {
       }
       const run = required(this.getRun(input.runId), 'Routine occurrence was not readable.');
       this.appendRunAudit('routine.occurrence_created', run, input.idempotencyKey, input.queuedAt);
-      return run;
+      this.tryAdmitCanonicalOccurrence(run, routine);
+      return required(this.getRun(input.runId), 'Routine occurrence was not readable after linking.');
   }
 
   getRun(occurrenceId: string): RoutineRun | undefined {
-    const row = this.db.get('SELECT * FROM routine_runs WHERE id = ?', occurrenceId);
+    const row = this.db.get(
+      `${this.routineRunProjection()} WHERE rr.id = ?`,
+      occurrenceId,
+    );
     return row ? rowToRun(row as unknown as RunRow) : undefined;
   }
 
@@ -1059,7 +1117,7 @@ export class RoutineStoreLogic {
     const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
     return this.db
       .all(
-        `SELECT * FROM routine_runs ${where}
+        `${this.routineRunProjection()} ${where}
          ORDER BY scheduled_for DESC, id DESC LIMIT ?`,
         ...params,
         limit,
@@ -1595,7 +1653,9 @@ export class RoutineStoreLogic {
   private initializeSchema(): void {
     this.db.exec(
       `CREATE TABLE IF NOT EXISTS routines (
-        id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, channel_id TEXT NOT NULL,
+        id TEXT PRIMARY KEY, work_id TEXT, binding_id TEXT,
+        source_visibility TEXT NOT NULL DEFAULT 'unknown',
+        workspace_id TEXT NOT NULL, channel_id TEXT NOT NULL,
         creator_user_id TEXT NOT NULL, name TEXT NOT NULL, description TEXT NOT NULL,
         task_text TEXT NOT NULL, trigger_kind TEXT NOT NULL, schedule_input TEXT NOT NULL,
         schedule_json TEXT NOT NULL, timezone TEXT NOT NULL, output_policy TEXT NOT NULL,
@@ -1658,7 +1718,7 @@ export class RoutineStoreLogic {
     );
     this.db.exec(
       `CREATE TABLE IF NOT EXISTS routine_runs (
-        id TEXT PRIMARY KEY, idempotency_key TEXT NOT NULL UNIQUE, routine_id TEXT NOT NULL,
+        id TEXT PRIMARY KEY, canonical_run_id TEXT, idempotency_key TEXT NOT NULL UNIQUE, routine_id TEXT NOT NULL,
         routine_version INTEGER NOT NULL, scheduled_for INTEGER NOT NULL,
         trigger_source TEXT NOT NULL, requested_by TEXT, status TEXT NOT NULL,
         failure_class TEXT, public_error TEXT, admission_owner TEXT,
@@ -1691,6 +1751,30 @@ export class RoutineStoreLogic {
     if (!runColumns.some((row) => row.name === 'provider_auth_route')) {
       this.db.exec('ALTER TABLE routine_runs ADD COLUMN provider_auth_route TEXT');
     }
+    if (!runColumns.some((row) => row.name === 'canonical_run_id')) {
+      this.db.exec('ALTER TABLE routine_runs ADD COLUMN canonical_run_id TEXT');
+    }
+    const routineColumns = this.db.all('PRAGMA table_info(routines)');
+    if (!routineColumns.some((row) => row.name === 'work_id')) {
+      this.db.exec('ALTER TABLE routines ADD COLUMN work_id TEXT');
+    }
+    if (!routineColumns.some((row) => row.name === 'binding_id')) {
+      this.db.exec('ALTER TABLE routines ADD COLUMN binding_id TEXT');
+    }
+    if (!routineColumns.some((row) => row.name === 'source_visibility')) {
+      this.db.exec(
+        "ALTER TABLE routines ADD COLUMN source_visibility TEXT NOT NULL DEFAULT 'unknown'",
+      );
+    }
+    this.db.exec(
+      'CREATE UNIQUE INDEX IF NOT EXISTS routines_work_link_unique ON routines (work_id) WHERE work_id IS NOT NULL',
+    );
+    this.db.exec(
+      'CREATE UNIQUE INDEX IF NOT EXISTS routines_binding_link_unique ON routines (binding_id) WHERE binding_id IS NOT NULL',
+    );
+    this.db.exec(
+      'CREATE UNIQUE INDEX IF NOT EXISTS routine_runs_canonical_link_unique ON routine_runs (canonical_run_id) WHERE canonical_run_id IS NOT NULL',
+    );
     this.db.exec(
       `CREATE UNIQUE INDEX IF NOT EXISTS routine_runs_schedule_slot_unique
        ON routine_runs (routine_id, scheduled_for) WHERE trigger_source = 'schedule'`,
@@ -1732,21 +1816,23 @@ export class RoutineStoreLogic {
     reservations: RoutineScheduleReservation[];
     actorId: string;
     at: number;
+    sourceVisibility: SourceVisibility;
   }): void {
     const d = input.definition;
     this.db.run(
       `INSERT INTO routines (
-        id, workspace_id, channel_id, creator_user_id, name, description, task_text,
+        id, source_visibility, workspace_id, channel_id, creator_user_id, name, description, task_text,
         trigger_kind, schedule_input, schedule_json, timezone, output_policy,
         authority_mode, state, version, next_run_at, last_scheduled_at,
         last_finished_at, consecutive_failures, last_change_key_hash,
         projected_daily_starts, reservation_windows_json, created_at, created_by,
         updated_at, updated_by, paused_at, paused_by, paused_reason, disabled_at,
         disabled_by, disabled_reason, deleted_at, deleted_by
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 1, ?, NULL,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 1, ?, NULL,
                 NULL, 0, NULL, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL,
                 NULL, NULL, NULL)`,
       input.id,
+      input.sourceVisibility,
       input.workspaceId,
       input.channelId,
       input.creatorUserId,
@@ -1767,6 +1853,147 @@ export class RoutineStoreLogic {
       input.at,
       input.actorId,
     );
+  }
+
+  private ensureRoutineWorkBinding(
+    routineId: string,
+    workspaceId: string,
+    channelId: string,
+    sourceVisibility: SourceVisibility,
+    createdAt: number,
+  ): void {
+    const workId = opaqueId('work', `routine:${routineId}`) as WorkId;
+    const bindingId = opaqueId('binding', `routine:${routineId}`) as BindingId;
+    this.work.ensureWorkBindingInTransaction({
+      work: {
+        id: workId,
+        kind: 'routine',
+        maximumSensitivity: sourceVisibility === 'public' ? 'public' : 'private',
+        createdAt,
+      },
+      binding: {
+        id: bindingId,
+        workId,
+        adapterKind: 'routine',
+        externalAccountId: opaqueId('account', `slack:${workspaceId}`),
+        externalConversationId: opaqueId(
+          'conversation',
+          `routine:${workspaceId}:${channelId}:${routineId}`,
+        ),
+        generation: 1,
+        sourceVisibility,
+        configMode: 'resolve_each_run',
+        orderingKey: opaqueId('ordering', `routine:${routineId}`),
+        createdAt,
+      },
+    });
+    this.db.run(
+      `UPDATE routines SET work_id = ?, binding_id = ?, source_visibility = ?
+       WHERE id = ? AND work_id IS NULL AND binding_id IS NULL`,
+      workId,
+      bindingId,
+      sourceVisibility,
+      routineId,
+    );
+  }
+
+  private tryAdmitCanonicalOccurrence(run: RoutineRun, routine: RoutineDefinition): void {
+    if (!routine.workId || !routine.bindingId) return;
+    const assignmentRow = this.config.find(routine.workspaceId, routine.channelId, {
+      surface: 'channel',
+    });
+    if (!assignmentRow) return;
+    let assignment: ResolvedAssignment;
+    try {
+      const agent = this.config.getAgent(assignmentRow.agentId);
+      if (!agent.enabled) return;
+      assignment = {
+        workspaceId: routine.workspaceId,
+        channelId: routine.channelId,
+        agentId: agent.id,
+        ...(assignmentRow.channelLabel ? { channelLabel: assignmentRow.channelLabel } : {}),
+        ...(assignmentRow.channelPromptAddendum
+          ? { channelPromptAddendum: assignmentRow.channelPromptAddendum }
+          : {}),
+        agent,
+      };
+    } catch {
+      return;
+    }
+    const visibility = this.routineSourceVisibility(routine.id);
+    let safeConfig;
+    try {
+      safeConfig = safeConfigForAssignment(
+        assignment,
+        visibility === 'public' ? 'public' : 'private',
+      );
+    } catch {
+      return;
+    }
+    const canonicalRunId = opaqueId('run', `routine:${run.id}`);
+    const admission = prepareSubmitRun({
+      work: {
+        id: routine.workId,
+        kind: 'routine',
+        createdAt: routine.createdAt,
+      },
+      binding: {
+        id: routine.bindingId,
+        adapterKind: 'routine',
+        externalAccountId: opaqueId('account', `slack:${routine.workspaceId}`),
+        externalConversationId: opaqueId(
+          'conversation',
+          `routine:${routine.workspaceId}:${routine.channelId}:${routine.id}`,
+        ),
+        generation: 1,
+        sourceVisibility: visibility,
+        configMode: 'resolve_each_run',
+        orderingKey: opaqueId('ordering', `routine:${routine.id}`),
+        createdAt: routine.createdAt,
+      },
+      trigger: {
+        runId: canonicalRunId,
+        runKind: 'routine',
+        kind: `routine_${run.triggerSource}`,
+        ref: opaqueId('trigger', `routine:${run.id}`),
+        dedupeKey: opaqueId('dedupe', `routine:${run.idempotencyKey}`),
+        body: null,
+        createdAt: run.queuedAt,
+      },
+      actor: {
+        ref: run.requestedBy
+          ? opaqueId('actor', `slack:${routine.workspaceId}:${run.requestedBy}`)
+          : opaqueId('actor', `routine:${routine.id}:system`),
+        trustTier: run.requestedBy ? 'member' : 'system',
+      },
+      sourceContextWatermark: opaqueId(
+        'watermark',
+        `routine:${routine.id}:${run.routineVersion}:${run.scheduledFor}`,
+      ),
+      safeConfig,
+      execution: {
+        authority: 'legacy',
+        coordinatorKind: 'flue_workflow',
+        authorityEpoch: 1,
+      },
+      audit: {
+        eventId: opaqueId('audit', `admit:routine:${run.id}`),
+        idempotencyKey: opaqueId('auditkey', `admit:routine:${run.id}`),
+      },
+    });
+    const admitted = this.work.admitShadowRunInTransaction(admission);
+    this.db.run(
+      `UPDATE routine_runs SET canonical_run_id = ?
+       WHERE id = ? AND canonical_run_id IS NULL`,
+      admitted.run.id,
+      run.id,
+    );
+  }
+
+  private routineSourceVisibility(routineId: string): SourceVisibility {
+    const value = this.db.get('SELECT source_visibility FROM routines WHERE id = ?', routineId)
+      ?.source_visibility;
+    return value === 'public' || value === 'private' ? value : 'unknown';
   }
 
   private requiredMutableRoutine(routineId: string, expectedVersion: number): RoutineDefinition {
@@ -2356,10 +2583,29 @@ export class RoutineStoreLogic {
 
   private runByIdempotencyKey(idempotencyKey: string): RoutineRun | undefined {
     const row = this.db.get(
-      'SELECT * FROM routine_runs WHERE idempotency_key = ?',
+      `${this.routineRunProjection()} WHERE rr.idempotency_key = ?`,
       idempotencyKey,
     );
     return row ? rowToRun(row as unknown as RunRow) : undefined;
+  }
+
+  private routineRunProjection(): string {
+    const hasExecutions = Boolean(
+      this.db.get(
+        "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'run_executions'",
+      ),
+    );
+    if (!hasExecutions) return 'SELECT rr.* FROM routine_runs rr';
+    return `SELECT rr.*,
+      COALESCE((
+        SELECT execution.provider_auth_route
+        FROM run_executions execution
+        WHERE execution.run_id = rr.canonical_run_id
+          AND execution.provider_auth_route IS NOT NULL
+        ORDER BY execution.attempt_number DESC
+        LIMIT 1
+      ), rr.provider_auth_route) AS provider_auth_route
+      FROM routine_runs rr`;
   }
 
   private nextAdmissionNumber(occurrenceId: string): number {
@@ -2587,7 +2833,7 @@ function validateAdminPageInput(input: RoutineAdminPageInput): void {
     (input.cursor !== undefined && (!Number.isSafeInteger(input.cursor) || input.cursor < 0 || input.cursor > 100_000)) ||
     (input.workspaceId !== undefined && !isOpaqueRoutineId(input.workspaceId)) ||
     (input.channelId !== undefined && !isOpaqueRoutineId(input.channelId)) ||
-    (input.state !== undefined && !['active', 'paused', 'disabled', 'completed', 'deleted'].includes(input.state)) ||
+    (input.state !== undefined && !['active', 'paused', 'disabled', 'completed', 'current', 'all', 'deleted'].includes(input.state)) ||
     (input.runStatus !== undefined && ![
       'queued', 'admitting', 'running', 'succeeded', 'no_op', 'failed', 'skipped', 'cancelled', 'superseded',
     ].includes(input.runStatus))
@@ -2673,6 +2919,8 @@ function validateReservationInput(
 function rowToRoutine(row: RoutineRow): RoutineDefinition {
   return {
     id: row.id,
+    ...(row.work_id ? { workId: row.work_id } : {}),
+    ...(row.binding_id ? { bindingId: row.binding_id } : {}),
     workspaceId: row.workspace_id,
     channelId: row.channel_id,
     creatorUserId: row.creator_user_id,
@@ -2760,6 +3008,7 @@ function rowToRevision(row: RevisionRow): RoutineRevision {
 function rowToRun(row: RunRow): RoutineRun {
   return {
     id: row.id,
+    ...(row.canonical_run_id ? { canonicalRunId: row.canonical_run_id } : {}),
     idempotencyKey: row.idempotency_key,
     routineId: row.routine_id,
     routineVersion: row.routine_version,

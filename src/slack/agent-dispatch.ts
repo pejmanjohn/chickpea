@@ -8,11 +8,12 @@ import { cloudflareSandboxOptionVariants } from '../sandbox/lifecycle.ts';
 import { sandboxThreadKey } from '../sandbox/thread-key.ts';
 import { prepareSandboxTurn, type SandboxTurnContext } from '../sandbox/turn-context.ts';
 import { activityStatusTraceHeaders } from './activity-publisher.ts';
+import { opaqueId } from '../work/admission.ts';
+import type { WorkTraceCorrelation } from '../work/trace-correlation.ts';
 
 export type AgentPromptFailureKind =
   | 'agent'
   | 'provider'
-  | 'openai-subscription-disabled'
   | 'openai-subscription-reconnect'
   | 'openai-subscription-quota'
   | 'openai-subscription-policy'
@@ -43,6 +44,7 @@ export interface AgentDispatchResult {
   returnedModel: AgentReturnedModel | null;
   reportedUsage: AgentReportedUsage | null;
   usageCompleteness: AgentUsageCompleteness;
+  flueSubmissionRef?: string | null;
 }
 
 /** Carries only a public-safe category across the Slack presentation seam. */
@@ -98,6 +100,7 @@ export async function promptSlackThreadAgent(
   turnId: string,
   useCloudflareSandbox: boolean,
   requestedModel: string | null,
+  workCorrelation?: WorkTraceCorrelation,
 ): Promise<AgentDispatchResult> {
   if (useCloudflareSandbox) {
     try {
@@ -117,7 +120,7 @@ export async function promptSlackThreadAgent(
       headers: {
         'content-type': 'application/json',
         [INTERNAL_AGENT_TOKEN_HEADER]: getInternalAgentToken(),
-        ...activityStatusTraceHeaders(turnId),
+        ...activityStatusTraceHeaders(turnId, workCorrelation),
       },
       body: JSON.stringify({ message }),
     },
@@ -159,6 +162,9 @@ export function parseAgentDispatchEnvelope(
     returnedModel: parseReturnedModel(record?.model),
     reportedUsage: usage.reportedUsage,
     usageCompleteness: usage.completeness,
+    flueSubmissionRef: typeof body?.submissionId === 'string' && body.submissionId
+      ? opaqueId('fluesubmission', body.submissionId)
+      : null,
   };
 }
 
@@ -176,9 +182,6 @@ export function classifyAgentPromptFailure(
   const message = error.message.toLowerCase();
   const searchable = `${type} ${message}`;
 
-  if (message.includes('openai subscription operation failed (preview_disabled)')) {
-    return 'openai-subscription-disabled';
-  }
   if (
     message.includes('openai subscription operation failed (auth_reconnect_required)') ||
     message.includes('openai subscription operation failed (authorization_missing)') ||

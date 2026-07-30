@@ -6,6 +6,10 @@ import type {
 } from '@flue/runtime';
 
 import type { ActivityStatus } from '../activity/status.ts';
+import {
+  workTraceStateEntries,
+  type WorkTraceCorrelation,
+} from '../work/trace-correlation.ts';
 import { setObservedSlackStatus } from './status-registry.ts';
 import { relayObservedStatus } from './status-relay.ts';
 
@@ -32,7 +36,10 @@ const ACTIVITY_STATUS_TRACESTATE_KEY = 'chickpea-status';
  * carrier. Flue replaces the original HTTP request with a synthetic request
  * while executing a durable submission, but preserves traceparent/tracestate.
  */
-export function activityStatusTraceHeaders(generation: string): {
+export function activityStatusTraceHeaders(
+  generation: string,
+  correlation: WorkTraceCorrelation | undefined = undefined,
+): {
   traceparent: string;
   tracestate: string;
 } {
@@ -40,7 +47,10 @@ export function activityStatusTraceHeaders(generation: string): {
   const spanId = crypto.randomUUID().replaceAll('-', '').slice(0, 16);
   return {
     traceparent: `00-${traceId}-${spanId}-01`,
-    tracestate: `${ACTIVITY_STATUS_TRACESTATE_KEY}=${encodeURIComponent(generation)}`,
+    tracestate: [
+      `${ACTIVITY_STATUS_TRACESTATE_KEY}=${encodeURIComponent(generation)}`,
+      ...(correlation ? workTraceStateEntries(correlation) : []),
+    ].join(','),
   };
 }
 

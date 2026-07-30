@@ -4,9 +4,14 @@ import { resolveAgentModel } from '../config/model-policy.ts';
 import { getGithubConnection } from '../config/github-app.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import { resolveSandboxSettings } from '../config/sandbox-settings.ts';
-import { getSettingsStore, getUsageStore } from '../config/state-backend.ts';
+import { getSettingsStore, getUsageStore, getWorkStore } from '../config/state-backend.ts';
+import type { SettingsStore } from '../config/settings-store.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
+import {
+  resolveProviderAuthRoute,
+  safeRuntimeModelRouteEvidence,
+} from '../config/runtime-model.ts';
 import { parseMemoryCommand } from '../memory/commands.ts';
 import { handleMemoryCommand, prepareMemoryTurn } from '../memory/runtime.ts';
 import {
@@ -33,7 +38,6 @@ import {
 } from './web-client-context.ts';
 import {
   AGENT_FAILURE_TEXT,
-  OPENAI_SUBSCRIPTION_DISABLED_TEXT,
   OPENAI_SUBSCRIPTION_POLICY_TEXT,
   OPENAI_SUBSCRIPTION_QUOTA_TEXT,
   OPENAI_SUBSCRIPTION_RECONNECT_TEXT,
@@ -48,6 +52,10 @@ import {
   type UsagePersistenceEvent,
 } from '../usage/runtime-recorder.ts';
 import type { UsageStore } from '../usage/types.ts';
+import { opaqueId } from '../work/admission.ts';
+import { createWorkExecutionLifecycle } from '../work/executor.ts';
+import type { ShadowWorkLifecycle } from '../work/lifecycle.ts';
+import type { RunExecutionAuthority, WorkStore } from '../work/types.ts';
 
 /**
  * The turn lifecycle, factored out of the Slack channel so BOTH the node detach
@@ -125,6 +133,20 @@ export interface RunTurnOptions {
   onDelivered?: () => void | Promise<void>;
   /** Stable ID for one actual model invocation; persistence retries reuse it. */
   usageExecutionId?: string;
+  /** Observational canonical Run correlation; legacy remains authoritative. */
+  runId?: string;
+  /** Durable relay attempt used as the canonical RunExecution fence. */
+  runAttempt?: number;
+  /** Explicit lease fence for a ledger-authoritative attempt. */
+  runFencingToken?: number;
+  /** Immutable authority selected at admission. Missing means legacy. */
+  executionAuthority?: RunExecutionAuthority;
+  /** Opaque Flue continuity identity, independent of Slack/memory coordinates. */
+  continuityKey?: string;
+  /** Local override avoids a Durable Object calling its own Work RPC. */
+  workStore?: WorkStore;
+  /** Local override avoids a Durable Object calling its own settings RPC. */
+  settingsStore?: SettingsStore;
   /** Local override avoids a Durable Object calling its own Usage RPC. */
   usageStore?: UsageStore;
   /** Test/rollout override; otherwise USAGE_RUNTIME_RECORDING controls capture. */
@@ -157,11 +179,15 @@ export async function runTurn(
   // A frozen assignment (from a thread snapshot) carries its model; otherwise
   // resolve it from the agent via policy.
   const resolvedModel = assignment.model ?? tryResolveAgentModel(assignment.agent);
+  const ledgerAuthority = options.executionAuthority === 'ledger';
   // env (SLACK_TAG_PUBLIC_URL) → stored slack.publicUrl (the origin the admin
   // pinned): on a button deploy nobody sets the env var, so without the stored
   // fallback the footer's "Configure" link would be dead.
   const publicUrl = await resolveSlackPublicUrl(platformEnv);
-  if (isRoutineSlackTurn(turn)) {
+  // Natural-language Routine intent still runs through the legacy Workflow
+  // coordinator. A selected ledger canary deliberately skips that pre-parser;
+  // explicit Routine commands are kept off this lane at admission.
+  if (!ledgerAuthority && isRoutineSlackTurn(turn)) {
     const routineText = await handleRoutineSlackRequest(turn, platformEnv);
     if (routineText !== undefined) {
       const routinePresenter = new WebClientPresenter(client, {
@@ -187,6 +213,24 @@ export async function runTurn(
   const preparedMemory = memoryCommand
     ? undefined
     : await prepareMemoryTurn({ turn, platformEnv, client });
+  const conversationKey = preparedMemory?.conversationKey ?? slackThreadKey(turn);
+  const agentConversationKey = options.continuityKey ?? conversationKey;
+  const workLifecycle = options.runId && options.replayText === undefined && resolvedModel
+    ? await createSlackShadowLifecycle({
+        runId: options.runId,
+        attemptNumber: options.runAttempt ?? 1,
+        ...(options.runFencingToken === undefined
+          ? {}
+          : { fencingToken: options.runFencingToken }),
+        assignment,
+        canonicalModel: resolvedModel,
+        flueInstanceRef: opaqueId('flueinstance', agentConversationKey),
+        platformEnv,
+        ...(options.workStore ? { workStore: options.workStore } : {}),
+        ...(options.settingsStore ? { settingsStore: options.settingsStore } : {}),
+        mode: ledgerAuthority ? 'enforce' : 'observe',
+      })
+    : undefined;
   const presenter = new WebClientPresenter(client, {
     channelId: turn.channelId,
     threadTs: turn.threadTs,
@@ -197,10 +241,9 @@ export async function runTurn(
     userId: turn.userId,
     workspaceId: turn.workspaceId,
     ...(preparedMemory ? { memoryFooterItems: preparedMemory.footerItems } : {}),
-  });
-  const conversationKey = preparedMemory?.conversationKey ?? slackThreadKey(turn);
+  }, workLifecycle, { deliverySafety: ledgerAuthority ? 'ledger' : 'legacy' });
   const statusGeneration = options.turnId ?? `msg:${turn.channelId}:${turn.messageTs}`;
-  const statusTurn = registerSlackStatusTurn(conversationKey, presenter, {
+  const statusTurn = registerSlackStatusTurn(agentConversationKey, presenter, {
     generation: statusGeneration,
   });
   const closeAndDrainStatus = async (): Promise<void> => {
@@ -242,6 +285,7 @@ export async function runTurn(
         operationId: statusGeneration,
         executionId: options.usageExecutionId ?? `exec:${statusGeneration}:1`,
         store: options.usageStore ?? getUsageStore(platformEnv),
+        ...(options.runId ? { runId: options.runId } : {}),
         ...(platformEnv ? { platformEnv } : {}),
         ...(options.usageWriteBudgetMs === undefined
           ? {}
@@ -268,6 +312,11 @@ export async function runTurn(
       ...(preparedMemory?.promptBlock ? { memoryBlock: preparedMemory.promptBlock } : {}),
       memorySelected: (preparedMemory?.selection?.entries.length ?? 0) > 0,
     });
+    const persistedPrompt = await workLifecycle?.prepareExecution(prompt);
+    if (workLifecycle?.hasExecution) {
+      usageRecorder?.linkRunExecution(workLifecycle.executionId);
+    }
+    const executionPrompt = persistedPrompt ?? prompt;
 
     // 3 + 4. Prompt the durable agent, then deliver the final — with clearStatus
     //    in a finally so a status that was actually set is cleared even if
@@ -291,17 +340,37 @@ export async function runTurn(
       try {
         usedCloudflareSandbox = await shouldUseCloudflareSandbox(assignment, platformEnv);
         agentResult = await promptSlackThreadAgent(
-          conversationKey,
-          prompt,
+          agentConversationKey,
+          executionPrompt,
           platformEnv,
           statusGeneration,
           usedCloudflareSandbox,
           resolvedModel ?? null,
+          workLifecycle && options.runId
+            ? {
+                runId: options.runId,
+                runExecutionId: workLifecycle.executionId,
+                mode: ledgerAuthority ? 'enforce' : 'observe',
+              }
+            : undefined,
         );
         text = agentResult.text;
+        await workLifecycle?.settleExecution({
+          outcome: 'succeeded',
+          rawStatus: 'flue_succeeded',
+          ...(agentResult.flueSubmissionRef
+            ? { flueSubmissionRef: agentResult.flueSubmissionRef }
+            : {}),
+        });
         await usageRecorder?.recordSuccess(agentResult);
       } catch (err) {
         console.error('[chickpea] agent run failed:', sanitizeError(err));
+        const modelNotInvoked = agentFailureBeforeModelInvocation(err);
+        await workLifecycle?.settleExecution({
+          outcome: modelNotInvoked ? 'not_submitted' : 'failed',
+          rawStatus: modelNotInvoked ? 'model_not_invoked' : 'flue_failed',
+          safeFailureCode: agentFailureSafeCode(err),
+        });
         await usageRecorder?.recordFailure();
         const recoveredText = await options.beforeDelivery?.();
         await closeAndDrainStatus();
@@ -352,6 +421,70 @@ export async function runTurn(
   }
 }
 
+async function createSlackShadowLifecycle(input: {
+  runId: string;
+  attemptNumber: number;
+  fencingToken?: number;
+  assignment: ResolvedAssignment;
+  canonicalModel: string;
+  flueInstanceRef: string;
+  platformEnv: PlatformEnv | undefined;
+  workStore?: WorkStore;
+  settingsStore?: SettingsStore;
+  mode: 'observe' | 'enforce';
+}): Promise<ShadowWorkLifecycle | undefined> {
+  try {
+    const store = input.workStore ?? getWorkStore(input.platformEnv);
+    const providerAuthRoute = await resolveProviderAuthRoute(
+      input.canonicalModel,
+      input.settingsStore ?? getSettingsStore(input.platformEnv),
+    );
+    return createWorkExecutionLifecycle(store, {
+      runId: input.runId,
+      attemptNumber: input.attemptNumber,
+      ...(input.fencingToken === undefined ? {} : { fencingToken: input.fencingToken }),
+      executorKind: 'agent',
+      agentName: input.assignment.agent.id,
+      canonicalModel: input.canonicalModel,
+      flueInstanceRef: input.flueInstanceRef,
+      routeEvidence: safeRuntimeModelRouteEvidence(
+        input.canonicalModel,
+        providerAuthRoute,
+        input.assignment.modelCredential,
+      ),
+    }, {
+      mode: input.mode,
+    });
+  } catch (error) {
+    if (input.mode === 'enforce') throw error;
+    console.warn('[work] shadow lifecycle initialization failed; legacy execution will continue');
+    return undefined;
+  }
+}
+
+function agentFailureSafeCode(error: unknown): string {
+  if (!(error instanceof AgentPromptFailure)) return 'agent_failed';
+  switch (error.kind) {
+    case 'provider': return 'provider_failed';
+    case 'openai-subscription-reconnect': return 'subscription_reconnect';
+    case 'openai-subscription-quota': return 'subscription_quota';
+    case 'openai-subscription-policy': return 'subscription_policy';
+    case 'sandbox': return 'sandbox_failed';
+    case 'sandbox-session-cap': return 'sandbox_session_cap';
+    default: return 'agent_failed';
+  }
+}
+
+function agentFailureBeforeModelInvocation(error: unknown): boolean {
+  if (!(error instanceof AgentPromptFailure)) return false;
+  return [
+    'openai-subscription-reconnect',
+    'openai-subscription-policy',
+    'sandbox',
+    'sandbox-session-cap',
+  ].includes(error.kind);
+}
+
 export async function shouldUseCloudflareSandbox(
   assignment: ResolvedAssignment,
   env: PlatformEnv | undefined,
@@ -394,7 +527,6 @@ export function resolveMemoryDeliveryText(
 export function agentFailureText(err: unknown): string {
   if (!(err instanceof AgentPromptFailure)) return AGENT_FAILURE_TEXT;
   if (err.kind === 'provider') return PROVIDER_FAILURE_TEXT;
-  if (err.kind === 'openai-subscription-disabled') return OPENAI_SUBSCRIPTION_DISABLED_TEXT;
   if (err.kind === 'openai-subscription-reconnect') return OPENAI_SUBSCRIPTION_RECONNECT_TEXT;
   if (err.kind === 'openai-subscription-quota') return OPENAI_SUBSCRIPTION_QUOTA_TEXT;
   if (err.kind === 'openai-subscription-policy') return OPENAI_SUBSCRIPTION_POLICY_TEXT;

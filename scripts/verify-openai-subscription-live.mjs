@@ -67,10 +67,9 @@ const request = async (path, init = {}) => {
 };
 
 const before = await request('/admin/api/providers/openai/subscription');
-assert.equal(before.capability?.enabled, true, 'Subscription preview is disabled on this target');
 if (before.status?.state === 'connected') {
   console.log(`[openai-subscription] ${target} target already connected (${before.status.accountFingerprint ?? 'safe identity unavailable'}).`);
-  console.log('[openai-subscription] Authorization gate passed; run the separate Slack/routine acceptance checklist without exposing credentials.');
+  console.log('[openai-subscription] Authorization is available; run the separate Slack/routine acceptance checklist without exposing credentials.');
   process.exit(0);
 }
 

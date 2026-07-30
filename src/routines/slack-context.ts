@@ -6,6 +6,7 @@ import {
   slackConversationsMembers,
 } from '../slack/credentials.ts';
 import type { NormalizedSlackTurn } from '../slack/types.ts';
+import type { SourceVisibility } from '../work/types.ts';
 
 const MAX_MEMBER_PAGES = 5;
 
@@ -60,6 +61,44 @@ export async function canManageRoutineChannel(
     return false;
   } catch {
     return false;
+  }
+}
+
+/**
+ * Resolve the privacy carried by the Routine's canonical Binding. Failures and
+ * unsupported shared surfaces stay unknown/private for operator projections;
+ * they do not invalidate the already-authorized legacy Routine command.
+ */
+export async function resolveRoutineSourceVisibility(
+  workspaceId: string,
+  channelId: string,
+  env: PlatformEnv | undefined,
+): Promise<SourceVisibility> {
+  try {
+    const { botToken } = await resolveSlackCredentials(env);
+    if (!botToken) return 'unknown';
+    const conversation = await slackConversationsInfo(botToken, channelId);
+    const facts = conversation.facts;
+    if (
+      !conversation.ok ||
+      !facts ||
+      facts.id !== channelId ||
+      facts.teamId !== workspaceId ||
+      !facts.member ||
+      facts.archived ||
+      facts.frozen ||
+      facts.shared ||
+      facts.externallyShared ||
+      facts.organizationShared ||
+      facts.pendingShared ||
+      facts.im ||
+      facts.mpim
+    ) {
+      return 'unknown';
+    }
+    return facts.private ? 'private' : 'public';
+  } catch {
+    return 'unknown';
   }
 }
 

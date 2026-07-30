@@ -10,6 +10,11 @@ interface RoutineStateSpikeStub {
     version: number;
     auditCount: number;
     revisionCount: number;
+    foreignKeysEnabled: boolean;
+    orphanRejected: boolean;
+    foreignKeyViolationCount: number;
+    workRunStatus: string;
+    workInvariantViolationCount: number;
   }>;
 }
 

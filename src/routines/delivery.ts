@@ -12,6 +12,7 @@ import {
 import { ROUTINE_LIMITS } from './limits.ts';
 import { RoutineRuntimeError, type RoutineRuntimeAccess } from './runtime.ts';
 import type { RoutineDefinition, RoutineRun, RoutineStore } from './types.ts';
+import type { ShadowWorkLifecycle } from '../work/lifecycle.ts';
 
 const ROUTINE_SLACK_TIMEOUT_MS = 10_000;
 
@@ -29,12 +30,13 @@ export async function deliverRoutineResult(
     access: RoutineRuntimeAccess;
     message: string;
     changeKeyHash: string | null;
+    workLifecycle?: ShadowWorkLifecycle;
     now?: () => number;
   },
   client: WebClient = createRoutineSlackClient(input.access.botToken),
 ): Promise<RoutineDeliveryReceipt> {
   return deliverRoutineSlackMessage(
-    input,
+    { ...input, approvedOutput: input.message },
     renderRoutineDelivery(input.routine, input.run, input.message, routineReplyFooter(input.access)),
     client,
   );
@@ -47,6 +49,7 @@ export async function deliverRoutineFailureNotice(
     routine: RoutineDefinition;
     access: RoutineRuntimeAccess;
     publicError: string;
+    workLifecycle?: ShadowWorkLifecycle;
     now?: () => number;
   },
   client: WebClient = createRoutineSlackClient(input.access.botToken),
@@ -63,7 +66,7 @@ export async function deliverRoutineFailureNotice(
         : []),
   ].join('\n');
   return deliverRoutineSlackMessage(
-    { ...input, changeKeyHash: null },
+    { ...input, changeKeyHash: null, approvedOutput: text },
     appendSlackReplyFooter(
       appendRoutineRunContext(
         renderSlackMessage(text, 'markdown'),
@@ -84,6 +87,8 @@ async function deliverRoutineSlackMessage(
     routine: RoutineDefinition;
     access: RoutineRuntimeAccess;
     changeKeyHash: string | null;
+    approvedOutput: string;
+    workLifecycle?: ShadowWorkLifecycle;
     now?: () => number;
   },
   message: string | RenderedSlackMessage,
@@ -103,16 +108,28 @@ async function deliverRoutineSlackMessage(
     );
   }
 
+  const payload = {
+    channel: input.routine.channelId,
+    ...(typeof message === 'string' ? { text: message } : message),
+    unfurl_links: false,
+    unfurl_media: false,
+  };
+  const workAttemptId = await input.workLifecycle?.beforeDelivery({
+    method: 'slack_chat_post_message',
+    approvedOutput: input.approvedOutput,
+    renderedPayload: JSON.stringify({ method: 'slack_chat_post_message', payload }),
+  });
+
   let response: ChatPostMessageResponse;
   try {
-    response = await client.chat.postMessage({
-      channel: input.routine.channelId,
-      ...(typeof message === 'string' ? { text: message } : message),
-      unfurl_links: false,
-      unfurl_media: false,
-    });
+    response = await client.chat.postMessage(payload);
   } catch (error) {
     const rateLimited = slackErrorCode(error) === ErrorCode.RateLimitedError;
+    await input.workLifecycle?.afterDelivery({
+      attemptId: workAttemptId,
+      outcome: rateLimited ? 'failed' : 'unknown',
+      safeFailureCode: rateLimited ? 'slack_rate_limited' : 'delivery_unknown',
+    });
     await recordFailedDelivery(input.store, input.run.id, rateLimited ? 'failed' : 'unknown', now());
     throw new RoutineRuntimeError(
       rateLimited ? 'slack_rate_limited' : 'delivery_unknown',
@@ -124,6 +141,11 @@ async function deliverRoutineSlackMessage(
   const channelId = typeof response.channel === 'string' ? response.channel : undefined;
   const messageTs = typeof response.ts === 'string' ? response.ts : undefined;
   if (!response.ok || channelId !== input.routine.channelId || !messageTs) {
+    await input.workLifecycle?.afterDelivery({
+      attemptId: workAttemptId,
+      outcome: 'unknown',
+      safeFailureCode: 'delivery_receipt_incomplete',
+    });
     await recordFailedDelivery(input.store, input.run.id, 'unknown', now());
     throw new RoutineRuntimeError(
       'delivery_unknown',
@@ -139,7 +161,17 @@ async function deliverRoutineSlackMessage(
       messageTs,
       changeKeyHash: input.changeKeyHash,
     });
+    await input.workLifecycle?.afterDelivery({
+      attemptId: workAttemptId,
+      outcome: 'delivered',
+      deliveryRef: `slack:${channelId}:${messageTs}`,
+    });
   } catch {
+    await input.workLifecycle?.afterDelivery({
+      attemptId: workAttemptId,
+      outcome: 'unknown',
+      safeFailureCode: 'delivery_receipt_persist_unknown',
+    });
     throw new RoutineRuntimeError(
       'unknown_external_outcome',
       'The Slack result was posted but its receipt could not be recorded.',
