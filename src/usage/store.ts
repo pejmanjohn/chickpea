@@ -10,6 +10,7 @@ import {
 } from './rollups.ts';
 import { UsageStateError } from './store-error.ts';
 import { installReleasePriceCatalogs } from './pricing/catalog.ts';
+import { estimateUsage } from './pricing/estimate.ts';
 import {
   USAGE_AGGREGATE_RETENTION_MONTHS,
   USAGE_RAW_RETENTION_DAYS,
@@ -810,6 +811,7 @@ export class UsageStoreLogic {
       'CREATE INDEX IF NOT EXISTS usage_measurements_model_idx ON usage_measurements (returned_model, observed_at DESC)',
       'CREATE INDEX IF NOT EXISTS usage_measurements_credential_idx ON usage_measurements (credential_ref_id, observed_at DESC)',
       'CREATE INDEX IF NOT EXISTS usage_measurements_operation_idx ON usage_measurements (operation_id, observed_at, execution_id)',
+      "CREATE INDEX IF NOT EXISTS usage_measurements_unknown_price_idx ON usage_measurements (observed_at, execution_id) WHERE estimate_completeness = 'unknown'",
       'CREATE INDEX IF NOT EXISTS usage_credentials_provider_idx ON usage_credentials (provider_id, retired_at, credential_ref_id, version)',
     ]) this.db.exec(sql);
     const operationColumns = this.db.all('PRAGMA table_info(usage_operations)');
@@ -837,6 +839,74 @@ export class UsageStoreLogic {
         metadata: { providerId: catalog.providerId, contentHash: catalog.contentHash },
       });
     }
+    this.backfillUnknownEstimates();
+  }
+
+  /**
+   * Price catalogs are immutable, but missing price coverage can improve in a
+   * later release. Enrich only measurements that already have complete usage
+   * and an explicitly unknown/stale price; never replace a prior estimate or
+   * manufacture tokens. Raw detail is retained for only 30 days, so the
+   * candidate scan remains bounded. The update and its audit commit together;
+   * a crash retries safely on the next store initialization.
+   */
+  private backfillUnknownEstimates(): number {
+    const rows = this.db.all(
+      `SELECT ${MEASUREMENT_COLUMNS} FROM usage_measurements
+       WHERE usage_completeness = 'complete'
+         AND estimate_completeness = 'unknown'
+         AND estimate_amount_micros IS NULL
+         AND estimate_currency IS NULL
+         AND price_version_id IS NULL
+         AND price_unknown_reason IN ('price_unknown', 'price_stale')`,
+    ) as unknown as MeasurementRow[];
+    return this.db.transaction(() => {
+      let changed = 0;
+      const catalogIds = new Set<string>();
+      for (const row of rows) {
+        const estimate = estimateUsage({
+          observedAt: row.observed_at,
+          providerRoute: row.provider_route,
+          requestedProvider: row.requested_provider,
+          requestedModel: row.requested_model,
+          returnedProvider: row.returned_provider,
+          returnedModel: row.returned_model,
+          usageCompleteness: row.usage_completeness,
+          inputTokens: row.input_tokens,
+          outputTokens: row.output_tokens,
+        });
+        if (estimate.estimateCompleteness !== 'complete') continue;
+        const updated = this.db.run(
+          `UPDATE usage_measurements
+           SET estimate_completeness = 'complete', estimate_amount_micros = ?,
+               estimate_currency = ?, price_version_id = ?, price_unknown_reason = NULL
+           WHERE execution_id = ?
+             AND estimate_completeness = 'unknown'
+             AND estimate_amount_micros IS NULL
+             AND estimate_currency IS NULL
+             AND price_version_id IS NULL
+             AND price_unknown_reason IN ('price_unknown', 'price_stale')`,
+          estimate.estimateAmountMicros,
+          estimate.estimateCurrency,
+          estimate.priceVersionId,
+          row.execution_id,
+        ).changes;
+        changed += updated;
+        if (updated > 0 && estimate.priceVersionId) catalogIds.add(estimate.priceVersionId);
+      }
+      if (changed > 0) {
+        const ids = [...catalogIds].sort();
+        this.appendUsageAudit({
+          eventId: `usage:estimates:${ids.join('+')}:backfilled`,
+          eventType: 'usage.estimates_backfilled',
+          subjectId: ids.join(','),
+          subjectVersion: 1,
+          createdAt: this.now(),
+          metadata: { catalogIds: ids, measurementCount: changed },
+        });
+      }
+      return changed;
+    });
   }
 }
 
@@ -1018,11 +1088,34 @@ function sameTerminal(measurement: UsageMeasurement, input: RecordUsageTerminalI
     measurement.outputTokens === input.outputTokens &&
     measurement.totalTokens === input.totalTokens &&
     measurement.usageUnknownReason === input.usageUnknownReason &&
+    sameEstimate(measurement, input);
+}
+
+function sameEstimate(
+  measurement: UsageMeasurement,
+  input: RecordUsageTerminalInput,
+): boolean {
+  if (
     measurement.estimateCompleteness === input.estimateCompleteness &&
     measurement.estimateAmountMicros === input.estimateAmountMicros &&
     measurement.estimateCurrency === input.estimateCurrency &&
     measurement.priceVersionId === input.priceVersionId &&
-    measurement.priceUnknownReason === input.priceUnknownReason;
+    measurement.priceUnknownReason === input.priceUnknownReason
+  ) return true;
+  if (
+    input.estimateCompleteness !== 'unknown' ||
+    input.estimateAmountMicros !== null ||
+    input.estimateCurrency !== null ||
+    input.priceVersionId !== null ||
+    (input.priceUnknownReason !== 'price_unknown' && input.priceUnknownReason !== 'price_stale')
+  ) return false;
+  const enriched = estimateUsage(input);
+  return enriched.estimateCompleteness === 'complete' &&
+    measurement.estimateCompleteness === enriched.estimateCompleteness &&
+    measurement.estimateAmountMicros === enriched.estimateAmountMicros &&
+    measurement.estimateCurrency === enriched.estimateCurrency &&
+    measurement.priceVersionId === enriched.priceVersionId &&
+    measurement.priceUnknownReason === enriched.priceUnknownReason;
 }
 
 function sameCredential(

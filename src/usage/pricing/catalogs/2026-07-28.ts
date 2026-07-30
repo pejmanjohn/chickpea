@@ -4,6 +4,9 @@ import type { UsagePriceRate, UsagePriceVersion } from '../types.ts';
 
 const REVIEWED_AT = Date.UTC(2026, 6, 28);
 const STALE_AFTER = REVIEWED_AT + 90 * 24 * 60 * 60 * 1_000;
+const CLOUDFLARE_BINDING_REVIEWED_AT = Date.UTC(2026, 6, 30);
+const CLOUDFLARE_BINDING_STALE_AFTER =
+  CLOUDFLARE_BINDING_REVIEWED_AT + 90 * 24 * 60 * 60 * 1_000;
 
 function version(
   input: Omit<UsagePriceVersion, 'contentHash' | 'rates'> & {
@@ -88,6 +91,25 @@ export const RELEASE_PRICE_CATALOGS: UsagePriceVersion[] = [
     currency: 'USD',
     rates: [{
       providerId: 'cloudflare-workers-ai',
+      modelId: '@cf/zai-org/glm-5.2',
+      modelAliases: ['@cf/zai-org/glm-5.2'],
+      currency: 'USD',
+      unitScale: 1_000_000,
+      inputMicrosPerUnit: 1_400_000,
+      outputMicrosPerUnit: 4_400_000,
+      basis: 'standard_input_output',
+    }],
+  }),
+  version({
+    id: 'cloudflare-binding_2026-07-30',
+    providerId: 'cloudflare',
+    sourceUrl: 'https://developers.cloudflare.com/workers-ai/models/glm-5.2/',
+    effectiveFrom: REVIEWED_AT,
+    reviewedAt: CLOUDFLARE_BINDING_REVIEWED_AT,
+    staleAfter: CLOUDFLARE_BINDING_STALE_AFTER,
+    currency: 'USD',
+    rates: [{
+      providerId: 'cloudflare',
       modelId: '@cf/zai-org/glm-5.2',
       modelAliases: ['@cf/zai-org/glm-5.2'],
       currency: 'USD',

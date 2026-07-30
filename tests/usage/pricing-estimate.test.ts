@@ -34,6 +34,7 @@ test('golden standard-rate estimates match every U0-priceable provider fixture',
     ['openai', 'gpt-4.1-mini', 13, 7, 16, 'openai_2026-07-28'],
     ['openrouter', 'openai/gpt-4.1', 17, 9, 106, 'openrouter_2026-07-28'],
     ['cloudflare-workers-ai', '@cf/zai-org/glm-5.2', 19, 11, 75, 'cloudflare-workers-ai_2026-07-28'],
+    ['cloudflare', '@cf/zai-org/glm-5.2', 19, 11, 75, 'cloudflare-binding_2026-07-30'],
   ] as const;
   for (const [provider, model, input, output, amount, version] of cases) {
     assert.deepEqual(estimateUsage(measurement(provider, model, input, output)), {
@@ -46,17 +47,14 @@ test('golden standard-rate estimates match every U0-priceable provider fixture',
   }
 });
 
-test('snapshot aliases price identically while unknown and operations-only models remain unknown', () => {
+test('snapshot aliases price identically while unknown models remain unknown', () => {
   assert.equal(
     estimateUsage(measurement('openai', 'gpt-4.1-mini-2025-04-14', 13, 7)).estimateAmountMicros,
     16,
   );
-  assert.deepEqual(
-    estimateUsage(measurement('cloudflare', '@cf/zai-org/glm-5.2', 19, 11)),
-    {
-      estimateCompleteness: 'unknown', estimateAmountMicros: null, estimateCurrency: null,
-      priceVersionId: null, priceUnknownReason: 'price_unknown',
-    },
+  assert.equal(
+    estimateUsage(measurement('cloudflare', '@cf/zai-org/glm-5.2', 19, 11)).priceVersionId,
+    'cloudflare-binding_2026-07-30',
   );
   assert.equal(
     estimateUsage(measurement('custom', 'local-model', 1, 1)).priceUnknownReason,
