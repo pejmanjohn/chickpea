@@ -28,11 +28,7 @@
     "TAG_RUN_BODY_RETENTION_DAYS": "30",
     // Exact workspace/channel pairs (`T123/C456`) for the internal interactive
     // ledger canary. Empty keeps every future Slack admission on legacy.
-    "SLACK_TAG_LEDGER_CANARY_CHANNELS": "",
-    // Experimental direct ChatGPT Subscription adapter. Keep "0" until the
-    // live protocol, Worker, no-fallback, redaction, and rollback gates in
-    // docs/runbooks/openai-subscription.md have passed for this exact build.
-    "TAG_OPENAI_SUBSCRIPTION_ENABLED": "0"
+    "SLACK_TAG_LEDGER_CANARY_CHANNELS": ""
   },
   "triggers": {
     "crons": ["* * * * *"]

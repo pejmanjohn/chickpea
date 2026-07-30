@@ -63,12 +63,6 @@ assert.equal(args.has('--live'), true, 'refusing model traffic without the expli
 const sourceStatePath = String(args.get('--source-state-db') ?? '');
 assert.ok(sourceStatePath, '--source-state-db is required');
 assert.equal(existsSync(sourceStatePath), true, 'authorized source settings database not found');
-assert.equal(
-  process.env.TAG_OPENAI_SUBSCRIPTION_ENABLED,
-  '1',
-  'TAG_OPENAI_SUBSCRIPTION_ENABLED must be exactly 1',
-);
-
 const guardDir = mkdtempSync(join(tmpdir(), 'chickpea-subscription-slack-live-'));
 const stateDbPath = join(guardDir, 'state.db');
 const netGuardLog = join(guardDir, 'external-hosts.log');
@@ -128,7 +122,6 @@ try {
       TAG_DB_PATH: ':memory:',
       SLACK_STATE_DB_PATH: stateDbPath,
       TAG_AGENT_API_TOKEN: 'subscription-slack-live-internal-token',
-      TAG_OPENAI_SUBSCRIPTION_ENABLED: '1',
       OPENAI_API_KEY: 'sk-chickpea-intentionally-invalid-no-fallback',
       NET_GUARD_ALLOW: 'chatgpt.com,auth.openai.com',
     },

@@ -38,7 +38,6 @@ import {
 } from './web-client-context.ts';
 import {
   AGENT_FAILURE_TEXT,
-  OPENAI_SUBSCRIPTION_DISABLED_TEXT,
   OPENAI_SUBSCRIPTION_POLICY_TEXT,
   OPENAI_SUBSCRIPTION_QUOTA_TEXT,
   OPENAI_SUBSCRIPTION_RECONNECT_TEXT,
@@ -467,7 +466,6 @@ function agentFailureSafeCode(error: unknown): string {
   if (!(error instanceof AgentPromptFailure)) return 'agent_failed';
   switch (error.kind) {
     case 'provider': return 'provider_failed';
-    case 'openai-subscription-disabled': return 'subscription_disabled';
     case 'openai-subscription-reconnect': return 'subscription_reconnect';
     case 'openai-subscription-quota': return 'subscription_quota';
     case 'openai-subscription-policy': return 'subscription_policy';
@@ -480,7 +478,6 @@ function agentFailureSafeCode(error: unknown): string {
 function agentFailureBeforeModelInvocation(error: unknown): boolean {
   if (!(error instanceof AgentPromptFailure)) return false;
   return [
-    'openai-subscription-disabled',
     'openai-subscription-reconnect',
     'openai-subscription-policy',
     'sandbox',
@@ -530,7 +527,6 @@ export function resolveMemoryDeliveryText(
 export function agentFailureText(err: unknown): string {
   if (!(err instanceof AgentPromptFailure)) return AGENT_FAILURE_TEXT;
   if (err.kind === 'provider') return PROVIDER_FAILURE_TEXT;
-  if (err.kind === 'openai-subscription-disabled') return OPENAI_SUBSCRIPTION_DISABLED_TEXT;
   if (err.kind === 'openai-subscription-reconnect') return OPENAI_SUBSCRIPTION_RECONNECT_TEXT;
   if (err.kind === 'openai-subscription-quota') return OPENAI_SUBSCRIPTION_QUOTA_TEXT;
   if (err.kind === 'openai-subscription-policy') return OPENAI_SUBSCRIPTION_POLICY_TEXT;

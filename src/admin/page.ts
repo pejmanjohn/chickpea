@@ -6559,7 +6559,6 @@ details[open].advanced summary::before {
 
   function openAiProviderRowHtml(summary, ui, apiEditor, meta) {
     var subscription = summary.subscription || { state: "disconnected", updatedAt: 0 };
-    var capability = summary.subscriptionCapability || { enabled: false };
     var apiConnected = summary.status === "stored" || summary.status === "env";
     var subscriptionConnected = subscription.state === "connected" || subscription.state === "account_change_confirmation_required";
     var activeMethod = summary.activeAuthMethod === "subscription" ? "subscription" : "api_key";
@@ -6578,26 +6577,22 @@ details[open].advanced summary::before {
       '<div class="prov-status"><span class="hint">' + connectedCount + ' of 2 connected</span></div></div>';
     return '<div class="prov-row">' + head + '<div class="prov-body">' +
       openAiAuthMethodControlHtml(summary, apiConnected, subscriptionConnected) +
-      '<div class="openai-auth-list">' + apiOption + openAiSubscriptionHtml(subscription, capability, activeMethod, showSelection) + '</div></div></div>';
+      '<div class="openai-auth-list">' + apiOption + openAiSubscriptionHtml(subscription, activeMethod, showSelection) + '</div></div></div>';
   }
 
   function openAiAuthMethodControlHtml(summary, apiConnected, subscriptionConnected) {
     if (!apiConnected || !subscriptionConnected) return "";
-    var capability = summary.subscriptionCapability || { enabled: false };
     var saved = summary.activeAuthMethod === "subscription" ? "subscription" : "api_key";
     var draft = state.openAiAuthMethodDraft === "subscription" ? "subscription" : "api_key";
     var changed = draft !== saved;
-    var ready = draft === "api_key" || capability.enabled;
     var selectedLabel = draft === "subscription" ? "ChatGPT subscription" : "OpenAI API key";
     var hint = changed
-      ? ready
-        ? "Save to use " + selectedLabel + " for every OpenAI call."
-        : "Subscription is unavailable while the preview is disabled."
+      ? "Save to use " + selectedLabel + " for every OpenAI call."
       : "Applies to every OpenAI model and profile.";
-    var disabled = state.openAiAuthMethodBusy || !changed || !ready;
+    var disabled = state.openAiAuthMethodBusy || !changed;
     return '<div class="openai-auth-choice"><label class="field-label" for="openai-auth-method">Use for OpenAI calls</label>' +
       '<div class="openai-auth-choice-row"><span class="select-wrap"><select class="input" id="openai-auth-method" data-action="openai-auth-method"' + (state.openAiAuthMethodBusy ? " disabled" : "") + '>' +
-      '<option value="subscription"' + (draft === "subscription" ? " selected" : "") + (!capability.enabled && draft !== "subscription" ? " disabled" : "") + '>ChatGPT subscription</option>' +
+      '<option value="subscription"' + (draft === "subscription" ? " selected" : "") + '>ChatGPT subscription</option>' +
       '<option value="api_key"' + (draft === "api_key" ? " selected" : "") + '>OpenAI API key</option></select>' + icon("chevron-down", "select-caret") + '</span>' +
       '<button type="button" class="btn btn-primary" data-action="openai-auth-method-save"' + (disabled ? " disabled" : "") + '>' + (state.openAiAuthMethodBusy ? "Saving&hellip;" : "Save") + '</button></div>' +
       '<p class="hint">' + esc(hint) + '</p>' +
@@ -6646,14 +6641,11 @@ details[open].advanced summary::before {
     return "Subscription authorization needs attention.";
   }
 
-  function openAiSubscriptionHtml(status, capability, activeMethod, showSelection) {
+  function openAiSubscriptionHtml(status, activeMethod, showSelection) {
     var attempt = state.openAiSubscriptionAttempt;
     var busy = state.openAiSubscriptionBusy;
     var stateName = status.state || "disconnected";
-    var previewEnabled = !capability || capability.enabled === true;
-    var badge = !previewEnabled
-      ? '<span class="badge badge-off"><span class="dot"></span>Preview disabled</span>'
-      : stateName === "connected"
+    var badge = stateName === "connected"
       ? '<span class="badge badge-on"><span class="dot"></span>Connected</span>'
       : stateName === "authorizing"
         ? '<span class="badge badge-off"><span class="dot"></span>Authorizing</span>'
@@ -6664,15 +6656,7 @@ details[open].advanced summary::before {
             : '<span class="badge badge-off"><span class="dot"></span>Not connected</span>';
     var actions = "";
     var detail = "";
-    if (!previewEnabled) {
-      detail = '<p class="hint">ChatGPT subscription connections are disabled for this installation.</p>';
-      if (stateName === "connected" || stateName === "reconnect_required" || stateName === "account_change_confirmation_required") {
-        detail += status.accountFingerprint ? '<p class="hint">Stored installation account <span class="mono">' + esc(status.accountFingerprint) + '</span>.</p>' : "";
-        actions = '<button type="button" class="btn btn-danger btn-sm" data-action="openai-subscription-disconnect-open"' + (busy ? " disabled" : "") + '>Disconnect stored connection</button>';
-      } else if (stateName === "authorizing" && attempt) {
-        actions = '<button type="button" class="btn btn-ghost btn-sm" data-action="openai-subscription-cancel"' + (busy ? " disabled" : "") + '>Cancel authorization</button>';
-      }
-    } else if (stateName === "authorizing" && attempt) {
+    if (stateName === "authorizing" && attempt) {
       detail = '<div class="callout"><span><b>Open the authorization page, then enter this one-time code:</b><br>' +
         '<a href="' + esc(attempt.verificationUri) + '" target="_blank" rel="noopener noreferrer">' + esc(attempt.verificationUri) + ' &nearr;</a><br>' +
         '<span class="mono" style="font-size:1.15rem; letter-spacing:.08em;">' + esc(attempt.userCode) + '</span> ' +

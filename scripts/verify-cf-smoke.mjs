@@ -145,8 +145,8 @@ function verifyBuildArtifacts() {
     'routine admission remains off by default in the built artifact',
   );
   check(
-    config.vars?.TAG_OPENAI_SUBSCRIPTION_ENABLED === '0',
-    'OpenAI Subscription admission remains off by default in the built artifact',
+    !Object.hasOwn(config.vars ?? {}, 'TAG_OPENAI_SUBSCRIPTION_ENABLED'),
+    'built artifact exposes no OpenAI Subscription preview gate',
   );
   check(
     config.vars?.SLACK_TAG_LEDGER_CANARY_CHANNELS === '',

@@ -14,7 +14,6 @@ import {
   openAiSubscriptionModelSpecifier,
 } from '../openai-subscription/provider.ts';
 import { OpenAiSubscriptionError } from '../openai-subscription/errors.ts';
-import { requireOpenAiSubscriptionEnabled } from '../openai-subscription/feature.ts';
 import {
   canonicalCompatibilityModel,
   isInternalCompatibilityProvider,
@@ -105,7 +104,6 @@ interface RuntimeModelDependencies {
     settings: SettingsStore,
   ) => Promise<void>;
   bindSubscription?: typeof bindOpenAiSubscriptionProvider;
-  requireSubscriptionEnabled?: (env?: PlatformEnv) => void;
   loadCatalog?: (settings: SettingsStore) => Promise<ModelCatalogLoadResult>;
 }
 
@@ -159,14 +157,6 @@ export async function resolveRuntimeModel(
     );
     return { model, providerAuthRoute: 'openai_api_key' };
   }
-
-  // The rollout switch is checked after resolving the installation-wide
-  // billing authority but before touching either credential lane. Disabling
-  // the preview preserves the setting and stored tokens while making every
-  // OpenAI operation fail closed.
-  (dependencies.requireSubscriptionEnabled ?? requireOpenAiSubscriptionEnabled)(
-    dependencies.env,
-  );
 
   // Reject malformed model ids before touching credentials. The provider then
   // validates safe ids against the account-scoped cached or live catalog.

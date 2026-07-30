@@ -53,7 +53,6 @@ function appWithProviderAdmin(): {
       usage,
       adminToken: ADMIN_TOKEN,
       knownProviders: new Set(['anthropic', 'openai', 'openrouter', 'workers-ai']),
-      openAiSubscriptionCapability: () => ({ enabled: true }),
     }),
   );
   return {

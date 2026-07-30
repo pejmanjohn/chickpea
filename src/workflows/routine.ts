@@ -641,12 +641,6 @@ function runtimeFailure(
     return { failureClass: error.failureClass, publicError: error.publicError };
   }
   if (error instanceof OpenAiSubscriptionError) {
-    if (error.code === 'preview_disabled') {
-      return {
-        failureClass: 'policy_denied',
-        publicError: 'The ChatGPT Subscription preview is disabled for this installation. API-key billing was not used.',
-      };
-    }
     if (
       error.code === 'auth_reconnect_required' ||
       error.code === 'authorization_missing' ||

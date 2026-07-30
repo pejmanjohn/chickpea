@@ -4,7 +4,6 @@ import { test } from 'node:test';
 import { Hono } from 'hono';
 
 import { createAdminRoutes } from '../src/admin/routes.ts';
-import { saveOpenAiAuthMethod } from '../src/config/openai-auth.ts';
 import {
   invalidateProviderKeyCache,
   PROVIDER_KEY_SETTING_KEYS,
@@ -74,7 +73,6 @@ test('OpenAI subscription admin routes keep authorization capability browser-loc
     openAiSubscriptionProtocol: protocol,
     openAiSubscriptionNow: () => currentTime,
     openAiSubscriptionRandomBytes: (length) => new Uint8Array(length).fill(9),
-    openAiSubscriptionCapability: () => ({ enabled: true }),
   }));
 
   const startedResponse = await app.request('/admin/api/providers/openai/subscription/start', {
@@ -98,7 +96,6 @@ test('OpenAI subscription admin routes keep authorization capability browser-loc
   const observer = await app.request('/admin/api/providers/openai/subscription', { headers: auth() });
   assert.deepEqual(await observer.json(), {
     status: { state: 'authorizing', updatedAt: currentTime },
-    capability: { enabled: true },
   });
   const providerSummary = await app.request('/admin/api/providers', { headers: auth() });
   const summaryJson = JSON.stringify(await providerSummary.json());
@@ -184,100 +181,6 @@ test('OpenAI subscription admin routes keep authorization capability browser-loc
   assert.match(JSON.stringify(await apiReselected.json()), /"activeAuthMethod":"api_key"/);
 });
 
-test('default-off preview gate blocks installation selection without deleting state or affecting profiles', async (t) => {
-  let enabled = true;
-  let protocolStarts = 0;
-  const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
-  const settings = new SqliteSettingsStore(':memory:');
-  t.after(() => { config.close(); settings.close(); });
-  const app = new Hono();
-  app.route('/', createAdminRoutes({
-    store: config,
-    settings,
-    adminToken: ADMIN_TOKEN,
-    knownProviders: new Set(['openai']),
-    openAiSubscriptionCapability: () => ({ enabled }),
-    openAiSubscriptionProtocol: {
-      start: async () => {
-        protocolStarts += 1;
-        return {
-          deviceAuthId: 'pending-device-secret',
-          userCode: 'PREVIEW-CODE',
-          verificationUri: 'https://auth.openai.com/codex/device',
-          intervalMs: 5_000,
-          expiresAt: 1_800_000_060_000,
-        };
-      },
-      poll: async () => ({ state: 'pending' }),
-      exchange: async () => { throw new Error('must not exchange'); },
-    },
-    openAiSubscriptionNow: () => 1_800_000_000_000,
-    openAiSubscriptionRandomBytes: (length) => new Uint8Array(length).fill(3),
-  }));
-
-  const started = await app.request('/admin/api/providers/openai/subscription/start', {
-    method: 'POST',
-    headers: { ...auth(), 'content-type': 'application/json' },
-    body: '{}',
-  });
-  assert.equal(started.status, 200);
-  assert.equal(protocolStarts, 1);
-  enabled = false;
-
-  const blocked = await app.request('/admin/api/providers/openai/subscription/start', {
-    method: 'POST',
-    headers: { ...auth(), 'content-type': 'application/json' },
-    body: '{}',
-  });
-  assert.equal(blocked.status, 409);
-  assert.deepEqual(await blocked.json(), { error: 'preview_disabled' });
-  assert.equal(protocolStarts, 1);
-
-  const status = await app.request('/admin/api/providers/openai/subscription', { headers: auth() });
-  assert.deepEqual(await status.json(), {
-    status: { state: 'authorizing', updatedAt: 1_800_000_000_000 },
-    capability: { enabled: false },
-  });
-
-  const blockedSelection = await app.request('/admin/api/providers/openai/auth-method', {
-    method: 'PUT',
-    headers: { ...auth(), 'content-type': 'application/json' },
-    body: JSON.stringify({ method: 'subscription' }),
-  });
-  assert.equal(blockedSelection.status, 409);
-
-  await saveOpenAiAuthMethod(settings, 'subscription');
-  const modelsWhileDisabled = await app.request('/admin/api/providers/openai/models?refresh=1', {
-    headers: auth(),
-  });
-  assert.equal(modelsWhileDisabled.status, 200);
-  assert.deepEqual(await modelsWhileDisabled.json(), {
-    provider: 'openai',
-    models: OPENAI_SUBSCRIPTION_MODELS.map((id) => ({ id })),
-    cached: true,
-    source: 'bundled',
-  });
-
-  const apiKeyProfile = await app.request('/admin/api/agents', {
-    method: 'POST',
-    headers: { ...auth(), 'content-type': 'application/json' },
-    body: JSON.stringify({
-      id: 'still_api_key',
-      name: 'Still API key',
-      instructions: 'Use Platform billing only.',
-      enabled: true,
-      model: 'openai/gpt-5.4',
-    }),
-  });
-  assert.equal(apiKeyProfile.status, 201);
-
-  const disconnected = await app.request('/admin/api/providers/openai/subscription', {
-    method: 'DELETE',
-    headers: auth(),
-  });
-  assert.equal(disconnected.status, 200, 'disconnect remains available while disabled');
-});
-
 test('OpenAI method selection is installation-wide and validates connections and models', async (t) => {
   const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   const settings = new SqliteSettingsStore(':memory:');
@@ -288,7 +191,6 @@ test('OpenAI method selection is installation-wide and validates connections and
     settings,
     adminToken: ADMIN_TOKEN,
     knownProviders: new Set(['openai', 'anthropic']),
-    openAiSubscriptionCapability: () => ({ enabled: true }),
   }));
 
   const incompatible = await app.request('/admin/api/agents', {
@@ -422,7 +324,6 @@ test('OpenAI subscription admin routes map safe failure codes to stable HTTP sta
     store: config,
     settings,
     adminToken: ADMIN_TOKEN,
-    openAiSubscriptionCapability: () => ({ enabled: true }),
     openAiSubscriptionProtocol: {
       start: async () => { throw startError; },
       poll: async () => ({ state: 'pending' }),

@@ -202,7 +202,6 @@ type ProviderSummaryFixture = {
   modelCount: number | null;
   activeAuthMethod?: 'api_key' | 'subscription';
   subscription?: OpenAiSubscriptionStatusFixture;
-  subscriptionCapability?: { enabled: boolean };
 };
 type ModelProviderFixture = {
   id: string;
@@ -213,7 +212,6 @@ type ModelProviderFixture = {
     activeMethod?: 'api_key' | 'subscription';
     apiKeyConfigured: boolean;
     subscription: OpenAiSubscriptionStatusFixture;
-    subscriptionCapability?: { enabled: boolean };
   };
 };
 type EgressPolicyFixture = {
@@ -678,7 +676,7 @@ function runAdminPageHarness(
   const providerState: ProviderSummaryFixture[] =
     options.providers ?? [
       { id: 'anthropic', status: 'stored', modelCount: 10 },
-      { id: 'openai', status: 'missing', modelCount: null, activeAuthMethod: 'api_key', subscriptionCapability: { enabled: true }, subscription: { state: 'disconnected', updatedAt: 0 } },
+      { id: 'openai', status: 'missing', modelCount: null, activeAuthMethod: 'api_key', subscription: { state: 'disconnected', updatedAt: 0 } },
       { id: 'openrouter', status: 'env', modelCount: null },
       { id: 'workers-ai', status: options.cloudflare ? 'env' : 'missing', modelCount: null },
     ];
@@ -7789,7 +7787,6 @@ test('Settings selects one OpenAI method installation-wide while both connection
         status: 'stored',
         modelCount: 2,
         activeAuthMethod: 'api_key',
-        subscriptionCapability: { enabled: true },
         subscription: {
           state: 'connected',
           updatedAt: 1_800_000_005_000,
@@ -7840,7 +7837,6 @@ test('switching the OpenAI authentication method invalidates the profile picker 
         status: 'stored',
         modelCount: 1,
         activeAuthMethod: 'api_key',
-        subscriptionCapability: { enabled: true },
         subscription: {
           state: 'connected',
           updatedAt: 1_800_000_005_000,
@@ -7984,7 +7980,6 @@ test('Settings omits the OpenAI method selector when Subscription is the only co
         status: 'missing',
         modelCount: null,
         activeAuthMethod: 'subscription',
-        subscriptionCapability: { enabled: true },
         subscription: {
           state: 'connected',
           updatedAt: 1_800_000_005_000,
@@ -8008,7 +8003,7 @@ test('Settings starts and completes Subscription authorization without rendering
   const harness = runAdminPageHarness({
     providers: [
       { id: 'anthropic', status: 'stored', modelCount: 10 },
-      { id: 'openai', status: 'stored', modelCount: 2, activeAuthMethod: 'api_key', subscriptionCapability: { enabled: true }, subscription: { state: 'disconnected', updatedAt: 0 } },
+      { id: 'openai', status: 'stored', modelCount: 2, activeAuthMethod: 'api_key', subscription: { state: 'disconnected', updatedAt: 0 } },
       { id: 'openrouter', status: 'env', modelCount: null },
       { id: 'workers-ai', status: 'missing', modelCount: null },
     ],
@@ -8056,7 +8051,7 @@ test('Settings keeps an authorizing attempt non-resumable after reload and disco
   const authorizing = runAdminPageHarness({
     providers: [
       { id: 'anthropic', status: 'stored', modelCount: 10 },
-      { id: 'openai', status: 'stored', modelCount: 2, subscriptionCapability: { enabled: true }, subscription: { state: 'authorizing', updatedAt: 1_800_000_000_000 } },
+      { id: 'openai', status: 'stored', modelCount: 2, subscription: { state: 'authorizing', updatedAt: 1_800_000_000_000 } },
       { id: 'openrouter', status: 'env', modelCount: null },
       { id: 'workers-ai', status: 'missing', modelCount: null },
     ],
@@ -8075,7 +8070,6 @@ test('Settings keeps an authorizing attempt non-resumable after reload and disco
         id: 'openai',
         status: 'stored',
         modelCount: 2,
-        subscriptionCapability: { enabled: true },
         subscription: {
           state: 'connected',
           updatedAt: 1_800_000_005_000,
@@ -8103,36 +8097,6 @@ test('Settings keeps an authorizing attempt non-resumable after reload and disco
   assert.match(connected.app.innerHTML, /Not connected/);
 });
 
-test('Settings shows the disabled preview as fail-closed while preserving stored connection controls', async () => {
-  const harness = runAdminPageHarness({
-    providers: [
-      { id: 'anthropic', status: 'missing', modelCount: null },
-      {
-        id: 'openai',
-        status: 'stored',
-        modelCount: 2,
-        subscriptionCapability: { enabled: false },
-        subscription: {
-          state: 'connected',
-          updatedAt: 1_800_000_005_000,
-          accountFingerprint: 'oas_safe_fixture',
-          connectedAt: 1_800_000_005_000,
-        },
-      },
-      { id: 'openrouter', status: 'missing', modelCount: null },
-      { id: 'workers-ai', status: 'missing', modelCount: null },
-    ],
-  });
-  await flushAsync();
-  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'open-settings' }) });
-  await flushAsync();
-
-  assert.match(harness.app.innerHTML, /Preview disabled/);
-  assert.match(harness.app.innerHTML, /ChatGPT subscription connections are disabled/);
-  assert.match(harness.app.innerHTML, /Disconnect stored connection/);
-  assert.doesNotMatch(harness.app.innerHTML, /data-action="openai-subscription-start"/);
-});
-
 test('OpenAI profiles contain only the model choice and do not carry an auth-method selector', async () => {
   const harness = runAdminPageHarness({
     assignments: [
@@ -8157,7 +8121,6 @@ test('OpenAI profiles contain only the model choice and do not carry an auth-met
         authMethods: {
           activeMethod: 'subscription',
           apiKeyConfigured: true,
-          subscriptionCapability: { enabled: true },
           subscription: {
             state: 'connected',
             updatedAt: 1_800_000_005_000,
@@ -8179,32 +8142,6 @@ test('OpenAI profiles contain only the model choice and do not carry an auth-met
   await flushAsync();
   assert.equal(harness.agentPatchBodies.length, 1);
   assert.equal(harness.agentPatchBodies[0]?.body.openaiAuthMethod, undefined);
-});
-
-test('Settings marks Subscription unavailable when the installation preview is disabled', async () => {
-  const harness = runAdminPageHarness({
-    providers: [
-      { id: 'anthropic', status: 'missing', modelCount: null },
-      {
-        id: 'openai',
-        status: 'stored',
-        modelCount: 2,
-        activeAuthMethod: 'api_key',
-        subscription: { state: 'connected', updatedAt: 1_800_000_005_000 },
-        subscriptionCapability: { enabled: false },
-      },
-      { id: 'openrouter', status: 'missing', modelCount: null },
-      { id: 'workers-ai', status: 'missing', modelCount: null },
-    ],
-  });
-  await flushAsync();
-  harness.listeners.click?.({
-    target: actionTarget({ 'data-action': 'open-settings' }),
-  });
-  await flushAsync();
-
-  assert.match(harness.app.innerHTML, /<option value="subscription" disabled>ChatGPT subscription<\/option>/);
-  assert.doesNotMatch(harness.app.innerHTML, /profile-openai-auth/);
 });
 
 test('Settings surfaces a rejected key verbatim in the raw-error block and stores nothing', async () => {
