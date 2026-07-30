@@ -766,6 +766,18 @@ test('client-routed admin paths serve the SPA page and POST login keeps a safe d
     assert.equal(channelsHub.status, 200);
     assert.match(await channelsHub.text(), /Chickpea/);
 
+    const retiredSessionsIndex = await app.request('/admin/sessions', {
+      headers: auth(ADMIN_TOKEN),
+    });
+    assert.equal(retiredSessionsIndex.status, 302);
+    assert.equal(retiredSessionsIndex.headers.get('location'), '/admin/channels');
+
+    const retiredSessionsPage = await app.request('/admin/sessions/run_legacy', {
+      headers: auth(ADMIN_TOKEN),
+    });
+    assert.equal(retiredSessionsPage.status, 302);
+    assert.equal(retiredSessionsPage.headers.get('location'), '/admin/channels');
+
     // A body-authenticated login can return to the same client-routed path.
     const login = await app.request('/admin/login', {
       method: 'POST',

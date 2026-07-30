@@ -26,6 +26,8 @@ export interface ShadowWorkLifecycleOptions {
   onGap?: (stage: ShadowLifecycleStage) => void;
   /** Legacy observes gaps; ledger authority must fail closed on every gap. */
   mode?: 'observe' | 'enforce';
+  /** Legacy-only budget so shadow writes cannot delay the established path. */
+  observeWriteBudgetMs?: number;
 }
 
 export type ShadowLifecycleStage =
@@ -61,6 +63,10 @@ export class ShadowWorkLifecycle {
     this.now = options.now ?? Date.now;
     this.fencingToken = options.fencingToken ?? options.attemptNumber;
     this.executionId = shadowRunExecutionId(options.runId, options.attemptNumber);
+  }
+
+  get hasExecution(): boolean {
+    return this.executionCreated;
   }
 
   async prepareExecution(preparedInput: string): Promise<string | undefined> {
@@ -228,7 +234,15 @@ export class ShadowWorkLifecycle {
   private async observe(stage: ShadowLifecycleStage, write: () => Promise<unknown>): Promise<boolean> {
     if (!this.usable) return false;
     try {
-      await write();
+      if (this.options.mode === 'enforce') {
+        await write();
+      } else {
+        const recorded = await withinBudget(
+          write(),
+          boundedObserveBudget(this.options.observeWriteBudgetMs),
+        );
+        if (!recorded) throw new Error('shadow_write_budget_exceeded');
+      }
       return true;
     } catch (error) {
       this.usable = false;
@@ -238,4 +252,23 @@ export class ShadowWorkLifecycle {
       return false;
     }
   }
+}
+
+async function withinBudget(promise: Promise<unknown>, budgetMs: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise.then(() => true, () => false),
+      new Promise<false>((resolve) => {
+        timer = setTimeout(() => resolve(false), budgetMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+function boundedObserveBudget(value: number | undefined): number {
+  if (value === undefined) return 100;
+  return Number.isFinite(value) ? Math.max(1, Math.min(250, Math.floor(value))) : 100;
 }

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
 import { openStateDb } from '../src/state/node-state-db.ts';
@@ -22,6 +23,13 @@ test('Run body retention defaults to 30 days and fails closed outside 1-365', ()
       value,
     );
   }
+});
+
+test('Cloudflare deployment exposes the canonical Run body retention control', () => {
+  const wrangler = readFileSync(new URL('../wrangler.jsonc', import.meta.url), 'utf8');
+  const devVars = readFileSync(new URL('../.dev.vars.example', import.meta.url), 'utf8');
+  assert.match(wrangler, /"TAG_RUN_BODY_RETENTION_DAYS"\s*:\s*"30"/);
+  assert.match(devVars, /^TAG_RUN_BODY_RETENTION_DAYS="30"$/m);
 });
 
 test('content records an immutable expiry, denies reads at expiry, and purges bodies idempotently', () => {

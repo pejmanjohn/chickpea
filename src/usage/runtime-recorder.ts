@@ -49,10 +49,12 @@ export class InteractiveUsageRecorder {
   private terminalInput: RecordUsageTerminalInput | undefined;
   private repairAttempted = false;
   private needsRepair = false;
+  private runExecutionId: string | undefined;
 
   constructor(private readonly options: InteractiveUsageRecorderOptions) {
     this.now = options.now ?? Date.now;
     this.budgetMs = boundedBudget(options.writeBudgetMs);
+    this.runExecutionId = options.runExecutionId;
     const requested = splitModelSpecifier(options.requestedModel);
     const direct = options.turn.source === 'dm_message' || options.turn.channelType === 'im';
     this.admission = {
@@ -81,6 +83,10 @@ export class InteractiveUsageRecorder {
       () => this.options.store.admitOperation(this.admission),
     );
     this.needsRepair ||= outcome !== 'recorded';
+  }
+
+  linkRunExecution(runExecutionId: string): void {
+    if (!this.terminalInput) this.runExecutionId = runExecutionId;
   }
 
   async recordSuccess(result: AgentDispatchResult): Promise<void> {
@@ -144,19 +150,13 @@ export class InteractiveUsageRecorder {
     phase: UsagePersistencePhase,
     write: () => Promise<unknown>,
   ): Promise<UsagePersistenceOutcome> {
-    const outcome = await withinBudget(write(), this.budgetMs);
-    this.options.onPersistence?.({
+    return persistUsage(
+      write(),
+      this.budgetMs,
       phase,
-      outcome,
-      executionId: this.options.executionId,
-      ...(this.options.runExecutionId
-        ? { runExecutionId: this.options.runExecutionId }
-        : {}),
-    });
-    if (outcome !== 'recorded') {
-      console.warn(`[usage] ${phase} persistence ${outcome}; model execution will continue`);
-    }
-    return outcome;
+      this.options.executionId,
+      this.options.onPersistence,
+    );
   }
 
   private baseTerminal(
@@ -177,6 +177,9 @@ export class InteractiveUsageRecorder {
     const terminal = {
       operationId: this.admission.operationId,
       executionId: this.options.executionId,
+      ...(this.runExecutionId
+        ? { runExecutionId: this.runExecutionId }
+        : {}),
       finishedAt,
       observedAt: finishedAt,
       requestedProvider: this.admission.requestedProvider,
@@ -229,10 +232,12 @@ export class RoutineUsageRecorder {
   private terminalInput: RecordUsageTerminalInput | undefined;
   private repairAttempted = false;
   private needsRepair = false;
+  private runExecutionId: string | undefined;
 
   constructor(private readonly options: RoutineUsageRecorderOptions) {
     this.now = options.now ?? Date.now;
     this.budgetMs = boundedBudget(options.writeBudgetMs);
+    this.runExecutionId = options.runExecutionId;
     const requested = splitModelSpecifier(options.requestedModel);
     this.admission = {
       operationId: options.operationId,
@@ -268,6 +273,10 @@ export class RoutineUsageRecorder {
     this.needsRepair ||= outcome !== 'recorded';
   }
 
+  linkRunExecution(runExecutionId: string): void {
+    if (!this.terminalInput) this.runExecutionId = runExecutionId;
+  }
+
   async recordTerminal(input: {
     status: UsageTerminalStatus;
     usage?: RoutineReportedUsage | null;
@@ -283,8 +292,8 @@ export class RoutineUsageRecorder {
     const terminal = {
       operationId: this.admission.operationId,
       executionId: this.options.executionId,
-      ...(this.options.runExecutionId
-        ? { runExecutionId: this.options.runExecutionId }
+      ...(this.runExecutionId
+        ? { runExecutionId: this.runExecutionId }
         : {}),
       status: input.status,
       finishedAt,

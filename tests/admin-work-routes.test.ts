@@ -29,7 +29,7 @@ test('Sessions routes are authenticated and cursor pagination is stable across n
     const firstBody = await first.json() as Record<string, any>;
     assert.equal(firstBody.items[0].runId, 'run_page_b');
     assert.equal(firstBody.items[0].contentAccess, 'public');
-    assert.match(firstBody.items[0].deepLink, /^\/admin\/sessions\/run_page_b$/);
+    assert.equal(Object.hasOwn(firstBody.items[0], 'deepLink'), false);
 
     await seedRun(work, 'page_c', NOW + 2);
     const second = await app.request(

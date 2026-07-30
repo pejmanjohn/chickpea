@@ -53,6 +53,22 @@ test('two Bindings on one Work block only when their ordering keys match', async
   assert.deepEqual(new Set([claimA?.run.id, claimB?.run.id]), new Set([first.run.id, second.run.id]));
 });
 
+test('an unfinished legacy Run cannot block a later ledger Run on the same ordering key', async (t) => {
+  const store = new SqliteWorkStore(':memory:', { now: () => NOW });
+  t.after(() => store.close());
+  const legacyInput = submission('legacy', 'promoted-channel', NOW);
+  legacyInput.execution.authority = 'legacy';
+  const legacy = await submitRun(store, legacyInput);
+  const ledger = await submitRun(store, submission('ledger', 'promoted-channel', NOW + 1));
+
+  const claim = await store.claimNextInteractiveRun({
+    ownerId: 'driver_promoted', authorityEpoch: 1, leaseDurationMs: 30_000, claimedAt: NOW + 2,
+  });
+
+  assert.equal((await store.getRun(legacy.run.id))?.status, 'admitted');
+  assert.equal(claim?.run.id, ledger.run.id);
+});
+
 function submission(
   suffix: string,
   ordering: string,

@@ -41,6 +41,7 @@ import {
   type RunExecutionRouteInput,
   type RunId,
   type RunRecord,
+  type RunVisibilityRecord,
   type ShadowRunAdmission,
   type SafeEffectiveConfigInput,
   type WorkId,
@@ -123,6 +124,8 @@ export class WorkStoreLogic {
         return { kind: 'binding', binding: this.getBinding(request.bindingId) ?? null };
       case 'get_run':
         return { kind: 'run', run: this.getRun(request.runId) ?? null };
+      case 'get_run_visibilities':
+        return { kind: 'run_visibilities', visibilities: this.getRunVisibilities(request.runIds) };
       case 'claim_next_interactive_run':
         return { kind: 'run_claim', claim: this.claimNextInteractiveRun(request.input) ?? null };
       case 'renew_run_lease':
@@ -525,6 +528,32 @@ export class WorkStoreLogic {
     return row ? rowToRun(row) : undefined;
   }
 
+  getRunVisibilities(ids: RunId[]): RunVisibilityRecord[] {
+    if (!Array.isArray(ids) || ids.length > 100) {
+      throw workError('work_input_invalid', 'Run visibility lookup must contain at most 100 IDs.');
+    }
+    // This is an admin redaction lookup, so a malformed historical reference
+    // must be ignored rather than preventing safe visibility checks for every
+    // other row on the page.
+    const uniqueIds = [...new Set(ids)].filter((id) =>
+      typeof id === 'string' && SAFE_ID.test(id)
+    );
+    if (uniqueIds.length === 0) return [];
+    const placeholders = uniqueIds.map(() => '?').join(', ');
+    return this.db.all(
+      `SELECT r.id AS run_id,
+              w.maximum_sensitivity = 'public' AND b.source_visibility = 'public' AS is_public
+       FROM runs r
+       INNER JOIN works w ON w.id = r.work_id
+       INNER JOIN bindings b ON b.id = r.binding_id AND b.work_id = w.id
+       WHERE r.id IN (${placeholders})`,
+      ...uniqueIds,
+    ).map((row) => ({
+      runId: String(row.run_id) as RunId,
+      public: Number(row.is_public) === 1,
+    }));
+  }
+
   claimNextInteractiveRun(input: ClaimNextInteractiveRunInput): InteractiveRunClaim | undefined {
     validateClaimNextInput(input);
     return this.db.transaction(() => {
@@ -545,6 +574,8 @@ export class WorkStoreLogic {
              INNER JOIN bindings prior_binding ON prior_binding.id = prior.binding_id
              WHERE prior.id <> r.id
                AND prior_binding.ordering_key = b.ordering_key
+               AND prior.execution_authority = 'ledger'
+               AND prior.authority_epoch = r.authority_epoch
                AND prior.status <> 'settled'
                AND (
                  prior.created_at < r.created_at OR
@@ -1734,6 +1765,9 @@ export class SqliteWorkStore implements WorkStore {
   }
   async getRun(id: RunId) {
     return this.logic.getRun(id);
+  }
+  async getRunVisibilities(ids: RunId[]) {
+    return this.logic.getRunVisibilities(ids);
   }
   async claimNextInteractiveRun(input: ClaimNextInteractiveRunInput) {
     return this.logic.claimNextInteractiveRun(input);

@@ -2,9 +2,9 @@
 
 This runbook governs the channel-neutral Work ledger and durable interactive
 driver. The foundation is safe to deploy with no Slack reply change when
-`SLACK_TAG_LEDGER_CANARY_CHANNELS` is empty. Sessions becomes available to an
-authenticated admin as a redacted view of canonical Runs; operator-originated
-web sessions are not part of this release.
+`SLACK_TAG_LEDGER_CANARY_CHANNELS` is empty. Authenticated Run/session APIs
+provide a redacted projection of canonical Runs, but the Admin Sessions page is
+deferred; operator-originated web sessions are not part of this release.
 
 ## Release position
 
@@ -65,7 +65,8 @@ authority promotion.
 Deploy the dual-lane artifact with the selector empty. Run fresh Slack checks
 for a channel mention, thread continuation, DM/App Home if enabled, profile and
 channel assignment, explicit Memory controls, Routine availability behavior,
-artifact/tool behavior applicable to the selected profiles, and Admin Sessions.
+artifact/tool behavior applicable to the selected profiles, Admin navigation,
+and the retained authenticated Run/session APIs.
 This verifies production compatibility, not ledger authority.
 
 ## Gate 1: shadow soak
@@ -97,9 +98,13 @@ Routine creation in a canary channel. Confirm installation egress is either
 legacy. The current canary intentionally bypasses that Slack pre-parser.
 Explicit Memory and Routine commands continue on legacy.
 
+Before adding a channel to the selector, verify its binding has no non-settled
+legacy Run. Legacy Runs never become ledger-executable and do not block the
+ledger lane, but this precondition keeps the canary evidence easy to interpret.
+
 Run at least 25 authoritative Runs for at least 24 hours. Verify one RunExecution
 per model attempt, one delivered Slack response, persisted approved output and
-rendered payload, correct Sessions authority/delivery display, no private body
+rendered payload, correct Run authority/delivery API evidence, no private body
 in list/detail/audit/log output, restart recovery, and no cross-lane claiming.
 
 ## Selector rollback
@@ -112,12 +117,20 @@ Selector rollback always precedes binary rollback:
    immutable authority and epoch.
 4. Disable new Routine scheduling/run-now admission, or use a separately proven
    compatibility-only Routine path, before measuring the drain.
-5. Inspect Sessions/integrity evidence for queued, runnable, in-flight,
+5. Inspect Run API/integrity evidence for queued, runnable, in-flight,
    `recovery_required`, unknown-delivery, or otherwise incompatible Runs.
 6. Reconcile an ambiguous Run only from durable authoritative evidence. If that
-   is impossible, use the authenticated same-origin quarantine action, recording
-   the admin credential identity, claimed operator label, server-derived auth
-   origin, and safe reason. Quarantine preserves ambiguity and never replays.
+   is impossible, quarantine it through the retained authenticated API. Use a
+   unique idempotency key and a body-free reason code; quarantine preserves
+   ambiguity and never replays:
+
+   ```bash
+   curl -X POST "$CHICKPEA_URL/admin/api/sessions/$RUN_ID/quarantine" \
+     -H "Authorization: Bearer $TAG_ADMIN_TOKEN" \
+     -H "Content-Type: application/json" \
+     -H "Idempotency-Key: quarantine-$RUN_ID-1" \
+     --data '{"confirm":true,"operatorLabel":"On-call operator","safeReasonCode":"accepted_unknown"}'
+   ```
 
 Clearing the selector does not cancel, duplicate, or transfer an existing Run.
 Never deploy the prior binary merely because the additive schema is readable.

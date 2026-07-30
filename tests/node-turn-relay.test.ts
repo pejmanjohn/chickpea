@@ -7,13 +7,55 @@ import { test } from 'node:test';
 import type { WebClient } from '@slack/web-api';
 
 import type { ResolvedAssignment } from '../src/config/types.ts';
-import { SqliteSlackStateStore } from '../src/slack/claim-store.ts';
+import { SqliteSlackStateStore, type SlackStateStore } from '../src/slack/claim-store.ts';
 import type { LedgerSlackTurnExecutor } from '../src/slack/ledger-turn-driver.ts';
-import { drainNodeTurnRelayOnce } from '../src/slack/node-turn-relay.ts';
+import { drainNodeTurnRelayOnce, wakeNodeTurnRelay } from '../src/slack/node-turn-relay.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { prepareSlackShadowAdmission } from '../src/slack/work-admission.ts';
 import { ShadowWorkLifecycle } from '../src/work/lifecycle.ts';
 import { SqliteWorkStore } from '../src/work/store.ts';
+import type { WorkStore } from '../src/work/types.ts';
+
+test('a wake admitted during a Node drain starts a follow-up drain immediately', async () => {
+  const jobs = [relayJob('first')];
+  const executions: string[] = [];
+  let releaseFirst!: () => void;
+  let markFirstStarted!: () => void;
+  const sawFirst = new Promise<void>((resolve) => { markFirstStarted = resolve; });
+  const holdFirst = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  const state = {
+    listPendingTurns: async () => [...jobs],
+    recordTurnAttempt: async () => true,
+    markTurnDelivered: async (id: string) => {
+      const index = jobs.findIndex((job) => job.id === id);
+      if (index >= 0) jobs.splice(index, 1);
+      return true;
+    },
+    discardTurn: async () => true,
+    release: async () => undefined,
+  } as unknown as SlackStateStore;
+  const options = {
+    state,
+    work: {} as WorkStore,
+    executeTurn: (async (_turn, _assignment, _env, runOptions) => {
+      const id = runOptions?.turnId ?? 'missing';
+      executions.push(id);
+      if (id.endsWith('first')) {
+        markFirstStarted();
+        await holdFirst;
+      }
+    }) as LedgerSlackTurnExecutor,
+  };
+  const firstWake = wakeNodeTurnRelay(undefined, options);
+  await sawFirst;
+  jobs.push(relayJob('second'));
+  const secondWake = wakeNodeTurnRelay(undefined, options);
+  releaseFirst();
+  await Promise.all([firstWake, secondWake]);
+
+  assert.deepEqual(executions, ['msg_relay_first', 'msg_relay_second']);
+  assert.equal(jobs.length, 0);
+});
 
 test('the Node relay drains a ledger Run once and tombstones its adapter job', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'chickpea-node-ledger-relay-'));
@@ -118,5 +160,16 @@ function assignment(): ResolvedAssignment {
       id: 'agent_node_relay', name: 'Node relay', instructions: 'Help.', enabled: true,
       skills: [], mcpServers: [], apiConnections: [], repositories: [],
     },
+  };
+}
+
+function relayJob(suffix: string) {
+  return {
+    id: `msg_relay_${suffix}`,
+    evtKey: `evt_relay_${suffix}`,
+    msgKey: `msg_relay_${suffix}`,
+    turn: { ...turn(), eventId: `Ev_${suffix}`, messageTs: `100.${suffix === 'first' ? '001' : '002'}` },
+    assignment: assignment(),
+    attempts: 0,
   };
 }

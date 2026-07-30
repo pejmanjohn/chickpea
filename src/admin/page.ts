@@ -7,7 +7,9 @@ const ADMIN_FAVICON = `<link rel="icon" type="image/svg+xml" href="data:image/sv
 const SLACK_LOGO_DATA_URL =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAAA/CAMAAABnwz74AAAAn1BMVEX///+j3++a2+rw5M3n2tOk0K7L3L54xrXI0sftyHSPxZqLwZSp07HI6/RkzOpz0uyJ09tmtHlirnNwtH59z+ZZyOpdrXFbqm1dsnOPxppNxej23qjupqThYIDldY3yr7rodJPx0Ibz0YreSW3dO2XjMV7kVnv43qzzyXbvuE/ttUXyyHfjNmPjKVrbJVXwsTvusj3aG1DbLFLhH1PvscJL5pvlAAAAAXRSTlMAQObYZgAABDtJREFUSMe9lw1vokAQhvkQVsFCEUFbRVBEQUWl9v//tpuZ3QU8bW97l9ybaAI4z843UdOeSTdAendtDizLGtiaonSdIYAN5Y2R7TjMdZyxIuDF8FD+q7zhsmACCl01wnDqRREhXqX9JI4n8Ww2USNMo0gAvNch2ccxegCEwDUVMmBEkhD5L5o2tlg8D8AHAMwchUTqfhQJROQZNgACHsCPAcgAwNAhQDxDF5QAxj1gDACKABkqAE2nInQhOAFo8gOAZvh3HlhBIBCqgDfm9T0QACCoAjAP0+nUgC/jrQOgD6qAvsZWOBGEvwZ0Hrj/Aph8DdC/0O+ALonmeDx+M+Vg6FNMehR1Q8THear3AZMewHVcFrqOZQr76F0q6nVh5BEBhknYI4BMYD/MQYFr0Xi39tG9wAlca48Al83JHggI0L0HU+lC5Bsm9sGE1gEAZrgPbAdMA/jM5yEzNZ1Fz+17rRz3AablzmVrBY6lDYwo+haA44ze0z5wTRkSKgwB8PI9wETALIbDSU8ANL0U8KPePUoihBtz+8DhgDDkpeUAn6+vR/P3d6yCbmHS+UoMGVUlZGHI0A/Xxq3LvD4ASwIfqqvPsMy2C/kWDoxFWUMeAeOdyHzqvN7JBHn3xHObcQLkHAALCiFgjLmunAV6k5GmrXx/yuRzeLO5ILKHMuKFA+oNFkQyBOEXXQ6H+os+7J6PRvB+tEfixyO41OjrOw21/ytzuVyaZjvg2jJJlnfPzQXIvFPv8WiVZlmWghJ+YwWX2aoNMllvnmidyMdplm9BeV5k/N4qL0DbneDty+pwqB51PCbCfou/L06nekd3VkVd10VRn3MOPFYX0BV1aMUR+DzJ8uJEJ54KAqxOaA6AuqHrdXW4cKMegOwP1RoykeyKFoAnJjtuD4QmX0HnYQAPElGUezAQDqDwxCSXgKLZpuYXACIcDuVGS7PWvKj7gHNRfOQc8JQADAIMskIeWNxagMgCepCUPN5WkJCrJAAgWW0loOY5yG91TWUoaulBHyAKcqHEUg52wgWwx+5K8kYS6lNqYxWqPgId4IDLpTpiFdIcCfWt2KXUF9sOkCNAEEQl5fmo6rgQnXQ6QRtlqSYAzRn18SEA2roUgF4rgQdVuRCjkHymaZaI1n4C0OzNppTqhmG/6E9bO1w9wFkCNPOpnk82AhoOaFrAT9TzoAPgOvg7AHeT9oEqoQWcOWCxL49i/uW++QMg/w2wkW1QlUqEFiBCSEo5vNC5KmEAAM1rBJw6wAEBlRrgXNcIgO4WgIvYAIdqo/CPRQLqFnDhk0cAhb5IdgRAUQiLEidYbEUlD7LzTQLyzwSrcJGEaj36M0DLtjdOaM601vcQw5UvIaUq4HuhaW44EGLA9yXN8fVaKXbjKNuhB9tM9k3KF7OqPRA+6d2YtH23WMIiWC+UOplkDkB3P98PBs+P/wV/Ze9+4cPjFgAAAABJRU5ErkJggg==';
 
-export function renderAdminPage(options: { usageAdminUi?: boolean } = {}): string {
+export function renderAdminPage(
+  options: { usageAdminUi?: boolean } = {},
+): string {
   // Target-aware chrome: the header chip and the provider-hint copy differ
   // between the Node and Cloudflare runtimes. Resolved server-side (the inline
   // script has no runtime-target check of its own) and interpolated as plain
@@ -1658,40 +1660,6 @@ details[open].advanced summary::before {
   .usage-contract { align-items: flex-start; flex-direction: column; }
 }
 
-/* ---- Sessions: canonical Run inspector -------------------------------- */
-.sessions-main { gap: 18px; max-width: 1100px; }
-.sessions-head { align-items: end; display: flex; flex-wrap: wrap; gap: 14px; justify-content: space-between; }
-.sessions-filters { align-items: end; display: grid; gap: 10px; grid-template-columns: repeat(2, minmax(150px, 200px)) auto; }
-.sessions-list { border: 1.5px solid var(--line); border-radius: 14px; display: flex; flex-direction: column; overflow: hidden; }
-.session-row { align-items: center; background: var(--bg); border: 0; border-top: 1px solid var(--line); color: var(--text-2); cursor: pointer; display: grid; gap: 10px; grid-template-columns: minmax(180px, 1.4fr) repeat(3, minmax(90px, .7fr)); padding: 13px 14px; text-align: left; }
-.session-row:first-child { border-top: 0; }
-.session-row:hover { background: #fff9e9; }
-.session-row:focus-visible { outline: 2px solid var(--ember-press); outline-offset: -2px; }
-.session-row-title { color: var(--text); font-family: var(--mono); font-size: .75rem; font-weight: 700; overflow-wrap: anywhere; }
-.session-detail-grid { display: grid; gap: 12px; grid-template-columns: repeat(4, minmax(0, 1fr)); }
-.session-detail-card { background: var(--well); border-radius: 13px; padding: 12px; }
-.session-detail-card strong, .session-detail-card span { display: block; overflow-wrap: anywhere; }
-.session-content { display: grid; gap: 12px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.session-content-card { border: 1.5px solid var(--line); border-radius: 13px; min-width: 0; padding: 12px; }
-.session-content-card pre { color: var(--text); font-family: var(--mono); font-size: .71875rem; margin-top: 8px; max-height: 260px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
-.session-timeline { border-left: 2px solid var(--line-strong); display: flex; flex-direction: column; gap: 12px; margin-left: 8px; padding-left: 18px; }
-.session-event { position: relative; }
-.session-event::before { background: var(--ember); border: 2px solid var(--bg); border-radius: 50%; content: ""; height: 10px; left: -24px; position: absolute; top: 5px; width: 10px; }
-.session-event strong, .session-event span { display: block; overflow-wrap: anywhere; }
-.session-private { background: var(--well); border-left: 4px solid var(--ember); border-radius: 12px; padding: 14px; }
-.session-recovery { background: var(--danger-well); border-radius: 12px; display: flex; gap: 12px; justify-content: space-between; padding: 14px; }
-@media (max-width: 900px) {
-  .session-detail-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .session-row { grid-template-columns: minmax(160px, 1.4fr) repeat(2, minmax(80px, .7fr)); }
-  .session-row > :last-child { display: none; }
-}
-@media (max-width: 640px) {
-  .sessions-filters, .session-content, .session-detail-grid { grid-template-columns: 1fr; }
-  .session-row { grid-template-columns: 1fr; }
-  .session-row > :not(:first-child) { display: block; }
-  .session-recovery { align-items: flex-start; flex-direction: column; }
-}
-
 </style>
 </head>
 <body>
@@ -1705,7 +1673,6 @@ details[open].advanced summary::before {
     <div class="actions">
       <button type="button" class="btn btn-soft" disabled>Channels</button>
       <button type="button" class="btn btn-soft" disabled>Profiles</button>
-      <button type="button" class="btn btn-soft" disabled>Sessions</button>
       <button type="button" class="btn btn-soft" disabled>Settings</button>
     </div>
   </header>
@@ -1946,23 +1913,6 @@ details[open].advanced summary::before {
     scheduledLimits: null,
     scheduledFilters: { workspaceId: "", channelId: "", state: "", status: "" },
     scheduledDeleteConfirm: false,
-    sessions: null,
-    sessionsNextCursor: null,
-    sessionsLoading: false,
-    sessionsLoadingMore: false,
-    sessionsError: "",
-    sessionsFilters: { kind: "", status: "" },
-    sessionSelection: "",
-    sessionDetail: null,
-    sessionDetailLoading: false,
-    sessionDetailError: "",
-    sessionRequestId: 0,
-    sessionQuarantineOpen: false,
-    sessionQuarantineLabel: "",
-    sessionQuarantineReason: "accepted_unknown",
-    sessionQuarantineBusy: false,
-    sessionQuarantineError: "",
-    sessionQuarantineKey: "",
     usageOverview: null,
     usageMetadata: null,
     usageOperations: null,
@@ -2220,7 +2170,6 @@ details[open].advanced summary::before {
   var routeReady = false;
 
   function canonicalPath() {
-    if (state.view === "sessions") return "/admin/sessions" + (state.sessionSelection ? "/" + encodeURIComponent(state.sessionSelection) : "");
     if (state.view === "usage") return "/admin/usage";
     if (state.view === "settings") return "/admin/settings/" + encodeURIComponent(state.settingsSection);
     if (state.view === "audit") {
@@ -2258,7 +2207,6 @@ details[open].advanced summary::before {
       try { return decodeURIComponent(part); } catch (err) { return part; }
     });
     state.leavePrompt = null;
-    if (parts[1] === "sessions") { openSessions(parts[2] || ""); return; }
     if (parts[1] === "usage" && USAGE_ADMIN_UI) { applyUsageQuery(location.search || ""); openUsage(); return; }
     if (parts[1] === "settings") { openSettings(parts[2] || "providers"); return; }
     if (parts[1] === "audit-logs") {
@@ -2298,7 +2246,7 @@ details[open].advanced summary::before {
 
   function render() {
     var app = document.getElementById("app");
-    app.innerHTML = topbarHtml() + '<div class="body">' + railHtml() + mainHtml() + "</div>" + leavePromptModalHtml() + connectionRemoveModalHtml() + apiConnectionRemoveModalHtml() + slackDisconnectModalHtml() + githubDisconnectModalHtml() + memoryDeleteModalHtml() + scheduledRoutineSummaryModalHtml() + scheduledDeleteModalHtml() + sessionQuarantineModalHtml();
+    app.innerHTML = topbarHtml() + '<div class="body">' + railHtml() + mainHtml() + "</div>" + leavePromptModalHtml() + connectionRemoveModalHtml() + apiConnectionRemoveModalHtml() + slackDisconnectModalHtml() + githubDisconnectModalHtml() + memoryDeleteModalHtml() + scheduledRoutineSummaryModalHtml() + scheduledDeleteModalHtml();
     // The disconnect confirmation is a true modal: keep the rest of the app
     // out of the focus and accessibility trees until it is resolved.
     if (state.slackDisconnectConfirm) {
@@ -2350,15 +2298,6 @@ details[open].advanced summary::before {
       var routineDeleteCancel = document.querySelector('[data-action="scheduled-delete-cancel"]');
       if (routineDeleteCancel && routineDeleteCancel.focus) routineDeleteCancel.focus();
     }
-    if (state.sessionQuarantineOpen) {
-      [document.querySelector(".topbar"), document.querySelector(".body")].forEach(function (region) {
-        if (!region) return;
-        region.inert = true;
-        if (region.setAttribute) region.setAttribute("aria-hidden", "true");
-      });
-      var sessionQuarantineFocus = document.querySelector(state.sessionQuarantineBusy ? '[data-action="session-quarantine-cancel"]' : '[data-action="session-quarantine-label"]');
-      if (sessionQuarantineFocus && sessionQuarantineFocus.focus) sessionQuarantineFocus.focus();
-    }
     syncUrl();
   }
 
@@ -2394,7 +2333,6 @@ details[open].advanced summary::before {
       '<div class="actions actions-list">' + connectedBadge +
       '<button type="button" class="btn btn-soft' + (primarySection() === "channels" ? " nav-active" : "") + '" data-action="open-channels" data-section-switcher="true">Channels</button>' +
       '<button type="button" class="btn btn-soft' + (primarySection() === "profiles" ? " nav-active" : "") + '" data-action="open-profiles" data-section-switcher="true">Profiles</button>' +
-      '<button type="button" class="btn btn-soft' + (primarySection() === "sessions" ? " nav-active" : "") + '" data-action="open-sessions" data-section-switcher="true">Sessions</button>' +
       (USAGE_ADMIN_UI ? '<button type="button" class="btn btn-soft' + (primarySection() === "usage" ? " nav-active" : "") + '" data-action="open-usage" data-section-switcher="true">Usage</button>' : '') +
       '<button type="button" class="btn btn-soft' + (primarySection() === "settings" ? " nav-active" : "") + '" data-action="open-settings" data-section-switcher="true">Settings</button></div>' +
       "</header>";
@@ -2408,8 +2346,7 @@ details[open].advanced summary::before {
     var active = primarySection();
     var sections = [
       { id: "channels", label: "Channels", action: "open-channels" },
-      { id: "profiles", label: "Profiles", action: "open-profiles" },
-      { id: "sessions", label: "Sessions", action: "open-sessions" }
+      { id: "profiles", label: "Profiles", action: "open-profiles" }
     ];
     if (USAGE_ADMIN_UI) sections.push({ id: "usage", label: "Usage", action: "open-usage" });
     sections.push({ id: "settings", label: "Settings", action: "open-settings" });
@@ -2430,7 +2367,6 @@ details[open].advanced summary::before {
   }
 
   function railHtml() {
-    if (state.view === "sessions") return sessionsRailHtml();
     if (state.view === "usage") return usageRailHtml();
     if (state.view === "profiles") return profilesRailHtml();
     if (state.view === "settings") return settingsRailHtml();
@@ -2485,13 +2421,6 @@ details[open].advanced summary::before {
     return '<nav class="rail" aria-label="Usage"><div class="rail-context">' +
       '<div class="rail-head"><span class="section-eyebrow">Usage</span></div>' +
       '<button type="button" class="chan-item active" data-action="open-usage"><span class="chan-name">Overview</span><span class="chan-meta">Spend and usage</span></button>' +
-      '</div>' + sectionSwitcherHtml() + '</nav>';
-  }
-
-  function sessionsRailHtml() {
-    return '<nav class="rail" aria-label="Sessions"><div class="rail-context">' +
-      '<div class="rail-head"><span class="section-eyebrow">Sessions</span></div>' +
-      '<button type="button" class="chan-item active" data-action="open-sessions"><span class="chan-name">All sessions</span><span class="chan-meta">Runs and delivery</span></button>' +
       '</div>' + sectionSwitcherHtml() + '</nav>';
   }
 
@@ -2817,7 +2746,8 @@ details[open].advanced summary::before {
     var groups = summary.groups || [];
     if (!groups.length) return '<div class="empty"><p class="hint">No breakdown data for this period.</p></div>';
     var rows = groups.map(function (group) {
-      var label = state.usageGroupBy === "channel" && group.label !== "Direct message" && !String(group.label).startsWith("#") ? "#" + group.label : group.label;
+      var label = group.label || (state.usageGroupBy === "channel" && group.key === "direct_message" ? "Direct message" : group.key) || "Unknown";
+      label = state.usageGroupBy === "channel" && label !== "Direct message" && !String(label).startsWith("#") ? "#" + label : label;
       return '<tr><td><button type="button" class="usage-row-action" data-action="usage-group-filter" data-value="' + esc(group.key) + '" data-label="' + esc(label) + '">' + esc(label) + '</button></td>' +
         '<td class="number">' + usageInt(group.operationCount) + '</td><td class="number">' + usageInt(group.inputTokens) + '</td>' +
         '<td class="number">' + usageInt(group.outputTokens) + '</td><td class="number">' + usageInt(group.totalTokens) + '</td>' +
@@ -2881,231 +2811,7 @@ details[open].advanced summary::before {
       '<section class="usage-section"><div class="usage-section-head"><div><h2 class="section-title">Recent ' + usageActivityLabelHtml("activity") + '</h2><p class="hint">Hover over total tokens to see the input and output split.</p></div>' + filter + '</div>' + usageOperationsHtml() + '</section>';
   }
 
-  function sessionsQueryPath(cursor) {
-    var params = new URLSearchParams();
-    params.set("limit", "40");
-    if (state.sessionsFilters.kind) params.set("kind", state.sessionsFilters.kind);
-    if (state.sessionsFilters.status) params.set("status", state.sessionsFilters.status);
-    if (cursor) params.set("cursor", cursor);
-    return "/admin/api/sessions?" + params.toString();
-  }
-
-  function openSessions(runId) {
-    state.view = "sessions";
-    state.sessionSelection = runId || "";
-    state.sessionQuarantineOpen = false;
-    state.sessionQuarantineError = "";
-    if (state.sessionSelection) loadSessionDetail(state.sessionSelection);
-    else if (!state.sessions) loadSessions(true);
-    render();
-  }
-
-  function loadSessions(reset) {
-    var requestId = ++state.sessionRequestId;
-    if (reset) {
-      state.sessionsLoading = true;
-      state.sessions = null;
-      state.sessionsNextCursor = null;
-    } else {
-      if (!state.sessionsNextCursor || state.sessionsLoadingMore) return;
-      state.sessionsLoadingMore = true;
-    }
-    state.sessionsError = "";
-    var cursor = reset ? "" : state.sessionsNextCursor;
-    api(sessionsQueryPath(cursor)).then(function (body) {
-      if (requestId !== state.sessionRequestId) return;
-      var items = body.items || [];
-      state.sessions = reset ? items : (state.sessions || []).concat(items);
-      state.sessionsNextCursor = body.nextCursor || null;
-      state.sessionsLoading = false;
-      state.sessionsLoadingMore = false;
-      render();
-      focusSessionsHeading();
-    }).catch(function (error) {
-      if (requestId !== state.sessionRequestId) return;
-      state.sessionsLoading = false;
-      state.sessionsLoadingMore = false;
-      state.sessionsError = error.serverMessage || error.message || "Sessions could not be loaded.";
-      render();
-      focusSessionsError();
-    });
-  }
-
-  function loadSessionDetail(runId) {
-    var requestId = ++state.sessionRequestId;
-    state.sessionDetailLoading = true;
-    state.sessionDetailError = "";
-    state.sessionDetail = null;
-    api("/admin/api/sessions/" + encodeURIComponent(runId)).then(function (body) {
-      if (requestId !== state.sessionRequestId || state.sessionSelection !== runId) return;
-      state.sessionDetail = body;
-      state.sessionDetailLoading = false;
-      render();
-      focusSessionsHeading();
-    }).catch(function (error) {
-      if (requestId !== state.sessionRequestId || state.sessionSelection !== runId) return;
-      state.sessionDetailLoading = false;
-      state.sessionDetailError = error.status === 404
-        ? "This session no longer exists."
-        : error.serverMessage || error.message || "Session detail is unavailable.";
-      render();
-      focusSessionsError();
-    });
-  }
-
-  function focusSessionsHeading() {
-    var heading = document.querySelector('[data-role="sessions-heading"]');
-    if (heading && heading.focus) heading.focus();
-  }
-
-  function focusSessionsError() {
-    var error = document.querySelector('[data-role="sessions-error"]');
-    if (error && error.focus) error.focus();
-  }
-
-  function sessionLabel(value) {
-    return String(value || "unknown").replace(/_/g, " ");
-  }
-
-  function sessionBadge(value) {
-    var label = sessionLabel(value);
-    var positive = value === "settled" || value === "succeeded" || value === "delivered";
-    return '<span class="badge ' + (positive ? 'badge-on' : 'badge-off') + '"><span class="dot"></span>' + esc(label) + '</span>';
-  }
-
-  function sessionsListHtml() {
-    if (state.sessionsLoading && !state.sessions) {
-      return '<div class="empty" role="status" aria-live="polite"><p class="hint">Loading sessions&hellip;</p></div>';
-    }
-    if (state.sessionsError && !state.sessions) {
-      return '<div class="empty"><p class="field-error" role="alert" tabindex="-1" data-role="sessions-error">' + esc(state.sessionsError) + '</p><button type="button" class="btn btn-ghost" data-action="sessions-retry">Retry</button></div>';
-    }
-    var items = state.sessions || [];
-    if (!items.length) {
-      var filtered = !!state.sessionsFilters.kind || !!state.sessionsFilters.status;
-      return '<div class="empty"><p class="field-label">' + (filtered ? 'No sessions match these filters.' : 'No sessions yet.') + '</p><p class="hint">' + (filtered ? 'Clear or change a filter to see other Runs.' : 'Runs will appear here after Chickpea receives work.') + '</p></div>';
-    }
-    var rows = items.map(function (item) {
-      return '<button type="button" class="session-row" data-action="select-session" data-run="' + esc(item.runId) + '">' +
-        '<span><span class="session-row-title">' + esc(item.runId) + '</span><span class="hint">' + esc(new Date(item.createdAt).toLocaleString()) + ' · ' + esc(sessionLabel(item.kind)) + '</span></span>' +
-        '<span>' + sessionBadge(item.status) + '</span>' +
-        '<span><span class="field-label">Delivery</span><span class="hint">' + esc(sessionLabel(item.deliveryStatus)) + '</span></span>' +
-        '<span><span class="field-label">Content</span><span class="hint">' + esc(sessionLabel(item.contentAccess)) + '</span></span></button>';
-    }).join("");
-    var more = state.sessionsNextCursor
-      ? '<button type="button" class="btn btn-ghost" data-action="sessions-load-more"' + (state.sessionsLoadingMore ? ' disabled' : '') + '>' + (state.sessionsLoadingMore ? 'Loading&hellip;' : 'Load more') + '</button>'
-      : '';
-    var pageError = state.sessionsError
-      ? '<p class="field-error" role="alert" tabindex="-1" data-role="sessions-error">' + esc(state.sessionsError) + ' Existing rows are still available.</p>'
-      : '';
-    return '<div class="sessions-list">' + rows + '</div>' + pageError + more;
-  }
-
-  function sessionContentCard(label, value) {
-    var stateName = value && value.state ? value.state : "not_retained";
-    var body = stateName === "available"
-      ? '<pre>' + esc(value.body) + '</pre><span class="hint">Retained until ' + esc(new Date(value.expiresAt).toLocaleString()) + '</span>'
-      : '<p class="hint" role="status">' + esc(stateName === "expired" ? "Content expired under retention policy." : stateName === "private" ? "Private content is not shown." : "Content was not retained.") + '</p>';
-    return '<article class="session-content-card"><span class="field-label">' + esc(label) + '</span>' + body + '</article>';
-  }
-
-  function sessionExecutionHtml(execution) {
-    return '<article class="session-content-card"><span class="field-label">Attempt ' + esc(execution.attemptNumber) + '</span>' +
-      '<p class="hint">' + esc(execution.canonicalModel || "Model unavailable") + '</p>' +
-      '<p class="hint">Route: ' + esc(sessionLabel(execution.providerAuthRoute || "not recorded")) + '</p>' +
-      '<p class="hint">Catalog: ' + esc(execution.catalogRevision || "not recorded") + (execution.compiledProfile ? ' · ' + esc(execution.compiledProfile) : '') + '</p>' +
-      '<p class="hint">Outcome: ' + esc(sessionLabel(execution.outcome)) + (execution.safeFailureCode ? ' · ' + esc(execution.safeFailureCode) : '') + '</p></article>';
-  }
-
-  function sessionTimelineHtml(events) {
-    if (!events || !events.length) return '<div class="empty"><p class="hint">Activity unavailable.</p></div>';
-    return '<div class="session-timeline">' + events.map(function (event) {
-      var metadata = event.metadata && Object.keys(event.metadata).length ? JSON.stringify(event.metadata) : "";
-      return '<div class="session-event"><strong>' + esc(sessionLabel(event.eventType)) + '</strong><span class="hint">' + esc(new Date(event.createdAt).toLocaleString()) + ' · ' + esc(event.outcome) + '</span>' +
-        (event.reasonCode ? '<span class="hint">' + esc(event.reasonCode) + '</span>' : '') +
-        (metadata ? '<span class="mono">' + esc(metadata) + '</span>' : '') + '</div>';
-    }).join("") + '</div>';
-  }
-
-  function sessionDetailHtml() {
-    var back = '<button type="button" class="btn btn-ghost btn-sm" data-action="sessions-back">&larr; All sessions</button>';
-    if (state.sessionDetailLoading) return back + '<div class="empty" role="status" aria-live="polite"><p class="hint">Loading session detail&hellip;</p></div>';
-    if (state.sessionDetailError) return back + '<div class="empty"><p class="field-error" role="alert" tabindex="-1" data-role="sessions-error">' + esc(state.sessionDetailError) + '</p><button type="button" class="btn btn-ghost" data-action="session-detail-retry">Retry</button></div>';
-    var detail = state.sessionDetail;
-    if (!detail) return back;
-    var session = detail.session || {};
-    var heading = '<div class="sessions-head"><div><span class="section-eyebrow">Run inspector</span><h1 class="page-title mono-title" tabindex="-1" data-role="sessions-heading">' + esc(session.runId) + '</h1><p class="hint">Work ' + esc(session.workId) + ' · Binding ' + esc(session.bindingId) + '</p></div>' + sessionBadge(session.status) + '</div>';
-    var summary = '<div class="session-detail-grid">' +
-      '<div class="session-detail-card"><span class="usage-card-label">Disposition</span><strong>' + esc(sessionLabel(session.terminalDisposition || "in progress")) + '</strong></div>' +
-      '<div class="session-detail-card"><span class="usage-card-label">Delivery</span><strong>' + esc(sessionLabel(session.deliveryStatus)) + '</strong></div>' +
-      '<div class="session-detail-card"><span class="usage-card-label">Usage coverage</span><strong>' + esc(sessionLabel((detail.usage || {}).state)) + '</strong></div>' +
-      '<div class="session-detail-card"><span class="usage-card-label">Content access</span><strong>' + esc(sessionLabel(session.contentAccess)) + '</strong></div></div>';
-    var privacy = detail.projection === "redacted"
-      ? '<div class="session-private" role="status" aria-live="polite"><strong>' + esc(sessionLabel((detail.content || {}).state)) + '</strong><p class="hint">' + esc((detail.content || {}).message || "Session content is redacted.") + '</p></div>'
-      : '';
-    var content = detail.projection === "public"
-      ? '<section class="usage-section"><div><h2 class="section-title">Content</h2><p class="hint">Trigger, exact prepared input, approved output, and adapter render remain distinct.</p></div><div class="session-content">' +
-        sessionContentCard("Trigger", detail.content.trigger) + sessionContentCard("Prepared input", detail.content.preparedInput) + sessionContentCard("Approved output", detail.content.approvedOutput) + sessionContentCard("Rendered payload", detail.content.renderedPayload) + '</div></section>'
-      : '';
-    var executions = '<section class="usage-section"><div><h2 class="section-title">Execution attempts</h2><p class="hint">Canonical model and safe route evidence only; credentials and internal aliases are never shown.</p></div><div class="session-content">' +
-      ((detail.executions || []).length ? detail.executions.map(sessionExecutionHtml).join("") : '<div class="empty"><p class="hint">No execution attempt recorded.</p></div>') + '</div></section>';
-    var integrity = detail.actionIntegrity && detail.actionIntegrity.state === "integrity_error"
-      ? '<p class="field-error" role="alert">Action receipt integrity error: ' + esc(detail.actionIntegrity.reason) + '</p>'
-      : '';
-    var recovery = session.status === "recovery_required"
-      ? '<div class="session-recovery" role="status" aria-live="assertive"><div><strong>Recovery required</strong><p class="hint">Delivery or action outcome is unresolved. Ordinary execution cannot resume.</p></div><button type="button" class="btn btn-danger" data-action="session-quarantine-open">Quarantine Run</button></div>'
-      : detail.recovery ? '<p class="inline-status ok" role="status">Recovery resolved as ' + esc(sessionLabel(detail.recovery.resolutionKind)) + (detail.recovery.claimedOperatorLabel ? ' by claimed operator ' + esc(detail.recovery.claimedOperatorLabel) : '') + '.</p>' : '';
-    return back + heading + summary + privacy + recovery + content + executions + integrity +
-      '<section class="usage-section"><div><h2 class="section-title">Timeline</h2><p class="hint">Committed lifecycle, action, and delivery evidence in chronological order.</p></div>' + sessionTimelineHtml(detail.timeline) + '</section>';
-  }
-
-  function sessionsMainHtml() {
-    if (state.sessionSelection) return sessionDetailHtml();
-    var head = '<div class="sessions-head"><div><span class="section-eyebrow">Operations</span><h1 class="page-title" tabindex="-1" data-role="sessions-heading">Sessions</h1><p class="hint">Review what triggered Chickpea, what ran, and what was delivered across channels.</p></div>' +
-      '<div class="sessions-filters"><label class="field"><span class="field-label">Kind</span><select class="input" data-action="sessions-filter-kind"><option value="">All kinds</option>' + ["interactive", "routine", "operator"].map(function (value) { return '<option value="' + value + '"' + (state.sessionsFilters.kind === value ? ' selected' : '') + '>' + esc(sessionLabel(value)) + '</option>'; }).join("") + '</select></label>' +
-      '<label class="field"><span class="field-label">Status</span><select class="input" data-action="sessions-filter-status"><option value="">All statuses</option>' + ["admitted", "queued", "preparing_input", "input_ready", "executing", "response_ready", "settled", "recovery_required"].map(function (value) { return '<option value="' + value + '"' + (state.sessionsFilters.status === value ? ' selected' : '') + '>' + esc(sessionLabel(value)) + '</option>'; }).join("") + '</select></label>' +
-      '<button type="button" class="btn btn-soft" data-action="sessions-apply-filters">Apply</button></div></div>';
-    return head + sessionsListHtml();
-  }
-
-  function sessionQuarantineModalHtml() {
-    if (!state.sessionQuarantineOpen) return "";
-    return '<div class="modal-backdrop"><div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="session-quarantine-title">' +
-      '<h2 class="modal-title" id="session-quarantine-title">Quarantine this Run?</h2><p class="modal-body">This terminally settles the Run while preserving the unknown delivery or action outcome. It does not retry work.</p>' +
-      '<label class="field"><span class="field-label">Operator label</span><input class="input" value="' + esc(state.sessionQuarantineLabel) + '" data-action="session-quarantine-label" maxlength="80" autocomplete="name"></label>' +
-      '<label class="field"><span class="field-label">Reason</span><select class="input" data-action="session-quarantine-reason"><option value="accepted_unknown"' + (state.sessionQuarantineReason === "accepted_unknown" ? ' selected' : '') + '>Accept unresolved outcome</option><option value="delivery_reconciled_externally"' + (state.sessionQuarantineReason === "delivery_reconciled_externally" ? ' selected' : '') + '>Delivery reconciled externally</option><option value="effect_reconciled_externally"' + (state.sessionQuarantineReason === "effect_reconciled_externally" ? ' selected' : '') + '>Action reconciled externally</option></select></label>' +
-      (state.sessionQuarantineError ? '<p class="field-error" role="alert">' + esc(state.sessionQuarantineError) + '</p>' : '') +
-      '<p class="hint">The label is a claim. Audit attribution uses the shared admin credential identity.</p><div class="modal-foot"><button type="button" class="btn btn-ghost" data-action="session-quarantine-cancel"' + (state.sessionQuarantineBusy ? ' disabled' : '') + '>Cancel</button><span class="spacer"></span><button type="button" class="btn btn-danger" data-action="session-quarantine-confirm"' + (state.sessionQuarantineBusy || !String(state.sessionQuarantineLabel || '').trim() ? ' disabled' : '') + '>' + (state.sessionQuarantineBusy ? 'Quarantining&hellip;' : 'Quarantine permanently') + '</button></div></div></div>';
-  }
-
-  function quarantineSession() {
-    if (!state.sessionSelection || state.sessionQuarantineBusy) return;
-    var label = String(state.sessionQuarantineLabel || "").trim();
-    if (!label) { state.sessionQuarantineError = "Operator label is required."; render(); return; }
-    state.sessionQuarantineBusy = true;
-    state.sessionQuarantineError = "";
-    render();
-    api("/admin/api/sessions/" + encodeURIComponent(state.sessionSelection) + "/quarantine", {
-      method: "POST",
-      headers: { "content-type": "application/json", "idempotency-key": state.sessionQuarantineKey },
-      body: JSON.stringify({ confirm: true, operatorLabel: label, safeReasonCode: state.sessionQuarantineReason })
-    }).then(function () {
-      state.sessionQuarantineBusy = false;
-      state.sessionQuarantineOpen = false;
-      state.sessionQuarantineError = "";
-      state.sessions = null;
-      loadSessionDetail(state.sessionSelection);
-    }).catch(function (error) {
-      state.sessionQuarantineBusy = false;
-      state.sessionQuarantineError = error.serverMessage || error.message || "The Run could not be quarantined.";
-      render();
-    });
-  }
-
   function mainHtml() {
-    if (state.view === "sessions") {
-      return '<main class="main"><div class="main-inner sessions-main">' + sessionsMainHtml() + '</div></main>';
-    }
     if (state.view === "usage") {
       return '<main class="main"><div class="main-inner usage-main">' + usageMainHtml() + '</div></main>';
     }
@@ -8520,19 +8226,9 @@ details[open].advanced summary::before {
       }
       return;
     }
-    if (state.sessionQuarantineOpen) {
-      if (action === "session-quarantine-cancel" && !state.sessionQuarantineBusy) {
-        state.sessionQuarantineOpen = false;
-        state.sessionQuarantineError = "";
-        render();
-      } else if (action === "session-quarantine-confirm") {
-        quarantineSession();
-      }
-      return;
-    }
     if (state.view === "audit" && state.memoryDirty && (
       action === "open-channels" || action === "open-profiles" || action === "open-settings" ||
-      action === "open-audit" || action === "open-usage" || action === "open-sessions" || action === "go-home" || action === "audit-tab-scheduled"
+      action === "open-audit" || action === "open-usage" || action === "go-home" || action === "audit-tab-scheduled"
     )) {
       state.memoryError = "Save or discard the current memory draft before navigating away.";
       render();
@@ -8592,7 +8288,6 @@ details[open].advanced summary::before {
       enterProfiles(requestedProfileId);
     }
     if (action === "open-usage" && USAGE_ADMIN_UI) { openUsage(); }
-    if (action === "open-sessions") { openSessions(""); }
     if (action === "open-audit") { openAuditLogs("", "", ""); }
     // Brand-as-home: the reliable exit back to the Channels overview.
     if (action === "go-home") { openChannels(); }
@@ -8680,20 +8375,6 @@ details[open].advanced summary::before {
       loadUsageOperations(true);
     }
     if (action === "usage-open-settings") { openSettings("providers"); }
-    if (action === "sessions-retry") { loadSessions(true); }
-    if (action === "sessions-load-more") { loadSessions(false); }
-    if (action === "sessions-apply-filters") { state.sessions = null; state.sessionsNextCursor = null; loadSessions(true); }
-    if (action === "select-session") { state.sessionSelection = target.getAttribute("data-run") || ""; loadSessionDetail(state.sessionSelection); render(); }
-    if (action === "sessions-back") { state.sessionSelection = ""; state.sessionDetail = null; state.sessionDetailError = ""; if (!state.sessions) loadSessions(true); render(); }
-    if (action === "session-detail-retry") { loadSessionDetail(state.sessionSelection); }
-    if (action === "session-quarantine-open") {
-      state.sessionQuarantineOpen = true;
-      state.sessionQuarantineLabel = "";
-      state.sessionQuarantineReason = "accepted_unknown";
-      state.sessionQuarantineError = "";
-      state.sessionQuarantineKey = "sessionq_" + state.sessionSelection + ":" + Date.now().toString(36);
-      render();
-    }
     if (action === "audit-tab-scheduled" && state.auditDomain !== "scheduled-work") { openScheduledWork(""); }
     if (action === "audit-tab-memory" && state.auditDomain !== "memory") { openAuditLogs("", "", ""); }
     if (action === "scheduled-retry") { loadScheduledRoutines(); }
@@ -9111,12 +8792,6 @@ details[open].advanced summary::before {
   document.addEventListener("input", function (event) {
     var target = event.target;
     var action = target.getAttribute && target.getAttribute("data-action");
-    if (action === "session-quarantine-label") {
-      state.sessionQuarantineLabel = target.value;
-      state.sessionQuarantineError = "";
-      var quarantineButton = document.querySelector('[data-action="session-quarantine-confirm"]');
-      if (quarantineButton) quarantineButton.disabled = !String(target.value || "").trim();
-    }
     if (state.memoryDraft) {
       if (action === "memory-description") { state.memoryDraft.description = target.value; markMemoryDirty(); }
       if (action === "memory-body") { state.memoryDraft.body = target.value; markMemoryDirty(); }
@@ -9240,9 +8915,6 @@ details[open].advanced summary::before {
   document.addEventListener("change", function (event) {
     var target = event.target;
     var action = target.getAttribute && target.getAttribute("data-action");
-    if (action === "sessions-filter-kind") state.sessionsFilters.kind = String(target.value || "");
-    if (action === "sessions-filter-status") state.sessionsFilters.status = String(target.value || "");
-    if (action === "session-quarantine-reason") state.sessionQuarantineReason = String(target.value || "accepted_unknown");
     if (action === "usage-range") {
       var usagePeriod = String(target.value || "last_30_days");
       var allowedUsagePeriods = ["last_7_days", "last_30_days", "last_90_days", "this_month", "last_month", "this_week", "last_week", "custom"];
@@ -9454,28 +9126,6 @@ details[open].advanced summary::before {
   }
 
   document.addEventListener("keydown", function (event) {
-    if (state.sessionQuarantineOpen && event.key === "Tab") {
-      if (!document.querySelectorAll) return;
-      var quarantineFocusables = Array.prototype.slice.call(document.querySelectorAll(
-        '.modal-card [data-action="session-quarantine-label"], .modal-card [data-action="session-quarantine-reason"], .modal-card [data-action="session-quarantine-cancel"], .modal-card [data-action="session-quarantine-confirm"]'
-      )).filter(function (element) { return !element.disabled; });
-      if (!quarantineFocusables.length) return;
-      event.preventDefault();
-      var quarantineIndex = quarantineFocusables.indexOf(document.activeElement);
-      var nextQuarantineIndex = event.shiftKey
-        ? (quarantineIndex <= 0 ? quarantineFocusables.length - 1 : quarantineIndex - 1)
-        : (quarantineIndex < 0 || quarantineIndex === quarantineFocusables.length - 1 ? 0 : quarantineIndex + 1);
-      quarantineFocusables[nextQuarantineIndex].focus();
-      return;
-    }
-    if (state.sessionQuarantineOpen && (event.key === "Escape" || event.key === "Esc")) {
-      event.preventDefault();
-      if (state.sessionQuarantineBusy) return;
-      state.sessionQuarantineOpen = false;
-      state.sessionQuarantineError = "";
-      render();
-      return;
-    }
     if (state.scheduledDeleteConfirm && (event.key === "Escape" || event.key === "Esc")) {
       event.preventDefault();
       if (state.scheduledBusy) return;
@@ -11109,7 +10759,7 @@ details[open].advanced summary::before {
   // the brand-home logo, and the "<- Profiles" back link.
   function isEditLeaveAction(action) {
     return action === "open-channels" || action === "open-profiles" || action === "open-settings" ||
-      action === "open-audit" || action === "open-usage" || action === "open-sessions" || action === "go-home" || action === "profiles-back" ||
+      action === "open-audit" || action === "open-usage" || action === "go-home" || action === "profiles-back" ||
       action === "edit-profile" || action === "new-profile";
   }
 
@@ -11142,8 +10792,6 @@ details[open].advanced summary::before {
       openAuditLogs("", "", "");
     } else if (action === "open-usage") {
       openUsage();
-    } else if (action === "open-sessions") {
-      openSessions("");
     } else if (action === "go-home" || action === "open-channels") {
       openChannels();
     } else if (action === "edit-profile") {

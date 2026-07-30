@@ -99,11 +99,12 @@ export function createUsageAdminApi(options: UsageAdminApiOptions): Hono {
   app.get('/usage/operations', async (c) => {
     try {
       const page = await options.store(c).listOperations(parseUsageQuery(c, false));
+      const visibility = await usageRunVisibility(options.work?.(c), page.items);
       return c.json({
-        items: await Promise.all(page.items.map((detail) => usageDetailProjection(
-          options.work?.(c),
+        items: page.items.map((detail) => usageDetailProjection(
           detail,
-        ))),
+          visibility.get(detail.operation.runId ?? '') ?? false,
+        )),
         nextCursor: page.nextCursor ? encodeCursor(page.nextCursor) : null,
       });
     } catch (error) {
@@ -114,9 +115,12 @@ export function createUsageAdminApi(options: UsageAdminApiOptions): Hono {
   app.get('/usage/operations/:operationId', async (c) => {
     try {
       const detail = await options.store(c).getOperation(c.req.param('operationId'));
-      return detail
-        ? c.json(await usageDetailProjection(options.work?.(c), detail))
-        : c.json({ error: 'usage_operation_not_found' }, 404);
+      if (!detail) return c.json({ error: 'usage_operation_not_found' }, 404);
+      const visibility = await usageRunVisibility(options.work?.(c), [detail]);
+      return c.json(usageDetailProjection(
+        detail,
+        visibility.get(detail.operation.runId ?? '') ?? false,
+      ));
     } catch (error) {
       return usageError(c, error);
     }
@@ -136,20 +140,16 @@ function redactAggregateLabels<T extends { groups: Array<{ key: string; label: s
   };
 }
 
-async function usageDetailProjection(
-  store: WorkStore | undefined,
+function usageDetailProjection(
   detail: UsageOperationDetail,
-): Promise<Record<string, unknown>> {
-  const publicLabels = await usageRunIsPublic(store, detail);
+  publicLabels: boolean,
+): Record<string, unknown> {
   return publicLabels ? publicUsageDetail(detail) : redactedUsageDetail(detail);
 }
 
 function publicUsageDetail(detail: UsageOperationDetail): Record<string, unknown> {
   return {
     projection: 'public',
-    sessionDeepLink: detail.operation.runId
-      ? `/admin/sessions/${encodeURIComponent(detail.operation.runId)}`
-      : null,
     operation: publicUsageOperation(detail),
     measurements: detail.measurements,
   };
@@ -158,9 +158,6 @@ function publicUsageDetail(detail: UsageOperationDetail): Record<string, unknown
 function redactedUsageDetail(detail: UsageOperationDetail): Record<string, unknown> {
   return {
     projection: 'redacted',
-    sessionDeepLink: detail.operation.runId
-      ? `/admin/sessions/${encodeURIComponent(detail.operation.runId)}`
-      : null,
     operation: redactedUsageOperation(detail),
     measurements: detail.measurements,
   };
@@ -212,28 +209,21 @@ function redactedUsageOperation(detail: UsageOperationDetail): Record<string, un
   };
 }
 
-async function usageRunIsPublic(
+async function usageRunVisibility(
   store: WorkStore | undefined,
-  detail: UsageOperationDetail,
-): Promise<boolean> {
-  const runId = detail.operation.runId;
-  if (!store || !runId) return false;
+  details: UsageOperationDetail[],
+): Promise<Map<string, boolean>> {
+  const runIds = [...new Set(details.flatMap((detail) =>
+    detail.operation.runId ? [detail.operation.runId] : [],
+  ))];
+  if (!store || runIds.length === 0) return new Map();
   try {
-    const run = await store.getRun(runId as Parameters<WorkStore['getRun']>[0]);
-    if (!run) return false;
-    const [work, binding] = await Promise.all([
-      store.getWork(run.workId),
-      store.getBinding(run.bindingId),
-    ]);
-    return Boolean(
-      work &&
-      binding &&
-      binding.workId === work.id &&
-      work.maximumSensitivity === 'public' &&
-      binding.sourceVisibility === 'public',
+    const visibilities = await store.getRunVisibilities(
+      runIds as Parameters<WorkStore['getRunVisibilities']>[0],
     );
+    return new Map(visibilities.map((item) => [item.runId, item.public]));
   } catch {
-    return false;
+    return new Map();
   }
 }
 

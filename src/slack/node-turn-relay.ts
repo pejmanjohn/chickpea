@@ -19,6 +19,7 @@ const NODE_RECONCILE_INTERVAL_MS = 30_000;
 
 let started = false;
 let draining: Promise<void> | undefined;
+let wakeRequested = false;
 
 /** Start the independent, unref'ed recovery heartbeat for compatibility jobs
  * and the channel-neutral ledger driver. Ledger execution remains default-off
@@ -36,10 +37,21 @@ export function startNodeTurnRelay(): void {
 }
 
 /** Wake once after admission; concurrent wakes join the same bounded drain. */
-export async function wakeNodeTurnRelay(env?: PlatformEnv): Promise<void> {
+export async function wakeNodeTurnRelay(
+  env?: PlatformEnv,
+  overrides: Omit<NodeTurnRelayDrainOptions, 'env'> = {},
+): Promise<void> {
   if (isCloudflareTarget()) return;
-  if (draining) return draining;
-  draining = drainNodeTurnRelayOnce({ ...(env ? { env } : {}) }).finally(() => {
+  if (draining) {
+    wakeRequested = true;
+    return draining;
+  }
+  draining = (async () => {
+    do {
+      wakeRequested = false;
+      await drainNodeTurnRelayOnce({ ...overrides, ...(env ? { env } : {}) });
+    } while (wakeRequested);
+  })().finally(() => {
     draining = undefined;
   });
   return draining;

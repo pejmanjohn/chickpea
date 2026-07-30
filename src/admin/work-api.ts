@@ -163,7 +163,6 @@ function sessionSummary(item: WorkRunListItem): Record<string, unknown> {
     createdAt: item.run.createdAt,
     updatedAt: item.run.updatedAt,
     settledAt: item.run.settledAt,
-    deepLink: `/admin/sessions/${encodeURIComponent(item.run.id)}`,
   };
 }
 

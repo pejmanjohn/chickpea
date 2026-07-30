@@ -261,15 +261,6 @@ type ScheduledWorkFixture = {
   };
   limits: Record<string, number>;
 };
-type SessionsFixture = {
-  items: Array<Record<string, unknown>>;
-  nextCursor: string | null;
-  details: Record<string, Record<string, unknown>>;
-  listError?: { status: number; error: string; message?: string };
-  nextPageError?: { status: number; error: string; message?: string };
-  detailErrors?: Record<string, { status: number; error: string; message?: string }>;
-  quarantineError?: { status: number; error: string; message?: string };
-};
 function runAdminPageHarness(
   options: {
     assignments?: AssignmentFixture[];
@@ -340,7 +331,6 @@ function runAdminPageHarness(
     usageAdminUi?: boolean;
     usageApiError?: boolean;
     usageCoverage?: { pricedOperationCount: number; meteredOperationCount: number };
-    sessions?: SessionsFixture;
   } = {},
 ): {
   app: FakeElement;
@@ -363,12 +353,6 @@ function runAdminPageHarness(
   historyPushes: string[];
   historyReplaces: string[];
   usageApiCalls: string[];
-  sessionApiCalls: string[];
-  sessionQuarantinePosts: Array<{
-    runId: string;
-    body: Record<string, unknown>;
-    idempotencyKey: string;
-  }>;
   channelListCalls: string[];
   providerKeyPosts: Array<{ id: string; key: string }>;
   providerKeyDeletes: string[];
@@ -472,12 +456,6 @@ function runAdminPageHarness(
   let slackDisconnectCalls = 0;
   const channelListCalls: string[] = [];
   const usageApiCalls: string[] = [];
-  const sessionApiCalls: string[] = [];
-  const sessionQuarantinePosts: Array<{
-    runId: string;
-    body: Record<string, unknown>;
-    idempotencyKey: string;
-  }> = [];
   const providerKeyPosts: Array<{ id: string; key: string }> = [];
   const providerKeyDeletes: string[] = [];
   const openAiSubscriptionPosts: Array<{ action: string; body: Record<string, unknown> }> = [];
@@ -798,14 +776,6 @@ function runAdminPageHarness(
       if (slackFocusAction && appHtml.includes(`data-action="${slackFocusAction}"`)) {
         return focusElement(slackFocusAction);
       }
-      const sessionFocusRole = selector.match(/^\[data-role="(sessions-(?:heading|error))"\]$/)?.[1];
-      if (sessionFocusRole && appHtml.includes(`data-role="${sessionFocusRole}"`)) {
-        return focusElement(sessionFocusRole);
-      }
-      const sessionFocusAction = selector.match(/^\[data-action="(session-quarantine-(?:label|confirm|cancel))"\]$/)?.[1];
-      if (sessionFocusAction && (appHtml + modalRoot.innerHTML).includes(`data-action="${sessionFocusAction}"`)) {
-        return focusElement(sessionFocusAction);
-      }
       if (selector === '[data-role="attach-channel"]' && options.attachSelectionValue !== undefined) {
         return { value: options.attachSelectionValue };
       }
@@ -855,69 +825,6 @@ function runAdminPageHarness(
       priceVersionId: 'openai_2026-07-28', priceUnknownReason: null, recordedAt: usageNow - 55_000,
     }],
   };
-  const defaultSessionRunId = 'run_session_fixture';
-  const defaultSessionDetail: Record<string, unknown> = {
-    projection: 'public',
-    session: {
-      runId: defaultSessionRunId,
-      workId: 'work_session_fixture',
-      bindingId: 'binding_session_fixture',
-      kind: 'interactive',
-      triggerKind: 'slack_app_mention',
-      status: 'settled',
-      terminalDisposition: 'succeeded',
-      deliveryStatus: 'delivered',
-      contentAccess: 'public',
-      createdAt: usageNow - 120_000,
-      updatedAt: usageNow - 60_000,
-    },
-    content: {
-      state: 'available',
-      trigger: { state: 'available', body: 'trigger <script>alert("trigger")</script>', expiresAt: usageNow + 86400000 },
-      preparedInput: { state: 'available', body: 'prepared <img src=x onerror=alert(1)>', expiresAt: usageNow + 86400000 },
-      approvedOutput: { state: 'available', body: 'approved <svg onload=alert(2)>', expiresAt: usageNow + 86400000 },
-      renderedPayload: { state: 'available', body: '{"text":"rendered <iframe src=javascript:alert(3)>"}', expiresAt: usageNow + 86400000 },
-    },
-    executions: [{
-      executionId: 'execution_session_fixture',
-      attemptNumber: 1,
-      canonicalModel: 'openai/gpt-5.6-sol',
-      providerAuthRoute: 'openai_api_key',
-      catalogRevision: 'catalog-safe-revision',
-      compiledProfile: 'responses-safe-profile',
-      outcome: 'succeeded',
-      safeFailureCode: null,
-    }],
-    timeline: [{
-      eventId: 'event_session_fixture',
-      eventType: 'work.delivery_delivered',
-      outcome: 'success',
-      createdAt: usageNow - 60_000,
-      reasonCode: null,
-      metadata: { method: 'slack_chat_post_message', note: '<script>alert("timeline")</script>' },
-    }],
-    usage: { state: 'reported', coverage: 'complete', totalTokens: 1250, estimateAmountMicros: 12500, currency: 'USD' },
-    actionIntegrity: { state: 'complete' },
-    recovery: null,
-  };
-  const sessionsFixture: SessionsFixture = options.sessions ?? {
-    items: [{
-      runId: defaultSessionRunId,
-      workId: 'work_session_fixture',
-      bindingId: 'binding_session_fixture',
-      kind: 'interactive',
-      triggerKind: 'slack_app_mention',
-      status: 'settled',
-      terminalDisposition: 'succeeded',
-      deliveryStatus: 'delivered',
-      contentAccess: 'public',
-      createdAt: usageNow - 120_000,
-      updatedAt: usageNow - 60_000,
-      deepLink: `/admin/sessions/${defaultSessionRunId}`,
-    }],
-    nextCursor: null,
-    details: { [defaultSessionRunId]: defaultSessionDetail },
-  };
   const slackIdentityResponse = (result: SlackIdentityResultFixture): FakeResponse => {
     if ('status' in result) {
       return jsonResponse(
@@ -933,67 +840,13 @@ function runAdminPageHarness(
 
   const fetch = (path: string, options?: { method?: string; body?: string; headers?: Record<string, string> }): Promise<FakeResponse> => {
     const method = options?.method ?? 'GET';
-    if (path.startsWith('/admin/api/sessions')) {
-      sessionApiCalls.push(path);
-      const quarantineMatch = path.match(/^\/admin\/api\/sessions\/([^/?]+)\/quarantine$/);
-      if (quarantineMatch && method === 'POST') {
-        const runId = decodeURIComponent(quarantineMatch[1] as string);
-        const body = JSON.parse(options?.body ?? '{}') as Record<string, unknown>;
-        sessionQuarantinePosts.push({
-          runId,
-          body,
-          idempotencyKey: options?.headers?.['idempotency-key'] ?? '',
-        });
-        if (sessionsFixture.quarantineError) {
-          return Promise.resolve(jsonResponse(sessionsFixture.quarantineError, sessionsFixture.quarantineError.status));
-        }
-        const detail = sessionsFixture.details[runId];
-        if (detail) {
-          const session = detail.session as Record<string, unknown>;
-          detail.session = { ...session, status: 'settled', terminalDisposition: 'quarantined' };
-          detail.recovery = {
-            resolutionKind: String(body.safeReasonCode ?? 'accepted_unknown'),
-            claimedOperatorLabel: String(body.operatorLabel ?? ''),
-          };
-        }
-        return Promise.resolve(jsonResponse({ terminalDisposition: 'quarantined' }));
-      }
-      const detailMatch = path.match(/^\/admin\/api\/sessions\/([^/?]+)$/);
-      if (detailMatch && method === 'GET') {
-        const runId = decodeURIComponent(detailMatch[1] as string);
-        const detailError = sessionsFixture.detailErrors?.[runId];
-        if (detailError) return Promise.resolve(jsonResponse(detailError, detailError.status));
-        const detail = sessionsFixture.details[runId];
-        return Promise.resolve(detail
-          ? jsonResponse(detail)
-          : jsonResponse({ error: 'run_not_found' }, 404));
-      }
-      if (method === 'GET') {
-        if (sessionsFixture.listError) {
-          return Promise.resolve(jsonResponse(sessionsFixture.listError, sessionsFixture.listError.status));
-        }
-        const url = new URL(path, 'http://admin.test');
-        if (url.searchParams.has('cursor') && sessionsFixture.nextPageError) {
-          return Promise.resolve(jsonResponse(
-            sessionsFixture.nextPageError,
-            sessionsFixture.nextPageError.status,
-          ));
-        }
-        const kind = url.searchParams.get('kind');
-        const status = url.searchParams.get('status');
-        const items = sessionsFixture.items.filter((item) =>
-          (!kind || item.kind === kind) && (!status || item.status === status)
-        );
-        return Promise.resolve(jsonResponse({ items, nextCursor: sessionsFixture.nextCursor }));
-      }
-    }
     if (path.startsWith('/admin/api/usage/')) {
       usageApiCalls.push(path);
       if (harnessOptions.usageApiError) return Promise.resolve(jsonResponse({ error: 'usage_unavailable' }, 503));
       if (path.startsWith('/admin/api/usage/overview')) {
         return Promise.resolve(jsonResponse({
-          current: { from: usageNow - 30 * 86400000, to: usageNow, groupBy: 'provider', currency: 'USD', mixedCurrency: false, availableCurrencies: ['USD'], totals: usageTotals, groups: [{ key: 'openai', label: 'OpenAI <unsafe>', ...usageTotals }] },
-          previous: { from: usageNow - 60 * 86400000, to: usageNow - 30 * 86400000, groupBy: 'provider', currency: 'USD', mixedCurrency: false, availableCurrencies: ['USD'], totals: { ...usageTotals, operationCount: 2, estimateAmountMicros: 10000 }, groups: [] },
+          current: { from: usageNow - 30 * 86400000, to: usageNow, groupBy: 'channel', currency: 'USD', mixedCurrency: false, availableCurrencies: ['USD'], totals: usageTotals, groups: [{ key: 'direct_message', label: null, ...usageTotals }] },
+          previous: { from: usageNow - 60 * 86400000, to: usageNow - 30 * 86400000, groupBy: 'channel', currency: 'USD', mixedCurrency: false, availableCurrencies: ['USD'], totals: { ...usageTotals, operationCount: 2, estimateAmountMicros: 10000 }, groups: [] },
         }));
       }
       if (path.startsWith('/admin/api/usage/operations')) {
@@ -1793,7 +1646,10 @@ function runAdminPageHarness(
   };
 
   vm.runInNewContext(
-    inlineScriptFor(options.cloudflare ?? false, options.usageAdminUi ?? false),
+    inlineScriptFor(
+      options.cloudflare ?? false,
+      options.usageAdminUi ?? false,
+    ),
     {
       document,
       fetch,
@@ -1855,8 +1711,6 @@ function runAdminPageHarness(
     historyPushes,
     historyReplaces,
     usageApiCalls,
-    sessionApiCalls,
-    sessionQuarantinePosts,
     channelListCalls,
     providerKeyPosts,
     providerKeyDeletes,
@@ -1930,7 +1784,10 @@ async function openReleaseAttachPicker(
 // isCloudflareTarget() (globalThis.navigator.userAgent). The Workers AI row is
 // binding-only, so a Cloudflare-target harness renders it by masquerading the
 // navigator just for the renderAdminPage() call, then restoring it.
-function inlineScriptFor(cloudflare: boolean, usageAdminUi = false): string {
+function inlineScriptFor(
+  cloudflare: boolean,
+  usageAdminUi = false,
+): string {
   if (!cloudflare) return inlineScript(usageAdminUi);
   const previous = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
   Object.defineProperty(globalThis, 'navigator', {
@@ -6976,6 +6833,7 @@ test('the left rail keeps one coherent section switcher and section-specific nav
 
   const initialSwitcher = harness.app.innerHTML.match(/<nav class="section-switcher" aria-label="Admin navigation">[\s\S]*?<\/nav>/)?.[0] ?? '';
   assert.doesNotMatch(initialSwitcher, />Sections</);
+  assert.doesNotMatch(initialSwitcher, /Sessions|open-sessions/);
   assert.ok(initialSwitcher.indexOf('>Channels</button>') < initialSwitcher.indexOf('>Profiles</button>'));
   assert.ok(initialSwitcher.indexOf('>Profiles</button>') < initialSwitcher.indexOf('>Usage</button>'));
   assert.ok(initialSwitcher.indexOf('>Usage</button>') < initialSwitcher.indexOf('>Settings</button>'));
@@ -7007,213 +6865,13 @@ test('the left rail keeps one coherent section switcher and section-specific nav
   assert.match(harness.app.innerHTML, /data-settings-panel="github"><section/);
 });
 
-test('Sessions is a top-level, newest-first Run surface with stable native navigation', async () => {
-  const harness = runAdminPageHarness({ initialPath: '/admin/sessions' });
+test('legacy Sessions page URLs return to Channels without loading Run data', async () => {
+  const harness = runAdminPageHarness({ initialPath: '/admin/sessions/run_session_fixture' });
   await flushAsync();
 
-  const html = harness.app.innerHTML;
-  assert.equal(harness.locationPath(), '/admin/sessions');
-  assert.match(html, /<nav class="rail" aria-label="Sessions">/);
-  assert.match(html, /class="section-nav-item active" data-action="open-sessions"[^>]*aria-current="page">Sessions<\/button>/);
-  assert.match(html, /<h1 class="page-title" tabindex="-1" data-role="sessions-heading">Sessions<\/h1>/);
-  assert.match(html, /Review what triggered Chickpea, what ran, and what was delivered across channels\./);
-  assert.match(html, /<button type="button" class="session-row" data-action="select-session" data-run="run_session_fixture">/);
-  assert.match(html, /Delivery[\s\S]*delivered[\s\S]*Content[\s\S]*public/);
-  assert.deepEqual(harness.sessionApiCalls, ['/admin/api/sessions?limit=40']);
-  assert.equal(harness.focusedAction(), 'sessions-heading');
-});
-
-test('Sessions detail keeps lifecycle layers distinct and escapes every stored value', async () => {
-  const harness = runAdminPageHarness({ initialPath: '/admin/sessions' });
-  await flushAsync();
-  harness.listeners.click?.({
-    target: actionTarget({ 'data-action': 'select-session', 'data-run': 'run_session_fixture' }),
-  });
-  await flushAsync();
-
-  const html = harness.app.innerHTML;
-  assert.equal(harness.locationPath(), '/admin/sessions/run_session_fixture');
-  assert.match(html, /Run inspector/);
-  assert.match(html, /Disposition[\s\S]*succeeded[\s\S]*Delivery[\s\S]*delivered[\s\S]*Usage coverage[\s\S]*reported/);
-  assert.match(html, />Trigger</);
-  assert.match(html, />Prepared input</);
-  assert.match(html, />Approved output</);
-  assert.match(html, />Rendered payload</);
-  assert.match(html, /trigger &lt;script&gt;alert\(&quot;trigger&quot;\)&lt;\/script&gt;/);
-  assert.match(html, /prepared &lt;img src=x onerror=alert\(1\)&gt;/);
-  assert.match(html, /approved &lt;svg onload=alert\(2\)&gt;/);
-  assert.match(html, /&lt;iframe src=javascript:alert\(3\)&gt;/);
-  assert.match(html, /timeline/);
-  assert.doesNotMatch(html, /<script>alert\("trigger"\)<\/script>|<img src=x onerror=alert\(1\)>|<svg onload=alert\(2\)>|<iframe src=javascript:/);
-  assert.match(html, /openai\/gpt-5\.6-sol/);
-  assert.match(html, /openai api key/);
-  assert.doesNotMatch(html, /cred_openai|modelCredentialRef/i);
-  assert.equal(harness.focusedAction(), 'sessions-heading');
-});
-
-test('Sessions redacted deep links never render private bodies and explain the privacy boundary', async () => {
-  const privateCanary = 'PRIVATE_SESSION_UI_CANARY_<script>alert(99)</script>';
-  const runId = 'run_private_fixture';
-  const harness = runAdminPageHarness({
-    initialPath: `/admin/sessions/${runId}`,
-    sessions: {
-      items: [],
-      nextCursor: null,
-      details: {
-        [runId]: {
-          projection: 'redacted',
-          session: {
-            runId,
-            workId: 'work_private_fixture',
-            bindingId: 'binding_private_fixture',
-            kind: 'interactive',
-            status: 'settled',
-            terminalDisposition: 'succeeded',
-            deliveryStatus: 'delivered',
-            contentAccess: 'private',
-          },
-          content: {
-            state: 'private',
-            message: 'Private session content is not shown.',
-          },
-          executions: [],
-          timeline: [],
-          usage: { state: 'not_reported' },
-          actionIntegrity: { state: 'complete' },
-          hiddenCanary: privateCanary,
-        },
-      },
-    },
-  });
-  await flushAsync();
-
-  assert.equal(harness.locationPath(), `/admin/sessions/${runId}`);
-  assert.match(harness.app.innerHTML, /Private session content is not shown\./);
-  assert.doesNotMatch(harness.app.innerHTML, /PRIVATE_SESSION_UI_CANARY|alert\(99\)|Prepared input/);
-});
-
-test('Sessions shows explicit empty, filtered-empty, and query failure states', async () => {
-  const empty = runAdminPageHarness({
-    initialPath: '/admin/sessions',
-    sessions: { items: [], nextCursor: null, details: {} },
-  });
-  await flushAsync();
-  assert.match(empty.app.innerHTML, /No sessions yet\./);
-
-  const filtered = runAdminPageHarness({ initialPath: '/admin/sessions' });
-  await flushAsync();
-  filtered.listeners.change?.({ target: inputTarget({ 'data-action': 'sessions-filter-kind' }, 'routine') });
-  filtered.listeners.click?.({ target: actionTarget({ 'data-action': 'sessions-apply-filters' }) });
-  await flushAsync();
-  assert.match(filtered.app.innerHTML, /No sessions match these filters\./);
-  assert.match(filtered.sessionApiCalls.at(-1) ?? '', /kind=routine/);
-
-  const failed = runAdminPageHarness({
-    initialPath: '/admin/sessions',
-    sessions: {
-      items: [],
-      nextCursor: null,
-      details: {},
-      listError: { status: 503, error: 'sessions_temporarily_unavailable' },
-    },
-  });
-  await flushAsync();
-  assert.match(failed.app.innerHTML, /sessions_temporarily_unavailable/);
-  assert.match(failed.app.innerHTML, /data-action="sessions-retry"/);
-  assert.equal(failed.focusedAction(), 'sessions-error');
-});
-
-test('Sessions preserves loaded rows through a next-page failure and explains missing deep links', async () => {
-  const paged = runAdminPageHarness({
-    initialPath: '/admin/sessions',
-    sessions: {
-      items: [{
-        runId: 'run_page_fixture',
-        workId: 'work_page_fixture',
-        bindingId: 'binding_page_fixture',
-        kind: 'interactive',
-        status: 'settled',
-        terminalDisposition: 'succeeded',
-        deliveryStatus: 'delivered',
-        contentAccess: 'public',
-        createdAt: Date.now(),
-      }],
-      nextCursor: 'cursor_page_2',
-      details: {},
-      nextPageError: { status: 503, error: 'sessions_next_page_unavailable' },
-    },
-  });
-  await flushAsync();
-  paged.listeners.click?.({ target: actionTarget({ 'data-action': 'sessions-load-more' }) });
-  await flushAsync();
-  assert.match(paged.app.innerHTML, /run_page_fixture/);
-  assert.match(paged.app.innerHTML, /sessions_next_page_unavailable Existing rows are still available\./);
-  assert.match(paged.app.innerHTML, /data-action="sessions-load-more"/);
-
-  const missing = runAdminPageHarness({
-    initialPath: '/admin/sessions/run_missing_fixture',
-    sessions: { items: [], nextCursor: null, details: {} },
-  });
-  await flushAsync();
-  assert.match(missing.app.innerHTML, /This session no longer exists\./);
-  assert.match(missing.app.innerHTML, /data-action="session-detail-retry"/);
-  assert.equal(missing.focusedAction(), 'sessions-error');
-});
-
-test('Sessions recovery quarantine requires an operator claim and preserves a traceable idempotency key', async () => {
-  const runId = 'run_recovery_fixture';
-  const detail: Record<string, unknown> = {
-    projection: 'redacted',
-    session: {
-      runId,
-      workId: 'work_recovery_fixture',
-      bindingId: 'binding_recovery_fixture',
-      kind: 'interactive',
-      status: 'recovery_required',
-      terminalDisposition: null,
-      deliveryStatus: 'unknown',
-      contentAccess: 'private',
-    },
-    content: { state: 'private', message: 'Private session content is not shown.' },
-    executions: [],
-    timeline: [],
-    usage: { state: 'not_reported' },
-    actionIntegrity: { state: 'complete' },
-    recovery: null,
-  };
-  const harness = runAdminPageHarness({
-    initialPath: `/admin/sessions/${runId}`,
-    sessions: { items: [], nextCursor: null, details: { [runId]: detail } },
-  });
-  await flushAsync();
-
-  assert.match(harness.app.innerHTML, /Recovery required/);
-  assert.match(harness.app.innerHTML, /Ordinary execution cannot resume\./);
-  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'session-quarantine-open' }) });
-  assert.match(harness.app.innerHTML, /role="dialog" aria-modal="true"/);
-  assert.match(harness.app.innerHTML, /data-action="session-quarantine-confirm" disabled/);
-  assert.equal(harness.topbarRegion.inert, true);
-  assert.equal(harness.bodyRegion.inert, true);
-  assert.equal(harness.focusedAction(), 'session-quarantine-label');
-
-  harness.listeners.input?.({
-    target: inputTarget({ 'data-action': 'session-quarantine-label' }, 'Acme on-call'),
-  });
-  harness.listeners.change?.({
-    target: inputTarget({ 'data-action': 'session-quarantine-reason' }, 'accepted_unknown'),
-  });
-  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'session-quarantine-confirm' }) });
-  await flushAsync();
-
-  assert.equal(harness.sessionQuarantinePosts.length, 1);
-  assert.deepEqual(harness.sessionQuarantinePosts[0]?.body, {
-    confirm: true,
-    operatorLabel: 'Acme on-call',
-    safeReasonCode: 'accepted_unknown',
-  });
-  assert.match(harness.sessionQuarantinePosts[0]?.idempotencyKey ?? '', /^sessionq_run_recovery_fixture:/);
-  assert.match(harness.app.innerHTML, /Recovery resolved as accepted unknown by claimed operator Acme on-call\./);
-  assert.match(harness.app.innerHTML, /Delivery[\s\S]*unknown/);
+  assert.equal(harness.locationPath(), '/admin/channels');
+  assert.match(harness.app.innerHTML, /<nav class="rail" aria-label="Channels">/);
+  assert.doesNotMatch(harness.app.innerHTML, /Sessions|open-sessions|Run inspector/);
 });
 
 test('Settings shows an unobtrusive model-list status and refreshes it on demand', async () => {
@@ -7849,6 +7507,9 @@ test('Usage shows concise spend, expanded token columns, and non-interactive act
   assert.match(html, /Set spending limits with each model provider/);
   assert.match(html, /<option value="channel" selected>Channel<\/option>/);
   assert.match(html, /Spend by channel/);
+  assert.match(html, /data-value="direct_message" data-label="Direct message">Direct message<\/button>/);
+  assert.doesNotMatch(html, /#direct_message/);
+  assert.doesNotMatch(html, />#null<\/button>/);
   assert.match(html, /Recent <span class="usage-term-help"[^>]*>activity<\/span>/);
   assert.match(html, /data-tooltip="Activity includes each Slack message Chickpea responds to and each scheduled routine run\."/);
   assert.match(html, />Input tokens<\/th><th class="number">Output tokens<\/th><th class="number">Total tokens<\/th>/);

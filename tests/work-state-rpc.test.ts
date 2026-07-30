@@ -85,6 +85,12 @@ test('Work state proxy preserves clone-safe request and response shapes', async 
     assert.equal(admitted.run.id, input.run.id);
     assert.equal(admitted.replayed, false);
     assert.equal((await proxy.admitShadowRun(input)).replayed, true);
+    assert.deepEqual(await proxy.getRunVisibilities([
+      input.run.id,
+      'run_rpc_missing' as RunId,
+      'MALFORMED/RUN' as RunId,
+      input.run.id,
+    ]), [{ runId: input.run.id, public: true }]);
     const prepared = await proxy.prepareRunInput({
       runId: input.run.id,
       sensitivity: 'public',

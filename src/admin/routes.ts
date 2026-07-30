@@ -3184,6 +3184,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   // SPA catch-all, registered LAST: every client-routed page path
   // (/admin/profiles, /admin/channels/T/C, ...) serves the same page so deep
   // links and refreshes work. Unmatched /admin/api/* stays a 404, never HTML.
+  app.get('/admin/sessions', (c) => c.redirect('/admin/channels'));
+  app.get('/admin/sessions/*', (c) => c.redirect('/admin/channels'));
   app.get('/admin/*', (c) => {
     const pathname = new URL(c.req.url).pathname;
     if (pathname.startsWith('/admin/api/')) return c.notFound();

@@ -149,10 +149,7 @@ test('Scheduled Work APIs are admin-authenticated, body-safe, filterable, and co
     );
     assert.equal(detailBody.runs[0].id, 'rrun_admin');
     assert.match(detailBody.runs[0].canonicalRunId, /^run_/);
-    assert.equal(
-      detailBody.runs[0].sessionDeepLink,
-      `/admin/sessions/${detailBody.runs[0].canonicalRunId}`,
-    );
+    assert.equal(Object.hasOwn(detailBody.runs[0], 'sessionDeepLink'), false);
     assert.ok(detailBody.events.some((event: Record<string, unknown>) =>
       event.eventType === 'routine.occurrence_created'));
     const runWire = JSON.stringify(detailBody.runs[0]);

@@ -281,9 +281,9 @@ const handleSlackEvents: NonNullable<SlackChannelOptions['events']> = async ({ c
   const evtKey = `evt:${payload.event_id}`;
   const msgKey = `msg:${turn.channelId}:${turn.messageTs}`;
 
-  // e. Resolve the config for this turn — inside a try so any failure releases
-  //    the claims (a Slack retry can then re-drive the turn) rather than
-  //    leaking them and dropping the message.
+  // e. Resolve the config for this turn before canonical admission acquires
+  //    the claims. A failure here must not release keys owned by a concurrent
+  //    sibling event or Slack retry.
   //    - CHANNELS freeze at the first turn: the gate resolves the effective
   //      config ONCE and writes the write-once snapshot, so the presenter and
   //      the durable agent both serve that same row (no first-turn attribution
@@ -324,7 +324,7 @@ const handleSlackEvents: NonNullable<SlackChannelOptions['events']> = async ({ c
     // assignment so the turn still delivers the sanitized provider-failure
     // final (no snapshot is written — a misconfigured-model thread has no
     // usable config to freeze). Everything else (unassigned/disabled channel,
-    // disabled DM default) is fail-closed: release the claims and stay silent.
+    // disabled DM default) is fail-closed and stays silent.
     const store = stores.config;
     if (err instanceof ModelResolutionError) {
       assignment = await resolveAssignment(
@@ -334,8 +334,6 @@ const handleSlackEvents: NonNullable<SlackChannelOptions['events']> = async ({ c
         { surface },
       );
     } else {
-      await state.release(evtKey);
-      await state.release(msgKey);
       console.error('[chickpea] no assignment for turn:', sanitizeError(err));
       // Fail-closed with feedback: the channel stays silent, but the person
       // who explicitly mentioned the bot gets an ephemeral pointer at /admin.

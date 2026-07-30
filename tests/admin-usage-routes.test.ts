@@ -1,13 +1,52 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
 import { createAdminRoutes } from '../src/admin/routes.ts';
+import { usageEstimatesEnabled } from '../src/usage/pricing/estimate.ts';
+import { usageRuntimeRecordingEnabled } from '../src/usage/runtime-recorder.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
 import { SqliteWorkStore } from '../src/work/store.ts';
-import type { BindingId, RunId, WorkId } from '../src/work/types.ts';
+import type { BindingId, RunId, WorkId, WorkStore } from '../src/work/types.ts';
+
+test('committed deployment defaults enable each Usage layer with independent kill switches', async () => {
+  const config = readFileSync(new URL('../wrangler.jsonc', import.meta.url), 'utf8');
+  const value = (name: string): string | undefined =>
+    new RegExp(`"${name}"\\s*:\\s*"([^"]+)"`).exec(config)?.[1];
+  const deploymentEnv = {
+    USAGE_RUNTIME_RECORDING: value('USAGE_RUNTIME_RECORDING'),
+    USAGE_ESTIMATES: value('USAGE_ESTIMATES'),
+    USAGE_ADMIN_UI: value('USAGE_ADMIN_UI'),
+  };
+
+  assert.deepEqual(deploymentEnv, {
+    USAGE_RUNTIME_RECORDING: '1',
+    USAGE_ESTIMATES: '1',
+    USAGE_ADMIN_UI: '1',
+  });
+  assert.equal(usageRuntimeRecordingEnabled(deploymentEnv), true);
+  assert.equal(usageEstimatesEnabled(deploymentEnv), true);
+
+  const usage = new SqliteUsageStore(':memory:');
+  try {
+    const app = createAdminRoutes({ adminToken: 'usage-default-test-token', usage });
+    const headers = { authorization: 'Bearer usage-default-test-token' };
+    const enabled = await app.request('/admin', { headers }, deploymentEnv);
+    assert.match(await enabled.text(), /var USAGE_ADMIN_UI = true/);
+    const disabled = await app.request('/admin', { headers }, {
+      ...deploymentEnv,
+      USAGE_ADMIN_UI: '0',
+    });
+    assert.match(await disabled.text(), /var USAGE_ADMIN_UI = false/);
+  } finally {
+    usage.close();
+  }
+
+  assert.equal(usageRuntimeRecordingEnabled({ ...deploymentEnv, USAGE_RUNTIME_RECORDING: '0' }), false);
+  assert.equal(usageEstimatesEnabled({ ...deploymentEnv, USAGE_ESTIMATES: '0' }), false);
+});
 
 test('usage Admin APIs are authenticated, bounded, and expose no content fields', async () => {
   const usage = new SqliteUsageStore(':memory:');
@@ -111,7 +150,7 @@ test('usage Admin APIs are authenticated, bounded, and expose no content fields'
   }
 });
 
-test('Usage public and redacted serializers share canonical Session links without leaking private labels', async () => {
+test('Usage public and redacted serializers expose canonical Run IDs without retired UI links or private labels', async () => {
   const path = join(mkdtempSync(join(tmpdir(), 'chickpea-admin-usage-redaction-')), 'state.db');
   const usage = new SqliteUsageStore(path);
   const work = new SqliteWorkStore(path);
@@ -157,10 +196,23 @@ test('Usage public and redacted serializers share canonical Session links withou
       credentialRefId: 'cred_openai_environment',
       credentialVersion: 1,
     });
+    let visibilityLookups = 0;
+    const batchedWork = new Proxy(work as WorkStore, {
+      get(target, property, receiver) {
+        if (property === 'getRunVisibilities') {
+          return async (runIds: RunId[]) => {
+            visibilityLookups += 1;
+            return target.getRunVisibilities(runIds);
+          };
+        }
+        const value = Reflect.get(target, property, receiver);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
     const app = createAdminRoutes({
       adminToken: 'usage-redaction-token',
       usage,
-      work,
+      work: batchedWork,
     });
     const headers = { authorization: 'Bearer usage-redaction-token' };
 
@@ -178,11 +230,12 @@ test('Usage public and redacted serializers share canonical Session links withou
     assert.equal(privateItem.operation.profileLabel, null);
     assert.equal(privateItem.operation.channelLabel, null);
     assert.equal(privateItem.operation.routineLabel, null);
-    assert.equal(privateItem.sessionDeepLink, '/admin/sessions/run_usage_private');
+    assert.equal(Object.hasOwn(privateItem, 'sessionDeepLink'), false);
     assert.equal(publicItem.projection, 'public');
     assert.equal(publicItem.operation.profileLabel, 'Public profile');
     assert.equal(publicItem.operation.channelLabel, 'public-lab');
-    assert.equal(publicItem.sessionDeepLink, '/admin/sessions/run_usage_public');
+    assert.equal(Object.hasOwn(publicItem, 'sessionDeepLink'), false);
+    assert.equal(visibilityLookups, 1);
 
     const detailText = await (await app.request(
       '/admin/api/usage/operations/op_usage_private',
@@ -190,6 +243,7 @@ test('Usage public and redacted serializers share canonical Session links withou
     )).text();
     assert.doesNotMatch(detailText, /PRIVATE_USAGE_LABEL|alert\(81\)/);
     assert.equal((JSON.parse(detailText) as Record<string, any>).projection, 'redacted');
+    assert.equal(visibilityLookups, 2);
 
     const summary = await (await app.request(
       '/admin/api/usage/summary?from=1&to=3000&groupBy=channel',

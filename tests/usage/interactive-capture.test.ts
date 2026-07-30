@@ -70,6 +70,8 @@ test('interactive capture persists only bounded attribution and aggregate respon
       requestedModel: assignment.model!,
       operationId: 'msg:C_USAGE:1000.0001',
       executionId: 'exec:msg:C_USAGE:1000.0001:1',
+      runId: 'run_usage_interactive',
+      runExecutionId: 'execution_usage_interactive_1',
       store,
       processEnv: { CHICKPEA_INSTALLATION_ID: 'installation_usage' },
       now: (() => { let now = 1_000_000; return () => now += 10; })(),
@@ -81,10 +83,37 @@ test('interactive capture persists only bounded attribution and aggregate respon
     assert.equal(detail?.operation.profileLabel, 'Usage profile');
     assert.equal(detail?.operation.channelLabel, 'usage-lab');
     assert.equal(detail?.operation.credentialVersion, 7);
+    assert.equal(detail?.operation.runId, 'run_usage_interactive');
+    assert.equal(detail?.measurements[0]?.runExecutionId, 'execution_usage_interactive_1');
     assert.equal(detail?.measurements[0]?.totalTokens, 150);
     assert.doesNotMatch(
       JSON.stringify(detail),
       /content is deliberately|private output|private instructions|Production project/,
+    );
+  } finally {
+    store.close();
+  }
+});
+
+test('interactive Usage links an execution only after lifecycle creation', async () => {
+  const store = new SqliteUsageStore(':memory:');
+  try {
+    const recorder = new InteractiveUsageRecorder({
+      turn,
+      assignment,
+      requestedModel: assignment.model!,
+      operationId: 'msg_late_execution',
+      executionId: 'exec_late_execution',
+      runId: 'run_late_execution',
+      store,
+      now: () => 1_500_000,
+    });
+    await recorder.admit();
+    recorder.linkRunExecution('execution_late_created');
+    await recorder.recordSuccess(success());
+    assert.equal(
+      (await store.getOperation('msg_late_execution'))?.measurements[0]?.runExecutionId,
+      'execution_late_created',
     );
   } finally {
     store.close();

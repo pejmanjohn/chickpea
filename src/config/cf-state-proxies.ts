@@ -870,6 +870,12 @@ export class CfWorkStore implements WorkStore {
     return orUndefined(response.run);
   }
 
+  async getRunVisibilities(runIds: RunId[]) {
+    const response = await this.execute({ kind: 'get_run_visibilities', runIds });
+    if (response.kind !== 'run_visibilities') throw unexpectedWorkResponse();
+    return response.visibilities;
+  }
+
   async claimNextInteractiveRun(input: ClaimNextInteractiveRunInput) {
     const response = await this.execute({ kind: 'claim_next_interactive_run', input });
     if (response.kind !== 'run_claim') throw unexpectedWorkResponse();

@@ -472,6 +472,11 @@ export interface WorkPurgeResult {
   remainingExpiredCount: number;
 }
 
+export interface RunVisibilityRecord {
+  runId: RunId;
+  public: boolean;
+}
+
 export type WorkRpcRequest =
   | { kind: 'put_config_revision'; input: SafeEffectiveConfigInput; createdAt?: number }
   | { kind: 'get_config_revision'; revisionId: EffectiveConfigRevisionId }
@@ -483,6 +488,7 @@ export type WorkRpcRequest =
   | { kind: 'get_work'; workId: WorkId }
   | { kind: 'get_binding'; bindingId: BindingId }
   | { kind: 'get_run'; runId: RunId }
+  | { kind: 'get_run_visibilities'; runIds: RunId[] }
   | { kind: 'claim_next_interactive_run'; input: ClaimNextInteractiveRunInput }
   | { kind: 'renew_run_lease'; input: RenewRunLeaseInput }
   | { kind: 'release_run_lease'; input: ReleaseRunLeaseInput }
@@ -513,6 +519,7 @@ export type WorkRpcResponse =
   | { kind: 'work'; work: WorkRecord | null }
   | { kind: 'binding'; binding: BindingRecord | null }
   | { kind: 'run'; run: RunRecord | null }
+  | { kind: 'run_visibilities'; visibilities: RunVisibilityRecord[] }
   | { kind: 'run_claim'; claim: InteractiveRunClaim | null }
   | { kind: 'run_page'; page: WorkRunPage }
   | { kind: 'execution'; execution: RunExecutionRecord | null }
@@ -535,6 +542,7 @@ export interface WorkStore {
   getWork(id: WorkId): Promise<WorkRecord | undefined>;
   getBinding(id: BindingId): Promise<BindingRecord | undefined>;
   getRun(id: RunId): Promise<RunRecord | undefined>;
+  getRunVisibilities(ids: RunId[]): Promise<RunVisibilityRecord[]>;
   claimNextInteractiveRun(input: ClaimNextInteractiveRunInput): Promise<InteractiveRunClaim | undefined>;
   renewRunLease(input: RenewRunLeaseInput): Promise<RunRecord>;
   releaseRunLease(input: ReleaseRunLeaseInput): Promise<RunRecord>;

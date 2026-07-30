@@ -62,6 +62,7 @@ test('routine recorder captures success, no-op-style zero usage, failure, and in
   try {
     const completed = new RoutineUsageRecorder({
       operationId: 'rrun_completed', executionId: 'exec_routine_completed', startedAt: 1_000,
+      runId: 'run_usage_routine', runExecutionId: 'execution_usage_routine_1',
       workspaceId: routine.workspaceId, channelId: routine.channelId, channelLabel: 'usage-lab',
       profileId: config.agentId, profileLabel: config.agent.name,
       routineId: routine.id, routineLabel: routine.name, requestedModel: config.model,
@@ -95,7 +96,10 @@ test('routine recorder captures success, no-op-style zero usage, failure, and in
       });
     }
 
-    assert.equal((await usage.getOperation('rrun_completed'))?.measurements[0]?.totalTokens, 250);
+    const completedDetail = await usage.getOperation('rrun_completed');
+    assert.equal(completedDetail?.operation.runId, 'run_usage_routine');
+    assert.equal(completedDetail?.measurements[0]?.runExecutionId, 'execution_usage_routine_1');
+    assert.equal(completedDetail?.measurements[0]?.totalTokens, 250);
     assert.equal(
       (await usage.getOperation('rrun_no_op'))?.measurements[0]?.usageCompleteness,
       'not_reported',

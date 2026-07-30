@@ -287,7 +287,6 @@ export async function runTurn(
         executionId: options.usageExecutionId ?? `exec:${statusGeneration}:1`,
         store: options.usageStore ?? getUsageStore(platformEnv),
         ...(options.runId ? { runId: options.runId } : {}),
-        ...(workLifecycle ? { runExecutionId: workLifecycle.executionId } : {}),
         ...(platformEnv ? { platformEnv } : {}),
         ...(options.usageWriteBudgetMs === undefined
           ? {}
@@ -315,6 +314,9 @@ export async function runTurn(
       memorySelected: (preparedMemory?.selection?.entries.length ?? 0) > 0,
     });
     const persistedPrompt = await workLifecycle?.prepareExecution(prompt);
+    if (workLifecycle?.hasExecution) {
+      usageRecorder?.linkRunExecution(workLifecycle.executionId);
+    }
     const executionPrompt = persistedPrompt ?? prompt;
 
     // 3 + 4. Prompt the durable agent, then deliver the final — with clearStatus

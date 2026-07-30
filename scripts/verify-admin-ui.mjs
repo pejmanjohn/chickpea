@@ -258,9 +258,10 @@ try {
   );
 
   record(
-    'admin page carries live Scheduled Work and Memory audit domains',
+    'admin page carries live audit domains without the retired Sessions UI',
     pageHtml.includes('Audit logs') &&
-      pageHtml.includes('data-action="open-sessions"') &&
+      !pageHtml.includes('SESSIONS_ADMIN_UI') &&
+      !pageHtml.includes('data-action="open-sessions"') &&
       pageHtml.includes('data-action="audit-tab-scheduled">Scheduled work') &&
       pageHtml.includes('data-action="audit-tab-memory">Memory') &&
       pageHtml.includes('aria-disabled="true" title="Coming later">Network events') &&
@@ -290,23 +291,26 @@ try {
       usageMetadata.body?.contract?.limitsManagedByChickpea === false &&
       usageOperations.status === 200 &&
       usageOperations.body?.items?.[0]?.operation?.operationId === 'usage_admin_ui_release' &&
-      usageOperations.body?.items?.[0]?.sessionDeepLink === '/admin/sessions/run_admin_ui_release',
+      usageOperations.body?.items?.[0]?.operation?.runId === 'run_admin_ui_release' &&
+      !Object.hasOwn(usageOperations.body?.items?.[0] ?? {}, 'sessionDeepLink'),
     `overview=${usageOverview.status} metadata=${usageMetadata.status} operations=${usageOperations.status}`,
   );
 
   const sessions = await adminJson(app, '/admin/api/sessions?limit=20');
   const sessionDetail = await adminJson(app, '/admin/api/sessions/run_admin_ui_release');
+  const retiredSessionsPage = await adminJson(app, '/admin/sessions/run_admin_ui_release');
   record(
-    'Sessions lists and reconstructs the public canonical Run without Usage authority',
+    'Run inspection APIs remain available without exposing a Sessions page',
     sessions.status === 200 &&
       sessions.body?.items?.[0]?.runId === 'run_admin_ui_release' &&
-      sessions.body?.items?.[0]?.deepLink === '/admin/sessions/run_admin_ui_release' &&
+      !Object.hasOwn(sessions.body?.items?.[0] ?? {}, 'deepLink') &&
       sessionDetail.status === 200 &&
       sessionDetail.body?.projection === 'public' &&
       sessionDetail.body?.session?.status === 'admitted' &&
       sessionDetail.body?.content?.trigger?.body === 'Admin UI Run trigger' &&
-      sessionDetail.body?.usage?.state === 'reported',
-    `list=${sessions.status} detail=${sessionDetail.status}`,
+      sessionDetail.body?.usage?.state === 'reported' &&
+      retiredSessionsPage.status === 302,
+    `list=${sessions.status} detail=${sessionDetail.status} page=${retiredSessionsPage.status}`,
   );
 
   const routineList = await adminJson(app, '/admin/api/audit/scheduled_work/routines?state=active');

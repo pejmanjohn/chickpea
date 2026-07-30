@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
 import type { ResolvedAssignment } from '../src/config/types.ts';
@@ -262,6 +263,15 @@ test('Slack claims, Run, content, thread registration, and relay row commit atom
   } finally {
     db.close();
   }
+});
+
+test('Slack configuration resolution completes before any event or message claim mutation', () => {
+  const source = readFileSync(new URL('../src/channels/slack.ts', import.meta.url), 'utf8');
+  const resolutionStart = source.indexOf('// e. Resolve the config for this turn');
+  const claimStart = source.indexOf('let claimsHeldByCanonicalAdmission', resolutionStart);
+  assert.ok(resolutionStart >= 0 && claimStart > resolutionStart);
+  const preClaimResolution = source.slice(resolutionStart, claimStart);
+  assert.doesNotMatch(preClaimResolution, /state\.(?:claim|release|admitCanonical)\s*\(/);
 });
 
 test('failed canonical admission rolls back Slack claims and all ledger writes', () => {

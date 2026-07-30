@@ -59,7 +59,6 @@ import {
 } from '../usage/runtime-recorder.ts';
 import type { UsageStore } from '../usage/types.ts';
 import { createWorkExecutionLifecycle } from '../work/executor.ts';
-import { shadowRunExecutionId } from '../work/lifecycle.ts';
 import type { ShadowWorkLifecycle } from '../work/lifecycle.ts';
 import type { RunId } from '../work/types.ts';
 import { opaqueId } from '../work/admission.ts';
@@ -230,12 +229,7 @@ export async function initializeRoutineWorkflowRuntime(
     usageRecorder = new RoutineUsageRecorder({
       operationId: input.run.id,
       executionId: `exec:${input.run.id}:${input.flueRunId}`,
-      ...(canonicalRunId
-        ? {
-            runId: canonicalRunId,
-            runExecutionId: shadowRunExecutionId(canonicalRunId, 1),
-          }
-        : {}),
+      ...(canonicalRunId ? { runId: canonicalRunId } : {}),
       startedAt,
       workspaceId: input.routine.workspaceId,
       channelId: input.routine.channelId,
@@ -369,7 +363,10 @@ export default defineWorkflow({
         runtime.env,
       );
       const workLifecycle = await createRoutineShadowLifecycle(runtime, prepared.prompt);
-      if (workLifecycle) runtime.workLifecycle = workLifecycle;
+      if (workLifecycle) {
+        runtime.workLifecycle = workLifecycle;
+        runtime.usageRecorder?.linkRunExecution(workLifecycle.executionId);
+      }
       const remainingMs = runtime.run.deadlineAt - Date.now();
       if (remainingMs <= 0) {
         throw new RoutineRuntimeError(
@@ -521,6 +518,7 @@ export async function failInterruptedRoutineWorkflow(
     ? new RoutineUsageRecorder({
         operationId: run.id,
         executionId: `exec:${run.id}:${run.flueRunId ?? 'interrupted'}`,
+        ...(run.canonicalRunId ? { runId: run.canonicalRunId } : {}),
         startedAt: run.startedAt ?? run.admittedAt ?? run.queuedAt,
         workspaceId: routine.workspaceId,
         channelId: routine.channelId,

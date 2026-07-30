@@ -330,7 +330,6 @@ async function runDetail(
   return {
     id: run.id,
     canonicalRunId: run.canonicalRunId ?? null,
-    sessionDeepLink: run.canonicalRunId ? `/admin/sessions/${encodeURIComponent(run.canonicalRunId)}` : null,
     routineId: run.routineId,
     routineVersion: run.routineVersion,
     scheduledFor: run.scheduledFor,

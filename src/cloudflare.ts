@@ -490,7 +490,14 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       } as Omit<TagStateStores, 'work'>;
       const completeStores: TagStateStores = {
         ...stores,
-        work: new WorkStoreLogic(db),
+        work: new WorkStoreLogic(db, {
+          env: {
+            TAG_RUN_BODY_RETENTION_DAYS:
+              typeof (this.env as PlatformEnv).TAG_RUN_BODY_RETENTION_DAYS === 'string'
+                ? (this.env as PlatformEnv).TAG_RUN_BODY_RETENTION_DAYS as string
+                : undefined,
+          },
+        }),
       };
       this.initError = undefined;
       return completeStores;
@@ -855,6 +862,8 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           turnId: job.id,
           usageExecutionId: `exec:${job.id}:${attempt}`,
           ...(job.runId ? { runId: job.runId, runAttempt: attempt } : {}),
+          workStore: stores.work as unknown as WorkStore,
+          settingsStore: localSettingsStore(stores),
           usageStore,
           onUsagePersistence: (event) => {
             stores.turnJobs.recordUsagePersistence(job.id, event);

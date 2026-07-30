@@ -5,6 +5,7 @@ import type { EffectiveSlackConfig } from '../src/config/effective-config.ts';
 import { RoutineRuntimeError } from '../src/routines/runtime.ts';
 import { OpenAiSubscriptionError } from '../src/openai-subscription/errors.ts';
 import type { RoutineDefinition, RoutineRun, RoutineStore } from '../src/routines/types.ts';
+import { SqliteUsageStore } from '../src/usage/store.ts';
 import {
   failInterruptedRoutineWorkflow,
   initializeRoutineWorkflowRuntime,
@@ -276,4 +277,78 @@ test('cold Workflow context fails persisted state without replaying model or too
     toolCallCount: 2,
   }]);
   assert.deepEqual(releases, [[{}, routineAgentInstanceId('run_flue'), true]]);
+});
+
+test('cold Workflow usage keeps its canonical Run without inventing a RunExecution', async () => {
+  const canonicalRunId = 'run_interrupted_routine';
+  const coldRun = {
+    ...run,
+    canonicalRunId,
+    status: 'running' as const,
+    toolCallCount: 2,
+  };
+  const routineStore = {
+    getRun: async () => coldRun,
+    getRoutine: async () => routine,
+    transitionRun: async () => coldRun,
+  } as unknown as RoutineStore;
+  const usageStore = new SqliteUsageStore(':memory:');
+
+  try {
+    await failInterruptedRoutineWorkflow(coldRun.id, {
+      env: {},
+      store: routineStore,
+      usageStore,
+      usageRecordingEnabled: true,
+      now: () => 123,
+      releaseSandbox: async () => undefined,
+    });
+
+    const detail = await usageStore.getOperation(coldRun.id);
+    assert.equal(detail?.operation.runId, canonicalRunId);
+    assert.equal(detail?.measurements[0]?.runExecutionId, undefined);
+  } finally {
+    usageStore.close();
+  }
+});
+
+test('routine setup failure keeps canonical Run usage without inventing a RunExecution', async () => {
+  const usageStore = new SqliteUsageStore(':memory:');
+  const canonicalRun = {
+    ...run,
+    canonicalRunId: 'run_routine_setup_failure',
+  };
+  try {
+    await assert.rejects(
+      () => initializeRoutineWorkflowRuntime(
+        {
+          flueRunId: 'run_setup_failure',
+          env: {},
+          store: fakeStore([]),
+          run: canonicalRun,
+          routine,
+        },
+        {
+          usageRecordingEnabled: true,
+          usageStore,
+          resolveAccess: async () => ({
+            config,
+            accessHash: 'd'.repeat(64),
+            botToken: 'xoxb-test',
+            botUserId: 'U_BOT',
+          }),
+          resolveCredential: async () => null,
+          resolveModel: async () => ({ model: config.model }),
+          useCloudflareSandbox: async () => false,
+          createAgent: async () => { throw new Error('setup failed'); },
+        },
+      ),
+      /could not complete safely/i,
+    );
+    const detail = await usageStore.getOperation(canonicalRun.id);
+    assert.equal(detail?.operation.runId, canonicalRun.canonicalRunId);
+    assert.equal(detail?.measurements[0]?.runExecutionId, undefined);
+  } finally {
+    usageStore.close();
+  }
 });

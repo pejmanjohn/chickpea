@@ -10,10 +10,39 @@ import {
   WorkStateError,
   type BindingId,
   type RunId,
+  type WorkStore,
   type WorkId,
 } from '../src/work/types.ts';
 
 const NOW = 1_900_000_000_000;
+
+test('legacy shadow writes stop blocking after their bounded observer budget', async () => {
+  const never = new Promise<never>(() => undefined);
+  const gaps: string[] = [];
+  const lifecycle = new ShadowWorkLifecycle({
+    store: { prepareRunInput: async () => never } as unknown as WorkStore,
+    runId: 'run_shadow_budget' as RunId,
+    attemptNumber: 1,
+    agentName: 'profile_shadow_budget',
+    canonicalModel: 'openai/gpt-5.6-sol',
+    sensitivity: 'public',
+    routeEvidence: {},
+    mode: 'observe',
+    observeWriteBudgetMs: 5,
+    onGap: (stage) => gaps.push(stage),
+  });
+  const originalWarn = console.warn;
+  console.warn = () => undefined;
+  try {
+    const started = performance.now();
+    assert.equal(await lifecycle.prepareExecution('prompt'), undefined);
+    assert.ok(performance.now() - started < 40);
+    assert.equal(lifecycle.hasExecution, false);
+    assert.deepEqual(gaps, ['prepare_input']);
+  } finally {
+    console.warn = originalWarn;
+  }
+});
 
 test('shadow lifecycle keeps prepared input, approved output, render, and delivery distinct', async () => {
   const fixture = await lifecycleFixture('public');
