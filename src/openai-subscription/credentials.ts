@@ -1,4 +1,5 @@
 import type { SettingsStore } from '../config/settings-store.ts';
+import { OPENAI_AUTH_METHOD_SETTING_KEY } from '../config/openai-auth.ts';
 import { OpenAiSubscriptionError, asOpenAiSubscriptionError } from './errors.ts';
 import {
   accountFingerprint,
@@ -22,6 +23,7 @@ const REFRESH_RETRY_MS = 25;
 const REFRESH_MAX_RETRY_MS = 400;
 const REFRESH_ATTEMPTS = 64;
 const AUTHENTICATION_FAILURE_LIMIT = 2;
+const credentialRevisions = new WeakMap<ResolvedOpenAiSubscriptionCredentials, string>();
 
 const SETTING_KEYS = {
   pending: 'openai.subscription.pending',
@@ -29,6 +31,7 @@ const SETTING_KEYS = {
   refreshLease: 'openai.subscription.refresh-lease',
   identityKey: 'openai.subscription.identity-key',
   status: 'openai.subscription.status',
+  modelCatalog: 'openai.subscription.model-catalog',
 } as const;
 
 export type OpenAiSubscriptionCredentialState =
@@ -50,6 +53,7 @@ export interface OpenAiSubscriptionCredentialStatus {
 
 interface StoredStatus extends OpenAiSubscriptionCredentialStatus {
   version: 1;
+  credentialRevision?: string;
   consecutiveAuthenticationFailures?: number;
 }
 
@@ -74,6 +78,12 @@ export interface OpenAiSubscriptionCredentialDependencies {
   refresh?: (refreshToken: string) => Promise<OpenAiSubscriptionTokenBundle>;
 }
 
+export interface ResolvedOpenAiSubscriptionCredentials {
+  accessToken: string;
+  accountId: string;
+  accountFingerprint: string;
+}
+
 export function openAiSubscriptionSettingKeys(): typeof SETTING_KEYS {
   return SETTING_KEYS;
 }
@@ -96,7 +106,11 @@ export async function getOrCreateOpenAiSubscriptionAccountFingerprint(
 export async function commitOpenAiSubscriptionCredentials(
   bundle: OpenAiSubscriptionTokenBundle,
   dependencies: OpenAiSubscriptionCredentialDependencies,
-  options: { expectedPendingRaw?: string; connectedAt?: number } = {},
+  options: {
+    expectedPendingRaw?: string;
+    connectedAt?: number;
+    selectAuthMethod?: boolean;
+  } = {},
 ): Promise<OpenAiSubscriptionCredentialStatus> {
   validateTokenBundle(bundle);
   const currentTime = now(dependencies);
@@ -111,20 +125,25 @@ export async function commitOpenAiSubscriptionCredentials(
     accountFingerprint: fingerprint,
     connectedAt,
   };
+  const storedRaw = JSON.stringify(stored);
   const status: StoredStatus = {
     version: 1,
     state: 'connected',
     updatedAt: currentTime,
     accountFingerprint: fingerprint,
     connectedAt,
+    credentialRevision: await credentialRevision(storedRaw),
   };
   const applied = await dependencies.settings.applySettingsPatch({
     ...(options.expectedPendingRaw === undefined
       ? {}
       : { expected: { key: SETTING_KEYS.pending, value: options.expectedPendingRaw } }),
     set: [
-      { key: SETTING_KEYS.tokens, value: JSON.stringify(stored) },
+      { key: SETTING_KEYS.tokens, value: storedRaw },
       { key: SETTING_KEYS.status, value: JSON.stringify(status) },
+      ...(options.selectAuthMethod
+        ? [{ key: OPENAI_AUTH_METHOD_SETTING_KEY, value: 'subscription' }]
+        : []),
     ],
     delete: [SETTING_KEYS.pending, SETTING_KEYS.refreshLease],
   });
@@ -139,11 +158,11 @@ export async function commitOpenAiSubscriptionCredentials(
 
 export async function resolveOpenAiSubscriptionCredentials(
   dependencies: OpenAiSubscriptionCredentialDependencies,
-): Promise<{ accessToken: string; accountId: string }> {
+): Promise<ResolvedOpenAiSubscriptionCredentials> {
   const { raw, bundle, identityRaw } = await readCredentialSnapshot(dependencies.settings);
   await validateStoredIdentity(bundle, raw, identityRaw, dependencies);
   if (!tokenNeedsRefresh(bundle, now(dependencies))) {
-    return resolvedCredentials(bundle);
+    return resolvedCredentials(bundle, raw);
   }
 
   const owner = (dependencies.randomId ?? (() => crypto.randomUUID()))();
@@ -159,7 +178,7 @@ export async function resolveOpenAiSubscriptionCredentials(
     const currentBundle = parseCredentials(currentRaw);
     await validateStoredIdentity(currentBundle, currentRaw, snapshot[1], dependencies);
     if (!tokenNeedsRefresh(currentBundle, now(dependencies))) {
-      return resolvedCredentials(currentBundle);
+      return resolvedCredentials(currentBundle, currentRaw);
     }
 
     const leaseRaw = snapshot[2];
@@ -189,16 +208,39 @@ export async function resolveOpenAiSubscriptionCredentials(
   throw new OpenAiSubscriptionError('provider_unavailable');
 }
 
+export async function openAiSubscriptionCredentialsAreCurrent(
+  settings: SettingsStore,
+  credentials: ResolvedOpenAiSubscriptionCredentials,
+): Promise<boolean> {
+  const expectedRevision = credentialRevisions.get(credentials);
+  if (!expectedRevision) return false;
+  const raw = await settings.getSetting(SETTING_KEYS.tokens);
+  return raw !== undefined && await credentialRevision(raw) === expectedRevision;
+}
+
 export async function recordOpenAiSubscriptionAuthenticationFailure(
   settings: SettingsStore,
-  options: { now?: () => number; limit?: number } = {},
+  options: {
+    now?: () => number;
+    limit?: number;
+    credentials?: ResolvedOpenAiSubscriptionCredentials;
+  } = {},
 ): Promise<boolean> {
   const currentTime = (options.now ?? Date.now)();
   const limit = options.limit ?? AUTHENTICATION_FAILURE_LIMIT;
+  const expectedRevision = options.credentials
+    ? credentialRevisions.get(options.credentials)
+    : undefined;
+  if (options.credentials && !expectedRevision) return false;
   for (let attempt = 0; attempt < 8; attempt += 1) {
-    const raw = await settings.getSetting(SETTING_KEYS.status);
+    const [raw, tokenRaw] = await settings.getSettings([SETTING_KEYS.status, SETTING_KEYS.tokens]);
     if (!raw) return false;
     const current = parseStatus(raw);
+    if (expectedRevision) {
+      const currentRevision = current.credentialRevision ??
+        (tokenRaw ? await credentialRevision(tokenRaw) : undefined);
+      if (currentRevision !== expectedRevision) return false;
+    }
     if (
       current.state === 'reconnect_required' &&
       current.failureCode === 'auth_reconnect_required'
@@ -214,12 +256,13 @@ export async function recordOpenAiSubscriptionAuthenticationFailure(
       updatedAt: currentTime,
       failureCode: 'auth_reconnect_required',
       consecutiveAuthenticationFailures: failures,
+      ...(expectedRevision ? { credentialRevision: expectedRevision } : {}),
     };
     const applied = await settings.applySettingsPatch({
       expected: { key: SETTING_KEYS.status, value: raw },
       set: [{ key: SETTING_KEYS.status, value: JSON.stringify(next) }],
       ...(reconnectRequired
-        ? { delete: [SETTING_KEYS.tokens, SETTING_KEYS.refreshLease] }
+        ? { delete: [SETTING_KEYS.pending, SETTING_KEYS.tokens, SETTING_KEYS.refreshLease] }
         : {}),
     });
     if (applied) {
@@ -246,6 +289,7 @@ export async function disconnectOpenAiSubscription(
       SETTING_KEYS.tokens,
       SETTING_KEYS.refreshLease,
       SETTING_KEYS.identityKey,
+      SETTING_KEYS.modelCatalog,
     ],
   });
   clearOpenAiSubscriptionTransport();
@@ -256,7 +300,7 @@ async function refreshCredentials(
   expectedRaw: string,
   current: StoredCredentials,
   dependencies: OpenAiSubscriptionCredentialDependencies,
-): Promise<{ accessToken: string; accountId: string }> {
+): Promise<ResolvedOpenAiSubscriptionCredentials> {
   let refreshed: OpenAiSubscriptionTokenBundle;
   try {
     refreshed = await (dependencies.refresh ?? refreshOpenAiSubscriptionToken)(current.refreshToken);
@@ -285,22 +329,27 @@ async function refreshCredentials(
     accountFingerprint: current.accountFingerprint,
     connectedAt: current.connectedAt,
   };
+  const nextRaw = JSON.stringify(next);
   const status: StoredStatus = {
     version: 1,
     state: 'connected',
     updatedAt: now(dependencies),
     accountFingerprint: current.accountFingerprint,
     connectedAt: current.connectedAt,
+    credentialRevision: await credentialRevision(nextRaw),
   };
   const stored = await dependencies.settings.applySettingsPatch({
     expected: { key: SETTING_KEYS.tokens, value: expectedRaw },
     set: [
-      { key: SETTING_KEYS.tokens, value: JSON.stringify(next) },
+      { key: SETTING_KEYS.tokens, value: nextRaw },
       { key: SETTING_KEYS.status, value: JSON.stringify(status) },
     ],
     delete: [SETTING_KEYS.refreshLease],
   });
-  if (stored) return resolvedCredentials(next);
+  if (stored) {
+    clearOpenAiSubscriptionTransport();
+    return resolvedCredentials(next, nextRaw);
+  }
   return readRefreshWinner(dependencies);
 }
 
@@ -317,11 +366,12 @@ async function markReconnectRequired(
     accountFingerprint: current.accountFingerprint,
     connectedAt: current.connectedAt,
     failureCode,
+    credentialRevision: await credentialRevision(expectedRaw),
   };
   const applied = await dependencies.settings.applySettingsPatch({
     expected: { key: SETTING_KEYS.tokens, value: expectedRaw },
     set: [{ key: SETTING_KEYS.status, value: JSON.stringify(status) }],
-    delete: [SETTING_KEYS.tokens, SETTING_KEYS.refreshLease],
+    delete: [SETTING_KEYS.pending, SETTING_KEYS.tokens, SETTING_KEYS.refreshLease],
   });
   if (applied) clearOpenAiSubscriptionTransport();
   return applied;
@@ -350,10 +400,10 @@ async function validateStoredIdentity(
 
 async function readRefreshWinner(
   dependencies: OpenAiSubscriptionCredentialDependencies,
-): Promise<{ accessToken: string; accountId: string }> {
+): Promise<ResolvedOpenAiSubscriptionCredentials> {
   const { raw, bundle, identityRaw } = await readCredentialSnapshot(dependencies.settings);
   await validateStoredIdentity(bundle, raw, identityRaw, dependencies);
-  return resolvedCredentials(bundle);
+  return resolvedCredentials(bundle, raw);
 }
 
 async function readCredentialSnapshot(
@@ -436,6 +486,9 @@ function parseStatus(raw: string): StoredStatus {
     (value.connectedAt !== undefined && typeof value.connectedAt !== 'number') ||
     (value.failureCode !== undefined && !isOpenAiSubscriptionFailureCode(value.failureCode)) ||
     (value.retryAt !== undefined && typeof value.retryAt !== 'number') ||
+    (value.credentialRevision !== undefined &&
+      (typeof value.credentialRevision !== 'string' ||
+        !/^[a-f0-9]{64}$/.test(value.credentialRevision))) ||
     (value.consecutiveAuthenticationFailures !== undefined &&
       (typeof value.consecutiveAuthenticationFailures !== 'number' ||
         !Number.isInteger(value.consecutiveAuthenticationFailures) ||
@@ -469,8 +522,22 @@ function publicStatus(status: StoredStatus): OpenAiSubscriptionCredentialStatus 
   };
 }
 
-function resolvedCredentials(bundle: StoredCredentials): { accessToken: string; accountId: string } {
-  return { accessToken: bundle.accessToken, accountId: bundle.accountId };
+async function resolvedCredentials(
+  bundle: StoredCredentials,
+  raw: string,
+): Promise<ResolvedOpenAiSubscriptionCredentials> {
+  const credentials = {
+    accessToken: bundle.accessToken,
+    accountId: bundle.accountId,
+    accountFingerprint: bundle.accountFingerprint,
+  };
+  credentialRevisions.set(credentials, await credentialRevision(raw));
+  return credentials;
+}
+
+async function credentialRevision(raw: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(raw));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
 function validateTokenBundle(bundle: OpenAiSubscriptionTokenBundle): void {

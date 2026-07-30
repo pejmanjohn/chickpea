@@ -21,11 +21,6 @@ import type { PlatformEnv } from '../src/config/state-backend.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import { FAKE_PROVIDER_KEYS, FakeProvidersBackend } from './helpers/fake-providers.ts';
 import { withEnv } from './helpers/env.ts';
-import type {
-  OpenAiSubscriptionAuthorizationProtocol,
-} from '../src/openai-subscription/device-auth.ts';
-import { commitOpenAiSubscriptionCredentials } from '../src/openai-subscription/credentials.ts';
-import { OPENAI_SUBSCRIPTION_MODELS } from '../src/openai-subscription/protocol.ts';
 
 const ADMIN_TOKEN = 'provider-admin-token';
 
@@ -66,356 +61,6 @@ function appWithProviderAdmin(): {
     },
   };
 }
-
-test('OpenAI subscription admin routes keep authorization capability browser-local and return safe status', async (t) => {
-  let currentTime = 1_800_000_000_000;
-  let polls = 0;
-  const protocol: OpenAiSubscriptionAuthorizationProtocol = {
-    start: async () => ({
-      deviceAuthId: 'provider-device-secret',
-      userCode: 'CHICK-PEA',
-      verificationUri: 'https://auth.openai.com/codex/device',
-      intervalMs: 5_000,
-      expiresAt: currentTime + 60_000,
-    }),
-    poll: async () => {
-      polls += 1;
-      return {
-        state: 'approved',
-        authorizationCode: 'provider-authorization-secret',
-        codeVerifier: 'provider-verifier-secret',
-      };
-    },
-    exchange: async () => ({
-      accessToken: 'provider-access-secret',
-      refreshToken: 'provider-refresh-secret',
-      idToken: 'provider-identity-secret',
-      expiresAt: currentTime + 3_600_000,
-      accountId: 'provider-account-secret',
-    }),
-  };
-  const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
-  const settings = new SqliteSettingsStore(':memory:');
-  t.after(() => { config.close(); settings.close(); });
-  const app = new Hono();
-  app.route('/', createAdminRoutes({
-    store: config,
-    settings,
-    adminToken: ADMIN_TOKEN,
-    openAiSubscriptionProtocol: protocol,
-    openAiSubscriptionNow: () => currentTime,
-    openAiSubscriptionRandomBytes: (length) => new Uint8Array(length).fill(9),
-    openAiSubscriptionCapability: () => ({ enabled: true }),
-  }));
-
-  const startedResponse = await app.request('/admin/api/providers/openai/subscription/start', {
-    method: 'POST',
-    headers: { ...auth(), 'content-type': 'application/json' },
-    body: '{}',
-  });
-  assert.equal(startedResponse.status, 200);
-  const started = await startedResponse.json() as {
-    state: string;
-    userCode: string;
-    verificationUri: string;
-    expiresAt: number;
-    nextPollAt: number;
-    attemptCapability: string;
-  };
-  assert.equal(started.state, 'authorizing');
-  assert.equal(started.userCode, 'CHICK-PEA');
-  assert.ok(started.attemptCapability.length >= 32);
-
-  const observer = await app.request('/admin/api/providers/openai/subscription', { headers: auth() });
-  assert.deepEqual(await observer.json(), {
-    status: { state: 'authorizing', updatedAt: currentTime },
-    capability: { enabled: true },
-  });
-  const providerSummary = await app.request('/admin/api/providers', { headers: auth() });
-  const summaryJson = JSON.stringify(await providerSummary.json());
-  assert.match(summaryJson, /"activeAuthMethod":"api_key"/);
-  assert.match(summaryJson, /"subscription":\{"state":"authorizing"/);
-  assert.doesNotMatch(summaryJson, /CHICK-PEA|attemptCapability|provider-device-secret/);
-
-  const earlyPoll = await app.request('/admin/api/providers/openai/subscription/poll', {
-    method: 'POST',
-    headers: { ...auth(), 'content-type': 'application/json' },
-    body: JSON.stringify({ attemptCapability: started.attemptCapability }),
-  });
-  assert.equal(earlyPoll.status, 200);
-  assert.equal(polls, 0);
-
-  currentTime += 5_000;
-  const connectedResponse = await app.request('/admin/api/providers/openai/subscription/poll', {
-    method: 'POST',
-    headers: { ...auth(), 'content-type': 'application/json' },
-    body: JSON.stringify({ attemptCapability: started.attemptCapability }),
-  });
-  assert.equal(connectedResponse.status, 200);
-  const connectedText = await connectedResponse.text();
-  assert.match(connectedText, /"state":"connected"/);
-  for (const secret of [
-    'provider-access-secret',
-    'provider-refresh-secret',
-    'provider-identity-secret',
-    'provider-account-secret',
-    'provider-authorization-secret',
-    'provider-verifier-secret',
-  ]) {
-    assert.doesNotMatch(connectedText, new RegExp(secret));
-  }
-
-  const subscriptionSelected = await app.request('/admin/api/providers', { headers: auth() });
-  assert.match(JSON.stringify(await subscriptionSelected.json()), /"activeAuthMethod":"subscription"/);
-
-  const fake = new FakeProvidersBackend();
-  await withEnv(
-    { OPENAI_API_KEY: undefined, OPENAI_API_URL: 'https://openai.fake/v1' },
-    () => withFetch(fake.asFetch(), async () => {
-      const apiConnected = await app.request('/admin/api/providers/openai/key', {
-        method: 'POST',
-        headers: { ...auth(), 'content-type': 'application/json' },
-        body: JSON.stringify({ apiKey: FAKE_PROVIDER_KEYS.openai }),
-      });
-      assert.equal(apiConnected.status, 200);
-    }),
-  );
-  const apiSelected = await app.request('/admin/api/providers', { headers: auth() });
-  assert.match(JSON.stringify(await apiSelected.json()), /"activeAuthMethod":"api_key"/);
-
-  const apiDisconnected = await app.request('/admin/api/providers/openai/key', {
-    method: 'DELETE',
-    headers: auth(),
-  });
-  assert.equal(apiDisconnected.status, 200);
-  const subscriptionReselected = await app.request('/admin/api/providers', { headers: auth() });
-  assert.match(JSON.stringify(await subscriptionReselected.json()), /"activeAuthMethod":"subscription"/);
-
-  await withEnv(
-    { OPENAI_API_KEY: undefined, OPENAI_API_URL: 'https://openai.fake/v1' },
-    () => withFetch(fake.asFetch(), async () => {
-      const apiReconnected = await app.request('/admin/api/providers/openai/key', {
-        method: 'POST',
-        headers: { ...auth(), 'content-type': 'application/json' },
-        body: JSON.stringify({ apiKey: FAKE_PROVIDER_KEYS.openai }),
-      });
-      assert.equal(apiReconnected.status, 200);
-    }),
-  );
-
-  const disconnected = await app.request('/admin/api/providers/openai/subscription', {
-    method: 'DELETE',
-    headers: auth(),
-  });
-  assert.equal(disconnected.status, 200);
-  assert.deepEqual(await disconnected.json(), {
-    status: { state: 'disconnected', updatedAt: currentTime },
-  });
-  const apiReselected = await app.request('/admin/api/providers', { headers: auth() });
-  assert.match(JSON.stringify(await apiReselected.json()), /"activeAuthMethod":"api_key"/);
-});
-
-test('default-off preview gate blocks installation selection without deleting state or affecting profiles', async (t) => {
-  let enabled = true;
-  let protocolStarts = 0;
-  const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
-  const settings = new SqliteSettingsStore(':memory:');
-  t.after(() => { config.close(); settings.close(); });
-  const app = new Hono();
-  app.route('/', createAdminRoutes({
-    store: config,
-    settings,
-    adminToken: ADMIN_TOKEN,
-    knownProviders: new Set(['openai']),
-    openAiSubscriptionCapability: () => ({ enabled }),
-    openAiSubscriptionProtocol: {
-      start: async () => {
-        protocolStarts += 1;
-        return {
-          deviceAuthId: 'pending-device-secret',
-          userCode: 'PREVIEW-CODE',
-          verificationUri: 'https://auth.openai.com/codex/device',
-          intervalMs: 5_000,
-          expiresAt: 1_800_000_060_000,
-        };
-      },
-      poll: async () => ({ state: 'pending' }),
-      exchange: async () => { throw new Error('must not exchange'); },
-    },
-    openAiSubscriptionNow: () => 1_800_000_000_000,
-    openAiSubscriptionRandomBytes: (length) => new Uint8Array(length).fill(3),
-  }));
-
-  const started = await app.request('/admin/api/providers/openai/subscription/start', {
-    method: 'POST',
-    headers: { ...auth(), 'content-type': 'application/json' },
-    body: '{}',
-  });
-  assert.equal(started.status, 200);
-  assert.equal(protocolStarts, 1);
-  enabled = false;
-
-  const blocked = await app.request('/admin/api/providers/openai/subscription/start', {
-    method: 'POST',
-    headers: { ...auth(), 'content-type': 'application/json' },
-    body: '{}',
-  });
-  assert.equal(blocked.status, 409);
-  assert.deepEqual(await blocked.json(), { error: 'preview_disabled' });
-  assert.equal(protocolStarts, 1);
-
-  const status = await app.request('/admin/api/providers/openai/subscription', { headers: auth() });
-  assert.deepEqual(await status.json(), {
-    status: { state: 'authorizing', updatedAt: 1_800_000_000_000 },
-    capability: { enabled: false },
-  });
-
-  const blockedSelection = await app.request('/admin/api/providers/openai/auth-method', {
-    method: 'PUT',
-    headers: { ...auth(), 'content-type': 'application/json' },
-    body: JSON.stringify({ method: 'subscription' }),
-  });
-  assert.equal(blockedSelection.status, 409);
-
-  const apiKeyProfile = await app.request('/admin/api/agents', {
-    method: 'POST',
-    headers: { ...auth(), 'content-type': 'application/json' },
-    body: JSON.stringify({
-      id: 'still_api_key',
-      name: 'Still API key',
-      instructions: 'Use Platform billing only.',
-      enabled: true,
-      model: 'openai/gpt-5.4',
-    }),
-  });
-  assert.equal(apiKeyProfile.status, 201);
-
-  const disconnected = await app.request('/admin/api/providers/openai/subscription', {
-    method: 'DELETE',
-    headers: auth(),
-  });
-  assert.equal(disconnected.status, 200, 'disconnect remains available while disabled');
-});
-
-test('OpenAI method selection is installation-wide and validates connections and models', async (t) => {
-  const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
-  const settings = new SqliteSettingsStore(':memory:');
-  t.after(() => { config.close(); settings.close(); });
-  const app = new Hono();
-  app.route('/', createAdminRoutes({
-    store: config,
-    settings,
-    adminToken: ADMIN_TOKEN,
-    knownProviders: new Set(['openai', 'anthropic']),
-    openAiSubscriptionCapability: () => ({ enabled: true }),
-  }));
-
-  const incompatible = await app.request('/admin/api/agents', {
-    method: 'POST',
-    headers: { ...auth(), 'content-type': 'application/json' },
-    body: JSON.stringify({
-      id: 'agent_incompatible',
-      name: 'Incompatible profile',
-      instructions: 'Use a Platform-only OpenAI model.',
-      enabled: true,
-      model: 'openai/gpt-4.1',
-    }),
-  });
-  assert.equal(incompatible.status, 201);
-
-  const missingSubscription = await app.request('/admin/api/providers/openai/auth-method', {
-    method: 'PUT',
-    headers: { ...auth(), 'content-type': 'application/json' },
-    body: JSON.stringify({ method: 'subscription' }),
-  });
-  assert.equal(missingSubscription.status, 409);
-  assert.deepEqual(await missingSubscription.json(), {
-    error: 'openai_subscription_missing',
-    message: 'Connect a ChatGPT subscription before selecting it.',
-  });
-
-  await commitOpenAiSubscriptionCredentials({
-    accessToken: 'installation-subscription-access',
-    refreshToken: 'installation-subscription-refresh',
-    idToken: undefined,
-    expiresAt: Date.now() + 3_600_000,
-    accountId: 'installation-account',
-  }, { settings, randomBytes: (length) => new Uint8Array(length).fill(6) });
-
-  const selectedSubscription = await app.request('/admin/api/providers/openai/auth-method', {
-    method: 'PUT',
-    headers: { ...auth(), 'content-type': 'application/json' },
-    body: JSON.stringify({ method: 'subscription' }),
-  });
-  assert.equal(selectedSubscription.status, 200);
-  assert.deepEqual(await selectedSubscription.json(), { activeAuthMethod: 'subscription' });
-
-  const supportedPatch = await app.request('/admin/api/agents/agent_incompatible', {
-    method: 'PATCH',
-    headers: { ...auth(), 'content-type': 'application/json' },
-    body: JSON.stringify({ model: 'openai/gpt-5.4' }),
-  });
-  assert.equal(supportedPatch.status, 200);
-
-  const subscriptionModels = await app.request('/admin/api/providers/openai/models', {
-    headers: auth(),
-  });
-  assert.equal(subscriptionModels.status, 200);
-  assert.deepEqual(await subscriptionModels.json(), {
-    provider: 'openai',
-    models: OPENAI_SUBSCRIPTION_MODELS.map((id) => ({ id })),
-    cached: true,
-  });
-
-  const modelPicker = await app.request('/admin/api/models', { headers: auth() });
-  assert.equal(modelPicker.status, 200);
-  const openAiProvider = ((await modelPicker.json()) as {
-    providers: Array<{
-      id: string;
-      configured: boolean;
-      source: string;
-      suggestions: string[];
-      authMethods?: { activeMethod?: string };
-    }>;
-  }).providers.find((provider) => provider.id === 'openai');
-  assert.equal(openAiProvider?.configured, true);
-  assert.equal(openAiProvider?.source, 'ChatGPT subscription');
-  assert.equal(openAiProvider?.authMethods?.activeMethod, 'subscription');
-  assert.deepEqual(
-    openAiProvider?.suggestions,
-    OPENAI_SUBSCRIPTION_MODELS.map((id) => `openai/${id}`),
-  );
-
-  const unsupportedCreate = await app.request('/admin/api/agents', {
-    method: 'POST',
-    headers: { ...auth(), 'content-type': 'application/json' },
-    body: JSON.stringify({
-      id: 'agent_unsupported',
-      name: 'Unsupported profile',
-      instructions: 'Reject this while Subscription is selected.',
-      enabled: true,
-      model: 'openai/gpt-4.1',
-    }),
-  });
-  assert.equal(unsupportedCreate.status, 400);
-
-  const missingApiKey = await app.request('/admin/api/providers/openai/auth-method', {
-    method: 'PUT',
-    headers: { ...auth(), 'content-type': 'application/json' },
-    body: JSON.stringify({ method: 'api_key' }),
-  });
-  assert.equal(missingApiKey.status, 409);
-
-  await settings.setSetting(PROVIDER_KEY_SETTING_KEYS.openai, 'stored-openai-key');
-  invalidateProviderKeyCache();
-  const selectedApiKey = await app.request('/admin/api/providers/openai/auth-method', {
-    method: 'PUT',
-    headers: { ...auth(), 'content-type': 'application/json' },
-    body: JSON.stringify({ method: 'api_key' }),
-  });
-  assert.equal(selectedApiKey.status, 200);
-  assert.deepEqual(await selectedApiKey.json(), { activeAuthMethod: 'api_key' });
-});
 
 function providerSettingsAgent(id: string, model: string) {
   return {
@@ -505,10 +150,20 @@ test('provider key POST validates, stores, primes model cache, and rejects bad k
           assert.equal(saved.status, 200);
           assert.deepEqual(await saved.json(), {
             ok: true,
-            provider: { id: 'anthropic', status: 'stored', modelCount: 2 },
+            provider: { id: 'anthropic', status: 'stored', modelCount: 4 },
             models: [
               { id: 'claude-sonnet-4-6', display_name: 'Claude Sonnet 4.6' },
               { id: 'claude-haiku-4-5', display_name: 'Claude Haiku 4.5' },
+              {
+                id: 'claude-opus-5',
+                display_name: 'Claude Opus 5',
+                context_length: 1_000_000,
+              },
+              {
+                id: 'claude-sonnet-5',
+                display_name: 'Claude Sonnet 5',
+                context_length: 1_000_000,
+              },
             ],
           });
           assert.equal(
@@ -662,7 +317,25 @@ test('provider models proxy caches OpenAI chat models and refresh bypasses the c
           assert.equal(first.status, 200);
           assert.deepEqual(await first.json(), {
             provider: 'openai',
-            models: [{ id: 'gpt-4.1' }, { id: 'gpt-4.1-mini' }],
+            models: [
+              { id: 'gpt-4.1' },
+              { id: 'gpt-4.1-mini' },
+              {
+                id: 'gpt-5.6-sol',
+                display_name: 'GPT-5.6 Sol',
+                context_length: 272_000,
+              },
+              {
+                id: 'gpt-5.6-terra',
+                display_name: 'GPT-5.6 Terra',
+                context_length: 272_000,
+              },
+              {
+                id: 'gpt-5.6-luna',
+                display_name: 'GPT-5.6 Luna',
+                context_length: 272_000,
+              },
+            ],
             cached: false,
           });
           assert.equal(fake.callsFor('/v1/models').length, 1);
@@ -674,7 +347,25 @@ test('provider models proxy caches OpenAI chat models and refresh bypasses the c
           assert.equal(cached.status, 200);
           assert.deepEqual(await cached.json(), {
             provider: 'openai',
-            models: [{ id: 'gpt-4.1' }, { id: 'gpt-4.1-mini' }],
+            models: [
+              { id: 'gpt-4.1' },
+              { id: 'gpt-4.1-mini' },
+              {
+                id: 'gpt-5.6-sol',
+                display_name: 'GPT-5.6 Sol',
+                context_length: 272_000,
+              },
+              {
+                id: 'gpt-5.6-terra',
+                display_name: 'GPT-5.6 Terra',
+                context_length: 272_000,
+              },
+              {
+                id: 'gpt-5.6-luna',
+                display_name: 'GPT-5.6 Luna',
+                context_length: 272_000,
+              },
+            ],
             cached: true,
           });
           assert.equal(fake.callsFor('/v1/models').length, 1);
@@ -685,7 +376,24 @@ test('provider models proxy caches OpenAI chat models and refresh bypasses the c
           assert.equal(refreshed.status, 200);
           assert.deepEqual(await refreshed.json(), {
             provider: 'openai',
-            models: [{ id: 'gpt-5.5' }],
+            models: [
+              { id: 'gpt-5.5' },
+              {
+                id: 'gpt-5.6-sol',
+                display_name: 'GPT-5.6 Sol',
+                context_length: 272_000,
+              },
+              {
+                id: 'gpt-5.6-terra',
+                display_name: 'GPT-5.6 Terra',
+                context_length: 272_000,
+              },
+              {
+                id: 'gpt-5.6-luna',
+                display_name: 'GPT-5.6 Luna',
+                context_length: 272_000,
+              },
+            ],
             cached: false,
           });
           assert.equal(fake.callsFor('/v1/models').length, 2);
@@ -908,10 +616,10 @@ test('models endpoint folds OpenRouter favorites into the picker suggestions (no
       'openrouter/anthropic/claude-sonnet-4',
       'openrouter/openai/gpt-4.1',
     ]);
-    // Anthropic keeps its small dynamic catalog (favorites folding is scoped).
+    // Anthropic keeps its current release suggestions (favorites folding is scoped).
     const anthropic = body.providers.find((provider) => provider.id === 'anthropic');
     assert.ok(anthropic);
-    assert.ok(anthropic.suggestions.includes('anthropic/claude-sonnet-4-6'));
+    assert.ok(anthropic.suggestions.includes('anthropic/claude-fable-5'));
   } finally {
     close();
   }

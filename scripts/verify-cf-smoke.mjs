@@ -662,13 +662,13 @@ async function main() {
       (providers.body?.providers ?? []).map((provider) => [provider.id, provider]),
     );
     check(
-      providerSummaries.anthropic?.status === 'stored' && providerSummaries.anthropic?.modelCount === 2,
-      'providers GET reports Anthropic key stored with two fake models',
+      providerSummaries.anthropic?.status === 'stored' && providerSummaries.anthropic?.modelCount === 4,
+      'providers GET combines two fake Anthropic models with two catalog models',
       JSON.stringify(providerSummaries.anthropic),
     );
     check(
-      providerSummaries.openai?.status === 'stored' && providerSummaries.openai?.modelCount === 2,
-      'providers GET reports OpenAI key stored with two chat models',
+      providerSummaries.openai?.status === 'stored' && providerSummaries.openai?.modelCount === 5,
+      'providers GET combines two fake OpenAI models with three catalog models',
       JSON.stringify(providerSummaries.openai),
     );
     check(
@@ -680,9 +680,9 @@ async function main() {
     const seededWorkersFavorites = await adminFetch(baseUrl, '/admin/api/providers/workers-ai/favorites');
     const expectedWorkersSeed = [
       '@cf/zai-org/glm-5.2',
-      '@cf/moonshotai/kimi-k2.6',
+      '@cf/moonshotai/kimi-k2.7-code',
       '@cf/openai/gpt-oss-120b',
-      '@cf/meta/llama-3.3-70b-instruct',
+      '@cf/meta/llama-4-scout-17b-16e-instruct',
     ];
     check(
       seededWorkersFavorites.status === 200 &&

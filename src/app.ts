@@ -18,6 +18,7 @@ import {
   publishActivityStatus,
 } from './slack/activity-publisher.ts';
 import { registerOpenAiSubscriptionApi } from './openai-subscription/provider.ts';
+import { registerModelCompatibilityApis } from './model-compat/provider.ts';
 
 // Provider registrations run at module scope so they are in place before any
 // agent resolves its model. On the Cloudflare target the seeded Workers AI
@@ -50,6 +51,10 @@ registerProvider('cloudflare-workers-ai', {
   maxTokens: 2048,
 });
 recordRegisteredProvider('cloudflare-workers-ai');
+
+// These handlers contain no credentials. API-key binding happens only after
+// Settings resolves the selected canonical provider immediately before use.
+registerModelCompatibilityApis();
 
 // The wire handler is credential-free and safe to install at module boot.
 // A subscription profile binds live credentials and the internal provider

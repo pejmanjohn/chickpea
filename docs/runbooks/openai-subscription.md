@@ -2,6 +2,8 @@
 
 Chickpea's OpenAI Subscription method is a direct, experimental integration with OpenAI's published Codex native-client authorization flow and the private ChatGPT Codex Responses transport. It uses ordinary HTTP and Web Crypto on Node and Cloudflare Workers. It does not install, launch, proxy through, or call Codex app-server.
 
+When Subscription is selected, the model picker starts with Chickpea's seven-model bundled compatibility catalog: `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, and `gpt-5.3-codex-spark`. All seven passed live subscription inference on 2026-07-29. A validated hosted snapshot may add a reviewed model only by mapping it to the already-compiled subscription contract; Chickpea never queries or caches an account-specific private model endpoint. The hosted data cannot change transport behavior or the selected billing lane. See [Model Catalog Operations](model-catalog.md).
+
 This is not a stable OpenAI Platform API contract. Public implementations show current technical precedent, not an SLA or irrevocable permission for Chickpea. Keep the preview default-off until every live acceptance gate below passes for the exact build and account posture.
 
 ## Product and security boundary
@@ -86,6 +88,17 @@ traffic:
 TAG_OPENAI_SUBSCRIPTION_ENABLED=1 \
 npm run verify:openai-subscription-runtime:live -- \
   --live --state-db ./tmp/openai-subscription-live.state.db
+```
+
+This compatibility alias runs the shared lane-aware verifier. Use `--model <id>`
+to exercise a specific model. Add `--catalog-file <path>` to exercise a reviewed
+hosted snapshot before publishing it. The canonical equivalent is:
+
+```sh
+TAG_OPENAI_SUBSCRIPTION_ENABLED=1 \
+npm run verify:model-compatibility:live -- \
+  --live --lane subscription --model gpt-5.3-codex-spark \
+  --state-db ./tmp/openai-subscription-live.state.db
 ```
 
 This is a Node runtime/no-fallback gate, not Slack or deployed-Worker acceptance.

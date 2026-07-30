@@ -8,7 +8,19 @@ import {
 
 test('provider route auditing maps only explicit OpenAI lanes to safe facts', () => {
   assert.equal(providerAuthRouteFromProviderId('openai-subscription'), 'openai_subscription');
+  assert.equal(
+    providerAuthRouteFromProviderId('chickpea-openai-subscription-r7-abcdef012345'),
+    'openai_subscription',
+  );
   assert.equal(providerAuthRouteFromProviderId('openai'), 'openai_api_key');
+  assert.equal(
+    providerAuthRouteFromProviderId('chickpea-openai-platform-bundled-v1'),
+    'openai_api_key',
+  );
+  assert.equal(
+    providerAuthRouteFromProviderId('chickpea-openai-platform-r7-abcdef012345'),
+    'openai_api_key',
+  );
   assert.equal(providerAuthRouteFromProviderId('anthropic'), undefined);
   assert.equal(providerAuthRouteFromProviderId(''), undefined);
   assert.doesNotMatch(

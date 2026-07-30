@@ -216,6 +216,7 @@ export async function pollOpenAiSubscriptionAuthorization(
     { ...dependencies, settings: dependencies.settings },
     {
       expectedPendingRaw: claimedRaw,
+      selectAuthMethod: claimed.previousStatus.state !== 'connected',
       ...(claimed.previousStatus.connectedAt === undefined
         ? {}
         : { connectedAt: claimed.previousStatus.connectedAt }),
@@ -260,18 +261,6 @@ export function getOpenAiSubscriptionAuthorizationStatus(
   settings: SettingsStore,
 ): Promise<OpenAiSubscriptionCredentialStatus> {
   return getOpenAiSubscriptionCredentialStatus(settings);
-}
-
-/**
- * Lets the admin boundary distinguish a first connection from a reconnect
- * without exposing the stored authorization attempt or account credentials.
- */
-export async function wasOpenAiSubscriptionConnectedBeforeAuthorization(
-  input: { attemptCapability: string },
-  settings: SettingsStore,
-): Promise<boolean> {
-  const { pending } = await requireAuthorization(input.attemptCapability, settings);
-  return pending.previousStatus.state === 'connected';
 }
 
 async function requireAuthorization(

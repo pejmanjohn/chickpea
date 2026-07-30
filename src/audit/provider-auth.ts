@@ -5,6 +5,8 @@ import type {
 } from '@flue/runtime';
 
 import type { ProviderAuthRoute } from '../config/runtime-model.ts';
+import { isOpenAiPlatformCompatibilityProviderId } from '../model-compat/provider.ts';
+import { isOpenAiSubscriptionProviderId } from '../openai-subscription/provider.ts';
 
 export const providerAuthRouteInterceptor: FlueExecutionInterceptor = async (
   _operation,
@@ -16,8 +18,10 @@ export const providerAuthRouteInterceptor: FlueExecutionInterceptor = async (
 export function providerAuthRouteFromProviderId(
   providerId: string,
 ): ProviderAuthRoute | undefined {
-  if (providerId === 'openai-subscription') return 'openai_subscription';
-  if (providerId === 'openai') return 'openai_api_key';
+  if (isOpenAiSubscriptionProviderId(providerId)) return 'openai_subscription';
+  if (providerId === 'openai' || isOpenAiPlatformCompatibilityProviderId(providerId)) {
+    return 'openai_api_key';
+  }
   return undefined;
 }
 

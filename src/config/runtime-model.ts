@@ -8,9 +8,21 @@ import type { SettingsStore } from './settings-store.ts';
 import type { PlatformEnv } from './state-backend.ts';
 import {
   bindOpenAiSubscriptionProvider,
+  isOpenAiSubscriptionProviderId,
   openAiSubscriptionModelSpecifier,
 } from '../openai-subscription/provider.ts';
+import { OpenAiSubscriptionError } from '../openai-subscription/errors.ts';
 import { requireOpenAiSubscriptionEnabled } from '../openai-subscription/feature.ts';
+import {
+  canonicalCompatibilityModel,
+  isInternalCompatibilityProvider,
+} from '../model-compat/provider.ts';
+import { resolveApiKeyModelSpecifier } from '../model-compat/routing.ts';
+import {
+  loadModelCatalog,
+  resolveActiveCatalogRoute,
+  type ModelCatalogLoadResult,
+} from '../model-catalog/index.ts';
 
 export type ProviderAuthRoute = 'openai_api_key' | 'openai_subscription';
 
@@ -32,6 +44,7 @@ interface RuntimeModelDependencies {
   ) => Promise<void>;
   bindSubscription?: typeof bindOpenAiSubscriptionProvider;
   requireSubscriptionEnabled?: (env?: PlatformEnv) => void;
+  loadCatalog?: (settings: SettingsStore) => Promise<ModelCatalogLoadResult>;
 }
 
 /**
@@ -44,7 +57,23 @@ export async function resolveRuntimeModel(
   canonicalModel: string,
   dependencies: RuntimeModelDependencies,
 ): Promise<ResolvedRuntimeModel> {
+  await (dependencies.loadCatalog ?? loadModelCatalog)(dependencies.settings);
   const providerId = providerPrefix(canonicalModel);
+  if (isOpenAiSubscriptionProviderId(providerId)) {
+    throw new OpenAiSubscriptionError('unsupported_model');
+  }
+  if (isInternalCompatibilityProvider(providerId)) {
+    throw new Error('Internal model providers cannot be selected in profiles.');
+  }
+  if (providerId === 'anthropic') {
+    const model = resolveApiKeyModelSpecifier(canonicalModel, 'anthropic');
+    await (dependencies.applyProviderKey ?? applyResolvedProviderKey)(
+      'anthropic',
+      dependencies.env,
+      dependencies.settings,
+    );
+    return { model };
+  }
   if (providerId !== 'openai') {
     if (isProviderKeyId(providerId)) {
       await (dependencies.applyProviderKey ?? applyResolvedProviderKey)(
@@ -60,12 +89,13 @@ export async function resolveRuntimeModel(
     dependencies.resolveOpenAiAuthorization ?? resolveOpenAiAuthMethod
   )(dependencies.settings);
   if (authorization === 'api_key') {
+    const model = resolveApiKeyModelSpecifier(canonicalModel, 'openai');
     await (dependencies.applyProviderKey ?? applyResolvedProviderKey)(
       'openai',
       dependencies.env,
       dependencies.settings,
     );
-    return { model: canonicalModel, providerAuthRoute: 'openai_api_key' };
+    return { model, providerAuthRoute: 'openai_api_key' };
   }
 
   // The rollout switch is checked after resolving the installation-wide
@@ -76,14 +106,16 @@ export async function resolveRuntimeModel(
     dependencies.env,
   );
 
-  // Validate the allowlist before resolving credentials or registering a live
-  // transport. A malformed/unsupported profile fails without touching either
-  // OpenAI credential lane.
-  const internalModel = openAiSubscriptionModelSpecifier(
-    canonicalModel.slice('openai/'.length),
-  );
+  // Reject malformed model ids before touching credentials. The provider then
+  // validates safe ids against the account-scoped cached or live catalog.
+  const modelId = canonicalModel.slice('openai/'.length);
+  const route = resolveActiveCatalogRoute(canonicalModel, 'openai_subscription');
+  if (!route) throw new OpenAiSubscriptionError('unsupported_model');
+  const internalModel = openAiSubscriptionModelSpecifier(modelId, route);
   await (dependencies.bindSubscription ?? bindOpenAiSubscriptionProvider)({
     settings: dependencies.settings,
+    modelId,
+    route,
   });
   return {
     model: internalModel,
@@ -92,9 +124,12 @@ export async function resolveRuntimeModel(
 }
 
 export function canonicalRuntimeModel(model: string): string {
-  return model.startsWith('openai-subscription/')
-    ? `openai/${model.slice('openai-subscription/'.length)}`
+  const separator = model.indexOf('/');
+  const providerId = separator > 0 ? model.slice(0, separator) : model;
+  const canonical = isOpenAiSubscriptionProviderId(providerId)
+    ? `openai/${model.slice(separator + 1)}`
     : model;
+  return canonicalCompatibilityModel(canonical);
 }
 
 function providerPrefix(model: string): string {

@@ -33,17 +33,25 @@ const BUILTIN_ENV_PROVIDERS: readonly ProviderCatalogEntry[] = [
   {
     id: 'anthropic',
     envVars: ['ANTHROPIC_API_KEY'],
-    suggestions: ['anthropic/claude-sonnet-4-6', 'anthropic/claude-haiku-4-5'],
+    suggestions: [
+      'anthropic/claude-fable-5',
+      'anthropic/claude-opus-5',
+      'anthropic/claude-sonnet-5',
+      'anthropic/claude-haiku-4-5',
+    ],
   },
   {
     id: 'openai',
     envVars: ['OPENAI_API_KEY'],
-    suggestions: ['openai/gpt-4.1', 'openai/gpt-4.1-mini'],
+    suggestions: ['openai/gpt-5.6-sol', 'openai/gpt-5.6-terra', 'openai/gpt-5.6-luna'],
   },
   {
     id: 'openrouter',
     envVars: ['OPENROUTER_API_KEY'],
-    suggestions: ['openrouter/anthropic/claude-sonnet-4', 'openrouter/openai/gpt-4.1'],
+    suggestions: [
+      'openrouter/anthropic/claude-sonnet-5',
+      'openrouter/openai/gpt-5.6-terra',
+    ],
   },
   {
     id: 'cloudflare-workers-ai',

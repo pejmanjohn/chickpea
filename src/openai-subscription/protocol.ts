@@ -14,6 +14,7 @@ export const OPENAI_SUBSCRIPTION_SCOPES = 'openid profile email offline_access';
 export const OPENAI_SUBSCRIPTION_ORIGINATOR = 'chickpea';
 
 const OPENAI_AUTH_ORIGIN = 'https://auth.openai.com';
+export const OPENAI_SUBSCRIPTION_API_BASE = 'https://chatgpt.com/backend-api';
 
 export const OPENAI_SUBSCRIPTION_ENDPOINTS = {
   deviceStart: `${OPENAI_AUTH_ORIGIN}/api/accounts/deviceauth/usercode`,
@@ -21,14 +22,17 @@ export const OPENAI_SUBSCRIPTION_ENDPOINTS = {
   deviceVerification: `${OPENAI_AUTH_ORIGIN}/codex/device`,
   deviceCallback: `${OPENAI_AUTH_ORIGIN}/deviceauth/callback`,
   token: `${OPENAI_AUTH_ORIGIN}/oauth/token`,
-  responses: 'https://chatgpt.com/backend-api/codex/responses',
+  responses: `${OPENAI_SUBSCRIPTION_API_BASE}/codex/responses`,
 } as const;
 
 export const OPENAI_SUBSCRIPTION_MODELS = [
-  'gpt-5.3-codex-spark',
+  'gpt-5.6-sol',
+  'gpt-5.6-terra',
+  'gpt-5.6-luna',
+  'gpt-5.5',
   'gpt-5.4',
   'gpt-5.4-mini',
-  'gpt-5.5',
+  'gpt-5.3-codex-spark',
 ] as const;
 
 const DEVICE_AUTHORIZATION_TTL_MS = 15 * 60 * 1000;
@@ -56,7 +60,7 @@ export class OpenAiSubscriptionProtocolError extends Error {
 export async function startOpenAiDeviceAuthorization(
   options: OpenAiSubscriptionProtocolOptions = {},
 ): Promise<OpenAiDeviceAuthorizationPending> {
-  const result = await boundedFetch(
+  const result = await boundedOpenAiSubscriptionFetch(
     OPENAI_SUBSCRIPTION_ENDPOINTS.deviceStart,
     {
       method: 'POST',
@@ -86,7 +90,7 @@ export async function pollOpenAiDeviceAuthorization(
   pending: OpenAiDeviceAuthorizationPending,
   options: OpenAiSubscriptionProtocolOptions = {},
 ): Promise<OpenAiDeviceAuthorizationPoll> {
-  const result = await boundedFetch(
+  const result = await boundedOpenAiSubscriptionFetch(
     OPENAI_SUBSCRIPTION_ENDPOINTS.devicePoll,
     {
       method: 'POST',
@@ -188,11 +192,11 @@ export function buildOpenAiSubscriptionHeaders({
   return result;
 }
 
-export function isOpenAiSubscriptionModel(model: string): boolean {
-  return (OPENAI_SUBSCRIPTION_MODELS as readonly string[]).includes(model);
+export function isSafeOpenAiSubscriptionModelId(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-z0-9][a-z0-9._-]{0,127}$/.test(value);
 }
 
-interface BoundedFetchResult {
+export interface OpenAiSubscriptionBoundedFetchResult {
   response: Response;
   text: string;
 }
@@ -201,7 +205,7 @@ async function requestToken(
   form: URLSearchParams,
   options: OpenAiSubscriptionProtocolOptions,
 ): Promise<Record<string, unknown>> {
-  const result = await boundedFetch(
+  const result = await boundedOpenAiSubscriptionFetch(
     OPENAI_SUBSCRIPTION_ENDPOINTS.token,
     {
       method: 'POST',
@@ -240,11 +244,11 @@ function normalizeTokenBundle(
   };
 }
 
-async function boundedFetch(
+export async function boundedOpenAiSubscriptionFetch(
   url: string,
   init: RequestInit,
   options: OpenAiSubscriptionProtocolOptions,
-): Promise<BoundedFetchResult> {
+): Promise<OpenAiSubscriptionBoundedFetchResult> {
   const controller = new AbortController();
   let timedOut = false;
   const timer = setTimeout(() => {
@@ -295,23 +299,31 @@ async function readBoundedText(response: Response, maxBytes: number): Promise<st
   }
   if (!response.body) return '';
   const reader = response.body.getReader();
-  const decoder = new TextDecoder();
   let total = 0;
-  let text = '';
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    if (total > maxBytes) {
-      await reader.cancel();
-      throw new OpenAiSubscriptionProtocolError('invalid_response', { status: response.status });
+  const chunks: Uint8Array[] = [];
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        throw new OpenAiSubscriptionProtocolError('invalid_response', { status: response.status });
+      }
+      chunks.push(value);
     }
-    text += decoder.decode(value, { stream: true });
+  } finally {
+    await reader.cancel().catch(() => undefined);
   }
-  return text + decoder.decode();
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
 }
 
-function requireSuccessfulJson(result: BoundedFetchResult): Record<string, unknown> {
+function requireSuccessfulJson(result: OpenAiSubscriptionBoundedFetchResult): Record<string, unknown> {
   if (!result.response.ok) {
     throw mapHttpFailure(result.response, result.text);
   }

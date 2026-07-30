@@ -229,6 +229,15 @@ type SandboxStatusFixture = {
   target: 'cloudflare' | 'node';
   workersPaidNote: string | null;
 };
+type ModelCatalogStatusFixture = {
+  mode: 'bundled' | 'hosted';
+  source: 'bundled' | 'hosted';
+  revision: number;
+  generatedAt: string | null;
+  checkedAt: number | null;
+  nextRefreshAt: number | null;
+  lkgAvailable: boolean;
+};
 type MemoryScopeFixture = {
   workspaceId: string;
   channelId: string;
@@ -279,11 +288,15 @@ function runAdminPageHarness(
     workersAiModels?: Array<{ id: string }>;
     anthropicModels?: Array<{ id: string }>;
     openaiModels?: Array<{ id: string }>;
+    openAiModelsAfterMethodSwitch?: Array<{ id: string }>;
     providerKeyReject?: { status: number; detail: string };
     providerSettingsError?: { status: number; error: string };
     openAiSubscriptionPollResult?: Record<string, unknown>;
     egressPolicy?: EgressPolicyFixture;
     sandboxStatus?: SandboxStatusFixture;
+    modelCatalogStatus?: ModelCatalogStatusFixture;
+    deferModelCatalogStatus?: boolean;
+    modelCatalogRefreshError?: { status: number; error: string; message?: string };
     modelProviders?: ModelProviderFixture[];
     attachSelectionValue?: string;
     effectiveError?: { status: number; error: string; message?: string };
@@ -349,6 +362,8 @@ function runAdminPageHarness(
     allowedHosts: string[];
     monthlySessionCap: number;
   }>;
+  modelCatalogRefreshCalls(): number;
+  resolveModelCatalogStatus(result: ModelCatalogStatusFixture): void;
   agentPatchBodies: Array<{ id: string; body: Record<string, unknown> }>;
   agentPostBodies: Array<Record<string, unknown>>;
   skillResolvePosts: Array<{ source: string }>;
@@ -448,6 +463,9 @@ function runAdminPageHarness(
     allowedHosts: string[];
     monthlySessionCap: number;
   }> = [];
+  let modelCatalogRefreshCalls = 0;
+  let modelCatalogStatusResolver: ((response: FakeResponse) => void) | undefined;
+  let deferModelCatalogStatus = options.deferModelCatalogStatus ?? false;
   const agentPatchBodies: Array<{ id: string; body: Record<string, unknown> }> = [];
   const agentPostBodies: Array<Record<string, unknown>> = [];
   const skillResolvePosts: Array<{ source: string }> = [];
@@ -530,6 +548,7 @@ function runAdminPageHarness(
   const slackPostError = options.slackPostError;
   const slackDisconnectError = options.slackDisconnectError;
   const modelProviders = options.modelProviders;
+  const openAiModelsAfterMethodSwitch = options.openAiModelsAfterMethodSwitch;
   const effectiveError = options.effectiveError;
   const agentWriteError = options.agentWriteError;
   let mcpSecretPutFailures = options.mcpSecretPutFailures ?? 0;
@@ -664,6 +683,15 @@ function runAdminPageHarness(
     workersPaidNote: options.cloudflare
       ? 'Requires Workers Paid. Real containers run on your Cloudflare account; a typical session costs about 1 cent.'
       : null,
+  };
+  let modelCatalogStatus: ModelCatalogStatusFixture = options.modelCatalogStatus ?? {
+    mode: 'hosted',
+    source: 'bundled',
+    revision: 0,
+    generatedAt: null,
+    checkedAt: null,
+    nextRefreshAt: null,
+    lkgAvailable: false,
   };
   const favoritesState: Record<string, string[]> = {
     openrouter: options.openrouterFavorites ?? ['anthropic/claude-sonnet-4', 'openai/gpt-4.1'],
@@ -1216,6 +1244,40 @@ function runAdminPageHarness(
     if (path === '/admin/api/models') {
       return Promise.resolve(jsonResponse({ providers: modelProviders ?? [] }));
     }
+    if (path === '/admin/api/model-catalog') {
+      if (deferModelCatalogStatus) {
+        deferModelCatalogStatus = false;
+        return new Promise<FakeResponse>((resolve) => {
+          modelCatalogStatusResolver = resolve;
+        });
+      }
+      return Promise.resolve(jsonResponse({ ...modelCatalogStatus }));
+    }
+    if (path === '/admin/api/model-catalog/refresh' && method === 'POST') {
+      modelCatalogRefreshCalls += 1;
+      if (harnessOptions.modelCatalogRefreshError) {
+        return Promise.resolve(jsonResponse(
+          {
+            error: harnessOptions.modelCatalogRefreshError.error,
+            ...(harnessOptions.modelCatalogRefreshError.message
+              ? { message: harnessOptions.modelCatalogRefreshError.message }
+              : {}),
+          },
+          harnessOptions.modelCatalogRefreshError.status,
+        ));
+      }
+      modelCatalogStatus = {
+        ...modelCatalogStatus,
+        source: modelCatalogStatus.mode === 'hosted' ? 'hosted' : 'bundled',
+        revision: modelCatalogStatus.mode === 'hosted'
+          ? Math.max(1, modelCatalogStatus.revision)
+          : 0,
+      };
+      return Promise.resolve(jsonResponse({
+        refresh: { status: 'activated', revision: modelCatalogStatus.revision },
+        catalog: { ...modelCatalogStatus },
+      }));
+    }
     if (path === '/admin/api/providers') {
       if (providerSettingsError) {
         return Promise.resolve(
@@ -1282,6 +1344,9 @@ function runAdminPageHarness(
       openAiAuthMethodPuts.push(body.method);
       const openAi = providerState.find((provider) => provider.id === 'openai');
       if (openAi) openAi.activeAuthMethod = body.method;
+      if (openAiModelsAfterMethodSwitch) {
+        modelsState.openai = openAiModelsAfterMethodSwitch;
+      }
       return Promise.resolve(jsonResponse({ activeAuthMethod: body.method }));
     }
     const subscriptionMatch = path.match(/^\/admin\/api\/providers\/openai\/subscription(?:\/(start|poll|cancel|confirm-account))?$/);
@@ -1584,6 +1649,13 @@ function runAdminPageHarness(
     favoritesPuts,
     egressPuts,
     sandboxPuts,
+    modelCatalogRefreshCalls: () => modelCatalogRefreshCalls,
+    resolveModelCatalogStatus(result) {
+      const resolve = modelCatalogStatusResolver;
+      assert.ok(resolve, 'model catalog status request is not pending');
+      modelCatalogStatusResolver = undefined;
+      resolve(jsonResponse({ ...result }));
+    },
     agentPatchBodies,
     agentPostBodies,
     skillResolvePosts,
@@ -6678,6 +6750,73 @@ test('admin topbar exposes a Settings destination that lands on the model-provid
   assert.match(harness.app.innerHTML, /class="btn btn-soft nav-active" data-action="open-settings">Settings<\/button>/);
 });
 
+test('Settings shows an unobtrusive model-list status and refreshes it on demand', async () => {
+  const harness = runAdminPageHarness({
+    modelCatalogStatus: {
+      mode: 'hosted',
+      source: 'hosted',
+      revision: 12,
+      generatedAt: '2026-07-29T20:00:00Z',
+      checkedAt: 1_785_355_200_000,
+      nextRefreshAt: 1_785_376_800_000,
+      lkgAvailable: true,
+    },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+
+  click({ target: actionTarget({ 'data-action': 'open-settings' }) });
+  await flushAsync();
+
+  const html = harness.app.innerHTML;
+  assert.match(html, /<span class="field-label">Model list<\/span>/);
+  assert.match(html, /Models up to date &middot; revision 12/);
+  assert.match(html, /data-action="model-catalog-refresh"[^>]*>[\s\S]*Refresh models<\/button>/);
+  assert.doesNotMatch(html, /experimental|I understand|risk warning/i);
+
+  click({ target: actionTarget({ 'data-action': 'model-catalog-refresh' }) });
+  await flushAsync();
+  await flushAsync();
+  assert.equal(harness.modelCatalogRefreshCalls(), 1);
+  assert.match(harness.app.innerHTML, /Models up to date &middot; revision 12/);
+});
+
+test('a stale model-list status response cannot overwrite a completed refresh', async () => {
+  const currentStatus: ModelCatalogStatusFixture = {
+    mode: 'hosted',
+    source: 'hosted',
+    revision: 12,
+    generatedAt: '2026-07-29T20:00:00Z',
+    checkedAt: 1_785_355_200_000,
+    nextRefreshAt: 1_785_376_800_000,
+    lkgAvailable: true,
+  };
+  const harness = runAdminPageHarness({
+    modelCatalogStatus: currentStatus,
+    deferModelCatalogStatus: true,
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+
+  click({ target: actionTarget({ 'data-action': 'open-settings' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'model-catalog-refresh' }) });
+  await flushAsync();
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /Models up to date &middot; revision 12/);
+
+  harness.resolveModelCatalogStatus({
+    ...currentStatus,
+    revision: 3,
+    generatedAt: '2026-07-01T20:00:00Z',
+  });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /Models up to date &middot; revision 12/);
+  assert.doesNotMatch(harness.app.innerHTML, /revision 3/);
+});
+
 test('Settings renders the off-by-default Coding sandbox card with cost and collapsed advanced controls', async () => {
   const harness = runAdminPageHarness({ cloudflare: true });
   await flushAsync();
@@ -7306,6 +7445,66 @@ test('Settings selects one OpenAI method installation-wide while both connection
   assert.match(harness.app.innerHTML, /Applies to every OpenAI model and profile/);
 });
 
+test('switching the OpenAI authentication method invalidates the profile picker model catalog', async () => {
+  const harness = runAdminPageHarness({
+    providers: [
+      { id: 'anthropic', status: 'missing', modelCount: null },
+      {
+        id: 'openai',
+        status: 'stored',
+        modelCount: 1,
+        activeAuthMethod: 'api_key',
+        subscriptionCapability: { enabled: true },
+        subscription: {
+          state: 'connected',
+          updatedAt: 1_800_000_005_000,
+          accountFingerprint: 'oas_safe_fixture',
+          connectedAt: 1_800_000_005_000,
+        },
+      },
+      { id: 'openrouter', status: 'missing', modelCount: null },
+      { id: 'workers-ai', status: 'missing', modelCount: null },
+    ],
+    modelProviders: [{
+      id: 'openai',
+      configured: true,
+      source: 'via your key',
+      suggestions: ['openai/gpt-4.1'],
+    }],
+    openaiModels: [{ id: 'gpt-4.1' }],
+    openAiModelsAfterMethodSwitch: [{ id: 'gpt-5.6-sol' }],
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  const change = harness.listeners.change;
+  assert.ok(click && change);
+
+  click({ target: actionTarget({ 'data-action': 'new-profile' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-model' }) });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /data-model="openai\/gpt-4\.1"/);
+
+  click({ target: actionTarget({ 'data-action': 'open-settings' }) });
+  change({
+    target: {
+      value: 'subscription',
+      closest: () => null,
+      getAttribute(name: string) {
+        return name === 'data-action' ? 'openai-auth-method' : null;
+      },
+    } as unknown as FakeTarget,
+  });
+  click({ target: actionTarget({ 'data-action': 'openai-auth-method-save' }) });
+  await flushAsync();
+
+  click({ target: actionTarget({ 'data-action': 'open-profiles' }) });
+  click({ target: actionTarget({ 'data-action': 'new-profile' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-model' }) });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /data-model="openai\/gpt-5\.6-sol"/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-model="openai\/gpt-4\.1"/);
+});
+
 test('Settings renders the outbound-access mode control and allowlist domain input', async () => {
   const harness = runAdminPageHarness();
   await flushAsync();
@@ -7782,7 +7981,7 @@ test('the profile Model picker labels Cloudflare binding suggestions as workers-
   assert.match(harness.app.innerHTML, /data-model="cloudflare\/@cf\/zai-org\/glm-5\.2"/);
 });
 
-test('the profile Model picker renders the FULL live Anthropic list (Opus) with a user-facing source', async () => {
+test('the profile Model picker renders the FULL live Anthropic list with a user-facing source', async () => {
   const harness = runAdminPageHarness({
     // A stored Anthropic key: the runtime reports its source as the internal
     // "registered in src/app.ts" path, which must never leak to the UI.
@@ -7791,14 +7990,19 @@ test('the profile Model picker renders the FULL live Anthropic list (Opus) with 
         id: 'anthropic',
         configured: true,
         source: 'registered in src/app.ts',
-        suggestions: ['anthropic/claude-sonnet-4-6', 'anthropic/claude-haiku-4-5'],
+        suggestions: [
+          'anthropic/claude-fable-5',
+          'anthropic/claude-opus-5',
+          'anthropic/claude-sonnet-5',
+          'anthropic/claude-haiku-4-5',
+        ],
       },
     ],
-    // The live /models list carries the full catalog — including Opus, which the
-    // static 2-model suggestions omitted (the F5 bug this fixes).
+    // The live /models list remains authoritative for the connected account.
     anthropicModels: [
-      { id: 'claude-opus-4-1' },
-      { id: 'claude-sonnet-4-6' },
+      { id: 'claude-fable-5' },
+      { id: 'claude-opus-5' },
+      { id: 'claude-sonnet-5' },
       { id: 'claude-haiku-4-5' },
     ],
   });
@@ -7815,9 +8019,10 @@ test('the profile Model picker renders the FULL live Anthropic list (Opus) with 
   // leaked src path.
   assert.match(html, /<div class="combo-group">anthropic<span class="src">· via your key<\/span><\/div>/);
   assert.doesNotMatch(html, /registered in src\/app\.ts/);
-  // Every live model renders as an anthropic/ specifier — Opus now appears.
-  assert.match(html, /data-model="anthropic\/claude-opus-4-1"/);
-  assert.match(html, /data-model="anthropic\/claude-sonnet-4-6"/);
+  // Every live model renders as an anthropic/ specifier.
+  assert.match(html, /data-model="anthropic\/claude-fable-5"/);
+  assert.match(html, /data-model="anthropic\/claude-opus-5"/);
+  assert.match(html, /data-model="anthropic\/claude-sonnet-5"/);
   assert.match(html, /data-model="anthropic\/claude-haiku-4-5"/);
 });
 
@@ -7828,10 +8033,10 @@ test('the profile Model picker filters options by the typed specifier', async ()
         id: 'anthropic',
         configured: true,
         source: 'registered in src/app.ts',
-        suggestions: ['anthropic/claude-sonnet-4-6'],
+        suggestions: ['anthropic/claude-sonnet-5'],
       },
     ],
-    anthropicModels: [{ id: 'claude-opus-4-1' }, { id: 'claude-sonnet-4-6' }, { id: 'claude-haiku-4-5' }],
+    anthropicModels: [{ id: 'claude-opus-5' }, { id: 'claude-sonnet-5' }, { id: 'claude-haiku-4-5' }],
   });
   await flushAsync();
   const click = harness.listeners.click;
@@ -7846,8 +8051,8 @@ test('the profile Model picker filters options by the typed specifier', async ()
   input({ target: inputTarget({ 'data-action': 'profile-model' }, 'opus') });
   await flushAsync();
   const html = harness.app.innerHTML;
-  assert.match(html, /data-model="anthropic\/claude-opus-4-1"/);
-  assert.doesNotMatch(html, /data-model="anthropic\/claude-sonnet-4-6"/);
+  assert.match(html, /data-model="anthropic\/claude-opus-5"/);
+  assert.doesNotMatch(html, /data-model="anthropic\/claude-sonnet-5"/);
   assert.doesNotMatch(html, /data-model="anthropic\/claude-haiku-4-5"/);
 });
 

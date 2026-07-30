@@ -14,31 +14,48 @@ import {
   streamSimple as streamSimpleCodex,
   type OpenAICodexResponsesOptions,
 } from '@earendil-works/pi-ai/api/openai-codex-responses';
-import { getBuiltinModels } from '@earendil-works/pi-ai/providers/all';
 
 import { recordRegisteredProvider } from '../config/providers.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import {
+  openAiSubscriptionCredentialsAreCurrent,
   recordOpenAiSubscriptionAuthenticationFailure,
   resolveOpenAiSubscriptionCredentials,
+  type ResolvedOpenAiSubscriptionCredentials,
 } from './credentials.ts';
 import { OpenAiSubscriptionError } from './errors.ts';
 import {
-  isOpenAiSubscriptionModel,
-  OPENAI_SUBSCRIPTION_MODELS,
+  listOpenAiSubscriptionModels,
+} from './model-catalog.ts';
+import {
+  catalogModelForLane,
+  materializeCatalogModel,
+  type ActiveModelCatalogRoute,
+} from '../model-catalog/index.ts';
+import {
+  isSafeOpenAiSubscriptionModelId,
+  OPENAI_SUBSCRIPTION_API_BASE,
 } from './protocol.ts';
 import {
   bindOpenAiSubscriptionTransport,
   clearOpenAiSubscriptionTransport,
+  createOpenAiSubscriptionTransportMarker,
+  openAiSubscriptionCredentialEpoch,
   OPENAI_SUBSCRIPTION_TRANSPORT_MARKER,
+  openAiSubscriptionTransportRevision,
 } from './transport.ts';
 
 export const OPENAI_SUBSCRIPTION_PROVIDER_ID = 'openai-subscription';
 export const OPENAI_SUBSCRIPTION_API = 'chickpea-openai-subscription-responses';
 
+const SUBSCRIPTION_MODELS = listOpenAiSubscriptionModels();
+const SUBSCRIPTION_MODELS_BY_ID = new Map(
+  SUBSCRIPTION_MODELS.map((model) => [model.id, model]),
+);
+const registeredRevisionApis = new Set<string>();
+
 const BOUNDARY_MANAGED_TOKEN =
   'eyJhbGciOiJub25lIn0.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYm91bmRhcnktbWFuYWdlZCJ9fQ.';
-const CATALOG_MODELS = getBuiltinModels('openai-codex');
 const SAFE_ERROR_CODES = new Set([
   'auth_reconnect_required',
   'client_rejected',
@@ -52,48 +69,88 @@ const SAFE_ERROR_CODES = new Set([
   'unsupported_model',
 ]);
 
+interface CapturedSubscriptionRegistration {
+  providerId: string;
+  api: string;
+  models: readonly Model<string>[];
+}
+
+const BUNDLED_SUBSCRIPTION_REGISTRATION: CapturedSubscriptionRegistration = Object.freeze({
+  api: OPENAI_SUBSCRIPTION_API,
+  providerId: OPENAI_SUBSCRIPTION_PROVIDER_ID,
+  models: freezeModels(compileBundledSubscriptionModels()),
+});
+const hostedSubscriptionRegistrations = new Map<string, CapturedSubscriptionRegistration>();
+const subscriptionTransportMarkers = new Map<string, string>();
+const MAX_HOSTED_SUBSCRIPTION_REGISTRATIONS = 16;
+
 export interface BindOpenAiSubscriptionProviderOptions {
   settings: SettingsStore;
   now?: () => number;
+  modelId?: string;
+  route?: ActiveModelCatalogRoute;
 }
 
 export function registerOpenAiSubscriptionApi(): void {
-  registerApiProvider({
-    api: OPENAI_SUBSCRIPTION_API,
-    stream: (model, context, streamOptions) =>
-      secureCodexStream(model, context, streamOptions, false),
-    streamSimple: (model, context, streamOptions) =>
-      secureCodexStream(model, context, streamOptions, true),
-  });
+  registerCapturedSubscriptionApi(BUNDLED_SUBSCRIPTION_REGISTRATION);
 }
 
 export async function bindOpenAiSubscriptionProvider(
   options: BindOpenAiSubscriptionProviderOptions,
 ): Promise<void> {
-  let credentials: { accessToken: string; accountId: string };
+  const route = options.route;
+  if (
+    options.modelId &&
+    (!isSafeOpenAiSubscriptionModelId(options.modelId) ||
+      (route ? route.model.id !== options.modelId : !SUBSCRIPTION_MODELS_BY_ID.has(options.modelId)))
+  ) {
+    throw new OpenAiSubscriptionError('unsupported_model');
+  }
+  if (route && route.lane !== 'openai_subscription') {
+    throw new OpenAiSubscriptionError('unsupported_model');
+  }
+  const registration = subscriptionRegistration(route);
+  const initialTransportRevision = openAiSubscriptionTransportRevision();
+  let credentials: ResolvedOpenAiSubscriptionCredentials;
   try {
     credentials = await resolveOpenAiSubscriptionCredentials({
       settings: options.settings,
       ...(options.now ? { now: options.now } : {}),
     });
   } catch (error) {
-    clearOpenAiSubscriptionTransport();
+    clearOpenAiSubscriptionTransport(initialTransportRevision);
     throw error;
   }
-  bindOpenAiSubscriptionTransport(credentials, {
+  const expectedCredentialEpoch = openAiSubscriptionCredentialEpoch();
+  if (!await openAiSubscriptionCredentialsAreCurrent(
+    options.settings,
+    credentials,
+  )) {
+    throw new OpenAiSubscriptionError('auth_reconnect_required');
+  }
+  const marker = createOpenAiSubscriptionTransportMarker();
+  bindOpenAiSubscriptionTransport({
+    accessToken: credentials.accessToken,
+    accountId: credentials.accountId,
+  }, {
+    expectedCredentialEpoch,
+    marker,
+    allowedModels: new Set(registration.models.map((model) => model.id)),
     onAuthenticationFailure: async () => {
       await recordOpenAiSubscriptionAuthenticationFailure(options.settings, {
+        credentials,
         ...(options.now ? { now: options.now } : {}),
       });
     },
   });
-  registerOpenAiSubscriptionApi();
-  registerProvider(OPENAI_SUBSCRIPTION_PROVIDER_ID, {
-    api: OPENAI_SUBSCRIPTION_API,
-    baseUrl: 'https://chatgpt.com/backend-api',
+  subscriptionTransportMarkers.set(registration.api, marker);
+  registerCapturedSubscriptionApi(registration);
+  registerProvider(registration.providerId, {
+    api: registration.api,
+    baseUrl: OPENAI_SUBSCRIPTION_API_BASE,
     apiKey: BOUNDARY_MANAGED_TOKEN,
     models: Object.fromEntries(
-      CATALOG_MODELS.map((model) => [
+      registration.models.map((model) => [
         model.id,
         { contextWindow: model.contextWindow, maxTokens: model.maxTokens },
       ]),
@@ -107,11 +164,77 @@ export async function bindOpenAiSubscriptionProvider(
   recordRegisteredProvider(OPENAI_SUBSCRIPTION_PROVIDER_ID);
 }
 
-export function openAiSubscriptionModelSpecifier(model: string): string {
-  if (!isOpenAiSubscriptionModel(model)) {
+export function openAiSubscriptionModelSpecifier(
+  model: string,
+  route?: ActiveModelCatalogRoute,
+): string {
+  if (!isSafeOpenAiSubscriptionModelId(model)) {
     throw new OpenAiSubscriptionError('unsupported_model');
   }
-  return `${OPENAI_SUBSCRIPTION_PROVIDER_ID}/${model}`;
+  return `${subscriptionRegistration(route).providerId}/${model}`;
+}
+
+export function isOpenAiSubscriptionProviderId(providerId: string): boolean {
+  return providerId === OPENAI_SUBSCRIPTION_PROVIDER_ID ||
+    /^chickpea-openai-subscription-r[1-9][0-9]*-[a-f0-9]{12}$/.test(providerId);
+}
+
+function subscriptionRegistration(
+  route?: ActiveModelCatalogRoute,
+): CapturedSubscriptionRegistration {
+  if (!route || route.snapshot.source === 'bundled') {
+    return BUNDLED_SUBSCRIPTION_REGISTRATION;
+  }
+  const suffix = `r${route.snapshot.revision}-${route.snapshot.sha256.slice(0, 12)}`;
+  const cached = hostedSubscriptionRegistrations.get(suffix);
+  if (cached) return cached;
+  if (hostedSubscriptionRegistrations.size >= MAX_HOSTED_SUBSCRIPTION_REGISTRATIONS) {
+    throw new Error('OpenAI subscription catalog activation requires a restart.');
+  }
+  const models = route.snapshot.entries.flatMap((entry) =>
+    entry.lanes.openai_subscription
+      ? [materializeCatalogModel(entry, 'openai_subscription')]
+      : []
+  );
+  const registration: CapturedSubscriptionRegistration = Object.freeze({
+    providerId: `chickpea-openai-subscription-${suffix}`,
+    api: `chickpea-openai-subscription-responses-${suffix}`,
+    models: freezeModels(models),
+  });
+  hostedSubscriptionRegistrations.set(suffix, registration);
+  return registration;
+}
+
+function compileBundledSubscriptionModels(): Model<string>[] {
+  return SUBSCRIPTION_MODELS.map((model) => {
+    const compiled = catalogModelForLane(`openai/${model.id}`, 'openai_subscription', {
+      nativeFirst: false,
+    });
+    if (!compiled) throw new Error(`Missing bundled subscription model ${model.id}.`);
+    return compiled;
+  });
+}
+
+function freezeModels(models: readonly Model<string>[]): readonly Model<string>[] {
+  return Object.freeze(models.map((model) => Object.freeze(structuredClone(model))));
+}
+
+function registerCapturedSubscriptionApi(
+  registration: CapturedSubscriptionRegistration,
+): void {
+  if (registeredRevisionApis.has(registration.api)) return;
+  const captured = Object.freeze({
+    ...registration,
+    models: freezeModels(registration.models),
+  });
+  registerApiProvider({
+    api: captured.api,
+    stream: (model, context, streamOptions) =>
+      secureCodexStream(model, context, streamOptions, false, captured),
+    streamSimple: (model, context, streamOptions) =>
+      secureCodexStream(model, context, streamOptions, true, captured),
+  });
+  registeredRevisionApis.add(captured.api);
 }
 
 function secureCodexStream(
@@ -119,13 +242,16 @@ function secureCodexStream(
   context: Context,
   options: (StreamOptions & Record<string, unknown>) | SimpleStreamOptions | undefined,
   simple: boolean,
+  registration: CapturedSubscriptionRegistration,
 ): AssistantMessageEventStream {
-  const codexModel = catalogModel(model.id);
-  const secureOptions = secureStreamOptions(options);
+  const codexModel = capturedCatalogModel(model, registration.models);
+  const marker = subscriptionTransportMarkers.get(registration.api);
+  if (!marker) throw new OpenAiSubscriptionError('auth_reconnect_required');
+  const secureOptions = secureStreamOptions(options, marker);
   const mappedContext = {
     ...context,
     messages: context.messages.map((message) =>
-      message.role === 'assistant' && message.provider === OPENAI_SUBSCRIPTION_PROVIDER_ID
+      message.role === 'assistant' && message.provider === registration.providerId
         ? { ...message, provider: 'openai-codex' }
         : message,
     ),
@@ -133,29 +259,37 @@ function secureCodexStream(
   const source = simple
     ? streamSimpleCodex(codexModel, mappedContext, secureOptions)
     : streamCodex(codexModel, mappedContext, secureOptions);
-  return rewriteAndSanitizeStream(source);
+  return rewriteAndSanitizeStream(source, registration.providerId, registration.api);
 }
 
-function catalogModel(modelId: string): Model<'openai-codex-responses'> {
-  if (!(OPENAI_SUBSCRIPTION_MODELS as readonly string[]).includes(modelId)) {
+function capturedCatalogModel(
+  model: Model<string>,
+  models: readonly Model<string>[],
+): Model<'openai-codex-responses'> {
+  if (!isSafeOpenAiSubscriptionModelId(model.id)) {
     throw new OpenAiSubscriptionError('unsupported_model');
   }
-  const model = CATALOG_MODELS.find((candidate) => candidate.id === modelId);
-  if (!model || model.baseUrl !== 'https://chatgpt.com/backend-api') {
+  const catalogModel = models.find((candidate) => candidate.id === model.id);
+  if (!catalogModel) throw new OpenAiSubscriptionError('unsupported_model');
+  const contextWindow = catalogModel.contextWindow;
+  const maxTokens = catalogModel.maxTokens;
+  if (!Number.isInteger(contextWindow) || contextWindow <= 0 ||
+      !Number.isInteger(maxTokens) || maxTokens <= 0 || maxTokens > contextWindow) {
     throw new OpenAiSubscriptionError('protocol_drift');
   }
-  return model;
+  return { ...catalogModel, contextWindow, maxTokens } as Model<'openai-codex-responses'>;
 }
 
 function secureStreamOptions(
   options: (StreamOptions & Record<string, unknown>) | SimpleStreamOptions | undefined,
+  marker: string,
 ): OpenAICodexResponsesOptions & SimpleStreamOptions {
   const values = (options ?? {}) as Record<string, unknown>;
   return {
     apiKey: BOUNDARY_MANAGED_TOKEN,
     transport: 'sse',
     maxRetries: 0,
-    headers: { [OPENAI_SUBSCRIPTION_TRANSPORT_MARKER]: 'v1' },
+    headers: { [OPENAI_SUBSCRIPTION_TRANSPORT_MARKER]: marker },
     ...(options?.signal ? { signal: options.signal } : {}),
     ...(typeof options?.temperature === 'number' ? { temperature: options.temperature } : {}),
     ...(typeof options?.maxTokens === 'number' ? { maxTokens: options.maxTokens } : {}),
@@ -175,15 +309,19 @@ function secureStreamOptions(
   };
 }
 
-function rewriteAndSanitizeStream(source: AssistantMessageEventStream): AssistantMessageEventStream {
+function rewriteAndSanitizeStream(
+  source: AssistantMessageEventStream,
+  providerId: string,
+  api: string,
+): AssistantMessageEventStream {
   const target = createAssistantMessageEventStream();
   void (async () => {
     try {
       for await (const event of source) {
-        target.push(rewriteEvent(event));
+        target.push(rewriteEvent(event, providerId));
       }
     } catch {
-      target.push(safeErrorEvent());
+      target.push(safeErrorEvent(providerId, api));
     } finally {
       target.end();
     }
@@ -191,24 +329,31 @@ function rewriteAndSanitizeStream(source: AssistantMessageEventStream): Assistan
   return target;
 }
 
-function rewriteEvent(event: AssistantMessageEvent): AssistantMessageEvent {
+function rewriteEvent(
+  event: AssistantMessageEvent,
+  providerId: string,
+): AssistantMessageEvent {
   if (event.type === 'done') {
-    return { ...event, message: safeMessage(event.message) };
+    return { ...event, message: safeMessage(event.message, providerId) };
   }
   if (event.type === 'error') {
     return {
       ...event,
-      error: safeMessage(event.error, safeErrorCode(event.error.errorMessage)),
+      error: safeMessage(event.error, providerId, safeErrorCode(event.error.errorMessage)),
     };
   }
-  return { ...event, partial: safeMessage(event.partial) };
+  return { ...event, partial: safeMessage(event.partial, providerId) };
 }
 
-function safeMessage(message: AssistantMessage, errorCode?: string): AssistantMessage {
+function safeMessage(
+  message: AssistantMessage,
+  providerId: string,
+  errorCode?: string,
+): AssistantMessage {
   const { diagnostics: _diagnostics, errorMessage: _errorMessage, ...safe } = message;
   return {
     ...safe,
-    provider: OPENAI_SUBSCRIPTION_PROVIDER_ID,
+    provider: providerId,
     ...(errorCode
       ? { errorMessage: `OpenAI subscription operation failed (${errorCode}).` }
       : {}),
@@ -219,15 +364,15 @@ function isThinkingLevel(value: unknown): value is NonNullable<SimpleStreamOptio
   return typeof value === 'string' && ['minimal', 'low', 'medium', 'high', 'xhigh'].includes(value);
 }
 
-function safeErrorEvent(): AssistantMessageEvent {
+function safeErrorEvent(providerId: string, api: string): AssistantMessageEvent {
   return {
     type: 'error',
     reason: 'error',
     error: {
       role: 'assistant',
       content: [],
-      api: OPENAI_SUBSCRIPTION_API,
-      provider: OPENAI_SUBSCRIPTION_PROVIDER_ID,
+      api,
+      provider: providerId,
       model: 'unknown',
       usage: {
         input: 0,

@@ -158,7 +158,6 @@ import {
   getOpenAiSubscriptionAuthorizationStatus,
   pollOpenAiSubscriptionAuthorization,
   startOpenAiSubscriptionAuthorization,
-  wasOpenAiSubscriptionConnectedBeforeAuthorization,
   type OpenAiSubscriptionAuthorizationDependencies,
   type OpenAiSubscriptionAuthorizationProtocol,
 } from '../openai-subscription/device-auth.ts';
@@ -169,7 +168,18 @@ import {
   requireOpenAiSubscriptionEnabled,
   type OpenAiSubscriptionCapability,
 } from '../openai-subscription/feature.ts';
-import { OPENAI_SUBSCRIPTION_MODELS } from '../openai-subscription/protocol.ts';
+import {
+  MODEL_CATALOG_SETTING_KEYS,
+  activateBundledModelCatalog,
+  activeModelCatalogSnapshot,
+  loadModelCatalog,
+  readModelCatalogLkg,
+  readModelCatalogMode,
+  refreshModelCatalog,
+  resolveActiveCatalogRoute,
+  type ModelCatalogRefreshResult,
+  type RefreshModelCatalogOptions,
+} from '../model-catalog/index.ts';
 import type {
   ChannelAssignment,
   CustomAgentConfig,
@@ -256,6 +266,16 @@ interface AdminRoutesOptions {
   openAiSubscriptionNow?: (() => number) | undefined;
   openAiSubscriptionRandomBytes?: ((length: number) => Uint8Array) | undefined;
   openAiSubscriptionCapability?: ((env?: PlatformEnv) => OpenAiSubscriptionCapability) | undefined;
+  // Catalog refresh stays deterministic in route tests without weakening the
+  // immutable production origin: tests inject the transport/clock, never a URL.
+  modelCatalogRefresh?: ((
+    options: RefreshModelCatalogOptions,
+  ) => Promise<ModelCatalogRefreshResult>) | undefined;
+  modelCatalogNow?: (() => number) | undefined;
+  modelCatalogRandom?: (() => number) | undefined;
+  modelCatalogOwnerId?: (() => string) | undefined;
+  modelCatalogFetch?: typeof fetch | undefined;
+  modelCatalogTimeoutMs?: number | undefined;
 }
 
 const ADMIN_COOKIE = 'flue_admin';
@@ -272,6 +292,9 @@ const openAiSubscriptionCapabilitySchema = v.object({
 const openAiSubscriptionStartSchema = v.object({});
 const openAiAuthMethodSchema = v.object({
   method: v.picklist(['api_key', 'subscription']),
+});
+const modelCatalogModeSchema = v.strictObject({
+  mode: v.picklist(['hosted', 'bundled']),
 });
 
 // A profile skill. `name` must satisfy Flue's `defineSkill` rule so a stored
@@ -792,6 +815,30 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
     requireOpenAiSubscriptionEnabled(c.env as PlatformEnv | undefined);
   };
+  const refreshCatalog = async (
+    c: Context,
+    force: boolean,
+  ): Promise<ModelCatalogRefreshResult> => {
+    try {
+      return await (options.modelCatalogRefresh ?? refreshModelCatalog)({
+        settings: settings(c),
+        force,
+        ...(options.modelCatalogNow ? { now: options.modelCatalogNow } : {}),
+        ...(options.modelCatalogRandom ? { random: options.modelCatalogRandom } : {}),
+        ...(options.modelCatalogOwnerId ? { ownerId: options.modelCatalogOwnerId() } : {}),
+        ...(options.modelCatalogFetch ? { fetch: options.modelCatalogFetch } : {}),
+        ...(options.modelCatalogTimeoutMs !== undefined
+          ? { timeoutMs: options.modelCatalogTimeoutMs }
+          : {}),
+      });
+    } catch {
+      return {
+        status: 'failed',
+        revision: activeModelCatalogSnapshot().revision,
+        code: 'unavailable',
+      };
+    }
+  };
   const adminLoginBodyLimit = bodyLimit({
     maxSize: MAX_ADMIN_LOGIN_BODY_BYTES,
     onError: (c) =>
@@ -1216,18 +1263,53 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     return c.json({ agents });
   });
 
-  // The profile picker's single source of provider groups + suggestions. Anthropic
-  // and OpenAI keep their small dynamic catalogs; OpenRouter and the keyless
+  app.get('/admin/api/model-catalog', async (c) => {
+    await loadModelCatalog(settings(c));
+    return c.json(await safeModelCatalogStatus(settings(c)));
+  });
+
+  app.post('/admin/api/model-catalog/refresh', async (c) => {
+    const refresh = await refreshCatalog(c, true);
+    return c.json({
+      refresh,
+      catalog: await safeModelCatalogStatus(settings(c)),
+    });
+  });
+
+  app.put('/admin/api/model-catalog/mode', async (c) => {
+    const parsed = v.safeParse(modelCatalogModeSchema, await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
+    const settingsStore = settings(c);
+    await settingsStore.setSetting(MODEL_CATALOG_SETTING_KEYS.mode, parsed.output.mode);
+    const refresh = parsed.output.mode === 'bundled'
+      ? ({
+          status: 'bundled',
+          revision: activateBundledModelCatalog().revision,
+        } satisfies ModelCatalogRefreshResult)
+      : await refreshCatalog(c, true);
+    return c.json({
+      refresh,
+      catalog: await safeModelCatalogStatus(settingsStore),
+    });
+  });
+
+  // The profile picker's single source of provider groups + suggestions.
+  // Reviewed catalog entries augment both API-key providers and define the
+  // complete Subscription list. OpenRouter and the keyless
   // Workers AI binding show ONLY the user's starred favorites (curated in the
   // Settings managers), so this route folds those favorites into their
   // suggestions — the per-provider search/favorites endpoints stay the editors.
   app.get('/admin/api/models', async (c) => {
     const settingsStore = settings(c);
+    await refreshCatalog(c, false);
     const [subscription, activeAuthMethod] = await Promise.all([
       getOpenAiSubscriptionAuthorizationStatus(settingsStore),
       resolveOpenAiAuthMethod(settingsStore),
     ]);
     const capability = subscriptionCapability(c);
+    const subscriptionModels = activeCatalogModels('openai_subscription');
+    const openAiApiModels = activeCatalogModels('openai_api_key');
+    const anthropicApiModels = activeCatalogModels('anthropic_api_key');
     const providers = await Promise.all(
       modelProviders().map(async (provider) => {
         if (provider.id === 'openai') {
@@ -1244,8 +1326,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
               : provider.configured,
             source: subscriptionActive ? 'ChatGPT subscription' : provider.source,
             suggestions: subscriptionActive
-              ? OPENAI_SUBSCRIPTION_MODELS.map((model) => `openai/${model}`)
-              : provider.suggestions,
+              ? subscriptionModels.map((model) => model.canonical)
+              : uniqueStrings([
+                  ...openAiApiModels.map((model) => model.canonical),
+                  ...provider.suggestions,
+                ]),
             authMethods: {
               activeMethod: activeAuthMethod,
               apiKeyConfigured: provider.configured,
@@ -1263,6 +1348,15 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         if (provider.id === 'cloudflare') {
           const favorites = await getProviderFavorites('workers-ai', settingsStore);
           return { ...provider, suggestions: favorites.map((model) => `cloudflare/${model}`) };
+        }
+        if (provider.id === 'anthropic') {
+          return {
+            ...provider,
+            suggestions: uniqueStrings([
+              ...anthropicApiModels.map((model) => model.canonical),
+              ...provider.suggestions,
+            ]),
+          };
         }
         return provider;
       }),
@@ -1351,18 +1445,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (!parsed.success) return invalidRequest(c);
     try {
       requireSubscriptionEnabled(c);
-      const settingsStore = settings(c);
-      const wasConnected = await wasOpenAiSubscriptionConnectedBeforeAuthorization(
-        parsed.output,
-        settingsStore,
-      );
       const result = await pollOpenAiSubscriptionAuthorization(
         parsed.output,
         openAiSubscriptionDependencies(c),
       );
-      if (result.state === 'connected' && !wasConnected) {
-        await saveOpenAiAuthMethod(settingsStore, 'subscription');
-      }
       return c.json(result);
     } catch (error) {
       return openAiSubscriptionRouteError(c, error);
@@ -1374,18 +1460,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (!parsed.success) return invalidRequest(c);
     try {
       requireSubscriptionEnabled(c);
-      const settingsStore = settings(c);
-      const wasConnected = await wasOpenAiSubscriptionConnectedBeforeAuthorization(
-        parsed.output,
-        settingsStore,
-      );
       const status = await confirmOpenAiSubscriptionAccountChange(
         parsed.output,
         openAiSubscriptionDependencies(c),
       );
-      if (status.state === 'connected' && !wasConnected) {
-        await saveOpenAiAuthMethod(settingsStore, 'subscription');
-      }
       return c.json(status);
     } catch (error) {
       return openAiSubscriptionRouteError(c, error);
@@ -1506,11 +1584,16 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     try {
       const platformEnv = c.env as PlatformEnv | undefined;
       const settingsStore = settings(c);
+      if (id === 'openai' || id === 'anthropic') {
+        await refreshCatalog(c, c.req.query('refresh') === '1');
+      }
       if (id === 'openai' && await resolveOpenAiAuthMethod(settingsStore) === 'subscription') {
+        const snapshot = activeModelCatalogSnapshot();
         return c.json({
           provider: id,
-          models: OPENAI_SUBSCRIPTION_MODELS.map((model) => ({ id: model })),
+          models: activeCatalogModels('openai_subscription').map((model) => ({ id: model.id })),
           cached: true,
+          source: snapshot.source,
         });
       }
       const result = await listProviderModels(id, {
@@ -1518,7 +1601,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         refresh: c.req.query('refresh') === '1',
         ...(platformEnv !== undefined ? { env: platformEnv } : {}),
       });
-      return c.json({ provider: id, models: result.models, cached: result.cached });
+      const models = id === 'openai' || id === 'anthropic'
+        ? result.models.filter((model) => resolveActiveCatalogRoute(
+            `${id}/${model.id}`,
+            id === 'openai' ? 'openai_api_key' : 'anthropic_api_key',
+          ) !== undefined)
+        : result.models;
+      return c.json({ provider: id, models, cached: result.cached });
     } catch (err) {
       if (err instanceof ProviderModelsUnavailableError) {
         return c.json({ error: err.code, provider: err.provider }, err.status as 409 | 502);
@@ -1824,11 +1913,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return invalidRequest(c, githubApiConnectionValidationMessage(parsed.issues));
     }
     let agent = toAgentConfig(parsed.output);
-    const openAiAuthError = openAiModelCompatibilityError(
+    await loadModelCatalog(settings(c));
+    const modelCompatibilityError = activeCatalogCompatibilityError(
       agent.model,
       await resolveOpenAiAuthMethod(settings(c)),
     );
-    if (openAiAuthError) return invalidRequest(c, openAiAuthError);
+    if (modelCompatibilityError) return invalidRequest(c, modelCompatibilityError);
     const modelError = modelResolutionError(agent);
     if (modelError) {
       return modelNotResolvable(c, modelError);
@@ -2359,11 +2449,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         ...patch,
         id: agentId,
       };
-      const openAiAuthError = openAiModelCompatibilityError(
+      await loadModelCatalog(settings(c));
+      const modelCompatibilityError = activeCatalogCompatibilityError(
         next.model,
         await resolveOpenAiAuthMethod(settings(c)),
       );
-      if (openAiAuthError) return invalidRequest(c, openAiAuthError);
+      if (modelCompatibilityError) return invalidRequest(c, modelCompatibilityError);
       const modelError = modelResolutionError(next);
       if (modelError) {
         return modelNotResolvable(c, modelError);
@@ -3842,18 +3933,80 @@ function providerWarnings(
   };
 }
 
-function openAiModelCompatibilityError(
+function activeCatalogCompatibilityError(
   model: string | null | undefined,
   method: 'api_key' | 'subscription',
 ): string | undefined {
-  if (
-    method === 'subscription' &&
-    model?.startsWith('openai/') &&
-    !(OPENAI_SUBSCRIPTION_MODELS as readonly string[]).includes(model?.slice('openai/'.length) ?? '')
-  ) {
-    return 'The selected ChatGPT subscription does not support this OpenAI model.';
+  if (!model) return undefined;
+  if (model.startsWith('openai/')) {
+    const lane = method === 'subscription' ? 'openai_subscription' : 'openai_api_key';
+    if (resolveActiveCatalogRoute(model, lane)) return undefined;
+    return method === 'subscription'
+      ? 'The selected ChatGPT subscription does not support this OpenAI model.'
+      : 'The active OpenAI API-key catalog does not support this model.';
+  }
+  if (model.startsWith('anthropic/') &&
+      !resolveActiveCatalogRoute(model, 'anthropic_api_key')) {
+    return 'The active Anthropic API-key catalog does not support this model.';
   }
   return undefined;
+}
+
+function activeCatalogModels(
+  lane: 'anthropic_api_key' | 'openai_api_key' | 'openai_subscription',
+): Array<{
+  canonical: string;
+  id: string;
+  name?: string;
+}> {
+  return activeModelCatalogSnapshot().entries.flatMap((entry) => {
+    const provider = lane === 'anthropic_api_key' ? 'anthropic' : 'openai';
+    if (!entry.lanes[lane] || !entry.id.startsWith(`${provider}/`)) return [];
+    return [{
+      canonical: entry.id,
+      id: entry.id.slice(provider.length + 1),
+      ...(entry.displayName ? { name: entry.displayName } : {}),
+    }];
+  });
+}
+
+function uniqueStrings(values: readonly string[]): string[] {
+  return [...new Set(values)];
+}
+
+async function safeModelCatalogStatus(settingsStore: SettingsStore): Promise<{
+  mode: 'bundled' | 'hosted';
+  source: 'bundled' | 'hosted';
+  revision: number;
+  generatedAt: string | null;
+  checkedAt: number | null;
+  nextRefreshAt: number | null;
+  lkgAvailable: boolean;
+}> {
+  const mode = await readModelCatalogMode(settingsStore);
+  const active = activeModelCatalogSnapshot();
+  try {
+    const lkg = await readModelCatalogLkg(settingsStore);
+    return {
+      mode,
+      source: active.source,
+      revision: active.revision,
+      generatedAt: lkg?.document.generatedAt ?? null,
+      checkedAt: lkg?.checkedAt ?? null,
+      nextRefreshAt: lkg?.nextRefreshAt ?? null,
+      lkgAvailable: lkg !== undefined,
+    };
+  } catch {
+    return {
+      mode,
+      source: active.source,
+      revision: active.revision,
+      generatedAt: null,
+      checkedAt: null,
+      nextRefreshAt: null,
+      lkgAvailable: false,
+    };
+  }
 }
 
 function openAiSubscriptionIsReady(

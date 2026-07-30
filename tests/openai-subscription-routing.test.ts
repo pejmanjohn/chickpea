@@ -9,7 +9,10 @@ import {
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import type { CustomAgentConfig } from '../src/config/types.ts';
+import { resetModelCatalogActivationForTests } from '../src/model-catalog/catalog.ts';
+import { acceptModelCatalogCandidate } from '../src/model-catalog/store.ts';
 import { OpenAiSubscriptionError } from '../src/openai-subscription/errors.ts';
+import type { BindOpenAiSubscriptionProviderOptions } from '../src/openai-subscription/provider.ts';
 
 function profile(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig {
   return {
@@ -141,7 +144,7 @@ test('subscription failures and unsupported models fail closed without crossing 
         error instanceof OpenAiSubscriptionError && error.code === 'auth_reconnect_required',
     );
     await assert.rejects(
-      () => resolveRuntimeModel(agent.id, 'openai/not-allowlisted', {
+      () => resolveRuntimeModel(agent.id, 'openai/../not-allowlisted', {
         settings,
         applyProviderKey: async (id) => { applied.push(id); },
         requireSubscriptionEnabled: () => {},
@@ -206,5 +209,74 @@ test('non-OpenAI models bind only their selected key-backed provider', async () 
   } finally {
     settings.close();
     agents.close();
+  }
+});
+
+test('profiles cannot address the internal subscription provider directly', async (t) => {
+  const settings = new SqliteSettingsStore(':memory:');
+  t.after(() => settings.close());
+  await assert.rejects(
+    () => resolveRuntimeModel(
+      'agent_openai_route',
+      'openai-subscription/gpt-5.4',
+      {
+        settings,
+        applyProviderKey: async () => { throw new Error('must not resolve a key'); },
+        bindSubscription: async () => { throw new Error('must not bind'); },
+      },
+    ),
+    (error: unknown) =>
+      error instanceof OpenAiSubscriptionError && error.code === 'unsupported_model',
+  );
+});
+
+test('runtime admission loads a persisted hosted route without any catalog fetch', async (t) => {
+  resetModelCatalogActivationForTests();
+  t.after(resetModelCatalogActivationForTests);
+  const settings = new SqliteSettingsStore(':memory:');
+  t.after(() => settings.close());
+  const bytes = new TextEncoder().encode(JSON.stringify({
+    schemaVersion: 1,
+    revision: 73,
+    generatedAt: '2026-07-29T20:00:00Z',
+    entries: [{
+      canonical: 'openai/gpt-hosted-runtime',
+      lanes: { subscription: 'openai-codex-responses-standard@1' },
+    }],
+  }));
+  await acceptModelCatalogCandidate(settings, {
+    bytes,
+    checkedAt: 1,
+    nextRefreshAt: 2,
+  });
+  await saveOpenAiAuthMethod(settings, 'subscription');
+
+  const originalFetch = globalThis.fetch;
+  let fetches = 0;
+  let captured: BindOpenAiSubscriptionProviderOptions | undefined;
+  globalThis.fetch = async () => {
+    fetches += 1;
+    throw new Error('runtime catalog admission must not fetch');
+  };
+  try {
+    const resolved = await resolveRuntimeModel(
+      'agent_openai_route',
+      'openai/gpt-hosted-runtime',
+      {
+        settings,
+        requireSubscriptionEnabled: () => {},
+        bindSubscription: async (options) => { captured = options; },
+      },
+    );
+    assert.match(
+      resolved.model,
+      /^chickpea-openai-subscription-r73-[a-f0-9]{12}\/gpt-hosted-runtime$/,
+    );
+    assert.equal(canonicalRuntimeModel(resolved.model), 'openai/gpt-hosted-runtime');
+    assert.equal(captured?.route?.snapshot.source, 'hosted');
+    assert.equal(captured?.route?.snapshot.revision, 73);
+    assert.equal(fetches, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
   }
 });

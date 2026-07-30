@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
+import { resolveOpenAiAuthMethod } from '../src/config/openai-auth.ts';
 import { CfSettingsStore } from '../src/config/cf-state-proxies.ts';
 import type { SettingsPatch, SettingsStore } from '../src/config/settings-store.ts';
 import type { TagStateRpc } from '../src/config/state-rpc.ts';
@@ -14,6 +15,10 @@ import {
   resolveOpenAiSubscriptionCredentials,
 } from '../src/openai-subscription/credentials.ts';
 import { OpenAiSubscriptionError } from '../src/openai-subscription/errors.ts';
+import {
+  cancelOpenAiSubscriptionAuthorization,
+  startOpenAiSubscriptionAuthorization,
+} from '../src/openai-subscription/device-auth.ts';
 import { accountFingerprint } from '../src/openai-subscription/identity.ts';
 import { OpenAiSubscriptionProtocolError } from '../src/openai-subscription/protocol.ts';
 import type { OpenAiSubscriptionTokenBundle } from '../src/openai-subscription/types.ts';
@@ -87,14 +92,18 @@ test('credential state and identity survive a Durable Object proxy round-trip', 
   assert.deepEqual(await getOpenAiSubscriptionCredentialStatus(secondProxy), connected);
   assert.deepEqual(
     await resolveOpenAiSubscriptionCredentials({ settings: secondProxy, now: () => START_TIME }),
-    { accessToken: 'access-original', accountId: 'account-primary' },
+    {
+      accessToken: 'access-original',
+      accountId: 'account-primary',
+      accountFingerprint: connected.accountFingerprint,
+    },
   );
 });
 
 test('concurrent refreshes share one rotation and retain an omitted replacement refresh token', async (t) => {
   const settings = new SqliteSettingsStore(':memory:');
   t.after(() => settings.close());
-  await commitOpenAiSubscriptionCredentials(bundle(), {
+  const connected = await commitOpenAiSubscriptionCredentials(bundle(), {
     settings,
     now: () => START_TIME,
     randomBytes: randomBytes(1),
@@ -130,8 +139,16 @@ test('concurrent refreshes share one rotation and retain an omitted replacement 
 
   assert.equal(refreshCalls, 1);
   assert.deepEqual(resolved, [
-    { accessToken: 'access-rotated', accountId: 'account-primary' },
-    { accessToken: 'access-rotated', accountId: 'account-primary' },
+    {
+      accessToken: 'access-rotated',
+      accountId: 'account-primary',
+      accountFingerprint: connected.accountFingerprint,
+    },
+    {
+      accessToken: 'access-rotated',
+      accountId: 'account-primary',
+      accountFingerprint: connected.accountFingerprint,
+    },
   ]);
   const raw = await settings.getSetting(openAiSubscriptionSettingKeys().tokens);
   assert.match(raw ?? '', /refresh-original/);
@@ -226,6 +243,94 @@ test('missing identity key and repeated authentication failures invalidate crede
   assert.equal((await getOpenAiSubscriptionCredentialStatus(settings)).state, 'reconnect_required');
 });
 
+test('a stale authentication failure cannot invalidate replacement credentials', async (t) => {
+  const settings = new SqliteSettingsStore(':memory:');
+  t.after(() => settings.close());
+  await commitOpenAiSubscriptionCredentials(bundle({ expiresAt: START_TIME + 3_600_000 }), {
+    settings,
+    now: () => START_TIME,
+    randomBytes: randomBytes(1),
+  });
+  const stale = await resolveOpenAiSubscriptionCredentials({ settings, now: () => START_TIME });
+
+  await commitOpenAiSubscriptionCredentials(bundle({
+    accessToken: 'access-replacement',
+    refreshToken: 'refresh-replacement',
+    expiresAt: START_TIME + 7_200_000,
+  }), {
+    settings,
+    now: () => START_TIME + 1,
+    randomBytes: randomBytes(1),
+  });
+
+  assert.equal(await recordOpenAiSubscriptionAuthenticationFailure(settings, {
+    credentials: stale,
+    limit: 1,
+    now: () => START_TIME + 2,
+  }), false);
+  assert.match(
+    await settings.getSetting(openAiSubscriptionSettingKeys().tokens) ?? '',
+    /access-replacement/,
+  );
+  assert.equal((await getOpenAiSubscriptionCredentialStatus(settings)).state, 'connected');
+});
+
+test('credential invalidation removes an in-flight reconnect so cancel cannot restore it', async (t) => {
+  const settings = new SqliteSettingsStore(':memory:');
+  t.after(() => settings.close());
+  await commitOpenAiSubscriptionCredentials(bundle({ expiresAt: START_TIME + 3_600_000 }), {
+    settings,
+    now: () => START_TIME,
+    randomBytes: randomBytes(1),
+  });
+  const credentials = await resolveOpenAiSubscriptionCredentials({ settings, now: () => START_TIME });
+  const started = await startOpenAiSubscriptionAuthorization({
+    settings,
+    now: () => START_TIME + 1,
+    randomBytes: randomBytes(2),
+    protocol: {
+      start: async () => ({
+        deviceAuthId: 'replacement-device',
+        userCode: 'REPLACE-ME',
+        verificationUri: 'https://auth.openai.com/codex/device',
+        intervalMs: 5_000,
+        expiresAt: START_TIME + 60_000,
+      }),
+      poll: async () => ({ state: 'pending' }),
+      exchange: async () => { throw new Error('must not exchange'); },
+    },
+  });
+
+  assert.equal(await recordOpenAiSubscriptionAuthenticationFailure(settings, {
+    credentials,
+    limit: 1,
+    now: () => START_TIME + 2,
+  }), true);
+  await assert.rejects(
+    () => cancelOpenAiSubscriptionAuthorization(
+      { attemptCapability: started.attemptCapability },
+      { settings, now: () => START_TIME + 3 },
+    ),
+    (error: unknown) =>
+      error instanceof OpenAiSubscriptionError && error.code === 'authorization_missing',
+  );
+  assert.equal((await getOpenAiSubscriptionCredentialStatus(settings)).state, 'reconnect_required');
+  assert.equal(await settings.getSetting(openAiSubscriptionSettingKeys().tokens), undefined);
+});
+
+test('a first credential commit can select Subscription in the same settings patch', async (t) => {
+  const settings = new SqliteSettingsStore(':memory:');
+  t.after(() => settings.close());
+
+  await commitOpenAiSubscriptionCredentials(bundle({ expiresAt: START_TIME + 3_600_000 }), {
+    settings,
+    now: () => START_TIME,
+    randomBytes: randomBytes(1),
+  }, { selectAuthMethod: true });
+
+  assert.equal(await resolveOpenAiAuthMethod(settings), 'subscription');
+});
+
 test('disconnect deletes every secret record while preserving a safe disconnected status', async (t) => {
   const settings = new SqliteSettingsStore(':memory:');
   t.after(() => settings.close());
@@ -236,6 +341,7 @@ test('disconnect deletes every secret record while preserving a safe disconnecte
   });
   await settings.setSetting(openAiSubscriptionSettingKeys().pending, 'pending-secret');
   await settings.setSetting(openAiSubscriptionSettingKeys().refreshLease, 'lease-secret');
+  await settings.setSetting(openAiSubscriptionSettingKeys().modelCatalog, 'safe-model-cache');
 
   assert.deepEqual(await disconnectOpenAiSubscription(settings, { now: () => START_TIME }), {
     state: 'disconnected',
@@ -243,8 +349,10 @@ test('disconnect deletes every secret record while preserving a safe disconnecte
   });
   const keys = openAiSubscriptionSettingKeys();
   assert.deepEqual(
-    await settings.getSettings([keys.pending, keys.tokens, keys.refreshLease, keys.identityKey]),
-    [undefined, undefined, undefined, undefined],
+    await settings.getSettings([
+      keys.pending, keys.tokens, keys.refreshLease, keys.identityKey, keys.modelCatalog,
+    ]),
+    [undefined, undefined, undefined, undefined, undefined],
   );
   assert.deepEqual(await getOpenAiSubscriptionCredentialStatus(settings), {
     state: 'disconnected',

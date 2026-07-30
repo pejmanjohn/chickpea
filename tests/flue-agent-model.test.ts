@@ -13,6 +13,11 @@ import { registerProvider } from '@flue/runtime';
 import { resolveModel } from '@flue/runtime/internal';
 
 import { WORKERS_AI_CONTEXT_WINDOW_FLOOR } from '../src/app.ts';
+import {
+  ANTHROPIC_COMPAT_PROVIDER_ID,
+  bindModelCompatibilityProvider,
+  OPENAI_PLATFORM_COMPAT_PROVIDER_ID,
+} from '../src/model-compat/provider.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import slackThreadAgent, {
   resolveAgentModel,
@@ -44,6 +49,44 @@ test('the REST Workers AI registration supplies the context-window floor used fo
   assert.equal(resolved.provider, 'cloudflare-workers-ai');
   assert.equal(resolved.contextWindow, WORKERS_AI_CONTEXT_WINDOW_FLOOR);
   assert.ok(resolved.contextWindow > 0);
+});
+
+test('Pi-native suggestions bypass Chickpea compatibility providers', () => {
+  const expected = [
+    ['anthropic/claude-fable-5', 'anthropic-messages', 1_000_000, 128_000],
+    ['anthropic/claude-haiku-4-5', 'anthropic-messages', 200_000, 64_000],
+    ['openai/gpt-5.5', 'openai-responses', 272_000, 128_000],
+    ['openai/gpt-5.4', 'openai-responses', 272_000, 128_000],
+    ['openai/gpt-5.4-mini', 'openai-responses', 400_000, 128_000],
+    ['openai/gpt-5.3-codex-spark', 'openai-responses', 128_000, 32_000],
+  ] as const;
+
+  for (const [specifier, api, contextWindow, maxTokens] of expected) {
+    const model = resolveModel(specifier);
+    assert.equal(model.api, api, specifier);
+    assert.equal(model.contextWindow, contextWindow, specifier);
+    assert.equal(model.maxTokens, maxTokens, specifier);
+    assert.equal(model.input.includes('image'), true, specifier);
+  }
+});
+
+test('reviewed Pi gaps resolve through bounded internal compatibility providers', () => {
+  bindModelCompatibilityProvider('openai', 'test-openai-key');
+  bindModelCompatibilityProvider('anthropic', 'test-anthropic-key');
+  const expected = [
+    [`${ANTHROPIC_COMPAT_PROVIDER_ID}/claude-opus-5`, 'chickpea-anthropic-messages-bundled-v1', 1_000_000, 128_000],
+    [`${ANTHROPIC_COMPAT_PROVIDER_ID}/claude-sonnet-5`, 'chickpea-anthropic-messages-bundled-v1', 1_000_000, 128_000],
+    [`${OPENAI_PLATFORM_COMPAT_PROVIDER_ID}/gpt-5.6-sol`, 'chickpea-openai-platform-responses-bundled-v1', 272_000, 128_000],
+    [`${OPENAI_PLATFORM_COMPAT_PROVIDER_ID}/gpt-5.6-terra`, 'chickpea-openai-platform-responses-bundled-v1', 272_000, 128_000],
+    [`${OPENAI_PLATFORM_COMPAT_PROVIDER_ID}/gpt-5.6-luna`, 'chickpea-openai-platform-responses-bundled-v1', 272_000, 128_000],
+  ] as const;
+
+  for (const [specifier, api, contextWindow, maxTokens] of expected) {
+    const model = resolveModel(specifier);
+    assert.equal(model.api, api, specifier);
+    assert.equal(model.contextWindow, contextWindow, specifier);
+    assert.equal(model.maxTokens, maxTokens, specifier);
+  }
 });
 
 test('Flue resolves the model specifier produced by the slack-thread agent', async () => {

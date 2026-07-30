@@ -6,7 +6,10 @@ import { getApiProvider } from '@earendil-works/pi-ai/compat';
 
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { listRuntimeModelProviders } from '../src/config/providers.ts';
-import { commitOpenAiSubscriptionCredentials } from '../src/openai-subscription/credentials.ts';
+import {
+  commitOpenAiSubscriptionCredentials,
+  openAiSubscriptionSettingKeys,
+} from '../src/openai-subscription/credentials.ts';
 import { OpenAiSubscriptionProtocolError } from '../src/openai-subscription/protocol.ts';
 import {
   bindOpenAiSubscriptionProvider,
@@ -14,6 +17,7 @@ import {
   openAiSubscriptionModelSpecifier,
 } from '../src/openai-subscription/provider.ts';
 import {
+  clearOpenAiSubscriptionTransport,
   createOpenAiSubscriptionFetchBoundary,
   OPENAI_SUBSCRIPTION_TRANSPORT_MARKER,
 } from '../src/openai-subscription/transport.ts';
@@ -30,11 +34,13 @@ const REQUEST_BODY = JSON.stringify({
   tool_choice: 'auto',
   parallel_tool_calls: true,
 });
+const ALLOWED_TEST_MODELS = () => new Set(['gpt-5.4']);
 
 test('the subscription boundary replaces caller credentials at the exact Codex endpoint', async () => {
   let captured: Request | undefined;
   const boundary = createOpenAiSubscriptionFetchBoundary({
     credentials: () => ({ accessToken: 'live-access-token', accountId: 'account-primary' }),
+    allowedModels: ALLOWED_TEST_MODELS,
     randomUUID: () => 'request-session-id',
     fetch: async (input, init) => {
       captured = new Request(input, init);
@@ -78,6 +84,7 @@ test('the subscription boundary replaces caller credentials at the exact Codex e
 test('the subscription boundary rejects an explicitly non-SSE success type', async () => {
   const boundary = createOpenAiSubscriptionFetchBoundary({
     credentials: () => ({ accessToken: 'subscription-token', accountId: 'subscription-account' }),
+    allowedModels: ALLOWED_TEST_MODELS,
     fetch: async () => new Response('{}', {
       status: 200,
       headers: { 'content-type': 'application/json' },
@@ -99,6 +106,7 @@ test('the subscription boundary leaves unrelated OpenAI API traffic untouched', 
   let captured: Request | undefined;
   const boundary = createOpenAiSubscriptionFetchBoundary({
     credentials: () => ({ accessToken: 'subscription-token', accountId: 'subscription-account' }),
+    allowedModels: ALLOWED_TEST_MODELS,
     fetch: async (input, init) => {
       captured = new Request(input, init);
       return new Response('{}');
@@ -119,6 +127,7 @@ test('the subscription boundary rejects marked traffic when its endpoint drifts'
   let forwarded = false;
   const boundary = createOpenAiSubscriptionFetchBoundary({
     credentials: () => ({ accessToken: 'subscription-token', accountId: 'subscription-account' }),
+    allowedModels: ALLOWED_TEST_MODELS,
     fetch: async () => {
       forwarded = true;
       return new Response('{}');
@@ -140,6 +149,7 @@ test('the subscription boundary rejects marked traffic when its endpoint drifts'
 test('the subscription boundary fails closed for unmarked, malformed, and redirected requests', async () => {
   const boundary = createOpenAiSubscriptionFetchBoundary({
     credentials: () => ({ accessToken: 'subscription-token', accountId: 'subscription-account' }),
+    allowedModels: ALLOWED_TEST_MODELS,
     fetch: async () => new Response('', { status: 302, headers: { location: 'https://example.com/' } }),
   });
 
@@ -171,10 +181,56 @@ test('the subscription boundary fails closed for unmarked, malformed, and redire
   );
 });
 
+test('the subscription boundary rejects a safe but undiscovered model before upstream fetch', async () => {
+  let forwarded = false;
+  const boundary = createOpenAiSubscriptionFetchBoundary({
+    credentials: () => ({ accessToken: 'subscription-token', accountId: 'subscription-account' }),
+    allowedModels: ALLOWED_TEST_MODELS,
+    fetch: async () => {
+      forwarded = true;
+      return new Response('');
+    },
+  });
+
+  await assert.rejects(
+    boundary('https://chatgpt.com/backend-api/codex/responses', {
+      method: 'POST',
+      headers: { [OPENAI_SUBSCRIPTION_TRANSPORT_MARKER]: 'v1' },
+      body: JSON.stringify({ ...JSON.parse(REQUEST_BODY), model: 'gpt-future-codex' }),
+    }),
+    (error: unknown) =>
+      error instanceof OpenAiSubscriptionProtocolError && error.code === 'unsupported_model',
+  );
+  assert.equal(forwarded, false);
+});
+
+test('the subscription boundary has no implicit model allowlist', async () => {
+  let forwarded = false;
+  const boundary = createOpenAiSubscriptionFetchBoundary({
+    credentials: () => ({ accessToken: 'subscription-token', accountId: 'subscription-account' }),
+    fetch: async () => {
+      forwarded = true;
+      return new Response('');
+    },
+  });
+
+  await assert.rejects(
+    boundary('https://chatgpt.com/backend-api/codex/responses', {
+      method: 'POST',
+      headers: { [OPENAI_SUBSCRIPTION_TRANSPORT_MARKER]: 'v1' },
+      body: REQUEST_BODY,
+    }),
+    (error: unknown) =>
+      error instanceof OpenAiSubscriptionProtocolError && error.code === 'unsupported_model',
+  );
+  assert.equal(forwarded, false);
+});
+
 test('provider errors are reduced to bounded failure codes and repeated 401s are reported', async () => {
   let authenticationFailures = 0;
   const boundary = createOpenAiSubscriptionFetchBoundary({
     credentials: () => ({ accessToken: 'subscription-token', accountId: 'subscription-account' }),
+    allowedModels: ALLOWED_TEST_MODELS,
     onAuthenticationFailure: async () => { authenticationFailures += 1; },
     fetch: async () => new Response('raw provider secret and internal trace', { status: 401 }),
   });
@@ -195,6 +251,7 @@ test('provider errors are reduced to bounded failure codes and repeated 401s are
 test('the subscription boundary enforces its response-header timeout', async () => {
   const boundary = createOpenAiSubscriptionFetchBoundary({
     credentials: () => ({ accessToken: 'subscription-token', accountId: 'subscription-account' }),
+    allowedModels: ALLOWED_TEST_MODELS,
     timeoutMs: 1,
     fetch: async (_input, init) =>
       new Promise<Response>((_resolve, reject) => {
@@ -218,6 +275,7 @@ test('caller cancellation remains attached after subscription response headers a
   let upstreamAborted = false;
   const boundary = createOpenAiSubscriptionFetchBoundary({
     credentials: () => ({ accessToken: 'subscription-token', accountId: 'subscription-account' }),
+    allowedModels: ALLOWED_TEST_MODELS,
     timeoutMs: 60_000,
     fetch: async (_input, init) => new Response(
       new ReadableStream<Uint8Array>({
@@ -243,6 +301,41 @@ test('caller cancellation remains attached after subscription response headers a
 
   await assert.rejects(pendingRead ?? Promise.resolve());
   assert.equal(upstreamAborted, true);
+});
+
+test('a guessed transport marker cannot spend bound subscription credentials', async (t) => {
+  const settings = new SqliteSettingsStore(':memory:');
+  t.after(() => settings.close());
+  await commitOpenAiSubscriptionCredentials({
+    accessToken: 'guarded-access',
+    refreshToken: 'guarded-refresh',
+    idToken: undefined,
+    expiresAt: NOW + 3_600_000,
+    accountId: 'guarded-account',
+  }, { settings, now: () => NOW, randomBytes: (length) => new Uint8Array(length).fill(3) });
+
+  let upstreamCalls = 0;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    upstreamCalls += 1;
+    return new Response('', { status: 200 });
+  };
+  t.after(() => {
+    clearOpenAiSubscriptionTransport();
+    globalThis.fetch = originalFetch;
+  });
+
+  await bindOpenAiSubscriptionProvider({ settings, now: () => NOW, modelId: 'gpt-5.4' });
+  await assert.rejects(
+    globalThis.fetch('https://chatgpt.com/backend-api/codex/responses', {
+      method: 'POST',
+      headers: { [OPENAI_SUBSCRIPTION_TRANSPORT_MARKER]: 'v1' },
+      body: REQUEST_BODY,
+    }),
+    (error: unknown) =>
+      error instanceof OpenAiSubscriptionProtocolError && error.code === 'auth_reconnect_required',
+  );
+  assert.equal(upstreamCalls, 0);
 });
 
 test('the registered wire handler streams through the boundary and ignores caller overrides', async (t) => {
@@ -411,7 +504,229 @@ test('binding the internal provider requires subscription credentials and never 
   assert.equal(listed.some((provider) => provider.id === OPENAI_SUBSCRIPTION_PROVIDER_ID), false);
 });
 
-test('subscription model specifiers reject models outside the pinned allowlist', () => {
+test('subscription model specifiers accept safe ids and reject malformed ids', () => {
   assert.equal(openAiSubscriptionModelSpecifier('gpt-5.4-mini'), 'openai-subscription/gpt-5.4-mini');
-  assert.throws(() => openAiSubscriptionModelSpecifier('gpt-4.1'), /unsupported_model/);
+  assert.equal(openAiSubscriptionModelSpecifier('gpt-future-codex'), 'openai-subscription/gpt-future-codex');
+  assert.throws(() => openAiSubscriptionModelSpecifier('../unsafe'), /unsupported_model/);
+});
+
+test('a release-catalog image model registers and streams through the subscription boundary', async (t) => {
+  const settings = new SqliteSettingsStore(':memory:');
+  t.after(() => settings.close());
+  await commitOpenAiSubscriptionCredentials({
+    accessToken: 'image-access',
+    refreshToken: 'image-refresh',
+    idToken: undefined,
+    expiresAt: NOW + 3_600_000,
+    accountId: 'image-account',
+  }, { settings, now: () => NOW, randomBytes: (length) => new Uint8Array(length).fill(3) });
+
+  let captured: Request | undefined;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    captured = new Request(input, init);
+    const events = [
+      { type: 'response.created', response: { id: 'response_image' } },
+      {
+        type: 'response.output_item.added',
+        item: { type: 'message', id: 'message_image', role: 'assistant', status: 'in_progress', content: [] },
+      },
+      { type: 'response.content_part.added', part: { type: 'output_text', text: '', annotations: [] } },
+      { type: 'response.output_text.delta', delta: 'Future works' },
+      {
+        type: 'response.output_item.done',
+        item: {
+          type: 'message',
+          id: 'message_image',
+          role: 'assistant',
+          status: 'completed',
+          content: [{ type: 'output_text', text: 'Future works', annotations: [] }],
+        },
+      },
+      {
+        type: 'response.completed',
+        response: {
+          id: 'response_image',
+          status: 'completed',
+          usage: {
+            input_tokens: 1,
+            output_tokens: 1,
+            total_tokens: 2,
+            input_tokens_details: { cached_tokens: 0 },
+          },
+        },
+      },
+    ];
+    return new Response(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(''), {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' },
+    });
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  await bindOpenAiSubscriptionProvider({ settings, now: () => NOW, modelId: 'gpt-5.4' });
+  const model = resolveModel(openAiSubscriptionModelSpecifier('gpt-5.4'));
+  assert.equal(model.contextWindow, 272_000);
+  assert.equal(model.maxTokens, 128_000);
+  const api = getApiProvider(model.api);
+  assert.ok(api);
+  const result = await api.stream(
+    model,
+    {
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'text', text: 'Describe this image.' },
+          { type: 'image', data: 'iVBORw0KGgo=', mimeType: 'image/png' },
+        ],
+        timestamp: NOW,
+      }],
+    },
+  ).result();
+
+  assert.ok(captured, `subscription stream failed before fetch: ${result.errorMessage ?? result.stopReason}`);
+  const payload = await captured.clone().json() as {
+    model?: string;
+    input?: Array<{ content?: Array<{ type?: string }> }>;
+  };
+  assert.equal(payload.model, 'gpt-5.4');
+  assert.equal(payload.input?.[0]?.content?.some((item) => item.type === 'input_image'), true);
+  assert.equal(captured?.url, 'https://chatgpt.com/backend-api/codex/responses');
+  assert.equal(result.stopReason, 'stop');
+  assert.equal(result.provider, OPENAI_SUBSCRIPTION_PROVIDER_ID);
+});
+
+test('binding rejects a safe model that is not in Chickpea\'s release catalog', async (t) => {
+  const settings = new SqliteSettingsStore(':memory:');
+  t.after(() => settings.close());
+  await commitOpenAiSubscriptionCredentials({
+    accessToken: 'unsupported-access',
+    refreshToken: 'unsupported-refresh',
+    idToken: undefined,
+    expiresAt: NOW + 3_600_000,
+    accountId: 'unsupported-account',
+  }, { settings, now: () => NOW, randomBytes: (length) => new Uint8Array(length).fill(6) });
+
+  await assert.rejects(
+    bindOpenAiSubscriptionProvider({ settings, now: () => NOW, modelId: 'gpt-future-codex' }),
+    /unsupported_model/,
+  );
+});
+
+test('provider construction cannot rebind credentials replaced during its final snapshot check', async (t) => {
+  const settings = new SqliteSettingsStore(':memory:');
+  t.after(() => settings.close());
+  await commitOpenAiSubscriptionCredentials({
+    accessToken: 'old-access',
+    refreshToken: 'old-refresh',
+    idToken: undefined,
+    expiresAt: NOW + 3_600_000,
+    accountId: 'old-account',
+  }, { settings, now: () => NOW, randomBytes: (length) => new Uint8Array(length).fill(1) });
+
+  const originalGetSetting = settings.getSetting.bind(settings);
+  let replaced = false;
+  settings.getSetting = async (key) => {
+    if (!replaced && key === openAiSubscriptionSettingKeys().tokens) {
+      replaced = true;
+      await commitOpenAiSubscriptionCredentials({
+      accessToken: 'new-access',
+      refreshToken: 'new-refresh',
+      idToken: undefined,
+      expiresAt: NOW + 3_600_000,
+      accountId: 'new-account',
+    }, { settings, now: () => NOW + 1, randomBytes: (length) => new Uint8Array(length).fill(2) });
+    }
+    return originalGetSetting(key);
+  };
+
+  await assert.rejects(
+    bindOpenAiSubscriptionProvider({ settings, now: () => NOW, modelId: 'gpt-5.4' }),
+    /auth_reconnect_required/,
+  );
+});
+
+test('a delayed failing bind cannot clear a newer valid transport binding', async (t) => {
+  const settings = new SqliteSettingsStore(':memory:');
+  t.after(() => settings.close());
+  await commitOpenAiSubscriptionCredentials({
+    accessToken: 'valid-access',
+    refreshToken: 'valid-refresh',
+    idToken: undefined,
+    expiresAt: NOW + 3_600_000,
+    accountId: 'valid-account',
+  }, { settings, now: () => NOW, randomBytes: (length) => new Uint8Array(length).fill(7) });
+
+  const originalGetSettings = settings.getSettings.bind(settings);
+  let releaseDelayedRead: (() => void) | undefined;
+  let signalDelayedRead: (() => void) | undefined;
+  const delayedReadStarted = new Promise<void>((resolve) => { signalDelayedRead = resolve; });
+  const delayedReadRelease = new Promise<void>((resolve) => { releaseDelayedRead = resolve; });
+  let delayFirstRead = true;
+  settings.getSettings = async (keys) => {
+    if (delayFirstRead) {
+      delayFirstRead = false;
+      signalDelayedRead?.();
+      await delayedReadRelease;
+      throw new Error('delayed storage failure');
+    }
+    return originalGetSettings(keys);
+  };
+
+  const staleBind = bindOpenAiSubscriptionProvider({ settings, now: () => NOW });
+  await delayedReadStarted;
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    const events = [
+      { type: 'response.created', response: { id: 'response_valid' } },
+      {
+        type: 'response.output_item.added',
+        item: { type: 'message', id: 'message_valid', role: 'assistant', status: 'in_progress', content: [] },
+      },
+      { type: 'response.content_part.added', part: { type: 'output_text', text: '', annotations: [] } },
+      { type: 'response.output_text.delta', delta: 'Valid' },
+      {
+        type: 'response.output_item.done',
+        item: {
+          type: 'message',
+          id: 'message_valid',
+          role: 'assistant',
+          status: 'completed',
+          content: [{ type: 'output_text', text: 'Valid', annotations: [] }],
+        },
+      },
+      {
+        type: 'response.completed',
+        response: {
+          id: 'response_valid',
+          status: 'completed',
+          usage: {
+            input_tokens: 1,
+            output_tokens: 1,
+            total_tokens: 2,
+            input_tokens_details: { cached_tokens: 0 },
+          },
+        },
+      },
+    ];
+    return new Response(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(''), {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' },
+    });
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  await bindOpenAiSubscriptionProvider({ settings, now: () => NOW, modelId: 'gpt-5.4' });
+  const model = resolveModel(openAiSubscriptionModelSpecifier('gpt-5.4'));
+  releaseDelayedRead?.();
+  await assert.rejects(staleBind, /delayed storage failure/);
+
+  const api = getApiProvider(model.api);
+  assert.ok(api);
+  const result = await api.stream(
+    model,
+    { messages: [{ role: 'user', content: 'Continue', timestamp: NOW }] },
+  ).result();
+  assert.equal(result.stopReason, 'stop');
 });

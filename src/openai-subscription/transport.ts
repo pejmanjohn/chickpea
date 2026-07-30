@@ -1,7 +1,8 @@
 import {
   buildOpenAiSubscriptionHeaders,
-  isOpenAiSubscriptionModel,
+  isSafeOpenAiSubscriptionModelId,
   OPENAI_SUBSCRIPTION_ENDPOINTS,
+  OPENAI_SUBSCRIPTION_MODELS,
   OpenAiSubscriptionProtocolError,
 } from './protocol.ts';
 import type { OpenAiSubscriptionFailureCode } from './types.ts';
@@ -11,6 +12,8 @@ export const OPENAI_SUBSCRIPTION_TRANSPORT_MARKER = 'x-chickpea-subscription-tra
 const DEFAULT_HEADER_TIMEOUT_MS = 20_000;
 const MAX_REQUEST_BYTES = 2 * 1024 * 1024;
 const MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
+const EMPTY_MODEL_SET: ReadonlySet<string> = new Set();
+const SUBSCRIPTION_MODEL_SET: ReadonlySet<string> = new Set(OPENAI_SUBSCRIPTION_MODELS);
 const ALLOWED_BODY_KEYS = new Set([
   'include',
   'input',
@@ -34,41 +37,94 @@ export interface OpenAiSubscriptionTransportCredentials {
 }
 
 export interface OpenAiSubscriptionFetchBoundaryOptions {
-  credentials: () => OpenAiSubscriptionTransportCredentials;
+  credentials?: () => OpenAiSubscriptionTransportCredentials;
+  allowedModels?: () => ReadonlySet<string>;
+  binding?: (marker: string) => ActiveTransportBinding | undefined;
   fetch?: typeof globalThis.fetch;
   randomUUID?: () => string;
   timeoutMs?: number;
   onAuthenticationFailure?: () => void | Promise<void>;
 }
 
-let activeCredentials: OpenAiSubscriptionTransportCredentials | undefined;
-let authenticationFailureHandler: (() => void | Promise<void>) | undefined;
+interface ActiveTransportBinding {
+  credentials: OpenAiSubscriptionTransportCredentials;
+  allowedModels: ReadonlySet<string>;
+  onAuthenticationFailure?: () => void | Promise<void>;
+}
+
+const activeBindings = new Map<string, ActiveTransportBinding>();
+let bindingRevision = 0;
+let credentialEpoch = 0;
 const WRAPPED_FETCH = Symbol.for('chickpea.openai-subscription.fetch-boundary');
 
 export function bindOpenAiSubscriptionTransport(
   credentials: OpenAiSubscriptionTransportCredentials,
-  options: { onAuthenticationFailure?: () => void | Promise<void> } = {},
+  options: {
+    expectedCredentialEpoch?: number;
+    marker: string;
+    allowedModels?: ReadonlySet<string>;
+    onAuthenticationFailure?: () => void | Promise<void>;
+  },
 ): void {
-  activeCredentials = { ...credentials };
-  authenticationFailureHandler = options.onAuthenticationFailure;
+  if (
+    options.expectedCredentialEpoch !== undefined &&
+    options.expectedCredentialEpoch !== credentialEpoch
+  ) {
+    throw new OpenAiSubscriptionProtocolError('auth_reconnect_required');
+  }
+  const marker = options.marker;
+  if (!isSafeTransportMarker(marker)) {
+    throw new OpenAiSubscriptionProtocolError('protocol_drift');
+  }
+  activeBindings.set(marker, {
+    credentials: { ...credentials },
+    allowedModels: new Set(options.allowedModels ?? SUBSCRIPTION_MODEL_SET),
+    ...(options.onAuthenticationFailure
+      ? { onAuthenticationFailure: options.onAuthenticationFailure }
+      : {}),
+  });
   installOpenAiSubscriptionFetchBoundary();
+  bindingRevision += 1;
 }
 
-export function clearOpenAiSubscriptionTransport(): void {
-  activeCredentials = undefined;
-  authenticationFailureHandler = undefined;
+export function clearOpenAiSubscriptionTransport(expectedRevision?: number): boolean {
+  if (expectedRevision !== undefined && expectedRevision !== bindingRevision) return false;
+  activeBindings.clear();
+  bindingRevision += 1;
+  credentialEpoch += 1;
+  return true;
+}
+
+export function openAiSubscriptionTransportRevision(): number {
+  return bindingRevision;
+}
+
+export function openAiSubscriptionCredentialEpoch(): number {
+  return credentialEpoch;
+}
+
+export function createOpenAiSubscriptionTransportMarker(
+  randomUUID: () => string = () => crypto.randomUUID(),
+): string {
+  const marker = `v2:${randomUUID()}`;
+  if (!isSafeTransportMarker(marker) || marker === 'v2:00000000-0000-0000-0000-000000000000') {
+    throw new OpenAiSubscriptionProtocolError('protocol_drift');
+  }
+  return marker;
 }
 
 export function installOpenAiSubscriptionFetchBoundary(): void {
   const current = globalThis.fetch as typeof globalThis.fetch & { [WRAPPED_FETCH]?: boolean };
   if (current[WRAPPED_FETCH]) return;
   const boundary = createOpenAiSubscriptionFetchBoundary({
-    credentials: () => {
-      if (!activeCredentials) throw new OpenAiSubscriptionProtocolError('auth_reconnect_required');
-      return activeCredentials;
+    binding: (marker) => {
+      const binding = activeBindings.get(marker);
+      if (!binding) {
+        throw new OpenAiSubscriptionProtocolError('auth_reconnect_required');
+      }
+      return binding;
     },
     fetch: current,
-    onAuthenticationFailure: () => authenticationFailureHandler?.(),
   }) as typeof globalThis.fetch & { [WRAPPED_FETCH]?: boolean };
   Object.defineProperty(boundary, WRAPPED_FETCH, { value: true });
   globalThis.fetch = boundary;
@@ -87,25 +143,33 @@ export function createOpenAiSubscriptionFetchBoundary(
       // The marker is private to the subscription provider. If its upstream
       // endpoint drifts, fail closed instead of forwarding model-visible data
       // to whatever URL the dependency selected.
-      if (callerHeaders.get(OPENAI_SUBSCRIPTION_TRANSPORT_MARKER) === 'v1') {
+      if (callerHeaders.has(OPENAI_SUBSCRIPTION_TRANSPORT_MARKER)) {
         throw new OpenAiSubscriptionProtocolError('protocol_drift');
       }
       return upstream(input, init);
     }
 
     const request = new Request(input, init);
-    if (request.headers.get(OPENAI_SUBSCRIPTION_TRANSPORT_MARKER) !== 'v1') {
+    const marker = request.headers.get(OPENAI_SUBSCRIPTION_TRANSPORT_MARKER);
+    if (!marker || !isSafeTransportMarker(marker)) {
       throw new OpenAiSubscriptionProtocolError('protocol_drift');
     }
     if (request.method !== 'POST' || new URL(request.url).search !== '') {
       throw new OpenAiSubscriptionProtocolError('protocol_drift');
     }
-    const body = await request.text();
-    validateRequestBody(body);
+    const binding = options.binding?.(marker);
+    const credentials = binding?.credentials ?? options.credentials?.();
+    if (!credentials) {
+      throw new OpenAiSubscriptionProtocolError('auth_reconnect_required');
+    }
+    const allowedModels = binding?.allowedModels ?? options.allowedModels?.() ?? EMPTY_MODEL_SET;
+    const onAuthenticationFailure = binding?.onAuthenticationFailure ?? options.onAuthenticationFailure;
+    const body = await readRequestBody(request);
+    validateRequestBody(body, allowedModels);
 
     const sessionId = (options.randomUUID ?? (() => crypto.randomUUID()))();
     const headers = buildOpenAiSubscriptionHeaders({
-      ...options.credentials(),
+      ...credentials,
       sessionId,
       headers: {
         accept: 'text/event-stream',
@@ -144,7 +208,7 @@ export function createOpenAiSubscriptionFetchBoundary(
       const providerText = await readBoundedText(response, 64 * 1024);
       timeout.clear();
       const code = classifyProviderFailure(response.status, providerText);
-      if (response.status === 401) await options.onAuthenticationFailure?.();
+      if (response.status === 401) await onAuthenticationFailure?.();
       return safeFailureResponse(response, code);
     }
     const contentType = response.headers.get('content-type');
@@ -166,13 +230,47 @@ export function createOpenAiSubscriptionFetchBoundary(
   };
 }
 
+function isSafeTransportMarker(value: string): boolean {
+  return value === 'v1' ||
+    /^v2:[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(value);
+}
+
 function requestUrlFor(input: RequestInfo | URL): string {
   if (typeof input === 'string') return input;
   if (input instanceof URL) return input.toString();
   return input.url;
 }
 
-function validateRequestBody(raw: string): void {
+async function readRequestBody(request: Request): Promise<string> {
+  const encoding = request.headers.get('content-encoding')?.trim().toLowerCase();
+  if (!encoding || encoding === 'identity') return request.text();
+  if (encoding !== 'zstd') throw new OpenAiSubscriptionProtocolError('protocol_drift');
+
+  const compressed = new Uint8Array(await request.arrayBuffer());
+  if (compressed.byteLength > MAX_REQUEST_BYTES) {
+    throw new OpenAiSubscriptionProtocolError('protocol_drift');
+  }
+  const zlib = typeof process === 'undefined'
+    ? undefined
+    : process.getBuiltinModule?.('node:zlib');
+  if (!zlib || typeof zlib.zstdDecompressSync !== 'function') {
+    throw new OpenAiSubscriptionProtocolError('protocol_drift');
+  }
+  try {
+    const decoded = zlib.zstdDecompressSync(compressed, {
+      maxOutputLength: MAX_REQUEST_BYTES + 1,
+    });
+    if (decoded.byteLength > MAX_REQUEST_BYTES) {
+      throw new OpenAiSubscriptionProtocolError('protocol_drift');
+    }
+    return new TextDecoder('utf-8', { fatal: true }).decode(decoded);
+  } catch (error) {
+    if (error instanceof OpenAiSubscriptionProtocolError) throw error;
+    throw new OpenAiSubscriptionProtocolError('protocol_drift', { cause: error });
+  }
+}
+
+function validateRequestBody(raw: string, allowedModels: ReadonlySet<string>): void {
   if (new TextEncoder().encode(raw).byteLength > MAX_REQUEST_BYTES) {
     throw new OpenAiSubscriptionProtocolError('protocol_drift');
   }
@@ -185,14 +283,16 @@ function validateRequestBody(raw: string): void {
   if (!isRecord(body) || Object.keys(body).some((key) => !ALLOWED_BODY_KEYS.has(key))) {
     throw new OpenAiSubscriptionProtocolError('protocol_drift');
   }
+  const modelAllowed = typeof body.model === 'string' &&
+    isSafeOpenAiSubscriptionModelId(body.model) &&
+    allowedModels.has(body.model);
   if (
-    typeof body.model !== 'string' ||
-    !isOpenAiSubscriptionModel(body.model) ||
+    !modelAllowed ||
     body.store !== false ||
     body.stream !== true
   ) {
     throw new OpenAiSubscriptionProtocolError(
-      typeof body.model === 'string' && !isOpenAiSubscriptionModel(body.model)
+      typeof body.model === 'string' && !modelAllowed
         ? 'unsupported_model'
         : 'protocol_drift',
     );

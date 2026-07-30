@@ -1693,6 +1693,11 @@ details[open].advanced summary::before {
     settings: null,
     settingsLoaded: false,
     settingsError: "",
+    modelCatalog: null,
+    modelCatalogLoaded: false,
+    modelCatalogError: "",
+    modelCatalogBusy: false,
+    modelCatalogRequestId: 0,
     // The device user code and attempt capability exist only in this page's
     // memory. Reloading or opening Settings elsewhere can observe the safe
     // authorizing status, but cannot display, poll, cancel, or confirm this attempt.
@@ -5862,9 +5867,9 @@ details[open].advanced summary::before {
       '<p class="hint">Configure GitHub, model providers, and outbound internet access for the sandbox.</p></div>';
     var providerSection;
     if (state.settingsError) {
-      providerSection = '<section class="section"><div class="section-head"><div><h2 class="section-title">Model providers</h2></div></div><p class="field-error">' + esc(state.settingsError) + '</p></section>';
+      providerSection = '<section class="section"><div class="section-head"><div><h2 class="section-title">Model providers</h2></div></div>' + modelCatalogStatusHtml() + '<p class="field-error">' + esc(state.settingsError) + '</p></section>';
     } else if (!state.settingsLoaded || !state.settings) {
-      providerSection = '<section class="section"><div class="section-head"><div><h2 class="section-title">Model providers</h2></div></div><p class="hint">Loading providers&hellip;</p></section>';
+      providerSection = '<section class="section"><div class="section-head"><div><h2 class="section-title">Model providers</h2></div></div>' + modelCatalogStatusHtml() + '<p class="hint">Loading providers&hellip;</p></section>';
     } else {
       var providers = (state.settings.providers || []).filter(function (provider) {
         // Workers AI is binding-only — shown on Cloudflare, hidden on Node.
@@ -5873,9 +5878,26 @@ details[open].advanced summary::before {
       var rows = providers.map(providerRowHtml).join("");
       providerSection = '<section class="section"><div class="section-head"><div><h2 class="section-title">Model providers</h2>' +
         '<p class="hint">Connect the credentials Chickpea can use. OpenAI can keep both an API key and ChatGPT subscription connected, with one method selected for all OpenAI calls.</p></div></div>' +
-        rows + '</section>';
+        modelCatalogStatusHtml() + rows + '</section>';
     }
     return head + githubSectionHtml() + sandboxSectionHtml() + providerSection + egressSectionHtml();
+  }
+
+  function modelCatalogStatusHtml() {
+    var status = state.modelCatalog;
+    var copy = "Loading model list status&hellip;";
+    if (state.modelCatalogLoaded) {
+      if (status) {
+        if (status.mode === "bundled") copy = "Included with this Chickpea release";
+        else if (status.source === "hosted") copy = "Models up to date &middot; revision " + Number(status.revision || 0);
+        else copy = "Using models included with this Chickpea release";
+      } else copy = "Model list status unavailable";
+    }
+    return '<div class="bundle-row model-catalog-status"><div class="danger-copy"><span class="field-label">Model list</span>' +
+      '<span class="hint">' + copy + '</span></div>' +
+      '<button type="button" class="btn btn-ghost btn-sm i-lead" data-action="model-catalog-refresh"' + (state.modelCatalogBusy ? " disabled" : "") + '>' +
+      (state.modelCatalogBusy ? '<span class="spinner"></span>Refreshing&hellip;' : icon("arrow-path") + 'Refresh models') + '</button>' +
+      (state.modelCatalogError ? '<span class="inline-status error" role="alert">' + esc(state.modelCatalogError) + '</span>' : "") + '</div>';
   }
 
   function egressSectionHtml() {
@@ -6276,12 +6298,15 @@ details[open].advanced summary::before {
     state.githubError = "";
     state.egressLoaded = false;
     state.sandboxLoaded = false;
+    state.modelCatalogLoaded = false;
+    state.modelCatalogError = "";
     render();
     if (sectionId) {
       var section = document.getElementById(sectionId);
       if (section && section.scrollIntoView) section.scrollIntoView({ block: "start" });
     }
     loadSettings().then(render);
+    loadModelCatalogStatus().then(render);
     loadGithubStatus().then(render);
     loadEgress().then(render);
     loadSandboxStatus().then(render);
@@ -6619,6 +6644,60 @@ details[open].advanced summary::before {
     });
   }
 
+  function loadModelCatalogStatus() {
+    var requestId = ++state.modelCatalogRequestId;
+    state.modelCatalogError = "";
+    return api("/admin/api/model-catalog").then(function (body) {
+      if (requestId !== state.modelCatalogRequestId) return;
+      state.modelCatalog = body;
+      state.modelCatalogLoaded = true;
+    }).catch(function (error) {
+      if (requestId !== state.modelCatalogRequestId) return;
+      state.modelCatalogLoaded = true;
+      state.modelCatalogError = (error && (error.serverMessage || error.message)) || "Could not load the model list status.";
+    });
+  }
+
+  function refreshModelCatalogFromSettings() {
+    if (state.modelCatalogBusy) return;
+    var requestId = ++state.modelCatalogRequestId;
+    state.modelCatalogBusy = true;
+    state.modelCatalogError = "";
+    render();
+    postJson("/admin/api/model-catalog/refresh", "POST", {}).then(function (body) {
+      if (requestId !== state.modelCatalogRequestId) {
+        state.modelCatalogBusy = false;
+        render();
+        return;
+      }
+      state.modelCatalogBusy = false;
+      state.modelCatalogLoaded = true;
+      state.modelCatalog = body.catalog || state.modelCatalog;
+      if (body.refresh && body.refresh.status === "failed") {
+        state.modelCatalogError = state.modelCatalog && state.modelCatalog.source === "hosted"
+          ? "Refresh failed. Still using hosted catalog revision " + Number(state.modelCatalog.revision || 0) + "."
+          : "Refresh failed. Still using the bundled model list.";
+      } else if (body.refresh && body.refresh.status === "restart_required") {
+        state.modelCatalogError = "The new model list is saved. Restart Chickpea to activate it.";
+      }
+      state.providerModels.openai = null;
+      state.providerModels.anthropic = null;
+      state.providerModelsError.openai = false;
+      state.providerModelsError.anthropic = false;
+      render();
+      return refreshModels().then(render);
+    }).catch(function (error) {
+      if (requestId !== state.modelCatalogRequestId) {
+        state.modelCatalogBusy = false;
+        render();
+        return;
+      }
+      state.modelCatalogBusy = false;
+      state.modelCatalogError = (error && (error.serverMessage || error.message)) || "Could not refresh the model list.";
+      render();
+    });
+  }
+
   function saveOpenAiAuthMethod() {
     if (state.openAiAuthMethodBusy || !state.openAiAuthMethodDirty) return;
     var method = state.openAiAuthMethodDraft === "subscription" ? "subscription" : "api_key";
@@ -6630,6 +6709,7 @@ details[open].advanced summary::before {
       state.openAiAuthMethodDirty = false;
       state.openAiAuthMethodError = "";
       providerSummaryById("openai").activeAuthMethod = body.activeAuthMethod;
+      invalidateOpenAiProviderModels();
       render();
       return refreshModels();
     }).catch(function (error) {
@@ -6642,6 +6722,12 @@ details[open].advanced summary::before {
   function setOpenAiSubscriptionStatus(status) {
     var summary = providerSummaryById("openai");
     summary.subscription = status;
+  }
+
+  function invalidateOpenAiProviderModels() {
+    state.providerModels.openai = null;
+    state.providerModelsError.openai = false;
+    favUiFor("openai").error = "";
   }
 
   function scheduleOpenAiSubscriptionPoll() {
@@ -6696,6 +6782,7 @@ details[open].advanced summary::before {
       setOpenAiSubscriptionStatus(result);
       if (result.state === "connected") {
         state.openAiSubscriptionAttempt = null;
+        invalidateOpenAiProviderModels();
         return loadSettings().then(function () { refreshModels(); render(); });
       }
       render();
@@ -6742,6 +6829,7 @@ details[open].advanced summary::before {
       state.openAiSubscriptionBusy = "";
       state.openAiSubscriptionAttempt = null;
       setOpenAiSubscriptionStatus(status);
+      invalidateOpenAiProviderModels();
       return loadSettings().then(function () { refreshModels(); render(); });
     }).catch(function (error) {
       state.openAiSubscriptionBusy = "";
@@ -6760,6 +6848,7 @@ details[open].advanced summary::before {
       state.openAiSubscriptionAttempt = null;
       state.openAiSubscriptionDisconnectConfirm = false;
       setOpenAiSubscriptionStatus(body.status);
+      invalidateOpenAiProviderModels();
       return loadSettings().then(function () { refreshModels(); render(); });
     }).catch(function (error) {
       state.openAiSubscriptionBusy = "";
@@ -7020,6 +7109,7 @@ details[open].advanced summary::before {
       ui.key = "";
       ui.error = "";
       ui.raw = "";
+      if (id === "openai") invalidateOpenAiProviderModels();
       // Refresh the provider list (status → Stored + count) and the picker's
       // suggestion source; the validate call primed the server model cache.
       return loadSettings().then(function () { refreshModels(); render(); });
@@ -7037,6 +7127,7 @@ details[open].advanced summary::before {
       ui.removeError = "";
       ui.open = false;
       ui.key = "";
+      if (id === "openai") invalidateOpenAiProviderModels();
       return loadSettings().then(function () { refreshModels(); render(); });
     }).catch(function (error) {
       ui.removeError = (error && (error.serverMessage || error.message)) || "Could not remove the key.";
@@ -7751,6 +7842,7 @@ details[open].advanced summary::before {
       render();
     }
     if (action === "egress-save") { saveEgress(); }
+    if (action === "model-catalog-refresh") { refreshModelCatalogFromSettings(); }
     if (action === "prov-add-key") { openProviderPaste(target.getAttribute("data-provider"), "add"); }
     if (action === "prov-change-key") { openProviderPaste(target.getAttribute("data-provider"), "change"); }
     if (action === "prov-cancel-key") { closeProviderPaste(target.getAttribute("data-provider")); }

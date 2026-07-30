@@ -5,6 +5,7 @@ import { registerProvider } from '@flue/runtime';
 import { forgetRegisteredProvider, recordRegisteredProvider } from './providers.ts';
 import type { SettingsStore } from './settings-store.ts';
 import { getSettingsStore, type PlatformEnv } from './state-backend.ts';
+import { bindModelCompatibilityProvider } from '../model-compat/provider.ts';
 
 export const PROVIDER_KEY_SETTING_KEYS = {
   anthropic: 'provider.anthropic.apiKey',
@@ -127,6 +128,11 @@ export function rebindBuiltinProvider(id: ProviderKeyId, apiKey: string | undefi
     return;
   }
   registerProvider(id, options);
+  if (id === 'anthropic' || id === 'openai') {
+    bindModelCompatibilityProvider(id, apiKey, {
+      ...(options.baseUrl ? { baseUrl: options.baseUrl } : {}),
+    });
+  }
   appliedProviderFingerprints.set(id, fingerprint);
   if (apiKey || options.baseUrl) {
     recordRegisteredProvider(id);

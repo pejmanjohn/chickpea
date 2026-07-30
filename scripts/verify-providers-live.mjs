@@ -60,7 +60,7 @@ const PROVIDERS = [
   },
   {
     id: 'openai',
-    model: 'openai/gpt-4.1-mini',
+    model: 'openai/gpt-5.6-luna',
     liveHost: 'api.openai.com',
     hasCreds: () => Boolean(process.env.OPENAI_API_KEY),
     missing: 'OPENAI_API_KEY absent',

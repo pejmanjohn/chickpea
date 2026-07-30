@@ -39,7 +39,11 @@ assert.ok(target === 'node' || target === 'cloudflare', '--target must be node o
 const baseUrl = new URL(String(args.get('--base-url') ?? ''));
 assert.equal(baseUrl.username || baseUrl.password, '', 'base URL must not contain credentials');
 if (target === 'cloudflare') assert.equal(baseUrl.protocol, 'https:', 'Cloudflare target must use HTTPS');
-else assert.ok(baseUrl.protocol === 'http:' || baseUrl.protocol === 'https:', 'Node target must use HTTP(S)');
+else assert.ok(
+  baseUrl.protocol === 'https:' ||
+    (baseUrl.protocol === 'http:' && isLoopbackHostname(baseUrl.hostname)),
+  'Node target must use HTTPS unless it is an explicit loopback host',
+);
 const adminToken = process.env.TAG_ADMIN_TOKEN;
 assert.ok(adminToken, 'TAG_ADMIN_TOKEN is required and is never printed');
 
@@ -97,3 +101,7 @@ while (Date.now() < Number(started.expiresAt)) {
   process.exit(0);
 }
 throw new Error('authorization expired before approval');
+
+function isLoopbackHostname(hostname) {
+  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]';
+}
