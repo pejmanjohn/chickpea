@@ -7,6 +7,7 @@ import { rotateStoredModelCredential } from './model-credential-refs.ts';
 import type { SettingsStore } from './settings-store.ts';
 import { getSettingsStore, getUsageStore, type PlatformEnv } from './state-backend.ts';
 import type { UsageStore } from '../usage/types.ts';
+import { bindModelCompatibilityProvider } from '../model-compat/provider.ts';
 
 export const PROVIDER_KEY_SETTING_KEYS = {
   anthropic: 'provider.anthropic.apiKey',
@@ -122,12 +123,17 @@ export async function applyResolvedProviderKeys(
   env?: PlatformEnv,
   store?: SettingsStore,
 ): Promise<void> {
-  await Promise.all(
-    PROVIDER_KEY_IDS.map(async (id) => {
-      const { apiKey } = await resolveProviderApiKey(id, env, store);
-      rebindBuiltinProvider(id, apiKey);
-    }),
-  );
+  await Promise.all(PROVIDER_KEY_IDS.map((id) => applyResolvedProviderKey(id, env, store)));
+}
+
+/** Resolve and bind only the provider selected for this model operation. */
+export async function applyResolvedProviderKey(
+  id: ProviderKeyId,
+  env?: PlatformEnv,
+  store?: SettingsStore,
+): Promise<void> {
+  const { apiKey } = await resolveProviderApiKey(id, env, store);
+  rebindBuiltinProvider(id, apiKey);
 }
 
 /**
@@ -142,6 +148,11 @@ export function rebindBuiltinProvider(id: ProviderKeyId, apiKey: string | undefi
     return;
   }
   registerProvider(id, options);
+  if (id === 'anthropic' || id === 'openai') {
+    bindModelCompatibilityProvider(id, apiKey, {
+      ...(options.baseUrl ? { baseUrl: options.baseUrl } : {}),
+    });
+  }
   appliedProviderFingerprints.set(id, fingerprint);
   if (apiKey || options.baseUrl) {
     recordRegisteredProvider(id);

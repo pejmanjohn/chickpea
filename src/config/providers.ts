@@ -6,6 +6,7 @@ import { isCloudflareTarget } from './runtime-target.ts';
 // registration (ANTHROPIC_API_KEY / OPENAI_API_KEY / OPENROUTER_API_KEY alone
 // enable them).
 const appRegistered = new Set<string>();
+const INTERNAL_PROVIDER_IDS = new Set(['openai-subscription']);
 
 export function recordRegisteredProvider(id: string): void {
   appRegistered.add(id);
@@ -32,17 +33,25 @@ const BUILTIN_ENV_PROVIDERS: readonly ProviderCatalogEntry[] = [
   {
     id: 'anthropic',
     envVars: ['ANTHROPIC_API_KEY'],
-    suggestions: ['anthropic/claude-sonnet-4-6', 'anthropic/claude-haiku-4-5'],
+    suggestions: [
+      'anthropic/claude-fable-5',
+      'anthropic/claude-opus-5',
+      'anthropic/claude-sonnet-5',
+      'anthropic/claude-haiku-4-5',
+    ],
   },
   {
     id: 'openai',
     envVars: ['OPENAI_API_KEY'],
-    suggestions: ['openai/gpt-4.1', 'openai/gpt-4.1-mini'],
+    suggestions: ['openai/gpt-5.6-sol', 'openai/gpt-5.6-terra', 'openai/gpt-5.6-luna'],
   },
   {
     id: 'openrouter',
     envVars: ['OPENROUTER_API_KEY'],
-    suggestions: ['openrouter/anthropic/claude-sonnet-4', 'openrouter/openai/gpt-4.1'],
+    suggestions: [
+      'openrouter/anthropic/claude-sonnet-5',
+      'openrouter/openai/gpt-5.6-terra',
+    ],
   },
   {
     id: 'cloudflare-workers-ai',
@@ -80,7 +89,11 @@ export function listRuntimeModelProviders({
     ? [...BUILTIN_ENV_PROVIDERS, CF_BINDING_PROVIDER]
     : BUILTIN_ENV_PROVIDERS;
   const catalogById = new Map(catalog.map((entry) => [entry.id, entry]));
-  const ids = new Set([...catalogById.keys(), ...registeredProviders]);
+  const ids = new Set(
+    [...catalogById.keys(), ...registeredProviders].filter(
+      (id) => !INTERNAL_PROVIDER_IDS.has(id),
+    ),
+  );
 
   return [...ids]
     .sort((a, b) => a.localeCompare(b))

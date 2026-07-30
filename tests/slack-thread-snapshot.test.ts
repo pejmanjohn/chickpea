@@ -10,7 +10,9 @@ import slackThreadAgent, {
 } from '../src/agents/slack-thread.ts';
 import type { EffectiveSlackConfig } from '../src/config/effective-config.ts';
 import { GITHUB_SETTING_KEYS } from '../src/config/github-app.ts';
+import { resolveOpenAiAuthMethod, saveOpenAiAuthMethod } from '../src/config/openai-auth.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
+import { PROVIDER_KEY_SETTING_KEYS } from '../src/config/provider-keys.ts';
 import {
   getOrCreateSnapshot,
   snapshotFromEffectiveConfig,
@@ -19,6 +21,10 @@ import {
 import { SqliteConfigStore } from '../src/config/store.ts';
 import type { ChannelAssignment, CustomAgentConfig } from '../src/config/types.ts';
 import { THREAD_TTL_MS } from '../src/slack/claim-store.ts';
+import {
+  commitOpenAiSubscriptionCredentials,
+  disconnectOpenAiSubscription,
+} from '../src/openai-subscription/credentials.ts';
 import { withEnv } from './helpers/env.ts';
 
 const AGENT_ID = 'agent_snapshot_unit';
@@ -155,6 +161,89 @@ test('agent snapshots freeze only non-secret model credential attribution', () =
 
   assert.deepEqual(snapshot.modelCredential, config.modelCredential);
   assert.doesNotMatch(JSON.stringify(snapshot), /apiKey|authorization|secret/i);
+});
+
+test('OpenAI method authority resolves installation-wide while the thread model remains frozen', async () => {
+  const configStore = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    const created = await configStore.createAgent(agent({
+      model: 'openai/gpt-5.4',
+    }));
+    const config = effConfig('C_OPENAI_AUTH');
+    config.agent = created;
+    config.model = 'openai/gpt-5.4';
+    config.provider = 'openai';
+    const snapshot = snapshotFromEffectiveConfig(config, 1_000);
+
+    await saveOpenAiAuthMethod(settings, 'subscription');
+    assert.equal(await resolveOpenAiAuthMethod(settings), 'subscription');
+    assert.doesNotMatch(
+      JSON.stringify(snapshot),
+      /accessToken|refreshToken|idToken|accountId|identityKey|attemptCapability/,
+    );
+  } finally {
+    settings.close();
+    configStore.close();
+  }
+});
+
+test('slack-thread constructs an isolated subscription model while a Platform key remains configured', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'chickpea-openai-subscription-route-'));
+  const dbPath = join(dir, 'state.db');
+  const accessToken = 'subscription-access-must-stay-boundary-only';
+  const apiKey = 'platform-key-must-not-be-selected';
+  let settings: SqliteSettingsStore | undefined;
+  try {
+    const configStore = new SqliteConfigStore(dbPath, { agents: [], assignments: [] });
+    await configStore.createAgent(agent({
+      model: 'openai/gpt-5.4',
+    }));
+    await configStore.putAssignment(assignment({ channelId: 'C_OPENAI_RUNTIME' }));
+    configStore.close();
+    settings = new SqliteSettingsStore(dbPath);
+    await saveOpenAiAuthMethod(settings, 'subscription');
+    await settings.setSetting(PROVIDER_KEY_SETTING_KEYS.openai, apiKey);
+    await commitOpenAiSubscriptionCredentials(
+      {
+        accessToken,
+        refreshToken: 'subscription-refresh-must-stay-boundary-only',
+        idToken: undefined,
+        expiresAt: Date.now() + 3_600_000,
+        accountId: 'subscription-account-must-stay-boundary-only',
+      },
+      { settings, randomBytes: (length) => new Uint8Array(length).fill(7) },
+    );
+
+    await withEnv(
+      {
+        SLACK_STATE_DB_PATH: dbPath,
+        SLACK_TAG_MODEL: undefined,
+        TAG_OPENAI_SUBSCRIPTION_ENABLED: '1',
+        OPENAI_API_KEY: undefined,
+        ANTHROPIC_API_KEY: undefined,
+        CLOUDFLARE_API_TOKEN: undefined,
+        CLOUDFLARE_ACCOUNT_ID: undefined,
+      },
+      async () => {
+        const runtime = await slackThreadAgent.initialize({
+          id: 'T_SNAPSHOT:C_OPENAI_RUNTIME:1782771902.000100',
+          env: {},
+        });
+        assert.equal(runtime.model, 'openai-subscription/gpt-5.4');
+        const visible = JSON.stringify(runtime);
+        assert.doesNotMatch(visible, new RegExp(accessToken));
+        assert.doesNotMatch(visible, new RegExp(apiKey));
+        assert.doesNotMatch(visible, /account-must-stay-boundary-only/);
+      },
+    );
+  } finally {
+    if (settings) {
+      await disconnectOpenAiSubscription(settings);
+      settings.close();
+    }
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('frozen repository grant removed from the live profile is excluded', () => {

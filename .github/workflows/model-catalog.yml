@@ -1,0 +1,52 @@
+name: Model catalog
+
+on:
+  pull_request:
+    paths:
+      - "catalog/**"
+      - "src/model-catalog/**"
+      - "src/model-compat/**"
+      - "scripts/*model-catalog*.mjs"
+      - "scripts/verify-model-compatibility-live.mjs"
+      - ".github/workflows/model-catalog.yml"
+  push:
+    branches: [main]
+    paths:
+      - "catalog/**"
+      - "src/model-catalog/**"
+      - "src/model-compat/**"
+      - "scripts/*model-catalog*.mjs"
+      - "scripts/verify-model-compatibility-live.mjs"
+      - ".github/workflows/model-catalog.yml"
+  schedule:
+    - cron: "17 */4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run catalog:build
+      - run: npm run catalog:reconcile
+      - run: npm run verify:model-catalog
+      - run: npm run verify:model-compatibility:live -- --help
+
+  served-bytes:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm run verify:model-catalog:served

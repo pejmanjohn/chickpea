@@ -42,6 +42,15 @@ import type {
   McpConnectionConfig,
 } from '../src/config/types.ts';
 import { withEnv } from './helpers/env.ts';
+import {
+  acceptModelCatalogCandidate,
+  activateModelCatalog,
+  activeModelCatalogSnapshot,
+  parseModelCatalogBytes,
+  resetModelCatalogActivationForTests,
+  type ModelCatalogRefreshResult,
+  type RefreshModelCatalogOptions,
+} from '../src/model-catalog/index.ts';
 
 const ADMIN_TOKEN = 'admin-secret-token';
 
@@ -93,6 +102,14 @@ interface AdminHarnessOptions {
     state: string,
     dependencies: ApiOAuthDependencies,
   ) => Promise<{ ref: ApiOAuthRef; provider: ApiOAuthProvider }>;
+  modelCatalogRefresh?: (
+    options: RefreshModelCatalogOptions,
+  ) => Promise<ModelCatalogRefreshResult>;
+  modelCatalogNow?: () => number;
+  modelCatalogRandom?: () => number;
+  modelCatalogOwnerId?: () => string;
+  modelCatalogFetch?: typeof fetch;
+  modelCatalogTimeoutMs?: number;
 }
 
 function appWithAdmin(store: ConfigStore, adminToken?: string): Hono {
@@ -131,9 +148,57 @@ function appWithAdminOptions(store: ConfigStore, options: AdminHarnessOptions = 
       ...(options.startApiOAuth ? { startApiOAuth: options.startApiOAuth } : {}),
       ...(options.completeApiOAuth ? { completeApiOAuth: options.completeApiOAuth } : {}),
       ...(options.cancelApiOAuth ? { cancelApiOAuth: options.cancelApiOAuth } : {}),
+      modelCatalogRefresh: options.modelCatalogRefresh ?? (async () => ({
+        status: 'fresh',
+        revision: activeModelCatalogSnapshot().revision,
+      })),
+      ...(options.modelCatalogNow ? { modelCatalogNow: options.modelCatalogNow } : {}),
+      ...(options.modelCatalogRandom ? { modelCatalogRandom: options.modelCatalogRandom } : {}),
+      ...(options.modelCatalogOwnerId ? { modelCatalogOwnerId: options.modelCatalogOwnerId } : {}),
+      ...(options.modelCatalogFetch ? { modelCatalogFetch: options.modelCatalogFetch } : {}),
+      ...(options.modelCatalogTimeoutMs !== undefined
+        ? { modelCatalogTimeoutMs: options.modelCatalogTimeoutMs }
+        : {}),
     }),
   );
   return app;
+}
+
+function activateAdminCatalog(
+  revision: number,
+  entries: unknown[],
+  hashDigit = 'a',
+): void {
+  const bytes = new TextEncoder().encode(JSON.stringify({
+    schemaVersion: 1,
+    revision,
+    generatedAt: '2026-07-29T20:00:00Z',
+    entries,
+  }));
+  const activation = activateModelCatalog({
+    document: parseModelCatalogBytes(bytes),
+    sha256: hashDigit.repeat(64),
+  });
+  assert.equal(activation.status, 'activated');
+}
+
+async function persistAdminCatalog(
+  settings: SettingsStore,
+  revision: number,
+  entries: unknown[],
+): Promise<void> {
+  const bytes = new TextEncoder().encode(JSON.stringify({
+    schemaVersion: 1,
+    revision,
+    generatedAt: '2026-07-29T20:00:00Z',
+    entries,
+  }));
+  const accepted = await acceptModelCatalogCandidate(settings, {
+    bytes,
+    checkedAt: revision * 1_000,
+    nextRefreshAt: revision * 1_000 + 60_000,
+  });
+  assert.equal(accepted.status, 'accepted');
 }
 
 function mcpServer(overrides: Partial<McpConnectionConfig> = {}): McpConnectionConfig {
@@ -1387,7 +1452,7 @@ test('admin API exposes model suggestions for configured provider sources', asyn
             (provider) =>
               provider.id === 'anthropic' &&
               provider.configured &&
-              provider.suggestions.includes('anthropic/claude-sonnet-4-6'),
+              provider.suggestions.includes('anthropic/claude-fable-5'),
           ),
           true,
         );
@@ -1406,6 +1471,272 @@ test('admin API exposes model suggestions for configured provider sources', asyn
   } finally {
     store.close();
   }
+});
+
+test('model catalog admin routes expose safe status, force refresh, and an exact kill switch', async (t) => {
+  resetModelCatalogActivationForTests();
+  t.after(resetModelCatalogActivationForTests);
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  t.after(() => store.close());
+  t.after(() => settings.close());
+  const forced: boolean[] = [];
+  const forwarded: Array<{
+    now: number | undefined;
+    random: number | undefined;
+    ownerId: string | undefined;
+    timeoutMs: number | undefined;
+    hasFetch: boolean;
+  }> = [];
+  const catalogFetch: typeof fetch = async () => new Response(null, { status: 304 });
+  const app = appWithAdminOptions(store, {
+    settings,
+    modelCatalogRefresh: async (options) => {
+      forced.push(options.force === true);
+      forwarded.push({
+        now: options.now?.(),
+        random: options.random?.(),
+        ownerId: options.ownerId,
+        timeoutMs: options.timeoutMs,
+        hasFetch: options.fetch === catalogFetch,
+      });
+      return { status: 'activated', revision: 0 };
+    },
+    modelCatalogNow: () => 1234,
+    modelCatalogRandom: () => 0.25,
+    modelCatalogOwnerId: () => 'admin-catalog-owner',
+    modelCatalogFetch: catalogFetch,
+    modelCatalogTimeoutMs: 321,
+  });
+
+  const unauthorized = await app.request('/admin/api/model-catalog');
+  assert.equal(unauthorized.status, 401);
+
+  const status = await app.request('/admin/api/model-catalog', {
+    headers: auth(ADMIN_TOKEN),
+  });
+  assert.equal(status.status, 200);
+  assert.deepEqual(await status.json(), {
+    mode: 'hosted',
+    source: 'bundled',
+    revision: 0,
+    generatedAt: null,
+    checkedAt: null,
+    nextRefreshAt: null,
+    lkgAvailable: false,
+  });
+
+  const invalidMode = await app.request('/admin/api/model-catalog/mode', {
+    method: 'PUT',
+    headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+    body: JSON.stringify({ mode: 'bundled', extra: true }),
+  });
+  assert.equal(invalidMode.status, 400);
+
+  const bundled = await app.request('/admin/api/model-catalog/mode', {
+    method: 'PUT',
+    headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+    body: JSON.stringify({ mode: 'bundled' }),
+  });
+  assert.equal(bundled.status, 200);
+  assert.equal(await settings.getSetting('model.catalog.mode'), 'bundled');
+  assert.deepEqual(forced, []);
+
+  const hosted = await app.request('/admin/api/model-catalog/mode', {
+    method: 'PUT',
+    headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+    body: JSON.stringify({ mode: 'hosted' }),
+  });
+  assert.equal(hosted.status, 200);
+  assert.equal(await settings.getSetting('model.catalog.mode'), 'hosted');
+
+  const refresh = await app.request('/admin/api/model-catalog/refresh', {
+    method: 'POST',
+    headers: auth(ADMIN_TOKEN),
+  });
+  assert.equal(refresh.status, 200);
+  assert.deepEqual(forced, [true, true]);
+  assert.deepEqual(forwarded, [
+    { now: 1234, random: 0.25, ownerId: 'admin-catalog-owner', timeoutMs: 321, hasFetch: true },
+    { now: 1234, random: 0.25, ownerId: 'admin-catalog-owner', timeoutMs: 321, hasFetch: true },
+  ]);
+});
+
+test('model list routes refresh with the requested force and retain active inventory on failure', async (t) => {
+  resetModelCatalogActivationForTests();
+  t.after(resetModelCatalogActivationForTests);
+  activateAdminCatalog(70, [{
+    canonical: 'openai/gpt-admin-hosted',
+    displayName: 'GPT Admin Hosted',
+    lanes: { subscription: 'openai-codex-responses-standard@1' },
+  }, {
+    canonical: 'openai/gpt-admin-api-hosted',
+    displayName: 'GPT Admin API Hosted',
+    lanes: { apiKey: 'openai-platform-responses-terra-tier@1' },
+  }, {
+    canonical: 'anthropic/claude-admin-api-hosted',
+    displayName: 'Claude Admin API Hosted',
+    lanes: { apiKey: 'anthropic-messages-sonnet-tier@1' },
+  }], 'b');
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  t.after(() => store.close());
+  t.after(() => settings.close());
+  await settings.setSetting('provider.openai.authMethod', 'subscription');
+  const forced: boolean[] = [];
+  const app = appWithAdminOptions(store, {
+    settings,
+    modelCatalogRefresh: async (options) => {
+      forced.push(options.force === true);
+      return { status: 'failed', revision: 70, code: 'unavailable' };
+    },
+  });
+
+  const models = await app.request('/admin/api/models', { headers: auth(ADMIN_TOKEN) });
+  assert.equal(models.status, 200);
+  const modelBody = (await models.json()) as {
+    providers: Array<{ id: string; suggestions: string[] }>;
+  };
+  assert.equal(
+    modelBody.providers.find((provider) => provider.id === 'openai')?.suggestions.includes(
+      'openai/gpt-admin-hosted',
+    ),
+    true,
+  );
+
+  const subscription = await app.request('/admin/api/providers/openai/models?refresh=1', {
+    headers: auth(ADMIN_TOKEN),
+  });
+  assert.equal(subscription.status, 200);
+  const subscriptionBody = (await subscription.json()) as {
+    source: string;
+    models: Array<{ id: string }>;
+  };
+  assert.equal(subscriptionBody.source, 'hosted');
+  assert.equal(subscriptionBody.models.some((model) => model.id === 'gpt-admin-hosted'), true);
+
+  await settings.setSetting('provider.openai.authMethod', 'api_key');
+  const apiKeyModels = await app.request('/admin/api/models', { headers: auth(ADMIN_TOKEN) });
+  const apiKeyBody = (await apiKeyModels.json()) as {
+    providers: Array<{ id: string; suggestions: string[] }>;
+  };
+  assert.equal(
+    apiKeyBody.providers.find((provider) => provider.id === 'openai')?.suggestions.includes(
+      'openai/gpt-admin-api-hosted',
+    ),
+    true,
+  );
+  assert.equal(
+    apiKeyBody.providers.find((provider) => provider.id === 'anthropic')?.suggestions.includes(
+      'anthropic/claude-admin-api-hosted',
+    ),
+    true,
+  );
+
+  const anthropic = await app.request('/admin/api/providers/anthropic/models?refresh=1', {
+    headers: auth(ADMIN_TOKEN),
+  });
+  assert.equal(anthropic.status, 409);
+
+  const failedRefresh = await app.request('/admin/api/model-catalog/refresh', {
+    method: 'POST',
+    headers: auth(ADMIN_TOKEN),
+  });
+  assert.equal(failedRefresh.status, 200);
+  const failedRefreshBody = (await failedRefresh.json()) as {
+    refresh: { status: string };
+    catalog: { source: string; revision: number };
+  };
+  assert.equal(failedRefreshBody.refresh.status, 'failed');
+  assert.deepEqual(failedRefreshBody.catalog, {
+    mode: 'hosted',
+    source: 'hosted',
+    revision: 70,
+    generatedAt: null,
+    checkedAt: null,
+    nextRefreshAt: null,
+    lkgAvailable: false,
+  });
+  assert.deepEqual(forced, [false, true, false, true, true]);
+  assert.equal(activeModelCatalogSnapshot().revision, 70);
+});
+
+test('profile writes strictly admit OpenAI installation lanes and the Anthropic API-key lane', async (t) => {
+  resetModelCatalogActivationForTests();
+  t.after(resetModelCatalogActivationForTests);
+  const catalogEntries = [
+    {
+      canonical: 'openai/gpt-admin-subscription-only',
+      lanes: { subscription: 'openai-codex-responses-standard@1' },
+    },
+    {
+      canonical: 'anthropic/claude-admin-hosted',
+      lanes: { apiKey: 'anthropic-messages-sonnet-tier@1' },
+    },
+  ];
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  t.after(() => store.close());
+  t.after(() => settings.close());
+  await persistAdminCatalog(settings, 71, catalogEntries);
+  await settings.setSetting('provider.openai.authMethod', 'subscription');
+  const app = appWithAdminOptions(store, { settings });
+
+  const acceptedOpenAi = await app.request('/admin/api/agents', {
+    method: 'POST',
+    headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+    body: JSON.stringify(agent({
+      id: 'agent_catalog_openai',
+      model: 'openai/gpt-admin-subscription-only',
+    })),
+  });
+  assert.equal(acceptedOpenAi.status, 201);
+
+  const rejectedPatch = await app.request('/admin/api/agents/agent_catalog_openai', {
+    method: 'PATCH',
+    headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'openai/gpt-not-admitted' }),
+  });
+  assert.equal(rejectedPatch.status, 400);
+  assert.match(
+    ((await rejectedPatch.json()) as { message: string }).message,
+    /subscription does not support/i,
+  );
+
+  const acceptedAnthropic = await app.request('/admin/api/agents', {
+    method: 'POST',
+    headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+    body: JSON.stringify(agent({
+      id: 'agent_catalog_anthropic',
+      model: 'anthropic/claude-admin-hosted',
+    })),
+  });
+  assert.equal(acceptedAnthropic.status, 201);
+
+  const rejectedAnthropic = await app.request('/admin/api/agents', {
+    method: 'POST',
+    headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+    body: JSON.stringify(agent({
+      id: 'agent_catalog_anthropic_bad',
+      model: 'anthropic/claude-not-admitted',
+    })),
+  });
+  assert.equal(rejectedAnthropic.status, 400);
+
+  await settings.setSetting('provider.openai.authMethod', 'api_key');
+  const rejectedWrongLane = await app.request('/admin/api/agents', {
+    method: 'POST',
+    headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+    body: JSON.stringify(agent({
+      id: 'agent_catalog_openai_wrong_lane',
+      model: 'openai/gpt-admin-subscription-only',
+    })),
+  });
+  assert.equal(rejectedWrongLane.status, 400);
+  assert.match(
+    ((await rejectedWrongLane.json()) as { message: string }).message,
+    /API-key catalog does not support/i,
+  );
 });
 
 test('effective config endpoint resolves through the runtime assignment path', async () => {

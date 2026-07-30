@@ -18,6 +18,18 @@ import {
 export const PROVIDER_FAILURE_TEXT =
   'I reached the Slack thread, but the model provider call failed before completion. I did not expose provider error details in Slack.';
 
+export const OPENAI_SUBSCRIPTION_RECONNECT_TEXT =
+  'The ChatGPT subscription connection needs attention in Settings before this profile can answer. I did not use OpenAI API-key billing as fallback.';
+
+export const OPENAI_SUBSCRIPTION_DISABLED_TEXT =
+  'The ChatGPT Subscription preview is disabled for this installation, so this profile cannot answer. I did not use OpenAI API-key billing as fallback.';
+
+export const OPENAI_SUBSCRIPTION_QUOTA_TEXT =
+  'The ChatGPT subscription quota could not serve this request. I did not switch to OpenAI API-key billing.';
+
+export const OPENAI_SUBSCRIPTION_POLICY_TEXT =
+  'The connected ChatGPT subscription did not authorize this request. An administrator can review the Subscription status in Settings; I did not switch to OpenAI API-key billing.';
+
 /** Static workspace failures disclose the affected surface, never SDK details. */
 export const SANDBOX_FAILURE_TEXT =
   'I reached the Slack thread, but the coding workspace was temporarily unavailable before completion. I did not expose internal error details in Slack. Please retry in a moment.';

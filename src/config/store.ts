@@ -359,7 +359,8 @@ export class ConfigStoreLogic {
 
   // Fresh databases start from the clean v1 schema. Migration v2 bridges the
   // pre-release default_models_json column; v3 adds API connection policy;
-  // v4 adds per-profile repository grants.
+  // v4 adds per-profile repository grants. v5 is reserved after the pre-release
+  // per-profile OpenAI auth experiment moved to one installation setting.
   private runMigrations(): void {
     const MIGRATIONS: Array<{ version: number; up: (db: StateDb) => void }> = [
       {
@@ -427,6 +428,10 @@ export class ConfigStoreLogic {
             );
           }
         },
+      },
+      {
+        version: 5,
+        up: () => {},
       },
     ];
     const row = this.db.get('SELECT value FROM config_meta WHERE key = ?', SCHEMA_VERSION_KEY) as

@@ -12,6 +12,11 @@ import * as v from 'valibot';
 
 import { createSlackAgentRuntime, resolveAgentPlatformEnv } from '../agents/slack-thread.ts';
 import {
+  canonicalRuntimeModel,
+  resolveRuntimeModel,
+  type ProviderAuthRoute,
+} from '../config/runtime-model.ts';
+import {
   getRoutineStore,
   getSettingsStore,
   getUsageStore,
@@ -44,6 +49,7 @@ import {
   releaseCloudflareSandboxTurn,
 } from '../slack/agent-dispatch.ts';
 import { shouldUseCloudflareSandbox } from '../slack/run-turn.ts';
+import { OpenAiSubscriptionError } from '../openai-subscription/errors.ts';
 import {
   RoutineUsageRecorder,
   usageRuntimeRecordingEnabled,
@@ -69,6 +75,7 @@ export interface RoutineWorkflowRuntime {
   routine: RoutineDefinition;
   access: RoutineRuntimeAccess;
   agentInstanceId: string;
+  providerAuthRoute?: ProviderAuthRoute;
   usedCloudflareSandbox: boolean;
   usageRecorder?: RoutineUsageRecorder;
 }
@@ -86,6 +93,7 @@ interface RoutineWorkflowInitializerDependencies {
   resolveCredential?: typeof resolveModelCredentialAttribution;
   usageRecordingEnabled?: boolean;
   now?: () => number;
+  resolveModel?: typeof resolveRuntimeModel;
 }
 
 interface InterruptedRoutineWorkflowDependencies {
@@ -150,6 +158,7 @@ export async function initializeRoutineWorkflowRuntime(
   const releaseSandbox = dependencies.releaseSandbox ?? releaseCloudflareSandboxTurn;
   const createAgent = dependencies.createAgent ?? createSlackAgentRuntime;
   const now = dependencies.now ?? Date.now;
+  const resolveModel = dependencies.resolveModel ?? resolveRuntimeModel;
   let access: RoutineRuntimeAccess;
   try {
     access = await resolveAccess(input.run, input.routine, input.env);
@@ -159,6 +168,17 @@ export async function initializeRoutineWorkflowRuntime(
     throw new Error(failure.publicError);
   }
   const startedAt = now();
+  let runtimeModel;
+  try {
+    runtimeModel = await resolveModel(access.config.agentId, access.config.model, {
+      settings: getSettingsStore(input.env),
+      env: input.env,
+    });
+  } catch (error) {
+    const failure = runtimeFailure(error, false);
+    await failBeforeStart(input.store, input.run, failure.failureClass, failure.publicError);
+    throw new Error(failure.publicError);
+  }
   const began = await input.store.beginOccurrence({
     occurrenceId: input.run.id,
     flueRunId: input.flueRunId,
@@ -166,6 +186,9 @@ export async function initializeRoutineWorkflowRuntime(
     resolvedAccessHash: access.accessHash,
     resolvedAgentId: access.config.agentId,
     model: access.config.model,
+    ...(runtimeModel.providerAuthRoute
+      ? { providerAuthRoute: runtimeModel.providerAuthRoute }
+      : {}),
     traceId: input.flueRunId,
   });
   if (began === 'superseded') {
@@ -220,6 +243,7 @@ export async function initializeRoutineWorkflowRuntime(
       workspaceId: input.routine.workspaceId,
       channelId: input.routine.channelId,
       liveConfig: access.config,
+      runtimeModel,
       freezeChannel: false,
       artifactThreadTs: null,
     });
@@ -231,6 +255,9 @@ export async function initializeRoutineWorkflowRuntime(
       routine: input.routine,
       access,
       agentInstanceId,
+      ...(runtimeModel.providerAuthRoute
+        ? { providerAuthRoute: runtimeModel.providerAuthRoute }
+        : {}),
       usedCloudflareSandbox,
       ...(usageRecorder ? { usageRecorder } : {}),
       config,
@@ -336,8 +363,8 @@ export default defineWorkflow({
           from: ['running'],
           to: result.status,
           at: Date.now(),
-          model: modelLabel(response.model),
-          ...usageMetadata(response.usage),
+          model: routineModelLabel(response.model),
+          ...routineUsageMetadata(response.usage, runtime.providerAuthRoute),
           toolCallCount,
           changeKeyHash: result.changeKeyHash,
           suppressedAsNoOp: result.suppressedAsNoOp,
@@ -538,6 +565,40 @@ function runtimeFailure(
   if (error instanceof RoutineRuntimeError) {
     return { failureClass: error.failureClass, publicError: error.publicError };
   }
+  if (error instanceof OpenAiSubscriptionError) {
+    if (error.code === 'preview_disabled') {
+      return {
+        failureClass: 'policy_denied',
+        publicError: 'The ChatGPT Subscription preview is disabled for this installation. API-key billing was not used.',
+      };
+    }
+    if (
+      error.code === 'auth_reconnect_required' ||
+      error.code === 'authorization_missing' ||
+      error.code === 'storage_invalid'
+    ) {
+      return {
+        failureClass: 'credential_unavailable',
+        publicError: 'The ChatGPT subscription connection needs attention in Settings. API-key billing was not used.',
+      };
+    }
+    if (error.code === 'subscription_quota_exhausted') {
+      return {
+        failureClass: 'capacity_limited',
+        publicError: 'The ChatGPT subscription quota could not serve this occurrence. API-key billing was not used.',
+      };
+    }
+    if (
+      error.code === 'entitlement_denied' ||
+      error.code === 'client_rejected' ||
+      error.code === 'originator_rejected'
+    ) {
+      return {
+        failureClass: 'policy_denied',
+        publicError: 'The connected ChatGPT subscription did not authorize this occurrence. API-key billing was not used.',
+      };
+    }
+  }
   if (error instanceof ResultUnavailableError) {
     return {
       failureClass: 'result_invalid',
@@ -553,12 +614,12 @@ function runtimeFailure(
   return { failureClass: 'tool_failed', publicError: 'The routine could not complete safely.' };
 }
 
-function usageMetadata(usage: PromptUsage): {
+export function routineUsageMetadata(usage: PromptUsage, route?: ProviderAuthRoute): {
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
   cacheWriteTokens: number;
-  costEstimate: number;
+  costEstimate?: number;
   costUnit: string;
 } {
   return {
@@ -566,8 +627,10 @@ function usageMetadata(usage: PromptUsage): {
     outputTokens: usage.output,
     cacheReadTokens: usage.cacheRead,
     cacheWriteTokens: usage.cacheWrite,
-    costEstimate: usage.cost.total,
-    costUnit: 'model_registry_unit',
+    ...(route === 'openai_subscription' ? {} : { costEstimate: usage.cost.total }),
+    costUnit: route === 'openai_subscription'
+      ? 'chatgpt_subscription_quota'
+      : 'model_registry_unit',
   };
 }
 
@@ -595,6 +658,8 @@ function usageTransitionMetadata(
   };
 }
 
-function modelLabel(model: { provider: string; id: string }): string {
-  return model.id.includes('/') ? model.id : `${model.provider}/${model.id}`;
+export function routineModelLabel(model: { provider: string; id: string }): string {
+  return canonicalRuntimeModel(
+    model.id.includes('/') ? model.id : `${model.provider}/${model.id}`,
+  );
 }

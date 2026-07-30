@@ -19,7 +19,11 @@
     "TAG_ROUTINES_ENABLED": "0",
     "USAGE_RUNTIME_RECORDING": "0",
     "USAGE_ESTIMATES": "0",
-    "USAGE_ADMIN_UI": "0"
+    "USAGE_ADMIN_UI": "0",
+    // Experimental direct ChatGPT Subscription adapter. Keep "0" until the
+    // live protocol, Worker, no-fallback, redaction, and rollback gates in
+    // docs/runbooks/openai-subscription.md have passed for this exact build.
+    "TAG_OPENAI_SUBSCRIPTION_ENABLED": "0"
   },
   "triggers": {
     "crons": ["* * * * *"]

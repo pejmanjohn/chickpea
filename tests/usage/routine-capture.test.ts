@@ -26,7 +26,8 @@ const run = {
   scheduledFor: 1, triggerSource: 'schedule', requestedBy: null, status: 'admitting',
   failureClass: null, publicError: null, admissionOwner: 'heartbeat', admissionLeaseUntil: 2,
   flueRunId: 'run_usage', queuedAt: 1_000, admittedAt: 1_100, startedAt: null, finishedAt: null,
-  resolvedAccessHash: null, resolvedAgentId: null, model: null, inputTokens: null,
+  resolvedAccessHash: null, resolvedAgentId: null, model: null, providerAuthRoute: null,
+  inputTokens: null,
   outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null, costEstimate: null,
   costUnit: null, deadlineAt: 9_999_999_999_999, sandboxSessionId: null, toolCallCount: 0,
   deliveryStatus: 'none', deliveryLeaseUntil: null, deliveryChannelId: null,
@@ -126,6 +127,10 @@ test('routine initialization admits ledger work before constructing the Agent', 
           return { config, accessHash: 'a'.repeat(64), botToken: 'xoxb', botUserId: 'U_BOT' };
         },
         resolveCredential: async () => null,
+        resolveModel: async () => {
+          events.push('model');
+          return { model: config.model };
+        },
         useCloudflareSandbox: async () => false,
         createAgent: async () => {
           events.push('agent');
@@ -134,7 +139,7 @@ test('routine initialization admits ledger work before constructing the Agent', 
         },
       },
     );
-    assert.deepEqual(events, ['access', 'begin', 'agent']);
+    assert.deepEqual(events, ['access', 'model', 'begin', 'agent']);
   } finally {
     settings.close();
     usage.close();

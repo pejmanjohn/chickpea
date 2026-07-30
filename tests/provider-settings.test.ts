@@ -53,6 +53,7 @@ function appWithProviderAdmin(): {
       usage,
       adminToken: ADMIN_TOKEN,
       knownProviders: new Set(['anthropic', 'openai', 'openrouter', 'workers-ai']),
+      openAiSubscriptionCapability: () => ({ enabled: true }),
     }),
   );
   return {
@@ -196,10 +197,20 @@ test('provider key POST validates, stores, primes model cache, and rejects bad k
           assert.equal(saved.status, 200);
           assert.deepEqual(await saved.json(), {
             ok: true,
-            provider: { id: 'anthropic', status: 'stored', modelCount: 2 },
+            provider: { id: 'anthropic', status: 'stored', modelCount: 4 },
             models: [
               { id: 'claude-sonnet-4-6', display_name: 'Claude Sonnet 4.6' },
               { id: 'claude-haiku-4-5', display_name: 'Claude Haiku 4.5' },
+              {
+                id: 'claude-opus-5',
+                display_name: 'Claude Opus 5',
+                context_length: 1_000_000,
+              },
+              {
+                id: 'claude-sonnet-5',
+                display_name: 'Claude Sonnet 5',
+                context_length: 1_000_000,
+              },
             ],
           });
           assert.equal(
@@ -353,7 +364,25 @@ test('provider models proxy caches OpenAI chat models and refresh bypasses the c
           assert.equal(first.status, 200);
           assert.deepEqual(await first.json(), {
             provider: 'openai',
-            models: [{ id: 'gpt-4.1' }, { id: 'gpt-4.1-mini' }],
+            models: [
+              { id: 'gpt-4.1' },
+              { id: 'gpt-4.1-mini' },
+              {
+                id: 'gpt-5.6-sol',
+                display_name: 'GPT-5.6 Sol',
+                context_length: 272_000,
+              },
+              {
+                id: 'gpt-5.6-terra',
+                display_name: 'GPT-5.6 Terra',
+                context_length: 272_000,
+              },
+              {
+                id: 'gpt-5.6-luna',
+                display_name: 'GPT-5.6 Luna',
+                context_length: 272_000,
+              },
+            ],
             cached: false,
           });
           assert.equal(fake.callsFor('/v1/models').length, 1);
@@ -365,7 +394,25 @@ test('provider models proxy caches OpenAI chat models and refresh bypasses the c
           assert.equal(cached.status, 200);
           assert.deepEqual(await cached.json(), {
             provider: 'openai',
-            models: [{ id: 'gpt-4.1' }, { id: 'gpt-4.1-mini' }],
+            models: [
+              { id: 'gpt-4.1' },
+              { id: 'gpt-4.1-mini' },
+              {
+                id: 'gpt-5.6-sol',
+                display_name: 'GPT-5.6 Sol',
+                context_length: 272_000,
+              },
+              {
+                id: 'gpt-5.6-terra',
+                display_name: 'GPT-5.6 Terra',
+                context_length: 272_000,
+              },
+              {
+                id: 'gpt-5.6-luna',
+                display_name: 'GPT-5.6 Luna',
+                context_length: 272_000,
+              },
+            ],
             cached: true,
           });
           assert.equal(fake.callsFor('/v1/models').length, 1);
@@ -376,7 +423,24 @@ test('provider models proxy caches OpenAI chat models and refresh bypasses the c
           assert.equal(refreshed.status, 200);
           assert.deepEqual(await refreshed.json(), {
             provider: 'openai',
-            models: [{ id: 'gpt-5.5' }],
+            models: [
+              { id: 'gpt-5.5' },
+              {
+                id: 'gpt-5.6-sol',
+                display_name: 'GPT-5.6 Sol',
+                context_length: 272_000,
+              },
+              {
+                id: 'gpt-5.6-terra',
+                display_name: 'GPT-5.6 Terra',
+                context_length: 272_000,
+              },
+              {
+                id: 'gpt-5.6-luna',
+                display_name: 'GPT-5.6 Luna',
+                context_length: 272_000,
+              },
+            ],
             cached: false,
           });
           assert.equal(fake.callsFor('/v1/models').length, 2);
@@ -599,10 +663,10 @@ test('models endpoint folds OpenRouter favorites into the picker suggestions (no
       'openrouter/anthropic/claude-sonnet-4',
       'openrouter/openai/gpt-4.1',
     ]);
-    // Anthropic keeps its small dynamic catalog (favorites folding is scoped).
+    // Anthropic keeps its current release suggestions (favorites folding is scoped).
     const anthropic = body.providers.find((provider) => provider.id === 'anthropic');
     assert.ok(anthropic);
-    assert.ok(anthropic.suggestions.includes('anthropic/claude-sonnet-4-6'));
+    assert.ok(anthropic.suggestions.includes('anthropic/claude-fable-5'));
   } finally {
     close();
   }

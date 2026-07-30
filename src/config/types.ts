@@ -96,6 +96,8 @@ export interface RepositoryGrant {
   enabled: boolean;
 }
 
+export type OpenAiAuthMethod = 'api_key' | 'subscription';
+
 export interface CustomAgentConfig {
   id: string;
   name: string;

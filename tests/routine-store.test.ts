@@ -772,7 +772,8 @@ test('occurrence uniqueness, admission attempts, and atomic Workflow begin preve
       await store.beginOccurrence({
         occurrenceId: run.id, flueRunId: 'run_flue_primary', startedAt: CREATED_AT + 3,
         resolvedAccessHash: 'a'.repeat(64), resolvedAgentId: 'agent_default',
-        model: 'anthropic/claude-sonnet-4-6', traceId: 'run_flue_primary',
+        model: 'openai/gpt-5.4', providerAuthRoute: 'openai_subscription',
+        traceId: 'run_flue_primary',
       }),
       'started',
     );
@@ -783,6 +784,14 @@ test('occurrence uniqueness, admission attempts, and atomic Workflow begin preve
     assert.equal((await store.getRun(run.id))?.flueRunId, 'run_flue_primary');
     assert.equal((await store.getRun(run.id))?.resolvedAccessHash, 'a'.repeat(64));
     assert.equal((await store.getRun(run.id))?.resolvedAgentId, 'agent_default');
+    assert.equal((await store.getRun(run.id))?.providerAuthRoute, 'openai_subscription');
+    const startedAudit = (await store.listAuditEvents({ eventType: 'routine.occurrence_started' }))[0];
+    assert.deepEqual(JSON.parse(startedAudit!.metadataJson), {
+      routineId: routine.id,
+      status: 'running',
+      triggerSource: 'schedule',
+      providerAuthRoute: 'openai_subscription',
+    });
     assert.deepEqual((await store.listAdmissions(run.id)).map((item) => item.status), ['attached', 'superseded']);
     assert.equal(await store.claimDelivery({
       occurrenceId: run.id, at: CREATED_AT + 4, leaseUntil: CREATED_AT + 60_004,

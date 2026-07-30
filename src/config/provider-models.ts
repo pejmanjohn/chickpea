@@ -2,6 +2,7 @@ import type { ProviderKeyId } from './provider-keys.ts';
 import { isProviderKeyId, resolveProviderApiKey } from './provider-keys.ts';
 import type { SettingsStore } from './settings-store.ts';
 import type { PlatformEnv } from './state-backend.ts';
+import { listActiveCatalogModels } from '../model-catalog/index.ts';
 
 export type AdminProviderId = ProviderKeyId | 'workers-ai';
 export type FavoriteProviderId = 'openrouter' | 'workers-ai';
@@ -49,9 +50,9 @@ export class ProviderModelsUnavailableError extends Error {
 
 export const WORKERS_AI_DEFAULT_FAVORITES = [
   '@cf/zai-org/glm-5.2',
-  '@cf/moonshotai/kimi-k2.6',
+  '@cf/moonshotai/kimi-k2.7-code',
   '@cf/openai/gpt-oss-120b',
-  '@cf/meta/llama-3.3-70b-instruct',
+  '@cf/meta/llama-4-scout-17b-16e-instruct',
 ] as const;
 
 export const PROVIDER_FAVORITES_SETTING_KEYS = {
@@ -199,11 +200,12 @@ async function fetchAnthropicModels(
       ? new ProviderKeyRejectedError('anthropic', response.status, providerErrorDetail(body, response))
       : new ProviderModelsUnavailableError('anthropic', 'provider_models_failed', 502);
   }
-  return readModelArray(body).map((model) => {
+  const models = readModelArray(body).map((model) => {
     const id = stringField(model, 'id');
     const displayName = optionalStringField(model, 'display_name') ?? optionalStringField(model, 'displayName');
     return displayName ? { id, display_name: displayName } : { id };
   });
+  return includeCatalogModels('anthropic', models);
 }
 
 async function fetchOpenAiModels(
@@ -222,9 +224,28 @@ async function fetchOpenAiModels(
       ? new ProviderKeyRejectedError('openai', response.status, providerErrorDetail(body, response))
       : new ProviderModelsUnavailableError('openai', 'provider_models_failed', 502);
   }
-  return readModelArray(body)
+  const models = readModelArray(body)
     .map((model) => ({ id: stringField(model, 'id') }))
     .filter((model) => OPENAI_CHAT_MODEL_PREFIXES.some((prefix) => model.id.startsWith(prefix)));
+  return includeCatalogModels('openai', models);
+}
+
+function includeCatalogModels(
+  provider: Extract<ProviderKeyId, 'anthropic' | 'openai'>,
+  discovered: ProviderModel[],
+): ProviderModel[] {
+  const byId = new Map(discovered.map((model) => [model.id, model]));
+  const lane = provider === 'openai' ? 'openai_api_key' : 'anthropic_api_key';
+  for (const model of listActiveCatalogModels(lane)) {
+    if (!byId.has(model.id)) {
+      byId.set(model.id, {
+        id: model.id,
+        display_name: model.name,
+        context_length: model.contextWindow,
+      });
+    }
+  }
+  return [...byId.values()];
 }
 
 async function validateOpenRouterKey(apiKey: string, timeoutMs?: number): Promise<void> {

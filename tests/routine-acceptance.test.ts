@@ -134,6 +134,7 @@ test('scheduled write crosses one-message creation, heartbeat, Workflow admissio
             config, accessHash: 'a'.repeat(64), botToken: 'xoxb-acceptance', botUserId: 'U_BOT',
           };
         },
+        resolveModel: async () => ({ model: config.model }),
         useCloudflareSandbox: async () => false,
         createAgent: async ({ id }) => {
           lifecycle.push(`agent:${id}`);

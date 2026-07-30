@@ -4,6 +4,10 @@ import { Hono } from 'hono';
 
 import { createAdminRoutes } from './admin/routes.ts';
 import { activityStatusForObservation } from './activity/status.ts';
+import {
+  observeProviderAuthRoute,
+  providerAuthRouteInterceptor,
+} from './audit/provider-auth.ts';
 import { recordRegisteredProvider } from './config/providers.ts';
 import {
   memoryToolPolicyInterceptor,
@@ -13,6 +17,8 @@ import {
   activityStatusGenerationInterceptor,
   publishActivityStatus,
 } from './slack/activity-publisher.ts';
+import { registerOpenAiSubscriptionApi } from './openai-subscription/provider.ts';
+import { registerModelCompatibilityApis } from './model-compat/provider.ts';
 
 // Provider registrations run at module scope so they are in place before any
 // agent resolves its model. On the Cloudflare target the seeded Workers AI
@@ -45,6 +51,15 @@ registerProvider('cloudflare-workers-ai', {
   maxTokens: 2048,
 });
 recordRegisteredProvider('cloudflare-workers-ai');
+
+// These handlers contain no credentials. API-key binding happens only after
+// Settings resolves the selected canonical provider immediately before use.
+registerModelCompatibilityApis();
+
+// The wire handler is credential-free and safe to install at module boot.
+// A subscription profile binds live credentials and the internal provider
+// immediately before use; until then no `openai-subscription/*` model exists.
+registerOpenAiSubscriptionApi();
 
 // The catalog `anthropic` provider works from ANTHROPIC_API_KEY alone; only
 // override it when an explicit base URL is configured.
@@ -90,6 +105,17 @@ instrument({
   key: Symbol.for('chickpea.memory-tool-policy'),
   interceptor: memoryToolPolicyInterceptor,
   observe: observeMemoryToolPolicy,
+  dispose() {},
+});
+
+// Flue emits one turn_request for every main, structured-output, retry, and
+// compaction model operation. Its provider id is already credential-free; add
+// the exact product route fact to the same trace without prompts, account data,
+// tokens, or billing guesses.
+instrument({
+  key: Symbol.for('chickpea.provider-auth-route'),
+  interceptor: providerAuthRouteInterceptor,
+  observe: observeProviderAuthRoute,
   dispose() {},
 });
 
