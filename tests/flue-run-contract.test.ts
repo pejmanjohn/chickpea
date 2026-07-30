@@ -234,9 +234,11 @@ test('the proof matrix has one explicit release decision for every runtime depen
     'node_foreign_keys',
     'workerd_foreign_keys',
     'provider_route_snapshot',
+    'non_slack_adapter_conformance',
+    'interactive_ledger_authority',
   ]);
   for (const capability of RUN_FOUNDATION_CAPABILITIES) {
-    assert.match(capability.status, /^(proven|absent|unstable)$/);
+    assert.match(capability.status, /^(proven|absent|unstable|canary_only)$/);
     assert.ok(capability.evidence.length > 0, capability.id);
     assert.ok(capability.releaseDecision.length > 0, capability.id);
   }

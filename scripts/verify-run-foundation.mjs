@@ -97,6 +97,18 @@ export const RUN_FOUNDATION_CAPABILITIES = Object.freeze([
     evidence: 'The active catalog route yields canonical model, lane, source, revision, digest, and compiled profile while internal aliases remain separate.',
     releaseDecision: 'compose_once_before_first_model_call',
   }),
+  Object.freeze({
+    id: 'non_slack_adapter_conformance',
+    status: 'proven',
+    evidence: 'The conformance adapter admits, executes, renders, delivers, and recovers without Slack types or coordinates.',
+    releaseDecision: 'reuse_submit_run_and_persisted_output_boundary',
+  }),
+  Object.freeze({
+    id: 'interactive_ledger_authority',
+    status: 'canary_only',
+    evidence: 'The exact-channel selector assigns immutable authority and the durable driver fences execution and payload redelivery.',
+    releaseDecision: 'default_empty_and_promote_by_evidence',
+  }),
 ]);
 
 const FOCUSED_TESTS = [
@@ -110,14 +122,28 @@ const FOCUSED_TESTS = [
   'tests/openai-subscription-routing.test.ts',
   'tests/model-catalog-routing.test.ts',
   'tests/provider-auth-audit.test.ts',
+  'tests/runtime-model-route-evidence.test.ts',
+  'tests/execution-authority.test.ts',
+  'tests/submit-run.test.ts',
   'tests/work-store.test.ts',
   'tests/work-retention.test.ts',
   'tests/work-state-rpc.test.ts',
+  'tests/work-admission.test.ts',
+  'tests/work-lifecycle.test.ts',
+  'tests/run-driver.test.ts',
+  'tests/run-ordering.test.ts',
+  'tests/run-recovery.test.ts',
+  'tests/non-slack-adapter-contract.test.ts',
+  'tests/turn-jobs.test.ts',
+  'tests/status-relay.test.ts',
+  'tests/slack-thread-context.test.ts',
+  'tests/web-client-presenter.test.ts',
   'tests/routine-store.test.ts',
   'tests/usage-store-contract.test.ts',
   'tests/admin-work-routes.test.ts',
   'tests/admin-scheduled-work-routes.test.ts',
   'tests/admin-usage-routes.test.ts',
+  'tests/deploy-with-epilogue.test.ts',
 ];
 
 function run(label, command, args) {

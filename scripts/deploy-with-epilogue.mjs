@@ -66,6 +66,22 @@ function cliEnablesRoutines() {
   });
 }
 
+function cliVariable(name) {
+  for (let index = 0; index < deployArgs.length; index += 1) {
+    const argument = deployArgs[index];
+    const raw = argument === '--var'
+      ? deployArgs[index + 1]
+      : argument.startsWith('--var=')
+        ? argument.slice(6)
+        : undefined;
+    if (typeof raw !== 'string') continue;
+    const separator = raw.search(/[:=]/);
+    if (separator < 1 || raw.slice(0, separator) !== name) continue;
+    return raw.slice(separator + 1);
+  }
+  return undefined;
+}
+
 function validateEnabledRoutineArtifact() {
   const configPath = builtConfigPath();
   if (!configPath) {
@@ -103,8 +119,46 @@ function validateEnabledRoutineArtifact() {
   }
 }
 
+function validateLedgerCanaryArtifact() {
+  const configPath = builtConfigPath();
+  const cliSelector = cliVariable('SLACK_TAG_LEDGER_CANARY_CHANNELS');
+  if (!configPath) {
+    if (cliSelector) throw new Error('Cannot enable the ledger canary without a built Cloudflare artifact.');
+    return;
+  }
+  const config = JSON.parse(readFileSync(configPath, 'utf8'));
+  const selector = cliSelector ?? config.vars?.SLACK_TAG_LEDGER_CANARY_CHANNELS ?? '';
+  if (selector === '') return;
+  if (typeof selector !== 'string') {
+    throw new Error('SLACK_TAG_LEDGER_CANARY_CHANNELS must be a string.');
+  }
+  const entries = selector.split(',').map((entry) => entry.trim());
+  const exactPair = /^[A-Za-z][A-Za-z0-9_-]{1,63}\/[A-Za-z][A-Za-z0-9_-]{1,63}$/;
+  if (entries.length > 20 || entries.some((entry) => !exactPair.test(entry))) {
+    throw new Error(
+      'SLACK_TAG_LEDGER_CANARY_CHANNELS is unsafe: use 1-20 exact workspace/channel pairs ' +
+      '(for example T123/C456), comma-separated with no wildcard or empty entry.',
+    );
+  }
+  const bundlePath = path.resolve(path.dirname(configPath), config.main ?? 'index.js');
+  const bundle = existsSync(bundlePath) ? readFileSync(bundlePath, 'utf8') : '';
+  const requiredSeams = [
+    'SLACK_TAG_LEDGER_CANARY_CHANNELS',
+    'delivery_receipt_persist_unknown',
+    'slack_agent_execution_contexts',
+  ];
+  const missing = requiredSeams.filter((seam) => !bundle.includes(seam));
+  if (missing.length) {
+    throw new Error(
+      'SLACK_TAG_LEDGER_CANARY_CHANNELS is unsafe for this artifact; missing durable driver seams: ' +
+      missing.join(', ') + '. Deploy with the selector empty and repair the artifact.',
+    );
+  }
+}
+
 try {
   validateEnabledRoutineArtifact();
+  validateLedgerCanaryArtifact();
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));
   process.exit(1);

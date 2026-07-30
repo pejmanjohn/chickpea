@@ -1,9 +1,31 @@
 # Agent Runtime Boundary
 
-This document freezes the U1 execution contracts for the channel-neutral Run
-foundation. It is verified against `@flue/runtime` and `@flue/sdk`
+This document defines the shipped execution contracts for the channel-neutral
+Run foundation. It is verified against `@flue/runtime` and `@flue/sdk`
 `1.0.0-beta.8`, including Chickpea's compiled-runtime patch. The executable
 source of truth is `scripts/verify-run-foundation.mjs`.
+
+Chickpea is the governed company-workflow product and control plane. Flue is
+the deep execution runtime. Slack is the first production client adapter; it
+is not the identity or persistence boundary for Work. Coding is one supported
+workload alongside marketing, operations, research, internal MCP work, and
+other company workflows.
+
+## Product objects and ownership
+
+| Object | Owns | Does not own |
+|---|---|---|
+| `Work` | Long-lived company task or conversation identity and sensitivity ceiling. | Channel coordinates, queue leases, or a Flue instance. |
+| `Binding` | One generation attaching Work to an external surface, its visibility, ordering, and safe config mode. | Model execution or delivery outcome. |
+| `Run` | One admitted trigger, immutable authority/coordinator, lifecycle, approved output, and delivery summary. | Raw model/tool history. |
+| `RunExecution` | One fenced execution attempt and immutable safe model/auth route. | Client identity or presentation state. |
+| `Session` | A redacted operator projection over Work/Binding/Run records. | Independent persisted lifecycle truth. |
+
+Slack owns Slack IDs, membership truth, event normalization, message rendering,
+and delivery receipts. Adapter-only execution context maps opaque RunExecution
+continuity to Slack coordinates outside the common ledger. Flue owns raw model,
+tool, transcript, compaction, and settlement facts. Chickpea owns admission,
+policy, product lifecycle, retention, safe audit evidence, and operator views.
 
 ## Capability decisions
 
@@ -176,8 +198,44 @@ heartbeat/idempotency path can retry. Routine task text remains standing
 definition content under the Routine retention policy; it is not copied into a
 30-day Run body.
 
-The remaining authority boundary is intentional: legacy `runTurn` and the
-existing Routine Workflow are the only components allowed to execute these
-Runs. The ledger does not dispatch them, and current Slack rendering, response
-counts, Routine controls, and APIs remain compatibility surfaces until the
-later coordinator and Sessions units pass their rollout gates.
+## Interactive authority rollout
+
+The committed `SLACK_TAG_LEDGER_CANARY_CHANNELS` value is empty. In that state,
+Slack keeps its established execution and reply behavior while Chickpea writes
+the canonical ledger and exposes the redacted Sessions projection. There is no
+global live switch that can reassign queued work.
+
+A reviewed canary may list up to 20 exact `workspace/channel` pairs. New
+eligible turns in those pairs receive immutable `execution_authority=ledger`
+and run through the durable driver. Removing a pair sends only later admissions
+back to legacy; already-owned Runs drain under the same dual-lane artifact.
+Explicit Memory and Routine commands stay with their existing coordinators.
+Profiles with enabled MCP tools, API connections, or repositories also remain
+legacy until paired action receipts and attempt ceilings are enforced on every
+execution path. A selected canary currently treats natural-language scheduling
+as an ordinary agent prompt, so only dedicated validation channels qualify.
+
+The ledger driver persists approved output and the exact rendered Slack payload
+before delivery. Recovery may redeliver that payload, but never reruns the model
+after response-ready. Binding ordering, authority epoch, leases, fencing, and
+delivery finalization remain durable across process or alarm recovery. Legacy
+and ledger queues cannot claim each other's Runs.
+
+See `docs/runbooks/agent-runtime-rollout.md` for promotion, rollback, and live
+acceptance. The compatibility lane stays in the artifact through the complete
+soak and rollback window.
+
+## Adding a future client
+
+A future production client supplies four narrow pieces: authenticated source
+and actor truth, a Binding resolver, a submission normalizer, and a renderer /
+delivery implementation. It calls the common `SubmitRun` boundary with opaque
+external identities and safe visibility/config facts, then consumes persisted
+policy-approved output. It must not copy Slack thread IDs into Work, use a Flue
+instance as product identity, or create a second lifecycle/session store.
+
+The test-only conformance adapter proves admission, execution, rendering,
+delivery, and recovery without Slack types or coordinates. That proof is the
+minimum bar for a web adapter; it is not a plugin registry mandate. Extract a
+general adapter interface only when the second production implementation makes
+the shared shape concrete.
