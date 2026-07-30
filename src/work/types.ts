@@ -288,11 +288,13 @@ export interface CreateRunExecutionInput {
   executorKind: 'agent' | 'workflow';
   agentName: string;
   canonicalModel: string;
+  flueInstanceRef?: string | null;
   startedAt: number;
 }
 
 export interface RunExecutionRouteInput {
   executionId: RunExecutionId;
+  recordedAt: number;
   providerAuthRoute?: ProviderAuthRoute | null;
   catalogSource?: string | null;
   catalogRevision?: string | null;
@@ -300,6 +302,84 @@ export interface RunExecutionRouteInput {
   compiledProfile?: string | null;
   modelCredentialRef?: string | null;
   modelCredentialVersion?: number | null;
+}
+
+export interface PrepareRunInput {
+  runId: RunId;
+  sensitivity: ContentSensitivity;
+  body: string;
+  preparedAt: number;
+}
+
+export interface MarkRunExecutionInvokedInput {
+  executionId: RunExecutionId;
+  fencingToken: number;
+  invokedAt: number;
+}
+
+export interface SettleRunExecutionInput {
+  executionId: RunExecutionId;
+  fencingToken: number;
+  outcome: Exclude<RunExecutionOutcome, 'pending'>;
+  modelInvocationStatus: Exclude<ModelInvocationStatus, 'ready'>;
+  rawSettlementRef?: string | null;
+  rawSettlementStatus?: string | null;
+  safeDisagreementCode?: string | null;
+  safeFailureCode?: string | null;
+  flueSubmissionRef?: string | null;
+  finishedAt: number;
+}
+
+export interface RecordRunResponseInput {
+  runId: RunId;
+  executionId?: RunExecutionId | null;
+  fencingToken: number;
+  sensitivity: ContentSensitivity;
+  approvedOutput: string;
+  renderedPayload: string;
+  recordedAt: number;
+}
+
+export interface StartRunDeliveryInput {
+  runId: RunId;
+  fencingToken: number;
+  method: string;
+  attemptId: string;
+  startedAt: number;
+}
+
+export interface FinalizeRunDeliveryInput {
+  runId: RunId;
+  fencingToken: number;
+  attemptId: string;
+  outcome: 'delivered' | 'failed' | 'unknown';
+  deliveryRef?: string | null;
+  terminalDisposition?: RunDisposition | null;
+  safeFailureCode?: string | null;
+  finalizedAt: number;
+}
+
+export interface SettleRunWithoutDeliveryInput {
+  runId: RunId;
+  fencingToken: number;
+  terminalDisposition: 'no_op' | 'failed' | 'skipped' | 'cancelled' | 'superseded';
+  safeFailureCode?: string | null;
+  settledAt: number;
+}
+
+export interface RecordWorkActionInput {
+  eventId: string;
+  idempotencyKey: string;
+  runId: RunId;
+  runExecutionId: RunExecutionId;
+  fencingToken: number;
+  actionAttemptId: string;
+  actionClass: string;
+  targetKind: string;
+  flueCorrelation: string;
+  status: 'denied' | 'started' | 'succeeded' | 'failed' | 'unknown';
+  reasonCode?: string | null;
+  createdAt: number;
 }
 
 export interface QuarantineRunInput {
@@ -345,6 +425,14 @@ export type WorkRpcRequest =
   | { kind: 'get_run'; runId: RunId }
   | { kind: 'create_execution'; input: CreateRunExecutionInput }
   | { kind: 'record_execution_route'; input: RunExecutionRouteInput }
+  | { kind: 'prepare_run_input'; input: PrepareRunInput }
+  | { kind: 'mark_execution_invoked'; input: MarkRunExecutionInvokedInput }
+  | { kind: 'settle_execution'; input: SettleRunExecutionInput }
+  | { kind: 'record_run_response'; input: RecordRunResponseInput }
+  | { kind: 'start_run_delivery'; input: StartRunDeliveryInput }
+  | { kind: 'finalize_run_delivery'; input: FinalizeRunDeliveryInput }
+  | { kind: 'settle_run_without_delivery'; input: SettleRunWithoutDeliveryInput }
+  | { kind: 'record_work_action'; input: RecordWorkActionInput }
   | { kind: 'get_execution'; executionId: RunExecutionId }
   | { kind: 'require_recovery'; input: RequireRunRecoveryInput }
   | { kind: 'quarantine_run'; input: QuarantineRunInput }
@@ -381,6 +469,14 @@ export interface WorkStore {
   getRun(id: RunId): Promise<RunRecord | undefined>;
   createRunExecution(input: CreateRunExecutionInput): Promise<RunExecutionRecord>;
   recordRunExecutionRoute(input: RunExecutionRouteInput): Promise<RunExecutionRecord>;
+  prepareRunInput(input: PrepareRunInput): Promise<RunRecord>;
+  markRunExecutionInvoked(input: MarkRunExecutionInvokedInput): Promise<RunExecutionRecord>;
+  settleRunExecution(input: SettleRunExecutionInput): Promise<RunExecutionRecord>;
+  recordRunResponse(input: RecordRunResponseInput): Promise<RunRecord>;
+  startRunDelivery(input: StartRunDeliveryInput): Promise<RunRecord>;
+  finalizeRunDelivery(input: FinalizeRunDeliveryInput): Promise<RunRecord>;
+  settleRunWithoutDelivery(input: SettleRunWithoutDeliveryInput): Promise<RunRecord>;
+  recordWorkAction(input: RecordWorkActionInput): Promise<AuditEvent>;
   getRunExecution(id: RunExecutionId): Promise<RunExecutionRecord | undefined>;
   requireRecovery(input: RequireRunRecoveryInput): Promise<RunRecord>;
   quarantineRun(input: QuarantineRunInput): Promise<RunRecord>;

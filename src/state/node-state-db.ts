@@ -85,7 +85,30 @@ export function openStateDb(path: string): NodeStateDb {
   db.exec('PRAGMA foreign_keys = ON;');
   db.exec('PRAGMA busy_timeout = 5000;');
   if (path !== ':memory:') {
-    db.exec('PRAGMA journal_mode = WAL;');
+    enableWalWithRetry(db);
   }
   return new NodeStateDb(db);
+}
+
+function enableWalWithRetry(db: DatabaseSync): void {
+  const deadline = Date.now() + 5_000;
+  const signal = new Int32Array(new SharedArrayBuffer(4));
+  for (;;) {
+    try {
+      db.exec('PRAGMA journal_mode = WAL;');
+      return;
+    } catch (error) {
+      if (!isSqliteBusy(error) || Date.now() >= deadline) throw error;
+      // DatabaseSync has no async busy callback for journal-mode changes.
+      // Atomics.wait is a bounded, allocation-free pause that lets the process
+      // currently creating WAL finish before this opener retries.
+      Atomics.wait(signal, 0, 0, 10);
+    }
+  }
+}
+
+function isSqliteBusy(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const candidate = error as { code?: unknown; errcode?: unknown };
+  return candidate.code === 'ERR_SQLITE_ERROR' && candidate.errcode === 5;
 }

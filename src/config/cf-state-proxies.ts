@@ -18,8 +18,16 @@ import {
   type EffectiveConfigRevisionId,
   type LedgerContentRef,
   type PutLedgerContentInput,
+  type PrepareRunInput,
   type QuarantineRunInput,
+  type RecordRunResponseInput,
+  type RecordWorkActionInput,
   type RequireRunRecoveryInput,
+  type MarkRunExecutionInvokedInput,
+  type SettleRunExecutionInput,
+  type StartRunDeliveryInput,
+  type FinalizeRunDeliveryInput,
+  type SettleRunWithoutDeliveryInput,
   type RunExecutionId,
   type RunExecutionRouteInput,
   type RunId,
@@ -858,6 +866,60 @@ export class CfWorkStore implements WorkStore {
       throw unexpectedWorkResponse();
     }
     return response.execution;
+  }
+
+  async prepareRunInput(input: PrepareRunInput) {
+    const response = await this.execute({ kind: 'prepare_run_input', input });
+    if (response.kind !== 'run' || !response.run) throw unexpectedWorkResponse();
+    return response.run;
+  }
+
+  async markRunExecutionInvoked(input: MarkRunExecutionInvokedInput) {
+    const response = await this.execute({ kind: 'mark_execution_invoked', input });
+    if (response.kind !== 'execution' || !response.execution) {
+      throw unexpectedWorkResponse();
+    }
+    return response.execution;
+  }
+
+  async settleRunExecution(input: SettleRunExecutionInput) {
+    const response = await this.execute({ kind: 'settle_execution', input });
+    if (response.kind !== 'execution' || !response.execution) {
+      throw unexpectedWorkResponse();
+    }
+    return response.execution;
+  }
+
+  async recordRunResponse(input: RecordRunResponseInput) {
+    const response = await this.execute({ kind: 'record_run_response', input });
+    if (response.kind !== 'run' || !response.run) throw unexpectedWorkResponse();
+    return response.run;
+  }
+
+  async startRunDelivery(input: StartRunDeliveryInput) {
+    const response = await this.execute({ kind: 'start_run_delivery', input });
+    if (response.kind !== 'run' || !response.run) throw unexpectedWorkResponse();
+    return response.run;
+  }
+
+  async finalizeRunDelivery(input: FinalizeRunDeliveryInput) {
+    const response = await this.execute({ kind: 'finalize_run_delivery', input });
+    if (response.kind !== 'run' || !response.run) throw unexpectedWorkResponse();
+    return response.run;
+  }
+
+  async settleRunWithoutDelivery(input: SettleRunWithoutDeliveryInput) {
+    const response = await this.execute({ kind: 'settle_run_without_delivery', input });
+    if (response.kind !== 'run' || !response.run) throw unexpectedWorkResponse();
+    return response.run;
+  }
+
+  async recordWorkAction(input: RecordWorkActionInput) {
+    const response = await this.execute({ kind: 'record_work_action', input });
+    if (response.kind !== 'audit_events' || response.events.length !== 1) {
+      throw unexpectedWorkResponse();
+    }
+    return response.events[0]!;
   }
 
   async getRunExecution(executionId: RunExecutionId) {

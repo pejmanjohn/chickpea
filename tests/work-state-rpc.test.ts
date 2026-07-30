@@ -9,6 +9,7 @@ import {
   WorkStateError,
   type AdmitShadowRunInput,
   type BindingId,
+  type RunExecutionId,
   type RunId,
   type SafeEffectiveConfigInput,
   type WorkId,
@@ -84,6 +85,69 @@ test('Work state proxy preserves clone-safe request and response shapes', async 
     assert.equal(admitted.run.id, input.run.id);
     assert.equal(admitted.replayed, false);
     assert.equal((await proxy.admitShadowRun(input)).replayed, true);
+    const prepared = await proxy.prepareRunInput({
+      runId: input.run.id,
+      sensitivity: 'public',
+      body: 'RPC prepared input proof',
+      preparedAt: 1_800_000_000_001,
+    });
+    assert.equal(prepared.status, 'input_ready');
+    const execution = await proxy.createRunExecution({
+      id: 'execution_rpc_shadow' as RunExecutionId,
+      runId: input.run.id,
+      attemptNumber: 1,
+      fencingToken: 1,
+      executorKind: 'agent',
+      agentName: 'agent_rpc',
+      canonicalModel: 'openai/gpt-5.6-sol',
+      flueInstanceRef: 'flueinstance_rpc',
+      startedAt: 1_800_000_000_002,
+    });
+    await proxy.recordRunExecutionRoute({
+      executionId: execution.id,
+      recordedAt: 1_800_000_000_002,
+      providerAuthRoute: 'openai_api_key',
+    });
+    await proxy.markRunExecutionInvoked({
+      executionId: execution.id,
+      fencingToken: 1,
+      invokedAt: 1_800_000_000_003,
+    });
+    await proxy.settleRunExecution({
+      executionId: execution.id,
+      fencingToken: 1,
+      outcome: 'succeeded',
+      modelInvocationStatus: 'settled',
+      rawSettlementStatus: 'flue_succeeded',
+      flueSubmissionRef: 'fluesubmission_rpc',
+      finishedAt: 1_800_000_000_004,
+    });
+    await proxy.recordRunResponse({
+      runId: input.run.id,
+      executionId: execution.id,
+      fencingToken: 1,
+      sensitivity: 'public',
+      approvedOutput: 'RPC approved output',
+      renderedPayload: '{"text":"RPC rendered output"}',
+      recordedAt: 1_800_000_000_005,
+    });
+    await proxy.startRunDelivery({
+      runId: input.run.id,
+      fencingToken: 1,
+      method: 'conformance_post',
+      attemptId: 'delivery_rpc_shadow',
+      startedAt: 1_800_000_000_006,
+    });
+    const delivered = await proxy.finalizeRunDelivery({
+      runId: input.run.id,
+      fencingToken: 1,
+      attemptId: 'delivery_rpc_shadow',
+      outcome: 'delivered',
+      deliveryRef: 'conformance:receipt:rpc',
+      finalizedAt: 1_800_000_000_007,
+    });
+    assert.equal(delivered.status, 'settled');
+    assert.equal((await proxy.getRunExecution(execution.id))?.flueSubmissionRef, 'fluesubmission_rpc');
     assert.deepEqual(await proxy.verifyIntegrity(), {
       foreignKeysEnabled: true,
       foreignKeyViolationCount: 0,

@@ -14,12 +14,15 @@ import { createSlackAgentRuntime, resolveAgentPlatformEnv } from '../agents/slac
 import {
   canonicalRuntimeModel,
   resolveRuntimeModel,
+  safeRuntimeModelRouteEvidence,
   type ProviderAuthRoute,
+  type SafeRuntimeModelRouteEvidence,
 } from '../config/runtime-model.ts';
 import {
   getRoutineStore,
   getSettingsStore,
   getUsageStore,
+  getWorkStore,
   type PlatformEnv,
 } from '../config/state-backend.ts';
 import { resolveModelCredentialAttribution } from '../config/model-credential-refs.ts';
@@ -55,6 +58,12 @@ import {
   usageRuntimeRecordingEnabled,
 } from '../usage/runtime-recorder.ts';
 import type { UsageStore } from '../usage/types.ts';
+import {
+  ShadowWorkLifecycle,
+  shadowRunExecutionId,
+} from '../work/lifecycle.ts';
+import type { RunId } from '../work/types.ts';
+import { opaqueId } from '../work/admission.ts';
 
 const InputSchema = v.object({
   occurrenceId: v.pipe(v.string(), v.regex(/^rrun_[A-Za-z0-9_-]+$/)),
@@ -76,8 +85,10 @@ export interface RoutineWorkflowRuntime {
   access: RoutineRuntimeAccess;
   agentInstanceId: string;
   providerAuthRoute?: ProviderAuthRoute;
+  routeEvidence: SafeRuntimeModelRouteEvidence;
   usedCloudflareSandbox: boolean;
   usageRecorder?: RoutineUsageRecorder;
+  workLifecycle?: ShadowWorkLifecycle;
 }
 
 const runtimeByOccurrence = new Map<string, RoutineWorkflowRuntime>();
@@ -195,24 +206,37 @@ export async function initializeRoutineWorkflowRuntime(
     throw new Error('Routine Workflow admission was superseded.');
   }
 
+  const usageStore = dependencies.usageStore ?? getUsageStore(input.env);
+  const resolveCredential = dependencies.resolveCredential ?? resolveModelCredentialAttribution;
+  const modelCredential = access.config.modelCredential ?? await resolveCredential(
+    access.config.model,
+    input.env,
+    dependencies.settingsStore ?? getSettingsStore(input.env),
+    usageStore,
+  ).catch(() => null);
+  if (modelCredential && !access.config.modelCredential) {
+    access = { ...access, config: { ...access.config, modelCredential } };
+  }
+  const routeEvidence = safeRuntimeModelRouteEvidence(
+    access.config.model,
+    runtimeModel.providerAuthRoute,
+    modelCredential ?? undefined,
+  );
+
   let usageRecorder: RoutineUsageRecorder | undefined;
   const recordingEnabled = dependencies.usageRecordingEnabled ??
     usageRuntimeRecordingEnabled(input.env);
   if (recordingEnabled) {
-    const usageStore = dependencies.usageStore ?? getUsageStore(input.env);
-    const resolveCredential = dependencies.resolveCredential ?? resolveModelCredentialAttribution;
-    const modelCredential = access.config.modelCredential ?? await resolveCredential(
-      access.config.model,
-      input.env,
-      dependencies.settingsStore ?? getSettingsStore(input.env),
-      usageStore,
-    ).catch(() => null);
-    if (modelCredential && !access.config.modelCredential) {
-      access = { ...access, config: { ...access.config, modelCredential } };
-    }
+    const canonicalRunId = input.run.canonicalRunId as RunId | null | undefined;
     usageRecorder = new RoutineUsageRecorder({
       operationId: input.run.id,
       executionId: `exec:${input.run.id}:${input.flueRunId}`,
+      ...(canonicalRunId
+        ? {
+            runId: canonicalRunId,
+            runExecutionId: shadowRunExecutionId(canonicalRunId, 1),
+          }
+        : {}),
       startedAt,
       workspaceId: input.routine.workspaceId,
       channelId: input.routine.channelId,
@@ -258,6 +282,7 @@ export async function initializeRoutineWorkflowRuntime(
       ...(runtimeModel.providerAuthRoute
         ? { providerAuthRoute: runtimeModel.providerAuthRoute }
         : {}),
+      routeEvidence,
       usedCloudflareSandbox,
       ...(usageRecorder ? { usageRecorder } : {}),
       config,
@@ -289,6 +314,41 @@ export function routineAgentInstanceId(
   return `routine:${flueRunId}:${routine.workspaceId}:${routine.channelId}`;
 }
 
+async function createRoutineShadowLifecycle(
+  runtime: RoutineWorkflowRuntime,
+  preparedInput: string,
+): Promise<ShadowWorkLifecycle | undefined> {
+  if (!runtime.run.canonicalRunId) return undefined;
+  try {
+    const store = getWorkStore(runtime.env);
+    const run = await store.getRun(runtime.run.canonicalRunId as RunId);
+    if (!run) return undefined;
+    const binding = await store.getBinding(run.bindingId);
+    if (!binding || binding.sourceVisibility === 'unknown') return undefined;
+    const lifecycle = new ShadowWorkLifecycle({
+      store,
+      runId: run.id,
+      attemptNumber: 1,
+      agentName: runtime.access.config.agentId,
+      canonicalModel: runtime.access.config.model,
+      flueInstanceRef: opaqueId('flueinstance', runtime.agentInstanceId),
+      sensitivity: binding.sourceVisibility,
+      routeEvidence: runtime.routeEvidence,
+    });
+    return await lifecycle.prepareExecution(preparedInput) ? lifecycle : undefined;
+  } catch {
+    console.warn('[work] Routine shadow lifecycle initialization failed; Workflow will continue');
+    return undefined;
+  }
+}
+
+function routineLifecycleFailureCode(failureClass: RoutineFailureClass): string {
+  const normalized = failureClass.replace(/[^a-z0-9_]/g, '_');
+  return normalized.length >= 3 && normalized.length <= 63
+    ? normalized
+    : 'routine_failed';
+}
+
 export default defineWorkflow({
   agent: routineAgent,
   input: InputSchema,
@@ -300,6 +360,7 @@ export default defineWorkflow({
       throw new Error('The routine Workflow was interrupted before execution could resume safely.');
     }
     let toolCallCount = 0;
+    let modelSettled = false;
     let promptUsage: PromptUsage | undefined;
     let promptModel: { provider: string; id: string } | undefined;
     const unsubscribe = observe((event) => {
@@ -314,6 +375,8 @@ export default defineWorkflow({
         runtime.access,
         runtime.env,
       );
+      const workLifecycle = await createRoutineShadowLifecycle(runtime, prepared.prompt);
+      if (workLifecycle) runtime.workLifecycle = workLifecycle;
       const remainingMs = runtime.run.deadlineAt - Date.now();
       if (remainingMs <= 0) {
         throw new RoutineRuntimeError(
@@ -322,12 +385,19 @@ export default defineWorkflow({
         );
       }
       const session = await harness.session();
+      await runtime.workLifecycle?.markInvoked();
       const response = await session.prompt(prepared.prompt, {
         result: RoutineModelResultSchema,
         signal: AbortSignal.timeout(remainingMs),
       });
       promptUsage = response.usage;
       promptModel = response.model;
+      await runtime.workLifecycle?.settleExecution({
+        outcome: 'succeeded',
+        rawStatus: 'flue_succeeded',
+        flueSubmissionRef: opaqueId('fluesubmission', runtime.flueRunId),
+      });
+      modelSettled = true;
       if (!(await prepared.validateMemoryLease())) {
         throw new RoutineRuntimeError(
           toolCallCount > 0 ? 'unknown_external_outcome' : 'access_denied',
@@ -349,8 +419,13 @@ export default defineWorkflow({
           access: runtime.access,
           message: result.message,
           changeKeyHash: result.changeKeyHash,
+          ...(runtime.workLifecycle ? { workLifecycle: runtime.workLifecycle } : {}),
         });
         delivered = true;
+      } else {
+        await runtime.workLifecycle?.settleWithoutDelivery({
+          terminalDisposition: 'no_op',
+        });
       }
       await runtime.usageRecorder?.recordTerminal({
         status: 'completed',
@@ -390,6 +465,14 @@ export default defineWorkflow({
       };
     } catch (error) {
       const failure = runtimeFailure(error, toolCallCount > 0);
+      if (!modelSettled) {
+        await runtime.workLifecycle?.settleExecution({
+          outcome: toolCallCount > 0 ? 'ambiguous' : 'failed',
+          rawStatus: toolCallCount > 0 ? 'flue_ambiguous' : 'flue_failed',
+          safeFailureCode: routineLifecycleFailureCode(failure.failureClass),
+          flueSubmissionRef: opaqueId('fluesubmission', runtime.flueRunId),
+        });
+      }
       const completeness = routineUsageCompleteness(promptUsage);
       await runtime.usageRecorder?.recordTerminal({
         status: failure.failureClass === 'workflow_interrupted' ? 'interrupted' : 'failed',
@@ -520,6 +603,7 @@ async function deliverFailureNoticeBestEffort(
       routine,
       access: runtime.access,
       publicError,
+      ...(runtime.workLifecycle ? { workLifecycle: runtime.workLifecycle } : {}),
     });
   } catch {
     // Terminal notices are one best-effort attempt. The run remains visible in

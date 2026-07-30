@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 
 import { AuditStoreLogic } from '../audit/store.ts';
-import type { AuditEvent } from '../audit/types.ts';
+import type { AuditEvent, WorkAuditEventType } from '../audit/types.ts';
 import { isCompiledModelProfileId } from '../model-catalog/profiles.ts';
 import { openStateDb, resolveStateDbPath, type NodeStateDb } from '../state/node-state-db.ts';
 import { inspectStateDbIntegrity, type StateDb } from '../state/state-db.ts';
@@ -22,8 +22,16 @@ import {
   type LedgerContentRecord,
   type LedgerContentRef,
   type PutLedgerContentInput,
+  type PrepareRunInput,
   type QuarantineRunInput,
+  type RecordRunResponseInput,
+  type RecordWorkActionInput,
   type RequireRunRecoveryInput,
+  type MarkRunExecutionInvokedInput,
+  type SettleRunExecutionInput,
+  type StartRunDeliveryInput,
+  type FinalizeRunDeliveryInput,
+  type SettleRunWithoutDeliveryInput,
   type RunExecutionRecord,
   type RunExecutionRouteInput,
   type RunId,
@@ -116,6 +124,22 @@ export class WorkStoreLogic {
           kind: 'execution',
           execution: this.recordRunExecutionRoute(request.input),
         };
+      case 'prepare_run_input':
+        return { kind: 'run', run: this.prepareRunInput(request.input) };
+      case 'mark_execution_invoked':
+        return { kind: 'execution', execution: this.markRunExecutionInvoked(request.input) };
+      case 'settle_execution':
+        return { kind: 'execution', execution: this.settleRunExecution(request.input) };
+      case 'record_run_response':
+        return { kind: 'run', run: this.recordRunResponse(request.input) };
+      case 'start_run_delivery':
+        return { kind: 'run', run: this.startRunDelivery(request.input) };
+      case 'finalize_run_delivery':
+        return { kind: 'run', run: this.finalizeRunDelivery(request.input) };
+      case 'settle_run_without_delivery':
+        return { kind: 'run', run: this.settleRunWithoutDelivery(request.input) };
+      case 'record_work_action':
+        return { kind: 'audit_events', events: [this.recordWorkAction(request.input)] };
       case 'get_execution':
         return {
           kind: 'execution',
@@ -514,7 +538,7 @@ export class WorkStoreLogic {
           compiled_profile, model_credential_ref, model_credential_version,
           model_invocation_status, started_at, finished_at, raw_settlement_ref,
           raw_settlement_status, outcome, safe_disagreement_code, safe_failure_code
-        ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, ?, NULL, NULL, NULL, NULL, NULL,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, NULL, NULL, NULL, NULL, NULL,
                   NULL, NULL, 'not_invoked', ?, NULL, NULL, NULL, 'pending', NULL, NULL)`,
         input.id,
         input.runId,
@@ -522,6 +546,7 @@ export class WorkStoreLogic {
         input.fencingToken,
         input.executorKind,
         input.agentName,
+        input.flueInstanceRef ?? null,
         input.canonicalModel,
         input.startedAt,
       );
@@ -532,6 +557,13 @@ export class WorkStoreLogic {
         input.startedAt,
         input.runId,
         input.fencingToken,
+      );
+      this.appendLifecycleAudit(
+        'work.execution_created',
+        input.runId,
+        input.startedAt,
+        { runExecutionId: input.id, runId: input.runId },
+        input.id,
       );
       return requiredExecution(this.getRunExecution(input.id));
     });
@@ -560,6 +592,13 @@ export class WorkStoreLogic {
         input.modelCredentialVersion ?? null,
         input.executionId,
       );
+      this.appendLifecycleAudit(
+        'work.execution_route_recorded',
+        execution.runId,
+        input.recordedAt,
+        { runExecutionId: input.executionId, runId: execution.runId },
+        input.executionId,
+      );
       return requiredExecution(this.getRunExecution(input.executionId));
     });
   }
@@ -567,6 +606,464 @@ export class WorkStoreLogic {
   getRunExecution(id: RunExecutionId): RunExecutionRecord | undefined {
     const row = this.db.get('SELECT * FROM run_executions WHERE id = ?', id);
     return row ? rowToExecution(row) : undefined;
+  }
+
+  prepareRunInput(input: PrepareRunInput): RunRecord {
+    validatePrepareRunInput(input);
+    return this.db.transaction(() => {
+      const run = requiredRun(this.getRun(input.runId));
+      if (run.preparedInputRef) {
+        const existing = this.getContent(run.preparedInputRef, input.preparedAt);
+        if (!existing || existing.sensitivity !== input.sensitivity) {
+          throw workError('work_prepared_input_unavailable', 'Run prepared input is unavailable.');
+        }
+        if (run.status === 'response_ready' && run.deliveryStatus === 'failed') {
+          this.db.run(
+            `UPDATE runs SET status = 'input_ready', policy_approved_output_ref = NULL,
+               rendered_payload_ref = NULL, delivery_status = 'not_ready', delivery_method = NULL,
+               delivery_attempt_id = NULL, delivery_ref = NULL, delivery_finalized_at = NULL,
+               safe_failure_code = NULL, updated_at = ?
+             WHERE id = ? AND status = 'response_ready' AND delivery_status = 'failed'`,
+            input.preparedAt,
+            input.runId,
+          );
+          return requiredRun(this.getRun(input.runId));
+        }
+        if (['input_ready', 'executing'].includes(run.status) || existing.body === input.body) {
+          return run;
+        }
+        throw workError('work_prepared_input_conflict', 'Run prepared input is immutable.');
+      }
+      if (!['admitted', 'queued', 'preparing_input'].includes(run.status)) {
+        throw workError('work_transition_invalid', 'Run cannot accept prepared input in this state.');
+      }
+      const content = this.putContentInTransaction({
+        sensitivity: input.sensitivity,
+        body: input.body,
+        createdAt: input.preparedAt,
+      });
+      this.assertRunContentSensitivity(run, content);
+      this.db.run(
+        `UPDATE runs SET prepared_input_ref = ?, status = 'input_ready', updated_at = ?
+         WHERE id = ? AND prepared_input_ref IS NULL
+           AND status IN ('admitted', 'queued', 'preparing_input')`,
+        content.ref,
+        input.preparedAt,
+        input.runId,
+      );
+      this.appendLifecycleAudit(
+        'work.input_prepared',
+        input.runId,
+        input.preparedAt,
+        { runId: input.runId },
+        content.ref,
+      );
+      return requiredRun(this.getRun(input.runId));
+    });
+  }
+
+  markRunExecutionInvoked(input: MarkRunExecutionInvokedInput): RunExecutionRecord {
+    validateMarkExecutionInvoked(input);
+    return this.db.transaction(() => {
+      const execution = requiredExecution(this.getRunExecution(input.executionId));
+      const run = requiredRun(this.getRun(execution.runId));
+      requireCurrentFence(run, execution, input.fencingToken);
+      if (execution.modelInvocationStatus === 'invoked') return execution;
+      if (execution.modelInvocationStatus !== 'ready') {
+        throw workError('work_transition_invalid', 'Execution route must be ready before invocation.');
+      }
+      this.db.run(
+        `UPDATE run_executions SET model_invocation_status = 'invoked'
+         WHERE id = ? AND model_invocation_status = 'ready'`,
+        input.executionId,
+      );
+      this.db.run('UPDATE runs SET updated_at = ? WHERE id = ?', input.invokedAt, run.id);
+      this.appendLifecycleAudit(
+        'work.execution_invoked',
+        run.id,
+        input.invokedAt,
+        { runExecutionId: input.executionId, runId: run.id },
+        input.executionId,
+      );
+      return requiredExecution(this.getRunExecution(input.executionId));
+    });
+  }
+
+  settleRunExecution(input: SettleRunExecutionInput): RunExecutionRecord {
+    validateSettleExecution(input);
+    return this.db.transaction(() => {
+      const execution = requiredExecution(this.getRunExecution(input.executionId));
+      const run = requiredRun(this.getRun(execution.runId));
+      requireCurrentFence(run, execution, input.fencingToken);
+      if (execution.outcome !== 'pending') {
+        if (sameExecutionSettlement(execution, input)) return execution;
+        throw workError('work_execution_conflict', 'Run execution is already settled.');
+      }
+      if (
+        input.modelInvocationStatus === 'not_invoked' &&
+        !['not_invoked', 'ready'].includes(execution.modelInvocationStatus)
+      ) {
+        throw workError('work_transition_invalid', 'Submitted execution cannot become not submitted.');
+      }
+      if (input.modelInvocationStatus === 'settled' && !['ready', 'invoked'].includes(execution.modelInvocationStatus)) {
+        throw workError('work_transition_invalid', 'Execution was not ready for settlement.');
+      }
+      if (
+        input.modelInvocationStatus === 'invoked' &&
+        execution.modelInvocationStatus !== 'invoked'
+      ) {
+        throw workError('work_transition_invalid', 'Unsubmitted execution cannot be marked invoked.');
+      }
+      this.db.run(
+        `UPDATE run_executions SET model_invocation_status = ?, finished_at = ?,
+           flue_submission_ref = ?, raw_settlement_ref = ?, raw_settlement_status = ?, outcome = ?,
+           safe_disagreement_code = ?, safe_failure_code = ?
+         WHERE id = ? AND outcome = 'pending'`,
+        input.modelInvocationStatus,
+        input.finishedAt,
+        input.flueSubmissionRef ?? null,
+        input.rawSettlementRef ?? null,
+        input.rawSettlementStatus ?? null,
+        input.outcome,
+        input.safeDisagreementCode ?? null,
+        input.safeFailureCode ?? null,
+        input.executionId,
+      );
+      this.db.run('UPDATE runs SET updated_at = ? WHERE id = ?', input.finishedAt, run.id);
+      this.appendLifecycleAudit(
+        'work.execution_settled',
+        run.id,
+        input.finishedAt,
+        { runExecutionId: input.executionId, runId: run.id },
+        input.executionId,
+        input.safeFailureCode ?? input.safeDisagreementCode ?? null,
+        input.outcome === 'succeeded' ? 'success' : 'failure',
+      );
+      return requiredExecution(this.getRunExecution(input.executionId));
+    });
+  }
+
+  recordRunResponse(input: RecordRunResponseInput): RunRecord {
+    validateRecordRunResponse(input);
+    return this.db.transaction(() => {
+      const run = requiredRun(this.getRun(input.runId));
+      requireRunFence(run, input.fencingToken);
+      if (run.policyApprovedOutputRef || run.renderedPayloadRef) {
+        const approved = run.policyApprovedOutputRef
+          ? this.getContent(run.policyApprovedOutputRef, input.recordedAt)
+          : undefined;
+        const rendered = run.renderedPayloadRef
+          ? this.getContent(run.renderedPayloadRef, input.recordedAt)
+          : undefined;
+        const sameApproved = approved?.body === input.approvedOutput &&
+          approved.sensitivity === input.sensitivity;
+        if (
+          sameApproved &&
+          rendered?.body === input.renderedPayload &&
+          rendered.sensitivity === input.sensitivity
+        ) return run;
+        // A transport that proved it did not deliver may select its documented
+        // fallback. Preserve the approved output ref and replace only the exact
+        // adapter render before the next external attempt.
+        if (sameApproved && run.deliveryStatus === 'failed') {
+          const replacement = this.putContentInTransaction({
+            sensitivity: input.sensitivity,
+            body: input.renderedPayload,
+            createdAt: input.recordedAt,
+          });
+          this.assertRunContentSensitivity(run, replacement);
+          this.db.run(
+            `UPDATE runs SET rendered_payload_ref = ?, delivery_status = 'not_ready',
+               delivery_method = NULL, delivery_attempt_id = NULL, delivery_ref = NULL,
+               delivery_finalized_at = NULL, safe_failure_code = NULL, updated_at = ?
+             WHERE id = ? AND fencing_token = ? AND delivery_status = 'failed'`,
+            replacement.ref,
+            input.recordedAt,
+            input.runId,
+            input.fencingToken,
+          );
+          this.appendLifecycleAudit(
+            'work.response_recorded',
+            input.runId,
+            input.recordedAt,
+            { runId: input.runId },
+            replacement.ref,
+          );
+          return requiredRun(this.getRun(input.runId));
+        }
+        throw workError('work_response_conflict', 'Run response is already immutable.');
+      }
+      if (!['executing', 'input_ready'].includes(run.status)) {
+        throw workError('work_transition_invalid', 'Run cannot accept a response in this state.');
+      }
+      if (input.executionId) {
+        const execution = requiredExecution(this.getRunExecution(input.executionId));
+        if (execution.runId !== run.id) {
+          throw workError('work_reference_invalid', 'Response execution belongs to another Run.');
+        }
+        requireCurrentFence(run, execution, input.fencingToken);
+      }
+      const approved = this.putContentInTransaction({
+        sensitivity: input.sensitivity,
+        body: input.approvedOutput,
+        createdAt: input.recordedAt,
+      });
+      const rendered = this.putContentInTransaction({
+        sensitivity: input.sensitivity,
+        body: input.renderedPayload,
+        createdAt: input.recordedAt,
+      });
+      this.assertRunContentSensitivity(run, approved);
+      this.assertRunContentSensitivity(run, rendered);
+      this.db.run(
+        `UPDATE runs SET policy_approved_output_ref = ?, rendered_payload_ref = ?,
+           status = 'response_ready', delivery_status = 'not_ready', updated_at = ?
+         WHERE id = ? AND fencing_token = ?`,
+        approved.ref,
+        rendered.ref,
+        input.recordedAt,
+        input.runId,
+        input.fencingToken,
+      );
+      this.appendLifecycleAudit(
+        'work.response_recorded',
+        input.runId,
+        input.recordedAt,
+        { runId: input.runId },
+        rendered.ref,
+      );
+      return requiredRun(this.getRun(input.runId));
+    });
+  }
+
+  startRunDelivery(input: StartRunDeliveryInput): RunRecord {
+    validateStartDelivery(input);
+    return this.db.transaction(() => {
+      const run = requiredRun(this.getRun(input.runId));
+      requireRunFence(run, input.fencingToken);
+      if (run.deliveryStatus === 'pending' && run.deliveryAttemptId === input.attemptId) {
+        if (run.deliveryMethod === input.method) return run;
+        throw workError('work_delivery_conflict', 'Delivery attempt method changed.');
+      }
+      if (run.status !== 'response_ready' || !['not_ready', 'failed'].includes(run.deliveryStatus)) {
+        throw workError('work_transition_invalid', 'Run is not ready for delivery.');
+      }
+      this.db.run(
+        `UPDATE runs SET delivery_status = 'pending', delivery_method = ?,
+           delivery_attempt_id = ?, delivery_ref = NULL, delivery_finalized_at = NULL,
+           safe_failure_code = NULL, updated_at = ?
+         WHERE id = ? AND fencing_token = ?`,
+        input.method,
+        input.attemptId,
+        input.startedAt,
+        input.runId,
+        input.fencingToken,
+      );
+      this.appendLifecycleAudit(
+        'work.delivery_started',
+        input.runId,
+        input.startedAt,
+        { deliveryAttemptId: input.attemptId, runId: input.runId },
+        input.attemptId,
+      );
+      return requiredRun(this.getRun(input.runId));
+    });
+  }
+
+  finalizeRunDelivery(input: FinalizeRunDeliveryInput): RunRecord {
+    validateFinalizeDelivery(input);
+    return this.db.transaction(() => {
+      const run = requiredRun(this.getRun(input.runId));
+      requireRunFence(run, input.fencingToken);
+      if (run.deliveryAttemptId !== input.attemptId || run.deliveryStatus !== 'pending') {
+        if (sameDeliveryFinalization(run, input)) return run;
+        throw workError('work_delivery_conflict', 'Delivery attempt is not current.');
+      }
+      const delivered = input.outcome === 'delivered';
+      const unknown = input.outcome === 'unknown';
+      const terminalDisposition = delivered
+        ? (input.terminalDisposition ?? 'succeeded')
+        : null;
+      if (delivered) {
+        this.db.run(
+          `UPDATE runs SET delivery_status = 'delivered', delivery_ref = ?,
+             delivery_finalized_at = ?, status = 'settled', terminal_disposition = ?,
+             safe_failure_code = ?, settled_at = ?, updated_at = ?
+           WHERE id = ? AND fencing_token = ? AND delivery_status = 'pending'`,
+          input.deliveryRef!,
+          input.finalizedAt,
+          terminalDisposition,
+          input.safeFailureCode ?? null,
+          input.finalizedAt,
+          input.finalizedAt,
+          input.runId,
+          input.fencingToken,
+        );
+      } else if (unknown) {
+        this.db.run(
+          `UPDATE runs SET delivery_status = 'unknown', status = 'recovery_required',
+             safe_failure_code = ?, updated_at = ?
+           WHERE id = ? AND fencing_token = ? AND delivery_status = 'pending'`,
+          input.safeFailureCode ?? 'delivery_unknown',
+          input.finalizedAt,
+          input.runId,
+          input.fencingToken,
+        );
+      } else {
+        this.db.run(
+          `UPDATE runs SET delivery_status = 'failed', safe_failure_code = ?, updated_at = ?
+           WHERE id = ? AND fencing_token = ? AND delivery_status = 'pending'`,
+          input.safeFailureCode ?? 'delivery_failed',
+          input.finalizedAt,
+          input.runId,
+          input.fencingToken,
+        );
+      }
+      const eventType: WorkAuditEventType = delivered
+        ? 'work.delivery_delivered'
+        : unknown
+          ? 'work.delivery_unknown'
+          : 'work.delivery_failed';
+      this.appendLifecycleAudit(
+        eventType,
+        input.runId,
+        input.finalizedAt,
+        { deliveryAttemptId: input.attemptId, runId: input.runId },
+        input.attemptId,
+        input.safeFailureCode ?? (unknown ? 'delivery_unknown' : delivered ? null : 'delivery_failed'),
+        delivered ? 'success' : 'failure',
+      );
+      return requiredRun(this.getRun(input.runId));
+    });
+  }
+
+  settleRunWithoutDelivery(input: SettleRunWithoutDeliveryInput): RunRecord {
+    validateSettleWithoutDelivery(input);
+    return this.db.transaction(() => {
+      const run = requiredRun(this.getRun(input.runId));
+      requireRunFence(run, input.fencingToken);
+      if (run.status === 'settled') {
+        if (
+          run.terminalDisposition === input.terminalDisposition &&
+          run.deliveryStatus === 'not_applicable' &&
+          run.settledAt === input.settledAt
+        ) return run;
+        throw workError('work_transition_invalid', 'Run is already settled.');
+      }
+      if (!['input_ready', 'executing', 'response_ready'].includes(run.status)) {
+        throw workError('work_transition_invalid', 'Run cannot settle without delivery.');
+      }
+      this.db.run(
+        `UPDATE runs SET status = 'settled', terminal_disposition = ?,
+           delivery_status = 'not_applicable', delivery_method = NULL,
+           delivery_attempt_id = NULL, delivery_ref = NULL, delivery_finalized_at = NULL,
+           safe_failure_code = ?, settled_at = ?, updated_at = ?
+         WHERE id = ? AND fencing_token = ? AND status <> 'settled'`,
+        input.terminalDisposition,
+        input.safeFailureCode ?? null,
+        input.settledAt,
+        input.settledAt,
+        input.runId,
+        input.fencingToken,
+      );
+      this.appendLifecycleAudit(
+        'work.run_settled_without_delivery',
+        input.runId,
+        input.settledAt,
+        { runId: input.runId },
+        `${input.runId}:${input.terminalDisposition}`,
+        input.safeFailureCode ?? null,
+        input.terminalDisposition === 'no_op' ? 'success' : 'failure',
+      );
+      return requiredRun(this.getRun(input.runId));
+    });
+  }
+
+  recordWorkAction(input: RecordWorkActionInput): AuditEvent {
+    validateWorkAction(input);
+    return this.db.transaction(() => {
+      const run = requiredRun(this.getRun(input.runId));
+      const execution = requiredExecution(this.getRunExecution(input.runExecutionId));
+      requireCurrentFence(run, execution, input.fencingToken);
+      const existing = this.audit.findByIdempotencyKey(input.idempotencyKey);
+      if (existing) {
+        if (existing.eventId === input.eventId) return existing;
+        throw workError('work_action_conflict', 'Action receipt identity already exists.');
+      }
+      const eventType = `work.action_${input.status}`;
+      const event = this.audit.append({
+        eventId: input.eventId,
+        domain: 'work',
+        eventType,
+        outcome: input.status === 'denied'
+          ? 'denied'
+          : input.status === 'failed' || input.status === 'unknown'
+            ? 'failure'
+            : 'success',
+        actorClass: 'system',
+        subjectId: input.runId,
+        subjectVersion: 1,
+        createdAt: input.createdAt,
+        reasonCode: input.reasonCode ?? null,
+        metadataJson: JSON.stringify({
+          actionAttemptId: input.actionAttemptId,
+          runId: input.runId,
+          runExecutionId: input.runExecutionId,
+          actionClass: input.actionClass,
+          targetKind: input.targetKind,
+          flueCorrelation: input.flueCorrelation,
+          status: input.status,
+        }),
+        idempotencyKey: input.idempotencyKey,
+      });
+      if (input.status === 'unknown') {
+        this.db.run(
+          `UPDATE runs SET status = 'recovery_required', safe_failure_code = 'action_unknown',
+             updated_at = ? WHERE id = ? AND status <> 'settled'`,
+          input.createdAt,
+          input.runId,
+        );
+      }
+      return event;
+    });
+  }
+
+  private appendLifecycleAudit(
+    eventType: WorkAuditEventType,
+    runId: RunId,
+    createdAt: number,
+    metadata: Record<string, string>,
+    identity: string,
+    reasonCode: string | null = null,
+    outcome: AuditEvent['outcome'] = 'success',
+  ): AuditEvent {
+    const eventId = `work:${eventType.slice('work.'.length)}:${identity}`;
+    return this.audit.append({
+      eventId,
+      domain: 'work',
+      eventType,
+      outcome,
+      actorClass: 'system',
+      subjectId: runId,
+      subjectVersion: 1,
+      createdAt,
+      reasonCode,
+      metadataJson: JSON.stringify(metadata),
+      idempotencyKey: eventId,
+    });
+  }
+
+  private assertRunContentSensitivity(
+    run: RunRecord,
+    content: LedgerContentRecord,
+  ): void {
+    const work = requiredWork(this.getWork(run.workId));
+    if (content.sensitivity === 'private' && work.maximumSensitivity !== 'private') {
+      throw workError(
+        'work_sensitivity_invalid',
+        'Private content requires a private Work sensitivity ceiling.',
+      );
+    }
   }
 
   requireRecovery(input: RequireRunRecoveryInput): RunRecord {
@@ -908,6 +1405,30 @@ export class SqliteWorkStore implements WorkStore {
   async recordRunExecutionRoute(input: RunExecutionRouteInput) {
     return this.logic.recordRunExecutionRoute(input);
   }
+  async prepareRunInput(input: PrepareRunInput) {
+    return this.logic.prepareRunInput(input);
+  }
+  async markRunExecutionInvoked(input: MarkRunExecutionInvokedInput) {
+    return this.logic.markRunExecutionInvoked(input);
+  }
+  async settleRunExecution(input: SettleRunExecutionInput) {
+    return this.logic.settleRunExecution(input);
+  }
+  async recordRunResponse(input: RecordRunResponseInput) {
+    return this.logic.recordRunResponse(input);
+  }
+  async startRunDelivery(input: StartRunDeliveryInput) {
+    return this.logic.startRunDelivery(input);
+  }
+  async finalizeRunDelivery(input: FinalizeRunDeliveryInput) {
+    return this.logic.finalizeRunDelivery(input);
+  }
+  async settleRunWithoutDelivery(input: SettleRunWithoutDeliveryInput) {
+    return this.logic.settleRunWithoutDelivery(input);
+  }
+  async recordWorkAction(input: RecordWorkActionInput) {
+    return this.logic.recordWorkAction(input);
+  }
   async getRunExecution(id: RunExecutionId) {
     return this.logic.getRunExecution(id);
   }
@@ -1199,6 +1720,7 @@ function validateExecutionInput(input: CreateRunExecutionInput): void {
       'executorKind',
       'agentName',
       'canonicalModel',
+      'flueInstanceRef',
       'startedAt',
     ],
     'Run execution',
@@ -1212,6 +1734,9 @@ function validateExecutionInput(input: CreateRunExecutionInput): void {
   }
   assertSafeRef(input.agentName, 'Agent name');
   assertSafeModel(input.canonicalModel);
+  if (input.flueInstanceRef !== undefined && input.flueInstanceRef !== null) {
+    assertSafeRef(input.flueInstanceRef, 'Flue instance ref');
+  }
   assertTimestamp(input.startedAt, 'Execution start time');
 }
 
@@ -1220,6 +1745,7 @@ function validateRouteInput(input: RunExecutionRouteInput): void {
     input,
     [
       'executionId',
+      'recordedAt',
       'providerAuthRoute',
       'catalogSource',
       'catalogRevision',
@@ -1231,6 +1757,7 @@ function validateRouteInput(input: RunExecutionRouteInput): void {
     'Run execution route',
   );
   assertOpaqueId(input.executionId, 'Run execution ID');
+  assertTimestamp(input.recordedAt, 'Execution route time');
   if (
     input.providerAuthRoute !== undefined &&
     input.providerAuthRoute !== null &&
@@ -1280,6 +1807,217 @@ function validateRouteInput(input: RunExecutionRouteInput): void {
   ] as const) {
     if (typeof value === 'string') rejectSecretString(value, label);
   }
+}
+
+function validatePrepareRunInput(input: PrepareRunInput): void {
+  assertExactKeys(input, ['runId', 'sensitivity', 'body', 'preparedAt'], 'Prepared input');
+  assertOpaqueId(input.runId, 'Prepared input Run ID');
+  if (!['public', 'private'].includes(input.sensitivity)) {
+    throw workError('work_content_invalid', 'Prepared input sensitivity is invalid.');
+  }
+  if (typeof input.body !== 'string' || Buffer.byteLength(input.body, 'utf8') < 1) {
+    throw workError('work_content_invalid', 'Prepared input body is invalid.');
+  }
+  assertTimestamp(input.preparedAt, 'Prepared input time');
+}
+
+function validateMarkExecutionInvoked(input: MarkRunExecutionInvokedInput): void {
+  assertExactKeys(input, ['executionId', 'fencingToken', 'invokedAt'], 'Execution invocation');
+  assertOpaqueId(input.executionId, 'Run execution ID');
+  boundedInteger(input.fencingToken, 1, Number.MAX_SAFE_INTEGER, 'Execution fencing token');
+  assertTimestamp(input.invokedAt, 'Execution invocation time');
+}
+
+function validateSettleExecution(input: SettleRunExecutionInput): void {
+  assertExactKeys(
+    input,
+    [
+      'executionId',
+      'fencingToken',
+      'outcome',
+      'modelInvocationStatus',
+      'rawSettlementRef',
+      'rawSettlementStatus',
+      'safeDisagreementCode',
+      'safeFailureCode',
+      'flueSubmissionRef',
+      'finishedAt',
+    ],
+    'Execution settlement',
+  );
+  assertOpaqueId(input.executionId, 'Run execution ID');
+  boundedInteger(input.fencingToken, 1, Number.MAX_SAFE_INTEGER, 'Execution fencing token');
+  if (!['not_submitted', 'succeeded', 'failed', 'ambiguous'].includes(input.outcome)) {
+    throw workError('work_execution_invalid', 'Execution outcome is invalid.');
+  }
+  if (!['not_invoked', 'invoked', 'settled'].includes(input.modelInvocationStatus)) {
+    throw workError('work_execution_invalid', 'Execution invocation settlement is invalid.');
+  }
+  if (input.outcome === 'not_submitted' || input.outcome === 'failed') {
+    if (!input.safeFailureCode || !SAFE_REASON.test(input.safeFailureCode)) {
+      throw workError('work_execution_invalid', 'Failed execution requires a safe failure code.');
+    }
+  }
+  for (const [label, value] of [
+    ['Raw settlement ref', input.rawSettlementRef],
+    ['Raw settlement status', input.rawSettlementStatus],
+    ['Safe disagreement code', input.safeDisagreementCode],
+    ['Safe failure code', input.safeFailureCode],
+    ['Flue submission ref', input.flueSubmissionRef],
+  ] as const) {
+    if (value !== undefined && value !== null) assertSafeRef(value, label);
+  }
+  assertTimestamp(input.finishedAt, 'Execution settlement time');
+}
+
+function validateRecordRunResponse(input: RecordRunResponseInput): void {
+  assertExactKeys(
+    input,
+    [
+      'runId',
+      'executionId',
+      'fencingToken',
+      'sensitivity',
+      'approvedOutput',
+      'renderedPayload',
+      'recordedAt',
+    ],
+    'Run response',
+  );
+  assertOpaqueId(input.runId, 'Response Run ID');
+  if (input.executionId !== undefined && input.executionId !== null) {
+    assertOpaqueId(input.executionId, 'Response execution ID');
+  }
+  boundedInteger(input.fencingToken, 1, Number.MAX_SAFE_INTEGER, 'Response fencing token');
+  if (!['public', 'private'].includes(input.sensitivity)) {
+    throw workError('work_content_invalid', 'Response sensitivity is invalid.');
+  }
+  for (const [label, value] of [
+    ['Approved output', input.approvedOutput],
+    ['Rendered payload', input.renderedPayload],
+  ] as const) {
+    if (typeof value !== 'string' || Buffer.byteLength(value, 'utf8') < 1) {
+      throw workError('work_content_invalid', `${label} body is invalid.`);
+    }
+  }
+  assertTimestamp(input.recordedAt, 'Response time');
+}
+
+function validateStartDelivery(input: StartRunDeliveryInput): void {
+  assertExactKeys(
+    input,
+    ['runId', 'fencingToken', 'method', 'attemptId', 'startedAt'],
+    'Delivery start',
+  );
+  assertOpaqueId(input.runId, 'Delivery Run ID');
+  boundedInteger(input.fencingToken, 1, Number.MAX_SAFE_INTEGER, 'Delivery fencing token');
+  assertSafeRef(input.method, 'Delivery method');
+  assertSafeRef(input.attemptId, 'Delivery attempt ID');
+  assertTimestamp(input.startedAt, 'Delivery start time');
+}
+
+function validateFinalizeDelivery(input: FinalizeRunDeliveryInput): void {
+  assertExactKeys(
+    input,
+    [
+      'runId',
+      'fencingToken',
+      'attemptId',
+      'outcome',
+      'deliveryRef',
+      'terminalDisposition',
+      'safeFailureCode',
+      'finalizedAt',
+    ],
+    'Delivery finalization',
+  );
+  assertOpaqueId(input.runId, 'Delivery Run ID');
+  boundedInteger(input.fencingToken, 1, Number.MAX_SAFE_INTEGER, 'Delivery fencing token');
+  assertSafeRef(input.attemptId, 'Delivery attempt ID');
+  if (!['delivered', 'failed', 'unknown'].includes(input.outcome)) {
+    throw workError('work_delivery_invalid', 'Delivery outcome is invalid.');
+  }
+  if (input.outcome === 'delivered') {
+    if (!input.deliveryRef) {
+      throw workError('work_delivery_invalid', 'Delivered outcome requires a response reference.');
+    }
+    assertSafeRef(input.deliveryRef, 'Delivery response reference');
+    if (
+      input.terminalDisposition !== undefined &&
+      input.terminalDisposition !== null &&
+      !['succeeded', 'no_op', 'failed', 'skipped', 'cancelled', 'superseded'].includes(
+        input.terminalDisposition,
+      )
+    ) {
+      throw workError('work_delivery_invalid', 'Delivery terminal disposition is invalid.');
+    }
+  } else if (input.deliveryRef !== undefined && input.deliveryRef !== null) {
+    throw workError('work_delivery_invalid', 'Unconfirmed delivery cannot have a response reference.');
+  }
+  if (input.safeFailureCode !== undefined && input.safeFailureCode !== null) {
+    if (!SAFE_REASON.test(input.safeFailureCode)) {
+      throw workError('work_delivery_invalid', 'Delivery failure code is invalid.');
+    }
+  }
+  assertTimestamp(input.finalizedAt, 'Delivery finalization time');
+}
+
+function validateSettleWithoutDelivery(input: SettleRunWithoutDeliveryInput): void {
+  assertExactKeys(
+    input,
+    ['runId', 'fencingToken', 'terminalDisposition', 'safeFailureCode', 'settledAt'],
+    'Run settlement without delivery',
+  );
+  assertOpaqueId(input.runId, 'Settlement Run ID');
+  boundedInteger(input.fencingToken, 1, Number.MAX_SAFE_INTEGER, 'Settlement fencing token');
+  if (!['no_op', 'failed', 'skipped', 'cancelled', 'superseded'].includes(input.terminalDisposition)) {
+    throw workError('work_transition_invalid', 'Terminal disposition is invalid.');
+  }
+  if (input.safeFailureCode !== undefined && input.safeFailureCode !== null) {
+    if (!SAFE_REASON.test(input.safeFailureCode)) {
+      throw workError('work_transition_invalid', 'Settlement failure code is invalid.');
+    }
+  }
+  assertTimestamp(input.settledAt, 'Run settlement time');
+}
+
+function validateWorkAction(input: RecordWorkActionInput): void {
+  assertExactKeys(
+    input,
+    [
+      'eventId',
+      'idempotencyKey',
+      'runId',
+      'runExecutionId',
+      'fencingToken',
+      'actionAttemptId',
+      'actionClass',
+      'targetKind',
+      'flueCorrelation',
+      'status',
+      'reasonCode',
+      'createdAt',
+    ],
+    'Work action receipt',
+  );
+  assertSafeRef(input.eventId, 'Action event ID');
+  assertSafeRef(input.idempotencyKey, 'Action idempotency key');
+  assertOpaqueId(input.runId, 'Action Run ID');
+  assertOpaqueId(input.runExecutionId, 'Action execution ID');
+  boundedInteger(input.fencingToken, 1, Number.MAX_SAFE_INTEGER, 'Action fencing token');
+  assertSafeRef(input.actionAttemptId, 'Action attempt ID');
+  assertSafeRef(input.actionClass, 'Action class');
+  assertSafeRef(input.targetKind, 'Action target kind');
+  assertSafeRef(input.flueCorrelation, 'Action Flue correlation');
+  if (!['denied', 'started', 'succeeded', 'failed', 'unknown'].includes(input.status)) {
+    throw workError('work_action_invalid', 'Action receipt status is invalid.');
+  }
+  if (input.reasonCode !== undefined && input.reasonCode !== null) {
+    if (!SAFE_REASON.test(input.reasonCode)) {
+      throw workError('work_action_invalid', 'Action reason code is invalid.');
+    }
+  }
+  assertTimestamp(input.createdAt, 'Action receipt time');
 }
 
 function validateRecoveryInput(input: RequireRunRecoveryInput): void {
@@ -1543,6 +2281,7 @@ function sameExecution(record: RunExecutionRecord, input: CreateRunExecutionInpu
     record.executorKind === input.executorKind &&
     record.agentName === input.agentName &&
     record.canonicalModel === input.canonicalModel &&
+    record.flueInstanceRef === (input.flueInstanceRef ?? null) &&
     record.startedAt === input.startedAt
   );
 }
@@ -1557,6 +2296,62 @@ function sameRoute(record: RunExecutionRecord, input: RunExecutionRouteInput): b
     record.modelCredentialRef === (input.modelCredentialRef ?? null) &&
     record.modelCredentialVersion === (input.modelCredentialVersion ?? null)
   );
+}
+
+function requireRunFence(run: RunRecord, fencingToken: number): void {
+  if (run.fencingToken !== fencingToken) {
+    throw workError('work_fence_stale', 'Run lifecycle fencing token is stale.');
+  }
+}
+
+function requireCurrentFence(
+  run: RunRecord,
+  execution: RunExecutionRecord,
+  fencingToken: number,
+): void {
+  if (
+    execution.runId !== run.id ||
+    execution.fencingToken !== fencingToken ||
+    run.fencingToken !== fencingToken
+  ) {
+    throw workError('work_fence_stale', 'Run execution fencing token is stale.');
+  }
+}
+
+function sameExecutionSettlement(
+  execution: RunExecutionRecord,
+  input: SettleRunExecutionInput,
+): boolean {
+  return (
+    execution.fencingToken === input.fencingToken &&
+    execution.outcome === input.outcome &&
+    execution.modelInvocationStatus === input.modelInvocationStatus &&
+    execution.rawSettlementRef === (input.rawSettlementRef ?? null) &&
+    execution.rawSettlementStatus === (input.rawSettlementStatus ?? null) &&
+    execution.safeDisagreementCode === (input.safeDisagreementCode ?? null) &&
+    execution.safeFailureCode === (input.safeFailureCode ?? null) &&
+    execution.flueSubmissionRef === (input.flueSubmissionRef ?? null) &&
+    execution.finishedAt === input.finishedAt
+  );
+}
+
+function sameDeliveryFinalization(
+  run: RunRecord,
+  input: FinalizeRunDeliveryInput,
+): boolean {
+  if (run.deliveryAttemptId !== input.attemptId) return false;
+  if (input.outcome === 'delivered') {
+    return (
+      run.deliveryStatus === 'delivered' &&
+      run.deliveryRef === input.deliveryRef &&
+      run.deliveryFinalizedAt === input.finalizedAt &&
+      run.terminalDisposition === (input.terminalDisposition ?? 'succeeded')
+    );
+  }
+  if (input.outcome === 'unknown') {
+    return run.deliveryStatus === 'unknown' && run.status === 'recovery_required';
+  }
+  return run.deliveryStatus === 'failed';
 }
 
 function rowToWork(row: Record<string, unknown>): WorkRecord {

@@ -842,6 +842,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           client,
           turnId: job.id,
           usageExecutionId: `exec:${job.id}:${attempt}`,
+          ...(job.runId ? { runId: job.runId, runAttempt: attempt } : {}),
           usageStore,
           onUsagePersistence: (event) => {
             stores.turnJobs.recordUsagePersistence(job.id, event);

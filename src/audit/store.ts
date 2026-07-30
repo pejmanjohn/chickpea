@@ -187,6 +187,17 @@ function validateWorkMetadata(eventType: string, metadata: Record<string, unknow
     'work.run_quarantined': {
       keys: ['adminCredentialId', 'authOrigin', 'operatorLabel', 'requestId', 'runId'],
     },
+    'work.input_prepared': { keys: ['runId'] },
+    'work.execution_created': { keys: ['runExecutionId', 'runId'] },
+    'work.execution_route_recorded': { keys: ['runExecutionId', 'runId'] },
+    'work.execution_invoked': { keys: ['runExecutionId', 'runId'] },
+    'work.execution_settled': { keys: ['runExecutionId', 'runId'] },
+    'work.response_recorded': { keys: ['runId'] },
+    'work.delivery_started': { keys: ['deliveryAttemptId', 'runId'] },
+    'work.delivery_delivered': { keys: ['deliveryAttemptId', 'runId'] },
+    'work.delivery_failed': { keys: ['deliveryAttemptId', 'runId'] },
+    'work.delivery_unknown': { keys: ['deliveryAttemptId', 'runId'] },
+    'work.run_settled_without_delivery': { keys: ['runId'] },
     'work.action_denied': {
       keys: actionMetadataKeys(),
       status: 'denied',

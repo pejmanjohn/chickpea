@@ -433,6 +433,7 @@ test('RunExecution keeps route evidence immutable and rejects internal or secret
     assert.equal(execution.modelInvocationStatus, 'not_invoked');
     const route = store.recordRunExecutionRoute({
       executionId,
+      recordedAt: NOW + 1,
       providerAuthRoute: 'openai_subscription',
       catalogSource: 'bundled',
       catalogRevision: 'revision:0',
@@ -446,6 +447,7 @@ test('RunExecution keeps route evidence immutable and rejects internal or secret
     assert.equal(
       store.recordRunExecutionRoute({
         executionId,
+        recordedAt: NOW + 1,
         providerAuthRoute: 'openai_subscription',
         catalogSource: 'bundled',
         catalogRevision: 'revision:0',
@@ -459,6 +461,7 @@ test('RunExecution keeps route evidence immutable and rejects internal or secret
     assert.throws(
       () => store.recordRunExecutionRoute({
         executionId,
+        recordedAt: NOW + 1,
         providerAuthRoute: 'openai_api_key',
         modelCredentialRef: 'openai_platform',
         modelCredentialVersion: 1,
@@ -486,6 +489,7 @@ test('RunExecution keeps route evidence immutable and rejects internal or secret
     assert.throws(
       () => store.recordRunExecutionRoute({
         executionId: nextId,
+        recordedAt: NOW + 2,
         providerAuthRoute: 'openai_api_key',
         modelCredentialRef: 'sk-secret-value',
         modelCredentialVersion: 1,
@@ -495,6 +499,7 @@ test('RunExecution keeps route evidence immutable and rejects internal or secret
     assert.throws(
       () => store.recordRunExecutionRoute({
         executionId: nextId,
+        recordedAt: NOW + 2,
         providerAuthRoute: 'openai_api_key',
         transportMarker: 'internal',
       } as never),
@@ -689,6 +694,7 @@ test('Routine compatibility links preserve coordinator admission and project can
     });
     work.recordRunExecutionRoute({
       executionId,
+      recordedAt: NOW + 1,
       providerAuthRoute: 'openai_subscription',
       catalogSource: 'bundled',
       catalogRevision: 'revision:0',

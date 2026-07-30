@@ -16,6 +16,7 @@ import type {
   RoutineRun,
   RoutineStore,
 } from '../src/routines/types.ts';
+import type { ShadowWorkLifecycle } from '../src/work/lifecycle.ts';
 
 const routine = {
   id: 'routine_test', name: '<Daily & write>', channelId: 'C_TEST', timezone: 'UTC',
@@ -152,4 +153,46 @@ test('terminal notices point to safe history and share the same dedupe lease', a
   assert.match(blocks, /View in Audit/);
   assert.match(blocks, /anthropic\/claude-sonnet-4/);
   assert.deepEqual(events, ['claim', 'record:delivered:1785000000.000200']);
+});
+
+test('routine render is durable before Slack and the receipt settles the same Work attempt', async () => {
+  const events: string[] = [];
+  const workLifecycle = {
+    async beforeDelivery(input: { approvedOutput: string; renderedPayload: string }) {
+      events.push('work:before');
+      assert.equal(input.approvedOutput, 'Canonical routine output');
+      assert.match(input.renderedPayload, /slack_chat_post_message/);
+      return 'delivery_routine_work';
+    },
+    async afterDelivery(input: { outcome: string; deliveryRef?: string }) {
+      events.push(`work:after:${input.outcome}:${input.deliveryRef ?? ''}`);
+    },
+  } as unknown as ShadowWorkLifecycle;
+  const client = new WebClient('xoxb-test', {
+    slackApiUrl: 'https://slack.invalid/api/', retryConfig: { retries: 0 },
+    fetch: async () => {
+      events.push('slack:post');
+      return new Response(
+        JSON.stringify({ ok: true, channel: 'C_TEST', ts: '1785000000.000700' }),
+        { headers: { 'content-type': 'application/json' } },
+      );
+    },
+  });
+  await deliverRoutineResult({
+    store: store(events),
+    run,
+    routine,
+    access,
+    message: 'Canonical routine output',
+    changeKeyHash: null,
+    workLifecycle,
+    now: () => 3_000,
+  }, client);
+  assert.deepEqual(events, [
+    'claim',
+    'work:before',
+    'slack:post',
+    'record:delivered:1785000000.000700',
+    'work:after:delivered:slack:C_TEST:1785000000.000700',
+  ]);
 });

@@ -26,13 +26,18 @@ const relayQueues = new Map<string, Map<string, RelayQueue>>();
 const activityStatusGeneration = new AsyncLocalStorage<string>();
 
 const ACTIVITY_STATUS_TRACESTATE_KEY = 'chickpea-status';
+const WORK_RUN_TRACESTATE_KEY = 'chickpea-run';
+const WORK_EXECUTION_TRACESTATE_KEY = 'chickpea-exec';
 
 /**
  * Encode the application-owned turn generation into Flue's persisted trace
  * carrier. Flue replaces the original HTTP request with a synthetic request
  * while executing a durable submission, but preserves traceparent/tracestate.
  */
-export function activityStatusTraceHeaders(generation: string): {
+export function activityStatusTraceHeaders(
+  generation: string,
+  correlation: { runId: string; runExecutionId: string } | undefined = undefined,
+): {
   traceparent: string;
   tracestate: string;
 } {
@@ -40,7 +45,15 @@ export function activityStatusTraceHeaders(generation: string): {
   const spanId = crypto.randomUUID().replaceAll('-', '').slice(0, 16);
   return {
     traceparent: `00-${traceId}-${spanId}-01`,
-    tracestate: `${ACTIVITY_STATUS_TRACESTATE_KEY}=${encodeURIComponent(generation)}`,
+    tracestate: [
+      `${ACTIVITY_STATUS_TRACESTATE_KEY}=${encodeURIComponent(generation)}`,
+      ...(correlation
+        ? [
+            `${WORK_RUN_TRACESTATE_KEY}=${encodeURIComponent(correlation.runId)}`,
+            `${WORK_EXECUTION_TRACESTATE_KEY}=${encodeURIComponent(correlation.runExecutionId)}`,
+          ]
+        : []),
+    ].join(','),
   };
 }
 

@@ -51,6 +51,7 @@ async function drain(env?: PlatformEnv): Promise<void> {
       await runTurn(job.turn, job.assignment, env, {
         turnId: job.id,
         usageExecutionId: `exec:${job.id}:${attempt}`,
+        ...(job.runId ? { runId: job.runId, runAttempt: attempt } : {}),
       });
       await markTurnDelivered(job.id);
     } catch (error) {

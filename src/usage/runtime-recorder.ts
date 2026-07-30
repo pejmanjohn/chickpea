@@ -32,6 +32,8 @@ export interface InteractiveUsageRecorderOptions {
   requestedModel: string | null;
   operationId: string;
   executionId: string;
+  runId?: string;
+  runExecutionId?: string;
   store: UsageStore;
   platformEnv?: PlatformEnv;
   processEnv?: NodeJS.ProcessEnv;
@@ -57,6 +59,7 @@ export class InteractiveUsageRecorder {
       operationId: options.operationId,
       operationKind: 'interactive_turn',
       sourceId: options.operationId,
+      ...(options.runId ? { runId: options.runId } : {}),
       startedAt: slackTimestampMs(options.turn.messageTs) ?? this.now(),
       installationId: installationId(options.platformEnv, options.processEnv),
       workspaceId: options.turn.workspaceId,
@@ -146,6 +149,9 @@ export class InteractiveUsageRecorder {
       phase,
       outcome,
       executionId: this.options.executionId,
+      ...(this.options.runExecutionId
+        ? { runExecutionId: this.options.runExecutionId }
+        : {}),
     });
     if (outcome !== 'recorded') {
       console.warn(`[usage] ${phase} persistence ${outcome}; model execution will continue`);
@@ -189,6 +195,8 @@ export class InteractiveUsageRecorder {
 export interface RoutineUsageRecorderOptions {
   operationId: string;
   executionId: string;
+  runId?: string;
+  runExecutionId?: string;
   startedAt: number;
   workspaceId: string;
   channelId: string;
@@ -230,6 +238,7 @@ export class RoutineUsageRecorder {
       operationId: options.operationId,
       operationKind: 'routine_run',
       sourceId: options.operationId,
+      ...(options.runId ? { runId: options.runId } : {}),
       startedAt: options.startedAt,
       installationId: installationId(options.platformEnv, options.processEnv),
       workspaceId: options.workspaceId,
@@ -274,6 +283,9 @@ export class RoutineUsageRecorder {
     const terminal = {
       operationId: this.admission.operationId,
       executionId: this.options.executionId,
+      ...(this.options.runExecutionId
+        ? { runExecutionId: this.options.runExecutionId }
+        : {}),
       status: input.status,
       finishedAt,
       observedAt: finishedAt,
