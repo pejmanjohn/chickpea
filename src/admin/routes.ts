@@ -1263,7 +1263,14 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
   });
 
-  app.get('/admin', (c) => c.html(renderAdminPage({ usageAdminUi: usageAdminUi(c) })));
+  const adminPage = (c: Context): Response => {
+    // The shell contains the full inline application. Never let a browser keep
+    // an older deployment's JavaScript after the Worker has been updated.
+    c.header('Cache-Control', 'no-store');
+    return c.html(renderAdminPage({ usageAdminUi: usageAdminUi(c) }));
+  };
+
+  app.get('/admin', adminPage);
 
   app.route('/admin/api', createMemoryAdminApi({
     store: memory,
@@ -3189,7 +3196,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   app.get('/admin/*', (c) => {
     const pathname = new URL(c.req.url).pathname;
     if (pathname.startsWith('/admin/api/')) return c.notFound();
-    return c.html(renderAdminPage({ usageAdminUi: usageAdminUi(c) }));
+    return adminPage(c);
   });
 
   return app;

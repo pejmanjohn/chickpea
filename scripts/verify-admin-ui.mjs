@@ -253,6 +253,7 @@ try {
       login.headers.get('location') === '/admin' &&
       sessionCookie.startsWith('flue_admin=') &&
       pageResponse.status === 200 &&
+      pageResponse.headers.get('cache-control') === 'no-store' &&
       pageHtml.includes('Access summary'),
     `login=${login.status} page=${pageResponse.status}`,
   );

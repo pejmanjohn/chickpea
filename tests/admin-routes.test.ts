@@ -697,6 +697,7 @@ test('admin API rejects a wrong bearer token and accepts the configured admin to
       headers: auth(ADMIN_TOKEN),
     });
     assert.equal(page.status, 200);
+    assert.equal(page.headers.get('cache-control'), 'no-store');
     assert.match(await page.text(), /Chickpea/);
   } finally {
     store.close();
@@ -760,10 +761,12 @@ test('client-routed admin paths serve the SPA page and POST login keeps a safe d
     // A deep page path serves the same SPA (client router takes it from there).
     const page = await app.request('/admin/profiles/agent_default', { headers: auth(ADMIN_TOKEN) });
     assert.equal(page.status, 200);
+    assert.equal(page.headers.get('cache-control'), 'no-store');
     assert.match(await page.text(), /Chickpea/);
 
     const channelsHub = await app.request('/admin/channels', { headers: auth(ADMIN_TOKEN) });
     assert.equal(channelsHub.status, 200);
+    assert.equal(channelsHub.headers.get('cache-control'), 'no-store');
     assert.match(await channelsHub.text(), /Chickpea/);
 
     const retiredSessionsIndex = await app.request('/admin/sessions', {
