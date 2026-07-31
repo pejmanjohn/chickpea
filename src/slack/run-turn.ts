@@ -67,6 +67,10 @@ import {
   classifySlackInteraction,
   type SlackInteractionIntent,
 } from './interaction-intent.ts';
+import {
+  startWorkChecklistHeartbeat,
+  type WorkChecklistHeartbeat,
+} from './work-checklist-heartbeat.ts';
 
 /**
  * The turn lifecycle, factored out of the Slack channel so BOTH the node detach
@@ -100,6 +104,9 @@ export function createSlackWebClient(botToken: string | undefined): WebClient {
   const slackApiUrl = process.env.SLACK_API_URL;
   return new WebClient(botToken, {
     retryConfig: { retries: 0 },
+    // The SDK default is no timeout. Bound every Slack request so an upstream
+    // connection cannot hold a durable turn claim or adapter cleanup forever.
+    timeout: 10_000,
     fetch: (input, init) => {
       const patchedInit =
         isCloudflareTarget() && init?.redirect === 'error'
@@ -176,6 +183,8 @@ export interface RunTurnOptions {
   ) => void | Promise<void>;
   /** Focused-test override for the otherwise one-minute checklist heartbeat. */
   progressHeartbeatMs?: number;
+  /** Focused-test override for the bounded in-flight heartbeat drain. */
+  progressHeartbeatDrainMs?: number;
 }
 
 const DEFAULT_PROGRESS_HEARTBEAT_MS = 60_000;
@@ -328,9 +337,7 @@ export async function runTurn(
         }
       : undefined;
   let workChecklistTs = interactionProgress.checklist?.messageTs;
-  let workChecklistHeartbeat: ReturnType<typeof setInterval> | undefined;
-  let workChecklistTerminal = false;
-  let workChecklistUpdate = Promise.resolve();
+  let workChecklistHeartbeat: WorkChecklistHeartbeat | undefined;
   const workChecklist = interactionIntent?.disposition === 'work'
     ? interactionIntent.checklist
     : undefined;
@@ -391,13 +398,16 @@ export async function runTurn(
     await options.onDelivered?.();
     await usageRecorder?.repairAfterDelivery();
     if (workChecklistHeartbeat) {
-      clearInterval(workChecklistHeartbeat);
+      const drained = await workChecklistHeartbeat.stop();
       workChecklistHeartbeat = undefined;
+      if (!drained) {
+        // The delivered tombstone is already durable. Leave adapter cleanup
+        // pending so the repair lane can finalize without racing a late write.
+        return;
+      }
     }
-    workChecklistTerminal = true;
     if (workChecklistTs && workChecklist) {
       try {
-        await workChecklistUpdate;
         await presenter.updateWorkChecklist(workChecklistTs, workChecklist, true);
         const checklistProgress = interactionProgress.checklist;
         if (checklistProgress) {
@@ -505,18 +515,19 @@ export async function runTurn(
           1_000,
           Math.floor(options.progressHeartbeatMs ?? DEFAULT_PROGRESS_HEARTBEAT_MS),
         );
-        workChecklistHeartbeat = setInterval(() => {
-          if (!workChecklistTs || workChecklistTerminal) return;
-          workChecklistUpdate = workChecklistUpdate
-            .then(() => {
-              if (!workChecklistTs || workChecklistTerminal) return;
-              return presenter.updateWorkChecklist(workChecklistTs, workChecklist, false);
-            })
-            .catch(() => {
-              console.warn('[chickpea] Slack work checklist heartbeat failed');
-            });
-        }, heartbeatMs);
-        workChecklistHeartbeat.unref?.();
+        workChecklistHeartbeat = startWorkChecklistHeartbeat({
+          intervalMs: heartbeatMs,
+          ...(options.progressHeartbeatDrainMs === undefined
+            ? {}
+            : { drainTimeoutMs: options.progressHeartbeatDrainMs }),
+          update: () => presenter.updateWorkChecklist(workChecklistTs!, workChecklist, false),
+          onError: () => {
+            console.warn('[chickpea] Slack work checklist heartbeat failed');
+          },
+          onDrainTimeout: () => {
+            console.warn('[chickpea] Slack work checklist heartbeat drain timed out');
+          },
+        });
       }
     }
     const statusSet = await statusTurn.setStatus(thinkingStatus());
@@ -627,7 +638,7 @@ export async function runTurn(
     // provider setup, or persistence). Idempotent after the success path.
     try {
       if (workChecklistHeartbeat) {
-        clearInterval(workChecklistHeartbeat);
+        workChecklistHeartbeat.cancel();
         workChecklistHeartbeat = undefined;
       }
       await closeAndDrainStatus();
