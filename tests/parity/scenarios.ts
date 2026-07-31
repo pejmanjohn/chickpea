@@ -374,6 +374,53 @@ export const scenarios: Scenario[] = [
     },
   },
   {
+    id: 'S10B2',
+    title: 'queued work acknowledges and posts its checklist before the active run finishes',
+    config: demoChannelConfig({ provider: { mode: 'ok', delayMs: 4_000 } }),
+    async run(instance) {
+      const firstTs = '1782770401.000100';
+      const secondTs = '1782770402.000100';
+      await instance.postEvent(appMention({
+        event_id: 'Ev_WORK_QUEUE_FIRST',
+        event: {
+          text: '<@U_BOT> Observe the first sample and report the result.',
+          ts: firstTs,
+          event_ts: firstTs,
+        },
+      }));
+      await waitForProviderCallCount(instance, 1);
+
+      await instance.postEvent(appMention({
+        event_id: 'Ev_WORK_QUEUE_SECOND',
+        event: {
+          text: '<@U_BOT> Observe the second sample and report the result.',
+          ts: secondTs,
+          event_ts: secondTs,
+        },
+      }));
+      await waitForWireCondition(
+        () =>
+          instance.backend.callsOfMethod('reactions.add').some(
+            (entry) => entry.body.timestamp === secondTs,
+          ) &&
+          instance.backend.callsOfMethod('chat.postMessage').some(
+            (entry) => entry.body.thread_ts === secondTs,
+          ),
+        'queued work did not publish admission progress',
+        2_000,
+      );
+
+      assert.equal(
+        instance.backend.finals().length,
+        0,
+        'the second acknowledgment and checklist must arrive before the active run finishes',
+      );
+      await waitForFinalCount(instance, 2, 12_000);
+      assert.equal(instance.backend.finals().length, 2);
+      assert.equal(instance.backend.providerCalls().length, 2);
+    },
+  },
+  {
     id: 'S10C',
     title: 'useful ambient work is promoted without a mention',
     config: demoChannelConfig(),

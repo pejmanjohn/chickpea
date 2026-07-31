@@ -172,6 +172,10 @@ export interface TagStateRpc {
   slackAgentExecutionContextGet(
     continuityKey: string,
   ): Promise<StateRpcResult<SlackAgentExecutionContext | null>>;
+  slackInteractionProgressRecord(
+    id: string,
+    patch: SlackInteractionProgressPatch,
+  ): Promise<StateRpcResult<null>>;
   // -- operator settings ---------------------------------------------------
   settingGet(key: string): Promise<StateRpcResult<string | null>>;
   settingGetMany(keys: readonly string[]): Promise<StateRpcResult<(string | null)[]>>;

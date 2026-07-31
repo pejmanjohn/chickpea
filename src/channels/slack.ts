@@ -13,10 +13,17 @@ import { isCloudflareTarget } from '../config/runtime-target.ts';
 import { resolveAssignment, type AssignmentSurface } from '../config/resolver.ts';
 import { getOrCreateSnapshot } from '../config/snapshot-store.ts';
 import { resolveStores, type AppStores, type PlatformEnv } from '../config/state-backend.ts';
-import { tagStateStub, type TurnJob } from '../config/state-rpc.ts';
+import {
+  tagStateStub,
+  type SlackInteractionProgress,
+  type TurnJob,
+} from '../config/state-rpc.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
 import { resolveSlackBehaviorSettings } from '../slack/behavior-settings.ts';
-import { classifySlackInteraction } from '../slack/interaction-intent.ts';
+import {
+  classifySlackInteraction,
+  resolveImmediateSlackInteractionIntent,
+} from '../slack/interaction-intent.ts';
 import {
   InteractionUsageRecorder,
   usageRuntimeRecordingEnabled,
@@ -50,6 +57,8 @@ import { slackThreadKey } from '../slack/thread-key.ts';
 import { normalizeSlackTurn } from '../slack/turn-normalization.ts';
 import { wakeNodeTurnRelay } from '../slack/node-turn-relay.ts';
 import { hydrateSlackContextViaWebClient } from '../slack/web-client-context.ts';
+import { WebClientPresenter } from '../slack/web-client-presenter.ts';
+import { publishSlackWorkAdmissionProgress } from '../slack/work-admission-progress.ts';
 import { parseSlackParticipationControl } from '../slack/participation-control.ts';
 import { selectSlackExecutionAuthority } from '../work/authority.ts';
 import { EGRESS_SETTING_KEY, parseEgressPolicy } from '../config/egress.ts';
@@ -435,6 +444,29 @@ async function processSlackEvent(
   }
   threadKey = slackThreadKey(turn);
   turn.activeWorkAtAdmission = await state.isActiveWork(threadKey);
+  const deterministicCommand = Boolean(parseMemoryCommand(turn.text)) ||
+    (isRoutineSlackTurn(turn) && Boolean(parseRoutineCommand(turn.text)));
+  if (!deterministicCommand && !candidateTurn) {
+    const immediateIntent = resolveImmediateSlackInteractionIntent({
+      workspaceId: turn.workspaceId,
+      channelId: turn.channelId,
+      eventId: turn.eventId,
+      text: turn.text,
+      source: turn.source,
+      guaranteed: true,
+      ...(turn.activeWorkAtAdmission === undefined
+        ? {}
+        : { activeWork: turn.activeWorkAtAdmission }),
+      profileInstructions:
+        'instructions' in assignment && typeof assignment.instructions === 'string'
+          ? assignment.instructions
+          : assignment.agent.instructions,
+      ...(assignment.channelPromptAddendum
+        ? { channelInstructions: assignment.channelPromptAddendum }
+        : {}),
+    });
+    if (immediateIntent) turn.interactionIntent = immediateIntent;
+  }
   let admissionTruth: SlackAdmissionTruth = {
     eligible: false,
     reason: 'slack_truth_unavailable',
@@ -497,8 +529,6 @@ async function processSlackEvent(
     });
   }
 
-  const deterministicCommand = Boolean(parseMemoryCommand(turn.text)) ||
-    (isRoutineSlackTurn(turn) && Boolean(parseRoutineCommand(turn.text)));
   let promotedDecisionKey: string | undefined;
   let promotedClassifierUsage:
     | {
@@ -639,6 +669,28 @@ async function processSlackEvent(
     }
   }
 
+  let admissionInteractionProgress: SlackInteractionProgress | undefined;
+  if (turn.interactionIntent?.disposition === 'work' && botToken) {
+    const presenter = new WebClientPresenter(createSlackWebClient(botToken), {
+      channelId: turn.channelId,
+      threadTs: turn.threadTs,
+      agentName: assignment.agent.name,
+      agentId: assignment.agent.id,
+      userId: turn.userId,
+      workspaceId: turn.workspaceId,
+    });
+    admissionInteractionProgress = await publishSlackWorkAdmissionProgress({
+      turn,
+      checklist: turn.interactionIntent.checklist,
+      presenter,
+      record: async (patch) => {
+        if (canonicalTurnJob && state.recordSlackInteractionProgress) {
+          await state.recordSlackInteractionProgress(canonicalTurnJob.id, patch);
+        }
+      },
+    });
+  }
+
   if (promotedClassifierUsage) {
     await recordInteractionClassifierUsage({
       turn,
@@ -704,6 +756,9 @@ async function processSlackEvent(
   await runTurn(turn, assignment, platformEnv, {
       turnId: msgKey,
       usageExecutionId: `exec:${msgKey}:1`,
+      ...(admissionInteractionProgress
+        ? { interactionProgress: admissionInteractionProgress }
+        : {}),
       onInteractionIntent: async (intent) => {
         if (intent.disposition !== 'work') return;
         marksActiveWork = true;

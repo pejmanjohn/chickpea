@@ -7,6 +7,7 @@ import {
   classifySlackInteraction,
   parseSlackInteractionIntent,
   reactionFallbacks,
+  resolveImmediateSlackInteractionIntent,
   resolveSlackInteractionIntent,
   SLACK_INTERACTION_CLASSIFIER_INSTRUCTIONS,
 } from '../src/slack/interaction-intent.ts';
@@ -164,6 +165,27 @@ test('high-confidence acknowledgments stay reaction-only even when a small model
     {
       disposition: 'react_only', reason: 'midwork_ack', reaction: 'midwork_seen', target: 'trigger',
     },
+  );
+});
+
+test('admission recognizes obvious work without invoking the classifier provider', () => {
+  assert.deepEqual(
+    resolveImmediateSlackInteractionIntent({
+      ...baseContext,
+      text: '<@U_BOT> Run a 75-second observation and report four samples.',
+    }),
+    {
+      disposition: 'work',
+      reason: 'substantive_request',
+      checklist: ['Execution result', 'Supporting evidence'],
+    },
+  );
+  assert.equal(
+    resolveImmediateSlackInteractionIntent({
+      ...baseContext,
+      text: '<@U_BOT> What does this result mean?',
+    }),
+    null,
   );
 });
 

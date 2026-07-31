@@ -666,6 +666,16 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     );
   }
 
+  async slackInteractionProgressRecord(
+    id: string,
+    patch: Parameters<TagStateRpc['slackInteractionProgressRecord']>[1],
+  ): Promise<StateRpcResult<null>> {
+    return this.call((stores) => {
+      stores.turnJobs.recordSlackInteractionProgress(id, patch);
+      return null;
+    });
+  }
+
   // ── operator settings ────────────────────────────────────────────────────
 
   async settingGet(key: string): Promise<StateRpcResult<string | null>> {

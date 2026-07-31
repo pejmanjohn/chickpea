@@ -312,6 +312,13 @@ export class CfSlackStateStore implements SlackStateStore {
   async getAgentExecutionContext(continuityKey: string) {
     return orUndefined(unwrap(await this.stub.slackAgentExecutionContextGet(continuityKey)));
   }
+
+  async recordSlackInteractionProgress(
+    id: string,
+    patch: Parameters<TagStateRpc['slackInteractionProgressRecord']>[1],
+  ): Promise<void> {
+    unwrap(await this.stub.slackInteractionProgressRecord(id, patch));
+  }
 }
 
 export class CfSettingsStore implements SettingsStore {

@@ -183,7 +183,7 @@ export async function classifySlackInteraction(
   prompt: InteractionIntentPrompt = promptSlackInteractionIntentAgent,
   timeoutMs = DEFAULT_INTERACTION_TIMEOUT_MS,
 ): Promise<SlackInteractionClassification> {
-  const deterministic = highConfidenceInteractionIntent(context);
+  const deterministic = resolveImmediateSlackInteractionIntent(context);
   if (deterministic) {
     return { intent: deterministic, failed: false };
   }
@@ -218,10 +218,11 @@ function applyHighConfidenceInteractionRules(
   context: SlackInteractionIntentContext,
   classified: SlackInteractionIntent,
 ): SlackInteractionIntent {
-  return highConfidenceInteractionIntent(context) ?? classified;
+  return resolveImmediateSlackInteractionIntent(context) ?? classified;
 }
 
-function highConfidenceInteractionIntent(
+/** Admission-safe interaction judgment: pure, synchronous, and provider-free. */
+export function resolveImmediateSlackInteractionIntent(
   context: SlackInteractionIntentContext,
 ): SlackInteractionIntent | null {
   const text = normalizedInteractionText(context.text);
