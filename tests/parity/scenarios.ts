@@ -149,7 +149,7 @@ export const scenarios: Scenario[] = [
   },
   {
     id: 'S03',
-    title: 'mention full turn delivers one final, sets then clears status',
+    title: 'mention full turn keeps generic liveness while loading detail advances',
     config: demoChannelConfig(),
     async run(instance) {
       const response = await instance.postEvent(appMention());
@@ -172,15 +172,22 @@ export const scenarios: Scenario[] = [
         .map((entry) => String(entry.body.status ?? '').trim())
         .filter(Boolean);
       const distinctStatusTexts = [...new Set(nonEmptyStatusTexts)];
-      assert.ok(distinctStatusTexts.length >= 3, 'expected at least three distinct status texts');
-      assert.match(distinctStatusTexts[0] ?? '', /reading the thread/);
+      assert.deepEqual(distinctStatusTexts, ['is thinking...']);
+      const loadingMessages = statuses.flatMap((entry) =>
+        Array.isArray(entry.body.loading_messages)
+          ? entry.body.loading_messages.map(String)
+          : []
+      );
+      assert.ok(loadingMessages.includes('is thinking...'));
       assert.ok(
-        distinctStatusTexts.some((text) => /using \d+ messages? of .+ context/.test(text)),
-        'expected one status to include the hydrated message count',
+        loadingMessages.some((message) =>
+          /^Using \d+ messages? of channel_history context$/.test(message)
+        ),
+        `expected hydrated context detail, received ${JSON.stringify(loadingMessages)}`,
       );
       assert.ok(
-        distinctStatusTexts.some((text) => text.includes('local-stub/parity-stub-1')),
-        'expected one status to name the resolved model id',
+        loadingMessages.includes(`Using ${PARITY_MODEL}`),
+        `expected model detail, received ${JSON.stringify(loadingMessages)}`,
       );
       const lastStatus = statuses.at(-1);
       assert.ok(lastStatus);
@@ -189,7 +196,7 @@ export const scenarios: Scenario[] = [
   },
   {
     id: 'S04',
-    title: 'duplicate delivery yields one final and at most one provider call',
+    title: 'duplicate delivery yields one final and one classifier plus one agent call',
     config: demoChannelConfig(),
     async run(instance) {
       const payload = appMention();
@@ -205,7 +212,7 @@ export const scenarios: Scenario[] = [
       await instance.quiesce();
 
       assert.equal(instance.backend.finals().length, 1);
-      assert.ok(instance.backend.providerCalls().length <= 1);
+      assert.ok(instance.backend.providerCalls().length <= 2);
     },
   },
   {
@@ -323,7 +330,7 @@ export const scenarios: Scenario[] = [
   },
   {
     id: 'S10',
-    title: 'top-level channel message is ignored with no wire calls',
+    title: 'ambient top-level chatter is classified and remains silent',
     // The channel MUST be assigned here: with no assignment the turn would be
     // dropped by fail-closed resolution and this scenario would pass without
     // exercising the top-level-ignore gate it exists to protect.
@@ -332,7 +339,202 @@ export const scenarios: Scenario[] = [
       const response = await instance.postEvent(topLevelChannelMessage());
       assert.equal(response.status, 200);
       await instance.quiesce();
+      assert.equal(instance.backend.finals().length, 0);
+      assert.equal(instance.backend.providerCalls().length, 1);
+      assert.equal(instance.backend.statusCalls().length, 0);
+    },
+  },
+  {
+    id: 'S10A',
+    title: 'reaction-only agreement settles with one explicit reaction and no text',
+    config: demoChannelConfig(),
+    async run(instance) {
+      await instance.postEvent(appMention({
+        event_id: 'Ev_REACT_ONLY',
+        event: { text: '<@U_BOT> Sounds good.' },
+      }));
+      await instance.quiesce();
+      const reactions = instance.backend.callsOfMethod('reactions.add');
+      assert.equal(reactions.length, 1);
+      assert.equal(reactions[0]?.body.name, '+1');
+      assert.equal(reactions[0]?.body.timestamp, ROOT_THREAD_TS);
+      assert.equal(instance.backend.finals().length, 0);
+      assert.equal(instance.backend.providerCalls().length, 0);
+    },
+  },
+  {
+    id: 'S10B',
+    title: 'work acknowledgment precedes one checklist, main work, finalization, and cleanup',
+    config: demoChannelConfig(),
+    async run(instance) {
+      await instance.postEvent(appMention({
+        event_id: 'Ev_WORK_PROGRESS',
+        event: { text: '<@U_BOT> PARITY_WORK_REQUEST' },
+      }));
+      await instance.quiesce();
+      const methods = instance.backend.wireLog.map((entry) => entry.method);
+      const reactionAdd = methods.indexOf('reactions.add');
+      const checklistPost = methods.indexOf('chat.postMessage');
+      const providerCalls = instance.backend.providerCalls();
+      const mainProviderIndex = instance.backend.wireLog.indexOf(providerCalls[1]!);
+      const checklistUpdate = methods.indexOf('chat.update');
+      const reactionRemove = methods.indexOf('reactions.remove');
+      assert.ok(reactionAdd >= 0 && reactionAdd < checklistPost);
+      assert.ok(checklistPost < mainProviderIndex);
+      assert.ok(checklistUpdate > mainProviderIndex);
+      assert.ok(reactionRemove > checklistUpdate);
+      assert.equal(instance.backend.callsOfMethod('chat.postMessage').length, 1);
+      assert.equal(instance.backend.callsOfMethod('chat.update').length, 1);
+      assert.equal(instance.backend.finals().length, 1);
+      assert.equal(providerCalls.length, 2);
+    },
+  },
+  {
+    id: 'S10B2',
+    title: 'queued work acknowledges and posts its checklist before the active run finishes',
+    config: demoChannelConfig({ provider: { mode: 'ok', delayMs: 4_000 } }),
+    async run(instance) {
+      const firstTs = '1782770401.000100';
+      const secondTs = '1782770402.000100';
+      await instance.postEvent(appMention({
+        event_id: 'Ev_WORK_QUEUE_FIRST',
+        event: {
+          text: '<@U_BOT> Observe the first sample and report the result.',
+          ts: firstTs,
+          event_ts: firstTs,
+        },
+      }));
+      await waitForProviderCallCount(instance, 1);
+
+      await instance.postEvent(appMention({
+        event_id: 'Ev_WORK_QUEUE_SECOND',
+        event: {
+          text: '<@U_BOT> Observe the second sample and report the result.',
+          ts: secondTs,
+          event_ts: secondTs,
+        },
+      }));
+      await waitForWireCondition(
+        () =>
+          instance.backend.callsOfMethod('reactions.add').some(
+            (entry) => entry.body.timestamp === secondTs,
+          ) &&
+          instance.backend.callsOfMethod('chat.postMessage').some(
+            (entry) => entry.body.thread_ts === secondTs,
+          ),
+        'queued work did not publish admission progress',
+        2_000,
+      );
+
+      assert.equal(
+        instance.backend.finals().length,
+        0,
+        'the second acknowledgment and checklist must arrive before the active run finishes',
+      );
+      await waitForFinalCount(instance, 2, 12_000);
+      assert.equal(instance.backend.finals().length, 2);
+      assert.equal(instance.backend.providerCalls().length, 2);
+    },
+  },
+  {
+    id: 'S10B3',
+    title: 'an unclassified explicit turn acknowledges before its classifier runs',
+    config: demoChannelConfig({ provider: { mode: 'ok', delayMs: 2_000 } }),
+    async run(instance) {
+      const ts = '1782770403.000100';
+      await instance.postEvent(appMention({
+        event_id: 'Ev_EXPLICIT_PRECLASSIFIER_ACK',
+        event: {
+          text: '<@U_BOT> Use the available context to explain this result.',
+          ts,
+          event_ts: ts,
+        },
+      }));
+
+      await waitForWireCondition(
+        () => instance.backend.callsOfMethod('reactions.add').some(
+          (entry) => entry.body.timestamp === ts,
+        ),
+        'explicit turn did not acknowledge before classification',
+        2_000,
+      );
+
+      const reactions = instance.backend.callsOfMethod('reactions.add');
+      assert.equal(reactions.length, 1);
+      assert.equal(reactions[0]?.body.name, 'eyes');
+      assert.equal(reactions[0]?.body.timestamp, ts);
+      assert.equal(instance.backend.finals().length, 0);
+      assert.equal(instance.backend.callsOfMethod('chat.postMessage').length, 0);
+
+      await waitForFinalCount(instance, 1, 8_000);
+      const providerCalls = instance.backend.providerCalls();
+      assert.equal(providerCalls.length, 2);
+      assert.ok(
+        instance.backend.wireLog.indexOf(reactions[0]!) <
+          instance.backend.wireLog.indexOf(providerCalls[0]!),
+      );
+      assert.equal(instance.backend.callsOfMethod('reactions.remove').length, 1);
+    },
+  },
+  {
+    id: 'S10C',
+    title: 'useful ambient work is promoted without a mention',
+    config: demoChannelConfig(),
+    async run(instance) {
+      await instance.postEvent(topLevelChannelMessage({
+        event_id: 'Ev_AMBIENT_WORK',
+        event: { text: 'PARITY_AMBIENT_WORK', ts: '1782770500.000100' },
+      }));
+      await instance.quiesce();
+      assert.equal(instance.backend.providerCalls().length, 2);
+      assert.equal(instance.backend.callsOfMethod('reactions.add').length, 1);
+      assert.equal(instance.backend.callsOfMethod('chat.update').length, 1);
+      assert.equal(instance.backend.finals().length, 1);
+      assert.equal(instance.backend.finals()[0]?.threadTs, '1782770500.000100');
+    },
+  },
+  {
+    id: 'S10D',
+    title: 'a human reaction on a reply resolves and answers in the root thread',
+    config: demoChannelConfig(),
+    async run(instance) {
+      await instance.postEvent(reactionAdded());
+      await instance.quiesce();
+      assert.equal(instance.backend.callsOfMethod('reactions.get').length, 1);
+      assert.equal(
+        instance.backend.callsOfMethod('reactions.get')[0]?.body.timestamp,
+        '1782770410.000200',
+      );
+      assert.equal(instance.backend.providerCalls().length, 2);
+      assert.equal(instance.backend.finals().length, 1);
+      assert.equal(instance.backend.finals()[0]?.threadTs, ROOT_THREAD_TS);
+    },
+  },
+  {
+    id: 'S10E',
+    title: 'the bot reaction event cannot create a loop',
+    config: demoChannelConfig(),
+    async run(instance) {
+      await instance.postEvent(reactionAdded({ user: 'U_BOT' }));
+      await instance.quiesce();
       assert.equal(instance.backend.wireLog.length, 0);
+    },
+  },
+  {
+    id: 'S10F',
+    title: 'confirmed reaction scope failure falls back to one text acknowledgment',
+    config: demoChannelConfig({ slack: { reactionsAddError: 'missing_scope' } }),
+    async run(instance) {
+      await instance.postEvent(appMention({
+        event_id: 'Ev_REACT_SCOPE_FALLBACK',
+        event: { text: '<@U_BOT> Sounds good.' },
+      }));
+      await instance.quiesce();
+      const posts = instance.backend.callsOfMethod('chat.postMessage');
+      assert.equal(instance.backend.callsOfMethod('reactions.add').length, 1);
+      assert.equal(posts.length, 1);
+      assert.equal(posts[0]?.body.text, 'Sounds good.');
+      assert.equal(instance.backend.providerCalls().length, 0);
     },
   },
   {
@@ -961,8 +1163,8 @@ export const scenarios: Scenario[] = [
       assert.equal(onboarding.body.thread_ts, undefined);
       const text = String(onboarding.body.text ?? '');
       assert.match(text, /<@U_BOT>/);
-      assert.match(text, /thread and bounded recent context only when asked/i);
-      assert.match(text, /no passive monitoring/i);
+      assert.match(text, /may also join an unmentioned conversation/i);
+      assert.match(text, /does not build a persistent workspace-message index/i);
       assert.match(text, /https:\/\/demo\.example\/admin\?channel=C_ENG/);
 
       const duplicate = await instance.postEvent(botJoin);
@@ -1086,7 +1288,7 @@ export const scenarios: Scenario[] = [
           },
         }),
       );
-      await waitForProviderCallCount(instance, 1);
+      await waitForProviderCallCount(instance, 2);
       assertProviderPrompt(instance, -1, {
         includes: 'SNAPSHOT_ALPHA_INSTRUCTIONS',
         excludes: 'SNAPSHOT_BETA_INSTRUCTIONS',
@@ -1107,7 +1309,7 @@ export const scenarios: Scenario[] = [
           },
         }),
       );
-      await waitForProviderCallCount(instance, 2);
+      await waitForProviderCallCount(instance, 4);
       assertProviderPrompt(instance, -1, {
         includes: 'SNAPSHOT_ALPHA_INSTRUCTIONS',
         excludes: 'SNAPSHOT_BETA_INSTRUCTIONS',
@@ -1129,7 +1331,7 @@ export const scenarios: Scenario[] = [
           },
         }),
       );
-      await waitForProviderCallCount(instance, 1);
+      await waitForProviderCallCount(instance, 2);
 
       await patchAgent(instance, 'agent_snapshot_new_thread', {
         instructions: 'SNAPSHOT_BETA_INSTRUCTIONS: edited profile instructions.',
@@ -1145,7 +1347,7 @@ export const scenarios: Scenario[] = [
           },
         }),
       );
-      await waitForProviderCallCount(instance, 2);
+      await waitForProviderCallCount(instance, 4);
       assertProviderPrompt(instance, -1, {
         includes: 'SNAPSHOT_BETA_INSTRUCTIONS',
         excludes: 'SNAPSHOT_ALPHA_INSTRUCTIONS',
@@ -1167,7 +1369,7 @@ export const scenarios: Scenario[] = [
           },
         }),
       );
-      await waitForProviderCallCount(instance, 1);
+      await waitForProviderCallCount(instance, 2);
 
       await patchAgent(instance, 'agent_snapshot_disable', { enabled: false });
 
@@ -1182,7 +1384,7 @@ export const scenarios: Scenario[] = [
           },
         }),
       );
-      await waitForProviderCallCount(instance, 2);
+      await waitForProviderCallCount(instance, 4);
       assertProviderPrompt(instance, -1, {
         includes: 'SNAPSHOT_ALPHA_INSTRUCTIONS',
         excludes: 'SNAPSHOT_BETA_INSTRUCTIONS',
@@ -1222,7 +1424,7 @@ export const scenarios: Scenario[] = [
           event: { ts: '1782771700.000100', event_ts: '1782771700.000100' },
         }),
       );
-      await waitForProviderCallCount(instance, 1);
+      await waitForProviderCallCount(instance, 2);
       assertProviderPrompt(instance, -1, {
         includes: 'SNAPSHOT_ALPHA_INSTRUCTIONS',
         excludes: 'SNAPSHOT_BETA_INSTRUCTIONS',
@@ -1238,7 +1440,7 @@ export const scenarios: Scenario[] = [
           event: { ts: '1782771701.000100', event_ts: '1782771701.000100' },
         }),
       );
-      await waitForProviderCallCount(instance, 2);
+      await waitForProviderCallCount(instance, 4);
       assertProviderPrompt(instance, -1, {
         includes: 'SNAPSHOT_BETA_INSTRUCTIONS',
         excludes: 'SNAPSHOT_ALPHA_INSTRUCTIONS',
@@ -1337,7 +1539,7 @@ export const scenarios: Scenario[] = [
       assert.equal(finals.length, 2);
       assert.ok(finals.every((final) => final.channel === PRIVATE_CHANNEL));
       assert.ok(finals.every((final) => final.threadTs === ROOT_THREAD_TS));
-      assert.equal(instance.backend.providerCalls().length, 2);
+      assert.equal(instance.backend.providerCalls().length, 4);
     },
   },
   {
@@ -1468,6 +1670,28 @@ export const scenarios: Scenario[] = [
     },
   },
 ];
+
+function reactionAdded(
+  event: Partial<Extract<SlackEventFixture['event'], { type: 'reaction_added' }>> = {},
+): SlackEventFixture {
+  return {
+    token: 'verification-token-not-a-secret',
+    team_id: 'T_DEMO',
+    api_app_id: 'A_DEMO',
+    event_id: event.user === 'U_BOT' ? 'Ev_REACTION_BOT' : 'Ev_REACTION_HUMAN',
+    event_time: 1782770600,
+    type: 'event_callback',
+    event: {
+      type: 'reaction_added',
+      user: 'U_ALICE',
+      reaction: 'bulb',
+      item: { type: 'message', channel: EXEC_CHANNEL, ts: '1782770410.000200' },
+      item_user: 'U_BOB',
+      event_ts: '1782770600.000100',
+      ...event,
+    },
+  };
+}
 
 /**
  * Seed for S29: two distinct profiles (Release Scribe on #eng, Exec Brief on the

@@ -5,6 +5,7 @@ export const SLACK_BEHAVIOR_KEYS = [
   'allowDms',
   'unassignedHint',
   'welcomeOnJoin',
+  'ambientParticipation',
 ] as const;
 
 export type SlackBehaviorKey = (typeof SLACK_BEHAVIOR_KEYS)[number];
@@ -22,12 +23,14 @@ export const SLACK_BEHAVIOR_SETTING_KEYS: Record<SlackBehaviorKey, string> = {
   allowDms: 'slack.behavior.allowDms',
   unassignedHint: 'slack.behavior.unassignedHint',
   welcomeOnJoin: 'slack.behavior.welcomeOnJoin',
+  ambientParticipation: 'slack.behavior.ambientParticipation',
 };
 
 export const SLACK_BEHAVIOR_ENV_KEYS: Record<SlackBehaviorKey, string> = {
   allowDms: 'SLACK_TAG_ALLOW_DMS',
   unassignedHint: 'SLACK_TAG_UNASSIGNED_HINT',
   welcomeOnJoin: 'SLACK_TAG_WELCOME_ON_JOIN',
+  ambientParticipation: 'SLACK_TAG_AMBIENT_PARTICIPATION',
 };
 
 /**
@@ -76,6 +79,7 @@ export async function resolveSlackBehaviorSettings(
     allowDms: fromSources('allowDms', stored[0]),
     unassignedHint: fromSources('unassignedHint', stored[1]),
     welcomeOnJoin: fromSources('welcomeOnJoin', stored[2]),
+    ambientParticipation: fromSources('ambientParticipation', stored[3]),
   };
 }
 

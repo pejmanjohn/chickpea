@@ -1,6 +1,7 @@
 import {
   isSlackAppMentionEvent,
   isSlackMessageEvent,
+  isSlackReactionAddedEvent,
   type NormalizedSlackTurn,
   type SlackContextMode,
   type SlackEventFixture,
@@ -24,6 +25,8 @@ interface RunnableTurnInput {
   source: SlackTurnSource;
   channelType?: string;
   contextMode: SlackContextMode;
+  reaction?: string;
+  reactionTargetTs?: string;
 }
 
 export function normalizeSlackTurn(
@@ -51,6 +54,31 @@ export function normalizeSlackTurn(
     });
   }
 
+  if (isSlackReactionAddedEvent(payload.event)) {
+    const event = payload.event;
+    if (options.botUserId && event.user === options.botUserId) {
+      return { status: 'ignored', reason: 'self_message' };
+    }
+    if (event.item.type !== 'message' || !event.item.channel || !event.item.ts) {
+      return { status: 'ignored', reason: 'unsupported_reaction_item' };
+    }
+    if (!event.user || !event.reaction || !event.event_ts) {
+      return { status: 'ignored', reason: 'missing_thread_metadata' };
+    }
+    return runnableTurn({
+      payload,
+      channelId: event.item.channel,
+      text: `Reacted :${event.reaction}: to the Slack message at ${event.item.ts}.`,
+      userId: event.user,
+      messageTs: event.event_ts,
+      threadTs: event.item.ts,
+      source: 'reaction_added',
+      contextMode: 'thread',
+      reaction: event.reaction,
+      reactionTargetTs: event.item.ts,
+    });
+  }
+
   if (!isSlackMessageEvent(payload.event)) {
     return { status: 'ignored', reason: 'unsupported_event_type' };
   }
@@ -73,6 +101,20 @@ export function normalizeSlackTurn(
   }
   if (!event.channel || !event.ts) {
     return { status: 'ignored', reason: 'missing_thread_metadata' };
+  }
+
+  if (options.botUserId && event.text.includes(`<@${options.botUserId}>`)) {
+    return runnableTurn({
+      payload,
+      channelId: event.channel,
+      text: event.text,
+      userId: event.user,
+      messageTs: event.ts,
+      threadTs: event.thread_ts ?? event.ts,
+      source: 'app_mention',
+      ...(event.channel_type ? { channelType: event.channel_type } : {}),
+      contextMode: event.thread_ts ? 'thread' : 'channel_history',
+    });
   }
 
   if (isDirectConversation(event)) {
@@ -98,7 +140,17 @@ export function normalizeSlackTurn(
     return { status: 'ignored', reason: 'unsupported_channel_type' };
   }
   if (!event.thread_ts) {
-    return { status: 'ignored', reason: 'top_level_channel_message' };
+    return runnableTurn({
+      payload,
+      channelId: event.channel,
+      text: event.text,
+      userId: event.user,
+      messageTs: event.ts,
+      threadTs: event.ts,
+      source: 'ambient_channel_message',
+      ...(event.channel_type ? { channelType: event.channel_type } : {}),
+      contextMode: 'channel_history',
+    });
   }
   if (!options.botUserId) {
     return { status: 'ignored', reason: 'missing_bot_user_id' };
@@ -130,6 +182,8 @@ function runnableTurn(input: RunnableTurnInput): SlackTurnNormalization {
     source: input.source,
     ...(input.channelType ? { channelType: input.channelType } : {}),
     contextMode: input.contextMode,
+    ...(input.reaction ? { reaction: input.reaction } : {}),
+    ...(input.reactionTargetTs ? { reactionTargetTs: input.reactionTargetTs } : {}),
   };
 
   return { status: 'runnable', turn };

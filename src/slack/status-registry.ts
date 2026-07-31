@@ -5,6 +5,8 @@ export interface SlackStatusTurnRegistration {
   setStatus(update: SlackStatusUpdate): Promise<boolean>;
   drain(): Promise<void>;
   close(): void;
+  /** Fence new writes, clear now, and clear once more if an in-flight write lands late. */
+  finish(clearStatus: () => Promise<void>): void;
 }
 
 type StatusPresenter = Pick<WebClientPresenter, 'setStatus'>;
@@ -37,6 +39,7 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
   private lastObservedWriteStartedAt: number | undefined;
   private lastAppliedText: string | undefined;
   private closed = false;
+  private finished = false;
 
   constructor(
     private readonly instanceId: string,
@@ -129,6 +132,19 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
     }
   }
 
+  finish(clearStatus: () => Promise<void>): void {
+    if (this.finished) return;
+    this.finished = true;
+    const activeResult = this.active?.result;
+    this.close();
+    this.clearIfUnowned(clearStatus);
+    if (activeResult) {
+      void activeResult.finally(() => {
+        this.clearIfUnowned(clearStatus);
+      });
+    }
+  }
+
   private scheduleNext(): void {
     if (this.closed || this.active || this.pendingTimer || !this.pending) {
       return;
@@ -194,6 +210,21 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
       this.pending.resolve(false);
       this.pending = undefined;
     }
+  }
+
+  private clearBestEffort(clearStatus: () => Promise<void>): void {
+    try {
+      void clearStatus().catch(() => undefined);
+    } catch {
+      // Status cleanup is cosmetic and must never interfere with final delivery.
+    }
+  }
+
+  private clearIfUnowned(clearStatus: () => Promise<void>): void {
+    // A later turn owns the shared Slack thread status once registered.
+    // Never let cleanup from this generation clear that newer turn.
+    if ((activeSlackStatusTurns.get(this.instanceId)?.size ?? 0) > 0) return;
+    this.clearBestEffort(clearStatus);
   }
 }
 

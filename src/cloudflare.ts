@@ -82,6 +82,7 @@ import { setObservedSlackStatus } from './slack/status-registry.ts';
 import {
   createSlackWebClient,
   deliverAgentFailureFinal,
+  repairSlackInteractionProgress,
   runTurn,
   sanitizeError,
 } from './slack/run-turn.ts';
@@ -616,6 +617,37 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     return this.call((stores) => stores.slack.has(key));
   }
 
+  async threadParticipationGet(
+    key: string,
+  ): Promise<StateRpcResult<'ambient' | 'mention_only'>> {
+    return this.call((stores) => stores.slack.getParticipation(key));
+  }
+
+  async threadParticipationSet(
+    key: string,
+    mode: 'ambient' | 'mention_only',
+  ): Promise<StateRpcResult<null>> {
+    return this.call((stores) => {
+      stores.slack.setParticipation(key, mode);
+      return null;
+    });
+  }
+
+  async threadActiveWorkGet(key: string): Promise<StateRpcResult<boolean>> {
+    return this.call((stores) => stores.slack.isActiveWork(key));
+  }
+
+  async threadActiveWorkSet(
+    key: string,
+    generation: string,
+    active: boolean,
+  ): Promise<StateRpcResult<null>> {
+    return this.call((stores) => {
+      stores.slack.setActiveWork(key, generation, active);
+      return null;
+    });
+  }
+
   async admitSlackTurn(input: SlackCanonicalAdmissionInput) {
     return this.call((stores) =>
       stores.slack.admitCanonical(input, stores.work, stores.turnJobs),
@@ -632,6 +664,16 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     return this.call((stores) =>
       stores.turnJobs.getAgentExecutionContext(continuityKey) ?? null,
     );
+  }
+
+  async slackInteractionProgressRecord(
+    id: string,
+    patch: Parameters<TagStateRpc['slackInteractionProgressRecord']>[1],
+  ): Promise<StateRpcResult<null>> {
+    return this.call((stores) => {
+      stores.turnJobs.recordSlackInteractionProgress(id, patch);
+      return null;
+    });
   }
 
   // ── operator settings ────────────────────────────────────────────────────
@@ -771,12 +813,22 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     const pending = stores.turnJobs.listPending(MAX_TURN_DRAIN_BATCH);
     if (pending.length === 0) {
       const ledgerPending = stores.turnJobs.hasPending('ledger');
+      const cleanupPending = stores.turnJobs.hasPendingSlackInteractionCleanup();
+      const client = ledgerPending || cleanupPending
+        ? await this.resolveAlarmClient(stores)
+        : undefined;
       await drainLedgerRuns(
         stores,
         this.env as PlatformEnv,
-        ledgerPending ? await this.resolveAlarmClient(stores) : undefined,
+        client,
       );
-      if (stores.turnJobs.hasPending('ledger')) {
+      if (cleanupPending && client) {
+        await drainSlackInteractionCleanups(stores, client);
+      }
+      if (
+        stores.turnJobs.hasPending('ledger') ||
+        stores.turnJobs.hasPendingSlackInteractionCleanup()
+      ) {
         await this.ctx.storage.setAlarm(Date.now() + RELAY_RETRY_BACKOFF_MS);
       }
       return;
@@ -795,6 +847,9 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         stores.config.find(workspaceId, channelId, options),
     };
     const runJob = async (job: (typeof pending)[number]): Promise<void> => {
+      if (!job.turn.interactionIntent && job.progress.interactionIntent) {
+        job.turn.interactionIntent = job.progress.interactionIntent;
+      }
       // DM turns resolve their profile live at agent time, so a profile
       // disabled in the enqueue->alarm gap would otherwise surface as a fake
       // "provider failed" final. Re-check here and fail closed exactly like
@@ -811,6 +866,10 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           if (err instanceof NoAssignmentError) {
             stores.slack.release(job.evtKey);
             stores.slack.release(job.msgKey);
+            stores.slack.release(`decision:${job.msgKey}`);
+            if (job.turn.interactionIntent?.disposition === 'work') {
+              stores.slack.setActiveWork(slackThreadKey(job.turn), job.id, false);
+            }
             stores.turnJobs.markDelivered(job.id);
             return;
           }
@@ -820,6 +879,9 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       }
       const attempt = job.attempts + 1;
       let delivered = false;
+      let activeWorkKey = job.turn.interactionIntent?.disposition === 'work'
+        ? slackThreadKey(job.turn)
+        : undefined;
       // Advance the attempt count before running the turn: a crash mid-turn
       // then re-fires with the count already committed, bounding retries.
       stores.turnJobs.recordAttempt(job.id, attempt);
@@ -868,6 +930,18 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           onUsagePersistence: (event) => {
             stores.turnJobs.recordUsagePersistence(job.id, event);
           },
+          onInteractionIntent: (intent) => {
+            stores.turnJobs.recordInteractionIntent(job.id, intent);
+            if (intent.disposition !== 'work') return;
+            activeWorkKey = slackThreadKey(job.turn);
+            stores.slack.setActiveWork(activeWorkKey, job.id, true);
+          },
+          ...(job.progress.slackInteraction
+            ? { interactionProgress: job.progress.slackInteraction }
+            : {}),
+          onInteractionProgress: (patch) => {
+            stores.turnJobs.recordSlackInteractionProgress(job.id, patch);
+          },
           ...(replayText === undefined ? {} : { replayText }),
           beforeDelivery: persistSandboxProgress,
           // Record terminal delivery before runTurn's post-delivery Sandbox
@@ -875,6 +949,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           // already-posted Slack final eligible for relay retry.
           onDelivered: () => {
             stores.turnJobs.markDelivered(job.id);
+            if (activeWorkKey) stores.slack.setActiveWork(activeWorkKey, job.id, false);
             delivered = true;
           },
         });
@@ -907,6 +982,8 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           });
           stores.slack.release(job.evtKey);
           stores.slack.release(job.msgKey);
+          stores.slack.release(`decision:${job.msgKey}`);
+          if (activeWorkKey) stores.slack.setActiveWork(activeWorkKey, job.id, false);
           stores.turnJobs.markError(job.id);
         } else {
           needsRetry = true;
@@ -946,7 +1023,10 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       }),
     );
     await drainLedgerRuns(stores, this.env as PlatformEnv, client);
-    needsRetry ||= stores.turnJobs.hasPending('legacy') || stores.turnJobs.hasPending('ledger');
+    await drainSlackInteractionCleanups(stores, client);
+    needsRetry ||= stores.turnJobs.hasPending('legacy') ||
+      stores.turnJobs.hasPending('ledger') ||
+      stores.turnJobs.hasPendingSlackInteractionCleanup();
     if (needsRetry) {
       // Re-arm (do NOT throw) so this invocation returns normally and its
       // attempt-count writes commit; the next firing re-drives the leftover
@@ -1035,6 +1115,29 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
   }
 }
 
+async function drainSlackInteractionCleanups(
+  stores: TagStateStores,
+  client: WebClient,
+): Promise<void> {
+  for (const job of stores.turnJobs.listPendingSlackInteractionCleanups(MAX_TURN_DRAIN_BATCH)) {
+    const progress = job.progress.slackInteraction;
+    if (!progress) continue;
+    try {
+      await repairSlackInteractionProgress(
+        job.turn,
+        job.assignment,
+        progress,
+        client,
+        (patch) => {
+          stores.turnJobs.recordSlackInteractionProgress(job.id, patch);
+        },
+      );
+    } catch (error) {
+      console.warn('[chickpea] Slack interaction cleanup retry failed:', sanitizeError(error));
+    }
+  }
+}
+
 async function drainLedgerRuns(
   stores: TagStateStores,
   platformEnv: PlatformEnv,
@@ -1056,6 +1159,8 @@ async function drainLedgerRuns(
       platformEnv,
       settingsStore: localSettingsStore(stores),
       usageStore: localUsageStore(stores),
+      setActiveWork: (key, generation, active) =>
+        stores.slack.setActiveWork(key, generation, active),
     }),
   }).drain();
 }

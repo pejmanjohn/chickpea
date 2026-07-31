@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import type { WebClient } from '@slack/web-api';
+import { ErrorCode, type WebClient } from '@slack/web-api';
 
-import { WebClientPresenter } from '../src/slack/web-client-presenter.ts';
+import {
+  deliverPersistedSlackPayload,
+  WebClientPresenter,
+} from '../src/slack/web-client-presenter.ts';
 
 function presenterWith(client: unknown): WebClientPresenter {
   return new WebClientPresenter(client as WebClient, {
@@ -13,6 +16,38 @@ function presenterWith(client: unknown): WebClientPresenter {
     agentId: 'agent_test',
   });
 }
+
+test('setStatus keeps composer liveness generic while activity loading detail changes', async () => {
+  const calls: unknown[] = [];
+  const presenter = presenterWith({
+    assistant: {
+      threads: {
+        async setStatus(input: unknown) {
+          calls.push(input);
+          return { ok: true };
+        },
+      },
+    },
+  });
+
+  await presenter.setStatus({ text: 'is thinking...' });
+  await presenter.setStatus({ text: 'is searching the workspace' });
+
+  assert.deepEqual(calls, [
+    {
+      channel_id: 'C_BOUND',
+      thread_ts: '1782770400.000100',
+      status: 'is thinking...',
+      loading_messages: ['is thinking...'],
+    },
+    {
+      channel_id: 'C_BOUND',
+      thread_ts: '1782770400.000100',
+      status: 'is thinking...',
+      loading_messages: ['is thinking...', 'Searching the workspace'],
+    },
+  ]);
+});
 
 test('postArtifact sends bytes to files.uploadV2 in the requested thread', async () => {
   const calls: unknown[] = [];
@@ -301,4 +336,128 @@ test('ledger delivery never calls Slack before its durable start receipt', async
 
   await assert.rejects(() => presenter.deliverFinal('approved answer', 'markdown'));
   assert.equal(externalCalls, 0);
+});
+
+test('semantic reactions fall back by name and preserve pre-existing reactions', async () => {
+  const calls: string[] = [];
+  const presenter = presenterWith({
+    reactions: {
+      async add(input: { name: string }) {
+        calls.push(input.name);
+        if (input.name === 'merged') {
+          throw { code: ErrorCode.PlatformError, data: { error: 'invalid_name' } };
+        }
+        throw { code: ErrorCode.PlatformError, data: { error: 'already_reacted' } };
+      },
+    },
+  });
+  assert.deepEqual(
+    await presenter.addSemanticReaction('merged', {
+      channelId: 'C_BOUND', messageTs: '1782770400.000100',
+    }),
+    { name: 'ship', created: false },
+  );
+  assert.deepEqual(calls, ['merged', 'ship']);
+});
+
+test('reaction-only delivery persists the semantic chain and text-falls back on confirmed scope failure', async () => {
+  const events: Array<Record<string, unknown>> = [];
+  const posts: unknown[] = [];
+  const presenter = new WebClientPresenter(
+    {
+      reactions: {
+        async add() {
+          throw { code: ErrorCode.PlatformError, data: { error: 'missing_scope' } };
+        },
+      },
+      chat: {
+        async postMessage(input: unknown) {
+          posts.push(input);
+          return { ok: true, ts: '1782770400.000900' };
+        },
+      },
+    } as unknown as WebClient,
+    {
+      channelId: 'C_BOUND', threadTs: '1782770400.000100',
+      agentName: 'Test agent', agentId: 'agent_test',
+    },
+    {
+      async beforeDelivery(input) { events.push(input); return 'attempt-reaction'; },
+      async afterDelivery(input) { events.push(input); },
+    },
+    { deliverySafety: 'ledger' },
+  );
+  const receipt = await presenter.deliverReaction('agreement', {
+    channelId: 'C_BOUND', messageTs: '1782770400.000100',
+  });
+  assert.deepEqual(receipt, { name: 'text_fallback', created: false });
+  assert.equal(posts.length, 1);
+  assert.equal((posts[0] as { text: string }).text, 'Sounds good.');
+  assert.match(String(events[0]?.renderedPayload), /slack_reaction_add/);
+  assert.equal(events[1]?.outcome, 'delivered');
+});
+
+test('persisted reaction delivery replays without reclassification', async () => {
+  const calls: unknown[] = [];
+  const result = await deliverPersistedSlackPayload(
+    {
+      reactions: {
+        async add(input: unknown) { calls.push(input); return { ok: true }; },
+      },
+    } as unknown as WebClient,
+    JSON.stringify({
+      method: 'slack_reaction_add', semantic: 'done', names: ['white_check_mark'],
+      channel: 'C_BOUND', timestamp: '1782770400.000100',
+      threadTs: '1782770400.000100', fallbackText: 'Done.',
+    }),
+  );
+  assert.equal(result.method, 'slack_reaction_add');
+  assert.equal(calls.length, 1);
+});
+
+test('persisted reaction text fallback stays in the original thread', async () => {
+  const posts: Array<{ thread_ts?: string }> = [];
+  const result = await deliverPersistedSlackPayload(
+    {
+      reactions: {
+        async add() {
+          throw { code: ErrorCode.PlatformError, data: { error: 'missing_scope' } };
+        },
+      },
+      chat: {
+        async postMessage(input: { thread_ts?: string }) {
+          posts.push(input);
+          return { ok: true, ts: '1782770400.000901' };
+        },
+      },
+    } as unknown as WebClient,
+    JSON.stringify({
+      method: 'slack_reaction_add', semantic: 'seen', names: ['eyes'],
+      channel: 'C_BOUND', timestamp: '1782770400.000700',
+      threadTs: '1782770400.000100', fallbackText: 'Seen.',
+    }),
+  );
+  assert.equal(result.method, 'slack_chat_post_message');
+  assert.equal(posts[0]?.thread_ts, '1782770400.000100');
+});
+
+test('work checklist posts once and updates the same message coordinate', async () => {
+  const calls: Array<{ method: string; input: unknown }> = [];
+  const presenter = presenterWith({
+    chat: {
+      async postMessage(input: unknown) {
+        calls.push({ method: 'post', input });
+        return { ok: true, ts: '1782770400.001000' };
+      },
+      async update(input: unknown) {
+        calls.push({ method: 'update', input });
+        return { ok: true };
+      },
+    },
+  });
+  const ts = await presenter.postWorkChecklist(['PR link', 'Verification result']);
+  assert.equal(ts, '1782770400.001000');
+  await presenter.updateWorkChecklist(ts!, ['PR link', 'Verification result'], true);
+  assert.deepEqual(calls.map((call) => call.method), ['post', 'update']);
+  assert.equal((calls[1]?.input as { ts: string }).ts, ts);
 });

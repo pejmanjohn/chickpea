@@ -6,6 +6,7 @@ import type {
   AdmitUsageOperationInput,
   RecordUsageTerminalInput,
   UsageStore,
+  UsageConversationKind,
   UsageUnknownReason,
   UsageTerminalStatus,
 } from './types.ts';
@@ -225,6 +226,144 @@ export interface RoutineReportedUsage {
   totalTokens: number;
 }
 
+export interface InteractionUsageRecorderOptions {
+  operationId: string;
+  executionId: string;
+  runId?: string;
+  runExecutionId?: string;
+  startedAt: number;
+  workspaceId: string;
+  channelId: string;
+  channelLabel?: string;
+  conversationKind?: UsageConversationKind;
+  profileId: string | null;
+  profileLabel: string | null;
+  requestedModel: string | null;
+  credentialRefId: string | null;
+  credentialVersion: number | null;
+  store: UsageStore;
+  platformEnv?: PlatformEnv;
+  processEnv?: NodeJS.ProcessEnv;
+  writeBudgetMs?: number;
+  now?: () => number;
+  onPersistence?: (event: UsagePersistenceEvent) => void;
+}
+
+export interface InteractionReportedUsage {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+}
+
+export class InteractionUsageRecorder {
+  private readonly admission: AdmitUsageOperationInput;
+  private readonly budgetMs: number;
+  private readonly now: () => number;
+  private terminalInput: RecordUsageTerminalInput | undefined;
+  private repairAttempted = false;
+  private needsRepair = false;
+  private runExecutionId: string | undefined;
+
+  constructor(private readonly options: InteractionUsageRecorderOptions) {
+    this.now = options.now ?? Date.now;
+    this.budgetMs = boundedBudget(options.writeBudgetMs);
+    this.runExecutionId = options.runExecutionId;
+    const requested = splitModelSpecifier(options.requestedModel);
+    this.admission = {
+      operationId: options.operationId,
+      operationKind: 'interaction_classification',
+      sourceId: options.operationId,
+      ...(options.runId ? { runId: options.runId } : {}),
+      startedAt: options.startedAt,
+      installationId: installationId(options.platformEnv, options.processEnv),
+      workspaceId: options.workspaceId,
+      profileId: options.profileId,
+      profileLabel: options.profileLabel,
+      channelId: options.channelId,
+      channelLabel: options.channelLabel ?? options.channelId,
+      conversationKind: options.conversationKind ?? 'named_channel',
+      requestedProvider: requested.provider,
+      requestedModel: requested.model,
+      credentialRefId: options.credentialRefId,
+      credentialVersion: options.credentialVersion,
+    };
+  }
+
+  async admit(): Promise<void> {
+    const outcome = await persistUsage(
+      this.options.store.admitOperation(this.admission),
+      this.budgetMs,
+      'admission',
+      this.options.executionId,
+      this.options.onPersistence,
+    );
+    this.needsRepair ||= outcome !== 'recorded';
+  }
+
+  linkRunExecution(runExecutionId: string): void {
+    if (!this.terminalInput) this.runExecutionId = runExecutionId;
+  }
+
+  async recordTerminal(input: {
+    status: UsageTerminalStatus;
+    usage?: InteractionReportedUsage | null;
+    returnedModel?: { provider: string; id: string } | null;
+    unknownReason?: UsageUnknownReason;
+  }): Promise<void> {
+    if (this.terminalInput) return;
+    const usage = normalizeInteractionUsage(input.usage ?? null);
+    const finishedAt = this.now();
+    const terminal = {
+      operationId: this.admission.operationId,
+      executionId: this.options.executionId,
+      ...(this.runExecutionId ? { runExecutionId: this.runExecutionId } : {}),
+      status: input.status,
+      finishedAt,
+      observedAt: finishedAt,
+      providerRoute: input.returnedModel?.provider ?? this.admission.requestedProvider,
+      requestedProvider: this.admission.requestedProvider,
+      requestedModel: this.admission.requestedModel,
+      returnedProvider: input.returnedModel?.provider ?? null,
+      returnedModel: input.returnedModel?.id ?? null,
+      credentialRefId: this.admission.credentialRefId,
+      credentialVersion: this.admission.credentialVersion,
+      usageCompleteness: usage ? 'complete' as const : 'not_reported' as const,
+      inputTokens: usage?.inputTokens ?? null,
+      outputTokens: usage?.outputTokens ?? null,
+      totalTokens: usage?.totalTokens ?? null,
+      usageUnknownReason: usage ? null : (input.unknownReason ?? 'usage_not_reported'),
+    };
+    this.terminalInput = {
+      ...terminal,
+      ...estimateForRuntime(terminal, this.options.platformEnv, this.options.processEnv),
+    };
+    const outcome = await persistUsage(
+      this.options.store.recordTerminal(this.terminalInput),
+      this.budgetMs,
+      'terminal',
+      this.options.executionId,
+      this.options.onPersistence,
+    );
+    this.needsRepair ||= outcome !== 'recorded';
+  }
+
+  async repairAfterTerminal(): Promise<void> {
+    if (!this.terminalInput || !this.needsRepair || this.repairAttempted) return;
+    this.repairAttempted = true;
+    const outcome = await persistUsage(
+      (async () => {
+        await this.options.store.admitOperation(this.admission);
+        await this.options.store.recordTerminal(this.terminalInput!);
+      })(),
+      this.budgetMs,
+      'repair',
+      this.options.executionId,
+      this.options.onPersistence,
+    );
+    if (outcome === 'recorded') this.needsRepair = false;
+  }
+}
+
 export class RoutineUsageRecorder {
   private readonly admission: AdmitUsageOperationInput;
   private readonly budgetMs: number;
@@ -415,6 +554,15 @@ async function persistUsage(
 function normalizeRoutineUsage(usage: RoutineReportedUsage | null): RoutineReportedUsage | null {
   if (!usage) return null;
   const values = [usage.input, usage.output, usage.totalTokens];
+  if (!values.every((value) => Number.isSafeInteger(value) && value >= 0)) return null;
+  return values.every((value) => value === 0) ? null : usage;
+}
+
+function normalizeInteractionUsage(
+  usage: InteractionReportedUsage | null,
+): InteractionReportedUsage | null {
+  if (!usage) return null;
+  const values = [usage.inputTokens, usage.outputTokens, usage.totalTokens];
   if (!values.every((value) => Number.isSafeInteger(value) && value >= 0)) return null;
   return values.every((value) => value === 0) ? null : usage;
 }

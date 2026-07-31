@@ -73,6 +73,7 @@ export async function resolveAssignment(
     ...(assignment.channelPromptAddendum
       ? { channelPromptAddendum: assignment.channelPromptAddendum }
       : {}),
+    participationMode: assignment.participationMode ?? 'ambient',
     agent,
   };
 }

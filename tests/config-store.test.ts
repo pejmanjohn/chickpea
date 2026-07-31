@@ -76,6 +76,16 @@ test('SqliteConfigStore round-trips agent and assignment CRUD', async () => {
   store.close();
 });
 
+test('channel participation defaults to ambient and persists mention-only narrowing', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  await store.createAgent(agent());
+  const ambient = await store.putAssignment(assignment());
+  assert.equal(ambient.participationMode ?? 'ambient', 'ambient');
+  const narrowed = await store.putAssignment(assignment({ participationMode: 'mention_only' }));
+  assert.equal(narrowed.participationMode, 'mention_only');
+  store.close();
+});
+
 test('SqliteConfigStore round-trips non-empty skills through create and update', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   const withSkills = agent({
@@ -488,7 +498,7 @@ test('SqliteConfigStore migrates the legacy v1 default-models column without los
       .all() as Array<{ id: string }>;
     migratedDb.close();
 
-    assert.equal(version.value, '5');
+    assert.equal(version.value, '6');
     assert.equal(
       agentColumns.some(({ name }) => name === 'default_models_json'),
       false,
@@ -521,7 +531,7 @@ test('fresh databases start at the clean current config schema', () => {
       .all('config_assignments') as Array<{ name: string }>;
     db.close();
 
-    assert.equal(version.value, '5');
+    assert.equal(version.value, '6');
     assert.deepEqual(
       agentColumns.map(({ name }) => name),
       [
@@ -545,6 +555,7 @@ test('fresh databases start at the clean current config schema', () => {
         'enabled',
         'channel_label',
         'channel_prompt_addendum',
+        'participation_mode',
       ],
     );
   } finally {

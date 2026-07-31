@@ -13,6 +13,11 @@ import {
   slackStatusText,
   type SlackStatusUpdate,
 } from './replies.ts';
+import {
+  reactionFallbacks,
+  SEMANTIC_REACTIONS,
+  type SemanticReaction,
+} from './interaction-intent.ts';
 
 /** Static failure copy keeps raw provider errors out of Slack (scenario S15). */
 export const PROVIDER_FAILURE_TEXT =
@@ -61,6 +66,16 @@ export interface SlackArtifactInput {
 export type SlackArtifactResult =
   | { uploaded: true }
   | { uploaded: false; reason: 'missing-scope' };
+
+export interface SlackReactionCoordinate {
+  channelId: string;
+  messageTs: string;
+}
+
+export interface SlackReactionReceipt {
+  name: string;
+  created: boolean;
+}
 
 export interface SlackDeliveryObserver {
   beforeDelivery(input: {
@@ -160,6 +175,113 @@ export class WebClientPresenter {
       channel: this.target.channelId,
       thread_ts: this.target.threadTs,
       text,
+    });
+  }
+
+  /** Best-effort work acknowledgment. The receipt records whether this run
+   * created the reaction so terminal cleanup never removes a pre-existing eye. */
+  async addSemanticReaction(
+    reaction: SemanticReaction,
+    coordinate: SlackReactionCoordinate,
+  ): Promise<SlackReactionReceipt> {
+    return addReactionChain(this.client, reactionFallbacks(reaction), coordinate);
+  }
+
+  async removeReaction(name: string, coordinate: SlackReactionCoordinate): Promise<void> {
+    try {
+      await this.client.reactions.remove({
+        name,
+        channel: coordinate.channelId,
+        timestamp: coordinate.messageTs,
+      });
+    } catch (error) {
+      if (slackPlatformErrorCode(error) === 'no_reaction') return;
+      throw error;
+    }
+  }
+
+  /** Canonical reaction-only delivery. The whole fallback chain is persisted
+   * before the first Slack write so recovery never needs model reclassification. */
+  async deliverReaction(
+    reaction: SemanticReaction,
+    coordinate: SlackReactionCoordinate,
+  ): Promise<SlackReactionReceipt> {
+    const names = reactionFallbacks(reaction);
+    const payload = {
+      method: 'slack_reaction_add' as const,
+      semantic: reaction,
+      names,
+      channel: coordinate.channelId,
+      timestamp: coordinate.messageTs,
+      threadTs: this.target.threadTs,
+      fallbackText: reactionTextEquivalent(reaction),
+    };
+    const attemptId = await this.observeBeforeDelivery({
+      method: payload.method,
+      approvedOutput: reaction,
+      renderedPayload: JSON.stringify(payload),
+    });
+    try {
+      let receipt: SlackReactionReceipt;
+      try {
+        receipt = await addReactionChain(this.client, names, coordinate);
+      } catch (error) {
+        if (slackDeliveryFailureOutcome(error) !== 'failed') throw error;
+        const posted = await this.client.chat.postMessage({
+          channel: this.target.channelId,
+          thread_ts: this.target.threadTs,
+          text: payload.fallbackText,
+        });
+        await this.observeAfterDelivery({
+          attemptId,
+          outcome: 'delivered',
+          deliveryRef: slackDeliveryRef(this.target.channelId, posted.ts),
+        });
+        return { name: 'text_fallback', created: false };
+      }
+      await this.observeAfterDelivery({
+        attemptId,
+        outcome: 'delivered',
+        deliveryRef: `slack:${coordinate.channelId}:${coordinate.messageTs}:reaction:${receipt.name}`,
+      });
+      return receipt;
+    } catch (error) {
+      const outcome = this.deliveryOutcome(error);
+      await this.observeAfterDelivery({
+        attemptId,
+        outcome,
+        safeFailureCode: outcome === 'failed'
+          ? 'slack_reaction_failed'
+          : 'slack_reaction_unknown',
+      });
+      throw error;
+    }
+  }
+
+  /** One accessible, non-ephemeral checklist. Returns its coordinate only
+   * after Slack confirms the post; unknown outcomes are deliberately not retried. */
+  async postWorkChecklist(checklist: readonly string[]): Promise<string | undefined> {
+    const rendered = renderWorkChecklist(checklist, false);
+    const response = await this.client.chat.postMessage({
+      channel: this.target.channelId,
+      thread_ts: this.target.threadTs,
+      text: rendered.text,
+      blocks: rendered.blocks,
+    });
+    return typeof response.ts === 'string' && response.ts ? response.ts : undefined;
+  }
+
+  async updateWorkChecklist(
+    messageTs: string,
+    checklist: readonly string[],
+    complete: boolean | 'failed',
+  ): Promise<void> {
+    const rendered = renderWorkChecklist(checklist, complete);
+    await this.client.chat.update({
+      channel: this.target.channelId,
+      ts: messageTs,
+      text: rendered.text,
+      blocks: rendered.blocks,
     });
   }
 
@@ -372,6 +494,33 @@ export async function deliverPersistedSlackPayload(
   renderedPayload: string,
 ): Promise<{ method: string; deliveryRef: string }> {
   const envelope = parsePersistedEnvelope(renderedPayload);
+  if (envelope.method === 'slack_reaction_add') {
+    try {
+      try {
+        const receipt = await addReactionChain(client, envelope.names, {
+          channelId: envelope.channel,
+          messageTs: envelope.timestamp,
+        });
+        return {
+          method: envelope.method,
+          deliveryRef: `slack:${envelope.channel}:${envelope.timestamp}:reaction:${receipt.name}`,
+        };
+      } catch (error) {
+        if (slackDeliveryFailureOutcome(error) !== 'failed') throw error;
+        const posted = await client.chat.postMessage({
+          channel: envelope.channel,
+          thread_ts: envelope.threadTs,
+          text: envelope.fallbackText,
+        });
+        return {
+          method: 'slack_chat_post_message',
+          deliveryRef: slackDeliveryRef(envelope.channel, posted.ts),
+        };
+      }
+    } catch (error) {
+      throw persistedDeliveryError(error, 'slack_reaction_failed', 'slack_reaction_unknown');
+    }
+  }
   if (envelope.method === 'slack_chat_post_message') {
     try {
       const response = await client.chat.postMessage(
@@ -451,6 +600,15 @@ type PersistedEnvelope =
   | { method: 'slack_chat_post_message'; payload: Record<string, unknown> }
   | { method: 'slack_chat_post_ephemeral'; payload: Record<string, unknown> }
   | {
+      method: 'slack_reaction_add';
+      semantic: SemanticReaction;
+      names: string[];
+      channel: string;
+      timestamp: string;
+      threadTs: string;
+      fallbackText: string;
+    }
+  | {
       method: 'slack_chat_stream';
       start: Record<string, unknown>;
       stop: Record<string, unknown>;
@@ -467,6 +625,27 @@ function parsePersistedEnvelope(raw: string): PersistedEnvelope {
     throw new PersistedSlackDeliveryError('unknown', 'slack_render_invalid');
   }
   const record = parsed as Record<string, unknown>;
+  if (
+    record.method === 'slack_reaction_add' &&
+    typeof record.semantic === 'string' &&
+    SEMANTIC_REACTIONS.includes(record.semantic as SemanticReaction) &&
+    Array.isArray(record.names) && record.names.length > 0 && record.names.length <= 3 &&
+    record.names.every((name) => typeof name === 'string' && /^[a-z0-9_+-]{1,80}$/.test(name)) &&
+    typeof record.channel === 'string' && record.channel.length > 0 &&
+    typeof record.timestamp === 'string' && record.timestamp.length > 0 &&
+    typeof record.threadTs === 'string' && record.threadTs.length > 0 &&
+    typeof record.fallbackText === 'string'
+  ) {
+    return {
+      method: record.method,
+      semantic: record.semantic as SemanticReaction,
+      names: record.names,
+      channel: record.channel,
+      timestamp: record.timestamp,
+      threadTs: record.threadTs,
+      fallbackText: record.fallbackText,
+    };
+  }
   if (
     (record.method === 'slack_chat_post_message' ||
       record.method === 'slack_chat_post_ephemeral') &&
@@ -507,4 +686,74 @@ function isMissingFilesScopeError(err: unknown): boolean {
   if (!data || typeof data !== 'object') return false;
   const error = (data as { error?: unknown }).error;
   return error === 'missing_scope' || error === 'not_allowed_token_type';
+}
+
+async function addReactionChain(
+  client: WebClient,
+  names: readonly string[],
+  coordinate: SlackReactionCoordinate,
+): Promise<SlackReactionReceipt> {
+  let lastError: unknown;
+  for (const name of names) {
+    try {
+      await client.reactions.add({
+        name,
+        channel: coordinate.channelId,
+        timestamp: coordinate.messageTs,
+      });
+      return { name, created: true };
+    } catch (error) {
+      const code = slackPlatformErrorCode(error);
+      if (code === 'already_reacted') return { name, created: false };
+      lastError = error;
+      if (code === 'invalid_name') continue;
+      throw error;
+    }
+  }
+  throw lastError ?? new PersistedSlackDeliveryError('failed', 'slack_reaction_failed');
+}
+
+function slackPlatformErrorCode(error: unknown): string | undefined {
+  if (!error || typeof error !== 'object') return undefined;
+  const data = (error as { data?: unknown }).data;
+  if (!data || typeof data !== 'object') return undefined;
+  const code = (data as { error?: unknown }).error;
+  return typeof code === 'string' ? code : undefined;
+}
+
+function renderWorkChecklist(checklist: readonly string[], complete: boolean | 'failed'): {
+  text: string;
+  blocks: Array<{
+    type: 'section';
+    block_id: 'chickpea_work_checklist';
+    text: { type: 'mrkdwn'; text: string };
+  }>;
+} {
+  const timestamp = new Date().toISOString().slice(11, 16) + ' UTC';
+  const lines = checklist.map((item, index) =>
+    `${complete === true ? '✓' : complete === 'failed' ? '×' : index === 0 ? '✱' : '○'} ${item}`
+  );
+  const text = `${lines.join('\n')}\n${timestamp}`;
+  return {
+    text,
+    blocks: [{
+      type: 'section',
+      block_id: 'chickpea_work_checklist',
+      text: { type: 'mrkdwn', text },
+    }],
+  };
+}
+
+export function reactionTextEquivalent(reaction: SemanticReaction): string {
+  switch (reaction) {
+    case 'agreement': return 'Sounds good.';
+    case 'done': return 'Done.';
+    case 'seen': return 'Seen.';
+    case 'appreciation': return 'Thank you.';
+    case 'midwork_seen': return 'Seen.';
+    case 'merged': return 'Merged.';
+    case 'failed': return 'Failed.';
+    case 'approved': return 'Approved.';
+    case 'work_ack': return 'I picked this up.';
+  }
 }

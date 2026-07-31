@@ -1796,7 +1796,7 @@ test('effective config endpoint resolves through the runtime assignment path', a
     assert.match(body.config.instructions, /Do not reveal Slack tokens/);
     assert.deepEqual(
       body.config.instructionLayers.map((layer) => layer.source),
-      ['profile', 'channel', 'runtime', 'guardrail'],
+      ['interaction_defaults', 'profile', 'channel', 'runtime', 'guardrail'],
     );
   } finally {
     store.close();

@@ -7,6 +7,10 @@ import { resolveSandboxSettings } from '../config/sandbox-settings.ts';
 import { getSettingsStore, getUsageStore, getWorkStore } from '../config/state-backend.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
+import type {
+  SlackInteractionProgress,
+  SlackInteractionProgressPatch,
+} from '../config/state-rpc.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
 import {
   resolveProviderAuthRoute,
@@ -16,6 +20,7 @@ import { parseMemoryCommand } from '../memory/commands.ts';
 import { handleMemoryCommand, prepareMemoryTurn } from '../memory/runtime.ts';
 import {
   handleRoutineSlackRequest,
+  parseRoutineCommand,
   routineResponseVisibility,
 } from '../routines/commands.ts';
 import { isRoutineSlackTurn } from '../routines/slack-context.ts';
@@ -45,9 +50,11 @@ import {
   SANDBOX_FAILURE_TEXT,
   SANDBOX_SESSION_CAP_FAILURE_TEXT,
   WebClientPresenter,
+  type SlackReactionReceipt,
 } from './web-client-presenter.ts';
 import {
   InteractiveUsageRecorder,
+  InteractionUsageRecorder,
   usageRuntimeRecordingEnabled,
   type UsagePersistenceEvent,
 } from '../usage/runtime-recorder.ts';
@@ -56,6 +63,14 @@ import { opaqueId } from '../work/admission.ts';
 import { createWorkExecutionLifecycle } from '../work/executor.ts';
 import type { ShadowWorkLifecycle } from '../work/lifecycle.ts';
 import type { RunExecutionAuthority, WorkStore } from '../work/types.ts';
+import {
+  classifySlackInteraction,
+  type SlackInteractionIntent,
+} from './interaction-intent.ts';
+import {
+  startWorkChecklistHeartbeat,
+  type WorkChecklistHeartbeat,
+} from './work-checklist-heartbeat.ts';
 
 /**
  * The turn lifecycle, factored out of the Slack channel so BOTH the node detach
@@ -89,6 +104,9 @@ export function createSlackWebClient(botToken: string | undefined): WebClient {
   const slackApiUrl = process.env.SLACK_API_URL;
   return new WebClient(botToken, {
     retryConfig: { retries: 0 },
+    // The SDK default is no timeout. Bound every Slack request so an upstream
+    // connection cannot hold a durable turn claim or adapter cleanup forever.
+    timeout: 10_000,
     fetch: (input, init) => {
       const patchedInit =
         isCloudflareTarget() && init?.redirect === 'error'
@@ -123,6 +141,8 @@ export interface RunTurnOptions {
    * the DO never has to RPC into itself to resolve the bot token.
    */
   client?: WebClient;
+  /** Focused-test override for proving replay and delivery lifecycle behavior. */
+  agentPrompt?: typeof promptSlackThreadAgent;
   /** Durable turn key forwarded to the sandbox for cap/idempotency state. */
   turnId?: string;
   /** Recorded result from an earlier attempt; skips the agent entirely. */
@@ -155,7 +175,21 @@ export interface RunTurnOptions {
   usageWriteBudgetMs?: number;
   /** Durable turn-job denominator hook for persistence coverage. */
   onUsagePersistence?: (event: UsagePersistenceEvent) => void;
+  /** Persist the first validated explicit-turn decision before Slack effects. */
+  onInteractionIntent?: (intent: SlackInteractionIntent) => void | Promise<void>;
+  /** Adapter artifacts restored from a prior relay attempt. */
+  interactionProgress?: SlackInteractionProgress;
+  /** Persist adapter coordinates before any later model or delivery work. */
+  onInteractionProgress?: (
+    patch: SlackInteractionProgressPatch,
+  ) => void | Promise<void>;
+  /** Focused-test override for the otherwise one-minute checklist heartbeat. */
+  progressHeartbeatMs?: number;
+  /** Focused-test override for the bounded in-flight heartbeat drain. */
+  progressHeartbeatDrainMs?: number;
 }
+
+const DEFAULT_PROGRESS_HEARTBEAT_MS = 60_000;
 
 /**
  * Full Slack turn lifecycle:
@@ -210,6 +244,41 @@ export async function runTurn(
     }
   }
   const memoryCommand = parseMemoryCommand(turn.text);
+  const deterministicCommand = Boolean(memoryCommand) ||
+    (isRoutineSlackTurn(turn) && Boolean(parseRoutineCommand(turn.text)));
+  let interactionIntent = turn.interactionIntent;
+  if (!deterministicCommand && !interactionIntent) {
+    const classification = await classifySlackInteraction({
+      workspaceId: turn.workspaceId,
+      channelId: turn.channelId,
+      eventId: turn.eventId,
+      text: turn.text,
+      source: turn.source,
+      guaranteed: true,
+      ...(turn.activeWorkAtAdmission === undefined
+        ? {}
+        : { activeWork: turn.activeWorkAtAdmission }),
+      profileInstructions:
+        'instructions' in assignment && typeof assignment.instructions === 'string'
+          ? assignment.instructions
+          : assignment.agent.instructions,
+      ...(assignment.channelPromptAddendum
+        ? { channelInstructions: assignment.channelPromptAddendum }
+        : {}),
+      requestedModel: resolvedModel ?? null,
+    }, platformEnv);
+    interactionIntent = classification.intent;
+    turn.interactionIntent = interactionIntent;
+    await options.onInteractionIntent?.(interactionIntent);
+    await recordExplicitInteractionClassifierUsage({
+      turn,
+      assignment,
+      classification,
+      requestedModel: resolvedModel ?? null,
+      platformEnv,
+      options,
+    });
+  }
   const preparedMemory = memoryCommand
     ? undefined
     : await prepareMemoryTurn({ turn, platformEnv, client });
@@ -246,23 +315,111 @@ export async function runTurn(
   const statusTurn = registerSlackStatusTurn(agentConversationKey, presenter, {
     generation: statusGeneration,
   });
-  const closeAndDrainStatus = async (): Promise<void> => {
+  const finishStatus = (): void => {
     // Close the sink first. Agent observations are relayed best-effort from a
     // different Cloudflare isolate and may still arrive after ?wait=result
     // resolves; removing this generation makes its late relays no-ops even if
     // another turn has already registered under the same conversation key.
-    // drain() then waits only for the one Slack write already in flight and
-    // discards throttled/stale pending detail, so the final is not delayed.
-    statusTurn.close();
-    await statusTurn.drain();
+    // Clearing is deliberately non-blocking: if the active Slack request lands
+    // after the first clear, the registry issues a second clear once it settles.
+    statusTurn.finish(() => presenter.clearStatus());
   };
   let usedCloudflareSandbox = false;
   let usageRecorder: InteractiveUsageRecorder | undefined;
+  let interactionProgress: SlackInteractionProgress = {
+    ...options.interactionProgress,
+  };
+  let workAcknowledgment: SlackReactionReceipt | undefined =
+    interactionProgress.acknowledgment
+      ? {
+          name: interactionProgress.acknowledgment.name,
+          created: interactionProgress.acknowledgment.created,
+        }
+      : undefined;
+  let workChecklistTs = interactionProgress.checklist?.messageTs;
+  let workChecklistHeartbeat: WorkChecklistHeartbeat | undefined;
+  const workChecklist = interactionIntent?.disposition === 'work'
+    ? interactionIntent.checklist
+    : undefined;
+  const triggerCoordinate = {
+    channelId: turn.channelId,
+    messageTs: turn.reactionTargetTs ?? turn.messageTs,
+  };
+  const recordInteractionProgress = async (
+    patch: SlackInteractionProgressPatch,
+  ): Promise<void> => {
+    interactionProgress = {
+      ...interactionProgress,
+      ...(patch.acknowledgment
+        ? {
+            acknowledgment: {
+              ...interactionProgress.acknowledgment,
+              ...patch.acknowledgment,
+            },
+          }
+        : {}),
+      ...(patch.checklist
+        ? {
+            checklist: {
+              ...interactionProgress.checklist,
+              ...patch.checklist,
+            },
+          }
+        : {}),
+    };
+    await options.onInteractionProgress?.(patch);
+  };
+  const removeWorkAcknowledgment = async (): Promise<void> => {
+    const persisted = interactionProgress.acknowledgment;
+    if (!workAcknowledgment?.created || persisted?.cleanup === 'done') return;
+    const acknowledgment = workAcknowledgment;
+    try {
+      const coordinate = persisted
+        ? { channelId: persisted.channelId, messageTs: persisted.messageTs }
+        : triggerCoordinate;
+      await presenter.removeReaction(acknowledgment.name, coordinate);
+      workAcknowledgment = undefined;
+      await recordInteractionProgress({
+        acknowledgment: {
+          channelId: coordinate.channelId,
+          messageTs: coordinate.messageTs,
+          name: acknowledgment.name,
+          created: true,
+          cleanup: 'done',
+        },
+      });
+    } catch {
+      console.warn('[chickpea] Slack work acknowledgment cleanup failed');
+    }
+  };
   const finishDelivery = async (): Promise<void> => {
     // Delivery gets its durable tombstone before the best-effort repair so a
     // slow reporting backend can never make Slack retry already-delivered work.
     await options.onDelivered?.();
     await usageRecorder?.repairAfterDelivery();
+    if (workChecklistHeartbeat) {
+      const drained = await workChecklistHeartbeat.stop();
+      workChecklistHeartbeat = undefined;
+      if (!drained) {
+        // The delivered tombstone is already durable. Leave adapter cleanup
+        // pending so the repair lane can finalize without racing a late write.
+        return;
+      }
+    }
+    if (workChecklistTs && workChecklist) {
+      try {
+        await presenter.updateWorkChecklist(workChecklistTs, workChecklist, true);
+        const checklistProgress = interactionProgress.checklist;
+        if (checklistProgress) {
+          await recordInteractionProgress({
+            checklist: { ...checklistProgress, cleanup: 'done' },
+          });
+        }
+      } catch {
+        console.warn('[chickpea] Slack work checklist finalization failed');
+      }
+    }
+    await removeWorkAcknowledgment();
   };
 
   // 1. Visible work: set status; if it is rejected, post a durable progress
@@ -274,6 +431,27 @@ export async function runTurn(
         await finishDelivery();
         return;
       }
+    }
+    if (interactionIntent?.disposition === 'react_only') {
+      const prepared = await workLifecycle?.prepareExecution(
+        `Slack reaction response: ${interactionIntent.reaction}`,
+      );
+      if (workLifecycle?.hasExecution) {
+        await workLifecycle.settleExecution({
+          outcome: 'succeeded',
+          rawStatus: 'adapter_reaction_only',
+          modelInvoked: false,
+        });
+      }
+      // Reading the persisted input is the ledger fence; its content is not
+      // user-visible and the semantic reaction remains the approved output.
+      void prepared;
+      await presenter.deliverReaction(
+        interactionIntent.reaction,
+        resolveReactionCoordinate(turn, interactionIntent.target),
+      );
+      await finishDelivery();
+      return;
     }
     const recordingEnabled = options.usageRecordingEnabled ??
       usageRuntimeRecordingEnabled(platformEnv);
@@ -296,8 +474,64 @@ export async function runTurn(
       });
       await usageRecorder.admit();
     }
-    const statusSet = await statusTurn.setStatus(readingThreadStatus());
-    if (!statusSet) {
+    if (workChecklist) {
+      if (!interactionProgress.acknowledgment) {
+        try {
+          workAcknowledgment = await presenter.addSemanticReaction('work_ack', triggerCoordinate);
+        } catch {
+          console.warn('[chickpea] Slack work acknowledgment failed');
+        }
+        if (workAcknowledgment) {
+          await recordInteractionProgress({
+            acknowledgment: {
+              channelId: triggerCoordinate.channelId,
+              messageTs: triggerCoordinate.messageTs,
+              name: workAcknowledgment.name,
+              created: workAcknowledgment.created,
+              cleanup: workAcknowledgment.created ? 'pending' : 'done',
+            },
+          });
+        }
+      }
+      if (!workChecklistTs) {
+        try {
+          workChecklistTs = await presenter.postWorkChecklist(workChecklist);
+        } catch {
+          console.warn('[chickpea] Slack work checklist post failed');
+        }
+        if (workChecklistTs) {
+          await recordInteractionProgress({
+            checklist: {
+              channelId: turn.channelId,
+              threadTs: turn.threadTs,
+              messageTs: workChecklistTs,
+              cleanup: 'pending',
+            },
+          });
+        }
+      }
+      if (workChecklistTs && interactionProgress.checklist?.cleanup !== 'done') {
+        const heartbeatMs = Math.max(
+          1_000,
+          Math.floor(options.progressHeartbeatMs ?? DEFAULT_PROGRESS_HEARTBEAT_MS),
+        );
+        workChecklistHeartbeat = startWorkChecklistHeartbeat({
+          intervalMs: heartbeatMs,
+          ...(options.progressHeartbeatDrainMs === undefined
+            ? {}
+            : { drainTimeoutMs: options.progressHeartbeatDrainMs }),
+          update: () => presenter.updateWorkChecklist(workChecklistTs!, workChecklist, false),
+          onError: () => {
+            console.warn('[chickpea] Slack work checklist heartbeat failed');
+          },
+          onDrainTimeout: () => {
+            console.warn('[chickpea] Slack work checklist heartbeat drain timed out');
+          },
+        });
+      }
+    }
+    const statusSet = await statusTurn.setStatus(thinkingStatus());
+    if (!statusSet && !workChecklistTs) {
       await presenter.postProgress(`${assignment.agent.name} is reading the thread.`);
     }
 
@@ -307,7 +541,7 @@ export async function runTurn(
       hydratedContext,
       preparedMemory?.visibilityBarrierAt ?? null,
     );
-    await statusTurn.setStatus(hydratedContextStatus(context));
+    void statusTurn.setStatus(hydratedContextStatus(context));
     const prompt = assembleSlackPrompt(turn, context, {
       ...(preparedMemory?.promptBlock ? { memoryBlock: preparedMemory.promptBlock } : {}),
       memorySelected: (preparedMemory?.selection?.entries.length ?? 0) > 0,
@@ -329,17 +563,17 @@ export async function runTurn(
     // durable agent's own resolution fail, so the prompt's catch below still
     // delivers a sanitized failure final (not silence + a Slack
     // retry loop from the claims being released on an uncaught throw).
-    if (resolvedModel) {
-      await statusTurn.setStatus(modelStatus(resolvedModel));
-    }
     let text: string;
     let agentResult: AgentDispatchResult | undefined;
     if (options.replayText !== undefined) {
       text = options.replayText;
     } else {
+      if (resolvedModel) {
+        void statusTurn.setStatus(modelStatus(resolvedModel));
+      }
       try {
         usedCloudflareSandbox = await shouldUseCloudflareSandbox(assignment, platformEnv);
-        agentResult = await promptSlackThreadAgent(
+        agentResult = await (options.agentPrompt ?? promptSlackThreadAgent)(
           agentConversationKey,
           executionPrompt,
           platformEnv,
@@ -373,7 +607,7 @@ export async function runTurn(
         });
         await usageRecorder?.recordFailure();
         const recoveredText = await options.beforeDelivery?.();
-        await closeAndDrainStatus();
+        finishStatus();
         if (recoveredText) {
           await preparedMemory?.confirmInjection();
           await presenter.deliverFinal(recoveredText, 'markdown');
@@ -397,7 +631,7 @@ export async function runTurn(
       recoveredText,
       leaseValid,
     );
-    await closeAndDrainStatus();
+    finishStatus();
     await presenter.deliverFinal(text, 'markdown');
     await finishDelivery();
   } catch (err) {
@@ -407,8 +641,12 @@ export async function runTurn(
     // Also covers failures before the ordinary delivery boundary (hydration,
     // provider setup, or persistence). Idempotent after the success path.
     try {
-      await closeAndDrainStatus();
-      await presenter.clearStatus();
+      if (workChecklistHeartbeat) {
+        workChecklistHeartbeat.cancel();
+        workChecklistHeartbeat = undefined;
+      }
+      finishStatus();
+      await removeWorkAcknowledgment();
     } finally {
       // The Sandbox DO lives in a different isolate from the agent factory;
       // release it by its durable thread id at the actual end-of-turn seam.
@@ -419,6 +657,137 @@ export async function runTurn(
       );
     }
   }
+}
+
+/** Repair only adapter-owned, already-delivered Slack artifacts. The answer
+ * tombstone remains authoritative, so this path can never re-enter the model
+ * or post another final. */
+export async function repairSlackInteractionProgress(
+  turn: NormalizedSlackTurn,
+  assignment: ResolvedAssignment,
+  progress: SlackInteractionProgress,
+  client: WebClient,
+  onProgress: (patch: SlackInteractionProgressPatch) => void | Promise<void>,
+): Promise<void> {
+  const presenter = new WebClientPresenter(client, {
+    channelId: turn.channelId,
+    threadTs: turn.threadTs,
+    agentName: assignment.agent.name,
+    agentId: assignment.agent.id,
+    modelLabel: assignment.model ?? tryResolveAgentModel(assignment.agent),
+    userId: turn.userId,
+    workspaceId: turn.workspaceId,
+  });
+  const checklistProgress = progress.checklist;
+  if (checklistProgress?.cleanup === 'pending') {
+    const intent = turn.interactionIntent;
+    if (intent?.disposition === 'work') {
+      await presenter.updateWorkChecklist(
+        checklistProgress.messageTs,
+        intent.checklist,
+        checklistProgress.terminal === 'error' ? 'failed' : true,
+      );
+    }
+    await onProgress({
+      checklist: { ...checklistProgress, cleanup: 'done' },
+    });
+  }
+  const acknowledgment = progress.acknowledgment;
+  if (acknowledgment?.created && acknowledgment.cleanup === 'pending') {
+    await presenter.removeReaction(acknowledgment.name, {
+      channelId: acknowledgment.channelId,
+      messageTs: acknowledgment.messageTs,
+    });
+    await onProgress({
+      acknowledgment: { ...acknowledgment, cleanup: 'done' },
+    });
+  }
+}
+
+async function recordExplicitInteractionClassifierUsage(input: {
+  turn: NormalizedSlackTurn;
+  assignment: ResolvedAssignment;
+  classification: Awaited<ReturnType<typeof classifySlackInteraction>>;
+  requestedModel: string | null;
+  platformEnv: PlatformEnv | undefined;
+  options: RunTurnOptions;
+}): Promise<void> {
+  const enabled = input.options.usageRecordingEnabled ??
+    usageRuntimeRecordingEnabled(input.platformEnv);
+  if (!enabled) return;
+  // Deterministic edge rules invoke no provider and therefore create no usage.
+  if (!input.classification.result && !input.classification.failed) return;
+  const direct = input.turn.source === 'dm_message' ||
+    input.turn.channelType === 'im' ||
+    input.turn.channelType === 'app_home' ||
+    input.turn.channelType === 'mpim';
+  const operationId =
+    `classification:${input.turn.workspaceId}:${input.turn.channelId}:${input.turn.eventId}`;
+  const recorder = new InteractionUsageRecorder({
+    operationId,
+    executionId: `classification-exec:${input.turn.eventId}`,
+    startedAt: slackTimestampMs(input.turn.messageTs) ?? Date.now(),
+    workspaceId: input.turn.workspaceId,
+    channelId: input.turn.channelId,
+    channelLabel: direct
+      ? 'Direct message'
+      : input.assignment.channelLabel ?? input.turn.channelId,
+    conversationKind: direct ? 'direct_message' : 'named_channel',
+    profileId: input.assignment.agentId,
+    profileLabel: input.assignment.agent.name,
+    requestedModel: input.requestedModel,
+    credentialRefId: input.assignment.modelCredential?.credentialRefId ?? null,
+    credentialVersion: input.assignment.modelCredential?.version ?? null,
+    store: input.options.usageStore ?? getUsageStore(input.platformEnv),
+    ...(input.options.runId ? { runId: input.options.runId } : {}),
+    ...(input.platformEnv ? { platformEnv: input.platformEnv } : {}),
+    ...(input.options.usageWriteBudgetMs === undefined
+      ? {}
+      : { writeBudgetMs: input.options.usageWriteBudgetMs }),
+    ...(input.options.onUsagePersistence
+      ? { onPersistence: input.options.onUsagePersistence }
+      : {}),
+  });
+  await recorder.admit();
+  const reported = input.classification.result?.reportedUsage;
+  const usage = reported &&
+    reported.inputTokens !== null &&
+    reported.outputTokens !== null &&
+    reported.totalTokens !== null
+    ? {
+        inputTokens: reported.inputTokens,
+        outputTokens: reported.outputTokens,
+        totalTokens: reported.totalTokens,
+      }
+    : null;
+  await recorder.recordTerminal({
+    status: input.classification.failed ? 'failed' : 'completed',
+    usage,
+    returnedModel: input.classification.result?.returnedModel ?? null,
+    unknownReason: input.classification.failed
+      ? 'provider_request_unknown'
+      : 'usage_not_reported',
+  });
+  await recorder.repairAfterTerminal();
+}
+
+function slackTimestampMs(value: string): number | null {
+  if (!/^\d+(?:\.\d+)?$/.test(value)) return null;
+  const milliseconds = Math.floor(Number(value) * 1_000);
+  return Number.isSafeInteger(milliseconds) && milliseconds >= 0 ? milliseconds : null;
+}
+
+function resolveReactionCoordinate(
+  turn: NormalizedSlackTurn,
+  target: 'trigger' | 'thread_root' | 'latest_user',
+): { channelId: string; messageTs: string } {
+  if (target === 'thread_root') {
+    return { channelId: turn.channelId, messageTs: turn.threadTs };
+  }
+  return {
+    channelId: turn.channelId,
+    messageTs: turn.reactionTargetTs ?? turn.messageTs,
+  };
 }
 
 async function createSlackShadowLifecycle(input: {
@@ -571,8 +940,8 @@ function tryResolveAgentModel(agent: Parameters<typeof resolveAgentModel>[0]): s
   }
 }
 
-function readingThreadStatus(): SlackStatusUpdate {
-  return { text: 'is reading the thread' };
+function thinkingStatus(): SlackStatusUpdate {
+  return { text: 'is thinking...' };
 }
 
 function hydratedContextStatus(context: SlackTurnContext): SlackStatusUpdate {

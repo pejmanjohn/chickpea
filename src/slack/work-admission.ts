@@ -96,7 +96,7 @@ export async function resolveSlackAdmissionTruth(
 
 export function slackAdmissionTruthReader(
   botToken: string,
-  timeoutMs = 750,
+  timeoutMs = 3_000,
 ): SlackAdmissionTruthReader {
   return {
     async user(userId) {

@@ -178,15 +178,16 @@ test('a plain_text final with a footer keeps its content literal (not markdown-p
   assert.equal(footer?.type, 'context');
 });
 
-test('channel onboarding discloses mention-only, bounded context, no monitoring, and a Configure link', () => {
+test('channel onboarding discloses mention guarantee, ambient judgment, bounded retention, and Configure', () => {
   const linked = renderChannelOnboarding({
     botUserId: 'U_BOT',
     channelId: 'C_ENG',
     publicUrl: 'https://demo.example',
   });
-  assert.match(linked, /Mention <@U_BOT> to start a thread\./);
-  assert.match(linked, /bounded recent context only when asked/);
-  assert.match(linked, /no passive monitoring/i);
+  assert.match(linked, /Mention <@U_BOT> to guarantee a response\./);
+  assert.match(linked, /join an unmentioned conversation/);
+  assert.match(linked, /does not build a persistent workspace-message index/);
+  assert.match(linked, /human replies continue without another mention/);
   assert.match(linked, /<https:\/\/demo\.example\/admin\?channel=C_ENG\|Configure> this channel's profile/);
 
   const unlinked = renderChannelOnboarding({ botUserId: 'U_BOT', channelId: 'C_ENG', publicUrl: undefined });
@@ -213,12 +214,19 @@ test('unassigned-channel hint names the bot, explains the silence, and links Con
   assert.doesNotMatch(unlinked, /\|Configure>/);
 });
 
-test('status updates use factual text and derive loading copy from the same fact', () => {
+test('status updates keep generic liveness while loading copy carries the current fact', () => {
   const update = { text: 'is using 2 messages of channel_history context' };
 
-  assert.equal(slackStatusText(update), update.text);
+  assert.equal(slackStatusText(update), 'is thinking...');
   assert.deepEqual(slackLoadingMessages(update), [
+    'is thinking...',
     'Using 2 messages of channel_history context',
+  ]);
+});
+
+test('thinking status does not add a redundant loading message', () => {
+  assert.deepEqual(slackLoadingMessages({ text: 'is thinking...' }), [
+    'is thinking...',
   ]);
 });
 
@@ -264,7 +272,7 @@ test('bash tool status describes the workspace stage without exposing command te
 
 test('MCP tool status still respects Slack’s 50-character loading cap', () => {
   const update = toolStatus('mcp__some-long-server-name__a-very-long-tool-name-indeed');
-  const [loading] = slackLoadingMessages(update);
+  const loading = slackLoadingMessages(update).at(-1);
   assert.ok(loading);
   assert.ok(loading.length <= 50, `expected <= 50 chars, got ${loading.length}`);
 });
@@ -273,7 +281,7 @@ test('derived loading message is capped to Slack’s 50-character limit', () => 
   // A long status must not produce a 51+ char loading message: Slack rejects it,
   // tripping the presenter latch and killing every later status for the turn.
   const long = 'is running a-very-long-tool-name-that-exceeds-the-slack-loading-limit';
-  const [loading] = slackLoadingMessages({ text: long });
+  const loading = slackLoadingMessages({ text: long }).at(-1);
   assert.ok(loading);
   assert.ok(loading.length <= 50, `expected <= 50 chars, got ${loading.length}`);
 });

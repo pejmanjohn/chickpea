@@ -34,6 +34,7 @@ const NO_SLACK_ENV: NodeJS.ProcessEnv = {
   SLACK_TAG_ALLOW_DMS: undefined,
   SLACK_TAG_UNASSIGNED_HINT: undefined,
   SLACK_TAG_WELCOME_ON_JOIN: undefined,
+  SLACK_TAG_AMBIENT_PARTICIPATION: undefined,
   // requestOrigin() honors SLACK_TAG_PUBLIC_URL as an operator pin; clear it so
   // the request-derived origin tests are hermetic against the dev shell.
   SLACK_TAG_PUBLIC_URL: undefined,
@@ -932,6 +933,7 @@ test('Slack behavior settings default on, persist booleans, and report provenanc
         allowDms: { value: true, source: 'default' },
         unassignedHint: { value: true, source: 'default' },
         welcomeOnJoin: { value: true, source: 'default' },
+        ambientParticipation: { value: true, source: 'default' },
       });
 
       const saved = await app.request('/admin/api/slack-behavior', {
@@ -944,6 +946,7 @@ test('Slack behavior settings default on, persist booleans, and report provenanc
         allowDms: { value: false, source: 'stored' },
         unassignedHint: { value: true, source: 'default' },
         welcomeOnJoin: { value: false, source: 'stored' },
+        ambientParticipation: { value: true, source: 'default' },
       });
     });
   } finally {
@@ -980,6 +983,7 @@ test('Slack behavior multi-key updates use one atomic settings patch', async () 
         allowDms: { value: false, source: 'stored' },
         unassignedHint: { value: true, source: 'default' },
         welcomeOnJoin: { value: false, source: 'stored' },
+        ambientParticipation: { value: true, source: 'default' },
       });
       assert.equal(patchCalls, 1);
     });
@@ -1000,6 +1004,7 @@ test('Slack behavior env overrides are read-only and PUT is atomic', async () =>
           allowDms: { value: false, source: 'env' },
           unassignedHint: { value: true, source: 'default' },
           welcomeOnJoin: { value: false, source: 'env' },
+          ambientParticipation: { value: true, source: 'default' },
         });
 
         const conflict = await app.request('/admin/api/slack-behavior', {
@@ -1043,6 +1048,7 @@ test('blank Slack behavior env placeholders do not lock browser-managed settings
           allowDms: { value: true, source: 'default' },
           unassignedHint: { value: true, source: 'default' },
           welcomeOnJoin: { value: true, source: 'default' },
+          ambientParticipation: { value: true, source: 'default' },
         });
 
         const saved = await app.request('/admin/api/slack-behavior', {
@@ -1055,6 +1061,7 @@ test('blank Slack behavior env placeholders do not lock browser-managed settings
           allowDms: { value: false, source: 'stored' },
           unassignedHint: { value: false, source: 'stored' },
           welcomeOnJoin: { value: true, source: 'default' },
+          ambientParticipation: { value: true, source: 'default' },
         });
       },
     );

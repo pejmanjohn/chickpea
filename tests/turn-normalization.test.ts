@@ -17,7 +17,7 @@ import {
   topLevelChannelMessage,
 } from './helpers/slack-fixtures.ts';
 
-test('Slack turn normalization classifies mentions, thread replies, DMs, and ignored top-level messages', () => {
+test('Slack turn normalization classifies mentions, thread replies, DMs, and ambient top-level messages', () => {
   const mention = normalizeSlackTurn(fixture());
   assert.ok(mention.status === 'runnable');
   assert.equal(mention.turn.source, 'app_mention');
@@ -45,9 +45,9 @@ test('Slack turn normalization classifies mentions, thread replies, DMs, and ign
     event_id: 'Ev_MSG_PRIVATE_TOP_LEVEL',
   });
   delete privateChannelTopLevel.event.thread_ts;
-  const ignoredPrivateChannelTopLevel = normalizeSlackTurn(privateChannelTopLevel, options);
-  assert.ok(ignoredPrivateChannelTopLevel.status === 'ignored');
-  assert.equal(ignoredPrivateChannelTopLevel.reason, 'top_level_channel_message');
+  const ambientPrivateChannelTopLevel = normalizeSlackTurn(privateChannelTopLevel, options);
+  assert.ok(ambientPrivateChannelTopLevel.status === 'runnable');
+  assert.equal(ambientPrivateChannelTopLevel.turn.source, 'ambient_channel_message');
 
   const dm = normalizeSlackTurn(dmMessage(), options);
   assert.ok(dm.status === 'runnable');
@@ -63,8 +63,9 @@ test('Slack turn normalization classifies mentions, thread replies, DMs, and ign
   assert.equal(slackThreadKey(appHome.turn), 'T_DEMO:D_DEMO_APP_HOME:dm');
 
   const topLevel = normalizeSlackTurn(topLevelChannelMessage(), options);
-  assert.ok(topLevel.status === 'ignored');
-  assert.equal(topLevel.reason, 'top_level_channel_message');
+  assert.ok(topLevel.status === 'runnable');
+  assert.equal(topLevel.turn.source, 'ambient_channel_message');
+  assert.equal(topLevel.turn.contextMode, 'channel_history');
 
   const missingBotUserId = normalizeSlackTurn(channelThreadMessage());
   assert.ok(missingBotUserId.status === 'ignored');
@@ -89,6 +90,30 @@ test('artifact routing derives the Slack thread timestamp from the durable agent
   const id = 'T_DEMO:C_EXEC:1782770400.000100';
   assert.equal(parseSlackThreadKey(id).threadTs, '1782770400.000100');
   assert.equal(slackArtifactThreadTs(id), '1782770400.000100');
+});
+
+test('human message reactions are candidates and the bot cannot react itself into a loop', () => {
+  const payload = {
+    ...fixture(),
+    event_id: 'Ev_REACTION',
+    event: {
+      type: 'reaction_added' as const,
+      user: 'U_HUMAN',
+      reaction: 'thumbsup',
+      item: { type: 'message', channel: 'C_EXEC', ts: '1782770400.000100' },
+      event_ts: '1782770401.000200',
+    },
+  };
+  const normalized = normalizeSlackTurn(payload, { botUserId: 'U_BOT' });
+  assert.ok(normalized.status === 'runnable');
+  assert.equal(normalized.turn.source, 'reaction_added');
+  assert.equal(normalized.turn.reactionTargetTs, '1782770400.000100');
+
+  const self = normalizeSlackTurn(
+    { ...payload, event: { ...payload.event, user: 'U_BOT' } },
+    { botUserId: 'U_BOT' },
+  );
+  assert.deepEqual(self, { status: 'ignored', reason: 'self_message' });
 });
 
 test('natural-language channel history windows do not match adjacent words', () => {

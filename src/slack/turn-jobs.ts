@@ -1,4 +1,8 @@
-import type { TurnProgress, TurnPullRequestProgress } from '../config/state-rpc.ts';
+import type {
+  SlackInteractionProgressPatch,
+  TurnProgress,
+  TurnPullRequestProgress,
+} from '../config/state-rpc.ts';
 import type { SlackAgentExecutionContext, TurnJob } from './turn-job-types.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
 import type { StateDb } from '../state/state-db.ts';
@@ -6,6 +10,7 @@ import type { RunExecutionAuthority } from '../work/types.ts';
 import { CLAIM_TTL_MS } from './state-limits.ts';
 import type { NormalizedSlackTurn } from './types.ts';
 import type { UsagePersistenceEvent } from '../usage/runtime-recorder.ts';
+import type { SlackInteractionIntent } from './interaction-intent.ts';
 
 /**
  * Durable queue of Slack turns for the Cloudflare turn-relay (see state-rpc.ts
@@ -275,13 +280,97 @@ export class TurnJobStoreLogic {
     });
   }
 
+  /** Persist the first validated interaction decision so relay retries never
+   * reclassify a guaranteed turn or repeat classifier usage. */
+  recordInteractionIntent(
+    id: string,
+    intent: SlackInteractionIntent,
+  ): TurnProgress | undefined {
+    return this.db.transaction(() => {
+      const current = this.getProgress(id);
+      if (!current || current.interactionIntent) return current;
+      const progress: TurnProgress = { ...current, interactionIntent: intent };
+      this.db.run(
+        'UPDATE turn_jobs SET progress_json = ? WHERE id = ?',
+        JSON.stringify(progress),
+        id,
+      );
+      return progress;
+    });
+  }
+
+  /** Merge adapter progress so a relay retry reuses the same Slack artifacts
+   * and post-delivery cleanup remains recoverable after the job tombstone. */
+  recordSlackInteractionProgress(
+    id: string,
+    patch: SlackInteractionProgressPatch,
+  ): TurnProgress | undefined {
+    return this.db.transaction(() => {
+      const current = this.getProgress(id);
+      if (!current) return undefined;
+      const slackInteraction = {
+        ...current.slackInteraction,
+        ...(patch.acknowledgment
+          ? {
+              acknowledgment: {
+                ...current.slackInteraction?.acknowledgment,
+                ...patch.acknowledgment,
+              },
+            }
+          : {}),
+        ...(patch.checklist
+          ? {
+              checklist: {
+                ...current.slackInteraction?.checklist,
+                ...patch.checklist,
+              },
+            }
+          : {}),
+      };
+      const progress: TurnProgress = { ...current, slackInteraction };
+      this.db.run(
+        'UPDATE turn_jobs SET progress_json = ? WHERE id = ?',
+        JSON.stringify(progress),
+        id,
+      );
+      return progress;
+    });
+  }
+
+  /** Delivered rows can still own lightweight Slack cleanup. They are never
+   * eligible for answer redelivery, only idempotent checklist/reaction repair. */
+  listPendingSlackInteractionCleanups(limit = 100): PendingTurnJob[] {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+      throw new Error('Slack interaction cleanup limit must be between 1 and 100.');
+    }
+    const rows = this.db.all(
+      `SELECT id, evt_key, msg_key, turn_json, assignment_json, run_id,
+              execution_authority, attempts, progress_json
+       FROM turn_jobs
+       WHERE delivered = 1 AND progress_json LIKE '%\"cleanup\":\"pending\"%'
+       ORDER BY enqueued_at LIMIT ?`,
+      limit,
+    ) as unknown as TurnJobRow[];
+    return rows.map((row) => this.decodeRow(row));
+  }
+
+  hasPendingSlackInteractionCleanup(): boolean {
+    return this.db.get(
+      `SELECT 1 AS pending FROM turn_jobs
+       WHERE delivered = 1 AND progress_json LIKE '%\"cleanup\":\"pending\"%'
+       LIMIT 1`,
+    ) !== undefined;
+  }
+
   /** Tombstone a delivered job so no later scan re-delivers it. */
   markDelivered(id: string): void {
+    this.recordTerminalStatus(id, 'success');
     this.db.run("UPDATE turn_jobs SET delivered = 1, status = 'done' WHERE id = ?", id);
   }
 
   /** Tombstone a job that exhausted its attempts (terminal failure). */
   markError(id: string): void {
+    this.recordTerminalStatus(id, 'error');
     this.db.run("UPDATE turn_jobs SET delivered = 1, status = 'error' WHERE id = ?", id);
   }
 
@@ -296,6 +385,15 @@ export class TurnJobStoreLogic {
       'DELETE FROM slack_agent_execution_contexts WHERE created_at < ?',
       this.now() - TURN_JOB_TTL_MS,
     );
+  }
+
+  private recordTerminalStatus(id: string, terminal: 'success' | 'error'): void {
+    const current = this.getProgress(id);
+    const checklist = current?.slackInteraction?.checklist;
+    if (!current || !checklist) return;
+    this.recordSlackInteractionProgress(id, {
+      checklist: { ...checklist, terminal },
+    });
   }
 
   private decodeRow(row: TurnJobRow): PendingTurnJob {
@@ -358,6 +456,26 @@ function parseTurnProgress(raw: string): TurnProgress {
   try {
     const parsed = JSON.parse(raw) as TurnProgress;
     const progress: TurnProgress = {};
+    if (
+      parsed?.interactionIntent &&
+      typeof parsed.interactionIntent === 'object' &&
+      typeof parsed.interactionIntent.disposition === 'string'
+    ) {
+      progress.interactionIntent = structuredClone(parsed.interactionIntent);
+    }
+    const slackInteraction = parsed?.slackInteraction;
+    if (slackInteraction && typeof slackInteraction === 'object') {
+      const acknowledgment = slackInteraction.acknowledgment;
+      const checklist = slackInteraction.checklist;
+      progress.slackInteraction = {
+        ...(isValidAcknowledgmentProgress(acknowledgment)
+          ? { acknowledgment: { ...acknowledgment } }
+          : {}),
+        ...(isValidChecklistProgress(checklist)
+          ? { checklist: { ...checklist } }
+          : {}),
+      };
+    }
     const pullRequest = parsed?.pullRequest;
     if (
       pullRequest &&
@@ -386,4 +504,29 @@ function parseTurnProgress(raw: string): TurnProgress {
     // Malformed progress is treated as absent so it can never suppress work.
   }
   return {};
+}
+
+function isValidAcknowledgmentProgress(
+  value: unknown,
+): value is NonNullable<NonNullable<TurnProgress['slackInteraction']>['acknowledgment']> {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Record<string, unknown>;
+  return typeof candidate.channelId === 'string' &&
+    typeof candidate.messageTs === 'string' &&
+    typeof candidate.name === 'string' &&
+    typeof candidate.created === 'boolean' &&
+    (candidate.cleanup === 'pending' || candidate.cleanup === 'done');
+}
+
+function isValidChecklistProgress(
+  value: unknown,
+): value is NonNullable<NonNullable<TurnProgress['slackInteraction']>['checklist']> {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Record<string, unknown>;
+  return typeof candidate.channelId === 'string' &&
+    typeof candidate.threadTs === 'string' &&
+    typeof candidate.messageTs === 'string' &&
+    (candidate.cleanup === 'pending' || candidate.cleanup === 'done') &&
+    (candidate.terminal === undefined ||
+      candidate.terminal === 'success' || candidate.terminal === 'error');
 }

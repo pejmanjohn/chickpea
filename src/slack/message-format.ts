@@ -155,9 +155,10 @@ export function renderChannelOnboarding(params: {
 }): string {
   const configure = renderSlackConfigureLink(params.publicUrl, { channelId: params.channelId });
   return [
-    `Mention <@${params.botUserId}> to start a thread.`,
-    'Chickpea reads the thread and bounded recent context only when asked.',
-    'There is no passive monitoring.',
+    `Mention <@${params.botUserId}> to guarantee a response.`,
+    'In an assigned channel, Chickpea may also join an unmentioned conversation when it has something materially useful to add.',
+    'It evaluates bounded recent context per message and does not build a persistent workspace-message index.',
+    'Once Chickpea joins a thread, human replies continue without another mention.',
     `${configure} this channel's profile in /admin.`,
   ].join(' ');
 }

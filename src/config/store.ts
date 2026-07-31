@@ -37,6 +37,7 @@ interface AssignmentRow {
   enabled: number;
   channel_label: string | null;
   channel_prompt_addendum: string | null;
+  participation_mode?: string | null;
 }
 
 /** PATCH shape: `model: null` clears a pinned model; omitting it keeps the pin. */
@@ -248,19 +249,22 @@ export class ConfigStoreLogic {
     this.getAgent(assignment.agentId);
     this.db.run(
       `INSERT INTO config_assignments (
-        workspace_id, channel_id, agent_id, enabled, channel_label, channel_prompt_addendum
-      ) VALUES (?, ?, ?, ?, ?, ?)
+        workspace_id, channel_id, agent_id, enabled, channel_label, channel_prompt_addendum,
+        participation_mode
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(workspace_id, channel_id) DO UPDATE SET
         agent_id = excluded.agent_id,
         enabled = excluded.enabled,
         channel_label = excluded.channel_label,
-        channel_prompt_addendum = excluded.channel_prompt_addendum`,
+        channel_prompt_addendum = excluded.channel_prompt_addendum,
+        participation_mode = excluded.participation_mode`,
       assignment.workspaceId,
       assignment.channelId,
       assignment.agentId,
       assignment.enabled ? 1 : 0,
       assignment.channelLabel ?? null,
       assignment.channelPromptAddendum ?? null,
+      assignment.participationMode ?? 'ambient',
     );
     return this.getAssignment(assignment.workspaceId, assignment.channelId) as ChannelAssignment;
   }
@@ -360,7 +364,9 @@ export class ConfigStoreLogic {
   // Fresh databases start from the clean v1 schema. Migration v2 bridges the
   // pre-release default_models_json column; v3 adds API connection policy;
   // v4 adds per-profile repository grants. v5 is reserved after the pre-release
-  // per-profile OpenAI auth experiment moved to one installation setting.
+  // per-profile OpenAI auth experiment moved to one installation setting. v6
+  // adds the live Slack participation ceiling, defaulting existing channels to
+  // ambient as part of the product migration.
   private runMigrations(): void {
     const MIGRATIONS: Array<{ version: number; up: (db: StateDb) => void }> = [
       {
@@ -432,6 +438,19 @@ export class ConfigStoreLogic {
       {
         version: 5,
         up: () => {},
+      },
+      {
+        version: 6,
+        up: (db) => {
+          const hasParticipationMode = db
+            .all('PRAGMA table_info(config_assignments)')
+            .some((column) => column.name === 'participation_mode');
+          if (!hasParticipationMode) {
+            db.exec(
+              "ALTER TABLE config_assignments ADD COLUMN participation_mode TEXT NOT NULL DEFAULT 'ambient'",
+            );
+          }
+        },
       },
     ];
     const row = this.db.get('SELECT value FROM config_meta WHERE key = ?', SCHEMA_VERSION_KEY) as
@@ -587,6 +606,9 @@ function rowToAssignment(row: AssignmentRow): ChannelAssignment {
     ...(row.channel_label ? { channelLabel: row.channel_label } : {}),
     ...(row.channel_prompt_addendum
       ? { channelPromptAddendum: row.channel_prompt_addendum }
+      : {}),
+    ...(row.participation_mode === 'mention_only'
+      ? { participationMode: 'mention_only' as const }
       : {}),
   };
 }

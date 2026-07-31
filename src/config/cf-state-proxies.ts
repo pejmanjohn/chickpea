@@ -285,6 +285,22 @@ export class CfSlackStateStore implements SlackStateStore {
     return unwrap(await this.stub.threadHas(key));
   }
 
+  async getParticipation(key: string) {
+    return unwrap(await this.stub.threadParticipationGet(key));
+  }
+
+  async setParticipation(key: string, mode: 'ambient' | 'mention_only') {
+    unwrap(await this.stub.threadParticipationSet(key, mode));
+  }
+
+  async isActiveWork(key: string) {
+    return unwrap(await this.stub.threadActiveWorkGet(key));
+  }
+
+  async setActiveWork(key: string, generation: string, active: boolean) {
+    unwrap(await this.stub.threadActiveWorkSet(key, generation, active));
+  }
+
   async admitCanonical(input: SlackCanonicalAdmissionInput) {
     return unwrap(await this.stub.admitSlackTurn(input));
   }
@@ -295,6 +311,13 @@ export class CfSlackStateStore implements SlackStateStore {
 
   async getAgentExecutionContext(continuityKey: string) {
     return orUndefined(unwrap(await this.stub.slackAgentExecutionContextGet(continuityKey)));
+  }
+
+  async recordSlackInteractionProgress(
+    id: string,
+    patch: Parameters<TagStateRpc['slackInteractionProgressRecord']>[1],
+  ): Promise<void> {
+    unwrap(await this.stub.slackInteractionProgressRecord(id, patch));
   }
 }
 

@@ -678,6 +678,7 @@ const assignmentSchema = v.object({
   enabled: v.boolean(),
   channelLabel: v.optional(v.string()),
   channelPromptAddendum: v.optional(v.string()),
+  participationMode: v.optional(v.picklist(['ambient', 'mention_only'])),
 });
 
 const slackConnectionSchema = v.object({
@@ -732,6 +733,7 @@ const slackBehaviorPatchSchema = v.pipe(
       allowDms: v.boolean(),
       unassignedHint: v.boolean(),
       welcomeOnJoin: v.boolean(),
+      ambientParticipation: v.boolean(),
     }),
   ),
   v.check((patch) => Object.keys(patch).length > 0),
@@ -3796,6 +3798,7 @@ function toAssignment(input: v.InferOutput<typeof assignmentSchema>): ChannelAss
     ...(input.channelPromptAddendum !== undefined
       ? { channelPromptAddendum: input.channelPromptAddendum }
       : {}),
+    participationMode: input.participationMode ?? 'ambient',
   };
 }
 
