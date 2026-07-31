@@ -219,7 +219,14 @@ test('status updates keep generic liveness while loading copy carries the curren
 
   assert.equal(slackStatusText(update), 'is thinking...');
   assert.deepEqual(slackLoadingMessages(update), [
+    'is thinking...',
     'Using 2 messages of channel_history context',
+  ]);
+});
+
+test('thinking status does not add a redundant loading message', () => {
+  assert.deepEqual(slackLoadingMessages({ text: 'is thinking...' }), [
+    'is thinking...',
   ]);
 });
 
@@ -265,7 +272,7 @@ test('bash tool status describes the workspace stage without exposing command te
 
 test('MCP tool status still respects Slack’s 50-character loading cap', () => {
   const update = toolStatus('mcp__some-long-server-name__a-very-long-tool-name-indeed');
-  const [loading] = slackLoadingMessages(update);
+  const loading = slackLoadingMessages(update).at(-1);
   assert.ok(loading);
   assert.ok(loading.length <= 50, `expected <= 50 chars, got ${loading.length}`);
 });
@@ -274,7 +281,7 @@ test('derived loading message is capped to Slack’s 50-character limit', () => 
   // A long status must not produce a 51+ char loading message: Slack rejects it,
   // tripping the presenter latch and killing every later status for the turn.
   const long = 'is running a-very-long-tool-name-that-exceeds-the-slack-loading-limit';
-  const [loading] = slackLoadingMessages({ text: long });
+  const loading = slackLoadingMessages({ text: long }).at(-1);
   assert.ok(loading);
   assert.ok(loading.length <= 50, `expected <= 50 chars, got ${loading.length}`);
 });

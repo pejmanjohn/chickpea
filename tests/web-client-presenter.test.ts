@@ -38,13 +38,13 @@ test('setStatus keeps composer liveness generic while activity loading detail ch
       channel_id: 'C_BOUND',
       thread_ts: '1782770400.000100',
       status: 'is thinking...',
-      loading_messages: ['Thinking...'],
+      loading_messages: ['is thinking...'],
     },
     {
       channel_id: 'C_BOUND',
       thread_ts: '1782770400.000100',
       status: 'is thinking...',
-      loading_messages: ['Searching the workspace'],
+      loading_messages: ['is thinking...', 'Searching the workspace'],
     },
   ]);
 });

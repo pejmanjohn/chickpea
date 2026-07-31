@@ -17,7 +17,11 @@ export function slackStatusText(_stage: SlackStatusUpdate): string {
 }
 
 export function slackLoadingMessages(stage: SlackStatusUpdate): string[] {
-  return [statusToLoadingMessage(activityStatusText(stage))];
+  const activity = statusToLoadingMessage(activityStatusText(stage));
+  if (isThinkingActivity(activity)) {
+    return [SLACK_LIVENESS_STATUS_TEXT];
+  }
+  return [SLACK_LIVENESS_STATUS_TEXT, activity];
 }
 
 function activityStatusText(stage: SlackStatusUpdate): string {
@@ -37,4 +41,8 @@ function statusToLoadingMessage(status: string): string {
     return message;
   }
   return `${message.slice(0, SLACK_LOADING_MESSAGE_MAX - 1)}…`;
+}
+
+function isThinkingActivity(message: string): boolean {
+  return message.replace(/\.+$/, '').trim().toLowerCase() === 'thinking';
 }

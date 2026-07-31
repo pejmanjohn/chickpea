@@ -178,7 +178,7 @@ export const scenarios: Scenario[] = [
           ? entry.body.loading_messages.map(String)
           : []
       );
-      assert.ok(loadingMessages.includes('Thinking...'));
+      assert.ok(loadingMessages.includes('is thinking...'));
       assert.ok(
         loadingMessages.some((message) =>
           /^Using \d+ messages? of channel_history context$/.test(message)
