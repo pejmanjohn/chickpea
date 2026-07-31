@@ -4,13 +4,13 @@ import { test } from 'node:test';
 import type { SlackInteractionProgressPatch } from '../src/config/state-rpc.ts';
 import { CfSlackStateStore } from '../src/config/cf-state-proxies.ts';
 import type { TagStateRpc } from '../src/config/state-rpc.ts';
-import { publishSlackWorkAdmissionProgress } from '../src/slack/work-admission-progress.ts';
+import { publishSlackAdmissionProgress } from '../src/slack/work-admission-progress.ts';
 
 test('work admission reacts, persists, posts one checklist, and persists before execution is armed', async () => {
   const events: string[] = [];
   const patches: SlackInteractionProgressPatch[] = [];
 
-  const progress = await publishSlackWorkAdmissionProgress({
+  const progress = await publishSlackAdmissionProgress({
     turn: {
       channelId: 'C_WORK',
       threadTs: '1785514949.001000',
@@ -62,7 +62,7 @@ test('work admission reacts, persists, posts one checklist, and persists before 
 
 test('work admission targets a reacted-to message and degrades independently per Slack artifact', async () => {
   const recorded: SlackInteractionProgressPatch[] = [];
-  const progress = await publishSlackWorkAdmissionProgress({
+  const progress = await publishSlackAdmissionProgress({
     turn: {
       channelId: 'C_WORK',
       threadTs: '1785514900.000100',
@@ -87,6 +87,34 @@ test('work admission targets a reacted-to message and degrades independently per
   assert.equal(progress.acknowledgment, undefined);
   assert.equal(recorded.length, 1);
   assert.deepEqual(recorded[0], { checklist: progress.checklist });
+});
+
+test('unknown explicit admission acknowledges immediately without inventing a checklist', async () => {
+  const events: string[] = [];
+  const progress = await publishSlackAdmissionProgress({
+    turn: {
+      channelId: 'C_EXPLICIT',
+      threadTs: '1785521730.418959',
+      messageTs: '1785521730.418959',
+    },
+    presenter: {
+      async addSemanticReaction(reaction) {
+        events.push(`react:${reaction}`);
+        return { name: 'eyes', created: true };
+      },
+      async postWorkChecklist() {
+        events.push('unexpected-checklist');
+        return '1785521731.000100';
+      },
+    },
+    async record(patch) {
+      events.push(patch.acknowledgment ? 'persist:ack' : 'persist:checklist');
+    },
+  });
+
+  assert.deepEqual(events, ['react:work_ack', 'persist:ack']);
+  assert.equal(progress.checklist, undefined);
+  assert.equal(progress.acknowledgment?.name, 'eyes');
 });
 
 test('Cloudflare Slack state persists admission progress through the durable RPC seam', async () => {

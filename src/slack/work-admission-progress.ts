@@ -16,13 +16,14 @@ type AdmissionProgressPresenter = Pick<
 >;
 
 /**
- * Publish the instant, adapter-owned part of visible Slack work after durable
- * admission but before the executor is armed. Execution reuses the persisted
- * coordinates instead of creating another reaction/checklist when it starts.
+ * Publish the instant, adapter-owned part of visible Slack pickup after durable
+ * admission but before the executor is armed. Unknown explicit turns get the
+ * acknowledgment immediately; confirmed work also gets its checklist.
+ * Execution reuses the persisted coordinates instead of creating duplicates.
  */
-export async function publishSlackWorkAdmissionProgress(input: {
+export async function publishSlackAdmissionProgress(input: {
   turn: AdmissionProgressTurn;
-  checklist: readonly string[];
+  checklist?: readonly string[];
   presenter: AdmissionProgressPresenter;
   record(patch: SlackInteractionProgressPatch): Promise<void>;
 }): Promise<SlackInteractionProgress> {
@@ -42,22 +43,24 @@ export async function publishSlackWorkAdmissionProgress(input: {
     };
     await input.record({ acknowledgment: progress.acknowledgment });
   } catch {
-    console.warn('[chickpea] Slack admission work acknowledgment failed');
+    console.warn('[chickpea] Slack admission acknowledgment failed');
   }
 
-  try {
-    const messageTs = await input.presenter.postWorkChecklist(input.checklist);
-    if (messageTs) {
-      progress.checklist = {
-        channelId: input.turn.channelId,
-        threadTs: input.turn.threadTs,
-        messageTs,
-        cleanup: 'pending',
-      };
-      await input.record({ checklist: progress.checklist });
+  if (input.checklist) {
+    try {
+      const messageTs = await input.presenter.postWorkChecklist(input.checklist);
+      if (messageTs) {
+        progress.checklist = {
+          channelId: input.turn.channelId,
+          threadTs: input.turn.threadTs,
+          messageTs,
+          cleanup: 'pending',
+        };
+        await input.record({ checklist: progress.checklist });
+      }
+    } catch {
+      console.warn('[chickpea] Slack admission work checklist failed');
     }
-  } catch {
-    console.warn('[chickpea] Slack admission work checklist failed');
   }
 
   return progress;

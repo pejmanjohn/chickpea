@@ -351,7 +351,7 @@ export const scenarios: Scenario[] = [
     async run(instance) {
       await instance.postEvent(appMention({
         event_id: 'Ev_REACT_ONLY',
-        event: { text: '<@U_BOT> PARITY_REACT_AGREEMENT' },
+        event: { text: '<@U_BOT> Sounds good.' },
       }));
       await instance.quiesce();
       const reactions = instance.backend.callsOfMethod('reactions.add');
@@ -359,7 +359,7 @@ export const scenarios: Scenario[] = [
       assert.equal(reactions[0]?.body.name, '+1');
       assert.equal(reactions[0]?.body.timestamp, ROOT_THREAD_TS);
       assert.equal(instance.backend.finals().length, 0);
-      assert.equal(instance.backend.providerCalls().length, 1);
+      assert.equal(instance.backend.providerCalls().length, 0);
     },
   },
   {
@@ -437,6 +437,46 @@ export const scenarios: Scenario[] = [
     },
   },
   {
+    id: 'S10B3',
+    title: 'an unclassified explicit turn acknowledges before its classifier runs',
+    config: demoChannelConfig({ provider: { mode: 'ok', delayMs: 2_000 } }),
+    async run(instance) {
+      const ts = '1782770403.000100';
+      await instance.postEvent(appMention({
+        event_id: 'Ev_EXPLICIT_PRECLASSIFIER_ACK',
+        event: {
+          text: '<@U_BOT> Use the available context to explain this result.',
+          ts,
+          event_ts: ts,
+        },
+      }));
+
+      await waitForWireCondition(
+        () => instance.backend.callsOfMethod('reactions.add').some(
+          (entry) => entry.body.timestamp === ts,
+        ),
+        'explicit turn did not acknowledge before classification',
+        2_000,
+      );
+
+      const reactions = instance.backend.callsOfMethod('reactions.add');
+      assert.equal(reactions.length, 1);
+      assert.equal(reactions[0]?.body.name, 'eyes');
+      assert.equal(reactions[0]?.body.timestamp, ts);
+      assert.equal(instance.backend.finals().length, 0);
+      assert.equal(instance.backend.callsOfMethod('chat.postMessage').length, 0);
+
+      await waitForFinalCount(instance, 1, 8_000);
+      const providerCalls = instance.backend.providerCalls();
+      assert.equal(providerCalls.length, 2);
+      assert.ok(
+        instance.backend.wireLog.indexOf(reactions[0]!) <
+          instance.backend.wireLog.indexOf(providerCalls[0]!),
+      );
+      assert.equal(instance.backend.callsOfMethod('reactions.remove').length, 1);
+    },
+  },
+  {
     id: 'S10C',
     title: 'useful ambient work is promoted without a mention',
     config: demoChannelConfig(),
@@ -487,14 +527,14 @@ export const scenarios: Scenario[] = [
     async run(instance) {
       await instance.postEvent(appMention({
         event_id: 'Ev_REACT_SCOPE_FALLBACK',
-        event: { text: '<@U_BOT> PARITY_REACT_AGREEMENT' },
+        event: { text: '<@U_BOT> Sounds good.' },
       }));
       await instance.quiesce();
       const posts = instance.backend.callsOfMethod('chat.postMessage');
       assert.equal(instance.backend.callsOfMethod('reactions.add').length, 1);
       assert.equal(posts.length, 1);
       assert.equal(posts[0]?.body.text, 'Sounds good.');
-      assert.equal(instance.backend.providerCalls().length, 1);
+      assert.equal(instance.backend.providerCalls().length, 0);
     },
   },
   {

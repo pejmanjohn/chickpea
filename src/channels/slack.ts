@@ -58,7 +58,7 @@ import { normalizeSlackTurn } from '../slack/turn-normalization.ts';
 import { wakeNodeTurnRelay } from '../slack/node-turn-relay.ts';
 import { hydrateSlackContextViaWebClient } from '../slack/web-client-context.ts';
 import { WebClientPresenter } from '../slack/web-client-presenter.ts';
-import { publishSlackWorkAdmissionProgress } from '../slack/work-admission-progress.ts';
+import { publishSlackAdmissionProgress } from '../slack/work-admission-progress.ts';
 import { parseSlackParticipationControl } from '../slack/participation-control.ts';
 import { selectSlackExecutionAuthority } from '../work/authority.ts';
 import { EGRESS_SETTING_KEY, parseEgressPolicy } from '../config/egress.ts';
@@ -670,7 +670,9 @@ async function processSlackEvent(
   }
 
   let admissionInteractionProgress: SlackInteractionProgress | undefined;
-  if (turn.interactionIntent?.disposition === 'work' && botToken) {
+  const shouldAcknowledgeAtAdmission = botToken && !candidateTurn && !deterministicCommand &&
+    turn.interactionIntent?.disposition !== 'react_only';
+  if (shouldAcknowledgeAtAdmission) {
     const presenter = new WebClientPresenter(createSlackWebClient(botToken), {
       channelId: turn.channelId,
       threadTs: turn.threadTs,
@@ -679,9 +681,11 @@ async function processSlackEvent(
       userId: turn.userId,
       workspaceId: turn.workspaceId,
     });
-    admissionInteractionProgress = await publishSlackWorkAdmissionProgress({
+    admissionInteractionProgress = await publishSlackAdmissionProgress({
       turn,
-      checklist: turn.interactionIntent.checklist,
+      ...(turn.interactionIntent?.disposition === 'work'
+        ? { checklist: turn.interactionIntent.checklist }
+        : {}),
       presenter,
       record: async (patch) => {
         if (canonicalTurnJob && state.recordSlackInteractionProgress) {
