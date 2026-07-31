@@ -10,14 +10,18 @@ export function toolStatus(toolName: string, args?: unknown): SlackStatusUpdate 
 }
 
 const FALLBACK_STATUS_TEXT = 'is working on the request';
+const SLACK_LIVENESS_STATUS_TEXT = 'is thinking...';
 
-export function slackStatusText(stage: SlackStatusUpdate): string {
-  return stage.text.trim() || FALLBACK_STATUS_TEXT;
+export function slackStatusText(_stage: SlackStatusUpdate): string {
+  return SLACK_LIVENESS_STATUS_TEXT;
 }
 
 export function slackLoadingMessages(stage: SlackStatusUpdate): string[] {
-  // The loading phrase is derived from the same event-derived status text.
-  return [statusToLoadingMessage(slackStatusText(stage))];
+  return [statusToLoadingMessage(activityStatusText(stage))];
+}
+
+function activityStatusText(stage: SlackStatusUpdate): string {
+  return stage.text.trim() || FALLBACK_STATUS_TEXT;
 }
 
 // Slack's assistant.threads.setStatus rejects a loading_messages entry of 51+

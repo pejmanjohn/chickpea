@@ -43,6 +43,25 @@ test('two same-thread turns: an earlier turn closing does not evict the later li
   turnB.close();
 });
 
+test('an earlier same-thread turn finishing does not clear the later turn status', () => {
+  const first = recordingPresenter();
+  const second = recordingPresenter();
+  const turnA = registerSlackStatusTurn(KEY, first, { generation: GENERATION_A });
+  const turnB = registerSlackStatusTurn(KEY, second, { generation: GENERATION_B });
+  let firstClearCount = 0;
+  let secondClearCount = 0;
+
+  turnA.finish(async () => {
+    firstClearCount += 1;
+  });
+  assert.equal(firstClearCount, 0);
+
+  turnB.finish(async () => {
+    secondClearCount += 1;
+  });
+  assert.equal(secondClearCount, 1);
+});
+
 test('two concurrent open turns route observations by generation', async () => {
   const first = recordingPresenter();
   const second = recordingPresenter();
@@ -106,26 +125,6 @@ test('setStatus on a closed turn resolves false without calling the presenter', 
 
   assert.equal(await turn.setStatus({ text: 'is reading the thread' }), false);
   assert.deepEqual(presenter.statuses, []);
-});
-
-test('generic-liveness turns consume observed detail without replacing the native status', async () => {
-  const presenter = recordingPresenter();
-  const turn = registerSlackStatusTurn('generic-liveness-thread', presenter, {
-    generation: GENERATION_A,
-    allowObservedStatuses: false,
-  });
-  await turn.setStatus({ text: 'is thinking...' });
-  assert.equal(
-    setObservedSlackStatus(
-      'generic-liveness-thread',
-      GENERATION_A,
-      { text: 'is searching the workspace' },
-    ),
-    true,
-  );
-  await turn.drain();
-  assert.deepEqual(presenter.statuses, ['is thinking...']);
-  turn.close();
 });
 
 test('rapid distinct updates coalesce to the newest status behind an in-flight write', async () => {
@@ -201,6 +200,50 @@ test('close fences late observed work and drain waits only for the active write'
   assert.equal(await active, true);
   await turn.drain();
   assert.deepEqual(calls, ['is thinking through the request']);
+});
+
+test('finish does not trap final delivery and clears again after a late status settles', async () => {
+  const calls: string[] = [];
+  const activeWrite = Promise.withResolvers<boolean>();
+  const lateClear = Promise.withResolvers<void>();
+  let clearCount = 0;
+  const turn = registerSlackStatusTurn('non-blocking-final-thread', {
+    setStatus(update: SlackStatusUpdate): Promise<boolean> {
+      calls.push(`status:${update.text}`);
+      return activeWrite.promise;
+    },
+  }, { generation: GENERATION_A });
+
+  const active = turn.setStatus({ text: 'is using Cloudflare Docs' });
+  turn.finish(async () => {
+    clearCount += 1;
+    calls.push(`clear:${clearCount}`);
+    if (clearCount === 2) lateClear.resolve();
+  });
+  calls.push('final');
+
+  assert.deepEqual(calls, [
+    'status:is using Cloudflare Docs',
+    'clear:1',
+    'final',
+  ]);
+
+  activeWrite.resolve(true);
+  assert.equal(await active, true);
+  await lateClear.promise;
+  assert.deepEqual(calls, [
+    'status:is using Cloudflare Docs',
+    'clear:1',
+    'final',
+    'clear:2',
+  ]);
+  assert.equal(
+    setObservedSlackStatus('non-blocking-final-thread', GENERATION_A, {
+      text: 'is running the old test suite',
+    }),
+    false,
+    'finish must retain the close fence for late observations',
+  );
 });
 
 test('consecutive identical statuses share one Slack write', async () => {

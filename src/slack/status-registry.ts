@@ -5,6 +5,8 @@ export interface SlackStatusTurnRegistration {
   setStatus(update: SlackStatusUpdate): Promise<boolean>;
   drain(): Promise<void>;
   close(): void;
+  /** Fence new writes, clear now, and clear once more if an in-flight write lands late. */
+  finish(clearStatus: () => Promise<void>): void;
 }
 
 type StatusPresenter = Pick<WebClientPresenter, 'setStatus'>;
@@ -19,8 +21,6 @@ export interface SlackStatusTurnOptions {
    * The override exists for deterministic focused tests.
    */
   observedMinIntervalMs?: number;
-  /** Keep the native Slack line as generic turn-liveness when false. */
-  allowObservedStatuses?: boolean;
 }
 
 interface QueuedStatusWrite {
@@ -39,13 +39,13 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
   private lastObservedWriteStartedAt: number | undefined;
   private lastAppliedText: string | undefined;
   private closed = false;
+  private finished = false;
 
   constructor(
     private readonly instanceId: string,
     private readonly generation: string,
     private readonly presenter: StatusPresenter,
     private readonly observedMinIntervalMs: number,
-    private readonly allowObservedStatuses: boolean,
   ) {}
 
   setStatus(update: SlackStatusUpdate): Promise<boolean> {
@@ -53,7 +53,6 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
   }
 
   setObservedStatus(update: SlackStatusUpdate): Promise<boolean> {
-    if (!this.allowObservedStatuses) return Promise.resolve(true);
     return this.enqueue(update, true);
   }
 
@@ -133,6 +132,19 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
     }
   }
 
+  finish(clearStatus: () => Promise<void>): void {
+    if (this.finished) return;
+    this.finished = true;
+    const activeResult = this.active?.result;
+    this.close();
+    this.clearIfUnowned(clearStatus);
+    if (activeResult) {
+      void activeResult.finally(() => {
+        this.clearIfUnowned(clearStatus);
+      });
+    }
+  }
+
   private scheduleNext(): void {
     if (this.closed || this.active || this.pendingTimer || !this.pending) {
       return;
@@ -199,6 +211,21 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
       this.pending = undefined;
     }
   }
+
+  private clearBestEffort(clearStatus: () => Promise<void>): void {
+    try {
+      void clearStatus().catch(() => undefined);
+    } catch {
+      // Status cleanup is cosmetic and must never interfere with final delivery.
+    }
+  }
+
+  private clearIfUnowned(clearStatus: () => Promise<void>): void {
+    // A later turn owns the shared Slack thread status once registered.
+    // Never let cleanup from this generation clear that newer turn.
+    if ((activeSlackStatusTurns.get(this.instanceId)?.size ?? 0) > 0) return;
+    this.clearBestEffort(clearStatus);
+  }
 }
 
 const activeSlackStatusTurns = new Map<string, Set<ActiveSlackStatusTurn>>();
@@ -213,7 +240,6 @@ export function registerSlackStatusTurn(
     options.generation,
     presenter,
     options.observedMinIntervalMs ?? DEFAULT_OBSERVED_STATUS_MIN_INTERVAL_MS,
-    options.allowObservedStatuses ?? true,
   );
   const turns = activeSlackStatusTurns.get(instanceId) ?? new Set<ActiveSlackStatusTurn>();
   turns.add(turn);

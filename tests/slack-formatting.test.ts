@@ -214,10 +214,10 @@ test('unassigned-channel hint names the bot, explains the silence, and links Con
   assert.doesNotMatch(unlinked, /\|Configure>/);
 });
 
-test('status updates use factual text and derive loading copy from the same fact', () => {
+test('status updates keep generic liveness while loading copy carries the current fact', () => {
   const update = { text: 'is using 2 messages of channel_history context' };
 
-  assert.equal(slackStatusText(update), update.text);
+  assert.equal(slackStatusText(update), 'is thinking...');
   assert.deepEqual(slackLoadingMessages(update), [
     'Using 2 messages of channel_history context',
   ]);

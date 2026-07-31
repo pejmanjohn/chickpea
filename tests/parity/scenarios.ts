@@ -149,7 +149,7 @@ export const scenarios: Scenario[] = [
   },
   {
     id: 'S03',
-    title: 'mention full turn delivers one final, sets then clears generic liveness',
+    title: 'mention full turn keeps generic liveness while loading detail advances',
     config: demoChannelConfig(),
     async run(instance) {
       const response = await instance.postEvent(appMention());
@@ -173,6 +173,22 @@ export const scenarios: Scenario[] = [
         .filter(Boolean);
       const distinctStatusTexts = [...new Set(nonEmptyStatusTexts)];
       assert.deepEqual(distinctStatusTexts, ['is thinking...']);
+      const loadingMessages = statuses.flatMap((entry) =>
+        Array.isArray(entry.body.loading_messages)
+          ? entry.body.loading_messages.map(String)
+          : []
+      );
+      assert.ok(loadingMessages.includes('Thinking...'));
+      assert.ok(
+        loadingMessages.some((message) =>
+          /^Using \d+ messages? of channel_history context$/.test(message)
+        ),
+        `expected hydrated context detail, received ${JSON.stringify(loadingMessages)}`,
+      );
+      assert.ok(
+        loadingMessages.includes(`Using ${PARITY_MODEL}`),
+        `expected model detail, received ${JSON.stringify(loadingMessages)}`,
+      );
       const lastStatus = statuses.at(-1);
       assert.ok(lastStatus);
       assert.equal(String(lastStatus.body.status), '');

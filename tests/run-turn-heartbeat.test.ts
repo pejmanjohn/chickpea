@@ -5,6 +5,7 @@ import type { WebClient } from '@slack/web-api';
 
 import type { ResolvedAssignment } from '../src/config/types.ts';
 import type { SlackInteractionProgressPatch } from '../src/config/state-rpc.ts';
+import type { AgentDispatchResult } from '../src/slack/agent-dispatch.ts';
 import { runTurn } from '../src/slack/run-turn.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 
@@ -219,4 +220,115 @@ test('runTurn bounds a never-settling heartbeat without racing a terminal update
     'durable repair must retain ownership of checklist finalization',
   );
   assert.equal(harness.removedCount(), 1);
+});
+
+test('replay delivery skips model activity and never invokes the agent provider', async () => {
+  const statusCalls: Array<{ status?: string; loading_messages?: string[] }> = [];
+  let agentCalls = 0;
+  const client = {
+    assistant: {
+      threads: {
+        async setStatus(input: { status?: string; loading_messages?: string[] }) {
+          statusCalls.push(input);
+          return { ok: true };
+        },
+      },
+    },
+    conversations: {
+      history: async () => ({ ok: true, messages: [] }),
+    },
+    chat: {
+      startStream: async () => ({ ok: true, ts: 'final-ts' }),
+      stopStream: async () => ({ ok: true }),
+      postMessage: async () => ({ ok: true, channel: assignment.channelId, ts: 'final-ts' }),
+    },
+  } as unknown as WebClient;
+  const turn: NormalizedSlackTurn = {
+    ...workTurn('Ev_REPLAY_NO_MODEL'),
+    interactionIntent: { disposition: 'reply', reason: 'substantive_request' },
+  };
+
+  await runTurn(turn, assignment, undefined, {
+    client,
+    replayText: 'Previously completed answer.',
+    usageRecordingEnabled: false,
+    async agentPrompt(): Promise<AgentDispatchResult> {
+      agentCalls += 1;
+      throw new Error('replay must not invoke the agent provider');
+    },
+  });
+
+  assert.equal(agentCalls, 0);
+  assert.equal(
+    statusCalls.some((call) =>
+      call.loading_messages?.includes(`Using ${assignment.model}`)
+    ),
+    false,
+  );
+});
+
+test('a stalled detail status does not delay agent start or final delivery', async () => {
+  const detailWrite = deferred<void>();
+  const agentStarted = deferred<void>();
+  const finalAttempted = deferred<void>();
+  const lateClear = deferred<void>();
+  let nonEmptyStatusCalls = 0;
+  let clearCalls = 0;
+  const client = {
+    assistant: {
+      threads: {
+        async setStatus(input: { status?: string }) {
+          if (input.status === '') {
+            clearCalls += 1;
+            if (clearCalls === 2) lateClear.resolve(undefined);
+            return { ok: true };
+          }
+          nonEmptyStatusCalls += 1;
+          if (nonEmptyStatusCalls === 2) {
+            await detailWrite.promise;
+          }
+          return { ok: true };
+        },
+      },
+    },
+    conversations: {
+      history: async () => ({ ok: true, messages: [] }),
+    },
+    chat: {
+      startStream: async () => {
+        finalAttempted.resolve(undefined);
+        return { ok: true, ts: 'final-ts' };
+      },
+      stopStream: async () => ({ ok: true }),
+      postMessage: async () => ({ ok: true, channel: assignment.channelId, ts: 'final-ts' }),
+    },
+  } as unknown as WebClient;
+  const turn: NormalizedSlackTurn = {
+    ...workTurn('Ev_STATUS_DOES_NOT_BLOCK'),
+    interactionIntent: { disposition: 'reply', reason: 'substantive_request' },
+  };
+
+  const outcome = runTurn(turn, assignment, undefined, {
+    client,
+    usageRecordingEnabled: false,
+    async agentPrompt(): Promise<AgentDispatchResult> {
+      agentStarted.resolve(undefined);
+      return {
+        text: 'Fresh answer.',
+        requestedModel: assignment.model ?? null,
+        returnedModel: null,
+        reportedUsage: null,
+        usageCompleteness: 'not_reported',
+      };
+    },
+  }).then(() => 'resolved' as const, () => 'rejected' as const);
+
+  await agentStarted.promise;
+  await finalAttempted.promise;
+  assert.equal(await Promise.race([outcome, delay(100, 'timeout' as const)]), 'resolved');
+  assert.equal(clearCalls, 1, 'final delivery should trigger an immediate clear');
+
+  detailWrite.resolve(undefined);
+  await lateClear.promise;
+  assert.equal(clearCalls, 2, 'the late detail write should be cleared after it settles');
 });

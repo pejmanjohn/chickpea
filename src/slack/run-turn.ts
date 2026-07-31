@@ -141,6 +141,8 @@ export interface RunTurnOptions {
    * the DO never has to RPC into itself to resolve the bot token.
    */
   client?: WebClient;
+  /** Focused-test override for proving replay and delivery lifecycle behavior. */
+  agentPrompt?: typeof promptSlackThreadAgent;
   /** Durable turn key forwarded to the sandbox for cap/idempotency state. */
   turnId?: string;
   /** Recorded result from an earlier attempt; skips the agent entirely. */
@@ -312,17 +314,15 @@ export async function runTurn(
   const statusGeneration = options.turnId ?? `msg:${turn.channelId}:${turn.messageTs}`;
   const statusTurn = registerSlackStatusTurn(agentConversationKey, presenter, {
     generation: statusGeneration,
-    allowObservedStatuses: false,
   });
-  const closeAndDrainStatus = async (): Promise<void> => {
+  const finishStatus = (): void => {
     // Close the sink first. Agent observations are relayed best-effort from a
     // different Cloudflare isolate and may still arrive after ?wait=result
     // resolves; removing this generation makes its late relays no-ops even if
     // another turn has already registered under the same conversation key.
-    // drain() then waits only for the one Slack write already in flight and
-    // discards throttled/stale pending detail, so the final is not delayed.
-    statusTurn.close();
-    await statusTurn.drain();
+    // Clearing is deliberately non-blocking: if the active Slack request lands
+    // after the first clear, the registry issues a second clear once it settles.
+    statusTurn.finish(() => presenter.clearStatus());
   };
   let usedCloudflareSandbox = false;
   let usageRecorder: InteractiveUsageRecorder | undefined;
@@ -541,6 +541,7 @@ export async function runTurn(
       hydratedContext,
       preparedMemory?.visibilityBarrierAt ?? null,
     );
+    void statusTurn.setStatus(hydratedContextStatus(context));
     const prompt = assembleSlackPrompt(turn, context, {
       ...(preparedMemory?.promptBlock ? { memoryBlock: preparedMemory.promptBlock } : {}),
       memorySelected: (preparedMemory?.selection?.entries.length ?? 0) > 0,
@@ -567,9 +568,12 @@ export async function runTurn(
     if (options.replayText !== undefined) {
       text = options.replayText;
     } else {
+      if (resolvedModel) {
+        void statusTurn.setStatus(modelStatus(resolvedModel));
+      }
       try {
         usedCloudflareSandbox = await shouldUseCloudflareSandbox(assignment, platformEnv);
-        agentResult = await promptSlackThreadAgent(
+        agentResult = await (options.agentPrompt ?? promptSlackThreadAgent)(
           agentConversationKey,
           executionPrompt,
           platformEnv,
@@ -603,7 +607,7 @@ export async function runTurn(
         });
         await usageRecorder?.recordFailure();
         const recoveredText = await options.beforeDelivery?.();
-        await closeAndDrainStatus();
+        finishStatus();
         if (recoveredText) {
           await preparedMemory?.confirmInjection();
           await presenter.deliverFinal(recoveredText, 'markdown');
@@ -627,7 +631,7 @@ export async function runTurn(
       recoveredText,
       leaseValid,
     );
-    await closeAndDrainStatus();
+    finishStatus();
     await presenter.deliverFinal(text, 'markdown');
     await finishDelivery();
   } catch (err) {
@@ -641,8 +645,7 @@ export async function runTurn(
         workChecklistHeartbeat.cancel();
         workChecklistHeartbeat = undefined;
       }
-      await closeAndDrainStatus();
-      await presenter.clearStatus();
+      finishStatus();
       await removeWorkAcknowledgment();
     } finally {
       // The Sandbox DO lives in a different isolate from the agent factory;
@@ -939,6 +942,20 @@ function tryResolveAgentModel(agent: Parameters<typeof resolveAgentModel>[0]): s
 
 function thinkingStatus(): SlackStatusUpdate {
   return { text: 'is thinking...' };
+}
+
+function hydratedContextStatus(context: SlackTurnContext): SlackStatusUpdate {
+  const count = context.messages.length;
+  const noun = count === 1 ? 'message' : 'messages';
+  return {
+    text: `is using ${count} ${noun} of ${context.mode} context`,
+  };
+}
+
+function modelStatus(modelId: string): SlackStatusUpdate {
+  return {
+    text: `is using ${modelId}`,
+  };
 }
 
 export function applyVisibilityBarrier(

@@ -17,6 +17,38 @@ function presenterWith(client: unknown): WebClientPresenter {
   });
 }
 
+test('setStatus keeps composer liveness generic while activity loading detail changes', async () => {
+  const calls: unknown[] = [];
+  const presenter = presenterWith({
+    assistant: {
+      threads: {
+        async setStatus(input: unknown) {
+          calls.push(input);
+          return { ok: true };
+        },
+      },
+    },
+  });
+
+  await presenter.setStatus({ text: 'is thinking...' });
+  await presenter.setStatus({ text: 'is searching the workspace' });
+
+  assert.deepEqual(calls, [
+    {
+      channel_id: 'C_BOUND',
+      thread_ts: '1782770400.000100',
+      status: 'is thinking...',
+      loading_messages: ['Thinking...'],
+    },
+    {
+      channel_id: 'C_BOUND',
+      thread_ts: '1782770400.000100',
+      status: 'is thinking...',
+      loading_messages: ['Searching the workspace'],
+    },
+  ]);
+});
+
 test('postArtifact sends bytes to files.uploadV2 in the requested thread', async () => {
   const calls: unknown[] = [];
   const presenter = presenterWith({
