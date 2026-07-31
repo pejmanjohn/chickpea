@@ -79,6 +79,7 @@ export interface SlackInteractionIntentContext {
   profileInstructions: string;
   channelInstructions?: string;
   recentContext?: string[];
+  reactionTargetText?: string;
   activeWork?: boolean;
   requestedModel?: string | null;
 }
@@ -228,6 +229,12 @@ function highConfidenceInteractionIntent(
     const acknowledgment = obviousAcknowledgment(text, Boolean(context.activeWork));
     if (acknowledgment) return acknowledgment;
   }
+  if (
+    context.source === 'reaction_added' &&
+    explicitReactionReplyRequest(context.reactionTargetText)
+  ) {
+    return { disposition: 'reply', reason: 'substantive_request' };
+  }
   const checklist = obviousWorkChecklist(text);
   if (checklist) {
     return {
@@ -281,10 +288,18 @@ function obviousAcknowledgment(
   return { disposition: 'react_only', reason: 'pure_ack', reaction, target: 'trigger' };
 }
 
+function explicitReactionReplyRequest(targetText: string | undefined): boolean {
+  if (!targetText) return false;
+  return /\b(?:when|if|once|after)\b/i.test(targetText) &&
+    /\b(?:react(?:ion|s|ed)?|emoji)\b/i.test(targetText) &&
+    /\b(?:answer|reply|respond)\b/i.test(targetText);
+}
+
 const OBVIOUS_WORK_VERBS = [
   'investigate', 'search', 'research', 'build', 'implement', 'debug', 'fix',
   'change', 'update', 'find', 'review', 'analy[sz]e', 'compare', 'audit',
   'deploy', 'test', 'verify', 'trace', 'diagnose', 'refactor', 'migrate',
+  'run', 'observe', 'monitor', 'watch',
 ];
 const OBVIOUS_WORK_REQUEST = new RegExp(
   `^(?:(?:(?:please|kindly)\\s+)|(?:(?:can|could|would|will)\\s+you\\s+(?:please\\s+)?)|(?:i\\s+(?:need|want)\\s+you\\s+to\\s+))?(${OBVIOUS_WORK_VERBS.join('|')})\\b`,
@@ -299,6 +314,10 @@ function obviousWorkChecklist(text: string): string[] | null {
     return ['Requested change', 'Verification result'];
   }
   if (verb === 'deploy') return ['Deployment result', 'Live verification'];
+  if (verb === 'run') return ['Execution result', 'Supporting evidence'];
+  if (['observe', 'monitor', 'watch'].includes(verb)) {
+    return ['Observation result', 'Supporting evidence'];
+  }
   if (['review', 'analyze', 'analyse', 'compare', 'audit'].includes(verb)) {
     return ['Findings', 'Supporting evidence'];
   }
@@ -363,6 +382,7 @@ function interactionClassifierContext(context: SlackInteractionIntentContext): C
     `Guaranteed input: ${context.guaranteed ? 'yes' : 'no'}`,
     `Active work in this thread: ${context.activeWork ? 'yes' : 'no'}`,
     `Current eligible-human intent: ${JSON.stringify(context.text)}`,
+    `Reacted-to message: ${JSON.stringify(context.reactionTargetText ?? '')}`,
     `Bounded recent context: ${JSON.stringify(context.recentContext ?? [])}`,
     `Profile guidance: ${JSON.stringify(context.profileInstructions)}`,
     `Channel guidance: ${JSON.stringify(context.channelInstructions ?? '')}`,

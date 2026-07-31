@@ -876,6 +876,9 @@ async function classifyCandidateTurn(
       : {}),
     requestedModel,
     recentContext: context.messages.map((message) => `${message.userId}: ${message.text}`),
+    ...(turn.reactionTargetText
+      ? { reactionTargetText: turn.reactionTargetText }
+      : {}),
   }, platformEnv);
   return { classification, requestedModel };
 }
@@ -903,6 +906,7 @@ async function resolveReactionTargetContext(
       : messageTs;
     if (typeof message?.text !== 'string' || !message.text.trim()) return false;
     turn.threadTs = threadTs;
+    turn.reactionTargetText = message.text.trim();
     return true;
   } catch {
     return false;

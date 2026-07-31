@@ -127,6 +127,8 @@ export interface NormalizedSlackTurn {
   contextMode: SlackContextMode;
   reaction?: string;
   reactionTargetTs?: string;
+  /** Slack-verified text of the message that received an inbound reaction. */
+  reactionTargetText?: string;
   /** Content-free state snapshot used by the durable explicit-turn classifier. */
   activeWorkAtAdmission?: boolean;
   /** Host-validated preflight result carried into the durable TurnJob. */

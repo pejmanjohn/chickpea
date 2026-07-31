@@ -167,6 +167,29 @@ test('high-confidence acknowledgments stay reaction-only even when a small model
   );
 });
 
+test('an explicit reacted-to response trigger is promoted without model ambiguity', async () => {
+  let promptCalls = 0;
+  assert.deepEqual(
+    (await classifySlackInteraction(
+      {
+        ...baseContext,
+        source: 'reaction_added',
+        guaranteed: false,
+        text: 'Reacted :bulb: to the Slack message at 123.456.',
+        reactionTargetText:
+          'When a teammate adds a light bulb reaction to this message, answer in this thread.',
+      },
+      undefined,
+      async () => {
+        promptCalls += 1;
+        return JSON.stringify({ disposition: 'ignore', reason: 'social_chatter' });
+      },
+    )).intent,
+    { disposition: 'reply', reason: 'substantive_request' },
+  );
+  assert.equal(promptCalls, 0);
+});
+
 test('high-confidence explicit work requests cannot collapse into ordinary replies', async () => {
   let promptCalls = 0;
   assert.deepEqual(
@@ -201,6 +224,20 @@ test('high-confidence explicit work requests cannot collapse into ordinary repli
     {
       disposition: 'work', reason: 'useful_ambient',
       checklist: ['Findings', 'Supporting evidence'],
+    },
+  );
+  assert.deepEqual(
+    (await classifySlackInteraction(
+      {
+        ...baseContext,
+        text: '<@U_BOT> ACCEPT-HEARTBEAT Run a 75-second observation and report the timestamps.',
+      },
+      undefined,
+      async () => JSON.stringify({ disposition: 'reply', reason: 'substantive_request' }),
+    )).intent,
+    {
+      disposition: 'work', reason: 'substantive_request',
+      checklist: ['Execution result', 'Supporting evidence'],
     },
   );
 });
