@@ -192,7 +192,13 @@ export async function classifySlackInteraction(
       failed: false,
     };
   } catch {
-    return { intent: fallbackIntent(context.guaranteed), failed: true };
+    return {
+      intent: applyHighConfidenceInteractionRules(
+        context,
+        fallbackIntent(context.guaranteed),
+      ),
+      failed: true,
+    };
   }
 }
 

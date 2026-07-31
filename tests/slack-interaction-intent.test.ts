@@ -111,6 +111,32 @@ test('classifier failures use quiet ambient and written guaranteed fallbacks', a
     ),
     { disposition: 'ignore', reason: 'classifier_fallback' },
   );
+  assert.deepEqual(
+    await resolveSlackInteractionIntent(
+      { ...baseContext, text: '<@U_BOT> Thanks, agreed.' },
+      undefined,
+      async () => { throw new Error('provider unavailable'); },
+    ),
+    {
+      disposition: 'react_only', reason: 'pure_ack', reaction: 'appreciation', target: 'trigger',
+    },
+  );
+  assert.deepEqual(
+    await resolveSlackInteractionIntent(
+      {
+        ...baseContext,
+        source: 'ambient_channel_message',
+        guaranteed: false,
+        text: 'Please review the latest rollout evidence.',
+      },
+      undefined,
+      async () => { throw new Error('provider unavailable'); },
+    ),
+    {
+      disposition: 'work', reason: 'useful_ambient',
+      checklist: ['Findings', 'Supporting evidence'],
+    },
+  );
 });
 
 test('high-confidence acknowledgments stay reaction-only even when a small model chooses prose', async () => {
