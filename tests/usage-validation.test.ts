@@ -30,6 +30,28 @@ test('usage validation bounds IDs and rejects credential-like captured labels', 
     (error: unknown) => error instanceof UsageStateError && error.code === 'usage_invalid_input',
   );
 });
+
+test('interaction-classification usage can be assignment-scoped without a Run', () => {
+  const normalized = normalizeAdmitUsageOperation({
+    operationId: 'classification_T1_C1_E1',
+    operationKind: 'interaction_classification' as never,
+    sourceId: 'classification_T1_C1_E1',
+    startedAt: 1,
+    installationId: 'installation',
+    workspaceId: 'T1',
+    profileId: 'agent_default',
+    profileLabel: 'Default',
+    channelId: 'C1',
+    channelLabel: 'general',
+    conversationKind: 'named_channel',
+    requestedProvider: 'openai',
+    requestedModel: 'gpt-4.1-mini',
+    credentialRefId: null,
+    credentialVersion: null,
+  });
+  assert.equal(normalized.operationKind, 'interaction_classification');
+  assert.equal(normalized.runId, undefined);
+});
 test('terminal validation requires nullable unknowns instead of synthetic zero usage', () => {
   assert.throws(
     () => normalizeRecordUsageTerminal({

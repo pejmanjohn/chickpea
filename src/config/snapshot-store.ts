@@ -153,6 +153,7 @@ export function snapshotFromEffectiveConfig(
     ...(config.channelPromptAddendum
       ? { channelPromptAddendum: config.channelPromptAddendum }
       : {}),
+    participationMode: config.participationMode ?? 'ambient',
     agent: config.agent,
     model: config.model,
     ...(config.modelCredential ? { modelCredential: config.modelCredential } : {}),

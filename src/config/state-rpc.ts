@@ -11,6 +11,7 @@ import type {
   SlackCanonicalAdmissionResult,
 } from '../slack/claim-store.ts';
 import type { SlackAgentExecutionContext, TurnJob } from '../slack/turn-job-types.ts';
+import type { SlackInteractionIntent } from '../slack/interaction-intent.ts';
 
 export type { TurnJob } from '../slack/turn-job-types.ts';
 
@@ -74,7 +75,28 @@ export interface TurnPullRequestProgress {
   branch?: string;
 }
 
+export interface SlackInteractionProgress {
+  acknowledgment?: {
+    channelId: string;
+    messageTs: string;
+    name: string;
+    created: boolean;
+    cleanup: 'pending' | 'done';
+  };
+  checklist?: {
+    channelId: string;
+    threadTs: string;
+    messageTs: string;
+    cleanup: 'pending' | 'done';
+    terminal?: 'success' | 'error';
+  };
+}
+
+export type SlackInteractionProgressPatch = Partial<SlackInteractionProgress>;
+
 export interface TurnProgress {
+  interactionIntent?: SlackInteractionIntent;
+  slackInteraction?: SlackInteractionProgress;
   pullRequest?: TurnPullRequestProgress;
   usageTelemetry?: {
     executionId: string;
@@ -130,6 +152,17 @@ export interface TagStateRpc {
   release(key: string): Promise<StateRpcResult<null>>;
   threadStart(key: string): Promise<StateRpcResult<null>>;
   threadHas(key: string): Promise<StateRpcResult<boolean>>;
+  threadParticipationGet(key: string): Promise<StateRpcResult<'ambient' | 'mention_only'>>;
+  threadParticipationSet(
+    key: string,
+    mode: 'ambient' | 'mention_only',
+  ): Promise<StateRpcResult<null>>;
+  threadActiveWorkGet(key: string): Promise<StateRpcResult<boolean>>;
+  threadActiveWorkSet(
+    key: string,
+    generation: string,
+    active: boolean,
+  ): Promise<StateRpcResult<null>>;
   admitSlackTurn(
     input: SlackCanonicalAdmissionInput,
   ): Promise<StateRpcResult<SlackCanonicalAdmissionResult>>;

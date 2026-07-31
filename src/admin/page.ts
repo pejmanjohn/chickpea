@@ -1719,7 +1719,7 @@ details[open].advanced summary::before {
     slackChannelsError: "",
     slackChannelsLoading: false,
     swapOpen: false,
-    channelDraft: { enabled: true, channelPromptAddendum: "" },
+    channelDraft: { enabled: true, channelPromptAddendum: "", participationMode: "ambient" },
     dirty: false,
     saveError: "",
     // Channels is the default destination. channelScreen distinguishes the
@@ -2705,6 +2705,7 @@ details[open].advanced summary::before {
 
   function usageWorkLabel(operation) {
     if (operation.operationKind === "routine_run") return operation.routineLabel || operation.routineId || "Scheduled work";
+    if (operation.operationKind === "interaction_classification") return "Interaction classification";
     if (operation.conversationKind === "direct_message") return "Direct message";
     return operation.channelLabel ? "#" + operation.channelLabel : operation.channelId || "Interactive turn";
   }
@@ -2859,7 +2860,7 @@ details[open].advanced summary::before {
       // non-blocking empty so the rest of the admin still renders.
       var emptyBlock = state.addChannelOpen ? "" : '<div class="empty">' +
         '<h1 class="page-title">No channels yet &mdash; add one</h1>' +
-        '<p class="hint">Pick a Slack channel and attach a profile. Chickpea answers @mentions there.</p>' +
+        '<p class="hint">Pick a Slack channel and attach a profile. Mentions guarantee a response; Chickpea may also join useful unmentioned conversation.</p>' +
         addChannelButtonHtml("btn btn-soft") +
         '</div>';
       return '<main class="main"><div class="main-inner">' + invite + addPanel + emptyBlock + '</div></main>';
@@ -2869,7 +2870,7 @@ details[open].advanced summary::before {
     return '<main class="main"><div class="main-inner">' + invite + addPanel +
       '<div class="main-head"><div style="display:flex; flex-direction:column; gap:2px;">' +
       '<h1 class="page-title mono-title">' + esc(channelLabel(assignment)) + '</h1>' +
-      '<p class="hint">What Chickpea can do in this channel. It answers mentions here, always as ' + slackMentionHtml() + '.</p>' +
+      '<p class="hint">What Chickpea can do in this channel. Mentions guarantee a response; ambient participation follows the setting below, always as ' + slackMentionHtml() + '.</p>' +
       '</div><label style="display:flex; align-items:center; gap:10px;"><span class="hint">' + (enabled ? "Enabled" : "Disabled") + '</span>' +
       '<span class="toggle"><span class="thumb"></span><input type="checkbox" data-action="channel-enabled" ' + (enabled ? "checked" : "") + ' aria-label="Channel enabled"></span></label></div>' +
       profileSectionHtml(agent, assignment) +
@@ -2936,6 +2937,7 @@ details[open].advanced summary::before {
       slackBehaviorRowHtml("allowDms", "Allow direct messages", "Chickpea answers Slack DMs with the install\'s Default profile and provider budget.") +
       slackBehaviorRowHtml("unassignedHint", "Help people configure unassigned channels", "When someone mentions " + slackMentionText() + " in an unassigned channel, Chickpea privately shares setup steps.") +
       slackBehaviorRowHtml("welcomeOnJoin", "Post a welcome when " + slackMentionText() + " joins an assigned channel", "Chickpea starts the conversation with a short welcome message.") +
+      slackBehaviorRowHtml("ambientParticipation", "Allow ambient participation", "Chickpea may selectively respond to useful unmentioned messages in assigned channels. Turn this off for an installation-wide mention-only rollback.") +
       '</div>' +
       (state.slackBehaviorError
         ? '<div class="inline-status error" role="alert">' + esc(state.slackBehaviorError) +
@@ -3206,7 +3208,7 @@ details[open].advanced summary::before {
   function addChannelPanelHtml() {
     if (!state.addChannelOpen) return "";
     var head = '<div class="section-head"><div><h2 class="section-title">Add a channel</h2>' +
-      '<p class="hint">Attach to a Slack channel. Chickpea answers @mentions there with the ' + esc(addChannelAgentName()) + ' profile &mdash; customize it on the channel page after.</p></div>' +
+      '<p class="hint">Attach to a Slack channel. Mentions guarantee a response and ambient messages may be evaluated with the ' + esc(addChannelAgentName()) + ' profile.</p></div>' +
       '<button type="button" class="btn btn-ghost btn-sm" data-action="cancel-add-channel">Cancel</button></div>';
     if (!isSlackConnected()) {
       return '<section class="section">' + head +
@@ -3417,6 +3419,11 @@ details[open].advanced summary::before {
 
   function channelInstructionsHtml() {
     return '<section class="section"><div class="section-head"><div><h2 class="section-title">Channel instructions</h2><p class="hint">Appended to the profile\\'s instructions in this channel only.</p></div></div>' +
+      '<div class="field"><label class="field-label" for="participation-mode">Participation</label>' +
+      '<span class="select-wrap"><select class="input" id="participation-mode" data-action="channel-participation">' +
+      '<option value="ambient"' + (state.channelDraft.participationMode === "ambient" ? " selected" : "") + '>Ambient (mentions guaranteed)</option>' +
+      '<option value="mention_only"' + (state.channelDraft.participationMode === "mention_only" ? " selected" : "") + '>Mention only</option></select>' + icon("chevron-down", "select-caret") + '</span>' +
+      '<p class="hint">Ambient lets Chickpea decide when an unmentioned contribution is useful. Mention-only narrows this channel without changing tools or teammate permissions.</p></div>' +
       '<div class="field"><label class="field-label" for="addendum" style="position:absolute; clip: rect(0 0 0 0);">Channel instructions</label>' +
       '<textarea class="textarea" id="addendum" data-action="channel-addendum">' + esc(state.channelDraft.channelPromptAddendum || "") + '</textarea></div></section>';
   }
@@ -8024,7 +8031,8 @@ details[open].advanced summary::before {
   function channelDraftFrom(assignment) {
     return {
       enabled: assignment ? assignment.enabled : true,
-      channelPromptAddendum: (assignment && assignment.channelPromptAddendum) || ""
+      channelPromptAddendum: (assignment && assignment.channelPromptAddendum) || "",
+      participationMode: (assignment && assignment.participationMode) || "ambient"
     };
   }
 
@@ -8106,11 +8114,12 @@ details[open].advanced summary::before {
       .catch(function (error) { state.effectiveError = error.serverMessage || error.message; });
   }
 
-  function putAssignment(workspaceId, channelId, agentId, enabled, addendum, label) {
+  function putAssignment(workspaceId, channelId, agentId, enabled, addendum, label, participationMode) {
     var body = { workspaceId: workspaceId, channelId: channelId, agentId: agentId, enabled: enabled };
     var normalizedLabel = normalizeChannelLabel(label);
     if (normalizedLabel) body.channelLabel = normalizedLabel;
     if (addendum !== undefined) body.channelPromptAddendum = addendum;
+    if (participationMode === "ambient" || participationMode === "mention_only") body.participationMode = participationMode;
     return postJson("/admin/api/assignments", "PUT", body);
   }
 
@@ -9018,6 +9027,11 @@ details[open].advanced summary::before {
       state.dirty = true;
       render();
     }
+    if (action === "channel-participation") {
+      state.channelDraft.participationMode = target.value === "mention_only" ? "mention_only" : "ambient";
+      state.dirty = true;
+      render();
+    }
     if (action === "slack-behavior") {
       saveSlackBehavior(target.getAttribute("data-setting"), !!target.checked);
     }
@@ -9601,7 +9615,7 @@ details[open].advanced summary::before {
     if (!assignment || !select) return;
     // Swap only the profile; keep the channel's persisted enabled/instructions
     // so an unsaved textarea edit is not committed as a side effect.
-    putAssignment(assignment.workspaceId, assignment.channelId, select.value, assignment.enabled, assignment.channelPromptAddendum, assignment.channelLabel).then(function () {
+    putAssignment(assignment.workspaceId, assignment.channelId, select.value, assignment.enabled, assignment.channelPromptAddendum, assignment.channelLabel, assignment.participationMode).then(function () {
       state.swapOpen = false;
       return refreshData();
     }).catch(function (error) { state.saveError = error.message; render(); });
@@ -9619,7 +9633,7 @@ details[open].advanced summary::before {
   function saveChannel() {
     var assignment = activeAssignment();
     if (!assignment) return;
-    putAssignment(assignment.workspaceId, assignment.channelId, assignment.agentId, state.channelDraft.enabled, state.channelDraft.channelPromptAddendum, assignment.channelLabel).then(function () {
+    putAssignment(assignment.workspaceId, assignment.channelId, assignment.agentId, state.channelDraft.enabled, state.channelDraft.channelPromptAddendum, assignment.channelLabel, state.channelDraft.participationMode).then(function () {
       state.dirty = false;
       state.saveError = "";
       return refreshData();
@@ -10992,7 +11006,7 @@ details[open].advanced summary::before {
     var enabled = assignment ? assignment.enabled : true;
     var addendum = assignment ? assignment.channelPromptAddendum : undefined;
     var label = assignment && assignment.channelLabel ? assignment.channelLabel : channel.name;
-    putAssignment(workspaceId, channel.id, draft.id, enabled, addendum, label).then(function (result) {
+    putAssignment(workspaceId, channel.id, draft.id, enabled, addendum, label, assignment && assignment.participationMode).then(function (result) {
       var savedLabel = normalizeChannelLabel((result && result.assignment && result.assignment.channelLabel) || label || channel.id);
       var needsInvite = result && result.isMember !== undefined ? result.isMember === false : channel.isMember === false;
       state.attachPicker = false;

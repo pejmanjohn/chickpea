@@ -1,3 +1,5 @@
+import type { SlackInteractionIntent } from './interaction-intent.ts';
+
 export interface SlackAppMentionEvent {
   type: 'app_mention';
   user: string;
@@ -60,12 +62,26 @@ export interface SlackMemberJoinedChannelEvent {
   event_ts: string;
 }
 
+export interface SlackReactionAddedEvent {
+  type: 'reaction_added';
+  user: string;
+  reaction: string;
+  item: {
+    type: string;
+    channel?: string;
+    ts?: string;
+  };
+  item_user?: string;
+  event_ts: string;
+}
+
 export type SlackEvent =
   | SlackAppMentionEvent
   | SlackMessageEvent
   | SlackAssistantThreadStartedEvent
   | SlackAssistantThreadContextChangedEvent
-  | SlackMemberJoinedChannelEvent;
+  | SlackMemberJoinedChannelEvent
+  | SlackReactionAddedEvent;
 
 export interface SlackEventFixture {
   token: string;
@@ -77,7 +93,12 @@ export interface SlackEventFixture {
   event: SlackEvent;
 }
 
-export type SlackTurnSource = 'app_mention' | 'implicit_thread_reply' | 'dm_message';
+export type SlackTurnSource =
+  | 'app_mention'
+  | 'implicit_thread_reply'
+  | 'dm_message'
+  | 'ambient_channel_message'
+  | 'reaction_added';
 export type SlackContextMode = 'thread' | 'channel_history' | 'dm_history';
 export type SlackTurnIgnoreReason =
   | 'non_event_callback'
@@ -90,7 +111,7 @@ export type SlackTurnIgnoreReason =
   | 'empty_text'
   | 'missing_thread_metadata'
   | 'unsupported_channel_type'
-  | 'top_level_channel_message';
+  | 'unsupported_reaction_item';
 
 export interface NormalizedSlackTurn {
   workspaceId: string;
@@ -104,6 +125,12 @@ export interface NormalizedSlackTurn {
   source: SlackTurnSource;
   channelType?: string;
   contextMode: SlackContextMode;
+  reaction?: string;
+  reactionTargetTs?: string;
+  /** Content-free state snapshot used by the durable explicit-turn classifier. */
+  activeWorkAtAdmission?: boolean;
+  /** Host-validated preflight result carried into the durable TurnJob. */
+  interactionIntent?: SlackInteractionIntent;
 }
 
 export interface IgnoredSlackTurn {
@@ -130,4 +157,10 @@ export function isSlackMemberJoinedChannelEvent(
   event: SlackEvent,
 ): event is SlackMemberJoinedChannelEvent {
   return event.type === 'member_joined_channel';
+}
+
+export function isSlackReactionAddedEvent(
+  event: SlackEvent,
+): event is SlackReactionAddedEvent {
+  return event.type === 'reaction_added';
 }

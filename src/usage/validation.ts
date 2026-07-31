@@ -63,8 +63,8 @@ export function normalizeAdmitUsageOperation(input: AdmitUsageOperationInput): A
   if (operationKind === 'routine_run' && !normalized.routineRunId) {
     invalid('A routine operation requires a routine run ID.');
   }
-  if (operationKind === 'interactive_turn' && normalized.routineRunId) {
-    invalid('An interactive operation cannot carry a routine run ID.');
+  if (operationKind !== 'routine_run' && normalized.routineRunId) {
+    invalid('A non-routine operation cannot carry a routine run ID.');
   }
   if ((normalized.credentialRefId === null) !== (normalized.credentialVersion === null)) {
     invalid('Credential reference and version must be recorded together.');

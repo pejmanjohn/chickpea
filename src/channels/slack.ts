@@ -16,6 +16,11 @@ import { resolveStores, type AppStores, type PlatformEnv } from '../config/state
 import { tagStateStub, type TurnJob } from '../config/state-rpc.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
 import { resolveSlackBehaviorSettings } from '../slack/behavior-settings.ts';
+import { classifySlackInteraction } from '../slack/interaction-intent.ts';
+import {
+  InteractionUsageRecorder,
+  usageRuntimeRecordingEnabled,
+} from '../usage/runtime-recorder.ts';
 import { parseMemoryCommand } from '../memory/commands.ts';
 import { parseRoutineCommand } from '../routines/commands.ts';
 import { isRoutineSlackTurn } from '../routines/slack-context.ts';
@@ -37,12 +42,15 @@ import {
 } from '../slack/message-format.ts';
 import {
   getClient,
+  createSlackWebClient,
   runTurn,
   sanitizeError,
 } from '../slack/run-turn.ts';
 import { slackThreadKey } from '../slack/thread-key.ts';
 import { normalizeSlackTurn } from '../slack/turn-normalization.ts';
 import { wakeNodeTurnRelay } from '../slack/node-turn-relay.ts';
+import { hydrateSlackContextViaWebClient } from '../slack/web-client-context.ts';
+import { parseSlackParticipationControl } from '../slack/participation-control.ts';
 import { selectSlackExecutionAuthority } from '../work/authority.ts';
 import { EGRESS_SETTING_KEY, parseEgressPolicy } from '../config/egress.ts';
 import {
@@ -84,6 +92,23 @@ function detach(
 let probedBotIdentity:
   | { botToken: string | undefined; botUserId: string | undefined }
   | undefined;
+
+const MAX_CANDIDATE_CLASSIFIERS_PER_CHANNEL = 2;
+const candidateClassifierCounts = new Map<string, number>();
+
+function acquireCandidateClassifier(key: string): (() => void) | undefined {
+  const active = candidateClassifierCounts.get(key) ?? 0;
+  if (active >= MAX_CANDIDATE_CLASSIFIERS_PER_CHANNEL) return undefined;
+  candidateClassifierCounts.set(key, active + 1);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const remaining = (candidateClassifierCounts.get(key) ?? 1) - 1;
+    if (remaining > 0) candidateClassifierCounts.set(key, remaining);
+    else candidateClassifierCounts.delete(key);
+  };
+}
 
 export function invalidateSlackBotUserIdCache(): void {
   probedBotIdentity = undefined;
@@ -210,7 +235,7 @@ export const channel: SlackChannel = {
   parseConversationKey: (id) => identityChannel().parseConversationKey(id),
 };
 
-const handleSlackEvents: NonNullable<SlackChannelOptions['events']> = async ({ c, payload }) => {
+const handleSlackEvents: NonNullable<SlackChannelOptions['events']> = ({ c, payload }) => {
   // a. Admission: only Events API callbacks; ack Assistant lifecycle events.
   if (payload.type !== 'event_callback') return;
   const eventType = payload.event.type;
@@ -226,6 +251,19 @@ const handleSlackEvents: NonNullable<SlackChannelOptions['events']> = async ({ c
   // the events ack returns (its request scope ends with the response). On
   // node the env is ignored everywhere it is threaded.
   const platformEnv = c.env as PlatformEnv | undefined;
+  detach(
+    c,
+    processSlackEvent(payload as unknown as SlackEventFixture, platformEnv).catch((err) => {
+      console.error('[chickpea] Slack event intake failed:', sanitizeError(err));
+    }),
+  );
+};
+
+async function processSlackEvent(
+  payload: SlackEventFixture,
+  platformEnv: PlatformEnv | undefined,
+): Promise<void> {
+  const eventType = payload.event.type;
 
   // Store resolution is per-request and target-aware: on Node the factories
   // return the process-cached SQLite stores (claims + thread registry are
@@ -243,19 +281,21 @@ const handleSlackEvents: NonNullable<SlackChannelOptions['events']> = async ({ c
     if (!behavior.welcomeOnJoin.value) {
       return;
     }
-    await handleMemberJoinedChannel(payload as unknown as SlackEventFixture, stores, platformEnv);
+    await handleMemberJoinedChannel(payload, stores, platformEnv);
     return;
   }
 
   // b. Normalize with the shared admission policy (imported verbatim).
   const resolvedBotUserId = await resolveBotUserId(platformEnv);
   const normalization = normalizeSlackTurn(
-    payload as unknown as SlackEventFixture,
+    payload,
     resolvedBotUserId ? { botUserId: resolvedBotUserId } : {},
   );
   if (normalization.status !== 'runnable') return;
   const turn = normalization.turn;
-  const threadKey = slackThreadKey(turn);
+  const candidateTurn =
+    turn.source === 'ambient_channel_message' || turn.source === 'reaction_added';
+  let threadKey = slackThreadKey(turn);
   const state = stores.slackState;
 
   // c. Implicit thread replies require a thread this app already started (a
@@ -264,6 +304,12 @@ const handleSlackEvents: NonNullable<SlackChannelOptions['events']> = async ({ c
   //    restarts; `:memory:` keeps the old process-local semantics. Checked
   //    before any claim so a dropped reply stays fully silent.
   if (turn.source === 'implicit_thread_reply' && !(await state.has(threadKey))) {
+    return;
+  }
+  if (
+    turn.source === 'implicit_thread_reply' &&
+    (await state.getParticipation(threadKey)) === 'mention_only'
+  ) {
     return;
   }
 
@@ -301,7 +347,7 @@ const handleSlackEvents: NonNullable<SlackChannelOptions['events']> = async ({ c
     const store = stores.config;
     const configStores = { agents: store, assignments: store };
     assignment =
-      surface === 'channel'
+      surface === 'channel' && !candidateTurn
         ? await getOrCreateSnapshot(stores.snapshots, threadKey, () =>
             resolveEffectiveSlackConfig(turn.workspaceId, turn.channelId, configStores).then(
               async (config) => {
@@ -318,7 +364,9 @@ const handleSlackEvents: NonNullable<SlackChannelOptions['events']> = async ({ c
               },
             ),
           )
-        : await resolveAssignment(turn.workspaceId, turn.channelId, configStores, { surface });
+        : surface === 'channel'
+          ? await resolveEffectiveSlackConfig(turn.workspaceId, turn.channelId, configStores)
+          : await resolveAssignment(turn.workspaceId, turn.channelId, configStores, { surface });
   } catch (err) {
     // A model that cannot resolve is NOT fail-closed: admit with a best-effort
     // assignment so the turn still delivers the sanitized provider-failure
@@ -339,17 +387,12 @@ const handleSlackEvents: NonNullable<SlackChannelOptions['events']> = async ({ c
       // who explicitly mentioned the bot gets an ephemeral pointer at /admin.
       // Detached so the events ack is not delayed by the Slack Web API call.
       if (err instanceof NoAssignmentError) {
-        detach(
-          c,
-          postUnassignedChannelHint(
-            turn,
-            surface,
-            behavior.unassignedHint.value,
-            state,
-            platformEnv,
-          ).catch((hintErr) => {
-            console.error('[chickpea] unassigned-channel hint failed:', sanitizeError(hintErr));
-          }),
+        await postUnassignedChannelHint(
+          turn,
+          surface,
+          behavior.unassignedHint.value,
+          state,
+          platformEnv,
         );
       }
       return;
@@ -374,10 +417,24 @@ const handleSlackEvents: NonNullable<SlackChannelOptions['events']> = async ({ c
     }
   }
 
+  let claimsHeldByCanonicalAdmission = false;
+  let canonicalRunId: string | undefined;
+  let canonicalTurnJob: TurnJob | undefined;
+
   // Resolve actor/source truth only after assignment succeeds. This keeps an
   // unassigned channel's established zero-Slack-API behavior intact while
   // still authorizing before any canonical content or Run is written.
   const { botToken } = await resolveSlackCredentials(platformEnv, stores.settings);
+  if (
+    turn.source === 'reaction_added' &&
+    (!botToken || !(await resolveReactionTargetContext(turn, createSlackWebClient(botToken))))
+  ) {
+    await state.claim(evtKey);
+    await state.claim(msgKey);
+    return;
+  }
+  threadKey = slackThreadKey(turn);
+  turn.activeWorkAtAdmission = await state.isActiveWork(threadKey);
   let admissionTruth: SlackAdmissionTruth = {
     eligible: false,
     reason: 'slack_truth_unavailable',
@@ -395,9 +452,118 @@ const handleSlackEvents: NonNullable<SlackChannelOptions['events']> = async ({ c
     }
   }
 
-  let claimsHeldByCanonicalAdmission = false;
-  let canonicalRunId: string | undefined;
-  let canonicalTurnJob: TurnJob | undefined;
+  // Ambient messages and inbound reactions are candidates, not durable work.
+  // Deterministic eligibility and the live rollback/assignment ceiling run
+  // before the model classifier, so mention-only channels create no cost.
+  if (
+    candidateTurn &&
+    (!behavior.ambientParticipation.value || assignment.participationMode === 'mention_only')
+  ) {
+    await state.claim(evtKey);
+    await state.claim(msgKey);
+    return;
+  }
+  if (candidateTurn && !admissionTruth.eligible) {
+    await state.claim(evtKey);
+    await state.claim(msgKey);
+    return;
+  }
+
+  const participationControl = !candidateTurn && admissionTruth.eligible
+    ? parseSlackParticipationControl(turn.text)
+    : null;
+  if (participationControl?.scope === 'thread') {
+    await state.setParticipation(threadKey, participationControl.mode);
+  } else if (participationControl?.scope === 'channel' && surface === 'channel') {
+    const current = await stores.config.getAssignment(turn.workspaceId, turn.channelId);
+    await stores.config.putAssignment({
+      workspaceId: turn.workspaceId,
+      channelId: turn.channelId,
+      agentId: current?.agentId ?? assignment.agentId,
+      enabled: current?.enabled ?? true,
+      ...(current?.channelLabel || assignment.channelLabel
+        ? { channelLabel: current?.channelLabel ?? assignment.channelLabel }
+        : {}),
+      ...(current?.channelPromptAddendum || assignment.channelPromptAddendum
+        ? {
+            channelPromptAddendum:
+              current?.channelPromptAddendum ?? assignment.channelPromptAddendum,
+          }
+        : {}),
+      participationMode: participationControl.mode,
+    });
+  }
+
+  const deterministicCommand = Boolean(parseMemoryCommand(turn.text)) ||
+    (isRoutineSlackTurn(turn) && Boolean(parseRoutineCommand(turn.text)));
+  let promotedDecisionKey: string | undefined;
+  let promotedClassifierUsage:
+    | {
+        classification: Awaited<ReturnType<typeof classifySlackInteraction>>;
+        requestedModel: string | null;
+      }
+    | undefined;
+  if (!deterministicCommand && candidateTurn) {
+    const decisionKey = `decision:${msgKey}`;
+    if (!(await state.claim(decisionKey))) return;
+    const releaseClassifier = acquireCandidateClassifier(
+      `${turn.workspaceId}:${turn.channelId}`,
+    );
+    if (!releaseClassifier) {
+      await state.claim(evtKey);
+      await state.claim(msgKey);
+      return;
+    }
+    try {
+      const { classification, requestedModel } = await classifyCandidateTurn(
+        turn,
+        assignment,
+        platformEnv,
+      );
+      if (classification.intent.disposition === 'ignore') {
+        await recordInteractionClassifierUsage({
+          turn,
+          assignment,
+          classification,
+          requestedModel,
+          surface,
+          stores,
+          platformEnv,
+        });
+        await state.claim(evtKey);
+        await state.claim(msgKey);
+        return;
+      }
+      turn.interactionIntent = classification.intent;
+      promotedDecisionKey = decisionKey;
+      promotedClassifierUsage = { classification, requestedModel };
+
+      // Candidate classification deliberately did not create a frozen thread
+      // snapshot. Promotion now freezes the same effective assignment that the
+      // full agent will execute under.
+      if (surface === 'channel') {
+        assignment = await getOrCreateSnapshot(stores.snapshots, threadKey, () =>
+          resolveEffectiveSlackConfig(turn.workspaceId, turn.channelId, {
+            agents: stores.config,
+            assignments: stores.config,
+          }).then(async (config) => {
+            const modelCredential = await resolveModelCredentialAttribution(
+              config.model,
+              platformEnv,
+              stores.settings,
+              stores.usage,
+            );
+            return {
+              ...config,
+              ...(modelCredential ? { modelCredential } : {}),
+            };
+          }));
+      }
+    } finally {
+      releaseClassifier();
+    }
+  }
+
   if (admissionTruth.eligible) {
     let egressPolicy;
     try {
@@ -450,6 +616,7 @@ const handleSlackEvents: NonNullable<SlackChannelOptions['events']> = async ({ c
         // A selected canary must never fall back across authority lanes. The
         // transaction rolled its claims back, so Slack may safely redeliver.
         console.error('[chickpea] ledger Work admission failed:', sanitizeError(err));
+        if (promotedDecisionKey) await state.release(promotedDecisionKey);
         return;
       }
       // U3 is deliberately observational. Preserve the existing product path
@@ -469,6 +636,18 @@ const handleSlackEvents: NonNullable<SlackChannelOptions['events']> = async ({ c
     }
   }
 
+  if (promotedClassifierUsage) {
+    await recordInteractionClassifierUsage({
+      turn,
+      assignment,
+      ...promotedClassifierUsage,
+      surface,
+      stores,
+      platformEnv,
+      ...(canonicalRunId ? { runId: canonicalRunId } : {}),
+    });
+  }
+
   // f. The old HTTP self-call — and the Host-derived origin trust it forced,
   //    since Slack signatures don't cover Host — is gone: the agent prompt
   //    now dispatches in-process (see slack/agent-dispatch.ts) with the
@@ -482,6 +661,8 @@ const handleSlackEvents: NonNullable<SlackChannelOptions['events']> = async ({ c
   //    session-created-before-provider-call semantics. A failed turn leaves
   //    the thread registered (only the claims are released, for retry).
   if (!claimsHeldByCanonicalAdmission) await state.start(threadKey);
+  let marksActiveWork = turn.interactionIntent?.disposition === 'work';
+  if (marksActiveWork) await state.setActiveWork(threadKey, msgKey, true);
 
   // h. Run the turn past the fast events ack.
   //    - NODE runs it inline as a floating promise: node has no waitUntil
@@ -505,34 +686,40 @@ const handleSlackEvents: NonNullable<SlackChannelOptions['events']> = async ({ c
       // redelivery can re-drive, and stay silent.
       await state.release(evtKey);
       await state.release(msgKey);
+      if (promotedDecisionKey) await state.release(promotedDecisionKey);
+      if (marksActiveWork) await state.setActiveWork(threadKey, msgKey, false);
       console.error('[chickpea] enqueue turn failed:', enqueued.error.message);
     }
     return;
   }
   if (canonicalRunId && canonicalTurnJob) {
-    detach(
-      c,
-      wakeNodeTurnRelay(platformEnv).catch((err) => {
-        console.error('[chickpea] node turn wake failed:', sanitizeError(err));
-      }),
-    );
+    await wakeNodeTurnRelay(platformEnv).catch((err) => {
+      console.error('[chickpea] node turn wake failed:', sanitizeError(err));
+    });
     return;
   }
-  detach(
-    c,
-    runTurn(turn, assignment, platformEnv, {
+  await runTurn(turn, assignment, platformEnv, {
       turnId: msgKey,
       usageExecutionId: `exec:${msgKey}:1`,
+      onInteractionIntent: async (intent) => {
+        if (intent.disposition !== 'work') return;
+        marksActiveWork = true;
+        await state.setActiveWork(threadKey, msgKey, true);
+      },
+      onDelivered: async () => {
+        if (marksActiveWork) await state.setActiveWork(threadKey, msgKey, false);
+      },
     }).catch(async (err) => {
       // Release on a genuine delivery failure so a Slack retry can re-drive
       // the turn. A completed turn (including a delivered provider-failure
       // final) returns normally and keeps its claim, so it never re-runs.
       await state.release(evtKey);
       await state.release(msgKey);
+      if (promotedDecisionKey) await state.release(promotedDecisionKey);
+      if (marksActiveWork) await state.setActiveWork(threadKey, msgKey, false);
       console.error('[chickpea] turn failed:', sanitizeError(err));
-    }),
-  );
-};
+    });
+}
 
 async function handleMemberJoinedChannel(
   payload: SlackEventFixture,
@@ -589,6 +776,138 @@ async function handleMemberJoinedChannel(
     // throw into a 500, which is exactly what makes Slack redeliver the event.
     console.error('[chickpea] channel onboarding post failed:', sanitizeError(err));
   }
+}
+
+async function recordInteractionClassifierUsage(input: {
+  turn: NormalizedSlackTurn;
+  assignment: ResolvedAssignment;
+  classification: Awaited<ReturnType<typeof classifySlackInteraction>>;
+  requestedModel: string | null;
+  surface: AssignmentSurface;
+  stores: AppStores;
+  platformEnv: PlatformEnv | undefined;
+  runId?: string;
+}): Promise<void> {
+  if (!usageRuntimeRecordingEnabled(input.platformEnv)) return;
+  const recorder = new InteractionUsageRecorder({
+    operationId:
+      `classification:${input.turn.workspaceId}:${input.turn.channelId}:${input.turn.eventId}`,
+    executionId: `classification-exec:${input.turn.eventId}`,
+    startedAt: slackEventTimestampMs(input.turn.messageTs) ?? Date.now(),
+    workspaceId: input.turn.workspaceId,
+    channelId: input.turn.channelId,
+    channelLabel: input.surface === 'direct'
+      ? 'Direct message'
+      : input.assignment.channelLabel ?? input.turn.channelId,
+    conversationKind: input.surface === 'direct' ? 'direct_message' : 'named_channel',
+    profileId: input.assignment.agentId,
+    profileLabel: input.assignment.agent.name,
+    requestedModel: input.requestedModel,
+    credentialRefId: input.assignment.modelCredential?.credentialRefId ?? null,
+    credentialVersion: input.assignment.modelCredential?.version ?? null,
+    store: input.stores.usage,
+    ...(input.runId ? { runId: input.runId } : {}),
+    ...(input.platformEnv ? { platformEnv: input.platformEnv } : {}),
+  });
+  await recorder.admit();
+  const reported = input.classification.result?.reportedUsage;
+  const usage = reported &&
+    reported.inputTokens !== null &&
+    reported.outputTokens !== null &&
+    reported.totalTokens !== null
+    ? {
+        inputTokens: reported.inputTokens,
+        outputTokens: reported.outputTokens,
+        totalTokens: reported.totalTokens,
+      }
+    : null;
+  await recorder.recordTerminal({
+    status: input.classification.failed ? 'failed' : 'completed',
+    usage,
+    returnedModel: input.classification.result?.returnedModel ?? null,
+    unknownReason: input.classification.failed
+      ? 'provider_request_unknown'
+      : 'usage_not_reported',
+  });
+  await recorder.repairAfterTerminal();
+}
+
+async function classifyCandidateTurn(
+  turn: NormalizedSlackTurn,
+  assignment: ResolvedAssignment,
+  platformEnv: PlatformEnv | undefined,
+): Promise<{
+  classification: Awaited<ReturnType<typeof classifySlackInteraction>>;
+  requestedModel: string | null;
+}> {
+  const requestedModel = assignment.model ?? (() => {
+    try {
+      return resolveAgentModel(assignment.agent);
+    } catch {
+      return null;
+    }
+  })();
+  const context = await hydrateSlackContextViaWebClient(
+    await getClient(platformEnv),
+    turn,
+    { maxMessages: 12, maxPages: 2 },
+  );
+  const classification = await classifySlackInteraction({
+    workspaceId: turn.workspaceId,
+    channelId: turn.channelId,
+    eventId: turn.eventId,
+    text: turn.text,
+    source: turn.source,
+    guaranteed: false,
+    ...(turn.activeWorkAtAdmission === undefined
+      ? {}
+      : { activeWork: turn.activeWorkAtAdmission }),
+    profileInstructions:
+      'instructions' in assignment && typeof assignment.instructions === 'string'
+        ? assignment.instructions
+        : assignment.agent.instructions,
+    ...(assignment.channelPromptAddendum
+      ? { channelInstructions: assignment.channelPromptAddendum }
+      : {}),
+    requestedModel,
+    recentContext: context.messages.map((message) => `${message.userId}: ${message.text}`),
+  }, platformEnv);
+  return { classification, requestedModel };
+}
+
+async function resolveReactionTargetContext(
+  turn: NormalizedSlackTurn,
+  client: ReturnType<typeof createSlackWebClient>,
+): Promise<boolean> {
+  const targetTs = turn.reactionTargetTs;
+  if (!targetTs) return false;
+  try {
+    const result = await client.reactions.get({
+      channel: turn.channelId,
+      timestamp: targetTs,
+      full: true,
+    });
+    const message = result.message as
+      | { ts?: unknown; thread_ts?: unknown; text?: unknown }
+      | undefined;
+    const messageTs = typeof message?.ts === 'string' && message.ts
+      ? message.ts
+      : targetTs;
+    const threadTs = typeof message?.thread_ts === 'string' && message.thread_ts
+      ? message.thread_ts
+      : messageTs;
+    if (typeof message?.text !== 'string' || !message.text.trim()) return false;
+    turn.threadTs = threadTs;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function slackEventTimestampMs(value: string): number | null {
+  if (!/^\d+(?:\.\d+)?$/.test(value)) return null;
+  const milliseconds = Math.floor(Number(value) * 1_000);
+  return Number.isSafeInteger(milliseconds) && milliseconds >= 0 ? milliseconds : null;
 }
 
 // The turn's surface, from the normalizer's authoritative source/channel_type

@@ -26,6 +26,9 @@ test('a wake admitted during a Node drain starts a follow-up drain immediately',
   const state = {
     listPendingTurns: async () => [...jobs],
     recordTurnAttempt: async () => true,
+    recordInteractionIntent: async () => undefined,
+    recordSlackInteractionProgress: async () => undefined,
+    listPendingSlackInteractionCleanups: async () => [],
     markTurnDelivered: async (id: string) => {
       const index = jobs.findIndex((job) => job.id === id);
       if (index >= 0) jobs.splice(index, 1);
@@ -144,6 +147,72 @@ test('the Node relay drains a ledger Run once and tombstones its adapter job', a
   }
 });
 
+test('delivered Node turns repair a checklist and remove only their created acknowledgment', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-node-slack-cleanup-'));
+  const path = join(directory, 'state.sqlite');
+  const state = new SqliteSlackStateStore(path);
+  const work = new SqliteWorkStore(path);
+  try {
+    const slackTurn = {
+      ...turn(),
+      interactionIntent: {
+        disposition: 'work' as const,
+        reason: 'substantive_request' as const,
+        checklist: ['Verified artifact'],
+      },
+    };
+    const resolvedAssignment = assignment();
+    const admission = prepareSlackShadowAdmission({
+      turn: slackTurn,
+      assignment: resolvedAssignment,
+      sourceVisibility: 'public',
+      admittedAt: Date.now(),
+      executionAuthority: 'legacy',
+    });
+    const id = 'msg_node_cleanup';
+    await state.admitCanonical({
+      evtKey: 'evt_node_cleanup',
+      msgKey: id,
+      threadKey: 'thread_node_cleanup',
+      admission,
+      turnJob: {
+        id, evtKey: 'evt_node_cleanup', msgKey: id,
+        turn: slackTurn, assignment: resolvedAssignment,
+        runId: admission.run.id, executionAuthority: 'legacy',
+      },
+    });
+    await state.recordSlackInteractionProgress?.(id, {
+      acknowledgment: {
+        channelId: 'C_node', messageTs: '100.001', name: 'eyes', created: true,
+        cleanup: 'pending',
+      },
+      checklist: {
+        channelId: 'C_node', threadTs: '100.001', messageTs: '100.002',
+        cleanup: 'pending',
+      },
+    });
+    await state.markTurnDelivered?.(id);
+
+    const calls: string[] = [];
+    const client = {
+      chat: {
+        update: async () => { calls.push('chat.update'); return { ok: true }; },
+      },
+      reactions: {
+        remove: async () => { calls.push('reactions.remove'); return { ok: true }; },
+      },
+    } as unknown as WebClient;
+    await drainNodeTurnRelayOnce({ state, work, client });
+
+    assert.deepEqual(calls, ['chat.update', 'reactions.remove']);
+    assert.deepEqual(await state.listPendingSlackInteractionCleanups?.(), []);
+  } finally {
+    state.close();
+    work.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 function turn(): NormalizedSlackTurn {
   return {
     workspaceId: 'T_node', channelId: 'C_node', eventId: 'Ev_node',
@@ -171,5 +240,7 @@ function relayJob(suffix: string) {
     turn: { ...turn(), eventId: `Ev_${suffix}`, messageTs: `100.${suffix === 'first' ? '001' : '002'}` },
     assignment: assignment(),
     attempts: 0,
+    progress: {},
+    executionAuthority: 'legacy' as const,
   };
 }

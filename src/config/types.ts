@@ -117,6 +117,8 @@ export interface ChannelAssignment {
   enabled: boolean;
   channelLabel?: string;
   channelPromptAddendum?: string;
+  /** Live participation ceiling. Missing legacy values resolve to ambient. */
+  participationMode?: 'ambient' | 'mention_only';
 }
 
 export interface BotIdentityConfig {
@@ -139,6 +141,7 @@ export interface ResolvedAssignment {
   agentId: string;
   channelLabel?: string;
   channelPromptAddendum?: string;
+  participationMode?: 'ambient' | 'mention_only';
   agent: CustomAgentConfig;
   // Optional pre-resolved model label. Set only when the assignment is served
   // from a frozen thread snapshot; undefined means resolve from the agent via

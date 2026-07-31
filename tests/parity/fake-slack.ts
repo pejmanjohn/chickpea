@@ -102,6 +102,9 @@ export interface FakeSlackBehaviorConfig {
    * unset, a join of a known public channel succeeds and flips its membership.
    */
   conversationsJoinError?: string;
+  /** Force semantic reaction APIs to return a Slack platform error. */
+  reactionsAddError?: string;
+  reactionsRemoveError?: string;
 }
 
 export interface FakeSlackIdentityConfig {
@@ -211,6 +214,8 @@ export class FakeSlackBackend {
   private channels: FakeSlackChannel[];
   private conversationsListPageSize: number;
   private conversationsJoinError: string | undefined;
+  private reactionsAddError: string | undefined;
+  private reactionsRemoveError: string | undefined;
   private channelMembers: Record<string, string[]>;
   private workspaceUsers: FakeSlackUser[];
   private readonly repliesPages: RepliesPage[];
@@ -247,6 +252,8 @@ export class FakeSlackBackend {
     this.channels = slack.channels ?? [];
     this.conversationsListPageSize = slack.conversationsListPageSize ?? 100;
     this.conversationsJoinError = slack.conversationsJoinError;
+    this.reactionsAddError = slack.reactionsAddError;
+    this.reactionsRemoveError = slack.reactionsRemoveError;
     this.channelMembers = slack.channelMembers ?? {};
     this.workspaceUsers = slack.workspaceUsers ?? [];
     this.providerMode = config.provider?.mode ?? 'ok';
@@ -454,6 +461,12 @@ export class FakeSlackBackend {
       if (config.slack.conversationsJoinError !== undefined) {
         this.conversationsJoinError = config.slack.conversationsJoinError;
       }
+      if (config.slack.reactionsAddError !== undefined) {
+        this.reactionsAddError = config.slack.reactionsAddError;
+      }
+      if (config.slack.reactionsRemoveError !== undefined) {
+        this.reactionsRemoveError = config.slack.reactionsRemoveError;
+      }
       if (config.slack.channelMembers !== undefined) {
         this.channelMembers = config.slack.channelMembers;
       }
@@ -539,7 +552,7 @@ export class FakeSlackBackend {
         return providerAdmin;
       }
       if (isOpenAiCompletions) {
-        return this.openAiCompletionsResponse();
+        return this.openAiCompletionsResponse(body);
       }
       if (isOpenAiResponses) {
         return this.openAiResponsesResponse();
@@ -702,6 +715,18 @@ export class FakeSlackBackend {
           return { ok: false, error: 'internal_error' };
         }
         return { ok: true, ts: this.nextTs() };
+      case 'chat.update':
+        return { ok: true, channel: body.channel, ts: body.ts };
+      case 'reactions.add':
+        return this.reactionsAddError
+          ? { ok: false, error: this.reactionsAddError }
+          : { ok: true };
+      case 'reactions.remove':
+        return this.reactionsRemoveError
+          ? { ok: false, error: this.reactionsRemoveError }
+          : { ok: true };
+      case 'reactions.get':
+        return this.reactionTargetResponse(body);
       case 'chat.startStream':
         if (this.rejectStartStream) {
           return { ok: false, error: 'missing_scope' };
@@ -815,6 +840,32 @@ export class FakeSlackBackend {
     }
   }
 
+  private reactionTargetResponse(body: Record<string, unknown>): Record<string, unknown> {
+    const timestamp = String(body.timestamp ?? '');
+    const root = this.repliesPages[0]?.messages.find(isUnknownRecord);
+    const rootTs = typeof root?.ts === 'string' ? root.ts : undefined;
+    for (const page of this.repliesPages) {
+      const messages = page.messages.filter(isUnknownRecord);
+      const message = messages.find((candidate) => candidate.ts === timestamp);
+      if (message) {
+        return {
+          ok: true,
+          type: 'message',
+          channel: body.channel,
+          message: {
+            ...message,
+            ...(rootTs && timestamp !== rootTs ? { thread_ts: rootTs } : {}),
+          },
+        };
+      }
+    }
+    const history = this.historyMessages.filter(isUnknownRecord);
+    const message = history.find((candidate) => candidate.ts === timestamp);
+    return message
+      ? { ok: true, type: 'message', channel: body.channel, message }
+      : { ok: false, error: 'message_not_found' };
+  }
+
   // Cursor-paginated conversations.list over the configured channel fixture.
   // The cursor is simply the next offset encoded as a string — enough to drive
   // the proxy's multi-page merge deterministically.
@@ -866,7 +917,7 @@ export class FakeSlackBackend {
    * `stream: true`, so the reply is delivered as `text/event-stream` chunks
    * terminated by `data: [DONE]`.
    */
-  private openAiCompletionsResponse(): RouteResult {
+  private openAiCompletionsResponse(body?: Record<string, unknown>): RouteResult {
     if (this.providerMode === 'http_500') {
       return {
         status: 500,
@@ -881,7 +932,7 @@ export class FakeSlackBackend {
       };
     }
 
-    return this.openAiTextStream(this.replyText);
+    return this.openAiTextStream(interactionClassifierReply(body) ?? this.replyText);
   }
 
   /** OpenAI SSE stream carrying a single assistant text block. */
@@ -1067,7 +1118,14 @@ function openAiResponsesStreamBody(text: string): string {
 }
 
 export function isMarkdownPost(body: Record<string, unknown>): boolean {
-  return Array.isArray(body.blocks) && body.blocks.length > 0;
+  return Array.isArray(body.blocks) && body.blocks.length > 0 &&
+    !body.blocks.some((block) =>
+      isUnknownRecord(block) && block.block_id === 'chickpea_work_checklist'
+    );
+}
+
+function isUnknownRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 /** Raw Slack conversation object shape (subset the proxy reads). */
@@ -1098,6 +1156,35 @@ function postText(body: Record<string, unknown>): string {
     }
   }
   return String(body.text ?? '');
+}
+
+function interactionClassifierReply(body: Record<string, unknown> | undefined): string | null {
+  const serialized = JSON.stringify(body ?? {});
+  if (!serialized.includes('Classify one Slack interaction')) return null;
+  if (serialized.includes('top-level channel chatter')) {
+    return JSON.stringify({ disposition: 'ignore', reason: 'social_chatter' });
+  }
+  if (serialized.includes('PARITY_REACT_AGREEMENT')) {
+    return JSON.stringify({
+      disposition: 'react_only', reason: 'pure_ack', reaction: 'agreement', target: 'trigger',
+    });
+  }
+  if (serialized.includes('PARITY_WORK_REQUEST')) {
+    return JSON.stringify({
+      disposition: 'work', reason: 'substantive_request',
+      checklist: ['Result artifact', 'Verification result'],
+    });
+  }
+  if (serialized.includes('PARITY_AMBIENT_WORK')) {
+    return JSON.stringify({
+      disposition: 'work', reason: 'useful_ambient',
+      checklist: ['Ambient result artifact'],
+    });
+  }
+  if (serialized.includes('Reacted :bulb:')) {
+    return JSON.stringify({ disposition: 'reply', reason: 'useful_ambient' });
+  }
+  return JSON.stringify({ disposition: 'reply', reason: 'substantive_request' });
 }
 
 function hasText(value: unknown): boolean {

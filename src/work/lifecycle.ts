@@ -136,6 +136,8 @@ export class ShadowWorkLifecycle {
     safeFailureCode?: string;
     safeDisagreementCode?: string;
     flueSubmissionRef?: string;
+    /** Adapter-only outcomes such as a reaction response have no model call. */
+    modelInvoked?: boolean;
   }): Promise<void> {
     if (!this.executionCreated) return;
     if (input.outcome !== 'succeeded') this.terminalDisposition = 'failed';
@@ -143,7 +145,10 @@ export class ShadowWorkLifecycle {
       executionId: this.executionId,
       fencingToken: this.fencingToken,
       outcome: input.outcome,
-      modelInvocationStatus: input.outcome === 'not_submitted' ? 'not_invoked' : 'settled',
+      modelInvocationStatus:
+        input.outcome === 'not_submitted' || input.modelInvoked === false
+          ? 'not_invoked'
+          : 'settled',
       rawSettlementRef: opaqueId(
         'settlement',
         `${this.executionId}:${input.rawStatus}`,

@@ -71,6 +71,7 @@ type SlackBehaviorFixture = {
   allowDms: SlackBehaviorEntry;
   unassignedHint: SlackBehaviorEntry;
   welcomeOnJoin: SlackBehaviorEntry;
+  ambientParticipation: SlackBehaviorEntry;
 };
 type GithubStatusFixture = {
   mode: 'none' | 'app';
@@ -529,6 +530,7 @@ function runAdminPageHarness(
     allowDms: { value: true, source: 'default' },
     unassignedHint: { value: true, source: 'default' },
     welcomeOnJoin: { value: true, source: 'default' },
+    ambientParticipation: { value: true, source: 'default' },
   };
   let slackBehaviorGetFailures = options.slackBehaviorGetFailures ?? 0;
   const slackBehaviorPutError = options.slackBehaviorPutError;
@@ -2232,6 +2234,7 @@ test('Slack behavior writes serialize and environment-managed settings stay read
       allowDms: { value: false, source: 'env' },
       unassignedHint: { value: true, source: 'default' },
       welcomeOnJoin: { value: true, source: 'default' },
+      ambientParticipation: { value: true, source: 'default' },
     },
   });
   await flushAsync();

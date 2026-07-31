@@ -2,6 +2,7 @@ import { openStateDb, type NodeStateDb } from '../state/node-state-db.ts';
 import type { StateDb } from '../state/state-db.ts';
 import { WorkStoreLogic } from '../work/store.ts';
 import type { AdmitShadowRunInput, ShadowRunAdmission } from '../work/types.ts';
+import type { SlackInteractionProgressPatch } from '../config/state-rpc.ts';
 import {
   MAX_TURN_DRAIN_BATCH,
   TurnJobStoreLogic,
@@ -9,9 +10,10 @@ import {
 } from './turn-jobs.ts';
 import type { TurnJob } from './turn-job-types.ts';
 import type { SlackAgentExecutionContext } from './turn-job-types.ts';
-import { CLAIM_TTL_MS, THREAD_TTL_MS } from './state-limits.ts';
+import type { SlackInteractionIntent } from './interaction-intent.ts';
+import { ACTIVE_WORK_TTL_MS, CLAIM_TTL_MS, THREAD_TTL_MS } from './state-limits.ts';
 
-export { CLAIM_TTL_MS, THREAD_TTL_MS } from './state-limits.ts';
+export { ACTIVE_WORK_TTL_MS, CLAIM_TTL_MS, THREAD_TTL_MS } from './state-limits.ts';
 
 export interface SlackCanonicalAdmissionInput {
   evtKey: string;
@@ -55,6 +57,10 @@ export interface SlackThreadRegistry {
   start(key: string): Promise<void>;
   /** True if a mention/DM already started this thread. */
   has(key: string): Promise<boolean>;
+  getParticipation(key: string): Promise<'ambient' | 'mention_only'>;
+  setParticipation(key: string, mode: 'ambient' | 'mention_only'): Promise<void>;
+  isActiveWork(key: string): Promise<boolean>;
+  setActiveWork(key: string, generation: string, active: boolean): Promise<void>;
 }
 
 /** The combined claims + thread-registry surface the Slack channel consumes. */
@@ -70,6 +76,13 @@ export interface SlackStateStore extends SlackClaimStore, SlackThreadRegistry {
   listPendingTurns?(): Promise<PendingTurnJob[]>;
   getPendingTurnByRunId?(runId: string): Promise<PendingTurnJob | undefined>;
   recordTurnAttempt?(id: string, attempts: number): Promise<void>;
+  recordInteractionIntent?(id: string, intent: SlackInteractionIntent): Promise<void>;
+  recordSlackInteractionProgress?(
+    id: string,
+    patch: SlackInteractionProgressPatch,
+  ): Promise<void>;
+  listPendingSlackInteractionCleanups?(): Promise<PendingTurnJob[]>;
+  hasPendingSlackInteractionCleanup?(): Promise<boolean>;
   markTurnDelivered?(id: string): Promise<void>;
   markTurnError?(id: string): Promise<void>;
   discardTurn?(id: string): Promise<void>;
@@ -107,6 +120,12 @@ export class SlackStateLogic {
     db.exec(
       'CREATE TABLE IF NOT EXISTS slack_threads (key TEXT PRIMARY KEY, started_at INTEGER NOT NULL)',
     );
+    db.exec(
+      "CREATE TABLE IF NOT EXISTS slack_thread_participation (key TEXT PRIMARY KEY, mode TEXT NOT NULL, updated_at INTEGER NOT NULL)",
+    );
+    db.exec(
+      'CREATE TABLE IF NOT EXISTS slack_active_work (key TEXT NOT NULL, generation TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (key, generation))',
+    );
   }
 
   claim(key: string): boolean {
@@ -134,6 +153,50 @@ export class SlackStateLogic {
       this.now() - THREAD_TTL_MS,
     );
     return row !== undefined;
+  }
+
+  getParticipation(key: string): 'ambient' | 'mention_only' {
+    const row = this.db.get(
+      'SELECT mode FROM slack_thread_participation WHERE key = ? AND updated_at >= ?',
+      key,
+      this.now() - THREAD_TTL_MS,
+    );
+    return row?.mode === 'mention_only' ? 'mention_only' : 'ambient';
+  }
+
+  setParticipation(key: string, mode: 'ambient' | 'mention_only'): void {
+    this.db.run(
+      'INSERT OR REPLACE INTO slack_thread_participation (key, mode, updated_at) VALUES (?, ?, ?)',
+      key,
+      mode,
+      this.now(),
+    );
+  }
+
+  isActiveWork(key: string): boolean {
+    const row = this.db.get(
+      'SELECT updated_at FROM slack_active_work WHERE key = ? AND updated_at >= ?',
+      key,
+      this.now() - ACTIVE_WORK_TTL_MS,
+    );
+    return row !== undefined;
+  }
+
+  setActiveWork(key: string, generation: string, active: boolean): void {
+    if (!active) {
+      this.db.run(
+        'DELETE FROM slack_active_work WHERE key = ? AND generation = ?',
+        key,
+        generation,
+      );
+      return;
+    }
+    this.db.run(
+      'INSERT OR REPLACE INTO slack_active_work (key, generation, updated_at) VALUES (?, ?, ?)',
+      key,
+      generation,
+      this.now(),
+    );
   }
 
   admitCanonical(
@@ -166,6 +229,14 @@ export class SlackStateLogic {
   private purgeExpired(): void {
     this.db.run('DELETE FROM slack_claims WHERE claimed_at < ?', this.now() - CLAIM_TTL_MS);
     this.db.run('DELETE FROM slack_threads WHERE started_at < ?', this.now() - THREAD_TTL_MS);
+    this.db.run(
+      'DELETE FROM slack_thread_participation WHERE updated_at < ?',
+      this.now() - THREAD_TTL_MS,
+    );
+    this.db.run(
+      'DELETE FROM slack_active_work WHERE updated_at < ?',
+      this.now() - ACTIVE_WORK_TTL_MS,
+    );
   }
 }
 
@@ -206,6 +277,22 @@ export class SqliteSlackStateStore implements SlackStateStore {
     return this.logic.has(key);
   }
 
+  async getParticipation(key: string) {
+    return this.logic.getParticipation(key);
+  }
+
+  async setParticipation(key: string, mode: 'ambient' | 'mention_only') {
+    this.logic.setParticipation(key, mode);
+  }
+
+  async isActiveWork(key: string) {
+    return this.logic.isActiveWork(key);
+  }
+
+  async setActiveWork(key: string, generation: string, active: boolean) {
+    this.logic.setActiveWork(key, generation, active);
+  }
+
   async admitCanonical(input: SlackCanonicalAdmissionInput) {
     return this.logic.admitCanonical(input, this.work, this.turnJobs);
   }
@@ -228,6 +315,22 @@ export class SqliteSlackStateStore implements SlackStateStore {
 
   async recordTurnAttempt(id: string, attempts: number) {
     this.turnJobs.recordAttempt(id, attempts);
+  }
+
+  async recordInteractionIntent(id: string, intent: SlackInteractionIntent) {
+    this.turnJobs.recordInteractionIntent(id, intent);
+  }
+
+  async recordSlackInteractionProgress(id: string, patch: SlackInteractionProgressPatch) {
+    this.turnJobs.recordSlackInteractionProgress(id, patch);
+  }
+
+  async listPendingSlackInteractionCleanups() {
+    return this.turnJobs.listPendingSlackInteractionCleanups(MAX_TURN_DRAIN_BATCH);
+  }
+
+  async hasPendingSlackInteractionCleanup() {
+    return this.turnJobs.hasPendingSlackInteractionCleanup();
   }
 
   async markTurnDelivered(id: string) {

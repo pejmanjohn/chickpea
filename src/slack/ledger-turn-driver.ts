@@ -18,6 +18,9 @@ import { MAX_TURN_ATTEMPTS, type PendingTurnJob } from './turn-jobs.ts';
 import type { NormalizedSlackTurn } from './types.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
 import type { SlackAgentExecutionContext } from './turn-job-types.ts';
+import { slackThreadKey } from './thread-key.ts';
+import type { SlackInteractionIntent } from './interaction-intent.ts';
+import type { SlackInteractionProgressPatch } from '../config/state-rpc.ts';
 
 type MaybePromise<T> = T | Promise<T>;
 
@@ -27,6 +30,11 @@ export interface LedgerSlackTurnStore {
     input: SlackAgentExecutionContext,
   ): MaybePromise<SlackAgentExecutionContext>;
   recordAttempt(id: string, attempts: number): MaybePromise<void>;
+  recordInteractionIntent(id: string, intent: SlackInteractionIntent): MaybePromise<unknown>;
+  recordSlackInteractionProgress(
+    id: string,
+    patch: SlackInteractionProgressPatch,
+  ): MaybePromise<unknown>;
   markDelivered(id: string): MaybePromise<void>;
   markError(id: string): MaybePromise<void>;
 }
@@ -46,6 +54,7 @@ export interface LedgerSlackRunHandlerOptions {
   settingsStore?: SettingsStore;
   usageStore?: UsageStore;
   executeTurn?: LedgerSlackTurnExecutor;
+  setActiveWork?: (key: string, generation: string, active: boolean) => MaybePromise<void>;
   now?: () => number;
 }
 
@@ -65,9 +74,13 @@ export function createLedgerSlackRunHandler(
     }
     if (claim.binding.adapterKind !== 'slack') {
       await options.turns.markError(job.id);
+      await clearActiveWork(options, job);
       return { kind: 'recovery_required', reasonCode: 'ledger_adapter_unsupported' };
     }
     const attempt = job.attempts + 1;
+    if (!job.turn.interactionIntent && job.progress.interactionIntent) {
+      job.turn.interactionIntent = job.progress.interactionIntent;
+    }
     await options.turns.recordAttempt(job.id, attempt);
     const client = options.client ?? await getClient(options.platformEnv);
     if (claim.phase === 'delivery') {
@@ -98,7 +111,22 @@ export function createLedgerSlackRunHandler(
         workStore: options.work,
         ...(options.settingsStore ? { settingsStore: options.settingsStore } : {}),
         ...(options.usageStore ? { usageStore: options.usageStore } : {}),
-        onDelivered: () => options.turns.markDelivered(job.id),
+        onInteractionIntent: async (intent) => {
+          await options.turns.recordInteractionIntent(job.id, intent);
+          if (intent.disposition === 'work') {
+            await options.setActiveWork?.(slackThreadKey(job.turn), job.id, true);
+          }
+        },
+        ...(job.progress.slackInteraction
+          ? { interactionProgress: job.progress.slackInteraction }
+          : {}),
+        onInteractionProgress: async (patch) => {
+          await options.turns.recordSlackInteractionProgress(job.id, patch);
+        },
+        onDelivered: async () => {
+          await options.turns.markDelivered(job.id);
+          await clearActiveWork(options, job);
+        },
       });
     } catch {
       return classifyExecutionFailure(options, claim, job, attempt, now);
@@ -106,10 +134,12 @@ export function createLedgerSlackRunHandler(
     const run = await options.work.getRun(claim.run.id);
     if (run?.status === 'settled') {
       await options.turns.markDelivered(job.id);
+      await clearActiveWork(options, job);
       return { kind: 'completed' };
     }
     if (run?.status === 'recovery_required') {
       await options.turns.markError(job.id);
+      await clearActiveWork(options, job);
       return { kind: 'completed' };
     }
     return classifyExecutionFailure(options, claim, job, attempt, now);
@@ -137,6 +167,7 @@ async function deliverPersistedResponse(
     : undefined;
   if (!run || !rendered?.body) {
     await options.turns.markError(job.id);
+    await clearActiveWork(options, job);
     return { kind: 'recovery_required', reasonCode: 'ledger_render_missing' };
   }
   const attemptId = opaqueId(
@@ -164,6 +195,7 @@ async function deliverPersistedResponse(
       finalizedAt: now(),
     });
     await options.turns.markDelivered(job.id);
+    await clearActiveWork(options, job);
     return { kind: 'completed' };
   } catch (error) {
     const failure = error instanceof PersistedSlackDeliveryError
@@ -180,10 +212,12 @@ async function deliverPersistedResponse(
       });
     } catch {
       await options.turns.markError(job.id);
+      await clearActiveWork(options, job);
       return { kind: 'recovery_required', reasonCode: 'delivery_receipt_persist_unknown' };
     }
     if (failure.outcome === 'unknown') {
       await options.turns.markError(job.id);
+      await clearActiveWork(options, job);
       return { kind: 'completed' };
     }
     if (attempt >= MAX_TURN_ATTEMPTS) {
@@ -195,6 +229,7 @@ async function deliverPersistedResponse(
         settledAt: now(),
       });
       await options.turns.markError(job.id);
+      await clearActiveWork(options, job);
       return { kind: 'completed' };
     }
     return { kind: 'requeue', reasonCode: 'confirmed_delivery_failure' };
@@ -211,14 +246,17 @@ async function classifyExecutionFailure(
   const run = await options.work.getRun(claim.run.id);
   if (!run) {
     await options.turns.markError(job.id);
+    await clearActiveWork(options, job);
     return { kind: 'recovery_required', reasonCode: 'ledger_run_missing' };
   }
   if (run.status === 'settled') {
     await options.turns.markDelivered(job.id);
+    await clearActiveWork(options, job);
     return { kind: 'completed' };
   }
   if (run.status === 'recovery_required' || run.deliveryStatus === 'unknown') {
     await options.turns.markError(job.id);
+    await clearActiveWork(options, job);
     return { kind: 'completed' };
   }
   if (run.status === 'response_ready' && run.deliveryStatus === 'failed') {
@@ -231,6 +269,7 @@ async function classifyExecutionFailure(
         settledAt: now(),
       });
       await options.turns.markError(job.id);
+      await clearActiveWork(options, job);
       return { kind: 'completed' };
     }
     return { kind: 'requeue', reasonCode: 'confirmed_delivery_failure' };
@@ -244,11 +283,21 @@ async function classifyExecutionFailure(
         latest.modelInvocationStatus === 'not_invoked' || latest.outcome === 'not_submitted') {
       if (attempt >= MAX_TURN_ATTEMPTS) {
         await options.turns.markError(job.id);
+        await clearActiveWork(options, job);
         return { kind: 'recovery_required', reasonCode: 'ledger_turn_attempts_exhausted' };
       }
       return { kind: 'requeue', reasonCode: 'ledger_turn_failed_before_submit' };
     }
   }
   await options.turns.markError(job.id);
+  await clearActiveWork(options, job);
   return { kind: 'recovery_required', reasonCode: 'ledger_turn_outcome_ambiguous' };
+}
+
+async function clearActiveWork(
+  options: LedgerSlackRunHandlerOptions,
+  job: PendingTurnJob,
+): Promise<void> {
+  if (job.turn.interactionIntent?.disposition !== 'work') return;
+  await options.setActiveWork?.(slackThreadKey(job.turn), job.id, false);
 }

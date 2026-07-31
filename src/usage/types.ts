@@ -2,7 +2,11 @@ import type { AuditEvent } from '../audit/types.ts';
 
 export const USAGE_TELEMETRY_SCHEMA_VERSION = 1;
 
-export const USAGE_OPERATION_KINDS = ['interactive_turn', 'routine_run'] as const;
+export const USAGE_OPERATION_KINDS = [
+  'interactive_turn',
+  'routine_run',
+  'interaction_classification',
+] as const;
 export type UsageOperationKind = (typeof USAGE_OPERATION_KINDS)[number];
 
 export const USAGE_OPERATION_STATUSES = [

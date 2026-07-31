@@ -178,15 +178,16 @@ test('a plain_text final with a footer keeps its content literal (not markdown-p
   assert.equal(footer?.type, 'context');
 });
 
-test('channel onboarding discloses mention-only, bounded context, no monitoring, and a Configure link', () => {
+test('channel onboarding discloses mention guarantee, ambient judgment, bounded retention, and Configure', () => {
   const linked = renderChannelOnboarding({
     botUserId: 'U_BOT',
     channelId: 'C_ENG',
     publicUrl: 'https://demo.example',
   });
-  assert.match(linked, /Mention <@U_BOT> to start a thread\./);
-  assert.match(linked, /bounded recent context only when asked/);
-  assert.match(linked, /no passive monitoring/i);
+  assert.match(linked, /Mention <@U_BOT> to guarantee a response\./);
+  assert.match(linked, /join an unmentioned conversation/);
+  assert.match(linked, /does not build a persistent workspace-message index/);
+  assert.match(linked, /human replies continue without another mention/);
   assert.match(linked, /<https:\/\/demo\.example\/admin\?channel=C_ENG\|Configure> this channel's profile/);
 
   const unlinked = renderChannelOnboarding({ botUserId: 'U_BOT', channelId: 'C_ENG', publicUrl: undefined });

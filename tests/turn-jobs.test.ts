@@ -80,6 +80,43 @@ test('markDelivered and markError tombstone a job out of the pending scan', () =
   assert.deepEqual(store.listPending(), []);
 });
 
+test('delivered work keeps only retryable Slack cleanup coordinates', () => {
+  const store = newStore();
+  store.enqueue(job('work'));
+  store.recordInteractionIntent('work', {
+    disposition: 'work',
+    reason: 'substantive_request',
+    checklist: ['Inspect the artifact'],
+  });
+  store.recordSlackInteractionProgress('work', {
+    acknowledgment: {
+      channelId: 'C1', messageTs: '1000.0001', name: 'eyes', created: true,
+      cleanup: 'pending',
+    },
+  });
+  store.recordSlackInteractionProgress('work', {
+    checklist: {
+      channelId: 'C1', threadTs: '1000.0001', messageTs: '1000.0002',
+      cleanup: 'pending',
+    },
+  });
+
+  store.markDelivered('work');
+  const cleanup = store.listPendingSlackInteractionCleanups();
+  assert.equal(cleanup.length, 1);
+  assert.equal(cleanup[0]?.progress.slackInteraction?.checklist?.terminal, 'success');
+  assert.deepEqual(cleanup[0]?.progress.slackInteraction?.acknowledgment, {
+    channelId: 'C1', messageTs: '1000.0001', name: 'eyes', created: true,
+    cleanup: 'pending',
+  });
+
+  store.recordSlackInteractionProgress('work', {
+    acknowledgment: { ...cleanup[0]!.progress.slackInteraction!.acknowledgment!, cleanup: 'done' },
+    checklist: { ...cleanup[0]!.progress.slackInteraction!.checklist!, cleanup: 'done' },
+  });
+  assert.equal(store.hasPendingSlackInteractionCleanup(), false);
+});
+
 test('recordAttempt advances the counter the alarm caps on', () => {
   const store = newStore();
   store.enqueue(job('a'));
