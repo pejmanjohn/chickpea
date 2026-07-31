@@ -185,14 +185,110 @@ export async function classifySlackInteraction(
   try {
     const response = await withTimeout(prompt(context, env), timeoutMs);
     const raw = typeof response === 'string' ? response : response.text;
+    const parsed = parseSlackInteractionIntent(raw, { guaranteed: context.guaranteed });
     return {
-      intent: parseSlackInteractionIntent(raw, { guaranteed: context.guaranteed }),
+      intent: applyHighConfidenceInteractionRules(context, parsed),
       ...(typeof response === 'string' ? {} : { result: response }),
       failed: false,
     };
   } catch {
     return { intent: fallbackIntent(context.guaranteed), failed: true };
   }
+}
+
+/**
+ * Keep the model's contextual judgment for the broad middle, but make the two
+ * low-ambiguity edges deterministic. Small classifier models otherwise tend
+ * to turn a bare acknowledgment into prose and an explicit multi-step request
+ * into an ordinary reply, defeating the exact low-noise/progress contract the
+ * classification exists to provide.
+ */
+function applyHighConfidenceInteractionRules(
+  context: SlackInteractionIntentContext,
+  classified: SlackInteractionIntent,
+): SlackInteractionIntent {
+  const text = normalizedInteractionText(context.text);
+  if (context.guaranteed) {
+    const acknowledgment = obviousAcknowledgment(text, Boolean(context.activeWork));
+    if (acknowledgment) return acknowledgment;
+  }
+  if (classified.disposition !== 'work') {
+    const checklist = obviousWorkChecklist(text);
+    if (checklist) {
+      return {
+        disposition: 'work',
+        reason: context.guaranteed ? 'substantive_request' : 'useful_ambient',
+        checklist,
+      };
+    }
+  }
+  return classified;
+}
+
+function normalizedInteractionText(text: string): string {
+  return text
+    .replace(/^\s*(?:<@[A-Z0-9_]+>\s*)+/i, '')
+    .replace(/^\s*[A-Z0-9]+(?:-[A-Z0-9]+)+(?:\s*[:—-]\s*|\s+)/, '')
+    .trim();
+}
+
+function obviousAcknowledgment(
+  text: string,
+  activeWork: boolean,
+): Extract<SlackInteractionIntent, { disposition: 'react_only' }> | null {
+  const acknowledgment = text.toLowerCase().replace(/[.!]+$/g, '').trim();
+  let reaction: SemanticReaction | undefined;
+  if (
+    /^(?:thanks?|thank you)(?:\s+(?:so|very)\s+much)?(?:\s*,?\s*(?:agreed|got it|sounds good|perfect|great|works for me))?$/.test(
+      acknowledgment,
+    )
+  ) {
+    reaction = 'appreciation';
+  } else if (
+    /^(?:agreed|sounds good|works for me|sgtm|yes|yep|yeah|exactly|perfect|great|ok|okay|\+1)$/.test(
+      acknowledgment,
+    )
+  ) {
+    reaction = 'agreement';
+  } else if (/^(?:done|confirmed|fixed|complete|completed)$/.test(acknowledgment)) {
+    reaction = 'done';
+  } else if (/^(?:seen|noted|got it)$/.test(acknowledgment)) {
+    reaction = 'seen';
+  }
+  if (!reaction) return null;
+  if (activeWork) {
+    return {
+      disposition: 'react_only',
+      reason: 'midwork_ack',
+      reaction: 'midwork_seen',
+      target: 'trigger',
+    };
+  }
+  return { disposition: 'react_only', reason: 'pure_ack', reaction, target: 'trigger' };
+}
+
+const OBVIOUS_WORK_VERBS = [
+  'investigate', 'search', 'research', 'build', 'implement', 'debug', 'fix',
+  'change', 'update', 'find', 'review', 'analy[sz]e', 'compare', 'audit',
+  'deploy', 'test', 'verify', 'trace', 'diagnose', 'refactor', 'migrate',
+];
+const OBVIOUS_WORK_REQUEST = new RegExp(
+  `^(?:(?:(?:please|kindly)\\s+)|(?:(?:can|could|would|will)\\s+you\\s+(?:please\\s+)?)|(?:i\\s+(?:need|want)\\s+you\\s+to\\s+))?(${OBVIOUS_WORK_VERBS.join('|')})\\b`,
+  'i',
+);
+
+function obviousWorkChecklist(text: string): string[] | null {
+  const match = OBVIOUS_WORK_REQUEST.exec(text);
+  const verb = match?.[1]?.toLowerCase();
+  if (!verb) return null;
+  if (['build', 'implement', 'fix', 'change', 'update', 'create', 'refactor', 'migrate'].includes(verb)) {
+    return ['Requested change', 'Verification result'];
+  }
+  if (verb === 'deploy') return ['Deployment result', 'Live verification'];
+  if (['review', 'analyze', 'analyse', 'compare', 'audit'].includes(verb)) {
+    return ['Findings', 'Supporting evidence'];
+  }
+  return ['Investigation result', 'Supporting evidence'];
 }
 
 export type InteractionIntentPrompt = (

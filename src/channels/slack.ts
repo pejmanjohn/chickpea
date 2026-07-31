@@ -464,6 +464,9 @@ async function processSlackEvent(
     return;
   }
   if (candidateTurn && !admissionTruth.eligible) {
+    console.info(
+      `[chickpea] Slack candidate denied: ${admissionTruth.reason} (${turn.source})`,
+    );
     await state.claim(evtKey);
     await state.claim(msgKey);
     return;
