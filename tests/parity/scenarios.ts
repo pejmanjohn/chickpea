@@ -149,7 +149,7 @@ export const scenarios: Scenario[] = [
   },
   {
     id: 'S03',
-    title: 'mention full turn delivers one final, sets then clears status',
+    title: 'mention full turn delivers one final, sets then clears generic liveness',
     config: demoChannelConfig(),
     async run(instance) {
       const response = await instance.postEvent(appMention());
@@ -172,16 +172,7 @@ export const scenarios: Scenario[] = [
         .map((entry) => String(entry.body.status ?? '').trim())
         .filter(Boolean);
       const distinctStatusTexts = [...new Set(nonEmptyStatusTexts)];
-      assert.ok(distinctStatusTexts.length >= 3, 'expected at least three distinct status texts');
-      assert.match(distinctStatusTexts[0] ?? '', /reading the thread/);
-      assert.ok(
-        distinctStatusTexts.some((text) => /using \d+ messages? of .+ context/.test(text)),
-        'expected one status to include the hydrated message count',
-      );
-      assert.ok(
-        distinctStatusTexts.some((text) => text.includes('local-stub/parity-stub-1')),
-        'expected one status to name the resolved model id',
-      );
+      assert.deepEqual(distinctStatusTexts, ['is thinking...']);
       const lastStatus = statuses.at(-1);
       assert.ok(lastStatus);
       assert.equal(String(lastStatus.body.status), '');

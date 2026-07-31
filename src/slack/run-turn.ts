@@ -303,6 +303,7 @@ export async function runTurn(
   const statusGeneration = options.turnId ?? `msg:${turn.channelId}:${turn.messageTs}`;
   const statusTurn = registerSlackStatusTurn(agentConversationKey, presenter, {
     generation: statusGeneration,
+    allowObservedStatuses: false,
   });
   const closeAndDrainStatus = async (): Promise<void> => {
     // Close the sink first. Agent observations are relayed best-effort from a
@@ -518,7 +519,7 @@ export async function runTurn(
         workChecklistHeartbeat.unref?.();
       }
     }
-    const statusSet = await statusTurn.setStatus(readingThreadStatus());
+    const statusSet = await statusTurn.setStatus(thinkingStatus());
     if (!statusSet && !workChecklistTs) {
       await presenter.postProgress(`${assignment.agent.name} is reading the thread.`);
     }
@@ -529,7 +530,6 @@ export async function runTurn(
       hydratedContext,
       preparedMemory?.visibilityBarrierAt ?? null,
     );
-    await statusTurn.setStatus(hydratedContextStatus(context));
     const prompt = assembleSlackPrompt(turn, context, {
       ...(preparedMemory?.promptBlock ? { memoryBlock: preparedMemory.promptBlock } : {}),
       memorySelected: (preparedMemory?.selection?.entries.length ?? 0) > 0,
@@ -551,9 +551,6 @@ export async function runTurn(
     // durable agent's own resolution fail, so the prompt's catch below still
     // delivers a sanitized failure final (not silence + a Slack
     // retry loop from the claims being released on an uncaught throw).
-    if (resolvedModel) {
-      await statusTurn.setStatus(modelStatus(resolvedModel));
-    }
     let text: string;
     let agentResult: AgentDispatchResult | undefined;
     if (options.replayText !== undefined) {
@@ -704,6 +701,8 @@ async function recordExplicitInteractionClassifierUsage(input: {
   const enabled = input.options.usageRecordingEnabled ??
     usageRuntimeRecordingEnabled(input.platformEnv);
   if (!enabled) return;
+  // Deterministic edge rules invoke no provider and therefore create no usage.
+  if (!input.classification.result && !input.classification.failed) return;
   const direct = input.turn.source === 'dm_message' ||
     input.turn.channelType === 'im' ||
     input.turn.channelType === 'app_home' ||
@@ -927,22 +926,8 @@ function tryResolveAgentModel(agent: Parameters<typeof resolveAgentModel>[0]): s
   }
 }
 
-function readingThreadStatus(): SlackStatusUpdate {
-  return { text: 'is reading the thread' };
-}
-
-function hydratedContextStatus(context: SlackTurnContext): SlackStatusUpdate {
-  const count = context.messages.length;
-  const noun = count === 1 ? 'message' : 'messages';
-  return {
-    text: `is using ${count} ${noun} of ${context.mode} context`,
-  };
-}
-
-function modelStatus(modelId: string): SlackStatusUpdate {
-  return {
-    text: `is using ${modelId}`,
-  };
+function thinkingStatus(): SlackStatusUpdate {
+  return { text: 'is thinking...' };
 }
 
 export function applyVisibilityBarrier(

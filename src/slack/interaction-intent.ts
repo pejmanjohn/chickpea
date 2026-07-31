@@ -182,6 +182,10 @@ export async function classifySlackInteraction(
   prompt: InteractionIntentPrompt = promptSlackInteractionIntentAgent,
   timeoutMs = DEFAULT_INTERACTION_TIMEOUT_MS,
 ): Promise<SlackInteractionClassification> {
+  const deterministic = highConfidenceInteractionIntent(context);
+  if (deterministic) {
+    return { intent: deterministic, failed: false };
+  }
   try {
     const response = await withTimeout(prompt(context, env), timeoutMs);
     const raw = typeof response === 'string' ? response : response.text;
@@ -213,22 +217,26 @@ function applyHighConfidenceInteractionRules(
   context: SlackInteractionIntentContext,
   classified: SlackInteractionIntent,
 ): SlackInteractionIntent {
+  return highConfidenceInteractionIntent(context) ?? classified;
+}
+
+function highConfidenceInteractionIntent(
+  context: SlackInteractionIntentContext,
+): SlackInteractionIntent | null {
   const text = normalizedInteractionText(context.text);
   if (context.guaranteed) {
     const acknowledgment = obviousAcknowledgment(text, Boolean(context.activeWork));
     if (acknowledgment) return acknowledgment;
   }
-  if (classified.disposition !== 'work') {
-    const checklist = obviousWorkChecklist(text);
-    if (checklist) {
-      return {
-        disposition: 'work',
-        reason: context.guaranteed ? 'substantive_request' : 'useful_ambient',
-        checklist,
-      };
-    }
+  const checklist = obviousWorkChecklist(text);
+  if (checklist) {
+    return {
+      disposition: 'work',
+      reason: context.guaranteed ? 'substantive_request' : 'useful_ambient',
+      checklist,
+    };
   }
-  return classified;
+  return null;
 }
 
 function normalizedInteractionText(text: string): string {

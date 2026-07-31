@@ -140,16 +140,21 @@ test('classifier failures use quiet ambient and written guaranteed fallbacks', a
 });
 
 test('high-confidence acknowledgments stay reaction-only even when a small model chooses prose', async () => {
+  let promptCalls = 0;
   assert.deepEqual(
     (await classifySlackInteraction(
       { ...baseContext, text: '<@U_BOT> Thanks, agreed.' },
       undefined,
-      async () => JSON.stringify({ disposition: 'reply', reason: 'other_addressed' }),
+      async () => {
+        promptCalls += 1;
+        return JSON.stringify({ disposition: 'reply', reason: 'other_addressed' });
+      },
     )).intent,
     {
       disposition: 'react_only', reason: 'pure_ack', reaction: 'appreciation', target: 'trigger',
     },
   );
+  assert.equal(promptCalls, 0);
   assert.deepEqual(
     (await classifySlackInteraction(
       { ...baseContext, text: '<@U_BOT> got it', activeWork: true },
@@ -163,6 +168,7 @@ test('high-confidence acknowledgments stay reaction-only even when a small model
 });
 
 test('high-confidence explicit work requests cannot collapse into ordinary replies', async () => {
+  let promptCalls = 0;
   assert.deepEqual(
     (await classifySlackInteraction(
       {
@@ -170,13 +176,17 @@ test('high-confidence explicit work requests cannot collapse into ordinary repli
         text: '<@U_BOT> LIVE-WORK-0731 Investigate the last two results and compare their evidence.',
       },
       undefined,
-      async () => JSON.stringify({ disposition: 'reply', reason: 'substantive_request' }),
+      async () => {
+        promptCalls += 1;
+        return JSON.stringify({ disposition: 'reply', reason: 'substantive_request' });
+      },
     )).intent,
     {
       disposition: 'work', reason: 'substantive_request',
       checklist: ['Investigation result', 'Supporting evidence'],
     },
   );
+  assert.equal(promptCalls, 0);
   assert.deepEqual(
     (await classifySlackInteraction(
       {

@@ -19,6 +19,8 @@ export interface SlackStatusTurnOptions {
    * The override exists for deterministic focused tests.
    */
   observedMinIntervalMs?: number;
+  /** Keep the native Slack line as generic turn-liveness when false. */
+  allowObservedStatuses?: boolean;
 }
 
 interface QueuedStatusWrite {
@@ -43,6 +45,7 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
     private readonly generation: string,
     private readonly presenter: StatusPresenter,
     private readonly observedMinIntervalMs: number,
+    private readonly allowObservedStatuses: boolean,
   ) {}
 
   setStatus(update: SlackStatusUpdate): Promise<boolean> {
@@ -50,6 +53,7 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
   }
 
   setObservedStatus(update: SlackStatusUpdate): Promise<boolean> {
+    if (!this.allowObservedStatuses) return Promise.resolve(true);
     return this.enqueue(update, true);
   }
 
@@ -209,6 +213,7 @@ export function registerSlackStatusTurn(
     options.generation,
     presenter,
     options.observedMinIntervalMs ?? DEFAULT_OBSERVED_STATUS_MIN_INTERVAL_MS,
+    options.allowObservedStatuses ?? true,
   );
   const turns = activeSlackStatusTurns.get(instanceId) ?? new Set<ActiveSlackStatusTurn>();
   turns.add(turn);

@@ -792,6 +792,8 @@ async function recordInteractionClassifierUsage(input: {
   runId?: string;
 }): Promise<void> {
   if (!usageRuntimeRecordingEnabled(input.platformEnv)) return;
+  // Deterministic edge rules invoke no provider and therefore create no usage.
+  if (!input.classification.result && !input.classification.failed) return;
   const recorder = new InteractionUsageRecorder({
     operationId:
       `classification:${input.turn.workspaceId}:${input.turn.channelId}:${input.turn.eventId}`,

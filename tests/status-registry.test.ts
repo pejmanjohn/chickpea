@@ -108,6 +108,26 @@ test('setStatus on a closed turn resolves false without calling the presenter', 
   assert.deepEqual(presenter.statuses, []);
 });
 
+test('generic-liveness turns consume observed detail without replacing the native status', async () => {
+  const presenter = recordingPresenter();
+  const turn = registerSlackStatusTurn('generic-liveness-thread', presenter, {
+    generation: GENERATION_A,
+    allowObservedStatuses: false,
+  });
+  await turn.setStatus({ text: 'is thinking...' });
+  assert.equal(
+    setObservedSlackStatus(
+      'generic-liveness-thread',
+      GENERATION_A,
+      { text: 'is searching the workspace' },
+    ),
+    true,
+  );
+  await turn.drain();
+  assert.deepEqual(presenter.statuses, ['is thinking...']);
+  turn.close();
+});
+
 test('rapid distinct updates coalesce to the newest status behind an in-flight write', async () => {
   const calls: string[] = [];
   const firstWrite = Promise.withResolvers<boolean>();
