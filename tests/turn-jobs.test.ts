@@ -239,6 +239,29 @@ test('legacy and ledger authority lanes never drain each other', () => {
   assert.equal(store.hasPending('ledger'), true);
 });
 
+test('runtime drain counts separate turn authorities and pending Slack cleanup', () => {
+  const store = newStore();
+  store.enqueue(job('legacy'));
+  store.enqueue({ ...job('ledger'), executionAuthority: 'ledger', runId: 'run_ledger' });
+  store.enqueue(job('cleanup'));
+  store.recordSlackInteractionProgress('cleanup', {
+    acknowledgment: {
+      channelId: 'C1',
+      messageTs: '1000.0001',
+      name: 'eyes',
+      created: true,
+      cleanup: 'pending',
+    },
+  });
+  store.markDelivered('cleanup');
+
+  assert.deepEqual(store.runtimeDrainCounts(), {
+    pendingLegacyTurnJobs: 1,
+    pendingLedgerTurnJobs: 1,
+    pendingSlackInteractionCleanups: 1,
+  });
+});
+
 test('opaque Flue identities resolve through adapter-owned Slack execution context', () => {
   const store = newStore(() => 1_800_000_000_000);
   const context = {

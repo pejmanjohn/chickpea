@@ -6,6 +6,7 @@ import type {
 import type { SlackAgentExecutionContext, TurnJob } from './turn-job-types.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
 import type { StateDb } from '../state/state-db.ts';
+import type { SlackRuntimeDrainCounts } from '../config/state-rpc.ts';
 import type { RunExecutionAuthority } from '../work/types.ts';
 import { CLAIM_TTL_MS } from './state-limits.ts';
 import type { NormalizedSlackTurn } from './types.ts';
@@ -223,6 +224,26 @@ export class TurnJobStoreLogic {
       'SELECT 1 AS pending FROM turn_jobs WHERE delivered = 0 AND execution_authority = ? LIMIT 1',
       executionAuthority,
     ) !== undefined;
+  }
+
+  runtimeDrainCounts(): SlackRuntimeDrainCounts {
+    const pending = (executionAuthority: RunExecutionAuthority): number => Number(
+      this.db.get(
+        `SELECT COUNT(*) AS count FROM turn_jobs
+         WHERE delivered = 0 AND execution_authority = ?`,
+        executionAuthority,
+      )?.count ?? 0,
+    );
+    return {
+      pendingLegacyTurnJobs: pending('legacy'),
+      pendingLedgerTurnJobs: pending('ledger'),
+      pendingSlackInteractionCleanups: Number(
+        this.db.get(
+          `SELECT COUNT(*) AS count FROM turn_jobs
+           WHERE delivered = 1 AND progress_json LIKE '%"cleanup":"pending"%'`,
+        )?.count ?? 0,
+      ),
+    };
   }
 
   /** Record that an attempt is being made (before running the turn). */

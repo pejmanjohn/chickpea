@@ -55,6 +55,31 @@ export interface StateRpcError {
 
 export type StateRpcResult<T> = { ok: true; value: T } | { ok: false; error: StateRpcError };
 
+export interface SlackRuntimeDrainCounts {
+  pendingLegacyTurnJobs: number;
+  pendingLedgerTurnJobs: number;
+  pendingSlackInteractionCleanups: number;
+}
+
+export type RuntimeDrainCategories = SlackRuntimeDrainCounts & {
+  executingRuns: number;
+  admittingOrRunningRoutineOccurrences: number;
+};
+
+export interface RuntimeDrainStatus {
+  drained: boolean;
+  categories: RuntimeDrainCategories;
+}
+
+export function buildRuntimeDrainStatus(
+  categories: RuntimeDrainCategories,
+): RuntimeDrainStatus {
+  return {
+    drained: Object.values(categories).every((count) => count === 0),
+    categories,
+  };
+}
+
 /**
  * A queued Slack turn, handed from the events handler to the state Durable
  * Object so its `alarm()` can run the turn AFTER the events ack — the Cloudflare
@@ -194,6 +219,7 @@ export interface TagStateRpc {
   usageExecute(request: UsageRpcRequest): Promise<StateRpcResult<UsageRpcResponse>>;
   // -- canonical Work ledger ----------------------------------------------
   workExecute(request: WorkRpcRequest): Promise<StateRpcResult<WorkRpcResponse>>;
+  runtimeDrainStatus(): Promise<StateRpcResult<RuntimeDrainStatus>>;
   maintainWork(at: number): Promise<StateRpcResult<null>>;
   // -- turn relay (Cloudflare turn-horizon fix) ----------------------------
   /**

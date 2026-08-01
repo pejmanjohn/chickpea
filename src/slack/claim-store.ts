@@ -2,7 +2,10 @@ import { openStateDb, type NodeStateDb } from '../state/node-state-db.ts';
 import type { StateDb } from '../state/state-db.ts';
 import { WorkStoreLogic } from '../work/store.ts';
 import type { AdmitShadowRunInput, ShadowRunAdmission } from '../work/types.ts';
-import type { SlackInteractionProgressPatch } from '../config/state-rpc.ts';
+import type {
+  SlackInteractionProgressPatch,
+  SlackRuntimeDrainCounts,
+} from '../config/state-rpc.ts';
 import {
   MAX_TURN_DRAIN_BATCH,
   TurnJobStoreLogic,
@@ -72,6 +75,7 @@ export interface SlackStateStore extends SlackClaimStore, SlackThreadRegistry {
   getAgentExecutionContext(
     continuityKey: string,
   ): Promise<SlackAgentExecutionContext | undefined>;
+  runtimeDrainCounts(): Promise<SlackRuntimeDrainCounts>;
   /** Node-only durable legacy relay operations; Cloudflare owns these in its DO alarm. */
   listPendingTurns?(): Promise<PendingTurnJob[]>;
   getPendingTurnByRunId?(runId: string): Promise<PendingTurnJob | undefined>;
@@ -303,6 +307,10 @@ export class SqliteSlackStateStore implements SlackStateStore {
 
   async getAgentExecutionContext(continuityKey: string) {
     return this.turnJobs.getAgentExecutionContext(continuityKey);
+  }
+
+  async runtimeDrainCounts() {
+    return this.turnJobs.runtimeDrainCounts();
   }
 
   async listPendingTurns() {

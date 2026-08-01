@@ -418,6 +418,7 @@ export interface RoutineStore {
   createOccurrence(input: CreateRoutineOccurrenceInput): Promise<RoutineRun>;
   getRun(occurrenceId: string): Promise<RoutineRun | undefined>;
   listRuns(filter?: RoutineRunFilter): Promise<RoutineRun[]>;
+  countAdmittingOrRunningOccurrences(): Promise<number>;
   claimDueSchedules(input: ClaimDueRoutinesInput): Promise<RoutineDueClaimBatch>;
   startAdmissionAttempt(input: StartRoutineAdmissionInput): Promise<RoutineAdmissionAttempt>;
   recordAdmissionReceipt(
@@ -477,6 +478,7 @@ export type RoutineRpcRequest =
   | { kind: 'claim_delivery'; input: ClaimRoutineDeliveryInput }
   | { kind: 'record_delivery'; input: RecordRoutineDeliveryInput }
   | { kind: 'list_admissions'; occurrenceId: string }
+  | { kind: 'count_admitting_or_running_occurrences' }
   | { kind: 'list_audit_events'; filter: AuditEventFilter };
 
 export type RoutineRpcResponse =
@@ -494,5 +496,6 @@ export type RoutineRpcResponse =
   | { kind: 'delivery_claim'; outcome: 'claimed' | 'superseded' }
   | { kind: 'boolean'; value: boolean }
   | { kind: 'purged'; count: number }
+  | { kind: 'count'; count: number }
   | { kind: 'maintenance'; result: RoutineMaintenanceResult }
   | { kind: 'audit_events'; events: AuditEvent[] };

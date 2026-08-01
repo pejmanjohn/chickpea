@@ -151,8 +151,10 @@ import {
   getUsageStore,
   getWorkStore,
   isCloudflareTarget,
+  readRuntimeDrainStatus,
   type PlatformEnv,
 } from '../config/state-backend.ts';
+import type { RuntimeDrainStatus } from '../config/state-rpc.ts';
 import type { ConfigStore } from '../config/store.ts';
 import type { MemoryStateStore } from '../memory/types.ts';
 import type { RoutineStore } from '../routines/types.ts';
@@ -224,6 +226,7 @@ interface AdminRoutesOptions {
   routines?: RoutineStore | undefined;
   usage?: UsageStore | undefined;
   work?: WorkStore | undefined;
+  runtimeDrain?: ((env?: PlatformEnv) => Promise<RuntimeDrainStatus>) | undefined;
   usageAdminUi?: boolean | undefined;
   adminToken?: string | undefined;
   knownProviders?: ReadonlySet<string> | undefined;
@@ -752,6 +755,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     options.usage ?? getUsageStore(c.env as PlatformEnv | undefined);
   const work = (c: Context) =>
     options.work ?? getWorkStore(c.env as PlatformEnv | undefined);
+  const runtimeDrain = options.runtimeDrain ?? readRuntimeDrainStatus;
   const usageAdminUi = (c: Context): boolean => {
     if (options.usageAdminUi !== undefined) return options.usageAdminUi;
     const platformValue = (c.env as PlatformEnv | undefined)?.USAGE_ADMIN_UI;
@@ -1075,6 +1079,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   app.use('/admin/*', adminGate);
   app.use('/admin/api/*', async (c, next) => {
     const platformEnv = c.env as PlatformEnv | undefined;
+    // The cutover drain probe must be observational: do not let the general
+    // admin middleware reconcile provider keys or pin request-origin state.
+    if (c.req.method === 'GET' && c.req.path === '/admin/api/runtime/drain') {
+      return next();
+    }
     const settingsStore = settings(c);
     await applyResolvedProviderKeys(platformEnv, settingsStore);
     // Opportunistically pin the resolved origin so the Slack "Configure" deep
@@ -1262,6 +1271,17 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   app.route('/admin/api', createRoutineAdminApi({ store: routines, usage, work }));
   app.route('/admin/api', createUsageAdminApi({ store: usage, work }));
   app.route('/admin/api', createWorkAdminApi({ store: work, usage }));
+
+  app.get('/admin/api/runtime/drain', async (c) => {
+    try {
+      const status = await runtimeDrain(c.env as PlatformEnv | undefined);
+      c.header('Cache-Control', 'no-store');
+      return c.json(status);
+    } catch {
+      console.error('[chickpea] runtime drain state unavailable');
+      return c.json({ error: 'runtime_drain_unavailable' }, 503);
+    }
+  });
 
   app.get('/admin/api/agents', async (c) => {
     const platformEnv = c.env as PlatformEnv | undefined;

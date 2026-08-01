@@ -339,6 +339,27 @@ test('graph admission is atomic, idempotent, and relationally constrained', () =
   }
 });
 
+test('runtime drain count includes only executing Runs', () => {
+  const db = openStateDb(':memory:');
+  try {
+    const store = new WorkStoreLogic(db, { now: () => NOW });
+    const config = store.putConfigRevision(safeConfig());
+    const executing = store.createGraph(graph(config.id, 'drain-executing')).run;
+    store.createGraph(graph(config.id, 'drain-admitted'));
+    store.prepareRunInput({
+      runId: executing.id,
+      sensitivity: 'public',
+      body: 'Runtime drain proof input',
+      preparedAt: NOW + 1,
+    });
+    db.run("UPDATE runs SET status = 'executing' WHERE id = ?", executing.id);
+
+    assert.equal(store.countExecutingRuns(), 1);
+  } finally {
+    db.close();
+  }
+});
+
 test('an audit write failure rolls the local Work graph back and a retry records one event', () => {
   const db = openStateDb(':memory:');
   try {

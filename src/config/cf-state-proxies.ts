@@ -313,6 +313,15 @@ export class CfSlackStateStore implements SlackStateStore {
     return orUndefined(unwrap(await this.stub.slackAgentExecutionContextGet(continuityKey)));
   }
 
+  async runtimeDrainCounts() {
+    const status = unwrap(await this.stub.runtimeDrainStatus());
+    return {
+      pendingLegacyTurnJobs: status.categories.pendingLegacyTurnJobs,
+      pendingLedgerTurnJobs: status.categories.pendingLedgerTurnJobs,
+      pendingSlackInteractionCleanups: status.categories.pendingSlackInteractionCleanups,
+    };
+  }
+
   async recordSlackInteractionProgress(
     id: string,
     patch: Parameters<TagStateRpc['slackInteractionProgressRecord']>[1],
@@ -653,6 +662,11 @@ export class CfRoutineStore implements RoutineStore {
     if (response.kind !== 'runs') throw unexpectedRoutineResponse();
     return response.runs;
   }
+  async countAdmittingOrRunningOccurrences(): Promise<number> {
+    const response = await this.execute({ kind: 'count_admitting_or_running_occurrences' });
+    if (response.kind !== 'count') throw unexpectedRoutineResponse();
+    return response.count;
+  }
   async claimDueSchedules(input: ClaimDueRoutinesInput): Promise<RoutineDueClaimBatch> {
     const response = await this.execute({ kind: 'claim_due_schedules', input });
     if (response.kind !== 'due_claims') throw unexpectedRoutineResponse();
@@ -921,6 +935,12 @@ export class CfWorkStore implements WorkStore {
     const response = await this.execute({ kind: 'list_runs', input });
     if (response.kind !== 'run_page') throw unexpectedWorkResponse();
     return response.page;
+  }
+
+  async countExecutingRuns() {
+    const response = await this.execute({ kind: 'count_executing_runs' });
+    if (response.kind !== 'count') throw unexpectedWorkResponse();
+    return response.count;
   }
 
   async listRunExecutions(runId: RunId, limit?: number) {

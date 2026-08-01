@@ -308,6 +308,8 @@ export class RoutineStoreLogic {
         return { kind: 'run', run: this.recordDelivery(request.input) };
       case 'list_admissions':
         return { kind: 'admissions', admissions: this.listAdmissions(request.occurrenceId) };
+      case 'count_admitting_or_running_occurrences':
+        return { kind: 'count', count: this.countAdmittingOrRunningOccurrences() };
       case 'list_audit_events':
         return { kind: 'audit_events', events: this.listAuditEvents(request.filter) };
     }
@@ -1123,6 +1125,14 @@ export class RoutineStoreLogic {
         limit,
       )
       .map((row) => rowToRun(row as unknown as RunRow));
+  }
+
+  countAdmittingOrRunningOccurrences(): number {
+    return Number(
+      this.db.get(
+        "SELECT COUNT(*) AS count FROM routine_runs WHERE status IN ('admitting', 'running')",
+      )?.count ?? 0,
+    );
   }
 
   claimDueSchedules(input: ClaimDueRoutinesInput): RoutineDueClaimBatch {
@@ -2712,6 +2722,9 @@ export class SqliteRoutineStore implements RoutineStore {
   }
   async listRuns(filter: RoutineRunFilter = {}): Promise<RoutineRun[]> {
     return this.logic.listRuns(filter);
+  }
+  async countAdmittingOrRunningOccurrences(): Promise<number> {
+    return this.logic.countAdmittingOrRunningOccurrences();
   }
   async claimDueSchedules(input: ClaimDueRoutinesInput): Promise<RoutineDueClaimBatch> {
     return this.logic.claimDueSchedules(input);

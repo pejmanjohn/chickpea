@@ -5,6 +5,7 @@ import { Hono } from 'hono';
 
 import { createAdminRoutes } from '../src/admin/routes.ts';
 import flueApp from '../src/app.ts';
+import type { RuntimeDrainStatus } from '../src/config/state-rpc.ts';
 import {
   ApiOAuthError,
   apiOAuthSettingKeys,
@@ -110,6 +111,7 @@ interface AdminHarnessOptions {
   modelCatalogOwnerId?: () => string;
   modelCatalogFetch?: typeof fetch;
   modelCatalogTimeoutMs?: number;
+  runtimeDrain?: () => Promise<RuntimeDrainStatus>;
 }
 
 function appWithAdmin(store: ConfigStore, adminToken?: string): Hono {
@@ -159,6 +161,7 @@ function appWithAdminOptions(store: ConfigStore, options: AdminHarnessOptions = 
       ...(options.modelCatalogTimeoutMs !== undefined
         ? { modelCatalogTimeoutMs: options.modelCatalogTimeoutMs }
         : {}),
+      ...(options.runtimeDrain ? { runtimeDrain: options.runtimeDrain } : {}),
     }),
   );
   return app;
@@ -699,6 +702,67 @@ test('admin API rejects a wrong bearer token and accepts the configured admin to
     assert.equal(page.status, 200);
     assert.equal(page.headers.get('cache-control'), 'no-store');
     assert.match(await page.text(), /Chickpea/);
+  } finally {
+    store.close();
+  }
+});
+
+test('runtime drain is admin-gated and reports every bounded work category', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const settings = new Proxy(new SqliteSettingsStore(':memory:'), {
+    get() {
+      throw new Error('runtime drain must not touch operator settings');
+    },
+  }) as SettingsStore;
+  let calls = 0;
+  const status: RuntimeDrainStatus = {
+    drained: false,
+    categories: {
+      pendingLegacyTurnJobs: 2,
+      pendingLedgerTurnJobs: 1,
+      pendingSlackInteractionCleanups: 3,
+      executingRuns: 4,
+      admittingOrRunningRoutineOccurrences: 5,
+    },
+  };
+  try {
+    const app = appWithAdminOptions(store, {
+      settings,
+      runtimeDrain: async () => {
+        calls += 1;
+        return status;
+      },
+    });
+
+    const unauthorized = await app.request('/admin/api/runtime/drain');
+    assert.equal(unauthorized.status, 401);
+    assert.equal(calls, 0);
+
+    const response = await app.request('/admin/api/runtime/drain', {
+      headers: auth(ADMIN_TOKEN),
+    });
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('cache-control'), 'no-store');
+    assert.deepEqual(await response.json(), status);
+    assert.equal(calls, 1);
+  } finally {
+    store.close();
+  }
+});
+
+test('runtime drain fails closed when the state store is unavailable', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  try {
+    const app = appWithAdminOptions(store, {
+      runtimeDrain: async () => {
+        throw new Error('private state failure');
+      },
+    });
+    const response = await app.request('/admin/api/runtime/drain', {
+      headers: auth(ADMIN_TOKEN),
+    });
+    assert.equal(response.status, 503);
+    assert.deepEqual(await response.json(), { error: 'runtime_drain_unavailable' });
   } finally {
     store.close();
   }

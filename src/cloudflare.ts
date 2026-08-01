@@ -42,8 +42,9 @@ import type {
   TurnJob,
   TurnProgress,
   TurnPullRequestProgress,
+  RuntimeDrainStatus,
 } from './config/state-rpc.ts';
-import { tagStateStub } from './config/state-rpc.ts';
+import { buildRuntimeDrainStatus, tagStateStub } from './config/state-rpc.ts';
 import type { PlatformEnv } from './config/state-backend.ts';
 import { getRoutineStore, getSettingsStore } from './config/state-backend.ts';
 import {
@@ -735,6 +736,18 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     request: WorkRpcRequest,
   ): Promise<StateRpcResult<WorkRpcResponse>> {
     return this.call((stores) => stores.work.execute(request));
+  }
+
+  async runtimeDrainStatus(): Promise<StateRpcResult<RuntimeDrainStatus>> {
+    return this.call((stores) => {
+      const categories = {
+        ...stores.turnJobs.runtimeDrainCounts(),
+        executingRuns: stores.work.countExecutingRuns(),
+        admittingOrRunningRoutineOccurrences:
+          stores.routines.countAdmittingOrRunningOccurrences(),
+      };
+      return buildRuntimeDrainStatus(categories);
+    });
   }
 
   async maintainWork(at: number): Promise<StateRpcResult<null>> {

@@ -508,6 +508,7 @@ export type WorkRpcRequest =
   | { kind: 'require_recovery'; input: RequireRunRecoveryInput }
   | { kind: 'quarantine_run'; input: QuarantineRunInput }
   | { kind: 'list_audit_events'; runId: RunId; limit?: number }
+  | { kind: 'count_executing_runs' }
   | { kind: 'verify_integrity' };
 
 export type WorkRpcResponse =
@@ -524,6 +525,7 @@ export type WorkRpcResponse =
   | { kind: 'run_page'; page: WorkRunPage }
   | { kind: 'execution'; execution: RunExecutionRecord | null }
   | { kind: 'executions'; executions: RunExecutionRecord[] }
+  | { kind: 'count'; count: number }
   | { kind: 'audit_events'; events: AuditEvent[] }
   | { kind: 'integrity'; report: WorkIntegrityReport };
 
@@ -547,6 +549,7 @@ export interface WorkStore {
   renewRunLease(input: RenewRunLeaseInput): Promise<RunRecord>;
   releaseRunLease(input: ReleaseRunLeaseInput): Promise<RunRecord>;
   listRuns(input: ListWorkRunsInput): Promise<WorkRunPage>;
+  countExecutingRuns(): Promise<number>;
   listRunExecutions(runId: RunId, limit?: number): Promise<RunExecutionRecord[]>;
   createRunExecution(input: CreateRunExecutionInput): Promise<RunExecutionRecord>;
   recordRunExecutionRoute(input: RunExecutionRouteInput): Promise<RunExecutionRecord>;

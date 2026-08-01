@@ -40,6 +40,7 @@ import {
   postSignedEvent,
   delay,
 } from './lib/offline-harness.mjs';
+import { runDrainCheck } from './lib/cf-drain-check.mjs';
 
 const WRANGLER_BIN = join(REPO_ROOT, 'node_modules', '.bin', 'wrangler');
 const CF_BUILD_SCRIPT = join(REPO_ROOT, 'scripts', 'flue-build-cf.mjs');
@@ -504,6 +505,18 @@ async function waitForFinalCount(backend, minFinals, timeoutMs) {
 }
 
 async function main() {
+  const args = process.argv.slice(2);
+  if (args.length > 0) {
+    if (args.length !== 1 || args[0] !== '--check-drain') {
+      throw new Error(`unknown arguments: ${args.join(' ')}`);
+    }
+    await runDrainCheck({
+      baseUrl: process.env.CF_SMOKE_BASE_URL,
+      adminToken: process.env.TAG_ADMIN_TOKEN,
+    });
+    console.log('PASS cf-smoke drain — every runtime work category is zero');
+    return;
+  }
   assertNodeVersion();
   buildCloudflareTarget();
   console.log('• verifying build artifacts…');
@@ -580,6 +593,12 @@ async function main() {
       usageSummary.status === 200 && usageSummary.body?.totals?.operationCount === 0,
       'Usage summary queries the initialized TagStateStore ledger',
       `HTTP ${usageSummary.status} operations=${String(usageSummary.body?.totals?.operationCount)}`,
+    );
+    const drainStatus = await runDrainCheck({ baseUrl, adminToken: ADMIN_TOKEN });
+    check(
+      drainStatus.drained,
+      'runtime drain endpoint reaches the initialized TagStateStore aggregate',
+      JSON.stringify(drainStatus.categories),
     );
 
     const wireBeforeHeartbeat = backend.wireLog.length;

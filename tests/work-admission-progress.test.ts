@@ -140,3 +140,30 @@ test('Cloudflare Slack state persists admission progress through the durable RPC
 
   assert.deepEqual(calls, [{ id: 'msg:C_WORK:1785514949.001000', patch }]);
 });
+
+test('Cloudflare Slack state proxy exposes only the turn-related drain counts', async () => {
+  const stub = {
+    async runtimeDrainStatus() {
+      return {
+        ok: true as const,
+        value: {
+          drained: false,
+          categories: {
+            pendingLegacyTurnJobs: 1,
+            pendingLedgerTurnJobs: 2,
+            pendingSlackInteractionCleanups: 3,
+            executingRuns: 4,
+            admittingOrRunningRoutineOccurrences: 5,
+          },
+        },
+      };
+    },
+  } as unknown as TagStateRpc;
+
+  const store = new CfSlackStateStore(stub);
+  assert.deepEqual(await store.runtimeDrainCounts(), {
+    pendingLegacyTurnJobs: 1,
+    pendingLedgerTurnJobs: 2,
+    pendingSlackInteractionCleanups: 3,
+  });
+});
