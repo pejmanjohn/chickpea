@@ -246,7 +246,7 @@ export class SlackStateLogic {
 
 /**
  * SQLite-backed claims + thread registry so dedupe and joined-thread admission
- * survive a process restart — the durability class `db.ts` already gives the
+ * survive a process restart — the durability class `db.node.ts` already gives the
  * agent transcript. Lives in its OWN database file (not the Flue transcript
  * DB) so the app never contends with the runtime's connection. `:memory:`
  * yields a per-process store with the exact pre-durability semantics — the

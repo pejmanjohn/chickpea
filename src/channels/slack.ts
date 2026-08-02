@@ -4,6 +4,7 @@ import {
   type SlackChannel,
   type SlackChannelOptions,
 } from '@flue/slack';
+import { createChannelRouter } from '@flue/runtime';
 
 import { resolveEffectiveSlackConfig } from '../config/effective-config.ts';
 import { resolveModelCredentialAttribution } from '../config/model-credential-refs.ts';
@@ -172,7 +173,7 @@ function channelForSecret(signingSecret: string): SlackChannel {
   return verifiedChannel.channel;
 }
 
-// conversationKey/parseConversationKey are pure identity helpers, independent
+// instanceId/parseInstanceId are pure identity helpers, independent
 // of the signing secret; serve them from whichever instance exists. The
 // placeholder-keyed instance can never verify anything — its routes are not
 // the ones exported below, and the events gate always resolves the real
@@ -237,11 +238,16 @@ const verifiedEventsHandler: SlackRouteHandler = async (c, next) => {
   return route.handler(c, next);
 };
 
+const routes: SlackChannel['routes'] = [
+  { method: 'POST', path: '/events', handler: verifiedEventsHandler },
+];
+
 export const channel: SlackChannel = {
   // Path: /channels/slack/events
-  routes: [{ method: 'POST', path: '/events', handler: verifiedEventsHandler }],
-  conversationKey: (ref) => identityChannel().conversationKey(ref),
-  parseConversationKey: (id) => identityChannel().parseConversationKey(id),
+  routes,
+  route: () => createChannelRouter(routes),
+  instanceId: (ref) => identityChannel().instanceId(ref),
+  parseInstanceId: (id) => identityChannel().parseInstanceId(id),
 };
 
 const handleSlackEvents: NonNullable<SlackChannelOptions['events']> = ({ c, payload }) => {

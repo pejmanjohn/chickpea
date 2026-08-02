@@ -20,7 +20,8 @@ import {
 } from '../src/model-compat/provider.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import { getSlackStateStore } from '../src/config/state-backend.ts';
-import slackThreadAgent, {
+import {
+  legacySlackThreadAgent as slackThreadAgent,
   resolveAgentModel,
   thinkingLevelForModel,
 } from '../src/agents/slack-thread.ts';

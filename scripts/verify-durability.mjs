@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * Restart-durability verification via file-backed `src/db.ts`.
+ * Restart-durability verification via file-backed `src/db.node.ts`.
  *
  * Proves conversation state survives a process restart. The app persists the
- * agent transcript to SQLite (db.ts), so a second turn in the same thread —
+ * agent transcript to SQLite (db.node.ts), so a second turn in the same thread —
  * served by a BRAND NEW process on the same DB file — replays the first turn's
  * assistant reply from durable storage.
  *

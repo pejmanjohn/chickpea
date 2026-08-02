@@ -43,7 +43,6 @@ import {
 import { runDrainCheck } from './lib/cf-drain-check.mjs';
 
 const WRANGLER_BIN = join(REPO_ROOT, 'node_modules', '.bin', 'wrangler');
-const CF_BUILD_SCRIPT = join(REPO_ROOT, 'scripts', 'flue-build-cf.mjs');
 const CF_OUTPUT_DIR = join(REPO_ROOT, 'dist-cf');
 const CF_WRANGLER_CONFIG = join(CF_OUTPUT_DIR, 'chickpea', 'wrangler.json');
 const CF_SMOKE_WRANGLER_CONFIG = join(CF_OUTPUT_DIR, 'chickpea', 'wrangler.smoke.json');
@@ -90,8 +89,8 @@ function buildCloudflareTarget() {
     console.log('• SMOKE_SKIP_BUILD=1 — reusing existing dist-cf build');
     return;
   }
-  console.log('• building Cloudflare target (flue-build-cf → dist-cf)…');
-  const result = spawnSync(process.execPath, [CF_BUILD_SCRIPT, '--output', 'dist-cf'], {
+  console.log('• building Cloudflare target (Vite → dist-cf)…');
+  const result = spawnSync('npm', ['run', 'flue:build:cf'], {
     cwd: REPO_ROOT,
     stdio: 'inherit',
   });
@@ -135,7 +134,11 @@ function verifyBuildArtifacts() {
   const redirect = join(REPO_ROOT, '.wrangler', 'deploy', 'config.json');
   const redirectBody = existsSync(redirect) ? readFileSync(redirect, 'utf8') : '';
   check(redirectBody.includes('dist-cf'), '.wrangler/deploy/config.json points into dist-cf');
-  check(existsSync(join(REPO_ROOT, 'src', 'db.ts')), 'src/db.ts restored after the CF build');
+  check(
+    existsSync(join(REPO_ROOT, 'src', 'db.node.ts')) &&
+      !existsSync(join(REPO_ROOT, 'src', 'db.ts')),
+    'Node-only persistence stays outside Cloudflare auto-discovery',
+  );
   check(config.ai?.binding === 'AI', 'built wrangler.json carries the production AI binding');
   check(
     sameArray(config.triggers?.crons ?? [], ['* * * * *']),

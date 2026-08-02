@@ -1,5 +1,8 @@
-import { registerProvider } from '@flue/runtime';
-import type { CloudflareAIBinding } from '@flue/runtime/cloudflare';
+import { setProvider } from '@flue/runtime';
+import {
+  cloudflareBindingProvider,
+  type CloudflareAIBinding,
+} from '@flue/runtime/cloudflare/workers-ai';
 
 import { SEED_CLOUDFLARE_MODEL_ID } from './config/seed.ts';
 
@@ -14,13 +17,14 @@ const SEED_CLOUDFLARE_RESPONSE_TIMEOUT_MS = 90_000;
  * imports it or registers a keyless `cloudflare/*` provider.
  */
 export function registerCloudflareBindingProvider(binding: CloudflareAIBinding): void {
-  registerProvider('cloudflare', {
-    api: 'cloudflare-ai-binding',
-    binding: withCloudflareModelPolicies(binding),
-    // Flue otherwise supplies `{ id: 'default' }`, which creates an AI
-    // Gateway whose default logs retain request and response payloads.
-    gateway: false,
-  });
+  setProvider(
+    cloudflareBindingProvider({
+      binding: withCloudflareModelPolicies(binding),
+      // Flue otherwise supplies `{ id: 'default' }`, which creates an AI
+      // Gateway whose default logs retain request and response payloads.
+      gateway: false,
+    }),
+  );
 }
 
 function withCloudflareModelPolicies(binding: CloudflareAIBinding): CloudflareAIBinding {

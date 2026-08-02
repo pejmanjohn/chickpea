@@ -190,7 +190,7 @@ npx wrangler secret put TAG_ADMIN_TOKEN
 Requires Node >= 22.19 (see `.nvmrc`).
 
 ```bash
-npm run flue:build                       # flue build --target node -> dist/server.mjs
+npm run flue:build                       # Vite Node build -> dist/server.mjs
 ```
 
 Run `dist/server.mjs` on any host. State is file-backed SQLite. Expose the port with a tunnel or reverse proxy and point Slack's Events Request URL at `https://<host>/channels/slack/events`. Both targets run the same source — `src/config/state-backend.ts` picks SQLite or the Durable Object state store at runtime.

@@ -11,7 +11,6 @@ import { sqlite } from '@flue/runtime/node';
 //
 // The path defaults to `./tmp/flue.db` (tmp/ is git-ignored). Override with
 // TAG_DB_PATH — parity/offline harnesses pass `:memory:` for per-process
-// isolation. NOTE: db.ts is only supported on the Node build target; the
-// Cloudflare target uses Durable Object SQLite automatically and rejects it,
-// which is why flue.config.ts and `flue:build` target Node.
+// isolation. This non-discoverable basename is selected only by
+// vite.node.config.ts; the Cloudflare build uses Durable Object SQLite.
 export default sqlite(process.env.TAG_DB_PATH ?? './tmp/flue.db');

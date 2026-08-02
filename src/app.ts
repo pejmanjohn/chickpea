@@ -1,7 +1,12 @@
 import { instrument, registerProvider } from '@flue/runtime';
-import { flue } from '@flue/runtime/routing';
+import { createAgentRouter } from '@flue/runtime/routing';
 import { Hono } from 'hono';
 
+import {
+  ChickpeaRoutineIntent,
+  route as routineIntentRoute,
+} from './agents/routine-intent.ts';
+import { ChickpeaSlack, route as slackAgentRoute } from './agents/slack-thread.ts';
 import { createAdminRoutes } from './admin/routes.ts';
 import { activityStatusForObservation } from './activity/status.ts';
 import {
@@ -21,6 +26,7 @@ import { registerOpenAiSubscriptionApi } from './openai-subscription/provider.ts
 import { registerModelCompatibilityApis } from './model-compat/provider.ts';
 import { startNodeTurnRelay } from './slack/node-turn-relay.ts';
 import { workModelInvocationInterceptor } from './work/model-invocation.ts';
+import { channel } from './channels/slack.ts';
 
 // Provider registrations run at module scope so they are in place before any
 // agent resolves its model. On the Cloudflare target the seeded Workers AI
@@ -136,6 +142,13 @@ const app = new Hono();
 // and exact-channel scoped by SLACK_TAG_LEDGER_CANARY_CHANNELS.
 startNodeTurnRelay();
 app.route('/', createAdminRoutes());
-app.route('/', flue());
+// Preserve the internal endpoints until dispatch moves to
+// init()/dispatch()/read(). Every agent route stays behind the existing
+// process-local/operator token rather than becoming a public model endpoint.
+app.use('/agents/slack-thread/*', slackAgentRoute);
+app.use('/agents/routine-intent/*', routineIntentRoute);
+app.route('/agents/slack-thread', createAgentRouter(ChickpeaSlack));
+app.route('/agents/routine-intent', createAgentRouter(ChickpeaRoutineIntent));
+app.route('/channels/slack', channel.route());
 
 export default app;

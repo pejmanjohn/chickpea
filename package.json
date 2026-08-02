@@ -23,6 +23,8 @@
     "tests",
     "types",
     "flue.config.ts",
+    "vite.config.ts",
+    "vite.node.config.ts",
     "slack-app-manifest.json",
     "tsconfig.json",
     "wrangler.jsonc"
@@ -32,13 +34,13 @@
     "node": ">=22.19.0"
   },
   "scripts": {
-    "postinstall": "node scripts/patch-flue-runtime.mjs",
-    "pretest": "node scripts/patch-flue-runtime.mjs && node scripts/preflight-node-lane.mjs",
     "test": "npm run typecheck && node --test --import tsx tests/*.test.ts tests/usage/*.test.ts",
     "test:ci": "TAG_REQUIRE_LOOPBACK=1 npm test",
     "typecheck": "tsc --noEmit",
-    "flue:build": "node scripts/patch-flue-runtime.mjs && node scripts/preflight-node-lane.mjs && flue build --target node",
-    "flue:build:cf": "node scripts/flue-build-cf.mjs --output dist-cf",
+    "verify:flue-v2-staged-types": "node scripts/verify-flue-v2-staged-types.mjs",
+    "dev": "vite dev --config vite.node.config.ts",
+    "flue:build": "vite build --config vite.node.config.ts",
+    "flue:build:cf": "vite build --config vite.config.ts && node scripts/flue-build-cf.mjs --validate-only",
     "build": "npm run flue:build:cf",
     "deploy": "node scripts/deploy-with-epilogue.mjs",
     "verify:cf-smoke": "node scripts/verify-cf-smoke.mjs",
@@ -64,29 +66,27 @@
   "dependencies": {
     "@cfworker/json-schema": "4.1.1",
     "@cloudflare/sandbox": "0.12.4",
-    "@earendil-works/pi-ai": "0.80.2",
-    "@flue/runtime": "1.0.0-beta.8",
-    "@flue/slack": "1.0.0-beta.1",
-    "@modelcontextprotocol/sdk": "1.29.0",
+    "@earendil-works/pi-ai": "0.83.0",
+    "@flue/runtime": "2.0.0",
+    "@flue/slack": "2.0.0",
+    "@modelcontextprotocol/sdk": "1.30.0",
     "@slack/web-api": "^8.0.0-rc.1",
-    "agents": "^0.14.5",
+    "agents": "^0.20.1",
     "croner": "10.0.1",
     "hono": "^4.12.27",
     "just-bash": "3.0.2",
     "valibot": "^1.4.2"
   },
   "devDependencies": {
-    "@flue/cli": "1.0.0-beta.8",
+    "@cloudflare/vite-plugin": "1.50.0",
+    "@flue/cli": "2.0.0",
+    "@flue/vite": "2.0.0",
     "@slack/socket-mode": "^2.0.7",
     "@types/node": "26.0.0",
     "tsx": "^4.22.4",
     "typescript": "6.0.3",
-    "wrangler": "4.103.0"
-  },
-  "overrides": {
-    "@flue/slack": {
-      "hono": "^4.12.27"
-    }
+    "vite": "^8.1.2",
+    "wrangler": "4.118.0"
   },
   "cloudflare": {
     "label": "Chickpea",

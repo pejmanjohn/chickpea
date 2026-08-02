@@ -13,8 +13,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
-const FLUE_BIN = join(REPO_ROOT, 'node_modules', '.bin', 'flue');
-const FLUE_RUNTIME_PATCH = join(REPO_ROOT, 'scripts', 'patch-flue-runtime.mjs');
+const VITE_BIN = join(REPO_ROOT, 'node_modules', '.bin', 'vite');
 export const NET_GUARD = join(REPO_ROOT, 'scripts', 'net-guard.mjs');
 export const SIGNING_SECRET = 'test-signing-secret';
 export const EVENTS_PATH = '/channels/slack/events';
@@ -67,15 +66,11 @@ export function assertNodeVersion() {
   return raw;
 }
 
-/** `flue build --target node --output <outputDir>`; resolves to the server entry.
+/** `vite build --config vite.node.config.ts --outDir <outputDir>`; resolves to the server entry.
  * Defaults to `dist/` (git-ignored, the canonical `flue:build` output). */
 export function buildNodeServer(outputDir = 'dist') {
-  execFileSync(process.execPath, [FLUE_RUNTIME_PATCH], {
-    cwd: REPO_ROOT,
-    stdio: 'inherit',
-  });
   return new Promise((resolve, reject) => {
-    const child = spawn(FLUE_BIN, ['build', '--target', 'node', '--output', outputDir], {
+    const child = spawn(VITE_BIN, ['build', '--config', 'vite.node.config.ts', '--outDir', outputDir], {
       cwd: REPO_ROOT,
       env: process.env,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -87,7 +82,7 @@ export function buildNodeServer(outputDir = 'dist') {
     child.once('exit', (code) =>
       code === 0
         ? resolve(join(REPO_ROOT, outputDir, 'server.mjs'))
-        : reject(new Error(`flue build --target node failed (exit ${code}):\n${output}`)),
+        : reject(new Error(`Vite Node build failed (exit ${code}):\n${output}`)),
     );
   });
 }

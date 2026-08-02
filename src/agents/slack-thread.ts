@@ -1,10 +1,13 @@
+'use agent';
+
 import {
   bash,
-  defineAgent,
   type AgentRuntimeConfig,
-  type AgentRouteHandler,
   type SandboxFactory,
+  useInstruction,
+  useModel,
 } from '@flue/runtime';
+import type { MiddlewareHandler } from 'hono';
 import { Bash, InMemoryFs, type NetworkConfig, type SecureFetch } from 'just-bash';
 
 import {
@@ -467,7 +470,7 @@ export async function resolveApiConnectionsForTurn(
 // reach the app could otherwise drive the agent directly (LLM cost,
 // channel-brief disclosure). Gate every method, including GET history views,
 // on the shared internal token; the channel's in-process dispatch sends it.
-export const route: AgentRouteHandler = async (c, next) => {
+export const route: MiddlewareHandler = async (c, next) => {
   const token = c.req.header(INTERNAL_AGENT_TOKEN_HEADER);
   if (!isValidInternalAgentToken(token)) {
     return c.json({ error: 'unauthorized' }, 401);
@@ -753,6 +756,17 @@ export async function createSlackAgentRuntime(
   };
 }
 
+/**
+ * Transitional access to the existing async assembler for focused policy
+ * tests and the U5 routine path. It is not registered with Flue 2 and is
+ * removed when RuntimePlanV2 becomes the single pre-dispatch compiler.
+ */
+export const legacySlackThreadAgent = {
+  initialize({ id, env }: { id: string; env?: PlatformEnv }) {
+    return createSlackAgentRuntime({ id, ...(env ? { platformEnv: env } : {}) });
+  },
+};
+
 interface SlackAgentAdapterContext {
   workspaceId: string;
   channelId: string;
@@ -794,7 +808,26 @@ async function resolveSlackAgentAdapterContext(
   };
 }
 
-export default defineAgent(async ({ id }) => createSlackAgentRuntime({ id }));
+/**
+ * Flue 2 discovers named, synchronous agent functions. This bootstrap pair is
+ * intentionally minimal until every harness-affecting decision arrives in a
+ * complete secret-free RuntimePlanV2.
+ */
+export function ChickpeaSlack() {
+  const model = isCloudflareTarget()
+    ? SEED_CLOUDFLARE_MODEL_PIN
+    : 'anthropic/claude-haiku-4-5';
+  const thinkingLevel = thinkingLevelForModel(model);
+  useModel(model, thinkingLevel ? { thinkingLevel } : {});
+  useInstruction('Never invent facts or claim access to context and tools you do not have.');
+  return [
+    'You are a general-purpose Slack assistant.',
+    'Be direct and concise, match the formality of the conversation, and use Slack-friendly formatting only when it aids clarity.',
+    'Say what is missing when you lack the context to answer.',
+  ].join(' ');
+}
+
+ChickpeaSlack.agentName = 'chickpea-slack-v2';
 
 export function thinkingLevelForModel(model: string): 'off' | undefined {
   return model === SEED_CLOUDFLARE_MODEL_PIN ? 'off' : undefined;

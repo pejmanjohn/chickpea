@@ -656,7 +656,7 @@ test('getConfigStore writes are visible to later slack-thread initializations in
       assignment({ workspaceId: 'T_CACHE', channelId: 'C_CACHE', agentId: 'agent_cached' }),
     );
 
-    const { default: slackThreadAgent } = await import('../src/agents/slack-thread.ts');
+    const { legacySlackThreadAgent: slackThreadAgent } = await import('../src/agents/slack-thread.ts');
     const config = await slackThreadAgent.initialize({
       id: 'T_CACHE:C_CACHE:1782770400.000100',
       env: {},

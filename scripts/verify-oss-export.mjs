@@ -330,10 +330,11 @@ function verifyNpmPackManifest() {
     'assets/chickpea-mark.svg',
     'scripts/deploy-with-epilogue.mjs',
     'scripts/flue-build-cf.mjs',
-    'scripts/patch-flue-runtime.mjs',
     'slack-app-manifest.json',
     'src/app.ts',
     'src/cloudflare.ts',
+    'vite.config.ts',
+    'vite.node.config.ts',
     'wrangler.jsonc',
   ];
   const missing = required.filter((path) => !files.has(path));

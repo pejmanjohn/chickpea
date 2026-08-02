@@ -5,8 +5,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
-import slackThreadAgent, {
+import {
   intersectFrozenRepositoryGrants,
+  legacySlackThreadAgent as slackThreadAgent,
 } from '../src/agents/slack-thread.ts';
 import type { EffectiveSlackConfig } from '../src/config/effective-config.ts';
 import { GITHUB_SETTING_KEYS } from '../src/config/github-app.ts';

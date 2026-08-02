@@ -113,7 +113,7 @@ export const RUN_FOUNDATION_CAPABILITIES = Object.freeze([
 
 const FOCUSED_TESTS = [
   'tests/flue-run-contract.test.ts',
-  'tests/flue-runtime-patch.test.ts',
+  'tests/flue-v2-runtime-regressions.test.ts',
   'tests/agent-dispatch.test.ts',
   'tests/routine-runtime-seams.test.ts',
   'tests/routine-admission.test.ts',
@@ -178,7 +178,6 @@ async function main() {
   console.log(`run foundation verifier (${assertNodeVersion()})`);
   const matrixOnly = process.argv.includes('--matrix');
   if (!matrixOnly) {
-    run('Flue patch verification', process.execPath, ['scripts/patch-flue-runtime.mjs']);
     run('run foundation focused contract tests', process.execPath, [
       '--test',
       '--import',
