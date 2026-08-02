@@ -148,6 +148,35 @@ test('direct save is idempotent and keeps deletion behind confirmation', async (
   }
 });
 
+test('runtime drain count includes admitting and running routine occurrences only', async () => {
+  const store = new SqliteRoutineStore(':memory:', () => CREATED_AT);
+  try {
+    const routine = await confirmDraft(store, createDraft('routine_drain'), 'runtime-drain');
+    const run = await store.createOccurrence({
+      runId: 'rrun_runtime_drain',
+      idempotencyKey: 'routine:runtime-drain',
+      routineId: routine.id,
+      routineVersion: routine.version,
+      scheduledFor: CREATED_AT,
+      triggerSource: 'run_now',
+      requestedBy: 'U_MEMBER',
+      queuedAt: CREATED_AT,
+      deadlineAt: CREATED_AT + 15 * 60 * 1_000,
+    });
+    assert.equal(await store.countAdmittingOrRunningOccurrences(), 0);
+
+    await store.transitionRun({
+      occurrenceId: run.id,
+      from: ['queued'],
+      to: 'admitting',
+      at: CREATED_AT + 1,
+    });
+    assert.equal(await store.countAdmittingOrRunningOccurrences(), 1);
+  } finally {
+    store.close();
+  }
+});
+
 test('confirmation atomically creates a versioned routine and body-free scheduled-work audit', async () => {
   const store = new SqliteRoutineStore(':memory:', () => CREATED_AT);
   try {
@@ -757,7 +786,7 @@ test('deployment active-run ceiling rejects a fifth distinct routine', async () 
   }
 });
 
-test('occurrence uniqueness, admission attempts, and atomic Workflow begin prevent duplicate work', async () => {
+test('occurrence uniqueness, admission attempts, and atomic legacy begin prevent duplicate work', async () => {
   const store = new SqliteRoutineStore(':memory:', () => CREATED_AT);
   try {
     const routine = await confirmDraft(store, createDraft(), 'occurrence');

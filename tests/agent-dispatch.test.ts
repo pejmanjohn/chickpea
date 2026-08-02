@@ -2,10 +2,19 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
+  agentFailureText,
   AgentPromptFailure,
   classifyAgentPromptFailure,
-} from '../src/slack/agent-dispatch.ts';
-import { agentFailureText } from '../src/slack/run-turn.ts';
+  promptSlackThreadAgent,
+  type SlackFlueDispatchState,
+} from '../src/slack/flue-dispatch.ts';
+import type { AgentInstanceHandle } from '@flue/runtime';
+import { AgentInstanceExistsError, AgentInstanceNotFoundError } from '@flue/runtime';
+import type {
+  FlueDispatchEnvelopeV1,
+  FlueDispatchReceiptV1,
+  FlueSettlementCheckpointV1,
+} from '../src/slack/turn-job-types.ts';
 import {
   AGENT_FAILURE_TEXT,
   OPENAI_SUBSCRIPTION_POLICY_TEXT,
@@ -101,4 +110,222 @@ test('Slack failure copy uses only the public-safe failure category', () => {
   );
   assert.equal(agentFailureText(new AgentPromptFailure('agent', 500)), AGENT_FAILURE_TEXT);
   assert.equal(agentFailureText(new Error('raw secret')), AGENT_FAILURE_TEXT);
+});
+
+const ENVELOPE = {
+  schemaVersion: 1,
+  agentName: 'chickpea-slack-v2',
+  instanceId: `agent_${'a'.repeat(40)}`,
+  uid: null,
+  message: { kind: 'user', body: 'hello' },
+  initialData: { schemaVersion: 2 },
+  idempotencyKey: 'turn_dispatch_test',
+} as unknown as FlueDispatchEnvelopeV1;
+
+const RECEIPT: FlueDispatchReceiptV1 = {
+  submissionId: 'submission_dispatch_test',
+  acceptedAt: '2026-08-01T12:00:00.000Z',
+  uid: 'inst_01ARZ3NDEKTSV4RRFFQ69G5FAV',
+};
+
+function state(
+  overrides: Partial<SlackFlueDispatchState> = {},
+): SlackFlueDispatchState {
+  return {
+    prepare: async () => ENVELOPE,
+    reconcileExistingInstance: async (uid) => {
+      const { initialData: _creationData, ...rest } = ENVELOPE;
+      return { ...rest, uid };
+    },
+    recordReceipt: async (receipt) => receipt,
+    recordSettlement: async (settlement) => settlement,
+    markRecoveryRequired: async () => {},
+    ...overrides,
+  };
+}
+
+function handle(overrides: Partial<AgentInstanceHandle>): AgentInstanceHandle {
+  return {
+    id: ENVELOPE.instanceId,
+    dispatch: async () => RECEIPT,
+    read: async () => ({
+      text: 'done',
+      data: {},
+      submissionId: RECEIPT.submissionId,
+      uid: RECEIPT.uid,
+      metadata: {
+        chickpea: {
+          schemaVersion: 1,
+          requestedModel: 'local-stub/x',
+          usage: { input: 2, output: 3, totalTokens: 5 },
+          returnedModel: { provider: 'local-stub', id: 'x' },
+        },
+      },
+    }),
+    abort: async () => {},
+    ...overrides,
+  };
+}
+
+function promptInput(dispatchState: SlackFlueDispatchState, agent: AgentInstanceHandle) {
+  return {
+    message: 'hello',
+    state: dispatchState,
+    turnId: 'turn_dispatch_test',
+    conversationKey: 'T1:C1:1.0',
+    useCloudflareSandbox: false,
+    requestedModel: 'local-stub/x',
+    handle: agent,
+    now: () => 1_800_000_000_000,
+  };
+}
+
+test('lost dispatch acknowledgment repeats the identical key and adopts the receipt', async () => {
+  const sent: unknown[] = [];
+  const dispatchState = state({ dispatchEnvelope: ENVELOPE });
+  await assert.rejects(
+    () => promptSlackThreadAgent(promptInput(dispatchState, handle({
+      async dispatch(request) {
+        sent.push(structuredClone(request));
+        throw new Error('ack lost');
+      },
+    }))),
+    (error: unknown) => error instanceof AgentPromptFailure && error.retryable,
+  );
+  let recorded: FlueDispatchReceiptV1 | undefined;
+  const result = await promptSlackThreadAgent(promptInput(state({
+    dispatchEnvelope: ENVELOPE,
+    async recordReceipt(receipt) {
+      recorded = receipt;
+      return receipt;
+    },
+  }), handle({
+    async dispatch(request) {
+      sent.push(structuredClone(request));
+      return { ...RECEIPT, deduplicated: true };
+    },
+  })));
+  assert.deepEqual(sent[1], sent[0]);
+  assert.equal(recorded?.deduplicated, true);
+  assert.equal(result.text, 'done');
+});
+
+test('a create-only collision adopts the returned uid before retrying admission', async () => {
+  const existingUid = 'inst_01ARZ3NDEKTSV4RRFFQ69G5FAZ';
+  const requests: unknown[] = [];
+  let reconciledUid: string | undefined;
+  let calls = 0;
+  const dispatchState = state({
+    dispatchEnvelope: ENVELOPE,
+    reconcileExistingInstance: async (uid) => {
+      reconciledUid = uid;
+      const { initialData: _creationData, ...rest } = ENVELOPE;
+      return { ...rest, uid };
+    },
+  });
+  const result = await promptSlackThreadAgent(promptInput(dispatchState, handle({
+    async dispatch(request) {
+      requests.push(structuredClone(request));
+      calls += 1;
+      if (calls === 1) {
+        throw new AgentInstanceExistsError({ id: ENVELOPE.instanceId, uid: existingUid });
+      }
+      return { ...RECEIPT, uid: existingUid };
+    },
+  })));
+  assert.equal(result.text, 'done');
+  assert.equal(reconciledUid, existingUid);
+  assert.equal(requests.length, 2);
+  assert.equal('initialData' in (requests[1] as Record<string, unknown>), false);
+  assert.equal(dispatchState.dispatchEnvelope?.uid, existingUid);
+});
+
+test('a transient read interruption retains the receipt and does not checkpoint failure', async () => {
+  let settlements = 0;
+  const dispatchState = state({
+    dispatchEnvelope: ENVELOPE,
+    dispatchReceipt: RECEIPT,
+    recordSettlement: async (settlement) => {
+      settlements += 1;
+      return settlement;
+    },
+  });
+  await assert.rejects(
+    () => promptSlackThreadAgent(promptInput(dispatchState, handle({
+      async read() { throw new TypeError('Network connection lost'); },
+    }))),
+    (error: unknown) => error instanceof AgentPromptFailure && error.retryable,
+  );
+  assert.equal(settlements, 0);
+  assert.equal(dispatchState.flueSettlement, undefined);
+
+  const recovered = await promptSlackThreadAgent(promptInput(dispatchState, handle({})));
+  assert.equal(recovered.text, 'done');
+  assert.equal(settlements, 1);
+});
+
+test('a missing expected instance enters recovery without fabricating a settlement', async () => {
+  let reason: string | undefined;
+  let settlements = 0;
+  await assert.rejects(
+    () => promptSlackThreadAgent(promptInput(state({
+      dispatchEnvelope: ENVELOPE,
+      dispatchReceipt: RECEIPT,
+      recordSettlement: async (settlement) => {
+        settlements += 1;
+        return settlement;
+      },
+      markRecoveryRequired: async (value) => { reason = value; },
+    }), handle({
+      async read() { throw new AgentInstanceNotFoundError({ id: ENVELOPE.instanceId }); },
+    }))),
+    (error: unknown) => error instanceof AgentPromptFailure && error.recoveryRequired,
+  );
+  assert.equal(reason, 'flue_expected_instance_missing');
+  assert.equal(settlements, 0);
+});
+
+test('saved receipt reattaches with read and saved settlement skips Flue entirely', async () => {
+  let reads = 0;
+  const result = await promptSlackThreadAgent(promptInput(state({
+    dispatchEnvelope: ENVELOPE,
+    dispatchReceipt: RECEIPT,
+  }), handle({
+    async dispatch() {
+      throw new Error('dispatch must not run');
+    },
+    async read(target) {
+      reads += 1;
+      assert.equal(typeof target === 'string' ? target : target.submissionId, RECEIPT.submissionId);
+      return {
+        text: 'reattached', data: {}, submissionId: RECEIPT.submissionId,
+        metadata: {
+          chickpea: {
+            schemaVersion: 1,
+            requestedModel: 'local-stub/x',
+            usage: { input: 1, output: 1, totalTokens: 2 },
+          },
+        },
+      };
+    },
+  })));
+  assert.equal(reads, 1);
+  assert.equal(result.text, 'reattached');
+
+  const settlement: FlueSettlementCheckpointV1 = {
+    outcome: 'completed',
+    settledAt: 1_800_000_000_000,
+    result,
+  };
+  let beforeResult = 0;
+  const replay = await promptSlackThreadAgent({ ...promptInput(state({
+    dispatchEnvelope: ENVELOPE,
+    dispatchReceipt: RECEIPT,
+    flueSettlement: settlement,
+  }), handle({
+    async dispatch() { throw new Error('dispatch must not run'); },
+    async read() { throw new Error('read must not run'); },
+  })), beforeResult: async () => { beforeResult += 1; } });
+  assert.deepEqual(replay, result);
+  assert.equal(beforeResult, 1, 'saved settlement still runs the pre-reply notice seam');
 });

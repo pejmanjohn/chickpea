@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import type { ResolvedAssignment } from '../../src/config/types.ts';
-import type { AgentDispatchResult } from '../../src/slack/agent-dispatch.ts';
+import type { AgentDispatchResult } from '../../src/slack/flue-dispatch.ts';
 import type { NormalizedSlackTurn } from '../../src/slack/types.ts';
 import { SqliteUsageStore } from '../../src/usage/store.ts';
 import {

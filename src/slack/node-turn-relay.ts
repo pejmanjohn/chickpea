@@ -19,13 +19,27 @@ import {
   runTurn,
   sanitizeError,
 } from './run-turn.ts';
+import { ContinuityNoticeDeliveryError } from './continuity-notice.ts';
+import { AgentPromptFailure } from './flue-dispatch.ts';
 import { slackThreadKey } from './thread-key.ts';
+import { MAX_POST_DISPATCH_ATTEMPTS } from './turn-jobs.ts';
 
 const NODE_RECONCILE_INTERVAL_MS = 30_000;
+const NODE_RETRY_BACKOFF_MS = 2_000;
 
 let started = false;
 let draining: Promise<void> | undefined;
 let wakeRequested = false;
+let retryTimer: ReturnType<typeof setTimeout> | undefined;
+
+function scheduleNodeTurnRelayRetry(env: PlatformEnv | undefined): void {
+  if (retryTimer) return;
+  retryTimer = setTimeout(() => {
+    retryTimer = undefined;
+    void wakeNodeTurnRelay(env);
+  }, NODE_RETRY_BACKOFF_MS);
+  retryTimer.unref();
+}
 
 /** Start the independent, unref'ed recovery heartbeat for compatibility jobs
  * and the channel-neutral ledger driver. Ledger execution remains default-off
@@ -57,8 +71,11 @@ export async function wakeNodeTurnRelay(
       wakeRequested = false;
       await drainNodeTurnRelayOnce({ ...overrides, ...(env ? { env } : {}) });
     } while (wakeRequested);
-  })().finally(() => {
+  })().finally(async () => {
     draining = undefined;
+    // A wake can arrive after the loop reads wakeRequested=false but before
+    // this completion callback clears `draining`. Do not lose that edge wake.
+    if (wakeRequested) await wakeNodeTurnRelay(env, overrides);
   });
   return draining;
 }
@@ -80,6 +97,14 @@ export async function drainNodeTurnRelayOnce(
   const executeTurn = options.executeTurn ?? runTurn;
   if (
     state.listPendingTurns &&
+    state.freezeRuntimePlan &&
+    state.prepareFlueDispatch &&
+    state.reconcileFlueExistingInstance &&
+    state.recordFlueReceipt &&
+    state.recordFlueSettlement &&
+    state.recordContinuityNotice &&
+    state.matchFlueObservation &&
+    state.markTurnRecoveryRequired &&
     state.recordTurnAttempt &&
     state.recordInteractionIntent &&
     state.recordSlackInteractionProgress &&
@@ -87,13 +112,20 @@ export async function drainNodeTurnRelayOnce(
     state.discardTurn
   ) {
     const listPendingTurns = state.listPendingTurns.bind(state);
+    const freezeRuntimePlan = state.freezeRuntimePlan.bind(state);
+    const prepareFlueDispatch = state.prepareFlueDispatch.bind(state);
+    const reconcileFlueExistingInstance = state.reconcileFlueExistingInstance.bind(state);
+    const recordFlueReceipt = state.recordFlueReceipt.bind(state);
+    const recordFlueSettlement = state.recordFlueSettlement.bind(state);
+    const recordContinuityNotice = state.recordContinuityNotice.bind(state);
+    const markTurnRecoveryRequired = state.markTurnRecoveryRequired.bind(state);
     const recordTurnAttempt = state.recordTurnAttempt.bind(state);
     const recordInteractionIntent = state.recordInteractionIntent.bind(state);
     const recordSlackInteractionProgress = state.recordSlackInteractionProgress.bind(state);
     const markTurnDelivered = state.markTurnDelivered.bind(state);
     const discardTurn = state.discardTurn.bind(state);
     const pending = await listPendingTurns();
-    await Promise.all(pending.map(async (job) => {
+    const runJob = async (job: (typeof pending)[number]): Promise<boolean> => {
       if (!job.turn.interactionIntent && job.progress.interactionIntent) {
         job.turn.interactionIntent = job.progress.interactionIntent;
       }
@@ -102,11 +134,42 @@ export async function drainNodeTurnRelayOnce(
         ? slackThreadKey(job.turn)
         : undefined;
       await recordTurnAttempt(job.id, attempt);
+      const flueDispatch = {
+        ...(job.dispatchEnvelope ? { dispatchEnvelope: job.dispatchEnvelope } : {}),
+        ...(job.dispatchReceipt ? { dispatchReceipt: job.dispatchReceipt } : {}),
+        ...(job.flueSettlement ? { flueSettlement: job.flueSettlement } : {}),
+        prepare: (message: string, observation: Parameters<typeof prepareFlueDispatch>[2]) =>
+          prepareFlueDispatch(job.id, message, observation),
+        reconcileExistingInstance: (uid: string) =>
+          reconcileFlueExistingInstance(job.id, uid),
+        recordReceipt: (receipt: Parameters<typeof recordFlueReceipt>[1]) =>
+          recordFlueReceipt(job.id, receipt),
+        recordSettlement: (settlement: Parameters<typeof recordFlueSettlement>[1]) =>
+          recordFlueSettlement(job.id, settlement),
+        markRecoveryRequired: (reason: string) =>
+          markTurnRecoveryRequired(job.id, reason),
+      };
       try {
+        const runtimePlanDecision = job.runtimePlan && job.agentInstanceId &&
+            job.continuityNoticeRequired !== undefined
+          ? {
+              runtimePlan: job.runtimePlan,
+              instanceId: job.agentInstanceId,
+              continuityNoticeRequired: job.continuityNoticeRequired,
+            }
+          : undefined;
         await executeTurn(job.turn, job.assignment, env, {
           turnId: job.id,
-          usageExecutionId: `exec:${job.id}:${attempt}`,
+          usageExecutionId: `exec:${job.id}:flue`,
           ...(job.runId ? { runId: job.runId, runAttempt: attempt } : {}),
+          ...(runtimePlanDecision ? { runtimePlanDecision } : {}),
+          onRuntimePlan: (candidate) => freezeRuntimePlan(job.id, candidate),
+          flueDispatch,
+          ...(job.progress.continuityNotice
+            ? { continuityNoticeProgress: job.progress.continuityNotice }
+            : {}),
+          onContinuityNoticeProgress: (notice) =>
+            recordContinuityNotice(job.id, notice),
           onInteractionIntent: async (intent) => {
             await recordInteractionIntent(job.id, intent);
             if (intent.disposition !== 'work') return;
@@ -121,7 +184,32 @@ export async function drainNodeTurnRelayOnce(
         });
         await markTurnDelivered(job.id);
         if (activeWorkKey) await state.setActiveWork(activeWorkKey, job.id, false);
+        return true;
       } catch (error) {
+        if (error instanceof ContinuityNoticeDeliveryError) {
+          if (error.recoveryRequired) {
+            await markTurnRecoveryRequired(job.id, 'continuity_notice_delivery_unknown');
+          }
+          if (activeWorkKey) await state.setActiveWork(activeWorkKey, job.id, false);
+          return false;
+        }
+        if (flueDispatch.dispatchEnvelope) {
+          // The row now owns the only legal redrive: replay the same keyed
+          // admission, re-read its receipt, or replay its saved settlement.
+          if (activeWorkKey) await state.setActiveWork(activeWorkKey, job.id, false);
+          if (error instanceof AgentPromptFailure && error.recoveryRequired) {
+            console.error('[chickpea] node Flue turn requires operator reconciliation');
+          } else if (attempt >= MAX_POST_DISPATCH_ATTEMPTS) {
+            await markTurnRecoveryRequired(job.id, 'post_dispatch_attempts_exhausted');
+            console.error('[chickpea] node Flue turn exhausted durable reattachment attempts');
+          } else {
+            // Production drains receive an automatic, bounded retry like the
+            // Cloudflare alarm. Injected test/store drains stay caller-owned.
+            if (!options.state) scheduleNodeTurnRelayRetry(env);
+            console.warn('[chickpea] node Flue turn retained for durable reattachment');
+          }
+          return false;
+        }
         // Preserve the established Node contract: a genuine delivery failure
         // releases claims so Slack can redrive; the durable row is terminal.
         await state.release(job.evtKey);
@@ -130,6 +218,21 @@ export async function drainNodeTurnRelayOnce(
         if (activeWorkKey) await state.setActiveWork(activeWorkKey, job.id, false);
         await discardTurn(job.id);
         console.error('[chickpea] node turn relay failed:', sanitizeError(error));
+        return true;
+      }
+    };
+    const groups = new Map<string, typeof pending>();
+    for (const job of pending) {
+      const key = slackThreadKey(job.turn);
+      const jobs = groups.get(key);
+      if (jobs) jobs.push(job);
+      else groups.set(key, [job]);
+    }
+    // Preserve ordering within one conversation while allowing unrelated
+    // conversations to make progress independently, matching the CF relay.
+    await Promise.all([...groups.values()].map(async (jobs) => {
+      for (const job of jobs) {
+        if (!(await runJob(job))) break;
       }
     }));
   }
@@ -180,6 +283,13 @@ async function drainLedgerRuns(input: {
   const { state, work } = input;
   if (
     !state.getPendingTurnByRunId ||
+    !state.freezeRuntimePlan ||
+    !state.prepareFlueDispatch ||
+    !state.reconcileFlueExistingInstance ||
+    !state.recordFlueReceipt ||
+    !state.recordFlueSettlement ||
+    !state.recordContinuityNotice ||
+    !state.markTurnRecoveryRequired ||
     !state.recordTurnAttempt ||
     !state.recordInteractionIntent ||
     !state.recordSlackInteractionProgress ||
@@ -196,7 +306,13 @@ async function drainLedgerRuns(input: {
       work,
       turns: {
         getPendingByRunId: state.getPendingTurnByRunId.bind(state),
-        putAgentExecutionContext: state.putAgentExecutionContext.bind(state),
+        freezeRuntimePlan: state.freezeRuntimePlan.bind(state),
+        prepareFlueDispatch: state.prepareFlueDispatch.bind(state),
+        reconcileFlueExistingInstance: state.reconcileFlueExistingInstance.bind(state),
+        recordFlueReceipt: state.recordFlueReceipt.bind(state),
+        recordFlueSettlement: state.recordFlueSettlement.bind(state),
+        recordContinuityNotice: state.recordContinuityNotice.bind(state),
+        markRecoveryRequired: state.markTurnRecoveryRequired.bind(state),
         recordAttempt: state.recordTurnAttempt.bind(state),
         recordInteractionIntent: state.recordInteractionIntent.bind(state),
         recordSlackInteractionProgress: async (id, patch) => {

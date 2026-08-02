@@ -30,7 +30,6 @@ import {
   waitForReady,
 } from './lib/offline-harness.mjs';
 
-const INTERNAL_TOKEN = 'snapshot-internal-token';
 const ADMIN_TOKEN = 'snapshot-admin-token';
 const EXEC_CHANNEL = 'C_EXEC';
 const ROOT_TS = '1782772000.000100';
@@ -78,7 +77,6 @@ async function startServer({ serverEntry, fakeUrl, dbPath, stateDbPath, netGuard
     env: {
       TAG_DB_PATH: dbPath,
       SLACK_STATE_DB_PATH: stateDbPath,
-      TAG_AGENT_API_TOKEN: INTERNAL_TOKEN,
       TAG_ADMIN_TOKEN: ADMIN_TOKEN,
       SLACK_TAG_MODEL: 'local-stub/snapshot-durability',
     },

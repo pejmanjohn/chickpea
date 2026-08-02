@@ -176,6 +176,8 @@ export class WorkStoreLogic {
           kind: 'audit_events',
           events: this.listAuditEvents(request.runId, request.limit),
         };
+      case 'count_executing_runs':
+        return { kind: 'count', count: this.countExecutingRuns() };
       case 'verify_integrity':
         return { kind: 'integrity', report: this.verifyIntegrity() };
     }
@@ -845,6 +847,12 @@ export class WorkStoreLogic {
         ? { createdAt: Number(last.created_at), runId: String(last.id) as RunId }
         : null,
     };
+  }
+
+  countExecutingRuns(): number {
+    return Number(
+      this.db.get("SELECT COUNT(*) AS count FROM runs WHERE status = 'executing'")?.count ?? 0,
+    );
   }
 
   listRunExecutions(runId: RunId, limit = 50): RunExecutionRecord[] {
@@ -1780,6 +1788,9 @@ export class SqliteWorkStore implements WorkStore {
   }
   async listRuns(input: ListWorkRunsInput) {
     return this.logic.listRuns(input);
+  }
+  async countExecutingRuns() {
+    return this.logic.countExecutingRuns();
   }
   async listRunExecutions(runId: RunId, limit?: number) {
     return this.logic.listRunExecutions(runId, limit);

@@ -3,12 +3,14 @@ import { test } from 'node:test';
 
 import type { WebClient } from '@slack/web-api';
 
+import { compileRuntimePlanV2 } from '../src/agents/runtime-plan.ts';
 import type { ResolvedAssignment } from '../src/config/types.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
 import {
   createLedgerSlackRunHandler,
   type LedgerSlackTurnExecutor,
 } from '../src/slack/ledger-turn-driver.ts';
+import { AgentPromptFailure } from '../src/slack/flue-dispatch.ts';
 import { TurnJobStoreLogic } from '../src/slack/turn-jobs.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { opaqueId } from '../src/work/admission.ts';
@@ -171,6 +173,39 @@ test('a pre-submit executor failure is safely requeued instead of quarantined', 
   }
 });
 
+test('a Flue reconciliation conflict quarantines the ledger Run and retains its TurnJob', async () => {
+  let clock = NOW;
+  const db = openStateDb(':memory:');
+  try {
+    const work = new WorkStoreLogic(db, { now: () => clock });
+    const turns = new TurnJobStoreLogic(db, () => clock);
+    const admission = work.admitShadowRun(prepareSubmitRun(submission('flue-conflict')));
+    turns.enqueue(turnJob(admission.run.id, 'flue-conflict'));
+    const claim = work.claimNextInteractiveRun({
+      ownerId: 'worker', authorityEpoch: 1, leaseDurationMs: 30_000, claimedAt: clock,
+    })!;
+    const handler = createLedgerSlackRunHandler({
+      work: work as unknown as WorkStore,
+      turns,
+      client: {} as WebClient,
+      executeTurn: (async () => {
+        turns.markRecoveryRequired('turn_flue-conflict', 'flue_dispatch_payload_conflict');
+        throw new AgentPromptFailure('agent', 409, true);
+      }) as LedgerSlackTurnExecutor,
+      now: () => ++clock,
+    });
+
+    assert.deepEqual(await handler(claim), {
+      kind: 'recovery_required',
+      reasonCode: 'flue_dispatch_reconciliation_required',
+    });
+    assert.equal(turns.runtimeDrainCounts().pendingLedgerTurnJobs, 1);
+    assert.equal(turns.getPendingByRunId(admission.run.id), undefined);
+  } finally {
+    db.close();
+  }
+});
+
 test('failure classification uses the newest immutable RunExecution', async () => {
   let clock = NOW;
   const db = openStateDb(':memory:');
@@ -188,13 +223,22 @@ test('failure classification uses the newest immutable RunExecution', async () =
       outcome: 'not_submitted', rawStatus: 'credential_unavailable',
       safeFailureCode: 'credential_unavailable',
     });
-    const continuityKeys: string[] = [];
+    const instanceIds: string[] = [];
     const handler = createLedgerSlackRunHandler({
       work: work as unknown as WorkStore,
       turns,
       client: {} as WebClient,
       executeTurn: (async (_turn, _assignment, _env, options) => {
-        continuityKeys.push(options?.continuityKey ?? 'missing');
+        const decision = options?.runtimePlanDecision ?? await options?.onRuntimePlan?.(
+          compileRuntimePlanV2({
+            turn: turn(),
+            assignment: assignment(),
+            instructions: 'Frozen recovery instructions.',
+            memoryEpoch: 1,
+            sandboxMode: 'bash',
+          }),
+        );
+        instanceIds.push(decision?.instanceId ?? 'missing');
         if (options?.runFencingToken === 2) {
           const secondLifecycle = lifecycleFor(
             work,
@@ -228,9 +272,10 @@ test('failure classification uses the newest immutable RunExecution', async () =
     assert.deepEqual(executions.map((execution) => execution.fencingToken), [1, 2]);
     assert.equal(executions[0]?.outcome, 'not_submitted');
     assert.equal(executions[1]?.outcome, 'pending');
-    assert.equal(continuityKeys.length, 2);
-    assert.notEqual(continuityKeys[0], continuityKeys[1]);
-    assert.doesNotMatch(continuityKeys.join(' '), /T_canary|C_canary|100\.001/);
+    assert.equal(instanceIds.length, 2);
+    assert.equal(instanceIds[0], instanceIds[1], 'retry keeps the frozen Flue target');
+    assert.match(instanceIds[0] ?? '', /^agent_[a-f0-9]{40}$/);
+    assert.doesNotMatch(instanceIds.join(' '), /T_canary|C_canary|100\.001/);
   } finally {
     db.close();
   }

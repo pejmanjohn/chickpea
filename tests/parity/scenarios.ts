@@ -832,14 +832,14 @@ export const scenarios: Scenario[] = [
   },
   {
     id: 'S23',
-    title: 'final delivery failure releases the claim so a Slack retry re-drives exactly one final',
+    title: 'final delivery failure retains the turn and durably retries exactly one final',
     config: demoChannelConfig({ slack: { failFinalDeliveryOnce: true } }),
     async run(instance) {
       const event = appMention();
 
-      // First attempt: both final transports (startStream + markdown post) fail,
-      // so deliverFinal throws, runTurn throws, and the claim is released. No
-      // final reaches the wire.
+      // First attempt: both final transports (startStream + markdown post) fail.
+      // The durable TurnJob retains its Flue settlement, so no final reaches
+      // the wire and recovery does not need another model call.
       const first = await instance.postEvent(event);
       assert.equal(first.status, 200);
       await instance.quiesce();
@@ -849,12 +849,12 @@ export const scenarios: Scenario[] = [
         'a fully-failed delivery must not count as a final on the wire',
       );
 
-      // Slack retries the SAME signed event. Because the claim was released, the
-      // retry re-drives the turn; delivery now succeeds. Dedupe still prevents a
-      // second post, so exactly one final lands (mirrors the deleted runner test
-      // "delivery failure after provider success releases dedupe for retry").
+      // Slack may still retry the SAME signed event, but the retained claim
+      // suppresses it. The Node relay replays the saved settlement after its
+      // bounded backoff and delivery succeeds exactly once.
       const retry = await instance.postEvent(event);
       assert.equal(retry.status, 200);
+      await waitForFinalCount(instance, 1);
       await instance.quiesce();
 
       const finals = instance.backend.finals();

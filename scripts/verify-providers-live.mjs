@@ -109,7 +109,6 @@ async function runLiveProvider(provider, serverEntry, fake, backend) {
     env: {
       TAG_DB_PATH: ':memory:',
       SLACK_STATE_DB_PATH: stateDbPath,
-      TAG_AGENT_API_TOKEN: 'providers-live-internal-token',
       SLACK_TAG_MODEL: provider.model,
       NET_GUARD_ALLOW: provider.liveHost,
       // The harness default points LOCAL_STUB_URL at the fake; that is fine —

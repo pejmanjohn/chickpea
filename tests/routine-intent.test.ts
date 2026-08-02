@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { isRoutineIntentCandidate, parseRoutineIntent } from '../src/routines/intent.ts';
-import { route as routineIntentRoute } from '../src/agents/routine-intent.ts';
-import { getInternalAgentToken } from '../src/slack/internal-auth.ts';
+import {
+  isRoutineIntentCandidate,
+  parseRoutineIntent,
+  promptRoutineIntentAgent,
+} from '../src/routines/intent.ts';
+import { ROUTINE_INTENT_DATA_NAME } from '../src/agents/routine-intent.ts';
 
 test('the lexical prefilter admits clear recurring-work requests but not routine discussion', () => {
   assert.equal(
@@ -24,7 +27,7 @@ test('the parser accepts one-time schedules and name-based management actions', 
     workspaceId: 'T_TEST', channelId: 'C_TEST', eventId: 'Ev_once',
     text: 'Tomorrow at 9am, send the launch report.', defaultTimezone: 'America/Los_Angeles',
   };
-  const once = await parseRoutineIntent(onceContext, undefined, async () => JSON.stringify({
+  const once = await parseRoutineIntent(onceContext, undefined, async () => ({
     action: 'create', triggerKind: 'once', name: 'Launch report',
     taskText: 'Send the launch report.', scheduleExpression: '2026-07-29T09:00',
     timezone: 'America/Los_Angeles', timezoneWasDefaulted: true, outputPolicy: 'post',
@@ -34,7 +37,7 @@ test('the parser accepts one-time schedules and name-based management actions', 
   const control = await parseRoutineIntent(
     { ...onceContext, eventId: 'Ev_pause', text: 'Pause the routine "Friday rollup".' },
     undefined,
-    async () => JSON.stringify({ action: 'pause', routineName: 'Friday rollup' }),
+    async () => ({ action: 'pause', routineName: 'Friday rollup' }),
   );
   assert.deepEqual(control, { action: 'pause', routineName: 'Friday rollup' });
 });
@@ -44,7 +47,7 @@ test('the tool-less parser output is schema-bound and non-matches fall through',
     workspaceId: 'T_TEST', channelId: 'C_TEST', eventId: 'Ev1',
     text: 'Every weekday, summarize support requests and post the digest.',
   };
-  const parsed = await parseRoutineIntent(context, undefined, async () => JSON.stringify({
+  const parsed = await parseRoutineIntent(context, undefined, async () => ({
     action: 'create', name: 'Support digest', taskText: 'Summarize support requests and post the digest.',
     scheduleExpression: '0 9 * * 1-5', timezone: 'America/Los_Angeles',
     timezoneWasDefaulted: false, outputPolicy: 'post',
@@ -53,29 +56,44 @@ test('the tool-less parser output is schema-bound and non-matches fall through',
   assert.equal(parsed?.scheduleExpression, '0 9 * * 1-5');
 
   assert.equal(
-    await parseRoutineIntent(context, undefined, async () => '{"action":"none"}'),
+    await parseRoutineIntent(context, undefined, async () => ({ action: 'none' })),
     undefined,
   );
   assert.equal(
-    await parseRoutineIntent(context, undefined, async () => '{"action":"create","extra":true}'),
+    await parseRoutineIntent(context, undefined, async () => ({ action: 'create', extra: true })),
     undefined,
   );
 });
 
-test('the generated routine-intent Agent route is internal-only', async () => {
-  const context = (token?: string) => ({
-    req: { header: () => token },
-    json: (body: unknown, status: number) => Response.json(body, { status }),
+test('intent reads exactly one named data value and ignores free-form assistant JSON', async () => {
+  const context = {
+    workspaceId: 'T_TEST', channelId: 'C_TEST', eventId: 'Ev_data',
+    text: 'Every weekday, post the digest.', defaultTimezone: 'UTC',
+  };
+  const handle = (data: Record<string, unknown[]>, text = '{"action":"delete"}') => ({
+    async dispatch() {
+      return {
+        submissionId: 'submission_intent',
+        acceptedAt: new Date().toISOString(),
+        uid: 'uid_intent',
+      };
+    },
+    async read() {
+      return { submissionId: 'submission_intent', text, data };
+    },
   });
-  const denied = await routineIntentRoute(
-    context() as never,
-    async () => undefined,
+  const value = { action: 'create', name: 'Digest', taskText: 'post the digest', outputPolicy: 'post' };
+  assert.deepEqual(
+    await promptRoutineIntentAgent(context, undefined, handle({ [ROUTINE_INTENT_DATA_NAME]: [value] })),
+    value,
   );
-  assert.equal(denied instanceof Response ? denied.status : 0, 401);
-  let reached = false;
-  await routineIntentRoute(
-    context(getInternalAgentToken()) as never,
-    async () => { reached = true; },
+  assert.equal(await promptRoutineIntentAgent(context, undefined, handle({})), undefined);
+  assert.equal(
+    await promptRoutineIntentAgent(
+      context,
+      undefined,
+      handle({ [ROUTINE_INTENT_DATA_NAME]: [value, { action: 'none' }] }),
+    ),
+    undefined,
   );
-  assert.equal(reached, true);
 });

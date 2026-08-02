@@ -101,6 +101,9 @@ import {
   type ControlRoutineInput,
   type CreateRoutineOccurrenceInput,
   type PutRoutineConfirmationInput,
+  type PrepareRoutineAgentDispatchInput,
+  type RecordRoutineAgentReceiptInput,
+  type RecordRoutineAgentSettlementInput,
   type RecordRoutineDeliveryInput,
   type RoutineAdmissionAttempt,
   type RoutineAdminPage,
@@ -305,12 +308,76 @@ export class CfSlackStateStore implements SlackStateStore {
     return unwrap(await this.stub.admitSlackTurn(input));
   }
 
-  async putAgentExecutionContext(input: Parameters<SlackStateStore['putAgentExecutionContext']>[0]) {
-    return unwrap(await this.stub.slackAgentExecutionContextPut(input));
+  async pinAgentBinding(
+    input: Parameters<SlackStateStore['pinAgentBinding']>[0],
+    expected?: Parameters<SlackStateStore['pinAgentBinding']>[1],
+  ) {
+    return unwrap(await this.stub.slackAgentBindingPin(input, expected));
   }
 
-  async getAgentExecutionContext(continuityKey: string) {
-    return orUndefined(unwrap(await this.stub.slackAgentExecutionContextGet(continuityKey)));
+  async getAgentBinding(continuityKey: string) {
+    return orUndefined(unwrap(await this.stub.slackAgentBindingGet(continuityKey)));
+  }
+
+  async prepareFlueDispatch(
+    id: string,
+    message: string,
+    observation: Parameters<TagStateRpc['slackFlueDispatchPrepare']>[2],
+  ) {
+    return unwrap(await this.stub.slackFlueDispatchPrepare(id, message, observation));
+  }
+
+  async reconcileFlueExistingInstance(id: string, uid: string) {
+    return unwrap(await this.stub.slackFlueExistingInstanceReconcile(id, uid));
+  }
+
+  async recordFlueReceipt(
+    id: string,
+    receipt: Parameters<TagStateRpc['slackFlueReceiptRecord']>[1],
+  ) {
+    return unwrap(await this.stub.slackFlueReceiptRecord(id, receipt));
+  }
+
+  async recordFlueSettlement(
+    id: string,
+    settlement: Parameters<TagStateRpc['slackFlueSettlementRecord']>[1],
+  ) {
+    return unwrap(await this.stub.slackFlueSettlementRecord(id, settlement));
+  }
+
+  async matchFlueObservation(instanceId: string, submissionId?: string) {
+    return orUndefined(
+      unwrap(await this.stub.slackFlueObservationMatch(instanceId, submissionId)),
+    );
+  }
+
+  async recordContinuityNotice(
+    id: string,
+    notice: Parameters<TagStateRpc['slackContinuityNoticeRecord']>[1],
+  ): Promise<void> {
+    unwrap(await this.stub.slackContinuityNoticeRecord(id, notice));
+  }
+
+  async markTurnRecoveryRequired(id: string, reason: string): Promise<void> {
+    unwrap(await this.stub.slackTurnRecoveryRequired(id, reason));
+  }
+
+  async listTurnRecoveryRequired(limit = 50) {
+    return unwrap(await this.stub.slackTurnRecoveryList(limit));
+  }
+
+  async resolveTurnRecoveryRequired(id: string) {
+    return unwrap(await this.stub.slackTurnRecoveryResolve(id));
+  }
+
+  async runtimeDrainCounts() {
+    const status = unwrap(await this.stub.runtimeDrainStatus());
+    return {
+      pendingLegacyTurnJobs: status.categories.pendingLegacyTurnJobs,
+      pendingLedgerTurnJobs: status.categories.pendingLedgerTurnJobs,
+      pendingSlackInteractionCleanups: status.categories.pendingSlackInteractionCleanups,
+      recoveryRequiredTurnJobs: status.categories.recoveryRequiredTurnJobs,
+    };
   }
 
   async recordSlackInteractionProgress(
@@ -653,6 +720,11 @@ export class CfRoutineStore implements RoutineStore {
     if (response.kind !== 'runs') throw unexpectedRoutineResponse();
     return response.runs;
   }
+  async countAdmittingOrRunningOccurrences(): Promise<number> {
+    const response = await this.execute({ kind: 'count_admitting_or_running_occurrences' });
+    if (response.kind !== 'count') throw unexpectedRoutineResponse();
+    return response.count;
+  }
   async claimDueSchedules(input: ClaimDueRoutinesInput): Promise<RoutineDueClaimBatch> {
     const response = await this.execute({ kind: 'claim_due_schedules', input });
     if (response.kind !== 'due_claims') throw unexpectedRoutineResponse();
@@ -682,6 +754,23 @@ export class CfRoutineStore implements RoutineStore {
     const response = await this.execute({ kind: 'begin_occurrence', input });
     if (response.kind !== 'begin') throw unexpectedRoutineResponse();
     return response.outcome;
+  }
+  async prepareAgentDispatch(
+    input: PrepareRoutineAgentDispatchInput,
+  ): Promise<'started' | 'superseded'> {
+    const response = await this.execute({ kind: 'prepare_agent_dispatch', input });
+    if (response.kind !== 'begin') throw unexpectedRoutineResponse();
+    return response.outcome;
+  }
+  async recordAgentReceipt(
+    input: RecordRoutineAgentReceiptInput,
+  ): Promise<RoutineAdmissionAttempt> {
+    const response = await this.execute({ kind: 'record_agent_receipt', input });
+    if (response.kind !== 'admission') throw unexpectedRoutineResponse();
+    return response.admission;
+  }
+  async recordAgentSettlement(input: RecordRoutineAgentSettlementInput): Promise<RoutineRun> {
+    return this.requiredRun(await this.execute({ kind: 'record_agent_settlement', input }));
   }
   async transitionRun(input: TransitionRoutineRunInput): Promise<RoutineRun> {
     return this.requiredRun(await this.execute({ kind: 'transition_run', input }));
@@ -921,6 +1010,12 @@ export class CfWorkStore implements WorkStore {
     const response = await this.execute({ kind: 'list_runs', input });
     if (response.kind !== 'run_page') throw unexpectedWorkResponse();
     return response.page;
+  }
+
+  async countExecutingRuns() {
+    const response = await this.execute({ kind: 'count_executing_runs' });
+    if (response.kind !== 'count') throw unexpectedWorkResponse();
+    return response.count;
   }
 
   async listRunExecutions(runId: RunId, limit?: number) {

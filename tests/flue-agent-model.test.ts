@@ -4,7 +4,6 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { test } from 'node:test';
 
-import { registerProvider } from '@flue/runtime';
 // `resolveModel` is not re-exported from the root `@flue/runtime` entry point,
 // but it is a documented public subpath export (see the `"./internal"` entry
 // in @flue/runtime's package.json `exports` map) — not a reach into an
@@ -19,8 +18,8 @@ import {
   OPENAI_PLATFORM_COMPAT_PROVIDER_ID,
 } from '../src/model-compat/provider.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
-import { getSlackStateStore } from '../src/config/state-backend.ts';
-import slackThreadAgent, {
+import {
+  legacySlackThreadAgent as slackThreadAgent,
   resolveAgentModel,
   thinkingLevelForModel,
 } from '../src/agents/slack-thread.ts';
@@ -111,8 +110,6 @@ test('Flue resolves the model specifier produced by the slack-thread agent', asy
   // resolution will admit it. An empty registration is enough for a catalog
   // provider id to hydrate from the catalog and admit arbitrary model-id
   // suffixes under it.
-  registerProvider('cloudflare-workers-ai', {});
-
   try {
     const config = await withEnv(
       {
@@ -277,7 +274,7 @@ test('slack-thread initializes from the SQLite config store for the current stat
   store.close();
 
   try {
-    const [config, opaqueConfig] = await withEnv(
+    const config = await withEnv(
       {
         SLACK_STATE_DB_PATH: dbPath,
         SLACK_TAG_MODEL: 'local-stub/runtime-fallback',
@@ -288,21 +285,10 @@ test('slack-thread initializes from the SQLite config store for the current stat
         CLOUDFLARE_ACCOUNT_ID: undefined,
       },
       async () => {
-        const config = await slackThreadAgent.initialize({
+        return slackThreadAgent.initialize({
           id: 'T_RUNTIME:C_RUNTIME:1782770400.000100',
           env: {},
         });
-        const continuityKey = `agent_${'a'.repeat(40)}`;
-        await getSlackStateStore().putAgentExecutionContext({
-          continuityKey,
-          runId: `run_${'b'.repeat(40)}`,
-          workspaceId: 'T_RUNTIME',
-          channelId: 'C_RUNTIME',
-          threadTs: '1782770400.000100',
-          createdAt: Date.now(),
-        });
-        const opaqueConfig = await slackThreadAgent.initialize({ id: continuityKey, env: {} });
-        return [config, opaqueConfig] as const;
       },
     );
 
@@ -314,8 +300,6 @@ test('slack-thread initializes from the SQLite config store for the current stat
       (config.skills ?? []).map((skill) => skill.name),
       ['runtime-skill'],
     );
-    assert.equal(opaqueConfig.model, config.model);
-    assert.equal(opaqueConfig.instructions, config.instructions);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

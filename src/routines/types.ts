@@ -233,6 +233,9 @@ export interface RoutineRun {
   admissionOwner: string | null;
   admissionLeaseUntil: number | null;
   flueRunId: string | null;
+  /** Historical Flue workflow id above remains read-only for legacy rows. */
+  flueAgentEnvelope?: RoutineAgentDispatchEnvelopeV1 | null;
+  flueAgentSettlement?: RoutineAgentSettlementV1 | null;
   queuedAt: number;
   admittedAt: number | null;
   startedAt: number | null;
@@ -289,13 +292,66 @@ export interface CreateRoutineOccurrenceInput {
 export interface RoutineAdmissionAttempt {
   occurrenceId: string;
   attempt: number;
+  attemptId: string;
   flueRunId: string | null;
+  flueAgentReceipt: RoutineAgentReceiptV1 | null;
   invokeStartedAt: number;
   receiptAt: number | null;
   visibleAt: number | null;
   status: RoutineAdmissionStatus;
   safeError: string | null;
 }
+
+export interface RoutineAgentDispatchEnvelopeV1 {
+  schemaVersion: 1;
+  attemptId: string;
+  instanceId: string;
+  idempotencyKey: string;
+  message: string;
+  initialData: unknown;
+}
+
+export interface RoutineAgentReceiptV1 {
+  submissionId: string;
+  acceptedAt: string;
+  uid?: string;
+  deduplicated?: true;
+}
+
+export interface RoutineAgentUsageV1 {
+  requestedModel: string;
+  returnedModel: { provider: string; id: string } | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  totalTokens: number | null;
+  completeness: 'complete' | 'partial' | 'not_reported';
+}
+
+export interface RoutineAgentCompletedResultV1 {
+  status: 'succeeded' | 'no_op';
+  message: string;
+  changeKeyHash: string | null;
+  suppressedAsNoOp: boolean;
+  toolCallCount: number;
+  usage: RoutineAgentUsageV1;
+}
+
+export type RoutineAgentSettlementV1 =
+  | {
+      schemaVersion: 1;
+      outcome: 'completed';
+      settledAt: number;
+      result: RoutineAgentCompletedResultV1;
+    }
+  | {
+      schemaVersion: 1;
+      outcome: 'failed' | 'aborted';
+      settledAt: number;
+      failureClass: RoutineFailureClass;
+      publicError: string;
+      toolCallCount: number;
+      usage: RoutineAgentUsageV1 | null;
+    };
 
 export interface StartRoutineAdmissionInput {
   occurrenceId: string;
@@ -342,6 +398,30 @@ export interface BeginRoutineOccurrenceInput {
   model?: string;
   providerAuthRoute?: ProviderAuthRoute;
   traceId?: string;
+}
+
+export interface PrepareRoutineAgentDispatchInput {
+  occurrenceId: string;
+  attempt: number;
+  startedAt: number;
+  envelope: RoutineAgentDispatchEnvelopeV1;
+  resolvedAccessHash: string;
+  resolvedAgentId: string;
+  model: string;
+  providerAuthRoute?: ProviderAuthRoute;
+  traceId: string;
+}
+
+export interface RecordRoutineAgentReceiptInput {
+  occurrenceId: string;
+  attempt: number;
+  receipt: RoutineAgentReceiptV1;
+  at: number;
+}
+
+export interface RecordRoutineAgentSettlementInput {
+  occurrenceId: string;
+  settlement: RoutineAgentSettlementV1;
 }
 
 export interface TransitionRoutineRunInput {
@@ -418,6 +498,7 @@ export interface RoutineStore {
   createOccurrence(input: CreateRoutineOccurrenceInput): Promise<RoutineRun>;
   getRun(occurrenceId: string): Promise<RoutineRun | undefined>;
   listRuns(filter?: RoutineRunFilter): Promise<RoutineRun[]>;
+  countAdmittingOrRunningOccurrences(): Promise<number>;
   claimDueSchedules(input: ClaimDueRoutinesInput): Promise<RoutineDueClaimBatch>;
   startAdmissionAttempt(input: StartRoutineAdmissionInput): Promise<RoutineAdmissionAttempt>;
   recordAdmissionReceipt(
@@ -428,6 +509,9 @@ export interface RoutineStore {
   ): Promise<RoutineAdmissionAttempt>;
   resolveAdmission(input: ResolveRoutineAdmissionInput): Promise<RoutineRun>;
   beginOccurrence(input: BeginRoutineOccurrenceInput): Promise<'started' | 'superseded'>;
+  prepareAgentDispatch(input: PrepareRoutineAgentDispatchInput): Promise<'started' | 'superseded'>;
+  recordAgentReceipt(input: RecordRoutineAgentReceiptInput): Promise<RoutineAdmissionAttempt>;
+  recordAgentSettlement(input: RecordRoutineAgentSettlementInput): Promise<RoutineRun>;
   transitionRun(input: TransitionRoutineRunInput): Promise<RoutineRun>;
   claimDelivery(input: ClaimRoutineDeliveryInput): Promise<'claimed' | 'superseded'>;
   recordDelivery(input: RecordRoutineDeliveryInput): Promise<RoutineRun>;
@@ -473,10 +557,14 @@ export type RoutineRpcRequest =
     }
   | { kind: 'resolve_admission'; input: ResolveRoutineAdmissionInput }
   | { kind: 'begin_occurrence'; input: BeginRoutineOccurrenceInput }
+  | { kind: 'prepare_agent_dispatch'; input: PrepareRoutineAgentDispatchInput }
+  | { kind: 'record_agent_receipt'; input: RecordRoutineAgentReceiptInput }
+  | { kind: 'record_agent_settlement'; input: RecordRoutineAgentSettlementInput }
   | { kind: 'transition_run'; input: TransitionRoutineRunInput }
   | { kind: 'claim_delivery'; input: ClaimRoutineDeliveryInput }
   | { kind: 'record_delivery'; input: RecordRoutineDeliveryInput }
   | { kind: 'list_admissions'; occurrenceId: string }
+  | { kind: 'count_admitting_or_running_occurrences' }
   | { kind: 'list_audit_events'; filter: AuditEventFilter };
 
 export type RoutineRpcResponse =
@@ -494,5 +582,6 @@ export type RoutineRpcResponse =
   | { kind: 'delivery_claim'; outcome: 'claimed' | 'superseded' }
   | { kind: 'boolean'; value: boolean }
   | { kind: 'purged'; count: number }
+  | { kind: 'count'; count: number }
   | { kind: 'maintenance'; result: RoutineMaintenanceResult }
   | { kind: 'audit_events'; events: AuditEvent[] };

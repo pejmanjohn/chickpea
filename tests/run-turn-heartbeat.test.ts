@@ -5,7 +5,10 @@ import type { WebClient } from '@slack/web-api';
 
 import type { ResolvedAssignment } from '../src/config/types.ts';
 import type { SlackInteractionProgressPatch } from '../src/config/state-rpc.ts';
-import type { AgentDispatchResult } from '../src/slack/agent-dispatch.ts';
+import {
+  AgentPromptFailure,
+  type AgentDispatchResult,
+} from '../src/slack/flue-dispatch.ts';
 import { runTurn } from '../src/slack/run-turn.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 
@@ -265,6 +268,82 @@ test('replay delivery skips model activity and never invokes the agent provider'
     ),
     false,
   );
+});
+
+test('a recovery-required Flue conflict emits no Slack final', async () => {
+  let finalAttempts = 0;
+  const client = {
+    assistant: {
+      threads: {
+        setStatus: async () => ({ ok: true }),
+      },
+    },
+    conversations: {
+      history: async () => ({ ok: true, messages: [] }),
+    },
+    chat: {
+      startStream: async () => {
+        finalAttempts += 1;
+        return { ok: true, ts: 'unexpected-final' };
+      },
+      stopStream: async () => ({ ok: true }),
+      postMessage: async () => {
+        finalAttempts += 1;
+        return { ok: true, channel: assignment.channelId, ts: 'unexpected-final' };
+      },
+    },
+  } as unknown as WebClient;
+  const turn: NormalizedSlackTurn = {
+    ...workTurn('Ev_RECOVERY_REQUIRED'),
+    interactionIntent: { disposition: 'reply', reason: 'substantive_request' },
+  };
+
+  await assert.rejects(
+    () => runTurn(turn, assignment, undefined, {
+      client,
+      usageRecordingEnabled: false,
+      async agentPrompt(): Promise<AgentDispatchResult> {
+        throw new AgentPromptFailure('agent', 409, true);
+      },
+    }),
+    (error: unknown) => error instanceof AgentPromptFailure && error.recoveryRequired,
+  );
+  assert.equal(finalAttempts, 0);
+});
+
+test('a retryable Flue interruption emits no Slack final', async () => {
+  let finalAttempts = 0;
+  const client = {
+    assistant: { threads: { setStatus: async () => ({ ok: true }) } },
+    conversations: { history: async () => ({ ok: true, messages: [] }) },
+    chat: {
+      startStream: async () => {
+        finalAttempts += 1;
+        return { ok: true, ts: 'unexpected-final' };
+      },
+      stopStream: async () => ({ ok: true }),
+      postMessage: async () => {
+        finalAttempts += 1;
+        return { ok: true, channel: assignment.channelId, ts: 'unexpected-final' };
+      },
+    },
+  } as unknown as WebClient;
+  const turn: NormalizedSlackTurn = {
+    ...workTurn('Ev_RETRYABLE_INTERRUPTION'),
+    interactionIntent: { disposition: 'reply', reason: 'substantive_request' },
+  };
+
+  await assert.rejects(
+    () => runTurn(turn, assignment, undefined, {
+      client,
+      usageRecordingEnabled: false,
+      async agentPrompt(): Promise<AgentDispatchResult> {
+        throw new AgentPromptFailure('agent', 503, false, true);
+      },
+    }),
+    (error: unknown) => error instanceof AgentPromptFailure && error.retryable,
+  );
+  assert.equal(finalAttempts, 0);
 });
 
 test('a stalled detail status does not delay agent start or final delivery', async () => {

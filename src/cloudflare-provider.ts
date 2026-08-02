@@ -1,5 +1,8 @@
-import { registerProvider } from '@flue/runtime';
-import type { CloudflareAIBinding } from '@flue/runtime/cloudflare';
+import { setProvider } from '@flue/runtime';
+import {
+  cloudflareBindingProvider,
+  type CloudflareAIBinding,
+} from '@flue/runtime/cloudflare/workers-ai';
 
 import { SEED_CLOUDFLARE_MODEL_ID } from './config/seed.ts';
 
@@ -14,13 +17,19 @@ const SEED_CLOUDFLARE_RESPONSE_TIMEOUT_MS = 90_000;
  * imports it or registers a keyless `cloudflare/*` provider.
  */
 export function registerCloudflareBindingProvider(binding: CloudflareAIBinding): void {
-  registerProvider('cloudflare', {
-    api: 'cloudflare-ai-binding',
+  setProvider(cloudflareBindingProvider(cloudflareBindingProviderOptions(binding)));
+}
+
+/** Pure construction seam: keeps gateway privacy and payload policy testable. */
+export function cloudflareBindingProviderOptions(
+  binding: CloudflareAIBinding,
+): { binding: CloudflareAIBinding; gateway: false } {
+  return {
     binding: withCloudflareModelPolicies(binding),
-    // Flue otherwise supplies `{ id: 'default' }`, which creates an AI
-    // Gateway whose default logs retain request and response payloads.
+      // Flue otherwise supplies `{ id: 'default' }`, which creates an AI
+      // Gateway whose default logs retain request and response payloads.
     gateway: false,
-  });
+  };
 }
 
 function withCloudflareModelPolicies(binding: CloudflareAIBinding): CloudflareAIBinding {
@@ -30,7 +39,7 @@ function withCloudflareModelPolicies(binding: CloudflareAIBinding): CloudflareAI
         return binding.run(modelId, inputs, options);
       }
 
-      // Workers AI enables GLM thinking by default. Flue beta.8 represents
+      // Workers AI enables GLM thinking by default. The Pi provider represents
       // `thinkingLevel: 'off'` by omitting `reasoning_effort`, which therefore
       // leaves that server-side default enabled. Apply Cloudflare's explicit
       // chat-template switch at the binding boundary, remove any conflicting

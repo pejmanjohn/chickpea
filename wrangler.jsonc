@@ -6,16 +6,21 @@
   // Without this, a fresh install captures NO logs at all — the sanitized
   // Slack error is then the only trace of a provider failure (learned the
   // hard way: the raw error behind a keyless-anthropic 401 was unrecoverable).
-  "observability": { "enabled": true },
+  "observability": {
+    "enabled": true,
+    // Flue spans are registered explicitly in the Cloudflare-only entry with
+    // `content: false`; platform tracing exports operational metadata only.
+    "traces": { "enabled": true }
+  },
   "ai": {
     "binding": "AI"
   },
   "vars": {
     "SANDBOX_TRANSPORT": "rpc",
     // Cloudflare-only routine kill switch. Keep "0" through deployment and
-    // workerd verification; set "1" only when the fixed Cron, TAG_STATE, Flue
-    // Workflow, and internal route guards are present. `npm run deploy` rejects
-    // an enabled artifact when any required seam is missing.
+    // workerd verification; set "1" only when the fixed Cron, TAG_STATE, and
+    // fresh Flue 2 routine agents are present. `npm run deploy` rejects an
+    // enabled artifact when any required seam is missing.
     "TAG_ROUTINES_ENABLED": "0",
     // Usage is a fail-open observer of canonical Run/RunExecution records. It
     // never controls admission or delivery, so the release artifact can keep
@@ -43,9 +48,9 @@
       { "name": "SANDBOX", "class_name": "Sandbox" }
     ]
   },
-  // Migrations are APPEND-ONLY: v1 (Flue's own DO classes) must never change,
-  // or existing deployments lose their agent transcripts. New classes get a
-  // new tag.
+  // v6 is the deliberate prelaunch Flue 2 reset. It permanently deletes only
+  // the four beta Flue namespaces and creates fresh v2 agents. TagStateStore,
+  // Sandbox, ContainerProxy, and all other app-owned state are preserved.
   "migrations": [
     {
       "tag": "v1",
@@ -66,6 +71,20 @@
     {
       "tag": "v5",
       "new_sqlite_classes": ["FlueRoutineIntentAgent"]
+    },
+    {
+      "tag": "v6",
+      "new_sqlite_classes": [
+        "FlueChickpeaSlackV2Agent",
+        "FlueChickpeaRoutineIntentV2Agent",
+        "FlueChickpeaRoutineExecutionV2Agent"
+      ],
+      "deleted_classes": [
+        "FlueRegistry",
+        "FlueSlackThreadAgent",
+        "FlueRoutineIntentAgent",
+        "FlueRoutineWorkflow"
+      ]
     }
   ],
   "containers": [

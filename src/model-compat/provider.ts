@@ -1,4 +1,4 @@
-import { registerApiProvider, registerProvider } from '@flue/runtime';
+import { setProvider } from '@flue/runtime';
 import {
   createAssistantMessageEventStream,
   type AssistantMessage,
@@ -6,6 +6,7 @@ import {
   type AssistantMessageEventStream,
   type Context,
   type Model,
+  type ProviderStreams,
   type SimpleStreamOptions,
   type StreamOptions,
 } from '@earendil-works/pi-ai';
@@ -25,6 +26,7 @@ import {
   listBundledCatalogModels,
 } from '../model-catalog/bundled.ts';
 import type { CatalogProviderId, ModelAuthLane } from '../model-catalog/types.ts';
+import { createChickpeaPiProvider } from '../config/pi-provider.ts';
 
 export const OPENAI_PLATFORM_COMPAT_PROVIDER_ID = 'chickpea-openai-platform-bundled-v1';
 export const ANTHROPIC_COMPAT_PROVIDER_ID = 'chickpea-anthropic-api-bundled-v1';
@@ -73,20 +75,8 @@ export interface ModelCompatibilityStreamAdapters {
 }
 
 export function registerModelCompatibilityApis(): void {
-  registerApiProvider({
-    api: OPENAI_PLATFORM_COMPAT_API,
-    stream: (model, context, options) =>
-      createModelCompatibilityStream(model, context, options, false),
-    streamSimple: (model, context, options) =>
-      createModelCompatibilityStream(model, context, options, true),
-  });
-  registerApiProvider({
-    api: ANTHROPIC_COMPAT_API,
-    stream: (model, context, options) =>
-      createModelCompatibilityStream(model, context, options, false),
-    streamSimple: (model, context, options) =>
-      createModelCompatibilityStream(model, context, options, true),
-  });
+  // Flue 2 no longer has a process-global API registry. Each Pi Provider owns
+  // its stream implementation and is installed when credentials are bound.
 }
 
 /**
@@ -109,18 +99,14 @@ export function bindModelCompatibilityProvider(
   const api = provider === 'openai' ? OPENAI_PLATFORM_COMPAT_API : ANTHROPIC_COMPAT_API;
   const baseUrl = options.baseUrl ?? models[0]?.baseUrl;
   if (!baseUrl) throw new Error(`No compiled compatibility models for ${provider}.`);
-  registerProvider(providerId, {
-    api,
-    baseUrl,
+  setProvider(createChickpeaPiProvider({
+    id: providerId,
+    name: provider === 'openai' ? 'OpenAI compatibility' : 'Anthropic compatibility',
     ...(apiKey ? { apiKey } : {}),
-    models: Object.fromEntries(models.map((model) => [
-      model.id,
-      { contextWindow: model.contextWindow, maxTokens: model.maxTokens },
-    ])),
-    telemetry: provider === 'openai'
-      ? { providerName: 'openai', serverAddress: 'api.openai.com', serverPort: 443 }
-      : { providerName: 'anthropic', serverAddress: 'api.anthropic.com', serverPort: 443 },
-  });
+    baseUrl,
+    models: compatibilityModels(models, providerId, api),
+    api: compatibilityStreams(),
+  }));
   for (const registration of capturedRegistrations.values()) {
     if (registration.provider === provider) registerCapturedProviderBinding(registration);
   }
@@ -175,23 +161,6 @@ export function registerCapturedModelCompatibilityProvider(options: {
       return model ? structuredClone(model) : undefined;
     },
   };
-  registerApiProvider({
-    api: aliases.api,
-    stream: (model, context, streamOptions) => createModelCompatibilityStream(
-      model,
-      context,
-      streamOptions,
-      false,
-      { route: { provider: options.provider, lane }, resolveModel: registration.resolveModel },
-    ),
-    streamSimple: (model, context, streamOptions) => createModelCompatibilityStream(
-      model,
-      context,
-      streamOptions,
-      true,
-      { route: { provider: options.provider, lane }, resolveModel: registration.resolveModel },
-    ),
-  });
   capturedRegistrations.set(aliases.providerId, registration);
   registerCapturedProviderBinding(registration);
   return aliases;
@@ -308,18 +277,42 @@ function registerCapturedProviderBinding(
   const credential = boundCredentials.get(registration.provider);
   const baseUrl = credential?.baseUrl ?? registration.models[0]?.baseUrl;
   if (!baseUrl) throw new Error(`No captured models for ${registration.provider}.`);
-  registerProvider(registration.providerId, {
-    api: registration.api,
-    baseUrl,
+  setProvider(createChickpeaPiProvider({
+    id: registration.providerId,
+    name: registration.provider === 'openai'
+      ? 'OpenAI captured compatibility'
+      : 'Anthropic captured compatibility',
     ...(credential?.apiKey ? { apiKey: credential.apiKey } : {}),
-    models: Object.fromEntries(registration.models.map((model) => [
-      model.id,
-      { contextWindow: model.contextWindow, maxTokens: model.maxTokens },
-    ])),
-    telemetry: registration.provider === 'openai'
-      ? { providerName: 'openai', serverAddress: 'api.openai.com', serverPort: 443 }
-      : { providerName: 'anthropic', serverAddress: 'api.anthropic.com', serverPort: 443 },
-  });
+    baseUrl,
+    models: compatibilityModels(
+      registration.models,
+      registration.providerId,
+      registration.api,
+    ),
+    api: compatibilityStreams({
+      route: { provider: registration.provider, lane: registration.lane },
+      resolveModel: registration.resolveModel,
+    }),
+  }));
+}
+
+function compatibilityModels(
+  models: readonly Model<string>[],
+  providerId: string,
+  api: string,
+): Model<string>[] {
+  return models.map((model) => ({ ...model, provider: providerId, api }));
+}
+
+function compatibilityStreams(
+  adapters: Pick<ModelCompatibilityStreamAdapters, 'route' | 'resolveModel'> = {},
+): ProviderStreams {
+  return {
+    stream: (model, context, options) =>
+      createModelCompatibilityStream(model, context, options, false, adapters),
+    streamSimple: (model, context, options) =>
+      createModelCompatibilityStream(model, context, options, true, adapters),
+  };
 }
 
 function isOpenAiCompatibilityProvider(provider: string): boolean {

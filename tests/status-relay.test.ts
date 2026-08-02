@@ -2,25 +2,12 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
-  activityStatusGenerationInterceptor,
-  activityStatusTraceHeaders,
   publishActivityStatus,
 } from '../src/slack/activity-publisher.ts';
 import { relayObservedStatus } from '../src/slack/status-relay.ts';
+import { createWorkModelInvocationInterceptor } from '../src/work/model-invocation.ts';
 
 const GENERATION = 'msg:C_CHAN:1782770400.000100 / retry=1';
-
-test('activity trace carries only opaque Run correlation beside the status generation', () => {
-  const headers = activityStatusTraceHeaders(GENERATION, {
-    runId: 'run_opaque_alpha',
-    runExecutionId: 'execution_opaque_alpha',
-    mode: 'enforce',
-  });
-  assert.match(headers.tracestate, /chickpea-run=run_opaque_alpha/);
-  assert.match(headers.tracestate, /chickpea-exec=execution_opaque_alpha/);
-  assert.match(headers.tracestate, /chickpea-work-mode=enforce/);
-  assert.doesNotMatch(headers.tracestate, /prompt|approved|token|secret/);
-});
 
 async function withCloudflareUserAgent<T>(run: () => Promise<T>): Promise<T> {
   const prototype = Object.getPrototypeOf(globalThis.navigator) as object;
@@ -37,26 +24,40 @@ async function withCloudflareUserAgent<T>(run: () => Promise<T>): Promise<T> {
   }
 }
 
-async function withActivityGeneration<T>(
+async function withActivityObservation<T>(
+  instanceId: string,
+  submissionId: string,
   generation: string,
   run: () => Promise<T>,
 ): Promise<T> {
-  return activityStatusGenerationInterceptor(
+  const interceptor = createWorkModelInvocationInterceptor({
+    resolveTarget: async () => ({
+      turnJobId: generation,
+      instanceId,
+      submissionId,
+      generation,
+    }),
+  });
+  return interceptor(
     { type: 'agent', operationId: 'status-test', operationKind: 'prompt' },
-    { traceCarrier: activityStatusTraceHeaders(generation) },
+    { instanceId, submissionId, agentName: 'chickpea-slack-v2' },
     run,
   );
 }
 
 test('Cloudflare activity relays coalesce stale queued detail before reaching the state DO', async () => {
-  await withCloudflareUserAgent(() => withActivityGeneration(GENERATION, async () => {
+  await withCloudflareUserAgent(() => withActivityObservation(
+    'relay-order-thread',
+    'submission-relay-order',
+    GENERATION,
+    async () => {
     const first = Promise.withResolvers<void>();
     const firstStarted = Promise.withResolvers<void>();
     const secondFinished = Promise.withResolvers<void>();
-    const calls: Array<{ instanceId: string; generation: string; statusText: string }> = [];
+    const calls: Array<{ instanceId: string; submissionId: string; statusText: string }> = [];
     const stub = {
-      async observedStatus(instanceId: string, generation: string, statusText: string) {
-        calls.push({ instanceId, generation, statusText });
+      async observedStatus(instanceId: string, submissionId: string, statusText: string) {
+        calls.push({ instanceId, submissionId, statusText });
         if (calls.length === 1) {
           firstStarted.resolve();
           await first.promise;
@@ -84,7 +85,7 @@ test('Cloudflare activity relays coalesce stale queued detail before reaching th
     assert.deepEqual(calls, [
       {
         instanceId: 'relay-order-thread',
-        generation: GENERATION,
+        submissionId: 'submission-relay-order',
         statusText: 'is thinking through the request',
       },
     ]);
@@ -94,20 +95,25 @@ test('Cloudflare activity relays coalesce stale queued detail before reaching th
     assert.deepEqual(calls, [
       {
         instanceId: 'relay-order-thread',
-        generation: GENERATION,
+        submissionId: 'submission-relay-order',
         statusText: 'is thinking through the request',
       },
       {
         instanceId: 'relay-order-thread',
-        generation: GENERATION,
+        submissionId: 'submission-relay-order',
         statusText: 'is using Cloudflare Docs',
       },
     ]);
-  }));
+    },
+  ));
 });
 
 test('a failed Cloudflare activity relay does not block the next update', async () => {
-  await withCloudflareUserAgent(() => withActivityGeneration(GENERATION, async () => {
+  await withCloudflareUserAgent(() => withActivityObservation(
+    'relay-retry-thread',
+    'submission-relay-retry',
+    GENERATION,
+    async () => {
     const secondFinished = Promise.withResolvers<void>();
     const calls: string[] = [];
     const env = {
@@ -116,10 +122,10 @@ test('a failed Cloudflare activity relay does not block the next update', async 
           return {
             async observedStatus(
               _instanceId: string,
-              generation: string,
+              submissionId: string,
               statusText: string,
             ) {
-              assert.equal(generation, GENERATION);
+              assert.equal(submissionId, 'submission-relay-retry');
               calls.push(statusText);
               if (calls.length === 1) throw new Error('transient RPC failure');
               secondFinished.resolve();
@@ -135,7 +141,8 @@ test('a failed Cloudflare activity relay does not block the next update', async 
 
     await secondFinished.promise;
     assert.deepEqual(calls, ['is loading a skill', 'is using a connection']);
-  }));
+    },
+  ));
 });
 
 test('Cloudflare relay remains best-effort when the state binding is missing', async () => {

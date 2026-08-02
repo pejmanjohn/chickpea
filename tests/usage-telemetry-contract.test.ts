@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { parseAgentDispatchEnvelope } from '../src/slack/agent-dispatch.ts';
+import { parseAgentDispatchEnvelope } from '../src/slack/flue-dispatch.ts';
 
 interface ProviderRouteFixture {
   id: string;
@@ -155,7 +155,7 @@ test('failed result envelopes do not become successful zero-usage operations', (
 
 test('pinned Flue Workers AI binding source uses zero as its pre-report accumulator', () => {
   const sourcePath = fileURLToPath(
-    new URL('../node_modules/@flue/runtime/dist/cloudflare/internal.mjs', import.meta.url),
+    new URL('../node_modules/@flue/runtime/dist/cloudflare/workers-ai-provider.mjs', import.meta.url),
   );
   const source = readFileSync(sourcePath, 'utf8');
 

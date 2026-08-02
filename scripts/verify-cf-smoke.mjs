@@ -26,7 +26,7 @@
  * an existing dist-cf (iteration speed); CI should run the full build.
  */
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import vm from 'node:vm';
 
@@ -40,9 +40,9 @@ import {
   postSignedEvent,
   delay,
 } from './lib/offline-harness.mjs';
+import { runDrainCheck } from './lib/cf-drain-check.mjs';
 
 const WRANGLER_BIN = join(REPO_ROOT, 'node_modules', '.bin', 'wrangler');
-const CF_BUILD_SCRIPT = join(REPO_ROOT, 'scripts', 'flue-build-cf.mjs');
 const CF_OUTPUT_DIR = join(REPO_ROOT, 'dist-cf');
 const CF_WRANGLER_CONFIG = join(CF_OUTPUT_DIR, 'chickpea', 'wrangler.json');
 const CF_SMOKE_WRANGLER_CONFIG = join(CF_OUTPUT_DIR, 'chickpea', 'wrangler.smoke.json');
@@ -60,6 +60,17 @@ const AI_SMOKE_SERVICE = 'chickpea-ai-smoke-stub';
 const AI_SMOKE_REPLY = 'workers-ai-binding-smoke::gateway-disabled';
 const AI_SMOKE_RPC_FLAG = 'enable_abortsignal_rpc';
 const USAGE_PRE_DELIVERY_BUDGET_MS = 100;
+const V2_AGENT_BINDINGS = [
+  ['FLUE_CHICKPEA_SLACK_V2_AGENT', 'FlueChickpeaSlackV2Agent'],
+  ['FLUE_CHICKPEA_ROUTINE_INTENT_V2_AGENT', 'FlueChickpeaRoutineIntentV2Agent'],
+  ['FLUE_CHICKPEA_ROUTINE_EXECUTION_V2_AGENT', 'FlueChickpeaRoutineExecutionV2Agent'],
+];
+const BETA_FLUE_CLASSES = [
+  'FlueRegistry',
+  'FlueSlackThreadAgent',
+  'FlueRoutineIntentAgent',
+  'FlueRoutineWorkflow',
+];
 
 // Slow-turn case: a distinct channel + thread whose provider is held open past
 // the old ~30s waitUntil horizon, proving the DO alarm relay delivers anyway.
@@ -89,8 +100,8 @@ function buildCloudflareTarget() {
     console.log('• SMOKE_SKIP_BUILD=1 — reusing existing dist-cf build');
     return;
   }
-  console.log('• building Cloudflare target (flue-build-cf → dist-cf)…');
-  const result = spawnSync(process.execPath, [CF_BUILD_SCRIPT, '--output', 'dist-cf'], {
+  console.log('• building Cloudflare target (Vite → dist-cf)…');
+  const result = spawnSync('npm', ['run', 'flue:build:cf'], {
     cwd: REPO_ROOT,
     stdio: 'inherit',
   });
@@ -101,25 +112,41 @@ function buildCloudflareTarget() {
 
 function verifyBuildArtifacts() {
   const config = JSON.parse(readFileSync(CF_WRANGLER_CONFIG, 'utf8'));
-  const bundle = readFileSync(join(CF_OUTPUT_DIR, 'chickpea', config.main ?? 'index.js'), 'utf8');
+  const artifactRoot = join(CF_OUTPUT_DIR, 'chickpea');
+  const bundle = readdirSync(artifactRoot, { recursive: true })
+    .filter((entry) => typeof entry === 'string' && entry.endsWith('.js'))
+    .sort()
+    .map((entry) => readFileSync(join(artifactRoot, entry), 'utf8'))
+    .join('\n');
   const doBindings = config.durable_objects?.bindings ?? [];
   check(
     doBindings.some((b) => b.name === 'TAG_STATE' && b.class_name === 'TagStateStore'),
     'built wrangler.json carries the TAG_STATE binding',
   );
-  check(
-    doBindings.some((b) => b.name === 'FLUE_ROUTINE_WORKFLOW' && b.class_name === 'FlueRoutineWorkflow'),
-    'built wrangler.json carries the routine Workflow binding',
-  );
+  for (const [name, className] of V2_AGENT_BINDINGS) {
+    check(
+      doBindings.some((binding) => binding.name === name && binding.class_name === className),
+      `built wrangler.json carries ${name}/${className}`,
+    );
+  }
   check(
     doBindings.some((b) => b.name === 'SANDBOX' && b.class_name === 'Sandbox'),
     'built wrangler.json carries the Sandbox DO binding',
   );
-  const tags = (config.migrations ?? []).map((m) => m.tag);
+  const migrations = config.migrations ?? [];
+  const tags = migrations.map((migration) => migration.tag);
   check(
-    tags.includes('v1') && tags.includes('v2') && tags.includes('v3') && tags.includes('v4') && tags.includes('v5'),
-    'built wrangler.json migrations include v1 through v5',
+    ['v1', 'v2', 'v3', 'v4', 'v5', 'v6'].every((tag) => tags.includes(tag)),
+    'built wrangler.json migrations include the append-only v1 through v6 chain',
     tags.join(','),
+  );
+  const reset = migrations.find((migration) => migration.tag === 'v6');
+  check(
+    sameArray(
+      [...(reset?.deleted_classes ?? [])].sort(),
+      [...BETA_FLUE_CLASSES].sort(),
+    ),
+    'v6 deletes exactly the four beta Flue classes',
   );
   const sandboxContainer = (config.containers ?? []).find(
     (container) => container.class_name === 'Sandbox',
@@ -134,7 +161,11 @@ function verifyBuildArtifacts() {
   const redirect = join(REPO_ROOT, '.wrangler', 'deploy', 'config.json');
   const redirectBody = existsSync(redirect) ? readFileSync(redirect, 'utf8') : '';
   check(redirectBody.includes('dist-cf'), '.wrangler/deploy/config.json points into dist-cf');
-  check(existsSync(join(REPO_ROOT, 'src', 'db.ts')), 'src/db.ts restored after the CF build');
+  check(
+    existsSync(join(REPO_ROOT, 'src', 'db.node.ts')) &&
+      !existsSync(join(REPO_ROOT, 'src', 'db.ts')),
+    'Node-only persistence stays outside Cloudflare auto-discovery',
+  );
   check(config.ai?.binding === 'AI', 'built wrangler.json carries the production AI binding');
   check(
     sameArray(config.triggers?.crons ?? [], ['* * * * *']),
@@ -153,11 +184,19 @@ function verifyBuildArtifacts() {
     'interactive ledger admission remains off by default in the built artifact',
   );
   check(
-    bundle.includes('scheduled(controller') &&
-      bundle.includes('routine-intent') &&
-      bundle.includes('x-flue-internal-token') &&
-      bundle.includes('error: "unauthorized"'),
-    'built Worker composes the heartbeat and internal-only routine Agent guard',
+    config.observability?.traces?.enabled === true,
+    'built artifact enables Workers Traces for metadata-only Flue spans',
+  );
+  check(
+    bundle.includes('heartbeat: runRoutineHeartbeat') &&
+      bundle.includes('maintenance: runWorkMaintenance') &&
+      bundle.includes('chickpea-slack-v2') &&
+      bundle.includes('chickpea-routine-intent-v2') &&
+      bundle.includes('chickpea-routine-execution-v2') &&
+      bundle.includes('chickpea.response-metadata') &&
+      bundle.includes('@flue/runtime/cloudflare-tracing') &&
+      bundle.includes('FLUE_PRIVATE_SANDBOX_COMMAND_V1'),
+    'built Worker composes the heartbeat, fresh agents, and content-free tracing',
   );
 }
 
@@ -221,6 +260,7 @@ function writeDevVars(fakeUrl) {
       `TAG_ADMIN_TOKEN=${ADMIN_TOKEN}`,
       `SLACK_API_URL=${fakeUrl}/api/`,
       `LOCAL_STUB_URL=${fakeUrl}/v1`,
+      'SLACK_TAG_MODEL=local-stub/smoke-model',
       `ANTHROPIC_API_URL=${fakeUrl}`,
       `OPENAI_API_URL=${fakeUrl}/openai/v1`,
       `OPENROUTER_API_URL=${fakeUrl}/openrouter`,
@@ -504,6 +544,18 @@ async function waitForFinalCount(backend, minFinals, timeoutMs) {
 }
 
 async function main() {
+  const args = process.argv.slice(2);
+  if (args.length > 0) {
+    if (args.length !== 1 || args[0] !== '--check-drain') {
+      throw new Error(`unknown arguments: ${args.join(' ')}`);
+    }
+    await runDrainCheck({
+      baseUrl: process.env.CF_SMOKE_BASE_URL,
+      adminToken: process.env.TAG_ADMIN_TOKEN,
+    });
+    console.log('PASS cf-smoke drain — every runtime work category is zero');
+    return;
+  }
   assertNodeVersion();
   buildCloudflareTarget();
   console.log('• verifying build artifacts…');
@@ -580,6 +632,12 @@ async function main() {
       usageSummary.status === 200 && usageSummary.body?.totals?.operationCount === 0,
       'Usage summary queries the initialized TagStateStore ledger',
       `HTTP ${usageSummary.status} operations=${String(usageSummary.body?.totals?.operationCount)}`,
+    );
+    const drainStatus = await runDrainCheck({ baseUrl, adminToken: ADMIN_TOKEN });
+    check(
+      drainStatus.drained,
+      'runtime drain endpoint reaches the initialized TagStateStore aggregate',
+      JSON.stringify(drainStatus.categories),
     );
 
     const wireBeforeHeartbeat = backend.wireLog.length;

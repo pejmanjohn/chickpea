@@ -1,4 +1,7 @@
-import type { ToolDefinition, connectMcpServer } from '@flue/runtime';
+import type {
+  McpConnectionDefinition,
+  ToolDefinition,
+} from '@flue/runtime';
 
 import { mcpDebugText } from './mcp-errors.ts';
 import {
@@ -7,7 +10,8 @@ import {
   type ResolveMcpOAuthAccessInput,
 } from './mcp-oauth.ts';
 import { buildMcpRequestHeaders, resolveMcpSecrets } from './mcp-secrets.ts';
-import { connectMcp } from './mcp-test.ts';
+import { connectMcp, type McpConnector } from './mcp-test.ts';
+import { createMcpGuardedFetch, validateMcpUrl } from './mcp-url.ts';
 import { isCloudflareTarget } from './runtime-target.ts';
 import {
   getConfigStore,
@@ -15,6 +19,7 @@ import {
   type PlatformEnv,
 } from './state-backend.ts';
 import type { McpConnectionConfig } from './types.ts';
+import type { RuntimePlanMcpConnectionV2 } from '../agents/runtime-plan.ts';
 
 /**
  * Turn-time assembly of a profile's remote MCP tools, called from the
@@ -49,8 +54,8 @@ export interface ResolveProfileMcpToolsOptions {
   env?: PlatformEnv | undefined;
   /** Tool + skill names already claimed by the agent; MCP collisions are dropped. */
   existingToolNames: string[];
-  /** Test seam — defaults to Flue's `connectMcpServer`. */
-  connect?: typeof connectMcpServer;
+  /** Test seam — defaults to Flue's `createMcpConnection`. */
+  connect?: McpConnector;
   /** Test seam — shortens the per-connect deadline; defaults to mcp-test's 8s. */
   connectTimeoutMs?: number;
   /** Test seam for OAuth token resolution; production resolves from settings. */
@@ -61,8 +66,171 @@ export interface ResolveProfileMcpToolsOptions {
   onConnectionStart?: (connection: { id: string; displayName: string }) => void;
 }
 
+export interface ResolveProfileMcpConnectionsOptions {
+  /** Durable profile id; definitions close over this id, never a token. */
+  agentId: string;
+  env?: PlatformEnv | undefined;
+  resolveOAuthAccessToken?: (
+    input: ResolveMcpOAuthAccessInput,
+  ) => Promise<string>;
+  onConnectionStart?: (connection: { id: string; displayName: string }) => void;
+  /** Test seam; production uses the SSRF-guarded fetch implementation. */
+  createGuardedFetch?: typeof createMcpGuardedFetch;
+}
+
 export function isProfileMcpServerEligible(server: McpConnectionConfig): boolean {
   return server.enabled && server.lifecycleStatus === 'ready' && server.allowedTools.length > 0;
+}
+
+/**
+ * Flue 2-native MCP declarations. Tool discovery, namespacing, strict
+ * allowlists, caching, and optional-resource narration belong to Flue; this
+ * adapter owns only Chickpea policy, SSRF defense, and live auth resolution.
+ */
+export function resolveProfileMcpConnections(
+  servers: readonly McpConnectionConfig[] | undefined,
+  opts: ResolveProfileMcpConnectionsOptions,
+): McpConnectionDefinition[] {
+  return (servers ?? [])
+    .filter(isProfileMcpServerEligible)
+    .flatMap((server) => {
+      const validated = validateMcpUrl(server.url);
+      if (!validated.ok) {
+        console.warn(`[chickpea] MCP connection ${server.id} skipped: blocked URL`);
+        return [];
+      }
+      try {
+        opts.onConnectionStart?.({ id: server.id, displayName: server.displayName });
+      } catch {
+        // Status narration is cosmetic and must never block a connection.
+      }
+      const guardedFetch = (opts.createGuardedFetch ?? createMcpGuardedFetch)({
+        allowedOrigin: new URL(validated.url).origin,
+      });
+      const fetchWithLiveCustomHeaders: typeof fetch = async (input, init) => {
+        const request = new Request(input, init);
+        const secrets = await resolveMcpSecrets(
+          { agentId: opts.agentId, connectionId: server.id },
+          server.headerNames,
+          opts.env,
+        );
+        const headers = new Headers(request.headers);
+        for (const [name, value] of Object.entries(secrets.headers)) {
+          if (
+            (server.authMode === 'bearer' || server.authMode === 'oauth') &&
+            name.toLowerCase() === 'authorization'
+          ) continue;
+          headers.set(name, value);
+        }
+        return guardedFetch(new Request(request, { headers }));
+      };
+      return [{
+        name: server.id,
+        url: validated.url,
+        transport: server.transport,
+        tools: [...server.allowedTools],
+        optional: true,
+        timeoutMs: 30_000,
+        fetch: fetchWithLiveCustomHeaders,
+        ...(server.authMode === 'bearer' || server.authMode === 'oauth'
+          ? { auth: () => resolveLiveMcpBearer(server, opts) }
+          : {}),
+      }];
+    });
+}
+
+/**
+ * Materialize a frozen RuntimePlanV2 MCP declaration without capturing a
+ * token, request, or Cloudflare invocation context. Each request re-reads the
+ * current profile row, requires it to remain within the frozen declaration,
+ * and resolves credentials from the trusted settings seam.
+ */
+export function resolveRuntimePlanMcpConnections(
+  profileId: string,
+  declarations: readonly RuntimePlanMcpConnectionV2[],
+  onConnectionStart?: (connection: { id: string; displayName: string }) => void,
+): McpConnectionDefinition[] {
+  return declarations.map((declaration) => {
+    const validated = validateMcpUrl(declaration.url);
+    if (!validated.ok) {
+      throw new Error(`Runtime plan MCP connection ${declaration.id} has a blocked URL.`);
+    }
+    const guardedFetch = createMcpGuardedFetch({ allowedOrigin: new URL(validated.url).origin });
+    const liveServer = async (): Promise<{
+      server: McpConnectionConfig;
+      env: PlatformEnv | undefined;
+    }> => {
+      const env = await resolveCurrentMcpEnv();
+      const profile = await getConfigStore(env).getAgent(profileId);
+      const server = profile.mcpServers.find((candidate) => candidate.id === declaration.id);
+      if (!server || !runtimeMcpDeclarationStillAllowed(server, declaration)) {
+        throw new Error('MCP connection policy changed; a new agent instance is required.');
+      }
+      try {
+        onConnectionStart?.({ id: server.id, displayName: server.displayName });
+      } catch {
+        // Activity narration is cosmetic.
+      }
+      return { server, env };
+    };
+    const fetchWithLiveHeaders: typeof fetch = async (input, init) => {
+      const { server, env } = await liveServer();
+      const secrets = await resolveMcpSecrets(
+        { agentId: profileId, connectionId: server.id },
+        declaration.headerNames,
+        env,
+      );
+      const request = new Request(input, init);
+      const headers = new Headers(request.headers);
+      for (const [name, value] of Object.entries(secrets.headers)) {
+        if (
+          declaration.authMode !== 'none' &&
+          name.toLowerCase() === 'authorization'
+        ) continue;
+        headers.set(name, value);
+      }
+      return guardedFetch(new Request(request, { headers }));
+    };
+    return {
+      name: declaration.id,
+      url: validated.url,
+      transport: declaration.transport,
+      tools: [...declaration.allowedTools],
+      optional: declaration.optional,
+      timeoutMs: 30_000,
+      fetch: fetchWithLiveHeaders,
+      ...(declaration.authMode === 'none'
+        ? {}
+        : {
+            auth: async () => {
+              const { server, env } = await liveServer();
+              return resolveLiveMcpBearer(server, {
+                agentId: profileId,
+                env,
+              });
+            },
+          }),
+    };
+  });
+}
+
+function runtimeMcpDeclarationStillAllowed(
+  server: McpConnectionConfig,
+  declaration: RuntimePlanMcpConnectionV2,
+): boolean {
+  return isProfileMcpServerEligible(server) &&
+    server.url === declaration.url &&
+    server.transport === declaration.transport &&
+    server.authMode === declaration.authMode &&
+    JSON.stringify([...server.headerNames].map((name) => name.toLowerCase()).sort()) ===
+      JSON.stringify([...declaration.headerNames].sort()) &&
+    declaration.allowedTools.every((tool) => server.allowedTools.includes(tool));
+}
+
+async function resolveCurrentMcpEnv(): Promise<PlatformEnv | undefined> {
+  if (!isCloudflareTarget()) return undefined;
+  const { getCloudflareContext } = await import('@flue/runtime/cloudflare');
+  return getCloudflareContext().env as PlatformEnv;
 }
 
 export async function resolveProfileMcpTools(
@@ -96,6 +264,44 @@ export async function resolveProfileMcpTools(
     }
   }
   return merged;
+}
+
+async function resolveLiveMcpBearer(
+  server: McpConnectionConfig,
+  opts: ResolveProfileMcpConnectionsOptions,
+): Promise<string> {
+  if (server.authMode === 'oauth') {
+    return (
+      opts.resolveOAuthAccessToken ??
+      ((input) => {
+        const configStore = getConfigStore(opts.env);
+        return resolveMcpOAuthAccessToken(input, {
+          settings: getSettingsStore(opts.env),
+          validateConnection: (ref, serverUrl) =>
+            isCurrentMcpOAuthConnection(configStore, ref, serverUrl),
+          onReauthorizationRequired: async (ref, serverUrl) => {
+            await configStore.markOAuthReauthorizationRequired({
+              lane: 'mcp',
+              ...ref,
+              serverUrl,
+            });
+          },
+        });
+      })
+    )({
+      ref: { agentId: opts.agentId, connectionId: server.id },
+      serverUrl: server.url,
+    });
+  }
+  const secrets = await resolveMcpSecrets(
+    { agentId: opts.agentId, connectionId: server.id },
+    [],
+    opts.env,
+  );
+  if (!secrets.bearer) {
+    throw new Error('MCP bearer credential is unavailable.');
+  }
+  return secrets.bearer;
 }
 
 async function resolveOneServer(
@@ -179,8 +385,8 @@ async function resolveOneServer(
 }
 
 /**
- * `AgentRuntimeConfig` has no turn-end hook (verified against @flue/runtime
- * 1.0.0-beta.8). On Cloudflare, connection I/O is request-pinned and dies with
+ * Flue 2 has no connection-specific turn-end hook. On Cloudflare, connection
+ * I/O is request-pinned and dies with
  * the request, so there is nothing to schedule. On node, close via an unref'd
  * setTimeout so a bounded leak is reclaimed 10 minutes after connect (or
  * immediately when the connection yielded no usable tools).

@@ -1,5 +1,11 @@
 import { WebClient } from '@slack/web-api';
 
+import {
+  compileRuntimePlanV2,
+  deriveRuntimePlanInstanceId,
+  type RuntimePlanV2,
+} from '../agents/runtime-plan.ts';
+import { effectiveSlackInstructions } from '../config/effective-config.ts';
 import { resolveAgentModel } from '../config/model-policy.ts';
 import { getGithubConnection } from '../config/github-app.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
@@ -8,6 +14,7 @@ import { getSettingsStore, getUsageStore, getWorkStore } from '../config/state-b
 import type { SettingsStore } from '../config/settings-store.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import type {
+  SlackContinuityNoticeProgress,
   SlackInteractionProgress,
   SlackInteractionProgressPatch,
 } from '../config/state-rpc.ts';
@@ -25,17 +32,24 @@ import {
 } from '../routines/commands.ts';
 import { isRoutineSlackTurn } from '../routines/slack-context.ts';
 import {
+  agentFailureText,
   AgentPromptFailure,
   promptSlackThreadAgent,
   releaseCloudflareSandboxTurn,
   type AgentDispatchResult,
-} from './agent-dispatch.ts';
+  type SlackFlueDispatchState,
+} from './flue-dispatch.ts';
+import {
+  ContinuityNoticeDeliveryError,
+  ensureContinuityNotice,
+} from './continuity-notice.ts';
 import { resolveSlackCredentials, resolveSlackPublicUrl } from './credentials.ts';
 import type { SlackStatusUpdate } from './replies.ts';
 import { registerSlackStatusTurn } from './status-registry.ts';
 import type { SlackTurnContext } from './thread-context.ts';
 import { slackThreadKey } from './thread-key.ts';
 import type { NormalizedSlackTurn } from './types.ts';
+import type { FrozenRuntimePlanDecision } from './turn-job-types.ts';
 import { selectSandbox } from '../sandbox/select.ts';
 import {
   assembleSlackPrompt,
@@ -43,12 +57,6 @@ import {
 } from './web-client-context.ts';
 import {
   AGENT_FAILURE_TEXT,
-  OPENAI_SUBSCRIPTION_POLICY_TEXT,
-  OPENAI_SUBSCRIPTION_QUOTA_TEXT,
-  OPENAI_SUBSCRIPTION_RECONNECT_TEXT,
-  PROVIDER_FAILURE_TEXT,
-  SANDBOX_FAILURE_TEXT,
-  SANDBOX_SESSION_CAP_FAILURE_TEXT,
   WebClientPresenter,
   type SlackReactionReceipt,
 } from './web-client-presenter.ts';
@@ -143,6 +151,13 @@ export interface RunTurnOptions {
   client?: WebClient;
   /** Focused-test override for proving replay and delivery lifecycle behavior. */
   agentPrompt?: typeof promptSlackThreadAgent;
+  /** Adapter-owned dispatch/read checkpoints restored by the relay. */
+  flueDispatch?: SlackFlueDispatchState;
+  /** Restored exactly-once DM/App Home continuity-notice checkpoint. */
+  continuityNoticeProgress?: SlackContinuityNoticeProgress;
+  onContinuityNoticeProgress?: (
+    notice: SlackContinuityNoticeProgress,
+  ) => void | Promise<void>;
   /** Durable turn key forwarded to the sandbox for cap/idempotency state. */
   turnId?: string;
   /** Recorded result from an earlier attempt; skips the agent entirely. */
@@ -163,6 +178,12 @@ export interface RunTurnOptions {
   executionAuthority?: RunExecutionAuthority;
   /** Opaque Flue continuity identity, independent of Slack/memory coordinates. */
   continuityKey?: string;
+  /** First-write-wins decision restored from a prior durable attempt. */
+  runtimePlanDecision?: FrozenRuntimePlanDecision;
+  /** Persist the first complete plan before the agent dispatch boundary. */
+  onRuntimePlan?: (
+    candidate: RuntimePlanV2,
+  ) => FrozenRuntimePlanDecision | Promise<FrozenRuntimePlanDecision>;
   /** Local override avoids a Durable Object calling its own Work RPC. */
   workStore?: WorkStore;
   /** Local override avoids a Durable Object calling its own settings RPC. */
@@ -195,13 +216,14 @@ const DEFAULT_PROGRESS_HEARTBEAT_MS = 60_000;
  * Full Slack turn lifecycle:
  *   1. set Assistant status (or post a durable progress placeholder on reject),
  *   2. hydrate the bounded Slack context per contextMode,
- *   3. prompt the durable agent in-process (slack/agent-dispatch.ts) with the
+ *   3. prompt the durable agent through Flue 2 dispatch/read with the
  *      trigger text + hydrated (bot-filtered) context rows,
  *   4. stream the final (fallback to a markdown post), and clear status.
  * An agent/provider/workspace failure is delivered as category-specific static
  * copy (no internal error text ever reaches Slack) and the turn still
- * completes. `runTurn` throws ONLY on a genuine delivery failure, so the
- * caller (node .catch / relay alarm) can release the claims for a retry.
+ * completes. `runTurn` throws only on a genuine delivery failure or when
+ * reconciliation explicitly requires recovery. Callers release claims for a
+ * retryable delivery failure and retain them for recovery-required Runs.
  */
 export async function runTurn(
   turn: NormalizedSlackTurn,
@@ -218,8 +240,8 @@ export async function runTurn(
   // pinned): on a button deploy nobody sets the env var, so without the stored
   // fallback the footer's "Configure" link would be dead.
   const publicUrl = await resolveSlackPublicUrl(platformEnv);
-  // Natural-language Routine intent still runs through the legacy Workflow
-  // coordinator. A selected ledger canary deliberately skips that pre-parser;
+  // Natural-language Routine intent runs through a fresh, tool-less v2 agent.
+  // A selected ledger canary deliberately skips that pre-parser;
   // explicit Routine commands are kept off this lane at admission.
   if (!ledgerAuthority && isRoutineSlackTurn(turn)) {
     const routineText = await handleRoutineSlackRequest(turn, platformEnv);
@@ -283,6 +305,17 @@ export async function runTurn(
     ? undefined
     : await prepareMemoryTurn({ turn, platformEnv, client });
   const conversationKey = preparedMemory?.conversationKey ?? slackThreadKey(turn);
+  const runtimePlanDecision = options.runtimePlanDecision ?? (
+    preparedMemory && resolvedModel
+      ? await freezeRuntimePlanForTurn({
+          turn,
+          assignment,
+          platformEnv,
+          memoryEpoch: preparedMemory.memoryEpoch,
+          ...(options.onRuntimePlan ? { persist: options.onRuntimePlan } : {}),
+        })
+      : undefined
+  );
   const agentConversationKey = options.continuityKey ?? conversationKey;
   const workLifecycle = options.runId && options.replayText === undefined && resolvedModel
     ? await createSlackShadowLifecycle({
@@ -293,7 +326,10 @@ export async function runTurn(
           : { fencingToken: options.runFencingToken }),
         assignment,
         canonicalModel: resolvedModel,
-        flueInstanceRef: opaqueId('flueinstance', agentConversationKey),
+        flueInstanceRef: opaqueId(
+          'flueinstance',
+          runtimePlanDecision?.instanceId ?? agentConversationKey,
+        ),
         platformEnv,
         ...(options.workStore ? { workStore: options.workStore } : {}),
         ...(options.settingsStore ? { settingsStore: options.settingsStore } : {}),
@@ -311,13 +347,24 @@ export async function runTurn(
     workspaceId: turn.workspaceId,
     ...(preparedMemory ? { memoryFooterItems: preparedMemory.footerItems } : {}),
   }, workLifecycle, { deliverySafety: ledgerAuthority ? 'ledger' : 'legacy' });
+  let continuityNoticeProgress = options.continuityNoticeProgress;
+  const ensureRequiredContinuityNotice = (): Promise<void> => ensureContinuityNotice({
+    required: runtimePlanDecision?.continuityNoticeRequired ?? false,
+    ...(continuityNoticeProgress ? { progress: continuityNoticeProgress } : {}),
+    post: (text) => presenter.postContinuityNotice(text),
+    record: async (notice) => {
+      continuityNoticeProgress = notice;
+      await options.onContinuityNoticeProgress?.(notice);
+    },
+  });
   const statusGeneration = options.turnId ?? `msg:${turn.channelId}:${turn.messageTs}`;
-  const statusTurn = registerSlackStatusTurn(agentConversationKey, presenter, {
+  const statusInstanceId = runtimePlanDecision?.instanceId ?? agentConversationKey;
+  const statusTurn = registerSlackStatusTurn(statusInstanceId, presenter, {
     generation: statusGeneration,
   });
   const finishStatus = (): void => {
     // Close the sink first. Agent observations are relayed best-effort from a
-    // different Cloudflare isolate and may still arrive after ?wait=result
+    // different Cloudflare isolate and may still arrive after settlement
     // resolves; removing this generation makes its late relays no-ops even if
     // another turn has already registered under the same conversation key.
     // Clearing is deliberately non-blocking: if the active Slack request lands
@@ -556,7 +603,7 @@ export async function runTurn(
     //    in a finally so a status that was actually set is cleared even if
     //    delivery throws (old-lane parity: the clear happened in a finally; keeps
     //    S03/S15/S16 green). clearStatus is a no-op when no status was set. A
-    //    failures surface as non-2xx ?wait=result envelopes; we deliver only
+    //    failures surface as bounded dispatch/read outcomes; we deliver only
     //    category-specific static copy (no envelope text reaches Slack).
     // The model status is cosmetic: resolving it must never abort the turn.
     // If the model is unresolvable (misconfig), skip the status and let the
@@ -572,22 +619,31 @@ export async function runTurn(
         void statusTurn.setStatus(modelStatus(resolvedModel));
       }
       try {
-        usedCloudflareSandbox = await shouldUseCloudflareSandbox(assignment, platformEnv);
-        agentResult = await (options.agentPrompt ?? promptSlackThreadAgent)(
-          agentConversationKey,
-          executionPrompt,
-          platformEnv,
-          statusGeneration,
-          usedCloudflareSandbox,
-          resolvedModel ?? null,
-          workLifecycle && options.runId
+        usedCloudflareSandbox = runtimePlanDecision
+          ? runtimePlanDecision.runtimePlan.sandbox.mode === 'cloudflare'
+          : await shouldUseCloudflareSandbox(assignment, platformEnv);
+        if (!options.agentPrompt && !options.flueDispatch) {
+          throw new Error('Durable Flue dispatch state is unavailable.');
+        }
+        agentResult = await (options.agentPrompt ?? promptSlackThreadAgent)({
+          message: executionPrompt,
+          state: options.flueDispatch!,
+          turnId: statusGeneration,
+          conversationKey: agentConversationKey,
+          useCloudflareSandbox: usedCloudflareSandbox,
+          requestedModel: resolvedModel ?? null,
+          ...(platformEnv ? { env: platformEnv } : {}),
+          ...(workLifecycle && options.runId
             ? {
-                runId: options.runId,
-                runExecutionId: workLifecycle.executionId,
-                mode: ledgerAuthority ? 'enforce' : 'observe',
+                workCorrelation: {
+                  runId: options.runId,
+                  runExecutionId: workLifecycle.executionId,
+                  mode: ledgerAuthority ? 'enforce' : 'observe',
+                },
               }
-            : undefined,
-        );
+            : {}),
+          beforeResult: ensureRequiredContinuityNotice,
+        });
         text = agentResult.text;
         await workLifecycle?.settleExecution({
           outcome: 'succeeded',
@@ -598,6 +654,33 @@ export async function runTurn(
         });
         await usageRecorder?.recordSuccess(agentResult);
       } catch (err) {
+        // A Flue identity or idempotency conflict is not an ordinary model
+        // failure. Its TurnJob already entered recovery_required and must not
+        // emit a Slack final or reach an onDelivered tombstone.
+        if (err instanceof AgentPromptFailure && (err.recoveryRequired || err.retryable)) {
+          throw err;
+        }
+        if (err instanceof ContinuityNoticeDeliveryError) {
+          const settlement = options.flueDispatch?.flueSettlement;
+          if (settlement?.outcome === 'completed') {
+            await workLifecycle?.settleExecution({
+              outcome: 'succeeded',
+              rawStatus: 'flue_succeeded',
+              ...(settlement.result.flueSubmissionRef
+                ? { flueSubmissionRef: settlement.result.flueSubmissionRef }
+                : {}),
+            });
+            await usageRecorder?.recordSuccess(settlement.result);
+          } else if (settlement) {
+            await workLifecycle?.settleExecution({
+              outcome: 'failed',
+              rawStatus: `flue_${settlement.outcome}`,
+              safeFailureCode: settlement.failureKind,
+            });
+            await usageRecorder?.recordFailure();
+          }
+          throw err;
+        }
         console.error('[chickpea] agent run failed:', sanitizeError(err));
         const modelNotInvoked = agentFailureBeforeModelInvocation(err);
         await workLifecycle?.settleExecution({
@@ -635,7 +718,10 @@ export async function runTurn(
     await presenter.deliverFinal(text, 'markdown');
     await finishDelivery();
   } catch (err) {
-    await usageRecorder?.recordFailure();
+    if (!(err instanceof ContinuityNoticeDeliveryError) &&
+        !(err instanceof AgentPromptFailure && err.retryable)) {
+      await usageRecorder?.recordFailure();
+    }
     throw err;
   } finally {
     // Also covers failures before the ordinary delivery boundary (hydration,
@@ -881,6 +967,62 @@ export async function shouldUseCloudflareSandbox(
   }
 }
 
+async function freezeRuntimePlanForTurn(input: {
+  turn: NormalizedSlackTurn;
+  assignment: ResolvedAssignment;
+  platformEnv: PlatformEnv | undefined;
+  memoryEpoch: number;
+  persist?: (candidate: RuntimePlanV2) => FrozenRuntimePlanDecision | Promise<FrozenRuntimePlanDecision>;
+}): Promise<FrozenRuntimePlanDecision> {
+  const sandboxMode = await resolveRuntimePlanSandboxMode(
+    input.assignment,
+    input.platformEnv,
+  );
+  const instructions =
+    'instructions' in input.assignment && typeof input.assignment.instructions === 'string'
+      ? input.assignment.instructions
+      : effectiveSlackInstructions(input.assignment);
+  const candidate = compileRuntimePlanV2({
+    turn: input.turn,
+    assignment: input.assignment,
+    instructions,
+    memoryEpoch: input.memoryEpoch,
+    sandboxMode,
+  });
+  const decision = input.persist
+    ? await input.persist(candidate)
+    : {
+        runtimePlan: candidate,
+        instanceId: deriveRuntimePlanInstanceId(candidate),
+        continuityNoticeRequired: false,
+      };
+  if (
+    decision.runtimePlan.conversation.continuityKey !==
+    candidate.conversation.continuityKey
+  ) {
+    throw new Error('Frozen RuntimePlanV2 belongs to another Slack conversation.');
+  }
+  return decision;
+}
+
+async function resolveRuntimePlanSandboxMode(
+  assignment: ResolvedAssignment,
+  env: PlatformEnv | undefined,
+): Promise<'bash' | 'cloudflare'> {
+  if (!isCloudflareTarget()) return 'bash';
+  const settingsStore = getSettingsStore(env);
+  const [settings, connection] = await Promise.all([
+    resolveSandboxSettings(settingsStore),
+    getGithubConnection(settingsStore),
+  ]);
+  return selectSandbox({
+    target: 'cloudflare',
+    enabled: settings.enabled,
+    appConnected: connection.mode === 'app',
+    repositoryGrants: assignment.agent.repositories ?? [],
+  });
+}
+
 export const MEMORY_CHANGED_RETRY_TEXT =
   'Channel memory or Slack access changed while I was answering, so I withheld the draft. Before trying again, check whether any requested external action already completed.';
 
@@ -891,17 +1033,6 @@ export function resolveMemoryDeliveryText(
 ): string {
   if (leaseValid) return draft;
   return recoveredText || MEMORY_CHANGED_RETRY_TEXT;
-}
-
-export function agentFailureText(err: unknown): string {
-  if (!(err instanceof AgentPromptFailure)) return AGENT_FAILURE_TEXT;
-  if (err.kind === 'provider') return PROVIDER_FAILURE_TEXT;
-  if (err.kind === 'openai-subscription-reconnect') return OPENAI_SUBSCRIPTION_RECONNECT_TEXT;
-  if (err.kind === 'openai-subscription-quota') return OPENAI_SUBSCRIPTION_QUOTA_TEXT;
-  if (err.kind === 'openai-subscription-policy') return OPENAI_SUBSCRIPTION_POLICY_TEXT;
-  if (err.kind === 'sandbox') return SANDBOX_FAILURE_TEXT;
-  if (err.kind === 'sandbox-session-cap') return SANDBOX_SESSION_CAP_FAILURE_TEXT;
-  return AGENT_FAILURE_TEXT;
 }
 
 /**

@@ -442,7 +442,9 @@ test('post_artifact enforces current-request admission at its delivery seam', as
     await assert.rejects(
       async () =>
         capability.tool.run({
-          input: { path: '/workspace/proof.png', filename: 'proof.png' },
+          toolCallId: 'memory-policy-artifact-call',
+          log: { info() {}, warn() {}, error() {} },
+          data: { path: '/workspace/proof.png', filename: 'proof.png' },
         }),
       (error: unknown) => error instanceof Error && error.name === 'CurrentRequestSideEffectDeniedError',
     );

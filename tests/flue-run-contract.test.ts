@@ -4,11 +4,11 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import type {
-  AgentPromptOptions,
-  AgentSendResult,
-  FlueClient,
-  FlueConversationPart,
-} from '@flue/sdk';
+  AgentDispatchRequest,
+  AgentInstanceHandle,
+  AgentReply,
+  DispatchReceipt,
+} from '@flue/runtime';
 
 import { resolveActiveCatalogRoute } from '../src/model-catalog/catalog.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
@@ -27,25 +27,24 @@ interface RunFoundationCapability {
 const RUN_FOUNDATION_CAPABILITIES =
   RAW_CAPABILITIES as readonly RunFoundationCapability[];
 
-type PromptAcceptsCallerSubmissionId =
-  'submissionId' extends keyof AgentPromptOptions ? true : false;
-type SendReturnsSubmissionId =
-  'submissionId' extends keyof AgentSendResult ? true : false;
-type ClientCanLookupSubmission =
-  'getSubmission' extends keyof FlueClient['agents'] ? true : false;
-type ClientCanAbortSubmission =
-  'abortSubmission' extends keyof FlueClient['agents'] ? true : false;
-type HistoryIncludesReasoning =
-  Extract<FlueConversationPart, { type: 'reasoning' }> extends never ? false : true;
-type HistoryIncludesToolBodies =
-  Extract<FlueConversationPart, { type: 'dynamic-tool' }> extends never ? false : true;
+type DispatchAcceptsIdempotencyKey =
+  'idempotencyKey' extends keyof AgentDispatchRequest ? true : false;
+type ReceiptReturnsSubmissionId =
+  'submissionId' extends keyof DispatchReceipt ? true : false;
+type ReceiptMarksDeduplication =
+  'deduplicated' extends keyof DispatchReceipt ? true : false;
+type HandleCanRead = 'read' extends keyof AgentInstanceHandle ? true : false;
+type HandleCanAbort = 'abort' extends keyof AgentInstanceHandle ? true : false;
+type HandleHasHistory = 'history' extends keyof AgentInstanceHandle ? true : false;
+type ReplyHasNamedData = 'data' extends keyof AgentReply ? true : false;
 
-const PROMPT_ACCEPTS_CALLER_SUBMISSION_ID: PromptAcceptsCallerSubmissionId = false;
-const SEND_RETURNS_SUBMISSION_ID: SendReturnsSubmissionId = true;
-const CLIENT_CAN_LOOKUP_SUBMISSION: ClientCanLookupSubmission = false;
-const CLIENT_CAN_ABORT_SUBMISSION: ClientCanAbortSubmission = false;
-const HISTORY_INCLUDES_REASONING: HistoryIncludesReasoning = true;
-const HISTORY_INCLUDES_TOOL_BODIES: HistoryIncludesToolBodies = true;
+const DISPATCH_ACCEPTS_IDEMPOTENCY_KEY: DispatchAcceptsIdempotencyKey = true;
+const RECEIPT_RETURNS_SUBMISSION_ID: ReceiptReturnsSubmissionId = true;
+const RECEIPT_MARKS_DEDUPLICATION: ReceiptMarksDeduplication = true;
+const HANDLE_CAN_READ: HandleCanRead = true;
+const HANDLE_CAN_ABORT: HandleCanAbort = true;
+const HANDLE_HAS_HISTORY: HandleHasHistory = false;
+const REPLY_HAS_NAMED_DATA: ReplyHasNamedData = true;
 
 const FLUE_ROOT = fileURLToPath(new URL('../node_modules/@flue/runtime/', import.meta.url));
 const FLUE_DIST = fileURLToPath(new URL('../node_modules/@flue/runtime/dist/', import.meta.url));
@@ -58,33 +57,54 @@ async function readDistPrefix(prefix: string): Promise<string> {
   return readFile(`${FLUE_DIST}${matches[0]}`, 'utf8');
 }
 
-test('the pinned Flue client exposes a receipt but no caller-owned direct idempotency key', async () => {
+async function readDistContaining(needle: string): Promise<string> {
+  const files = (await readdir(FLUE_DIST)).filter((name) => name.endsWith('.mjs'));
+  const matches: string[] = [];
+  for (const name of files) {
+    const source = await readFile(`${FLUE_DIST}${name}`, 'utf8');
+    if (source.includes(needle)) matches.push(source);
+  }
+  assert.ok(matches.length >= 1, `expected compiled Flue source containing ${needle}`);
+  return matches[0]!;
+}
+
+async function readDistDeclarationContaining(needle: string): Promise<string> {
+  const files = (await readdir(FLUE_DIST)).filter((name) => name.endsWith('.d.mts'));
+  for (const name of files) {
+    const source = await readFile(`${FLUE_DIST}${name}`, 'utf8');
+    if (source.includes(needle)) return source;
+  }
+  assert.fail(`expected compiled Flue declaration containing ${needle}`);
+}
+
+test('the pinned Flue 2 handle exposes keyed admission, receipts, and reattachable reads', async () => {
   const packageJson = JSON.parse(
     await readFile(`${FLUE_ROOT}package.json`, 'utf8'),
   ) as { version?: unknown };
 
-  assert.equal(packageJson.version, '1.0.0-beta.8');
-  assert.equal(PROMPT_ACCEPTS_CALLER_SUBMISSION_ID, false);
-  assert.equal(SEND_RETURNS_SUBMISSION_ID, true);
-  assert.equal(CLIENT_CAN_LOOKUP_SUBMISSION, false);
-  assert.equal(CLIENT_CAN_ABORT_SUBMISSION, false);
+  assert.equal(packageJson.version, '2.0.0');
+  assert.equal(DISPATCH_ACCEPTS_IDEMPOTENCY_KEY, true);
+  assert.equal(RECEIPT_RETURNS_SUBMISSION_ID, true);
+  assert.equal(RECEIPT_MARKS_DEDUPLICATION, true);
+  assert.equal(HANDLE_CAN_READ, true);
+  assert.equal(HANDLE_CAN_ABORT, true);
 
-  const runtime = await readDistPrefix('conversation-stream-store-');
+  const runtime = await readDistContaining('async function adoptKeyedSubmissionReplay');
   const directInput = runtime.slice(
     runtime.indexOf('function createDirectAgentSubmissionInput'),
-    runtime.indexOf('async function materializeAgentSubmissionSession'),
+    runtime.indexOf('function isInstanceContactRejection'),
   );
-  assert.match(directInput, /submissionId: crypto\.randomUUID\(\)/);
-  assert.match(directInput, /traceCarrier/);
+  assert.match(directInput, /deriveKeyedSubmissionId/);
+  assert.match(runtime, /deep-equal `message`/);
+  assert.match(await readDistContaining('deduplicated: true'), /deduplicated: true/);
 });
 
-test('same-instance submissions are ordered, but receipt loss remains application-ambiguous', async () => {
-  const store = await readDistPrefix('sql-run-store-');
+test('same-instance submissions are ordered and exact keyed replay recovers receipt loss', async () => {
+  const store = await readDistPrefix('sql-agent-execution-store-');
 
   assert.match(store, /earlier\.session_key = current\.session_key/);
   assert.match(store, /earlier\.sequence < current\.sequence/);
   assert.match(store, /ORDER BY current\.sequence ASC/);
-  assert.match(store, /Idempotent admission keyed by dispatch id|admitDispatch/);
 
   const directCapability = RUN_FOUNDATION_CAPABILITIES.find(
     (capability) => capability.id === 'caller_submission_idempotency',
@@ -95,15 +115,15 @@ test('same-instance submissions are ordered, but receipt loss remains applicatio
       releaseDecision: directCapability.releaseDecision,
     },
     {
-      status: 'absent',
-      releaseDecision: 'do_not_resubmit_after_ambiguous_admission',
+      status: 'proven',
+      releaseDecision: 'redispatch_identical_key_after_ambiguous_admission',
     },
   );
 });
 
-test('Flue history is stable but not a safe Sessions detail projection', () => {
-  assert.equal(HISTORY_INCLUDES_REASONING, true);
-  assert.equal(HISTORY_INCLUDES_TOOL_BODIES, true);
+test('Flue replies expose named data but no public detailed-history projection', () => {
+  assert.equal(REPLY_HAS_NAMED_DATA, true);
+  assert.equal(HANDLE_HAS_HISTORY, false);
 
   const capability = RUN_FOUNDATION_CAPABILITIES.find(
     (candidate) => candidate.id === 'safe_detailed_history',
@@ -113,7 +133,7 @@ test('Flue history is stable but not a safe Sessions detail projection', () => {
 });
 
 test('the exact patched artifact wraps model tools with a pre/post execution interceptor', async () => {
-  const runtime = await readDistPrefix('conversation-stream-store-');
+  const runtime = await readDistContaining('wrapModelTool(tool');
   const wrapper = runtime.slice(
     runtime.indexOf('wrapModelTool(tool'),
     runtime.indexOf('createCustomTools(tools)'),
@@ -133,8 +153,8 @@ test('the exact patched artifact wraps model tools with a pre/post execution int
   assert.equal(capability?.releaseDecision, 'enforce_with_chickpea_interceptor');
 });
 
-test('Flue has no finite tool-attempt ceiling, so side effects stay disabled until Chickpea supplies one', async () => {
-  const types = await readFile(`${FLUE_DIST}types-USSZhfC6.d.mts`, 'utf8');
+test('Flue bounds submission attempts but not model-selected tool calls', async () => {
+  const types = await readDistDeclarationContaining('interface DurabilityConfig');
   const durability = types.slice(
     types.indexOf('interface DurabilityConfig'),
     types.indexOf('interface AgentConfig'),
@@ -151,15 +171,15 @@ test('Flue has no finite tool-attempt ceiling, so side effects stay disabled unt
   assert.equal(capability?.releaseDecision, 'disable_side_effects_until_bounded');
 });
 
-test('trace carrier survives into execution context for model-boundary invocation evidence', async () => {
-  const runtime = await readDistPrefix('conversation-stream-store-');
+test('instrumentation supplies model-invisible instance and submission coordinates', async () => {
+  const runtime = await readDistContaining('const run = () => interceptExecution({');
   const execution = runtime.slice(
     runtime.indexOf('const run = () => interceptExecution({'),
     runtime.indexOf('result = opts.wrapExecution'),
   );
 
+  assert.match(execution, /instanceId: input\.id/);
   assert.match(execution, /submissionId: submission\.submissionId/);
-  assert.match(execution, /traceCarrier: input\.traceCarrier/);
 
   const capability = RUN_FOUNDATION_CAPABILITIES.find(
     (candidate) => candidate.id === 'interactive_execution_descriptor',

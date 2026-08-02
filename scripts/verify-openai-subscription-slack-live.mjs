@@ -121,7 +121,6 @@ try {
     env: {
       TAG_DB_PATH: ':memory:',
       SLACK_STATE_DB_PATH: stateDbPath,
-      TAG_AGENT_API_TOKEN: 'subscription-slack-live-internal-token',
       OPENAI_API_KEY: 'sk-chickpea-intentionally-invalid-no-fallback',
       NET_GUARD_ALLOW: 'chatgpt.com,auth.openai.com',
     },

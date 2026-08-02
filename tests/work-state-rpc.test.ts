@@ -119,6 +119,7 @@ test('Work state proxy preserves clone-safe request and response shapes', async 
       fencingToken: 1,
       invokedAt: 1_800_000_000_003,
     });
+    assert.equal(await proxy.countExecutingRuns(), 1);
     await proxy.settleRunExecution({
       executionId: execution.id,
       fencingToken: 1,

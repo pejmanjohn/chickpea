@@ -1,11 +1,29 @@
 import type {
+  SlackContinuityNoticeProgress,
   SlackInteractionProgressPatch,
   TurnProgress,
   TurnPullRequestProgress,
 } from '../config/state-rpc.ts';
-import type { SlackAgentExecutionContext, TurnJob } from './turn-job-types.ts';
+import {
+  deriveRuntimePlanInstanceId,
+  parseRuntimePlanV2,
+  type RuntimePlanV2,
+} from '../agents/runtime-plan.ts';
+import type {
+  FlueDispatchEnvelopeV1,
+  FlueDispatchReceiptV1,
+  FlueObservationTarget,
+  FlueSettlementCheckpointV1,
+  FlueTurnObservationV1,
+  FrozenRuntimePlanDecision,
+  SlackAgentBinding,
+  SlackAgentBindingExpectation,
+  TurnJob,
+} from './turn-job-types.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
 import type { StateDb } from '../state/state-db.ts';
+import type { SlackRuntimeDrainCounts } from '../config/state-rpc.ts';
+import type { SlackTurnRecoveryItem } from '../config/state-rpc.ts';
 import type { RunExecutionAuthority } from '../work/types.ts';
 import { CLAIM_TTL_MS } from './state-limits.ts';
 import type { NormalizedSlackTurn } from './types.ts';
@@ -19,30 +37,32 @@ import type { SlackInteractionIntent } from './interaction-intent.ts';
  * the DO's 15-minute wall-time budget instead of the events invocation's ~30s
  * `waitUntil` horizon.
  *
- * This is target-neutral StateDb logic (like the claim/snapshot/settings logic)
- * so it is unit-testable on the node lane, even though only the Cloudflare
- * Durable Object ever enqueues or drains (node runs turns inline — no relay).
+ * This is target-neutral StateDb logic (like the claim/snapshot/settings logic):
+ * Cloudflare drains it from the state Durable Object alarm, while Node drains
+ * the same durable rows from its independent SQLite-backed relay.
  *
  * Delivery guarantees:
  *   - Idempotent enqueue (INSERT OR IGNORE on the message claim key), so the
  *     app_mention + message fan-out for one mention enqueues at most once.
  *   - A `delivered` tombstone excludes a completed job from any later alarm
  *     scan (`WHERE delivered = 0`), the guard against a redundant re-delivery.
- *   - A bounded attempt counter caps retries; the alarm posts a sanitized
- *     generic failure final and releases the claims on the terminal attempt.
- *   - Rows purge on the claim TTL horizon (past it a Slack redelivery can no
- *     longer arrive, so the tombstone is dead weight — the same horizon the
- *     claims table uses).
+ *   - Never-dispatched failures retain the bounded legacy retry policy.
+ *     Dispatched rows reattach through their immutable Flue checkpoints.
+ *   - Only terminal rows with no pending Slack cleanup age out. Stuck
+ *     nonterminal rows become visible recovery work after 30 days.
  */
 
 /** Attempts (inclusive) the alarm makes to deliver a turn before giving up. */
 export const MAX_TURN_ATTEMPTS = 2;
+/** Dispatched turns may reattach more often, but never hot-loop indefinitely. */
+export const MAX_POST_DISPATCH_ATTEMPTS = 8;
 export const MAX_TURN_DRAIN_BATCH = 16;
 
-// Job rows live no longer than the claim TTL: past it Slack no longer
-// redelivers the originating event, so neither the idempotency key nor the
-// delivered tombstone can still matter.
+// Terminal rows need only outlive Slack's redelivery horizon. Nonterminal rows
+// and their claims are retained until explicitly resolved and terminalized.
 export const TURN_JOB_TTL_MS = CLAIM_TTL_MS;
+export const SLACK_AGENT_BINDING_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
+export const TURN_JOB_RECOVERY_BACKSTOP_MS = SLACK_AGENT_BINDING_TTL_MS;
 
 /** A pending job the alarm should run, decoded from its row. */
 export interface PendingTurnJob {
@@ -56,6 +76,14 @@ export interface PendingTurnJob {
   /** Deliveries already attempted (0 before the alarm has ever run it). */
   attempts: number;
   progress: TurnProgress;
+  runtimePlan?: RuntimePlanV2;
+  agentInstanceId?: string;
+  continuityNoticeRequired?: boolean;
+  dispatchEnvelope?: FlueDispatchEnvelopeV1;
+  dispatchReceipt?: FlueDispatchReceiptV1;
+  flueSettlement?: FlueSettlementCheckpointV1;
+  dispatchStartedAt?: number;
+  recoveryReason?: string;
 }
 
 interface TurnJobRow {
@@ -68,7 +96,23 @@ interface TurnJobRow {
   execution_authority: RunExecutionAuthority;
   attempts: number;
   progress_json: string;
+  runtime_plan_json?: string | null;
+  agent_instance_id?: string | null;
+  continuity_notice_required?: number | null;
+  dispatch_envelope_json?: string | null;
+  dispatch_receipt_json?: string | null;
+  flue_settlement_json?: string | null;
+  dispatch_started_at?: number | null;
+  submission_id?: string | null;
+  observation_json?: string | null;
+  recovery_reason?: string | null;
 }
+
+const TURN_JOB_SELECT_COLUMNS = `id, evt_key, msg_key, turn_json, assignment_json, run_id,
+  execution_authority, attempts, progress_json, runtime_plan_json,
+  agent_instance_id, continuity_notice_required, dispatch_envelope_json,
+  dispatch_receipt_json, flue_settlement_json, dispatch_started_at,
+  submission_id, observation_json, recovery_reason`;
 
 export class TurnJobStoreLogic {
   constructor(
@@ -88,6 +132,16 @@ export class TurnJobStoreLogic {
         delivered INTEGER NOT NULL DEFAULT 0,
         status TEXT NOT NULL DEFAULT 'pending',
         progress_json TEXT NOT NULL DEFAULT '{}',
+        runtime_plan_json TEXT,
+        agent_instance_id TEXT,
+        continuity_notice_required INTEGER,
+        dispatch_envelope_json TEXT,
+        dispatch_receipt_json TEXT,
+        flue_settlement_json TEXT,
+        dispatch_started_at INTEGER,
+        submission_id TEXT,
+        observation_json TEXT,
+        recovery_reason TEXT,
         enqueued_at INTEGER NOT NULL
       )`,
     );
@@ -101,16 +155,50 @@ export class TurnJobStoreLogic {
     if (!columns.some((column) => column.name === 'execution_authority')) {
       db.exec("ALTER TABLE turn_jobs ADD COLUMN execution_authority TEXT NOT NULL DEFAULT 'legacy'");
     }
+    if (!columns.some((column) => column.name === 'runtime_plan_json')) {
+      db.exec('ALTER TABLE turn_jobs ADD COLUMN runtime_plan_json TEXT');
+    }
+    if (!columns.some((column) => column.name === 'agent_instance_id')) {
+      db.exec('ALTER TABLE turn_jobs ADD COLUMN agent_instance_id TEXT');
+    }
+    if (!columns.some((column) => column.name === 'continuity_notice_required')) {
+      db.exec('ALTER TABLE turn_jobs ADD COLUMN continuity_notice_required INTEGER');
+    }
+    if (!columns.some((column) => column.name === 'dispatch_envelope_json')) {
+      db.exec('ALTER TABLE turn_jobs ADD COLUMN dispatch_envelope_json TEXT');
+    }
+    if (!columns.some((column) => column.name === 'dispatch_receipt_json')) {
+      db.exec('ALTER TABLE turn_jobs ADD COLUMN dispatch_receipt_json TEXT');
+    }
+    if (!columns.some((column) => column.name === 'flue_settlement_json')) {
+      db.exec('ALTER TABLE turn_jobs ADD COLUMN flue_settlement_json TEXT');
+    }
+    if (!columns.some((column) => column.name === 'dispatch_started_at')) {
+      db.exec('ALTER TABLE turn_jobs ADD COLUMN dispatch_started_at INTEGER');
+    }
+    if (!columns.some((column) => column.name === 'submission_id')) {
+      db.exec('ALTER TABLE turn_jobs ADD COLUMN submission_id TEXT');
+    }
+    if (!columns.some((column) => column.name === 'observation_json')) {
+      db.exec('ALTER TABLE turn_jobs ADD COLUMN observation_json TEXT');
+    }
+    if (!columns.some((column) => column.name === 'recovery_reason')) {
+      db.exec('ALTER TABLE turn_jobs ADD COLUMN recovery_reason TEXT');
+    }
+    db.exec('CREATE INDEX IF NOT EXISTS turn_jobs_instance_id_idx ON turn_jobs(agent_instance_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS turn_jobs_submission_id_idx ON turn_jobs(submission_id)');
     db.exec(
-      `CREATE TABLE IF NOT EXISTS slack_agent_execution_contexts (
+      `CREATE TABLE IF NOT EXISTS slack_agent_bindings (
         continuity_key TEXT PRIMARY KEY,
-        run_id TEXT NOT NULL,
-        workspace_id TEXT NOT NULL,
-        channel_id TEXT NOT NULL,
-        thread_ts TEXT NOT NULL,
-        created_at INTEGER NOT NULL
+        instance_id TEXT NOT NULL,
+        uid TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
       )`,
     );
+    // This ephemeral beta bridge mixed per-turn Slack coordinates with Flue
+    // identity. RuntimePlanV2 now carries immutable coordinates and the binding
+    // table is the sole long-lived incarnation pin.
+    db.exec('DROP TABLE IF EXISTS slack_agent_execution_contexts');
   }
 
   /**
@@ -146,83 +234,492 @@ export class TurnJobStoreLogic {
       throw new Error('Turn job limit must be between 1 and 100.');
     }
     const rows = this.db.all(
-      `SELECT id, evt_key, msg_key, turn_json, assignment_json, run_id,
-              execution_authority, attempts, progress_json
+      `SELECT ${TURN_JOB_SELECT_COLUMNS}
        FROM turn_jobs
-       WHERE delivered = 0 AND execution_authority = ?
+       WHERE delivered = 0 AND status != 'recovery_required' AND execution_authority = ?
        ORDER BY enqueued_at LIMIT ?`,
       executionAuthority,
       limit,
     ) as unknown as TurnJobRow[];
-    return rows.map((row) => ({
-      id: row.id,
-      evtKey: row.evt_key,
-      msgKey: row.msg_key,
-      turn: JSON.parse(row.turn_json) as NormalizedSlackTurn,
-      assignment: JSON.parse(row.assignment_json) as ResolvedAssignment,
-      ...(row.run_id ? { runId: row.run_id } : {}),
-      executionAuthority: row.execution_authority,
-      attempts: Number(row.attempts),
-      progress: parseTurnProgress(row.progress_json),
-    }));
+    return rows.map((row) => this.decodeRow(row));
   }
 
   getPendingByRunId(runId: string): PendingTurnJob | undefined {
     const row = this.db.get(
-      `SELECT id, evt_key, msg_key, turn_json, assignment_json, run_id,
-              execution_authority, attempts, progress_json
+      `SELECT ${TURN_JOB_SELECT_COLUMNS}
        FROM turn_jobs
-       WHERE delivered = 0 AND execution_authority = 'ledger' AND run_id = ?
+       WHERE delivered = 0 AND status != 'recovery_required'
+         AND execution_authority = 'ledger' AND run_id = ?
        LIMIT 1`,
       runId,
     ) as unknown as TurnJobRow | undefined;
     return row ? this.decodeRow(row) : undefined;
   }
 
-  putAgentExecutionContext(input: SlackAgentExecutionContext): SlackAgentExecutionContext {
-    validateAgentExecutionContext(input);
-    this.purgeExpired();
-    this.db.run(
-      `INSERT OR IGNORE INTO slack_agent_execution_contexts (
-        continuity_key, run_id, workspace_id, channel_id, thread_ts, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?)`,
-      input.continuityKey,
-      input.runId,
-      input.workspaceId,
-      input.channelId,
-      input.threadTs,
-      input.createdAt,
+  /** First successful write owns the plan and target for every later retry. */
+  freezeRuntimePlan(id: string, candidate: RuntimePlanV2): FrozenRuntimePlanDecision {
+    const plan = parseRuntimePlanV2(candidate);
+    return this.db.transaction(() => {
+      const current = this.getFrozenRuntimePlan(id);
+      if (current) return current;
+      const instanceId = deriveRuntimePlanInstanceId(plan);
+      const binding = this.getAgentBinding(plan.conversation.continuityKey);
+      const continuityNoticeRequired = Boolean(
+        binding &&
+        binding.instanceId !== instanceId &&
+        plan.conversation.surface !== 'channel_thread',
+      );
+      const updated = this.db.run(
+        `UPDATE turn_jobs
+         SET runtime_plan_json = ?, agent_instance_id = ?, continuity_notice_required = ?
+         WHERE id = ? AND runtime_plan_json IS NULL`,
+        JSON.stringify(plan),
+        instanceId,
+        continuityNoticeRequired ? 1 : 0,
+        id,
+      );
+      if (updated.changes !== 1) {
+        const winner = this.getFrozenRuntimePlan(id);
+        if (winner) return winner;
+        throw new Error('TurnJob is unavailable for RuntimePlanV2 freeze.');
+      }
+      return { runtimePlan: plan, instanceId, continuityNoticeRequired };
+    });
+  }
+
+  getFrozenRuntimePlan(id: string): FrozenRuntimePlanDecision | undefined {
+    const row = this.db.get(
+      `SELECT runtime_plan_json, agent_instance_id, continuity_notice_required
+       FROM turn_jobs WHERE id = ?`,
+      id,
     );
-    const persisted = this.getAgentExecutionContext(input.continuityKey);
-    if (!persisted || !sameAgentExecutionContext(persisted, input)) {
-      throw new Error('Slack agent execution context identity belongs to another binding or Run.');
+    if (!row?.runtime_plan_json) return undefined;
+    const runtimePlan = parseRuntimePlanV2(JSON.parse(String(row.runtime_plan_json)));
+    const instanceId = validateOpaqueAgentId(row.agent_instance_id, 'instance id');
+    return {
+      runtimePlan,
+      instanceId,
+      continuityNoticeRequired: Number(row.continuity_notice_required) === 1,
+    };
+  }
+
+  /**
+   * Freeze the exact Flue admission before crossing the dispatch boundary.
+   * A retry always receives the byte-equivalent envelope, including its
+   * create/continue condition and idempotency key.
+   */
+  prepareFlueDispatch(
+    id: string,
+    message: string,
+    observation: FlueTurnObservationV1,
+  ): FlueDispatchEnvelopeV1 {
+    if (typeof message !== 'string' || message.length === 0) {
+      throw new Error('Flue dispatch message must be non-empty.');
+    }
+    validateFlueObservation(observation);
+    const existing = this.getDispatchEnvelope(id);
+    if (existing) {
+      if (existing.message.body !== message) {
+        this.markRecoveryRequired(id, 'flue_dispatch_payload_conflict');
+        throw new Error('Flue dispatch payload conflicts with the durable checkpoint.');
+      }
+      return existing;
+    }
+    return this.db.transaction(() => {
+      const decision = this.getFrozenRuntimePlan(id);
+      if (!decision) {
+        throw new Error('RuntimePlanV2 must be frozen before Flue dispatch.');
+      }
+      const binding = this.readAgentBinding(decision.runtimePlan.conversation.continuityKey);
+      const continuing = binding?.instanceId === decision.instanceId ? binding : undefined;
+      const envelope: FlueDispatchEnvelopeV1 = {
+        schemaVersion: 1,
+        agentName: 'chickpea-slack-v2',
+        instanceId: decision.instanceId,
+        uid: continuing?.uid ?? null,
+        message: { kind: 'user', body: message },
+        ...(continuing ? {} : { initialData: decision.runtimePlan }),
+        idempotencyKey: id,
+        ...(!continuing && binding
+          ? { previousBinding: { instanceId: binding.instanceId, uid: binding.uid } }
+          : {}),
+      };
+      parseFlueDispatchEnvelope(envelope);
+      const startedAt = this.now();
+      const updated = this.db.run(
+        `UPDATE turn_jobs
+         SET dispatch_envelope_json = ?, dispatch_started_at = ?, observation_json = ?
+         WHERE id = ? AND dispatch_envelope_json IS NULL`,
+        JSON.stringify(envelope),
+        startedAt,
+        JSON.stringify(observation),
+        id,
+      );
+      if (updated.changes !== 1) {
+        const winner = this.getDispatchEnvelope(id);
+        if (winner) return winner;
+        throw new Error('TurnJob is unavailable for Flue dispatch.');
+      }
+      return envelope;
+    });
+  }
+
+  getDispatchEnvelope(id: string): FlueDispatchEnvelopeV1 | undefined {
+    const row = this.db.get(
+      'SELECT dispatch_envelope_json FROM turn_jobs WHERE id = ?',
+      id,
+    );
+    return row?.dispatch_envelope_json
+      ? parseFlueDispatchEnvelope(JSON.parse(String(row.dispatch_envelope_json)))
+      : undefined;
+  }
+
+  /**
+   * A create-only send can prove that the deterministic instance already
+   * exists and return its uid without admitting any work. Persist that
+   * confirmed incarnation before retrying as a continue-only send.
+   */
+  reconcileFlueExistingInstance(id: string, uid: string): FlueDispatchEnvelopeV1 {
+    validateBoundedString(uid, 'Flue instance uid', 200);
+    const existing = this.getDispatchEnvelope(id);
+    if (!existing) throw new Error('Flue dispatch envelope is unavailable.');
+    if (existing.uid === uid && existing.initialData === undefined) return existing;
+    if (existing.uid !== null || existing.initialData === undefined) {
+      this.markRecoveryRequired(id, 'flue_existing_instance_reconciliation_conflict');
+      throw new Error('Flue existing-instance reconciliation conflicts with the checkpoint.');
+    }
+
+    const { initialData: _creationData, ...rest } = existing;
+    const reconciled = parseFlueDispatchEnvelope({ ...rest, uid });
+    const updated = this.db.run(
+      `UPDATE turn_jobs SET dispatch_envelope_json = ?
+       WHERE id = ? AND dispatch_envelope_json = ?
+         AND dispatch_receipt_json IS NULL AND flue_settlement_json IS NULL`,
+      JSON.stringify(reconciled),
+      id,
+      JSON.stringify(existing),
+    );
+    if (updated.changes === 1) return reconciled;
+    const winner = this.getDispatchEnvelope(id);
+    if (winner && sameJson(winner, reconciled)) return winner;
+    this.markRecoveryRequired(id, 'flue_existing_instance_reconciliation_conflict');
+    throw new Error('Flue existing-instance reconciliation lost its compare-and-set race.');
+  }
+
+  /** Persist admission before any read begins and pin the contacted incarnation. */
+  recordFlueReceipt(id: string, value: FlueDispatchReceiptV1): FlueDispatchReceiptV1 {
+    const receipt = parseFlueDispatchReceipt(value);
+    const envelope = this.getDispatchEnvelope(id);
+    if (!envelope) throw new Error('Flue dispatch envelope is unavailable.');
+    const current = this.getFlueReceipt(id);
+    if (current) {
+      if (!sameJson(current, receipt)) {
+        this.markRecoveryRequired(id, 'flue_receipt_conflict');
+        throw new Error('Flue dispatch receipt conflicts with the durable checkpoint.');
+      }
+      return current;
+    }
+    const updated = this.db.run(
+      `UPDATE turn_jobs
+       SET dispatch_receipt_json = ?, submission_id = ?
+       WHERE id = ? AND dispatch_receipt_json IS NULL`,
+      JSON.stringify(receipt),
+      receipt.submissionId,
+      id,
+    );
+    const persisted = updated.changes === 1 ? receipt : this.getFlueReceipt(id);
+    if (!persisted || !sameJson(persisted, receipt)) {
+      this.markRecoveryRequired(id, 'flue_receipt_conflict');
+      throw new Error('Flue dispatch receipt could not be checkpointed.');
+    }
+    try {
+      this.pinReceiptBinding(envelope, persisted);
+    } catch (error) {
+      this.markRecoveryRequired(id, 'flue_binding_reconciliation_required');
+      throw error;
     }
     return persisted;
   }
 
-  getAgentExecutionContext(continuityKey: string): SlackAgentExecutionContext | undefined {
+  getFlueReceipt(id: string): FlueDispatchReceiptV1 | undefined {
     const row = this.db.get(
-      `SELECT continuity_key, run_id, workspace_id, channel_id, thread_ts, created_at
-       FROM slack_agent_execution_contexts WHERE continuity_key = ?`,
+      'SELECT dispatch_receipt_json FROM turn_jobs WHERE id = ?',
+      id,
+    );
+    return row?.dispatch_receipt_json
+      ? parseFlueDispatchReceipt(JSON.parse(String(row.dispatch_receipt_json)))
+      : undefined;
+  }
+
+  recordFlueSettlement(
+    id: string,
+    value: FlueSettlementCheckpointV1,
+  ): FlueSettlementCheckpointV1 {
+    const settlement = parseFlueSettlement(value);
+    const current = this.getFlueSettlement(id);
+    if (current) {
+      if (!sameJson(current, settlement)) {
+        this.markRecoveryRequired(id, 'flue_settlement_conflict');
+        throw new Error('Flue settlement conflicts with the durable checkpoint.');
+      }
+      return current;
+    }
+    if (!this.getFlueReceipt(id)) {
+      throw new Error('Flue receipt must be checkpointed before settlement.');
+    }
+    const updated = this.db.run(
+      `UPDATE turn_jobs SET flue_settlement_json = ?
+       WHERE id = ? AND flue_settlement_json IS NULL`,
+      JSON.stringify(settlement),
+      id,
+    );
+    const persisted = updated.changes === 1 ? settlement : this.getFlueSettlement(id);
+    if (!persisted || !sameJson(persisted, settlement)) {
+      this.markRecoveryRequired(id, 'flue_settlement_conflict');
+      throw new Error('Flue settlement could not be checkpointed.');
+    }
+    return persisted;
+  }
+
+  getFlueSettlement(id: string): FlueSettlementCheckpointV1 | undefined {
+    const row = this.db.get(
+      'SELECT flue_settlement_json FROM turn_jobs WHERE id = ?',
+      id,
+    );
+    return row?.flue_settlement_json
+      ? parseFlueSettlement(JSON.parse(String(row.flue_settlement_json)))
+      : undefined;
+  }
+
+  /**
+   * Resolve framework observations without a model-visible carrier. Exact
+   * receipt matches win; before receipt persistence only one dispatch-started
+   * row for the instance may be adopted. Delivered and ambiguous rows vanish.
+   */
+  matchFlueObservation(
+    instanceId: string,
+    submissionId?: string,
+  ): FlueObservationTarget | undefined {
+    validateOpaqueAgentId(instanceId, 'instance id');
+    if (submissionId !== undefined) validateBoundedString(submissionId, 'submission id', 200);
+    const exact = submissionId
+      ? this.db.all(
+          `SELECT id, observation_json FROM turn_jobs
+           WHERE delivered = 0 AND agent_instance_id = ? AND submission_id = ?
+           LIMIT 2`,
+          instanceId,
+          submissionId,
+        )
+      : [];
+    if (
+      submissionId &&
+      exact.length === 0 &&
+      this.db.get('SELECT 1 AS known FROM turn_jobs WHERE submission_id = ? LIMIT 1', submissionId)
+    ) {
+      // A late event for a delivered/terminal row must never fall through and
+      // attach to a newer receiptless turn on the same conversation.
+      return undefined;
+    }
+    const candidates = exact.length > 0
+      ? exact
+      : this.db.all(
+          `SELECT id, observation_json FROM turn_jobs
+           WHERE delivered = 0 AND agent_instance_id = ?
+             AND dispatch_started_at IS NOT NULL AND submission_id IS NULL
+           ORDER BY dispatch_started_at LIMIT 2`,
+          instanceId,
+        );
+    if (candidates.length !== 1) return undefined;
+    const row = candidates[0]!;
+    if (!row.observation_json) return undefined;
+    const observation = parseFlueObservation(JSON.parse(String(row.observation_json)));
+    return {
+      ...observation,
+      turnJobId: String(row.id),
+      instanceId,
+      ...(submissionId ? { submissionId } : {}),
+    };
+  }
+
+  markRecoveryRequired(id: string, reason: string): void {
+    validateBoundedString(reason, 'recovery reason', 120);
+    this.db.run(
+      `UPDATE turn_jobs SET status = 'recovery_required', recovery_reason = ?
+       WHERE id = ? AND delivered = 0`,
+      reason,
+      id,
+    );
+  }
+
+  /**
+   * Pin a successful Flue incarnation. Revisions use explicit compare-and-set
+   * so an older in-flight turn cannot overwrite a newer conversation binding.
+   */
+  pinAgentBinding(
+    input: SlackAgentBinding,
+    expected?: SlackAgentBindingExpectation,
+  ): SlackAgentBinding {
+    validateAgentBinding(input);
+    if (expected) validateAgentBindingExpectation(expected);
+    this.purgeExpired();
+    return this.db.transaction(() => {
+      const current = this.readAgentBinding(input.continuityKey);
+      if (!current) {
+        if (expected) {
+          throw new Error('Slack agent binding compare-and-set target is missing.');
+        }
+        this.db.run(
+          `INSERT INTO slack_agent_bindings (continuity_key, instance_id, uid, updated_at)
+           VALUES (?, ?, ?, ?)`,
+          input.continuityKey,
+          input.instanceId,
+          input.uid,
+          input.updatedAt,
+        );
+        return input;
+      }
+      if (current.instanceId === input.instanceId) {
+        if (current.uid !== input.uid) {
+          throw new Error('Slack agent binding has a conflicting uid for this instance.');
+        }
+        this.db.run(
+          'UPDATE slack_agent_bindings SET updated_at = ? WHERE continuity_key = ?',
+          Math.max(current.updatedAt, input.updatedAt),
+          input.continuityKey,
+        );
+        return this.readAgentBinding(input.continuityKey)!;
+      }
+      if (
+        !expected ||
+        current.instanceId !== expected.instanceId ||
+        current.uid !== expected.uid
+      ) {
+        throw new Error('Slack agent binding rotation requires a matching compare-and-set value.');
+      }
+      this.db.run(
+        `UPDATE slack_agent_bindings
+         SET instance_id = ?, uid = ?, updated_at = ?
+         WHERE continuity_key = ?`,
+        input.instanceId,
+        input.uid,
+        input.updatedAt,
+        input.continuityKey,
+      );
+      return input;
+    });
+  }
+
+  getAgentBinding(continuityKey: string): SlackAgentBinding | undefined {
+    validateOpaqueAgentId(continuityKey, 'continuity key');
+    this.purgeExpired();
+    return this.readAgentBinding(continuityKey);
+  }
+
+  private readAgentBinding(continuityKey: string): SlackAgentBinding | undefined {
+    const row = this.db.get(
+      `SELECT continuity_key, instance_id, uid, updated_at
+       FROM slack_agent_bindings WHERE continuity_key = ?`,
       continuityKey,
     );
     return row
       ? {
           continuityKey: String(row.continuity_key),
-          runId: String(row.run_id),
-          workspaceId: String(row.workspace_id),
-          channelId: String(row.channel_id),
-          threadTs: String(row.thread_ts),
-          createdAt: Number(row.created_at),
+          instanceId: String(row.instance_id),
+          uid: String(row.uid),
+          updatedAt: Number(row.updated_at),
         }
       : undefined;
   }
 
+  private pinReceiptBinding(
+    envelope: FlueDispatchEnvelopeV1,
+    receipt: FlueDispatchReceiptV1,
+  ): void {
+    if (typeof envelope.uid === 'string' && receipt.uid !== envelope.uid) {
+      throw new Error('Flue continued a different agent incarnation.');
+    }
+    const plan = envelope.initialData ?? this.getFrozenRuntimePlan(envelope.idempotencyKey)?.runtimePlan;
+    if (!plan) throw new Error('RuntimePlanV2 is unavailable for Flue binding.');
+    this.pinAgentBinding(
+      {
+        continuityKey: plan.conversation.continuityKey,
+        instanceId: envelope.instanceId,
+        uid: receipt.uid,
+        updatedAt: this.now(),
+      },
+      envelope.previousBinding,
+    );
+  }
+
   hasPending(executionAuthority: RunExecutionAuthority = 'legacy'): boolean {
     return this.db.get(
-      'SELECT 1 AS pending FROM turn_jobs WHERE delivered = 0 AND execution_authority = ? LIMIT 1',
+      `SELECT 1 AS pending FROM turn_jobs
+       WHERE delivered = 0 AND status != 'recovery_required' AND execution_authority = ? LIMIT 1`,
       executionAuthority,
     ) !== undefined;
+  }
+
+  runtimeDrainCounts(): SlackRuntimeDrainCounts {
+    const pending = (executionAuthority: RunExecutionAuthority): number => Number(
+      this.db.get(
+        `SELECT COUNT(*) AS count FROM turn_jobs
+         WHERE delivered = 0 AND execution_authority = ?`,
+        executionAuthority,
+      )?.count ?? 0,
+    );
+    return {
+      pendingLegacyTurnJobs: pending('legacy'),
+      pendingLedgerTurnJobs: pending('ledger'),
+      pendingSlackInteractionCleanups: Number(
+        this.db.get(
+          `SELECT COUNT(*) AS count FROM turn_jobs
+           WHERE delivered = 1 AND progress_json LIKE '%"cleanup":"pending"%'`,
+        )?.count ?? 0,
+      ),
+      recoveryRequiredTurnJobs: Number(
+        this.db.get(
+          `SELECT COUNT(*) AS count FROM turn_jobs
+           WHERE delivered = 0 AND status = 'recovery_required'`,
+        )?.count ?? 0,
+      ),
+    };
+  }
+
+  listRecoveryRequired(limit = 50): SlackTurnRecoveryItem[] {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+      throw new Error('Turn recovery limit must be between 1 and 100.');
+    }
+    return this.db.all(
+      `SELECT id, execution_authority, recovery_reason, enqueued_at
+       FROM turn_jobs
+       WHERE delivered = 0 AND status = 'recovery_required'
+       ORDER BY enqueued_at ASC, id ASC LIMIT ?`,
+      limit,
+    ).map((row) => ({
+      id: String(row.id),
+      executionAuthority: row.execution_authority as 'legacy' | 'ledger',
+      reason: String(row.recovery_reason ?? 'operator_reconciliation_required'),
+      enqueuedAt: Number(row.enqueued_at),
+    }));
+  }
+
+  /** Explicit operator terminalization; retained claims continue to dedupe. */
+  resolveRecoveryRequired(id: string): boolean {
+    validateBoundedString(id, 'TurnJob id', 200);
+    return this.db.transaction(() => {
+      const current = this.db.get(
+        `SELECT 1 AS present FROM turn_jobs
+         WHERE id = ? AND delivered = 0 AND status = 'recovery_required'`,
+        id,
+      );
+      if (!current) return false;
+      this.recordTerminalStatus(id, 'error');
+      return this.db.run(
+        `UPDATE turn_jobs SET delivered = 1, status = 'error'
+         WHERE id = ? AND delivered = 0 AND status = 'recovery_required'`,
+        id,
+      ).changes === 1;
+    });
   }
 
   /** Record that an attempt is being made (before running the turn). */
@@ -299,6 +796,25 @@ export class TurnJobStoreLogic {
     });
   }
 
+  recordContinuityNotice(
+    id: string,
+    notice: SlackContinuityNoticeProgress,
+  ): TurnProgress | undefined {
+    const parsed = parseContinuityNotice(notice);
+    return this.db.transaction(() => {
+      const current = this.getProgress(id);
+      if (!current) return undefined;
+      if (current.continuityNotice?.status === 'delivered') return current;
+      const progress: TurnProgress = { ...current, continuityNotice: parsed };
+      this.db.run(
+        'UPDATE turn_jobs SET progress_json = ? WHERE id = ?',
+        JSON.stringify(progress),
+        id,
+      );
+      return progress;
+    });
+  }
+
   /** Merge adapter progress so a relay retry reuses the same Slack artifacts
    * and post-delivery cleanup remains recoverable after the job tombstone. */
   recordSlackInteractionProgress(
@@ -344,8 +860,7 @@ export class TurnJobStoreLogic {
       throw new Error('Slack interaction cleanup limit must be between 1 and 100.');
     }
     const rows = this.db.all(
-      `SELECT id, evt_key, msg_key, turn_json, assignment_json, run_id,
-              execution_authority, attempts, progress_json
+      `SELECT ${TURN_JOB_SELECT_COLUMNS}
        FROM turn_jobs
        WHERE delivered = 1 AND progress_json LIKE '%\"cleanup\":\"pending\"%'
        ORDER BY enqueued_at LIMIT ?`,
@@ -374,16 +889,39 @@ export class TurnJobStoreLogic {
     this.db.run("UPDATE turn_jobs SET delivered = 1, status = 'error' WHERE id = ?", id);
   }
 
-  /** Node legacy failures release Slack claims, so remove the row for redrive. */
-  discard(id: string): void {
-    this.db.run('DELETE FROM turn_jobs WHERE id = ?', id);
+  /** Only a never-dispatched row may be physically discarded for redrive. */
+  discard(id: string): boolean {
+    const deleted = this.db.run(
+      'DELETE FROM turn_jobs WHERE id = ? AND dispatch_started_at IS NULL',
+      id,
+    );
+    if (deleted.changes === 1) return true;
+    this.markRecoveryRequired(id, 'post_dispatch_redrive_required');
+    return false;
   }
 
   private purgeExpired(): void {
-    this.db.run('DELETE FROM turn_jobs WHERE enqueued_at < ?', this.now() - TURN_JOB_TTL_MS);
+    const now = this.now();
+    const backedOff = this.db.run(
+      `UPDATE turn_jobs
+       SET status = 'recovery_required', recovery_reason = 'nonterminal_retention_backstop'
+       WHERE delivered = 0 AND enqueued_at < ? AND status != 'recovery_required'`,
+      now - TURN_JOB_RECOVERY_BACKSTOP_MS,
+    );
+    if (backedOff.changes > 0) {
+      console.error(
+        `[chickpea] ${backedOff.changes} stale TurnJob(s) require operator reconciliation`,
+      );
+    }
     this.db.run(
-      'DELETE FROM slack_agent_execution_contexts WHERE created_at < ?',
-      this.now() - TURN_JOB_TTL_MS,
+      `DELETE FROM turn_jobs
+       WHERE delivered = 1 AND enqueued_at < ?
+         AND progress_json NOT LIKE '%"cleanup":"pending"%'`,
+      now - TURN_JOB_TTL_MS,
+    );
+    this.db.run(
+      'DELETE FROM slack_agent_bindings WHERE updated_at < ?',
+      now - SLACK_AGENT_BINDING_TTL_MS,
     );
   }
 
@@ -407,43 +945,298 @@ export class TurnJobStoreLogic {
       executionAuthority: row.execution_authority,
       attempts: Number(row.attempts),
       progress: parseTurnProgress(row.progress_json),
+      ...(row.runtime_plan_json
+        ? { runtimePlan: parseRuntimePlanV2(JSON.parse(row.runtime_plan_json)) }
+        : {}),
+      ...(row.agent_instance_id ? { agentInstanceId: row.agent_instance_id } : {}),
+      ...(row.continuity_notice_required === null || row.continuity_notice_required === undefined
+        ? {}
+        : { continuityNoticeRequired: Number(row.continuity_notice_required) === 1 }),
+      ...(row.dispatch_envelope_json
+        ? { dispatchEnvelope: parseFlueDispatchEnvelope(JSON.parse(row.dispatch_envelope_json)) }
+        : {}),
+      ...(row.dispatch_receipt_json
+        ? { dispatchReceipt: parseFlueDispatchReceipt(JSON.parse(row.dispatch_receipt_json)) }
+        : {}),
+      ...(row.flue_settlement_json
+        ? { flueSettlement: parseFlueSettlement(JSON.parse(row.flue_settlement_json)) }
+        : {}),
+      ...(row.dispatch_started_at === null || row.dispatch_started_at === undefined
+        ? {}
+        : { dispatchStartedAt: Number(row.dispatch_started_at) }),
+      ...(row.recovery_reason ? { recoveryReason: row.recovery_reason } : {}),
     };
   }
 }
 
-function validateAgentExecutionContext(input: SlackAgentExecutionContext): void {
-  if (!/^agent_[a-f0-9]{40}$/.test(input.continuityKey)) {
-    throw new Error('Slack agent continuity key is invalid.');
+function parseFlueDispatchEnvelope(value: unknown): FlueDispatchEnvelopeV1 {
+  const record = exactObject(value, 'Flue dispatch envelope', [
+    'schemaVersion',
+    'agentName',
+    'instanceId',
+    'uid',
+    'message',
+    'initialData',
+    'idempotencyKey',
+    'previousBinding',
+  ]);
+  if (record.schemaVersion !== 1 || record.agentName !== 'chickpea-slack-v2') {
+    throw new Error('Flue dispatch envelope version or agent is invalid.');
   }
-  if (!/^run_[a-f0-9]{40}$/.test(input.runId)) {
-    throw new Error('Slack agent Run identity is invalid.');
+  const instanceId = validateOpaqueAgentId(record.instanceId, 'instance id');
+  const uid = record.uid === null ? null : validateFlueInstanceUid(record.uid);
+  const message = exactObject(record.message, 'Flue dispatch message', ['kind', 'body']);
+  if (message.kind !== 'user') throw new Error('Flue dispatch message kind is invalid.');
+  const body = validateBoundedString(message.body, 'dispatch message body', 1_000_000);
+  const idempotencyKey = validateBoundedString(record.idempotencyKey, 'idempotency key', 256);
+  const initialData = record.initialData === undefined
+    ? undefined
+    : parseRuntimePlanV2(record.initialData);
+  if (uid === null && !initialData) {
+    throw new Error('Create-only Flue dispatch requires initial data.');
   }
-  for (const [label, value] of [
-    ['workspace', input.workspaceId],
-    ['channel', input.channelId],
-  ] as const) {
-    if (!/^[A-Za-z0-9_-]{2,80}$/.test(value)) {
-      throw new Error(`Slack agent ${label} identity is invalid.`);
-    }
+  if (uid !== null && initialData) {
+    throw new Error('Continued Flue dispatch cannot reseed initial data.');
   }
-  if (!/^\d{1,20}\.\d{1,10}$/.test(input.threadTs)) {
-    throw new Error('Slack agent thread timestamp is invalid.');
+  if (initialData && deriveRuntimePlanInstanceId(initialData) !== instanceId) {
+    throw new Error('Flue dispatch target does not match its RuntimePlanV2.');
   }
-  if (!Number.isSafeInteger(input.createdAt) || input.createdAt < 0) {
-    throw new Error('Slack agent context creation time is invalid.');
+  const previousBinding = record.previousBinding === undefined
+    ? undefined
+    : parseBindingExpectation(record.previousBinding);
+  return {
+    schemaVersion: 1,
+    agentName: 'chickpea-slack-v2',
+    instanceId,
+    uid,
+    message: { kind: 'user', body },
+    ...(initialData ? { initialData } : {}),
+    idempotencyKey,
+    ...(previousBinding ? { previousBinding } : {}),
+  };
+}
+
+function parseFlueDispatchReceipt(value: unknown): FlueDispatchReceiptV1 {
+  const record = exactObject(value, 'Flue dispatch receipt', [
+    'submissionId',
+    'acceptedAt',
+    'uid',
+    'deduplicated',
+  ]);
+  if (record.deduplicated !== undefined && record.deduplicated !== true) {
+    throw new Error('Flue dispatch receipt deduplicated flag is invalid.');
+  }
+  const acceptedAt = validateBoundedString(record.acceptedAt, 'accepted at', 80);
+  if (!Number.isFinite(Date.parse(acceptedAt))) {
+    throw new Error('Flue dispatch receipt accepted time is invalid.');
+  }
+  return {
+    submissionId: validateBoundedString(record.submissionId, 'submission id', 200),
+    acceptedAt,
+    uid: validateFlueInstanceUid(record.uid),
+    ...(record.deduplicated === true ? { deduplicated: true } : {}),
+  };
+}
+
+function parseFlueSettlement(value: unknown): FlueSettlementCheckpointV1 {
+  const record = exactObject(value, 'Flue settlement', [
+    'outcome',
+    'settledAt',
+    'result',
+    'failureKind',
+  ]);
+  const settledAt = Number(record.settledAt);
+  if (!Number.isSafeInteger(settledAt) || settledAt < 0) {
+    throw new Error('Flue settlement time is invalid.');
+  }
+  if (record.outcome === 'failed' || record.outcome === 'aborted') {
+    const failureKind = oneOf(record.failureKind, FLUE_FAILURE_KINDS, 'failure kind');
+    if (record.result !== undefined) throw new Error('Failed Flue settlement cannot carry a result.');
+    return { outcome: record.outcome, settledAt, failureKind };
+  }
+  if (record.outcome !== 'completed' || record.failureKind !== undefined) {
+    throw new Error('Flue settlement outcome is invalid.');
+  }
+  return {
+    outcome: 'completed',
+    settledAt,
+    result: parseSettledResult(record.result),
+  };
+}
+
+const FLUE_FAILURE_KINDS = [
+  'agent',
+  'provider',
+  'openai-subscription-reconnect',
+  'openai-subscription-quota',
+  'openai-subscription-policy',
+  'sandbox',
+  'sandbox-session-cap',
+] as const;
+
+function parseSettledResult(value: unknown): Extract<FlueSettlementCheckpointV1, {
+  outcome: 'completed';
+}>['result'] {
+  const record = exactObject(value, 'Flue settled result', [
+    'text',
+    'requestedModel',
+    'returnedModel',
+    'reportedUsage',
+    'usageCompleteness',
+    'flueSubmissionRef',
+  ]);
+  const text = validateBoundedString(record.text, 'settled result text', 1_000_000);
+  const requestedModel = record.requestedModel === null
+    ? null
+    : validateBoundedString(record.requestedModel, 'requested model', 240);
+  const returnedModel = record.returnedModel === null
+    ? null
+    : (() => {
+        const model = exactObject(record.returnedModel, 'returned model', ['provider', 'id']);
+        return {
+          provider: validateBoundedString(model.provider, 'returned provider', 120),
+          id: validateBoundedString(model.id, 'returned model id', 240),
+        };
+      })();
+  const reportedUsage = record.reportedUsage === null
+    ? null
+    : (() => {
+        const usage = exactObject(record.reportedUsage, 'reported usage', [
+          'inputTokens', 'outputTokens', 'totalTokens',
+        ]);
+        return {
+          inputTokens: nullableTokenCount(usage.inputTokens),
+          outputTokens: nullableTokenCount(usage.outputTokens),
+          totalTokens: nullableTokenCount(usage.totalTokens),
+        };
+      })();
+  const usageCompleteness = oneOf(
+    record.usageCompleteness,
+    ['complete', 'partial', 'not_reported'] as const,
+    'usage completeness',
+  );
+  const flueSubmissionRef = record.flueSubmissionRef === undefined || record.flueSubmissionRef === null
+    ? record.flueSubmissionRef
+    : validateBoundedString(record.flueSubmissionRef, 'Flue submission ref', 200);
+  return {
+    text,
+    requestedModel,
+    returnedModel,
+    reportedUsage,
+    usageCompleteness,
+    ...(flueSubmissionRef === undefined ? {} : { flueSubmissionRef }),
+  };
+}
+
+function parseFlueObservation(value: unknown): FlueTurnObservationV1 {
+  const record = exactObject(value, 'Flue observation target', ['generation', 'workCorrelation']);
+  const generation = validateBoundedString(record.generation, 'observation generation', 256);
+  if (record.workCorrelation === undefined) return { generation };
+  const correlation = exactObject(record.workCorrelation, 'work correlation', [
+    'runId', 'runExecutionId', 'mode',
+  ]);
+  const runId = validateWorkCorrelationId(correlation.runId, 'run id');
+  const runExecutionId = validateWorkCorrelationId(correlation.runExecutionId, 'execution id');
+  if (correlation.mode !== 'observe' && correlation.mode !== 'enforce') {
+    throw new Error('Work correlation mode is invalid.');
+  }
+  return {
+    generation,
+    workCorrelation: { runId, runExecutionId, mode: correlation.mode },
+  };
+}
+
+function validateFlueObservation(value: FlueTurnObservationV1): void {
+  parseFlueObservation(value);
+}
+
+function parseBindingExpectation(value: unknown): SlackAgentBindingExpectation {
+  const record = exactObject(value, 'binding expectation', ['instanceId', 'uid']);
+  return {
+    instanceId: validateOpaqueAgentId(record.instanceId, 'expected instance id'),
+    uid: validateFlueInstanceUid(record.uid),
+  };
+}
+
+function exactObject(
+  value: unknown,
+  label: string,
+  allowed: readonly string[],
+): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`${label} must be an object.`);
+  }
+  const record = value as Record<string, unknown>;
+  const allowedKeys = new Set(allowed);
+  const extra = Object.keys(record).find((key) => !allowedKeys.has(key));
+  if (extra) throw new Error(`${label} has unknown field ${extra}.`);
+  return record;
+}
+
+function validateBoundedString(value: unknown, label: string, max: number): string {
+  if (typeof value !== 'string' || value.length === 0 || value.length > max) {
+    throw new Error(`Flue ${label} is invalid.`);
+  }
+  return value;
+}
+
+function validateWorkCorrelationId(value: unknown, label: string): string {
+  const parsed = validateBoundedString(value, label, 128);
+  if (!/^[a-z][a-z0-9_-]{7,127}$/.test(parsed)) {
+    throw new Error(`Flue ${label} is invalid.`);
+  }
+  return parsed;
+}
+
+function nullableTokenCount(value: unknown): number | null {
+  if (value === null) return null;
+  if (!Number.isSafeInteger(value) || Number(value) < 0) {
+    throw new Error('Flue reported usage is invalid.');
+  }
+  return Number(value);
+}
+
+function oneOf<const T extends readonly string[]>(
+  value: unknown,
+  values: T,
+  label: string,
+): T[number] {
+  if (typeof value !== 'string' || !values.includes(value)) {
+    throw new Error(`Flue ${label} is invalid.`);
+  }
+  return value as T[number];
+}
+
+function sameJson(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function validateAgentBinding(input: SlackAgentBinding): void {
+  validateOpaqueAgentId(input.continuityKey, 'continuity key');
+  validateOpaqueAgentId(input.instanceId, 'instance id');
+  validateFlueInstanceUid(input.uid);
+  if (!Number.isSafeInteger(input.updatedAt) || input.updatedAt < 0) {
+    throw new Error('Slack agent binding update time is invalid.');
   }
 }
 
-function sameAgentExecutionContext(
-  left: SlackAgentExecutionContext,
-  right: SlackAgentExecutionContext,
-): boolean {
-  return left.continuityKey === right.continuityKey &&
-    left.runId === right.runId &&
-    left.workspaceId === right.workspaceId &&
-    left.channelId === right.channelId &&
-    left.threadTs === right.threadTs &&
-    left.createdAt === right.createdAt;
+function validateAgentBindingExpectation(input: SlackAgentBindingExpectation): void {
+  validateOpaqueAgentId(input.instanceId, 'expected instance id');
+  validateFlueInstanceUid(input.uid);
+}
+
+function validateOpaqueAgentId(value: unknown, label: string): string {
+  if (typeof value !== 'string' || !/^agent_[a-f0-9]{40}$/.test(value)) {
+    throw new Error(`Slack agent ${label} is invalid.`);
+  }
+  return value;
+}
+
+function validateFlueInstanceUid(value: unknown): string {
+  if (typeof value !== 'string' || !/^inst_[0-9A-HJKMNP-TV-Z]{26}$/.test(value)) {
+    throw new Error('Slack agent binding uid is invalid.');
+  }
+  return value;
 }
 
 export function replayTextForTurnProgress(progress: TurnProgress): string | undefined {
@@ -476,6 +1269,9 @@ function parseTurnProgress(raw: string): TurnProgress {
           : {}),
       };
     }
+    if (parsed?.continuityNotice) {
+      progress.continuityNotice = parseContinuityNotice(parsed.continuityNotice);
+    }
     const pullRequest = parsed?.pullRequest;
     if (
       pullRequest &&
@@ -504,6 +1300,31 @@ function parseTurnProgress(raw: string): TurnProgress {
     // Malformed progress is treated as absent so it can never suppress work.
   }
   return {};
+}
+
+function parseContinuityNotice(value: unknown): SlackContinuityNoticeProgress {
+  if (!value || typeof value !== 'object') {
+    throw new Error('Slack continuity notice progress is invalid.');
+  }
+  const candidate = value as Record<string, unknown>;
+  if (
+    candidate.status !== 'retryable' &&
+    candidate.status !== 'posting' &&
+    candidate.status !== 'delivered' &&
+    candidate.status !== 'unknown'
+  ) {
+    throw new Error('Slack continuity notice status is invalid.');
+  }
+  if (candidate.messageTs !== undefined && typeof candidate.messageTs !== 'string') {
+    throw new Error('Slack continuity notice coordinate is invalid.');
+  }
+  if (candidate.status === 'delivered' && !candidate.messageTs) {
+    throw new Error('Delivered Slack continuity notice requires a coordinate.');
+  }
+  return {
+    status: candidate.status,
+    ...(typeof candidate.messageTs === 'string' ? { messageTs: candidate.messageTs } : {}),
+  };
 }
 
 function isValidAcknowledgmentProgress(

@@ -10,7 +10,16 @@ import type {
   SlackCanonicalAdmissionInput,
   SlackCanonicalAdmissionResult,
 } from '../slack/claim-store.ts';
-import type { SlackAgentExecutionContext, TurnJob } from '../slack/turn-job-types.ts';
+import type {
+  FlueDispatchEnvelopeV1,
+  FlueDispatchReceiptV1,
+  FlueObservationTarget,
+  FlueSettlementCheckpointV1,
+  FlueTurnObservationV1,
+  SlackAgentBinding,
+  SlackAgentBindingExpectation,
+  TurnJob,
+} from '../slack/turn-job-types.ts';
 import type { SlackInteractionIntent } from '../slack/interaction-intent.ts';
 
 export type { TurnJob } from '../slack/turn-job-types.ts';
@@ -55,6 +64,39 @@ export interface StateRpcError {
 
 export type StateRpcResult<T> = { ok: true; value: T } | { ok: false; error: StateRpcError };
 
+export interface SlackRuntimeDrainCounts {
+  pendingLegacyTurnJobs: number;
+  pendingLedgerTurnJobs: number;
+  pendingSlackInteractionCleanups: number;
+  recoveryRequiredTurnJobs: number;
+}
+
+export interface SlackTurnRecoveryItem {
+  id: string;
+  executionAuthority: 'legacy' | 'ledger';
+  reason: string;
+  enqueuedAt: number;
+}
+
+export type RuntimeDrainCategories = SlackRuntimeDrainCounts & {
+  executingRuns: number;
+  admittingOrRunningRoutineOccurrences: number;
+};
+
+export interface RuntimeDrainStatus {
+  drained: boolean;
+  categories: RuntimeDrainCategories;
+}
+
+export function buildRuntimeDrainStatus(
+  categories: RuntimeDrainCategories,
+): RuntimeDrainStatus {
+  return {
+    drained: Object.values(categories).every((count) => count === 0),
+    categories,
+  };
+}
+
 /**
  * A queued Slack turn, handed from the events handler to the state Durable
  * Object so its `alarm()` can run the turn AFTER the events ack — the Cloudflare
@@ -94,9 +136,15 @@ export interface SlackInteractionProgress {
 
 export type SlackInteractionProgressPatch = Partial<SlackInteractionProgress>;
 
+export interface SlackContinuityNoticeProgress {
+  status: 'retryable' | 'posting' | 'delivered' | 'unknown';
+  messageTs?: string;
+}
+
 export interface TurnProgress {
   interactionIntent?: SlackInteractionIntent;
   slackInteraction?: SlackInteractionProgress;
+  continuityNotice?: SlackContinuityNoticeProgress;
   pullRequest?: TurnPullRequestProgress;
   usageTelemetry?: {
     executionId: string;
@@ -166,12 +214,41 @@ export interface TagStateRpc {
   admitSlackTurn(
     input: SlackCanonicalAdmissionInput,
   ): Promise<StateRpcResult<SlackCanonicalAdmissionResult>>;
-  slackAgentExecutionContextPut(
-    input: SlackAgentExecutionContext,
-  ): Promise<StateRpcResult<SlackAgentExecutionContext>>;
-  slackAgentExecutionContextGet(
+  slackAgentBindingPin(
+    input: SlackAgentBinding,
+    expected?: SlackAgentBindingExpectation,
+  ): Promise<StateRpcResult<SlackAgentBinding>>;
+  slackAgentBindingGet(
     continuityKey: string,
-  ): Promise<StateRpcResult<SlackAgentExecutionContext | null>>;
+  ): Promise<StateRpcResult<SlackAgentBinding | null>>;
+  slackFlueDispatchPrepare(
+    id: string,
+    message: string,
+    observation: FlueTurnObservationV1,
+  ): Promise<StateRpcResult<FlueDispatchEnvelopeV1>>;
+  slackFlueExistingInstanceReconcile(
+    id: string,
+    uid: string,
+  ): Promise<StateRpcResult<FlueDispatchEnvelopeV1>>;
+  slackFlueReceiptRecord(
+    id: string,
+    receipt: FlueDispatchReceiptV1,
+  ): Promise<StateRpcResult<FlueDispatchReceiptV1>>;
+  slackFlueSettlementRecord(
+    id: string,
+    settlement: FlueSettlementCheckpointV1,
+  ): Promise<StateRpcResult<FlueSettlementCheckpointV1>>;
+  slackFlueObservationMatch(
+    instanceId: string,
+    submissionId?: string,
+  ): Promise<StateRpcResult<FlueObservationTarget | null>>;
+  slackContinuityNoticeRecord(
+    id: string,
+    notice: SlackContinuityNoticeProgress,
+  ): Promise<StateRpcResult<null>>;
+  slackTurnRecoveryRequired(id: string, reason: string): Promise<StateRpcResult<null>>;
+  slackTurnRecoveryList(limit: number): Promise<StateRpcResult<SlackTurnRecoveryItem[]>>;
+  slackTurnRecoveryResolve(id: string): Promise<StateRpcResult<boolean>>;
   slackInteractionProgressRecord(
     id: string,
     patch: SlackInteractionProgressPatch,
@@ -194,6 +271,7 @@ export interface TagStateRpc {
   usageExecute(request: UsageRpcRequest): Promise<StateRpcResult<UsageRpcResponse>>;
   // -- canonical Work ledger ----------------------------------------------
   workExecute(request: WorkRpcRequest): Promise<StateRpcResult<WorkRpcResponse>>;
+  runtimeDrainStatus(): Promise<StateRpcResult<RuntimeDrainStatus>>;
   maintainWork(at: number): Promise<StateRpcResult<null>>;
   // -- turn relay (Cloudflare turn-horizon fix) ----------------------------
   /**
@@ -213,7 +291,7 @@ export interface TagStateRpc {
    */
   observedStatus(
     instanceId: string,
-    generation: string,
+    submissionId: string,
     statusText: string,
   ): Promise<StateRpcResult<null>>;
 }

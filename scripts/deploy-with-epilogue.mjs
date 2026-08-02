@@ -15,7 +15,7 @@
  * failed deploy), and stdout is scanned line-by-line rather than buffered.
  */
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -25,8 +25,40 @@ const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 // works whether or not node_modules/.bin is on PATH.
 const wranglerBin = path.join(projectRoot, 'node_modules', 'wrangler', 'bin', 'wrangler.js');
 const cliArgs = process.argv.slice(2);
-const deployArgs = cliArgs.filter((arg) => arg !== '--skip-build');
+const deployArgs = cliArgs.filter((arg) => !['--skip-build', '--preflight-only'].includes(arg));
 const skipBuild = cliArgs.includes('--skip-build');
+const preflightOnly = cliArgs.includes('--preflight-only');
+
+const BETA_FLUE_CLASSES = Object.freeze([
+  'FlueRegistry',
+  'FlueSlackThreadAgent',
+  'FlueRoutineIntentAgent',
+  'FlueRoutineWorkflow',
+]);
+const V2_AGENT_CLASSES = Object.freeze([
+  'FlueChickpeaSlackV2Agent',
+  'FlueChickpeaRoutineIntentV2Agent',
+  'FlueChickpeaRoutineExecutionV2Agent',
+]);
+const V2_AGENT_BINDINGS = Object.freeze([
+  ['FLUE_CHICKPEA_SLACK_V2_AGENT', 'FlueChickpeaSlackV2Agent'],
+  ['FLUE_CHICKPEA_ROUTINE_INTENT_V2_AGENT', 'FlueChickpeaRoutineIntentV2Agent'],
+  ['FLUE_CHICKPEA_ROUTINE_EXECUTION_V2_AGENT', 'FlueChickpeaRoutineExecutionV2Agent'],
+]);
+const PROTECTED_CLASSES = new Set(['TagStateStore', 'Sandbox', 'ContainerProxy']);
+
+function hasCustomConfigFlag(args) {
+  return args.some((argument) =>
+    argument === '--config' || argument === '-c' || argument.startsWith('--config=')
+  );
+}
+
+if (hasCustomConfigFlag(deployArgs)) {
+  console.error(
+    'Do not pass a custom Wrangler config. Build the Vite artifact and use its generated deploy redirect.',
+  );
+  process.exit(1);
+}
 
 if (!skipBuild) {
   process.stdout.write('Building the Cloudflare artifact from current source...\n');
@@ -66,6 +98,101 @@ function cliEnablesRoutines() {
   });
 }
 
+function sortedUnique(values) {
+  return [...new Set(values)].sort();
+}
+
+function sameMembers(actual, expected) {
+  return actual.length === expected.length &&
+    JSON.stringify([...actual].sort()) === JSON.stringify([...expected].sort());
+}
+
+function renamedClassNames(migrations) {
+  const names = [];
+  for (const migration of migrations) {
+    for (const rename of migration.renamed_classes ?? []) {
+      if (typeof rename?.from === 'string') names.push(rename.from);
+      if (typeof rename?.to === 'string') names.push(rename.to);
+    }
+  }
+  return names;
+}
+
+function requireBuiltArtifact() {
+  const configPath = builtConfigPath();
+  if (!configPath) {
+    throw new Error('Cloudflare preflight requires the generated Vite Wrangler artifact.');
+  }
+  const config = JSON.parse(readFileSync(configPath, 'utf8'));
+  const artifactRoot = path.dirname(configPath);
+  const bundlePath = path.resolve(artifactRoot, config.main ?? 'index.js');
+  const bundle = existsSync(bundlePath)
+    ? readdirSync(artifactRoot, { recursive: true })
+      .filter((entry) => typeof entry === 'string' && entry.endsWith('.js'))
+      .sort()
+      .map((entry) => readFileSync(path.join(artifactRoot, entry), 'utf8'))
+      .join('\n')
+    : '';
+  return { configPath, config, bundle };
+}
+
+function validateFlue2CutoverArtifact(artifact) {
+  const { config, bundle } = artifact;
+  const failures = [];
+  const migrations = config.migrations ?? [];
+  const deleted = migrations.flatMap((migration) => migration.deleted_classes ?? []);
+  const renamed = renamedClassNames(migrations);
+  const destructive = sortedUnique([...deleted, ...renamed]);
+  const unexpected = destructive.filter((name) => !BETA_FLUE_CLASSES.includes(name));
+  if (unexpected.length) failures.push(`unexpected deleted/renamed classes: ${unexpected.join(', ')}`);
+  const protectedDestruction = destructive.filter((name) => PROTECTED_CLASSES.has(name));
+  if (protectedDestruction.length) {
+    failures.push(`protected classes marked deleted/renamed: ${protectedDestruction.join(', ')}`);
+  }
+  if (!sameMembers(deleted, BETA_FLUE_CLASSES) || renamed.length > 0) {
+    failures.push('the exact four-class beta deletion set with no class renames');
+  }
+  const reset = migrations.find((migration) => migration.tag === 'v6');
+  if (!reset || !sameMembers(reset.new_sqlite_classes ?? [], V2_AGENT_CLASSES)) {
+    failures.push('v6 fresh Flue 2 SQLite agent classes');
+  }
+
+  const bindings = config.durable_objects?.bindings ?? [];
+  const hasBinding = (name, className) => bindings.some(
+    (binding) => binding.name === name && binding.class_name === className,
+  );
+  if (!hasBinding('TAG_STATE', 'TagStateStore')) failures.push('TAG_STATE/TagStateStore binding');
+  if (!hasBinding('SANDBOX', 'Sandbox')) failures.push('SANDBOX/Sandbox binding');
+  for (const [name, className] of V2_AGENT_BINDINGS) {
+    if (!hasBinding(name, className)) failures.push(`${name}/${className} binding`);
+  }
+  const betaBindings = bindings.filter((binding) => BETA_FLUE_CLASSES.includes(binding.class_name));
+  if (betaBindings.length) failures.push('no beta Flue Durable Object bindings');
+  if ((config.workflows ?? []).length !== 0) failures.push('no Flue workflow bindings');
+
+  if (config.observability?.traces?.enabled !== true) {
+    failures.push('enabled Workers Traces for metadata-only Flue spans');
+  }
+  if (!bundle.includes('@flue/runtime/cloudflare-tracing')) {
+    failures.push('explicit content-free Cloudflare tracing instrumentation');
+  }
+  if (!bundle.includes('FLUE_PRIVATE_SANDBOX_COMMAND_V1')) {
+    failures.push('content-free Cloudflare Sandbox exec logging');
+  }
+  if (!bundle.includes('chickpea.response-metadata')) {
+    failures.push('bounded metadata-only Chickpea instrumentation');
+  }
+  if (
+    typeof config.compatibility_date !== 'string' ||
+    config.compatibility_date < '2026-04-01'
+  ) {
+    failures.push('compatibility_date at or above 2026-04-01');
+  }
+  if (failures.length) {
+    throw new Error(`Flue 2 cutover preflight failed; missing or unsafe ${failures.join(', ')}.`);
+  }
+}
+
 function cliVariable(name) {
   for (let index = 0; index < deployArgs.length; index += 1) {
     const argument = deployArgs[index];
@@ -82,13 +209,8 @@ function cliVariable(name) {
   return undefined;
 }
 
-function validateEnabledRoutineArtifact() {
-  const configPath = builtConfigPath();
-  if (!configPath) {
-    if (cliEnablesRoutines()) throw new Error('Cannot enable routines without a built Cloudflare artifact.');
-    return;
-  }
-  const config = JSON.parse(readFileSync(configPath, 'utf8'));
+function validateEnabledRoutineArtifact(artifact) {
+  const { config, bundle } = artifact;
   if (config.vars?.TAG_ROUTINES_ENABLED !== '1' && !cliEnablesRoutines()) return;
   const failures = [];
   const crons = config.triggers?.crons ?? [];
@@ -97,19 +219,22 @@ function validateEnabledRoutineArtifact() {
   if (!bindings.some((binding) => binding.name === 'TAG_STATE' && binding.class_name === 'TagStateStore')) {
     failures.push('TAG_STATE/TagStateStore binding');
   }
-  if (!bindings.some((binding) => binding.name === 'FLUE_ROUTINE_WORKFLOW' && binding.class_name === 'FlueRoutineWorkflow')) {
-    failures.push('FLUE_ROUTINE_WORKFLOW/FlueRoutineWorkflow binding');
+  for (const [name, className] of V2_AGENT_BINDINGS.slice(1)) {
+    if (!bindings.some((binding) => binding.name === name && binding.class_name === className)) {
+      failures.push(`${name}/${className} binding`);
+    }
   }
-  const bundlePath = path.resolve(path.dirname(configPath), config.main ?? 'index.js');
-  const bundle = existsSync(bundlePath) ? readFileSync(bundlePath, 'utf8') : '';
-  if (!bundle.includes('scheduled(controller')) failures.push('composed scheduled handler');
   if (
-    !bundle.includes('routine-intent') ||
-    !bundle.includes('slack-thread') ||
-    !bundle.includes('x-flue-internal-token') ||
-    !bundle.includes('error: "unauthorized"')
+    !bundle.includes('heartbeat: runRoutineHeartbeat') ||
+    !bundle.includes('maintenance: runWorkMaintenance')
   ) {
-    failures.push('internal-only generated Agent route guards');
+    failures.push('composed heartbeat and maintenance handlers');
+  }
+  if (
+    !bundle.includes('chickpea-routine-intent-v2') ||
+    !bundle.includes('chickpea-routine-execution-v2')
+  ) {
+    failures.push('fresh Flue 2 routine agent registrations');
   }
   if (failures.length) {
     throw new Error(
@@ -119,14 +244,9 @@ function validateEnabledRoutineArtifact() {
   }
 }
 
-function validateLedgerCanaryArtifact() {
-  const configPath = builtConfigPath();
+function validateLedgerCanaryArtifact(artifact) {
+  const { config, bundle } = artifact;
   const cliSelector = cliVariable('SLACK_TAG_LEDGER_CANARY_CHANNELS');
-  if (!configPath) {
-    if (cliSelector) throw new Error('Cannot enable the ledger canary without a built Cloudflare artifact.');
-    return;
-  }
-  const config = JSON.parse(readFileSync(configPath, 'utf8'));
   const selector = cliSelector ?? config.vars?.SLACK_TAG_LEDGER_CANARY_CHANNELS ?? '';
   if (selector === '') return;
   if (typeof selector !== 'string') {
@@ -140,12 +260,10 @@ function validateLedgerCanaryArtifact() {
       '(for example T123/C456), comma-separated with no wildcard or empty entry.',
     );
   }
-  const bundlePath = path.resolve(path.dirname(configPath), config.main ?? 'index.js');
-  const bundle = existsSync(bundlePath) ? readFileSync(bundlePath, 'utf8') : '';
   const requiredSeams = [
     'SLACK_TAG_LEDGER_CANARY_CHANNELS',
     'delivery_receipt_persist_unknown',
-    'slack_agent_execution_contexts',
+    'slack_agent_bindings',
   ];
   const missing = requiredSeams.filter((seam) => !bundle.includes(seam));
   if (missing.length) {
@@ -157,11 +275,18 @@ function validateLedgerCanaryArtifact() {
 }
 
 try {
-  validateEnabledRoutineArtifact();
-  validateLedgerCanaryArtifact();
+  const artifact = requireBuiltArtifact();
+  validateFlue2CutoverArtifact(artifact);
+  validateEnabledRoutineArtifact(artifact);
+  validateLedgerCanaryArtifact(artifact);
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));
   process.exit(1);
+}
+
+if (preflightOnly) {
+  process.stdout.write('Flue 2 generated cutover preflight passed. No deployment was attempted.\n');
+  process.exit(0);
 }
 
 const child = spawn(

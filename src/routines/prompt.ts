@@ -14,7 +14,7 @@ import { ROUTINE_LIMITS } from './limits.ts';
 import { RoutineRuntimeError, type RoutineRuntimeAccess } from './runtime.ts';
 import type { RoutineDefinition, RoutineRun } from './types.ts';
 
-export const RoutineModelResultSchema = v.object({
+export const RoutineModelResultSchema = v.strictObject({
   outcome: v.picklist(['succeeded', 'no_op']),
   message: v.string(),
   changeKey: v.optional(v.string()),
@@ -24,6 +24,8 @@ export type RoutineModelResult = v.InferOutput<typeof RoutineModelResultSchema>;
 
 export interface PreparedRoutinePrompt {
   prompt: string;
+  turn: NormalizedSlackTurn;
+  memoryEpoch: number;
   confirmMemory(): Promise<void>;
   validateMemoryLease(): Promise<boolean>;
 }
@@ -84,6 +86,8 @@ export async function prepareRoutinePrompt(
       '',
       ordinaryPrompt,
     ].join('\n'),
+    turn,
+    memoryEpoch: memory.memoryEpoch,
     confirmMemory: async () => {
       await memory.confirmInjection();
     },

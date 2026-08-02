@@ -322,6 +322,193 @@ test('recovery quarantine is same-origin, confirmed, idempotent, body-free, and 
   }
 });
 
+test('stale executing test Runs can be retired through one audited idempotent operator action', async () => {
+  const work = new SqliteWorkStore(':memory:', { now: () => NOW + 100 });
+  try {
+    const seeded = await seedRun(work, 'stale_retire', NOW, 'public', 'stale test prompt');
+    const lifecycle = lifecycleFor(work, seeded.runId, () => NOW + 10);
+    await lifecycle.prepareExecution('stale prepared input');
+    await lifecycle.markInvoked();
+
+    const freshApi = createWorkAdminApi({ store: () => work, now: () => NOW + 29 * 60_000 });
+    const missingCredential = await freshApi.request(`/sessions/${seeded.runId}/retire-stale`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'idempotency-key': 'retire-stale-run-1' },
+      body: JSON.stringify({
+        confirm: true,
+        operatorLabel: 'Flue 2 migration operator',
+        safeReasonCode: 'accepted_unknown',
+      }),
+    });
+    assert.equal(missingCredential.status, 403);
+    const crossOrigin = await freshApi.request(`/sessions/${seeded.runId}/retire-stale`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer admin-test',
+        'content-type': 'application/json',
+        'idempotency-key': 'retire-stale-run-1',
+        origin: 'https://evil.test',
+      },
+      body: JSON.stringify({
+        confirm: true,
+        operatorLabel: 'Flue 2 migration operator',
+        safeReasonCode: 'accepted_unknown',
+      }),
+    });
+    assert.equal(crossOrigin.status, 403);
+    const fresh = await freshApi.request(`/sessions/${seeded.runId}/retire-stale`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer admin-test',
+        'content-type': 'application/json',
+        'idempotency-key': 'retire-stale-run-1',
+      },
+      body: JSON.stringify({
+        confirm: true,
+        operatorLabel: 'Flue 2 migration operator',
+        safeReasonCode: 'accepted_unknown',
+      }),
+    });
+    assert.equal(fresh.status, 409);
+    assert.deepEqual(await fresh.json(), { error: 'session_not_stale' });
+
+    const api = createWorkAdminApi({ store: () => work, now: () => NOW + 31 * 60_000 });
+    const headers = {
+      authorization: 'Bearer admin-test',
+      'content-type': 'application/json',
+      'idempotency-key': 'retire-stale-run-1',
+    };
+    const payload = JSON.stringify({
+      confirm: true,
+      operatorLabel: 'Flue 2 migration operator',
+      safeReasonCode: 'accepted_unknown',
+    });
+    const retired = await api.request(`/sessions/${seeded.runId}/retire-stale`, {
+      method: 'POST',
+      headers,
+      body: payload,
+    });
+    assert.equal(retired.status, 200, await retired.clone().text());
+    const body = await retired.json() as Record<string, any>;
+    assert.equal(body.status, 'settled');
+    assert.equal(body.terminalDisposition, 'quarantined');
+    assert.equal(body.recovery.reasonCode, 'accepted_unknown');
+    assert.equal(body.recovery.claimedOperatorLabel, 'Flue 2 migration operator');
+
+    const replay = await api.request(`/sessions/${seeded.runId}/retire-stale`, {
+      method: 'POST',
+      headers,
+      body: payload,
+    });
+    assert.equal(replay.status, 200, await replay.clone().text());
+    assert.deepEqual(await replay.json(), body);
+
+    const run = await work.getRun(seeded.runId);
+    assert.equal(run?.safeFailureCode, 'operator_retired_stale_run');
+    const events = await work.listAuditEvents(seeded.runId);
+    assert.equal(events.filter((event) => event.eventType === 'work.run_recovery_required').length, 1);
+    assert.equal(events.filter((event) => event.eventType === 'work.run_quarantined').length, 1);
+    assert.equal(
+      events.find((event) => event.eventType === 'work.run_recovery_required')?.reasonCode,
+      'operator_retired_stale_run',
+    );
+    const audit = JSON.stringify(events);
+    assert.doesNotMatch(audit, /stale test prompt|stale prepared input/);
+  } finally {
+    work.close();
+  }
+});
+
+test('stale Run retirement rejects active leases and resumes a partial two-write failure', async () => {
+  const work = new SqliteWorkStore(':memory:', { now: () => NOW + 100 });
+  try {
+    const leased = await seedRun(work, 'stale_retire_leased', NOW);
+    const leasedLifecycle = lifecycleFor(work, leased.runId, () => NOW + 10);
+    await leasedLifecycle.prepareExecution('leased prepared input');
+    await leasedLifecycle.markInvoked();
+    const activeLeaseStore = new Proxy(work, {
+      get(target, property, receiver) {
+        if (property === 'getRun') {
+          return async (runId: RunId) => {
+            const run = await target.getRun(runId);
+            return run ? { ...run, leaseUntil: NOW + 32 * 60_000 } : undefined;
+          };
+        }
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    }) as WorkStore;
+    const activeLeaseApi = createWorkAdminApi({
+      store: () => activeLeaseStore,
+      now: () => NOW + 31 * 60_000,
+    });
+    const activeLease = await activeLeaseApi.request(`/sessions/${leased.runId}/retire-stale`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer admin-test',
+        'content-type': 'application/json',
+        'idempotency-key': 'retire-stale-active-lease',
+      },
+      body: JSON.stringify({
+        confirm: true,
+        operatorLabel: 'Flue 2 migration operator',
+        safeReasonCode: 'accepted_unknown',
+      }),
+    });
+    assert.equal(activeLease.status, 409);
+    assert.deepEqual(await activeLease.json(), { error: 'session_not_stale' });
+
+    const partial = await seedRun(work, 'stale_retire_partial', NOW);
+    const partialLifecycle = lifecycleFor(work, partial.runId, () => NOW + 10);
+    await partialLifecycle.prepareExecution('partial prepared input');
+    await partialLifecycle.markInvoked();
+    let failQuarantineOnce = true;
+    const interruptedStore = new Proxy(work, {
+      get(target, property, receiver) {
+        if (property === 'quarantineRun') {
+          return async (...args: Parameters<WorkStore['quarantineRun']>) => {
+            if (failQuarantineOnce) {
+              failQuarantineOnce = false;
+              throw new Error('injected quarantine interruption');
+            }
+            return target.quarantineRun(...args);
+          };
+        }
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    }) as WorkStore;
+    const partialApi = createWorkAdminApi({
+      store: () => interruptedStore,
+      now: () => NOW + 31 * 60_000,
+    });
+    const request = {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer admin-test',
+        'content-type': 'application/json',
+        'idempotency-key': 'retire-stale-partial',
+      },
+      body: JSON.stringify({
+        confirm: true,
+        operatorLabel: 'Flue 2 migration operator',
+        safeReasonCode: 'accepted_unknown',
+      }),
+    };
+    const interrupted = await partialApi.request(
+      `/sessions/${partial.runId}/retire-stale`,
+      request,
+    );
+    assert.equal(interrupted.status, 503);
+    assert.equal((await work.getRun(partial.runId))?.status, 'recovery_required');
+    const resumed = await partialApi.request(`/sessions/${partial.runId}/retire-stale`, request);
+    assert.equal(resumed.status, 200, await resumed.clone().text());
+    assert.equal((await resumed.json() as Record<string, unknown>).status, 'settled');
+  } finally {
+    work.close();
+  }
+});
+
 async function seedRun(
   work: SqliteWorkStore,
   suffix: string,

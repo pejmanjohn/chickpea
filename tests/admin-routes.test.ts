@@ -5,6 +5,8 @@ import { Hono } from 'hono';
 
 import { createAdminRoutes } from '../src/admin/routes.ts';
 import flueApp from '../src/app.ts';
+import type { RuntimeDrainStatus } from '../src/config/state-rpc.ts';
+import type { SlackStateStore } from '../src/slack/claim-store.ts';
 import {
   ApiOAuthError,
   apiOAuthSettingKeys,
@@ -110,6 +112,8 @@ interface AdminHarnessOptions {
   modelCatalogOwnerId?: () => string;
   modelCatalogFetch?: typeof fetch;
   modelCatalogTimeoutMs?: number;
+  runtimeDrain?: () => Promise<RuntimeDrainStatus>;
+  slackState?: SlackStateStore;
 }
 
 function appWithAdmin(store: ConfigStore, adminToken?: string): Hono {
@@ -159,6 +163,8 @@ function appWithAdminOptions(store: ConfigStore, options: AdminHarnessOptions = 
       ...(options.modelCatalogTimeoutMs !== undefined
         ? { modelCatalogTimeoutMs: options.modelCatalogTimeoutMs }
         : {}),
+      ...(options.runtimeDrain ? { runtimeDrain: options.runtimeDrain } : {}),
+      ...(options.slackState ? { slackState: options.slackState } : {}),
     }),
   );
   return app;
@@ -653,30 +659,6 @@ test('admin API returns 404 for every admin route when TAG_ADMIN_TOKEN is unset'
   }
 });
 
-test('TAG_AGENT_API_TOKEN does not authorize admin routes', async () => {
-  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
-  try {
-    await withEnv(
-      {
-        TAG_ADMIN_TOKEN: undefined,
-        TAG_AGENT_API_TOKEN: 'agent-api-token',
-      },
-      async () => {
-        const app = new Hono();
-        app.route('/', createAdminRoutes({ store }));
-
-        const response = await app.request('/admin/api/agents', {
-          headers: auth('agent-api-token'),
-        });
-
-        assert.equal(response.status, 404);
-      },
-    );
-  } finally {
-    store.close();
-  }
-});
-
 test('admin API rejects a wrong bearer token and accepts the configured admin token', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   try {
@@ -699,6 +681,138 @@ test('admin API rejects a wrong bearer token and accepts the configured admin to
     assert.equal(page.status, 200);
     assert.equal(page.headers.get('cache-control'), 'no-store');
     assert.match(await page.text(), /Chickpea/);
+  } finally {
+    store.close();
+  }
+});
+
+test('runtime drain is admin-gated and reports every bounded work category', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const settings = new Proxy(new SqliteSettingsStore(':memory:'), {
+    get() {
+      throw new Error('runtime drain must not touch operator settings');
+    },
+  }) as SettingsStore;
+  let calls = 0;
+  const status: RuntimeDrainStatus = {
+    drained: false,
+    categories: {
+      pendingLegacyTurnJobs: 2,
+      pendingLedgerTurnJobs: 1,
+      pendingSlackInteractionCleanups: 3,
+      recoveryRequiredTurnJobs: 6,
+      executingRuns: 4,
+      admittingOrRunningRoutineOccurrences: 5,
+    },
+  };
+  try {
+    const app = appWithAdminOptions(store, {
+      settings,
+      runtimeDrain: async () => {
+        calls += 1;
+        return status;
+      },
+    });
+
+    const unauthorized = await app.request('/admin/api/runtime/drain');
+    assert.equal(unauthorized.status, 401);
+    assert.equal(calls, 0);
+
+    const response = await app.request('/admin/api/runtime/drain', {
+      headers: auth(ADMIN_TOKEN),
+    });
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('cache-control'), 'no-store');
+    assert.deepEqual(await response.json(), status);
+    assert.equal(calls, 1);
+  } finally {
+    store.close();
+  }
+});
+
+test('runtime drain fails closed when the state store is unavailable', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  try {
+    const app = appWithAdminOptions(store, {
+      runtimeDrain: async () => {
+        throw new Error('private state failure');
+      },
+    });
+    const response = await app.request('/admin/api/runtime/drain', {
+      headers: auth(ADMIN_TOKEN),
+    });
+    assert.equal(response.status, 503);
+    assert.deepEqual(await response.json(), { error: 'runtime_drain_unavailable' });
+  } finally {
+    store.close();
+  }
+});
+
+test('turn recovery inventory and explicit terminalization are admin-gated', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const turns = [{
+    id: 'msg:recovery:1',
+    executionAuthority: 'legacy' as const,
+    reason: 'flue_expected_instance_missing',
+    enqueuedAt: 1_800_000_000_000,
+  }];
+  const slackState = {
+    listTurnRecoveryRequired: async () => [...turns],
+    resolveTurnRecoveryRequired: async (id: string) => {
+      const index = turns.findIndex((turn) => turn.id === id);
+      if (index < 0) return false;
+      turns.splice(index, 1);
+      return true;
+    },
+  } as unknown as SlackStateStore;
+  try {
+    const app = appWithAdminOptions(store, { slackState });
+    const unauthorized = await app.request('/admin/api/runtime/recovery-turns');
+    assert.equal(unauthorized.status, 401);
+
+    const listed = await app.request('/admin/api/runtime/recovery-turns?limit=10', {
+      headers: auth(ADMIN_TOKEN),
+    });
+    assert.equal(listed.status, 200);
+    assert.equal(listed.headers.get('cache-control'), 'no-store');
+    assert.deepEqual(await listed.json(), { turns });
+
+    const invalid = await app.request('/admin/api/runtime/recovery-turns/msg:recovery:1/resolve', {
+      method: 'POST',
+      headers: { ...auth(ADMIN_TOKEN), 'idempotency-key': 'resolve-recovery-1' },
+      body: JSON.stringify({ confirm: false }),
+    });
+    assert.equal(invalid.status, 400);
+
+    const resolved = await app.request(
+      '/admin/api/runtime/recovery-turns/msg:recovery:1/resolve',
+      {
+        method: 'POST',
+        headers: {
+          ...auth(ADMIN_TOKEN),
+          'content-type': 'application/json',
+          'idempotency-key': 'resolve-recovery-1',
+        },
+        body: JSON.stringify({ confirm: 'terminalize' }),
+      },
+    );
+    assert.equal(resolved.status, 200);
+    assert.deepEqual(await resolved.json(), { id: 'msg:recovery:1', resolved: true });
+
+    const replay = await app.request(
+      '/admin/api/runtime/recovery-turns/msg:recovery:1/resolve',
+      {
+        method: 'POST',
+        headers: {
+          ...auth(ADMIN_TOKEN),
+          'content-type': 'application/json',
+          'idempotency-key': 'resolve-recovery-1',
+        },
+        body: JSON.stringify({ confirm: 'terminalize' }),
+      },
+    );
+    assert.equal(replay.status, 200);
+    assert.deepEqual(await replay.json(), { id: 'msg:recovery:1', resolved: false });
   } finally {
     store.close();
   }
@@ -1394,7 +1508,7 @@ test('admin API supports agent and assignment CRUD with the admin token', async 
   }
 });
 
-test('main app mounts admin routes before flue routing', async () => {
+test('main app owns the authenticated admin route without a Flue HTTP router', async () => {
   await withEnv(
     {
       TAG_ADMIN_TOKEN: 'mounted-admin-token',

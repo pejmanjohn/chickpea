@@ -8,6 +8,11 @@ import {
   MAX_ARTIFACT_BYTES,
 } from '../src/sandbox/artifact-tool.ts';
 
+const TOOL_RUN_CONTEXT = {
+  toolCallId: 'artifact-test-call',
+  log: { info() {}, warn() {}, error() {} },
+} as const;
+
 function fakeSessionEnv(
   readPaths: string[],
   statPaths: string[] = [],
@@ -78,14 +83,15 @@ test('workspace artifact tool reads through SessionEnv and binds the Slack desti
 
   await capability.sandbox.createSessionEnv({ id: 'thread-1' });
   const result = await capability.tool.run({
-    input: {
+    ...TOOL_RUN_CONTEXT,
+    data: {
       path: '/workspace/proof.png',
       filename: 'proof.png',
       title: 'Proof',
     },
   });
 
-  assert.deepEqual(result, { uploaded: true });
+  assert.deepEqual(result, { output: { uploaded: true } });
   assert.equal(statPaths[0], '/workspace/proof.png');
   const frozenPath = statPaths[1];
   assert.match(
@@ -135,7 +141,8 @@ test('workspace artifact tool rejects over-cap files without reading or posting 
   await assert.rejects(
     async () =>
       capability.tool.run({
-        input: {
+        ...TOOL_RUN_CONTEXT,
+        data: {
           path: '/workspace/oversized.zip',
           filename: 'oversized.zip',
         },
@@ -174,7 +181,8 @@ test('workspace artifact copy-freeze bounds a source that grows after the pre-st
 
   await capability.sandbox.createSessionEnv({ id: 'thread-race' });
   await capability.tool.run({
-    input: {
+    ...TOOL_RUN_CONTEXT,
+    data: {
       path: '/workspace/racing.bin',
       filename: 'racing.bin',
     },
@@ -213,7 +221,8 @@ test('workspace artifact tool rejects post-read oversize bytes and cleans up', a
   await assert.rejects(
     async () =>
       capability.tool.run({
-        input: {
+        ...TOOL_RUN_CONTEXT,
+        data: {
           path: '/workspace/racing.bin',
           filename: 'racing.bin',
         },
@@ -244,7 +253,8 @@ test('workspace artifact temp name is random and independent of model input', as
 
   await capability.sandbox.createSessionEnv({ id: 'thread-random' });
   await capability.tool.run({
-    input: {
+    ...TOOL_RUN_CONTEXT,
+    data: {
       path: "/workspace/model-controlled-'-$HOME.bin",
       filename: 'model-controlled.bin',
     },
@@ -284,12 +294,13 @@ test('workspace artifact tool keeps the container root and rejects paths outside
 
   assert.deepEqual(
     await capability.tool.run({
-      input: {
+      ...TOOL_RUN_CONTEXT,
+      data: {
         path: '/workspace/proof.png',
         filename: 'proof.png',
       },
     }),
-    { uploaded: true },
+    { output: { uploaded: true } },
   );
   assert.equal(readPaths.length, 1);
   assert.match(
@@ -300,7 +311,8 @@ test('workspace artifact tool keeps the container root and rejects paths outside
   await assert.rejects(
     async () =>
       capability.tool.run({
-        input: {
+        ...TOOL_RUN_CONTEXT,
+        data: {
           path: '/workspace/../secret',
           filename: 'secret',
         },

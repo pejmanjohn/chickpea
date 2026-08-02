@@ -11,7 +11,8 @@ import {
 import { isCloudflareTarget } from './runtime-target.ts';
 import { SqliteSettingsStore, type SettingsStore } from './settings-store.ts';
 import { SqliteAgentSnapshotStore, type AgentSnapshotStore } from './snapshot-store.ts';
-import { tagStateStub } from './state-rpc.ts';
+import { buildRuntimeDrainStatus, tagStateStub } from './state-rpc.ts';
+import type { RuntimeDrainStatus } from './state-rpc.ts';
 import { SqliteConfigStore, type ConfigStore } from './store.ts';
 import { SqliteSlackStateStore, type SlackStateStore } from '../slack/claim-store.ts';
 import { resolveStateDbPath } from '../state/node-state-db.ts';
@@ -171,6 +172,28 @@ export function getWorkStore(env?: PlatformEnv): WorkStore {
     (path) => new SqliteWorkStore(path),
   );
   return cachedWorkStore.store;
+}
+
+export async function readRuntimeDrainStatus(env?: PlatformEnv): Promise<RuntimeDrainStatus> {
+  if (isCloudflareTarget()) {
+    const result = await tagStateStub(env).runtimeDrainStatus();
+    if (!result.ok) {
+      throw new Error(`Runtime drain state is unavailable (${result.error.code}).`);
+    }
+    return result.value;
+  }
+
+  const [turnJobs, executingRuns, admittingOrRunningRoutineOccurrences] = await Promise.all([
+    getSlackStateStore(env).runtimeDrainCounts(),
+    getWorkStore(env).countExecutingRuns(),
+    getRoutineStore(env).countAdmittingOrRunningOccurrences(),
+  ]);
+  const categories = {
+    ...turnJobs,
+    executingRuns,
+    admittingOrRunningRoutineOccurrences,
+  };
+  return buildRuntimeDrainStatus(categories);
 }
 
 /**

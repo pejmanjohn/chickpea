@@ -150,7 +150,7 @@ test('runtime routing is native-first, lane-isolated, and explicit for unsupport
   assert.deepEqual(
     await resolveRuntimeModel('agent', 'openai/gpt-5.6-sol', dependencies),
     {
-      model: `${OPENAI_PLATFORM_COMPAT_PROVIDER_ID}/gpt-5.6-sol`,
+      model: 'openai/gpt-5.6-sol',
       providerAuthRoute: 'openai_api_key',
     },
   );
@@ -160,7 +160,7 @@ test('runtime routing is native-first, lane-isolated, and explicit for unsupport
   );
   assert.deepEqual(
     await resolveRuntimeModel('agent', 'anthropic/claude-opus-5', dependencies),
-    { model: `${ANTHROPIC_COMPAT_PROVIDER_ID}/claude-opus-5` },
+    { model: 'anthropic/claude-opus-5' },
   );
   await assert.rejects(
     () => resolveRuntimeModel('agent', 'openai/gpt-not-reviewed', dependencies),

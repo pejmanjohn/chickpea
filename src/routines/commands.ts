@@ -8,12 +8,14 @@ import {
   hashRoutineValue,
   runNowOccurrenceKey,
 } from './ids.ts';
-import {
+import type {
   parseRoutineIntent,
+  RoutineIntent,
+} from './intent.ts';
+import {
   isRoutineIntentCandidate,
   routineIntentNeedsDefaultTimezone,
-  type RoutineIntent,
-} from './intent.ts';
+} from './intent-candidate.ts';
 import { ROUTINE_LIMITS } from './limits.ts';
 import {
   renderRoutineDeletionConfirmation,
@@ -153,7 +155,9 @@ export async function handleRoutineSlackRequest(
     : 'UTC';
   let intent: RoutineIntent | undefined;
   try {
-    intent = await (dependencies.parseIntent ?? parseRoutineIntent)(
+    const parseIntent = dependencies.parseIntent ?? (async (...args) =>
+      (await import('./intent.ts')).parseRoutineIntent(...args));
+    intent = await parseIntent(
       {
         workspaceId: turn.workspaceId,
         channelId: turn.channelId,

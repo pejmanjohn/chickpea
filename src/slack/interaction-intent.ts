@@ -10,7 +10,7 @@ import {
 } from '../config/provider-keys.ts';
 import { getSettingsStore, type PlatformEnv } from '../config/state-backend.ts';
 import { hasCredentialLikeContent, hasDisallowedControlCharacter } from '../security/content-validation.ts';
-import type { AgentDispatchResult } from './agent-dispatch.ts';
+import type { AgentDispatchResult } from './flue-dispatch.ts';
 
 export const SLACK_INTERACTION_DISPOSITIONS = ['ignore', 'react_only', 'reply', 'work'] as const;
 export type SlackInteractionDisposition = (typeof SLACK_INTERACTION_DISPOSITIONS)[number];

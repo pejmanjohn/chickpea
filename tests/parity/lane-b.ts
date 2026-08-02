@@ -31,8 +31,7 @@ import {
  */
 
 const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
-const FLUE_BIN = join(REPO_ROOT, 'node_modules', '.bin', 'flue');
-const FLUE_RUNTIME_PATCH = join(REPO_ROOT, 'scripts', 'patch-flue-runtime.mjs');
+const VITE_BIN = join(REPO_ROOT, 'node_modules', '.bin', 'vite');
 const DIST_NODE_DIR = join(REPO_ROOT, 'dist-node');
 const SERVER_ENTRY = join(DIST_NODE_DIR, 'server.mjs');
 const EVENTS_PATH = '/channels/slack/events';
@@ -73,6 +72,11 @@ export const laneB: Lane = {
       const store = new SqliteConfigStore(configDbPath, config.configSeed);
       store.close();
       configEnv.SLACK_STATE_DB_PATH = configDbPath;
+      configEnv.LOCAL_STUB_MODELS = config.configSeed.agents
+        .flatMap((agent) => agent.model?.startsWith('local-stub/')
+          ? [agent.model.slice('local-stub/'.length)]
+          : [])
+        .join(',');
     }
 
     const port = await getFreePort();
@@ -111,11 +115,8 @@ export const laneB: Lane = {
         LOCAL_STUB_URL: `${fake.url}/v1`,
         SLACK_TAG_MODEL: 'local-stub/parity-stub-1',
         SLACK_BOT_USER_ID: slackBotUserId,
-        // Pin the internal agent token so the in-process channel → agent hop
-        // and its guarded route agree deterministically.
-        TAG_AGENT_API_TOKEN: 'parity-internal-token',
         TAG_ADMIN_TOKEN: ADMIN_TOKEN,
-        // `src/db.ts` uses file-backed persistence by default. Every Lane B
+        // `src/db.node.ts` uses file-backed persistence by default. Every Lane B
         // scenario spawns a fresh process, so pin
         // an in-memory DB to keep each scenario's conversation state isolated
         // (a shared file would cross-contaminate).
@@ -210,20 +211,20 @@ function ensureBuilt(nodeBin: string): Promise<void> {
   return buildPromise;
 }
 
-/** `flue build --target node --output dist-node`, run once via `nodeBin`. */
+/** `vite build --config vite.node.config.ts --outDir dist-node`, run once via `nodeBin`. */
 function buildNodeTarget(nodeBin: string): Promise<void> {
-  execFileSync(nodeBin, [FLUE_RUNTIME_PATCH], {
-    cwd: REPO_ROOT,
-    stdio: 'inherit',
-  });
   return new Promise((resolve, reject) => {
-    const child = spawn(FLUE_BIN, ['build', '--target', 'node', '--output', 'dist-node'], {
-      cwd: REPO_ROOT,
-      // The flue bin is `#!/usr/bin/env node`; prefix PATH so its shebang picks
-      // up the validated Node (>=22.19) rather than the default local Node.
-      env: { ...process.env, PATH: `${dirname(nodeBin)}:${process.env.PATH ?? ''}` },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    const child = spawn(
+      VITE_BIN,
+      ['build', '--config', 'vite.node.config.ts', '--outDir', 'dist-node'],
+      {
+        cwd: REPO_ROOT,
+        // The Vite bin is `#!/usr/bin/env node`; prefix PATH so its shebang picks
+        // up the validated Node (>=22.19) rather than the default local Node.
+        env: { ...process.env, PATH: `${dirname(nodeBin)}:${process.env.PATH ?? ''}` },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
     let output = '';
     child.stdout?.on('data', (chunk: Buffer) => {
       output += chunk.toString();
@@ -236,7 +237,7 @@ function buildNodeTarget(nodeBin: string): Promise<void> {
       if (code === 0) {
         resolve();
       } else {
-        reject(new Error(`flue build --target node failed (exit ${code}):\n${output}`));
+        reject(new Error(`Vite Node build failed (exit ${code}):\n${output}`));
       }
     });
   });

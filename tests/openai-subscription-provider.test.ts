@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { resolveModel } from '@flue/runtime/internal';
-import { getApiProvider } from '@earendil-works/pi-ai/compat';
 
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { listRuntimeModelProviders } from '../src/config/providers.ts';
@@ -13,6 +12,7 @@ import {
 import { OpenAiSubscriptionProtocolError } from '../src/openai-subscription/protocol.ts';
 import {
   bindOpenAiSubscriptionProvider,
+  getBoundOpenAiSubscriptionProviderForTests,
   OPENAI_SUBSCRIPTION_PROVIDER_ID,
   openAiSubscriptionModelSpecifier,
 } from '../src/openai-subscription/provider.ts';
@@ -400,7 +400,7 @@ test('the registered wire handler streams through the boundary and ignores calle
 
   await bindOpenAiSubscriptionProvider({ settings, now: () => NOW });
   const model = resolveModel(openAiSubscriptionModelSpecifier('gpt-5.4'));
-  const api = getApiProvider(model.api);
+  const api = getBoundOpenAiSubscriptionProviderForTests(model.provider);
   assert.ok(api);
   const stream = api.stream(
     model,
@@ -449,7 +449,7 @@ test('malformed subscription streams surface only a bounded adapter error', asyn
 
   await bindOpenAiSubscriptionProvider({ settings, now: () => NOW });
   const model = resolveModel(openAiSubscriptionModelSpecifier('gpt-5.4'));
-  const api = getApiProvider(model.api);
+  const api = getBoundOpenAiSubscriptionProviderForTests(model.provider);
   assert.ok(api);
   const result = await api.stream(
     model,
@@ -568,7 +568,7 @@ test('a release-catalog image model registers and streams through the subscripti
   const model = resolveModel(openAiSubscriptionModelSpecifier('gpt-5.4'));
   assert.equal(model.contextWindow, 272_000);
   assert.equal(model.maxTokens, 128_000);
-  const api = getApiProvider(model.api);
+  const api = getBoundOpenAiSubscriptionProviderForTests(model.provider);
   assert.ok(api);
   const result = await api.stream(
     model,
@@ -722,7 +722,7 @@ test('a delayed failing bind cannot clear a newer valid transport binding', asyn
   releaseDelayedRead?.();
   await assert.rejects(staleBind, /delayed storage failure/);
 
-  const api = getApiProvider(model.api);
+  const api = getBoundOpenAiSubscriptionProviderForTests(model.provider);
   assert.ok(api);
   const result = await api.stream(
     model,

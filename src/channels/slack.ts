@@ -4,6 +4,7 @@ import {
   type SlackChannel,
   type SlackChannelOptions,
 } from '@flue/slack';
+import { createChannelRouter } from '@flue/runtime';
 
 import { resolveEffectiveSlackConfig } from '../config/effective-config.ts';
 import { resolveModelCredentialAttribution } from '../config/model-credential-refs.ts';
@@ -50,7 +51,6 @@ import {
 import {
   getClient,
   createSlackWebClient,
-  runTurn,
   sanitizeError,
 } from '../slack/run-turn.ts';
 import { slackThreadKey } from '../slack/thread-key.ts';
@@ -172,7 +172,7 @@ function channelForSecret(signingSecret: string): SlackChannel {
   return verifiedChannel.channel;
 }
 
-// conversationKey/parseConversationKey are pure identity helpers, independent
+// instanceId/parseInstanceId are pure identity helpers, independent
 // of the signing secret; serve them from whichever instance exists. The
 // placeholder-keyed instance can never verify anything — its routes are not
 // the ones exported below, and the events gate always resolves the real
@@ -237,11 +237,16 @@ const verifiedEventsHandler: SlackRouteHandler = async (c, next) => {
   return route.handler(c, next);
 };
 
+const routes: SlackChannel['routes'] = [
+  { method: 'POST', path: '/events', handler: verifiedEventsHandler },
+];
+
 export const channel: SlackChannel = {
   // Path: /channels/slack/events
-  routes: [{ method: 'POST', path: '/events', handler: verifiedEventsHandler }],
-  conversationKey: (ref) => identityChannel().conversationKey(ref),
-  parseConversationKey: (id) => identityChannel().parseConversationKey(id),
+  routes,
+  route: () => createChannelRouter(routes),
+  instanceId: (ref) => identityChannel().instanceId(ref),
+  parseInstanceId: (id) => identityChannel().parseInstanceId(id),
 };
 
 const handleSlackEvents: NonNullable<SlackChannelOptions['events']> = ({ c, payload }) => {
@@ -669,6 +674,8 @@ async function processSlackEvent(
     }
   }
 
+  const durableCanonicalTurnJob = canonicalRunId ? canonicalTurnJob : undefined;
+
   let admissionInteractionProgress: SlackInteractionProgress | undefined;
   const shouldAcknowledgeAtAdmission = botToken && !candidateTurn && !deterministicCommand &&
     turn.interactionIntent?.disposition !== 'react_only';
@@ -688,8 +695,8 @@ async function processSlackEvent(
         : {}),
       presenter,
       record: async (patch) => {
-        if (canonicalTurnJob && state.recordSlackInteractionProgress) {
-          await state.recordSlackInteractionProgress(canonicalTurnJob.id, patch);
+        if (durableCanonicalTurnJob && state.recordSlackInteractionProgress) {
+          await state.recordSlackInteractionProgress(durableCanonicalTurnJob.id, patch);
         }
       },
     });
@@ -709,7 +716,7 @@ async function processSlackEvent(
 
   // f. The old HTTP self-call — and the Host-derived origin trust it forced,
   //    since Slack signatures don't cover Host — is gone: the agent prompt
-  //    now dispatches in-process (see slack/agent-dispatch.ts) with the
+  //    now dispatches through the durable Flue 2 adapter with the
   //    platform env captured at the top of this handler, so there is no
   //    origin to spoof or configure.
 
@@ -720,25 +727,30 @@ async function processSlackEvent(
   //    session-created-before-provider-call semantics. A failed turn leaves
   //    the thread registered (only the claims are released, for retry).
   if (!claimsHeldByCanonicalAdmission) await state.start(threadKey);
-  let marksActiveWork = turn.interactionIntent?.disposition === 'work';
+  const marksActiveWork = turn.interactionIntent?.disposition === 'work';
   if (marksActiveWork) await state.setActiveWork(threadKey, msgKey, true);
 
-  // h. Run the turn past the fast events ack.
-  //    - NODE runs it inline as a floating promise: node has no waitUntil
-  //      horizon, so a long turn just outlives the response.
-  //    - CLOUDFLARE cannot do that. A turn driven inside the events
+  // h. Persist the turn before starting the target-owned durable driver.
+  //    - NODE wakes its SQLite-backed relay after either canonical admission
+  //      or a legacy fallback enqueue.
+  //    - CLOUDFLARE cannot drive a turn inside the events
   //      invocation's `waitUntil` is cancelled ~30s after the response
   //      (tail-log-confirmed), killing any longer model turn. So the handler
   //      ENQUEUES the job into the state Durable Object — awaited, so the job +
   //      armed alarm are durable BEFORE the ack (milliseconds) — and the DO's
   //      alarm() runs the SAME runTurn with the platform's 15-minute wall-time
-  //      budget. The claims are already held; on the CF path the alarm owns
-  //      releasing them on terminal failure, exactly as the node .catch does.
+  //      budget. The claims are already held; each driver owns terminal claim
+  //      release and preserves any admitted Flue envelope for reattachment.
   if (isCloudflareTarget()) {
     // id = msgKey: the message claim key already dedupes the app_mention +
     // message fan-out, so keying the job by it makes the enqueue idempotent.
-    const job: TurnJob =
-      canonicalTurnJob ?? { id: msgKey, evtKey, msgKey, turn, assignment, ...(canonicalRunId ? { runId: canonicalRunId } : {}) };
+    const job: TurnJob = durableCanonicalTurnJob ?? {
+      id: msgKey,
+      evtKey,
+      msgKey,
+      turn,
+      assignment,
+    };
     const enqueued = await tagStateStub(platformEnv).enqueueTurn(job);
     if (!enqueued.ok) {
       // Enqueue failed before anything ran: free the claims so a Slack
@@ -751,36 +763,35 @@ async function processSlackEvent(
     }
     return;
   }
-  if (canonicalRunId && canonicalTurnJob) {
-    await wakeNodeTurnRelay(platformEnv).catch((err) => {
-      console.error('[chickpea] node turn wake failed:', sanitizeError(err));
-    });
-    return;
-  }
-  await runTurn(turn, assignment, platformEnv, {
-      turnId: msgKey,
-      usageExecutionId: `exec:${msgKey}:1`,
-      ...(admissionInteractionProgress
-        ? { interactionProgress: admissionInteractionProgress }
-        : {}),
-      onInteractionIntent: async (intent) => {
-        if (intent.disposition !== 'work') return;
-        marksActiveWork = true;
-        await state.setActiveWork(threadKey, msgKey, true);
-      },
-      onDelivered: async () => {
-        if (marksActiveWork) await state.setActiveWork(threadKey, msgKey, false);
-      },
-    }).catch(async (err) => {
-      // Release on a genuine delivery failure so a Slack retry can re-drive
-      // the turn. A completed turn (including a delivered provider-failure
-      // final) returns normally and keeps its claim, so it never re-runs.
+  if (!durableCanonicalTurnJob) {
+    try {
+      const enqueued = await state.enqueueTurn?.({
+        id: msgKey,
+        evtKey,
+        msgKey,
+        turn,
+        assignment,
+      });
+      if (enqueued === undefined) {
+        throw new Error('Node turn store is unavailable.');
+      }
+    } catch (err) {
+      // Persistence failed before a durable driver owned the turn. Release the
+      // claims and active-work marker so Slack can safely redeliver it.
       await state.release(evtKey);
       await state.release(msgKey);
       if (promotedDecisionKey) await state.release(promotedDecisionKey);
       if (marksActiveWork) await state.setActiveWork(threadKey, msgKey, false);
-      console.error('[chickpea] turn failed:', sanitizeError(err));
-    });
+      console.error('[chickpea] Node turn enqueue failed:', sanitizeError(err));
+      return;
+    }
+    if (admissionInteractionProgress && state.recordSlackInteractionProgress) {
+      await state.recordSlackInteractionProgress(msgKey, admissionInteractionProgress);
+    }
+  }
+  await wakeNodeTurnRelay(platformEnv).catch((err) => {
+    console.error('[chickpea] node turn wake failed:', sanitizeError(err));
+  });
 }
 
 async function handleMemberJoinedChannel(

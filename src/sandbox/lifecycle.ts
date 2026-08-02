@@ -30,6 +30,53 @@ export interface DestroyableSandbox {
   destroy(): Promise<void>;
 }
 
+const PRIVATE_SANDBOX_COMMAND_ENV = 'FLUE_PRIVATE_SANDBOX_COMMAND_V1';
+const CONTENT_FREE_SANDBOX_COMMAND = `sh -lc "$${PRIVATE_SANDBOX_COMMAND_ENV}"`;
+
+interface OperationallyPrivateSandbox {
+  exec(
+    command: string,
+    options?: {
+      env?: Record<string, string>;
+      [key: string]: unknown;
+    },
+  ): unknown;
+}
+
+/**
+ * Keep model-authored shell text out of the Cloudflare Sandbox SDK's canonical
+ * `sandbox.exec` log. The SDK logs its command argument on both success and
+ * failure, independently of Flue tracing, so send a fixed wrapper command and
+ * carry the real command in the execution environment instead. `origin` also
+ * demotes the content-free success event below the production log threshold.
+ */
+export function contentFreeSandboxExec<T extends OperationallyPrivateSandbox>(sandbox: T): T {
+  return new Proxy(sandbox, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver) as unknown;
+      if (property !== 'exec' || typeof value !== 'function') return value;
+
+      return (command: string, options?: Record<string, unknown>) => {
+        const env =
+          options?.env && typeof options.env === 'object'
+            ? (options.env as Record<string, string>)
+            : undefined;
+        return Reflect.apply(value, target, [
+          CONTENT_FREE_SANDBOX_COMMAND,
+          {
+            ...options,
+            env: {
+              ...env,
+              [PRIVATE_SANDBOX_COMMAND_ENV]: command,
+            },
+            origin: 'internal',
+          },
+        ]);
+      };
+    },
+  });
+}
+
 interface ActivatableSandbox {
   exists(path: string): Promise<unknown>;
 }
