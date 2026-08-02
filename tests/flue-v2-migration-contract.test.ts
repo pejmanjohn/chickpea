@@ -47,6 +47,7 @@ async function sourceFiles(): Promise<string[]> {
     const entries = await readdir(absolute, { recursive: true, withFileTypes: true });
     for (const entry of entries) {
       if (!entry.isFile() || !/\.(?:ts|mjs)$/.test(entry.name)) continue;
+      if (entry.parentPath.split(path.sep).includes('.flue-vite')) continue;
       files.push(path.join(entry.parentPath, entry.name));
     }
   }
@@ -73,6 +74,16 @@ function matchingFiles(
 
 function sorted(values: readonly string[]): string[] {
   return [...values].sort();
+}
+
+async function builtJavaScript(): Promise<string> {
+  const artifactRoot = path.join(ROOT, 'dist-cf', 'chickpea');
+  const entries = await readdir(artifactRoot, { recursive: true, withFileTypes: true });
+  const files = entries
+    .filter((entry) => entry.isFile() && entry.name.endsWith('.js'))
+    .map((entry) => path.join(entry.parentPath, entry.name))
+    .sort();
+  return (await Promise.all(files.map((file) => readFile(file, 'utf8')))).join('\n');
 }
 
 test('dependencies and scripts are pinned to the supported Flue 2 surface', async () => {
@@ -155,7 +166,7 @@ test('authored Cloudflare reset preserves app state and replaces only beta Flue 
   assert.equal(destructive.includes('TagStateStore'), false);
   assert.equal(destructive.includes('Sandbox'), false);
   assert.equal(destructive.includes('ContainerProxy'), false);
-  assert.equal(config.observability?.traces?.enabled, false);
+  assert.equal(config.observability?.traces?.enabled, true);
   assert.ok((config.compatibility_date ?? '') >= '2026-04-01');
 });
 
@@ -186,22 +197,44 @@ test(
     assert.ok(bindings.includes('TAG_STATE/TagStateStore'));
     assert.ok(bindings.includes('SANDBOX/Sandbox'));
     assert.deepEqual(config.workflows ?? [], []);
-    assert.equal(config.observability?.traces?.enabled, false);
+    assert.equal(config.observability?.traces?.enabled, true);
     assert.ok((config.compatibility_date ?? '') >= '2026-04-01');
 
     const reset = (config.migrations ?? []).find((migration) => migration.tag === 'v6');
     assert.deepEqual(sorted(reset?.new_sqlite_classes ?? []), V2_CLASSES);
     assert.deepEqual(sorted(reset?.deleted_classes ?? []), BETA_CLASSES);
 
-    const bundle = await readFile(path.join(path.dirname(configPath), config.main ?? 'index.js'), 'utf8');
+    const mainBundle = await readFile(
+      path.join(path.dirname(configPath), config.main ?? 'index.js'),
+      'utf8',
+    );
     for (const name of [
       'chickpea-slack-v2',
       'chickpea-routine-intent-v2',
       'chickpea-routine-execution-v2',
       'chickpea.response-metadata',
     ]) {
-      assert.match(bundle, new RegExp(name));
+      assert.match(mainBundle, new RegExp(name));
     }
-    assert.doesNotMatch(bundle, /x-flue-internal-token|\/agents\/slack-thread|\/workflows\//);
+    assert.doesNotMatch(mainBundle, /x-flue-internal-token|\/agents\/slack-thread|\/workflows\//);
+
+    const bundle = await builtJavaScript();
+    assert.match(bundle, /#region node_modules\/agents\/dist\/agent-tool-types\.js/);
+    assert.match(bundle, /var Agent = class Agent extends Server/);
+    assert.match(bundle, /async function getAgentByName\(/);
+    assert.match(bundle, /async schedule\(when, callback, payload, options\)/);
+    assert.match(bundle, /async runFiber\(name, fn\)/);
+    assert.match(bundle, /async onFiberRecovered\(_ctx\)/);
+    assert.match(bundle, /async runWorkflow\(workflowName, params, options\)/);
+    assert.match(bundle, /class FlueGeneratedAgent extends Base/);
+    assert.match(bundle, /return \(await getAgentByName\(binding, instanceId\)\)\.fetch\(request\)/);
+    for (const className of V2_CLASSES) {
+      assert.equal(
+        bundle.includes(`var ${className} = createFlueAgentClass({`),
+        true,
+        `${className} must be generated from the installed Agents base`,
+      );
+    }
+    assert.doesNotMatch(bundle, /#region node_modules\/(?:ai|@ai-sdk|@cloudflare\/codemode)\//);
   },
 );

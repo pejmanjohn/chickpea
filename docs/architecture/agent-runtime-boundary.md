@@ -95,10 +95,11 @@ counts plus requested and returned model evidence. It contains no prompt,
 completion, tool argument/output, credential, Slack body, internal correlation
 ID, or billing guess. Observation replay cannot create a second measurement.
 
-Flue tracing is disabled in the Vite configuration. Cloudflare platform traces
-are explicitly disabled, while Workers Logs remain enabled for sanitized
-operational warnings. App instrumentation emits only bounded status, route,
-usage, and policy facts.
+Flue's generated tracing is disabled in the Vite configuration. The
+Cloudflare-only entry explicitly registers Flue's native tracing adapter with
+`content: false`, and Workers Traces export those operational spans. Workers
+Logs remain enabled for sanitized operational warnings. App instrumentation
+emits only bounded status, route, usage, and policy facts.
 
 ## Cloudflare object boundary
 
@@ -118,6 +119,29 @@ The generated Wrangler artifact, not the source config passed through a custom
 `--config`, is the deploy input. `npm run deploy -- --preflight-only` proves the
 class allowlist, protected bindings, tracing policy, and compatibility-date
 floor without deploying.
+
+## AI SDK and optional Agents integrations
+
+Chickpea does not install the Vercel AI SDK at the root merely to satisfy the
+Cloudflare Agents SDK. `agents@0.20.1` supplies the generated Durable Object
+base and treats `ai` as an optional peer; Flue 2 performs model execution
+through `@earendil-works/pi-ai`.
+
+A Node 24 compatibility spike installed `ai@7.0.48` without overrides or a
+second AI SDK major, then ran a clean install, typecheck, and both Flue builds.
+The complete Node and Cloudflare artifact trees were byte-for-byte identical
+after removing `ai`, and neither artifact contained an AI SDK, Gateway, or Code
+Mode module. The unused install added eight packages without enabling a
+Chickpea capability, so the dependency was not retained.
+
+The generated Worker still proves the required Agents contract: each fresh
+Flue class uses the Agents `Agent` base; instance routing uses
+`getAgentByName`; and the bundled base exposes `schedule`, `runFiber`,
+`onFiberRecovered`, and workflow methods. Code Mode remains a separate product
+decision. Adopting it would require an explicit capability, authorization,
+durable approval, replay, external-effect receipt, sandbox-network, and audit
+design under Chickpea Work and Run; an optional peer dependency supplies none
+of those authorities.
 
 ## Capability roadmap
 
