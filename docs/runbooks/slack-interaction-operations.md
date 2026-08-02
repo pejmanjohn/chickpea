@@ -43,6 +43,15 @@ Repeated Usage persistence timeouts mean Slack delivery may still be healthy, bu
 3. Confirm matching redacted Usage exists for the classifier and, when applicable, the interactive turn.
 4. If an acknowledgment or checklist remains stale after delivery, inspect the matching delivery reference and content-free cleanup warning. The repair lane must update only adapter artifacts and must not re-enter final delivery.
 5. If Slack reports `invalid_name`, verify the next semantic fallback was attempted. If reaction scope is missing, substantive work must still end in words; a reaction-only response may use its fixed one-line fallback.
+6. If the TurnJob has an envelope but no receipt, repeat only the exact keyed dispatch. If it has a receipt, reattach `read()` without dispatch. If it has a settlement, run delivery repair without reading or dispatching.
+7. A local reader timeout is resumable. Abort the Flue instance only after the app-owned deadline or an authorized cancellation; an abort is not proof that no tool ran.
+
+## Flue 2 continuity checks
+
+- Channel threads adopt a compatible runtime-plan revision silently. Verify the next TurnJob records the new plan while the Slack thread receives no reset notice.
+- DM and App Home plan changes start a fresh Flue generation. Verify one continuity notice is checkpointed and delivered before the first reply, including after a delivery retry.
+- Credential rotation alone must not create a new generation or notice. Credentials resolve through the live provider/MCP seam on each submission.
+- Never place TurnJob IDs, Run IDs, receipts, credentials, or private runtime policy in status text, checklists, tool-visible messages, or other model-visible delivery signals.
 
 ## Rollback and isolation
 

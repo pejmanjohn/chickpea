@@ -60,6 +60,17 @@ const AI_SMOKE_SERVICE = 'chickpea-ai-smoke-stub';
 const AI_SMOKE_REPLY = 'workers-ai-binding-smoke::gateway-disabled';
 const AI_SMOKE_RPC_FLAG = 'enable_abortsignal_rpc';
 const USAGE_PRE_DELIVERY_BUDGET_MS = 100;
+const V2_AGENT_BINDINGS = [
+  ['FLUE_CHICKPEA_SLACK_V2_AGENT', 'FlueChickpeaSlackV2Agent'],
+  ['FLUE_CHICKPEA_ROUTINE_INTENT_V2_AGENT', 'FlueChickpeaRoutineIntentV2Agent'],
+  ['FLUE_CHICKPEA_ROUTINE_EXECUTION_V2_AGENT', 'FlueChickpeaRoutineExecutionV2Agent'],
+];
+const BETA_FLUE_CLASSES = [
+  'FlueRegistry',
+  'FlueSlackThreadAgent',
+  'FlueRoutineIntentAgent',
+  'FlueRoutineWorkflow',
+];
 
 // Slow-turn case: a distinct channel + thread whose provider is held open past
 // the old ~30s waitUntil horizon, proving the DO alarm relay delivers anyway.
@@ -107,19 +118,30 @@ function verifyBuildArtifacts() {
     doBindings.some((b) => b.name === 'TAG_STATE' && b.class_name === 'TagStateStore'),
     'built wrangler.json carries the TAG_STATE binding',
   );
-  check(
-    doBindings.some((b) => b.name === 'FLUE_ROUTINE_WORKFLOW' && b.class_name === 'FlueRoutineWorkflow'),
-    'built wrangler.json carries the routine Workflow binding',
-  );
+  for (const [name, className] of V2_AGENT_BINDINGS) {
+    check(
+      doBindings.some((binding) => binding.name === name && binding.class_name === className),
+      `built wrangler.json carries ${name}/${className}`,
+    );
+  }
   check(
     doBindings.some((b) => b.name === 'SANDBOX' && b.class_name === 'Sandbox'),
     'built wrangler.json carries the Sandbox DO binding',
   );
-  const tags = (config.migrations ?? []).map((m) => m.tag);
+  const migrations = config.migrations ?? [];
+  const tags = migrations.map((migration) => migration.tag);
   check(
-    tags.includes('v1') && tags.includes('v2') && tags.includes('v3') && tags.includes('v4') && tags.includes('v5'),
-    'built wrangler.json migrations include v1 through v5',
+    ['v1', 'v2', 'v3', 'v4', 'v5', 'v6'].every((tag) => tags.includes(tag)),
+    'built wrangler.json migrations include the append-only v1 through v6 chain',
     tags.join(','),
+  );
+  const reset = migrations.find((migration) => migration.tag === 'v6');
+  check(
+    sameArray(
+      [...(reset?.deleted_classes ?? [])].sort(),
+      [...BETA_FLUE_CLASSES].sort(),
+    ),
+    'v6 deletes exactly the four beta Flue classes',
   );
   const sandboxContainer = (config.containers ?? []).find(
     (container) => container.class_name === 'Sandbox',
@@ -157,11 +179,17 @@ function verifyBuildArtifacts() {
     'interactive ledger admission remains off by default in the built artifact',
   );
   check(
+    config.observability?.traces?.enabled === false,
+    'built artifact explicitly disables platform content tracing',
+  );
+  check(
     bundle.includes('scheduled(controller') &&
-      bundle.includes('routine-intent') &&
-      bundle.includes('x-flue-internal-token') &&
-      bundle.includes('error: "unauthorized"'),
-    'built Worker composes the heartbeat and internal-only routine Agent guard',
+      bundle.includes('chickpea-slack-v2') &&
+      bundle.includes('chickpea-routine-intent-v2') &&
+      bundle.includes('chickpea-routine-execution-v2') &&
+      bundle.includes('chickpea.response-metadata') &&
+      !bundle.includes('x-flue-internal-token'),
+    'built Worker composes the heartbeat, fresh agents, and metadata-only instrumentation',
   );
 }
 

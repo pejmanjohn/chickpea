@@ -22,8 +22,6 @@
  *      HTTP boundary deliberately renders unknown upstream failures opaque),
  *      no raw provider error marker, status cleared
  *   6. NET_GUARD_LOG empty     -> zero external traffic across all scenarios
- *   7. direct POST to the internal agent endpoint without the internal token
- *      -> 401 (the agent route is not reachable unauthenticated)
  *
  * A suitable Node >= 22.19 builds and spawns the Flue server; the shared
  * harness resolves a free port itself:
@@ -259,23 +257,6 @@ try {
     );
   }
 
-  // Check 7: the internal agent endpoint rejects direct callers that don't
-  // present the internal token (normal channel dispatch starts from a
-  // signature-verified /channels/slack/events request; this endpoint has no
-  // other gate).
-  {
-    const response = await fetch(`${baseUrl}/agents/slack-thread/some-id`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ message: 'unauthenticated probe' }),
-    });
-    const text = await response.text();
-    record(
-      'unauthenticated POST /agents/slack-thread/:id -> 401',
-      response.status === 401,
-      `status=${response.status} body=${text}`,
-    );
-  }
 } catch (error) {
   record('verification harness', false, error instanceof Error ? error.message : String(error));
 } finally {

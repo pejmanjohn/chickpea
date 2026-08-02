@@ -184,9 +184,6 @@ async function main() {
       'tsx',
       ...FOCUSED_TESTS,
     ]);
-    run('isolated workerd contract', process.execPath, [
-      'scripts/verify-routines-runtime-spike.mjs',
-    ]);
   }
   printMatrix();
   console.log(matrixOnly ? 'run foundation matrix printed' : 'run foundation verifier passed');

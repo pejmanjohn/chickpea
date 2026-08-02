@@ -110,9 +110,6 @@ export const laneB: Lane = {
         LOCAL_STUB_URL: `${fake.url}/v1`,
         SLACK_TAG_MODEL: 'local-stub/parity-stub-1',
         SLACK_BOT_USER_ID: slackBotUserId,
-        // Pin the internal agent token so the in-process channel → agent hop
-        // and its guarded route agree deterministically.
-        TAG_AGENT_API_TOKEN: 'parity-internal-token',
         TAG_ADMIN_TOKEN: ADMIN_TOKEN,
         // `src/db.node.ts` uses file-backed persistence by default. Every Lane B
         // scenario spawns a fresh process, so pin

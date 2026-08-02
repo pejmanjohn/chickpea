@@ -129,36 +129,6 @@ export async function postSignedEvent(eventsUrl, payload, opts = {}) {
   return { status: response.status, body };
 }
 
-/** Prompt the guarded Flue agent route directly and return its JSON envelope. */
-export async function postAgentPrompt(
-  baseUrl,
-  {
-    conversationKey,
-    message,
-    internalToken,
-  },
-) {
-  const response = await fetch(
-    `${baseUrl}/agents/slack-thread/${encodeURIComponent(conversationKey)}?wait=result`,
-    {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-flue-internal-token': internalToken,
-      },
-      body: JSON.stringify({ message }),
-    },
-  );
-  const text = await response.text();
-  let body;
-  try {
-    body = text ? JSON.parse(text) : undefined;
-  } catch {
-    body = text;
-  }
-  return { status: response.status, body };
-}
-
 /**
  * Spawn a built Flue server. `env` is merged last (so callers set provider
  * routing, TAG_DB_PATH, tokens, etc.). Returns the child + an output getter

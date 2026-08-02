@@ -1,172 +1,144 @@
-# Agent Runtime Rollout and Rollback
+# Flue 2 reset, rollout, and rollback
 
-This runbook governs the channel-neutral Work ledger and durable interactive
-driver. The foundation is safe to deploy with no Slack reply change when
-`SLACK_TAG_LEDGER_CANARY_CHANNELS` is empty. Authenticated Run/session APIs
-provide a redacted projection of canonical Runs, but the Admin Sessions page is
-deferred; operator-originated web sessions are not part of this release.
+This runbook governs the prelaunch cutover from Flue beta state to Flue 2. The
+reset is intentionally destructive only to four beta Flue Durable Object
+namespaces. It does not authorize deployment by itself.
 
 ## Release position
 
-- Slack is the only production client adapter.
-- The Work ledger is canonical for product lifecycle and audit facts.
-- Flue remains the execution engine and raw transcript/tool-history owner.
-- Interactive execution defaults to `legacy`; the ledger driver is an internal
-  exact-channel canary only.
-- Routines retain their current Workflow coordinator and ship according to the
-  separate `TAG_ROUTINES_ENABLED` gate, which remains off by default.
-- Explicit Memory and Routine commands never enter the ledger canary.
-- A profile with enabled MCP tools, API connections, or repositories is not
-  canary-eligible until paired action receipts and finite attempt ceilings ship
-  on every relevant execution path.
-- Open internet egress or a non-empty installation domain allowlist also makes
-  a Run ineligible; the selector fails closed to legacy when live egress policy
-  cannot be read.
+- Flue is pinned to 2.0.0 and built through the supported Vite integrations.
+- Slack turns and scheduled routines use app-owned envelope, receipt, and
+  settlement checkpoints with keyed dispatch and reattachable reads.
+- `TAG_STATE/TagStateStore`, `SANDBOX/Sandbox`, routine definitions, Work/Run,
+  configuration, memory, and usage state are preserved.
+- Beta Flue transcripts and workflow history are disposable and will not
+  survive the v6 deployment.
+- `TAG_ROUTINES_ENABLED` and `SLACK_TAG_LEDGER_CANARY_CHANNELS` remain off by
+  default.
 
-Do not describe an empty-selector deploy as a ledger-authority cutover. It is a
-foundation/shadow release that preserves current Slack execution behavior.
+## Roles and evidence
 
-## Immutable rollout facts
+Name a release lead, migration verifier, privacy verifier, Slack acceptance
+operator, and rollback owner. Record the git SHA, built artifact digest,
+Worker version, exact generated class/binding list, drain response, deployment
+time, and acceptance timestamps. Evidence may contain opaque IDs and counts,
+but never message, prompt, tool, credential, private-channel, or reasoning
+bodies.
 
-At every checkpoint record:
+## Gate 0: local and artifact proof
 
-- git SHA, built Worker version/artifact digest, and compiled Flue patch digest;
-- Work schema version, runtime (`node` or `cloudflare`), and authority epoch;
-- workspace and exact canary channel IDs, plus resulting Binding and Run IDs;
-- admission, execution, delivery, recovery, shadow-mismatch, Routine, and Usage
-  counts before and after the checkpoint;
-- Slack request message and reply timestamps without message bodies; and
-- named release lead, migration verifier, privacy approver, Slack acceptance
-  operator, and rollback owner. One person may fill several roles.
-
-Message, prompt, tool, credential, private-channel, and model-reasoning bodies
-do not belong in the evidence bundle.
-
-## Gate 0: exact artifact, default off
-
-Use Node 24 and the exact release source:
+Use the repository's Node 24 lane:
 
 ```bash
-npm run typecheck
-npm test
-npm run verify:run-foundation
-npm run verify:durability
-npm run verify:admin-ui
-npm run verify:cf-smoke
-npm run deploy -- --dry-run
+PATH=/opt/homebrew/opt/node@24/bin:$PATH \
+FLUE_NODE_BIN=/opt/homebrew/opt/node@24/bin/node npm test
+
+PATH=/opt/homebrew/opt/node@24/bin:$PATH \
+FLUE_NODE_BIN=/opt/homebrew/opt/node@24/bin/node npm run flue:build
+
+PATH=/opt/homebrew/opt/node@24/bin:$PATH \
+FLUE_NODE_BIN=/opt/homebrew/opt/node@24/bin/node npm run build
+
+PATH=/opt/homebrew/opt/node@24/bin:$PATH \
+node scripts/deploy-with-epilogue.mjs --skip-build --preflight-only
 ```
 
-Confirm the built Worker config contains an empty
-`SLACK_TAG_LEDGER_CANARY_CHANNELS`. Confirm Routines and experimental provider
-lanes match their own release decisions. Save migration integrity output and
-prove that the prior artifact can open a copy of migrated state before any
-authority promotion.
+The preflight must show:
 
-Deploy the dual-lane artifact with the selector empty. Run fresh Slack checks
-for a channel mention, thread continuation, DM/App Home if enabled, profile and
-channel assignment, explicit Memory controls, Routine availability behavior,
-artifact/tool behavior applicable to the selected profiles, Admin navigation,
-and the retained authenticated Run/session APIs.
-This verifies production compatibility, not ledger authority.
+- fresh Slack, routine-intent, and routine-execution v2 agent classes;
+- deletion of exactly `FlueRegistry`, `FlueSlackThreadAgent`,
+  `FlueRoutineIntentAgent`, and `FlueRoutineWorkflow`;
+- no deleted or renamed `TagStateStore`, `Sandbox`, or `ContainerProxy`;
+- retained `TAG_STATE/TagStateStore` and `SANDBOX/Sandbox` bindings;
+- no Workflow binding, explicit content-tracing disablement, and compatibility
+  date at or above `2026-04-01`; and
+- deployment through `.wrangler/deploy/config.json`, with no custom
+  `--config` flag.
 
-## Gate 1: shadow soak
+## Gate 1: drain the existing deployment
 
-Keep the selector empty for at least 24 hours and 100 eligible events, including
-deterministic load and fresh live Slack activity. Capture invariant snapshots at
-start, +5 minutes, +1 hour, +4 hours, +24 hours, and checkpoint end.
+This gate is live and requires operator authorization. The authenticated drain
+endpoint must already be present in the beta-compatible safety release.
 
-Stop on any privacy leak, executable untrusted Admin content, duplicate reply or
-execution, orphan/invalid ledger state, unexplained shadow mismatch, or missing
-wake fact. A stopped checkpoint is not resumed by dismissing the error; fix it,
-deploy a new exact artifact, and restart the checkpoint record.
-
-## Gate 2: exact-channel authority canary
-
-Use a dedicated internal channel with an assigned read-only profile. Obtain its
-actual Slack workspace and channel IDs; labels are not accepted. Configure at
-most 20 comma-separated pairs:
-
-```text
-SLACK_TAG_LEDGER_CANARY_CHANNELS=T123/C456,T123/C789
+```bash
+CF_SMOKE_BASE_URL=https://<worker>.<subdomain>.workers.dev \
+TAG_ADMIN_TOKEN=<token> \
+npm run verify:cf-smoke -- --check-drain
 ```
 
-The deploy wrapper rejects malformed or oversized selectors and an artifact
-without the durable driver seams. Do not canary a channel whose profile has an
-enabled MCP tool, API connection, or repository. Do not use natural-language
-Routine creation in a canary channel. Confirm installation egress is either
-`off` or the default empty allowlist; open or domain-allowlisted egress stays on
-legacy. The current canary intentionally bypasses that Slack pre-parser.
-Explicit Memory and Routine commands continue on legacy.
+Do not continue unless pending TurnJobs, Slack cleanup, active Runs, and
+pending/running routine occurrences are all zero. Disable routine admission and
+the ledger canary first if the drain does not converge. Do not delete rows or
+invent a second drain mechanism to force zero.
 
-Before adding a channel to the selector, verify its binding has no non-settled
-legacy Run. Legacy Runs never become ledger-executable and do not block the
-ledger lane, but this precondition keeps the canary evidence easy to interpret.
+## Gate 2: backup and retention decision
 
-Run at least 25 authoritative Runs for at least 24 hours. Verify one RunExecution
-per model attempt, one delivered Slack response, persisted approved output and
-rendered payload, correct Run authority/delivery API evidence, no private body
-in list/detail/audit/log output, restart recovery, and no cross-lane claiming.
+The beta Flue namespaces are deleted permanently by the v6 migration. Confirm
+in writing that their test transcripts and workflow history are disposable.
+Cloudflare Durable Object point-in-time recovery is not a substitute for an
+application export after a namespace deletion.
 
-## Selector rollback
+If app-owned state matters, capture the available configuration, memory,
+routine, Work/Run, and audit exports or screenshots before deployment. This
+repository does not claim a complete one-click Cloudflare state backup. Stop if
+the organization requires a restoration guarantee that the available exports
+cannot meet.
 
-Selector rollback always precedes binary rollback:
+## Gate 3: deploy the generated artifact
 
-1. Deploy the same dual-lane artifact with the selector empty.
-2. Verify new eligible turns are admitted with `execution_authority=legacy`.
-3. Leave the artifact running while existing ledger-owned Runs drain under their
-   immutable authority and epoch.
-4. Disable new Routine scheduling/run-now admission, or use a separately proven
-   compatibility-only Routine path, before measuring the drain.
-5. Inspect Run API/integrity evidence for queued, runnable, in-flight,
-   `recovery_required`, unknown-delivery, or otherwise incompatible Runs.
-6. Reconcile an ambiguous Run only from durable authoritative evidence. If that
-   is impossible, quarantine it through the retained authenticated API. Use a
-   unique idempotency key and a body-free reason code; quarantine preserves
-   ambiguity and never replays:
+Deployment is an explicit operator action:
 
-   ```bash
-   curl -X POST "$CHICKPEA_URL/admin/api/sessions/$RUN_ID/quarantine" \
-     -H "Authorization: Bearer $TAG_ADMIN_TOKEN" \
-     -H "Content-Type: application/json" \
-     -H "Idempotency-Key: quarantine-$RUN_ID-1" \
-     --data '{"confirm":true,"operatorLabel":"On-call operator","safeReasonCode":"accepted_unknown"}'
-   ```
+```bash
+npm run deploy
+```
 
-Clearing the selector does not cancel, duplicate, or transfer an existing Run.
-Never deploy the prior binary merely because the additive schema is readable.
+Do not pass `--config`. The wrapper builds current source, validates the final
+Vite redirect and destructive allowlist, then invokes Wrangler. Save the
+Wrangler deployment/version output and reconcile its classes with the preflight
+record.
 
-## Internal realm-wide promotion and external release
+## Gate 4: fresh-instance validation
 
-After a successful canary rollback rehearsal, select every eligible internal
-channel explicitly and run at least 50 authoritative Runs for at least 24 hours.
-If the installation has more than 20 eligible internal channels, the current
-selector cannot represent realm-wide promotion; stop and implement a reviewed
-realm selector rather than widening syntax ad hoc.
+Before enabling routines or a ledger canary:
 
-External release of ledger authority requires all shadow, canary, rollback, and
-internal realm-wide records. Keep the compatibility lane and selector for at
-least 72 stable hours after realm-wide/external promotion. Until those records
-exist, ship the foundation with the selector empty and call the execution lane
-legacy—not migrated, promoted, or realm-wide.
+1. Run the authenticated Cloudflare smoke against the approved target.
+2. Confirm `/admin/api/agents` and the Slack connection state are healthy.
+3. Admit one disposable Slack mention and confirm one v2 Slack instance, one
+   durable receipt, one settlement, one Usage measurement, and one final.
+4. Restart or otherwise exercise the recovery lane after receipt persistence;
+   confirm `read()` reattaches without another dispatch.
+5. Confirm the beta routes, workflow endpoints, and beta bindings do not exist.
+6. Confirm logs and traces contain no supplied secret marker from model input,
+   instructions, tool arguments, or tool output.
 
-## Binary rollback gate
+## Gate 5: Slack and routine acceptance
 
-A prior binary may be deployed only when all of the following are zero:
+Capture the full timeline, not only the final thread:
 
-- ledger-owned Runs that are queued, runnable, leased, or in flight;
-- unresolved `recovery_required` Runs;
-- unknown deliveries or action outcomes;
-- unquarantined prior-binary-incompatible Runs; and
-- Routine admissions that can race the drain.
+- acknowledgment timing, thinking status, checklist creation/edits, final
+  delivery, usage capture, status clearing, and acknowledgment cleanup;
+- explicit mention, ignored ambient message, reaction-only result, provider
+  failure, sandbox failure, and concurrent nearby turns;
+- same-channel thread continuity without a notice;
+- DM/App Home generation reset with exactly one continuity notice before its
+  first new reply; and
+- one disposable routine occurrence with one named result, one usage record,
+  one delivery, and no workflow record.
 
-The evidence bundle must show the exact migrated state used for the rehearsal.
-Additive Work tables and audit observations remain; rollback never rewrites Run
-authority or deletes evidence.
+Only after those checks may the operator separately consider setting
+`TAG_ROUTINES_ENABLED=1` or selecting exact ledger-canary channels. Those are
+product rollout decisions, not part of the Flue namespace reset.
 
-## Legacy removal
+## Rollback limits
 
-Removing legacy storage, queue handling, or selector controls is post-release
-hardening. Start only after the 72-hour rollback window, zero hard-stop metrics,
-and an explicit release-owner decision. A web client does not require legacy
-removal; it should attach to the canonical submission/execution/output boundary
-while Slack continues as its own adapter.
+Disabling `TAG_ROUTINES_ENABLED` and clearing
+`SLACK_TAG_LEDGER_CANARY_CHANNELS` stop new admissions in those lanes while
+existing owned work drains. A source rollback can restore application behavior,
+but it cannot undelete beta Flue namespaces or restore their transcripts.
+
+Do not deploy an older artifact whose configuration expects a deleted beta
+class. If the v2 deployment is unhealthy, keep new admissions disabled, retain
+the app-owned ledger for diagnosis, fix forward with the same three v2 class
+identities, and rerun local, artifact, drain, and acceptance gates. Restoring a
+backup to a different Worker name is a separate disaster-recovery operation and
+must not be improvised during the cutover.

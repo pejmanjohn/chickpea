@@ -656,30 +656,6 @@ test('admin API returns 404 for every admin route when TAG_ADMIN_TOKEN is unset'
   }
 });
 
-test('TAG_AGENT_API_TOKEN does not authorize admin routes', async () => {
-  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
-  try {
-    await withEnv(
-      {
-        TAG_ADMIN_TOKEN: undefined,
-        TAG_AGENT_API_TOKEN: 'agent-api-token',
-      },
-      async () => {
-        const app = new Hono();
-        app.route('/', createAdminRoutes({ store }));
-
-        const response = await app.request('/admin/api/agents', {
-          headers: auth('agent-api-token'),
-        });
-
-        assert.equal(response.status, 404);
-      },
-    );
-  } finally {
-    store.close();
-  }
-});
-
 test('admin API rejects a wrong bearer token and accepts the configured admin token', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   try {
@@ -1458,7 +1434,7 @@ test('admin API supports agent and assignment CRUD with the admin token', async 
   }
 });
 
-test('main app mounts admin routes before flue routing', async () => {
+test('main app owns the authenticated admin route without a Flue HTTP router', async () => {
   await withEnv(
     {
       TAG_ADMIN_TOKEN: 'mounted-admin-token',

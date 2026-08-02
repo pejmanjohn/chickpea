@@ -12,8 +12,7 @@
  *      SIGKILL server1.
  *   2. server2 on DB_A (fresh process, same DB): T2 signed mention in the SAME
  *      thread. Assert (i) T2 delivers a final on the wire; (ii) T2's provider
- *      request replays the marker (T1's assistant reply, loaded from the DB);
- *      (iii) GET .../{thread}?view=history returns BOTH turns.
+ *      request replays the marker (T1's assistant reply, loaded from the DB).
  *   3. NEGATIVE CONTROL — server3 on a DIFFERENT fresh DB_B: the same follow-up
  *      turn's provider request must NOT contain the marker (no shared durable
  *      storage → no replay). This proves the assertion measures durability.
@@ -53,10 +52,8 @@ import {
 } from './lib/offline-harness.mjs';
 
 const DURABILITY_MARKER = 'DURABILITY_MARKER_ALPHA';
-const INTERNAL_TOKEN = 'durability-internal-token';
 const EXEC_CHANNEL = 'C_EXEC';
 const ROOT_TS = '1782770400.000100';
-const THREAD_KEY = `T_DEMO:${EXEC_CHANNEL}:${ROOT_TS}:memory-e1`;
 
 function log(line) {
   console.log(line);
@@ -113,7 +110,7 @@ function mention({ eventId, ts, threadTs }) {
 
 async function runServerTurn({ serverEntry, fakeUrl, dbPath, netGuardLog, payload }) {
   const port = await getFreePort();
-  const { child, baseUrl, eventsUrl, getOutput } = spawnServer({
+  const { child, eventsUrl, getOutput } = spawnServer({
     serverEntry,
     port,
     fakeUrl,
@@ -125,7 +122,6 @@ async function runServerTurn({ serverEntry, fakeUrl, dbPath, netGuardLog, payloa
       // from a live-Slack shell) would otherwise redirect every server here to
       // the operator's live state store and merge the three "isolated" DBs.
       SLACK_STATE_DB_PATH: `${dbPath}.state`,
-      TAG_AGENT_API_TOKEN: INTERNAL_TOKEN,
       SLACK_TAG_MODEL: 'local-stub/parity-stub-1',
     },
   });
@@ -136,7 +132,7 @@ async function runServerTurn({ serverEntry, fakeUrl, dbPath, netGuardLog, payloa
     await stopChild(child);
     throw error;
   }
-  return { child, baseUrl, eventsUrl };
+  return { child, eventsUrl };
 }
 
 // Load every TypeScript dependency before the restart probes begin. Registering
@@ -201,7 +197,7 @@ try {
   // --- Turn 2 on DB_A: fresh process, same DB. Marker must replay. ---
   backend.reset();
   {
-    const { child, baseUrl } = await runServerTurn({
+    const { child } = await runServerTurn({
       serverEntry,
       fakeUrl: fake.url,
       dbPath: dbA,
@@ -216,14 +212,6 @@ try {
       JSON.stringify(call.body).includes(DURABILITY_MARKER),
     );
 
-    // Read the durable transcript through the authenticated history view.
-    const historyUrl = `${baseUrl}/agents/slack-thread/${encodeURIComponent(THREAD_KEY)}?view=history`;
-    const historyResponse = await fetch(historyUrl, {
-      headers: { 'x-flue-internal-token': INTERNAL_TOKEN },
-    });
-    const historyTranscript = await historyResponse.text();
-    const markerCount = (historyTranscript.match(new RegExp(DURABILITY_MARKER, 'g')) || []).length;
-
     await stopChild(child);
 
     record(
@@ -235,11 +223,6 @@ try {
       'T2 provider request REPLAYS the marker from durable storage',
       providerReplaysMarker,
       `providerCalls=${providerCalls.length} replaysMarker=${providerReplaysMarker}`,
-    );
-    record(
-      'history view returns BOTH turns (marker present >= 2x) with the internal token',
-      historyResponse.status === 200 && markerCount >= 2,
-      `status=${historyResponse.status} markerOccurrences=${markerCount}`,
     );
   }
 
