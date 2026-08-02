@@ -391,7 +391,15 @@ try {
   run('node', ['scripts/verify-flue-offline-turn.mjs'], { cwd: scratch });
   run('npm', ['run', 'verify:durability'], { cwd: scratch });
   run('npm', ['run', 'verify:providers'], { cwd: scratch });
-  run('npm', ['run', 'deploy', '--', '--dry-run'], { cwd: scratch });
+  // The OSS gate validates the generated Worker bundle and redirected Wrangler
+  // configuration; it must not require a local Docker daemon merely to inspect
+  // a source export. Wrangler still reports the configured container while
+  // skipping the image build/rollout, which belongs in the deployment lane.
+  run(
+    'npm',
+    ['run', 'deploy', '--', '--dry-run', '--containers-rollout=none'],
+    { cwd: scratch },
+  );
 
   console.log('OSS export verification passed');
   passed = true;
