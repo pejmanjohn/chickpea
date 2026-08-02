@@ -49,6 +49,7 @@ import { registerSlackStatusTurn } from './status-registry.ts';
 import type { SlackTurnContext } from './thread-context.ts';
 import { slackThreadKey } from './thread-key.ts';
 import type { NormalizedSlackTurn } from './types.ts';
+import { requireSlackIdentityDeliverySupport } from './identity-admission.ts';
 import type { FrozenRuntimePlanDecision } from './turn-job-types.ts';
 import type { FlueDispatchReceiptV1 } from './turn-job-types.ts';
 import type { SlackProgressiveReadRelay } from './progressive-relay.ts';
@@ -253,6 +254,7 @@ export async function runTurn(
   platformEnv: PlatformEnv | undefined,
   options: RunTurnOptions = {},
 ): Promise<void> {
+  requireSlackIdentityDeliverySupport(turn);
   const client = options.client ?? (await getClient(platformEnv));
   // A frozen assignment (from a thread snapshot) carries its model; otherwise
   // resolve it from the agent via policy.

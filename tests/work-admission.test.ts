@@ -2,12 +2,22 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
-import type { ResolvedAssignment } from '../src/config/types.ts';
-import { ConfigStoreLogic } from '../src/config/store.ts';
+import {
+  WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+  type ResolvedAssignment,
+  type SlackIdentity,
+} from '../src/config/types.ts';
+import { ConfigStoreLogic, SqliteConfigStore } from '../src/config/store.ts';
 import { RoutineStoreLogic } from '../src/routines/store.ts';
 import { normalizeRoutineSchedule } from '../src/routines/schedule.ts';
 import { SlackStateLogic } from '../src/slack/claim-store.ts';
 import { SlackRunPresentationStoreLogic } from '../src/slack/run-presentations.ts';
+import {
+  assignmentUsesSlackIdentity,
+  requireSlackIdentityDeliverySupport,
+  resolveSlackIdentityDmAssignment,
+  slackIdentityDeliverySupported,
+} from '../src/slack/identity-admission.ts';
 import { TurnJobStoreLogic } from '../src/slack/turn-jobs.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
@@ -24,6 +34,7 @@ function assignment(): ResolvedAssignment {
     workspaceId: 'T_home',
     channelId: 'C_public',
     agentId: 'agent_default',
+    slackIdentityId: WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
     agent: {
       id: 'agent_default',
       name: 'Default',
@@ -45,6 +56,7 @@ function turn(overrides: Partial<NormalizedSlackTurn> = {}): NormalizedSlackTurn
     workspaceId: 'T_home',
     channelId: 'C_public',
     eventId: 'Ev_1',
+    slackIdentityId: WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
     text: 'Prepare the launch brief',
     userId: 'U_member',
     messageTs: '100.001',
@@ -55,6 +67,55 @@ function turn(overrides: Partial<NormalizedSlackTurn> = {}): NormalizedSlackTurn
     ...overrides,
   };
 }
+
+test('identity admission selects DMs from the receiving app and channels from the Profile', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [assignment().agent], assignments: [] });
+  const financeIdentity: SlackIdentity = {
+    id: 'slack_identity_finance',
+    ingressKey: 'finance_ingress_0123456789abcdef',
+    kind: 'dedicated',
+    lifecycle: 'connected',
+    teamId: 'T_home',
+    appId: 'A_FINANCE',
+    botUserId: 'U_FINANCE',
+    dmState: 'on',
+    dmAgentId: 'agent_default',
+    credentialProvenance: 'stored',
+    connectionRevision: 1,
+    health: 'healthy',
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+  await store.createSlackIdentity(financeIdentity);
+
+  const dm = await resolveSlackIdentityDmAssignment(
+    financeIdentity,
+    'T_home',
+    'D_FINANCE',
+    store,
+  );
+  assert.equal(dm?.agentId, 'agent_default');
+  assert.equal(dm?.slackIdentityId, financeIdentity.id);
+  assert.equal(assignmentUsesSlackIdentity(dm as ResolvedAssignment, financeIdentity.id), true);
+  assert.equal(assignmentUsesSlackIdentity(assignment(), financeIdentity.id), false);
+
+  const off = { ...financeIdentity, dmState: 'off' as const };
+  assert.equal(
+    await resolveSlackIdentityDmAssignment(off, 'T_home', 'D_FINANCE', store),
+    undefined,
+  );
+  store.close();
+});
+
+test('dedicated turns fail closed until U4 can preserve identity through durable delivery', () => {
+  assert.equal(slackIdentityDeliverySupported(turn()), true);
+  const dedicated = turn({ slackIdentityId: 'slack_identity_finance' });
+  assert.equal(slackIdentityDeliverySupported(dedicated), false);
+  assert.throws(
+    () => requireSlackIdentityDeliverySupport(dedicated),
+    /durable delivery is not available yet/,
+  );
+});
 
 test('Slack admission reuses one Work and Binding, sequences Runs, and dedupes fanout', () => {
   const db = openStateDb(':memory:');

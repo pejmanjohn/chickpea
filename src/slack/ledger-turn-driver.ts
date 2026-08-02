@@ -30,6 +30,7 @@ import type {
 } from './turn-job-types.ts';
 import type { RuntimePlanV2 } from '../agents/runtime-plan.ts';
 import { slackThreadKey } from './thread-key.ts';
+import { slackIdentityDeliverySupported } from './identity-admission.ts';
 import type { SlackInteractionIntent } from './interaction-intent.ts';
 import type { SlackInteractionProgressPatch } from '../config/state-rpc.ts';
 import type { SlackContinuityNoticeProgress } from '../config/state-rpc.ts';
@@ -111,6 +112,11 @@ export function createLedgerSlackRunHandler(
     const job = await options.turns.getPendingByRunId(claim.run.id);
     if (!job || job.executionAuthority !== 'ledger') {
       return { kind: 'recovery_required', reasonCode: 'ledger_adapter_payload_missing' };
+    }
+    if (!slackIdentityDeliverySupported(job.turn)) {
+      await options.turns.markRecoveryRequired(job.id, 'slack_identity_delivery_not_ready');
+      await clearActiveWork(options, job);
+      return { kind: 'recovery_required', reasonCode: 'slack_identity_delivery_not_ready' };
     }
     if (claim.binding.adapterKind !== 'slack') {
       await options.turns.markError(job.id);

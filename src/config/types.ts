@@ -201,6 +201,8 @@ export interface ResolvedAssignment {
   workspaceId: string;
   channelId: string;
   agentId: string;
+  /** Effective Slack transport for this assignment. Missing only on legacy snapshots. */
+  slackIdentityId?: string;
   channelLabel?: string;
   channelPromptAddendum?: string;
   participationMode?: 'ambient' | 'mention_only';

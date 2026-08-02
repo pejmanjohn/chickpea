@@ -22,6 +22,7 @@ import {
 import { ContinuityNoticeDeliveryError } from './continuity-notice.ts';
 import { AgentPromptFailure } from './flue-dispatch.ts';
 import { slackThreadKey } from './thread-key.ts';
+import { slackIdentityDeliverySupported } from './identity-admission.ts';
 import { MAX_POST_DISPATCH_ATTEMPTS } from './turn-jobs.ts';
 import type { SlackPresentationStatePort } from './agent-view-presentation.ts';
 
@@ -128,6 +129,13 @@ export async function drainNodeTurnRelayOnce(
     const presentationState = slackPresentationStatePort(state);
     const pending = await listPendingTurns();
     const runJob = async (job: (typeof pending)[number]): Promise<boolean> => {
+      if (!slackIdentityDeliverySupported(job.turn)) {
+        await markTurnRecoveryRequired(job.id, 'slack_identity_delivery_not_ready');
+        if (job.turn.interactionIntent?.disposition === 'work') {
+          await state.setActiveWork(slackThreadKey(job.turn), job.id, false);
+        }
+        return false;
+      }
       if (!job.turn.interactionIntent && job.progress.interactionIntent) {
         job.turn.interactionIntent = job.progress.interactionIntent;
       }

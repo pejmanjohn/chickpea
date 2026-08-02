@@ -139,6 +139,76 @@ test('fresh stores backfill one workspace-default Slack identity and preserve pr
   store.close();
 });
 
+test('legacy direct-message assignment writes stay synchronized with the default identity', async () => {
+  const store = new SqliteConfigStore(':memory:');
+  await store.createAgent(agent({ id: 'agent_dm', name: 'DM Profile' }));
+
+  await store.putAssignment(assignment({
+    workspaceId: '*',
+    channelId: '*',
+    agentId: 'agent_dm',
+  }));
+  let identity = await store.getSlackIdentity(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
+  assert.equal(identity.dmState, 'on');
+  assert.equal(identity.dmAgentId, 'agent_dm');
+
+  await store.putAssignment(assignment({
+    workspaceId: '*',
+    channelId: '*',
+    agentId: 'agent_dm',
+    enabled: false,
+  }));
+  identity = await store.getSlackIdentity(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
+  assert.equal(identity.dmState, 'off');
+  assert.equal(identity.dmAgentId, 'agent_dm');
+
+  await store.deleteAssignment('*', '*');
+  identity = await store.getSlackIdentity(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
+  assert.equal(identity.dmState, 'needs_setup');
+  assert.equal(identity.dmAgentId, undefined);
+  store.close();
+});
+
+test('default identity DM binding writes through to the legacy wildcard row', async () => {
+  const store = new SqliteConfigStore(':memory:');
+  await store.createAgent(agent({ id: 'agent_dm', name: 'DM Profile' }));
+  let identity = await store.getSlackIdentity(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
+
+  identity = await store.setSlackIdentityDmBinding(
+    identity.id,
+    identity.connectionRevision,
+    'off',
+    'agent_dm',
+  );
+  assert.deepEqual(await store.getAssignment('*', '*'), {
+    workspaceId: '*',
+    channelId: '*',
+    agentId: 'agent_dm',
+    enabled: false,
+  });
+
+  identity = await store.setSlackIdentityDmBinding(
+    identity.id,
+    identity.connectionRevision,
+    'needs_setup',
+  );
+  assert.equal(await store.getAssignment('*', '*'), undefined);
+
+  await store.setSlackIdentityDmBinding(
+    identity.id,
+    identity.connectionRevision,
+    'on',
+    'agent_dm',
+  );
+  assert.deepEqual(await store.getAssignment('*', '*'), {
+    workspaceId: '*',
+    channelId: '*',
+    agentId: 'agent_dm',
+    enabled: true,
+  });
+  store.close();
+});
+
 test('several Profiles may share one connected Slack identity without changing its DM handler', async () => {
   const store = new SqliteConfigStore(':memory:');
   await store.createAgent(agent({ id: 'agent_finance', name: 'Finance' }));

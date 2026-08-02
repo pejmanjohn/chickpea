@@ -71,13 +71,27 @@ export interface SlackReactionAddedEvent {
   event_ts: string;
 }
 
+export interface SlackAppUninstalledEvent {
+  type: 'app_uninstalled';
+}
+
+export interface SlackTokensRevokedEvent {
+  type: 'tokens_revoked';
+  tokens?: {
+    oauth?: string[];
+    bot?: string[];
+  };
+}
+
 export type SlackEvent =
   | SlackAppMentionEvent
   | SlackMessageEvent
   | SlackAppHomeOpenedEvent
   | SlackAppContextChangedEvent
   | SlackMemberJoinedChannelEvent
-  | SlackReactionAddedEvent;
+  | SlackReactionAddedEvent
+  | SlackAppUninstalledEvent
+  | SlackTokensRevokedEvent;
 
 export interface SlackEventFixture {
   token: string;
@@ -113,6 +127,8 @@ export interface NormalizedSlackTurn {
   workspaceId: string;
   channelId: string;
   eventId: string;
+  /** Internal identity attached after verification; missing on legacy persisted/synthetic turns. */
+  slackIdentityId?: string;
   text: string;
   userId: string;
   messageTs: string;

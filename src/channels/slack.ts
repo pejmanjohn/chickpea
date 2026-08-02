@@ -23,9 +23,11 @@ import {
 import {
   WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
   type ResolvedAssignment,
+  type SlackIdentity,
 } from '../config/types.ts';
 import {
   resolveSlackBehaviorSettings,
+  resolveSlackIdentityMode,
 } from '../slack/behavior-settings.ts';
 import {
   classifySlackInteraction,
@@ -44,7 +46,14 @@ import {
   resolveSlackPublicUrl,
   slackAuthTest,
 } from '../slack/credentials.ts';
-import { resolveSlackIdentityCredentials } from '../slack/identity-credentials.ts';
+import {
+  resolveSlackIdentityCredentials,
+  type ResolvedSlackIdentityCredentials,
+} from '../slack/identity-credentials.ts';
+import {
+  assignmentUsesSlackIdentity,
+  resolveSlackIdentityDmAssignment,
+} from '../slack/identity-admission.ts';
 import {
   handlePendingSlackIdentityChallenge,
   MAX_SLACK_INGRESS_BYTES,
@@ -62,7 +71,6 @@ import {
   renderUnassignedChannelHint,
 } from '../slack/message-format.ts';
 import {
-  getClient,
   createSlackWebClient,
   sanitizeError,
 } from '../slack/run-turn.ts';
@@ -400,10 +408,21 @@ function handleSlackEventsForIdentity(
       }
     }
 
-    // The trust-boundary half of U3 deliberately keeps dedicated callbacks
-    // inert. The admission half below enables them only after identity-aware
-    // normalization and eligibility are installed in the same unit.
-    if (identity.kind === 'dedicated') return;
+    const verifiedEventType = payload.type === 'event_callback' &&
+        payload.event && typeof payload.event === 'object'
+      ? (payload.event as { type?: unknown }).type
+      : undefined;
+    if (verifiedEventType === 'app_uninstalled' || verifiedEventType === 'tokens_revoked') {
+      await recordSlackIdentityLifecycleEvent(identity, verifiedEventType, stores);
+      return;
+    }
+
+    if (identity.kind === 'dedicated' && resolveSlackIdentityMode(platformEnv) === 'base') {
+      return;
+    }
+    if (identity.kind === 'dedicated' && identity.lifecycle !== 'connected') {
+      return;
+    }
 
     // a. Admission: only Events API callbacks; acknowledge and discard Agent
     // View lifecycle events before they can enter normalization or persistence.
@@ -422,19 +441,92 @@ function handleSlackEventsForIdentity(
     // node the env is ignored everywhere it is threaded.
     detach(
       c,
-      processSlackEvent(payload as unknown as SlackEventFixture, platformEnv).catch((err) => {
+      processSlackEvent(
+        payload as unknown as SlackEventFixture,
+        platformEnv,
+        identity.id,
+      ).catch((err) => {
         console.error('[chickpea] Slack event intake failed:', sanitizeError(err));
       }),
     );
   };
 }
 
+async function recordSlackIdentityLifecycleEvent(
+  identity: SlackIdentity,
+  eventType: 'app_uninstalled' | 'tokens_revoked',
+  stores: AppStores,
+): Promise<void> {
+  const health = eventType === 'app_uninstalled' || identity.health === 'uninstalled'
+    ? 'uninstalled'
+    : 'unauthorized';
+  try {
+    await stores.config.updateSlackIdentity(identity.id, identity.connectionRevision, {
+      lifecycle: 'degraded',
+      health,
+      healthDetail: eventType,
+    });
+  } catch (error) {
+    console.error('[chickpea] Slack identity lifecycle update failed:', sanitizeError(error));
+  }
+}
+
+async function resolveIdentityBotUserId(
+  identity: SlackIdentity,
+  credentials: ResolvedSlackIdentityCredentials,
+  platformEnv: PlatformEnv | undefined,
+): Promise<string | undefined> {
+  const configured = credentials.botUserId ?? identity.botUserId;
+  if (configured) return configured;
+  return identity.id === WORKSPACE_DEFAULT_SLACK_IDENTITY_ID
+    ? resolveBotUserId(platformEnv)
+    : undefined;
+}
+
+async function resolveIdentityGateAssignment(
+  turn: NormalizedSlackTurn,
+  surface: AssignmentSurface,
+  identity: SlackIdentity,
+  stores: AppStores,
+): Promise<ResolvedAssignment | undefined> {
+  if (surface === 'direct') {
+    return resolveSlackIdentityDmAssignment(
+      identity,
+      turn.workspaceId,
+      turn.channelId,
+      stores.config,
+    );
+  }
+  const frozen = await stores.snapshots.get(slackThreadKey(turn));
+  if (frozen) return frozen;
+  return resolveAssignment(
+    turn.workspaceId,
+    turn.channelId,
+    { agents: stores.config, assignments: stores.config },
+    { surface: 'channel' },
+  );
+}
+
+async function requireSlackIdentityDmAssignment(
+  identity: SlackIdentity,
+  turn: NormalizedSlackTurn,
+  stores: AppStores,
+): Promise<ResolvedAssignment> {
+  const assignment = await resolveSlackIdentityDmAssignment(
+    identity,
+    turn.workspaceId,
+    turn.channelId,
+    stores.config,
+  );
+  if (!assignment) throw new NoAssignmentError('Slack identity DMs are disabled');
+  return assignment;
+}
+
 async function processSlackEvent(
   payload: SlackEventFixture,
   platformEnv: PlatformEnv | undefined,
+  slackIdentityId: string,
 ): Promise<void> {
-  const eventType = payload.event.type;
-
   // Store resolution is per-request and target-aware: on Node the factories
   // return the process-cached SQLite stores (claims + thread registry are
   // SQLite-backed in their own file, sibling of the Flue transcript DB, so a
@@ -446,27 +538,73 @@ async function processSlackEvent(
   // admin exposes. Resolve against THIS request's settings store so Node and
   // Cloudflare (Durable Object-backed) observe the same saved switches.
   const behavior = await resolveSlackBehaviorSettings(platformEnv, stores.settings);
+  const identity = await stores.config.getSlackIdentity(slackIdentityId);
+  const credentials = await resolveSlackIdentityCredentials(
+    slackIdentityId,
+    platformEnv,
+    stores.settings,
+  );
 
-  if (eventType === 'member_joined_channel') {
+  if (payload.event.type === 'member_joined_channel') {
     if (!behavior.welcomeOnJoin.value) {
       return;
     }
-    await handleMemberJoinedChannel(payload, stores, platformEnv);
+    await handleMemberJoinedChannel(payload, stores, platformEnv, identity, credentials);
     return;
   }
 
-  // b. Normalize with the shared admission policy (imported verbatim).
-  const resolvedBotUserId = await resolveBotUserId(platformEnv);
-  const normalization = normalizeSlackTurn(
-    payload,
-    resolvedBotUserId ? { botUserId: resolvedBotUserId } : {},
-  );
+  // Build a no-network preliminary turn so Profile/identity eligibility is
+  // known before auth.test, reactions.get, context reads, classification, or
+  // any other Slack API call. The sentinel is replaced after the gate.
+  const configuredBotUserId = credentials.botUserId ?? identity.botUserId;
+  const preliminary = normalizeSlackTurn(payload, {
+    slackIdentityId,
+    botUserId: configuredBotUserId ?? '__chickpea_identity_gate__',
+  });
+  if (preliminary.status !== 'runnable') return;
+  const preliminaryTurn = preliminary.turn;
+  const state = stores.slackState;
+  const preliminarySurface = turnSurface(preliminaryTurn);
+  if (preliminarySurface === 'direct' && !behavior.allowDms.value) return;
+
+  try {
+    const gateAssignment = await resolveIdentityGateAssignment(
+      preliminaryTurn,
+      preliminarySurface,
+      identity,
+      stores,
+    );
+    if (!gateAssignment || !assignmentUsesSlackIdentity(gateAssignment, slackIdentityId)) {
+      return;
+    }
+  } catch (error) {
+    if (error instanceof NoAssignmentError) {
+      const hintBotUserId = await resolveIdentityBotUserId(identity, credentials, platformEnv);
+      await postUnassignedChannelHint(
+        preliminaryTurn,
+        preliminarySurface,
+        behavior.unassignedHint.value,
+        state,
+        hintBotUserId,
+        credentials.botToken
+          ? createSlackWebClient(credentials.botToken)
+          : undefined,
+        platformEnv,
+      );
+    }
+    return;
+  }
+
+  const resolvedBotUserId = await resolveIdentityBotUserId(identity, credentials, platformEnv);
+  const normalization = normalizeSlackTurn(payload, {
+    slackIdentityId,
+    ...(resolvedBotUserId ? { botUserId: resolvedBotUserId } : {}),
+  });
   if (normalization.status !== 'runnable') return;
   const turn = normalization.turn;
   const candidateTurn =
     turn.source === 'ambient_channel_message' || turn.source === 'reaction_added';
   let threadKey = slackThreadKey(turn);
-  const state = stores.slackState;
 
   // c. Implicit thread replies require a thread this app already started (a
   //    prior mention/DM). An unknown thread key produces nothing on the wire
@@ -483,14 +621,8 @@ async function processSlackEvent(
     return;
   }
 
-  // c2. Direct messages are a separate surface, on by default.
-  //     When the resolved allow-DMs setting is off (env or admin-stored), the
-  //     bot is reachable only in channels. Checked before any claim so a
-  //     disabled DM stays fully silent.
   const surface = turnSurface(turn);
-  if (surface === 'direct' && !behavior.allowDms.value) {
-    return;
-  }
+  if (surface !== preliminarySurface) return;
 
   // d. Claim BOTH the event id and the (channel, message-ts) so the
   //    app_mention + message fan-out for a single mention replies once.
@@ -516,8 +648,9 @@ async function processSlackEvent(
   try {
     const store = stores.config;
     const configStores = { agents: store, assignments: store };
-    assignment =
-      surface === 'channel' && !candidateTurn
+    assignment = surface === 'direct'
+      ? await requireSlackIdentityDmAssignment(identity, turn, stores)
+      : !candidateTurn
         ? await getOrCreateSnapshot(stores.snapshots, threadKey, () =>
             resolveEffectiveSlackConfig(turn.workspaceId, turn.channelId, configStores).then(
               async (config) => {
@@ -534,9 +667,7 @@ async function processSlackEvent(
               },
             ),
           )
-        : surface === 'channel'
-          ? await resolveEffectiveSlackConfig(turn.workspaceId, turn.channelId, configStores)
-          : await resolveAssignment(turn.workspaceId, turn.channelId, configStores, { surface });
+        : await resolveEffectiveSlackConfig(turn.workspaceId, turn.channelId, configStores);
   } catch (err) {
     // A model that cannot resolve is NOT fail-closed: admit with a best-effort
     // assignment so the turn still delivers the sanitized provider-failure
@@ -562,12 +693,18 @@ async function processSlackEvent(
           surface,
           behavior.unassignedHint.value,
           state,
+          resolvedBotUserId,
+          credentials.botToken
+            ? createSlackWebClient(credentials.botToken)
+            : undefined,
           platformEnv,
         );
       }
       return;
     }
   }
+
+  if (!assignmentUsesSlackIdentity(assignment, slackIdentityId)) return;
 
   // Direct-message assignments are intentionally live rather than snapshotted,
   // so attach the same non-secret credential attribution at admission time.
@@ -594,10 +731,11 @@ async function processSlackEvent(
   // Resolve actor/source truth only after assignment succeeds. This keeps an
   // unassigned channel's established zero-Slack-API behavior intact while
   // still authorizing before any canonical content or Run is written.
-  const { botToken } = await resolveSlackCredentials(platformEnv, stores.settings);
+  const { botToken } = credentials;
+  const slackClient = botToken ? createSlackWebClient(botToken) : undefined;
   if (
     turn.source === 'reaction_added' &&
-    (!botToken || !(await resolveReactionTargetContext(turn, createSlackWebClient(botToken))))
+    (!slackClient || !(await resolveReactionTargetContext(turn, slackClient)))
   ) {
     await state.claim(evtKey);
     await state.claim(msgKey);
@@ -643,6 +781,9 @@ async function processSlackEvent(
       // Shadow truth is observational in U3. A transient resolver failure must
       // not change the established Slack execution path before authority cutover.
     }
+  }
+  if (identity.kind === 'dedicated' && !admissionTruth.eligible) {
+    return;
   }
 
   // Ambient messages and inbound reactions are candidates, not durable work.
@@ -713,6 +854,7 @@ async function processSlackEvent(
         turn,
         assignment,
         platformEnv,
+        slackClient as ReturnType<typeof createSlackWebClient>,
       );
       if (classification.intent.disposition === 'ignore') {
         await recordInteractionClassifierUsage({
@@ -756,6 +898,11 @@ async function processSlackEvent(
     } finally {
       releaseClassifier();
     }
+  }
+
+  if (!assignmentUsesSlackIdentity(assignment, slackIdentityId)) {
+    if (promotedDecisionKey) await state.release(promotedDecisionKey);
+    return;
   }
 
   if (admissionTruth.eligible) {
@@ -848,10 +995,10 @@ async function processSlackEvent(
   const durableCanonicalTurnJob = canonicalRunId ? canonicalTurnJob : undefined;
 
   let admissionInteractionProgress: SlackInteractionProgress | undefined;
-  const shouldAcknowledgeAtAdmission = botToken && !candidateTurn && !deterministicCommand &&
+  const shouldAcknowledgeAtAdmission = slackClient && !candidateTurn && !deterministicCommand &&
     turn.interactionIntent?.disposition !== 'react_only';
   if (shouldAcknowledgeAtAdmission) {
-    const presenter = new WebClientPresenter(createSlackWebClient(botToken), {
+    const presenter = new WebClientPresenter(slackClient, {
       channelId: turn.channelId,
       threadTs: turn.threadTs,
       agentName: assignment.agent.name,
@@ -969,14 +1116,11 @@ async function handleMemberJoinedChannel(
   payload: SlackEventFixture,
   stores: AppStores,
   platformEnv: PlatformEnv | undefined,
+  identity: SlackIdentity,
+  credentials: ResolvedSlackIdentityCredentials,
 ): Promise<void> {
   const event = payload.event;
   if (!isSlackMemberJoinedChannelEvent(event)) {
-    return;
-  }
-
-  const resolvedBotUserId = await resolveBotUserId(platformEnv);
-  if (!resolvedBotUserId || event.user !== resolvedBotUserId) {
     return;
   }
 
@@ -989,15 +1133,19 @@ async function handleMemberJoinedChannel(
   }
   try {
     const store = stores.config;
-    await resolveAssignment(
+    const assignment = await resolveAssignment(
       workspaceId,
       event.channel,
       { agents: store, assignments: store },
       { surface: 'channel' },
     );
+    if (!assignmentUsesSlackIdentity(assignment, identity.id)) return;
   } catch {
     return;
   }
+
+  const resolvedBotUserId = await resolveIdentityBotUserId(identity, credentials, platformEnv);
+  if (!resolvedBotUserId || event.user !== resolvedBotUserId || !credentials.botToken) return;
 
   const state = stores.slackState;
   const evtKey = `evt:${payload.event_id}`;
@@ -1006,7 +1154,7 @@ async function handleMemberJoinedChannel(
   }
 
   try {
-    await (await getClient(platformEnv)).chat.postMessage({
+    await createSlackWebClient(credentials.botToken).chat.postMessage({
       channel: event.channel,
       text: renderChannelOnboarding({
         botUserId: resolvedBotUserId,
@@ -1082,6 +1230,7 @@ async function classifyCandidateTurn(
   turn: NormalizedSlackTurn,
   assignment: ResolvedAssignment,
   platformEnv: PlatformEnv | undefined,
+  client: ReturnType<typeof createSlackWebClient>,
 ): Promise<{
   classification: Awaited<ReturnType<typeof classifySlackInteraction>>;
   requestedModel: string | null;
@@ -1094,7 +1243,7 @@ async function classifyCandidateTurn(
     }
   })();
   const context = await hydrateSlackContextViaWebClient(
-    await getClient(platformEnv),
+    client,
     turn,
     { maxMessages: 12, maxPages: 2 },
   );
@@ -1188,6 +1337,8 @@ async function postUnassignedChannelHint(
   surface: AssignmentSurface,
   enabled: boolean,
   state: SlackClaimStore,
+  botUserId: string | undefined,
+  client: ReturnType<typeof createSlackWebClient> | undefined,
   platformEnv: PlatformEnv | undefined,
 ): Promise<void> {
   try {
@@ -1204,8 +1355,7 @@ async function postUnassignedChannelHint(
     if (!enabled) {
       return;
     }
-    const botUserId = await resolveBotUserId(platformEnv);
-    if (!botUserId) {
+    if (!botUserId || !client) {
       return;
     }
     const hintKey = `hint:${turn.workspaceId}:${turn.channelId}`;
@@ -1213,7 +1363,7 @@ async function postUnassignedChannelHint(
       return;
     }
     try {
-      await (await getClient(platformEnv)).chat.postEphemeral({
+      await client.chat.postEphemeral({
         channel: turn.channelId,
         user: turn.userId,
         text: renderUnassignedChannelHint({

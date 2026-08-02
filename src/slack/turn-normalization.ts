@@ -11,11 +11,13 @@ import {
 } from './types.ts';
 
 export interface SlackTurnNormalizationOptions {
+  slackIdentityId: string;
   botUserId?: string;
 }
 
 interface RunnableTurnInput {
   payload: SlackEventFixture;
+  slackIdentityId: string;
   channelId: string;
   text: string;
   userId: string;
@@ -31,7 +33,7 @@ interface RunnableTurnInput {
 
 export function normalizeSlackTurn(
   payload: SlackEventFixture,
-  options: SlackTurnNormalizationOptions = {},
+  options: SlackTurnNormalizationOptions,
 ): SlackTurnNormalization {
   payload = stripSlackMessageAppContext(payload);
   if (payload.type !== 'event_callback') {
@@ -45,6 +47,7 @@ export function normalizeSlackTurn(
 
     return runnableTurn({
       payload,
+      slackIdentityId: options.slackIdentityId,
       channelId: payload.event.channel,
       text: payload.event.text,
       userId: payload.event.user,
@@ -68,6 +71,7 @@ export function normalizeSlackTurn(
     }
     return runnableTurn({
       payload,
+      slackIdentityId: options.slackIdentityId,
       channelId: event.item.channel,
       text: `Reacted :${event.reaction}: to the Slack message at ${event.item.ts}.`,
       userId: event.user,
@@ -107,6 +111,7 @@ export function normalizeSlackTurn(
   if (options.botUserId && event.text.includes(`<@${options.botUserId}>`)) {
     return runnableTurn({
       payload,
+      slackIdentityId: options.slackIdentityId,
       channelId: event.channel,
       text: event.text,
       userId: event.user,
@@ -125,6 +130,7 @@ export function normalizeSlackTurn(
 
     return runnableTurn({
       payload,
+      slackIdentityId: options.slackIdentityId,
       channelId: event.channel,
       text: event.text,
       userId: event.user,
@@ -143,6 +149,7 @@ export function normalizeSlackTurn(
   if (!event.thread_ts) {
     return runnableTurn({
       payload,
+      slackIdentityId: options.slackIdentityId,
       channelId: event.channel,
       text: event.text,
       userId: event.user,
@@ -159,6 +166,7 @@ export function normalizeSlackTurn(
 
   return runnableTurn({
     payload,
+    slackIdentityId: options.slackIdentityId,
     channelId: event.channel,
     text: event.text,
     userId: event.user,
@@ -175,6 +183,7 @@ function runnableTurn(input: RunnableTurnInput): SlackTurnNormalization {
     workspaceId: input.payload.team_id,
     channelId: input.channelId,
     eventId: input.payload.event_id,
+    slackIdentityId: input.slackIdentityId,
     text: input.text,
     userId: input.userId,
     messageTs: input.messageTs,

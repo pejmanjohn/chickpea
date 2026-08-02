@@ -28,6 +28,7 @@ import {
 } from './config/github-app.ts';
 import { resolveAssignment, surfaceForChannelId } from './config/resolver.ts';
 import { slackThreadKey } from './slack/thread-key.ts';
+import { slackIdentityDeliverySupported } from './slack/identity-admission.ts';
 import type { AssignmentLookupOptions } from './config/resolver.ts';
 import {
   parseSandboxAllowedHosts,
@@ -1087,6 +1088,13 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         stores.config.find(workspaceId, channelId, options),
     };
     const runJob = async (job: (typeof pending)[number]): Promise<boolean> => {
+      if (!slackIdentityDeliverySupported(job.turn)) {
+        stores.turnJobs.markRecoveryRequired(job.id, 'slack_identity_delivery_not_ready');
+        if (job.turn.interactionIntent?.disposition === 'work') {
+          stores.slack.setActiveWork(slackThreadKey(job.turn), job.id, false);
+        }
+        return false;
+      }
       if (!job.turn.interactionIntent && job.progress.interactionIntent) {
         job.turn.interactionIntent = job.progress.interactionIntent;
       }

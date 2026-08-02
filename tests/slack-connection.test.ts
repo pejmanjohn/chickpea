@@ -5,6 +5,7 @@ import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 
 import { Hono } from 'hono';
@@ -230,6 +231,57 @@ function listenTokenAwareFakeSlack(userIds: Readonly<Record<string, string>>): P
     server.listen(0, '127.0.0.1', () => {
       const { port } = server.address() as AddressInfo;
       resolve({ server, baseUrl: `http://127.0.0.1:${port}/api/`, authHeaders });
+    });
+  });
+}
+
+function listenIdentityAdmissionSlack(): Promise<{
+  server: Server;
+  baseUrl: string;
+  authHeaders: string[];
+  setMember(value: boolean): void;
+}> {
+  const authHeaders: string[] = [];
+  let member = true;
+  const server = createServer((req, res) => {
+    res.setHeader('content-type', 'application/json');
+    authHeaders.push(req.headers.authorization ?? '');
+    if (req.url?.endsWith('/users.info')) {
+      res.end(JSON.stringify({
+        ok: true,
+        user: { id: 'U_MEMBER', team_id: 'T_ACME' },
+      }));
+      return;
+    }
+    if (req.url?.endsWith('/conversations.info')) {
+      res.end(JSON.stringify({
+        ok: true,
+        channel: {
+          id: 'C_FINANCE',
+          name: 'finance',
+          context_team_id: 'T_ACME',
+          is_member: member,
+        },
+      }));
+      return;
+    }
+    if (req.url?.endsWith('/chat.postMessage')) {
+      res.end(JSON.stringify({ ok: true, channel: 'C_FINANCE', ts: '1782770400.009000' }));
+      return;
+    }
+    res.end('{"ok":true}');
+  });
+  return new Promise((resolve) => {
+    server.listen(0, '127.0.0.1', () => {
+      const { port } = server.address() as AddressInfo;
+      resolve({
+        server,
+        baseUrl: `http://127.0.0.1:${port}/api/`,
+        authHeaders,
+        setMember(value) {
+          member = value;
+        },
+      });
     });
   });
 }
@@ -1874,6 +1926,13 @@ test('scoped ingress verifies the selected identity secret and binds app plus wo
             signingSecret: 'finance-secret',
             botUserId: 'U_FINANCE',
           });
+          await config.updateAgent('agent_default', { slackIdentityId: identity.id });
+          await config.putAssignment({
+            workspaceId: 'T_ACME',
+            channelId: 'C_FINANCE',
+            agentId: 'agent_default',
+            enabled: true,
+          });
           const app = await identityIngressApp();
           const url = `/channels/slack/events/${identity.ingressKey}`;
           const basePayload = {
@@ -1881,7 +1940,14 @@ test('scoped ingress verifies the selected identity secret and binds app plus wo
             api_app_id: 'A0FINANCE',
             team_id: 'T_ACME',
             event_id: 'Ev_FINANCE',
-            event: { type: 'app_mention' },
+            event: {
+              type: 'app_mention',
+              user: 'U_MEMBER',
+              text: '<@U_FINANCE> hello',
+              ts: '1782770400.000100',
+              event_ts: '1782770400.000100',
+              channel: 'C_FINANCE',
+            },
           };
 
           const wrongSecret = signedSlackEvent('other-secret', basePayload);
@@ -1927,6 +1993,315 @@ test('scoped ingress verifies the selected identity secret and binds app plus wo
               body: valid.body,
             });
           assert.equal(validResponse.status, 200, await validResponse.clone().text());
+
+          const db = new DatabaseSync(path);
+          try {
+            assert.equal(
+              db.prepare('SELECT COUNT(*) AS count FROM turn_jobs').get()?.count,
+              0,
+              'base mode acknowledges dedicated callbacks without durable work',
+            );
+          } finally {
+            db.close();
+          }
+        } finally {
+          config.close();
+          settings.close();
+        }
+      },
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('a verified non-selected identity exits before claims, Work, or Slack API reads', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-slack-identity-non-selected-'));
+  const path = join(directory, 'state.db');
+  try {
+    await withEnv(
+      {
+        ...NO_SLACK_ENV,
+        TAG_DB_PATH: path,
+        SLACK_STATE_DB_PATH: path,
+        SLACK_API_URL: 'http://127.0.0.1:9/api/',
+      },
+      async () => {
+        const config = new SqliteConfigStore(path);
+        const settings = new SqliteSettingsStore(path);
+        try {
+          const identity = await config.createSlackIdentity(pendingIdentity({
+            lifecycle: 'connected',
+            teamId: 'T_ACME',
+            appId: 'A0FINANCE',
+            botUserId: 'U_FINANCE',
+            credentialProvenance: 'stored',
+            health: 'healthy',
+          }));
+          await config.updateAgent('agent_default', { slackIdentityId: identity.id });
+          await config.putAssignment({
+            workspaceId: 'T_ACME',
+            channelId: 'C_FINANCE',
+            agentId: 'agent_default',
+            enabled: true,
+          });
+          await settings.setSetting(SLACK_SETTING_KEYS.botToken, 'xoxb-default');
+          await settings.setSetting(SLACK_SETTING_KEYS.signingSecret, 'default-secret');
+          await settings.setSetting(SLACK_SETTING_KEYS.botUserId, 'U_DEFAULT');
+
+          const app = await identityIngressApp();
+          const event = signedSlackEvent('default-secret', {
+            type: 'event_callback',
+            api_app_id: 'A_DEFAULT',
+            team_id: 'T_ACME',
+            event_id: 'Ev_WRONG_IDENTITY',
+            event: {
+              type: 'app_mention',
+              user: 'U_MEMBER',
+              text: '<@U_DEFAULT> hello',
+              ts: '1782770400.000200',
+              event_ts: '1782770400.000200',
+              channel: 'C_FINANCE',
+            },
+          });
+          const response = await app.request('/channels/slack/events', {
+            method: 'POST',
+            headers: event.headers,
+            body: event.body,
+          });
+          assert.equal(response.status, 200, await response.clone().text());
+          await new Promise<void>((resolve) => setImmediate(resolve));
+
+          const db = new DatabaseSync(path);
+          try {
+            assert.equal(db.prepare('SELECT COUNT(*) AS count FROM slack_claims').get()?.count, 0);
+            assert.equal(db.prepare('SELECT COUNT(*) AS count FROM turn_jobs').get()?.count, 0);
+            assert.equal(db.prepare('SELECT COUNT(*) AS count FROM runs').get()?.count, 0);
+          } finally {
+            db.close();
+          }
+        } finally {
+          config.close();
+          settings.close();
+        }
+      },
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('multi mode admits only a connected selected dedicated identity that is in the channel', async (t) => {
+  const skip = await loopbackListenSkipReason();
+  if (skip) {
+    t.skip(skip);
+    return;
+  }
+  const fake = await listenIdentityAdmissionSlack();
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-slack-identity-multi-'));
+  const path = join(directory, 'state.db');
+  try {
+    await withEnv(
+      {
+        ...NO_SLACK_ENV,
+        TAG_DB_PATH: path,
+        SLACK_STATE_DB_PATH: path,
+        SLACK_API_URL: fake.baseUrl,
+        SLACK_TAG_IDENTITY_MODE: 'multi',
+      },
+      async () => {
+        const config = new SqliteConfigStore(path);
+        const settings = new SqliteSettingsStore(path);
+        try {
+          const identity = await config.createSlackIdentity(pendingIdentity({
+            lifecycle: 'connected',
+            teamId: 'T_ACME',
+            appId: 'A0FINANCE',
+            botUserId: 'U_FINANCE',
+            credentialProvenance: 'stored',
+            health: 'healthy',
+          }));
+          await writeSlackIdentityCredentials(settings, identity.id, null, {
+            botToken: 'xoxb-finance',
+            signingSecret: 'finance-secret',
+            botUserId: 'U_FINANCE',
+          });
+          await config.updateAgent('agent_default', {
+            slackIdentityId: identity.id,
+            model: 'local-stub/identity-admission',
+          });
+          await config.putAssignment({
+            workspaceId: 'T_ACME',
+            channelId: 'C_FINANCE',
+            agentId: 'agent_default',
+            enabled: true,
+          });
+          const app = await identityIngressApp();
+          const url = `/channels/slack/events/${identity.ingressKey}`;
+          const event = (eventId: string, ts: string) => signedSlackEvent('finance-secret', {
+            type: 'event_callback',
+            api_app_id: 'A0FINANCE',
+            team_id: 'T_ACME',
+            event_id: eventId,
+            event: {
+              type: 'app_mention',
+              user: 'U_MEMBER',
+              text: '<@U_FINANCE> hello',
+              ts,
+              event_ts: ts,
+              channel: 'C_FINANCE',
+            },
+          });
+
+          const selected = event('Ev_MULTI_SELECTED', '1782770400.000300');
+          const selectedResponse = await app.request(url, {
+            method: 'POST',
+            headers: selected.headers,
+            body: selected.body,
+          });
+          assert.equal(selectedResponse.status, 200, await selectedResponse.clone().text());
+
+          let admitted:
+            | { status: string; recovery_reason: string | null; turn_json: string }
+            | undefined;
+          for (let attempt = 0; attempt < 50 && !admitted; attempt += 1) {
+            await new Promise<void>((resolve) => setTimeout(resolve, 10));
+            const db = new DatabaseSync(path);
+            try {
+              const row = db.prepare(
+                `SELECT status, recovery_reason, turn_json
+                 FROM turn_jobs WHERE id = 'msg:C_FINANCE:1782770400.000300'`,
+              ).get() as
+                | { status: string; recovery_reason: string | null; turn_json: string }
+                | undefined;
+              if (row?.status === 'recovery_required') admitted = row;
+            } finally {
+              db.close();
+            }
+          }
+          assert.equal(admitted?.recovery_reason, 'slack_identity_delivery_not_ready');
+          assert.equal(JSON.parse(admitted?.turn_json ?? '{}').slackIdentityId, identity.id);
+
+          fake.setMember(false);
+          const nonMember = event('Ev_MULTI_NOT_MEMBER', '1782770400.000400');
+          const nonMemberResponse = await app.request(url, {
+            method: 'POST',
+            headers: nonMember.headers,
+            body: nonMember.body,
+          });
+          assert.equal(nonMemberResponse.status, 200, await nonMemberResponse.clone().text());
+          await new Promise<void>((resolve) => setTimeout(resolve, 25));
+
+          fake.setMember(true);
+          const beforeDisconnectCalls = fake.authHeaders.length;
+          const current = await config.getSlackIdentity(identity.id);
+          await config.updateSlackIdentity(identity.id, current.connectionRevision, {
+            lifecycle: 'degraded',
+            health: 'unauthorized',
+            healthDetail: 'tokens_revoked',
+          });
+          const disconnected = event('Ev_MULTI_DISCONNECTED', '1782770400.000500');
+          const disconnectedResponse = await app.request(url, {
+            method: 'POST',
+            headers: disconnected.headers,
+            body: disconnected.body,
+          });
+          assert.equal(
+            disconnectedResponse.status,
+            200,
+            await disconnectedResponse.clone().text(),
+          );
+          await new Promise<void>((resolve) => setTimeout(resolve, 25));
+
+          const db = new DatabaseSync(path);
+          try {
+            assert.equal(db.prepare('SELECT COUNT(*) AS count FROM turn_jobs').get()?.count, 1);
+            assert.equal(db.prepare('SELECT COUNT(*) AS count FROM runs').get()?.count, 1);
+          } finally {
+            db.close();
+          }
+          assert.ok(fake.authHeaders.length >= 2);
+          assert.deepEqual(new Set(fake.authHeaders), new Set(['Bearer xoxb-finance']));
+          assert.equal(fake.authHeaders.length, beforeDisconnectCalls);
+        } finally {
+          config.close();
+          settings.close();
+        }
+      },
+    );
+  } finally {
+    await closeServer(fake.server);
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('verified lifecycle events update only the receiving identity and uninstall outranks revocation', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-slack-identity-lifecycle-'));
+  const path = join(directory, 'state.db');
+  try {
+    await withEnv(
+      { ...NO_SLACK_ENV, TAG_DB_PATH: path, SLACK_STATE_DB_PATH: path },
+      async () => {
+        const config = new SqliteConfigStore(path);
+        const settings = new SqliteSettingsStore(path);
+        try {
+          const identity = await config.createSlackIdentity(pendingIdentity({
+            lifecycle: 'connected',
+            teamId: 'T_ACME',
+            appId: 'A0FINANCE',
+            botUserId: 'U_FINANCE',
+            credentialProvenance: 'stored',
+            health: 'healthy',
+          }));
+          await writeSlackIdentityCredentials(settings, identity.id, null, {
+            botToken: 'xoxb-finance',
+            signingSecret: 'finance-secret',
+            botUserId: 'U_FINANCE',
+          });
+          const app = await identityIngressApp();
+          const url = `/channels/slack/events/${identity.ingressKey}`;
+          const lifecycleEvent = (
+            type: 'tokens_revoked' | 'app_uninstalled',
+            eventId: string,
+          ) => signedSlackEvent('finance-secret', {
+            type: 'event_callback',
+            api_app_id: 'A0FINANCE',
+            team_id: 'T_ACME',
+            event_id: eventId,
+            event: { type },
+          });
+
+          const revoked = lifecycleEvent('tokens_revoked', 'Ev_REVOKED');
+          assert.equal((await app.request(url, {
+            method: 'POST',
+            headers: revoked.headers,
+            body: revoked.body,
+          })).status, 200);
+          let current = await config.getSlackIdentity(identity.id);
+          assert.equal(current.health, 'unauthorized');
+          assert.equal(current.healthDetail, 'tokens_revoked');
+
+          const uninstalled = lifecycleEvent('app_uninstalled', 'Ev_UNINSTALLED');
+          await app.request(url, {
+            method: 'POST',
+            headers: uninstalled.headers,
+            body: uninstalled.body,
+          });
+          current = await config.getSlackIdentity(identity.id);
+          assert.equal(current.health, 'uninstalled');
+
+          const lateRevocation = lifecycleEvent('tokens_revoked', 'Ev_REVOKED_LATE');
+          await app.request(url, {
+            method: 'POST',
+            headers: lateRevocation.headers,
+            body: lateRevocation.body,
+          });
+          current = await config.getSlackIdentity(identity.id);
+          assert.equal(current.health, 'uninstalled');
+          assert.equal(
+            (await config.getSlackIdentity('slack_identity_default')).health,
+            'unknown',
+          );
         } finally {
           config.close();
           settings.close();

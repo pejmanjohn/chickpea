@@ -370,6 +370,14 @@ export class ConfigStoreLogic {
 
   putAssignment(assignment: ChannelAssignment): ChannelAssignment {
     this.getAgent(assignment.agentId);
+    return this.db.transaction(() => {
+      this.putAssignmentRow(assignment);
+      this.syncDefaultDmIdentityFromLegacyAssignment(assignment);
+      return this.getAssignment(assignment.workspaceId, assignment.channelId) as ChannelAssignment;
+    });
+  }
+
+  private putAssignmentRow(assignment: ChannelAssignment): void {
     this.db.run(
       `INSERT INTO config_assignments (
         workspace_id, channel_id, agent_id, enabled, channel_label, channel_prompt_addendum,
@@ -389,16 +397,30 @@ export class ConfigStoreLogic {
       assignment.channelPromptAddendum ?? null,
       assignment.participationMode ?? 'ambient',
     );
-    return this.getAssignment(assignment.workspaceId, assignment.channelId) as ChannelAssignment;
   }
 
   deleteAssignment(workspaceId: string, channelId: string): boolean {
-    const deleted = this.db.run(
+    return this.db.transaction(() => {
+      const deleted = this.deleteAssignmentRow(workspaceId, channelId);
+      if (deleted && workspaceId === '*' && channelId === '*') {
+        const identity = this.workspaceDefaultSlackIdentity();
+        if (identity) {
+          this.updateSlackIdentity(identity.id, identity.connectionRevision, {
+            dmState: 'needs_setup',
+            dmAgentId: null,
+          });
+        }
+      }
+      return deleted;
+    });
+  }
+
+  private deleteAssignmentRow(workspaceId: string, channelId: string): boolean {
+    return this.db.run(
       'DELETE FROM config_assignments WHERE workspace_id = ? AND channel_id = ?',
       workspaceId,
       channelId,
-    );
-    return deleted.changes === 1;
+    ).changes === 1;
   }
 
   // Assignment precedence, most specific first: exact (workspace, channel), then
@@ -595,9 +617,24 @@ export class ConfigStoreLogic {
     dmState: SlackIdentityDmState,
     dmAgentId?: string,
   ): SlackIdentity {
-    return this.updateSlackIdentity(identityId, expectedRevision, {
-      dmState,
-      dmAgentId: dmAgentId ?? null,
+    return this.db.transaction(() => {
+      const updated = this.updateSlackIdentity(identityId, expectedRevision, {
+        dmState,
+        dmAgentId: dmAgentId ?? null,
+      });
+      if (identityId !== WORKSPACE_DEFAULT_SLACK_IDENTITY_ID) return updated;
+
+      if (dmState === 'needs_setup' || !dmAgentId) {
+        this.deleteAssignmentRow('*', '*');
+      } else {
+        this.putAssignmentRow({
+          workspaceId: '*',
+          channelId: '*',
+          agentId: dmAgentId,
+          enabled: dmState === 'on',
+        });
+      }
+      return updated;
     });
   }
 
@@ -726,6 +763,25 @@ export class ConfigStoreLogic {
     return identity;
   }
 
+  private workspaceDefaultSlackIdentity(): SlackIdentity | undefined {
+    const row = this.db.get(
+      'SELECT * FROM config_slack_identities WHERE id = ?',
+      WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+    );
+    return row ? rowToSlackIdentity(row as unknown as SlackIdentityRow) : undefined;
+  }
+
+  private syncDefaultDmIdentityFromLegacyAssignment(assignment: ChannelAssignment): void {
+    if (assignment.workspaceId !== '*' || assignment.channelId !== '*') return;
+    const identity = this.workspaceDefaultSlackIdentity();
+    if (!identity) return;
+    const agent = this.getAgent(assignment.agentId);
+    this.updateSlackIdentity(identity.id, identity.connectionRevision, {
+      dmState: assignment.enabled ? (agent.enabled ? 'on' : 'needs_setup') : 'off',
+      dmAgentId: assignment.enabled && !agent.enabled ? null : agent.id,
+    });
+  }
+
   private validateSlackIdentity(identity: SlackIdentity): void {
     if (!identity.id || !identity.ingressKey) {
       throw new Error('Slack identity id and ingress key are required');
@@ -770,7 +826,8 @@ export class ConfigStoreLogic {
           this.insertAgent(agent);
         }
         for (const assignment of seed.assignments) {
-          this.putAssignment(assignment);
+          this.getAgent(assignment.agentId);
+          this.putAssignmentRow(assignment);
         }
       }
       this.db.run(

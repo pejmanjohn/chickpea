@@ -20,13 +20,14 @@ import {
 } from './helpers/slack-fixtures.ts';
 
 test('Slack turn normalization classifies mentions, thread replies, DMs, and ambient top-level messages', () => {
-  const mention = normalizeSlackTurn(fixture());
+  const options = { slackIdentityId: 'slack_identity_default', botUserId: 'U_BOT' };
+  const mention = normalizeSlackTurn(fixture(), options);
   assert.ok(mention.status === 'runnable');
   assert.equal(mention.turn.source, 'app_mention');
+  assert.equal(mention.turn.slackIdentityId, 'slack_identity_default');
   assert.equal(mention.turn.contextMode, 'channel_history');
   assert.equal(slackThreadKey(mention.turn), 'T_DEMO:C_EXEC:1782770400.000100');
 
-  const options = { botUserId: 'U_BOT' };
   const threadReply = normalizeSlackTurn(channelThreadMessage(), options);
   assert.ok(threadReply.status === 'runnable');
   assert.equal(threadReply.turn.source, 'implicit_thread_reply');
@@ -64,7 +65,9 @@ test('Slack turn normalization classifies mentions, thread replies, DMs, and amb
   assert.equal(topLevel.turn.source, 'ambient_channel_message');
   assert.equal(topLevel.turn.contextMode, 'channel_history');
 
-  const missingBotUserId = normalizeSlackTurn(channelThreadMessage());
+  const missingBotUserId = normalizeSlackTurn(channelThreadMessage(), {
+    slackIdentityId: 'slack_identity_default',
+  });
   assert.ok(missingBotUserId.status === 'ignored');
   assert.equal(missingBotUserId.reason, 'missing_bot_user_id');
 
@@ -136,14 +139,17 @@ test('human message reactions are candidates and the bot cannot react itself int
       event_ts: '1782770401.000200',
     },
   };
-  const normalized = normalizeSlackTurn(payload, { botUserId: 'U_BOT' });
+  const normalized = normalizeSlackTurn(payload, {
+    slackIdentityId: 'slack_identity_finance',
+    botUserId: 'U_BOT',
+  });
   assert.ok(normalized.status === 'runnable');
   assert.equal(normalized.turn.source, 'reaction_added');
   assert.equal(normalized.turn.reactionTargetTs, '1782770400.000100');
 
   const self = normalizeSlackTurn(
     { ...payload, event: { ...payload.event, user: 'U_BOT' } },
-    { botUserId: 'U_BOT' },
+    { slackIdentityId: 'slack_identity_finance', botUserId: 'U_BOT' },
   );
   assert.deepEqual(self, { status: 'ignored', reason: 'self_message' });
 });
