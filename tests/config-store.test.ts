@@ -15,7 +15,12 @@ import {
 } from '../src/config/seed.ts';
 import { getConfigStore } from '../src/config/state-backend.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
-import type { ChannelAssignment, CustomAgentConfig } from '../src/config/types.ts';
+import {
+  WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+  type ChannelAssignment,
+  type CustomAgentConfig,
+  type SlackIdentity,
+} from '../src/config/types.ts';
 import { withEnv } from './helpers/env.ts';
 
 function tempDbPath(): { dir: string; path: string } {
@@ -47,6 +52,25 @@ function assignment(overrides: Partial<ChannelAssignment> = {}): ChannelAssignme
   };
 }
 
+function slackIdentity(overrides: Partial<SlackIdentity> = {}): SlackIdentity {
+  return {
+    id: 'slack_identity_finance',
+    ingressKey: 'ingress_finance_0123456789abcdef',
+    kind: 'dedicated',
+    lifecycle: 'connected',
+    teamId: 'T_TEST',
+    appId: 'A_FINANCE',
+    botUserId: 'U_FINANCE_BOT',
+    dmState: 'off',
+    credentialProvenance: 'stored',
+    connectionRevision: 1,
+    health: 'healthy',
+    createdAt: 1_700_000_000_000,
+    updatedAt: 1_700_000_000_000,
+    ...overrides,
+  };
+}
+
 test('SqliteConfigStore round-trips agent and assignment CRUD', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   const created = agent({ model: 'local-stub/agent-created' });
@@ -72,6 +96,96 @@ test('SqliteConfigStore round-trips agent and assignment CRUD', async () => {
   assert.equal(await store.find('T_TEST', 'C_TEST'), undefined);
   assert.equal(await store.deleteAgent(created.id), true);
   await assert.rejects(() => store.getAgent(created.id), /Unknown agent agent_test/);
+
+  store.close();
+});
+
+test('fresh stores backfill one workspace-default Slack identity and preserve profile inheritance', async () => {
+  const store = new SqliteConfigStore(':memory:');
+
+  const identities = await store.listSlackIdentities();
+  assert.equal(identities.length, 1);
+  assert.deepEqual(
+    {
+      id: identities[0]?.id,
+      kind: identities[0]?.kind,
+      lifecycle: identities[0]?.lifecycle,
+      dmState: identities[0]?.dmState,
+      dmAgentId: identities[0]?.dmAgentId,
+      credentialProvenance: identities[0]?.credentialProvenance,
+    },
+    {
+      id: WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+      kind: 'workspace_default',
+      lifecycle: 'setup_incomplete',
+      dmState: 'on',
+      dmAgentId: 'agent_default',
+      credentialProvenance: 'workspace_default',
+    },
+  );
+  assert.match(identities[0]?.ingressKey ?? '', /^[A-Za-z0-9_-]{22,}$/);
+  assert.equal(
+    (await store.resolveSlackIdentityForAgent('agent_default')).id,
+    WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+  );
+  assert.equal((await store.getAgent('agent_default')).slackIdentityId, undefined);
+
+  store.close();
+});
+
+test('several Profiles may share one connected Slack identity without changing its DM handler', async () => {
+  const store = new SqliteConfigStore(':memory:');
+  await store.createAgent(agent({ id: 'agent_finance', name: 'Finance' }));
+  await store.createSlackIdentity(
+    slackIdentity({ dmState: 'on', dmAgentId: 'agent_default' }),
+  );
+
+  await store.updateAgent('agent_default', { slackIdentityId: 'slack_identity_finance' });
+  await store.updateAgent('agent_finance', { slackIdentityId: 'slack_identity_finance' });
+
+  assert.deepEqual(
+    (await store.listAgentsForSlackIdentity('slack_identity_finance')).map(({ id }) => id),
+    ['agent_default', 'agent_finance'],
+  );
+  assert.equal(
+    (await store.resolveSlackIdentityForAgent('agent_finance')).id,
+    'slack_identity_finance',
+  );
+  assert.equal(
+    (await store.getSlackIdentity('slack_identity_finance')).dmAgentId,
+    'agent_default',
+  );
+
+  store.close();
+});
+
+test('Slack identity references protect DM Profiles and dedicated identity retirement', async () => {
+  const store = new SqliteConfigStore(':memory:');
+  await store.createAgent(agent({ id: 'agent_finance', name: 'Finance' }));
+  await store.createSlackIdentity(
+    slackIdentity({ dmState: 'on', dmAgentId: 'agent_finance' }),
+  );
+  await store.updateAgent('agent_default', { slackIdentityId: 'slack_identity_finance' });
+
+  await assert.rejects(
+    () => store.updateAgent('agent_finance', { enabled: false }),
+    (error: unknown) =>
+      error instanceof Error && error.name === 'AgentStillSlackDmHandlerError',
+  );
+  await assert.rejects(
+    () => store.deleteAgent('agent_finance'),
+    (error: unknown) =>
+      error instanceof Error &&
+      error.name === 'AgentStillSlackDmHandlerError' &&
+      /slack_identity_finance/.test(error.message),
+  );
+  await assert.rejects(
+    () => store.retireSlackIdentity('slack_identity_finance', 1),
+    (error: unknown) =>
+      error instanceof Error &&
+      error.name === 'SlackIdentityStillReferencedError' &&
+      /agent_default/.test(error.message),
+  );
 
   store.close();
 });
@@ -498,7 +612,7 @@ test('SqliteConfigStore migrates the legacy v1 default-models column without los
       .all() as Array<{ id: string }>;
     migratedDb.close();
 
-    assert.equal(version.value, '6');
+    assert.equal(version.value, '7');
     assert.equal(
       agentColumns.some(({ name }) => name === 'default_models_json'),
       false,
@@ -529,9 +643,12 @@ test('fresh databases start at the clean current config schema', () => {
     const assignmentColumns = db
       .prepare('SELECT name FROM pragma_table_info(?) ORDER BY cid')
       .all('config_assignments') as Array<{ name: string }>;
+    const identityColumns = db
+      .prepare('SELECT name FROM pragma_table_info(?) ORDER BY cid')
+      .all('config_slack_identities') as Array<{ name: string }>;
     db.close();
 
-    assert.equal(version.value, '6');
+    assert.equal(version.value, '7');
     assert.deepEqual(
       agentColumns.map(({ name }) => name),
       [
@@ -544,6 +661,7 @@ test('fresh databases start at the clean current config schema', () => {
         'mcp_servers_json',
         'api_connections_json',
         'repositories_json',
+        'slack_identity_id',
       ],
     );
     assert.deepEqual(
@@ -558,10 +676,168 @@ test('fresh databases start at the clean current config schema', () => {
         'participation_mode',
       ],
     );
+    assert.deepEqual(
+      identityColumns.map(({ name }) => name),
+      [
+        'id',
+        'ingress_key',
+        'kind',
+        'lifecycle',
+        'team_id',
+        'app_id',
+        'bot_user_id',
+        'dm_state',
+        'dm_agent_id',
+        'credential_provenance',
+        'connection_revision',
+        'observed_display_name',
+        'observed_avatar_url',
+        'observed_at',
+        'health',
+        'health_detail',
+        'created_at',
+        'updated_at',
+        'retired_at',
+        'setup_intent_json',
+      ],
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('v6 migration backfills a custom direct-message Profile exactly once', async () => {
+  const { dir, path } = tempDbPath();
+  try {
+    createV6Fixture(path, {
+      agents: [agent({ id: 'agent_custom', name: 'Custom DM Profile' })],
+      directAgentId: 'agent_custom',
+    });
+
+    const first = new SqliteConfigStore(path, { agents: [], assignments: [] });
+    const identity = await first.getSlackIdentity(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
+    assert.equal(identity.dmState, 'on');
+    assert.equal(identity.dmAgentId, 'agent_custom');
+    const ingressKey = identity.ingressKey;
+    const updatedAt = identity.updatedAt;
+    first.close();
+
+    const second = new SqliteConfigStore(path, { agents: [], assignments: [] });
+    assert.equal((await second.listSlackIdentities()).length, 1);
+    assert.equal(
+      (await second.getSlackIdentity(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID)).ingressKey,
+      ingressKey,
+    );
+    assert.equal(
+      (await second.getSlackIdentity(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID)).updatedAt,
+      updatedAt,
+    );
+    assert.equal((await second.getAgent('agent_custom')).slackIdentityId, undefined);
+    assert.deepEqual(await second.getAssignment('*', '*'), {
+      workspaceId: '*',
+      channelId: '*',
+      agentId: 'agent_custom',
+      enabled: true,
+    });
+    second.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+for (const fixture of [
+  { name: 'missing wildcard', directAgentId: undefined },
+  { name: 'disabled wildcard', directAgentId: 'agent_custom', directEnabled: false },
+  { name: 'missing Profile', directAgentId: 'agent_missing' },
+] as const) {
+  test(`v6 migration opens with needs_setup for a ${fixture.name}`, async () => {
+    const { dir, path } = tempDbPath();
+    try {
+      createV6Fixture(path, {
+        agents: [agent({ id: 'agent_custom', name: 'Custom DM Profile' })],
+        ...(fixture.directAgentId ? { directAgentId: fixture.directAgentId } : {}),
+        ...(fixture.directEnabled === undefined
+          ? {}
+          : { directEnabled: fixture.directEnabled }),
+      });
+      const store = new SqliteConfigStore(path, { agents: [], assignments: [] });
+      const identity = await store.getSlackIdentity(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
+      assert.equal(identity.dmState, 'needs_setup');
+      assert.equal(identity.dmAgentId, undefined);
+      store.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}
+
+function createV6Fixture(
+  path: string,
+  options: {
+    agents: CustomAgentConfig[];
+    directAgentId?: string;
+    directEnabled?: boolean;
+  },
+): void {
+  const db = new DatabaseSync(path);
+  db.exec(`CREATE TABLE config_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  )`);
+  db.exec(`CREATE TABLE config_agents (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    instructions TEXT NOT NULL,
+    enabled INTEGER NOT NULL,
+    model TEXT,
+    skills_json TEXT NOT NULL DEFAULT '[]',
+    mcp_servers_json TEXT NOT NULL DEFAULT '[]',
+    api_connections_json TEXT NOT NULL DEFAULT '[]',
+    repositories_json TEXT NOT NULL DEFAULT '[]'
+  )`);
+  db.exec(`CREATE TABLE config_assignments (
+    workspace_id TEXT NOT NULL,
+    channel_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    enabled INTEGER NOT NULL,
+    channel_label TEXT,
+    channel_prompt_addendum TEXT,
+    participation_mode TEXT NOT NULL DEFAULT 'ambient',
+    PRIMARY KEY (workspace_id, channel_id)
+  )`);
+  db.prepare('INSERT INTO config_meta (key, value) VALUES (?, ?)').run('schema_version', '6');
+  db.prepare('INSERT INTO config_meta (key, value) VALUES (?, ?)').run(
+    'config_seeded_v1',
+    'legacy',
+  );
+  for (const item of options.agents) {
+    db.prepare(
+      `INSERT INTO config_agents (
+        id, name, instructions, enabled, model, skills_json, mcp_servers_json,
+        api_connections_json, repositories_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      item.id,
+      item.name,
+      item.instructions,
+      item.enabled ? 1 : 0,
+      item.model ?? null,
+      JSON.stringify(item.skills),
+      JSON.stringify(item.mcpServers),
+      JSON.stringify(item.apiConnections),
+      JSON.stringify(item.repositories),
+    );
+  }
+  if (options.directAgentId) {
+    db.prepare(
+      `INSERT INTO config_assignments (
+        workspace_id, channel_id, agent_id, enabled, channel_label,
+        channel_prompt_addendum, participation_mode
+      ) VALUES ('*', '*', ?, ?, NULL, NULL, 'ambient')`,
+    ).run(options.directAgentId, options.directEnabled === false ? 0 : 1);
+  }
+  db.close();
+}
 
 test(':memory: config stores are isolated by connection', async () => {
   const first = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });

@@ -1,7 +1,18 @@
 import type { AssignmentLookupOptions } from './resolver.ts';
 import type { SettingsPatch } from './settings-store.ts';
-import type { ConfigAgentPatch, OAuthReauthorizationTarget } from './store.ts';
-import type { AgentSnapshot, ChannelAssignment, CustomAgentConfig } from './types.ts';
+import type {
+  ConfigAgentPatch,
+  OAuthReauthorizationTarget,
+  SlackIdentityPatch,
+} from './store.ts';
+import type {
+  AgentSnapshot,
+  ChannelAssignment,
+  CustomAgentConfig,
+  SlackIdentity,
+  SlackIdentityDmState,
+  SlackIdentityReferenceSummary,
+} from './types.ts';
 import type { MemoryRpcRequest, MemoryRpcResponse } from '../memory/types.ts';
 import type { RoutineRpcRequest, RoutineRpcResponse } from '../routines/types.ts';
 import type { UsageRpcRequest, UsageRpcResponse } from '../usage/types.ts';
@@ -55,6 +66,13 @@ export type StateRpcErrorCode =
   | 'unknown_agent'
   | 'agent_exists'
   | 'agent_still_assigned'
+  | 'agent_slack_dm_handler'
+  | 'unknown_slack_identity'
+  | 'slack_identity_exists'
+  | 'slack_identity_still_referenced'
+  | 'slack_identity_revision_conflict'
+  | 'slack_identity_lifecycle'
+  | 'workspace_default_slack_identity_protected'
   | 'memory'
   | 'routine'
   | 'usage'
@@ -198,6 +216,45 @@ export interface TagStateRpc {
     channelId: string,
     options?: AssignmentLookupOptions,
   ): Promise<StateRpcResult<ChannelAssignment | null>>;
+  // -- config: Slack identities -------------------------------------------
+  configListSlackIdentities(): Promise<StateRpcResult<SlackIdentity[]>>;
+  configGetSlackIdentity(identityId: string): Promise<StateRpcResult<SlackIdentity>>;
+  configCreateSlackIdentity(identity: SlackIdentity): Promise<StateRpcResult<SlackIdentity>>;
+  configUpdateSlackIdentity(
+    identityId: string,
+    expectedRevision: number,
+    patch: SlackIdentityPatch,
+  ): Promise<StateRpcResult<SlackIdentity>>;
+  configListSlackIdentitiesForAgent(
+    agentId: string,
+  ): Promise<StateRpcResult<SlackIdentity[]>>;
+  configListAgentsForSlackIdentity(
+    identityId: string,
+  ): Promise<StateRpcResult<CustomAgentConfig[]>>;
+  configResolveSlackIdentityForAgent(agentId: string): Promise<StateRpcResult<SlackIdentity>>;
+  configGetSlackIdentityReferences(
+    identityId: string,
+  ): Promise<StateRpcResult<SlackIdentityReferenceSummary>>;
+  configSetSlackIdentityDmBinding(
+    identityId: string,
+    expectedRevision: number,
+    dmState: SlackIdentityDmState,
+    dmAgentId?: string,
+  ): Promise<StateRpcResult<SlackIdentity>>;
+  configRetireSlackIdentity(
+    identityId: string,
+    expectedRevision: number,
+  ): Promise<StateRpcResult<SlackIdentity>>;
+  configDeleteIncompleteSlackIdentity(
+    identityId: string,
+    expectedRevision: number,
+    credentialsErased: boolean,
+  ): Promise<StateRpcResult<boolean>>;
+  configPurgeRetiredSlackIdentity(
+    identityId: string,
+    expectedRevision: number,
+    credentialsErased: boolean,
+  ): Promise<StateRpcResult<boolean>>;
   // -- agent snapshots -----------------------------------------------------
   snapshotGet(threadKey: string): Promise<StateRpcResult<AgentSnapshot | null>>;
   snapshotPutIfAbsent(

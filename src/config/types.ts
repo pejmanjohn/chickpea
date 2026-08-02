@@ -98,6 +98,66 @@ export interface RepositoryGrant {
 
 export type OpenAiAuthMethod = 'api_key' | 'subscription';
 
+/** Stable identity inherited by every Profile without an explicit selection. */
+export const WORKSPACE_DEFAULT_SLACK_IDENTITY_ID = 'slack_identity_default';
+
+export type SlackIdentityKind = 'workspace_default' | 'dedicated';
+export type SlackIdentityLifecycle =
+  | 'setup_incomplete'
+  | 'credentials_pending'
+  | 'connected'
+  | 'degraded'
+  | 'retired';
+export type SlackIdentityDmState = 'on' | 'off' | 'needs_setup';
+export type SlackIdentityCredentialProvenance = 'workspace_default' | 'stored' | 'none';
+export type SlackIdentityHealth =
+  | 'unknown'
+  | 'healthy'
+  | 'degraded'
+  | 'disconnected'
+  | 'uninstalled'
+  | 'unauthorized';
+
+export interface SlackIdentitySetupIntent {
+  displayName?: string;
+  sourceAgentId?: string;
+}
+
+/**
+ * Non-secret Slack app policy and observed metadata. Bot tokens and signing
+ * secrets never enter this record; they are addressed by `id` in SettingsStore.
+ * `ingressKey` is sensitive routing material and must stay out of non-Admin
+ * responses and logs even though request signatures remain the auth boundary.
+ */
+export interface SlackIdentity {
+  id: string;
+  ingressKey: string;
+  kind: SlackIdentityKind;
+  lifecycle: SlackIdentityLifecycle;
+  teamId?: string;
+  appId?: string;
+  botUserId?: string;
+  dmState: SlackIdentityDmState;
+  dmAgentId?: string;
+  credentialProvenance: SlackIdentityCredentialProvenance;
+  connectionRevision: number;
+  observedDisplayName?: string;
+  observedAvatarUrl?: string;
+  observedAt?: number;
+  health: SlackIdentityHealth;
+  healthDetail?: string;
+  createdAt: number;
+  updatedAt: number;
+  retiredAt?: number;
+  setupIntent?: SlackIdentitySetupIntent;
+}
+
+export interface SlackIdentityReferenceSummary {
+  identityId: string;
+  profileIds: string[];
+  dmAgentId?: string;
+}
+
 export interface CustomAgentConfig {
   id: string;
   name: string;
@@ -108,6 +168,8 @@ export interface CustomAgentConfig {
   mcpServers: McpConnectionConfig[];
   apiConnections: ApiConnectionConfig[];
   repositories: RepositoryGrant[];
+  /** Missing means inherit WORKSPACE_DEFAULT_SLACK_IDENTITY_ID. */
+  slackIdentityId?: string;
 }
 
 export interface ChannelAssignment {

@@ -12,8 +12,15 @@ import type { WebClient } from '@slack/web-api';
 import {
   AgentExistsError,
   AgentStillAssignedError,
+  AgentStillSlackDmHandlerError,
   NoAssignmentError,
+  SlackIdentityExistsError,
+  SlackIdentityLifecycleError,
+  SlackIdentityRevisionConflictError,
+  SlackIdentityStillReferencedError,
   UnknownAgentError,
+  UnknownSlackIdentityError,
+  WorkspaceDefaultSlackIdentityProtectedError,
 } from './config/errors.ts';
 import {
   getCachedInstallationToken,
@@ -32,6 +39,7 @@ import { SettingsStoreLogic } from './config/settings-store.ts';
 import { SnapshotStoreLogic } from './config/snapshot-store.ts';
 import type {
   StateRpcResult,
+  StateRpcErrorCode,
   TagStateRpc,
   TurnJob,
   TurnProgress,
@@ -45,11 +53,15 @@ import {
   ConfigStoreLogic,
   type ConfigAgentPatch,
   type OAuthReauthorizationTarget,
+  type SlackIdentityPatch,
 } from './config/store.ts';
 import type {
   AgentSnapshot,
   ChannelAssignment,
   CustomAgentConfig,
+  SlackIdentity,
+  SlackIdentityDmState,
+  SlackIdentityReferenceSummary,
 } from './config/types.ts';
 import {
   decideSandboxEgress,
@@ -592,6 +604,109 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     options?: AssignmentLookupOptions,
   ): Promise<StateRpcResult<ChannelAssignment | null>> {
     return this.call((stores) => stores.config.find(workspaceId, channelId, options) ?? null);
+  }
+
+  // ── config: Slack identities ────────────────────────────────────────────
+
+  async configListSlackIdentities(): Promise<StateRpcResult<SlackIdentity[]>> {
+    return this.call((stores) => stores.config.listSlackIdentities());
+  }
+
+  async configGetSlackIdentity(
+    identityId: string,
+  ): Promise<StateRpcResult<SlackIdentity>> {
+    return this.call((stores) => stores.config.getSlackIdentity(identityId));
+  }
+
+  async configCreateSlackIdentity(
+    identity: SlackIdentity,
+  ): Promise<StateRpcResult<SlackIdentity>> {
+    return this.call((stores) => stores.config.createSlackIdentity(identity));
+  }
+
+  async configUpdateSlackIdentity(
+    identityId: string,
+    expectedRevision: number,
+    patch: SlackIdentityPatch,
+  ): Promise<StateRpcResult<SlackIdentity>> {
+    return this.call((stores) =>
+      stores.config.updateSlackIdentity(identityId, expectedRevision, patch),
+    );
+  }
+
+  async configListSlackIdentitiesForAgent(
+    agentId: string,
+  ): Promise<StateRpcResult<SlackIdentity[]>> {
+    return this.call((stores) => stores.config.listSlackIdentitiesForAgent(agentId));
+  }
+
+  async configListAgentsForSlackIdentity(
+    identityId: string,
+  ): Promise<StateRpcResult<CustomAgentConfig[]>> {
+    return this.call((stores) => stores.config.listAgentsForSlackIdentity(identityId));
+  }
+
+  async configResolveSlackIdentityForAgent(
+    agentId: string,
+  ): Promise<StateRpcResult<SlackIdentity>> {
+    return this.call((stores) => stores.config.resolveSlackIdentityForAgent(agentId));
+  }
+
+  async configGetSlackIdentityReferences(
+    identityId: string,
+  ): Promise<StateRpcResult<SlackIdentityReferenceSummary>> {
+    return this.call((stores) => stores.config.getSlackIdentityReferences(identityId));
+  }
+
+  async configSetSlackIdentityDmBinding(
+    identityId: string,
+    expectedRevision: number,
+    dmState: SlackIdentityDmState,
+    dmAgentId?: string,
+  ): Promise<StateRpcResult<SlackIdentity>> {
+    return this.call((stores) =>
+      stores.config.setSlackIdentityDmBinding(
+        identityId,
+        expectedRevision,
+        dmState,
+        dmAgentId,
+      ),
+    );
+  }
+
+  async configRetireSlackIdentity(
+    identityId: string,
+    expectedRevision: number,
+  ): Promise<StateRpcResult<SlackIdentity>> {
+    return this.call((stores) => stores.config.retireSlackIdentity(identityId, expectedRevision));
+  }
+
+  async configDeleteIncompleteSlackIdentity(
+    identityId: string,
+    expectedRevision: number,
+    credentialsErased: boolean,
+  ): Promise<StateRpcResult<boolean>> {
+    return this.call((stores) =>
+      stores.config.deleteIncompleteSlackIdentity(
+        identityId,
+        expectedRevision,
+        credentialsErased,
+      ),
+    );
+  }
+
+  async configPurgeRetiredSlackIdentity(
+    identityId: string,
+    expectedRevision: number,
+    credentialsErased: boolean,
+  ): Promise<StateRpcResult<boolean>> {
+    return this.call((stores) =>
+      stores.config.purgeRetiredSlackIdentity(
+        identityId,
+        expectedRevision,
+        credentialsErased,
+      ),
+    );
   }
 
   // ── agent snapshots ──────────────────────────────────────────────────────
@@ -1277,6 +1392,48 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           keys: err.keys,
         });
       }
+      if (err instanceof AgentStillSlackDmHandlerError) {
+        return rpcError('agent_slack_dm_handler', err.message, {
+          agentId: err.agentId,
+          identityIds: err.identityIds,
+        });
+      }
+      if (err instanceof UnknownSlackIdentityError) {
+        return rpcError('unknown_slack_identity', err.message, {
+          identityId: err.identityId,
+        });
+      }
+      if (err instanceof SlackIdentityExistsError) {
+        return rpcError('slack_identity_exists', err.message, {
+          identityId: err.identityId,
+        });
+      }
+      if (err instanceof SlackIdentityStillReferencedError) {
+        return rpcError('slack_identity_still_referenced', err.message, {
+          identityId: err.identityId,
+          profileIds: err.profileIds,
+          dmAgentId: err.dmAgentId,
+        });
+      }
+      if (err instanceof SlackIdentityRevisionConflictError) {
+        return rpcError('slack_identity_revision_conflict', err.message, {
+          identityId: err.identityId,
+          expectedRevision: String(err.expectedRevision),
+          actualRevision: String(err.actualRevision),
+        });
+      }
+      if (err instanceof SlackIdentityLifecycleError) {
+        return rpcError('slack_identity_lifecycle', err.message, {
+          identityId: err.identityId,
+          action: err.action,
+          lifecycle: err.lifecycle,
+        });
+      }
+      if (err instanceof WorkspaceDefaultSlackIdentityProtectedError) {
+        return rpcError('workspace_default_slack_identity_protected', err.message, {
+          action: err.action,
+        });
+      }
       if (err instanceof MemoryStateError) {
         return rpcError('memory', err.message, {
           memoryCode: err.code,
@@ -1407,8 +1564,7 @@ function localUsageStore(stores: TagStateStores): UsageStore {
 }
 
 function rpcError(
-  code: 'unknown_agent' | 'agent_exists' | 'agent_still_assigned' | 'memory' | 'routine' |
-    'usage' | 'work' | 'slack_presentation' | 'internal',
+  code: StateRpcErrorCode,
   message: string,
   details?: Record<string, string>,
 ): { ok: false; error: { code: typeof code; message: string; details?: Record<string, string> } } {

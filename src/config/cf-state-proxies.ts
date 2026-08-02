@@ -1,10 +1,33 @@
-import { AgentExistsError, AgentStillAssignedError, UnknownAgentError } from './errors.ts';
+import {
+  AgentExistsError,
+  AgentStillAssignedError,
+  AgentStillSlackDmHandlerError,
+  SlackIdentityExistsError,
+  SlackIdentityLifecycleError,
+  SlackIdentityRevisionConflictError,
+  SlackIdentityStillReferencedError,
+  UnknownAgentError,
+  UnknownSlackIdentityError,
+  WorkspaceDefaultSlackIdentityProtectedError,
+} from './errors.ts';
 import type { AssignmentLookupOptions } from './resolver.ts';
 import type { SettingsPatch, SettingsStore } from './settings-store.ts';
 import type { AgentSnapshotStore } from './snapshot-store.ts';
 import type { StateRpcResult, TagStateRpc } from './state-rpc.ts';
-import type { ConfigAgentPatch, ConfigStore, OAuthReauthorizationTarget } from './store.ts';
-import type { AgentSnapshot, ChannelAssignment, CustomAgentConfig } from './types.ts';
+import type {
+  ConfigAgentPatch,
+  ConfigStore,
+  OAuthReauthorizationTarget,
+  SlackIdentityPatch,
+} from './store.ts';
+import type {
+  AgentSnapshot,
+  ChannelAssignment,
+  CustomAgentConfig,
+  SlackIdentity,
+  SlackIdentityDmState,
+  SlackIdentityReferenceSummary,
+} from './types.ts';
 import type {
   SlackCanonicalAdmissionInput,
   SlackStateStore,
@@ -157,6 +180,35 @@ function unwrap<T>(result: StateRpcResult<T>): T {
       throw new AgentExistsError(details?.agentId ?? 'unknown');
     case 'agent_still_assigned':
       throw new AgentStillAssignedError(details?.agentId ?? 'unknown', details?.keys ?? '');
+    case 'agent_slack_dm_handler':
+      throw new AgentStillSlackDmHandlerError(
+        details?.agentId ?? 'unknown',
+        details?.identityIds ?? '',
+      );
+    case 'unknown_slack_identity':
+      throw new UnknownSlackIdentityError(details?.identityId ?? 'unknown');
+    case 'slack_identity_exists':
+      throw new SlackIdentityExistsError(details?.identityId ?? 'unknown');
+    case 'slack_identity_still_referenced':
+      throw new SlackIdentityStillReferencedError(
+        details?.identityId ?? 'unknown',
+        details?.profileIds ?? '',
+        details?.dmAgentId ?? '',
+      );
+    case 'slack_identity_revision_conflict':
+      throw new SlackIdentityRevisionConflictError(
+        details?.identityId ?? 'unknown',
+        Number(details?.expectedRevision ?? 0),
+        Number(details?.actualRevision ?? 0),
+      );
+    case 'slack_identity_lifecycle':
+      throw new SlackIdentityLifecycleError(
+        details?.identityId ?? 'unknown',
+        details?.action ?? 'change',
+        details?.lifecycle ?? 'unknown',
+      );
+    case 'workspace_default_slack_identity_protected':
+      throw new WorkspaceDefaultSlackIdentityProtectedError(details?.action ?? 'change');
     case 'memory': {
       const memoryCode = details?.memoryCode ?? 'memory_state_error';
       if (memoryCode === 'memory_version_conflict') {
@@ -264,6 +316,97 @@ export class CfConfigStore implements ConfigStore {
     options: AssignmentLookupOptions = {},
   ): Promise<ChannelAssignment | undefined> {
     return orUndefined(unwrap(await this.stub.configFind(workspaceId, channelId, options)));
+  }
+
+  async listSlackIdentities(): Promise<SlackIdentity[]> {
+    return unwrap(await this.stub.configListSlackIdentities());
+  }
+
+  async getSlackIdentity(identityId: string): Promise<SlackIdentity> {
+    return unwrap(await this.stub.configGetSlackIdentity(identityId));
+  }
+
+  async createSlackIdentity(identity: SlackIdentity): Promise<SlackIdentity> {
+    return unwrap(await this.stub.configCreateSlackIdentity(identity));
+  }
+
+  async updateSlackIdentity(
+    identityId: string,
+    expectedRevision: number,
+    patch: SlackIdentityPatch,
+  ): Promise<SlackIdentity> {
+    return unwrap(
+      await this.stub.configUpdateSlackIdentity(identityId, expectedRevision, patch),
+    );
+  }
+
+  async listSlackIdentitiesForAgent(agentId: string): Promise<SlackIdentity[]> {
+    return unwrap(await this.stub.configListSlackIdentitiesForAgent(agentId));
+  }
+
+  async listAgentsForSlackIdentity(identityId: string): Promise<CustomAgentConfig[]> {
+    return unwrap(await this.stub.configListAgentsForSlackIdentity(identityId));
+  }
+
+  async resolveSlackIdentityForAgent(agentId: string): Promise<SlackIdentity> {
+    return unwrap(await this.stub.configResolveSlackIdentityForAgent(agentId));
+  }
+
+  async getSlackIdentityReferences(
+    identityId: string,
+  ): Promise<SlackIdentityReferenceSummary> {
+    return unwrap(await this.stub.configGetSlackIdentityReferences(identityId));
+  }
+
+  async setSlackIdentityDmBinding(
+    identityId: string,
+    expectedRevision: number,
+    dmState: SlackIdentityDmState,
+    dmAgentId?: string,
+  ): Promise<SlackIdentity> {
+    return unwrap(
+      await this.stub.configSetSlackIdentityDmBinding(
+        identityId,
+        expectedRevision,
+        dmState,
+        dmAgentId,
+      ),
+    );
+  }
+
+  async retireSlackIdentity(
+    identityId: string,
+    expectedRevision: number,
+  ): Promise<SlackIdentity> {
+    return unwrap(await this.stub.configRetireSlackIdentity(identityId, expectedRevision));
+  }
+
+  async deleteIncompleteSlackIdentity(
+    identityId: string,
+    expectedRevision: number,
+    credentialsErased: boolean,
+  ): Promise<boolean> {
+    return unwrap(
+      await this.stub.configDeleteIncompleteSlackIdentity(
+        identityId,
+        expectedRevision,
+        credentialsErased,
+      ),
+    );
+  }
+
+  async purgeRetiredSlackIdentity(
+    identityId: string,
+    expectedRevision: number,
+    credentialsErased: boolean,
+  ): Promise<boolean> {
+    return unwrap(
+      await this.stub.configPurgeRetiredSlackIdentity(
+        identityId,
+        expectedRevision,
+        credentialsErased,
+      ),
+    );
   }
 }
 
