@@ -5,6 +5,10 @@ import type { SlackInteractionProgressPatch } from '../src/config/state-rpc.ts';
 import { CfSlackStateStore } from '../src/config/cf-state-proxies.ts';
 import type { TagStateRpc } from '../src/config/state-rpc.ts';
 import { publishSlackAdmissionProgress } from '../src/slack/work-admission-progress.ts';
+import type {
+  SlackPresentationTransitionInput,
+  SlackRunPresentationV1,
+} from '../src/slack/run-presentations.ts';
 
 test('work admission reacts, persists, posts one checklist, and persists before execution is armed', async () => {
   const events: string[] = [];
@@ -139,6 +143,86 @@ test('Cloudflare Slack state persists admission progress through the durable RPC
   await store.recordSlackInteractionProgress('msg:C_WORK:1785514949.001000', patch);
 
   assert.deepEqual(calls, [{ id: 'msg:C_WORK:1785514949.001000', patch }]);
+});
+
+test('Cloudflare Slack presentation proxy preserves fenced state and budget shapes', async () => {
+  const presentation = {
+    schemaVersion: 1,
+    runId: 'run_rpc_presentation',
+    turnJobId: 'turn_rpc_presentation',
+    bindingId: 'binding_rpc_presentation',
+    workBindingGeneration: 1,
+    runFencingToken: 0,
+    projectionVersion: 1,
+    progressiveEligibility: { status: 'pending' },
+    root: {
+      workspaceId: 'T_RPC',
+      channelId: 'D_RPC',
+      threadTs: '1785700000.000100',
+      requesterUserId: 'U_RPC',
+    },
+    stream: { state: 'absent', acknowledgedByteLength: 0, slackAppendCursor: 0 },
+    repairRequired: false,
+    createdAt: 1_800_000_000_000,
+    updatedAt: 1_800_000_000_000,
+  } satisfies SlackRunPresentationV1;
+  const transitions: SlackPresentationTransitionInput[] = [];
+  const stub = {
+    async slackPresentationGet() {
+      return { ok: true as const, value: structuredClone(presentation) };
+    },
+    async slackPresentationTransition(input: SlackPresentationTransitionInput) {
+      transitions.push(structuredClone(input));
+      return {
+        ok: true as const,
+        value: { outcome: 'applied' as const, presentation: structuredClone(presentation) },
+      };
+    },
+    async slackPresentationReserveAppend() {
+      return { ok: true as const, value: { outcome: 'reserved' as const, budgetVersion: 4 } };
+    },
+    async slackPresentationApplyCooldown() {
+      return {
+        ok: true as const,
+        value: { cooldownUntil: 1_800_000_002_000, budgetVersion: 5 },
+      };
+    },
+    async slackPresentationRepairList() {
+      return { ok: true as const, value: [structuredClone(presentation)] };
+    },
+    async slackPresentationMaintain() {
+      return {
+        ok: true as const,
+        value: { finalizedPurged: 2, expiredTombstoned: 1 },
+      };
+    },
+  } as unknown as TagStateRpc;
+  const store = new CfSlackStateStore(stub);
+  const transition: SlackPresentationTransitionInput = {
+    runId: presentation.runId,
+    workBindingGeneration: 1,
+    runFencingToken: 0,
+    expectedProjectionVersion: 1,
+    expectedStreamState: 'absent',
+    mutation: {
+      kind: 'freeze_progressive_eligibility',
+      eligibility: { allowed: false, reason: 'effect_capable' },
+    },
+  };
+
+  assert.deepEqual(await store.getRunPresentation(presentation.runId), presentation);
+  assert.equal((await store.transitionRunPresentation(transition)).outcome, 'applied');
+  assert.deepEqual(transitions, [transition]);
+  assert.deepEqual(await store.reserveSlackAppend('T_RPC'), {
+    outcome: 'reserved', budgetVersion: 4,
+  });
+  assert.deepEqual(await store.applySlackAppendCooldown('T_RPC', 2_000), {
+    cooldownUntil: 1_800_000_002_000, budgetVersion: 5,
+  });
+  assert.deepEqual(await store.listRunPresentationsForRepair(10), [presentation]);
+  assert.deepEqual(await store.maintainRunPresentations(10), {
+    finalizedPurged: 2, expiredTombstoned: 1,
+  });
 });
 
 test('Cloudflare Slack state proxy exposes only the turn-related drain counts', async () => {

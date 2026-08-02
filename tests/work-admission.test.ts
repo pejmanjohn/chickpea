@@ -7,6 +7,7 @@ import { ConfigStoreLogic } from '../src/config/store.ts';
 import { RoutineStoreLogic } from '../src/routines/store.ts';
 import { normalizeRoutineSchedule } from '../src/routines/schedule.ts';
 import { SlackStateLogic } from '../src/slack/claim-store.ts';
+import { SlackRunPresentationStoreLogic } from '../src/slack/run-presentations.ts';
 import { TurnJobStoreLogic } from '../src/slack/turn-jobs.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
@@ -223,6 +224,7 @@ test('Slack claims, Run, content, thread registration, and relay row commit atom
   try {
     const slack = new SlackStateLogic(db, () => NOW);
     const turnJobs = new TurnJobStoreLogic(db, () => NOW);
+    const presentations = new SlackRunPresentationStoreLogic(db, () => NOW);
     const work = new WorkStoreLogic(db, { now: () => NOW });
     const normalized = turn();
     const resolved = assignment();
@@ -245,21 +247,83 @@ test('Slack claims, Run, content, thread registration, and relay row commit atom
         assignment: resolved,
         runId: admission.run.id,
       },
+      presentation: {
+        root: {
+          workspaceId: normalized.workspaceId,
+          channelId: normalized.channelId,
+          threadTs: normalized.threadTs,
+          requesterUserId: normalized.userId,
+        },
+        taskLabels: ['Prepare the brief', 'Check the evidence'],
+      },
     };
-    const admitted = slack.admitCanonical(input, work, turnJobs);
+    const admitted = slack.admitCanonical(input, work, turnJobs, presentations);
     assert.equal(admitted.claimed, true);
     assert.equal(slack.has(input.threadKey), true);
     assert.equal(turnJobs.listPending()[0]?.runId, admission.run.id);
+    assert.deepEqual(
+      presentations.get(admission.run.id)?.plan?.tasks.map((task) => task.title),
+      ['Prepare the brief', 'Check the evidence'],
+    );
 
     const mirrored = slack.admitCanonical(
       { ...input, evtKey: 'evt:Ev_mirrored' },
       work,
       turnJobs,
+      presentations,
     );
     assert.deepEqual(mirrored, { claimed: false });
     assert.equal(slack.claim('evt:Ev_mirrored'), true, 'losing event claim was released');
     assert.equal(db.get('SELECT COUNT(*) AS count FROM runs')?.count, 1);
     assert.equal(db.get('SELECT COUNT(*) AS count FROM turn_jobs')?.count, 1);
+    assert.equal(db.get('SELECT COUNT(*) AS count FROM slack_run_presentations')?.count, 1);
+  } finally {
+    db.close();
+  }
+});
+
+test('presentation creation failure rolls back claims, Work, and TurnJob atomically', () => {
+  const db = openStateDb(':memory:');
+  try {
+    const slack = new SlackStateLogic(db, () => NOW);
+    const turns = new TurnJobStoreLogic(db, () => NOW);
+    const presentations = new SlackRunPresentationStoreLogic(db, () => NOW);
+    const work = new WorkStoreLogic(db, { now: () => NOW });
+    const normalized = turn();
+    const resolved = assignment();
+    const admission = prepareSlackShadowAdmission({
+      turn: normalized,
+      assignment: resolved,
+      sourceVisibility: 'public',
+      admittedAt: NOW,
+    });
+    assert.throws(() => slack.admitCanonical({
+      evtKey: 'evt:presentation-bad',
+      msgKey: 'msg:presentation-bad',
+      threadKey: 'thread:presentation-bad',
+      admission,
+      turnJob: {
+        id: 'msg:presentation-bad',
+        evtKey: 'evt:presentation-bad',
+        msgKey: 'msg:presentation-bad',
+        turn: normalized,
+        assignment: resolved,
+        runId: admission.run.id,
+      },
+      presentation: {
+        root: {
+          workspaceId: normalized.workspaceId,
+          channelId: normalized.channelId,
+          threadTs: normalized.threadTs,
+          requesterUserId: normalized.userId,
+        },
+        taskLabels: ['invalid\nlabel'],
+      },
+    }, work, turns, presentations), /task title/i);
+    assert.equal(slack.claim('evt:presentation-bad'), true);
+    assert.equal(db.get('SELECT COUNT(*) AS count FROM runs')?.count, 0);
+    assert.equal(db.get('SELECT COUNT(*) AS count FROM turn_jobs')?.count, 0);
+    assert.equal(db.get('SELECT COUNT(*) AS count FROM slack_run_presentations')?.count, 0);
   } finally {
     db.close();
   }

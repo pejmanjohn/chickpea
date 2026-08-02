@@ -25,6 +25,13 @@ import type {
 } from './turn-job-types.ts';
 import type { RuntimePlanV2 } from '../agents/runtime-plan.ts';
 import type { SlackInteractionIntent } from './interaction-intent.ts';
+import {
+  SlackRunPresentationStoreLogic,
+  type SlackAppendReservation,
+  type SlackPresentationTransitionInput,
+  type SlackPresentationTransitionResult,
+  type SlackRunPresentationV1,
+} from './run-presentations.ts';
 import { ACTIVE_WORK_TTL_MS, CLAIM_TTL_MS, THREAD_TTL_MS } from './state-limits.ts';
 
 export { ACTIVE_WORK_TTL_MS, CLAIM_TTL_MS, THREAD_TTL_MS } from './state-limits.ts';
@@ -35,6 +42,10 @@ export interface SlackCanonicalAdmissionInput {
   threadKey: string;
   admission: AdmitShadowRunInput;
   turnJob?: TurnJob;
+  presentation?: {
+    root: SlackRunPresentationV1['root'];
+    taskLabels?: readonly string[];
+  };
 }
 
 export type SlackCanonicalAdmissionResult =
@@ -130,6 +141,19 @@ export interface SlackStateStore extends SlackClaimStore, SlackThreadRegistry {
   markTurnRecoveryRequired?(id: string, reason: string): Promise<void>;
   listTurnRecoveryRequired?(limit?: number): Promise<SlackTurnRecoveryItem[]>;
   resolveTurnRecoveryRequired?(id: string): Promise<boolean>;
+  getRunPresentation?(runId: string): Promise<SlackRunPresentationV1 | undefined>;
+  transitionRunPresentation?(
+    input: SlackPresentationTransitionInput,
+  ): Promise<SlackPresentationTransitionResult>;
+  reserveSlackAppend?(workspaceId: string): Promise<SlackAppendReservation>;
+  applySlackAppendCooldown?(
+    workspaceId: string,
+    retryAfterMs: number,
+  ): Promise<{ cooldownUntil: number; budgetVersion: number }>;
+  listRunPresentationsForRepair?(limit?: number): Promise<SlackRunPresentationV1[]>;
+  maintainRunPresentations?(
+    limit?: number,
+  ): Promise<{ finalizedPurged: number; expiredTombstoned: number }>;
   discardTurn?(id: string): Promise<boolean>;
   /** Node backend only (closes the SQLite handle); absent on RPC proxies. */
   close?(): void;
@@ -248,6 +272,7 @@ export class SlackStateLogic {
     input: SlackCanonicalAdmissionInput,
     work: WorkStoreLogic,
     turnJobs?: TurnJobStoreLogic,
+    presentations?: SlackRunPresentationStoreLogic,
   ): SlackCanonicalAdmissionResult {
     return this.db.transaction(() => {
       if (!this.claim(input.evtKey)) return { claimed: false };
@@ -266,6 +291,22 @@ export class SlackStateLogic {
           throw new Error('Turn job authority does not match its canonical Run.');
         }
         turnJobs.enqueue(input.turnJob);
+      }
+      if (input.presentation) {
+        if (!input.turnJob || !presentations) {
+          throw new Error('Slack presentation requires its canonical TurnJob owner.');
+        }
+        presentations.createInTransaction({
+          runId: admission.run.id,
+          turnJobId: input.turnJob.id,
+          bindingId: admission.binding.id,
+          workBindingGeneration: admission.binding.generation,
+          runFencingToken: admission.run.fencingToken,
+          root: input.presentation.root,
+          ...(input.presentation.taskLabels
+            ? { taskLabels: input.presentation.taskLabels }
+            : {}),
+        });
       }
       return { claimed: true, admission };
     });
@@ -328,11 +369,13 @@ export class SqliteSlackStateStore implements SlackStateStore {
   private readonly logic: SlackStateLogic;
   private readonly work: WorkStoreLogic;
   private readonly turnJobs: TurnJobStoreLogic;
+  private readonly presentations: SlackRunPresentationStoreLogic;
 
   constructor(path: string, now: () => number = Date.now) {
     this.db = openStateDb(path);
     this.logic = new SlackStateLogic(this.db, now);
     this.turnJobs = new TurnJobStoreLogic(this.db, now);
+    this.presentations = new SlackRunPresentationStoreLogic(this.db, now);
     this.work = new WorkStoreLogic(this.db, { now });
   }
 
@@ -369,7 +412,7 @@ export class SqliteSlackStateStore implements SlackStateStore {
   }
 
   async admitCanonical(input: SlackCanonicalAdmissionInput) {
-    return this.logic.admitCanonical(input, this.work, this.turnJobs);
+    return this.logic.admitCanonical(input, this.work, this.turnJobs, this.presentations);
   }
 
   async enqueueTurn(job: TurnJob) {
@@ -462,6 +505,30 @@ export class SqliteSlackStateStore implements SlackStateStore {
 
   async resolveTurnRecoveryRequired(id: string) {
     return this.turnJobs.resolveRecoveryRequired(id);
+  }
+
+  async getRunPresentation(runId: string) {
+    return this.presentations.get(runId);
+  }
+
+  async transitionRunPresentation(input: SlackPresentationTransitionInput) {
+    return this.presentations.transition(input);
+  }
+
+  async reserveSlackAppend(workspaceId: string) {
+    return this.presentations.reserveAppend(workspaceId);
+  }
+
+  async applySlackAppendCooldown(workspaceId: string, retryAfterMs: number) {
+    return this.presentations.applyAppendCooldown(workspaceId, retryAfterMs);
+  }
+
+  async listRunPresentationsForRepair(limit = 50) {
+    return this.presentations.listRepairRequired(limit);
+  }
+
+  async maintainRunPresentations(limit = 100) {
+    return this.presentations.maintain(limit);
   }
 
   async discardTurn(id: string) {

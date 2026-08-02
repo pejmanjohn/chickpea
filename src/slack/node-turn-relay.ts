@@ -244,6 +244,7 @@ export async function drainNodeTurnRelayOnce(
     ...(env ? { env } : {}),
   });
   await drainSlackInteractionCleanups(state, options.client, env);
+  await state.maintainRunPresentations?.(100);
 }
 
 async function drainSlackInteractionCleanups(

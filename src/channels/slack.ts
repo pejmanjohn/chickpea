@@ -646,6 +646,17 @@ async function processSlackEvent(
         threadKey,
         admission,
         turnJob: canonicalTurnJob,
+        presentation: {
+          root: {
+            workspaceId: turn.workspaceId,
+            channelId: turn.channelId,
+            threadTs: turn.threadTs,
+            requesterUserId: turn.userId,
+          },
+          ...(turn.interactionIntent?.disposition === 'work'
+            ? { taskLabels: turn.interactionIntent.checklist }
+            : {}),
+        },
       });
       if (!result.claimed) return;
       claimsHeldByCanonicalAdmission = true;

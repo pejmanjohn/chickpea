@@ -71,6 +71,10 @@ import {
 } from './sandbox/progress.ts';
 import { SlackStateLogic } from './slack/claim-store.ts';
 import type { SlackCanonicalAdmissionInput } from './slack/claim-store.ts';
+import {
+  SlackPresentationStateError,
+  SlackRunPresentationStoreLogic,
+} from './slack/run-presentations.ts';
 import { createLedgerSlackRunHandler } from './slack/ledger-turn-driver.ts';
 import { resolveSlackCredentials } from './slack/credentials.ts';
 import { setObservedSlackStatus } from './slack/status-registry.ts';
@@ -451,6 +455,7 @@ interface TagStateStores {
   slack: SlackStateLogic;
   settings: SettingsStoreLogic;
   turnJobs: TurnJobStoreLogic;
+  presentations: SlackRunPresentationStoreLogic;
   memory: MemoryStoreLogic;
   routines: RoutineStoreLogic;
   usage: UsageStoreLogic;
@@ -492,6 +497,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         slack: new SlackStateLogic(db),
         settings: new SettingsStoreLogic(db),
         turnJobs: new TurnJobStoreLogic(db),
+        presentations: new SlackRunPresentationStoreLogic(db),
         memory: new MemoryStoreLogic(db),
         routines: new RoutineStoreLogic(db),
         usage: new UsageStoreLogic(db),
@@ -657,7 +663,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
 
   async admitSlackTurn(input: SlackCanonicalAdmissionInput) {
     return this.call((stores) =>
-      stores.slack.admitCanonical(input, stores.work, stores.turnJobs),
+      stores.slack.admitCanonical(input, stores.work, stores.turnJobs, stores.presentations),
     );
   }
 
@@ -744,6 +750,34 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     });
   }
 
+  async slackPresentationGet(runId: string) {
+    return this.call((stores) => stores.presentations.get(runId) ?? null);
+  }
+
+  async slackPresentationTransition(
+    input: Parameters<TagStateRpc['slackPresentationTransition']>[0],
+  ) {
+    return this.call((stores) => stores.presentations.transition(input));
+  }
+
+  async slackPresentationReserveAppend(workspaceId: string) {
+    return this.call((stores) => stores.presentations.reserveAppend(workspaceId));
+  }
+
+  async slackPresentationApplyCooldown(workspaceId: string, retryAfterMs: number) {
+    return this.call((stores) =>
+      stores.presentations.applyAppendCooldown(workspaceId, retryAfterMs),
+    );
+  }
+
+  async slackPresentationRepairList(limit: number) {
+    return this.call((stores) => stores.presentations.listRepairRequired(limit));
+  }
+
+  async slackPresentationMaintain(limit: number) {
+    return this.call((stores) => stores.presentations.maintain(limit));
+  }
+
   // ── operator settings ────────────────────────────────────────────────────
 
   async settingGet(key: string): Promise<StateRpcResult<string | null>> {
@@ -825,6 +859,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     }
     const result = this.call((stores) => {
       stores.work.purgeContent(at, 100);
+      stores.presentations.maintain(100);
       return stores.turnJobs.hasPending('legacy') || stores.turnJobs.hasPending('ledger');
     });
     if (!result.ok) return result;
@@ -1259,6 +1294,11 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           ...err.details,
         });
       }
+      if (err instanceof SlackPresentationStateError) {
+        return rpcError('slack_presentation', err.message, {
+          presentationCode: err.code,
+        });
+      }
       const message = err instanceof Error ? err.message : String(err);
       console.error('[chickpea] TagStateStore RPC failure:', message);
       return rpcError('internal', message);
@@ -1347,7 +1387,8 @@ function localUsageStore(stores: TagStateStores): UsageStore {
 }
 
 function rpcError(
-  code: 'unknown_agent' | 'agent_exists' | 'agent_still_assigned' | 'memory' | 'routine' | 'usage' | 'work' | 'internal',
+  code: 'unknown_agent' | 'agent_exists' | 'agent_still_assigned' | 'memory' | 'routine' |
+    'usage' | 'work' | 'slack_presentation' | 'internal',
   message: string,
   details?: Record<string, string>,
 ): { ok: false; error: { code: typeof code; message: string; details?: Record<string, string> } } {

@@ -10,6 +10,11 @@ import type {
   SlackStateStore,
 } from '../slack/claim-store.ts';
 import {
+  SlackPresentationStateError,
+  type SlackPresentationStateErrorCode,
+  type SlackPresentationTransitionInput,
+} from '../slack/run-presentations.ts';
+import {
   WorkStateError,
   type BindingId,
   type ClaimNextInteractiveRunInput,
@@ -188,6 +193,11 @@ function unwrap<T>(result: StateRpcResult<T>): T {
       delete workDetails.workCode;
       throw new WorkStateError(workCode, message, workDetails);
     }
+    case 'slack_presentation':
+      throw new SlackPresentationStateError(
+        (details?.presentationCode ?? 'invalid_input') as SlackPresentationStateErrorCode,
+        message,
+      );
     default:
       throw new Error(message);
   }
@@ -385,6 +395,30 @@ export class CfSlackStateStore implements SlackStateStore {
     patch: Parameters<TagStateRpc['slackInteractionProgressRecord']>[1],
   ): Promise<void> {
     unwrap(await this.stub.slackInteractionProgressRecord(id, patch));
+  }
+
+  async getRunPresentation(runId: string) {
+    return orUndefined(unwrap(await this.stub.slackPresentationGet(runId)));
+  }
+
+  async transitionRunPresentation(input: SlackPresentationTransitionInput) {
+    return unwrap(await this.stub.slackPresentationTransition(input));
+  }
+
+  async reserveSlackAppend(workspaceId: string) {
+    return unwrap(await this.stub.slackPresentationReserveAppend(workspaceId));
+  }
+
+  async applySlackAppendCooldown(workspaceId: string, retryAfterMs: number) {
+    return unwrap(await this.stub.slackPresentationApplyCooldown(workspaceId, retryAfterMs));
+  }
+
+  async listRunPresentationsForRepair(limit = 50) {
+    return unwrap(await this.stub.slackPresentationRepairList(limit));
+  }
+
+  async maintainRunPresentations(limit = 100) {
+    return unwrap(await this.stub.slackPresentationMaintain(limit));
   }
 }
 

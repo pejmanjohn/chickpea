@@ -21,6 +21,12 @@ import type {
   TurnJob,
 } from '../slack/turn-job-types.ts';
 import type { SlackInteractionIntent } from '../slack/interaction-intent.ts';
+import type {
+  SlackAppendReservation,
+  SlackPresentationTransitionInput,
+  SlackPresentationTransitionResult,
+  SlackRunPresentationV1,
+} from '../slack/run-presentations.ts';
 
 export type { TurnJob } from '../slack/turn-job-types.ts';
 
@@ -52,6 +58,7 @@ export type StateRpcErrorCode =
   | 'routine'
   | 'usage'
   | 'work'
+  | 'slack_presentation'
   | 'internal';
 
 export interface StateRpcError {
@@ -253,6 +260,25 @@ export interface TagStateRpc {
     id: string,
     patch: SlackInteractionProgressPatch,
   ): Promise<StateRpcResult<null>>;
+  slackPresentationGet(
+    runId: string,
+  ): Promise<StateRpcResult<SlackRunPresentationV1 | null>>;
+  slackPresentationTransition(
+    input: SlackPresentationTransitionInput,
+  ): Promise<StateRpcResult<SlackPresentationTransitionResult>>;
+  slackPresentationReserveAppend(
+    workspaceId: string,
+  ): Promise<StateRpcResult<SlackAppendReservation>>;
+  slackPresentationApplyCooldown(
+    workspaceId: string,
+    retryAfterMs: number,
+  ): Promise<StateRpcResult<{ cooldownUntil: number; budgetVersion: number }>>;
+  slackPresentationRepairList(
+    limit: number,
+  ): Promise<StateRpcResult<SlackRunPresentationV1[]>>;
+  slackPresentationMaintain(
+    limit: number,
+  ): Promise<StateRpcResult<{ finalizedPurged: number; expiredTombstoned: number }>>;
   // -- operator settings ---------------------------------------------------
   settingGet(key: string): Promise<StateRpcResult<string | null>>;
   settingGetMany(keys: readonly string[]): Promise<StateRpcResult<(string | null)[]>>;
