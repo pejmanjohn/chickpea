@@ -128,6 +128,12 @@ test('fresh stores backfill one workspace-default Slack identity and preserve pr
     (await store.resolveSlackIdentityForAgent('agent_default')).id,
     WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
   );
+  assert.deepEqual(
+    (await store.listAgentsForSlackIdentity(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID)).map(
+      ({ id }) => id,
+    ),
+    ['agent_default'],
+  );
   assert.equal((await store.getAgent('agent_default')).slackIdentityId, undefined);
 
   store.close();
@@ -185,6 +191,30 @@ test('Slack identity references protect DM Profiles and dedicated identity retir
       error instanceof Error &&
       error.name === 'SlackIdentityStillReferencedError' &&
       /agent_default/.test(error.message),
+  );
+
+  store.close();
+});
+
+test('retiring an off identity clears its remembered DM Profile so the tombstone can purge', async () => {
+  const store = new SqliteConfigStore(':memory:');
+  const identity = await store.createSlackIdentity(
+    slackIdentity({ dmState: 'off', dmAgentId: 'agent_default' }),
+  );
+
+  const retired = await store.retireSlackIdentity(
+    identity.id,
+    identity.connectionRevision,
+  );
+  assert.equal(retired.lifecycle, 'retired');
+  assert.equal(retired.dmAgentId, undefined);
+  assert.equal(
+    await store.purgeRetiredSlackIdentity(
+      retired.id,
+      retired.connectionRevision,
+      true,
+    ),
+    true,
   );
 
   store.close();

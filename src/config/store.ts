@@ -563,7 +563,15 @@ export class ConfigStoreLogic {
   listAgentsForSlackIdentity(identityId: string): CustomAgentConfig[] {
     this.getSlackIdentity(identityId);
     return this.db
-      .all('SELECT * FROM config_agents WHERE slack_identity_id = ? ORDER BY id', identityId)
+      .all(
+        `SELECT * FROM config_agents
+         WHERE slack_identity_id = ?
+            OR (? = ? AND slack_identity_id IS NULL)
+         ORDER BY id`,
+        identityId,
+        identityId,
+        WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+      )
       .map((row) => rowToAgent(row as unknown as AgentRow));
   }
 
@@ -621,6 +629,7 @@ export class ConfigStoreLogic {
       expectedRevision,
       {
         lifecycle: 'retired',
+        dmAgentId: null,
         health: 'disconnected',
         retiredAt: Date.now(),
       },

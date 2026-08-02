@@ -25,6 +25,7 @@ import {
 import {
   resolveSlackIdentityCredentials,
   slackIdentityCredentialSettingKeys,
+  writeSlackIdentityCredentials,
 } from '../src/slack/identity-credentials.ts';
 import {
   beginSlackIdentityConnection,
@@ -2053,6 +2054,53 @@ test('dedicated identity validation rejects user tokens, cross-workspace install
   }
 });
 
+test('dedicated identity setup requires a known workspace before calling Slack', async () => {
+  const config = new SqliteConfigStore(':memory:');
+  const settings = new SqliteSettingsStore(':memory:');
+  let authCalls = 0;
+  try {
+    const draft = await config.createSlackIdentity(pendingIdentity());
+    await assert.rejects(
+      () =>
+        beginSlackIdentityConnection(
+          {
+            config,
+            settings,
+            identityId: draft.id,
+            expectedRevision: draft.connectionRevision,
+            expectedTeamId: ' ',
+            botToken: 'xoxb-other-workspace',
+            signingSecret: 'other-secret',
+          },
+          {
+            ...validDedicatedSlackDeps(),
+            authTest: async () => {
+              authCalls += 1;
+              return {
+                ...(await validDedicatedSlackDeps().authTest()),
+                teamId: 'T_OTHER',
+              };
+            },
+          },
+        ),
+      (error: unknown) =>
+        error instanceof SlackIdentityBootstrapError &&
+        error.code === 'workspace_unverified',
+    );
+    assert.equal(authCalls, 0);
+    assert.equal((await config.getSlackIdentity(draft.id)).lifecycle, 'setup_incomplete');
+    assert.equal(
+      (
+        await resolveSlackIdentityCredentials(draft.id, undefined, settings)
+      ).botToken,
+      undefined,
+    );
+  } finally {
+    config.close();
+    settings.close();
+  }
+});
+
 test('pending Slack challenges are bounded, rate-limited, and atomically cleared with credentials', async () => {
   const config = new SqliteConfigStore(':memory:');
   const settings = new SqliteSettingsStore(':memory:');
@@ -2139,6 +2187,52 @@ test('pending Slack challenges are bounded, rate-limited, and atomically cleared
         keys.botUserId,
       ]),
       [undefined, undefined, undefined],
+    );
+  } finally {
+    config.close();
+    settings.close();
+  }
+});
+
+test('setup cancellation cannot erase credentials from a connected identity', async () => {
+  const config = new SqliteConfigStore(':memory:');
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    const identity = await config.createSlackIdentity(
+      pendingIdentity({
+        lifecycle: 'connected',
+        teamId: 'T_ACME',
+        appId: 'A0FINANCE',
+        botUserId: 'U_FINANCE',
+        dmState: 'off',
+        credentialProvenance: 'stored',
+        health: 'healthy',
+      }),
+    );
+    await writeSlackIdentityCredentials(settings, identity.id, null, {
+      botToken: 'xoxb-connected',
+      signingSecret: 'connected-secret',
+      botUserId: 'U_FINANCE',
+    });
+
+    await assert.rejects(
+      () =>
+        cancelSlackIdentityConnection({
+          config,
+          settings,
+          identityId: identity.id,
+          expectedRevision: identity.connectionRevision,
+        }),
+      (error: unknown) =>
+        error instanceof SlackIdentityBootstrapError &&
+        error.code === 'identity_not_connectable',
+    );
+    assert.equal((await config.getSlackIdentity(identity.id)).lifecycle, 'connected');
+    assert.equal(
+      (
+        await resolveSlackIdentityCredentials(identity.id, undefined, settings)
+      ).botToken,
+      'xoxb-connected',
     );
   } finally {
     config.close();

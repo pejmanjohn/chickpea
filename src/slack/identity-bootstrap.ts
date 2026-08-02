@@ -182,6 +182,12 @@ export async function beginSlackIdentityConnection(
   },
   deps: SlackIdentityBootstrapDeps = {},
 ): Promise<SlackIdentity> {
+  if (!input.expectedTeamId.trim()) {
+    throw new SlackIdentityBootstrapError(
+      'workspace_unverified',
+      'The Slack workspace must be known before connecting a dedicated identity',
+    );
+  }
   const identity = await input.config.getSlackIdentity(input.identityId);
   requireConnectableIdentity(identity, input.expectedRevision);
   const previousCredentials = await resolveSlackIdentityCredentials(
@@ -289,7 +295,11 @@ export async function cancelSlackIdentityConnection(input: {
 }): Promise<SlackIdentity> {
   const identity = await input.config.getSlackIdentity(input.identityId);
   requireRevision(identity, input.expectedRevision);
-  if (identity.kind !== 'dedicated' || identity.lifecycle === 'retired') {
+  if (
+    identity.kind !== 'dedicated' ||
+    (identity.lifecycle !== 'setup_incomplete' &&
+      identity.lifecycle !== 'credentials_pending')
+  ) {
     throw new SlackIdentityBootstrapError(
       'identity_not_connectable',
       'This Slack identity setup cannot be canceled',
