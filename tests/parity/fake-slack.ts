@@ -36,6 +36,7 @@ export interface WireEntry {
    * `chat.postMessage` never reaches the channel in real Slack).
    */
   ok?: boolean;
+  responseTs?: string;
 }
 
 /**
@@ -383,7 +384,12 @@ export class FakeSlackBackend {
    */
   finals(): FinalOnWire[] {
     const finals: FinalOnWire[] = [];
-    const pendingStreams: Array<{ entry: WireEntry; index: number }> = [];
+    const pendingStreams = new Map<string, {
+      channel: string;
+      threadTs: string;
+      text: string;
+      index: number;
+    }>();
 
     this.wireLog.forEach((entry, index) => {
       if (entry.kind !== 'slack') {
@@ -391,10 +397,17 @@ export class FakeSlackBackend {
       }
       if (
         entry.method === 'chat.startStream' &&
-        entry.ok !== false &&
-        hasText(entry.body.markdown_text)
+        entry.ok !== false && entry.responseTs
       ) {
-        pendingStreams.push({ entry, index });
+        pendingStreams.set(entry.responseTs, {
+          channel: String(entry.body.channel ?? ''),
+          threadTs: String(entry.body.thread_ts ?? ''),
+          text: streamText(entry.body),
+          index,
+        });
+      } else if (entry.method === 'chat.appendStream' && entry.ok !== false) {
+        const stream = pendingStreams.get(String(entry.body.ts ?? ''));
+        if (stream) stream.text += streamText(entry.body);
       } else if (entry.method === 'chat.stopStream') {
         // Deliberately NOT gated on `entry.ok`: S18 fails the first
         // chat.stopStream call ({ ok:false, error:'timeout' }) and still
@@ -402,14 +415,17 @@ export class FakeSlackBackend {
         // content already reached the channel via startStream; a stopStream
         // failure is a finalization-signal hiccup, not a lost delivery).
         // Filtering this branch on `ok` would make S18 see zero finals.
-        const start = pendingStreams.shift();
-        if (start) {
+        const ts = String(entry.body.ts ?? '');
+        const stream = pendingStreams.get(ts);
+        if (stream) {
+          stream.text += streamText(entry.body);
           finals.push({
-            channel: String(start.entry.body.channel ?? ''),
-            threadTs: String(start.entry.body.thread_ts ?? ''),
-            text: String(start.entry.body.markdown_text ?? ''),
-            index: start.index,
+            channel: stream.channel,
+            threadTs: stream.threadTs,
+            text: stream.text,
+            index: stream.index,
           });
+          pendingStreams.delete(ts);
         }
       } else if (
         entry.method === 'chat.postMessage' &&
@@ -566,6 +582,7 @@ export class FakeSlackBackend {
     // Record the outcome so `finals()` can tell a delivered final from one the
     // fake rejected (a rejected `{ ok:false }` makes the real WebClient throw).
     entry.ok = slackBody.ok !== false;
+    if (typeof slackBody.ts === 'string') entry.responseTs = slackBody.ts;
     return { status: 200, body: slackBody };
   }
 
@@ -707,6 +724,8 @@ export class FakeSlackBackend {
         }
         return { ok: true };
       }
+      case 'assistant.threads.setTitle':
+        return { ok: true };
       case 'chat.postMessage':
         // Fail only the FIRST markdown (final) post under failFinalDeliveryOnce;
         // plain progress posts and later finals go through.
@@ -736,6 +755,8 @@ export class FakeSlackBackend {
           return { ok: false, error: 'internal_error' };
         }
         return { ok: true, channel: body.channel, ts: this.nextTs() };
+      case 'chat.appendStream':
+        return { ok: true, channel: body.channel, ts: body.ts };
       case 'chat.stopStream':
         if (this.failStopStreamOnce && this.stopStreamCalls === 0) {
           this.stopStreamCalls += 1;
@@ -1158,6 +1179,18 @@ function postText(body: Record<string, unknown>): string {
   return String(body.text ?? '');
 }
 
+function streamText(body: Record<string, unknown>): string {
+  let text = typeof body.markdown_text === 'string' ? body.markdown_text : '';
+  if (!Array.isArray(body.chunks)) return text;
+  for (const chunk of body.chunks) {
+    if (isUnknownRecord(chunk) && chunk.type === 'markdown_text' &&
+        typeof chunk.text === 'string') {
+      text += chunk.text;
+    }
+  }
+  return text;
+}
+
 function interactionClassifierReply(body: Record<string, unknown> | undefined): string | null {
   const serialized = JSON.stringify(body ?? {});
   if (!serialized.includes('Classify one Slack interaction')) return null;
@@ -1185,10 +1218,6 @@ function interactionClassifierReply(body: Record<string, unknown> | undefined): 
     return JSON.stringify({ disposition: 'reply', reason: 'useful_ambient' });
   }
   return JSON.stringify({ disposition: 'reply', reason: 'substantive_request' });
-}
-
-function hasText(value: unknown): boolean {
-  return typeof value === 'string' && value.trim().length > 0;
 }
 
 function decodeWireBody(raw: string): Record<string, unknown> {

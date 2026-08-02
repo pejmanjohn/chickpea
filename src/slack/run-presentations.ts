@@ -70,6 +70,10 @@ export interface SlackRunPresentationV1 {
   runFencingToken: number;
   projectionVersion: number;
   progressiveEligibility: SlackProgressiveEligibility;
+  features: {
+    progressiveStreaming: boolean;
+    nativeTasks: boolean;
+  };
   root: {
     workspaceId: string;
     channelId: string;
@@ -117,6 +121,7 @@ export interface SlackRunPresentationCreateInput {
   bindingId: string;
   workBindingGeneration: number;
   runFencingToken: number;
+  features?: Partial<SlackRunPresentationV1['features']>;
   root: SlackRunPresentationV1['root'];
   taskLabels?: readonly string[];
 }
@@ -148,15 +153,24 @@ export type SlackPresentationMutation =
       hash: string;
     }
   | { kind: 'append_acknowledged'; cursor: number; acknowledgedPrefixHash: string }
+  | { kind: 'append_rejected'; cursor: number }
   | {
       kind: 'close_stream';
-      outcome?: Extract<SlackPresentationOutcome, 'progressive' | 'terminal_only'>;
+      outcome?: Extract<
+        SlackPresentationOutcome,
+        'progressive' | 'terminal_only' | 'corrected' | 'withdrawn'
+      >;
       degradationReason?: SlackPresentationDegradationReason;
     }
   | { kind: 'mark_finalizing' }
   | { kind: 'mark_fallback'; outcome: 'fallback' }
-  | { kind: 'mark_artifact_delivered'; outcome: SlackPresentationOutcome }
+  | {
+      kind: 'mark_artifact_delivered';
+      outcome: SlackPresentationOutcome;
+      messageTs?: string;
+    }
   | { kind: 'mark_finalized' }
+  | { kind: 'mark_non_stream_finalized' }
   | { kind: 'mark_unknown'; degradationReason: SlackPresentationDegradationReason }
   | { kind: 'set_task_status'; status: 'in_progress' | 'complete' | 'error' }
   | { kind: 'record_title_intent'; valueHash: string }
@@ -190,6 +204,16 @@ export interface SlackPresentationRetentionTombstone {
   repairRequired: boolean;
   expiredAt: number;
   tombstonedAt: number;
+}
+
+export interface SlackPresentationSummary {
+  workspaceId: string;
+  total: number;
+  truncated: boolean;
+  streamStates: Record<string, number>;
+  eligibility: Record<string, number>;
+  outcomes: Record<string, number>;
+  degradations: Record<string, number>;
 }
 
 export type SlackPresentationStateErrorCode =
@@ -323,6 +347,10 @@ export class SlackRunPresentationStoreLogic {
         runFencingToken: input.runFencingToken,
         projectionVersion: 1,
         progressiveEligibility: { status: 'pending' },
+        features: {
+          progressiveStreaming: input.features?.progressiveStreaming ?? false,
+          nativeTasks: input.features?.nativeTasks ?? false,
+        },
         root: { ...input.root },
         stream: {
           state: 'absent',
@@ -601,6 +629,43 @@ export class SlackRunPresentationStoreLogic {
     }));
   }
 
+  summarize(workspaceId: string, limit = 10_000): SlackPresentationSummary {
+    validateId(workspaceId, 'Workspace id');
+    const bounded = Math.min(10_000, Math.max(1, Math.floor(limit)));
+    const total = Number(this.db.get(
+      'SELECT COUNT(*) AS count FROM slack_run_presentations WHERE workspace_id = ?',
+      workspaceId,
+    )?.count ?? 0);
+    const rows = this.db.all(
+      `SELECT presentation_json FROM slack_run_presentations
+       WHERE workspace_id = ? ORDER BY updated_at DESC, run_id DESC LIMIT ?`,
+      workspaceId,
+      bounded,
+    );
+    const summary: SlackPresentationSummary = {
+      workspaceId,
+      total,
+      truncated: total > rows.length,
+      streamStates: {},
+      eligibility: {},
+      outcomes: {},
+      degradations: {},
+    };
+    for (const row of rows) {
+      const presentation = JSON.parse(String(row.presentation_json)) as SlackRunPresentationV1;
+      increment(summary.streamStates, presentation.stream.state);
+      const eligibility = presentation.progressiveEligibility.status === 'pending'
+        ? 'pending'
+        : presentation.progressiveEligibility.allowed
+          ? 'allowed'
+          : `denied:${presentation.progressiveEligibility.reason}`;
+      increment(summary.eligibility, eligibility);
+      increment(summary.outcomes, presentation.stream.presentationOutcome ?? 'pending');
+      increment(summary.degradations, presentation.stream.degradationReason ?? 'none');
+    }
+    return summary;
+  }
+
   private getRow(runId: string): PresentationRow | undefined {
     return this.db.get(
       `SELECT ${PRESENTATION_COLUMNS} FROM slack_run_presentations WHERE run_id = ?`,
@@ -653,6 +718,7 @@ function applyMutation(
     case 'stream_start_intent':
       requireState(current, 'absent');
       next.stream.state = 'starting';
+      next.repairRequired = true;
       return next;
     case 'stream_started':
       requireState(current, 'starting');
@@ -663,6 +729,7 @@ function applyMutation(
       next.stream.state = 'streaming';
       next.stream.messageTs = mutation.messageTs;
       next.stream.flue = { ...mutation.flue };
+      next.repairRequired = false;
       return next;
     case 'append_intent': {
       requireState(current, 'streaming');
@@ -692,6 +759,7 @@ function applyMutation(
         to: mutation.to,
         hash: mutation.hash,
       };
+      next.repairRequired = true;
       return next;
     }
     case 'append_acknowledged': {
@@ -709,6 +777,17 @@ function applyMutation(
       next.stream.slackAppendCursor = pending.cursor;
       next.stream.acknowledgedPrefixHash = mutation.acknowledgedPrefixHash;
       delete next.stream.pendingAppend;
+      next.repairRequired = false;
+      return next;
+    }
+    case 'append_rejected': {
+      requireState(current, 'streaming');
+      const pending = current.stream.pendingAppend;
+      if (!pending || mutation.cursor !== pending.cursor) {
+        throw stateError('cursor_gap', 'Slack append rejection does not match its intent.');
+      }
+      delete next.stream.pendingAppend;
+      next.repairRequired = false;
       return next;
     }
     case 'close_stream':
@@ -723,22 +802,40 @@ function applyMutation(
     case 'mark_finalizing':
       requireState(current, 'reconciling');
       next.stream.state = 'finalizing';
+      next.repairRequired = true;
       return next;
     case 'mark_fallback':
       requireState(current, 'starting');
       next.stream.state = 'fallback';
       next.stream.presentationOutcome = mutation.outcome;
+      // A confirmed stream rejection still requires the fallback artifact.
+      // Keep it visible to repair until that post has an exact receipt.
+      next.repairRequired = true;
       return next;
     case 'mark_artifact_delivered':
       if (current.stream.state !== 'finalizing' && current.stream.state !== 'fallback') {
         throw stateError('invalid_transition', 'Only a finalizing or fallback artifact can deliver.');
       }
+      if (mutation.messageTs !== undefined) {
+        if (current.stream.state !== 'fallback' || current.stream.messageTs) {
+          throw stateError('coordinate_conflict', 'Fallback coordinate is not assignable.');
+        }
+        validateSlackTimestamp(mutation.messageTs, 'Slack fallback coordinate');
+        next.stream.messageTs = mutation.messageTs;
+      }
       next.stream.state = 'artifact_delivered';
       next.stream.presentationOutcome = mutation.outcome;
+      next.repairRequired = false;
       return next;
     case 'mark_finalized':
       requireState(current, 'artifact_delivered');
       next.stream.state = 'finalized';
+      next.repairRequired = false;
+      return next;
+    case 'mark_non_stream_finalized':
+      requireState(current, 'absent');
+      next.stream.state = 'finalized';
+      next.stream.presentationOutcome = 'terminal_only';
       next.repairRequired = false;
       return next;
     case 'mark_unknown':
@@ -785,6 +882,10 @@ function applyMutation(
       next.title = { ...current.title, outcome: mutation.outcome };
       return next;
   }
+}
+
+function increment(target: Record<string, number>, key: string): void {
+  target[key] = (target[key] ?? 0) + 1;
 }
 
 function buildPlan(runId: string, labels: readonly string[]): NonNullable<SlackRunPresentationV1['plan']> {
@@ -840,6 +941,10 @@ function sameCreateIdentity(
     presentation.workBindingGeneration === input.workBindingGeneration &&
     presentation.runFencingToken === input.runFencingToken &&
     JSON.stringify(presentation.root) === JSON.stringify(input.root) &&
+    JSON.stringify(presentation.features) === JSON.stringify({
+      progressiveStreaming: input.features?.progressiveStreaming ?? false,
+      nativeTasks: input.features?.nativeTasks ?? false,
+    }) &&
     JSON.stringify(presentation.plan) === JSON.stringify(expectedPlan);
 }
 

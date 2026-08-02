@@ -6,6 +6,8 @@ export const SLACK_BEHAVIOR_KEYS = [
   'unassignedHint',
   'welcomeOnJoin',
   'ambientParticipation',
+  'progressiveStreaming',
+  'nativeTasks',
 ] as const;
 
 export type SlackBehaviorKey = (typeof SLACK_BEHAVIOR_KEYS)[number];
@@ -24,6 +26,8 @@ export const SLACK_BEHAVIOR_SETTING_KEYS: Record<SlackBehaviorKey, string> = {
   unassignedHint: 'slack.behavior.unassignedHint',
   welcomeOnJoin: 'slack.behavior.welcomeOnJoin',
   ambientParticipation: 'slack.behavior.ambientParticipation',
+  progressiveStreaming: 'slack.behavior.progressiveStreaming',
+  nativeTasks: 'slack.behavior.nativeTasks',
 };
 
 export const SLACK_BEHAVIOR_ENV_KEYS: Record<SlackBehaviorKey, string> = {
@@ -31,6 +35,8 @@ export const SLACK_BEHAVIOR_ENV_KEYS: Record<SlackBehaviorKey, string> = {
   unassignedHint: 'SLACK_TAG_UNASSIGNED_HINT',
   welcomeOnJoin: 'SLACK_TAG_WELCOME_ON_JOIN',
   ambientParticipation: 'SLACK_TAG_AMBIENT_PARTICIPATION',
+  progressiveStreaming: 'SLACK_TAG_PROGRESSIVE_STREAMING',
+  nativeTasks: 'SLACK_TAG_NATIVE_TASKS',
 };
 
 /**
@@ -63,7 +69,10 @@ function fromSources(
   if (stored !== undefined) {
     return { value: defaultOnBoolean(stored), source: 'stored' };
   }
-  return { value: true, source: 'default' };
+  return {
+    value: key === 'progressiveStreaming' || key === 'nativeTasks' ? false : true,
+    source: 'default',
+  };
 }
 
 /** Resolve env > stored > default for all Slack runtime behavior switches. */
@@ -80,6 +89,8 @@ export async function resolveSlackBehaviorSettings(
     unassignedHint: fromSources('unassignedHint', stored[1]),
     welcomeOnJoin: fromSources('welcomeOnJoin', stored[2]),
     ambientParticipation: fromSources('ambientParticipation', stored[3]),
+    progressiveStreaming: fromSources('progressiveStreaming', stored[4]),
+    nativeTasks: fromSources('nativeTasks', stored[5]),
   };
 }
 

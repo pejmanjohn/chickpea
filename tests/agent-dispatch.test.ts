@@ -24,6 +24,7 @@ import {
   SANDBOX_FAILURE_TEXT,
   SANDBOX_SESSION_CAP_FAILURE_TEXT,
 } from '../src/slack/web-client-presenter.ts';
+import type { SlackProgressiveReadRelay } from '../src/slack/progressive-relay.ts';
 
 function envelope(type: string, message: string): string {
   return JSON.stringify({ error: { type, message, details: 'private detail' } });
@@ -328,4 +329,82 @@ test('saved receipt reattaches with read and saved settlement skips Flue entirel
   })), beforeResult: async () => { beforeResult += 1; } });
   assert.deepEqual(replay, result);
   assert.equal(beforeResult, 1, 'saved settlement still runs the pre-reply notice seam');
+});
+
+test('receipt-scoped relay is prepared after durable receipt and drains after settlement', async () => {
+  const operations: string[] = [];
+  const relay: SlackProgressiveReadRelay = {
+    onEvent(chunk) {
+      operations.push(`event:${chunk.type}`);
+    },
+    async closeAndDrain() {
+      operations.push('relay:closed');
+      return {
+        acceptedChunks: 1,
+        acceptedBytes: 4,
+        targetMessageCompleted: true,
+        invalidated: false,
+      };
+    },
+    async invalidateAndDrain(reason) {
+      operations.push(`relay:invalid:${reason}`);
+      return {
+        acceptedChunks: 0,
+        acceptedBytes: 0,
+        targetMessageCompleted: false,
+        invalidated: true,
+        invalidationReason: reason,
+      };
+    },
+  };
+  const dispatchState = state({
+    async recordReceipt(receipt) {
+      operations.push('receipt:persisted');
+      return receipt;
+    },
+    async recordSettlement(settlement) {
+      operations.push('settlement:persisted');
+      return settlement;
+    },
+  });
+  const result = await promptSlackThreadAgent({
+    ...promptInput(dispatchState, handle({
+      async read(_receipt, options) {
+        assert.equal(typeof options?.onEvent, 'function');
+        options?.onEvent?.({
+          type: 'message-delta',
+          conversationId: 'conversation_dispatch',
+          messageId: 'message_dispatch',
+          kind: 'text',
+          delta: 'done',
+          position: { batch: 1, index: 0 },
+        });
+        return {
+          text: 'done', data: {}, submissionId: RECEIPT.submissionId,
+          metadata: {
+            chickpea: {
+              schemaVersion: 1,
+              requestedModel: 'local-stub/x',
+              usage: { input: 1, output: 1, totalTokens: 2 },
+            },
+          },
+        };
+      },
+    })),
+    prepareProgressiveRelay: async ({ instanceId, receipt }) => {
+      operations.push(`relay:prepared:${instanceId}:${receipt.submissionId}`);
+      return relay;
+    },
+    beforeResult: async () => { operations.push('before:result'); },
+  });
+
+  assert.equal(result.text, 'done');
+  assert.deepEqual(operations, [
+    'receipt:persisted',
+    `relay:prepared:${ENVELOPE.instanceId}:${RECEIPT.submissionId}`,
+    'event:message-delta',
+    'settlement:persisted',
+    'relay:closed',
+    'before:result',
+  ]);
 });

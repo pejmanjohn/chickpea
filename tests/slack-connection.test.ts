@@ -934,12 +934,19 @@ test('Slack behavior settings default on, persist booleans, and report provenanc
         unassignedHint: { value: true, source: 'default' },
         welcomeOnJoin: { value: true, source: 'default' },
         ambientParticipation: { value: true, source: 'default' },
+        progressiveStreaming: { value: false, source: 'default' },
+        nativeTasks: { value: false, source: 'default' },
       });
 
       const saved = await app.request('/admin/api/slack-behavior', {
         method: 'PUT',
         headers: { ...auth(), 'content-type': 'application/json' },
-        body: JSON.stringify({ allowDms: false, welcomeOnJoin: false }),
+        body: JSON.stringify({
+          allowDms: false,
+          welcomeOnJoin: false,
+          nativeTasks: true,
+          progressiveStreaming: true,
+        }),
       });
       assert.equal(saved.status, 200);
       assert.deepEqual(await saved.json(), {
@@ -947,6 +954,8 @@ test('Slack behavior settings default on, persist booleans, and report provenanc
         unassignedHint: { value: true, source: 'default' },
         welcomeOnJoin: { value: false, source: 'stored' },
         ambientParticipation: { value: true, source: 'default' },
+        progressiveStreaming: { value: true, source: 'stored' },
+        nativeTasks: { value: true, source: 'stored' },
       });
     });
   } finally {
@@ -984,6 +993,8 @@ test('Slack behavior multi-key updates use one atomic settings patch', async () 
         unassignedHint: { value: true, source: 'default' },
         welcomeOnJoin: { value: false, source: 'stored' },
         ambientParticipation: { value: true, source: 'default' },
+        progressiveStreaming: { value: false, source: 'default' },
+        nativeTasks: { value: false, source: 'default' },
       });
       assert.equal(patchCalls, 1);
     });
@@ -1005,6 +1016,8 @@ test('Slack behavior env overrides are read-only and PUT is atomic', async () =>
           unassignedHint: { value: true, source: 'default' },
           welcomeOnJoin: { value: false, source: 'env' },
           ambientParticipation: { value: true, source: 'default' },
+          progressiveStreaming: { value: false, source: 'default' },
+          nativeTasks: { value: false, source: 'default' },
         });
 
         const conflict = await app.request('/admin/api/slack-behavior', {
@@ -1049,6 +1062,8 @@ test('blank Slack behavior env placeholders do not lock browser-managed settings
           unassignedHint: { value: true, source: 'default' },
           welcomeOnJoin: { value: true, source: 'default' },
           ambientParticipation: { value: true, source: 'default' },
+          progressiveStreaming: { value: false, source: 'default' },
+          nativeTasks: { value: false, source: 'default' },
         });
 
         const saved = await app.request('/admin/api/slack-behavior', {
@@ -1062,6 +1077,8 @@ test('blank Slack behavior env placeholders do not lock browser-managed settings
           unassignedHint: { value: false, source: 'stored' },
           welcomeOnJoin: { value: true, source: 'default' },
           ambientParticipation: { value: true, source: 'default' },
+          progressiveStreaming: { value: false, source: 'default' },
+          nativeTasks: { value: false, source: 'default' },
         });
       },
     );

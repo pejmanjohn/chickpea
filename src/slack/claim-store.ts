@@ -30,6 +30,7 @@ import {
   type SlackAppendReservation,
   type SlackPresentationTransitionInput,
   type SlackPresentationTransitionResult,
+  type SlackPresentationSummary,
   type SlackRunPresentationV1,
 } from './run-presentations.ts';
 import { ACTIVE_WORK_TTL_MS, CLAIM_TTL_MS, THREAD_TTL_MS } from './state-limits.ts';
@@ -45,6 +46,7 @@ export interface SlackCanonicalAdmissionInput {
   presentation?: {
     root: SlackRunPresentationV1['root'];
     taskLabels?: readonly string[];
+    features?: Partial<SlackRunPresentationV1['features']>;
   };
 }
 
@@ -154,6 +156,7 @@ export interface SlackStateStore extends SlackClaimStore, SlackThreadRegistry {
   maintainRunPresentations?(
     limit?: number,
   ): Promise<{ finalizedPurged: number; expiredTombstoned: number }>;
+  summarizeRunPresentations?(workspaceId: string): Promise<SlackPresentationSummary>;
   discardTurn?(id: string): Promise<boolean>;
   /** Node backend only (closes the SQLite handle); absent on RPC proxies. */
   close?(): void;
@@ -303,6 +306,9 @@ export class SlackStateLogic {
           workBindingGeneration: admission.binding.generation,
           runFencingToken: admission.run.fencingToken,
           root: input.presentation.root,
+          ...(input.presentation.features
+            ? { features: input.presentation.features }
+            : {}),
           ...(input.presentation.taskLabels
             ? { taskLabels: input.presentation.taskLabels }
             : {}),
@@ -529,6 +535,10 @@ export class SqliteSlackStateStore implements SlackStateStore {
 
   async maintainRunPresentations(limit = 100) {
     return this.presentations.maintain(limit);
+  }
+
+  async summarizeRunPresentations(workspaceId: string) {
+    return this.presentations.summarize(workspaceId);
   }
 
   async discardTurn(id: string) {

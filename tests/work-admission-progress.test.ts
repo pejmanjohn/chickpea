@@ -155,6 +155,7 @@ test('Cloudflare Slack presentation proxy preserves fenced state and budget shap
     runFencingToken: 0,
     projectionVersion: 1,
     progressiveEligibility: { status: 'pending' },
+    features: { progressiveStreaming: false, nativeTasks: false },
     root: {
       workspaceId: 'T_RPC',
       channelId: 'D_RPC',

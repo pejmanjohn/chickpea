@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import {
   appendSlackReplyFooter,
   buildSlackAdminUrl,
+  canonicalSlackMarkdownText,
   renderChannelOnboarding,
   renderSlackReplyFooterBlock,
   renderUnassignedChannelHint,
@@ -11,6 +12,7 @@ import {
   renderSlackMessage,
   sanitizeSlackMarkdownLinks,
   slackMarkdownBlockTextLimit,
+  streamableSlackMarkdownPrefix,
 } from '../src/slack/message-format.ts';
 import {
   slackLoadingMessages,
@@ -67,6 +69,30 @@ test('strong emphasis cannot leak a trailing asterisk into an auto-linked URL', 
   assert.doesNotMatch(block?.type === 'markdown' ? block.text : '', /\/4\*/);
 
   assert.equal(sanitizeSlackMarkdownLinks(`**bold** and \`${markdown}\``), `**bold** and \`${markdown}\``);
+});
+
+test('every progressive cut point is a monotone prefix of the canonical terminal answer', () => {
+  const corpus = [
+    'A plain answer that arrives one character at a time.',
+    'Done: **https://github.com/octo-org/example-site/pull/4** after review.',
+    'Read [the runbook](https://example.com/runbook?q=1) before continuing.',
+    '```ts\nconst answer = 42;\nconsole.log(answer);\n```\nComplete.',
+    '**Bold text** followed by _ordinary emphasis_ and `inline code`.',
+    'Credential: xoxb-123456789012345678901234\nDo not expose it.',
+    'OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz123456\nRotated.',
+    '<https://example.com/path|Slack link> then a safe suffix.',
+  ];
+
+  for (const terminalInput of corpus) {
+    const terminal = canonicalSlackMarkdownText(terminalInput);
+    let prior = '';
+    for (let cut = 0; cut <= terminalInput.length; cut += 1) {
+      const prefix = streamableSlackMarkdownPrefix(terminalInput.slice(0, cut));
+      assert.ok(terminal.startsWith(prefix), `${JSON.stringify(prefix)} is not terminal prefix`);
+      assert.ok(prefix.startsWith(prior), `${JSON.stringify(prefix)} rewrote ${JSON.stringify(prior)}`);
+      prior = prefix;
+    }
+  }
 });
 
 test('plain progress replies disable Slack markup parsing and escape control characters', () => {

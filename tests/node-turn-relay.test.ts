@@ -249,6 +249,15 @@ test('the Node relay drains a ledger Run once and tombstones its adapter job', a
         threadKey: 'thread_node_ledger_relay',
         admission,
         turnJob: job,
+        presentation: {
+          root: {
+            workspaceId: slackTurn.workspaceId,
+            channelId: slackTurn.channelId,
+            threadTs: slackTurn.threadTs,
+            requesterUserId: slackTurn.userId,
+          },
+          features: { progressiveStreaming: true, nativeTasks: true },
+        },
       }).then((result) => result.claimed),
       true,
     );
@@ -261,7 +270,8 @@ test('the Node relay drains a ledger Run once and tombstones its adapter job', a
       options,
     ) => {
       executions += 1;
-      if (!options?.workStore || !options.runId || options.runFencingToken === undefined) {
+      if (!options?.workStore || !options.runId || options.runFencingToken === undefined ||
+          !options.presentationState || options.progressiveAttributionProven !== true) {
         throw new Error('Ledger relay did not supply canonical execution context.');
       }
       const lifecycle = new ShadowWorkLifecycle({

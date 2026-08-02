@@ -656,6 +656,10 @@ async function processSlackEvent(
           ...(turn.interactionIntent?.disposition === 'work'
             ? { taskLabels: turn.interactionIntent.checklist }
             : {}),
+          features: {
+            progressiveStreaming: behavior.progressiveStreaming.value,
+            nativeTasks: behavior.nativeTasks.value,
+          },
         },
       });
       if (!result.claimed) return;

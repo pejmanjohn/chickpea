@@ -2,6 +2,7 @@ import { ErrorCode, type WebClient } from '@slack/web-api';
 
 import {
   appendSlackReplyFooter,
+  canonicalSlackMarkdownText,
   renderSlackMessage,
   renderSlackReplyFooterBlock,
   sanitizeSlackMarkdownLinks,
@@ -18,6 +19,7 @@ import {
   SEMANTIC_REACTIONS,
   type SemanticReaction,
 } from './interaction-intent.ts';
+import type { SlackAgentViewPresentation } from './agent-view-presentation.ts';
 
 /** Static failure copy keeps raw provider errors out of Slack (scenario S15). */
 export const PROVIDER_FAILURE_TEXT =
@@ -93,6 +95,7 @@ export interface SlackDeliveryObserver {
 
 export interface SlackPresenterOptions {
   deliverySafety?: 'legacy' | 'ledger';
+  agentViewPresentation?: SlackAgentViewPresentation;
 }
 
 export class PersistedSlackDeliveryError extends Error {
@@ -298,6 +301,13 @@ export class WebClientPresenter {
     });
   }
 
+  async deleteWorkChecklist(messageTs: string): Promise<void> {
+    await this.client.chat.delete({
+      channel: this.target.channelId,
+      ts: messageTs,
+    });
+  }
+
   /**
    * Attach a workspace artifact to its bound Slack thread. Slack's v2 upload
    * helper performs the external-upload sequence over the same patched fetch
@@ -327,11 +337,34 @@ export class WebClientPresenter {
    * the final is never duplicated (S18). Throws only when BOTH the stream and
    * the fallback post fail, so the caller can release its claim for a retry.
    */
-  async deliverFinal(text: string, format: SlackReplyFormat): Promise<void> {
+  async deliverFinal(
+    text: string,
+    format: SlackReplyFormat,
+    terminalTaskStatus: 'complete' | 'error' = 'complete',
+  ): Promise<void> {
     const footer = this.replyFooter();
-    const displayText = format === 'markdown' ? sanitizeSlackMarkdownLinks(text) : text;
+    const displayText = format === 'markdown'
+      ? this.options.agentViewPresentation
+        ? canonicalSlackMarkdownText(text)
+        : sanitizeSlackMarkdownLinks(text)
+      : text;
 
-    if (this.target.userId && this.target.workspaceId) {
+    let forcePostFallback = false;
+    if (this.options.agentViewPresentation) {
+      const result = await this.options.agentViewPresentation.finalize(
+        text,
+        format,
+        terminalTaskStatus,
+        {
+          before: (input) => this.observeBeforeDelivery(input),
+          after: (input) => this.observeAfterDelivery(input),
+        },
+      );
+      if (result.handled) return;
+      forcePostFallback = result.fallbackPresentation;
+    }
+
+    if (!forcePostFallback && this.target.userId && this.target.workspaceId) {
       const startPayload = {
         channel: this.target.channelId,
         thread_ts: this.target.threadTs,
@@ -404,6 +437,11 @@ export class WebClientPresenter {
     });
     try {
       const posted = await this.client.chat.postMessage(postPayload);
+      if (forcePostFallback) {
+        // Persist the exact replacement coordinate before the Work delivery
+        // receipt. A restart can then settle Work without posting again.
+        await this.options.agentViewPresentation?.markFallbackDelivered(posted.ts);
+      }
       await this.observeAfterDelivery({
         attemptId,
         outcome: 'delivered',
@@ -418,6 +456,10 @@ export class WebClientPresenter {
       });
       throw error;
     }
+  }
+
+  async markCanonicalPresentationFinalized(): Promise<void> {
+    await this.options.agentViewPresentation?.markCanonicalFinalized();
   }
 
   /** Deliver channel-contextual information only to the requesting member. */
@@ -502,10 +544,16 @@ export class WebClientPresenter {
 
 /** Replay a previously persisted adapter render without invoking the agent or
  * re-rendering from mutable profile/config state. */
+export interface PersistedSlackDeliveryReceipt {
+  method: string;
+  deliveryRef: string;
+  terminalTaskStatus?: 'complete' | 'error';
+}
+
 export async function deliverPersistedSlackPayload(
   client: WebClient,
   renderedPayload: string,
-): Promise<{ method: string; deliveryRef: string }> {
+): Promise<PersistedSlackDeliveryReceipt> {
   const envelope = parsePersistedEnvelope(renderedPayload);
   if (envelope.method === 'slack_reaction_add') {
     try {
@@ -566,6 +614,49 @@ export async function deliverPersistedSlackPayload(
       throw persistedDeliveryError(error, 'slack_ephemeral_failed', 'slack_ephemeral_unknown');
     }
   }
+  if (envelope.method === 'slack_chat_stream_resume') {
+    try {
+      await client.chat.stopStream({
+        channel: envelope.channel,
+        ts: envelope.ts,
+        ...envelope.stop,
+      });
+      return {
+        method: envelope.method,
+        deliveryRef: slackDeliveryRef(envelope.channel, envelope.ts),
+        ...terminalTaskStatusField(envelope),
+      };
+    } catch (error) {
+      throw persistedDeliveryError(
+        error,
+        'slack_stream_finalize_failed',
+        'slack_stream_finalize_unknown',
+      );
+    }
+  }
+  if (envelope.method === 'slack_chat_stream_correct') {
+    try {
+      await client.chat.stopStream({
+        channel: envelope.channel,
+        ts: envelope.ts,
+        ...envelope.stop,
+      });
+      await client.chat.update(
+        envelope.update as unknown as Parameters<WebClient['chat']['update']>[0],
+      );
+      return {
+        method: envelope.method,
+        deliveryRef: slackDeliveryRef(envelope.channel, envelope.ts),
+        ...terminalTaskStatusField(envelope),
+      };
+    } catch (error) {
+      throw persistedDeliveryError(
+        error,
+        'slack_stream_correction_failed',
+        'slack_stream_correction_unknown',
+      );
+    }
+  }
   try {
     const started = await client.chat.startStream(
       envelope.start as unknown as Parameters<WebClient['chat']['startStream']>[0],
@@ -581,7 +672,11 @@ export async function deliverPersistedSlackPayload(
     } catch {
       throw new PersistedSlackDeliveryError('unknown', 'slack_stream_finalize_unknown');
     }
-    return { method: envelope.method, deliveryRef: slackDeliveryRef(channel, ts) };
+    return {
+      method: envelope.method,
+      deliveryRef: slackDeliveryRef(channel, ts),
+      ...terminalTaskStatusField(envelope),
+    };
   } catch (error) {
     throw persistedDeliveryError(error, 'slack_stream_not_started', 'slack_stream_start_unknown');
   }
@@ -625,6 +720,22 @@ type PersistedEnvelope =
       method: 'slack_chat_stream';
       start: Record<string, unknown>;
       stop: Record<string, unknown>;
+      terminalTaskStatus?: 'complete' | 'error';
+    }
+  | {
+      method: 'slack_chat_stream_resume';
+      channel: string;
+      ts: string;
+      stop: Record<string, unknown>;
+      terminalTaskStatus?: 'complete' | 'error';
+    }
+  | {
+      method: 'slack_chat_stream_correct';
+      channel: string;
+      ts: string;
+      stop: Record<string, unknown>;
+      update: Record<string, unknown>;
+      terminalTaskStatus?: 'complete' | 'error';
     };
 
 function parsePersistedEnvelope(raw: string): PersistedEnvelope {
@@ -671,9 +782,51 @@ function parsePersistedEnvelope(raw: string): PersistedEnvelope {
     isRecord(record.start) &&
     isRecord(record.stop)
   ) {
-    return { method: record.method, start: record.start, stop: record.stop };
+    return {
+      method: record.method,
+      start: record.start,
+      stop: record.stop,
+      ...terminalTaskStatusField(record),
+    };
+  }
+  if (
+    record.method === 'slack_chat_stream_resume' &&
+    typeof record.channel === 'string' && record.channel.length > 0 &&
+    typeof record.ts === 'string' && record.ts.length > 0 &&
+    isRecord(record.stop)
+  ) {
+    return {
+      method: record.method,
+      channel: record.channel,
+      ts: record.ts,
+      stop: record.stop,
+      ...terminalTaskStatusField(record),
+    };
+  }
+  if (
+    record.method === 'slack_chat_stream_correct' &&
+    typeof record.channel === 'string' && record.channel.length > 0 &&
+    typeof record.ts === 'string' && record.ts.length > 0 &&
+    isRecord(record.stop) && isRecord(record.update)
+  ) {
+    return {
+      method: record.method,
+      channel: record.channel,
+      ts: record.ts,
+      stop: record.stop,
+      update: record.update,
+      ...terminalTaskStatusField(record),
+    };
   }
   throw new PersistedSlackDeliveryError('unknown', 'slack_render_invalid');
+}
+
+function terminalTaskStatusField(
+  record: { terminalTaskStatus?: unknown },
+): { terminalTaskStatus?: 'complete' | 'error' } {
+  return record.terminalTaskStatus === 'complete' || record.terminalTaskStatus === 'error'
+    ? { terminalTaskStatus: record.terminalTaskStatus }
+    : {};
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

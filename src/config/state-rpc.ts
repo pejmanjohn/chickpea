@@ -26,6 +26,7 @@ import type {
   SlackPresentationTransitionInput,
   SlackPresentationTransitionResult,
   SlackRunPresentationV1,
+  SlackPresentationSummary,
 } from '../slack/run-presentations.ts';
 
 export type { TurnJob } from '../slack/turn-job-types.ts';
@@ -138,6 +139,7 @@ export interface SlackInteractionProgress {
     messageTs: string;
     cleanup: 'pending' | 'done';
     terminal?: 'success' | 'error';
+    supersededByNative?: boolean;
   };
 }
 
@@ -279,6 +281,9 @@ export interface TagStateRpc {
   slackPresentationMaintain(
     limit: number,
   ): Promise<StateRpcResult<{ finalizedPurged: number; expiredTombstoned: number }>>;
+  slackPresentationSummary(
+    workspaceId: string,
+  ): Promise<StateRpcResult<SlackPresentationSummary>>;
   // -- operator settings ---------------------------------------------------
   settingGet(key: string): Promise<StateRpcResult<string | null>>;
   settingGetMany(keys: readonly string[]): Promise<StateRpcResult<(string | null)[]>>;

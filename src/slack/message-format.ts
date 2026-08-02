@@ -54,7 +54,7 @@ export interface SlackReplyFooter {
 
 export function renderSlackMessage(text: string, format: SlackReplyFormat): RenderedSlackMessage {
   const normalized = normalizeMessageText(text);
-  const displayText = format === 'markdown' ? sanitizeSlackMarkdownLinks(normalized) : normalized;
+  const displayText = format === 'markdown' ? canonicalSlackMarkdownText(normalized) : normalized;
 
   if (format === 'markdown') {
     return {
@@ -80,6 +80,30 @@ export function renderSlackMessage(text: string, format: SlackReplyFormat): Rend
   };
 }
 
+/** Canonical answer formatter shared by progressive and terminal delivery. */
+export function canonicalSlackMarkdownText(text: string): string {
+  const normalized = normalizeMessageText(text);
+  return truncateText(
+    redactSlackCredentialLikeContent(sanitizeSlackMarkdownLinks(normalized)),
+    slackMarkdownBlockTextLimit,
+  );
+}
+
+/**
+ * Return the cumulative prefix that is safe to expose before generation ends.
+ * Potential links, emphasized URLs, and credential-shaped tokens remain in the
+ * in-memory tail until their closing delimiter arrives. The returned value is
+ * therefore monotone and a prefix of `canonicalSlackMarkdownText(final)`.
+ */
+export function streamableSlackMarkdownPrefix(text: string): string {
+  const normalized = text.replace(/\r\n?/g, '\n').replace(/^\s+/, '');
+  if (!normalized) return '';
+  const unsafeFrom = earliestUnsafeTail(normalized);
+  const stable = normalized.slice(0, unsafeFrom).trimEnd();
+  if (!stable) return '';
+  return canonicalSlackMarkdownText(stable);
+}
+
 // Slack's markdown renderer can treat the closing `*` in a strong span as part
 // of an auto-linked URL (`**https://example.test/4**` -> URL ending in `*`).
 // Drop only the unsafe outer emphasis while preserving ordinary bold text and
@@ -92,6 +116,92 @@ export function sanitizeSlackMarkdownLinks(markdown: string): string {
       return segment.replace(/\*\*([^*\n]*https?:\/\/[^*\n]+)\*\*/g, '$1');
     })
     .join('');
+}
+
+const CREDENTIAL_REDACTIONS = [
+  /\bxox[a-z]-[a-z0-9-]{20,}\b/gi,
+  /\bsk-ant-[a-z0-9_-]{20,}\b/gi,
+  /\bsk-proj-[a-z0-9_-]{20,}(?![a-z0-9_-])/gi,
+  /\b(?:ghp|github_pat)_[a-z0-9_]{20,}\b/gi,
+  /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g,
+  /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/gi,
+  /\b(?:TAG_ADMIN_TOKEN|ADMIN_TOKEN|SLACK_(?:BOT|APP)_TOKEN|ANTHROPIC_API_KEY|OPENAI_API_KEY|GITHUB_TOKEN)\s*=\s*[^\s]{8,}/gi,
+  /\bAWS_(?:ACCESS_KEY_ID|SECRET_ACCESS_KEY)\b["']?\s*(?:=|:)\s*["']?[a-z0-9/+=]{8,}/gi,
+] as const;
+
+function redactSlackCredentialLikeContent(text: string): string {
+  return CREDENTIAL_REDACTIONS.reduce(
+    (value, pattern) => value.replace(pattern, '[credential redacted]'),
+    text,
+  );
+}
+
+const CREDENTIAL_MARKERS = [
+  'xox',
+  'sk-ant-',
+  'sk-proj-',
+  'ghp_',
+  'github_pat_',
+  'AKIA',
+  'ASIA',
+  '-----BEGIN ',
+  'TAG_ADMIN_TOKEN',
+  'ADMIN_TOKEN',
+  'SLACK_BOT_TOKEN',
+  'SLACK_APP_TOKEN',
+  'ANTHROPIC_API_KEY',
+  'OPENAI_API_KEY',
+  'GITHUB_TOKEN',
+  'AWS_ACCESS_KEY_ID',
+  'AWS_SECRET_ACCESS_KEY',
+] as const;
+
+function earliestUnsafeTail(value: string): number {
+  let unsafeFrom = value.length;
+  const lower = value.toLowerCase();
+
+  // Hold a full credential marker and its non-whitespace tail until a token
+  // boundary proves that terminal redaction can no longer rewrite it.
+  for (const marker of CREDENTIAL_MARKERS) {
+    const markerLower = marker.toLowerCase();
+    const full = lower.lastIndexOf(markerLower);
+    if (full >= 0 && !value.slice(full).includes('\n')) {
+      unsafeFrom = Math.min(unsafeFrom, full);
+    }
+    const maximumPrefix = Math.min(markerLower.length - 1, value.length);
+    for (let length = maximumPrefix; length > 0; length -= 1) {
+      if (lower.endsWith(markerLower.slice(0, length))) {
+        unsafeFrom = Math.min(unsafeFrom, value.length - length);
+        break;
+      }
+    }
+  }
+
+  const openLink = value.lastIndexOf('[');
+  const lastClosedLink = value.lastIndexOf(')');
+  if (openLink > lastClosedLink) {
+    unsafeFrom = Math.min(unsafeFrom, openLink);
+  }
+  const openAngle = value.lastIndexOf('<');
+  if (openAngle > value.lastIndexOf('>')) {
+    unsafeFrom = Math.min(unsafeFrom, openAngle);
+  }
+  const emphasis = value.lastIndexOf('**');
+  if (emphasis >= 0 && countToken(value, '**') % 2 === 1) {
+    unsafeFrom = Math.min(unsafeFrom, emphasis);
+  }
+  const trailingTicks = value.match(/`{1,2}$/)?.[0];
+  if (trailingTicks) unsafeFrom = Math.min(unsafeFrom, value.length - trailingTicks.length);
+  if (value.endsWith('*') && !value.endsWith('**')) {
+    unsafeFrom = Math.min(unsafeFrom, value.length - 1);
+  }
+  return unsafeFrom;
+}
+
+function countToken(value: string, token: string): number {
+  let count = 0;
+  for (let at = 0; (at = value.indexOf(token, at)) >= 0; at += token.length) count += 1;
+  return count;
 }
 
 export function appendSlackReplyFooter(

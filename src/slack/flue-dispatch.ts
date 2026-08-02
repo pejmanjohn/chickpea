@@ -25,6 +25,7 @@ import type {
   FlueSettlementCheckpointV1,
   FlueTurnObservationV1,
 } from './turn-job-types.ts';
+import type { SlackProgressiveReadRelay } from './progressive-relay.ts';
 import {
   AGENT_FAILURE_TEXT,
   OPENAI_SUBSCRIPTION_POLICY_TEXT,
@@ -121,6 +122,11 @@ export interface PromptSlackAgentInput {
   now?: () => number;
   /** Slack seam run after settlement persistence and before any visible reply. */
   beforeResult?: () => Promise<void>;
+  /** Prepared only after the durable receipt exists and eligibility is frozen. */
+  prepareProgressiveRelay?: (input: {
+    instanceId: string;
+    receipt: FlueDispatchReceiptV1;
+  }) => Promise<SlackProgressiveReadRelay | undefined>;
   /** Focused contract seam; production uses the real Flue handle. */
   handle?: ReturnType<typeof init>;
 }
@@ -209,11 +215,29 @@ export async function promptSlackThreadAgent(
     input.state.dispatchReceipt = receipt;
   }
 
+  let progressiveRelay: SlackProgressiveReadRelay | undefined;
+  if (input.prepareProgressiveRelay) {
+    try {
+      progressiveRelay = await input.prepareProgressiveRelay({
+        instanceId: envelope.instanceId,
+        receipt,
+      });
+    } catch {
+      // The receipt is already durable, so retry reattaches to the same paid
+      // submission. No read callback was registered and no text escaped.
+      throw new AgentPromptFailure('agent', 503, false, true);
+    }
+  }
+
   let reply: AgentReply;
   try {
-    reply = await handle.read(receipt as DispatchReceipt);
+    reply = await handle.read(
+      receipt as DispatchReceipt,
+      progressiveRelay ? { onEvent: progressiveRelay.onEvent } : undefined,
+    );
   } catch (error) {
     if (!(error instanceof AgentRunError)) {
+      await progressiveRelay?.invalidateAndDrain('read_interrupted');
       if (error instanceof AgentInstanceNotFoundError) {
         await input.state.markRecoveryRequired('flue_expected_instance_missing');
         throw new AgentPromptFailure('agent', 409, true);
@@ -224,12 +248,19 @@ export async function promptSlackThreadAgent(
       throw new AgentPromptFailure('agent', 503, false, true);
     }
     const kind = classifyFlueRunFailure(error);
-    const checkpoint = await input.state.recordSettlement({
-      outcome: error.outcome,
-      settledAt: now(),
-      failureKind: kind,
-    });
+    let checkpoint: FlueSettlementCheckpointV1;
+    try {
+      checkpoint = await input.state.recordSettlement({
+        outcome: error.outcome,
+        settledAt: now(),
+        failureKind: kind,
+      });
+    } catch (settlementError) {
+      await progressiveRelay?.invalidateAndDrain('settlement_persist_failed');
+      throw settlementError;
+    }
     input.state.flueSettlement = checkpoint;
+    await progressiveRelay?.invalidateAndDrain('run_failed');
     await input.beforeResult?.();
     throw new AgentPromptFailure(kind);
   }
@@ -238,22 +269,36 @@ export async function promptSlackThreadAgent(
   try {
     completed = resultFromAgentReply(reply, input.requestedModel);
   } catch {
-    const checkpoint = await input.state.recordSettlement({
-      outcome: 'failed',
-      settledAt: now(),
-      failureKind: 'agent',
-    });
+    let checkpoint: FlueSettlementCheckpointV1;
+    try {
+      checkpoint = await input.state.recordSettlement({
+        outcome: 'failed',
+        settledAt: now(),
+        failureKind: 'agent',
+      });
+    } catch (settlementError) {
+      await progressiveRelay?.invalidateAndDrain('settlement_persist_failed');
+      throw settlementError;
+    }
     input.state.flueSettlement = checkpoint;
+    await progressiveRelay?.invalidateAndDrain('invalid_result');
     await input.beforeResult?.();
     throw new AgentPromptFailure('agent');
   }
 
-  const checkpoint = await input.state.recordSettlement({
-    outcome: 'completed',
-    settledAt: now(),
-    result: completed,
-  });
+  let checkpoint: FlueSettlementCheckpointV1;
+  try {
+    checkpoint = await input.state.recordSettlement({
+      outcome: 'completed',
+      settledAt: now(),
+      result: completed,
+    });
+  } catch (settlementError) {
+    await progressiveRelay?.invalidateAndDrain('settlement_persist_failed');
+    throw settlementError;
+  }
   input.state.flueSettlement = checkpoint;
+  await progressiveRelay?.closeAndDrain();
   await input.beforeResult?.();
   return resultFromSettlement(checkpoint);
 }

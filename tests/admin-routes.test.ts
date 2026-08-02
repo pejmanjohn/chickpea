@@ -748,6 +748,51 @@ test('runtime drain fails closed when the state store is unavailable', async () 
   }
 });
 
+test('Slack presentation diagnostics are admin-only and workspace-scoped', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  await settings.setSetting('slack.teamId', 'T_AUTHORIZED');
+  const summary = {
+    workspaceId: 'T_AUTHORIZED',
+    total: 2,
+    truncated: false,
+    streamStates: { finalized: 2 },
+    eligibility: { allowed: 1, 'denied:effect_capable': 1 },
+    outcomes: { progressive: 1, terminal_only: 1 },
+    degradations: { none: 2 },
+  };
+  const slackState = {
+    summarizeRunPresentations: async (workspaceId: string) => {
+      assert.equal(workspaceId, 'T_AUTHORIZED');
+      return summary;
+    },
+  } as unknown as SlackStateStore;
+  try {
+    const app = appWithAdminOptions(store, { settings, slackState });
+    assert.equal(
+      (await app.request('/admin/api/runtime/slack-presentations?workspaceId=T_AUTHORIZED')).status,
+      401,
+    );
+    const wrongWorkspace = await app.request(
+      '/admin/api/runtime/slack-presentations?workspaceId=T_OTHER',
+      { headers: auth(ADMIN_TOKEN) },
+    );
+    assert.equal(wrongWorkspace.status, 403);
+    assert.equal(wrongWorkspace.headers.get('cache-control'), 'no-store');
+
+    const response = await app.request(
+      '/admin/api/runtime/slack-presentations?workspaceId=T_AUTHORIZED',
+      { headers: auth(ADMIN_TOKEN) },
+    );
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('cache-control'), 'no-store');
+    assert.deepEqual(await response.json(), summary);
+  } finally {
+    settings.close();
+    store.close();
+  }
+});
+
 test('turn recovery inventory and explicit terminalization are admin-gated', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   const turns = [{

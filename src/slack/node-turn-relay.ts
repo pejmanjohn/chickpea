@@ -23,6 +23,7 @@ import { ContinuityNoticeDeliveryError } from './continuity-notice.ts';
 import { AgentPromptFailure } from './flue-dispatch.ts';
 import { slackThreadKey } from './thread-key.ts';
 import { MAX_POST_DISPATCH_ATTEMPTS } from './turn-jobs.ts';
+import type { SlackPresentationStatePort } from './agent-view-presentation.ts';
 
 const NODE_RECONCILE_INTERVAL_MS = 30_000;
 const NODE_RETRY_BACKOFF_MS = 2_000;
@@ -124,6 +125,7 @@ export async function drainNodeTurnRelayOnce(
     const recordSlackInteractionProgress = state.recordSlackInteractionProgress.bind(state);
     const markTurnDelivered = state.markTurnDelivered.bind(state);
     const discardTurn = state.discardTurn.bind(state);
+    const presentationState = slackPresentationStatePort(state);
     const pending = await listPendingTurns();
     const runJob = async (job: (typeof pending)[number]): Promise<boolean> => {
       if (!job.turn.interactionIntent && job.progress.interactionIntent) {
@@ -165,6 +167,9 @@ export async function drainNodeTurnRelayOnce(
           ...(runtimePlanDecision ? { runtimePlanDecision } : {}),
           onRuntimePlan: (candidate) => freezeRuntimePlan(job.id, candidate),
           flueDispatch,
+          ...(presentationState
+            ? { presentationState, progressiveAttributionProven: true }
+            : {}),
           ...(job.progress.continuityNotice
             ? { continuityNoticeProgress: job.progress.continuityNotice }
             : {}),
@@ -323,6 +328,9 @@ async function drainLedgerRuns(input: {
         markError: state.markTurnError.bind(state),
       },
       executeTurn: input.executeTurn,
+      ...(slackPresentationStatePort(state)
+        ? { presentationState: slackPresentationStatePort(state)! }
+        : {}),
       setActiveWork: (key, generation, active) =>
         state.setActiveWork(key, generation, active),
       ...(input.client ? { client: input.client } : {}),
@@ -330,4 +338,23 @@ async function drainLedgerRuns(input: {
     }),
   });
   await driver.drain();
+}
+
+function slackPresentationStatePort(
+  state: SlackStateStore,
+): SlackPresentationStatePort | undefined {
+  if (
+    !state.getRunPresentation ||
+    !state.transitionRunPresentation ||
+    !state.reserveSlackAppend ||
+    !state.applySlackAppendCooldown ||
+    !state.matchFlueObservation
+  ) return undefined;
+  return {
+    getRunPresentation: state.getRunPresentation.bind(state),
+    transitionRunPresentation: state.transitionRunPresentation.bind(state),
+    reserveSlackAppend: state.reserveSlackAppend.bind(state),
+    applySlackAppendCooldown: state.applySlackAppendCooldown.bind(state),
+    matchFlueObservation: state.matchFlueObservation.bind(state),
+  };
 }

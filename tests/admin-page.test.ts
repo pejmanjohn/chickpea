@@ -72,6 +72,8 @@ type SlackBehaviorFixture = {
   unassignedHint: SlackBehaviorEntry;
   welcomeOnJoin: SlackBehaviorEntry;
   ambientParticipation: SlackBehaviorEntry;
+  progressiveStreaming: SlackBehaviorEntry;
+  nativeTasks: SlackBehaviorEntry;
 };
 type GithubStatusFixture = {
   mode: 'none' | 'app';
@@ -531,6 +533,8 @@ function runAdminPageHarness(
     unassignedHint: { value: true, source: 'default' },
     welcomeOnJoin: { value: true, source: 'default' },
     ambientParticipation: { value: true, source: 'default' },
+    progressiveStreaming: { value: false, source: 'default' },
+    nativeTasks: { value: false, source: 'default' },
   };
   let slackBehaviorGetFailures = options.slackBehaviorGetFailures ?? 0;
   const slackBehaviorPutError = options.slackBehaviorPutError;
@@ -2235,6 +2239,8 @@ test('Slack behavior writes serialize and environment-managed settings stay read
       unassignedHint: { value: true, source: 'default' },
       welcomeOnJoin: { value: true, source: 'default' },
       ambientParticipation: { value: true, source: 'default' },
+      progressiveStreaming: { value: false, source: 'default' },
+      nativeTasks: { value: false, source: 'default' },
     },
   });
   await flushAsync();

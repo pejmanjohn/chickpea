@@ -255,6 +255,7 @@ test('Slack claims, Run, content, thread registration, and relay row commit atom
           requesterUserId: normalized.userId,
         },
         taskLabels: ['Prepare the brief', 'Check the evidence'],
+        features: { progressiveStreaming: true, nativeTasks: true },
       },
     };
     const admitted = slack.admitCanonical(input, work, turnJobs, presentations);
@@ -265,6 +266,10 @@ test('Slack claims, Run, content, thread registration, and relay row commit atom
       presentations.get(admission.run.id)?.plan?.tasks.map((task) => task.title),
       ['Prepare the brief', 'Check the evidence'],
     );
+    assert.deepEqual(presentations.get(admission.run.id)?.features, {
+      progressiveStreaming: true,
+      nativeTasks: true,
+    });
 
     const mirrored = slack.admitCanonical(
       { ...input, evtKey: 'evt:Ev_mirrored' },

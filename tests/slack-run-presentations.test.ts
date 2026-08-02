@@ -61,6 +61,33 @@ test('presentation creation freezes identity and stable native tasks', () => {
   }
 });
 
+test('presentation diagnostics aggregate only content-free workspace outcomes', () => {
+  const db = openStateDb(':memory:');
+  try {
+    const store = new SlackRunPresentationStoreLogic(db, () => 1_800_000_000_000);
+    store.create({
+      ...createInput('run_summary'),
+      features: { progressiveStreaming: true, nativeTasks: true },
+    });
+    const other = store.create({
+      ...createInput('run_other_workspace'),
+      root: { ...ROOT, workspaceId: 'T_OTHER', threadTs: '1785700001.000100' },
+    });
+    assert.ok(other);
+    assert.deepEqual(store.summarize(ROOT.workspaceId), {
+      workspaceId: ROOT.workspaceId,
+      total: 1,
+      truncated: false,
+      streamStates: { absent: 1 },
+      eligibility: { pending: 1 },
+      outcomes: { pending: 1 },
+      degradations: { none: 1 },
+    });
+  } finally {
+    db.close();
+  }
+});
+
 test('one fenced transition writer rejects stale versions, cursor gaps, and coordinate reuse', () => {
   const db = openStateDb(':memory:');
   try {
@@ -100,6 +127,7 @@ test('one fenced transition writer rejects stale versions, cursor gaps, and coor
     });
     assert.equal(starting.outcome, 'applied');
     if (starting.outcome !== 'applied') return;
+    assert.equal(starting.presentation.repairRequired, true);
 
     const streaming = store.transition({
       runId: first.runId,
@@ -119,6 +147,7 @@ test('one fenced transition writer rejects stale versions, cursor gaps, and coor
     });
     assert.equal(streaming.outcome, 'applied');
     if (streaming.outcome !== 'applied') return;
+    assert.equal(streaming.presentation.repairRequired, false);
 
     const intent = store.transition({
       runId: first.runId,
@@ -142,6 +171,7 @@ test('one fenced transition writer rejects stale versions, cursor gaps, and coor
       to: 12,
       hash: 'a'.repeat(64),
     });
+    assert.equal(intent.presentation.repairRequired, true);
 
     assert.throws(
       () => store.transition({
@@ -176,6 +206,7 @@ test('one fenced transition writer rejects stale versions, cursor gaps, and coor
     if (acknowledged.outcome !== 'applied') return;
     assert.equal(acknowledged.presentation.stream.acknowledgedByteLength, 12);
     assert.equal(acknowledged.presentation.stream.pendingAppend, undefined);
+    assert.equal(acknowledged.presentation.repairRequired, false);
 
     store.create({
       ...createInput('run_presentation_2'),

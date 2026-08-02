@@ -50,6 +50,12 @@ import type { SlackTurnContext } from './thread-context.ts';
 import { slackThreadKey } from './thread-key.ts';
 import type { NormalizedSlackTurn } from './types.ts';
 import type { FrozenRuntimePlanDecision } from './turn-job-types.ts';
+import type { FlueDispatchReceiptV1 } from './turn-job-types.ts';
+import type { SlackProgressiveReadRelay } from './progressive-relay.ts';
+import {
+  decideProgressiveEligibility,
+  type ProgressiveEligibilityDecision,
+} from './progressive-eligibility.ts';
 import { selectSandbox } from '../sandbox/select.ts';
 import {
   assembleSlackPrompt,
@@ -79,6 +85,10 @@ import {
   startWorkChecklistHeartbeat,
   type WorkChecklistHeartbeat,
 } from './work-checklist-heartbeat.ts';
+import {
+  SlackAgentViewPresentation,
+  type SlackPresentationStatePort,
+} from './agent-view-presentation.ts';
 
 /**
  * The turn lifecycle, factored out of the Slack channel so BOTH the node detach
@@ -204,6 +214,18 @@ export interface RunTurnOptions {
   onInteractionProgress?: (
     patch: SlackInteractionProgressPatch,
   ) => void | Promise<void>;
+  /** U4/U5 adapter seam; absent means terminal-only delivery. */
+  prepareProgressiveRelay?: (input: {
+    runId: string;
+    runFencingToken: number;
+    instanceId: string;
+    receipt: FlueDispatchReceiptV1;
+    eligibility: ProgressiveEligibilityDecision;
+  }) => Promise<SlackProgressiveReadRelay | undefined>;
+  /** True only when the adapter serializes roots in this Flue conversation. */
+  progressiveAttributionProven?: boolean;
+  /** Canonical presentation writer; absent keeps the legacy terminal path. */
+  presentationState?: SlackPresentationStatePort;
   /** Focused-test override for the otherwise one-minute checklist heartbeat. */
   progressHeartbeatMs?: number;
   /** Focused-test override for the bounded in-flight heartbeat drain. */
@@ -336,6 +358,23 @@ export async function runTurn(
         mode: ledgerAuthority ? 'enforce' : 'observe',
       })
     : undefined;
+  let onNativeStarted = async (): Promise<void> => {};
+  const agentViewPresentation = options.presentationState && options.runId
+    ? new SlackAgentViewPresentation({
+        client,
+        state: options.presentationState,
+        runId: options.runId,
+        runFencingToken: options.runFencingToken ?? 0,
+        footer: {
+          profileName: assignment.agent.name,
+          modelLabel: resolvedModel,
+          agentId: assignment.agent.id,
+          publicUrl,
+          memoryItems: preparedMemory?.footerItems,
+        },
+        onNativeStarted: () => onNativeStarted(),
+      })
+    : undefined;
   const presenter = new WebClientPresenter(client, {
     channelId: turn.channelId,
     threadTs: turn.threadTs,
@@ -346,7 +385,10 @@ export async function runTurn(
     userId: turn.userId,
     workspaceId: turn.workspaceId,
     ...(preparedMemory ? { memoryFooterItems: preparedMemory.footerItems } : {}),
-  }, workLifecycle, { deliverySafety: ledgerAuthority ? 'ledger' : 'legacy' });
+  }, workLifecycle, {
+    deliverySafety: ledgerAuthority ? 'ledger' : 'legacy',
+    ...(agentViewPresentation ? { agentViewPresentation } : {}),
+  });
   let continuityNoticeProgress = options.continuityNoticeProgress;
   const ensureRequiredContinuityNotice = (): Promise<void> => ensureContinuityNotice({
     required: runtimePlanDecision?.continuityNoticeRequired ?? false,
@@ -443,6 +485,7 @@ export async function runTurn(
     // Delivery gets its durable tombstone before the best-effort repair so a
     // slow reporting backend can never make Slack retry already-delivered work.
     await options.onDelivered?.();
+    await presenter.markCanonicalPresentationFinalized();
     await usageRecorder?.repairAfterDelivery();
     if (workChecklistHeartbeat) {
       const drained = await workChecklistHeartbeat.stop();
@@ -453,7 +496,8 @@ export async function runTurn(
         return;
       }
     }
-    if (workChecklistTs && workChecklist) {
+    if (workChecklistTs && workChecklist &&
+        !interactionProgress.checklist?.supersededByNative) {
       try {
         await presenter.updateWorkChecklist(workChecklistTs, workChecklist, true);
         const checklistProgress = interactionProgress.checklist;
@@ -468,10 +512,33 @@ export async function runTurn(
     }
     await removeWorkAcknowledgment();
   };
+  onNativeStarted = async (): Promise<void> => {
+    if (!workChecklistTs || !interactionProgress.checklist ||
+        interactionProgress.checklist.cleanup === 'done') return;
+    if (workChecklistHeartbeat) {
+      await workChecklistHeartbeat.stop();
+      workChecklistHeartbeat = undefined;
+    }
+    const checklist = {
+      ...interactionProgress.checklist,
+      supersededByNative: true,
+    };
+    await recordInteractionProgress({ checklist });
+    try {
+      await presenter.deleteWorkChecklist(workChecklistTs);
+      await recordInteractionProgress({ checklist: { ...checklist, cleanup: 'done' } });
+      workChecklistTs = undefined;
+    } catch {
+      console.warn('[chickpea] legacy checklist cleanup will retry after native start');
+    }
+  };
 
   // 1. Visible work: set status; if it is rejected, post a durable progress
   //    placeholder so the user still sees work in-flight before the final.
   try {
+    await agentViewPresentation?.setTitle(turn.text).catch(() => {
+      console.warn('[chickpea] Slack Agent View title could not be recorded');
+    });
     if (memoryCommand) {
       const handled = await handleMemoryCommand({ turn, platformEnv, client, presenter });
       if (handled) {
@@ -625,6 +692,51 @@ export async function runTurn(
         if (!options.agentPrompt && !options.flueDispatch) {
           throw new Error('Durable Flue dispatch state is unavailable.');
         }
+        let prepareProgressiveRelay:
+          | NonNullable<Parameters<typeof promptSlackThreadAgent>[0]['prepareProgressiveRelay']>
+          | undefined;
+        const progressiveRelayFactory = options.prepareProgressiveRelay ??
+          (agentViewPresentation
+            ? (input: Parameters<NonNullable<RunTurnOptions['prepareProgressiveRelay']>>[0]) =>
+                agentViewPresentation.prepareReceipt(input)
+            : undefined);
+        if (
+          progressiveRelayFactory &&
+          options.runId &&
+          runtimePlanDecision
+        ) {
+          let continuityReady = !runtimePlanDecision.continuityNoticeRequired ||
+            continuityNoticeProgress?.status === 'delivered';
+          let eligibility = decideProgressiveEligibility({
+            runtimePlan: runtimePlanDecision.runtimePlan,
+            memorySelected: (preparedMemory?.selection?.entries.length ?? 0) > 0,
+            continuityReady,
+            recoveryRequired: false,
+            concurrentAttributionProven: options.progressiveAttributionProven === true,
+            replacementCapable: options.beforeDelivery !== undefined,
+          });
+          if (eligibility.reason === 'continuity') {
+            await ensureRequiredContinuityNotice();
+            continuityReady = continuityNoticeProgress?.status === 'delivered';
+            eligibility = decideProgressiveEligibility({
+              runtimePlan: runtimePlanDecision.runtimePlan,
+              memorySelected: (preparedMemory?.selection?.entries.length ?? 0) > 0,
+              continuityReady,
+              recoveryRequired: false,
+              concurrentAttributionProven: options.progressiveAttributionProven === true,
+              replacementCapable: options.beforeDelivery !== undefined,
+            });
+          }
+          const frozenEligibility = eligibility;
+          prepareProgressiveRelay = ({ instanceId, receipt }) =>
+            progressiveRelayFactory({
+              runId: options.runId!,
+              runFencingToken: options.runFencingToken ?? 0,
+              instanceId,
+              receipt,
+              eligibility: frozenEligibility,
+            });
+        }
         agentResult = await (options.agentPrompt ?? promptSlackThreadAgent)({
           message: executionPrompt,
           state: options.flueDispatch!,
@@ -643,6 +755,7 @@ export async function runTurn(
               }
             : {}),
           beforeResult: ensureRequiredContinuityNotice,
+          ...(prepareProgressiveRelay ? { prepareProgressiveRelay } : {}),
         });
         text = agentResult.text;
         await workLifecycle?.settleExecution({
@@ -697,7 +810,7 @@ export async function runTurn(
           await finishDelivery();
           return;
         }
-        await presenter.deliverFinal(agentFailureText(err), 'plain_text');
+        await presenter.deliverFinal(agentFailureText(err), 'plain_text', 'error');
         await finishDelivery();
         return;
       }
@@ -766,13 +879,17 @@ export async function repairSlackInteractionProgress(
   });
   const checklistProgress = progress.checklist;
   if (checklistProgress?.cleanup === 'pending') {
-    const intent = turn.interactionIntent;
-    if (intent?.disposition === 'work') {
-      await presenter.updateWorkChecklist(
-        checklistProgress.messageTs,
-        intent.checklist,
-        checklistProgress.terminal === 'error' ? 'failed' : true,
-      );
+    if (checklistProgress.supersededByNative) {
+      await presenter.deleteWorkChecklist(checklistProgress.messageTs);
+    } else {
+      const intent = turn.interactionIntent;
+      if (intent?.disposition === 'work') {
+        await presenter.updateWorkChecklist(
+          checklistProgress.messageTs,
+          intent.checklist,
+          checklistProgress.terminal === 'error' ? 'failed' : true,
+        );
+      }
     }
     await onProgress({
       checklist: { ...checklistProgress, cleanup: 'done' },

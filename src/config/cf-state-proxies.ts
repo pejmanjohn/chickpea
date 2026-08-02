@@ -420,6 +420,10 @@ export class CfSlackStateStore implements SlackStateStore {
   async maintainRunPresentations(limit = 100) {
     return unwrap(await this.stub.slackPresentationMaintain(limit));
   }
+
+  async summarizeRunPresentations(workspaceId: string) {
+    return unwrap(await this.stub.slackPresentationSummary(workspaceId));
+  }
 }
 
 export class CfSettingsStore implements SettingsStore {
