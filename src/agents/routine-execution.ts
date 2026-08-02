@@ -10,6 +10,7 @@ import * as v from 'valibot';
 
 import {
   parseRuntimePlanV2,
+  runtimePlanSandboxConversationKey,
   type RuntimePlanV2,
 } from './runtime-plan.ts';
 import { useRuntimePlanAgent } from './slack-thread.ts';
@@ -37,7 +38,9 @@ export function parseRoutineExecutionInitialData(value: unknown): RoutineExecuti
 
 export function ChickpeaRoutineExecution({ id }: { id: string }) {
   const data = parseRoutineExecutionInitialData(useInitialData());
-  useRuntimePlanAgent(data.runtimePlan, id);
+  useRuntimePlanAgent(data.runtimePlan, id, {
+    sandboxConversationKey: runtimePlanSandboxConversationKey(data.runtimePlan, id),
+  });
   useChickpeaResponseMetadata(data.requestedModel);
   useInstruction(
     'Finish by calling submit_routine_result exactly once. Ordinary assistant text and JSON are not a result.',

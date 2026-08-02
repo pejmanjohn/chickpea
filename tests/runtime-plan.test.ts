@@ -5,8 +5,11 @@ import {
   compileRuntimePlanV2,
   deriveRuntimePlanInstanceId,
   parseRuntimePlanV2,
+  runtimePlanConversationKey,
+  runtimePlanSandboxConversationKey,
 } from '../src/agents/runtime-plan.ts';
 import type { CustomAgentConfig, ResolvedAssignment } from '../src/config/types.ts';
+import { sandboxThreadKey } from '../src/sandbox/thread-key.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 
 const AGENT: CustomAgentConfig = {
@@ -106,6 +109,30 @@ function compile(overrides: Partial<Parameters<typeof compileRuntimePlanV2>[0]> 
     ...overrides,
   });
 }
+
+test('the sandbox conversation key stays a Slack coordinate instead of a Flue instance id', () => {
+  const plan = compile();
+
+  assert.equal(
+    runtimePlanConversationKey(plan),
+    'T_RUNTIME:C_RUNTIME:1783000000.000100',
+  );
+  assert.notEqual(runtimePlanConversationKey(plan), deriveRuntimePlanInstanceId(plan));
+});
+
+test('owner-bound sandbox keys converge for retries and isolate competing routine attempts', () => {
+  const plan = compile();
+  const first = runtimePlanSandboxConversationKey(plan, 'routineagent_first');
+  const second = runtimePlanSandboxConversationKey(plan, 'routineagent_second');
+
+  assert.equal(first, runtimePlanSandboxConversationKey(plan, 'routineagent_first'));
+  assert.notEqual(first, second);
+  assert.match(first, /^T_RUNTIME:C_RUNTIME:1783000000\.000100-sandboxowner_[a-f0-9]{40}$/);
+  assert.equal(sandboxThreadKey(first), first);
+  assert.notEqual(sandboxThreadKey(first), sandboxThreadKey(second));
+  assert.throws(() => runtimePlanSandboxConversationKey(plan, '   '), /owner identity is invalid/);
+  assert.throws(() => runtimePlanSandboxConversationKey(plan, 'x'.repeat(201)), /owner identity is invalid/);
+});
 
 test('a complete first-turn plan contains policy descriptors but no auth material', () => {
   const plan = compile();

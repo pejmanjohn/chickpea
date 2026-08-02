@@ -496,6 +496,7 @@ export interface SlackAgentRuntimeInput {
   threadTs?: string;
   declarationsOwnedByHooks?: boolean;
   forcedSandbox?: SandboxSelection;
+  sandboxConversationKey?: string;
 }
 
 /** Shared interactive/routine agent assembly. Credentials always resolve here, live. */
@@ -719,7 +720,7 @@ export async function createSlackAgentRuntime(
     selection: sandboxSelection,
     fallback: virtualSandbox,
     env,
-    id,
+    conversationKey: input.sandboxConversationKey ?? adapterContext.threadKey,
     grants: repositoryAccess.grants,
     ...(repositoryAccess.credentialMode
       ? { credentialMode: repositoryAccess.credentialMode }
@@ -833,7 +834,7 @@ export function ChickpeaSlack({ id }: AgentProps) {
 export function useRuntimePlanAgent(
   plan: RuntimePlanV2,
   id: string,
-  options: { responseMetadataModel?: string } = {},
+  options: { responseMetadataModel?: string; sandboxConversationKey?: string } = {},
 ): void {
   const thinkingLevel = thinkingLevelForModel(plan.model);
   useModel(plan.model, thinkingLevel ? { thinkingLevel } : {});
@@ -855,7 +856,7 @@ export function useRuntimePlanAgent(
   )) {
     useMcpConnection(connection);
   }
-  useSandbox(createRuntimePlanSandbox(plan));
+  useSandbox(createRuntimePlanSandbox(plan, options.sandboxConversationKey));
   if (plan.sandbox.mode === 'cloudflare') {
     useTool(createRuntimePlanArtifactTool(plan));
   }
@@ -871,7 +872,10 @@ ChickpeaSlack.initialData = v.custom<RuntimePlanV2>((value) => {
   }
 }, 'RuntimePlanV2 is invalid.');
 
-function createRuntimePlanSandbox(plan: RuntimePlanV2): SandboxFactory {
+function createRuntimePlanSandbox(
+  plan: RuntimePlanV2,
+  sandboxConversationKey?: string,
+): SandboxFactory {
   return {
     async createSessionEnv({ id }) {
       const env = await resolveAgentPlatformEnv();
@@ -897,6 +901,7 @@ function createRuntimePlanSandbox(plan: RuntimePlanV2): SandboxFactory {
         artifactThreadTs: null,
         declarationsOwnedByHooks: true,
         forcedSandbox: plan.sandbox.mode,
+        ...(sandboxConversationKey ? { sandboxConversationKey } : {}),
       });
       if (!runtime.sandbox) throw new Error('RuntimePlanV2 sandbox is unavailable.');
       return runtime.sandbox.createSessionEnv({ id });
@@ -1013,7 +1018,7 @@ interface AgentSandboxOptions {
   selection: SandboxSelection;
   fallback: SandboxFactory;
   env: PlatformEnv | undefined;
-  id: string;
+  conversationKey: string;
   grants: readonly RepositoryGrant[];
   credentialMode?: SandboxCredentialMode;
   settingsStore: ReturnType<typeof getSettingsStore>;
@@ -1035,7 +1040,7 @@ async function resolveAgentSandbox(options: AgentSandboxOptions): Promise<Sandbo
   if (!binding) {
     throw new Error('SANDBOX Durable Object binding is unavailable');
   }
-  const sandboxKey = sandboxThreadKey(options.id);
+  const sandboxKey = sandboxThreadKey(options.conversationKey);
   let turnId: string | undefined;
   const sandbox = await cloudflareSandboxLifecycle.acquire(
     sandboxKey,

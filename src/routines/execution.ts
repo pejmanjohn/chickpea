@@ -14,7 +14,10 @@ import {
   ROUTINE_RESULT_DATA_NAME,
   type RoutineExecutionInitialData,
 } from '../agents/routine-execution.ts';
-import { compileRuntimePlanV2 } from '../agents/runtime-plan.ts';
+import {
+  compileRuntimePlanV2,
+  runtimePlanSandboxConversationKey,
+} from '../agents/runtime-plan.ts';
 import {
   canonicalRuntimeModel,
   resolveRuntimeModel,
@@ -101,6 +104,7 @@ interface PreparedExecution {
   access: RoutineRuntimeAccess;
   prompt: PreparedRoutinePrompt;
   envelope: RoutineAgentDispatchEnvelopeV1;
+  sandboxConversationKey: string;
   receipt: RoutineAgentReceiptV1 | null;
   usageRecorder?: RoutineUsageRecorder;
   workLifecycle?: ShadowWorkLifecycle;
@@ -171,6 +175,7 @@ export async function executeRoutineOccurrence(
   const toolCalls = new ToolCallCounter('submit_routine_result');
   let modelSettled = false;
   let settledUsage: RoutineAgentUsageV1 | null = null;
+  let retainPreparedSandbox = false;
   try {
     if (!receipt) {
       let admitted: DispatchReceipt;
@@ -181,7 +186,10 @@ export async function executeRoutineOccurrence(
           idempotencyKey: prepared.envelope.idempotencyKey,
         });
       } catch (error) {
-        if (now() < prepared.run.deadlineAt) return 'resumable';
+        if (now() < prepared.run.deadlineAt) {
+          retainPreparedSandbox = true;
+          return 'resumable';
+        }
         throw error;
       }
       const checkpoint = boundedReceipt(admitted);
@@ -211,6 +219,7 @@ export async function executeRoutineOccurrence(
       });
     } catch (error) {
       if (isLocalReadInterruption(error) && now() < prepared.run.deadlineAt) {
+        retainPreparedSandbox = true;
         return 'resumable';
       }
       if (isLocalReadInterruption(error)) {
@@ -288,7 +297,9 @@ export async function executeRoutineOccurrence(
     }
     return 'completed';
   } finally {
-    await releasePreparedSandbox(input.env, prepared, dependencies);
+    if (!retainPreparedSandbox) {
+      await releasePreparedSandbox(input.env, prepared, dependencies);
+    }
   }
 }
 
@@ -326,18 +337,26 @@ async function prepareExecution(
     input.env,
   );
   const useCloudflareSandbox = dependencies.useCloudflareSandbox ?? shouldUseCloudflareSandbox;
-  const usedCloudflareSandbox = await useCloudflareSandbox(access.config, input.env);
   const attemptId = input.admission.attemptId;
   if (!attemptId) throw new Error('Routine attempt identity is unavailable.');
-  const envelope = input.run.flueAgentEnvelope ?? createEnvelope({
-    routine: input.routine,
-    access,
-    prompt,
-    attemptId,
-    runtimeModel: runtimeModel.model,
-    sandboxMode: usedCloudflareSandbox ? 'cloudflare' : 'bash',
-  });
-  executionInitialData(envelope);
+  let envelope = input.run.flueAgentEnvelope;
+  if (!envelope) {
+    const selectedCloudflareSandbox = await useCloudflareSandbox(access.config, input.env);
+    envelope = createEnvelope({
+      routine: input.routine,
+      access,
+      prompt,
+      attemptId,
+      runtimeModel: runtimeModel.model,
+      sandboxMode: selectedCloudflareSandbox ? 'cloudflare' : 'bash',
+    });
+  }
+  const initialData = executionInitialData(envelope);
+  const usedCloudflareSandbox = initialData.runtimePlan.sandbox.mode === 'cloudflare';
+  const sandboxConversationKey = runtimePlanSandboxConversationKey(
+    initialData.runtimePlan,
+    envelope.instanceId,
+  );
   const started = await input.store.prepareAgentDispatch({
     occurrenceId: input.run.id,
     attempt: input.attempt,
@@ -388,7 +407,7 @@ async function prepareExecution(
     try {
       await (dependencies.prepareSandbox ?? prepareCloudflareSandboxTurn)(
         input.env,
-        envelope.instanceId,
+        sandboxConversationKey,
         input.run.id,
       );
     } catch (error) {
@@ -399,7 +418,7 @@ async function prepareExecution(
       await usageRecorder?.repairAfterTerminal();
       await (dependencies.releaseSandbox ?? releaseCloudflareSandboxTurn)(
         input.env,
-        envelope.instanceId,
+        sandboxConversationKey,
         usedCloudflareSandbox,
       );
       throw error;
@@ -425,6 +444,7 @@ async function prepareExecution(
     access,
     prompt,
     envelope,
+    sandboxConversationKey,
     receipt: input.admission.flueAgentReceipt ?? null,
     ...(usageRecorder ? { usageRecorder } : {}),
     ...(workLifecycle ? { workLifecycle } : {}),
@@ -795,7 +815,7 @@ async function releasePreparedSandbox(
 ): Promise<void> {
   await (dependencies.releaseSandbox ?? releaseCloudflareSandboxTurn)(
     env,
-    prepared.envelope.instanceId,
+    prepared.sandboxConversationKey,
     prepared.usedCloudflareSandbox,
   );
 }

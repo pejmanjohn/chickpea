@@ -162,38 +162,67 @@ test('live access and a frozen app checkpoint precede Flue dispatch', async () =
 
 test('an interrupted local read stays resumable and the next execution reads the saved receipt', async () => {
   const store = new SqliteRoutineStore(':memory:', () => NOW);
+  const preparedSandboxKeys: string[] = [];
+  const releasedSandboxKeys: string[] = [];
+  const sandboxDependencies = {
+    ...dependencies(),
+    useCloudflareSandbox: async () => true,
+    prepareSandbox: async (_env: unknown, conversationKey: string) => {
+      preparedSandboxKeys.push(conversationKey);
+    },
+    releaseSandbox: async (_env: unknown, conversationKey: string) => {
+      releasedSandboxKeys.push(conversationKey);
+    },
+  };
   try {
     const fixture = await admittedFixture(store, 'resume');
     const interrupted = new DOMException('local reader stopped', 'AbortError');
     const first = await executeRoutineOccurrence({
       env: {}, store, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt,
-    }, { ...dependencies(), handle: fakeHandle({ readError: interrupted }) });
+    }, { ...sandboxDependencies, handle: fakeHandle({ readError: interrupted }) });
     assert.equal(first, 'resumable');
     assert.equal((await store.getRun(fixture.run.id))?.status, 'running');
+    assert.equal(preparedSandboxKeys.length, 1);
+    assert.deepEqual(releasedSandboxKeys, []);
 
     let dispatches = 0;
     const resumed = fakeHandle({});
     resumed.dispatch = async () => { dispatches += 1; throw new Error('must not redispatch'); };
     const second = await executeRoutineOccurrence({
       env: {}, store, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt,
-    }, { ...dependencies(), handle: resumed });
+    }, { ...sandboxDependencies, handle: resumed });
     assert.equal(second, 'completed');
     assert.equal(dispatches, 0);
+    assert.equal(preparedSandboxKeys[0], preparedSandboxKeys[1]);
+    assert.deepEqual(releasedSandboxKeys, [preparedSandboxKeys[0]]);
     assert.equal((await store.getRun(fixture.run.id))?.status, 'no_op');
   } finally {
     store.close();
   }
 });
 
-test('an ambiguous dispatch repeats the frozen request and releases attempt-scoped sandbox state', async () => {
+test('an ambiguous dispatch keeps its sandbox until the frozen request settles', async () => {
   const store = new SqliteRoutineStore(':memory:', () => NOW);
   const events: string[] = [];
+  const preparedSandboxKeys: string[] = [];
+  const releasedSandboxKeys: string[] = [];
+  let sandboxSelectionCalls = 0;
   let releases = 0;
   const sandboxDependencies = {
     ...dependencies(events),
-    useCloudflareSandbox: async () => true,
-    prepareSandbox: async () => { events.push('sandbox:prepare'); },
-    releaseSandbox: async () => { releases += 1; events.push('sandbox:release'); },
+    useCloudflareSandbox: async () => {
+      sandboxSelectionCalls += 1;
+      return sandboxSelectionCalls === 1;
+    },
+    prepareSandbox: async (_env: unknown, conversationKey: string) => {
+      preparedSandboxKeys.push(conversationKey);
+      events.push('sandbox:prepare');
+    },
+    releaseSandbox: async (_env: unknown, conversationKey: string) => {
+      releasedSandboxKeys.push(conversationKey);
+      releases += 1;
+      events.push('sandbox:release');
+    },
   };
   try {
     const fixture = await admittedFixture(store, 'dispatch_retry');
@@ -204,20 +233,81 @@ test('an ambiguous dispatch repeats the frozen request and releases attempt-scop
       handle: fakeHandle({ events, dispatchError: new Error('connection ended after dispatch') }),
     });
     assert.equal(first, 'resumable');
-    assert.equal(releases, 1);
+    assert.equal(releases, 0);
     const frozen = (await store.getRun(fixture.run.id))?.flueAgentEnvelope;
 
     const second = await executeRoutineOccurrence({
       env: {}, store, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt,
     }, { ...sandboxDependencies, handle: fakeHandle({ events }) });
     assert.equal(second, 'completed');
-    assert.equal(releases, 2);
+    assert.equal(sandboxSelectionCalls, 1);
+    assert.equal(releases, 1);
+    assert.equal(preparedSandboxKeys[0], preparedSandboxKeys[1]);
+    assert.match(
+      preparedSandboxKeys[0] ?? '',
+      /^T_TEST:C_TEST:1785100000\.000100-sandboxowner_[a-f0-9]{40}$/,
+    );
+    assert.deepEqual(releasedSandboxKeys, [preparedSandboxKeys[0]]);
     assert.deepEqual((await store.getRun(fixture.run.id))?.flueAgentEnvelope, frozen);
     assert.equal(
       (await store.listAdmissions(fixture.run.id))[0]?.flueAgentReceipt?.submissionId,
       'submission_test',
     );
   } finally {
+    store.close();
+  }
+});
+
+test('concurrent routine occurrences isolate sandbox preparation and release by frozen owner', async () => {
+  const store = new SqliteRoutineStore(':memory:', () => NOW);
+  const prepared: Array<{ conversationKey: string; turnId: string }> = [];
+  const released: string[] = [];
+  const { promise: holdFirstRead, resolve: releaseFirstRead } = Promise.withResolvers<void>();
+  const { promise: firstReadStarted, resolve: markFirstReadStarted } = Promise.withResolvers<void>();
+  let firstExecution: Promise<Awaited<ReturnType<typeof executeRoutineOccurrence>>> | undefined;
+  const sandboxDependencies = {
+    ...dependencies(),
+    useCloudflareSandbox: async () => true,
+    prepareSandbox: async (_env: unknown, conversationKey: string, turnId: string) => {
+      prepared.push({ conversationKey, turnId });
+    },
+    releaseSandbox: async (_env: unknown, conversationKey: string) => {
+      released.push(conversationKey);
+    },
+  };
+  try {
+    const firstFixture = await admittedFixture(store, 'sandbox_owner_first');
+    const secondFixture = await admittedFixture(store, 'sandbox_owner_second');
+    const firstHandle = fakeHandle({});
+    const originalFirstRead = firstHandle.read.bind(firstHandle);
+    firstHandle.read = async (...args) => {
+      markFirstReadStarted();
+      await holdFirstRead;
+      return originalFirstRead(...args);
+    };
+
+    firstExecution = executeRoutineOccurrence({
+      env: {}, store, occurrenceId: firstFixture.run.id, attempt: firstFixture.attempt.attempt,
+    }, { ...sandboxDependencies, handle: firstHandle });
+    await firstReadStarted;
+
+    const secondOutcome = await executeRoutineOccurrence({
+      env: {}, store, occurrenceId: secondFixture.run.id, attempt: secondFixture.attempt.attempt,
+    }, { ...sandboxDependencies, handle: fakeHandle({}) });
+    assert.equal(secondOutcome, 'completed');
+    assert.equal(prepared.length, 2);
+    assert.notEqual(prepared[0]?.conversationKey, prepared[1]?.conversationKey);
+    assert.deepEqual(released, [prepared[1]?.conversationKey]);
+
+    releaseFirstRead();
+    assert.equal(await firstExecution, 'completed');
+    assert.deepEqual(released, [
+      prepared[1]?.conversationKey,
+      prepared[0]?.conversationKey,
+    ]);
+  } finally {
+    releaseFirstRead();
+    await firstExecution?.catch(() => undefined);
     store.close();
   }
 });

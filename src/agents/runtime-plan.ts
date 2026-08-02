@@ -139,6 +139,36 @@ export function deriveRuntimePlanInstanceId(plan: RuntimePlanV2): string {
   );
 }
 
+/**
+ * Canonical adapter coordinate for operational state that belongs to the
+ * Slack conversation rather than to one opaque Flue agent incarnation.
+ */
+export function runtimePlanConversationKey(plan: RuntimePlanV2): string {
+  const validated = parseRuntimePlanV2(plan);
+  return [
+    validated.conversation.workspaceId,
+    validated.conversation.channelId,
+    validated.conversation.threadTs,
+  ].join(':');
+}
+
+/**
+ * Owner-bound Sandbox coordinate for isolated executions such as routines.
+ * The canonical Slack coordinate remains visible in the key while the frozen
+ * owner identity prevents concurrent occurrences from sharing mutable policy,
+ * turn progress, or teardown. Retries with the same owner converge.
+ */
+export function runtimePlanSandboxConversationKey(
+  plan: RuntimePlanV2,
+  ownerId: string,
+): string {
+  const conversationKey = runtimePlanConversationKey(plan);
+  if (!ownerId.trim() || ownerId.length > 200) {
+    throw new Error('Sandbox owner identity is invalid.');
+  }
+  return `${conversationKey}-${opaqueId('sandboxowner', ownerId)}`;
+}
+
 /** Strict allowlist parser for persisted/runtime-provided Flue initial data. */
 export function parseRuntimePlanV2(value: unknown): RuntimePlanV2 {
   const record = exactRecord(value, 'runtime plan', [
