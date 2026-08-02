@@ -167,6 +167,8 @@ export interface EffectiveConfigRevision {
 export interface SafeEffectiveConfigInput {
   schemaVersion: 1;
   profileId: string;
+  /** Non-secret adapter execution correlation; never credential material. */
+  slackIdentityId?: string;
   configuredModel: string;
   snapshotDigest: string;
   capabilityDigest: string;

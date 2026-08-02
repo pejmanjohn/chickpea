@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 
 import { resolveAgentModel } from '../config/model-policy.ts';
 import type { AgentSnapshot, ResolvedAssignment } from '../config/types.ts';
+import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from '../config/types.ts';
 import type {
   SafeEffectiveConfigInput,
   SourceVisibility,
@@ -44,6 +45,9 @@ export function safeConfigForAssignment(
   return {
     schemaVersion: 1,
     profileId: assignment.agentId,
+    slackIdentityId: assignment.slackIdentityId ??
+      assignment.agent.slackIdentityId ??
+      WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
     configuredModel,
     snapshotDigest,
     capabilityDigest,

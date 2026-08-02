@@ -23,9 +23,10 @@ export async function canManageRoutineChannel(
   channelId: string,
   actorId: string,
   env: PlatformEnv | undefined,
+  admittedBotToken?: string,
 ): Promise<boolean> {
   try {
-    const { botToken } = await resolveSlackCredentials(env);
+    const botToken = admittedBotToken ?? (await resolveSlackCredentials(env)).botToken;
     if (!botToken) return false;
     const [auth, conversation] = await Promise.all([
       slackAuthTest(botToken),
@@ -72,9 +73,10 @@ export async function resolveRoutineSourceVisibility(
   workspaceId: string,
   channelId: string,
   env: PlatformEnv | undefined,
+  admittedBotToken?: string,
 ): Promise<SourceVisibility> {
   try {
-    const { botToken } = await resolveSlackCredentials(env);
+    const botToken = admittedBotToken ?? (await resolveSlackCredentials(env)).botToken;
     if (!botToken) return 'unknown';
     const conversation = await slackConversationsInfo(botToken, channelId);
     const facts = conversation.facts;

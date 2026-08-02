@@ -1,5 +1,8 @@
 import { computeSnapshotHash, type EffectiveSlackConfig } from './effective-config.ts';
-import type { AgentSnapshot } from './types.ts';
+import {
+  WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+  type AgentSnapshot,
+} from './types.ts';
 import { THREAD_TTL_MS } from '../slack/claim-store.ts';
 import { openStateDb, resolveStateDbPath, type NodeStateDb } from '../state/node-state-db.ts';
 import type { StateDb } from '../state/state-db.ts';
@@ -62,7 +65,7 @@ export class SnapshotStoreLogic {
       this.now(),
       threadKey,
     );
-    return JSON.parse(row.snapshot_json) as AgentSnapshot;
+    return normalizeLegacySnapshot(JSON.parse(row.snapshot_json) as AgentSnapshot);
   }
 
   putIfAbsent(threadKey: string, snapshot: AgentSnapshot): AgentSnapshot {
@@ -149,6 +152,7 @@ export function snapshotFromEffectiveConfig(
     workspaceId: config.workspaceId,
     channelId: config.channelId,
     agentId: config.agentId,
+    slackIdentityId: config.slackIdentityId ?? WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
     ...(config.channelLabel ? { channelLabel: config.channelLabel } : {}),
     ...(config.channelPromptAddendum
       ? { channelPromptAddendum: config.channelPromptAddendum }
@@ -162,5 +166,15 @@ export function snapshotFromEffectiveConfig(
     repositories: config.agent.repositories,
     snapshotHash: computeSnapshotHash(config),
     createdAt,
+  };
+}
+
+/** Legacy snapshot rows predate SlackIdentity. Normalize only the in-memory
+ * view: their stored JSON and original hash remain the durable drift anchor. */
+function normalizeLegacySnapshot(snapshot: AgentSnapshot): AgentSnapshot {
+  if (snapshot.slackIdentityId) return snapshot;
+  return {
+    ...snapshot,
+    slackIdentityId: WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
   };
 }

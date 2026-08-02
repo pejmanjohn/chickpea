@@ -14,9 +14,7 @@ import { SlackStateLogic } from '../src/slack/claim-store.ts';
 import { SlackRunPresentationStoreLogic } from '../src/slack/run-presentations.ts';
 import {
   assignmentUsesSlackIdentity,
-  requireSlackIdentityDeliverySupport,
   resolveSlackIdentityDmAssignment,
-  slackIdentityDeliverySupported,
 } from '../src/slack/identity-admission.ts';
 import { TurnJobStoreLogic } from '../src/slack/turn-jobs.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
@@ -107,14 +105,15 @@ test('identity admission selects DMs from the receiving app and channels from th
   store.close();
 });
 
-test('dedicated turns fail closed until U4 can preserve identity through durable delivery', () => {
-  assert.equal(slackIdentityDeliverySupported(turn()), true);
-  const dedicated = turn({ slackIdentityId: 'slack_identity_finance' });
-  assert.equal(slackIdentityDeliverySupported(dedicated), false);
-  assert.throws(
-    () => requireSlackIdentityDeliverySupport(dedicated),
-    /durable delivery is not available yet/,
-  );
+test('Slack Run correlation carries identity references without credentials', () => {
+  const input = prepareSlackShadowAdmission({
+    turn: turn({ slackIdentityId: 'slack_identity_finance' }),
+    assignment: { ...assignment(), slackIdentityId: 'slack_identity_finance' },
+    sourceVisibility: 'public',
+    admittedAt: NOW,
+  });
+  assert.equal(input.safeConfig.slackIdentityId, 'slack_identity_finance');
+  assert.doesNotMatch(JSON.stringify(input.safeConfig), /xoxb-|botToken|signingSecret/i);
 });
 
 test('Slack admission reuses one Work and Binding, sequences Runs, and dedupes fanout', () => {

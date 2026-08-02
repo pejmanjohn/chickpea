@@ -108,6 +108,12 @@ function demoChannelConfig(config: ScenarioLaneConfig = {}): ScenarioLaneConfig 
         { id: 'U_BOT', teamId: 'T_DEMO', isBot: true, isAppUser: true },
       ],
       ...config.slack,
+      identity: {
+        appId: 'A_DEMO',
+        botUserId: 'U_BOT',
+        teamId: 'T_DEMO',
+        ...config.slack?.identity,
+      },
     },
     configSeed: {
       agents: pinAgentsForParity(seededAgents),

@@ -575,7 +575,12 @@ async function main() {
   // Add-channel proxy and the assignment-PUT validation have real fixtures).
   const backend = new FakeSlackBackend({
     slack: {
-      identity: { teamId: WORKSPACE, teamName: 'Smoke Workspace' },
+      identity: {
+        appId: 'A_SMOKE',
+        botUserId: 'U_BOT',
+        teamId: WORKSPACE,
+        teamName: 'Smoke Workspace',
+      },
       channels: [
         { id: CHANNEL, name: 'smoke-mentions', isMember: true, teamId: WORKSPACE },
         { id: AI_CHANNEL, name: 'smoke-workers-ai', isMember: true, teamId: WORKSPACE },

@@ -1,12 +1,13 @@
 import { createHash } from 'node:crypto';
 
 import { resolveAgentModel } from '../config/model-policy.ts';
-import type {
-  ApiConnectionConfig,
-  McpConnectionConfig,
-  RepositoryGrant,
-  ResolvedAssignment,
-  SkillConfig,
+import {
+  WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+  type ApiConnectionConfig,
+  type McpConnectionConfig,
+  type RepositoryGrant,
+  type ResolvedAssignment,
+  type SkillConfig,
 } from '../config/types.ts';
 import { opaqueId } from '../work/admission.ts';
 import { slackThreadKey } from '../slack/thread-key.ts';
@@ -65,6 +66,8 @@ export interface RuntimePlanV2 {
   continuityPolicy: string;
   /** Durable profile identity used only by trusted live resource resolvers. */
   agentId: string;
+  /** Non-secret Slack app reference. Missing only on pre-U4 durable plans. */
+  slackIdentityId?: string;
   conversation: RuntimePlanConversationV2;
   model: string;
   instructions: string;
@@ -104,6 +107,9 @@ export function compileRuntimePlanV2(input: CompileRuntimePlanV2Input): RuntimeP
     schemaVersion: RUNTIME_PLAN_SCHEMA_VERSION,
     continuityPolicy: input.continuityPolicy ?? DEFAULT_CONTINUITY_POLICY,
     agentId: input.assignment.agent.id,
+    slackIdentityId: input.assignment.slackIdentityId ??
+      input.assignment.agent.slackIdentityId ??
+      WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
     conversation: {
       workspaceId: input.turn.workspaceId,
       channelId: input.turn.channelId,
@@ -176,6 +182,7 @@ export function parseRuntimePlanV2(value: unknown): RuntimePlanV2 {
     'schemaVersion',
     'continuityPolicy',
     'agentId',
+    'slackIdentityId',
     'conversation',
     'model',
     'instructions',
@@ -187,12 +194,15 @@ export function parseRuntimePlanV2(value: unknown): RuntimePlanV2 {
     'sandbox',
     'artifactDestination',
     'harnessRevision',
-  ]);
+  ], ['slackIdentityId']);
   if (record.schemaVersion !== RUNTIME_PLAN_SCHEMA_VERSION) {
     throw new Error('Runtime plan schemaVersion must be 2.');
   }
   const continuityPolicy = boundedString(record.continuityPolicy, 'continuityPolicy', 1, 80);
   const agentId = boundedString(record.agentId, 'agentId', 1, 128);
+  const slackIdentityId = record.slackIdentityId === undefined
+    ? undefined
+    : boundedString(record.slackIdentityId, 'slackIdentityId', 1, 128);
   const conversationRecord = exactRecord(record.conversation, 'conversation', [
     'workspaceId',
     'channelId',
@@ -258,6 +268,7 @@ export function parseRuntimePlanV2(value: unknown): RuntimePlanV2 {
     schemaVersion: RUNTIME_PLAN_SCHEMA_VERSION,
     continuityPolicy,
     agentId,
+    ...(slackIdentityId ? { slackIdentityId } : {}),
     conversation,
     model,
     instructions,
@@ -370,6 +381,7 @@ function computeHarnessRevision(
       schemaVersion: plan.schemaVersion,
       continuityPolicy: plan.continuityPolicy,
       agentId: plan.agentId,
+      ...(plan.slackIdentityId ? { slackIdentityId: plan.slackIdentityId } : {}),
       model: plan.model,
       instructions: plan.instructions,
       memoryEpoch: plan.memoryEpoch,

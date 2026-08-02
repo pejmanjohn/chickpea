@@ -21,6 +21,7 @@ import type {
   TurnJob,
 } from './turn-job-types.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
+import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from '../config/types.ts';
 import type { StateDb } from '../state/state-db.ts';
 import type { SlackRuntimeDrainCounts } from '../config/state-rpc.ts';
 import type { SlackTurnRecoveryItem } from '../config/state-rpc.ts';
@@ -935,12 +936,16 @@ export class TurnJobStoreLogic {
   }
 
   private decodeRow(row: TurnJobRow): PendingTurnJob {
+    const turn = JSON.parse(row.turn_json) as NormalizedSlackTurn;
+    const assignment = JSON.parse(row.assignment_json) as ResolvedAssignment;
+    turn.slackIdentityId ??= WORKSPACE_DEFAULT_SLACK_IDENTITY_ID;
+    assignment.slackIdentityId ??= WORKSPACE_DEFAULT_SLACK_IDENTITY_ID;
     return {
       id: row.id,
       evtKey: row.evt_key,
       msgKey: row.msg_key,
-      turn: JSON.parse(row.turn_json) as NormalizedSlackTurn,
-      assignment: JSON.parse(row.assignment_json) as ResolvedAssignment,
+      turn,
+      assignment,
       ...(row.run_id ? { runId: row.run_id } : {}),
       executionAuthority: row.execution_authority,
       attempts: Number(row.attempts),

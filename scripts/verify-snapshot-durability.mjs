@@ -137,7 +137,18 @@ function providerBodyText(call) {
 }
 
 const { FakeSlackBackend } = await loadFake();
-const backend = new FakeSlackBackend({ provider: { mode: 'ok', replyText: 'snapshot durability ok' } });
+const backend = new FakeSlackBackend({
+  slack: {
+    identity: { appId: 'A_DEMO', teamId: 'T_DEMO', botUserId: 'U_BOT' },
+    channels: [{ id: EXEC_CHANNEL, name: 'exec', isMember: true }],
+    channelMembers: { [EXEC_CHANNEL]: ['U_ALICE', 'U_BOT'] },
+    workspaceUsers: [
+      { id: 'U_ALICE', teamId: 'T_DEMO' },
+      { id: 'U_BOT', teamId: 'T_DEMO', isBot: true, isAppUser: true },
+    ],
+  },
+  provider: { mode: 'ok', replyText: 'snapshot durability ok' },
+});
 
 const dbDir = mkdtempSync(join(tmpdir(), 'flue-snapshot-db-'));
 const dbPath = join(dbDir, 'flue.db');

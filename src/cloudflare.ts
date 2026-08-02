@@ -7,13 +7,11 @@ import {
 import { getSandbox, Sandbox as CloudflareSandbox } from '@cloudflare/sandbox';
 import { instrument } from '@flue/runtime';
 import { createCloudflareTracing } from '@flue/runtime/cloudflare';
-import type { WebClient } from '@slack/web-api';
 
 import {
   AgentExistsError,
   AgentStillAssignedError,
   AgentStillSlackDmHandlerError,
-  NoAssignmentError,
   SlackIdentityExistsError,
   SlackIdentityLifecycleError,
   SlackIdentityRevisionConflictError,
@@ -26,9 +24,18 @@ import {
   getCachedInstallationToken,
   getGithubConnection,
 } from './config/github-app.ts';
-import { resolveAssignment, surfaceForChannelId } from './config/resolver.ts';
+import { surfaceForChannelId } from './config/resolver.ts';
 import { slackThreadKey } from './slack/thread-key.ts';
-import { slackIdentityDeliverySupported } from './slack/identity-admission.ts';
+import { resolveSlackIdentityDmAssignment } from './slack/identity-admission.ts';
+import {
+  cacheSlackIdentityExecutionContexts,
+  effectiveTurnSlackIdentityId,
+  normalizeSlackIdentityExecutionError,
+  resolveSlackIdentityExecutionContext,
+  verifySlackIdentityTurnAccess,
+  type SlackIdentityExecutionContext,
+  type SlackIdentityExecutionResolver,
+} from './slack/identity-execution.ts';
 import type { AssignmentLookupOptions } from './config/resolver.ts';
 import {
   parseSandboxAllowedHosts,
@@ -93,7 +100,6 @@ import type { SlackPresentationStatePort } from './slack/agent-view-presentation
 import { resolveSlackCredentials } from './slack/credentials.ts';
 import { setObservedSlackStatus } from './slack/status-registry.ts';
 import {
-  createSlackWebClient,
   deliverAgentFailureFinal,
   repairSlackInteractionProgress,
   runTurn,
@@ -1053,18 +1059,15 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     const stores = this.stores;
     const pending = stores.turnJobs.listPending(MAX_TURN_DRAIN_BATCH);
     if (pending.length === 0) {
-      const ledgerPending = stores.turnJobs.hasPending('ledger');
       const cleanupPending = stores.turnJobs.hasPendingSlackInteractionCleanup();
-      const client = ledgerPending || cleanupPending
-        ? await this.resolveAlarmClient(stores)
-        : undefined;
+      const resolveIdentity = this.createAlarmIdentityResolver(stores);
       await drainLedgerRuns(
         stores,
         this.env as PlatformEnv,
-        client,
+        resolveIdentity,
       );
-      if (cleanupPending && client) {
-        await drainSlackInteractionCleanups(stores, client);
+      if (cleanupPending) {
+        await drainSlackInteractionCleanups(stores, resolveIdentity);
       }
       if (
         stores.turnJobs.hasPending('ledger') ||
@@ -1074,44 +1077,58 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       }
       return;
     }
-    // One client per alarm firing, resolved from THIS DO's LOCAL settings so
-    // credential resolution never RPCs into this same object (a self-call while
-    // the alarm holds the thread). runTurn takes it as an override.
-    const client = await this.resolveAlarmClient(stores);
+    // Resolve current credentials once per identity referenced by this bounded
+    // batch. The map is discarded after the alarm, so the next retry observes
+    // credential rotation without ever falling back to another identity.
+    const resolveIdentity = this.createAlarmIdentityResolver(stores);
     const usageStore = localUsageStore(stores);
     let needsRetry = false;
-    // The resolver's store contract is async; the DO's logic classes are sync.
-    // A tiny async adapter bridges them for the fail-closed re-check below.
-    const configReader = {
-      getAgent: async (id: string) => stores.config.getAgent(id),
-      find: async (workspaceId: string, channelId: string, options?: AssignmentLookupOptions) =>
-        stores.config.find(workspaceId, channelId, options),
-    };
+    let identityRetryDelayMs = RELAY_RETRY_BACKOFF_MS;
     const runJob = async (job: (typeof pending)[number]): Promise<boolean> => {
-      if (!slackIdentityDeliverySupported(job.turn)) {
-        stores.turnJobs.markRecoveryRequired(job.id, 'slack_identity_delivery_not_ready');
+      if (!job.turn.interactionIntent && job.progress.interactionIntent) {
+        job.turn.interactionIntent = job.progress.interactionIntent;
+      }
+      let identityContext: SlackIdentityExecutionContext;
+      try {
+        identityContext = await resolveIdentity(effectiveTurnSlackIdentityId(job.turn));
+        await verifySlackIdentityTurnAccess(identityContext, job.turn);
+      } catch (error) {
+        const unavailable = normalizeSlackIdentityExecutionError(
+          error,
+          effectiveTurnSlackIdentityId(job.turn),
+        );
+        if (unavailable.retryable) {
+          needsRetry = true;
+          identityRetryDelayMs = Math.max(
+            identityRetryDelayMs,
+            unavailable.retryAfterMs ?? 0,
+          );
+          console.warn(
+            `[chickpea] Slack identity preflight will retry (${unavailable.reasonCode})`,
+          );
+          return false;
+        }
+        stores.turnJobs.markRecoveryRequired(job.id, 'slack_identity_unavailable');
         if (job.turn.interactionIntent?.disposition === 'work') {
           stores.slack.setActiveWork(slackThreadKey(job.turn), job.id, false);
         }
         return false;
       }
-      if (!job.turn.interactionIntent && job.progress.interactionIntent) {
-        job.turn.interactionIntent = job.progress.interactionIntent;
-      }
+      const client = identityContext.client;
       // DM turns resolve their profile live at agent time, so a profile
       // disabled in the enqueue->alarm gap would otherwise surface as a fake
       // "provider failed" final. Re-check here and fail closed exactly like
       // the admit path: silent, claims released, job tombstoned.
       if (surfaceForChannelId(job.turn.channelId) === 'direct') {
         try {
-          await resolveAssignment(
+          const identity = stores.config.getSlackIdentity(identityContext.identityId);
+          const liveAssignment = await resolveSlackIdentityDmAssignment(
+            identity,
             job.turn.workspaceId,
             job.turn.channelId,
-            { agents: configReader, assignments: configReader },
-            { surface: 'direct' },
+            stores.config,
           );
-        } catch (err) {
-          if (err instanceof NoAssignmentError) {
+          if (!liveAssignment) {
             stores.slack.release(job.evtKey);
             stores.slack.release(job.msgKey);
             stores.slack.release(`decision:${job.msgKey}`);
@@ -1121,8 +1138,11 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
             stores.turnJobs.markDelivered(job.id);
             return true;
           }
-          // Any other resolution error falls through to the normal turn path,
-          // which owns retry/terminal semantics.
+        } catch {
+          // A transient policy-store read must not widen authority by falling
+          // through to model work. A later alarm rechecks the same identity.
+          needsRetry = true;
+          return false;
         }
       }
       const attempt = job.attempts + 1;
@@ -1192,6 +1212,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           : undefined;
         await runTurn(job.turn, job.assignment, this.env as PlatformEnv, {
           client,
+          identityContext,
           turnId: job.id,
           usageExecutionId: `exec:${job.id}:flue`,
           ...(job.runId ? { runId: job.runId, runAttempt: attempt } : {}),
@@ -1338,8 +1359,8 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         }
       }),
     );
-    await drainLedgerRuns(stores, this.env as PlatformEnv, client);
-    await drainSlackInteractionCleanups(stores, client);
+    await drainLedgerRuns(stores, this.env as PlatformEnv, resolveIdentity);
+    await drainSlackInteractionCleanups(stores, resolveIdentity);
     needsRetry ||= stores.turnJobs.hasPending('legacy') ||
       stores.turnJobs.hasPending('ledger') ||
       stores.turnJobs.hasPendingSlackInteractionCleanup();
@@ -1347,21 +1368,24 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       // Re-arm (do NOT throw) so this invocation returns normally and its
       // attempt-count writes commit; the next firing re-drives the leftover
       // pending jobs.
-      await this.ctx.storage.setAlarm(Date.now() + RELAY_RETRY_BACKOFF_MS);
+      await this.ctx.storage.setAlarm(Date.now() + identityRetryDelayMs);
     }
   }
 
-  /**
-   * A Slack WebClient for the alarm, using the bot token resolved from env
-   * (process.env) first and this DO's LOCAL settings store second. Passing the
-   * local settings as the resolver's store bypasses both the resolver cache AND
-   * the Cloudflare settings proxy — so this never opens an RPC back into this
-   * same Durable Object while the alarm is executing.
-   */
-  private async resolveAlarmClient(stores: TagStateStores): Promise<WebClient> {
+  private createAlarmIdentityResolver(stores: TagStateStores): SlackIdentityExecutionResolver {
     const localSettings = localSettingsStore(stores);
-    const { botToken } = await resolveSlackCredentials(this.env as PlatformEnv, localSettings);
-    return createSlackWebClient(botToken);
+    return cacheSlackIdentityExecutionContexts(
+      (identityId) => resolveSlackIdentityExecutionContext(
+          identityId,
+          this.env as PlatformEnv,
+          {
+            config: {
+              getSlackIdentity: async (id) => stores.config.getSlackIdentity(id),
+            },
+            settings: localSettings,
+          },
+        ),
+    );
   }
 
   /**
@@ -1480,17 +1504,19 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
 
 async function drainSlackInteractionCleanups(
   stores: TagStateStores,
-  client: WebClient,
+  resolveIdentity: SlackIdentityExecutionResolver,
 ): Promise<void> {
   for (const job of stores.turnJobs.listPendingSlackInteractionCleanups(MAX_TURN_DRAIN_BATCH)) {
     const progress = job.progress.slackInteraction;
     if (!progress) continue;
     try {
+      const identityContext = await resolveIdentity(effectiveTurnSlackIdentityId(job.turn));
+      await verifySlackIdentityTurnAccess(identityContext, job.turn);
       await repairSlackInteractionProgress(
         job.turn,
         job.assignment,
         progress,
-        client,
+        identityContext.client,
         (patch) => {
           stores.turnJobs.recordSlackInteractionProgress(job.id, patch);
         },
@@ -1504,7 +1530,7 @@ async function drainSlackInteractionCleanups(
 async function drainLedgerRuns(
   stores: TagStateStores,
   platformEnv: PlatformEnv,
-  client?: WebClient,
+  resolveIdentity: SlackIdentityExecutionResolver,
 ): Promise<void> {
   await new DurableRunDriver(stores.work, {
     ownerId: 'cloudflare_ledger_run_driver',
@@ -1518,7 +1544,8 @@ async function drainLedgerRuns(
       // handler contract without a self-RPC through CfWorkStore.
       work: stores.work as unknown as WorkStore,
       turns: stores.turnJobs,
-      ...(client ? { client } : {}),
+      resolveIdentity,
+      verifyIdentityAccess: verifySlackIdentityTurnAccess,
       platformEnv,
       settingsStore: localSettingsStore(stores),
       usageStore: localUsageStore(stores),

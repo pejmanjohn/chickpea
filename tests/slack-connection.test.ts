@@ -265,6 +265,15 @@ function listenIdentityAdmissionSlack(): Promise<{
       }));
       return;
     }
+    if (req.url?.endsWith('/auth.test')) {
+      res.end(JSON.stringify({
+        ok: true,
+        app_id: 'A0FINANCE',
+        team_id: 'T_ACME',
+        user_id: 'U_FINANCE',
+      }));
+      return;
+    }
     if (req.url?.endsWith('/chat.postMessage')) {
       res.end(JSON.stringify({ ok: true, channel: 'C_FINANCE', ts: '1782770400.009000' }));
       return;
@@ -2174,12 +2183,13 @@ test('multi mode admits only a connected selected dedicated identity that is in 
               ).get() as
                 | { status: string; recovery_reason: string | null; turn_json: string }
                 | undefined;
-              if (row?.status === 'recovery_required') admitted = row;
+              if (row) admitted = row;
             } finally {
               db.close();
             }
           }
-          assert.equal(admitted?.recovery_reason, 'slack_identity_delivery_not_ready');
+          assert.notEqual(admitted?.status, 'recovery_required');
+          assert.equal(admitted?.recovery_reason, null);
           assert.equal(JSON.parse(admitted?.turn_json ?? '{}').slackIdentityId, identity.id);
 
           fake.setMember(false);

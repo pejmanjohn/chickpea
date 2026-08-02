@@ -22,7 +22,16 @@ import {
 import { ContinuityNoticeDeliveryError } from './continuity-notice.ts';
 import { AgentPromptFailure } from './flue-dispatch.ts';
 import { slackThreadKey } from './thread-key.ts';
-import { slackIdentityDeliverySupported } from './identity-admission.ts';
+import {
+  cacheSlackIdentityExecutionContexts,
+  effectiveTurnSlackIdentityId,
+  normalizeSlackIdentityExecutionError,
+  resolveSlackIdentityExecutionContext,
+  verifySlackIdentityTurnAccess,
+  type SlackIdentityAccessVerifier,
+  type SlackIdentityExecutionContext,
+  type SlackIdentityExecutionResolver,
+} from './identity-execution.ts';
 import { MAX_POST_DISPATCH_ATTEMPTS } from './turn-jobs.ts';
 import type { SlackPresentationStatePort } from './agent-view-presentation.ts';
 
@@ -34,12 +43,15 @@ let draining: Promise<void> | undefined;
 let wakeRequested = false;
 let retryTimer: ReturnType<typeof setTimeout> | undefined;
 
-function scheduleNodeTurnRelayRetry(env: PlatformEnv | undefined): void {
+function scheduleNodeTurnRelayRetry(
+  env: PlatformEnv | undefined,
+  delayMs = NODE_RETRY_BACKOFF_MS,
+): void {
   if (retryTimer) return;
   retryTimer = setTimeout(() => {
     retryTimer = undefined;
     void wakeNodeTurnRelay(env);
-  }, NODE_RETRY_BACKOFF_MS);
+  }, Math.max(NODE_RETRY_BACKOFF_MS, delayMs));
   retryTimer.unref();
 }
 
@@ -88,6 +100,9 @@ export interface NodeTurnRelayDrainOptions {
   state?: SlackStateStore;
   work?: WorkStore;
   client?: WebClient;
+  /** Focused seam for proving identity isolation and rotation. */
+  resolveIdentity?: SlackIdentityExecutionResolver;
+  verifyIdentityAccess?: SlackIdentityAccessVerifier;
   executeTurn?: LedgerSlackTurnExecutor;
 }
 
@@ -97,6 +112,12 @@ export async function drainNodeTurnRelayOnce(
   const env = options.env;
   const state = options.state ?? getSlackStateStore(env);
   const executeTurn = options.executeTurn ?? runTurn;
+  const shouldResolveIdentity = Boolean(options.resolveIdentity) ||
+    (!options.client && !options.executeTurn);
+  const resolveIdentity = options.resolveIdentity ??
+    ((identityId: string) => resolveSlackIdentityExecutionContext(identityId, env));
+  const verifyIdentityAccess = options.verifyIdentityAccess ?? verifySlackIdentityTurnAccess;
+  const identityFor = cacheSlackIdentityExecutionContexts(resolveIdentity);
   if (
     state.listPendingTurns &&
     state.freezeRuntimePlan &&
@@ -129,15 +150,34 @@ export async function drainNodeTurnRelayOnce(
     const presentationState = slackPresentationStatePort(state);
     const pending = await listPendingTurns();
     const runJob = async (job: (typeof pending)[number]): Promise<boolean> => {
-      if (!slackIdentityDeliverySupported(job.turn)) {
-        await markTurnRecoveryRequired(job.id, 'slack_identity_delivery_not_ready');
-        if (job.turn.interactionIntent?.disposition === 'work') {
-          await state.setActiveWork(slackThreadKey(job.turn), job.id, false);
-        }
-        return false;
-      }
       if (!job.turn.interactionIntent && job.progress.interactionIntent) {
         job.turn.interactionIntent = job.progress.interactionIntent;
+      }
+      let identityContext: SlackIdentityExecutionContext | undefined;
+      if (shouldResolveIdentity) {
+        try {
+          identityContext = await identityFor(effectiveTurnSlackIdentityId(job.turn));
+          await verifyIdentityAccess(identityContext, job.turn);
+        } catch (error) {
+          const unavailable = normalizeSlackIdentityExecutionError(
+            error,
+            effectiveTurnSlackIdentityId(job.turn),
+          );
+          if (unavailable.retryable) {
+            if (!options.state) {
+              scheduleNodeTurnRelayRetry(env, unavailable.retryAfterMs);
+            }
+            console.warn(
+              `[chickpea] Slack identity preflight will retry (${unavailable.reasonCode})`,
+            );
+            return false;
+          }
+          await markTurnRecoveryRequired(job.id, 'slack_identity_unavailable');
+          if (job.turn.interactionIntent?.disposition === 'work') {
+            await state.setActiveWork(slackThreadKey(job.turn), job.id, false);
+          }
+          return false;
+        }
       }
       const attempt = job.attempts + 1;
       let activeWorkKey = job.turn.interactionIntent?.disposition === 'work'
@@ -169,6 +209,11 @@ export async function drainNodeTurnRelayOnce(
             }
           : undefined;
         await executeTurn(job.turn, job.assignment, env, {
+          ...(identityContext
+            ? { client: identityContext.client, identityContext }
+            : options.client
+              ? { client: options.client }
+              : {}),
           turnId: job.id,
           usageExecutionId: `exec:${job.id}:flue`,
           ...(job.runId ? { runId: job.runId, runAttempt: attempt } : {}),
@@ -254,9 +299,16 @@ export async function drainNodeTurnRelayOnce(
     work: options.work ?? getWorkStore(env),
     executeTurn,
     ...(options.client ? { client: options.client } : {}),
+    ...(shouldResolveIdentity ? { resolveIdentity: identityFor, verifyIdentityAccess } : {}),
     ...(env ? { env } : {}),
   });
-  await drainSlackInteractionCleanups(state, options.client, env);
+  await drainSlackInteractionCleanups(
+    state,
+    options.client,
+    env,
+    shouldResolveIdentity ? identityFor : undefined,
+    verifyIdentityAccess,
+  );
   await state.maintainRunPresentations?.(100);
 }
 
@@ -264,16 +316,22 @@ async function drainSlackInteractionCleanups(
   state: SlackStateStore,
   client: WebClient | undefined,
   env: PlatformEnv | undefined,
+  resolveIdentity?: SlackIdentityExecutionResolver,
+  verifyIdentityAccess: SlackIdentityAccessVerifier = verifySlackIdentityTurnAccess,
 ): Promise<void> {
   if (!state.listPendingSlackInteractionCleanups || !state.recordSlackInteractionProgress) {
     return;
   }
   const jobs = await state.listPendingSlackInteractionCleanups();
   if (jobs.length === 0) return;
-  const slack = client ?? await getClient(env);
   for (const job of jobs) {
     if (!job.progress.slackInteraction) continue;
     try {
+      const identityContext = client || !resolveIdentity
+        ? undefined
+        : await resolveIdentity(effectiveTurnSlackIdentityId(job.turn));
+      if (identityContext) await verifyIdentityAccess(identityContext, job.turn);
+      const slack = client ?? identityContext?.client ?? await getClient(env);
       await repairSlackInteractionProgress(
         job.turn,
         job.assignment,
@@ -292,6 +350,8 @@ async function drainLedgerRuns(input: {
   work: WorkStore;
   executeTurn: LedgerSlackTurnExecutor;
   client?: WebClient;
+  resolveIdentity?: SlackIdentityExecutionResolver;
+  verifyIdentityAccess?: SlackIdentityAccessVerifier;
   env?: PlatformEnv;
 }): Promise<void> {
   const { state, work } = input;
@@ -342,6 +402,10 @@ async function drainLedgerRuns(input: {
       setActiveWork: (key, generation, active) =>
         state.setActiveWork(key, generation, active),
       ...(input.client ? { client: input.client } : {}),
+      ...(input.resolveIdentity ? { resolveIdentity: input.resolveIdentity } : {}),
+      ...(input.verifyIdentityAccess
+        ? { verifyIdentityAccess: input.verifyIdentityAccess }
+        : {}),
       ...(input.env ? { platformEnv: input.env } : {}),
     }),
   });

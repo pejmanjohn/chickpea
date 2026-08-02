@@ -9,7 +9,7 @@ import type {
   InteractiveRunClaim,
   WorkStore,
 } from '../work/types.ts';
-import { getClient, runTurn, type RunTurnOptions } from './run-turn.ts';
+import { runTurn, type RunTurnOptions } from './run-turn.ts';
 import {
   deliverPersistedSlackPayload,
   PersistedSlackDeliveryError,
@@ -30,7 +30,16 @@ import type {
 } from './turn-job-types.ts';
 import type { RuntimePlanV2 } from '../agents/runtime-plan.ts';
 import { slackThreadKey } from './thread-key.ts';
-import { slackIdentityDeliverySupported } from './identity-admission.ts';
+import {
+  cacheSlackIdentityExecutionContexts,
+  effectiveTurnSlackIdentityId,
+  normalizeSlackIdentityExecutionError,
+  resolveSlackIdentityExecutionContext,
+  verifySlackIdentityTurnAccess,
+  type SlackIdentityAccessVerifier,
+  type SlackIdentityExecutionContext,
+  type SlackIdentityExecutionResolver,
+} from './identity-execution.ts';
 import type { SlackInteractionIntent } from './interaction-intent.ts';
 import type { SlackInteractionProgressPatch } from '../config/state-rpc.ts';
 import type { SlackContinuityNoticeProgress } from '../config/state-rpc.ts';
@@ -90,6 +99,8 @@ export interface LedgerSlackRunHandlerOptions {
   work: WorkStore;
   turns: LedgerSlackTurnStore;
   client?: WebClient;
+  resolveIdentity?: SlackIdentityExecutionResolver;
+  verifyIdentityAccess?: SlackIdentityAccessVerifier;
   platformEnv?: PlatformEnv;
   settingsStore?: SettingsStore;
   usageStore?: UsageStore;
@@ -108,15 +119,20 @@ export function createLedgerSlackRunHandler(
 ): (claim: InteractiveRunClaim) => Promise<RunDriverHandlerResult> {
   const now = options.now ?? Date.now;
   const executeTurn = options.executeTurn ?? runTurn;
+  const shouldResolveIdentity = Boolean(options.resolveIdentity) ||
+    (!options.client && !options.executeTurn);
+  const resolveIdentity = options.resolveIdentity ??
+    ((identityId: string) => resolveSlackIdentityExecutionContext(
+      identityId,
+      options.platformEnv,
+      { ...(options.settingsStore ? { settings: options.settingsStore } : {}) },
+    ));
+  const verifyIdentityAccess = options.verifyIdentityAccess ?? verifySlackIdentityTurnAccess;
+  const identityFor = cacheSlackIdentityExecutionContexts(resolveIdentity);
   return async (claim) => {
     const job = await options.turns.getPendingByRunId(claim.run.id);
     if (!job || job.executionAuthority !== 'ledger') {
       return { kind: 'recovery_required', reasonCode: 'ledger_adapter_payload_missing' };
-    }
-    if (!slackIdentityDeliverySupported(job.turn)) {
-      await options.turns.markRecoveryRequired(job.id, 'slack_identity_delivery_not_ready');
-      await clearActiveWork(options, job);
-      return { kind: 'recovery_required', reasonCode: 'slack_identity_delivery_not_ready' };
     }
     if (claim.binding.adapterKind !== 'slack') {
       await options.turns.markError(job.id);
@@ -127,8 +143,32 @@ export function createLedgerSlackRunHandler(
     if (!job.turn.interactionIntent && job.progress.interactionIntent) {
       job.turn.interactionIntent = job.progress.interactionIntent;
     }
+    let identityContext: SlackIdentityExecutionContext | undefined;
+    if (shouldResolveIdentity) {
+      try {
+        const identityId = effectiveTurnSlackIdentityId(job.turn);
+        identityContext = await identityFor(identityId);
+        await verifyIdentityAccess(identityContext, job.turn);
+      } catch (error) {
+        const unavailable = normalizeSlackIdentityExecutionError(
+          error,
+          effectiveTurnSlackIdentityId(job.turn),
+        );
+        if (unavailable.retryable) {
+          return { kind: 'requeue', reasonCode: 'slack_identity_temporarily_unavailable' };
+        }
+        await options.turns.markRecoveryRequired(job.id, 'slack_identity_unavailable');
+        await clearActiveWork(options, job);
+        return { kind: 'recovery_required', reasonCode: 'slack_identity_unavailable' };
+      }
+    }
     await options.turns.recordAttempt(job.id, attempt);
-    const client = options.client ?? await getClient(options.platformEnv);
+    const client = identityContext?.client ?? options.client;
+    if (!client) {
+      await options.turns.markRecoveryRequired(job.id, 'slack_identity_unavailable');
+      await clearActiveWork(options, job);
+      return { kind: 'recovery_required', reasonCode: 'slack_identity_unavailable' };
+    }
     if (claim.phase === 'delivery') {
       return deliverPersistedResponse(options, claim, job, client, attempt, now);
     }
@@ -143,6 +183,7 @@ export function createLedgerSlackRunHandler(
     try {
       await executeTurn(job.turn, job.assignment, options.platformEnv, {
         client,
+        ...(identityContext ? { identityContext } : {}),
         turnId: job.id,
         usageExecutionId: `exec:${job.id}:flue`,
         runId: claim.run.id,

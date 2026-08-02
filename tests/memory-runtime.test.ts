@@ -387,6 +387,45 @@ test('memory quarantine hides all pre-trigger transcript history when live Slack
   }
 });
 
+test('memory authorization uses the admitted identity token without changing its audience key', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-memory-identity-'));
+  const previous = snapshotEnvironment();
+  const originalFetch = globalThis.fetch;
+  const authorizations: string[] = [];
+  try {
+    process.env.SLACK_STATE_DB_PATH = join(directory, 'state.db');
+    process.env.SLACK_BOT_TOKEN = 'xoxb-workspace-default';
+    process.env.SLACK_BOT_USER_ID = 'U_DEFAULT';
+    globalThis.fetch = async (input, init) => {
+      authorizations.push(String(new Headers(init?.headers).get('authorization')));
+      return fakeSlackFetch(input);
+    };
+
+    const prepared = await prepareMemoryTurn({
+      turn: {
+        ...baseTurn,
+        eventId: 'E_IDENTITY_MEMORY',
+        slackIdentityId: 'slack_identity_finance',
+        text: '<@U_FINANCE> What do you remember?',
+      },
+      platformEnv: undefined,
+      client: {} as WebClient,
+      botToken: 'xoxb-finance',
+      botUserId: 'U_BOT',
+    });
+
+    assert.ok(prepared.conversationKey.startsWith(slackThreadKey(baseTurn)));
+    assert.ok(authorizations.length > 0);
+    assert.ok(authorizations.every((value) => value === 'Bearer xoxb-finance'));
+  } finally {
+    globalThis.fetch = originalFetch;
+    process.env.SLACK_STATE_DB_PATH = ':memory:';
+    getMemoryStateStore();
+    restoreEnvironment(previous);
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('an empty memory selection returns a no-op delivery lease', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'chickpea-memory-empty-lease-'));
   const previous = snapshotEnvironment();

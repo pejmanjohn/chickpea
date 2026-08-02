@@ -6,7 +6,11 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 import { SqliteConfigStore } from '../../src/config/store.ts';
-import { FakeSlackBackend } from './fake-slack.ts';
+import {
+  FakeSlackBackend,
+  type FakeSlackBehaviorConfig,
+  type FakeSlackChannel,
+} from './fake-slack.ts';
 import {
   PARITY_SIGNING_SECRET,
   signSlackRequest,
@@ -59,8 +63,9 @@ export const laneB: Lane = {
     assertNodeVersion(nodeBin);
     await ensureBuilt(nodeBin);
 
+    const slack = slackFixturesFor(config);
     const backend = new FakeSlackBackend({
-      ...(config.slack ? { slack: config.slack } : {}),
+      ...(slack ? { slack } : {}),
       ...(config.provider ? { provider: config.provider } : {}),
     });
     const fake = await backend.listen();
@@ -173,6 +178,34 @@ export const laneB: Lane = {
     };
   },
 };
+
+/** Durable execution rechecks real app membership. Custom config seeds used by
+ * parity therefore need matching conversations.info rows just like the demo
+ * helper's explicit fixtures. */
+function slackFixturesFor(config: ScenarioLaneConfig): FakeSlackBehaviorConfig | undefined {
+  const derived = (config.configSeed?.assignments ?? [])
+    .filter((assignment) =>
+      assignment.enabled &&
+      assignment.workspaceId !== '*' &&
+      assignment.channelId !== '*' &&
+      !assignment.channelId.includes('*'),
+    )
+    .map((assignment): FakeSlackChannel => ({
+      id: assignment.channelId,
+      name: assignment.channelLabel ?? assignment.channelId.toLowerCase(),
+      isMember: true,
+      isPrivate: assignment.channelId.startsWith('G'),
+      teamId: assignment.workspaceId,
+    }));
+  if (!config.slack && derived.length === 0) return undefined;
+  const channels = new Map<string, FakeSlackChannel>();
+  for (const channel of derived) channels.set(channel.id, channel);
+  for (const channel of config.slack?.channels ?? []) channels.set(channel.id, channel);
+  return {
+    ...config.slack,
+    ...(channels.size > 0 ? { channels: [...channels.values()] } : {}),
+  };
+}
 
 /**
  * Reuse the shared Slack v0 request signer (tests/parity/lane.ts, lane-agnostic),

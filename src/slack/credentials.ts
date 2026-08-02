@@ -291,6 +291,8 @@ export interface SlackAuthTestResult {
   ok: boolean;
   /** Slack's machine error code when ok is false (e.g. 'invalid_auth'). */
   error: string | undefined;
+  /** Slack-provided retry delay for bounded truth reads, when available. */
+  retryAfterMs?: number;
   /** Slack app id for deep-linking install-wide identity settings. */
   appId?: string;
   teamId: string | undefined;
@@ -402,13 +404,17 @@ export async function slackIdentityAuthTest(
     return {
       ok: false,
       error: result.error,
+      ...(result.retryAfterMs === undefined ? {} : { retryAfterMs: result.retryAfterMs }),
       teamId: undefined,
       teamName: undefined,
       botName: undefined,
       botUserId: undefined,
     };
   }
-  return parseSlackAuthTest(result.body);
+  return {
+    ...parseSlackAuthTest(result.body),
+    ...(result.retryAfterMs === undefined ? {} : { retryAfterMs: result.retryAfterMs }),
+  };
 }
 
 /** One Slack channel, mapped to the admin-facing shape the proxy returns. */
