@@ -33,7 +33,10 @@
     "TAG_RUN_BODY_RETENTION_DAYS": "30",
     // Exact workspace/channel pairs (`T123/C456`) for the internal interactive
     // ledger canary. Empty keeps every future Slack admission on legacy.
-    "SLACK_TAG_LEDGER_CANARY_CHANNELS": ""
+    "SLACK_TAG_LEDGER_CANARY_CHANNELS": "",
+    // Dedicated Slack identities stay inert until an operator explicitly
+    // enables the reviewed multi-identity runtime path.
+    "SLACK_TAG_IDENTITY_MODE": "base"
   },
   "triggers": {
     "crons": ["* * * * *"]

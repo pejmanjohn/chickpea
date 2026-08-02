@@ -5,6 +5,7 @@ import {
   type SlackChannelOptions,
 } from '@flue/slack';
 import { createChannelRouter } from '@flue/runtime';
+import { Hono } from 'hono';
 
 import { resolveEffectiveSlackConfig } from '../config/effective-config.ts';
 import { resolveModelCredentialAttribution } from '../config/model-credential-refs.ts';
@@ -19,8 +20,13 @@ import {
   type SlackInteractionProgress,
   type TurnJob,
 } from '../config/state-rpc.ts';
-import type { ResolvedAssignment } from '../config/types.ts';
-import { resolveSlackBehaviorSettings } from '../slack/behavior-settings.ts';
+import {
+  WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+  type ResolvedAssignment,
+} from '../config/types.ts';
+import {
+  resolveSlackBehaviorSettings,
+} from '../slack/behavior-settings.ts';
 import {
   classifySlackInteraction,
   resolveImmediateSlackInteractionIntent,
@@ -38,6 +44,13 @@ import {
   resolveSlackPublicUrl,
   slackAuthTest,
 } from '../slack/credentials.ts';
+import { resolveSlackIdentityCredentials } from '../slack/identity-credentials.ts';
+import {
+  handlePendingSlackIdentityChallenge,
+  MAX_SLACK_INGRESS_BYTES,
+  resolveSlackIngressCandidate,
+  validateSlackIdentityEnvelopeBinding,
+} from '../slack/identity-ingress.ts';
 import {
   prepareSlackShadowAdmission,
   resolveSlackAdmissionTruth,
@@ -161,15 +174,46 @@ export async function resolveBotUserId(
  * the whole app) into the events gate below, keyed so a rotated/stored secret
  * replaces the instance instead of being ignored.
  */
-let verifiedChannel: { signingSecret: string; channel: SlackChannel } | undefined;
-function channelForSecret(signingSecret: string): SlackChannel {
-  if (verifiedChannel?.signingSecret !== signingSecret) {
-    verifiedChannel = {
-      signingSecret,
-      channel: createSlackChannel({ signingSecret, events: handleSlackEvents }),
-    };
+const MAX_VERIFIED_SLACK_IDENTITY_CHANNELS = 64;
+interface VerifiedSlackIdentityChannel {
+  credentialRevision: string | null;
+  signingSecret: string;
+  channel: SlackChannel;
+}
+
+const verifiedChannels = new Map<string, VerifiedSlackIdentityChannel>();
+
+function channelForIdentity(
+  identityId: string,
+  signingSecret: string,
+  credentialRevision: string | null,
+): SlackChannel {
+  const cached = verifiedChannels.get(identityId);
+  if (
+    cached?.credentialRevision === credentialRevision &&
+    cached.signingSecret === signingSecret
+  ) {
+    verifiedChannels.delete(identityId);
+    verifiedChannels.set(identityId, cached);
+    return cached.channel;
   }
-  return verifiedChannel.channel;
+  const entry: VerifiedSlackIdentityChannel = {
+    credentialRevision,
+    signingSecret,
+    channel: createSlackChannel({
+      signingSecret,
+      bodyLimit: MAX_SLACK_INGRESS_BYTES,
+      events: handleSlackEventsForIdentity(identityId),
+    }),
+  };
+  verifiedChannels.delete(identityId);
+  verifiedChannels.set(identityId, entry);
+  while (verifiedChannels.size > MAX_VERIFIED_SLACK_IDENTITY_CHANNELS) {
+    const oldest = verifiedChannels.keys().next().value as string | undefined;
+    if (!oldest) break;
+    verifiedChannels.delete(oldest);
+  }
+  return entry.channel;
 }
 
 // instanceId/parseInstanceId are pure identity helpers, independent
@@ -178,7 +222,12 @@ function channelForSecret(signingSecret: string): SlackChannel {
 // the ones exported below, and the events gate always resolves the real
 // secret first.
 function identityChannel(): SlackChannel {
-  return verifiedChannel?.channel ?? channelForSecret('unconfigured-placeholder');
+  return verifiedChannels.values().next().value?.channel ??
+    channelForIdentity(
+      WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+      'unconfigured-placeholder',
+      null,
+    );
 }
 
 type SlackRouteHandler = SlackChannel['routes'][number]['handler'];
@@ -220,7 +269,17 @@ async function urlVerificationChallenge(c: {
  * like any other event.
  */
 const verifiedEventsHandler: SlackRouteHandler = async (c, next) => {
-  const { signingSecret } = await resolveSlackCredentials(c.env as PlatformEnv | undefined);
+  const platformEnv = c.env as PlatformEnv | undefined;
+  const stores = resolveStores(platformEnv);
+  const identity = await stores.config.getSlackIdentity(
+    WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+  );
+  const credentials = await resolveSlackIdentityCredentials(
+    identity.id,
+    platformEnv,
+    stores.settings,
+  );
+  const { signingSecret } = credentials;
   if (!signingSecret) {
     const challenge = await urlVerificationChallenge(c);
     if (challenge !== undefined) {
@@ -228,7 +287,11 @@ const verifiedEventsHandler: SlackRouteHandler = async (c, next) => {
     }
     return c.json({ error: 'slack_not_configured' }, 401);
   }
-  const route = channelForSecret(signingSecret).routes.find((r) => r.path === '/events');
+  const route = channelForIdentity(
+    identity.id,
+    signingSecret,
+    credentials.connectionRevision,
+  ).routes.find((candidate) => candidate.path === '/events');
   if (!route) {
     // Unreachable: createSlackChannel with an events handler always mounts
     // /events. Guarded (not asserted away) so a library change fails loudly.
@@ -237,42 +300,134 @@ const verifiedEventsHandler: SlackRouteHandler = async (c, next) => {
   return route.handler(c, next);
 };
 
+const scopedIdentityEventsHandler: SlackRouteHandler = async (c, next) => {
+  const ingressKey = c.req.param('ingressKey');
+  if (!ingressKey) return c.json({ error: 'slack_identity_unknown' }, 401);
+  const platformEnv = c.env as PlatformEnv | undefined;
+  const stores = resolveStores(platformEnv);
+  const candidate = await resolveSlackIngressCandidate(stores.config, ingressKey);
+  if (!candidate.found) return c.json({ error: 'slack_identity_unknown' }, 401);
+
+  const credentials = await resolveSlackIdentityCredentials(
+    candidate.identity.id,
+    platformEnv,
+    stores.settings,
+  );
+  if (!credentials.signingSecret) {
+    if (candidate.identity.kind !== 'dedicated') {
+      return c.json({ error: 'slack_not_configured' }, 401);
+    }
+    return handlePendingSlackIdentityChallenge(
+      c.req.raw,
+      candidate.identity,
+      stores.settings,
+    );
+  }
+
+  const route = channelForIdentity(
+    candidate.identity.id,
+    credentials.signingSecret,
+    credentials.connectionRevision,
+  ).routes.find((routeCandidate) => routeCandidate.path === '/events');
+  if (!route) throw new Error('slack channel lost its /events route');
+  return route.handler(c, next);
+};
+
 const routes: SlackChannel['routes'] = [
   { method: 'POST', path: '/events', handler: verifiedEventsHandler },
 ];
 
+function createSlackIdentityRouter(): ReturnType<typeof createChannelRouter> {
+  const router = new Hono();
+  router.post('/events/:ingressKey', (c, next) =>
+    scopedIdentityEventsHandler(c as never, next as never));
+  router.route('/', createChannelRouter(routes));
+  return router;
+}
+
 export const channel: SlackChannel = {
   // Path: /channels/slack/events
   routes,
-  route: () => createChannelRouter(routes),
+  route: createSlackIdentityRouter,
   instanceId: (ref) => identityChannel().instanceId(ref),
   parseInstanceId: (id) => identityChannel().parseInstanceId(id),
 };
 
-const handleSlackEvents: NonNullable<SlackChannelOptions['events']> = ({ c, payload }) => {
-  // a. Admission: only Events API callbacks; acknowledge and discard Agent
-  // View lifecycle events before they can enter normalization or persistence.
-  if (payload.type !== 'event_callback') return;
-  const eventType = payload.event.type;
-  if (
-    eventType === 'app_home_opened' ||
-    eventType === 'app_context_changed'
-  ) {
-    return;
-  }
-  // Capture the platform env up front — and BEFORE anything detaches: the
-  // stores, the credential resolver, and the dispatch on Cloudflare all need
-  // the bindings object `c` carries, and `c` itself must not be touched after
-  // the events ack returns (its request scope ends with the response). On
-  // node the env is ignored everywhere it is threaded.
-  const platformEnv = c.env as PlatformEnv | undefined;
-  detach(
-    c,
-    processSlackEvent(payload as unknown as SlackEventFixture, platformEnv).catch((err) => {
-      console.error('[chickpea] Slack event intake failed:', sanitizeError(err));
-    }),
-  );
-};
+function handleSlackEventsForIdentity(
+  identityId: string,
+): NonNullable<SlackChannelOptions['events']> {
+  return async ({ c, payload }) => {
+    const platformEnv = c.env as PlatformEnv | undefined;
+    const stores = resolveStores(platformEnv);
+    let identity = await stores.config.getSlackIdentity(identityId);
+    const binding = validateSlackIdentityEnvelopeBinding(identity, payload);
+    if (!binding.valid) {
+      return c.json({ error: `slack_identity_${binding.reason}` }, 401);
+    }
+
+    if (
+      identity.kind === 'workspace_default' &&
+      (!identity.appId ||
+        !identity.teamId ||
+        identity.lifecycle === 'setup_incomplete' ||
+        identity.lifecycle === 'credentials_pending')
+    ) {
+      const completesSetup =
+        identity.lifecycle === 'setup_incomplete' ||
+        identity.lifecycle === 'credentials_pending';
+      try {
+        identity = await stores.config.updateSlackIdentity(
+          identity.id,
+          identity.connectionRevision,
+          {
+            appId: payload.api_app_id,
+            teamId: payload.team_id,
+            ...(completesSetup
+              ? {
+                  lifecycle: 'connected' as const,
+                  health: 'healthy' as const,
+                  healthDetail: null,
+                }
+              : {}),
+          },
+        );
+      } catch {
+        const current = await stores.config.getSlackIdentity(identity.id);
+        if (!validateSlackIdentityEnvelopeBinding(current, payload).valid) {
+          return c.json({ error: 'slack_identity_changed' }, 409);
+        }
+        identity = current;
+      }
+    }
+
+    // The trust-boundary half of U3 deliberately keeps dedicated callbacks
+    // inert. The admission half below enables them only after identity-aware
+    // normalization and eligibility are installed in the same unit.
+    if (identity.kind === 'dedicated') return;
+
+    // a. Admission: only Events API callbacks; acknowledge and discard Agent
+    // View lifecycle events before they can enter normalization or persistence.
+    if (payload.type !== 'event_callback') return;
+    const eventType = payload.event.type;
+    if (
+      eventType === 'app_home_opened' ||
+      eventType === 'app_context_changed'
+    ) {
+      return;
+    }
+    // Capture the platform env up front — and BEFORE anything detaches: the
+    // stores, the credential resolver, and the dispatch on Cloudflare all need
+    // the bindings object `c` carries, and `c` itself must not be touched after
+    // the events ack returns (its request scope ends with the response). On
+    // node the env is ignored everywhere it is threaded.
+    detach(
+      c,
+      processSlackEvent(payload as unknown as SlackEventFixture, platformEnv).catch((err) => {
+        console.error('[chickpea] Slack event intake failed:', sanitizeError(err));
+      }),
+    );
+  };
+}
 
 async function processSlackEvent(
   payload: SlackEventFixture,

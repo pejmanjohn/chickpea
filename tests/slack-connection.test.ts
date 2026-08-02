@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 
 import { Hono } from 'hono';
@@ -11,6 +14,7 @@ import {
   invalidateSlackBotUserIdCache,
   resolveBotUserId,
 } from '../src/channels/slack.ts';
+import { resolveSlackIdentityMode } from '../src/slack/behavior-settings.ts';
 import { SqliteSettingsStore, type SettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import type { SlackIdentity } from '../src/config/types.ts';
@@ -115,10 +119,37 @@ const NO_SLACK_ENV: NodeJS.ProcessEnv = {
   SLACK_TAG_UNASSIGNED_HINT: undefined,
   SLACK_TAG_WELCOME_ON_JOIN: undefined,
   SLACK_TAG_AMBIENT_PARTICIPATION: undefined,
+  SLACK_TAG_IDENTITY_MODE: undefined,
   // requestOrigin() honors SLACK_TAG_PUBLIC_URL as an operator pin; clear it so
   // the request-derived origin tests are hermetic against the dev shell.
   SLACK_TAG_PUBLIC_URL: undefined,
 };
+
+function signedSlackEvent(
+  secret: string,
+  payload: Record<string, unknown>,
+  timestamp = Math.floor(Date.now() / 1_000),
+): { body: string; headers: Record<string, string> } {
+  const body = JSON.stringify(payload);
+  const timestampText = String(timestamp);
+  return {
+    body,
+    headers: {
+      'content-type': 'application/json',
+      'x-slack-request-timestamp': timestampText,
+      'x-slack-signature': `v0=${createHmac('sha256', secret)
+        .update(`v0:${timestampText}:${body}`)
+        .digest('hex')}`,
+    },
+  };
+}
+
+async function identityIngressApp(): Promise<Hono> {
+  const { channel } = await import('../src/channels/slack.ts');
+  const app = new Hono();
+  app.route('/channels/slack', channel.route());
+  return app;
+}
 
 function appWith(settings: SettingsStore): Hono {
   const app = new Hono();
@@ -1727,6 +1758,184 @@ test('events route echoes a url_verification challenge before any signing secret
       assert.deepEqual(await denied.json(), { error: 'slack_not_configured' });
     },
   );
+});
+
+test('Slack identity mode defaults closed and requires an explicit multi value', async () => {
+  await withEnv({ SLACK_TAG_IDENTITY_MODE: undefined }, async () => {
+    assert.equal(resolveSlackIdentityMode(), 'base');
+    assert.equal(resolveSlackIdentityMode({ SLACK_TAG_IDENTITY_MODE: 'multi' }), 'multi');
+    assert.equal(resolveSlackIdentityMode({ SLACK_TAG_IDENTITY_MODE: 'unexpected' }), 'base');
+  });
+});
+
+test('scoped identity ingress records one bounded pending challenge and rejects secretless events', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-slack-identity-ingress-pending-'));
+  const path = join(directory, 'state.db');
+  try {
+    await withEnv(
+      { ...NO_SLACK_ENV, TAG_DB_PATH: path, SLACK_STATE_DB_PATH: path },
+      async () => {
+        const config = new SqliteConfigStore(path);
+        const settings = new SqliteSettingsStore(path);
+        try {
+          const identity = await config.createSlackIdentity(pendingIdentity());
+          const app = await identityIngressApp();
+          const challenge = signedSlackEvent('future-secret', {
+            type: 'url_verification',
+            challenge: 'challenge-finance',
+          });
+          const url = `/channels/slack/events/${identity.ingressKey}`;
+
+          const accepted = await app.request(url, {
+            method: 'POST',
+            headers: challenge.headers,
+            body: challenge.body,
+          });
+          assert.equal(accepted.status, 200, await accepted.clone().text());
+          assert.deepEqual(await accepted.json(), { challenge: 'challenge-finance' });
+          assert.equal(
+            (await readPendingSlackChallenge(settings, identity.id))?.rawBody,
+            challenge.body,
+          );
+
+          const duplicate = await app.request(url, {
+            method: 'POST',
+            headers: challenge.headers,
+            body: challenge.body,
+          });
+          assert.equal(duplicate.status, 429);
+
+          const event = signedSlackEvent('future-secret', {
+            type: 'event_callback',
+            api_app_id: 'A0FINANCE',
+            team_id: 'T_ACME',
+            event_id: 'Ev_SECRETLESS',
+            event: { type: 'app_mention' },
+          });
+          const denied = await app.request(url, {
+            method: 'POST',
+            headers: event.headers,
+            body: event.body,
+          });
+          assert.equal(denied.status, 401);
+
+          const unknown = await app.request(
+            '/channels/slack/events/unknown_ingress_0123456789abcdef',
+            {
+              method: 'POST',
+              headers: challenge.headers,
+              body: challenge.body,
+            },
+          );
+          assert.equal(unknown.status, 401);
+
+          const oversized = await app.request(url, {
+            method: 'POST',
+            headers: {
+              ...challenge.headers,
+              'content-length': String(MAX_PENDING_SLACK_CHALLENGE_BYTES + 1),
+            },
+            body: challenge.body,
+          });
+          assert.equal(oversized.status, 413);
+        } finally {
+          config.close();
+          settings.close();
+        }
+      },
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('scoped ingress verifies the selected identity secret and binds app plus workspace', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-slack-identity-ingress-bound-'));
+  const path = join(directory, 'state.db');
+  try {
+    await withEnv(
+      { ...NO_SLACK_ENV, TAG_DB_PATH: path, SLACK_STATE_DB_PATH: path },
+      async () => {
+        const config = new SqliteConfigStore(path);
+        const settings = new SqliteSettingsStore(path);
+        try {
+          const identity = await config.createSlackIdentity(
+            pendingIdentity({
+              lifecycle: 'connected',
+              teamId: 'T_ACME',
+              appId: 'A0FINANCE',
+              botUserId: 'U_FINANCE',
+              credentialProvenance: 'stored',
+              health: 'healthy',
+            }),
+          );
+          await writeSlackIdentityCredentials(settings, identity.id, null, {
+            botToken: 'xoxb-finance',
+            signingSecret: 'finance-secret',
+            botUserId: 'U_FINANCE',
+          });
+          const app = await identityIngressApp();
+          const url = `/channels/slack/events/${identity.ingressKey}`;
+          const basePayload = {
+            type: 'event_callback',
+            api_app_id: 'A0FINANCE',
+            team_id: 'T_ACME',
+            event_id: 'Ev_FINANCE',
+            event: { type: 'app_mention' },
+          };
+
+          const wrongSecret = signedSlackEvent('other-secret', basePayload);
+          assert.equal(
+            (await app.request(url, {
+              method: 'POST',
+              headers: wrongSecret.headers,
+              body: wrongSecret.body,
+            })).status,
+            401,
+          );
+
+          const wrongApp = signedSlackEvent('finance-secret', {
+            ...basePayload,
+            api_app_id: 'A_OTHER',
+          });
+          assert.equal(
+            (await app.request(url, {
+              method: 'POST',
+              headers: wrongApp.headers,
+              body: wrongApp.body,
+            })).status,
+            401,
+          );
+
+          const wrongTeam = signedSlackEvent('finance-secret', {
+            ...basePayload,
+            team_id: 'T_OTHER',
+          });
+          assert.equal(
+            (await app.request(url, {
+              method: 'POST',
+              headers: wrongTeam.headers,
+              body: wrongTeam.body,
+            })).status,
+            401,
+          );
+
+          const valid = signedSlackEvent('finance-secret', basePayload);
+          const validResponse = await app.request(url, {
+              method: 'POST',
+              headers: valid.headers,
+              body: valid.body,
+            });
+          assert.equal(validResponse.status, 200, await validResponse.clone().text());
+        } finally {
+          config.close();
+          settings.close();
+        }
+      },
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test('requestOrigin honors SLACK_TAG_PUBLIC_URL as an operator pin over the request host', async () => {
