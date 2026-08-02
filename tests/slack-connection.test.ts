@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHmac } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { test } from 'node:test';
@@ -11,6 +12,8 @@ import {
   resolveBotUserId,
 } from '../src/channels/slack.ts';
 import { SqliteSettingsStore, type SettingsStore } from '../src/config/settings-store.ts';
+import { SqliteConfigStore } from '../src/config/store.ts';
+import type { SlackIdentity } from '../src/config/types.ts';
 import {
   invalidateStoredSlackCredentials,
   primeStoredSlackCredentials,
@@ -19,10 +22,86 @@ import {
   slackTokenFingerprint,
   SLACK_SETTING_KEYS,
 } from '../src/slack/credentials.ts';
+import {
+  resolveSlackIdentityCredentials,
+  slackIdentityCredentialSettingKeys,
+} from '../src/slack/identity-credentials.ts';
+import {
+  beginSlackIdentityConnection,
+  cancelSlackIdentityConnection,
+  completeSlackIdentityConnection,
+  refreshSlackIdentityHealth,
+  type SlackIdentityBootstrapDeps,
+  SlackIdentityBootstrapError,
+  validateSlackIdentityBotInstallation,
+} from '../src/slack/identity-bootstrap.ts';
+import {
+  MAX_PENDING_SLACK_CHALLENGE_BYTES,
+  recordPendingSlackChallenge,
+  readPendingSlackChallenge,
+  verifyPendingSlackChallenge,
+} from '../src/slack/identity-handshake.ts';
 import { withEnv } from './helpers/env.ts';
 import { loopbackListenSkipReason } from './helpers/listen.ts';
 
 const ADMIN_TOKEN = 'wizard-admin-token';
+
+function pendingIdentity(overrides: Partial<SlackIdentity> = {}): SlackIdentity {
+  return {
+    id: 'slack_identity_finance',
+    ingressKey: 'finance_ingress_0123456789abcdef',
+    kind: 'dedicated',
+    lifecycle: 'setup_incomplete',
+    dmState: 'on',
+    dmAgentId: 'agent_default',
+    credentialProvenance: 'none',
+    connectionRevision: 0,
+    health: 'unknown',
+    createdAt: 1,
+    updatedAt: 1,
+    ...overrides,
+  };
+}
+
+function signedChallenge(
+  secret: string,
+  options: { challenge?: string; timestamp?: number } = {},
+): { rawBody: string; signature: string; timestamp: string } {
+  const timestamp = String(options.timestamp ?? Math.floor(Date.now() / 1_000));
+  const rawBody = JSON.stringify({
+    type: 'url_verification',
+    challenge: options.challenge ?? 'challenge-finance',
+  });
+  return {
+    rawBody,
+    timestamp,
+    signature: `v0=${createHmac('sha256', secret)
+      .update(`v0:${timestamp}:${rawBody}`)
+      .digest('hex')}`,
+  };
+}
+
+function validDedicatedSlackDeps() {
+  return {
+    authTest: async () => ({
+      ok: true,
+      error: undefined,
+      appId: 'A0FINANCE',
+      teamId: 'T_ACME',
+      teamName: 'Acme Inc',
+      botName: 'finance',
+      botUserId: 'U_FINANCE',
+      botId: 'B_FINANCE',
+    }),
+    botIdentityInfo: async () => ({
+      ok: true,
+      error: undefined,
+      displayName: 'Finance',
+      avatarUrl: 'https://avatars.slack-edge.com/finance.png',
+      appId: 'A0FINANCE',
+    }),
+  };
+}
 
 // The wizard tests must not see ambient Slack credentials from the developer's
 // shell — clear the whole family for the duration of each test.
@@ -1735,6 +1814,384 @@ test('bot user id resolution ties a stored id to a stored token, and env token p
       },
     );
   } finally {
+    settings.close();
+  }
+});
+
+test('dedicated identity setup validates a bot, stores isolated credentials, and completes from a signed challenge', async () => {
+  const config = new SqliteConfigStore(':memory:');
+  const settings = new SqliteSettingsStore(':memory:');
+  const signingSecret = 'finance-signing-secret';
+  try {
+    const draft = await config.createSlackIdentity(pendingIdentity());
+    const recorded = await recordPendingSlackChallenge(
+      settings,
+      draft,
+      signedChallenge(signingSecret),
+    );
+    assert.equal(recorded.accepted, true);
+    if (recorded.accepted) assert.ok(Number.isSafeInteger(recorded.expiresAt));
+
+    const pending = await beginSlackIdentityConnection(
+      {
+        config,
+        settings,
+        identityId: draft.id,
+        expectedRevision: 0,
+        expectedTeamId: 'T_ACME',
+        botToken: 'xoxb-finance',
+        signingSecret,
+      },
+      validDedicatedSlackDeps(),
+    );
+    assert.equal(pending.lifecycle, 'credentials_pending');
+    assert.equal(pending.connectionRevision, 1);
+    assert.equal(pending.teamId, 'T_ACME');
+    assert.equal(pending.appId, 'A0FINANCE');
+    assert.equal(pending.botUserId, 'U_FINANCE');
+    assert.equal(pending.observedDisplayName, 'Finance');
+    assert.equal(pending.observedAvatarUrl, 'https://avatars.slack-edge.com/finance.png');
+
+    const connected = await completeSlackIdentityConnection({
+      config,
+      settings,
+      identityId: draft.id,
+      expectedRevision: pending.connectionRevision,
+    });
+    assert.equal(connected.lifecycle, 'connected');
+    assert.equal(connected.connectionRevision, 2);
+    assert.equal(await readPendingSlackChallenge(settings, draft.id), undefined);
+    const credentials = await resolveSlackIdentityCredentials(
+      draft.id,
+      undefined,
+      settings,
+    );
+    assert.equal(credentials.botToken, 'xoxb-finance');
+    assert.equal(credentials.signingSecret, signingSecret);
+    assert.equal(credentials.botUserId, 'U_FINANCE');
+    assert.ok(credentials.connectionRevision);
+    assert.equal(JSON.stringify(connected).includes('xoxb-finance'), false);
+    assert.equal(JSON.stringify(connected).includes(signingSecret), false);
+
+    const refreshed = await refreshSlackIdentityHealth(
+      {
+        config,
+        settings,
+        identityId: draft.id,
+        expectedRevision: connected.connectionRevision,
+      },
+      validDedicatedSlackDeps(),
+    );
+    assert.equal(refreshed.identity.health, 'healthy');
+    assert.equal(
+      refreshed.consoleUrl,
+      'https://api.slack.com/apps/A0FINANCE/general',
+    );
+    assert.equal(JSON.stringify(refreshed).includes(signingSecret), false);
+  } finally {
+    config.close();
+    settings.close();
+  }
+});
+
+test('legacy Slack Admin GETs never expose dedicated credential values or setting keys', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    const keys = slackIdentityCredentialSettingKeys('slack_identity_finance');
+    await settings.setSetting(keys.botToken, 'xoxb-must-not-leak');
+    await settings.setSetting(keys.signingSecret, 'signing-secret-must-not-leak');
+    await withEnv(NO_SLACK_ENV, async () => {
+      const app = appWith(settings);
+      for (const path of ['/admin/api/slack-connection', '/admin/api/slack-identity']) {
+        const response = await app.request(path, { headers: auth() });
+        const body = await response.text();
+        assert.doesNotMatch(body, /xoxb-must-not-leak|signing-secret-must-not-leak/);
+        assert.doesNotMatch(body, /slack\.identity\.slack_identity_finance/);
+      }
+    });
+  } finally {
+    settings.close();
+  }
+});
+
+test('workspace-default identity health keeps the legacy env-first credential contract', async () => {
+  const config = new SqliteConfigStore(':memory:');
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    await settings.setSetting(SLACK_SETTING_KEYS.botToken, 'xoxb-default-stored');
+    await settings.setSetting(SLACK_SETTING_KEYS.signingSecret, 'default-stored-secret');
+    await withEnv(NO_SLACK_ENV, async () => {
+      const base = (await config.listSlackIdentities())[0];
+      assert.ok(base);
+      const refreshed = await refreshSlackIdentityHealth(
+        {
+          config,
+          settings,
+          identityId: base.id,
+          expectedRevision: base.connectionRevision,
+        },
+        validDedicatedSlackDeps(),
+      );
+      assert.equal(refreshed.identity.kind, 'workspace_default');
+      assert.equal(refreshed.identity.lifecycle, 'connected');
+      assert.equal(refreshed.identity.teamId, 'T_ACME');
+      assert.equal(refreshed.identity.appId, 'A0FINANCE');
+      assert.equal(JSON.stringify(refreshed).includes('xoxb-default-stored'), false);
+      assert.equal(JSON.stringify(refreshed).includes('default-stored-secret'), false);
+    });
+  } finally {
+    config.close();
+    settings.close();
+  }
+});
+
+test('dedicated identity validation rejects user tokens, cross-workspace installs, and duplicate apps', async () => {
+  const config = new SqliteConfigStore(':memory:');
+  try {
+    await config.createSlackIdentity(pendingIdentity());
+    await config.createSlackIdentity(
+      pendingIdentity({
+        id: 'slack_identity_existing',
+        ingressKey: 'existing_ingress_0123456789abcdef',
+        lifecycle: 'connected',
+        teamId: 'T_ACME',
+        appId: 'A0EXISTING',
+        botUserId: 'U_EXISTING',
+        dmState: 'off',
+        credentialProvenance: 'stored',
+        health: 'healthy',
+      }),
+    );
+
+    const fallback = await validateSlackIdentityBotInstallation(
+      {
+        config,
+        identityId: 'slack_identity_finance',
+        expectedTeamId: 'T_ACME',
+        botToken: 'xoxb-fallback-app-id',
+      },
+      {
+        ...validDedicatedSlackDeps(),
+        authTest: async () => {
+          const { appId: _appId, ...authWithoutAppId } =
+            await validDedicatedSlackDeps().authTest();
+          return authWithoutAppId;
+        },
+        botIdentityInfo: async () => ({
+          ...(await validDedicatedSlackDeps().botIdentityInfo()),
+          avatarUrl: 'javascript:alert(1)',
+        }),
+      },
+    );
+    assert.equal(fallback.appId, 'A0FINANCE');
+    assert.equal(fallback.avatarUrl, undefined);
+    assert.equal(
+      fallback.consoleUrl,
+      'https://api.slack.com/apps/A0FINANCE/general',
+    );
+
+    const assertBootstrapCode = async (
+      code: string,
+      deps: SlackIdentityBootstrapDeps,
+    ) => {
+      await assert.rejects(
+        () =>
+          validateSlackIdentityBotInstallation(
+            {
+              config,
+              identityId: 'slack_identity_finance',
+              expectedTeamId: 'T_ACME',
+              botToken: 'token-under-test',
+            },
+            deps,
+          ),
+        (error: unknown) =>
+          error instanceof SlackIdentityBootstrapError && error.code === code,
+      );
+    };
+
+    await assertBootstrapCode('bot_token_required', {
+      ...validDedicatedSlackDeps(),
+      authTest: async () => {
+        const { botId: _botId, ...userAuth } = await validDedicatedSlackDeps().authTest();
+        return userAuth;
+      },
+    });
+    await assertBootstrapCode('workspace_mismatch', {
+      ...validDedicatedSlackDeps(),
+      authTest: async () => ({
+        ...(await validDedicatedSlackDeps().authTest()),
+        teamId: 'T_OTHER',
+      }),
+    });
+    await assertBootstrapCode('app_already_connected', {
+      ...validDedicatedSlackDeps(),
+      authTest: async () => ({
+        ...(await validDedicatedSlackDeps().authTest()),
+        appId: 'A0EXISTING',
+      }),
+      botIdentityInfo: async () => ({
+        ...(await validDedicatedSlackDeps().botIdentityInfo()),
+        appId: 'A0EXISTING',
+      }),
+    });
+    await assertBootstrapCode('app_identity_missing', {
+      ...validDedicatedSlackDeps(),
+      authTest: async () => {
+        const { appId: _appId, ...authWithoutAppId } =
+          await validDedicatedSlackDeps().authTest();
+        return authWithoutAppId;
+      },
+      botIdentityInfo: async () => {
+        const { appId: _appId, ...profileWithoutAppId } =
+          await validDedicatedSlackDeps().botIdentityInfo();
+        return { ...profileWithoutAppId, appId: undefined };
+      },
+    });
+  } finally {
+    config.close();
+  }
+});
+
+test('pending Slack challenges are bounded, rate-limited, and atomically cleared with credentials', async () => {
+  const config = new SqliteConfigStore(':memory:');
+  const settings = new SqliteSettingsStore(':memory:');
+  const now = 1_700_000_000_000;
+  const secret = 'pending-secret';
+  try {
+    const draft = await config.createSlackIdentity(pendingIdentity());
+    const oversized = await recordPendingSlackChallenge(
+      settings,
+      draft,
+      {
+        rawBody: 'x'.repeat(MAX_PENDING_SLACK_CHALLENGE_BYTES + 1),
+        signature: 'v0=bad',
+        timestamp: String(Math.floor(now / 1_000)),
+      },
+      { now },
+    );
+    assert.deepEqual(oversized, { accepted: false, reason: 'oversized' });
+
+    const envelope = signedChallenge(secret, { timestamp: Math.floor(now / 1_000) });
+    const first = await recordPendingSlackChallenge(settings, draft, envelope, { now });
+    assert.equal(first.accepted, true);
+    assert.deepEqual(
+      await recordPendingSlackChallenge(settings, draft, envelope, { now: now + 1 }),
+      { accepted: false, reason: 'rate_limited' },
+    );
+    assert.deepEqual(
+      await verifyPendingSlackChallenge(settings, draft.id, secret, {
+        now: now + 5 * 60_000 + 1,
+      }),
+      { verified: false, reason: 'expired' },
+    );
+    assert.equal(await readPendingSlackChallenge(settings, draft.id), undefined);
+
+    assert.equal(
+      (
+        await recordPendingSlackChallenge(settings, draft, envelope, {
+          now: now + 2,
+        })
+      ).accepted,
+      true,
+    );
+    assert.deepEqual(
+      await verifyPendingSlackChallenge(settings, draft.id, 'wrong-identity-secret', {
+        now: now + 3,
+      }),
+      { verified: false, reason: 'invalid_signature' },
+    );
+    assert.equal(
+      (
+        await recordPendingSlackChallenge(settings, draft, envelope, {
+          now: now + 4,
+        })
+      ).accepted,
+      true,
+    );
+
+    const pending = await beginSlackIdentityConnection(
+      {
+        config,
+        settings,
+        identityId: draft.id,
+        expectedRevision: 0,
+        expectedTeamId: 'T_ACME',
+        botToken: 'xoxb-finance',
+        signingSecret: secret,
+      },
+      validDedicatedSlackDeps(),
+    );
+    const cancelled = await cancelSlackIdentityConnection({
+      config,
+      settings,
+      identityId: draft.id,
+      expectedRevision: pending.connectionRevision,
+    });
+    assert.equal(cancelled.lifecycle, 'setup_incomplete');
+    assert.equal(cancelled.credentialProvenance, 'none');
+    assert.equal(await readPendingSlackChallenge(settings, draft.id), undefined);
+    const keys = slackIdentityCredentialSettingKeys(draft.id);
+    assert.deepEqual(
+      await settings.getSettings([
+        keys.botToken,
+        keys.signingSecret,
+        keys.botUserId,
+      ]),
+      [undefined, undefined, undefined],
+    );
+  } finally {
+    config.close();
+    settings.close();
+  }
+});
+
+test('a delayed dedicated connect cannot recreate credentials after the identity is deleted', async () => {
+  const config = new SqliteConfigStore(':memory:');
+  const settings = new SqliteSettingsStore(':memory:');
+  const { promise: authStarted, resolve: markAuthStarted } = Promise.withResolvers<void>();
+  const { promise: releaseAuth, resolve: release } = Promise.withResolvers<void>();
+  try {
+    const identity = pendingIdentity({ dmState: 'off' });
+    delete identity.dmAgentId;
+    const draft = await config.createSlackIdentity(identity);
+    const deps = {
+      ...validDedicatedSlackDeps(),
+      authTest: async () => {
+        markAuthStarted();
+        await releaseAuth;
+        return validDedicatedSlackDeps().authTest();
+      },
+    };
+    const connecting = beginSlackIdentityConnection(
+      {
+        config,
+        settings,
+        identityId: draft.id,
+        expectedRevision: 0,
+        expectedTeamId: 'T_ACME',
+        botToken: 'xoxb-delayed',
+        signingSecret: 'delayed-secret',
+      },
+      deps,
+    );
+    await authStarted;
+    assert.equal(await config.deleteIncompleteSlackIdentity(draft.id, 0, true), true);
+    release();
+    await assert.rejects(connecting, /Unknown Slack identity/);
+
+    const keys = slackIdentityCredentialSettingKeys(draft.id);
+    assert.deepEqual(
+      await settings.getSettings([
+        keys.connectionRevision,
+        keys.botToken,
+        keys.signingSecret,
+      ]),
+      [undefined, undefined, undefined],
+    );
+  } finally {
+    release();
+    config.close();
     settings.close();
   }
 });

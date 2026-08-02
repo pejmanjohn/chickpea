@@ -297,6 +297,8 @@ export interface SlackAuthTestResult {
   teamName: string | undefined;
   botName: string | undefined;
   botUserId: string | undefined;
+  /** Present for bot installations; dedicated identities reject user tokens. */
+  botId?: string;
 }
 
 /**
@@ -336,6 +338,7 @@ function parseSlackAuthTest(body: Record<string, unknown>): SlackAuthTestResult 
     teamName: typeof body.team === 'string' ? body.team : undefined,
     botName: typeof body.user === 'string' ? body.user : undefined,
     botUserId: typeof body.user_id === 'string' ? body.user_id : undefined,
+    ...(typeof body.bot_id === 'string' ? { botId: body.bot_id } : {}),
   };
 }
 
