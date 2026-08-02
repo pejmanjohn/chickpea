@@ -42,6 +42,9 @@ const quarantineSchema = v.strictObject({
     'accepted_unknown',
   ]),
 });
+// Runtime ceilings allow 15-minute turns. Keep a full ceiling of margin so a
+// lease-free legacy Run cannot become retire-eligible while still in budget.
+const STALE_RUN_RETIRE_AFTER_MS = 30 * 60_000;
 
 export function createWorkAdminApi(options: WorkAdminApiOptions): Hono {
   const app = new Hono();
@@ -120,6 +123,67 @@ export function createWorkAdminApi(options: WorkAdminApiOptions): Hono {
         status: run.status,
         terminalDisposition: run.terminalDisposition,
         recovery: recoveryProjection(run),
+        attribution: 'The operator label is claimed; the credential ID identifies the shared admin credential.',
+      });
+    } catch (error) {
+      return workError(c, error);
+    }
+  });
+
+  app.post('/sessions/:runId/retire-stale', async (c) => {
+    if (!safeMutationRequest(c)) return c.json({ error: 'cross_origin_denied' }, 403);
+    const idempotencyKey = readIdempotencyKey(c);
+    if (!idempotencyKey) return c.json({ error: 'idempotency_key_required' }, 400);
+    const parsed = v.safeParse(quarantineSchema, await readJson(c));
+    if (!parsed.success) return c.json({ error: 'invalid_request' }, 400);
+    try {
+      const runId = parseRunId(c.req.param('runId'));
+      const store = options.store(c);
+      const run = await store.getRun(runId);
+      if (!run) return c.json({ error: 'session_not_found' }, 404);
+
+      const retiredAt = now();
+      const identity = sha256(`retire-stale\0${idempotencyKey}`).slice(0, 32);
+      if (run.status !== 'settled') {
+        const resumesPartialRetirement =
+          run.status === 'recovery_required' &&
+          run.safeFailureCode === 'operator_retired_stale_run';
+        if (run.status !== 'executing' && !resumesPartialRetirement) {
+          return c.json({ error: 'session_not_executing' }, 409);
+        }
+        if (!resumesPartialRetirement) {
+          if (
+            retiredAt - run.updatedAt < STALE_RUN_RETIRE_AFTER_MS ||
+            (run.leaseUntil !== null && run.leaseUntil >= retiredAt)
+          ) {
+            return c.json({ error: 'session_not_stale' }, 409);
+          }
+          await store.requireRecovery({
+            runId,
+            safeFailureCode: 'operator_retired_stale_run',
+            at: retiredAt,
+            auditEventId: `work:recovery:admin-retire:${identity}`,
+            auditIdempotencyKey: `work:recovery:admin-retire:${identity}`,
+          });
+        }
+      }
+
+      const credential = adminCredential(c);
+      const retired = await store.quarantineRun({
+        runId,
+        adminCredentialId: credential.id,
+        operatorLabel: parsed.output.operatorLabel,
+        authOrigin: credential.origin,
+        safeReasonCode: parsed.output.safeReasonCode,
+        requestId: `request_retire_${identity}`,
+        idempotencyKey: `work:quarantine:admin-retire:${identity}`,
+        resolvedAt: retiredAt,
+      });
+      return c.json({
+        runId: retired.id,
+        status: retired.status,
+        terminalDisposition: retired.terminalDisposition,
+        recovery: recoveryProjection(retired),
         attribution: 'The operator label is claimed; the credential ID identifies the shared admin credential.',
       });
     } catch (error) {
