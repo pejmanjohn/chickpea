@@ -101,6 +101,9 @@ import {
   type ControlRoutineInput,
   type CreateRoutineOccurrenceInput,
   type PutRoutineConfirmationInput,
+  type PrepareRoutineAgentDispatchInput,
+  type RecordRoutineAgentReceiptInput,
+  type RecordRoutineAgentSettlementInput,
   type RecordRoutineDeliveryInput,
   type RoutineAdmissionAttempt,
   type RoutineAdminPage,
@@ -738,6 +741,23 @@ export class CfRoutineStore implements RoutineStore {
     const response = await this.execute({ kind: 'begin_occurrence', input });
     if (response.kind !== 'begin') throw unexpectedRoutineResponse();
     return response.outcome;
+  }
+  async prepareAgentDispatch(
+    input: PrepareRoutineAgentDispatchInput,
+  ): Promise<'started' | 'superseded'> {
+    const response = await this.execute({ kind: 'prepare_agent_dispatch', input });
+    if (response.kind !== 'begin') throw unexpectedRoutineResponse();
+    return response.outcome;
+  }
+  async recordAgentReceipt(
+    input: RecordRoutineAgentReceiptInput,
+  ): Promise<RoutineAdmissionAttempt> {
+    const response = await this.execute({ kind: 'record_agent_receipt', input });
+    if (response.kind !== 'admission') throw unexpectedRoutineResponse();
+    return response.admission;
+  }
+  async recordAgentSettlement(input: RecordRoutineAgentSettlementInput): Promise<RoutineRun> {
+    return this.requiredRun(await this.execute({ kind: 'record_agent_settlement', input }));
   }
   async transitionRun(input: TransitionRoutineRunInput): Promise<RoutineRun> {
     return this.requiredRun(await this.execute({ kind: 'transition_run', input }));

@@ -239,8 +239,8 @@ export async function runTurn(
   // pinned): on a button deploy nobody sets the env var, so without the stored
   // fallback the footer's "Configure" link would be dead.
   const publicUrl = await resolveSlackPublicUrl(platformEnv);
-  // Natural-language Routine intent still runs through the legacy Workflow
-  // coordinator. A selected ledger canary deliberately skips that pre-parser;
+  // Natural-language Routine intent runs through a fresh, tool-less v2 agent.
+  // A selected ledger canary deliberately skips that pre-parser;
   // explicit Routine commands are kept off this lane at admission.
   if (!ledgerAuthority && isRoutineSlackTurn(turn)) {
     const routineText = await handleRoutineSlackRequest(turn, platformEnv);

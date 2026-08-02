@@ -213,7 +213,7 @@ import {
   SLACK_SETTING_KEYS,
   type SlackTeamInfo,
 } from '../slack/credentials.ts';
-import { constantTimeEquals } from '../slack/internal-auth.ts';
+import { constantTimeEquals } from './constant-time.ts';
 
 interface AdminRoutesOptions {
   // Injection seam for tests/harnesses: any async ConfigStore serves the

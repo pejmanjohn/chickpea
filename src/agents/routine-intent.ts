@@ -1,32 +1,27 @@
 'use agent';
 
-import { type AgentRuntimeConfig, useModel } from '@flue/runtime';
-import type { MiddlewareHandler } from 'hono';
+import { useDataWriter, useInitialData, useModel, useTool } from '@flue/runtime';
+import * as v from 'valibot';
 
-import { resolveEffectiveSlackConfig } from '../config/effective-config.ts';
-import { resolveRuntimeModel } from '../config/runtime-model.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import { SEED_CLOUDFLARE_MODEL_PIN } from '../config/seed.ts';
-import { getConfigStore, getSettingsStore, type PlatformEnv } from '../config/state-backend.ts';
-import { INTERNAL_AGENT_TOKEN_HEADER, isValidInternalAgentToken } from '../slack/internal-auth.ts';
+import { RoutineIntentSchema } from '../routines/intent-schema.ts';
 import { useChickpeaResponseMetadata } from '../usage/response-metadata.ts';
 import { bootstrapRuntimeProviders } from '../runtime-bootstrap.ts';
 
 bootstrapRuntimeProviders();
 
-const INTENT_ID = /^routine-intent:([A-Za-z0-9_-]{1,200}):([A-Za-z0-9_-]{1,200}):/;
+export const ROUTINE_INTENT_DATA_NAME = 'routineIntent';
 
-export const route: MiddlewareHandler = async (c, next) => {
-  if (!isValidInternalAgentToken(c.req.header(INTERNAL_AGENT_TOKEN_HEADER))) {
-    return c.json({ error: 'unauthorized' }, 401);
-  }
-  return next();
-};
+const RoutineIntentInitialDataSchema = v.strictObject({
+  model: v.pipe(v.string(), v.minLength(3), v.maxLength(240)),
+});
+type RoutineIntentInitialData = v.InferOutput<typeof RoutineIntentInitialDataSchema>;
 
 const instructions = [
   'Classify and normalize one Slack message that may create, edit, or manage scheduled Chickpea work.',
   'You have no tools and must never execute, promise, or simulate the requested task.',
-  'Return exactly one JSON object and no Markdown.',
+  'Finish by calling submit_routine_intent exactly once. JSON in ordinary assistant text is ignored.',
   'Use action "none" for questions, examples, vague discussion, or any message that is not a clear request to create, edit, or manage scheduled work.',
   'For create/edit, taskText must be copied verbatim as one contiguous span of the current Slack message (apart from surrounding whitespace). Do not paraphrase, change identifiers, append actions, or discard a negation or negative directive. A scheduling wrapper such as "Every day," may remain outside taskText.',
   'For recurring work, set triggerKind to "schedule" and translate recurrence to a standard five-field cron expression. Never use seconds, macros, or a frequency shorter than five minutes.',
@@ -40,37 +35,30 @@ const instructions = [
 ].join('\n');
 
 export function ChickpeaRoutineIntent() {
-  const model = isCloudflareTarget()
-    ? SEED_CLOUDFLARE_MODEL_PIN
-    : 'anthropic/claude-haiku-4-5';
+  const { model } = useInitialData<RoutineIntentInitialData>();
   useModel(model);
   useChickpeaResponseMetadata(model);
+  const writeIntentData = useDataWriter(ROUTINE_INTENT_DATA_NAME, {
+    schema: RoutineIntentSchema,
+  });
+  useTool({
+    name: 'submit_routine_intent',
+    description: 'Submit the one final, normalized routine intent.',
+    input: RoutineIntentSchema,
+    output: v.string(),
+    run: ({ data }) => {
+      writeIntentData(data);
+      return { output: 'Routine intent submitted.', terminate: true };
+    },
+  });
   return instructions;
 }
 
 ChickpeaRoutineIntent.agentName = 'chickpea-routine-intent-v2';
+ChickpeaRoutineIntent.initialData = RoutineIntentInitialDataSchema;
 
-/** Transitional async assembler for the still-unconverted routine dispatch path. */
-export async function createRoutineIntentRuntime(
-  id: string,
-  env: PlatformEnv,
-): Promise<AgentRuntimeConfig> {
-  const match = id.match(INTENT_ID);
-  if (!match) throw new Error('Routine intent scope is invalid.');
-  const platformEnv = env;
-  const store = getConfigStore(platformEnv);
-  const settings = getSettingsStore(platformEnv);
-  const config = await resolveEffectiveSlackConfig(match[1]!, match[2]!, {
-    agents: store,
-    assignments: store,
-  });
-  const runtimeModel = await resolveRuntimeModel(config.agentId, config.model, {
-    settings,
-    env: platformEnv,
-  });
-  return {
-    model: runtimeModel.model,
-    tools: [],
-    instructions,
-  };
+export function routineIntentModel(): string {
+  return isCloudflareTarget()
+    ? SEED_CLOUDFLARE_MODEL_PIN
+    : 'anthropic/claude-haiku-4-5';
 }

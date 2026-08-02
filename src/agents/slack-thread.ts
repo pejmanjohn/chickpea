@@ -825,9 +825,21 @@ export function ChickpeaSlack({ id }: AgentProps) {
   const initialData = useInitialData<RuntimePlanV2>();
   if (!initialData) throw new Error('ChickpeaSlack requires RuntimePlanV2 creation data.');
   const plan = parseRuntimePlanV2(initialData);
+  useRuntimePlanAgent(plan, id, { responseMetadataModel: plan.model });
+  return plan.instructions;
+}
+
+/** Compose the declarations shared by Slack and fresh routine agents. */
+export function useRuntimePlanAgent(
+  plan: RuntimePlanV2,
+  id: string,
+  options: { responseMetadataModel?: string } = {},
+): void {
   const thinkingLevel = thinkingLevelForModel(plan.model);
   useModel(plan.model, thinkingLevel ? { thinkingLevel } : {});
-  useChickpeaResponseMetadata(plan.model);
+  if (options.responseMetadataModel) {
+    useChickpeaResponseMetadata(options.responseMetadataModel);
+  }
   useInstruction('Never invent facts or claim access to context and tools you do not have.');
   for (const skill of resolveProfileSkills(
     plan.skills.map((entry) => ({ ...entry, enabled: true })),
@@ -847,7 +859,6 @@ export function ChickpeaSlack({ id }: AgentProps) {
   if (plan.sandbox.mode === 'cloudflare') {
     useTool(createRuntimePlanArtifactTool(plan));
   }
-  return plan.instructions;
 }
 
 ChickpeaSlack.agentName = 'chickpea-slack-v2';

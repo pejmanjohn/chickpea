@@ -2,12 +2,12 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { createRoutineAdminApi } from '../../src/admin/routines-api.ts';
-import { SqliteSettingsStore } from '../../src/config/settings-store.ts';
 import type { EffectiveSlackConfig } from '../../src/config/effective-config.ts';
 import type { RoutineDefinition, RoutineRun, RoutineStore } from '../../src/routines/types.ts';
 import { SqliteUsageStore } from '../../src/usage/store.ts';
 import { RoutineUsageRecorder } from '../../src/usage/runtime-recorder.ts';
-import { initializeRoutineWorkflowRuntime } from '../../src/workflows/routine.ts';
+import { routineUsageFromAgentReply } from '../../src/routines/execution.ts';
+import { CHICKPEA_RESPONSE_METADATA_KEY } from '../../src/usage/response-metadata.ts';
 
 const routine = {
   id: 'routine_usage', workspaceId: 'T_USAGE', channelId: 'C_USAGE', creatorUserId: 'U_OWNER',
@@ -111,43 +111,33 @@ test('routine recorder captures success, no-op-style zero usage, failure, and in
   }
 });
 
-test('routine initialization admits ledger work before constructing the Agent', async () => {
-  const usage = new SqliteUsageStore(':memory:');
-  const settings = new SqliteSettingsStore(':memory:');
-  const events: string[] = [];
-  const store = {
-    beginOccurrence: async () => { events.push('begin'); return 'started'; },
-  } as unknown as RoutineStore;
-  try {
-    await initializeRoutineWorkflowRuntime(
-      { flueRunId: 'run_usage', env: {}, store, run, routine },
-      {
-        usageRecordingEnabled: true,
-        usageStore: usage,
-        settingsStore: settings,
-        now: () => 2_000,
-        resolveAccess: async () => {
-          events.push('access');
-          return { config, accessHash: 'a'.repeat(64), botToken: 'xoxb', botUserId: 'U_BOT' };
-        },
-        resolveCredential: async () => null,
-        resolveModel: async () => {
-          events.push('model');
-          return { model: config.model };
-        },
-        useCloudflareSandbox: async () => false,
-        createAgent: async () => {
-          events.push('agent');
-          assert.equal((await usage.getOperation(run.id))?.operation.status, 'admitted');
-          return { model: config.model, instructions: config.instructions, tools: [] };
-        },
+test('routine reply metadata yields one bounded aggregate with returned-model evidence', () => {
+  const usage = routineUsageFromAgentReply({
+    submissionId: 'submission_usage', text: '', data: {},
+    metadata: {
+      [CHICKPEA_RESPONSE_METADATA_KEY]: {
+        schemaVersion: 1,
+        requestedModel: 'anthropic/claude-haiku-4-5',
+        usage: { input: 200, output: 50, totalTokens: 250 },
+        returnedModel: { provider: 'anthropic', id: 'claude-haiku-4-5-20251001' },
       },
-    );
-    assert.deepEqual(events, ['access', 'model', 'begin', 'agent']);
-  } finally {
-    settings.close();
-    usage.close();
-  }
+    },
+  }, 'anthropic/fallback');
+  assert.deepEqual(usage, {
+    requestedModel: 'anthropic/claude-haiku-4-5',
+    returnedModel: { provider: 'anthropic', id: 'claude-haiku-4-5-20251001' },
+    inputTokens: 200,
+    outputTokens: 50,
+    totalTokens: 250,
+    completeness: 'complete',
+  });
+  assert.equal(
+    routineUsageFromAgentReply(
+      { submissionId: 'submission_missing', text: '', data: {} },
+      'anthropic/fallback',
+    ).requestedModel,
+    'anthropic/fallback',
+  );
 });
 
 test('Scheduled Work detail prefers linked ledger facts and labels historical rows honestly', async () => {

@@ -35,7 +35,7 @@ export function createRoutineScheduledHandler(input: {
       const owner = `heartbeat:${controller.scheduledTime}`;
       const tasks: Promise<unknown>[] = [];
       // Generic Work recovery/retention is independent from proactive Routine
-      // enablement and cannot submit a Workflow, model call, or Slack delivery.
+      // enablement and cannot dispatch an agent, call a model, or deliver Slack output.
       if (input.maintenance) {
         tasks.push(input.maintenance(controller.scheduledTime, env));
       }

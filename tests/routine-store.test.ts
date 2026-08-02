@@ -786,7 +786,7 @@ test('deployment active-run ceiling rejects a fifth distinct routine', async () 
   }
 });
 
-test('occurrence uniqueness, admission attempts, and atomic Workflow begin prevent duplicate work', async () => {
+test('occurrence uniqueness, admission attempts, and atomic legacy begin prevent duplicate work', async () => {
   const store = new SqliteRoutineStore(':memory:', () => CREATED_AT);
   try {
     const routine = await confirmDraft(store, createDraft(), 'occurrence');

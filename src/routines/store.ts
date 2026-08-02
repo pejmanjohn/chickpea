@@ -32,10 +32,14 @@ import {
   type ControlRoutineInput,
   type CreateRoutineOccurrenceInput,
   type PutRoutineConfirmationInput,
+  type PrepareRoutineAgentDispatchInput,
+  type RecordRoutineAgentReceiptInput,
+  type RecordRoutineAgentSettlementInput,
   type RecordRoutineDeliveryInput,
   type RoutineAdmissionAttempt,
   type RoutineAdminPage,
   type RoutineAdminPageInput,
+  type RoutineAgentUsageV1,
   type RoutineConfirmation,
   type RoutineConfirmationDraft,
   type RoutineDefinition,
@@ -162,6 +166,8 @@ interface RunRow {
   admission_owner: string | null;
   admission_lease_until: number | null;
   flue_run_id: string | null;
+  flue_agent_envelope_json: string | null;
+  flue_agent_settlement_json: string | null;
   queued_at: number;
   admitted_at: number | null;
   started_at: number | null;
@@ -201,7 +207,9 @@ interface RunRow {
 interface AdmissionRow {
   occurrence_id: string;
   attempt: number;
+  attempt_id: string;
   flue_run_id: string | null;
+  flue_agent_receipt_json: string | null;
   invoke_started_at: number;
   receipt_at: number | null;
   visible_at: number | null;
@@ -300,6 +308,12 @@ export class RoutineStoreLogic {
         return { kind: 'run', run: this.resolveAdmission(request.input) };
       case 'begin_occurrence':
         return { kind: 'begin', outcome: this.beginOccurrence(request.input) };
+      case 'prepare_agent_dispatch':
+        return { kind: 'begin', outcome: this.prepareAgentDispatch(request.input) };
+      case 'record_agent_receipt':
+        return { kind: 'admission', admission: this.recordAgentReceipt(request.input) };
+      case 'record_agent_settlement':
+        return { kind: 'run', run: this.recordAgentSettlement(request.input) };
       case 'transition_run':
         return { kind: 'run', run: this.transitionRun(request.input) };
       case 'claim_delivery':
@@ -1264,11 +1278,12 @@ export class RoutineStoreLogic {
       );
       this.db.run(
         `INSERT INTO routine_run_admissions (
-          occurrence_id, attempt, flue_run_id, invoke_started_at, receipt_at,
-          visible_at, status, safe_error
-        ) VALUES (?, ?, NULL, ?, NULL, NULL, 'attempting', NULL)`,
+          occurrence_id, attempt, attempt_id, flue_run_id, flue_agent_receipt_json,
+          invoke_started_at, receipt_at, visible_at, status, safe_error
+        ) VALUES (?, ?, ?, NULL, NULL, ?, NULL, NULL, 'attempting', NULL)`,
         input.occurrenceId,
         attempt,
+        routineAttemptId(input.occurrenceId, attempt),
         input.invokeStartedAt,
       );
       return required(this.getAdmission(input.occurrenceId, attempt), 'Routine admission attempt was not readable.');
@@ -1468,11 +1483,12 @@ export class RoutineStoreLogic {
         const nextAttempt = this.nextAdmissionNumber(input.occurrenceId);
         this.db.run(
           `INSERT INTO routine_run_admissions (
-            occurrence_id, attempt, flue_run_id, invoke_started_at, receipt_at,
-            visible_at, status, safe_error
-          ) VALUES (?, ?, ?, ?, ?, ?, 'attached', NULL)`,
+            occurrence_id, attempt, attempt_id, flue_run_id, flue_agent_receipt_json,
+            invoke_started_at, receipt_at, visible_at, status, safe_error
+          ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, 'attached', NULL)`,
           input.occurrenceId,
           nextAttempt,
+          routineAttemptId(input.occurrenceId, nextAttempt),
           input.flueRunId,
           input.startedAt,
           input.startedAt,
@@ -1487,6 +1503,136 @@ export class RoutineStoreLogic {
         input.startedAt,
       );
       return 'started';
+    });
+  }
+
+  prepareAgentDispatch(input: PrepareRoutineAgentDispatchInput): 'started' | 'superseded' {
+    validateAgentDispatchInput(input);
+    return this.db.transaction(() => {
+      const run = required(this.getRun(input.occurrenceId), 'Routine occurrence was not found.');
+      const admission = required(
+        this.getAdmission(input.occurrenceId, input.attempt),
+        'Routine admission attempt was not found.',
+      );
+      if (admission.attemptId !== input.envelope.attemptId) {
+        throw routineError('routine_admission_conflict', 'Routine attempt identity conflicts.');
+      }
+      if (run.status === 'running') {
+        if (sameJson(run.flueAgentEnvelope, input.envelope)) return 'started';
+        throw routineError('routine_admission_conflict', 'Routine agent envelope conflicts.');
+      }
+      if (run.status !== 'admitting' || run.flueRunId !== null) {
+        this.db.run(
+          `UPDATE routine_run_admissions SET status = 'superseded', visible_at = COALESCE(visible_at, ?)
+           WHERE occurrence_id = ? AND attempt = ? AND status = 'attempting'`,
+          input.startedAt,
+          input.occurrenceId,
+          input.attempt,
+        );
+        return 'superseded';
+      }
+      const routine = this.getRoutine(run.routineId);
+      if (
+        (run.triggerSource === 'schedule' || run.triggerSource === 'once') &&
+        (!routine || routine.deletedAt !== null || routine.state !== 'active')
+      ) {
+        this.db.run(
+          `UPDATE routine_runs SET status = 'superseded', finished_at = COALESCE(finished_at, ?),
+             admission_owner = NULL, admission_lease_until = NULL
+           WHERE id = ? AND status = 'admitting'`,
+          input.startedAt,
+          run.id,
+        );
+        this.db.run(
+          `UPDATE routine_run_admissions SET status = 'superseded', visible_at = ?
+           WHERE occurrence_id = ? AND attempt = ?`,
+          input.startedAt,
+          input.occurrenceId,
+          input.attempt,
+        );
+        return 'superseded';
+      }
+      this.db.run(
+        `UPDATE routine_runs SET status = 'running', started_at = ?,
+           resolved_access_hash = ?, resolved_agent_id = ?, model = ?,
+           provider_auth_route = ?, trace_id = ?, flue_agent_envelope_json = ?,
+           admission_owner = NULL, admission_lease_until = NULL
+         WHERE id = ? AND status = 'admitting'`,
+        input.startedAt,
+        input.resolvedAccessHash,
+        input.resolvedAgentId,
+        input.model,
+        input.providerAuthRoute ?? null,
+        input.traceId,
+        JSON.stringify(input.envelope),
+        input.occurrenceId,
+      );
+      const started = required(this.getRun(input.occurrenceId), 'Routine occurrence was not readable.');
+      this.appendRunAudit(
+        'routine.occurrence_started',
+        started,
+        `routine:agent-begin:${input.envelope.attemptId}`,
+        input.startedAt,
+      );
+      return 'started';
+    });
+  }
+
+  recordAgentReceipt(input: RecordRoutineAgentReceiptInput): RoutineAdmissionAttempt {
+    validateAgentReceiptInput(input);
+    return this.db.transaction(() => {
+      const run = required(this.getRun(input.occurrenceId), 'Routine occurrence was not found.');
+      const admission = required(
+        this.getAdmission(input.occurrenceId, input.attempt),
+        'Routine admission attempt was not found.',
+      );
+      if (run.status !== 'running' || run.flueAgentEnvelope?.attemptId !== admission.attemptId) {
+        throw routineError('routine_admission_conflict', 'Routine agent receipt was superseded.');
+      }
+      if (admission.flueAgentReceipt) {
+        if (sameJson(admission.flueAgentReceipt, input.receipt)) return admission;
+        throw routineError('routine_admission_conflict', 'Routine agent receipt conflicts.');
+      }
+      this.db.run(
+        `UPDATE routine_run_admissions SET flue_agent_receipt_json = ?, receipt_at = ?,
+           visible_at = ?, status = 'attached'
+         WHERE occurrence_id = ? AND attempt = ? AND flue_agent_receipt_json IS NULL`,
+        JSON.stringify(input.receipt),
+        input.at,
+        input.at,
+        input.occurrenceId,
+        input.attempt,
+      );
+      this.db.run(
+        'UPDATE routine_runs SET admitted_at = COALESCE(admitted_at, ?) WHERE id = ?',
+        input.at,
+        input.occurrenceId,
+      );
+      return required(
+        this.getAdmission(input.occurrenceId, input.attempt),
+        'Routine agent receipt was not readable.',
+      );
+    });
+  }
+
+  recordAgentSettlement(input: RecordRoutineAgentSettlementInput): RoutineRun {
+    validateAgentSettlement(input.settlement);
+    return this.db.transaction(() => {
+      const run = required(this.getRun(input.occurrenceId), 'Routine occurrence was not found.');
+      if (run.flueAgentSettlement) {
+        if (sameJson(run.flueAgentSettlement, input.settlement)) return run;
+        throw routineError('routine_run_settlement_conflict', 'Routine agent settlement conflicts.');
+      }
+      if (run.status !== 'running' || !run.flueAgentEnvelope) {
+        throw routineError('routine_run_transition_invalid', 'Routine agent settlement was superseded.');
+      }
+      this.db.run(
+        `UPDATE routine_runs SET flue_agent_settlement_json = ?
+         WHERE id = ? AND status = 'running' AND flue_agent_settlement_json IS NULL`,
+        JSON.stringify(input.settlement),
+        input.occurrenceId,
+      );
+      return required(this.getRun(input.occurrenceId), 'Routine agent settlement was not readable.');
     });
   }
 
@@ -1732,7 +1878,9 @@ export class RoutineStoreLogic {
         routine_version INTEGER NOT NULL, scheduled_for INTEGER NOT NULL,
         trigger_source TEXT NOT NULL, requested_by TEXT, status TEXT NOT NULL,
         failure_class TEXT, public_error TEXT, admission_owner TEXT,
-        admission_lease_until INTEGER, flue_run_id TEXT UNIQUE, queued_at INTEGER NOT NULL,
+        admission_lease_until INTEGER, flue_run_id TEXT UNIQUE,
+        flue_agent_envelope_json TEXT, flue_agent_settlement_json TEXT,
+        queued_at INTEGER NOT NULL,
         admitted_at INTEGER, started_at INTEGER, finished_at INTEGER,
         resolved_access_hash TEXT, resolved_agent_id TEXT, model TEXT,
         provider_auth_route TEXT,
@@ -1753,6 +1901,8 @@ export class RoutineStoreLogic {
       ['usage_ledger_operation_id', 'TEXT'],
       ['usage_provenance', "TEXT NOT NULL DEFAULT 'legacy_routine'"],
       ['usage_completeness', 'TEXT'],
+      ['flue_agent_envelope_json', 'TEXT'],
+      ['flue_agent_settlement_json', 'TEXT'],
     ] as const) {
       if (!runColumns.some((column) => column.name === name)) {
         this.db.exec(`ALTER TABLE routine_runs ADD COLUMN ${name} ${definition}`);
@@ -1807,11 +1957,31 @@ export class RoutineStoreLogic {
     );
     this.db.exec(
       `CREATE TABLE IF NOT EXISTS routine_run_admissions (
-        occurrence_id TEXT NOT NULL, attempt INTEGER NOT NULL, flue_run_id TEXT UNIQUE,
+        occurrence_id TEXT NOT NULL, attempt INTEGER NOT NULL, attempt_id TEXT NOT NULL UNIQUE,
+        flue_run_id TEXT UNIQUE, flue_agent_receipt_json TEXT,
         invoke_started_at INTEGER NOT NULL, receipt_at INTEGER, visible_at INTEGER,
         status TEXT NOT NULL, safe_error TEXT,
         PRIMARY KEY (occurrence_id, attempt)
       )`,
+    );
+    const admissionColumns = this.db.all('PRAGMA table_info(routine_run_admissions)');
+    if (!admissionColumns.some((column) => column.name === 'attempt_id')) {
+      this.db.exec('ALTER TABLE routine_run_admissions ADD COLUMN attempt_id TEXT');
+      const rows = this.db.all('SELECT occurrence_id, attempt FROM routine_run_admissions');
+      for (const row of rows) {
+        this.db.run(
+          'UPDATE routine_run_admissions SET attempt_id = ? WHERE occurrence_id = ? AND attempt = ?',
+          routineAttemptId(String(row.occurrence_id), Number(row.attempt)),
+          String(row.occurrence_id),
+          Number(row.attempt),
+        );
+      }
+    }
+    if (!admissionColumns.some((column) => column.name === 'flue_agent_receipt_json')) {
+      this.db.exec('ALTER TABLE routine_run_admissions ADD COLUMN flue_agent_receipt_json TEXT');
+    }
+    this.db.exec(
+      'CREATE UNIQUE INDEX IF NOT EXISTS routine_run_admissions_attempt_id_unique ON routine_run_admissions (attempt_id)',
     );
   }
 
@@ -2649,13 +2819,15 @@ export class RoutineStoreLogic {
       );
       return;
     }
+    const attempt = this.nextAdmissionNumber(occurrenceId);
     this.db.run(
       `INSERT INTO routine_run_admissions (
-        occurrence_id, attempt, flue_run_id, invoke_started_at, receipt_at,
-        visible_at, status, safe_error
-      ) VALUES (?, ?, ?, ?, NULL, ?, 'superseded', NULL)`,
+        occurrence_id, attempt, attempt_id, flue_run_id, flue_agent_receipt_json,
+        invoke_started_at, receipt_at, visible_at, status, safe_error
+      ) VALUES (?, ?, ?, ?, NULL, ?, NULL, ?, 'superseded', NULL)`,
       occurrenceId,
-      this.nextAdmissionNumber(occurrenceId),
+      attempt,
+      routineAttemptId(occurrenceId, attempt),
       flueRunId,
       at,
       at,
@@ -2745,6 +2917,19 @@ export class SqliteRoutineStore implements RoutineStore {
   }
   async beginOccurrence(input: BeginRoutineOccurrenceInput): Promise<'started' | 'superseded'> {
     return this.logic.beginOccurrence(input);
+  }
+  async prepareAgentDispatch(
+    input: PrepareRoutineAgentDispatchInput,
+  ): Promise<'started' | 'superseded'> {
+    return this.logic.prepareAgentDispatch(input);
+  }
+  async recordAgentReceipt(
+    input: RecordRoutineAgentReceiptInput,
+  ): Promise<RoutineAdmissionAttempt> {
+    return this.logic.recordAgentReceipt(input);
+  }
+  async recordAgentSettlement(input: RecordRoutineAgentSettlementInput): Promise<RoutineRun> {
+    return this.logic.recordAgentSettlement(input);
   }
   async transitionRun(input: TransitionRoutineRunInput): Promise<RoutineRun> {
     return this.logic.transitionRun(input);
@@ -2853,6 +3038,97 @@ function validateAdminPageInput(input: RoutineAdminPageInput): void {
   ) {
     throw routineError('routine_invalid_filter', 'Routine filter is invalid.');
   }
+}
+
+function routineAttemptId(occurrenceId: string, attempt: number): string {
+  return opaqueId('routineattempt', `${occurrenceId}:${attempt}`);
+}
+
+function validateAgentDispatchInput(input: PrepareRoutineAgentDispatchInput): void {
+  const envelope = input.envelope;
+  let encoded = '';
+  try {
+    encoded = JSON.stringify(envelope);
+  } catch {
+    // Rejected below with the same public state error as any other malformed envelope.
+  }
+  if (
+    !isOpaqueRoutineId(input.occurrenceId) ||
+    !Number.isSafeInteger(input.attempt) || input.attempt < 1 ||
+    !Number.isSafeInteger(input.startedAt) ||
+    !/^[a-f0-9]{64}$/.test(input.resolvedAccessHash) ||
+    !isOpaqueRoutineId(input.resolvedAgentId) ||
+    !input.model || input.model.length > 500 ||
+    (input.providerAuthRoute !== undefined &&
+      !['openai_api_key', 'openai_subscription'].includes(input.providerAuthRoute)) ||
+    !isOpaqueRoutineId(input.traceId) ||
+    envelope.schemaVersion !== 1 ||
+    !isOpaqueRoutineId(envelope.attemptId) ||
+    !isOpaqueRoutineId(envelope.instanceId) ||
+    envelope.idempotencyKey !== envelope.attemptId ||
+    typeof envelope.message !== 'string' || envelope.message.length < 1 ||
+    encoded.length < 1 || encoded.length > 500_000
+  ) {
+    throw routineError('routine_admission_invalid', 'Routine agent admission is invalid.');
+  }
+}
+
+function validateAgentReceiptInput(input: RecordRoutineAgentReceiptInput): void {
+  const receipt = input.receipt;
+  if (
+    !isOpaqueRoutineId(input.occurrenceId) ||
+    !Number.isSafeInteger(input.attempt) || input.attempt < 1 ||
+    !Number.isSafeInteger(input.at) ||
+    !boundedReceiptValue(receipt.submissionId) ||
+    !boundedReceiptValue(receipt.acceptedAt) ||
+    (receipt.uid !== undefined && !boundedReceiptValue(receipt.uid)) ||
+    (receipt.deduplicated !== undefined && receipt.deduplicated !== true)
+  ) {
+    throw routineError('routine_admission_invalid', 'Routine agent receipt is invalid.');
+  }
+}
+
+function validateAgentSettlement(settlement: RecordRoutineAgentSettlementInput['settlement']): void {
+  const result = settlement.outcome === 'completed' ? settlement.result : undefined;
+  const usage = settlement.outcome === 'completed' ? settlement.result.usage : settlement.usage;
+  if (
+    settlement.schemaVersion !== 1 ||
+    !Number.isSafeInteger(settlement.settledAt) ||
+    (result !== undefined && (
+      !['succeeded', 'no_op'].includes(result.status) ||
+      typeof result.message !== 'string' || result.message.length > 16_000 ||
+      (result.changeKeyHash !== null && !/^[a-f0-9]{64}$/.test(result.changeKeyHash)) ||
+      typeof result.suppressedAsNoOp !== 'boolean' ||
+      !Number.isSafeInteger(result.toolCallCount) || result.toolCallCount < 0
+    )) ||
+    (settlement.outcome !== 'completed' && (
+      !settlement.failureClass ||
+      !validatePublicRoutineError(settlement.publicError) ||
+      !Number.isSafeInteger(settlement.toolCallCount) || settlement.toolCallCount < 0
+    )) ||
+    (usage !== null && usage !== undefined && !validAgentUsage(usage))
+  ) {
+    throw routineError('routine_run_transition_invalid', 'Routine agent settlement is invalid.');
+  }
+}
+
+function validAgentUsage(usage: RoutineAgentUsageV1): boolean {
+  const tokens = [usage.inputTokens, usage.outputTokens, usage.totalTokens];
+  return typeof usage.requestedModel === 'string' && usage.requestedModel.length > 0 &&
+    usage.requestedModel.length <= 500 &&
+    tokens.every((value) => value === null || (Number.isSafeInteger(value) && value >= 0)) &&
+    ['complete', 'partial', 'not_reported'].includes(usage.completeness) &&
+    (usage.returnedModel === null || (
+      boundedReceiptValue(usage.returnedModel.provider) && boundedReceiptValue(usage.returnedModel.id)
+    ));
+}
+
+function boundedReceiptValue(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= 512;
+}
+
+function sameJson(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 function validResultMetadata(input: TransitionRoutineRunInput): boolean {
@@ -3034,6 +3310,16 @@ function rowToRun(row: RunRow): RoutineRun {
     admissionOwner: row.admission_owner,
     admissionLeaseUntil: row.admission_lease_until,
     flueRunId: row.flue_run_id,
+    flueAgentEnvelope: row.flue_agent_envelope_json
+      ? JSON.parse(row.flue_agent_envelope_json) as Exclude<
+          RoutineRun['flueAgentEnvelope'], null | undefined
+        >
+      : null,
+    flueAgentSettlement: row.flue_agent_settlement_json
+      ? JSON.parse(row.flue_agent_settlement_json) as Exclude<
+          RoutineRun['flueAgentSettlement'], null | undefined
+        >
+      : null,
     queuedAt: row.queued_at,
     admittedAt: row.admitted_at,
     startedAt: row.started_at,
@@ -3075,7 +3361,11 @@ function rowToAdmission(row: AdmissionRow): RoutineAdmissionAttempt {
   return {
     occurrenceId: row.occurrence_id,
     attempt: row.attempt,
+    attemptId: row.attempt_id ?? routineAttemptId(row.occurrence_id, row.attempt),
     flueRunId: row.flue_run_id,
+    flueAgentReceipt: row.flue_agent_receipt_json
+      ? JSON.parse(row.flue_agent_receipt_json) as RoutineAdmissionAttempt['flueAgentReceipt']
+      : null,
     invokeStartedAt: row.invoke_started_at,
     receiptAt: row.receipt_at,
     visibleAt: row.visible_at,

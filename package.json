@@ -37,7 +37,6 @@
     "test": "npm run typecheck && node --test --import tsx tests/*.test.ts tests/usage/*.test.ts",
     "test:ci": "TAG_REQUIRE_LOOPBACK=1 npm test",
     "typecheck": "tsc --noEmit",
-    "verify:flue-v2-staged-types": "node scripts/verify-flue-v2-staged-types.mjs",
     "dev": "vite dev --config vite.node.config.ts",
     "flue:build": "vite build --config vite.node.config.ts",
     "flue:build:cf": "vite build --config vite.config.ts && node scripts/flue-build-cf.mjs --validate-only",

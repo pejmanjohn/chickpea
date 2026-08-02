@@ -4,14 +4,6 @@ import {
   type DurableObjectState,
   type DurableObjectStorage,
 } from 'cloudflare:workers';
-import {
-  WorkflowInputSerializationError,
-  WorkflowInvocationNotConfiguredError,
-  WorkflowNotDiscoveredError,
-  getRun,
-  invoke,
-  listRuns,
-} from '@flue/runtime';
 import { getSandbox, Sandbox as CloudflareSandbox } from '@cloudflare/sandbox';
 import type { WebClient } from '@slack/web-api';
 
@@ -123,11 +115,9 @@ import {
 } from './work/types.ts';
 import {
   RoutineAdmissionController,
-  RoutineNotSubmittedError,
-  type RoutineAdmissionAdapter,
 } from './routines/admission.ts';
 import { RoutineScheduler } from './routines/scheduler.ts';
-import routineWorkflow from './workflows/routine.ts';
+import { executeRoutineOccurrence } from './routines/execution.ts';
 
 // This module is imported only by Flue's Cloudflare entry. Register before
 // the generated entry's guarded default so `cloudflare/*` remains keyless but
@@ -1348,56 +1338,13 @@ async function runRoutineHeartbeat(
   rawEnv: Record<string, unknown>,
 ): Promise<void> {
   const store = getRoutineStore(rawEnv);
-  const admissions = new RoutineAdmissionController(store, flueRoutineAdmissionAdapter());
+  const admissions = new RoutineAdmissionController(store, {
+    execute: (run, attempt) => executeRoutineOccurrence({
+      env: rawEnv,
+      store,
+      occurrenceId: run.id,
+      attempt: attempt.attempt,
+    }),
+  });
   await new RoutineScheduler(store, admissions).heartbeat(scheduledTime, owner);
-}
-
-function flueRoutineAdmissionAdapter(): RoutineAdmissionAdapter {
-  return {
-    async invoke(run) {
-      try {
-        return await invoke(routineWorkflow, { input: { occurrenceId: run.id } });
-      } catch (error) {
-        if (
-          error instanceof WorkflowNotDiscoveredError ||
-          error instanceof WorkflowInvocationNotConfiguredError ||
-          error instanceof WorkflowInputSerializationError
-        ) {
-          throw new RoutineNotSubmittedError('Routine Workflow was not submitted.');
-        }
-        throw error;
-      }
-    },
-    async scan({ workflowName, since, limit }) {
-      try {
-        const page = await listRuns({ workflowName, limit });
-        const relevant = page.runs.filter((pointer) => {
-          const startedAt = Date.parse(pointer.startedAt);
-          return Number.isFinite(startedAt) && startedAt >= since;
-        });
-        const records = await Promise.all(relevant.map(({ runId }) => getRun(runId)));
-        const completeRecords = records.every((record) => record !== null);
-        const oldest = page.runs.at(-1);
-        const completeWindow =
-          !page.nextCursor ||
-          (!!oldest && Number.isFinite(Date.parse(oldest.startedAt)) && Date.parse(oldest.startedAt) < since);
-        return {
-          available: true,
-          complete: completeRecords && completeWindow,
-          candidates: records.flatMap((record) =>
-            record
-              ? [{
-                  runId: record.runId,
-                  workflowName: record.workflowName,
-                  startedAt: Date.parse(record.startedAt),
-                  input: record.input,
-                }]
-              : [],
-          ),
-        };
-      } catch {
-        return { available: false, complete: false, candidates: [] };
-      }
-    },
-  };
 }

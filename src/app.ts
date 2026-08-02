@@ -1,11 +1,6 @@
 import { instrument } from '@flue/runtime';
-import { createAgentRouter } from '@flue/runtime/routing';
 import { Hono } from 'hono';
 
-import {
-  ChickpeaRoutineIntent,
-  route as routineIntentRoute,
-} from './agents/routine-intent.ts';
 import { createAdminRoutes } from './admin/routes.ts';
 import { activityStatusForObservation } from './activity/status.ts';
 import {
@@ -99,8 +94,6 @@ const app = new Hono();
 // and exact-channel scoped by SLACK_TAG_LEDGER_CANARY_CHANNELS.
 startNodeTurnRelay();
 app.route('/', createAdminRoutes());
-app.use('/agents/routine-intent/*', routineIntentRoute);
-app.route('/agents/routine-intent', createAgentRouter(ChickpeaRoutineIntent));
 app.route('/channels/slack', channel.route());
 
 export default app;
