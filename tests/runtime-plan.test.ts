@@ -127,11 +127,30 @@ test('owner-bound sandbox keys converge for retries and isolate competing routin
 
   assert.equal(first, runtimePlanSandboxConversationKey(plan, 'routineagent_first'));
   assert.notEqual(first, second);
-  assert.match(first, /^T_RUNTIME:C_RUNTIME:1783000000\.000100-sandboxowner_[a-f0-9]{40}$/);
+  assert.match(first, /^sandbox_[a-f0-9]{40}$/);
+  assert.ok(first.length <= 63, 'Cloudflare Sandbox ids must not exceed 63 characters');
   assert.equal(sandboxThreadKey(first), first);
   assert.notEqual(sandboxThreadKey(first), sandboxThreadKey(second));
   assert.throws(() => runtimePlanSandboxConversationKey(plan, '   '), /owner identity is invalid/);
   assert.throws(() => runtimePlanSandboxConversationKey(plan, 'x'.repeat(201)), /owner identity is invalid/);
+});
+
+test('owner-bound sandbox keys stay provider-safe at maximum runtime-plan bounds', () => {
+  const workspaceId = `T${'W'.repeat(79)}`;
+  const channelId = `C${'H'.repeat(79)}`;
+  const plan = compile({
+    turn: turn({
+      workspaceId,
+      channelId,
+      threadTs: '12345678901234567890.1234567890',
+    }),
+    assignment: assignment({ workspaceId, channelId }),
+  });
+
+  const key = runtimePlanSandboxConversationKey(plan, 'x'.repeat(200));
+  assert.match(key, /^sandbox_[a-f0-9]{40}$/);
+  assert.ok(key.length <= 63, 'Cloudflare Sandbox ids must not exceed 63 characters');
+  assert.equal(sandboxThreadKey(key), key);
 });
 
 test('a complete first-turn plan contains policy descriptors but no auth material', () => {

@@ -154,9 +154,10 @@ export function runtimePlanConversationKey(plan: RuntimePlanV2): string {
 
 /**
  * Owner-bound Sandbox coordinate for isolated executions such as routines.
- * The canonical Slack coordinate remains visible in the key while the frozen
- * owner identity prevents concurrent occurrences from sharing mutable policy,
- * turn progress, or teardown. Retries with the same owner converge.
+ * The opaque key binds both the canonical Slack coordinate and frozen owner
+ * identity while remaining below Cloudflare Sandbox's 63-character id limit.
+ * Concurrent occurrences stay isolated and retries with the same owner
+ * converge without exposing a provider identity to unbounded Slack fields.
  */
 export function runtimePlanSandboxConversationKey(
   plan: RuntimePlanV2,
@@ -166,7 +167,7 @@ export function runtimePlanSandboxConversationKey(
   if (!ownerId.trim() || ownerId.length > 200) {
     throw new Error('Sandbox owner identity is invalid.');
   }
-  return `${conversationKey}-${opaqueId('sandboxowner', ownerId)}`;
+  return opaqueId('sandbox', `${conversationKey}:${ownerId}`);
 }
 
 /** Strict allowlist parser for persisted/runtime-provided Flue initial data. */

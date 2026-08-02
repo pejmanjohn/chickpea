@@ -245,7 +245,7 @@ test('an ambiguous dispatch keeps its sandbox until the frozen request settles',
     assert.equal(preparedSandboxKeys[0], preparedSandboxKeys[1]);
     assert.match(
       preparedSandboxKeys[0] ?? '',
-      /^T_TEST:C_TEST:1785100000\.000100-sandboxowner_[a-f0-9]{40}$/,
+      /^sandbox_[a-f0-9]{40}$/,
     );
     assert.deepEqual(releasedSandboxKeys, [preparedSandboxKeys[0]]);
     assert.deepEqual((await store.getRun(fixture.run.id))?.flueAgentEnvelope, frozen);
