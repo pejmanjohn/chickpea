@@ -38,6 +38,10 @@ function createHarness() {
   `;
   writeFileSync(npmStub, commandLogger('npm'));
   writeFileSync(wranglerStub, commandLogger('wrangler'));
+  writeFileSync(
+    path.join(root, 'slack-app-manifest.json'),
+    JSON.stringify({ features: { agent_view: { agent_description: 'Test agent' } } }),
+  );
 
   const harness = {
     root,
@@ -52,12 +56,16 @@ function createHarness() {
 function runHarness(
   harness: ReturnType<typeof createHarness>,
   args: string[],
+  envOverrides: NodeJS.ProcessEnv = {},
 ) {
+  const env = { ...process.env };
+  delete env.SLACK_AGENT_VIEW_CUTOVER_AUTHORIZED;
+  Object.assign(env, envOverrides);
   return spawnSync(process.execPath, [harness.script, ...args], {
     cwd: harness.root,
     encoding: 'utf8',
     env: {
-      ...process.env,
+      ...env,
       DEPLOY_TEST_LOG: harness.logPath,
       npm_execpath: harness.npmStub,
     },
@@ -82,6 +90,7 @@ function writeCutoverArtifact(
     tracing?: boolean;
     cloudflareTracer?: boolean;
     sandboxCommandRedaction?: boolean;
+    agentViewArtifact?: boolean;
   } = {},
 ) {
   const builtDir = path.join(harness.root, 'dist-cf', 'chickpea');
@@ -142,6 +151,7 @@ function writeCutoverArtifact(
       `${options.cloudflareTracer === false ? '' : '@flue/runtime/cloudflare-tracing '} ` +
       `${options.sandboxCommandRedaction === false ? '' : 'FLUE_PRIVATE_SANDBOX_COMMAND_V1 '} ` +
       `${options.routineAgents === false ? '' : 'chickpea-routine-intent-v2 chickpea-routine-execution-v2 '} ` +
+      `${options.agentViewArtifact === false ? '' : 'agent_view agent_description '} ` +
       canarySeams,
   );
 }
@@ -196,6 +206,71 @@ test('preflight-only validates the generated cutover artifact without invoking W
 
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /cutover preflight passed/);
+  assert.equal(existsSync(harness.logPath), false);
+});
+
+test('Agent View source refuses a real deploy without explicit cutover authorization', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+
+  const denied = runHarness(harness, ['--skip-build']);
+
+  assert.equal(denied.status, 1);
+  assert.match(denied.stderr, /SLACK_AGENT_VIEW_CUTOVER_AUTHORIZED=1/);
+  assert.equal(existsSync(harness.logPath), false);
+
+  const authorized = runHarness(
+    harness,
+    ['--skip-build'],
+    { SLACK_AGENT_VIEW_CUTOVER_AUTHORIZED: '1' },
+  );
+  assert.equal(authorized.status, 0, authorized.stderr);
+  assert.deepEqual(commands(harness.logPath), ['wrangler:["deploy"]']);
+});
+
+test('Agent View deploy guard fails closed for unreadable, malformed, and dual-view manifests', (context) => {
+  const missing = createHarness();
+  const malformed = createHarness();
+  const dualView = createHarness();
+  context.after(() => {
+    rmSync(missing.root, { recursive: true, force: true });
+    rmSync(malformed.root, { recursive: true, force: true });
+    rmSync(dualView.root, { recursive: true, force: true });
+  });
+  rmSync(path.join(missing.root, 'slack-app-manifest.json'));
+  writeFileSync(path.join(malformed.root, 'slack-app-manifest.json'), '{not-json');
+  writeFileSync(
+    path.join(dualView.root, 'slack-app-manifest.json'),
+    JSON.stringify({ features: { agent_view: {}, assistant_view: {} } }),
+  );
+
+  const missingResult = runHarness(missing, ['--skip-build']);
+  const malformedResult = runHarness(malformed, ['--skip-build']);
+  const dualViewResult = runHarness(dualView, ['--skip-build']);
+
+  assert.equal(missingResult.status, 1);
+  assert.match(missingResult.stderr, /Unable to validate the Slack manifest/);
+  assert.equal(malformedResult.status, 1);
+  assert.match(malformedResult.stderr, /Unable to validate the Slack manifest/);
+  assert.equal(dualViewResult.status, 1);
+  assert.match(dualViewResult.stderr, /agent_view and assistant_view cannot coexist/);
+  assert.equal(existsSync(missing.logPath), false);
+  assert.equal(existsSync(malformed.logPath), false);
+  assert.equal(existsSync(dualView.logPath), false);
+});
+
+test('Agent View deploy guard validates the artifact used by skip-build', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+  writeFileSync(
+    path.join(harness.root, 'slack-app-manifest.json'),
+    JSON.stringify({ features: { assistant_view: { assistant_description: 'Legacy source' } } }),
+  );
+
+  const result = runHarness(harness, ['--skip-build']);
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /SLACK_AGENT_VIEW_CUTOVER_AUTHORIZED=1/);
   assert.equal(existsSync(harness.logPath), false);
 });
 

@@ -15,7 +15,7 @@ import type { NormalizedSlackTurn } from '../slack/types.ts';
 export const RUNTIME_PLAN_SCHEMA_VERSION = 2 as const;
 export const DEFAULT_CONTINUITY_POLICY = 'slack-runtime-v2' as const;
 
-export type RuntimePlanSurface = 'channel_thread' | 'direct_message' | 'app_home';
+export type RuntimePlanSurface = 'channel_thread' | 'direct_message';
 export type RuntimePlanSandboxMode = 'bash' | 'cloudflare';
 
 export interface RuntimePlanConversationV2 {
@@ -200,11 +200,17 @@ export function parseRuntimePlanV2(value: unknown): RuntimePlanV2 {
     'surface',
     'continuityKey',
   ]);
-  const surface = oneOf(
+  const persistedSurface = oneOf(
     conversationRecord.surface,
     'conversation.surface',
     ['channel_thread', 'direct_message', 'app_home'] as const,
   );
+  // Pre-Agent-View plans may survive in pending TurnJobs. Accept that durable
+  // read shape, but normalize it so new plans and every downstream consumer
+  // only observe the current direct-message surface.
+  const surface: RuntimePlanSurface = persistedSurface === 'app_home'
+    ? 'direct_message'
+    : persistedSurface;
   const conversation: RuntimePlanConversationV2 = {
     workspaceId: slackIdentity(conversationRecord.workspaceId, 'conversation.workspaceId'),
     channelId: slackIdentity(conversationRecord.channelId, 'conversation.channelId'),
@@ -346,7 +352,6 @@ function compileRepositories(
 }
 
 function surfaceForTurn(turn: NormalizedSlackTurn): RuntimePlanSurface {
-  if (turn.channelType === 'app_home') return 'app_home';
   if (
     turn.source === 'dm_message' ||
     turn.channelType === 'im' ||

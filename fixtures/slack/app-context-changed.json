@@ -1,0 +1,22 @@
+{
+  "token": "verification-token-not-a-secret",
+  "team_id": "T_DEMO",
+  "api_app_id": "A_DEMO",
+  "event_id": "Ev_APP_CONTEXT_CHANGED_001",
+  "event_time": 1782770460,
+  "type": "event_callback",
+  "event": {
+    "type": "app_context_changed",
+    "user": "U_ALICE",
+    "event_ts": "1782770460.000100",
+    "context": {
+      "entities": [
+        {
+          "type": "slack#/types/thread_ts",
+          "value": "1782770400.000100",
+          "team_id": "T_DEMO"
+        }
+      ]
+    }
+  }
+}

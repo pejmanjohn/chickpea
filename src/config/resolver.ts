@@ -8,7 +8,7 @@ export interface AgentReader {
 }
 
 // A turn's surface. The global '*,*' wildcard assignment is the default for
-// DIRECT conversations only (DMs, App Home): a direct message is a separate
+// DIRECT conversations only: a direct message is a separate
 // surface, not a channel that access attaches to. CHANNELS are fail-closed —
 // they resolve only via an explicit (exact / workspace / channel) assignment
 // and never fall through to the global wildcard.
@@ -23,7 +23,7 @@ export interface AssignmentLookupOptions {
 // turn's authoritative source/channel_type when available (see turnSurface in
 // the Slack channel) — this id heuristic is the fallback.
 //
-// Slack 1:1 DM and App Home channel ids are 'D…'; public channels are 'C…'.
+// Slack 1:1 DM channel ids are 'D…'; public channels are 'C…'.
 // A 'G…' id is ambiguous — legacy private channel vs group DM (mpim) — and the
 // app_mention event carries no channel_type to disambiguate, so it is treated
 // as a channel: the fail-closed default (better to require an explicit

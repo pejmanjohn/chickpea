@@ -1118,13 +1118,21 @@ test('wizard GET reports missing credentials and substitutes the request origin 
       const manifest = JSON.parse(manifestUrl.searchParams.get('manifest_json') ?? '{}') as {
         $schema?: string;
         display_information: { name: string };
-        settings: { event_subscriptions: { request_url: string } };
+        features: { agent_view?: unknown; assistant_view?: unknown };
+        settings: {
+          event_subscriptions: { request_url: string; bot_events: string[] };
+          interactivity: { is_enabled: boolean };
+        };
       };
       // The one substitution that removes the copy-the-URL setup step.
       assert.equal(manifest.settings.event_subscriptions.request_url, body.requestUrl);
       // Editor-tooling key must not leak into Slack's manifest import.
       assert.equal(manifest.$schema, undefined);
       assert.equal(manifest.display_information.name, 'Chickpea');
+      assert.ok(manifest.features.agent_view);
+      assert.equal(manifest.features.assistant_view, undefined);
+      assert.ok(manifest.settings.event_subscriptions.bot_events.includes('app_context_changed'));
+      assert.equal(manifest.settings.interactivity.is_enabled, false);
     } finally {
       settings.close();
     }

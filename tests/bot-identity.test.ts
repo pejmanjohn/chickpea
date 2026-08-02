@@ -53,6 +53,51 @@ test('Slack manifest defaults the app and bot display names to Chickpea', () => 
   assert.notEqual(description.trim(), '');
 });
 
+test('Slack manifest uses the minimal Agent View contract without enabling actions', () => {
+  const manifest = JSON.parse(readFileSync(MANIFEST_PATH, 'utf8')) as {
+    features?: {
+      agent_view?: {
+        agent_description?: unknown;
+        suggested_prompts?: unknown;
+        actions?: unknown;
+      };
+      assistant_view?: unknown;
+    };
+    oauth_config?: { scopes?: { bot?: unknown[] } };
+    settings?: {
+      event_subscriptions?: { bot_events?: unknown[] };
+      interactivity?: { is_enabled?: unknown };
+    };
+  };
+
+  assert.equal(manifest.features?.assistant_view, undefined);
+  assert.ok(typeof manifest.features?.agent_view?.agent_description === 'string');
+  assert.deepEqual(manifest.features?.agent_view?.suggested_prompts, [
+    {
+      title: 'Summarize supplied text',
+      message: 'Summarize the conversation or material I paste here.',
+    },
+    {
+      title: 'Investigate a question',
+      message:
+        'Investigate this question using only material I supply or you are authorized to access:',
+    },
+    { title: 'Plan a task', message: 'Help me plan this task:' },
+  ]);
+  assert.equal(manifest.features?.agent_view?.actions, undefined);
+  assert.equal(manifest.settings?.interactivity?.is_enabled, false);
+
+  const scopes = manifest.oauth_config?.scopes?.bot ?? [];
+  assert.ok(scopes.includes('assistant:write'));
+  const events = manifest.settings?.event_subscriptions?.bot_events ?? [];
+  assert.ok(events.includes('app_home_opened'));
+  assert.ok(events.includes('app_context_changed'));
+  assert.ok(events.includes('message.im'));
+  assert.ok(!events.includes('assistant_thread_started'));
+  assert.ok(!events.includes('assistant_thread_context_changed'));
+  assert.ok(!events.includes('message.app_home'));
+});
+
 test('default avatar path resolves to a square PNG at least 512px wide', () => {
   const avatarPath = join(REPO_ROOT, defaultBotIdentity.avatarPath);
   assert.ok(existsSync(avatarPath), `expected ${defaultBotIdentity.avatarPath} to exist`);

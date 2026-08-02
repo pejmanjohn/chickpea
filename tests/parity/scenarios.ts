@@ -2,9 +2,9 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
-  appHomeMessage,
+  appContextChanged,
+  appHomeOpened,
   appMention,
-  assistantThreadStarted,
   channelThreadMessage,
   dmMessage,
   memberJoinedChannel,
@@ -314,17 +314,24 @@ export const scenarios: Scenario[] = [
   },
   {
     id: 'S09',
-    title: 'App Home messages reuse the DM path',
+    title: 'Agent View suggested prompts reuse the ordinary DM path',
     config: {},
     async run(instance) {
-      await instance.postEvent(appHomeMessage());
+      await instance.postEvent(dmMessage({
+        event_id: 'Ev_MSG_DM_PROMPT',
+        event: {
+          text: 'Help me plan this task:',
+          ts: '1782770430.000300',
+          event_ts: '1782770430.000300',
+        },
+      }));
       await instance.quiesce();
 
       const finals = instance.backend.finals();
       assert.equal(finals.length, 1);
       const [final] = finals;
       assert.ok(final);
-      assert.equal(final.channel, 'D_DEMO_APP_HOME');
+      assert.equal(final.channel, 'D_DEMO_DM');
       assert.equal(instance.backend.callsOfMethod('conversations.replies').length, 0);
     },
   },
@@ -573,17 +580,12 @@ export const scenarios: Scenario[] = [
   },
   {
     id: 'S12',
-    title: 'assistant events are acknowledged without running',
+    title: 'Agent View lifecycle events are acknowledged without running',
     config: {},
     async run(instance) {
-      const started = assistantThreadStarted();
-      const startedResponse = await instance.postEvent(started);
-      assert.ok(startedResponse.status >= 200 && startedResponse.status < 300);
-
-      const changed = structuredClone(started);
-      changed.event_id = 'Ev_ASSISTANT_002';
-      changed.event.type = 'assistant_thread_context_changed';
-      const changedResponse = await instance.postEvent(changed);
+      const openedResponse = await instance.postEvent(appHomeOpened());
+      assert.ok(openedResponse.status >= 200 && openedResponse.status < 300);
+      const changedResponse = await instance.postEvent(appContextChanged());
       assert.ok(changedResponse.status >= 200 && changedResponse.status < 300);
 
       await instance.quiesce();

@@ -250,12 +250,13 @@ export const channel: SlackChannel = {
 };
 
 const handleSlackEvents: NonNullable<SlackChannelOptions['events']> = ({ c, payload }) => {
-  // a. Admission: only Events API callbacks; ack Assistant lifecycle events.
+  // a. Admission: only Events API callbacks; acknowledge and discard Agent
+  // View lifecycle events before they can enter normalization or persistence.
   if (payload.type !== 'event_callback') return;
   const eventType = payload.event.type;
   if (
-    eventType === 'assistant_thread_started' ||
-    eventType === 'assistant_thread_context_changed'
+    eventType === 'app_home_opened' ||
+    eventType === 'app_context_changed'
   ) {
     return;
   }
@@ -327,7 +328,7 @@ async function processSlackEvent(
     return;
   }
 
-  // c2. Direct messages / App Home are a separate surface, on by default.
+  // c2. Direct messages are a separate surface, on by default.
   //     When the resolved allow-DMs setting is off (env or admin-stored), the
   //     bot is reachable only in channels. Checked before any claim so a
   //     disabled DM stays fully silent.
@@ -353,7 +354,7 @@ async function processSlackEvent(
   //      turn passed this gate, so it cannot bypass fail-closed. Channels fail
   //      closed if unassigned and never fall through to the global '*,*'
   //      wildcard (see turnSurface / the resolver).
-  //    - DIRECT conversations (DMs, App Home) are one continuous session, not a
+  //    - DIRECT conversations are one continuous session, not a
   //      discrete thread, so they are NOT frozen: they resolve current config
   //      every turn, so admin edits to the DM profile reach existing DM users.
   let assignment: ResolvedAssignment;
@@ -990,8 +991,8 @@ function slackEventTimestampMs(value: string): number | null {
 }
 
 // The turn's surface, from the normalizer's authoritative source/channel_type
-// (not a channel-id prefix): a DM or App Home message ('dm_message'), and any
-// im/app_home/mpim thread, is 'direct'; everything else is a channel. A group-DM
+// (not a channel-id prefix): a DM message ('dm_message'), and any im/mpim
+// thread, is 'direct'; everything else is a channel. A group-DM
 // app_mention carries no channel_type and falls through to 'channel' — the
 // fail-closed default (see surfaceForChannelId for the id ambiguity).
 function turnSurface(turn: NormalizedSlackTurn): AssignmentSurface {
@@ -999,7 +1000,7 @@ function turnSurface(turn: NormalizedSlackTurn): AssignmentSurface {
     return 'direct';
   }
   const channelType = turn.channelType;
-  if (channelType === 'im' || channelType === 'app_home' || channelType === 'mpim') {
+  if (channelType === 'im' || channelType === 'mpim') {
     return 'direct';
   }
   return 'channel';

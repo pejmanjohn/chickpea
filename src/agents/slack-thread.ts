@@ -518,7 +518,7 @@ export async function createSlackAgentRuntime(
 
   // Channel threads are frozen (the channel handler wrote the snapshot at the
   // first turn; getOrCreateSnapshot serves that row). Direct conversations
-  // (DMs, App Home) are one continuous session, not a discrete thread, so they
+  // Direct messages are one continuous session, not a discrete thread, so they
   // resolve the current config every turn instead of freezing — admin edits to
   // the DM profile reach existing DM users.
   const isDirect = surfaceForChannelId(channelId) === 'direct';

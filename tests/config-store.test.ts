@@ -668,8 +668,8 @@ test('getConfigStore writes are visible to later slack-thread initializations in
   rmSync(dir, { recursive: true, force: true });
 });
 
-test('surfaceForChannelId classifies DM/App Home and the wildcard key as direct, channels as fail-closed', () => {
-  // 1:1 DM and App Home ids ('D…') and the '*' wildcard key are direct.
+test('surfaceForChannelId classifies DM and the wildcard key as direct, channels as fail-closed', () => {
+  // 1:1 DM ids ('D…') and the '*' wildcard key are direct.
   assert.equal(surfaceForChannelId('D_DEMO_DM'), 'direct');
   assert.equal(surfaceForChannelId('D_DEMO_APP_HOME'), 'direct');
   assert.equal(surfaceForChannelId('*'), 'direct');

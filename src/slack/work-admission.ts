@@ -185,7 +185,6 @@ function isDirectTurn(turn: NormalizedSlackTurn): boolean {
   return (
     turn.source === 'dm_message' ||
     turn.channelType === 'im' ||
-    turn.channelType === 'app_home' ||
     turn.channelType === 'mpim'
   );
 }

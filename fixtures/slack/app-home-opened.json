@@ -1,0 +1,24 @@
+{
+  "token": "verification-token-not-a-secret",
+  "team_id": "T_DEMO",
+  "api_app_id": "A_DEMO",
+  "event_id": "Ev_APP_HOME_OPENED_001",
+  "event_time": 1782770450,
+  "type": "event_callback",
+  "event": {
+    "type": "app_home_opened",
+    "user": "U_ALICE",
+    "channel": "D_DEMO_DM",
+    "tab": "messages",
+    "event_ts": "1782770450.000100",
+    "context": {
+      "entities": [
+        {
+          "type": "slack#/types/channel_id",
+          "value": "C_CONTEXT",
+          "team_id": "T_DEMO"
+        }
+      ]
+    }
+  }
+}

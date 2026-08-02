@@ -294,6 +294,46 @@ test('dispatch envelope, receipt, and settlement checkpoints survive retry and r
   });
 });
 
+test('pending jobs normalize persisted App Home runtime plans without poisoning the batch', () => {
+  const db = openStateDb(':memory:');
+  const store = new TurnJobStoreLogic(db);
+  const runtimePlan = compileRuntimePlanV2({
+    turn: turn({
+      channelId: 'D1',
+      threadTs: '1000.0001',
+      sessionThreadTs: 'dm',
+      source: 'dm_message',
+      channelType: 'im',
+      contextMode: 'dm_history',
+    }),
+    assignment: { ...assignment(), channelId: 'D1' },
+    instructions: 'Frozen direct-message instructions.',
+    memoryEpoch: 1,
+    sandboxMode: 'bash',
+  });
+  store.enqueue({
+    ...job('legacy-app-home'),
+    turn: { ...job('legacy-app-home').turn, channelId: 'D1' },
+    assignment: { ...assignment(), channelId: 'D1' },
+  });
+  store.enqueue(job('ordinary-pending'));
+  store.freezeRuntimePlan('legacy-app-home', runtimePlan);
+  const persistedLegacyPlan = structuredClone(runtimePlan) as unknown as {
+    conversation: { surface: string };
+  };
+  persistedLegacyPlan.conversation.surface = 'app_home';
+  db.run(
+    'UPDATE turn_jobs SET runtime_plan_json = ? WHERE id = ?',
+    JSON.stringify(persistedLegacyPlan),
+    'legacy-app-home',
+  );
+
+  const pending = store.listPending();
+
+  assert.deepEqual(pending.map(({ id }) => id), ['legacy-app-home', 'ordinary-pending']);
+  assert.equal(pending[0]?.runtimePlan?.conversation.surface, 'direct_message');
+});
+
 test('same-key dispatch payload drift fails closed in retained recovery state', () => {
   const store = newStore();
   store.enqueue(job('payload-conflict'));

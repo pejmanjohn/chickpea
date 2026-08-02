@@ -296,7 +296,7 @@ test('strict parsing rejects unknown and explicit auth fields without token heur
   assert.match(legitimate.instructions, /sk-live-looking-example/);
 });
 
-test('direct and App Home plans use stable conversation coordinates', () => {
+test('direct plans use stable coordinates and normalize persisted App Home surfaces', () => {
   const dm = compile({
     turn: turn({
       channelId: 'D_RUNTIME',
@@ -308,20 +308,14 @@ test('direct and App Home plans use stable conversation coordinates', () => {
     }),
     assignment: assignment({ channelId: 'D_RUNTIME' }),
   });
-  const appHome = compile({
-    turn: turn({
-      channelId: 'D_HOME',
-      threadTs: '1783000000.000300',
-      sessionThreadTs: 'dm',
-      source: 'dm_message',
-      channelType: 'app_home',
-      contextMode: 'dm_history',
-    }),
-    assignment: assignment({ channelId: 'D_HOME' }),
-  });
-
   assert.equal(dm.conversation.surface, 'direct_message');
   assert.equal(dm.conversation.threadTs, 'dm');
-  assert.equal(appHome.conversation.surface, 'app_home');
-  assert.equal(appHome.conversation.threadTs, 'dm');
+  const legacyAppHome = structuredClone(dm) as unknown as {
+    conversation: { surface: string };
+  };
+  legacyAppHome.conversation.surface = 'app_home';
+  assert.equal(
+    parseRuntimePlanV2(legacyAppHome).conversation.surface,
+    'direct_message',
+  );
 });

@@ -6,7 +6,9 @@ import { fileURLToPath } from 'node:url';
 import type {
   AgentDispatchRequest,
   AgentInstanceHandle,
+  AgentReadOptions,
   AgentReply,
+  ConversationStreamChunk,
   DispatchReceipt,
 } from '@flue/runtime';
 
@@ -37,6 +39,21 @@ type HandleCanRead = 'read' extends keyof AgentInstanceHandle ? true : false;
 type HandleCanAbort = 'abort' extends keyof AgentInstanceHandle ? true : false;
 type HandleHasHistory = 'history' extends keyof AgentInstanceHandle ? true : false;
 type ReplyHasNamedData = 'data' extends keyof AgentReply ? true : false;
+type ReadHasEventCallback = 'onEvent' extends keyof AgentReadOptions ? true : false;
+type ReadHasLocalSignal = 'signal' extends keyof AgentReadOptions ? true : false;
+type EventCallbackReturnsVoid = ReturnType<
+  NonNullable<AgentReadOptions['onEvent']>
+> extends void ? true : false;
+type ChunkHasDurablePosition = ConversationStreamChunk['position'] extends {
+  batch: number;
+  index: number;
+} ? true : false;
+type DeltaKinds = Extract<ConversationStreamChunk, { type: 'message-delta' }>['kind'];
+type ChunkHasNoDirectSubagentEvent = Extract<
+  ConversationStreamChunk,
+  { type: 'subagent-started' }
+> extends never ? true : false;
+type AbortArgumentCount = Parameters<AgentInstanceHandle['abort']>['length'];
 
 const DISPATCH_ACCEPTS_IDEMPOTENCY_KEY: DispatchAcceptsIdempotencyKey = true;
 const RECEIPT_RETURNS_SUBMISSION_ID: ReceiptReturnsSubmissionId = true;
@@ -45,6 +62,13 @@ const HANDLE_CAN_READ: HandleCanRead = true;
 const HANDLE_CAN_ABORT: HandleCanAbort = true;
 const HANDLE_HAS_HISTORY: HandleHasHistory = false;
 const REPLY_HAS_NAMED_DATA: ReplyHasNamedData = true;
+const READ_HAS_EVENT_CALLBACK: ReadHasEventCallback = true;
+const READ_HAS_LOCAL_SIGNAL: ReadHasLocalSignal = true;
+const EVENT_CALLBACK_RETURNS_VOID: EventCallbackReturnsVoid = true;
+const CHUNK_HAS_DURABLE_POSITION: ChunkHasDurablePosition = true;
+const DELTA_KINDS: ReadonlySet<DeltaKinds> = new Set(['text', 'reasoning']);
+const CHUNK_HAS_NO_DIRECT_SUBAGENT_EVENT: ChunkHasNoDirectSubagentEvent = true;
+const ABORT_ARGUMENT_COUNT: AbortArgumentCount = 0;
 
 const FLUE_ROOT = fileURLToPath(new URL('../node_modules/@flue/runtime/', import.meta.url));
 const FLUE_DIST = fileURLToPath(new URL('../node_modules/@flue/runtime/dist/', import.meta.url));
@@ -88,6 +112,13 @@ test('the pinned Flue 2 handle exposes keyed admission, receipts, and reattachab
   assert.equal(RECEIPT_MARKS_DEDUPLICATION, true);
   assert.equal(HANDLE_CAN_READ, true);
   assert.equal(HANDLE_CAN_ABORT, true);
+  assert.equal(READ_HAS_EVENT_CALLBACK, true);
+  assert.equal(READ_HAS_LOCAL_SIGNAL, true);
+  assert.equal(EVENT_CALLBACK_RETURNS_VOID, true);
+  assert.equal(CHUNK_HAS_DURABLE_POSITION, true);
+  assert.deepEqual([...DELTA_KINDS], ['text', 'reasoning']);
+  assert.equal(CHUNK_HAS_NO_DIRECT_SUBAGENT_EVENT, true);
+  assert.equal(ABORT_ARGUMENT_COUNT, 0, 'abort remains instance-wide, not receipt-scoped');
 
   const runtime = await readDistContaining('async function adoptKeyedSubmissionReplay');
   const directInput = runtime.slice(

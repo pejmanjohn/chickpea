@@ -153,7 +153,7 @@ export interface RunTurnOptions {
   agentPrompt?: typeof promptSlackThreadAgent;
   /** Adapter-owned dispatch/read checkpoints restored by the relay. */
   flueDispatch?: SlackFlueDispatchState;
-  /** Restored exactly-once DM/App Home continuity-notice checkpoint. */
+  /** Restored exactly-once DM continuity-notice checkpoint. */
   continuityNoticeProgress?: SlackContinuityNoticeProgress;
   onContinuityNoticeProgress?: (
     notice: SlackContinuityNoticeProgress,
@@ -805,7 +805,6 @@ async function recordExplicitInteractionClassifierUsage(input: {
   if (!input.classification.result && !input.classification.failed) return;
   const direct = input.turn.source === 'dm_message' ||
     input.turn.channelType === 'im' ||
-    input.turn.channelType === 'app_home' ||
     input.turn.channelType === 'mpim';
   const operationId =
     `classification:${input.turn.workspaceId}:${input.turn.channelId}:${input.turn.eventId}`;

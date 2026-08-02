@@ -178,7 +178,7 @@ export class WebClientPresenter {
     });
   }
 
-  /** Governed one-time notice before the first reply from a rotated DM/App Home agent. */
+  /** Governed one-time notice before the first reply from a rotated DM agent. */
   async postContinuityNotice(text: string): Promise<string> {
     const response = await this.client.chat.postMessage({
       channel: this.target.channelId,
