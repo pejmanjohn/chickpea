@@ -1,15 +1,5 @@
-import { AsyncLocalStorage } from 'node:async_hooks';
-
-import type {
-  FlueExecutionContext,
-  FlueExecutionInterceptor,
-} from '@flue/runtime';
-
 import type { ActivityStatus } from '../activity/status.ts';
-import {
-  workTraceStateEntries,
-  type WorkTraceCorrelation,
-} from '../work/trace-correlation.ts';
+import { currentFlueObservationContext } from '../work/model-invocation.ts';
 import { setObservedSlackStatus } from './status-registry.ts';
 import { relayObservedStatus } from './status-relay.ts';
 
@@ -27,42 +17,6 @@ interface RelayQueue {
 // returns. Keep one active relay and only the newest pending safe status so the
 // cross-isolate path cannot replay an arbitrarily long stale queue.
 const relayQueues = new Map<string, Map<string, RelayQueue>>();
-const activityStatusGeneration = new AsyncLocalStorage<string>();
-
-const ACTIVITY_STATUS_TRACESTATE_KEY = 'chickpea-status';
-
-/**
- * Encode the application-owned turn generation into Flue's persisted trace
- * carrier. Flue replaces the original HTTP request with a synthetic request
- * while executing a durable submission, but preserves traceparent/tracestate.
- */
-export function activityStatusTraceHeaders(
-  generation: string,
-  correlation: WorkTraceCorrelation | undefined = undefined,
-): {
-  traceparent: string;
-  tracestate: string;
-} {
-  const traceId = crypto.randomUUID().replaceAll('-', '');
-  const spanId = crypto.randomUUID().replaceAll('-', '').slice(0, 16);
-  return {
-    traceparent: `00-${traceId}-${spanId}-01`,
-    tracestate: [
-      `${ACTIVITY_STATUS_TRACESTATE_KEY}=${encodeURIComponent(generation)}`,
-      ...(correlation ? workTraceStateEntries(correlation) : []),
-    ].join(','),
-  };
-}
-
-/** Restore the persisted generation around Flue's complete agent execution. */
-export const activityStatusGenerationInterceptor: FlueExecutionInterceptor =
-  async (_operation, context, next) => {
-    const generation = generationFromExecutionContext(context);
-    return generation
-      ? activityStatusGeneration.run(generation, next)
-      : next();
-  };
-
 /**
  * Publish one already-sanitized activity update to the live Slack turn. Node
  * reaches the in-isolate registry directly; Cloudflare relays the same safe
@@ -72,22 +26,26 @@ export function publishActivityStatus(
   instanceId: string,
   status: ActivityStatus,
   env?: Record<string, unknown>,
+  observedSubmissionId?: string,
 ): void {
-  const generation = activityStatusGeneration.getStore();
-  if (!generation) {
-    return;
-  }
-  if (setObservedSlackStatus(instanceId, generation, status)) {
+  const context = currentFlueObservationContext();
+  const matchingContext = context?.instanceId === instanceId ? context : undefined;
+  const submissionId = observedSubmissionId ?? matchingContext?.submissionId;
+  if (!submissionId) return;
+  const generation = matchingContext?.submissionId === submissionId
+    ? matchingContext.target?.generation
+    : undefined;
+  if (generation && setObservedSlackStatus(instanceId, generation, status)) {
     return;
   }
 
   const instanceQueues = relayQueues.get(instanceId) ?? new Map<string, RelayQueue>();
   relayQueues.set(instanceId, instanceQueues);
-  const queue = instanceQueues.get(generation) ?? {
+  const queue = instanceQueues.get(submissionId) ?? {
     active: undefined,
     pending: undefined,
   };
-  instanceQueues.set(generation, queue);
+  instanceQueues.set(submissionId, queue);
   if (queue.active?.text === status.text) {
     // The in-flight value is already the newest requested state.
     queue.pending = undefined;
@@ -97,15 +55,15 @@ export function publishActivityStatus(
     return;
   }
   queue.pending = { text: status.text, ...(env ? { env } : {}) };
-  startNextRelay(instanceId, generation, queue);
+  startNextRelay(instanceId, submissionId, queue);
 }
 
-function startNextRelay(instanceId: string, generation: string, queue: RelayQueue): void {
+function startNextRelay(instanceId: string, submissionId: string, queue: RelayQueue): void {
   if (queue.active || !queue.pending) return;
 
   const next = queue.pending;
   queue.pending = undefined;
-  const result = relayObservedStatus(instanceId, generation, next.text, next.env).catch(
+  const result = relayObservedStatus(instanceId, submissionId, next.text, next.env).catch(
     () => undefined,
   );
   const active = { text: next.text };
@@ -115,33 +73,15 @@ function startNextRelay(instanceId: string, generation: string, queue: RelayQueu
       queue.active = undefined;
     }
     if (queue.pending) {
-      startNextRelay(instanceId, generation, queue);
+      startNextRelay(instanceId, submissionId, queue);
     } else if (!queue.active) {
       const instanceQueues = relayQueues.get(instanceId);
-      if (instanceQueues?.get(generation) === queue) {
-        instanceQueues.delete(generation);
+      if (instanceQueues?.get(submissionId) === queue) {
+        instanceQueues.delete(submissionId);
         if (instanceQueues.size === 0) {
           relayQueues.delete(instanceId);
         }
       }
     }
   });
-}
-
-function generationFromExecutionContext(
-  context: FlueExecutionContext,
-): string | undefined {
-  const tracestate = context.traceCarrier?.tracestate;
-  if (!tracestate) return undefined;
-  for (const entry of tracestate.split(',')) {
-    const [key, encoded] = entry.trim().split('=', 2);
-    if (key !== ACTIVITY_STATUS_TRACESTATE_KEY || !encoded) continue;
-    try {
-      const generation = decodeURIComponent(encoded);
-      return generation || undefined;
-    } catch {
-      return undefined;
-    }
-  }
-  return undefined;
 }

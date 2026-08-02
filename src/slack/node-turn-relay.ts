@@ -19,6 +19,7 @@ import {
   runTurn,
   sanitizeError,
 } from './run-turn.ts';
+import { ContinuityNoticeDeliveryError } from './continuity-notice.ts';
 import { slackThreadKey } from './thread-key.ts';
 
 const NODE_RECONCILE_INTERVAL_MS = 30_000;
@@ -81,6 +82,12 @@ export async function drainNodeTurnRelayOnce(
   if (
     state.listPendingTurns &&
     state.freezeRuntimePlan &&
+    state.prepareFlueDispatch &&
+    state.recordFlueReceipt &&
+    state.recordFlueSettlement &&
+    state.recordContinuityNotice &&
+    state.matchFlueObservation &&
+    state.markTurnRecoveryRequired &&
     state.recordTurnAttempt &&
     state.recordInteractionIntent &&
     state.recordSlackInteractionProgress &&
@@ -89,6 +96,11 @@ export async function drainNodeTurnRelayOnce(
   ) {
     const listPendingTurns = state.listPendingTurns.bind(state);
     const freezeRuntimePlan = state.freezeRuntimePlan.bind(state);
+    const prepareFlueDispatch = state.prepareFlueDispatch.bind(state);
+    const recordFlueReceipt = state.recordFlueReceipt.bind(state);
+    const recordFlueSettlement = state.recordFlueSettlement.bind(state);
+    const recordContinuityNotice = state.recordContinuityNotice.bind(state);
+    const markTurnRecoveryRequired = state.markTurnRecoveryRequired.bind(state);
     const recordTurnAttempt = state.recordTurnAttempt.bind(state);
     const recordInteractionIntent = state.recordInteractionIntent.bind(state);
     const recordSlackInteractionProgress = state.recordSlackInteractionProgress.bind(state);
@@ -99,11 +111,24 @@ export async function drainNodeTurnRelayOnce(
       if (!job.turn.interactionIntent && job.progress.interactionIntent) {
         job.turn.interactionIntent = job.progress.interactionIntent;
       }
-      const attempt = job.attempts + 1;
+      const attempt = job.dispatchStartedAt ? Math.max(1, job.attempts) : job.attempts + 1;
       let activeWorkKey = job.turn.interactionIntent?.disposition === 'work'
         ? slackThreadKey(job.turn)
         : undefined;
       await recordTurnAttempt(job.id, attempt);
+      const flueDispatch = {
+        ...(job.dispatchEnvelope ? { dispatchEnvelope: job.dispatchEnvelope } : {}),
+        ...(job.dispatchReceipt ? { dispatchReceipt: job.dispatchReceipt } : {}),
+        ...(job.flueSettlement ? { flueSettlement: job.flueSettlement } : {}),
+        prepare: (message: string, observation: Parameters<typeof prepareFlueDispatch>[2]) =>
+          prepareFlueDispatch(job.id, message, observation),
+        recordReceipt: (receipt: Parameters<typeof recordFlueReceipt>[1]) =>
+          recordFlueReceipt(job.id, receipt),
+        recordSettlement: (settlement: Parameters<typeof recordFlueSettlement>[1]) =>
+          recordFlueSettlement(job.id, settlement),
+        markRecoveryRequired: (reason: string) =>
+          markTurnRecoveryRequired(job.id, reason),
+      };
       try {
         const runtimePlanDecision = job.runtimePlan && job.agentInstanceId &&
             job.continuityNoticeRequired !== undefined
@@ -115,10 +140,16 @@ export async function drainNodeTurnRelayOnce(
           : undefined;
         await executeTurn(job.turn, job.assignment, env, {
           turnId: job.id,
-          usageExecutionId: `exec:${job.id}:${attempt}`,
+          usageExecutionId: `exec:${job.id}:flue`,
           ...(job.runId ? { runId: job.runId, runAttempt: attempt } : {}),
           ...(runtimePlanDecision ? { runtimePlanDecision } : {}),
           onRuntimePlan: (candidate) => freezeRuntimePlan(job.id, candidate),
+          flueDispatch,
+          ...(job.progress.continuityNotice
+            ? { continuityNoticeProgress: job.progress.continuityNotice }
+            : {}),
+          onContinuityNoticeProgress: (notice) =>
+            recordContinuityNotice(job.id, notice),
           onInteractionIntent: async (intent) => {
             await recordInteractionIntent(job.id, intent);
             if (intent.disposition !== 'work') return;
@@ -134,6 +165,20 @@ export async function drainNodeTurnRelayOnce(
         await markTurnDelivered(job.id);
         if (activeWorkKey) await state.setActiveWork(activeWorkKey, job.id, false);
       } catch (error) {
+        if (error instanceof ContinuityNoticeDeliveryError) {
+          if (error.recoveryRequired) {
+            await markTurnRecoveryRequired(job.id, 'continuity_notice_delivery_unknown');
+          }
+          if (activeWorkKey) await state.setActiveWork(activeWorkKey, job.id, false);
+          return;
+        }
+        if (flueDispatch.dispatchEnvelope) {
+          // The row now owns the only legal redrive: replay the same keyed
+          // admission, re-read its receipt, or replay its saved settlement.
+          if (activeWorkKey) await state.setActiveWork(activeWorkKey, job.id, false);
+          console.warn('[chickpea] node Flue turn retained for durable reattachment');
+          return;
+        }
         // Preserve the established Node contract: a genuine delivery failure
         // releases claims so Slack can redrive; the durable row is terminal.
         await state.release(job.evtKey);
@@ -193,6 +238,11 @@ async function drainLedgerRuns(input: {
   if (
     !state.getPendingTurnByRunId ||
     !state.freezeRuntimePlan ||
+    !state.prepareFlueDispatch ||
+    !state.recordFlueReceipt ||
+    !state.recordFlueSettlement ||
+    !state.recordContinuityNotice ||
+    !state.markTurnRecoveryRequired ||
     !state.recordTurnAttempt ||
     !state.recordInteractionIntent ||
     !state.recordSlackInteractionProgress ||
@@ -210,6 +260,11 @@ async function drainLedgerRuns(input: {
       turns: {
         getPendingByRunId: state.getPendingTurnByRunId.bind(state),
         freezeRuntimePlan: state.freezeRuntimePlan.bind(state),
+        prepareFlueDispatch: state.prepareFlueDispatch.bind(state),
+        recordFlueReceipt: state.recordFlueReceipt.bind(state),
+        recordFlueSettlement: state.recordFlueSettlement.bind(state),
+        recordContinuityNotice: state.recordContinuityNotice.bind(state),
+        markRecoveryRequired: state.markTurnRecoveryRequired.bind(state),
         recordAttempt: state.recordTurnAttempt.bind(state),
         recordInteractionIntent: state.recordInteractionIntent.bind(state),
         recordSlackInteractionProgress: async (id, patch) => {

@@ -56,7 +56,8 @@ test('Node and Cloudflare Vite compositions select distinct truthful targets', a
 test('the explicit v2 app shell mounts owned routes without the beta auto-router', () => {
   const appSource = readFileSync(path.join(PROJECT_ROOT, 'src', 'app.ts'), 'utf8');
   assert.doesNotMatch(appSource, /\bflue\s*\(\s*\)/);
-  assert.match(appSource, /createAgentRouter\(ChickpeaSlack\)/);
+  assert.doesNotMatch(appSource, /createAgentRouter\(ChickpeaSlack\)/);
+  assert.doesNotMatch(appSource, /agents\/slack-thread/);
   assert.match(appSource, /createAgentRouter\(ChickpeaRoutineIntent\)/);
   assert.match(appSource, /app\.route\('\/channels\/slack', channel\.route\(\)\)/);
 });

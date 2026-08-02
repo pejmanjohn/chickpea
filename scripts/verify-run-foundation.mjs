@@ -16,14 +16,14 @@ export const RUN_FOUNDATION_CAPABILITIES = Object.freeze([
   Object.freeze({
     id: 'direct_submission_receipt',
     status: 'proven',
-    evidence: '@flue/sdk AgentSendResult returns a server-generated submissionId and offset.',
+    evidence: '@flue/runtime dispatch() returns a durable DispatchReceipt with submissionId, acceptedAt, and uid.',
     releaseDecision: 'persist_receipt_when_returned',
   }),
   Object.freeze({
     id: 'caller_submission_idempotency',
-    status: 'absent',
-    evidence: 'AgentPromptOptions has no caller submission id; direct admission generates crypto.randomUUID().',
-    releaseDecision: 'do_not_resubmit_after_ambiguous_admission',
+    status: 'proven',
+    evidence: 'AgentDispatchRequest accepts an idempotencyKey and exact keyed replays adopt the original submission.',
+    releaseDecision: 'redispatch_identical_key_after_ambiguous_admission',
   }),
   Object.freeze({
     id: 'same_instance_ordering',
@@ -33,14 +33,14 @@ export const RUN_FOUNDATION_CAPABILITIES = Object.freeze([
   }),
   Object.freeze({
     id: 'post_admission_lookup',
-    status: 'unstable',
-    evidence: 'History/observe can find settlement after a known receipt, but no public API discovers a receipt lost before the 202 response.',
-    releaseDecision: 'receipt_known_observe_else_recovery_required',
+    status: 'proven',
+    evidence: 'A keyed replay recovers a lost receipt; AgentInstanceHandle.read() reattaches from any process after receipt persistence.',
+    releaseDecision: 'recover_receipt_then_reattach_read',
   }),
   Object.freeze({
     id: 'safe_detailed_history',
     status: 'absent',
-    evidence: 'The public history projection includes reasoning and dynamic-tool input/output bodies.',
+    evidence: 'AgentInstanceHandle exposes dispatch, read, and abort but no public detailed-history projection.',
     releaseDecision: 'omit_detailed_flue_activity',
   }),
   Object.freeze({
@@ -58,14 +58,14 @@ export const RUN_FOUNDATION_CAPABILITIES = Object.freeze([
   Object.freeze({
     id: 'interactive_execution_descriptor',
     status: 'proven',
-    evidence: 'Direct submissions persist traceCarrier; an AsyncLocal interceptor restores it and marks canonical invocation at the first Flue model operation.',
+    evidence: 'Flue instrumentation supplies instanceId and submissionId; Chickpea matches them to model-invisible TurnJob state before marking invocation.',
     releaseDecision: 'mark_after_agent_policy_before_provider',
   }),
   Object.freeze({
     id: 'workflow_execution_descriptor',
-    status: 'proven',
-    evidence: 'Workflow input is durable run-scoped data and the runtime exposes the opaque runId to initialization.',
-    releaseDecision: 'carry_coordinator_descriptor_in_workflow_input',
+    status: 'absent',
+    evidence: 'Flue 2 removes workflows; Chickpea occurrence state owns routine scheduling, checkpoints, and correlation.',
+    releaseDecision: 'keep_routine_occurrence_authority_in_chickpea',
   }),
   Object.freeze({
     id: 'tool_action_interception',

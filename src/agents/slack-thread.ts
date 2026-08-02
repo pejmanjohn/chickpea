@@ -2,13 +2,19 @@
 
 import {
   bash,
+  type AgentProps,
   type AgentRuntimeConfig,
   type SandboxFactory,
+  useInitialData,
   useInstruction,
+  useMcpConnection,
   useModel,
+  useSandbox,
+  useSkill,
+  useTool,
 } from '@flue/runtime';
-import type { MiddlewareHandler } from 'hono';
 import { Bash, InMemoryFs, type NetworkConfig, type SecureFetch } from 'just-bash';
+import * as v from 'valibot';
 
 import {
   connectingActivityStatus,
@@ -47,6 +53,7 @@ import {
 } from '../config/github-app.ts';
 import {
   isProfileMcpServerEligible,
+  resolveRuntimePlanMcpConnections,
   resolveProfileMcpTools,
 } from '../config/profile-mcp.ts';
 import { resolveProfileSkills } from '../config/profile-skills.ts';
@@ -65,7 +72,12 @@ import {
   getSettingsStore,
   type PlatformEnv,
 } from '../config/state-backend.ts';
-import type { ApiConnectionConfig, RepositoryGrant, SkillConfig } from '../config/types.ts';
+import type {
+  ApiConnectionConfig,
+  CustomAgentConfig,
+  RepositoryGrant,
+  SkillConfig,
+} from '../config/types.ts';
 import {
   isDeniedRepositoryEndpoint,
   matchesGrantedCodeSearch,
@@ -94,14 +106,20 @@ import {
   type SandboxTurnContext,
 } from '../sandbox/turn-context.ts';
 import { createWorkspaceArtifactCapability } from '../sandbox/artifact-tool.ts';
+import { createWorkspaceArtifactTool } from '../sandbox/artifact-tool.ts';
 import { workspaceSkillForSandbox } from '../sandbox/workspace-skill.ts';
-import { INTERNAL_AGENT_TOKEN_HEADER, isValidInternalAgentToken } from '../slack/internal-auth.ts';
 import { publishActivityStatus } from '../slack/activity-publisher.ts';
 import { parseSlackThreadKey } from '../slack/thread-key.ts';
 import { getClient } from '../slack/run-turn.ts';
 import { WebClientPresenter } from '../slack/web-client-presenter.ts';
 import { useChickpeaResponseMetadata } from '../usage/response-metadata.ts';
 import { bootstrapRuntimeProviders } from '../runtime-bootstrap.ts';
+import {
+  parseRuntimePlanV2,
+  type RuntimePlanApiConnectionV2,
+  type RuntimePlanRepositoryV2,
+  type RuntimePlanV2,
+} from './runtime-plan.ts';
 
 bootstrapRuntimeProviders();
 
@@ -466,21 +484,6 @@ export async function resolveApiConnectionsForTurn(
   );
 }
 
-// Expose the agent over HTTP at `POST /agents/slack-thread/:id` so the Slack
-// channel can drive one durable turn via `?wait=result`. This endpoint is
-// otherwise unauthenticated (Slack signature verification happens upstream,
-// on the channel's `/channels/slack/events` route, not here) — anyone who can
-// reach the app could otherwise drive the agent directly (LLM cost,
-// channel-brief disclosure). Gate every method, including GET history views,
-// on the shared internal token; the channel's in-process dispatch sends it.
-export const route: MiddlewareHandler = async (c, next) => {
-  const token = c.req.header(INTERNAL_AGENT_TOKEN_HEADER);
-  if (!isValidInternalAgentToken(token)) {
-    return c.json({ error: 'unauthorized' }, 401);
-  }
-  return next();
-};
-
 export interface SlackAgentRuntimeInput {
   id: string;
   platformEnv?: PlatformEnv;
@@ -490,6 +493,9 @@ export interface SlackAgentRuntimeInput {
   runtimeModel?: ResolvedRuntimeModel;
   freezeChannel?: boolean;
   artifactThreadTs?: string | null;
+  threadTs?: string;
+  declarationsOwnedByHooks?: boolean;
+  forcedSandbox?: SandboxSelection;
 }
 
 /** Shared interactive/routine agent assembly. Credentials always resolve here, live. */
@@ -570,7 +576,7 @@ export async function createSlackAgentRuntime(
         () => false,
       ),
     ]);
-  const sandboxSelection = selectSandbox({
+  const sandboxSelection = input.forcedSandbox ?? selectSandbox({
     target: isCloudflareTarget() ? 'cloudflare' : 'node',
     enabled: sandboxSettings.enabled,
     appConnected: githubAppConnected,
@@ -661,14 +667,16 @@ export async function createSlackAgentRuntime(
   // secrets always resolve live). The resolver degrades gracefully — a dead or
   // slow server is skipped, never aborting the turn — and drops any tool whose
   // name collides with a built-in or skill (a duplicate name kills the turn).
-  const mcpTools = await resolveProfileMcpTools(config.agent.mcpServers, {
-    agentId: config.agent.id,
-    env,
-    existingToolNames: skills.map((s) => s.name),
-    onConnectionStart: ({ displayName }) => {
-      publishActivityStatus(id, connectingActivityStatus(displayName), env);
-    },
-  });
+  const mcpTools = input.declarationsOwnedByHooks
+    ? []
+    : await resolveProfileMcpTools(config.agent.mcpServers, {
+        agentId: config.agent.id,
+        env,
+        existingToolNames: skills.map((s) => s.name),
+        onConnectionStart: ({ displayName }) => {
+          publishActivityStatus(id, connectingActivityStatus(displayName), env);
+        },
+      });
 
   const { scopes, baseNetwork, baseMethods, fallbackNetwork } = buildEgressPlan(
     egressPolicy,
@@ -781,6 +789,14 @@ async function resolveSlackAgentAdapterContext(
   input: SlackAgentRuntimeInput,
   _env: PlatformEnv | undefined,
 ): Promise<SlackAgentAdapterContext> {
+  if (input.workspaceId && input.channelId && input.threadTs) {
+    return {
+      workspaceId: input.workspaceId,
+      channelId: input.channelId,
+      threadTs: input.threadTs,
+      threadKey: `${input.workspaceId}:${input.channelId}:${input.threadTs}`,
+    };
+  }
   let parsed: { workspaceId: string; channelId: string; threadTs: string };
   try {
     parsed = parseSlackThreadKey(input.id);
@@ -803,27 +819,176 @@ async function resolveSlackAgentAdapterContext(
   };
 }
 
-/**
- * Flue 2 discovers named, synchronous agent functions. This bootstrap pair is
- * intentionally minimal until every harness-affecting decision arrives in a
- * complete secret-free RuntimePlanV2.
- */
-export function ChickpeaSlack() {
-  const model = isCloudflareTarget()
-    ? SEED_CLOUDFLARE_MODEL_PIN
-    : 'anthropic/claude-haiku-4-5';
-  const thinkingLevel = thinkingLevelForModel(model);
-  useModel(model, thinkingLevel ? { thinkingLevel } : {});
-  useChickpeaResponseMetadata(model);
+/** Flue 2 hook-authored Slack agent. Every declaration comes from validated,
+ * secret-free creation data; live credentials stay behind lazy resolvers. */
+export function ChickpeaSlack({ id }: AgentProps) {
+  const initialData = useInitialData<RuntimePlanV2>();
+  if (!initialData) throw new Error('ChickpeaSlack requires RuntimePlanV2 creation data.');
+  const plan = parseRuntimePlanV2(initialData);
+  const thinkingLevel = thinkingLevelForModel(plan.model);
+  useModel(plan.model, thinkingLevel ? { thinkingLevel } : {});
+  useChickpeaResponseMetadata(plan.model);
   useInstruction('Never invent facts or claim access to context and tools you do not have.');
-  return [
-    'You are a general-purpose Slack assistant.',
-    'Be direct and concise, match the formality of the conversation, and use Slack-friendly formatting only when it aids clarity.',
-    'Say what is missing when you lack the context to answer.',
-  ].join(' ');
+  for (const skill of resolveProfileSkills(
+    plan.skills.map((entry) => ({ ...entry, enabled: true })),
+  )) {
+    useSkill(skill);
+  }
+  for (const connection of resolveRuntimePlanMcpConnections(
+    plan.agentId,
+    plan.mcpConnections,
+    ({ displayName }) => {
+      publishActivityStatus(id, connectingActivityStatus(displayName));
+    },
+  )) {
+    useMcpConnection(connection);
+  }
+  useSandbox(createRuntimePlanSandbox(plan));
+  if (plan.sandbox.mode === 'cloudflare') {
+    useTool(createRuntimePlanArtifactTool(plan));
+  }
+  return plan.instructions;
 }
 
 ChickpeaSlack.agentName = 'chickpea-slack-v2';
+ChickpeaSlack.initialData = v.custom<RuntimePlanV2>((value) => {
+  try {
+    parseRuntimePlanV2(value);
+    return true;
+  } catch {
+    return false;
+  }
+}, 'RuntimePlanV2 is invalid.');
+
+function createRuntimePlanSandbox(plan: RuntimePlanV2): SandboxFactory {
+  return {
+    async createSessionEnv({ id }) {
+      const env = await resolveAgentPlatformEnv();
+      const current = await getConfigStore(env).getAgent(plan.agentId);
+      const agent = projectRuntimePlanAgent(plan, current);
+      const runtime = await createSlackAgentRuntime({
+        id,
+        ...(env ? { platformEnv: env } : {}),
+        workspaceId: plan.conversation.workspaceId,
+        channelId: plan.conversation.channelId,
+        threadTs: plan.conversation.threadTs,
+        liveConfig: {
+          workspaceId: plan.conversation.workspaceId,
+          channelId: plan.conversation.channelId,
+          agentId: plan.agentId,
+          agent,
+          model: plan.model,
+          provider: plan.model.split('/', 1)[0] ?? plan.model,
+          instructions: plan.instructions,
+          instructionLayers: [],
+        },
+        freezeChannel: false,
+        artifactThreadTs: null,
+        declarationsOwnedByHooks: true,
+        forcedSandbox: plan.sandbox.mode,
+      });
+      if (!runtime.sandbox) throw new Error('RuntimePlanV2 sandbox is unavailable.');
+      return runtime.sandbox.createSessionEnv({ id });
+    },
+  };
+}
+
+function projectRuntimePlanAgent(
+  plan: RuntimePlanV2,
+  current: CustomAgentConfig,
+): CustomAgentConfig {
+  if (!current.enabled || current.id !== plan.agentId) {
+    throw new Error('RuntimePlanV2 profile is unavailable.');
+  }
+  const apiConnections = plan.apiConnections.map((declaration) => {
+    const live = current.apiConnections.find((candidate) =>
+      candidate.id === declaration.id && runtimeApiConnectionMatches(candidate, declaration)
+    );
+    if (!live) throw new Error('RuntimePlanV2 API connection policy changed.');
+    return live;
+  });
+  const repositories = plan.repositories.map((declaration) => {
+    const live = current.repositories.find((candidate) =>
+      candidate.id === declaration.id && runtimeRepositoryMatches(candidate, declaration)
+    );
+    if (!live) throw new Error('RuntimePlanV2 repository policy changed.');
+    return live;
+  });
+  const mcpServers = plan.mcpConnections.flatMap((declaration) => {
+    const live = current.mcpServers.find((candidate) =>
+      candidate.id === declaration.id &&
+      candidate.enabled &&
+      candidate.lifecycleStatus === 'ready' &&
+      candidate.url === declaration.url &&
+      candidate.transport === declaration.transport &&
+      candidate.authMode === declaration.authMode &&
+      declaration.allowedTools.every((tool) => candidate.allowedTools.includes(tool))
+    );
+    return live ? [live] : [];
+  });
+  return {
+    id: current.id,
+    name: current.name,
+    instructions: plan.instructions,
+    enabled: true,
+    model: plan.model,
+    skills: plan.skills.map((skill) => ({ ...skill, enabled: true })),
+    mcpServers,
+    apiConnections,
+    repositories,
+  };
+}
+
+function runtimeApiConnectionMatches(
+  current: ApiConnectionConfig,
+  planned: RuntimePlanApiConnectionV2,
+): boolean {
+  return current.enabled &&
+    (current.lifecycleStatus === undefined || current.lifecycleStatus === 'ready') &&
+    sameStringSet(current.allowedHosts.map((host) => host.toLowerCase()), planned.allowedHosts) &&
+    sameStringSet(current.pathPrefixes, planned.pathPrefixes) &&
+    sameStringSet(current.allowedMethods.map((method) => method.toUpperCase()), planned.allowedMethods) &&
+    current.headerName.toLowerCase() === planned.headerName &&
+    (current.headerValuePrefix ?? undefined) === planned.headerValuePrefix &&
+    (current.authMode ?? 'credential') === planned.authMode &&
+    current.oauthProvider === planned.oauthProvider &&
+    sameStringSet(current.oauthScopes ?? [], planned.oauthScopes ?? []);
+}
+
+function runtimeRepositoryMatches(
+  current: RepositoryGrant,
+  planned: RuntimePlanRepositoryV2,
+): boolean {
+  return current.enabled &&
+    current.fullName.toLowerCase() === planned.fullName.toLowerCase() &&
+    Boolean(current.allRepos) === Boolean(planned.allRepos);
+}
+
+function sameStringSet(left: readonly string[], right: readonly string[]): boolean {
+  return JSON.stringify([...new Set(left)].sort()) === JSON.stringify([...new Set(right)].sort());
+}
+
+function createRuntimePlanArtifactTool(plan: RuntimePlanV2) {
+  let presenter: Promise<WebClientPresenter> | undefined;
+  return createWorkspaceArtifactTool({
+    channel: plan.artifactDestination.channelId,
+    threadTs: plan.conversation.threadTs,
+    async postArtifact(input) {
+      presenter ??= (async () => {
+        const env = await resolveAgentPlatformEnv();
+        const profile = await getConfigStore(env).getAgent(plan.agentId);
+        return new WebClientPresenter(await getClient(env), {
+          channelId: plan.conversation.channelId,
+          threadTs: plan.conversation.threadTs,
+          agentName: profile.name,
+          agentId: plan.agentId,
+          workspaceId: plan.conversation.workspaceId,
+        });
+      })();
+      return (await presenter).postArtifact(input);
+    },
+  });
+}
 
 export function thinkingLevelForModel(model: string): 'off' | undefined {
   return model === SEED_CLOUDFLARE_MODEL_PIN ? 'off' : undefined;

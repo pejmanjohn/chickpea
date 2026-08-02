@@ -9,10 +9,12 @@ import type { TurnJob } from '../src/config/state-rpc.ts';
 import type { CustomAgentConfig, ResolvedAssignment } from '../src/config/types.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
+import { CLAIM_TTL_MS, SlackStateLogic } from '../src/slack/claim-store.ts';
 import {
   MAX_TURN_ATTEMPTS,
   SLACK_AGENT_BINDING_TTL_MS,
   replayTextForTurnProgress,
+  TURN_JOB_RECOVERY_BACKSTOP_MS,
   TURN_JOB_TTL_MS,
   TurnJobStoreLogic,
 } from '../src/slack/turn-jobs.ts';
@@ -188,18 +190,228 @@ test('recorded PR progress makes a retry replay instead of opening another PR', 
   assert.equal(opened, 0, 'the second attempt must not execute the PR-opening path');
 });
 
-test('enqueue purges rows past the TTL horizon', () => {
+test('age purge removes only terminal rows whose Slack cleanup is complete', () => {
   let clock = 1_000_000;
   const store = newStore(() => clock);
-  store.enqueue(job('old'));
-  assert.equal(store.listPending().length, 1);
+  store.enqueue(job('pending'));
+  store.enqueue(job('terminal'));
+  store.enqueue(job('cleanup'));
+  store.recordSlackInteractionProgress('cleanup', {
+    acknowledgment: {
+      channelId: 'C1', messageTs: '1000.0001', name: 'eyes', created: true,
+      cleanup: 'pending',
+    },
+  });
+  store.markDelivered('terminal');
+  store.markDelivered('cleanup');
 
-  // Advance past the TTL and enqueue again: the purge on write drops the stale
-  // row, leaving only the fresh one.
   clock += TURN_JOB_TTL_MS + 1;
   store.enqueue(job('fresh'));
-  const ids = store.listPending().map((row) => row.id);
-  assert.deepEqual(ids, ['fresh']);
+  assert.deepEqual(store.listPending().map((row) => row.id), ['pending', 'fresh']);
+  assert.deepEqual(
+    store.listPendingSlackInteractionCleanups().map((row) => row.id),
+    ['cleanup'],
+  );
+});
+
+test('dispatch envelope, receipt, and settlement checkpoints survive retry and restart', () => {
+  let clock = 1_800_000_000_000;
+  const store = newStore(() => clock++);
+  const runtimePlan = compileRuntimePlanV2({
+    turn: turn(),
+    assignment: assignment(),
+    instructions: 'Frozen instructions.',
+    memoryEpoch: 1,
+    sandboxMode: 'bash',
+  });
+  store.enqueue(job('dispatch-job'));
+  const decision = store.freezeRuntimePlan('dispatch-job', runtimePlan);
+  const observation = {
+    generation: 'dispatch-job',
+    workCorrelation: {
+      runId: 'run_dispatch_job',
+      runExecutionId: 'execution_dispatch_job',
+      mode: 'enforce' as const,
+    },
+  };
+  const envelope = store.prepareFlueDispatch('dispatch-job', 'answer this', observation);
+  assert.deepEqual(envelope, {
+    schemaVersion: 1,
+    agentName: 'chickpea-slack-v2',
+    instanceId: decision.instanceId,
+    uid: null,
+    message: { kind: 'user', body: 'answer this' },
+    initialData: runtimePlan,
+    idempotencyKey: 'dispatch-job',
+  });
+  assert.deepEqual(
+    store.prepareFlueDispatch('dispatch-job', 'answer this', { generation: 'other' }),
+    envelope,
+    'an identical retry reuses the first dispatch payload',
+  );
+
+  const receipt = {
+    submissionId: 'submission_opaque',
+    acceptedAt: '2026-08-01T12:00:00.000Z',
+    uid: 'inst_01ARZ3NDEKTSV4RRFFQ69G5FAV',
+  };
+  assert.deepEqual(store.recordFlueReceipt('dispatch-job', receipt), receipt);
+  assert.deepEqual(store.recordFlueReceipt('dispatch-job', receipt), receipt);
+  assert.equal(
+    store.getAgentBinding(runtimePlan.conversation.continuityKey)?.uid,
+    receipt.uid,
+  );
+  const result = {
+    text: 'done',
+    requestedModel: runtimePlan.model,
+    returnedModel: { provider: 'local-stub', id: 'x' },
+    reportedUsage: { inputTokens: 3, outputTokens: 2, totalTokens: 5 },
+    usageCompleteness: 'complete' as const,
+    flueSubmissionRef: 'fluesubmission_opaque',
+  };
+  store.recordFlueSettlement('dispatch-job', {
+    outcome: 'completed',
+    settledAt: clock,
+    result,
+  });
+  store.recordContinuityNotice('dispatch-job', { status: 'posting' });
+  store.recordContinuityNotice('dispatch-job', {
+    status: 'delivered',
+    messageTs: '1800000000.000100',
+  });
+  store.recordContinuityNotice('dispatch-job', { status: 'unknown' });
+  const restored = store.listPending()[0];
+  assert.deepEqual(restored?.dispatchEnvelope, envelope);
+  assert.deepEqual(restored?.dispatchReceipt, receipt);
+  assert.deepEqual(restored?.flueSettlement, {
+    outcome: 'completed',
+    settledAt: clock,
+    result,
+  });
+  assert.deepEqual(restored?.progress.continuityNotice, {
+    status: 'delivered',
+    messageTs: '1800000000.000100',
+  });
+});
+
+test('same-key dispatch payload drift fails closed in retained recovery state', () => {
+  const store = newStore();
+  store.enqueue(job('payload-conflict'));
+  store.freezeRuntimePlan('payload-conflict', compileRuntimePlanV2({
+    turn: turn(), assignment: assignment(), instructions: 'Frozen.', memoryEpoch: 1,
+    sandboxMode: 'bash',
+  }));
+  store.prepareFlueDispatch('payload-conflict', 'original', { generation: 'first' });
+  assert.throws(
+    () => store.prepareFlueDispatch('payload-conflict', 'changed', { generation: 'second' }),
+    /payload conflicts/i,
+  );
+  assert.equal(store.listPending().length, 0);
+  assert.equal(store.runtimeDrainCounts().pendingLegacyTurnJobs, 1);
+});
+
+test('receipt checkpoint conflicts fail closed without replacing durable state', () => {
+  const store = newStore();
+  store.enqueue(job('receipt-conflict'));
+  store.freezeRuntimePlan('receipt-conflict', compileRuntimePlanV2({
+    turn: turn(), assignment: assignment(), instructions: 'Frozen.', memoryEpoch: 1,
+    sandboxMode: 'bash',
+  }));
+  store.prepareFlueDispatch('receipt-conflict', 'message', { generation: 'first' });
+  store.recordFlueReceipt('receipt-conflict', {
+    submissionId: 'submission_original',
+    acceptedAt: '2026-08-01T12:00:00.000Z',
+    uid: 'inst_01ARZ3NDEKTSV4RRFFQ69G5FAV',
+  });
+  assert.throws(
+    () => store.recordFlueReceipt('receipt-conflict', {
+      submissionId: 'submission_conflicting',
+      acceptedAt: '2026-08-01T12:00:01.000Z',
+      uid: 'inst_01ARZ3NDEKTSV4RRFFQ69G5FAV',
+    }),
+    /receipt conflicts/i,
+  );
+  assert.equal(store.listPending().length, 0);
+  assert.equal(store.runtimeDrainCounts().pendingLegacyTurnJobs, 1);
+});
+
+test('nonterminal TurnJobs retain their admission claims beyond the old claim TTL', () => {
+  let clock = 1_000_000;
+  const db = openStateDb(':memory:');
+  const claims = new SlackStateLogic(db, () => clock);
+  const turns = new TurnJobStoreLogic(db, () => clock);
+  const pending = job('claim-retained');
+  assert.equal(claims.claim(pending.evtKey), true);
+  assert.equal(claims.claim(pending.msgKey), true);
+  assert.equal(claims.claim(`decision:${pending.msgKey}`), true);
+  turns.enqueue(pending);
+
+  clock += CLAIM_TTL_MS + 1;
+  assert.equal(claims.claim('purge-trigger'), true);
+  assert.equal(claims.claim(pending.evtKey), false);
+  assert.equal(claims.claim(pending.msgKey), false);
+  assert.equal(claims.claim(`decision:${pending.msgKey}`), false);
+
+  turns.markDelivered(pending.id);
+  clock += 1;
+  assert.equal(claims.claim('terminal-purge-trigger'), true);
+  assert.equal(claims.claim(pending.evtKey), true, 'terminal ownership releases TTL retention');
+});
+
+test('observation matching uses exact receipts and rejects receiptless ambiguity or stale delivery', () => {
+  const store = newStore();
+  const runtimePlan = compileRuntimePlanV2({
+    turn: turn(), assignment: assignment(), instructions: 'Frozen.', memoryEpoch: 1,
+    sandboxMode: 'bash',
+  });
+  const start = (id: string) => {
+    store.enqueue(job(id));
+    const decision = store.freezeRuntimePlan(id, runtimePlan);
+    store.prepareFlueDispatch(id, `message ${id}`, { generation: id });
+    return decision.instanceId;
+  };
+  const instanceId = start('first');
+  assert.equal(store.matchFlueObservation(instanceId, 'sub-first')?.turnJobId, 'first');
+  start('second');
+  assert.equal(store.matchFlueObservation(instanceId, 'sub-unknown'), undefined);
+  store.recordFlueReceipt('first', {
+    submissionId: 'sub-first', acceptedAt: '2026-08-01T12:00:00.000Z',
+    uid: 'inst_01ARZ3NDEKTSV4RRFFQ69G5FAV',
+  });
+  assert.equal(store.matchFlueObservation(instanceId, 'sub-first')?.turnJobId, 'first');
+  store.markDelivered('first');
+  assert.equal(store.matchFlueObservation(instanceId, 'sub-first'), undefined);
+});
+
+test('dispatch-started jobs cannot be discarded and cross the 30-day backstop visibly', () => {
+  let clock = 1_000_000;
+  const store = newStore(() => clock);
+  const runtimePlan = compileRuntimePlanV2({
+    turn: turn(), assignment: assignment(), instructions: 'Frozen.', memoryEpoch: 1,
+    sandboxMode: 'bash',
+  });
+  store.enqueue(job('never-dispatched'));
+  assert.equal(store.discard('never-dispatched'), true);
+  store.enqueue(job('started'));
+  store.freezeRuntimePlan('started', runtimePlan);
+  const instanceId = store.prepareFlueDispatch(
+    'started', 'message', { generation: 'started' },
+  ).instanceId;
+  assert.equal(store.discard('started'), false);
+  assert.equal(store.listPending().length, 0, 'recovery rows do not auto-redrive');
+  assert.equal(store.runtimeDrainCounts().pendingLegacyTurnJobs, 1);
+  assert.equal(store.matchFlueObservation(instanceId)?.turnJobId, 'started');
+
+  store.enqueue(job('aging'));
+
+  clock += TURN_JOB_RECOVERY_BACKSTOP_MS + 1;
+  store.enqueue(job('fresh'));
+  assert.deepEqual(store.listPending().map((row) => row.id), ['fresh']);
+  assert.equal(
+    store.runtimeDrainCounts().pendingLegacyTurnJobs,
+    3,
+    'operator drain status includes both recovery rows and the fresh pending row',
+  );
 });
 
 test('pending jobs come back in enqueue order', () => {

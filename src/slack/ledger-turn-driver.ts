@@ -18,10 +18,17 @@ import { MAX_TURN_ATTEMPTS, type PendingTurnJob } from './turn-jobs.ts';
 import type { NormalizedSlackTurn } from './types.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
 import type { FrozenRuntimePlanDecision } from './turn-job-types.ts';
+import type {
+  FlueDispatchReceiptV1,
+  FlueSettlementCheckpointV1,
+  FlueTurnObservationV1,
+} from './turn-job-types.ts';
 import type { RuntimePlanV2 } from '../agents/runtime-plan.ts';
 import { slackThreadKey } from './thread-key.ts';
 import type { SlackInteractionIntent } from './interaction-intent.ts';
 import type { SlackInteractionProgressPatch } from '../config/state-rpc.ts';
+import type { SlackContinuityNoticeProgress } from '../config/state-rpc.ts';
+import { ContinuityNoticeDeliveryError } from './continuity-notice.ts';
 
 type MaybePromise<T> = T | Promise<T>;
 
@@ -31,6 +38,21 @@ export interface LedgerSlackTurnStore {
     id: string,
     candidate: RuntimePlanV2,
   ): MaybePromise<FrozenRuntimePlanDecision>;
+  prepareFlueDispatch(
+    id: string,
+    message: string,
+    observation: FlueTurnObservationV1,
+  ): MaybePromise<import('./turn-job-types.ts').FlueDispatchEnvelopeV1>;
+  recordFlueReceipt(id: string, receipt: FlueDispatchReceiptV1): MaybePromise<FlueDispatchReceiptV1>;
+  recordFlueSettlement(
+    id: string,
+    settlement: FlueSettlementCheckpointV1,
+  ): MaybePromise<FlueSettlementCheckpointV1>;
+  recordContinuityNotice(
+    id: string,
+    notice: SlackContinuityNoticeProgress,
+  ): MaybePromise<unknown>;
+  markRecoveryRequired(id: string, reason: string): MaybePromise<void>;
   recordAttempt(id: string, attempts: number): MaybePromise<void>;
   recordInteractionIntent(id: string, intent: SlackInteractionIntent): MaybePromise<unknown>;
   recordSlackInteractionProgress(
@@ -79,7 +101,7 @@ export function createLedgerSlackRunHandler(
       await clearActiveWork(options, job);
       return { kind: 'recovery_required', reasonCode: 'ledger_adapter_unsupported' };
     }
-    const attempt = job.attempts + 1;
+    const attempt = job.dispatchStartedAt ? Math.max(1, job.attempts) : job.attempts + 1;
     if (!job.turn.interactionIntent && job.progress.interactionIntent) {
       job.turn.interactionIntent = job.progress.interactionIntent;
     }
@@ -100,13 +122,31 @@ export function createLedgerSlackRunHandler(
       await executeTurn(job.turn, job.assignment, options.platformEnv, {
         client,
         turnId: job.id,
-        usageExecutionId: `exec:${job.id}:${claim.fencingToken}`,
+        usageExecutionId: `exec:${job.id}:flue`,
         runId: claim.run.id,
         runAttempt: claim.fencingToken,
         runFencingToken: claim.fencingToken,
         executionAuthority: 'ledger',
         ...(runtimePlanDecision ? { runtimePlanDecision } : {}),
         onRuntimePlan: (candidate) => options.turns.freezeRuntimePlan(job.id, candidate),
+        flueDispatch: {
+          ...(job.dispatchEnvelope ? { dispatchEnvelope: job.dispatchEnvelope } : {}),
+          ...(job.dispatchReceipt ? { dispatchReceipt: job.dispatchReceipt } : {}),
+          ...(job.flueSettlement ? { flueSettlement: job.flueSettlement } : {}),
+          prepare: (message, observation) =>
+            options.turns.prepareFlueDispatch(job.id, message, observation),
+          recordReceipt: (receipt) => options.turns.recordFlueReceipt(job.id, receipt),
+          recordSettlement: (settlement) =>
+            options.turns.recordFlueSettlement(job.id, settlement),
+          markRecoveryRequired: (reason) =>
+            options.turns.markRecoveryRequired(job.id, reason),
+        },
+        ...(job.progress.continuityNotice
+          ? { continuityNoticeProgress: job.progress.continuityNotice }
+          : {}),
+        onContinuityNoticeProgress: async (notice) => {
+          await options.turns.recordContinuityNotice(job.id, notice);
+        },
         workStore: options.work,
         ...(options.settingsStore ? { settingsStore: options.settingsStore } : {}),
         ...(options.usageStore ? { usageStore: options.usageStore } : {}),
@@ -127,7 +167,18 @@ export function createLedgerSlackRunHandler(
           await clearActiveWork(options, job);
         },
       });
-    } catch {
+    } catch (error) {
+      if (error instanceof ContinuityNoticeDeliveryError) {
+        if (error.recoveryRequired) {
+          await options.turns.markRecoveryRequired(
+            job.id,
+            'continuity_notice_delivery_unknown',
+          );
+          await clearActiveWork(options, job);
+          return { kind: 'recovery_required', reasonCode: 'continuity_notice_delivery_unknown' };
+        }
+        return { kind: 'requeue', reasonCode: 'continuity_notice_delivery_failed' };
+      }
       return classifyExecutionFailure(options, claim, job, attempt, now);
     }
     const run = await options.work.getRun(claim.run.id);

@@ -19,6 +19,7 @@ import {
   type PlatformEnv,
 } from './state-backend.ts';
 import type { McpConnectionConfig } from './types.ts';
+import type { RuntimePlanMcpConnectionV2 } from '../agents/runtime-plan.ts';
 
 /**
  * Turn-time assembly of a profile's remote MCP tools, called from the
@@ -136,6 +137,100 @@ export function resolveProfileMcpConnections(
           : {}),
       }];
     });
+}
+
+/**
+ * Materialize a frozen RuntimePlanV2 MCP declaration without capturing a
+ * token, request, or Cloudflare invocation context. Each request re-reads the
+ * current profile row, requires it to remain within the frozen declaration,
+ * and resolves credentials from the trusted settings seam.
+ */
+export function resolveRuntimePlanMcpConnections(
+  profileId: string,
+  declarations: readonly RuntimePlanMcpConnectionV2[],
+  onConnectionStart?: (connection: { id: string; displayName: string }) => void,
+): McpConnectionDefinition[] {
+  return declarations.map((declaration) => {
+    const validated = validateMcpUrl(declaration.url);
+    if (!validated.ok) {
+      throw new Error(`Runtime plan MCP connection ${declaration.id} has a blocked URL.`);
+    }
+    const guardedFetch = createMcpGuardedFetch({ allowedOrigin: new URL(validated.url).origin });
+    const liveServer = async (): Promise<{
+      server: McpConnectionConfig;
+      env: PlatformEnv | undefined;
+    }> => {
+      const env = await resolveCurrentMcpEnv();
+      const profile = await getConfigStore(env).getAgent(profileId);
+      const server = profile.mcpServers.find((candidate) => candidate.id === declaration.id);
+      if (!server || !runtimeMcpDeclarationStillAllowed(server, declaration)) {
+        throw new Error('MCP connection policy changed; a new agent instance is required.');
+      }
+      try {
+        onConnectionStart?.({ id: server.id, displayName: server.displayName });
+      } catch {
+        // Activity narration is cosmetic.
+      }
+      return { server, env };
+    };
+    const fetchWithLiveHeaders: typeof fetch = async (input, init) => {
+      const { server, env } = await liveServer();
+      const secrets = await resolveMcpSecrets(
+        { agentId: profileId, connectionId: server.id },
+        declaration.headerNames,
+        env,
+      );
+      const request = new Request(input, init);
+      const headers = new Headers(request.headers);
+      for (const [name, value] of Object.entries(secrets.headers)) {
+        if (
+          declaration.authMode !== 'none' &&
+          name.toLowerCase() === 'authorization'
+        ) continue;
+        headers.set(name, value);
+      }
+      return guardedFetch(new Request(request, { headers }));
+    };
+    return {
+      name: declaration.id,
+      url: validated.url,
+      transport: declaration.transport,
+      tools: [...declaration.allowedTools],
+      optional: declaration.optional,
+      timeoutMs: 30_000,
+      fetch: fetchWithLiveHeaders,
+      ...(declaration.authMode === 'none'
+        ? {}
+        : {
+            auth: async () => {
+              const { server, env } = await liveServer();
+              return resolveLiveMcpBearer(server, {
+                agentId: profileId,
+                env,
+              });
+            },
+          }),
+    };
+  });
+}
+
+function runtimeMcpDeclarationStillAllowed(
+  server: McpConnectionConfig,
+  declaration: RuntimePlanMcpConnectionV2,
+): boolean {
+  return isProfileMcpServerEligible(server) &&
+    server.url === declaration.url &&
+    server.transport === declaration.transport &&
+    server.authMode === declaration.authMode &&
+    JSON.stringify([...server.headerNames].map((name) => name.toLowerCase()).sort()) ===
+      JSON.stringify([...declaration.headerNames].sort()) &&
+    declaration.allowedTools.every((tool) => server.allowedTools.includes(tool));
+}
+
+async function resolveCurrentMcpEnv(): Promise<PlatformEnv | undefined> {
+  if (!isCloudflareTarget()) return undefined;
+  const { getCloudflareContext } = await import('@flue/runtime/cloudflare');
+  return getCloudflareContext().env as PlatformEnv;
 }
 
 export async function resolveProfileMcpTools(

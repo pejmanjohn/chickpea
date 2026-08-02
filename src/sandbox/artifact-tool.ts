@@ -16,6 +16,50 @@ interface WorkspaceArtifactCapabilityOptions {
   postArtifact(input: SlackArtifactInput): Promise<SlackArtifactResult>;
 }
 
+export interface WorkspaceArtifactToolOptions {
+  channel: string;
+  threadTs: string;
+  postArtifact(input: SlackArtifactInput): Promise<SlackArtifactResult>;
+}
+
+/** Flue 2 hook-agent variant: the harness supplies the initialized sandbox. */
+export function createWorkspaceArtifactTool(options: WorkspaceArtifactToolOptions) {
+  return defineTool({
+    name: 'post_artifact',
+    description:
+      'Attach a file written under /workspace to the current Slack thread. If Slack file uploads are unavailable, describe the verified artifact in the final reply instead.',
+    input: v.object({
+      path: v.pipe(v.string(), v.minLength(1)),
+      filename: v.pipe(v.string(), v.minLength(1)),
+      title: v.optional(v.pipe(v.string(), v.minLength(1))),
+    }),
+    harness: true,
+    async run({ data, harness }) {
+      assertCurrentRequestSideEffectAllowed('post_artifact');
+      const sessionEnv = harness.sandbox;
+      const path = workspaceArtifactPath(data.path);
+      const stat = await sessionEnv.stat(path);
+      if (!stat.isFile) throw new Error('artifact path must identify a file');
+      if (!Number.isSafeInteger(stat.size) || Number(stat.size) < 0) {
+        throw new Error('artifact size is unavailable');
+      }
+      if (Number(stat.size) > MAX_ARTIFACT_BYTES) {
+        throw new Error('artifact exceeds the 8 MB upload limit');
+      }
+      const bytes = await readFrozenWorkspaceArtifact(sessionEnv, path);
+      return {
+        output: await options.postArtifact({
+          channel: options.channel,
+          threadTs: options.threadTs,
+          bytes,
+          filename: data.filename,
+          ...(data.title === undefined ? {} : { title: data.title }),
+        }),
+      };
+    },
+  });
+}
+
 /**
  * Capture the SessionEnv Flue creates for the selected workspace and expose
  * one destination-bound upload tool. The model selects only a file under the

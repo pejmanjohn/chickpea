@@ -87,6 +87,12 @@ import {
   runTurn,
   sanitizeError,
 } from './slack/run-turn.ts';
+import { ContinuityNoticeDeliveryError } from './slack/continuity-notice.ts';
+import type {
+  FlueDispatchReceiptV1,
+  FlueSettlementCheckpointV1,
+  FlueTurnObservationV1,
+} from './slack/turn-job-types.ts';
 import {
   MAX_TURN_ATTEMPTS,
   MAX_TURN_DRAIN_BATCH,
@@ -668,6 +674,54 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     );
   }
 
+  async slackFlueDispatchPrepare(
+    id: string,
+    message: string,
+    observation: Parameters<TagStateRpc['slackFlueDispatchPrepare']>[2],
+  ) {
+    return this.call((stores) => stores.turnJobs.prepareFlueDispatch(id, message, observation));
+  }
+
+  async slackFlueReceiptRecord(
+    id: string,
+    receipt: Parameters<TagStateRpc['slackFlueReceiptRecord']>[1],
+  ) {
+    return this.call((stores) => stores.turnJobs.recordFlueReceipt(id, receipt));
+  }
+
+  async slackFlueSettlementRecord(
+    id: string,
+    settlement: Parameters<TagStateRpc['slackFlueSettlementRecord']>[1],
+  ) {
+    return this.call((stores) => stores.turnJobs.recordFlueSettlement(id, settlement));
+  }
+
+  async slackFlueObservationMatch(instanceId: string, submissionId?: string) {
+    return this.call((stores) =>
+      stores.turnJobs.matchFlueObservation(instanceId, submissionId) ?? null,
+    );
+  }
+
+  async slackContinuityNoticeRecord(
+    id: string,
+    notice: Parameters<TagStateRpc['slackContinuityNoticeRecord']>[1],
+  ): Promise<StateRpcResult<null>> {
+    return this.call((stores) => {
+      stores.turnJobs.recordContinuityNotice(id, notice);
+      return null;
+    });
+  }
+
+  async slackTurnRecoveryRequired(
+    id: string,
+    reason: string,
+  ): Promise<StateRpcResult<null>> {
+    return this.call((stores) => {
+      stores.turnJobs.markRecoveryRequired(id, reason);
+      return null;
+    });
+  }
+
   async slackInteractionProgressRecord(
     id: string,
     patch: Parameters<TagStateRpc['slackInteractionProgressRecord']>[1],
@@ -798,11 +852,16 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
    */
   async observedStatus(
     instanceId: string,
-    generation: string,
+    submissionId: string,
     statusText: string,
   ): Promise<StateRpcResult<null>> {
-    setObservedSlackStatus(instanceId, generation, { text: statusText });
-    return { ok: true, value: null };
+    return this.call((stores) => {
+      const target = stores.turnJobs.matchFlueObservation(instanceId, submissionId);
+      if (target) {
+        setObservedSlackStatus(instanceId, target.generation, { text: statusText });
+      }
+      return null;
+    });
   }
 
   /**
@@ -891,7 +950,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           // which owns retry/terminal semantics.
         }
       }
-      const attempt = job.attempts + 1;
+      const attempt = job.dispatchStartedAt ? Math.max(1, job.attempts) : job.attempts + 1;
       let delivered = false;
       let activeWorkKey = job.turn.interactionIntent?.disposition === 'work'
         ? slackThreadKey(job.turn)
@@ -899,6 +958,19 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       // Advance the attempt count before running the turn: a crash mid-turn
       // then re-fires with the count already committed, bounding retries.
       stores.turnJobs.recordAttempt(job.id, attempt);
+      const flueDispatch = {
+        ...(job.dispatchEnvelope ? { dispatchEnvelope: job.dispatchEnvelope } : {}),
+        ...(job.dispatchReceipt ? { dispatchReceipt: job.dispatchReceipt } : {}),
+        ...(job.flueSettlement ? { flueSettlement: job.flueSettlement } : {}),
+        prepare: (message: string, observation: FlueTurnObservationV1) =>
+          stores.turnJobs.prepareFlueDispatch(job.id, message, observation),
+        recordReceipt: (receipt: FlueDispatchReceiptV1) =>
+          stores.turnJobs.recordFlueReceipt(job.id, receipt),
+        recordSettlement: (settlement: FlueSettlementCheckpointV1) =>
+          stores.turnJobs.recordFlueSettlement(job.id, settlement),
+        markRecoveryRequired: (reason: string) =>
+          stores.turnJobs.markRecoveryRequired(job.id, reason),
+      };
       try {
         const persistSandboxProgress = async (): Promise<string | undefined> => {
           const binding =
@@ -944,13 +1016,20 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         await runTurn(job.turn, job.assignment, this.env as PlatformEnv, {
           client,
           turnId: job.id,
-          usageExecutionId: `exec:${job.id}:${attempt}`,
+          usageExecutionId: `exec:${job.id}:flue`,
           ...(job.runId ? { runId: job.runId, runAttempt: attempt } : {}),
           workStore: stores.work as unknown as WorkStore,
           settingsStore: localSettingsStore(stores),
           usageStore,
           ...(runtimePlanDecision ? { runtimePlanDecision } : {}),
           onRuntimePlan: (candidate) => stores.turnJobs.freezeRuntimePlan(job.id, candidate),
+          flueDispatch,
+          ...(job.progress.continuityNotice
+            ? { continuityNoticeProgress: job.progress.continuityNotice }
+            : {}),
+          onContinuityNoticeProgress: (notice) => {
+            stores.turnJobs.recordContinuityNotice(job.id, notice);
+          },
           onUsagePersistence: (event) => {
             stores.turnJobs.recordUsagePersistence(job.id, event);
           },
@@ -980,11 +1059,32 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         // Delivery was tombstoned at the exact presentation boundary above.
         // Claims stay held — a completed turn never re-runs.
       } catch (err) {
+        if (err instanceof ContinuityNoticeDeliveryError) {
+          if (err.recoveryRequired) {
+            stores.turnJobs.markRecoveryRequired(
+              job.id,
+              'continuity_notice_delivery_unknown',
+            );
+            console.error('[chickpea] continuity notice delivery requires reconciliation');
+          } else {
+            needsRetry = true;
+          }
+          if (activeWorkKey) stores.slack.setActiveWork(activeWorkKey, job.id, false);
+          return;
+        }
         // Any failure after the terminal presentation boundary is cleanup,
         // not a failed turn. The durable tombstone prevents a duplicate final;
         // keep the claims held and let a later thread turn start normally.
         if (delivered) {
           console.warn('[chickpea] post-delivery cleanup did not complete');
+          return;
+        }
+        if (flueDispatch.dispatchEnvelope) {
+          // A dispatched turn is never discarded or replaced. A later alarm
+          // replays its admission key, receipt read, or terminal settlement.
+          needsRetry = true;
+          if (activeWorkKey) stores.slack.setActiveWork(activeWorkKey, job.id, false);
+          console.warn('[chickpea] Flue turn retained for durable reattachment');
           return;
         }
         console.error(

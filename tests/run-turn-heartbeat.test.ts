@@ -5,7 +5,7 @@ import type { WebClient } from '@slack/web-api';
 
 import type { ResolvedAssignment } from '../src/config/types.ts';
 import type { SlackInteractionProgressPatch } from '../src/config/state-rpc.ts';
-import type { AgentDispatchResult } from '../src/slack/agent-dispatch.ts';
+import type { AgentDispatchResult } from '../src/slack/flue-dispatch.ts';
 import { runTurn } from '../src/slack/run-turn.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 

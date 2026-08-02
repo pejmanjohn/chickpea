@@ -5,11 +5,7 @@ src/cloudflare.ts:TS7006
 src/cloudflare.ts:TS7031
 src/routines/intent.ts:TS18048
 src/routines/intent.ts:TS2305
-src/slack/agent-dispatch.ts:TS2305
-src/slack/agent-dispatch.ts:TS2322
 src/workflows/routine.ts:TS2305
 src/workflows/routine.ts:TS2339
 src/workflows/routine.ts:TS2724
 src/workflows/routine.ts:TS7031
-tests/flue-run-contract.test.ts:TS2307
-tests/flue-run-contract.test.ts:TS2322

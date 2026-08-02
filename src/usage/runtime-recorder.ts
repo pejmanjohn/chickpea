@@ -1,4 +1,4 @@
-import type { AgentDispatchResult } from '../slack/agent-dispatch.ts';
+import type { AgentDispatchResult } from '../slack/flue-dispatch.ts';
 import type { NormalizedSlackTurn } from '../slack/types.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import type { ResolvedAssignment } from '../config/types.ts';

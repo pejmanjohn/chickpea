@@ -316,6 +316,45 @@ export class CfSlackStateStore implements SlackStateStore {
     return orUndefined(unwrap(await this.stub.slackAgentBindingGet(continuityKey)));
   }
 
+  async prepareFlueDispatch(
+    id: string,
+    message: string,
+    observation: Parameters<TagStateRpc['slackFlueDispatchPrepare']>[2],
+  ) {
+    return unwrap(await this.stub.slackFlueDispatchPrepare(id, message, observation));
+  }
+
+  async recordFlueReceipt(
+    id: string,
+    receipt: Parameters<TagStateRpc['slackFlueReceiptRecord']>[1],
+  ) {
+    return unwrap(await this.stub.slackFlueReceiptRecord(id, receipt));
+  }
+
+  async recordFlueSettlement(
+    id: string,
+    settlement: Parameters<TagStateRpc['slackFlueSettlementRecord']>[1],
+  ) {
+    return unwrap(await this.stub.slackFlueSettlementRecord(id, settlement));
+  }
+
+  async matchFlueObservation(instanceId: string, submissionId?: string) {
+    return orUndefined(
+      unwrap(await this.stub.slackFlueObservationMatch(instanceId, submissionId)),
+    );
+  }
+
+  async recordContinuityNotice(
+    id: string,
+    notice: Parameters<TagStateRpc['slackContinuityNoticeRecord']>[1],
+  ): Promise<void> {
+    unwrap(await this.stub.slackContinuityNoticeRecord(id, notice));
+  }
+
+  async markTurnRecoveryRequired(id: string, reason: string): Promise<void> {
+    unwrap(await this.stub.slackTurnRecoveryRequired(id, reason));
+  }
+
   async runtimeDrainCounts() {
     const status = unwrap(await this.stub.runtimeDrainStatus());
     return {

@@ -36,6 +36,8 @@ export interface RuntimePlanMcpConnectionV2 {
   id: string;
   url: string;
   transport: 'streamable-http' | 'sse';
+  authMode: 'none' | 'bearer' | 'oauth';
+  headerNames: string[];
   allowedTools: string[];
   optional: boolean;
 }
@@ -45,6 +47,11 @@ export interface RuntimePlanApiConnectionV2 {
   allowedHosts: string[];
   pathPrefixes: string[];
   allowedMethods: string[];
+  headerName: string;
+  headerValuePrefix?: string;
+  authMode: 'credential' | 'oauth';
+  oauthProvider?: 'google';
+  oauthScopes?: string[];
 }
 
 export interface RuntimePlanRepositoryV2 {
@@ -56,6 +63,8 @@ export interface RuntimePlanRepositoryV2 {
 export interface RuntimePlanV2 {
   schemaVersion: typeof RUNTIME_PLAN_SCHEMA_VERSION;
   continuityPolicy: string;
+  /** Durable profile identity used only by trusted live resource resolvers. */
+  agentId: string;
   conversation: RuntimePlanConversationV2;
   model: string;
   instructions: string;
@@ -84,9 +93,9 @@ export interface CompileRuntimePlanV2Input {
 
 /**
  * Compile the only data allowed to cross Flue's durable creation boundary.
- * Credential identities, versions, auth modes, header names, tokens, and live
- * request objects are intentionally absent; trusted request-time resolvers own
- * those facts.
+ * Credential identities, versions, values, tokens, and live request objects
+ * are intentionally absent. Non-secret auth and header policy is frozen here;
+ * trusted request-time resolvers own the current credential material.
  */
 export function compileRuntimePlanV2(input: CompileRuntimePlanV2Input): RuntimePlanV2 {
   const conversationThreadTs = input.turn.sessionThreadTs ?? input.turn.threadTs;
@@ -94,6 +103,7 @@ export function compileRuntimePlanV2(input: CompileRuntimePlanV2Input): RuntimeP
   const planWithoutRevision: Omit<RuntimePlanV2, 'harnessRevision'> = {
     schemaVersion: RUNTIME_PLAN_SCHEMA_VERSION,
     continuityPolicy: input.continuityPolicy ?? DEFAULT_CONTINUITY_POLICY,
+    agentId: input.assignment.agent.id,
     conversation: {
       workspaceId: input.turn.workspaceId,
       channelId: input.turn.channelId,
@@ -134,6 +144,7 @@ export function parseRuntimePlanV2(value: unknown): RuntimePlanV2 {
   const record = exactRecord(value, 'runtime plan', [
     'schemaVersion',
     'continuityPolicy',
+    'agentId',
     'conversation',
     'model',
     'instructions',
@@ -150,6 +161,7 @@ export function parseRuntimePlanV2(value: unknown): RuntimePlanV2 {
     throw new Error('Runtime plan schemaVersion must be 2.');
   }
   const continuityPolicy = boundedString(record.continuityPolicy, 'continuityPolicy', 1, 80);
+  const agentId = boundedString(record.agentId, 'agentId', 1, 128);
   const conversationRecord = exactRecord(record.conversation, 'conversation', [
     'workspaceId',
     'channelId',
@@ -208,6 +220,7 @@ export function parseRuntimePlanV2(value: unknown): RuntimePlanV2 {
   const parsed: RuntimePlanV2 = {
     schemaVersion: RUNTIME_PLAN_SCHEMA_VERSION,
     continuityPolicy,
+    agentId,
     conversation,
     model,
     instructions,
@@ -254,6 +267,8 @@ function compileMcpConnections(
       id: connection.id,
       url: connection.url,
       transport: connection.transport,
+      authMode: connection.authMode,
+      headerNames: sortedUnique(connection.headerNames.map((name) => name.toLowerCase())),
       allowedTools: sortedUnique(connection.allowedTools),
       // Current Chickpea policy degrades unavailable profile MCP servers.
       optional: true,
@@ -275,6 +290,13 @@ function compileApiConnections(
       allowedHosts: sortedUnique(connection.allowedHosts.map((host) => host.toLowerCase())),
       pathPrefixes: sortedUnique(connection.pathPrefixes),
       allowedMethods: sortedUnique(connection.allowedMethods.map((method) => method.toUpperCase())),
+      headerName: connection.headerName.toLowerCase(),
+      ...(connection.headerValuePrefix ? { headerValuePrefix: connection.headerValuePrefix } : {}),
+      authMode: connection.authMode ?? 'credential',
+      ...(connection.oauthProvider ? { oauthProvider: connection.oauthProvider } : {}),
+      ...(connection.oauthScopes
+        ? { oauthScopes: sortedUnique(connection.oauthScopes) }
+        : {}),
     }))
     .sort(compareBy('id'));
 }
@@ -311,6 +333,7 @@ function computeHarnessRevision(
     .update(canonicalJson({
       schemaVersion: plan.schemaVersion,
       continuityPolicy: plan.continuityPolicy,
+      agentId: plan.agentId,
       model: plan.model,
       instructions: plan.instructions,
       memoryEpoch: plan.memoryEpoch,
@@ -351,6 +374,8 @@ function parseMcpConnection(value: unknown, index: number): RuntimePlanMcpConnec
     'id',
     'url',
     'transport',
+    'authMode',
+    'headerNames',
     'allowedTools',
     'optional',
   ]);
@@ -365,6 +390,12 @@ function parseMcpConnection(value: unknown, index: number): RuntimePlanMcpConnec
       `${label}.transport`,
       ['streamable-http', 'sse'] as const,
     ),
+    authMode: oneOf(
+      record.authMode,
+      `${label}.authMode`,
+      ['none', 'bearer', 'oauth'] as const,
+    ),
+    headerNames: sortedUniqueStringArray(record.headerNames, `${label}.headerNames`, 64),
     allowedTools: sortedUniqueStringArray(record.allowedTools, `${label}.allowedTools`, 256),
     optional: record.optional,
   };
@@ -377,12 +408,41 @@ function parseApiConnection(value: unknown, index: number): RuntimePlanApiConnec
     'allowedHosts',
     'pathPrefixes',
     'allowedMethods',
-  ]);
+    'headerName',
+    'headerValuePrefix',
+    'authMode',
+    'oauthProvider',
+    'oauthScopes',
+  ], ['headerValuePrefix', 'oauthProvider', 'oauthScopes']);
+  const authMode = oneOf(
+    record.authMode,
+    `${label}.authMode`,
+    ['credential', 'oauth'] as const,
+  );
+  const oauthProvider = record.oauthProvider === undefined
+    ? undefined
+    : oneOf(record.oauthProvider, `${label}.oauthProvider`, ['google'] as const);
+  const oauthScopes = record.oauthScopes === undefined
+    ? undefined
+    : sortedUniqueStringArray(record.oauthScopes, `${label}.oauthScopes`, 128);
+  if (authMode === 'oauth' && (!oauthProvider || !oauthScopes)) {
+    throw new Error(`Runtime plan ${label} OAuth policy is incomplete.`);
+  }
+  if (authMode === 'credential' && (oauthProvider || oauthScopes)) {
+    throw new Error(`Runtime plan ${label} credential policy has OAuth fields.`);
+  }
   return {
     id: boundedString(record.id, `${label}.id`, 1, 120),
     allowedHosts: sortedUniqueStringArray(record.allowedHosts, `${label}.allowedHosts`, 128),
     pathPrefixes: sortedUniqueStringArray(record.pathPrefixes, `${label}.pathPrefixes`, 128),
     allowedMethods: sortedUniqueStringArray(record.allowedMethods, `${label}.allowedMethods`, 16),
+    headerName: boundedString(record.headerName, `${label}.headerName`, 1, 128).toLowerCase(),
+    ...(record.headerValuePrefix === undefined
+      ? {}
+      : { headerValuePrefix: boundedString(record.headerValuePrefix, `${label}.headerValuePrefix`, 0, 200) }),
+    authMode,
+    ...(oauthProvider ? { oauthProvider } : {}),
+    ...(oauthScopes ? { oauthScopes } : {}),
   };
 }
 

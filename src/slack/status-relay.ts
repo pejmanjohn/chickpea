@@ -17,7 +17,7 @@ import { tagStateStub } from '../config/state-rpc.ts';
  */
 export async function relayObservedStatus(
   instanceId: string,
-  generation: string,
+  submissionId: string,
   statusText: string,
   providedEnv?: Record<string, unknown>,
 ): Promise<void> {
@@ -30,7 +30,7 @@ export async function relayObservedStatus(
       const { getCloudflareContext } = await import('@flue/runtime/cloudflare');
       env = getCloudflareContext().env as Record<string, unknown> | undefined;
     }
-    await tagStateStub(env).observedStatus(instanceId, generation, statusText);
+    await tagStateStub(env).observedStatus(instanceId, submissionId, statusText);
   } catch {
     // Outside a DO handler (no ALS context) or a transient RPC failure —
     // the status line simply skips this stage.

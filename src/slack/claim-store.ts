@@ -3,6 +3,7 @@ import type { StateDb } from '../state/state-db.ts';
 import { WorkStoreLogic } from '../work/store.ts';
 import type { AdmitShadowRunInput, ShadowRunAdmission } from '../work/types.ts';
 import type {
+  SlackContinuityNoticeProgress,
   SlackInteractionProgressPatch,
   SlackRuntimeDrainCounts,
 } from '../config/state-rpc.ts';
@@ -13,6 +14,10 @@ import {
 } from './turn-jobs.ts';
 import type { TurnJob } from './turn-job-types.ts';
 import type {
+  FlueDispatchReceiptV1,
+  FlueObservationTarget,
+  FlueSettlementCheckpointV1,
+  FlueTurnObservationV1,
   FrozenRuntimePlanDecision,
   SlackAgentBinding,
   SlackAgentBindingExpectation,
@@ -87,8 +92,26 @@ export interface SlackStateStore extends SlackClaimStore, SlackThreadRegistry {
     id: string,
     candidate: RuntimePlanV2,
   ): Promise<FrozenRuntimePlanDecision>;
+  prepareFlueDispatch?(
+    id: string,
+    message: string,
+    observation: FlueTurnObservationV1,
+  ): Promise<import('./turn-job-types.ts').FlueDispatchEnvelopeV1>;
+  recordFlueReceipt?(id: string, receipt: FlueDispatchReceiptV1): Promise<FlueDispatchReceiptV1>;
+  recordFlueSettlement?(
+    id: string,
+    settlement: FlueSettlementCheckpointV1,
+  ): Promise<FlueSettlementCheckpointV1>;
+  matchFlueObservation?(
+    instanceId: string,
+    submissionId?: string,
+  ): Promise<FlueObservationTarget | undefined>;
   recordTurnAttempt?(id: string, attempts: number): Promise<void>;
   recordInteractionIntent?(id: string, intent: SlackInteractionIntent): Promise<void>;
+  recordContinuityNotice?(
+    id: string,
+    notice: SlackContinuityNoticeProgress,
+  ): Promise<void>;
   recordSlackInteractionProgress?(
     id: string,
     patch: SlackInteractionProgressPatch,
@@ -97,16 +120,15 @@ export interface SlackStateStore extends SlackClaimStore, SlackThreadRegistry {
   hasPendingSlackInteractionCleanup?(): Promise<boolean>;
   markTurnDelivered?(id: string): Promise<void>;
   markTurnError?(id: string): Promise<void>;
-  discardTurn?(id: string): Promise<void>;
+  markTurnRecoveryRequired?(id: string, reason: string): Promise<void>;
+  discardTurn?(id: string): Promise<boolean>;
   /** Node backend only (closes the SQLite handle); absent on RPC proxies. */
   close?(): void;
 }
 
-// Claims only need to outlive Slack's redelivery horizon (retries span about an
-// hour); the TTL is what keeps the claims table from growing without bound.
-// Exported so the turn-relay job table (turn-jobs.ts) purges on the SAME
-// horizon: past it Slack no longer redelivers the originating event, so a
-// leftover job row can no longer matter.
+// Orphan claims expire after Slack's redelivery horizon. Claims referenced by
+// a nonterminal TurnJob or pending Slack cleanup are retained for that durable
+// owner's full lifetime, including recovery-required rows beyond 30 days.
 // Joined threads stay continuable for much longer, but not forever — expiring
 // them bounds the table and matches how stale a weeks-old thread really is. A
 // thread's config snapshot is bounded to the same horizon (see snapshot-store):
@@ -121,6 +143,8 @@ export interface SlackStateStore extends SlackClaimStore, SlackThreadRegistry {
  * synchronously — and the async public interface wraps them.
  */
 export class SlackStateLogic {
+  private turnJobsAvailable = false;
+
   constructor(
     private readonly db: StateDb,
     private readonly now: () => number = Date.now,
@@ -239,7 +263,37 @@ export class SlackStateLogic {
   }
 
   private purgeExpired(): void {
-    this.db.run('DELETE FROM slack_claims WHERE claimed_at < ?', this.now() - CLAIM_TTL_MS);
+    // A nonterminal TurnJob (including delivered work with pending adapter
+    // cleanup) keeps all three admission claims alive. Expiring one would let
+    // a late Slack redelivery create a second TurnJob while the original still
+    // owns an unread Flue receipt or external cleanup.
+    this.turnJobsAvailable ||= this.db.get(
+      "SELECT 1 AS available FROM sqlite_master WHERE type = 'table' AND name = 'turn_jobs'",
+    ) !== undefined;
+    if (this.turnJobsAvailable) {
+      this.db.run(
+        `DELETE FROM slack_claims
+         WHERE claimed_at < ?
+           AND NOT EXISTS (
+             SELECT 1 FROM turn_jobs
+             WHERE (
+               turn_jobs.evt_key = slack_claims.key OR
+               turn_jobs.msg_key = slack_claims.key OR
+               'decision:' || turn_jobs.msg_key = slack_claims.key
+             )
+             AND (
+               turn_jobs.delivered = 0 OR
+               turn_jobs.progress_json LIKE '%"cleanup":"pending"%'
+             )
+           )`,
+        this.now() - CLAIM_TTL_MS,
+      );
+    } else {
+      this.db.run(
+        'DELETE FROM slack_claims WHERE claimed_at < ?',
+        this.now() - CLAIM_TTL_MS,
+      );
+    }
     this.db.run('DELETE FROM slack_threads WHERE started_at < ?', this.now() - THREAD_TTL_MS);
     this.db.run(
       'DELETE FROM slack_thread_participation WHERE updated_at < ?',
@@ -333,12 +387,32 @@ export class SqliteSlackStateStore implements SlackStateStore {
     return this.turnJobs.freezeRuntimePlan(id, candidate);
   }
 
+  async prepareFlueDispatch(id: string, message: string, observation: FlueTurnObservationV1) {
+    return this.turnJobs.prepareFlueDispatch(id, message, observation);
+  }
+
+  async recordFlueReceipt(id: string, receipt: FlueDispatchReceiptV1) {
+    return this.turnJobs.recordFlueReceipt(id, receipt);
+  }
+
+  async recordFlueSettlement(id: string, settlement: FlueSettlementCheckpointV1) {
+    return this.turnJobs.recordFlueSettlement(id, settlement);
+  }
+
+  async matchFlueObservation(instanceId: string, submissionId?: string) {
+    return this.turnJobs.matchFlueObservation(instanceId, submissionId);
+  }
+
   async recordTurnAttempt(id: string, attempts: number) {
     this.turnJobs.recordAttempt(id, attempts);
   }
 
   async recordInteractionIntent(id: string, intent: SlackInteractionIntent) {
     this.turnJobs.recordInteractionIntent(id, intent);
+  }
+
+  async recordContinuityNotice(id: string, notice: SlackContinuityNoticeProgress) {
+    this.turnJobs.recordContinuityNotice(id, notice);
   }
 
   async recordSlackInteractionProgress(id: string, patch: SlackInteractionProgressPatch) {
@@ -361,8 +435,12 @@ export class SqliteSlackStateStore implements SlackStateStore {
     this.turnJobs.markError(id);
   }
 
+  async markTurnRecoveryRequired(id: string, reason: string) {
+    this.turnJobs.markRecoveryRequired(id, reason);
+  }
+
   async discardTurn(id: string) {
-    this.turnJobs.discard(id);
+    return this.turnJobs.discard(id);
   }
 
   close(): void {

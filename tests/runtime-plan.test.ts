@@ -111,6 +111,7 @@ test('a complete first-turn plan contains policy descriptors but no auth materia
   const plan = compile();
 
   assert.equal(plan.schemaVersion, 2);
+  assert.equal(plan.agentId, 'agent_runtime');
   assert.equal(plan.conversation.workspaceId, 'T_RUNTIME');
   assert.equal(plan.conversation.threadTs, '1783000000.000100');
   assert.equal(plan.conversation.surface, 'channel_thread');
@@ -122,6 +123,8 @@ test('a complete first-turn plan contains policy descriptors but no auth materia
     id: 'notion',
     url: 'https://mcp.example.com/notion',
     transport: 'streamable-http',
+    authMode: 'oauth',
+    headerNames: ['x-secret-header'],
     allowedTools: ['search'],
     optional: true,
   }]);
@@ -130,6 +133,9 @@ test('a complete first-turn plan contains policy descriptors but no auth materia
     allowedHosts: ['api.example.com'],
     pathPrefixes: ['/v1/accounts'],
     allowedMethods: ['GET'],
+    headerName: 'authorization',
+    headerValuePrefix: 'Bearer ',
+    authMode: 'credential',
   }]);
   assert.deepEqual(plan.repositories, [{ id: 'repo_acme', fullName: 'acme/product' }]);
   assert.equal(plan.sandbox.mode, 'cloudflare');
@@ -138,7 +144,7 @@ test('a complete first-turn plan contains policy descriptors but no auth materia
     channelId: 'C_RUNTIME',
   });
   assert.match(plan.harnessRevision, /^[a-f0-9]{64}$/);
-  assert.equal(JSON.stringify(plan).includes('authorization'), false);
+  assert.equal(JSON.stringify(plan).includes('super-secret-token'), false);
   assert.equal(JSON.stringify(plan).includes('documents:read'), false);
   assert.equal(JSON.stringify(plan).includes('installationId'), false);
   assert.match(plan.instructions, /sk-live-looking-but-not-secret/);
@@ -216,8 +222,8 @@ test('harness policy changes rotate while credential attribution does not', () =
   const liveResolverChange = compile({
     assignment: assignment({ agent: mcpCredentialPolicyRotated }),
   });
-  assert.equal(liveResolverChange.harnessRevision, baseline.harnessRevision);
-  assert.equal(deriveRuntimePlanInstanceId(liveResolverChange), deriveRuntimePlanInstanceId(baseline));
+  assert.notEqual(liveResolverChange.harnessRevision, baseline.harnessRevision);
+  assert.notEqual(deriveRuntimePlanInstanceId(liveResolverChange), deriveRuntimePlanInstanceId(baseline));
 });
 
 test('strict parsing rejects unknown and explicit auth fields without token heuristics', () => {
@@ -233,9 +239,9 @@ test('strict parsing rejects unknown and explicit auth fields without token heur
   assert.throws(
     () => parseRuntimePlanV2({
       ...plan,
-      mcpConnections: [{ ...plan.mcpConnections[0]!, authMode: 'oauth' }],
+      mcpConnections: [{ ...plan.mcpConnections[0]!, authToken: 'secret' }],
     }),
-    /unknown field.*authMode/i,
+    /unknown field.*authToken/i,
   );
 
   const legitimate = parseRuntimePlanV2(compile({

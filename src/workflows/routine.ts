@@ -50,7 +50,7 @@ import type {
 import {
   prepareCloudflareSandboxTurn,
   releaseCloudflareSandboxTurn,
-} from '../slack/agent-dispatch.ts';
+} from '../slack/flue-dispatch.ts';
 import { shouldUseCloudflareSandbox } from '../slack/run-turn.ts';
 import { OpenAiSubscriptionError } from '../openai-subscription/errors.ts';
 import {

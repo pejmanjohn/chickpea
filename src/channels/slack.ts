@@ -715,7 +715,7 @@ async function processSlackEvent(
 
   // f. The old HTTP self-call — and the Host-derived origin trust it forced,
   //    since Slack signatures don't cover Host — is gone: the agent prompt
-  //    now dispatches in-process (see slack/agent-dispatch.ts) with the
+  //    now dispatches through the durable Flue 2 adapter with the
   //    platform env captured at the top of this handler, so there is no
   //    origin to spoof or configure.
 
