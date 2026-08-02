@@ -10,6 +10,7 @@ import {
   createLedgerSlackRunHandler,
   type LedgerSlackTurnExecutor,
 } from '../src/slack/ledger-turn-driver.ts';
+import { AgentPromptFailure } from '../src/slack/flue-dispatch.ts';
 import { TurnJobStoreLogic } from '../src/slack/turn-jobs.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { opaqueId } from '../src/work/admission.ts';
@@ -167,6 +168,39 @@ test('a pre-submit executor failure is safely requeued instead of quarantined', 
       kind: 'requeue',
       reasonCode: 'ledger_turn_failed_before_submit',
     });
+  } finally {
+    db.close();
+  }
+});
+
+test('a Flue reconciliation conflict quarantines the ledger Run and retains its TurnJob', async () => {
+  let clock = NOW;
+  const db = openStateDb(':memory:');
+  try {
+    const work = new WorkStoreLogic(db, { now: () => clock });
+    const turns = new TurnJobStoreLogic(db, () => clock);
+    const admission = work.admitShadowRun(prepareSubmitRun(submission('flue-conflict')));
+    turns.enqueue(turnJob(admission.run.id, 'flue-conflict'));
+    const claim = work.claimNextInteractiveRun({
+      ownerId: 'worker', authorityEpoch: 1, leaseDurationMs: 30_000, claimedAt: clock,
+    })!;
+    const handler = createLedgerSlackRunHandler({
+      work: work as unknown as WorkStore,
+      turns,
+      client: {} as WebClient,
+      executeTurn: (async () => {
+        turns.markRecoveryRequired('turn_flue-conflict', 'flue_dispatch_payload_conflict');
+        throw new AgentPromptFailure('agent', 409, true);
+      }) as LedgerSlackTurnExecutor,
+      now: () => ++clock,
+    });
+
+    assert.deepEqual(await handler(claim), {
+      kind: 'recovery_required',
+      reasonCode: 'flue_dispatch_reconciliation_required',
+    });
+    assert.equal(turns.runtimeDrainCounts().pendingLedgerTurnJobs, 1);
+    assert.equal(turns.getPendingByRunId(admission.run.id), undefined);
   } finally {
     db.close();
   }

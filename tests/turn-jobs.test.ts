@@ -476,6 +476,7 @@ test('runtime drain counts separate turn authorities and pending Slack cleanup',
     pendingLegacyTurnJobs: 1,
     pendingLedgerTurnJobs: 1,
     pendingSlackInteractionCleanups: 1,
+    recoveryRequiredTurnJobs: 0,
   });
 });
 
@@ -601,6 +602,53 @@ test('minimal bindings use CAS rotation, reject conflicting uids, and expire aft
 
   clock += SLACK_AGENT_BINDING_TTL_MS + 1;
   assert.equal(store.getAgentBinding(initial.continuityKey), undefined);
+});
+
+test('an expired binding collision durably reconciles to the proven Flue uid', () => {
+  const store = newStore(() => 1_800_000_000_000);
+  const runtimePlan = compileRuntimePlanV2({
+    turn: turn(), assignment: assignment(), instructions: 'Frozen.', memoryEpoch: 1,
+    sandboxMode: 'bash',
+  });
+  store.enqueue(job('binding-reconcile'));
+  store.freezeRuntimePlan('binding-reconcile', runtimePlan);
+  const created = store.prepareFlueDispatch(
+    'binding-reconcile',
+    'message',
+    { generation: 'binding-reconcile' },
+  );
+  assert.equal(created.uid, null);
+  assert.ok(created.initialData);
+
+  const uid = 'inst_01ARZ3NDEKTSV4RRFFQ69G5FAY';
+  const reconciled = store.reconcileFlueExistingInstance('binding-reconcile', uid);
+  assert.equal(reconciled.uid, uid);
+  assert.equal(reconciled.initialData, undefined);
+  assert.deepEqual(store.reconcileFlueExistingInstance('binding-reconcile', uid), reconciled);
+
+  store.recordFlueReceipt('binding-reconcile', {
+    submissionId: 'submission_binding_reconcile',
+    acceptedAt: '2026-08-01T12:00:00.000Z',
+    uid,
+  });
+  assert.equal(store.getAgentBinding(runtimePlan.conversation.continuityKey)?.uid, uid);
+});
+
+test('recovery inventory is bounded and explicitly terminalized', () => {
+  const store = newStore(() => 1_800_000_000_000);
+  store.enqueue(job('recovery-inventory'));
+  store.markRecoveryRequired('recovery-inventory', 'flue_receipt_conflict');
+  assert.deepEqual(store.listRecoveryRequired(), [{
+    id: 'recovery-inventory',
+    executionAuthority: 'legacy',
+    reason: 'flue_receipt_conflict',
+    enqueuedAt: 1_800_000_000_000,
+  }]);
+  assert.equal(store.runtimeDrainCounts().recoveryRequiredTurnJobs, 1);
+  assert.equal(store.resolveRecoveryRequired('recovery-inventory'), true);
+  assert.equal(store.resolveRecoveryRequired('recovery-inventory'), false);
+  assert.deepEqual(store.listRecoveryRequired(), []);
+  assert.equal(store.runtimeDrainCounts().recoveryRequiredTurnJobs, 0);
 });
 
 test('existing turn job tables gain progress storage without losing pending rows', () => {

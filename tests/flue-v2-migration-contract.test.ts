@@ -1,0 +1,207 @@
+import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
+import { readFile, readdir } from 'node:fs/promises';
+import path from 'node:path';
+import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
+
+import { experimental_readRawConfig } from 'wrangler';
+
+const ROOT = fileURLToPath(new URL('..', import.meta.url));
+const BETA_CLASSES = [
+  'FlueRegistry',
+  'FlueSlackThreadAgent',
+  'FlueRoutineIntentAgent',
+  'FlueRoutineWorkflow',
+].sort();
+const V2_CLASSES = [
+  'FlueChickpeaSlackV2Agent',
+  'FlueChickpeaRoutineIntentV2Agent',
+  'FlueChickpeaRoutineExecutionV2Agent',
+].sort();
+const V2_BINDINGS = [
+  'FLUE_CHICKPEA_SLACK_V2_AGENT/FlueChickpeaSlackV2Agent',
+  'FLUE_CHICKPEA_ROUTINE_INTENT_V2_AGENT/FlueChickpeaRoutineIntentV2Agent',
+  'FLUE_CHICKPEA_ROUTINE_EXECUTION_V2_AGENT/FlueChickpeaRoutineExecutionV2Agent',
+].sort();
+
+interface DurableObjectMigration {
+  tag: string;
+  new_sqlite_classes?: string[];
+  deleted_classes?: string[];
+  renamed_classes?: Array<{ from: string; to: string }>;
+}
+
+interface AuthoredWranglerConfig {
+  compatibility_date?: string;
+  observability?: { traces?: { enabled?: boolean } };
+  durable_objects?: { bindings?: Array<{ name: string; class_name: string }> };
+  migrations?: DurableObjectMigration[];
+}
+
+async function sourceFiles(): Promise<string[]> {
+  const roots = ['src', 'scripts'];
+  const files: string[] = [];
+  for (const root of roots) {
+    const absolute = path.join(ROOT, root);
+    const entries = await readdir(absolute, { recursive: true, withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isFile() || !/\.(?:ts|mjs)$/.test(entry.name)) continue;
+      files.push(path.join(entry.parentPath, entry.name));
+    }
+  }
+  return files;
+}
+
+async function sourceEntries(): Promise<Array<{ file: string; source: string }>> {
+  return Promise.all((await sourceFiles()).map(async (file) => ({
+    file,
+    source: await readFile(file, 'utf8'),
+  })));
+}
+
+function matchingFiles(
+  entries: ReadonlyArray<{ file: string; source: string }>,
+  pattern: RegExp,
+): string[] {
+  return entries.flatMap(({ file, source }) => {
+    const matches = pattern.test(source);
+    pattern.lastIndex = 0;
+    return matches ? [path.relative(ROOT, file)] : [];
+  }).sort();
+}
+
+function sorted(values: readonly string[]): string[] {
+  return [...values].sort();
+}
+
+test('dependencies and scripts are pinned to the supported Flue 2 surface', async () => {
+  const packageJson = JSON.parse(
+    await readFile(path.join(ROOT, 'package.json'), 'utf8'),
+  ) as {
+    dependencies: Record<string, string>;
+    devDependencies: Record<string, string>;
+    scripts: Record<string, string>;
+  };
+
+  assert.equal(packageJson.dependencies['@flue/runtime'], '2.0.0');
+  assert.equal(packageJson.dependencies['@flue/slack'], '2.0.0');
+  assert.equal(packageJson.devDependencies['@flue/cli'], '2.0.0');
+  assert.equal(packageJson.devDependencies['@flue/vite'], '2.0.0');
+  assert.equal(packageJson.dependencies['@flue/sdk'], undefined);
+  assert.equal(packageJson.devDependencies['@flue/sdk'], undefined);
+  const scripts = JSON.stringify(packageJson.scripts);
+  assert.doesNotMatch(scripts, /patch|staged-types|routines-runtime-spike|wait=result/);
+});
+
+test('application and verification sources contain no removed beta runtime surfaces', async () => {
+  const entries = await sourceEntries();
+  const forbidden = [
+    /@flue\/runtime\/routing/,
+    /\bdefineAgent\s*\(/,
+    /\bdefineWorkflow\s*\(/,
+    /\?wait=result/,
+    /TAG_AGENT_API_TOKEN/,
+    /x-flue-internal-token/,
+    /verify-flue-v2-staged-types/,
+    /verify-routines-runtime-spike/,
+  ];
+  for (const pattern of forbidden) {
+    assert.deepEqual(matchingFiles(entries, pattern), [], String(pattern));
+  }
+
+  const runtimeImport = /import\s*\{([\s\S]*?)\}\s*from\s*['"]@flue\/runtime['"]/g;
+  const removedRuntimeExports = /\b(?:defineAgent|defineWorkflow|getRun|listRuns|invoke)\b/;
+  for (const { file, source } of entries) {
+    for (const match of source.matchAll(runtimeImport)) {
+      assert.doesNotMatch(match[1] ?? '', removedRuntimeExports, path.relative(ROOT, file));
+    }
+  }
+
+  assert.deepEqual(
+    entries
+      .map(({ file }) => file)
+      .filter((file) => file.startsWith(path.join(ROOT, 'src', 'workflows'))),
+    [],
+  );
+  const app = await readFile(path.join(ROOT, 'src', 'app.ts'), 'utf8');
+  assert.doesNotMatch(app, /\bflue\s*\(/);
+  assert.doesNotMatch(app, /app\.route\(['"]\/agents/);
+});
+
+test('authored Cloudflare reset preserves app state and replaces only beta Flue classes', async () => {
+  const { rawConfig } = await experimental_readRawConfig({
+    config: path.join(ROOT, 'wrangler.jsonc'),
+  });
+  const config = rawConfig as AuthoredWranglerConfig;
+  const migrations = config.migrations ?? [];
+  const reset = migrations.find((migration) => migration.tag === 'v6');
+  assert.ok(reset);
+  assert.deepEqual(sorted(reset.new_sqlite_classes ?? []), V2_CLASSES);
+  assert.deepEqual(sorted(reset.deleted_classes ?? []), BETA_CLASSES);
+  assert.deepEqual(reset.renamed_classes ?? [], []);
+
+  const bindings = config.durable_objects?.bindings ?? [];
+  assert.ok(bindings.some((binding) =>
+    binding.name === 'TAG_STATE' && binding.class_name === 'TagStateStore'
+  ));
+  assert.ok(bindings.some((binding) =>
+    binding.name === 'SANDBOX' && binding.class_name === 'Sandbox'
+  ));
+  const destructive = migrations.flatMap((migration) => [
+    ...(migration.deleted_classes ?? []),
+    ...(migration.renamed_classes ?? []).flatMap((rename) => [rename.from, rename.to]),
+  ]);
+  assert.equal(destructive.includes('TagStateStore'), false);
+  assert.equal(destructive.includes('Sandbox'), false);
+  assert.equal(destructive.includes('ContainerProxy'), false);
+  assert.equal(config.observability?.traces?.enabled, false);
+  assert.ok((config.compatibility_date ?? '') >= '2026-04-01');
+});
+
+test(
+  'generated Cloudflare artifact contains only fresh Flue 2 bindings and no workflows',
+  { skip: !existsSync(path.join(ROOT, 'dist-cf', 'chickpea', 'wrangler.json')) },
+  async () => {
+    const configPath = path.join(ROOT, 'dist-cf', 'chickpea', 'wrangler.json');
+    const config = JSON.parse(await readFile(configPath, 'utf8')) as {
+      main?: string;
+      compatibility_date?: string;
+      observability?: { traces?: { enabled?: boolean } };
+      durable_objects?: { bindings?: Array<{ name: string; class_name: string }> };
+      workflows?: unknown[];
+      migrations?: Array<{
+        tag: string;
+        new_sqlite_classes?: string[];
+        deleted_classes?: string[];
+      }>;
+    };
+    const bindings = (config.durable_objects?.bindings ?? []).map(
+      (binding) => `${binding.name}/${binding.class_name}`,
+    );
+    assert.deepEqual(
+      sorted(bindings.filter((binding) => binding.startsWith('FLUE_'))),
+      V2_BINDINGS,
+    );
+    assert.ok(bindings.includes('TAG_STATE/TagStateStore'));
+    assert.ok(bindings.includes('SANDBOX/Sandbox'));
+    assert.deepEqual(config.workflows ?? [], []);
+    assert.equal(config.observability?.traces?.enabled, false);
+    assert.ok((config.compatibility_date ?? '') >= '2026-04-01');
+
+    const reset = (config.migrations ?? []).find((migration) => migration.tag === 'v6');
+    assert.deepEqual(sorted(reset?.new_sqlite_classes ?? []), V2_CLASSES);
+    assert.deepEqual(sorted(reset?.deleted_classes ?? []), BETA_CLASSES);
+
+    const bundle = await readFile(path.join(path.dirname(configPath), config.main ?? 'index.js'), 'utf8');
+    for (const name of [
+      'chickpea-slack-v2',
+      'chickpea-routine-intent-v2',
+      'chickpea-routine-execution-v2',
+      'chickpea.response-metadata',
+    ]) {
+      assert.match(bundle, new RegExp(name));
+    }
+    assert.doesNotMatch(bundle, /x-flue-internal-token|\/agents\/slack-thread|\/workflows\//);
+  },
+);

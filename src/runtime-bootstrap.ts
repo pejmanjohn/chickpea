@@ -57,10 +57,14 @@ export function bootstrapRuntimeProviders(): void {
     const configuredModel = process.env.SLACK_TAG_MODEL?.startsWith('local-stub/')
       ? process.env.SLACK_TAG_MODEL.slice('local-stub/'.length)
       : 'model';
+    const configuredModels = (process.env.LOCAL_STUB_MODELS ?? '')
+      .split(',')
+      .map((model) => model.trim())
+      .filter((model) => /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/.test(model));
     setLocalStubPiProvider({
       baseUrl: process.env.LOCAL_STUB_URL,
       apiKey: process.env.LOCAL_STUB_API_KEY ?? 'offline-stub-key',
-      modelId: configuredModel,
+      modelIds: [configuredModel, ...configuredModels],
     });
     recordRegisteredProvider('local-stub');
   }

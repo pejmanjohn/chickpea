@@ -6,6 +6,7 @@ import type {
   SlackContinuityNoticeProgress,
   SlackInteractionProgressPatch,
   SlackRuntimeDrainCounts,
+  SlackTurnRecoveryItem,
 } from '../config/state-rpc.ts';
 import {
   MAX_TURN_DRAIN_BATCH,
@@ -79,6 +80,8 @@ export interface SlackThreadRegistry {
 /** The combined claims + thread-registry surface the Slack channel consumes. */
 export interface SlackStateStore extends SlackClaimStore, SlackThreadRegistry {
   admitCanonical(input: SlackCanonicalAdmissionInput): Promise<SlackCanonicalAdmissionResult>;
+  /** Node fallback when Slack truth cannot authorize a canonical Work/Run. */
+  enqueueTurn?(job: TurnJob): Promise<boolean>;
   pinAgentBinding(
     input: SlackAgentBinding,
     expected?: SlackAgentBindingExpectation,
@@ -96,6 +99,10 @@ export interface SlackStateStore extends SlackClaimStore, SlackThreadRegistry {
     id: string,
     message: string,
     observation: FlueTurnObservationV1,
+  ): Promise<import('./turn-job-types.ts').FlueDispatchEnvelopeV1>;
+  reconcileFlueExistingInstance?(
+    id: string,
+    uid: string,
   ): Promise<import('./turn-job-types.ts').FlueDispatchEnvelopeV1>;
   recordFlueReceipt?(id: string, receipt: FlueDispatchReceiptV1): Promise<FlueDispatchReceiptV1>;
   recordFlueSettlement?(
@@ -121,6 +128,8 @@ export interface SlackStateStore extends SlackClaimStore, SlackThreadRegistry {
   markTurnDelivered?(id: string): Promise<void>;
   markTurnError?(id: string): Promise<void>;
   markTurnRecoveryRequired?(id: string, reason: string): Promise<void>;
+  listTurnRecoveryRequired?(limit?: number): Promise<SlackTurnRecoveryItem[]>;
+  resolveTurnRecoveryRequired?(id: string): Promise<boolean>;
   discardTurn?(id: string): Promise<boolean>;
   /** Node backend only (closes the SQLite handle); absent on RPC proxies. */
   close?(): void;
@@ -363,6 +372,10 @@ export class SqliteSlackStateStore implements SlackStateStore {
     return this.logic.admitCanonical(input, this.work, this.turnJobs);
   }
 
+  async enqueueTurn(job: TurnJob) {
+    return this.turnJobs.enqueue(job);
+  }
+
   async pinAgentBinding(input: SlackAgentBinding, expected?: SlackAgentBindingExpectation) {
     return this.turnJobs.pinAgentBinding(input, expected);
   }
@@ -389,6 +402,10 @@ export class SqliteSlackStateStore implements SlackStateStore {
 
   async prepareFlueDispatch(id: string, message: string, observation: FlueTurnObservationV1) {
     return this.turnJobs.prepareFlueDispatch(id, message, observation);
+  }
+
+  async reconcileFlueExistingInstance(id: string, uid: string) {
+    return this.turnJobs.reconcileFlueExistingInstance(id, uid);
   }
 
   async recordFlueReceipt(id: string, receipt: FlueDispatchReceiptV1) {
@@ -437,6 +454,14 @@ export class SqliteSlackStateStore implements SlackStateStore {
 
   async markTurnRecoveryRequired(id: string, reason: string) {
     this.turnJobs.markRecoveryRequired(id, reason);
+  }
+
+  async listTurnRecoveryRequired(limit = 50) {
+    return this.turnJobs.listRecoveryRequired(limit);
+  }
+
+  async resolveTurnRecoveryRequired(id: string) {
+    return this.turnJobs.resolveRecoveryRequired(id);
   }
 
   async discardTurn(id: string) {

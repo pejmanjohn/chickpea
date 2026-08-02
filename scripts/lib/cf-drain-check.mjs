@@ -3,6 +3,7 @@ const DRAIN_CATEGORY_KEYS = [
   'pendingLegacyTurnJobs',
   'pendingLedgerTurnJobs',
   'pendingSlackInteractionCleanups',
+  'recoveryRequiredTurnJobs',
   'executingRuns',
   'admittingOrRunningRoutineOccurrences',
 ];

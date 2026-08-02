@@ -178,6 +178,7 @@ try {
     env: {
       CLOUDFLARE_WORKERS_AI_BASE_URL: `${fake.url}/v1`,
       CLOUDFLARE_API_TOKEN: 'offline-stub-key',
+      CLOUDFLARE_ACCOUNT_ID: 'offline-stub-account',
     },
   });
   record(

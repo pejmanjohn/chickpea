@@ -221,8 +221,9 @@ const DEFAULT_PROGRESS_HEARTBEAT_MS = 60_000;
  *   4. stream the final (fallback to a markdown post), and clear status.
  * An agent/provider/workspace failure is delivered as category-specific static
  * copy (no internal error text ever reaches Slack) and the turn still
- * completes. `runTurn` throws ONLY on a genuine delivery failure, so the
- * caller (node .catch / relay alarm) can release the claims for a retry.
+ * completes. `runTurn` throws only on a genuine delivery failure or when
+ * reconciliation explicitly requires recovery. Callers release claims for a
+ * retryable delivery failure and retain them for recovery-required Runs.
  */
 export async function runTurn(
   turn: NormalizedSlackTurn,
@@ -305,7 +306,7 @@ export async function runTurn(
     : await prepareMemoryTurn({ turn, platformEnv, client });
   const conversationKey = preparedMemory?.conversationKey ?? slackThreadKey(turn);
   const runtimePlanDecision = options.runtimePlanDecision ?? (
-    preparedMemory
+    preparedMemory && resolvedModel
       ? await freezeRuntimePlanForTurn({
           turn,
           assignment,
@@ -653,6 +654,12 @@ export async function runTurn(
         });
         await usageRecorder?.recordSuccess(agentResult);
       } catch (err) {
+        // A Flue identity or idempotency conflict is not an ordinary model
+        // failure. Its TurnJob already entered recovery_required and must not
+        // emit a Slack final or reach an onDelivered tombstone.
+        if (err instanceof AgentPromptFailure && (err.recoveryRequired || err.retryable)) {
+          throw err;
+        }
         if (err instanceof ContinuityNoticeDeliveryError) {
           const settlement = options.flueDispatch?.flueSettlement;
           if (settlement?.outcome === 'completed') {
@@ -711,7 +718,8 @@ export async function runTurn(
     await presenter.deliverFinal(text, 'markdown');
     await finishDelivery();
   } catch (err) {
-    if (!(err instanceof ContinuityNoticeDeliveryError)) {
+    if (!(err instanceof ContinuityNoticeDeliveryError) &&
+        !(err instanceof AgentPromptFailure && err.retryable)) {
       await usageRecorder?.recordFailure();
     }
     throw err;

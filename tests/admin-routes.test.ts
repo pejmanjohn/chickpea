@@ -6,6 +6,7 @@ import { Hono } from 'hono';
 import { createAdminRoutes } from '../src/admin/routes.ts';
 import flueApp from '../src/app.ts';
 import type { RuntimeDrainStatus } from '../src/config/state-rpc.ts';
+import type { SlackStateStore } from '../src/slack/claim-store.ts';
 import {
   ApiOAuthError,
   apiOAuthSettingKeys,
@@ -112,6 +113,7 @@ interface AdminHarnessOptions {
   modelCatalogFetch?: typeof fetch;
   modelCatalogTimeoutMs?: number;
   runtimeDrain?: () => Promise<RuntimeDrainStatus>;
+  slackState?: SlackStateStore;
 }
 
 function appWithAdmin(store: ConfigStore, adminToken?: string): Hono {
@@ -162,6 +164,7 @@ function appWithAdminOptions(store: ConfigStore, options: AdminHarnessOptions = 
         ? { modelCatalogTimeoutMs: options.modelCatalogTimeoutMs }
         : {}),
       ...(options.runtimeDrain ? { runtimeDrain: options.runtimeDrain } : {}),
+      ...(options.slackState ? { slackState: options.slackState } : {}),
     }),
   );
   return app;
@@ -697,6 +700,7 @@ test('runtime drain is admin-gated and reports every bounded work category', asy
       pendingLegacyTurnJobs: 2,
       pendingLedgerTurnJobs: 1,
       pendingSlackInteractionCleanups: 3,
+      recoveryRequiredTurnJobs: 6,
       executingRuns: 4,
       admittingOrRunningRoutineOccurrences: 5,
     },
@@ -739,6 +743,76 @@ test('runtime drain fails closed when the state store is unavailable', async () 
     });
     assert.equal(response.status, 503);
     assert.deepEqual(await response.json(), { error: 'runtime_drain_unavailable' });
+  } finally {
+    store.close();
+  }
+});
+
+test('turn recovery inventory and explicit terminalization are admin-gated', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const turns = [{
+    id: 'msg:recovery:1',
+    executionAuthority: 'legacy' as const,
+    reason: 'flue_expected_instance_missing',
+    enqueuedAt: 1_800_000_000_000,
+  }];
+  const slackState = {
+    listTurnRecoveryRequired: async () => [...turns],
+    resolveTurnRecoveryRequired: async (id: string) => {
+      const index = turns.findIndex((turn) => turn.id === id);
+      if (index < 0) return false;
+      turns.splice(index, 1);
+      return true;
+    },
+  } as unknown as SlackStateStore;
+  try {
+    const app = appWithAdminOptions(store, { slackState });
+    const unauthorized = await app.request('/admin/api/runtime/recovery-turns');
+    assert.equal(unauthorized.status, 401);
+
+    const listed = await app.request('/admin/api/runtime/recovery-turns?limit=10', {
+      headers: auth(ADMIN_TOKEN),
+    });
+    assert.equal(listed.status, 200);
+    assert.equal(listed.headers.get('cache-control'), 'no-store');
+    assert.deepEqual(await listed.json(), { turns });
+
+    const invalid = await app.request('/admin/api/runtime/recovery-turns/msg:recovery:1/resolve', {
+      method: 'POST',
+      headers: { ...auth(ADMIN_TOKEN), 'idempotency-key': 'resolve-recovery-1' },
+      body: JSON.stringify({ confirm: false }),
+    });
+    assert.equal(invalid.status, 400);
+
+    const resolved = await app.request(
+      '/admin/api/runtime/recovery-turns/msg:recovery:1/resolve',
+      {
+        method: 'POST',
+        headers: {
+          ...auth(ADMIN_TOKEN),
+          'content-type': 'application/json',
+          'idempotency-key': 'resolve-recovery-1',
+        },
+        body: JSON.stringify({ confirm: 'terminalize' }),
+      },
+    );
+    assert.equal(resolved.status, 200);
+    assert.deepEqual(await resolved.json(), { id: 'msg:recovery:1', resolved: true });
+
+    const replay = await app.request(
+      '/admin/api/runtime/recovery-turns/msg:recovery:1/resolve',
+      {
+        method: 'POST',
+        headers: {
+          ...auth(ADMIN_TOKEN),
+          'content-type': 'application/json',
+          'idempotency-key': 'resolve-recovery-1',
+        },
+        body: JSON.stringify({ confirm: 'terminalize' }),
+      },
+    );
+    assert.equal(replay.status, 200);
+    assert.deepEqual(await replay.json(), { id: 'msg:recovery:1', resolved: false });
   } finally {
     store.close();
   }

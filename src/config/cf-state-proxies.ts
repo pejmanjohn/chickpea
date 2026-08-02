@@ -327,6 +327,10 @@ export class CfSlackStateStore implements SlackStateStore {
     return unwrap(await this.stub.slackFlueDispatchPrepare(id, message, observation));
   }
 
+  async reconcileFlueExistingInstance(id: string, uid: string) {
+    return unwrap(await this.stub.slackFlueExistingInstanceReconcile(id, uid));
+  }
+
   async recordFlueReceipt(
     id: string,
     receipt: Parameters<TagStateRpc['slackFlueReceiptRecord']>[1],
@@ -358,12 +362,21 @@ export class CfSlackStateStore implements SlackStateStore {
     unwrap(await this.stub.slackTurnRecoveryRequired(id, reason));
   }
 
+  async listTurnRecoveryRequired(limit = 50) {
+    return unwrap(await this.stub.slackTurnRecoveryList(limit));
+  }
+
+  async resolveTurnRecoveryRequired(id: string) {
+    return unwrap(await this.stub.slackTurnRecoveryResolve(id));
+  }
+
   async runtimeDrainCounts() {
     const status = unwrap(await this.stub.runtimeDrainStatus());
     return {
       pendingLegacyTurnJobs: status.categories.pendingLegacyTurnJobs,
       pendingLedgerTurnJobs: status.categories.pendingLedgerTurnJobs,
       pendingSlackInteractionCleanups: status.categories.pendingSlackInteractionCleanups,
+      recoveryRequiredTurnJobs: status.categories.recoveryRequiredTurnJobs,
     };
   }
 

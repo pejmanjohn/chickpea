@@ -68,6 +68,14 @@ export interface SlackRuntimeDrainCounts {
   pendingLegacyTurnJobs: number;
   pendingLedgerTurnJobs: number;
   pendingSlackInteractionCleanups: number;
+  recoveryRequiredTurnJobs: number;
+}
+
+export interface SlackTurnRecoveryItem {
+  id: string;
+  executionAuthority: 'legacy' | 'ledger';
+  reason: string;
+  enqueuedAt: number;
 }
 
 export type RuntimeDrainCategories = SlackRuntimeDrainCounts & {
@@ -218,6 +226,10 @@ export interface TagStateRpc {
     message: string,
     observation: FlueTurnObservationV1,
   ): Promise<StateRpcResult<FlueDispatchEnvelopeV1>>;
+  slackFlueExistingInstanceReconcile(
+    id: string,
+    uid: string,
+  ): Promise<StateRpcResult<FlueDispatchEnvelopeV1>>;
   slackFlueReceiptRecord(
     id: string,
     receipt: FlueDispatchReceiptV1,
@@ -235,6 +247,8 @@ export interface TagStateRpc {
     notice: SlackContinuityNoticeProgress,
   ): Promise<StateRpcResult<null>>;
   slackTurnRecoveryRequired(id: string, reason: string): Promise<StateRpcResult<null>>;
+  slackTurnRecoveryList(limit: number): Promise<StateRpcResult<SlackTurnRecoveryItem[]>>;
+  slackTurnRecoveryResolve(id: string): Promise<StateRpcResult<boolean>>;
   slackInteractionProgressRecord(
     id: string,
     patch: SlackInteractionProgressPatch,

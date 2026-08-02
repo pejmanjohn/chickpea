@@ -57,7 +57,8 @@ test('the explicit v2 app shell mounts owned routes without the beta auto-router
   const appSource = readFileSync(path.join(PROJECT_ROOT, 'src', 'app.ts'), 'utf8');
   assert.doesNotMatch(appSource, /\bflue\s*\(\s*\)/);
   assert.doesNotMatch(appSource, /createAgentRouter\(ChickpeaSlack\)/);
+  assert.doesNotMatch(appSource, /createAgentRouter\(ChickpeaRoutineIntent\)/);
+  assert.doesNotMatch(appSource, /createAgentRouter\(ChickpeaRoutineExecution\)/);
   assert.doesNotMatch(appSource, /agents\/slack-thread/);
-  assert.match(appSource, /createAgentRouter\(ChickpeaRoutineIntent\)/);
   assert.match(appSource, /app\.route\('\/channels\/slack', channel\.route\(\)\)/);
 });

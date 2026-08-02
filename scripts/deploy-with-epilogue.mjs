@@ -211,7 +211,12 @@ function validateEnabledRoutineArtifact(artifact) {
       failures.push(`${name}/${className} binding`);
     }
   }
-  if (!bundle.includes('scheduled(controller')) failures.push('composed scheduled handler');
+  if (
+    !bundle.includes('heartbeat: runRoutineHeartbeat') ||
+    !bundle.includes('maintenance: runWorkMaintenance')
+  ) {
+    failures.push('composed heartbeat and maintenance handlers');
+  }
   if (
     !bundle.includes('chickpea-routine-intent-v2') ||
     !bundle.includes('chickpea-routine-execution-v2')

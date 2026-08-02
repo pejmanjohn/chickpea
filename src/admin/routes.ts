@@ -148,6 +148,7 @@ import {
   getMemoryStateStore,
   getRoutineStore,
   getSettingsStore,
+  getSlackStateStore,
   getUsageStore,
   getWorkStore,
   isCloudflareTarget,
@@ -160,6 +161,7 @@ import type { MemoryStateStore } from '../memory/types.ts';
 import type { RoutineStore } from '../routines/types.ts';
 import type { UsageStore } from '../usage/types.ts';
 import type { WorkStore } from '../work/types.ts';
+import type { SlackStateStore } from '../slack/claim-store.ts';
 import {
   cancelOpenAiSubscriptionAuthorization,
   confirmOpenAiSubscriptionAccountChange,
@@ -226,6 +228,7 @@ interface AdminRoutesOptions {
   routines?: RoutineStore | undefined;
   usage?: UsageStore | undefined;
   work?: WorkStore | undefined;
+  slackState?: SlackStateStore | undefined;
   runtimeDrain?: ((env?: PlatformEnv) => Promise<RuntimeDrainStatus>) | undefined;
   usageAdminUi?: boolean | undefined;
   adminToken?: string | undefined;
@@ -741,6 +744,9 @@ const slackBehaviorPatchSchema = v.pipe(
   ),
   v.check((patch) => Object.keys(patch).length > 0),
 );
+const turnRecoveryResolveSchema = v.strictObject({
+  confirm: v.literal('terminalize'),
+});
 export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   const app = new Hono();
   const tokenFromOptions = Object.hasOwn(options, 'adminToken');
@@ -755,6 +761,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     options.usage ?? getUsageStore(c.env as PlatformEnv | undefined);
   const work = (c: Context) =>
     options.work ?? getWorkStore(c.env as PlatformEnv | undefined);
+  const slackState = (c: Context) =>
+    options.slackState ?? getSlackStateStore(c.env as PlatformEnv | undefined);
   const runtimeDrain = options.runtimeDrain ?? readRuntimeDrainStatus;
   const usageAdminUi = (c: Context): boolean => {
     if (options.usageAdminUi !== undefined) return options.usageAdminUi;
@@ -1081,7 +1089,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const platformEnv = c.env as PlatformEnv | undefined;
     // The cutover drain probe must be observational: do not let the general
     // admin middleware reconcile provider keys or pin request-origin state.
-    if (c.req.method === 'GET' && c.req.path === '/admin/api/runtime/drain') {
+    if (c.req.method === 'GET' &&
+        (c.req.path === '/admin/api/runtime/drain' ||
+          c.req.path === '/admin/api/runtime/recovery-turns')) {
       return next();
     }
     const settingsStore = settings(c);
@@ -1280,6 +1290,51 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     } catch {
       console.error('[chickpea] runtime drain state unavailable');
       return c.json({ error: 'runtime_drain_unavailable' }, 503);
+    }
+  });
+
+  app.get('/admin/api/runtime/recovery-turns', async (c) => {
+    const rawLimit = c.req.query('limit');
+    const limit = rawLimit === undefined ? 50 : Number(rawLimit);
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100 ||
+        (rawLimit !== undefined && !/^\d+$/.test(rawLimit))) {
+      return invalidRequest(c);
+    }
+    try {
+      const recoveryStore = slackState(c);
+      const list = recoveryStore.listTurnRecoveryRequired;
+      if (!list) throw new Error('Turn recovery inventory is unavailable.');
+      c.header('Cache-Control', 'no-store');
+      return c.json({ turns: await list.call(recoveryStore, limit) });
+    } catch {
+      console.error('[chickpea] turn recovery inventory unavailable');
+      return c.json({ error: 'turn_recovery_unavailable' }, 503);
+    }
+  });
+
+  app.post('/admin/api/runtime/recovery-turns/:id/resolve', async (c) => {
+    const id = c.req.param('id');
+    const idempotencyKey = c.req.header('idempotency-key')?.trim();
+    const origin = c.req.header('origin');
+    const bearerAuthenticated = c.req.header('authorization') !== undefined;
+    if (!/^[A-Za-z0-9_.:-]{1,200}$/.test(id) ||
+        !idempotencyKey || idempotencyKey.length > 200 ||
+        !/^[A-Za-z0-9_.:-]+$/.test(idempotencyKey) ||
+        (!bearerAuthenticated && origin !== requestOrigin(c))) {
+      return invalidRequest(c);
+    }
+    const parsed = v.safeParse(turnRecoveryResolveSchema, await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
+    try {
+      const recoveryStore = slackState(c);
+      const resolve = recoveryStore.resolveTurnRecoveryRequired;
+      if (!resolve) throw new Error('Turn recovery resolution is unavailable.');
+      const resolved = await resolve.call(recoveryStore, id);
+      c.header('Cache-Control', 'no-store');
+      return c.json({ id, resolved });
+    } catch {
+      console.error('[chickpea] turn recovery resolution unavailable');
+      return c.json({ error: 'turn_recovery_unavailable' }, 503);
     }
   });
 

@@ -70,6 +70,8 @@ export class AgentPromptFailure extends Error {
   constructor(
     readonly kind: AgentPromptFailureKind,
     readonly status = 500,
+    readonly recoveryRequired = false,
+    readonly retryable = false,
   ) {
     super(`agent prompt failed (${kind})`);
     this.name = 'AgentPromptFailure';
@@ -101,6 +103,9 @@ export interface SlackFlueDispatchState {
   recordSettlement(
     settlement: FlueSettlementCheckpointV1,
   ): FlueSettlementCheckpointV1 | Promise<FlueSettlementCheckpointV1>;
+  reconcileExistingInstance(
+    uid: string,
+  ): FlueDispatchEnvelopeV1 | Promise<FlueDispatchEnvelopeV1>;
   markRecoveryRequired(reason: string): void | Promise<void>;
 }
 
@@ -146,13 +151,11 @@ export async function promptSlackThreadAgent(
     generation: input.turnId,
     ...(input.workCorrelation ? { workCorrelation: input.workCorrelation } : {}),
   };
-  const envelope = input.state.dispatchEnvelope ??
+  let envelope = input.state.dispatchEnvelope ??
     await input.state.prepare(input.message, observation);
   input.state.dispatchEnvelope = envelope;
-  const handle = input.handle ?? init(
-    (await import('../agents/slack-thread.ts')).ChickpeaSlack,
-    { id: envelope.instanceId, uid: envelope.uid },
-  );
+  const agent = input.handle ? undefined : (await import('../agents/slack-thread.ts')).ChickpeaSlack;
+  let handle = input.handle ?? init(agent!, { id: envelope.instanceId, uid: envelope.uid });
   let receipt = input.state.dispatchReceipt;
   if (!receipt) {
     let admitted: DispatchReceipt;
@@ -163,32 +166,86 @@ export async function promptSlackThreadAgent(
         idempotencyKey: envelope.idempotencyKey,
       });
     } catch (error) {
-      const reason = dispatchReconciliationReason(error);
-      if (reason) {
-        await input.state.markRecoveryRequired(reason);
-        throw new AgentPromptFailure('agent', 409);
+      if (error instanceof AgentInstanceExistsError && error.uid) {
+        try {
+          envelope = await input.state.reconcileExistingInstance(error.uid);
+          input.state.dispatchEnvelope = envelope;
+          handle = input.handle ?? init(agent!, {
+            id: envelope.instanceId,
+            uid: envelope.uid,
+          });
+          admitted = await handle.dispatch({
+            message: envelope.message,
+            idempotencyKey: envelope.idempotencyKey,
+          });
+        } catch (reconciliationError) {
+          const reason = dispatchReconciliationReason(reconciliationError);
+          if (reason) await input.state.markRecoveryRequired(reason);
+          if (reconciliationError instanceof SubmissionConflictError ||
+              reconciliationError instanceof AgentInstanceExistsError ||
+              reconciliationError instanceof AgentInstanceNotFoundError) {
+            throw new AgentPromptFailure('agent', 409, true);
+          }
+          // The local reconciliation CAS marks its own conflict. A transport
+          // interruption from the second keyed dispatch remains retryable.
+          if (input.state.dispatchEnvelope?.uid === error.uid) {
+            throw new AgentPromptFailure('agent', 503, false, true);
+          }
+          await input.state.markRecoveryRequired(
+            'flue_existing_instance_reconciliation_conflict',
+          );
+          throw new AgentPromptFailure('agent', 409, true);
+        }
+      } else {
+        const reason = dispatchReconciliationReason(error);
+        if (reason) {
+          await input.state.markRecoveryRequired(reason);
+          throw new AgentPromptFailure('agent', 409, true);
+        }
+        throw new AgentPromptFailure('agent', 503, false, true);
       }
-      throw error;
     }
     receipt = await input.state.recordReceipt(boundedReceipt(admitted));
     input.state.dispatchReceipt = receipt;
   }
 
-  let completed: AgentDispatchResult;
+  let reply: AgentReply;
   try {
-    const reply = await handle.read(receipt as DispatchReceipt);
-    completed = resultFromAgentReply(reply, input.requestedModel);
+    reply = await handle.read(receipt as DispatchReceipt);
   } catch (error) {
-    const outcome = error instanceof AgentRunError ? error.outcome : 'failed';
+    if (!(error instanceof AgentRunError)) {
+      if (error instanceof AgentInstanceNotFoundError) {
+        await input.state.markRecoveryRequired('flue_expected_instance_missing');
+        throw new AgentPromptFailure('agent', 409, true);
+      }
+      // Transport/isolate interruptions are not settlement evidence. Keep the
+      // receipt and let the durable relay reattach instead of freezing a paid,
+      // possibly completed turn as a permanent failure.
+      throw new AgentPromptFailure('agent', 503, false, true);
+    }
     const kind = classifyFlueRunFailure(error);
     const checkpoint = await input.state.recordSettlement({
-      outcome,
+      outcome: error.outcome,
       settledAt: now(),
       failureKind: kind,
     });
     input.state.flueSettlement = checkpoint;
     await input.beforeResult?.();
     throw new AgentPromptFailure(kind);
+  }
+
+  let completed: AgentDispatchResult;
+  try {
+    completed = resultFromAgentReply(reply, input.requestedModel);
+  } catch {
+    const checkpoint = await input.state.recordSettlement({
+      outcome: 'failed',
+      settledAt: now(),
+      failureKind: 'agent',
+    });
+    input.state.flueSettlement = checkpoint;
+    await input.beforeResult?.();
+    throw new AgentPromptFailure('agent');
   }
 
   const checkpoint = await input.state.recordSettlement({

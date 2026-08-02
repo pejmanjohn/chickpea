@@ -246,6 +246,7 @@ It calls `auth.test` and `users.info`, compares the display name to the manifest
 | `TAG_DB_PATH` | optional | SQLite path for the durable agent transcript. Default `./tmp/flue.db`; use `:memory:` for ephemeral runs. The default `tmp/**` path is ignored by `flue dev` watch mode. |
 | `SLACK_STATE_DB_PATH` | optional | SQLite path for app-owned state: runtime config, assignments, dedupe claims, joined-thread registry, per-thread config snapshots. Defaults to `<TAG_DB_PATH>.state`; a `:memory:` transcript DB implies a `:memory:` state store, so ephemeral runs stay fully ephemeral. |
 | `LOCAL_STUB_URL` / `LOCAL_STUB_API_KEY` | optional | Register the offline `local-stub` provider (OpenAI-completions wire; use `SLACK_TAG_MODEL=local-stub/<model>`). |
+| `LOCAL_STUB_MODELS` | optional | Comma-separated provider-local model IDs exposed by the offline stub for fixture/profile configurations. |
 | `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` | optional | Enable the `anthropic` provider; `ANTHROPIC_BASE_URL` overrides its runtime inference endpoint. The key can instead be stored in Settings. |
 | `OPENAI_API_KEY` | optional | Enable the built-in `openai` provider. The key can instead be stored in Settings. |
 | `TAG_OPENAI_SUBSCRIPTION_ENABLED` | optional, experimental | Default-off gate for the direct ChatGPT Subscription adapter on both Node and Cloudflare. Exact `"1"` enables authorization and subscription-selected inference; all other values block them without deleting stored credentials or changing profile intent. API-key profiles are unaffected and are never used as fallback. See the [operator runbook](docs/runbooks/openai-subscription.md). |
@@ -334,6 +335,7 @@ Offline, net-guarded evidence scripts (run with Node >= 22.19 on `PATH`) spawn t
 node scripts/verify-flue-offline-turn.mjs
 node scripts/verify-agent-config.mjs
 npm run verify:durability
+npm run verify:conversation-scale
 npm run verify:run-foundation
 npm run verify:providers
 npm run verify:admin-ui
@@ -341,7 +343,7 @@ npm run verify:cf-smoke
 npm run verify:oss-export
 ```
 
-`verify:run-foundation` runs the channel-neutral lifecycle, Flue 2 handle boundary, storage, privacy, recovery, and non-Slack adapter matrix. `verify:admin-ui` exercises the authenticated admin plane, including the retained Run/session APIs and retired-page redirect, Scheduled Work, Usage correlation, and a real Memory scope/index, versioned edit conflict, and irreversible delete contract. `verify:durability` proves transcript/config state plus Work ledger, memory, and routine-definition/run replay across a file-backed SQLite restart. `verify:cf-smoke` builds the Cloudflare bundle and boots it under real workerd (`wrangler dev`), driving the full first-run story with no Slack credentials: seeding from the Durable Object store, fail-closed 401s before the wizard, wizard validation and persistence, signed Slack delivery, dedupe, an exact-channel ledger canary, Memory state across a workerd restart, the fresh Flue 2 class/binding and tracing contract, and tampered-signature rejection — with every outbound URL pointed at loopback.
+`verify:run-foundation` runs the channel-neutral lifecycle, Flue 2 handle boundary, storage, privacy, recovery, and non-Slack adapter matrix. `verify:admin-ui` exercises the authenticated admin plane, including the retained Run/session APIs and retired-page redirect, Scheduled Work, Usage correlation, and a real Memory scope/index, versioned edit conflict, and irreversible delete contract. `verify:durability` proves transcript/config state plus Work ledger, memory, and routine-definition/run replay across a file-backed SQLite restart. `verify:conversation-scale` drives one real Flue 2 coordinator conversation through 50 offline turns and records first-read latency, settled reattach latency, serialized history-response growth, and provider-context growth at turns 20 and 50. `verify:cf-smoke` builds the Cloudflare bundle and boots it under real workerd (`wrangler dev`), driving the full first-run story with no Slack credentials: seeding from the Durable Object store, fail-closed 401s before the wizard, wizard validation and persistence, signed Slack delivery, dedupe, an exact-channel ledger canary, Memory state across a workerd restart, the fresh Flue 2 class/binding and tracing contract, and tampered-signature rejection — with every outbound URL pointed at loopback.
 
 The ledger canary is a migration control, not a product preference. Keep it empty for ordinary releases unless the [runtime rollout runbook](docs/runbooks/agent-runtime-rollout.md) has an active evidence record. Clearing it rolls only future admissions back to legacy authority; the dual-lane artifact must remain deployed while already-ledger-owned Runs drain.
 

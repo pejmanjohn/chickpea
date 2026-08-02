@@ -40,8 +40,19 @@ PATH=/opt/homebrew/opt/node@24/bin:$PATH \
 FLUE_NODE_BIN=/opt/homebrew/opt/node@24/bin/node npm run build
 
 PATH=/opt/homebrew/opt/node@24/bin:$PATH \
+FLUE_NODE_BIN=/opt/homebrew/opt/node@24/bin/node npm run verify:conversation-scale
+
+PATH=/opt/homebrew/opt/node@24/bin:$PATH \
 node scripts/deploy-with-epilogue.mjs --skip-build --preflight-only
 ```
+
+Record the scale probe's 20- and 50-turn checkpoints with the release
+evidence. The migration reference run grew the serialized history response
+from 14,321 to 35,561 bytes (2.483x), the provider request from 4,905 to 9,645
+bytes (1.966x), and a settled reattach read from 2.697 ms to 8.827 ms; the
+bounded reply remained 147 bytes. Those timings are a local baseline, not an
+SLO. Stop the release if the current run fails to complete 50 turns or shows a
+materially different growth shape before proceeding to Cloudflare acceptance.
 
 The preflight must show:
 
@@ -54,6 +65,19 @@ The preflight must show:
   date at or above `2026-04-01`; and
 - deployment through `.wrangler/deploy/config.json`, with no custom
   `--config` flag.
+
+Flue's generated Cloudflare tracing is deliberately disabled rather than
+content-redacted: Chickpea's app-owned `instrument()` observers retain only the
+instance/submission correlation and bounded operational metadata needed for
+recovery and usage attribution. Conversation content and secrets never enter
+the tracing plane.
+
+If the drain reports `recoveryRequiredTurnJobs`, inspect the bounded inventory
+at `GET /admin/api/runtime/recovery-turns`. After reconciling the underlying
+condition, explicitly terminalize a quarantined adapter row with
+`POST /admin/api/runtime/recovery-turns/:id/resolve`, an `Idempotency-Key`
+header, and `{ "confirm": "terminalize" }`. Cookie-authenticated calls must be
+same-origin; bearer-authenticated operator calls remain suitable for scripts.
 
 ## Gate 1: drain the existing deployment
 

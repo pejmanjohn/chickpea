@@ -28,14 +28,17 @@ test('the bundled catalog describes only canonical ids, lane profiles, and shrin
   }
 });
 
-test('Pi-native models win and current Pi gaps are supplied by reviewed profiles', () => {
+test('Pi-native models win while reviewed profiles remain available for non-native routes', () => {
   assert.equal(isPiNativeModel('openai/gpt-5.4'), true);
   assert.equal(isPiNativeModel('anthropic/claude-fable-5'), true);
-  assert.equal(isPiNativeModel('openai/gpt-5.6-sol'), false);
-  assert.equal(isPiNativeModel('anthropic/claude-opus-5'), false);
+  assert.equal(isPiNativeModel('openai/gpt-5.6-sol'), true);
+  assert.equal(isPiNativeModel('anthropic/claude-opus-5'), true);
 
   assert.equal(catalogModelForLane('openai/gpt-5.4', 'openai_api_key'), undefined);
-  const openAi = catalogModelForLane('openai/gpt-5.6-sol', 'openai_api_key');
+  assert.equal(catalogModelForLane('openai/gpt-5.6-sol', 'openai_api_key'), undefined);
+  const openAi = catalogModelForLane('openai/gpt-5.6-sol', 'openai_api_key', {
+    nativeFirst: false,
+  });
   assert.equal(openAi?.provider, 'openai');
   assert.equal(openAi?.api, 'openai-responses');
   assert.equal(openAi?.reasoning, true);
@@ -49,7 +52,10 @@ test('Pi-native models win and current Pi gaps are supplied by reviewed profiles
     cacheWrite: 6.25,
   });
 
-  const anthropic = catalogModelForLane('anthropic/claude-opus-5', 'anthropic_api_key');
+  assert.equal(catalogModelForLane('anthropic/claude-opus-5', 'anthropic_api_key'), undefined);
+  const anthropic = catalogModelForLane('anthropic/claude-opus-5', 'anthropic_api_key', {
+    nativeFirst: false,
+  });
   assert.equal(anthropic?.provider, 'anthropic');
   assert.equal(anthropic?.api, 'anthropic-messages');
   assert.equal(anthropic?.contextWindow, 1_000_000);

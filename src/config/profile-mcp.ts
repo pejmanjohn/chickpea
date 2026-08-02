@@ -385,8 +385,8 @@ async function resolveOneServer(
 }
 
 /**
- * `AgentRuntimeConfig` has no turn-end hook (verified against @flue/runtime
- * 1.0.0-beta.8). On Cloudflare, connection I/O is request-pinned and dies with
+ * Flue 2 has no connection-specific turn-end hook. On Cloudflare, connection
+ * I/O is request-pinned and dies with
  * the request, so there is nothing to schedule. On node, close via an unref'd
  * setTimeout so a bounded leak is reclaimed 10 minutes after connect (or
  * immediately when the connection yielded no usable tools).

@@ -10,6 +10,7 @@ const ZERO_STATUS = {
     pendingLegacyTurnJobs: 0,
     pendingLedgerTurnJobs: 0,
     pendingSlackInteractionCleanups: 0,
+    recoveryRequiredTurnJobs: 0,
     executingRuns: 0,
     admittingOrRunningRoutineOccurrences: 0,
   },

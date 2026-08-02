@@ -100,20 +100,22 @@ export function setWorkersAiRestPiProvider(options: {
 export function setLocalStubPiProvider(options: {
   baseUrl: string;
   apiKey: string;
-  modelId: string;
+  modelIds: readonly string[];
 }): void {
-  const model: Model<'openai-completions'> = {
-    id: options.modelId,
-    name: options.modelId,
-    api: 'openai-completions',
-    provider: 'local-stub',
-    baseUrl: options.baseUrl,
-    reasoning: false,
-    input: ['text'],
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: 32_768,
-    maxTokens: 2_048,
-  };
+  const models: Model<'openai-completions'>[] = [...new Set(options.modelIds)].map(
+    (modelId) => ({
+      id: modelId,
+      name: modelId,
+      api: 'openai-completions',
+      provider: 'local-stub',
+      baseUrl: options.baseUrl,
+      reasoning: false,
+      input: ['text'],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 32_768,
+      maxTokens: 2_048,
+    }),
+  );
   setProvider(
     createProvider({
       id: 'local-stub',
@@ -122,7 +124,7 @@ export function setLocalStubPiProvider(options: {
         apiKey: options.apiKey,
         baseUrl: options.baseUrl,
       }),
-      models: [model],
+      models,
       api: openAICompletionsApi(),
     }),
   );

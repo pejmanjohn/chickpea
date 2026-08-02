@@ -7,6 +7,7 @@ import { test } from 'node:test';
 import type { WebClient } from '@slack/web-api';
 
 import { deriveRuntimePlanInstanceId } from '../src/agents/runtime-plan.ts';
+import { AgentPromptFailure } from '../src/slack/flue-dispatch.ts';
 import type { ResolvedAssignment } from '../src/config/types.ts';
 import { SqliteSlackStateStore, type SlackStateStore } from '../src/slack/claim-store.ts';
 import type { LedgerSlackTurnExecutor } from '../src/slack/ledger-turn-driver.ts';
@@ -32,6 +33,9 @@ test('a wake admitted during a Node drain starts a follow-up drain immediately',
       continuityNoticeRequired: false,
     }),
     prepareFlueDispatch: async () => { throw new Error('fixture does not dispatch Flue'); },
+    reconcileFlueExistingInstance: async () => {
+      throw new Error('fixture does not reconcile Flue');
+    },
     recordFlueReceipt: async (receipt: unknown) => receipt,
     recordFlueSettlement: async (settlement: unknown) => settlement,
     recordContinuityNotice: async () => undefined,
@@ -70,6 +74,148 @@ test('a wake admitted during a Node drain starts a follow-up drain immediately',
 
   assert.deepEqual(executions, ['msg_relay_first', 'msg_relay_second']);
   assert.equal(jobs.length, 0);
+});
+
+test('the Node relay serializes queued turns in the same conversation', async () => {
+  const jobs = [relayJob('first'), relayJob('second')];
+  const executions: string[] = [];
+  let releaseFirst!: () => void;
+  let markFirstStarted!: () => void;
+  const sawFirst = new Promise<void>((resolve) => { markFirstStarted = resolve; });
+  const holdFirst = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  const state = {
+    listPendingTurns: async () => [...jobs],
+    freezeRuntimePlan: async (_id: string, runtimePlan: Parameters<typeof deriveRuntimePlanInstanceId>[0]) => ({
+      runtimePlan,
+      instanceId: deriveRuntimePlanInstanceId(runtimePlan),
+      continuityNoticeRequired: false,
+    }),
+    prepareFlueDispatch: async () => { throw new Error('fixture does not dispatch Flue'); },
+    reconcileFlueExistingInstance: async () => {
+      throw new Error('fixture does not reconcile Flue');
+    },
+    recordFlueReceipt: async (receipt: unknown) => receipt,
+    recordFlueSettlement: async (settlement: unknown) => settlement,
+    recordContinuityNotice: async () => undefined,
+    matchFlueObservation: async () => undefined,
+    markTurnRecoveryRequired: async () => undefined,
+    recordTurnAttempt: async () => true,
+    recordInteractionIntent: async () => undefined,
+    recordSlackInteractionProgress: async () => undefined,
+    listPendingSlackInteractionCleanups: async () => [],
+    markTurnDelivered: async (id: string) => {
+      const index = jobs.findIndex((job) => job.id === id);
+      if (index >= 0) jobs.splice(index, 1);
+      return true;
+    },
+    discardTurn: async () => true,
+    release: async () => undefined,
+  } as unknown as SlackStateStore;
+  const draining = drainNodeTurnRelayOnce({
+    state,
+    work: {} as WorkStore,
+    executeTurn: (async (_turn, _assignment, _env, options) => {
+      const id = options?.turnId ?? 'missing';
+      executions.push(id);
+      if (id.endsWith('first')) {
+        markFirstStarted();
+        await holdFirst;
+      }
+    }) as LedgerSlackTurnExecutor,
+  });
+
+  await sawFirst;
+  await Promise.resolve();
+  assert.deepEqual(executions, ['msg_relay_first']);
+  releaseFirst();
+  await draining;
+  assert.deepEqual(executions, ['msg_relay_first', 'msg_relay_second']);
+});
+
+test('post-dispatch retries stop in visible recovery state at the bounded ceiling', async () => {
+  const job = {
+    ...relayJob('reattach'),
+    attempts: 7,
+    dispatchStartedAt: 1,
+    dispatchEnvelope: { idempotencyKey: 'msg_relay_reattach' },
+  };
+  const recovery: Array<{ id: string; reason: string }> = [];
+  const attempts: number[] = [];
+  const state = {
+    listPendingTurns: async () => [job],
+    freezeRuntimePlan: async () => { throw new Error('not reached'); },
+    prepareFlueDispatch: async () => { throw new Error('not reached'); },
+    reconcileFlueExistingInstance: async () => { throw new Error('not reached'); },
+    recordFlueReceipt: async (receipt: unknown) => receipt,
+    recordFlueSettlement: async (settlement: unknown) => settlement,
+    recordContinuityNotice: async () => undefined,
+    matchFlueObservation: async () => undefined,
+    markTurnRecoveryRequired: async (id: string, reason: string) => {
+      recovery.push({ id, reason });
+    },
+    recordTurnAttempt: async (_id: string, attempt: number) => {
+      attempts.push(attempt);
+    },
+    recordInteractionIntent: async () => undefined,
+    recordSlackInteractionProgress: async () => undefined,
+    markTurnDelivered: async () => undefined,
+    discardTurn: async () => true,
+    release: async () => undefined,
+    setActiveWork: async () => undefined,
+  } as unknown as SlackStateStore;
+
+  await drainNodeTurnRelayOnce({
+    state,
+    work: {} as WorkStore,
+    executeTurn: (async () => {
+      throw new AgentPromptFailure('agent', 503, false, true);
+    }) as LedgerSlackTurnExecutor,
+  });
+
+  assert.deepEqual(attempts, [8]);
+  assert.deepEqual(recovery, [{
+    id: job.id,
+    reason: 'post_dispatch_attempts_exhausted',
+  }]);
+});
+
+test('a retained first turn blocks later turns in the same conversation', async () => {
+  const first = {
+    ...relayJob('first'),
+    dispatchStartedAt: 1,
+    dispatchEnvelope: { idempotencyKey: 'msg_relay_first' },
+  };
+  const second = relayJob('second');
+  const executions: string[] = [];
+  const state = {
+    listPendingTurns: async () => [first, second],
+    freezeRuntimePlan: async () => { throw new Error('not reached'); },
+    prepareFlueDispatch: async () => { throw new Error('not reached'); },
+    reconcileFlueExistingInstance: async () => { throw new Error('not reached'); },
+    recordFlueReceipt: async (receipt: unknown) => receipt,
+    recordFlueSettlement: async (settlement: unknown) => settlement,
+    recordContinuityNotice: async () => undefined,
+    matchFlueObservation: async () => undefined,
+    markTurnRecoveryRequired: async () => undefined,
+    recordTurnAttempt: async () => undefined,
+    recordInteractionIntent: async () => undefined,
+    recordSlackInteractionProgress: async () => undefined,
+    markTurnDelivered: async () => undefined,
+    discardTurn: async () => true,
+    release: async () => undefined,
+    setActiveWork: async () => undefined,
+  } as unknown as SlackStateStore;
+
+  await drainNodeTurnRelayOnce({
+    state,
+    work: {} as WorkStore,
+    executeTurn: (async (_turn, _assignment, _env, options) => {
+      executions.push(options?.turnId ?? 'missing');
+      throw new AgentPromptFailure('agent', 503, false, true);
+    }) as LedgerSlackTurnExecutor,
+  });
+
+  assert.deepEqual(executions, [first.id]);
 });
 
 test('the Node relay drains a ledger Run once and tombstones its adapter job', async () => {
@@ -152,6 +298,36 @@ test('the Node relay drains a ledger Run once and tombstones its adapter job', a
       executeTurn,
     });
     assert.equal(executions, 1, 'the delivered tombstone prevents a second execution');
+  } finally {
+    state.close();
+    work.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('a Node fallback turn is durably relayed without inventing a canonical Run', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-node-fallback-relay-'));
+  const path = join(directory, 'state.sqlite');
+  const state = new SqliteSlackStateStore(path);
+  const work = new SqliteWorkStore(path);
+  try {
+    const job = relayJob('fallback');
+    assert.equal(await state.enqueueTurn(job), true);
+
+    let executionOptions: Parameters<LedgerSlackTurnExecutor>[3];
+    await drainNodeTurnRelayOnce({
+      state,
+      work,
+      client: {} as WebClient,
+      executeTurn: async (_turn, _assignment, _env, options) => {
+        executionOptions = options;
+      },
+    });
+
+    assert.equal(executionOptions?.turnId, job.id);
+    assert.equal(executionOptions?.runId, undefined);
+    assert.ok(executionOptions?.flueDispatch, 'fallback execution retains durable Flue state');
+    assert.deepEqual(await state.listPendingTurns?.(), []);
   } finally {
     state.close();
     work.close();

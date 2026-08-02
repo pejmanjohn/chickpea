@@ -39,7 +39,7 @@ function withCloudflareModelPolicies(binding: CloudflareAIBinding): CloudflareAI
         return binding.run(modelId, inputs, options);
       }
 
-      // Workers AI enables GLM thinking by default. Flue beta.8 represents
+      // Workers AI enables GLM thinking by default. The Pi provider represents
       // `thinkingLevel: 'off'` by omitting `reasoning_effort`, which therefore
       // leaves that server-side default enabled. Apply Cloudflare's explicit
       // chat-template switch at the binding boundary, remove any conflicting

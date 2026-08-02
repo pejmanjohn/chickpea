@@ -908,7 +908,11 @@ function projectRuntimePlanAgent(
   plan: RuntimePlanV2,
   current: CustomAgentConfig,
 ): CustomAgentConfig {
-  if (!current.enabled || current.id !== plan.agentId) {
+  // A channel thread owns its frozen RuntimePlan even if the profile is later
+  // disabled. Individual live grants still intersect below, so disabling a
+  // connection or repository revokes that capability without breaking the
+  // already-started conversation.
+  if (current.id !== plan.agentId) {
     throw new Error('RuntimePlanV2 profile is unavailable.');
   }
   const apiConnections = plan.apiConnections.map((declaration) => {
@@ -1080,7 +1084,7 @@ async function resolveAgentSandbox(options: AgentSandboxOptions): Promise<Sandbo
  * binding). This module executes inside the Flue-generated agent Durable
  * Object there, where the bindings come from the runtime's ALS-scoped
  * Cloudflare context — populated ONLY inside DO handlers, which is exactly
- * where defineAgent's factory runs. Imported dynamically and only on the CF
+ * where the Flue agent function runs. Imported dynamically and only on the CF
  * target: '@flue/runtime/cloudflare' has no business in the node lane's
  * runtime graph, and on node the factories ignore the env anyway.
  */

@@ -14,7 +14,11 @@ import {
   deliverPersistedSlackPayload,
   PersistedSlackDeliveryError,
 } from './web-client-presenter.ts';
-import { MAX_TURN_ATTEMPTS, type PendingTurnJob } from './turn-jobs.ts';
+import {
+  MAX_POST_DISPATCH_ATTEMPTS,
+  MAX_TURN_ATTEMPTS,
+  type PendingTurnJob,
+} from './turn-jobs.ts';
 import type { NormalizedSlackTurn } from './types.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
 import type { FrozenRuntimePlanDecision } from './turn-job-types.ts';
@@ -29,6 +33,7 @@ import type { SlackInteractionIntent } from './interaction-intent.ts';
 import type { SlackInteractionProgressPatch } from '../config/state-rpc.ts';
 import type { SlackContinuityNoticeProgress } from '../config/state-rpc.ts';
 import { ContinuityNoticeDeliveryError } from './continuity-notice.ts';
+import { AgentPromptFailure } from './flue-dispatch.ts';
 
 type MaybePromise<T> = T | Promise<T>;
 
@@ -42,6 +47,10 @@ export interface LedgerSlackTurnStore {
     id: string,
     message: string,
     observation: FlueTurnObservationV1,
+  ): MaybePromise<import('./turn-job-types.ts').FlueDispatchEnvelopeV1>;
+  reconcileFlueExistingInstance(
+    id: string,
+    uid: string,
   ): MaybePromise<import('./turn-job-types.ts').FlueDispatchEnvelopeV1>;
   recordFlueReceipt(id: string, receipt: FlueDispatchReceiptV1): MaybePromise<FlueDispatchReceiptV1>;
   recordFlueSettlement(
@@ -101,7 +110,7 @@ export function createLedgerSlackRunHandler(
       await clearActiveWork(options, job);
       return { kind: 'recovery_required', reasonCode: 'ledger_adapter_unsupported' };
     }
-    const attempt = job.dispatchStartedAt ? Math.max(1, job.attempts) : job.attempts + 1;
+    const attempt = job.attempts + 1;
     if (!job.turn.interactionIntent && job.progress.interactionIntent) {
       job.turn.interactionIntent = job.progress.interactionIntent;
     }
@@ -135,6 +144,8 @@ export function createLedgerSlackRunHandler(
           ...(job.flueSettlement ? { flueSettlement: job.flueSettlement } : {}),
           prepare: (message, observation) =>
             options.turns.prepareFlueDispatch(job.id, message, observation),
+          reconcileExistingInstance: (uid) =>
+            options.turns.reconcileFlueExistingInstance(job.id, uid),
           recordReceipt: (receipt) => options.turns.recordFlueReceipt(job.id, receipt),
           recordSettlement: (settlement) =>
             options.turns.recordFlueSettlement(job.id, settlement),
@@ -168,6 +179,24 @@ export function createLedgerSlackRunHandler(
         },
       });
     } catch (error) {
+      if (error instanceof AgentPromptFailure && error.recoveryRequired) {
+        await clearActiveWork(options, job);
+        return {
+          kind: 'recovery_required',
+          reasonCode: 'flue_dispatch_reconciliation_required',
+        };
+      }
+      if (error instanceof AgentPromptFailure && error.retryable) {
+        if (attempt >= MAX_POST_DISPATCH_ATTEMPTS) {
+          await options.turns.markRecoveryRequired(
+            job.id,
+            'post_dispatch_attempts_exhausted',
+          );
+          await clearActiveWork(options, job);
+          return { kind: 'recovery_required', reasonCode: 'post_dispatch_attempts_exhausted' };
+        }
+        return { kind: 'requeue', reasonCode: 'flue_reattachment_interrupted' };
+      }
       if (error instanceof ContinuityNoticeDeliveryError) {
         if (error.recoveryRequired) {
           await options.turns.markRecoveryRequired(

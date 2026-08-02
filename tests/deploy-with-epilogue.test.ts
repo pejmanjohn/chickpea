@@ -135,7 +135,8 @@ function writeCutoverArtifact(
     : 'SLACK_TAG_LEDGER_CANARY_CHANNELS delivery_receipt_persist_unknown slack_agent_bindings';
   writeFileSync(
     path.join(builtDir, 'index.js'),
-    `scheduled(controller) {} chickpea.response-metadata chickpea-slack-v2 ` +
+    `heartbeat: runRoutineHeartbeat maintenance: runWorkMaintenance ` +
+      `chickpea.response-metadata chickpea-slack-v2 ` +
       `${options.routineAgents === false ? '' : 'chickpea-routine-intent-v2 chickpea-routine-execution-v2 '} ` +
       canarySeams,
   );

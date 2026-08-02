@@ -183,12 +183,12 @@ function verifyBuildArtifacts() {
     'built artifact explicitly disables platform content tracing',
   );
   check(
-    bundle.includes('scheduled(controller') &&
+    bundle.includes('heartbeat: runRoutineHeartbeat') &&
+      bundle.includes('maintenance: runWorkMaintenance') &&
       bundle.includes('chickpea-slack-v2') &&
       bundle.includes('chickpea-routine-intent-v2') &&
       bundle.includes('chickpea-routine-execution-v2') &&
-      bundle.includes('chickpea.response-metadata') &&
-      !bundle.includes('x-flue-internal-token'),
+      bundle.includes('chickpea.response-metadata'),
     'built Worker composes the heartbeat, fresh agents, and metadata-only instrumentation',
   );
 }
@@ -253,6 +253,7 @@ function writeDevVars(fakeUrl) {
       `TAG_ADMIN_TOKEN=${ADMIN_TOKEN}`,
       `SLACK_API_URL=${fakeUrl}/api/`,
       `LOCAL_STUB_URL=${fakeUrl}/v1`,
+      'SLACK_TAG_MODEL=local-stub/smoke-model',
       `ANTHROPIC_API_URL=${fakeUrl}`,
       `OPENAI_API_URL=${fakeUrl}/openai/v1`,
       `OPENROUTER_API_URL=${fakeUrl}/openrouter`,

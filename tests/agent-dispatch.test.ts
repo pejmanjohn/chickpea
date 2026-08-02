@@ -9,7 +9,7 @@ import {
   type SlackFlueDispatchState,
 } from '../src/slack/flue-dispatch.ts';
 import type { AgentInstanceHandle } from '@flue/runtime';
-import { AgentInstanceExistsError } from '@flue/runtime';
+import { AgentInstanceExistsError, AgentInstanceNotFoundError } from '@flue/runtime';
 import type {
   FlueDispatchEnvelopeV1,
   FlueDispatchReceiptV1,
@@ -133,6 +133,10 @@ function state(
 ): SlackFlueDispatchState {
   return {
     prepare: async () => ENVELOPE,
+    reconcileExistingInstance: async (uid) => {
+      const { initialData: _creationData, ...rest } = ENVELOPE;
+      return { ...rest, uid };
+    },
     recordReceipt: async (receipt) => receipt,
     recordSettlement: async (settlement) => settlement,
     markRecoveryRequired: async () => {},
@@ -186,7 +190,7 @@ test('lost dispatch acknowledgment repeats the identical key and adopts the rece
         throw new Error('ack lost');
       },
     }))),
-    /ack lost/,
+    (error: unknown) => error instanceof AgentPromptFailure && error.retryable,
   );
   let recorded: FlueDispatchReceiptV1 | undefined;
   const result = await promptSlackThreadAgent(promptInput(state({
@@ -206,23 +210,79 @@ test('lost dispatch acknowledgment repeats the identical key and adopts the rece
   assert.equal(result.text, 'done');
 });
 
-test('an unrelated pre-existing create-only instance enters recovery immediately', async () => {
+test('a create-only collision adopts the returned uid before retrying admission', async () => {
+  const existingUid = 'inst_01ARZ3NDEKTSV4RRFFQ69G5FAZ';
+  const requests: unknown[] = [];
+  let reconciledUid: string | undefined;
+  let calls = 0;
+  const dispatchState = state({
+    dispatchEnvelope: ENVELOPE,
+    reconcileExistingInstance: async (uid) => {
+      reconciledUid = uid;
+      const { initialData: _creationData, ...rest } = ENVELOPE;
+      return { ...rest, uid };
+    },
+  });
+  const result = await promptSlackThreadAgent(promptInput(dispatchState, handle({
+    async dispatch(request) {
+      requests.push(structuredClone(request));
+      calls += 1;
+      if (calls === 1) {
+        throw new AgentInstanceExistsError({ id: ENVELOPE.instanceId, uid: existingUid });
+      }
+      return { ...RECEIPT, uid: existingUid };
+    },
+  })));
+  assert.equal(result.text, 'done');
+  assert.equal(reconciledUid, existingUid);
+  assert.equal(requests.length, 2);
+  assert.equal('initialData' in (requests[1] as Record<string, unknown>), false);
+  assert.equal(dispatchState.dispatchEnvelope?.uid, existingUid);
+});
+
+test('a transient read interruption retains the receipt and does not checkpoint failure', async () => {
+  let settlements = 0;
+  const dispatchState = state({
+    dispatchEnvelope: ENVELOPE,
+    dispatchReceipt: RECEIPT,
+    recordSettlement: async (settlement) => {
+      settlements += 1;
+      return settlement;
+    },
+  });
+  await assert.rejects(
+    () => promptSlackThreadAgent(promptInput(dispatchState, handle({
+      async read() { throw new TypeError('Network connection lost'); },
+    }))),
+    (error: unknown) => error instanceof AgentPromptFailure && error.retryable,
+  );
+  assert.equal(settlements, 0);
+  assert.equal(dispatchState.flueSettlement, undefined);
+
+  const recovered = await promptSlackThreadAgent(promptInput(dispatchState, handle({})));
+  assert.equal(recovered.text, 'done');
+  assert.equal(settlements, 1);
+});
+
+test('a missing expected instance enters recovery without fabricating a settlement', async () => {
   let reason: string | undefined;
+  let settlements = 0;
   await assert.rejects(
     () => promptSlackThreadAgent(promptInput(state({
       dispatchEnvelope: ENVELOPE,
+      dispatchReceipt: RECEIPT,
+      recordSettlement: async (settlement) => {
+        settlements += 1;
+        return settlement;
+      },
       markRecoveryRequired: async (value) => { reason = value; },
     }), handle({
-      async dispatch() {
-        throw new AgentInstanceExistsError({
-          id: ENVELOPE.instanceId,
-          uid: 'inst_01ARZ3NDEKTSV4RRFFQ69G5FAZ',
-        });
-      },
+      async read() { throw new AgentInstanceNotFoundError({ id: ENVELOPE.instanceId }); },
     }))),
-    (error: unknown) => error instanceof AgentPromptFailure && error.status === 409,
+    (error: unknown) => error instanceof AgentPromptFailure && error.recoveryRequired,
   );
-  assert.equal(reason, 'flue_unexpected_existing_instance');
+  assert.equal(reason, 'flue_expected_instance_missing');
+  assert.equal(settlements, 0);
 });
 
 test('saved receipt reattaches with read and saved settlement skips Flue entirely', async () => {

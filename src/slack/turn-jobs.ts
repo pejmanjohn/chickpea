@@ -23,6 +23,7 @@ import type {
 import type { ResolvedAssignment } from '../config/types.ts';
 import type { StateDb } from '../state/state-db.ts';
 import type { SlackRuntimeDrainCounts } from '../config/state-rpc.ts';
+import type { SlackTurnRecoveryItem } from '../config/state-rpc.ts';
 import type { RunExecutionAuthority } from '../work/types.ts';
 import { CLAIM_TTL_MS } from './state-limits.ts';
 import type { NormalizedSlackTurn } from './types.ts';
@@ -36,9 +37,9 @@ import type { SlackInteractionIntent } from './interaction-intent.ts';
  * the DO's 15-minute wall-time budget instead of the events invocation's ~30s
  * `waitUntil` horizon.
  *
- * This is target-neutral StateDb logic (like the claim/snapshot/settings logic)
- * so it is unit-testable on the node lane, even though only the Cloudflare
- * Durable Object ever enqueues or drains (node runs turns inline — no relay).
+ * This is target-neutral StateDb logic (like the claim/snapshot/settings logic):
+ * Cloudflare drains it from the state Durable Object alarm, while Node drains
+ * the same durable rows from its independent SQLite-backed relay.
  *
  * Delivery guarantees:
  *   - Idempotent enqueue (INSERT OR IGNORE on the message claim key), so the
@@ -53,6 +54,8 @@ import type { SlackInteractionIntent } from './interaction-intent.ts';
 
 /** Attempts (inclusive) the alarm makes to deliver a turn before giving up. */
 export const MAX_TURN_ATTEMPTS = 2;
+/** Dispatched turns may reattach more often, but never hot-loop indefinitely. */
+export const MAX_POST_DISPATCH_ATTEMPTS = 8;
 export const MAX_TURN_DRAIN_BATCH = 16;
 
 // Terminal rows need only outlive Slack's redelivery horizon. Nonterminal rows
@@ -371,6 +374,38 @@ export class TurnJobStoreLogic {
       : undefined;
   }
 
+  /**
+   * A create-only send can prove that the deterministic instance already
+   * exists and return its uid without admitting any work. Persist that
+   * confirmed incarnation before retrying as a continue-only send.
+   */
+  reconcileFlueExistingInstance(id: string, uid: string): FlueDispatchEnvelopeV1 {
+    validateBoundedString(uid, 'Flue instance uid', 200);
+    const existing = this.getDispatchEnvelope(id);
+    if (!existing) throw new Error('Flue dispatch envelope is unavailable.');
+    if (existing.uid === uid && existing.initialData === undefined) return existing;
+    if (existing.uid !== null || existing.initialData === undefined) {
+      this.markRecoveryRequired(id, 'flue_existing_instance_reconciliation_conflict');
+      throw new Error('Flue existing-instance reconciliation conflicts with the checkpoint.');
+    }
+
+    const { initialData: _creationData, ...rest } = existing;
+    const reconciled = parseFlueDispatchEnvelope({ ...rest, uid });
+    const updated = this.db.run(
+      `UPDATE turn_jobs SET dispatch_envelope_json = ?
+       WHERE id = ? AND dispatch_envelope_json = ?
+         AND dispatch_receipt_json IS NULL AND flue_settlement_json IS NULL`,
+      JSON.stringify(reconciled),
+      id,
+      JSON.stringify(existing),
+    );
+    if (updated.changes === 1) return reconciled;
+    const winner = this.getDispatchEnvelope(id);
+    if (winner && sameJson(winner, reconciled)) return winner;
+    this.markRecoveryRequired(id, 'flue_existing_instance_reconciliation_conflict');
+    throw new Error('Flue existing-instance reconciliation lost its compare-and-set race.');
+  }
+
   /** Persist admission before any read begins and pin the contacted incarnation. */
   recordFlueReceipt(id: string, value: FlueDispatchReceiptV1): FlueDispatchReceiptV1 {
     const receipt = parseFlueDispatchReceipt(value);
@@ -641,7 +676,50 @@ export class TurnJobStoreLogic {
            WHERE delivered = 1 AND progress_json LIKE '%"cleanup":"pending"%'`,
         )?.count ?? 0,
       ),
+      recoveryRequiredTurnJobs: Number(
+        this.db.get(
+          `SELECT COUNT(*) AS count FROM turn_jobs
+           WHERE delivered = 0 AND status = 'recovery_required'`,
+        )?.count ?? 0,
+      ),
     };
+  }
+
+  listRecoveryRequired(limit = 50): SlackTurnRecoveryItem[] {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+      throw new Error('Turn recovery limit must be between 1 and 100.');
+    }
+    return this.db.all(
+      `SELECT id, execution_authority, recovery_reason, enqueued_at
+       FROM turn_jobs
+       WHERE delivered = 0 AND status = 'recovery_required'
+       ORDER BY enqueued_at ASC, id ASC LIMIT ?`,
+      limit,
+    ).map((row) => ({
+      id: String(row.id),
+      executionAuthority: row.execution_authority as 'legacy' | 'ledger',
+      reason: String(row.recovery_reason ?? 'operator_reconciliation_required'),
+      enqueuedAt: Number(row.enqueued_at),
+    }));
+  }
+
+  /** Explicit operator terminalization; retained claims continue to dedupe. */
+  resolveRecoveryRequired(id: string): boolean {
+    validateBoundedString(id, 'TurnJob id', 200);
+    return this.db.transaction(() => {
+      const current = this.db.get(
+        `SELECT 1 AS present FROM turn_jobs
+         WHERE id = ? AND delivered = 0 AND status = 'recovery_required'`,
+        id,
+      );
+      if (!current) return false;
+      this.recordTerminalStatus(id, 'error');
+      return this.db.run(
+        `UPDATE turn_jobs SET delivered = 1, status = 'error'
+         WHERE id = ? AND delivered = 0 AND status = 'recovery_required'`,
+        id,
+      ).changes === 1;
+    });
   }
 
   /** Record that an attempt is being made (before running the turn). */

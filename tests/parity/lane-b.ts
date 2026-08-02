@@ -72,6 +72,11 @@ export const laneB: Lane = {
       const store = new SqliteConfigStore(configDbPath, config.configSeed);
       store.close();
       configEnv.SLACK_STATE_DB_PATH = configDbPath;
+      configEnv.LOCAL_STUB_MODELS = config.configSeed.agents
+        .flatMap((agent) => agent.model?.startsWith('local-stub/')
+          ? [agent.model.slice('local-stub/'.length)]
+          : [])
+        .join(',');
     }
 
     const port = await getFreePort();
