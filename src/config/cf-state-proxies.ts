@@ -305,12 +305,15 @@ export class CfSlackStateStore implements SlackStateStore {
     return unwrap(await this.stub.admitSlackTurn(input));
   }
 
-  async putAgentExecutionContext(input: Parameters<SlackStateStore['putAgentExecutionContext']>[0]) {
-    return unwrap(await this.stub.slackAgentExecutionContextPut(input));
+  async pinAgentBinding(
+    input: Parameters<SlackStateStore['pinAgentBinding']>[0],
+    expected?: Parameters<SlackStateStore['pinAgentBinding']>[1],
+  ) {
+    return unwrap(await this.stub.slackAgentBindingPin(input, expected));
   }
 
-  async getAgentExecutionContext(continuityKey: string) {
-    return orUndefined(unwrap(await this.stub.slackAgentExecutionContextGet(continuityKey)));
+  async getAgentBinding(continuityKey: string) {
+    return orUndefined(unwrap(await this.stub.slackAgentBindingGet(continuityKey)));
   }
 
   async runtimeDrainCounts() {

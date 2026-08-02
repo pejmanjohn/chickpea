@@ -145,7 +145,7 @@ function validateLedgerCanaryArtifact() {
   const requiredSeams = [
     'SLACK_TAG_LEDGER_CANARY_CHANNELS',
     'delivery_receipt_persist_unknown',
-    'slack_agent_execution_contexts',
+    'slack_agent_bindings',
   ];
   const missing = requiredSeams.filter((seam) => !bundle.includes(seam));
   if (missing.length) {

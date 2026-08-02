@@ -115,7 +115,7 @@ function writeCanaryArtifact(
     path.join(builtDir, 'index.js'),
     options.complete === false
       ? 'SLACK_TAG_LEDGER_CANARY_CHANNELS'
-      : 'SLACK_TAG_LEDGER_CANARY_CHANNELS delivery_receipt_persist_unknown slack_agent_execution_contexts',
+      : 'SLACK_TAG_LEDGER_CANARY_CHANNELS delivery_receipt_persist_unknown slack_agent_bindings',
   );
 }
 

@@ -10,7 +10,11 @@ import type {
   SlackCanonicalAdmissionInput,
   SlackCanonicalAdmissionResult,
 } from '../slack/claim-store.ts';
-import type { SlackAgentExecutionContext, TurnJob } from '../slack/turn-job-types.ts';
+import type {
+  SlackAgentBinding,
+  SlackAgentBindingExpectation,
+  TurnJob,
+} from '../slack/turn-job-types.ts';
 import type { SlackInteractionIntent } from '../slack/interaction-intent.ts';
 
 export type { TurnJob } from '../slack/turn-job-types.ts';
@@ -191,12 +195,13 @@ export interface TagStateRpc {
   admitSlackTurn(
     input: SlackCanonicalAdmissionInput,
   ): Promise<StateRpcResult<SlackCanonicalAdmissionResult>>;
-  slackAgentExecutionContextPut(
-    input: SlackAgentExecutionContext,
-  ): Promise<StateRpcResult<SlackAgentExecutionContext>>;
-  slackAgentExecutionContextGet(
+  slackAgentBindingPin(
+    input: SlackAgentBinding,
+    expected?: SlackAgentBindingExpectation,
+  ): Promise<StateRpcResult<SlackAgentBinding>>;
+  slackAgentBindingGet(
     continuityKey: string,
-  ): Promise<StateRpcResult<SlackAgentExecutionContext | null>>;
+  ): Promise<StateRpcResult<SlackAgentBinding | null>>;
   slackInteractionProgressRecord(
     id: string,
     patch: SlackInteractionProgressPatch,

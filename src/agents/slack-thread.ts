@@ -63,7 +63,6 @@ import {
   getAgentSnapshotStore,
   getConfigStore,
   getSettingsStore,
-  getSlackStateStore,
   type PlatformEnv,
 } from '../config/state-backend.ts';
 import type { ApiConnectionConfig, RepositoryGrant, SkillConfig } from '../config/types.ts';
@@ -776,21 +775,13 @@ interface SlackAgentAdapterContext {
 
 async function resolveSlackAgentAdapterContext(
   input: SlackAgentRuntimeInput,
-  env: PlatformEnv | undefined,
+  _env: PlatformEnv | undefined,
 ): Promise<SlackAgentAdapterContext> {
-  let parsed: { workspaceId: string; channelId: string; threadTs: string } | undefined;
+  let parsed: { workspaceId: string; channelId: string; threadTs: string };
   try {
     parsed = parseSlackThreadKey(input.id);
   } catch {
-    const persisted = await getSlackStateStore(env).getAgentExecutionContext(input.id);
-    if (!persisted) {
-      throw new Error('Opaque agent execution context is unavailable.');
-    }
-    parsed = {
-      workspaceId: persisted.workspaceId,
-      channelId: persisted.channelId,
-      threadTs: persisted.threadTs,
-    };
+    throw new Error('Legacy Slack agent initialization requires a Slack thread key.');
   }
   const workspaceId = input.workspaceId ?? parsed.workspaceId;
   const channelId = input.channelId ?? parsed.channelId;

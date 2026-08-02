@@ -1,12 +1,17 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
+import {
+  compileRuntimePlanV2,
+  deriveRuntimePlanInstanceId,
+} from '../src/agents/runtime-plan.ts';
 import type { TurnJob } from '../src/config/state-rpc.ts';
 import type { CustomAgentConfig, ResolvedAssignment } from '../src/config/types.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import {
   MAX_TURN_ATTEMPTS,
+  SLACK_AGENT_BINDING_TTL_MS,
   replayTextForTurnProgress,
   TURN_JOB_TTL_MS,
   TurnJobStoreLogic,
@@ -262,26 +267,128 @@ test('runtime drain counts separate turn authorities and pending Slack cleanup',
   });
 });
 
-test('opaque Flue identities resolve through adapter-owned Slack execution context', () => {
+test('runtime plans freeze once and record surface-specific rotation decisions', () => {
   const store = newStore(() => 1_800_000_000_000);
-  const context = {
-    continuityKey: `agent_${'a'.repeat(40)}`,
-    runId: `run_${'b'.repeat(40)}`,
-    workspaceId: 'T_HOME',
-    channelId: 'C_TEAM',
+  const dmTurn = turn({
+    channelId: 'D1',
     threadTs: '1782770100.000100',
-    createdAt: 1_800_000_000_000,
+    sessionThreadTs: 'dm',
+    source: 'dm_message',
+    channelType: 'im',
+    contextMode: 'dm_history',
+  });
+  const dmAssignment = { ...assignment(), channelId: 'D1' };
+  const baseline = compileRuntimePlanV2({
+    turn: dmTurn,
+    assignment: dmAssignment,
+    instructions: 'Frozen instructions.',
+    memoryEpoch: 1,
+    sandboxMode: 'bash',
+  });
+  store.enqueue({
+    ...job('dm-first'),
+    turn: dmTurn,
+    assignment: dmAssignment,
+  });
+  const first = store.freezeRuntimePlan('dm-first', baseline);
+  assert.equal(first.instanceId, deriveRuntimePlanInstanceId(baseline));
+  assert.equal(first.continuityNoticeRequired, false, 'a first conversation is not a rotation');
+
+  const binding = {
+    continuityKey: baseline.conversation.continuityKey,
+    instanceId: first.instanceId,
+    uid: 'inst_01ARZ3NDEKTSV4RRFFQ69G5FAV',
+    updatedAt: 1_800_000_000_000,
   };
-  assert.deepEqual(store.putAgentExecutionContext(context), context);
-  assert.deepEqual(store.getAgentExecutionContext(context.continuityKey), context);
-  assert.throws(
-    () => store.putAgentExecutionContext({ ...context, channelId: 'C_OTHER' }),
-    /another binding or Run/,
+  store.pinAgentBinding(binding);
+
+  const rotated = compileRuntimePlanV2({
+    turn: { ...dmTurn, eventId: 'Ev2', messageTs: '1782770101.000100' },
+    assignment: { ...dmAssignment, model: 'anthropic/claude-haiku-4-5' },
+    instructions: 'Frozen instructions.',
+    memoryEpoch: 1,
+    sandboxMode: 'bash',
+  });
+  store.enqueue({
+    ...job('dm-rotated'),
+    turn: { ...dmTurn, eventId: 'Ev2', messageTs: '1782770101.000100' },
+    assignment: { ...dmAssignment, model: 'anthropic/claude-haiku-4-5' },
+  });
+  const dmDecision = store.freezeRuntimePlan('dm-rotated', rotated);
+  assert.equal(dmDecision.continuityNoticeRequired, true);
+
+  const driftedRetry = compileRuntimePlanV2({
+    turn: dmTurn,
+    assignment: { ...dmAssignment, model: 'local-stub/changed-after-admission' },
+    instructions: 'Changed after admission.',
+    memoryEpoch: 2,
+    sandboxMode: 'cloudflare',
+  });
+  assert.deepEqual(
+    store.freezeRuntimePlan('dm-first', driftedRetry),
+    first,
+    'a retry keeps the first accepted plan and target',
   );
-  assert.throws(
-    () => store.putAgentExecutionContext({ ...context, continuityKey: 'T_HOME:C_TEAM:1.0' }),
-    /continuity key/i,
+
+  const channelPlan = compileRuntimePlanV2({
+    turn: turn(),
+    assignment: assignment(),
+    instructions: 'Channel instructions.',
+    memoryEpoch: 1,
+    sandboxMode: 'bash',
+  });
+  store.pinAgentBinding({
+    continuityKey: channelPlan.conversation.continuityKey,
+    instanceId: `agent_${'c'.repeat(40)}`,
+    uid: 'inst_01ARZ3NDEKTSV4RRFFQ69G5FAA',
+    updatedAt: 1_800_000_000_000,
+  });
+  store.enqueue(job('channel-rotated'));
+  assert.equal(
+    store.freezeRuntimePlan('channel-rotated', channelPlan).continuityNoticeRequired,
+    false,
+    'channel context is reassembled silently',
   );
+});
+
+test('minimal bindings use CAS rotation, reject conflicting uids, and expire after 30 days', () => {
+  let clock = 1_800_000_000_000;
+  const store = newStore(() => clock);
+  const initial = {
+    continuityKey: `agent_${'a'.repeat(40)}`,
+    instanceId: `agent_${'b'.repeat(40)}`,
+    uid: 'inst_01ARZ3NDEKTSV4RRFFQ69G5FAV',
+    updatedAt: clock,
+  };
+  assert.deepEqual(store.pinAgentBinding(initial), initial);
+  assert.deepEqual(store.getAgentBinding(initial.continuityKey), initial);
+
+  clock += 1;
+  assert.throws(
+    () => store.pinAgentBinding({
+      ...initial,
+      uid: 'inst_01ARZ3NDEKTSV4RRFFQ69G5FAW',
+      updatedAt: clock,
+    }),
+    /conflicting uid/i,
+  );
+  const rotated = {
+    ...initial,
+    instanceId: `agent_${'c'.repeat(40)}`,
+    uid: 'inst_01ARZ3NDEKTSV4RRFFQ69G5FAX',
+    updatedAt: clock,
+  };
+  assert.throws(() => store.pinAgentBinding(rotated), /compare-and-set/i);
+  assert.deepEqual(
+    store.pinAgentBinding(rotated, {
+      instanceId: initial.instanceId,
+      uid: initial.uid,
+    }),
+    rotated,
+  );
+
+  clock += SLACK_AGENT_BINDING_TTL_MS + 1;
+  assert.equal(store.getAgentBinding(initial.continuityKey), undefined);
 });
 
 test('existing turn job tables gain progress storage without losing pending rows', () => {
@@ -317,6 +424,13 @@ test('existing turn job tables gain progress storage without losing pending rows
     assert.equal(pending[0]?.id, 'before-migration');
     assert.equal(pending[0]?.executionAuthority, 'legacy');
     assert.deepEqual(pending[0]?.progress, {});
+    const bindingColumns = db.all('PRAGMA table_info(slack_agent_bindings)')
+      .map((column) => String(column.name));
+    assert.deepEqual(bindingColumns, ['continuity_key', 'instance_id', 'uid', 'updated_at']);
+    assert.equal(
+      db.get("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'slack_agent_execution_contexts'"),
+      undefined,
+    );
   } finally {
     db.close();
   }

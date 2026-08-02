@@ -31,6 +31,8 @@ let lastMemoryRetentionCleanupAt = Number.NEGATIVE_INFINITY;
 
 export interface PreparedMemoryTurn {
   conversationKey: string;
+  /** Stable transcript epoch compiled into RuntimePlanV2 before dispatch. */
+  memoryEpoch: number;
   promptBlock?: string;
   selection?: MemorySelection;
   footerItems: string[];
@@ -150,6 +152,7 @@ export async function prepareMemoryTurn(input: {
     });
     return {
       conversationKey: memoryEpochThreadKey(baseKey, context.epoch),
+      memoryEpoch: context.epoch,
       ...(promptBlock ? { promptBlock } : {}),
       selection,
       footerItems,
@@ -182,6 +185,7 @@ export async function prepareMemoryTurn(input: {
         Number.MAX_SAFE_INTEGER,
       ),
       conversationKey: memoryQuarantineThreadKey(baseKey, input.turn.eventId),
+      memoryEpoch: Number.MAX_SAFE_INTEGER,
     };
   }
 }
@@ -520,6 +524,7 @@ function memoryFree(
 ): PreparedMemoryTurn {
   return {
     conversationKey,
+    memoryEpoch: 1,
     footerItems: [],
     visibilityBarrierAt,
     validateLease: async () => true,

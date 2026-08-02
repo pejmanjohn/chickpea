@@ -3,7 +3,17 @@ import type {
   TurnProgress,
   TurnPullRequestProgress,
 } from '../config/state-rpc.ts';
-import type { SlackAgentExecutionContext, TurnJob } from './turn-job-types.ts';
+import {
+  deriveRuntimePlanInstanceId,
+  parseRuntimePlanV2,
+  type RuntimePlanV2,
+} from '../agents/runtime-plan.ts';
+import type {
+  FrozenRuntimePlanDecision,
+  SlackAgentBinding,
+  SlackAgentBindingExpectation,
+  TurnJob,
+} from './turn-job-types.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
 import type { StateDb } from '../state/state-db.ts';
 import type { SlackRuntimeDrainCounts } from '../config/state-rpc.ts';
@@ -44,6 +54,7 @@ export const MAX_TURN_DRAIN_BATCH = 16;
 // redelivers the originating event, so neither the idempotency key nor the
 // delivered tombstone can still matter.
 export const TURN_JOB_TTL_MS = CLAIM_TTL_MS;
+export const SLACK_AGENT_BINDING_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
 
 /** A pending job the alarm should run, decoded from its row. */
 export interface PendingTurnJob {
@@ -57,6 +68,9 @@ export interface PendingTurnJob {
   /** Deliveries already attempted (0 before the alarm has ever run it). */
   attempts: number;
   progress: TurnProgress;
+  runtimePlan?: RuntimePlanV2;
+  agentInstanceId?: string;
+  continuityNoticeRequired?: boolean;
 }
 
 interface TurnJobRow {
@@ -69,6 +83,9 @@ interface TurnJobRow {
   execution_authority: RunExecutionAuthority;
   attempts: number;
   progress_json: string;
+  runtime_plan_json?: string | null;
+  agent_instance_id?: string | null;
+  continuity_notice_required?: number | null;
 }
 
 export class TurnJobStoreLogic {
@@ -89,6 +106,9 @@ export class TurnJobStoreLogic {
         delivered INTEGER NOT NULL DEFAULT 0,
         status TEXT NOT NULL DEFAULT 'pending',
         progress_json TEXT NOT NULL DEFAULT '{}',
+        runtime_plan_json TEXT,
+        agent_instance_id TEXT,
+        continuity_notice_required INTEGER,
         enqueued_at INTEGER NOT NULL
       )`,
     );
@@ -102,16 +122,27 @@ export class TurnJobStoreLogic {
     if (!columns.some((column) => column.name === 'execution_authority')) {
       db.exec("ALTER TABLE turn_jobs ADD COLUMN execution_authority TEXT NOT NULL DEFAULT 'legacy'");
     }
+    if (!columns.some((column) => column.name === 'runtime_plan_json')) {
+      db.exec('ALTER TABLE turn_jobs ADD COLUMN runtime_plan_json TEXT');
+    }
+    if (!columns.some((column) => column.name === 'agent_instance_id')) {
+      db.exec('ALTER TABLE turn_jobs ADD COLUMN agent_instance_id TEXT');
+    }
+    if (!columns.some((column) => column.name === 'continuity_notice_required')) {
+      db.exec('ALTER TABLE turn_jobs ADD COLUMN continuity_notice_required INTEGER');
+    }
     db.exec(
-      `CREATE TABLE IF NOT EXISTS slack_agent_execution_contexts (
+      `CREATE TABLE IF NOT EXISTS slack_agent_bindings (
         continuity_key TEXT PRIMARY KEY,
-        run_id TEXT NOT NULL,
-        workspace_id TEXT NOT NULL,
-        channel_id TEXT NOT NULL,
-        thread_ts TEXT NOT NULL,
-        created_at INTEGER NOT NULL
+        instance_id TEXT NOT NULL,
+        uid TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
       )`,
     );
+    // This ephemeral beta bridge mixed per-turn Slack coordinates with Flue
+    // identity. RuntimePlanV2 now carries immutable coordinates and the binding
+    // table is the sole long-lived incarnation pin.
+    db.exec('DROP TABLE IF EXISTS slack_agent_execution_contexts');
   }
 
   /**
@@ -148,7 +179,8 @@ export class TurnJobStoreLogic {
     }
     const rows = this.db.all(
       `SELECT id, evt_key, msg_key, turn_json, assignment_json, run_id,
-              execution_authority, attempts, progress_json
+              execution_authority, attempts, progress_json, runtime_plan_json,
+              agent_instance_id, continuity_notice_required
        FROM turn_jobs
        WHERE delivered = 0 AND execution_authority = ?
        ORDER BY enqueued_at LIMIT ?`,
@@ -171,7 +203,8 @@ export class TurnJobStoreLogic {
   getPendingByRunId(runId: string): PendingTurnJob | undefined {
     const row = this.db.get(
       `SELECT id, evt_key, msg_key, turn_json, assignment_json, run_id,
-              execution_authority, attempts, progress_json
+              execution_authority, attempts, progress_json, runtime_plan_json,
+              agent_instance_id, continuity_notice_required
        FROM turn_jobs
        WHERE delivered = 0 AND execution_authority = 'ledger' AND run_id = ?
        LIMIT 1`,
@@ -180,41 +213,129 @@ export class TurnJobStoreLogic {
     return row ? this.decodeRow(row) : undefined;
   }
 
-  putAgentExecutionContext(input: SlackAgentExecutionContext): SlackAgentExecutionContext {
-    validateAgentExecutionContext(input);
-    this.purgeExpired();
-    this.db.run(
-      `INSERT OR IGNORE INTO slack_agent_execution_contexts (
-        continuity_key, run_id, workspace_id, channel_id, thread_ts, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?)`,
-      input.continuityKey,
-      input.runId,
-      input.workspaceId,
-      input.channelId,
-      input.threadTs,
-      input.createdAt,
-    );
-    const persisted = this.getAgentExecutionContext(input.continuityKey);
-    if (!persisted || !sameAgentExecutionContext(persisted, input)) {
-      throw new Error('Slack agent execution context identity belongs to another binding or Run.');
-    }
-    return persisted;
+  /** First successful write owns the plan and target for every later retry. */
+  freezeRuntimePlan(id: string, candidate: RuntimePlanV2): FrozenRuntimePlanDecision {
+    const plan = parseRuntimePlanV2(candidate);
+    return this.db.transaction(() => {
+      const current = this.getFrozenRuntimePlan(id);
+      if (current) return current;
+      const instanceId = deriveRuntimePlanInstanceId(plan);
+      const binding = this.getAgentBinding(plan.conversation.continuityKey);
+      const continuityNoticeRequired = Boolean(
+        binding &&
+        binding.instanceId !== instanceId &&
+        plan.conversation.surface !== 'channel_thread',
+      );
+      const updated = this.db.run(
+        `UPDATE turn_jobs
+         SET runtime_plan_json = ?, agent_instance_id = ?, continuity_notice_required = ?
+         WHERE id = ? AND runtime_plan_json IS NULL`,
+        JSON.stringify(plan),
+        instanceId,
+        continuityNoticeRequired ? 1 : 0,
+        id,
+      );
+      if (updated.changes !== 1) {
+        const winner = this.getFrozenRuntimePlan(id);
+        if (winner) return winner;
+        throw new Error('TurnJob is unavailable for RuntimePlanV2 freeze.');
+      }
+      return { runtimePlan: plan, instanceId, continuityNoticeRequired };
+    });
   }
 
-  getAgentExecutionContext(continuityKey: string): SlackAgentExecutionContext | undefined {
+  getFrozenRuntimePlan(id: string): FrozenRuntimePlanDecision | undefined {
     const row = this.db.get(
-      `SELECT continuity_key, run_id, workspace_id, channel_id, thread_ts, created_at
-       FROM slack_agent_execution_contexts WHERE continuity_key = ?`,
+      `SELECT runtime_plan_json, agent_instance_id, continuity_notice_required
+       FROM turn_jobs WHERE id = ?`,
+      id,
+    );
+    if (!row?.runtime_plan_json) return undefined;
+    const runtimePlan = parseRuntimePlanV2(JSON.parse(String(row.runtime_plan_json)));
+    const instanceId = validateOpaqueAgentId(row.agent_instance_id, 'instance id');
+    return {
+      runtimePlan,
+      instanceId,
+      continuityNoticeRequired: Number(row.continuity_notice_required) === 1,
+    };
+  }
+
+  /**
+   * Pin a successful Flue incarnation. Revisions use explicit compare-and-set
+   * so an older in-flight turn cannot overwrite a newer conversation binding.
+   */
+  pinAgentBinding(
+    input: SlackAgentBinding,
+    expected?: SlackAgentBindingExpectation,
+  ): SlackAgentBinding {
+    validateAgentBinding(input);
+    if (expected) validateAgentBindingExpectation(expected);
+    this.purgeExpired();
+    return this.db.transaction(() => {
+      const current = this.readAgentBinding(input.continuityKey);
+      if (!current) {
+        if (expected) {
+          throw new Error('Slack agent binding compare-and-set target is missing.');
+        }
+        this.db.run(
+          `INSERT INTO slack_agent_bindings (continuity_key, instance_id, uid, updated_at)
+           VALUES (?, ?, ?, ?)`,
+          input.continuityKey,
+          input.instanceId,
+          input.uid,
+          input.updatedAt,
+        );
+        return input;
+      }
+      if (current.instanceId === input.instanceId) {
+        if (current.uid !== input.uid) {
+          throw new Error('Slack agent binding has a conflicting uid for this instance.');
+        }
+        this.db.run(
+          'UPDATE slack_agent_bindings SET updated_at = ? WHERE continuity_key = ?',
+          Math.max(current.updatedAt, input.updatedAt),
+          input.continuityKey,
+        );
+        return this.readAgentBinding(input.continuityKey)!;
+      }
+      if (
+        !expected ||
+        current.instanceId !== expected.instanceId ||
+        current.uid !== expected.uid
+      ) {
+        throw new Error('Slack agent binding rotation requires a matching compare-and-set value.');
+      }
+      this.db.run(
+        `UPDATE slack_agent_bindings
+         SET instance_id = ?, uid = ?, updated_at = ?
+         WHERE continuity_key = ?`,
+        input.instanceId,
+        input.uid,
+        input.updatedAt,
+        input.continuityKey,
+      );
+      return input;
+    });
+  }
+
+  getAgentBinding(continuityKey: string): SlackAgentBinding | undefined {
+    validateOpaqueAgentId(continuityKey, 'continuity key');
+    this.purgeExpired();
+    return this.readAgentBinding(continuityKey);
+  }
+
+  private readAgentBinding(continuityKey: string): SlackAgentBinding | undefined {
+    const row = this.db.get(
+      `SELECT continuity_key, instance_id, uid, updated_at
+       FROM slack_agent_bindings WHERE continuity_key = ?`,
       continuityKey,
     );
     return row
       ? {
           continuityKey: String(row.continuity_key),
-          runId: String(row.run_id),
-          workspaceId: String(row.workspace_id),
-          channelId: String(row.channel_id),
-          threadTs: String(row.thread_ts),
-          createdAt: Number(row.created_at),
+          instanceId: String(row.instance_id),
+          uid: String(row.uid),
+          updatedAt: Number(row.updated_at),
         }
       : undefined;
   }
@@ -366,7 +487,8 @@ export class TurnJobStoreLogic {
     }
     const rows = this.db.all(
       `SELECT id, evt_key, msg_key, turn_json, assignment_json, run_id,
-              execution_authority, attempts, progress_json
+              execution_authority, attempts, progress_json, runtime_plan_json,
+              agent_instance_id, continuity_notice_required
        FROM turn_jobs
        WHERE delivered = 1 AND progress_json LIKE '%\"cleanup\":\"pending\"%'
        ORDER BY enqueued_at LIMIT ?`,
@@ -403,8 +525,8 @@ export class TurnJobStoreLogic {
   private purgeExpired(): void {
     this.db.run('DELETE FROM turn_jobs WHERE enqueued_at < ?', this.now() - TURN_JOB_TTL_MS);
     this.db.run(
-      'DELETE FROM slack_agent_execution_contexts WHERE created_at < ?',
-      this.now() - TURN_JOB_TTL_MS,
+      'DELETE FROM slack_agent_bindings WHERE updated_at < ?',
+      this.now() - SLACK_AGENT_BINDING_TTL_MS,
     );
   }
 
@@ -428,43 +550,43 @@ export class TurnJobStoreLogic {
       executionAuthority: row.execution_authority,
       attempts: Number(row.attempts),
       progress: parseTurnProgress(row.progress_json),
+      ...(row.runtime_plan_json
+        ? { runtimePlan: parseRuntimePlanV2(JSON.parse(row.runtime_plan_json)) }
+        : {}),
+      ...(row.agent_instance_id ? { agentInstanceId: row.agent_instance_id } : {}),
+      ...(row.continuity_notice_required === null || row.continuity_notice_required === undefined
+        ? {}
+        : { continuityNoticeRequired: Number(row.continuity_notice_required) === 1 }),
     };
   }
 }
 
-function validateAgentExecutionContext(input: SlackAgentExecutionContext): void {
-  if (!/^agent_[a-f0-9]{40}$/.test(input.continuityKey)) {
-    throw new Error('Slack agent continuity key is invalid.');
-  }
-  if (!/^run_[a-f0-9]{40}$/.test(input.runId)) {
-    throw new Error('Slack agent Run identity is invalid.');
-  }
-  for (const [label, value] of [
-    ['workspace', input.workspaceId],
-    ['channel', input.channelId],
-  ] as const) {
-    if (!/^[A-Za-z0-9_-]{2,80}$/.test(value)) {
-      throw new Error(`Slack agent ${label} identity is invalid.`);
-    }
-  }
-  if (!/^\d{1,20}\.\d{1,10}$/.test(input.threadTs)) {
-    throw new Error('Slack agent thread timestamp is invalid.');
-  }
-  if (!Number.isSafeInteger(input.createdAt) || input.createdAt < 0) {
-    throw new Error('Slack agent context creation time is invalid.');
+function validateAgentBinding(input: SlackAgentBinding): void {
+  validateOpaqueAgentId(input.continuityKey, 'continuity key');
+  validateOpaqueAgentId(input.instanceId, 'instance id');
+  validateFlueInstanceUid(input.uid);
+  if (!Number.isSafeInteger(input.updatedAt) || input.updatedAt < 0) {
+    throw new Error('Slack agent binding update time is invalid.');
   }
 }
 
-function sameAgentExecutionContext(
-  left: SlackAgentExecutionContext,
-  right: SlackAgentExecutionContext,
-): boolean {
-  return left.continuityKey === right.continuityKey &&
-    left.runId === right.runId &&
-    left.workspaceId === right.workspaceId &&
-    left.channelId === right.channelId &&
-    left.threadTs === right.threadTs &&
-    left.createdAt === right.createdAt;
+function validateAgentBindingExpectation(input: SlackAgentBindingExpectation): void {
+  validateOpaqueAgentId(input.instanceId, 'expected instance id');
+  validateFlueInstanceUid(input.uid);
+}
+
+function validateOpaqueAgentId(value: unknown, label: string): string {
+  if (typeof value !== 'string' || !/^agent_[a-f0-9]{40}$/.test(value)) {
+    throw new Error(`Slack agent ${label} is invalid.`);
+  }
+  return value;
+}
+
+function validateFlueInstanceUid(value: unknown): string {
+  if (typeof value !== 'string' || !/^inst_[0-9A-HJKMNP-TV-Z]{26}$/.test(value)) {
+    throw new Error('Slack agent binding uid is invalid.');
+  }
+  return value;
 }
 
 export function replayTextForTurnProgress(progress: TurnProgress): string | undefined {

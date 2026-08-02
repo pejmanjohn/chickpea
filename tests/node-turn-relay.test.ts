@@ -6,6 +6,7 @@ import { test } from 'node:test';
 
 import type { WebClient } from '@slack/web-api';
 
+import { deriveRuntimePlanInstanceId } from '../src/agents/runtime-plan.ts';
 import type { ResolvedAssignment } from '../src/config/types.ts';
 import { SqliteSlackStateStore, type SlackStateStore } from '../src/slack/claim-store.ts';
 import type { LedgerSlackTurnExecutor } from '../src/slack/ledger-turn-driver.ts';
@@ -25,6 +26,11 @@ test('a wake admitted during a Node drain starts a follow-up drain immediately',
   const holdFirst = new Promise<void>((resolve) => { releaseFirst = resolve; });
   const state = {
     listPendingTurns: async () => [...jobs],
+    freezeRuntimePlan: async (_id: string, runtimePlan: Parameters<typeof deriveRuntimePlanInstanceId>[0]) => ({
+      runtimePlan,
+      instanceId: deriveRuntimePlanInstanceId(runtimePlan),
+      continuityNoticeRequired: false,
+    }),
     recordTurnAttempt: async () => true,
     recordInteractionIntent: async () => undefined,
     recordSlackInteractionProgress: async () => undefined,

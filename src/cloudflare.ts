@@ -655,15 +655,16 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     );
   }
 
-  async slackAgentExecutionContextPut(
-    input: Parameters<TagStateRpc['slackAgentExecutionContextPut']>[0],
+  async slackAgentBindingPin(
+    input: Parameters<TagStateRpc['slackAgentBindingPin']>[0],
+    expected?: Parameters<TagStateRpc['slackAgentBindingPin']>[1],
   ) {
-    return this.call((stores) => stores.turnJobs.putAgentExecutionContext(input));
+    return this.call((stores) => stores.turnJobs.pinAgentBinding(input, expected));
   }
 
-  async slackAgentExecutionContextGet(continuityKey: string) {
+  async slackAgentBindingGet(continuityKey: string) {
     return this.call((stores) =>
-      stores.turnJobs.getAgentExecutionContext(continuityKey) ?? null,
+      stores.turnJobs.getAgentBinding(continuityKey) ?? null,
     );
   }
 
@@ -930,8 +931,16 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           // identity retains its marker, so a later alarm can try again.
           return undefined;
         };
-        const replayText =
+      const replayText =
           replayTextForTurnProgress(job.progress) ?? (await persistSandboxProgress());
+        const runtimePlanDecision = job.runtimePlan && job.agentInstanceId &&
+            job.continuityNoticeRequired !== undefined
+          ? {
+              runtimePlan: job.runtimePlan,
+              instanceId: job.agentInstanceId,
+              continuityNoticeRequired: job.continuityNoticeRequired,
+            }
+          : undefined;
         await runTurn(job.turn, job.assignment, this.env as PlatformEnv, {
           client,
           turnId: job.id,
@@ -940,6 +949,8 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           workStore: stores.work as unknown as WorkStore,
           settingsStore: localSettingsStore(stores),
           usageStore,
+          ...(runtimePlanDecision ? { runtimePlanDecision } : {}),
+          onRuntimePlan: (candidate) => stores.turnJobs.freezeRuntimePlan(job.id, candidate),
           onUsagePersistence: (event) => {
             stores.turnJobs.recordUsagePersistence(job.id, event);
           },

@@ -12,7 +12,12 @@ import {
   type PendingTurnJob,
 } from './turn-jobs.ts';
 import type { TurnJob } from './turn-job-types.ts';
-import type { SlackAgentExecutionContext } from './turn-job-types.ts';
+import type {
+  FrozenRuntimePlanDecision,
+  SlackAgentBinding,
+  SlackAgentBindingExpectation,
+} from './turn-job-types.ts';
+import type { RuntimePlanV2 } from '../agents/runtime-plan.ts';
 import type { SlackInteractionIntent } from './interaction-intent.ts';
 import { ACTIVE_WORK_TTL_MS, CLAIM_TTL_MS, THREAD_TTL_MS } from './state-limits.ts';
 
@@ -69,16 +74,19 @@ export interface SlackThreadRegistry {
 /** The combined claims + thread-registry surface the Slack channel consumes. */
 export interface SlackStateStore extends SlackClaimStore, SlackThreadRegistry {
   admitCanonical(input: SlackCanonicalAdmissionInput): Promise<SlackCanonicalAdmissionResult>;
-  putAgentExecutionContext(
-    input: SlackAgentExecutionContext,
-  ): Promise<SlackAgentExecutionContext>;
-  getAgentExecutionContext(
-    continuityKey: string,
-  ): Promise<SlackAgentExecutionContext | undefined>;
+  pinAgentBinding(
+    input: SlackAgentBinding,
+    expected?: SlackAgentBindingExpectation,
+  ): Promise<SlackAgentBinding>;
+  getAgentBinding(continuityKey: string): Promise<SlackAgentBinding | undefined>;
   runtimeDrainCounts(): Promise<SlackRuntimeDrainCounts>;
   /** Node-only durable legacy relay operations; Cloudflare owns these in its DO alarm. */
   listPendingTurns?(): Promise<PendingTurnJob[]>;
   getPendingTurnByRunId?(runId: string): Promise<PendingTurnJob | undefined>;
+  freezeRuntimePlan?(
+    id: string,
+    candidate: RuntimePlanV2,
+  ): Promise<FrozenRuntimePlanDecision>;
   recordTurnAttempt?(id: string, attempts: number): Promise<void>;
   recordInteractionIntent?(id: string, intent: SlackInteractionIntent): Promise<void>;
   recordSlackInteractionProgress?(
@@ -301,12 +309,12 @@ export class SqliteSlackStateStore implements SlackStateStore {
     return this.logic.admitCanonical(input, this.work, this.turnJobs);
   }
 
-  async putAgentExecutionContext(input: SlackAgentExecutionContext) {
-    return this.turnJobs.putAgentExecutionContext(input);
+  async pinAgentBinding(input: SlackAgentBinding, expected?: SlackAgentBindingExpectation) {
+    return this.turnJobs.pinAgentBinding(input, expected);
   }
 
-  async getAgentExecutionContext(continuityKey: string) {
-    return this.turnJobs.getAgentExecutionContext(continuityKey);
+  async getAgentBinding(continuityKey: string) {
+    return this.turnJobs.getAgentBinding(continuityKey);
   }
 
   async runtimeDrainCounts() {
@@ -319,6 +327,10 @@ export class SqliteSlackStateStore implements SlackStateStore {
 
   async getPendingTurnByRunId(runId: string) {
     return this.turnJobs.getPendingByRunId(runId);
+  }
+
+  async freezeRuntimePlan(id: string, candidate: RuntimePlanV2) {
+    return this.turnJobs.freezeRuntimePlan(id, candidate);
   }
 
   async recordTurnAttempt(id: string, attempts: number) {

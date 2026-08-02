@@ -17,7 +17,8 @@ import {
 import { MAX_TURN_ATTEMPTS, type PendingTurnJob } from './turn-jobs.ts';
 import type { NormalizedSlackTurn } from './types.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
-import type { SlackAgentExecutionContext } from './turn-job-types.ts';
+import type { FrozenRuntimePlanDecision } from './turn-job-types.ts';
+import type { RuntimePlanV2 } from '../agents/runtime-plan.ts';
 import { slackThreadKey } from './thread-key.ts';
 import type { SlackInteractionIntent } from './interaction-intent.ts';
 import type { SlackInteractionProgressPatch } from '../config/state-rpc.ts';
@@ -26,9 +27,10 @@ type MaybePromise<T> = T | Promise<T>;
 
 export interface LedgerSlackTurnStore {
   getPendingByRunId(runId: string): MaybePromise<PendingTurnJob | undefined>;
-  putAgentExecutionContext(
-    input: SlackAgentExecutionContext,
-  ): MaybePromise<SlackAgentExecutionContext>;
+  freezeRuntimePlan(
+    id: string,
+    candidate: RuntimePlanV2,
+  ): MaybePromise<FrozenRuntimePlanDecision>;
   recordAttempt(id: string, attempts: number): MaybePromise<void>;
   recordInteractionIntent(id: string, intent: SlackInteractionIntent): MaybePromise<unknown>;
   recordSlackInteractionProgress(
@@ -86,18 +88,14 @@ export function createLedgerSlackRunHandler(
     if (claim.phase === 'delivery') {
       return deliverPersistedResponse(options, claim, job, client, attempt, now);
     }
-    const continuityKey = ledgerSlackContinuityKey(
-      claim.run.id,
-      claim.fencingToken,
-    );
-    await options.turns.putAgentExecutionContext({
-      continuityKey,
-      runId: claim.run.id,
-      workspaceId: job.turn.workspaceId,
-      channelId: job.turn.channelId,
-      threadTs: job.turn.sessionThreadTs ?? job.turn.threadTs,
-      createdAt: now(),
-    });
+    const runtimePlanDecision = job.runtimePlan && job.agentInstanceId &&
+        job.continuityNoticeRequired !== undefined
+      ? {
+          runtimePlan: job.runtimePlan,
+          instanceId: job.agentInstanceId,
+          continuityNoticeRequired: job.continuityNoticeRequired,
+        }
+      : undefined;
     try {
       await executeTurn(job.turn, job.assignment, options.platformEnv, {
         client,
@@ -107,7 +105,8 @@ export function createLedgerSlackRunHandler(
         runAttempt: claim.fencingToken,
         runFencingToken: claim.fencingToken,
         executionAuthority: 'ledger',
-        continuityKey,
+        ...(runtimePlanDecision ? { runtimePlanDecision } : {}),
+        onRuntimePlan: (candidate) => options.turns.freezeRuntimePlan(job.id, candidate),
         workStore: options.work,
         ...(options.settingsStore ? { settingsStore: options.settingsStore } : {}),
         ...(options.usageStore ? { usageStore: options.usageStore } : {}),
@@ -144,13 +143,6 @@ export function createLedgerSlackRunHandler(
     }
     return classifyExecutionFailure(options, claim, job, attempt, now);
   };
-}
-
-export function ledgerSlackContinuityKey(
-  runId: string,
-  fencingToken: number,
-): string {
-  return opaqueId('agent', `${runId}:continuity:${fencingToken}`);
 }
 
 async function deliverPersistedResponse(

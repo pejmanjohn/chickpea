@@ -1,5 +1,11 @@
 import { WebClient } from '@slack/web-api';
 
+import {
+  compileRuntimePlanV2,
+  deriveRuntimePlanInstanceId,
+  type RuntimePlanV2,
+} from '../agents/runtime-plan.ts';
+import { effectiveSlackInstructions } from '../config/effective-config.ts';
 import { resolveAgentModel } from '../config/model-policy.ts';
 import { getGithubConnection } from '../config/github-app.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
@@ -36,6 +42,7 @@ import { registerSlackStatusTurn } from './status-registry.ts';
 import type { SlackTurnContext } from './thread-context.ts';
 import { slackThreadKey } from './thread-key.ts';
 import type { NormalizedSlackTurn } from './types.ts';
+import type { FrozenRuntimePlanDecision } from './turn-job-types.ts';
 import { selectSandbox } from '../sandbox/select.ts';
 import {
   assembleSlackPrompt,
@@ -163,6 +170,12 @@ export interface RunTurnOptions {
   executionAuthority?: RunExecutionAuthority;
   /** Opaque Flue continuity identity, independent of Slack/memory coordinates. */
   continuityKey?: string;
+  /** First-write-wins decision restored from a prior durable attempt. */
+  runtimePlanDecision?: FrozenRuntimePlanDecision;
+  /** Persist the first complete plan before the agent dispatch boundary. */
+  onRuntimePlan?: (
+    candidate: RuntimePlanV2,
+  ) => FrozenRuntimePlanDecision | Promise<FrozenRuntimePlanDecision>;
   /** Local override avoids a Durable Object calling its own Work RPC. */
   workStore?: WorkStore;
   /** Local override avoids a Durable Object calling its own settings RPC. */
@@ -283,6 +296,17 @@ export async function runTurn(
     ? undefined
     : await prepareMemoryTurn({ turn, platformEnv, client });
   const conversationKey = preparedMemory?.conversationKey ?? slackThreadKey(turn);
+  const runtimePlanDecision = options.runtimePlanDecision ?? (
+    preparedMemory
+      ? await freezeRuntimePlanForTurn({
+          turn,
+          assignment,
+          platformEnv,
+          memoryEpoch: preparedMemory.memoryEpoch,
+          ...(options.onRuntimePlan ? { persist: options.onRuntimePlan } : {}),
+        })
+      : undefined
+  );
   const agentConversationKey = options.continuityKey ?? conversationKey;
   const workLifecycle = options.runId && options.replayText === undefined && resolvedModel
     ? await createSlackShadowLifecycle({
@@ -293,7 +317,10 @@ export async function runTurn(
           : { fencingToken: options.runFencingToken }),
         assignment,
         canonicalModel: resolvedModel,
-        flueInstanceRef: opaqueId('flueinstance', agentConversationKey),
+        flueInstanceRef: opaqueId(
+          'flueinstance',
+          runtimePlanDecision?.instanceId ?? agentConversationKey,
+        ),
         platformEnv,
         ...(options.workStore ? { workStore: options.workStore } : {}),
         ...(options.settingsStore ? { settingsStore: options.settingsStore } : {}),
@@ -572,7 +599,9 @@ export async function runTurn(
         void statusTurn.setStatus(modelStatus(resolvedModel));
       }
       try {
-        usedCloudflareSandbox = await shouldUseCloudflareSandbox(assignment, platformEnv);
+        usedCloudflareSandbox = runtimePlanDecision
+          ? runtimePlanDecision.runtimePlan.sandbox.mode === 'cloudflare'
+          : await shouldUseCloudflareSandbox(assignment, platformEnv);
         agentResult = await (options.agentPrompt ?? promptSlackThreadAgent)(
           agentConversationKey,
           executionPrompt,
@@ -879,6 +908,62 @@ export async function shouldUseCloudflareSandbox(
     // Avoid touching a container when its policy cannot be established here.
     return false;
   }
+}
+
+async function freezeRuntimePlanForTurn(input: {
+  turn: NormalizedSlackTurn;
+  assignment: ResolvedAssignment;
+  platformEnv: PlatformEnv | undefined;
+  memoryEpoch: number;
+  persist?: (candidate: RuntimePlanV2) => FrozenRuntimePlanDecision | Promise<FrozenRuntimePlanDecision>;
+}): Promise<FrozenRuntimePlanDecision> {
+  const sandboxMode = await resolveRuntimePlanSandboxMode(
+    input.assignment,
+    input.platformEnv,
+  );
+  const instructions =
+    'instructions' in input.assignment && typeof input.assignment.instructions === 'string'
+      ? input.assignment.instructions
+      : effectiveSlackInstructions(input.assignment);
+  const candidate = compileRuntimePlanV2({
+    turn: input.turn,
+    assignment: input.assignment,
+    instructions,
+    memoryEpoch: input.memoryEpoch,
+    sandboxMode,
+  });
+  const decision = input.persist
+    ? await input.persist(candidate)
+    : {
+        runtimePlan: candidate,
+        instanceId: deriveRuntimePlanInstanceId(candidate),
+        continuityNoticeRequired: false,
+      };
+  if (
+    decision.runtimePlan.conversation.continuityKey !==
+    candidate.conversation.continuityKey
+  ) {
+    throw new Error('Frozen RuntimePlanV2 belongs to another Slack conversation.');
+  }
+  return decision;
+}
+
+async function resolveRuntimePlanSandboxMode(
+  assignment: ResolvedAssignment,
+  env: PlatformEnv | undefined,
+): Promise<'bash' | 'cloudflare'> {
+  if (!isCloudflareTarget()) return 'bash';
+  const settingsStore = getSettingsStore(env);
+  const [settings, connection] = await Promise.all([
+    resolveSandboxSettings(settingsStore),
+    getGithubConnection(settingsStore),
+  ]);
+  return selectSandbox({
+    target: 'cloudflare',
+    enabled: settings.enabled,
+    appConnected: connection.mode === 'app',
+    repositoryGrants: assignment.agent.repositories ?? [],
+  });
 }
 
 export const MEMORY_CHANGED_RETRY_TEXT =

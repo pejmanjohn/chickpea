@@ -80,6 +80,7 @@ export async function drainNodeTurnRelayOnce(
   const executeTurn = options.executeTurn ?? runTurn;
   if (
     state.listPendingTurns &&
+    state.freezeRuntimePlan &&
     state.recordTurnAttempt &&
     state.recordInteractionIntent &&
     state.recordSlackInteractionProgress &&
@@ -87,6 +88,7 @@ export async function drainNodeTurnRelayOnce(
     state.discardTurn
   ) {
     const listPendingTurns = state.listPendingTurns.bind(state);
+    const freezeRuntimePlan = state.freezeRuntimePlan.bind(state);
     const recordTurnAttempt = state.recordTurnAttempt.bind(state);
     const recordInteractionIntent = state.recordInteractionIntent.bind(state);
     const recordSlackInteractionProgress = state.recordSlackInteractionProgress.bind(state);
@@ -103,10 +105,20 @@ export async function drainNodeTurnRelayOnce(
         : undefined;
       await recordTurnAttempt(job.id, attempt);
       try {
+        const runtimePlanDecision = job.runtimePlan && job.agentInstanceId &&
+            job.continuityNoticeRequired !== undefined
+          ? {
+              runtimePlan: job.runtimePlan,
+              instanceId: job.agentInstanceId,
+              continuityNoticeRequired: job.continuityNoticeRequired,
+            }
+          : undefined;
         await executeTurn(job.turn, job.assignment, env, {
           turnId: job.id,
           usageExecutionId: `exec:${job.id}:${attempt}`,
           ...(job.runId ? { runId: job.runId, runAttempt: attempt } : {}),
+          ...(runtimePlanDecision ? { runtimePlanDecision } : {}),
+          onRuntimePlan: (candidate) => freezeRuntimePlan(job.id, candidate),
           onInteractionIntent: async (intent) => {
             await recordInteractionIntent(job.id, intent);
             if (intent.disposition !== 'work') return;
@@ -180,6 +192,7 @@ async function drainLedgerRuns(input: {
   const { state, work } = input;
   if (
     !state.getPendingTurnByRunId ||
+    !state.freezeRuntimePlan ||
     !state.recordTurnAttempt ||
     !state.recordInteractionIntent ||
     !state.recordSlackInteractionProgress ||
@@ -196,7 +209,7 @@ async function drainLedgerRuns(input: {
       work,
       turns: {
         getPendingByRunId: state.getPendingTurnByRunId.bind(state),
-        putAgentExecutionContext: state.putAgentExecutionContext.bind(state),
+        freezeRuntimePlan: state.freezeRuntimePlan.bind(state),
         recordAttempt: state.recordTurnAttempt.bind(state),
         recordInteractionIntent: state.recordInteractionIntent.bind(state),
         recordSlackInteractionProgress: async (id, patch) => {

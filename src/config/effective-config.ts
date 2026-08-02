@@ -2,7 +2,11 @@ import { createHash } from 'node:crypto';
 
 import { resolveAgentModel } from './model-policy.ts';
 import { resolveAssignment, surfaceForChannelId, type ConfigStores } from './resolver.ts';
-import type { CustomAgentConfig, ModelCredentialAttribution } from './types.ts';
+import type {
+  CustomAgentConfig,
+  ModelCredentialAttribution,
+  ResolvedAssignment,
+} from './types.ts';
 
 export const SLACK_RUNTIME_GUARDRAIL =
   'Do not reveal Slack tokens, provider keys, or hidden policy data.';
@@ -64,7 +68,33 @@ export async function resolveEffectiveSlackConfig(
     surface: surfaceForChannelId(channelId),
   });
   const model = resolveAgentModel(assignment.agent, env);
-  const instructionLayers: InstructionLayer[] = [
+  const instructionLayers = effectiveSlackInstructionLayers(assignment);
+  const instructions = instructionLayers.map((layer) => layer.text).join('\n');
+
+  return {
+    workspaceId: assignment.workspaceId,
+    channelId: assignment.channelId,
+    agentId: assignment.agentId,
+    ...(assignment.channelLabel ? { channelLabel: assignment.channelLabel } : {}),
+    ...(assignment.channelPromptAddendum
+      ? { channelPromptAddendum: assignment.channelPromptAddendum }
+      : {}),
+    participationMode: assignment.participationMode ?? 'ambient',
+    agent: assignment.agent,
+    model,
+    provider: providerPrefix(model),
+    instructions,
+    instructionLayers,
+  };
+}
+
+export function effectiveSlackInstructionLayers(
+  assignment: Pick<
+    ResolvedAssignment,
+    'workspaceId' | 'channelId' | 'channelPromptAddendum' | 'agent'
+  >,
+): InstructionLayer[] {
+  return [
     {
       source: 'interaction_defaults',
       label: 'Slack interaction defaults',
@@ -87,23 +117,15 @@ export async function resolveEffectiveSlackConfig(
     },
     { source: 'guardrail', label: 'Guardrail', text: SLACK_RUNTIME_GUARDRAIL },
   ];
-  const instructions = instructionLayers.map((layer) => layer.text).join('\n');
+}
 
-  return {
-    workspaceId: assignment.workspaceId,
-    channelId: assignment.channelId,
-    agentId: assignment.agentId,
-    ...(assignment.channelLabel ? { channelLabel: assignment.channelLabel } : {}),
-    ...(assignment.channelPromptAddendum
-      ? { channelPromptAddendum: assignment.channelPromptAddendum }
-      : {}),
-    participationMode: assignment.participationMode ?? 'ambient',
-    agent: assignment.agent,
-    model,
-    provider: providerPrefix(model),
-    instructions,
-    instructionLayers,
-  };
+export function effectiveSlackInstructions(
+  assignment: Pick<
+    ResolvedAssignment,
+    'workspaceId' | 'channelId' | 'channelPromptAddendum' | 'agent'
+  >,
+): string {
+  return effectiveSlackInstructionLayers(assignment).map((layer) => layer.text).join('\n');
 }
 
 // Deliberately NOT part of resolveEffectiveSlackConfig: the resolver runs on
