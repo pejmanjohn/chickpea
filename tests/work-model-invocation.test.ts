@@ -83,3 +83,32 @@ test('ledger authority fails closed when its invocation marker cannot persist', 
   );
   assert.equal(providerCalls, 0);
 });
+
+test('non-Slack Flue agents bypass Slack TurnJob correlation', async () => {
+  let targetResolutions = 0;
+  let agentCalls = 0;
+  const interceptor = createWorkModelInvocationInterceptor({
+    resolveTarget: async () => {
+      targetResolutions += 1;
+      throw new Error('Slack matcher must not receive an auxiliary agent id');
+    },
+  });
+
+  for (const agentName of [
+    'chickpea-routine-intent-v2',
+    'chickpea-routine-execution-v2',
+  ]) {
+    await interceptor(
+      { type: 'agent', operationId: `operation-${agentName}`, operationKind: 'prompt' },
+      {
+        instanceId: `routine-${agentName}`,
+        submissionId: `submission-${agentName}`,
+        agentName,
+      },
+      async () => { agentCalls += 1; },
+    );
+  }
+
+  assert.equal(targetResolutions, 0);
+  assert.equal(agentCalls, 2);
+});

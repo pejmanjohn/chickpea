@@ -59,11 +59,17 @@ export function createWorkModelInvocationInterceptor(options: {
   const markInvocation = options.markInvocation ?? markPersistedInvocation;
   return async (operation, context, next) => {
     if (operation.type === 'agent') {
+      // Only interactive Slack agents are correlated through TurnJob state.
+      // Routine intent has no canonical Work execution, while routine
+      // execution owns its lifecycle directly in routines/execution.ts.
+      // Sending either auxiliary agent's instance id to the Slack matcher
+      // rejects its valid, domain-specific id before Flue can run it.
+      if (context.agentName !== 'chickpea-slack-v2') return next();
       const instanceId = context.instanceId;
       const submissionId = context.submissionId;
       if (!instanceId || !submissionId) return next();
       const target = await resolveTarget(instanceId, submissionId);
-      if (context.agentName === 'chickpea-slack-v2' && !target) {
+      if (!target) {
         throw new Error('Slack TurnJob observation correlation is unavailable.');
       }
       return invocationState.run({
