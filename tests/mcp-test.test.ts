@@ -1,11 +1,16 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import type { McpServerConnection, McpServerOptions } from '@flue/runtime';
 import type { ToolDefinition } from '@flue/runtime';
 
 import { classifyMcpError, safeMcpFailureText } from '../src/config/mcp-errors.ts';
-import { connectMcp, discoverMcpTools, type McpConnectInput } from '../src/config/mcp-test.ts';
+import {
+  connectMcp,
+  discoverMcpTools,
+  type McpConnectInput,
+  type McpServerConnection,
+  type McpServerOptions,
+} from '../src/config/mcp-test.ts';
 
 // A minimal ToolDefinition stand-in — the real adapter freezes these, but for
 // discovery we only read name/description (and defensively title if present).

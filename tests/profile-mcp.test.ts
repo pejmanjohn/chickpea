@@ -1,9 +1,17 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import type { McpServerConnection, McpServerOptions, ToolDefinition } from '@flue/runtime';
+import type { ToolDefinition } from '@flue/runtime';
 
-import { resolveProfileMcpTools } from '../src/config/profile-mcp.ts';
+import type {
+  McpServerConnection,
+  McpServerOptions,
+} from '../src/config/mcp-test.ts';
+import {
+  resolveProfileMcpConnections,
+  resolveProfileMcpTools,
+} from '../src/config/profile-mcp.ts';
+import { mcpBearerEnvVar, mcpHeaderEnvVar } from '../src/config/mcp-secrets.ts';
 import type { McpConnectionConfig } from '../src/config/types.ts';
 import { withEnv } from './helpers/env.ts';
 
@@ -399,4 +407,49 @@ test('returns [] for an empty server list without connecting', async () => {
   });
   assert.deepEqual(tools, []);
   assert.deepEqual(connected, []);
+});
+
+test('Flue 2 MCP definitions retain only policy and resolve rotating bearer auth live', async () => {
+  const ref = { agentId: 'agent_v2', connectionId: 'srv' };
+  const envVar = mcpBearerEnvVar(ref);
+  await withEnv({ [envVar]: 'first-token' }, async () => {
+    const [definition] = resolveProfileMcpConnections(
+      [server({ authMode: 'bearer', allowedTools: ['search'] })],
+      { agentId: ref.agentId, env: noSecretsEnv },
+    );
+    assert.ok(definition);
+    assert.deepEqual(definition.tools, ['search']);
+    assert.equal(definition.optional, true);
+    assert.equal(typeof definition.auth, 'function');
+    assert.doesNotMatch(JSON.stringify(definition), /first-token/);
+    assert.equal(await (definition.auth as () => Promise<string>)(), 'first-token');
+
+    process.env[envVar] = 'second-token';
+    assert.equal(await (definition.auth as () => Promise<string>)(), 'second-token');
+  });
+});
+
+test('Flue 2 MCP guarded fetch resolves rotating custom headers per request', async () => {
+  const ref = { agentId: 'agent_v2_headers', connectionId: 'srv' };
+  const envVar = mcpHeaderEnvVar(ref, 'X-Api-Key');
+  const captured: Request[] = [];
+  await withEnv({ [envVar]: 'header-one' }, async () => {
+    const [definition] = resolveProfileMcpConnections(
+      [server({ headerNames: ['X-Api-Key'], allowedTools: ['search'] })],
+      {
+        agentId: ref.agentId,
+        env: noSecretsEnv,
+        createGuardedFetch: () => (async (input, init) => {
+          captured.push(new Request(input, init));
+          return new Response('{}');
+        }) as typeof fetch,
+      },
+    );
+    assert.ok(definition?.fetch);
+    await definition.fetch('https://mcp.example.com/mcp', { method: 'POST' });
+    process.env[envVar] = 'header-two';
+    await definition.fetch('https://mcp.example.com/mcp', { method: 'POST' });
+  });
+  assert.equal(captured[0]?.headers.get('x-api-key'), 'header-one');
+  assert.equal(captured[1]?.headers.get('x-api-key'), 'header-two');
 });

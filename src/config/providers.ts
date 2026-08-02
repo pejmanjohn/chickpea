@@ -1,7 +1,7 @@
 import { isCloudflareTarget } from './runtime-target.ts';
 
-// Providers usable in this install. src/app.ts records every registerProvider()
-// call here, and built-in catalog providers count as detected when their
+// Providers usable in this install. The shared runtime bootstrap records every
+// app-owned Pi provider here, and built-in catalog providers count as detected when their
 // standard credential is present — per the Flue models guide they need no
 // registration (ANTHROPIC_API_KEY / OPENAI_API_KEY / OPENROUTER_API_KEY alone
 // enable them).
@@ -99,7 +99,7 @@ export function listRuntimeModelProviders({
     .sort((a, b) => a.localeCompare(b))
     .map((id) => {
       const entry = catalogById.get(id) ?? customProviderEntry(id);
-      // The REST `cloudflare-workers-ai` provider is registered in src/app.ts on
+      // The REST `cloudflare-workers-ai` provider is registered by the shared bootstrap on
       // EVERY target, but on Cloudflare it still needs its own API token +
       // account id to actually work — the keyless entry there is the
       // binding-backed `cloudflare` provider. So on CF ignore its registration:

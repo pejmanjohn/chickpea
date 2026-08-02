@@ -17,14 +17,19 @@ const SEED_CLOUDFLARE_RESPONSE_TIMEOUT_MS = 90_000;
  * imports it or registers a keyless `cloudflare/*` provider.
  */
 export function registerCloudflareBindingProvider(binding: CloudflareAIBinding): void {
-  setProvider(
-    cloudflareBindingProvider({
-      binding: withCloudflareModelPolicies(binding),
+  setProvider(cloudflareBindingProvider(cloudflareBindingProviderOptions(binding)));
+}
+
+/** Pure construction seam: keeps gateway privacy and payload policy testable. */
+export function cloudflareBindingProviderOptions(
+  binding: CloudflareAIBinding,
+): { binding: CloudflareAIBinding; gateway: false } {
+  return {
+    binding: withCloudflareModelPolicies(binding),
       // Flue otherwise supplies `{ id: 'default' }`, which creates an AI
       // Gateway whose default logs retain request and response payloads.
-      gateway: false,
-    }),
-  );
+    gateway: false,
+  };
 }
 
 function withCloudflareModelPolicies(binding: CloudflareAIBinding): CloudflareAIBinding {

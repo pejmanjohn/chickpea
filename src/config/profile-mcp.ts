@@ -1,4 +1,7 @@
-import type { ToolDefinition, connectMcpServer } from '@flue/runtime';
+import type {
+  McpConnectionDefinition,
+  ToolDefinition,
+} from '@flue/runtime';
 
 import { mcpDebugText } from './mcp-errors.ts';
 import {
@@ -7,7 +10,8 @@ import {
   type ResolveMcpOAuthAccessInput,
 } from './mcp-oauth.ts';
 import { buildMcpRequestHeaders, resolveMcpSecrets } from './mcp-secrets.ts';
-import { connectMcp } from './mcp-test.ts';
+import { connectMcp, type McpConnector } from './mcp-test.ts';
+import { createMcpGuardedFetch, validateMcpUrl } from './mcp-url.ts';
 import { isCloudflareTarget } from './runtime-target.ts';
 import {
   getConfigStore,
@@ -49,8 +53,8 @@ export interface ResolveProfileMcpToolsOptions {
   env?: PlatformEnv | undefined;
   /** Tool + skill names already claimed by the agent; MCP collisions are dropped. */
   existingToolNames: string[];
-  /** Test seam — defaults to Flue's `connectMcpServer`. */
-  connect?: typeof connectMcpServer;
+  /** Test seam — defaults to Flue's `createMcpConnection`. */
+  connect?: McpConnector;
   /** Test seam — shortens the per-connect deadline; defaults to mcp-test's 8s. */
   connectTimeoutMs?: number;
   /** Test seam for OAuth token resolution; production resolves from settings. */
@@ -61,8 +65,77 @@ export interface ResolveProfileMcpToolsOptions {
   onConnectionStart?: (connection: { id: string; displayName: string }) => void;
 }
 
+export interface ResolveProfileMcpConnectionsOptions {
+  /** Durable profile id; definitions close over this id, never a token. */
+  agentId: string;
+  env?: PlatformEnv | undefined;
+  resolveOAuthAccessToken?: (
+    input: ResolveMcpOAuthAccessInput,
+  ) => Promise<string>;
+  onConnectionStart?: (connection: { id: string; displayName: string }) => void;
+  /** Test seam; production uses the SSRF-guarded fetch implementation. */
+  createGuardedFetch?: typeof createMcpGuardedFetch;
+}
+
 export function isProfileMcpServerEligible(server: McpConnectionConfig): boolean {
   return server.enabled && server.lifecycleStatus === 'ready' && server.allowedTools.length > 0;
+}
+
+/**
+ * Flue 2-native MCP declarations. Tool discovery, namespacing, strict
+ * allowlists, caching, and optional-resource narration belong to Flue; this
+ * adapter owns only Chickpea policy, SSRF defense, and live auth resolution.
+ */
+export function resolveProfileMcpConnections(
+  servers: readonly McpConnectionConfig[] | undefined,
+  opts: ResolveProfileMcpConnectionsOptions,
+): McpConnectionDefinition[] {
+  return (servers ?? [])
+    .filter(isProfileMcpServerEligible)
+    .flatMap((server) => {
+      const validated = validateMcpUrl(server.url);
+      if (!validated.ok) {
+        console.warn(`[chickpea] MCP connection ${server.id} skipped: blocked URL`);
+        return [];
+      }
+      try {
+        opts.onConnectionStart?.({ id: server.id, displayName: server.displayName });
+      } catch {
+        // Status narration is cosmetic and must never block a connection.
+      }
+      const guardedFetch = (opts.createGuardedFetch ?? createMcpGuardedFetch)({
+        allowedOrigin: new URL(validated.url).origin,
+      });
+      const fetchWithLiveCustomHeaders: typeof fetch = async (input, init) => {
+        const request = new Request(input, init);
+        const secrets = await resolveMcpSecrets(
+          { agentId: opts.agentId, connectionId: server.id },
+          server.headerNames,
+          opts.env,
+        );
+        const headers = new Headers(request.headers);
+        for (const [name, value] of Object.entries(secrets.headers)) {
+          if (
+            (server.authMode === 'bearer' || server.authMode === 'oauth') &&
+            name.toLowerCase() === 'authorization'
+          ) continue;
+          headers.set(name, value);
+        }
+        return guardedFetch(new Request(request, { headers }));
+      };
+      return [{
+        name: server.id,
+        url: validated.url,
+        transport: server.transport,
+        tools: [...server.allowedTools],
+        optional: true,
+        timeoutMs: 30_000,
+        fetch: fetchWithLiveCustomHeaders,
+        ...(server.authMode === 'bearer' || server.authMode === 'oauth'
+          ? { auth: () => resolveLiveMcpBearer(server, opts) }
+          : {}),
+      }];
+    });
 }
 
 export async function resolveProfileMcpTools(
@@ -96,6 +169,44 @@ export async function resolveProfileMcpTools(
     }
   }
   return merged;
+}
+
+async function resolveLiveMcpBearer(
+  server: McpConnectionConfig,
+  opts: ResolveProfileMcpConnectionsOptions,
+): Promise<string> {
+  if (server.authMode === 'oauth') {
+    return (
+      opts.resolveOAuthAccessToken ??
+      ((input) => {
+        const configStore = getConfigStore(opts.env);
+        return resolveMcpOAuthAccessToken(input, {
+          settings: getSettingsStore(opts.env),
+          validateConnection: (ref, serverUrl) =>
+            isCurrentMcpOAuthConnection(configStore, ref, serverUrl),
+          onReauthorizationRequired: async (ref, serverUrl) => {
+            await configStore.markOAuthReauthorizationRequired({
+              lane: 'mcp',
+              ...ref,
+              serverUrl,
+            });
+          },
+        });
+      })
+    )({
+      ref: { agentId: opts.agentId, connectionId: server.id },
+      serverUrl: server.url,
+    });
+  }
+  const secrets = await resolveMcpSecrets(
+    { agentId: opts.agentId, connectionId: server.id },
+    [],
+    opts.env,
+  );
+  if (!secrets.bearer) {
+    throw new Error('MCP bearer credential is unavailable.');
+  }
+  return secrets.bearer;
 }
 
 async function resolveOneServer(

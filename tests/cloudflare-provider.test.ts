@@ -1,21 +1,24 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, test } from 'node:test';
 
-import { registerProvider } from '@flue/runtime';
-import type { CloudflareAIBinding } from '@flue/runtime/cloudflare';
+import type { CloudflareAIBinding } from '@flue/runtime/cloudflare/workers-ai';
 import {
-  hasRegisteredProvider,
-  resetProviderRuntime,
+  hasProvider,
+  resetModelsForTests,
   resolveModel,
 } from '@flue/runtime/internal';
 
-import { registerCloudflareBindingProvider } from '../src/cloudflare-provider.ts';
+import {
+  cloudflareBindingProviderOptions,
+  registerCloudflareBindingProvider,
+} from '../src/cloudflare-provider.ts';
+import { setWorkersAiRestPiProvider } from '../src/config/pi-provider.ts';
 
-beforeEach(() => resetProviderRuntime());
-afterEach(() => resetProviderRuntime());
+beforeEach(() => resetModelsForTests());
+afterEach(() => resetModelsForTests());
 
 test('the Cloudflare-only helper has no registration side effect when merely imported', () => {
-  assert.equal(hasRegisteredProvider('cloudflare'), false);
+  assert.equal(hasProvider('cloudflare'), false);
 });
 
 test('the Workers AI binding registration opts out of the default AI Gateway', () => {
@@ -23,22 +26,10 @@ test('the Workers AI binding registration opts out of the default AI Gateway', (
     run: async () => ({ response: 'ok' }),
   };
 
-  registerProvider('cloudflare', {
-    api: 'cloudflare-ai-binding',
-    binding,
-  });
-  const defaultRoutedModel = resolveModel('cloudflare/@cf/test/default-routed');
-  assert.deepEqual(Object.getOwnPropertyDescriptor(defaultRoutedModel, 'gateway')?.value, {
-    id: 'default',
-  });
+  const options = cloudflareBindingProviderOptions(binding);
 
-  registerCloudflareBindingProvider(binding);
-  const model = resolveModel('cloudflare/@cf/test/private');
-
-  assert.equal(model.provider, 'cloudflare');
-  assert.equal(model.api, 'cloudflare-ai-binding');
-  assert.notEqual(Object.getOwnPropertyDescriptor(model, 'binding')?.value, binding);
-  assert.equal(Object.getOwnPropertyDescriptor(model, 'gateway')?.value, undefined);
+  assert.notEqual(options.binding, binding);
+  assert.equal(options.gateway, false);
 });
 
 test('the seeded keyless GLM binding explicitly disables server-side thinking', async () => {
@@ -53,10 +44,7 @@ test('the seeded keyless GLM binding explicitly disables server-side thinking', 
       return { response: 'ok' };
     },
   };
-  registerCloudflareBindingProvider(binding);
-  const model = resolveModel('cloudflare/@cf/zai-org/glm-5.2');
-  const registeredBinding = Object.getOwnPropertyDescriptor(model, 'binding')
-    ?.value as CloudflareAIBinding;
+  const registeredBinding = cloudflareBindingProviderOptions(binding).binding;
   const options = { returnRawResponse: true };
 
   await registeredBinding.run(
@@ -101,10 +89,7 @@ test('a caller abort reaches the active Workers AI model request', async () => {
       });
     },
   };
-  registerCloudflareBindingProvider(binding);
-  const model = resolveModel('cloudflare/@cf/zai-org/glm-5.2');
-  const registeredBinding = Object.getOwnPropertyDescriptor(model, 'binding')
-    ?.value as CloudflareAIBinding;
+  const registeredBinding = cloudflareBindingProviderOptions(binding).binding;
   const controller = new AbortController();
   const prompt = registeredBinding.run(
     '@cf/zai-org/glm-5.2',
@@ -127,10 +112,7 @@ test('the seeded keyless GLM binding preserves a lower requested output limit', 
       return { response: 'ok' };
     },
   };
-  registerCloudflareBindingProvider(binding);
-  const model = resolveModel('cloudflare/@cf/zai-org/glm-5.2');
-  const registeredBinding = Object.getOwnPropertyDescriptor(model, 'binding')
-    ?.value as CloudflareAIBinding;
+  const registeredBinding = cloudflareBindingProviderOptions(binding).binding;
 
   await registeredBinding.run('@cf/zai-org/glm-5.2', {
     messages: [],
@@ -149,10 +131,7 @@ test('the binding payload policy leaves every other Workers AI model unchanged',
       return { response: 'ok' };
     },
   };
-  registerCloudflareBindingProvider(binding);
-  const model = resolveModel('cloudflare/@cf/openai/gpt-oss-120b');
-  const registeredBinding = Object.getOwnPropertyDescriptor(model, 'binding')
-    ?.value as CloudflareAIBinding;
+  const registeredBinding = cloudflareBindingProviderOptions(binding).binding;
 
   await registeredBinding.run('@cf/openai/gpt-oss-120b', payload);
 
@@ -160,13 +139,16 @@ test('the binding payload policy leaves every other Workers AI model unchanged',
 });
 
 test('the Cloudflare binding registration does not alter the REST Workers AI provider', () => {
-  registerProvider('cloudflare-workers-ai', {
+  setWorkersAiRestPiProvider({
     baseUrl: 'https://workers-ai.example.invalid/v1',
     apiKey: 'test-key',
+    accountId: 'test-account',
+    contextWindowFloor: 32_768,
+    maxTokens: 2_048,
   });
   registerCloudflareBindingProvider({ run: async () => ({ response: 'ok' }) });
 
-  const model = resolveModel('cloudflare-workers-ai/@cf/test/rest');
+  const model = resolveModel('cloudflare-workers-ai/@cf/zai-org/glm-5.2');
 
   assert.equal(model.provider, 'cloudflare-workers-ai');
   assert.equal(model.baseUrl, 'https://workers-ai.example.invalid/v1');

@@ -9,6 +9,10 @@ import { isCloudflareTarget } from '../config/runtime-target.ts';
 import { SEED_CLOUDFLARE_MODEL_PIN } from '../config/seed.ts';
 import { getConfigStore, getSettingsStore, type PlatformEnv } from '../config/state-backend.ts';
 import { INTERNAL_AGENT_TOKEN_HEADER, isValidInternalAgentToken } from '../slack/internal-auth.ts';
+import { useChickpeaResponseMetadata } from '../usage/response-metadata.ts';
+import { bootstrapRuntimeProviders } from '../runtime-bootstrap.ts';
+
+bootstrapRuntimeProviders();
 
 const INTENT_ID = /^routine-intent:([A-Za-z0-9_-]{1,200}):([A-Za-z0-9_-]{1,200}):/;
 
@@ -36,11 +40,11 @@ const instructions = [
 ].join('\n');
 
 export function ChickpeaRoutineIntent() {
-  useModel(
-    isCloudflareTarget()
-      ? SEED_CLOUDFLARE_MODEL_PIN
-      : 'anthropic/claude-haiku-4-5',
-  );
+  const model = isCloudflareTarget()
+    ? SEED_CLOUDFLARE_MODEL_PIN
+    : 'anthropic/claude-haiku-4-5';
+  useModel(model);
+  useChickpeaResponseMetadata(model);
   return instructions;
 }
 

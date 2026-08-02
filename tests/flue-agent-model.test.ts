@@ -4,7 +4,6 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { test } from 'node:test';
 
-import { registerProvider } from '@flue/runtime';
 // `resolveModel` is not re-exported from the root `@flue/runtime` entry point,
 // but it is a documented public subpath export (see the `"./internal"` entry
 // in @flue/runtime's package.json `exports` map) — not a reach into an
@@ -111,8 +110,6 @@ test('Flue resolves the model specifier produced by the slack-thread agent', asy
   // resolution will admit it. An empty registration is enough for a catalog
   // provider id to hydrate from the catalog and admit arbitrary model-id
   // suffixes under it.
-  registerProvider('cloudflare-workers-ai', {});
-
   try {
     const config = await withEnv(
       {

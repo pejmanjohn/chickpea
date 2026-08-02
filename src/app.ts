@@ -1,4 +1,4 @@
-import { instrument, registerProvider } from '@flue/runtime';
+import { instrument } from '@flue/runtime';
 import { createAgentRouter } from '@flue/runtime/routing';
 import { Hono } from 'hono';
 
@@ -13,7 +13,6 @@ import {
   observeProviderAuthRoute,
   providerAuthRouteInterceptor,
 } from './audit/provider-auth.ts';
-import { recordRegisteredProvider } from './config/providers.ts';
 import {
   memoryToolPolicyInterceptor,
   observeMemoryToolPolicy,
@@ -22,75 +21,23 @@ import {
   activityStatusGenerationInterceptor,
   publishActivityStatus,
 } from './slack/activity-publisher.ts';
-import { registerOpenAiSubscriptionApi } from './openai-subscription/provider.ts';
-import { registerModelCompatibilityApis } from './model-compat/provider.ts';
 import { startNodeTurnRelay } from './slack/node-turn-relay.ts';
 import { workModelInvocationInterceptor } from './work/model-invocation.ts';
+import {
+  observeResponseMetadata,
+  responseMetadataInterceptor,
+} from './usage/response-metadata.ts';
 import { channel } from './channels/slack.ts';
+import {
+  bootstrapRuntimeProviders,
+  WORKERS_AI_CONTEXT_WINDOW_FLOOR,
+} from './runtime-bootstrap.ts';
 
-// Provider registrations run at module scope so they are in place before any
-// agent resolves its model. On the Cloudflare target the seeded Workers AI
-// default (`@cf/zai-org/glm-5.2`) resolves keylessly through Flue's
-// binding-backed `cloudflare` provider — no registration needed there.
-// Registering `cloudflare-workers-ai` here is the NODE path: the REST provider
-// that serves the same non-catalog model id from CLOUDFLARE_API_TOKEN +
-// CLOUDFLARE_ACCOUNT_ID (and declares a context-window floor below so that
-// path keeps auto-compaction, unlike the binding provider's contextWindow 0).
-// `||` (not `??`): an empty-string env var means "unset" here — an empty
-// baseUrl would otherwise be accepted and the openai-completions client would
-// silently fall back to api.openai.com.
-const workersAiBaseUrl =
-  process.env.CLOUDFLARE_WORKERS_AI_BASE_URL ||
-  `https://api.cloudflare.com/client/v4/accounts/${
-    process.env.CLOUDFLARE_ACCOUNT_ID || '{CLOUDFLARE_ACCOUNT_ID}'
-  }/ai/v1`;
+export { WORKERS_AI_CONTEXT_WINDOW_FLOOR };
 
-export const WORKERS_AI_CONTEXT_WINDOW_FLOOR = 32_768;
-
-registerProvider('cloudflare-workers-ai', {
-  baseUrl: workersAiBaseUrl,
-  ...(process.env.CLOUDFLARE_API_TOKEN ? { apiKey: process.env.CLOUDFLARE_API_TOKEN } : {}),
-  // Non-catalog models resolve with contextWindow 0, which Flue treats as
-  // "unknown" and therefore NEVER threshold-compacts. Pre-release transcript
-  // testing measured linear DM-history growth on that path. Declaring a
-  // conservative floor turns auto-compaction on; if the real window is larger,
-  // compaction just fires early, never overflows.
-  contextWindow: WORKERS_AI_CONTEXT_WINDOW_FLOOR,
-  maxTokens: 2048,
-});
-recordRegisteredProvider('cloudflare-workers-ai');
-
-// These handlers contain no credentials. API-key binding happens only after
-// Settings resolves the selected canonical provider immediately before use.
-registerModelCompatibilityApis();
-
-// The wire handler is credential-free and safe to install at module boot.
-// A subscription profile binds live credentials and the internal provider
-// immediately before use; until then no `openai-subscription/*` model exists.
-registerOpenAiSubscriptionApi();
-
-// The catalog `anthropic` provider works from ANTHROPIC_API_KEY alone; only
-// override it when an explicit base URL is configured.
-if (process.env.ANTHROPIC_BASE_URL) {
-  registerProvider('anthropic', {
-    baseUrl: process.env.ANTHROPIC_BASE_URL,
-    ...(process.env.ANTHROPIC_API_KEY ? { apiKey: process.env.ANTHROPIC_API_KEY } : {}),
-  });
-  recordRegisteredProvider('anthropic');
-}
-
-// Offline / local stub provider speaking the OpenAI-completions wire protocol.
-// Enables `SLACK_TAG_MODEL=local-stub/<model>` against a fake provider.
-if (process.env.LOCAL_STUB_URL) {
-  registerProvider('local-stub', {
-    api: 'openai-completions',
-    baseUrl: process.env.LOCAL_STUB_URL,
-    // The OpenAI-completions client requires a non-empty key even offline; the
-    // fake provider ignores it.
-    apiKey: process.env.LOCAL_STUB_API_KEY ?? 'offline-stub-key',
-  });
-  recordRegisteredProvider('local-stub');
-}
+// Install the same app-owned Pi providers used by direct agent execution.
+// Cloudflare adds its keyless Workers AI binding in the Worker entry.
+bootstrapRuntimeProviders();
 
 // Flue persists trace carriers across its durable submission boundary even
 // though recovered execution receives a synthetic Request. Restore the Slack
@@ -106,6 +53,17 @@ instrument({
       publishActivityStatus(event.instanceId, status, context.env);
     }
   },
+  dispose() {},
+});
+
+// Response metadata is the one durable usage-of-record consumed by both the
+// interactive Slack relay and routines. It contains token counts and bounded
+// model identifiers only — never prompts, completions, credentials, or tool
+// arguments.
+instrument({
+  key: Symbol.for('chickpea.response-metadata'),
+  interceptor: responseMetadataInterceptor,
+  observe: observeResponseMetadata,
   dispose() {},
 });
 

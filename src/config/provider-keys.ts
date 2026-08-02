@@ -1,8 +1,7 @@
 import { createHash } from 'node:crypto';
 
-import { registerProvider } from '@flue/runtime';
-
 import { forgetRegisteredProvider, recordRegisteredProvider } from './providers.ts';
+import { setBuiltinPiProvider } from './pi-provider.ts';
 import { rotateStoredModelCredential } from './model-credential-refs.ts';
 import type { SettingsStore } from './settings-store.ts';
 import { getSettingsStore, getUsageStore, type PlatformEnv } from './state-backend.ts';
@@ -147,7 +146,7 @@ export function rebindBuiltinProvider(id: ProviderKeyId, apiKey: string | undefi
   if (appliedProviderFingerprints.get(id) === fingerprint) {
     return;
   }
-  registerProvider(id, options);
+  setBuiltinPiProvider(id, options);
   if (id === 'anthropic' || id === 'openai') {
     bindModelCompatibilityProvider(id, apiKey, {
       ...(options.baseUrl ? { baseUrl: options.baseUrl } : {}),

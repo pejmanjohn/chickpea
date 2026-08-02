@@ -1,4 +1,9 @@
-import { connectMcpServer, type McpServerConnection, type ToolDefinition } from '@flue/runtime';
+import {
+  createMcpConnection,
+  type McpConnection,
+  type McpConnectionDefinition,
+  type ToolDefinition,
+} from '@flue/runtime';
 
 import { McpBlockedUrlError } from './mcp-errors.ts';
 import {
@@ -45,9 +50,19 @@ export interface McpConnectInput {
   headers: Record<string, string>;
   /** Deadline around the initial connect (Flue's timeoutMs does not bound it). */
   connectTimeoutMs?: number;
-  /** Per-request timeout passed to `connectMcpServer` (bounds tool calls). */
+  /** Per-request timeout passed to `createMcpConnection` (bounds tool calls). */
   callTimeoutMs?: number;
 }
+
+export type McpConnector = (
+  name: string,
+  definition: Omit<McpConnectionDefinition, 'name'>,
+) => Promise<McpConnection>;
+export type McpServerConnection = McpConnection;
+export type McpServerOptions = Omit<McpConnectionDefinition, 'name'>;
+
+const connectWithFlueV2: McpConnector = (name, definition) =>
+  createMcpConnection({ name, ...definition });
 
 /**
  * Connect + list tools + close. Returns truncated, prefix-stripped tool
@@ -56,7 +71,7 @@ export interface McpConnectInput {
  */
 export async function discoverMcpTools(
   input: McpConnectInput,
-  connect: typeof connectMcpServer = connectMcpServer,
+  connect: McpConnector = connectWithFlueV2,
 ): Promise<McpDiscoveryResult> {
   const connection = await connectMcp(input, connect);
   try {
@@ -72,9 +87,9 @@ export async function discoverMcpTools(
  */
 export async function connectMcp(
   input: McpConnectInput,
-  connect: typeof connectMcpServer = connectMcpServer,
+  connect: McpConnector = connectWithFlueV2,
   createGuardedFetch: (options: McpGuardedFetchOptions) => typeof fetch = createMcpGuardedFetch,
-): Promise<McpServerConnection> {
+): Promise<McpConnection> {
   const validated = validateMcpUrl(input.url);
   if (!validated.ok) {
     throw new McpBlockedUrlError(validated.reason);

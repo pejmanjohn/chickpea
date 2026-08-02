@@ -1,4 +1,4 @@
-import { defineSkill, SkillDefinitionValidationError, type SkillReference } from '@flue/runtime';
+import { defineSkill, SkillDefinitionValidationError, type Skill } from '@flue/runtime';
 
 import type { SkillConfig } from './types.ts';
 
@@ -19,7 +19,7 @@ import type { SkillConfig } from './types.ts';
  *
  * Only `enabled` skills are materialized.
  */
-export function resolveProfileSkills(skills: readonly SkillConfig[] | undefined): SkillReference[] {
+export function resolveProfileSkills(skills: readonly SkillConfig[] | undefined): Skill[] {
   if (!skills || skills.length === 0) {
     return [];
   }
@@ -31,7 +31,7 @@ export function resolveProfileSkills(skills: readonly SkillConfig[] | undefined)
     }
   }
 
-  const refs: SkillReference[] = [];
+  const refs: Skill[] = [];
   for (const skill of byName.values()) {
     try {
       refs.push(

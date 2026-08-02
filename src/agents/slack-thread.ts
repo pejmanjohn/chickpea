@@ -100,6 +100,10 @@ import { publishActivityStatus } from '../slack/activity-publisher.ts';
 import { parseSlackThreadKey } from '../slack/thread-key.ts';
 import { getClient } from '../slack/run-turn.ts';
 import { WebClientPresenter } from '../slack/web-client-presenter.ts';
+import { useChickpeaResponseMetadata } from '../usage/response-metadata.ts';
+import { bootstrapRuntimeProviders } from '../runtime-bootstrap.ts';
+
+bootstrapRuntimeProviders();
 
 export { resolveAgentModel } from '../config/model-policy.ts';
 
@@ -810,6 +814,7 @@ export function ChickpeaSlack() {
     : 'anthropic/claude-haiku-4-5';
   const thinkingLevel = thinkingLevelForModel(model);
   useModel(model, thinkingLevel ? { thinkingLevel } : {});
+  useChickpeaResponseMetadata(model);
   useInstruction('Never invent facts or claim access to context and tools you do not have.');
   return [
     'You are a general-purpose Slack assistant.',

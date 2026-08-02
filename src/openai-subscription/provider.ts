@@ -1,4 +1,4 @@
-import { registerApiProvider, registerProvider } from '@flue/runtime';
+import { setProvider } from '@flue/runtime';
 import {
   createAssistantMessageEventStream,
   type AssistantMessage,
@@ -6,6 +6,7 @@ import {
   type AssistantMessageEventStream,
   type Context,
   type Model,
+  type ProviderStreams,
   type SimpleStreamOptions,
   type StreamOptions,
 } from '@earendil-works/pi-ai';
@@ -16,6 +17,7 @@ import {
 } from '@earendil-works/pi-ai/api/openai-codex-responses';
 
 import { recordRegisteredProvider } from '../config/providers.ts';
+import { createChickpeaPiProvider } from '../config/pi-provider.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import {
   openAiSubscriptionCredentialsAreCurrent,
@@ -82,6 +84,7 @@ const BUNDLED_SUBSCRIPTION_REGISTRATION: CapturedSubscriptionRegistration = Obje
 });
 const hostedSubscriptionRegistrations = new Map<string, CapturedSubscriptionRegistration>();
 const subscriptionTransportMarkers = new Map<string, string>();
+const boundSubscriptionProviders = new Map<string, ReturnType<typeof createChickpeaPiProvider>>();
 const MAX_HOSTED_SUBSCRIPTION_REGISTRATIONS = 16;
 
 export interface BindOpenAiSubscriptionProviderOptions {
@@ -144,23 +147,20 @@ export async function bindOpenAiSubscriptionProvider(
     },
   });
   subscriptionTransportMarkers.set(registration.api, marker);
-  registerCapturedSubscriptionApi(registration);
-  registerProvider(registration.providerId, {
-    api: registration.api,
+  const piProvider = createChickpeaPiProvider({
+    id: registration.providerId,
+    name: 'OpenAI subscription',
     baseUrl: OPENAI_SUBSCRIPTION_API_BASE,
     apiKey: BOUNDARY_MANAGED_TOKEN,
-    models: Object.fromEntries(
-      registration.models.map((model) => [
-        model.id,
-        { contextWindow: model.contextWindow, maxTokens: model.maxTokens },
-      ]),
-    ),
-    telemetry: {
-      providerName: 'openai_subscription',
-      serverAddress: 'chatgpt.com',
-      serverPort: 443,
-    },
+    models: registration.models.map((model) => ({
+      ...model,
+      provider: registration.providerId,
+      api: registration.api,
+    })),
+    api: subscriptionStreams(registration),
   });
+  boundSubscriptionProviders.set(registration.providerId, piProvider);
+  setProvider(piProvider);
   recordRegisteredProvider(OPENAI_SUBSCRIPTION_PROVIDER_ID);
 }
 
@@ -177,6 +177,11 @@ export function openAiSubscriptionModelSpecifier(
 export function isOpenAiSubscriptionProviderId(providerId: string): boolean {
   return providerId === OPENAI_SUBSCRIPTION_PROVIDER_ID ||
     /^chickpea-openai-subscription-r[1-9][0-9]*-[a-f0-9]{12}$/.test(providerId);
+}
+
+/** Test seam for the provider-owned stream Flue 2 installs by id. */
+export function getBoundOpenAiSubscriptionProviderForTests(providerId: string) {
+  return boundSubscriptionProviders.get(providerId);
 }
 
 function subscriptionRegistration(
@@ -222,19 +227,24 @@ function freezeModels(models: readonly Model<string>[]): readonly Model<string>[
 function registerCapturedSubscriptionApi(
   registration: CapturedSubscriptionRegistration,
 ): void {
-  if (registeredRevisionApis.has(registration.api)) return;
+  // Kept as an idempotent compatibility seam for startup callers. In Flue 2
+  // the API implementation is installed with the bound Pi Provider below.
+  registeredRevisionApis.add(registration.api);
+}
+
+function subscriptionStreams(
+  registration: CapturedSubscriptionRegistration,
+): ProviderStreams {
   const captured = Object.freeze({
     ...registration,
     models: freezeModels(registration.models),
   });
-  registerApiProvider({
-    api: captured.api,
+  return {
     stream: (model, context, streamOptions) =>
       secureCodexStream(model, context, streamOptions, false, captured),
     streamSimple: (model, context, streamOptions) =>
       secureCodexStream(model, context, streamOptions, true, captured),
-  });
-  registeredRevisionApis.add(captured.api);
+  };
 }
 
 function secureCodexStream(

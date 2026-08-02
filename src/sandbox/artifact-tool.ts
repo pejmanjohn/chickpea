@@ -44,12 +44,12 @@ export function createWorkspaceArtifactCapability(
       filename: v.pipe(v.string(), v.minLength(1)),
       title: v.optional(v.pipe(v.string(), v.minLength(1))),
     }),
-    async run({ input }) {
+    async run({ data }) {
       assertCurrentRequestSideEffectAllowed('post_artifact');
       if (!sessionEnv) {
         throw new Error('workspace is not initialized');
       }
-      const path = workspaceArtifactPath(input.path);
+      const path = workspaceArtifactPath(data.path);
       const stat = await sessionEnv.stat(path);
       if (!stat.isFile) {
         throw new Error('artifact path must identify a file');
@@ -65,13 +65,13 @@ export function createWorkspaceArtifactCapability(
         throw new Error('artifact exceeds the 8 MB upload limit');
       }
       const bytes = await readFrozenWorkspaceArtifact(sessionEnv, path);
-      return options.postArtifact({
+      return { output: await options.postArtifact({
         channel: options.channel,
         threadTs: options.threadTs,
         bytes,
-        filename: input.filename,
-        ...(input.title === undefined ? {} : { title: input.title }),
-      });
+        filename: data.filename,
+        ...(data.title === undefined ? {} : { title: data.title }),
+      }) };
     },
   });
 

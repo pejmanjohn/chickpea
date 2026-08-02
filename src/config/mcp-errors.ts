@@ -30,7 +30,7 @@ export function classifyMcpError(err: unknown): McpErrorCode {
   if (message.includes('failed to fetch') || message.includes('fetch failed') || message.includes('network')) {
     return 'network';
   }
-  // Flue's connectMcpServer throws "… produced duplicate tool name …" when two
+  // Flue's MCP adapter throws "… produced duplicate tool name …" when two
   // tools collide after name sanitization — a server-side naming problem that
   // must not be reported as a bad URL.
   if (message.includes('duplicate tool name')) return 'tool_name_collision';
