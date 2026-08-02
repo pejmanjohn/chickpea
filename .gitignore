@@ -16,3 +16,4 @@ tmp/
 # Internal working docs (plans, decision records, rehearsal artifacts) stay
 # out of the public repository and its verified source export.
 docs/
+design-qa.md

@@ -34,8 +34,10 @@ const denyPatterns = [
   // catches case-insensitive macOS paths while allowing `/users/...` API route
   // segments whose preceding character is part of a URL path.
   ['local user path', localUserPathPattern],
-  ['live rehearsal marker', new RegExp(term('can', 'ary'), 'i')],
 ];
+
+// `canary` is public rollout vocabulary used by the ledger authority contract,
+// so it cannot also serve as a generic private rehearsal marker.
 
 for (const value of [
   term('/', 'Users', '/', 'alice', '/', 'code/project'),
@@ -68,7 +70,10 @@ const forbiddenSourcePathRoots = [
   exportPath('tmp'),
 ];
 
-const forbiddenSourcePaths = new Set([exportPath('.worktreeinclude')]);
+const forbiddenSourcePaths = new Set([
+  exportPath('.worktreeinclude'),
+  exportPath('design-qa.md'),
+]);
 
 const forbiddenBinaryExtensions = new Set([
   '.avif',
