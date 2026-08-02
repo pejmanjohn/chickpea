@@ -5,6 +5,7 @@ import {
   CLOUDFLARE_SANDBOX_OPTIONS,
   SandboxLifecycleRegistry,
   cloudflareSandboxOptionVariants,
+  contentFreeSandboxExec,
   serializeSandboxActivation,
 } from '../src/sandbox/lifecycle.ts';
 import {
@@ -24,6 +25,32 @@ test('Cloudflare sandbox guardrail options pin sleep and prohibit keep-alive', (
     sleepAfter: '5m',
     normalizeId: false,
   });
+});
+
+test('Cloudflare sandbox exec keeps model-authored commands out of operational logs', async () => {
+  const calls: Array<{ command: string; options?: Record<string, unknown> }> = [];
+  const sandbox = contentFreeSandboxExec({
+    async exec(command: string, options?: Record<string, unknown>) {
+      calls.push({ command, ...(options ? { options } : {}) });
+      return { success: true };
+    },
+  });
+  const marker = 'fake-sensitive-command-marker';
+  const options = { cwd: '/workspace', env: { EXISTING: 'preserved' } };
+
+  assert.deepEqual(await sandbox.exec(`printf %s ${marker}`, options), { success: true });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.command, 'sh -lc "$FLUE_PRIVATE_SANDBOX_COMMAND_V1"');
+  assert.equal(calls[0]?.command.includes(marker), false);
+  assert.deepEqual(calls[0]?.options, {
+    cwd: '/workspace',
+    env: {
+      EXISTING: 'preserved',
+      FLUE_PRIVATE_SANDBOX_COMMAND_V1: `printf %s ${marker}`,
+    },
+    origin: 'internal',
+  });
+  assert.deepEqual(options, { cwd: '/workspace', env: { EXISTING: 'preserved' } });
 });
 
 test('uppercase thread ids bridge legacy and normalized Sandbox identities during rollout', () => {

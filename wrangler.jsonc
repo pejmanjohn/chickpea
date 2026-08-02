@@ -8,9 +8,9 @@
   // hard way: the raw error behind a keyless-anthropic 401 was unrecoverable).
   "observability": {
     "enabled": true,
-    // Keep platform request tracing opt-in. Chickpea's Flue instrumentation
-    // emits bounded status, usage, route, and policy facts without content.
-    "traces": { "enabled": false }
+    // Flue spans are registered explicitly in the Cloudflare-only entry with
+    // `content: false`; platform tracing exports operational metadata only.
+    "traces": { "enabled": true }
   },
   "ai": {
     "binding": "AI"

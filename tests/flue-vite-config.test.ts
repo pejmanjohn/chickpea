@@ -62,3 +62,9 @@ test('the explicit v2 app shell mounts owned routes without the beta auto-router
   assert.doesNotMatch(appSource, /agents\/slack-thread/);
   assert.match(appSource, /app\.route\('\/channels\/slack', channel\.route\(\)\)/);
 });
+
+test('Cloudflare tracing is explicit and content-free while generated tracing stays disabled', () => {
+  const cloudflareSource = readFileSync(path.join(PROJECT_ROOT, 'src', 'cloudflare.ts'), 'utf8');
+  assert.match(cloudflareSource, /createCloudflareTracing\(\{\s*content:\s*false\s*\}\)/);
+  assert.match(cloudflareSource, /instrument\(createCloudflareTracing/);
+});

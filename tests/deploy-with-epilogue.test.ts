@@ -80,6 +80,8 @@ function writeCutoverArtifact(
     deletedClasses?: string[];
     compatibilityDate?: string;
     tracing?: boolean;
+    cloudflareTracer?: boolean;
+    sandboxCommandRedaction?: boolean;
   } = {},
 ) {
   const builtDir = path.join(harness.root, 'dist-cf', 'chickpea');
@@ -93,7 +95,7 @@ function writeCutoverArtifact(
     name: 'chickpea',
     main: 'index.js',
     compatibility_date: options.compatibilityDate ?? '2026-06-01',
-    observability: { enabled: true, traces: { enabled: options.tracing ?? false } },
+    observability: { enabled: true, traces: { enabled: options.tracing ?? true } },
     vars: {
       TAG_ROUTINES_ENABLED: options.routinesEnabled ? '1' : '0',
       SLACK_TAG_LEDGER_CANARY_CHANNELS: options.selector ?? '',
@@ -137,6 +139,8 @@ function writeCutoverArtifact(
     path.join(builtDir, 'index.js'),
     `heartbeat: runRoutineHeartbeat maintenance: runWorkMaintenance ` +
       `chickpea.response-metadata chickpea-slack-v2 ` +
+      `${options.cloudflareTracer === false ? '' : '@flue/runtime/cloudflare-tracing '} ` +
+      `${options.sandboxCommandRedaction === false ? '' : 'FLUE_PRIVATE_SANDBOX_COMMAND_V1 '} ` +
       `${options.routineAgents === false ? '' : 'chickpea-routine-intent-v2 chickpea-routine-execution-v2 '} ` +
       canarySeams,
   );
@@ -224,27 +228,45 @@ test('preflight rejects unexpected or protected destructive class operations', (
   assert.match(protectedResult.stderr, /protected classes.*TagStateStore/);
 });
 
-test('preflight rejects missing app bindings, content tracing, and stale compatibility dates', (context) => {
+test('preflight rejects missing bindings, missing content-free tracing, and stale dates', (context) => {
   const missingSandbox = createHarness();
-  const traced = createHarness();
+  const tracingDisabled = createHarness();
+  const missingTracer = createHarness();
+  const missingSandboxRedaction = createHarness();
   const stale = createHarness();
   context.after(() => {
     rmSync(missingSandbox.root, { recursive: true, force: true });
-    rmSync(traced.root, { recursive: true, force: true });
+    rmSync(tracingDisabled.root, { recursive: true, force: true });
+    rmSync(missingTracer.root, { recursive: true, force: true });
+    rmSync(missingSandboxRedaction.root, { recursive: true, force: true });
     rmSync(stale.root, { recursive: true, force: true });
   });
   writeCutoverArtifact(missingSandbox, { missingBinding: 'SANDBOX' });
-  writeCutoverArtifact(traced, { tracing: true });
+  writeCutoverArtifact(tracingDisabled, { tracing: false });
+  writeCutoverArtifact(missingTracer, { cloudflareTracer: false });
+  writeCutoverArtifact(missingSandboxRedaction, { sandboxCommandRedaction: false });
   writeCutoverArtifact(stale, { compatibilityDate: '2026-03-31' });
 
   const sandboxResult = runHarness(missingSandbox, ['--skip-build', '--preflight-only']);
-  const tracingResult = runHarness(traced, ['--skip-build', '--preflight-only']);
+  const tracingDisabledResult = runHarness(
+    tracingDisabled,
+    ['--skip-build', '--preflight-only'],
+  );
+  const missingTracerResult = runHarness(missingTracer, ['--skip-build', '--preflight-only']);
+  const missingSandboxRedactionResult = runHarness(
+    missingSandboxRedaction,
+    ['--skip-build', '--preflight-only'],
+  );
   const staleResult = runHarness(stale, ['--skip-build', '--preflight-only']);
 
   assert.equal(sandboxResult.status, 1);
   assert.match(sandboxResult.stderr, /SANDBOX\/Sandbox binding/);
-  assert.equal(tracingResult.status, 1);
-  assert.match(tracingResult.stderr, /disabled platform content tracing/);
+  assert.equal(tracingDisabledResult.status, 1);
+  assert.match(tracingDisabledResult.stderr, /enabled Workers Traces/);
+  assert.equal(missingTracerResult.status, 1);
+  assert.match(missingTracerResult.stderr, /content-free Cloudflare tracing/);
+  assert.equal(missingSandboxRedactionResult.status, 1);
+  assert.match(missingSandboxRedactionResult.stderr, /content-free Cloudflare Sandbox exec/);
   assert.equal(staleResult.status, 1);
   assert.match(staleResult.stderr, /compatibility_date at or above 2026-04-01/);
 });

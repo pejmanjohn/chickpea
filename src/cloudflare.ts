@@ -5,6 +5,8 @@ import {
   type DurableObjectStorage,
 } from 'cloudflare:workers';
 import { getSandbox, Sandbox as CloudflareSandbox } from '@cloudflare/sandbox';
+import { instrument } from '@flue/runtime';
+import { createCloudflareTracing } from '@flue/runtime/cloudflare';
 import type { WebClient } from '@slack/web-api';
 
 import {
@@ -120,6 +122,12 @@ import {
 } from './routines/admission.ts';
 import { RoutineScheduler } from './routines/scheduler.ts';
 import { executeRoutineOccurrence } from './routines/execution.ts';
+
+// The generated default captures model and tool content. Register the native
+// Cloudflare adapter explicitly for this Cloudflare-only entry so Workers
+// Traces retain operational Flue spans without prompts, instructions, tool
+// definitions, arguments, results, error messages, or stacks.
+instrument(createCloudflareTracing({ content: false }));
 
 // This module is imported only by Flue's Cloudflare entry. Register before
 // the generated entry's guarded default so `cloudflare/*` remains keyless but

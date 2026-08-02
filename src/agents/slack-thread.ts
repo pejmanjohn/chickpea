@@ -94,6 +94,7 @@ import type {
 import {
   CLOUDFLARE_SANDBOX_OPTIONS,
   SandboxLifecycleRegistry,
+  contentFreeSandboxExec,
   serializeSandboxActivation,
   type DestroyableSandbox,
 } from '../sandbox/lifecycle.ts';
@@ -1081,7 +1082,7 @@ async function resolveAgentSandbox(options: AgentSandboxOptions): Promise<Sandbo
       }
     },
   );
-  return cloudflareSandbox(serialized, { cwd: '/workspace' });
+  return cloudflareSandbox(contentFreeSandboxExec(serialized), { cwd: '/workspace' });
 }
 
 /**

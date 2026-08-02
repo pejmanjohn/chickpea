@@ -15,7 +15,7 @@
  * failed deploy), and stdout is scanned line-by-line rather than buffered.
  */
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -124,8 +124,15 @@ function requireBuiltArtifact() {
     throw new Error('Cloudflare preflight requires the generated Vite Wrangler artifact.');
   }
   const config = JSON.parse(readFileSync(configPath, 'utf8'));
-  const bundlePath = path.resolve(path.dirname(configPath), config.main ?? 'index.js');
-  const bundle = existsSync(bundlePath) ? readFileSync(bundlePath, 'utf8') : '';
+  const artifactRoot = path.dirname(configPath);
+  const bundlePath = path.resolve(artifactRoot, config.main ?? 'index.js');
+  const bundle = existsSync(bundlePath)
+    ? readdirSync(artifactRoot, { recursive: true })
+      .filter((entry) => typeof entry === 'string' && entry.endsWith('.js'))
+      .sort()
+      .map((entry) => readFileSync(path.join(artifactRoot, entry), 'utf8'))
+      .join('\n')
+    : '';
   return { configPath, config, bundle };
 }
 
@@ -163,8 +170,14 @@ function validateFlue2CutoverArtifact(artifact) {
   if (betaBindings.length) failures.push('no beta Flue Durable Object bindings');
   if ((config.workflows ?? []).length !== 0) failures.push('no Flue workflow bindings');
 
-  if (config.observability?.traces?.enabled !== false) {
-    failures.push('explicitly disabled platform content tracing');
+  if (config.observability?.traces?.enabled !== true) {
+    failures.push('enabled Workers Traces for metadata-only Flue spans');
+  }
+  if (!bundle.includes('@flue/runtime/cloudflare-tracing')) {
+    failures.push('explicit content-free Cloudflare tracing instrumentation');
+  }
+  if (!bundle.includes('FLUE_PRIVATE_SANDBOX_COMMAND_V1')) {
+    failures.push('content-free Cloudflare Sandbox exec logging');
   }
   if (!bundle.includes('chickpea.response-metadata')) {
     failures.push('bounded metadata-only Chickpea instrumentation');

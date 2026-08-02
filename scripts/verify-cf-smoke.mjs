@@ -26,7 +26,7 @@
  * an existing dist-cf (iteration speed); CI should run the full build.
  */
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import vm from 'node:vm';
 
@@ -112,7 +112,12 @@ function buildCloudflareTarget() {
 
 function verifyBuildArtifacts() {
   const config = JSON.parse(readFileSync(CF_WRANGLER_CONFIG, 'utf8'));
-  const bundle = readFileSync(join(CF_OUTPUT_DIR, 'chickpea', config.main ?? 'index.js'), 'utf8');
+  const artifactRoot = join(CF_OUTPUT_DIR, 'chickpea');
+  const bundle = readdirSync(artifactRoot, { recursive: true })
+    .filter((entry) => typeof entry === 'string' && entry.endsWith('.js'))
+    .sort()
+    .map((entry) => readFileSync(join(artifactRoot, entry), 'utf8'))
+    .join('\n');
   const doBindings = config.durable_objects?.bindings ?? [];
   check(
     doBindings.some((b) => b.name === 'TAG_STATE' && b.class_name === 'TagStateStore'),
@@ -179,8 +184,8 @@ function verifyBuildArtifacts() {
     'interactive ledger admission remains off by default in the built artifact',
   );
   check(
-    config.observability?.traces?.enabled === false,
-    'built artifact explicitly disables platform content tracing',
+    config.observability?.traces?.enabled === true,
+    'built artifact enables Workers Traces for metadata-only Flue spans',
   );
   check(
     bundle.includes('heartbeat: runRoutineHeartbeat') &&
@@ -188,8 +193,10 @@ function verifyBuildArtifacts() {
       bundle.includes('chickpea-slack-v2') &&
       bundle.includes('chickpea-routine-intent-v2') &&
       bundle.includes('chickpea-routine-execution-v2') &&
-      bundle.includes('chickpea.response-metadata'),
-    'built Worker composes the heartbeat, fresh agents, and metadata-only instrumentation',
+      bundle.includes('chickpea.response-metadata') &&
+      bundle.includes('@flue/runtime/cloudflare-tracing') &&
+      bundle.includes('FLUE_PRIVATE_SANDBOX_COMMAND_V1'),
+    'built Worker composes the heartbeat, fresh agents, and content-free tracing',
   );
 }
 
