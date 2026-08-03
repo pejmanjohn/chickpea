@@ -152,9 +152,13 @@ async function identityIngressApp(): Promise<Hono> {
   return app;
 }
 
-function appWith(settings: SettingsStore): Hono {
+function appWith(settings: SettingsStore, store?: SqliteConfigStore): Hono {
   const app = new Hono();
-  app.route('/', createAdminRoutes({ settings, adminToken: ADMIN_TOKEN }));
+  app.route('/', createAdminRoutes({
+    settings,
+    adminToken: ADMIN_TOKEN,
+    ...(store ? { store } : {}),
+  }));
   return app;
 }
 
@@ -848,6 +852,50 @@ test('disconnect deletes only stored Slack connection identity and immediately c
     });
   } finally {
     invalidateStoredSlackCredentials();
+    settings.close();
+  }
+});
+
+test('workspace disconnect is blocked while a dedicated identity retains credentials', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const config = new SqliteConfigStore(':memory:');
+  try {
+    await withEnv(NO_SLACK_ENV, async () => {
+      await settings.setSetting(SLACK_SETTING_KEYS.botToken, 'xoxb-default');
+      await settings.setSetting(SLACK_SETTING_KEYS.signingSecret, 'default-secret');
+      const identity = await config.createSlackIdentity(pendingIdentity({
+        lifecycle: 'connected',
+        teamId: 'T_ACME',
+        appId: 'A0FINANCE',
+        botUserId: 'U_FINANCE',
+        credentialProvenance: 'stored',
+        health: 'healthy',
+      }));
+      await writeSlackIdentityCredentials(settings, identity.id, null, {
+        botToken: 'xoxb-finance',
+        signingSecret: 'finance-secret',
+        botUserId: 'U_FINANCE',
+      });
+
+      const response = await appWith(settings, config).request(
+        '/admin/api/slack-connection',
+        { method: 'DELETE', headers: auth() },
+      );
+      assert.equal(response.status, 409);
+      assert.deepEqual(await response.json(), {
+        error: 'slack_dedicated_identities_connected',
+        message:
+          'Cancel or retire every credentialed dedicated Slack identity before disconnecting @Chickpea.',
+        identities: [{ id: identity.id, name: 'slack_identity_finance' }],
+      });
+      assert.equal(await settings.getSetting(SLACK_SETTING_KEYS.botToken), 'xoxb-default');
+      assert.equal(
+        (await resolveSlackIdentityCredentials(identity.id, undefined, settings)).botToken,
+        'xoxb-finance',
+      );
+    });
+  } finally {
+    config.close();
     settings.close();
   }
 });

@@ -1,4 +1,5 @@
 import {
+  AgentSlackIdentityConflictError,
   AgentExistsError,
   AgentStillAssignedError,
   AgentStillSlackDmHandlerError,
@@ -101,7 +102,7 @@ import {
   type TransitionMemoryEntryInput,
   type UpdateMemoryEntryInput,
 } from '../memory/types.ts';
-import type { AuditEvent, AuditEventFilter } from '../audit/types.ts';
+import type { AppendAuditEvent, AuditEvent, AuditEventFilter } from '../audit/types.ts';
 import {
   UsageStateError,
   type AdmitUsageOperationInput,
@@ -184,6 +185,12 @@ function unwrap<T>(result: StateRpcResult<T>): T {
       throw new AgentStillSlackDmHandlerError(
         details?.agentId ?? 'unknown',
         details?.identityIds ?? '',
+      );
+    case 'agent_slack_identity_conflict':
+      throw new AgentSlackIdentityConflictError(
+        details?.agentId ?? 'unknown',
+        details?.expectedIdentityId || null,
+        details?.actualIdentityId || null,
       );
     case 'unknown_slack_identity':
       throw new UnknownSlackIdentityError(details?.identityId ?? 'unknown');
@@ -374,6 +381,34 @@ export class CfConfigStore implements ConfigStore {
     );
   }
 
+  async completeSlackIdentitySetup(
+    identityId: string,
+    expectedRevision: number,
+    agentId?: string,
+    expectedAgentIdentityId?: string | null,
+  ): Promise<SlackIdentity> {
+    return unwrap(await this.stub.configCompleteSlackIdentitySetup(
+      identityId,
+      expectedRevision,
+      agentId,
+      expectedAgentIdentityId,
+    ));
+  }
+
+  async attachAgentToSlackIdentity(
+    agentId: string,
+    identityId: string,
+    expectedIdentityRevision: number,
+    expectedAgentIdentityId: string | null,
+  ): Promise<CustomAgentConfig> {
+    return unwrap(await this.stub.configAttachAgentToSlackIdentity(
+      agentId,
+      identityId,
+      expectedIdentityRevision,
+      expectedAgentIdentityId,
+    ));
+  }
+
   async retireSlackIdentity(
     identityId: string,
     expectedRevision: number,
@@ -407,6 +442,16 @@ export class CfConfigStore implements ConfigStore {
         credentialsErased,
       ),
     );
+  }
+
+  async appendSlackIdentityAudit(input: AppendAuditEvent): Promise<AuditEvent> {
+    return unwrap(await this.stub.configAppendSlackIdentityAudit(input));
+  }
+
+  async listSlackIdentityAuditEvents(
+    filter: AuditEventFilter = {},
+  ): Promise<AuditEvent[]> {
+    return unwrap(await this.stub.configListSlackIdentityAuditEvents(filter));
   }
 }
 
@@ -531,6 +576,10 @@ export class CfSlackStateStore implements SlackStateStore {
       pendingSlackInteractionCleanups: status.categories.pendingSlackInteractionCleanups,
       recoveryRequiredTurnJobs: status.categories.recoveryRequiredTurnJobs,
     };
+  }
+
+  async countPendingDeliveriesForSlackIdentity(identityId: string) {
+    return unwrap(await this.stub.slackIdentityPendingDeliveryCount(identityId));
   }
 
   async recordSlackInteractionProgress(

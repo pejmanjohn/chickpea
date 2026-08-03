@@ -39,6 +39,7 @@ import type {
   SlackRunPresentationV1,
   SlackPresentationSummary,
 } from '../slack/run-presentations.ts';
+import type { AppendAuditEvent, AuditEvent, AuditEventFilter } from '../audit/types.ts';
 
 export type { TurnJob } from '../slack/turn-job-types.ts';
 
@@ -67,6 +68,7 @@ export type StateRpcErrorCode =
   | 'agent_exists'
   | 'agent_still_assigned'
   | 'agent_slack_dm_handler'
+  | 'agent_slack_identity_conflict'
   | 'unknown_slack_identity'
   | 'slack_identity_exists'
   | 'slack_identity_still_referenced'
@@ -241,6 +243,18 @@ export interface TagStateRpc {
     dmState: SlackIdentityDmState,
     dmAgentId?: string,
   ): Promise<StateRpcResult<SlackIdentity>>;
+  configCompleteSlackIdentitySetup(
+    identityId: string,
+    expectedRevision: number,
+    agentId?: string,
+    expectedAgentIdentityId?: string | null,
+  ): Promise<StateRpcResult<SlackIdentity>>;
+  configAttachAgentToSlackIdentity(
+    agentId: string,
+    identityId: string,
+    expectedIdentityRevision: number,
+    expectedAgentIdentityId: string | null,
+  ): Promise<StateRpcResult<CustomAgentConfig>>;
   configRetireSlackIdentity(
     identityId: string,
     expectedRevision: number,
@@ -255,6 +269,12 @@ export interface TagStateRpc {
     expectedRevision: number,
     credentialsErased: boolean,
   ): Promise<StateRpcResult<boolean>>;
+  configAppendSlackIdentityAudit(
+    input: AppendAuditEvent,
+  ): Promise<StateRpcResult<AuditEvent>>;
+  configListSlackIdentityAuditEvents(
+    filter?: AuditEventFilter,
+  ): Promise<StateRpcResult<AuditEvent[]>>;
   // -- agent snapshots -----------------------------------------------------
   snapshotGet(threadKey: string): Promise<StateRpcResult<AgentSnapshot | null>>;
   snapshotPutIfAbsent(
@@ -315,6 +335,7 @@ export interface TagStateRpc {
   slackTurnRecoveryRequired(id: string, reason: string): Promise<StateRpcResult<null>>;
   slackTurnRecoveryList(limit: number): Promise<StateRpcResult<SlackTurnRecoveryItem[]>>;
   slackTurnRecoveryResolve(id: string): Promise<StateRpcResult<boolean>>;
+  slackIdentityPendingDeliveryCount(identityId: string): Promise<StateRpcResult<number>>;
   slackInteractionProgressRecord(
     id: string,
     patch: SlackInteractionProgressPatch,

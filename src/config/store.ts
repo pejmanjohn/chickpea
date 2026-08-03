@@ -1,4 +1,5 @@
 import {
+  AgentSlackIdentityConflictError,
   AgentExistsError,
   AgentStillAssignedError,
   AgentStillSlackDmHandlerError,
@@ -10,6 +11,8 @@ import {
   UnknownSlackIdentityError,
   WorkspaceDefaultSlackIdentityProtectedError,
 } from './errors.ts';
+import { AuditStoreLogic } from '../audit/store.ts';
+import type { AppendAuditEvent, AuditEvent, AuditEventFilter } from '../audit/types.ts';
 import type { AssignmentLookupOptions } from './resolver.ts';
 import { seededAgents, seededAssignments } from './seed.ts';
 import {
@@ -178,6 +181,18 @@ export interface ConfigStore {
     dmState: SlackIdentityDmState,
     dmAgentId?: string,
   ): Promise<SlackIdentity>;
+  completeSlackIdentitySetup(
+    identityId: string,
+    expectedRevision: number,
+    agentId?: string,
+    expectedAgentIdentityId?: string | null,
+  ): Promise<SlackIdentity>;
+  attachAgentToSlackIdentity(
+    agentId: string,
+    identityId: string,
+    expectedIdentityRevision: number,
+    expectedAgentIdentityId: string | null,
+  ): Promise<CustomAgentConfig>;
   retireSlackIdentity(identityId: string, expectedRevision: number): Promise<SlackIdentity>;
   deleteIncompleteSlackIdentity(
     identityId: string,
@@ -189,6 +204,8 @@ export interface ConfigStore {
     expectedRevision: number,
     credentialsErased: boolean,
   ): Promise<boolean>;
+  appendSlackIdentityAudit(input: AppendAuditEvent): Promise<AuditEvent>;
+  listSlackIdentityAuditEvents(filter?: AuditEventFilter): Promise<AuditEvent[]>;
   /** Node backend only (closes the SQLite handle); absent on RPC proxies. */
   close?(): void;
 }
@@ -201,10 +218,13 @@ export interface ConfigStore {
  * execute SQL synchronously — and the async public interface wraps them.
  */
 export class ConfigStoreLogic {
+  private readonly audit: AuditStoreLogic;
+
   constructor(
     private readonly db: StateDb,
     seed: ConfigSeed = DEFAULT_SEED,
   ) {
+    this.audit = new AuditStoreLogic(db);
     // One statement per exec: DO SQLite rejects multi-statement strings.
     db.exec(
       `CREATE TABLE IF NOT EXISTS config_meta (
@@ -638,6 +658,56 @@ export class ConfigStoreLogic {
     });
   }
 
+  completeSlackIdentitySetup(
+    identityId: string,
+    expectedRevision: number,
+    agentId?: string,
+    expectedAgentIdentityId: string | null = null,
+  ): SlackIdentity {
+    return this.db.transaction(() => {
+      const identity = this.getSlackIdentity(identityId);
+      this.requireSlackIdentityRevision(identity, expectedRevision);
+      this.requireDedicatedSlackIdentity(identity, 'complete setup');
+      if (identity.lifecycle !== 'credentials_pending') {
+        throw new SlackIdentityLifecycleError(
+          identityId,
+          'complete setup',
+          identity.lifecycle,
+        );
+      }
+      if (agentId) {
+        this.requireAgentSlackIdentity(agentId, expectedAgentIdentityId);
+      }
+      const connected = this.updateSlackIdentity(identityId, expectedRevision, {
+        lifecycle: 'connected',
+        health: 'healthy',
+        healthDetail: null,
+      });
+      if (agentId) {
+        this.updateAgent(agentId, { slackIdentityId: identityId });
+      }
+      return connected;
+    });
+  }
+
+  attachAgentToSlackIdentity(
+    agentId: string,
+    identityId: string,
+    expectedIdentityRevision: number,
+    expectedAgentIdentityId: string | null,
+  ): CustomAgentConfig {
+    return this.db.transaction(() => {
+      const identity = this.getSlackIdentity(identityId);
+      this.requireSlackIdentityRevision(identity, expectedIdentityRevision);
+      this.requireAssignableSlackIdentity(identityId);
+      this.requireAgentSlackIdentity(agentId, expectedAgentIdentityId);
+      return this.updateAgent(agentId, {
+        slackIdentityId:
+          identityId === WORKSPACE_DEFAULT_SLACK_IDENTITY_ID ? null : identityId,
+      });
+    });
+  }
+
   retireSlackIdentity(identityId: string, expectedRevision: number): SlackIdentity {
     const identity = this.getSlackIdentity(identityId);
     this.requireSlackIdentityRevision(identity, expectedRevision);
@@ -691,7 +761,18 @@ export class ConfigStoreLogic {
     if (!credentialsErased) {
       throw new SlackIdentityLifecycleError(identityId, 'delete before credentials are erased', identity.lifecycle);
     }
-    this.requireNoSlackIdentityReferences(identityId);
+    const references = this.getSlackIdentityReferences(identityId);
+    // A pending identity's DM Profile is setup intent, not a runtime binding:
+    // the identity cannot admit DMs until connected. It must not make a
+    // credential-erased cancellation undeletable. Explicit Profile presence
+    // references remain blockers.
+    if (references.profileIds.length > 0) {
+      throw new SlackIdentityStillReferencedError(
+        identityId,
+        references.profileIds.join(', '),
+        '',
+      );
+    }
     return this.db.run('DELETE FROM config_slack_identities WHERE id = ?', identityId).changes === 1;
   }
 
@@ -711,6 +792,17 @@ export class ConfigStoreLogic {
     }
     this.requireNoSlackIdentityReferences(identityId);
     return this.db.run('DELETE FROM config_slack_identities WHERE id = ?', identityId).changes === 1;
+  }
+
+  appendSlackIdentityAudit(input: AppendAuditEvent): AuditEvent {
+    if (input.domain !== 'slack_identity') {
+      throw new Error('ConfigStore accepts only Slack identity audit events');
+    }
+    return this.audit.appendIdempotent(input);
+  }
+
+  listSlackIdentityAuditEvents(filter: AuditEventFilter = {}): AuditEvent[] {
+    return this.audit.list({ ...filter, domain: 'slack_identity' });
   }
 
   private requireNoSlackIdentityReferences(identityId: string): void {
@@ -753,6 +845,22 @@ export class ConfigStoreLogic {
         identity.connectionRevision,
       );
     }
+  }
+
+  private requireAgentSlackIdentity(
+    agentId: string,
+    expectedIdentityId: string | null,
+  ): CustomAgentConfig {
+    const agent = this.getAgent(agentId);
+    const actualIdentityId = agent.slackIdentityId ?? null;
+    if (actualIdentityId !== expectedIdentityId) {
+      throw new AgentSlackIdentityConflictError(
+        agentId,
+        expectedIdentityId,
+        actualIdentityId,
+      );
+    }
+    return agent;
   }
 
   private requireAssignableSlackIdentity(identityId: string): SlackIdentity {
@@ -1207,6 +1315,34 @@ export class SqliteConfigStore implements ConfigStore {
     );
   }
 
+  async completeSlackIdentitySetup(
+    identityId: string,
+    expectedRevision: number,
+    agentId?: string,
+    expectedAgentIdentityId?: string | null,
+  ): Promise<SlackIdentity> {
+    return this.logic.completeSlackIdentitySetup(
+      identityId,
+      expectedRevision,
+      agentId,
+      expectedAgentIdentityId,
+    );
+  }
+
+  async attachAgentToSlackIdentity(
+    agentId: string,
+    identityId: string,
+    expectedIdentityRevision: number,
+    expectedAgentIdentityId: string | null,
+  ): Promise<CustomAgentConfig> {
+    return this.logic.attachAgentToSlackIdentity(
+      agentId,
+      identityId,
+      expectedIdentityRevision,
+      expectedAgentIdentityId,
+    );
+  }
+
   async retireSlackIdentity(
     identityId: string,
     expectedRevision: number,
@@ -1236,6 +1372,16 @@ export class SqliteConfigStore implements ConfigStore {
       expectedRevision,
       credentialsErased,
     );
+  }
+
+  async appendSlackIdentityAudit(input: AppendAuditEvent): Promise<AuditEvent> {
+    return this.logic.appendSlackIdentityAudit(input);
+  }
+
+  async listSlackIdentityAuditEvents(
+    filter: AuditEventFilter = {},
+  ): Promise<AuditEvent[]> {
+    return this.logic.listSlackIdentityAuditEvents(filter);
   }
 }
 

@@ -1440,6 +1440,17 @@ export class MemoryStoreLogic {
   } {
     const at = this.now();
     return this.db.transaction(() => {
+      // Slack identity administration has a deliberately shorter, domain-only
+      // correlation horizon. Keep the legacy 365-day actor cleanup below for
+      // every other audit domain; never reuse it for this 30-day policy.
+      this.audit.clearExpiredActorIdsForDomain(
+        'slack_identity',
+        at - 30 * 24 * 60 * 60 * 1_000,
+      );
+      this.audit.deleteBefore(
+        'slack_identity',
+        at - 90 * 24 * 60 * 60 * 1_000,
+      );
       this.db.run(
         `DELETE FROM memory_conversation_injections
          WHERE base_conversation_key IN (

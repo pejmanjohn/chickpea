@@ -245,6 +245,22 @@ export class TurnJobStoreLogic {
     return rows.map((row) => this.decodeRow(row));
   }
 
+  countPendingDeliveriesForSlackIdentity(identityId: string): number {
+    const row = this.db.get(
+      `SELECT COUNT(*) AS count
+       FROM turn_jobs
+       WHERE delivered = 0
+         AND COALESCE(
+           json_extract(turn_json, '$.slackIdentityId'),
+           json_extract(assignment_json, '$.slackIdentityId'),
+           ?
+         ) = ?`,
+      WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+      identityId,
+    ) as { count?: number } | undefined;
+    return Number(row?.count ?? 0);
+  }
+
   getPendingByRunId(runId: string): PendingTurnJob | undefined {
     const row = this.db.get(
       `SELECT ${TURN_JOB_SELECT_COLUMNS}

@@ -246,6 +246,8 @@ export async function completeSlackIdentityConnection(input: {
   settings: SettingsStore;
   identityId: string;
   expectedRevision: number;
+  attachAgentId?: string;
+  expectedAgentIdentityId?: string | null;
 }): Promise<SlackIdentity> {
   const identity = await input.config.getSlackIdentity(input.identityId);
   requireRevision(identity, input.expectedRevision);
@@ -280,11 +282,12 @@ export async function completeSlackIdentityConnection(input: {
           : 'challenge_missing';
     throw new SlackIdentityBootstrapError(code, 'Slack Request URL verification did not match');
   }
-  return input.config.updateSlackIdentity(input.identityId, input.expectedRevision, {
-    lifecycle: 'connected',
-    health: 'healthy',
-    healthDetail: null,
-  });
+  return input.config.completeSlackIdentitySetup(
+    input.identityId,
+    input.expectedRevision,
+    input.attachAgentId,
+    input.expectedAgentIdentityId,
+  );
 }
 
 export async function cancelSlackIdentityConnection(input: {

@@ -101,6 +101,7 @@ export interface SlackStateStore extends SlackClaimStore, SlackThreadRegistry {
   ): Promise<SlackAgentBinding>;
   getAgentBinding(continuityKey: string): Promise<SlackAgentBinding | undefined>;
   runtimeDrainCounts(): Promise<SlackRuntimeDrainCounts>;
+  countPendingDeliveriesForSlackIdentity(identityId: string): Promise<number>;
   /** Node-only durable legacy relay operations; Cloudflare owns these in its DO alarm. */
   listPendingTurns?(): Promise<PendingTurnJob[]>;
   getPendingTurnByRunId?(runId: string): Promise<PendingTurnJob | undefined>;
@@ -435,6 +436,10 @@ export class SqliteSlackStateStore implements SlackStateStore {
 
   async runtimeDrainCounts() {
     return this.turnJobs.runtimeDrainCounts();
+  }
+
+  async countPendingDeliveriesForSlackIdentity(identityId: string) {
+    return this.turnJobs.countPendingDeliveriesForSlackIdentity(identityId);
   }
 
   async listPendingTurns() {

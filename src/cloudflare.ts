@@ -9,6 +9,7 @@ import { instrument } from '@flue/runtime';
 import { createCloudflareTracing } from '@flue/runtime/cloudflare';
 
 import {
+  AgentSlackIdentityConflictError,
   AgentExistsError,
   AgentStillAssignedError,
   AgentStillSlackDmHandlerError,
@@ -71,6 +72,7 @@ import type {
   SlackIdentityDmState,
   SlackIdentityReferenceSummary,
 } from './config/types.ts';
+import type { AppendAuditEvent, AuditEvent, AuditEventFilter } from './audit/types.ts';
 import {
   decideSandboxEgress,
   REPOSITORY_PERMISSIONS,
@@ -681,6 +683,34 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     );
   }
 
+  async configCompleteSlackIdentitySetup(
+    identityId: string,
+    expectedRevision: number,
+    agentId?: string,
+    expectedAgentIdentityId?: string | null,
+  ): Promise<StateRpcResult<SlackIdentity>> {
+    return this.call((stores) => stores.config.completeSlackIdentitySetup(
+      identityId,
+      expectedRevision,
+      agentId,
+      expectedAgentIdentityId,
+    ));
+  }
+
+  async configAttachAgentToSlackIdentity(
+    agentId: string,
+    identityId: string,
+    expectedIdentityRevision: number,
+    expectedAgentIdentityId: string | null,
+  ): Promise<StateRpcResult<CustomAgentConfig>> {
+    return this.call((stores) => stores.config.attachAgentToSlackIdentity(
+      agentId,
+      identityId,
+      expectedIdentityRevision,
+      expectedAgentIdentityId,
+    ));
+  }
+
   async configRetireSlackIdentity(
     identityId: string,
     expectedRevision: number,
@@ -714,6 +744,18 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         credentialsErased,
       ),
     );
+  }
+
+  async configAppendSlackIdentityAudit(
+    input: AppendAuditEvent,
+  ): Promise<StateRpcResult<AuditEvent>> {
+    return this.call((stores) => stores.config.appendSlackIdentityAudit(input));
+  }
+
+  async configListSlackIdentityAuditEvents(
+    filter: AuditEventFilter = {},
+  ): Promise<StateRpcResult<AuditEvent[]>> {
+    return this.call((stores) => stores.config.listSlackIdentityAuditEvents(filter));
   }
 
   // ── agent snapshots ──────────────────────────────────────────────────────
@@ -861,6 +903,12 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
 
   async slackTurnRecoveryResolve(id: string) {
     return this.call((stores) => stores.turnJobs.resolveRecoveryRequired(id));
+  }
+
+  async slackIdentityPendingDeliveryCount(identityId: string) {
+    return this.call((stores) =>
+      stores.turnJobs.countPendingDeliveriesForSlackIdentity(identityId),
+    );
   }
 
   async slackInteractionProgressRecord(
@@ -1428,6 +1476,13 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         return rpcError('agent_slack_dm_handler', err.message, {
           agentId: err.agentId,
           identityIds: err.identityIds,
+        });
+      }
+      if (err instanceof AgentSlackIdentityConflictError) {
+        return rpcError('agent_slack_identity_conflict', err.message, {
+          agentId: err.agentId,
+          expectedIdentityId: err.expectedIdentityId ?? '',
+          actualIdentityId: err.actualIdentityId ?? '',
         });
       }
       if (err instanceof UnknownSlackIdentityError) {

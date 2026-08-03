@@ -7,7 +7,12 @@ import {
   SlackIdentityStillReferencedError,
 } from '../src/config/errors.ts';
 import type { StateRpcResult, TagStateRpc } from '../src/config/state-rpc.ts';
-import type { SlackIdentity, SlackIdentityReferenceSummary } from '../src/config/types.ts';
+import type {
+  CustomAgentConfig,
+  SlackIdentity,
+  SlackIdentityReferenceSummary,
+} from '../src/config/types.ts';
+import type { AuditEvent } from '../src/audit/types.ts';
 
 const identity: SlackIdentity = {
   id: 'slack_identity_finance',
@@ -23,6 +28,38 @@ const identity: SlackIdentity = {
   health: 'healthy',
   createdAt: 1,
   updatedAt: 2,
+};
+
+const attachedProfile: CustomAgentConfig = {
+  id: 'agent_finance',
+  name: 'Finance',
+  instructions: 'Review finance work.',
+  enabled: true,
+  skills: [],
+  mcpServers: [],
+  apiConnections: [],
+  repositories: [],
+  slackIdentityId: identity.id,
+};
+
+const auditEvent: AuditEvent = {
+  eventId: 'evt-1',
+  domain: 'slack_identity',
+  eventType: 'slack_identity.profile_attached',
+  outcome: 'success',
+  actorClass: 'admin',
+  actorId: 'admin-1',
+  workspaceId: null,
+  channelId: null,
+  storeId: null,
+  subjectId: identity.id,
+  subjectVersion: identity.connectionRevision,
+  createdAt: 1,
+  reasonCode: null,
+  beforeHash: null,
+  afterHash: null,
+  metadataJson: '{}',
+  idempotencyKey: 'request-1',
 };
 
 test('Cloudflare config proxy preserves Slack identity records and reference operations', async () => {
@@ -46,16 +83,69 @@ test('Cloudflare config proxy preserves Slack identity records and reference ope
       calls.push({ method: 'references', args: [identityId] });
       return { ok: true, value: references };
     },
+    async configCompleteSlackIdentitySetup(
+      identityId: string,
+      expectedRevision: number,
+      agentId?: string,
+      expectedAgentIdentityId?: string | null,
+    ): Promise<StateRpcResult<SlackIdentity>> {
+      calls.push({
+        method: 'completeSetup',
+        args: [identityId, expectedRevision, agentId, expectedAgentIdentityId],
+      });
+      return { ok: true, value: identity };
+    },
+    async configAttachAgentToSlackIdentity(
+      agentId: string,
+      identityId: string,
+      expectedRevision: number,
+      expectedAgentIdentityId: string | null,
+    ): Promise<StateRpcResult<CustomAgentConfig>> {
+      calls.push({
+        method: 'attachProfile',
+        args: [agentId, identityId, expectedRevision, expectedAgentIdentityId],
+      });
+      return { ok: true, value: attachedProfile };
+    },
+    async configAppendSlackIdentityAudit(): Promise<StateRpcResult<AuditEvent>> {
+      calls.push({ method: 'appendAudit', args: [] });
+      return { ok: true, value: auditEvent };
+    },
+    async configListSlackIdentityAuditEvents(): Promise<StateRpcResult<AuditEvent[]>> {
+      calls.push({ method: 'listAudit', args: [] });
+      return { ok: true, value: [auditEvent] };
+    },
   } as unknown as TagStateRpc;
   const store = new CfConfigStore(stub);
 
   assert.deepEqual(await store.listSlackIdentities(), [identity]);
   assert.deepEqual(await store.getSlackIdentity(identity.id), identity);
   assert.deepEqual(await store.getSlackIdentityReferences(identity.id), references);
+  assert.deepEqual(
+    await store.completeSlackIdentitySetup(identity.id, 3, attachedProfile.id, null),
+    identity,
+  );
+  assert.deepEqual(
+    await store.attachAgentToSlackIdentity(attachedProfile.id, identity.id, 3, null),
+    attachedProfile,
+  );
+  assert.deepEqual(await store.appendSlackIdentityAudit({
+    eventId: auditEvent.eventId,
+    domain: auditEvent.domain,
+    eventType: auditEvent.eventType,
+    outcome: auditEvent.outcome,
+    actorClass: auditEvent.actorClass,
+    createdAt: auditEvent.createdAt,
+  }), auditEvent);
+  assert.deepEqual(await store.listSlackIdentityAuditEvents(), [auditEvent]);
   assert.deepEqual(calls, [
     { method: 'list', args: [] },
     { method: 'get', args: [identity.id] },
     { method: 'references', args: [identity.id] },
+    { method: 'completeSetup', args: [identity.id, 3, attachedProfile.id, null] },
+    { method: 'attachProfile', args: [attachedProfile.id, identity.id, 3, null] },
+    { method: 'appendAudit', args: [] },
+    { method: 'listAudit', args: [] },
   ]);
 });
 
@@ -102,5 +192,38 @@ test('Cloudflare config proxy reconstructs active-DM and referenced-identity dom
       error instanceof SlackIdentityStillReferencedError &&
       error.identityId === 'slack_identity_finance' &&
       error.profileIds === 'agent_finance',
+  );
+});
+
+test('Cloudflare config proxy reconstructs a stale Profile identity selection conflict', async () => {
+  const stub = {
+    async configAttachAgentToSlackIdentity(): Promise<StateRpcResult<CustomAgentConfig>> {
+      return {
+        ok: false,
+        error: {
+          code: 'agent_slack_identity_conflict',
+          message: 'Profile identity changed',
+          details: {
+            agentId: attachedProfile.id,
+            expectedIdentityId: '',
+            actualIdentityId: 'slack_identity_legal',
+          },
+        },
+      };
+    },
+  } as unknown as TagStateRpc;
+
+  await assert.rejects(
+    () => new CfConfigStore(stub).attachAgentToSlackIdentity(
+      attachedProfile.id,
+      identity.id,
+      3,
+      null,
+    ),
+    (error: unknown) =>
+      error instanceof Error &&
+      error.name === 'AgentSlackIdentityConflictError' &&
+      'expectedIdentityId' in error && error.expectedIdentityId === null &&
+      'actualIdentityId' in error && error.actualIdentityId === 'slack_identity_legal',
   );
 });

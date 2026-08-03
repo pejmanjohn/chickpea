@@ -41,6 +41,19 @@ export class AgentStillSlackDmHandlerError extends Error {
   }
 }
 
+export class AgentSlackIdentityConflictError extends Error {
+  constructor(
+    readonly agentId: string,
+    readonly expectedIdentityId: string | null,
+    readonly actualIdentityId: string | null,
+  ) {
+    super(
+      `Profile ${agentId} changed Slack identity (expected ${expectedIdentityId ?? 'workspace default'}, actual ${actualIdentityId ?? 'workspace default'})`,
+    );
+    this.name = 'AgentSlackIdentityConflictError';
+  }
+}
+
 export class UnknownSlackIdentityError extends Error {
   constructor(readonly identityId: string) {
     super(`Unknown Slack identity ${identityId}`);

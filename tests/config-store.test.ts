@@ -15,6 +15,7 @@ import {
 } from '../src/config/seed.ts';
 import { getConfigStore } from '../src/config/state-backend.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { AgentSlackIdentityConflictError } from '../src/config/errors.ts';
 import {
   WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
   type ChannelAssignment,
@@ -207,6 +208,67 @@ test('default identity DM binding writes through to the legacy wildcard row', as
     enabled: true,
   });
   store.close();
+});
+
+test('identity setup attaches a Profile in the same metadata transaction', async () => {
+  const store = new SqliteConfigStore(':memory:', {
+    agents: [agent({ id: 'agent_finance', name: 'Finance' })],
+    assignments: [],
+  });
+  try {
+    const pending = await store.createSlackIdentity(slackIdentity({
+      lifecycle: 'credentials_pending',
+      dmState: 'on',
+      dmAgentId: 'agent_finance',
+    }));
+    const connected = await store.completeSlackIdentitySetup(
+      pending.id,
+      pending.connectionRevision,
+      'agent_finance',
+      null,
+    );
+    assert.equal(connected.lifecycle, 'connected');
+    assert.equal((await store.getAgent('agent_finance')).slackIdentityId, pending.id);
+  } finally {
+    store.close();
+  }
+});
+
+test('identity attachment is stale-write fenced by the Profile current selection', async () => {
+  const store = new SqliteConfigStore(':memory:', {
+    agents: [agent({ id: 'agent_finance', name: 'Finance' })],
+    assignments: [],
+  });
+  try {
+    const finance = await store.createSlackIdentity(slackIdentity());
+    const legal = await store.createSlackIdentity(slackIdentity({
+      id: 'slack_identity_legal',
+      ingressKey: 'ingress_legal_0123456789abcdef',
+      appId: 'A_LEGAL',
+      botUserId: 'U_LEGAL_BOT',
+    }));
+    await store.attachAgentToSlackIdentity(
+      'agent_finance',
+      finance.id,
+      finance.connectionRevision,
+      null,
+    );
+
+    await assert.rejects(
+      () => store.attachAgentToSlackIdentity(
+        'agent_finance',
+        legal.id,
+        legal.connectionRevision,
+        null,
+      ),
+      (error: unknown) =>
+        error instanceof AgentSlackIdentityConflictError &&
+        error.actualIdentityId === finance.id,
+    );
+    assert.equal((await store.getAgent('agent_finance')).slackIdentityId, finance.id);
+  } finally {
+    store.close();
+  }
 });
 
 test('several Profiles may share one connected Slack identity without changing its DM handler', async () => {
