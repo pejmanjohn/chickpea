@@ -1759,6 +1759,7 @@ function runAdminPageHarness(
           identity.credentialProvenance = 'stored';
           identity.appId = 'A_' + identityId.replace(/^slack_identity_/, '').toUpperCase();
           identity.consoleUrl = 'https://api.slack.com/apps/' + identity.appId + '/general';
+          identity.avatarUrl = 'https://avatars.slack-edge.com/' + identity.appId + '.png';
           identity.observedAt = 1_800_000_000_000;
           return jsonResponse({ identity });
         };
@@ -2397,6 +2398,8 @@ test('dedicated setup resumes without returned secrets and completes the signed 
 
   assert.match(harness.app.innerHTML, /Set up @Launch/);
   assert.match(harness.app.innerHTML, /Create and install the Slack app/);
+  assert.match(harness.app.innerHTML, /exact Slack page to change its avatar/);
+  assert.doesNotMatch(harness.app.innerHTML, /Change avatar image in Slack/);
   assert.doesNotMatch(harness.app.innerHTML, /xoxb-live-secret|signing-live-secret/);
   click({ target: actionTarget({ 'data-action': 'slack-identity-credentials-open' }) });
   submit({
@@ -2417,6 +2420,13 @@ test('dedicated setup resumes without returned secrets and completes the signed 
     },
   });
   assert.doesNotMatch(harness.app.innerHTML, /xoxb-live-secret|signing-live-secret/);
+  assert.match(harness.app.innerHTML, /Set avatar and verify Slack/);
+  assert.match(harness.app.innerHTML, /Current Slack avatar/);
+  assert.match(harness.app.innerHTML, /src="https:\/\/avatars\.slack-edge\.com\/A_LAUNCH\.png"/);
+  assert.match(
+    harness.app.innerHTML,
+    /href="https:\/\/api\.slack\.com\/apps\/A_LAUNCH\/general"[^>]*>Change avatar image in Slack &nearr;<\/a>/,
+  );
   assert.match(harness.app.innerHTML, /Verify signed callback/);
   assert.doesNotMatch(harness.app.innerHTML, />Save names<\/button>/);
 
@@ -2424,7 +2434,7 @@ test('dedicated setup resumes without returned secrets and completes the signed 
   await flushAsync();
   assert.equal(harness.slackIdentityVerifyPosts.length, 1);
   assert.match(harness.app.innerHTML, /Identity connected and attached to its creating Profile/);
-  assert.match(harness.app.innerHTML, /Change name or avatar in Slack/);
+  assert.match(harness.app.innerHTML, /Change avatar image in Slack/);
   assert.equal(harness.locationPath(), '/admin/settings/slack/identities/slack_identity_launch');
 });
 
@@ -2596,10 +2606,10 @@ test('Slack identity settings link is scoped to Slack settings and uses a safe n
   });
   await flushAsync();
 
-  assert.doesNotMatch(firstPaint, /Change name or avatar in Slack/);
+  assert.doesNotMatch(firstPaint, /Change avatar image in Slack/);
   const header = harness.app.innerHTML.match(/<header class="topbar">[\s\S]*?<\/header>/)?.[0] ?? '';
-  assert.doesNotMatch(header, /Change name or avatar in Slack/);
-  const anchor = harness.app.innerHTML.match(/<a\b[^>]*href="https:\/\/api\.slack\.com\/apps\/A_CHICKPEA\/general"[^>]*>Change name or avatar in Slack &nearr;<\/a>/)?.[0];
+  assert.doesNotMatch(header, /Change avatar image in Slack/);
+  const anchor = harness.app.innerHTML.match(/<a\b[^>]*href="https:\/\/api\.slack\.com\/apps\/A_CHICKPEA\/general"[^>]*>Change avatar image in Slack &nearr;<\/a>/)?.[0];
   assert.ok(anchor, 'expected the exact Slack identity settings anchor inside Slack settings');
   assert.match(anchor, /\btarget="_blank"/);
   const rel = anchor.match(/\brel="([^"]+)"/)?.[1]?.split(/\s+/) ?? [];

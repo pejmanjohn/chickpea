@@ -6712,6 +6712,11 @@ details[open].advanced summary::before {
     return '<span class="slack-identity-avatar" aria-hidden="true">' + esc(name.slice(0, 1).toUpperCase() || "C") + '</span>';
   }
 
+  function slackIdentityAvatarSettingsLinkHtml(identity) {
+    if (!identity || !identity.consoleUrl) return "";
+    return '<a class="btn btn-soft btn-sm" href="' + esc(identity.consoleUrl) + '" target="_blank" rel="noopener noreferrer">Change avatar image in Slack &nearr;</a>';
+  }
+
   function identityRolloutPaused(identity) {
     return identity && identity.kind === "dedicated" && !state.slackIdentities.creationEnabled && identity.lifecycle !== "retired";
   }
@@ -6826,11 +6831,14 @@ details[open].advanced summary::before {
     var intentBody = identity.lifecycle === "setup_incomplete" && !reconnecting
       ? '<form data-action="slack-identity-setup-names-form"><div class="form-grid"><div class="field"><label class="field-label">Slack app name</label><input class="input" name="appName" maxlength="35" required value="' + esc(names.appName) + '" data-action="slack-identity-setup-app-name"></div><div class="field"><label class="field-label">Mention name</label><input class="input" name="displayName" maxlength="80" required value="' + esc(names.displayName) + '" data-action="slack-identity-setup-display-name"></div></div><button type="submit" class="btn btn-soft btn-sm"' + (state.slackIdentityBusy ? " disabled" : "") + '>Save names</button></form>'
       : '<div class="kv"><dt>Slack app name</dt><dd>' + esc(names.appName || identity.displayName || "Identity") + '</dd><dt>Mention name</dt><dd>@' + esc(names.displayName || identity.displayName || "Identity") + '</dd></div><p class="hint">These installed names are read-only here. Change the live name later in Slack.</p>';
-    var manifestBody = '<p class="hint">Slack opens a prefilled manifest. Review it, choose <b>Create</b>, install the app in <b>' + esc(connectedTeamName()) + '</b>, then upload the avatar in Slack. Manifests cannot set avatars.</p>' +
+    var manifestBody = '<p class="hint">Slack opens a prefilled manifest. Review it, choose <b>Create</b>, and install the app in <b>' + esc(connectedTeamName()) + '</b>. After Chickpea validates its credentials, you can open the exact Slack page to change its avatar.</p>' +
       (setup.manifestUrl ? '<a class="btn btn-primary i-lead" href="' + esc(setup.manifestUrl) + '" target="_blank" rel="noopener noreferrer" data-action="slack-identity-manifest-open">Create app in Slack &nearr;</a>' : '<p class="field-error">' + esc(setup.manifestError || "The manifest could not be generated. Edit the names and try again.") + '</p>') +
       '<button type="button" class="btn btn-ghost btn-sm" data-action="slack-identity-credentials-open">I installed the app</button>';
     var credentialBody = stage >= 3 ? '<form data-action="slack-identity-credentials-form"><p class="hint">Paste the Bot User OAuth Token and Signing Secret from this app. They are write-only and disappear from the browser after submission.</p><div class="form-grid"><div class="field"><label class="field-label">Bot User OAuth Token</label><input class="input mono" type="password" autocomplete="off" name="botToken" placeholder="xoxb-&hellip;" value="' + esc(state.slackIdentityCredentialDraft.botToken) + '" data-action="slack-identity-credential-token"></div><div class="field"><label class="field-label">Signing Secret</label><input class="input mono" type="password" autocomplete="off" name="signingSecret" value="' + esc(state.slackIdentityCredentialDraft.signingSecret) + '" data-action="slack-identity-credential-secret"></div></div><button type="submit" class="btn btn-primary"' + (state.slackIdentityBusy ? " disabled" : "") + '>' + (state.slackIdentityBusy === "connect" ? "Checking&hellip;" : "Validate credentials") + '</button></form>' : '<p class="hint">Install the Slack app first, then continue here.</p>';
-    var verifyBody = identity.lifecycle === "credentials_pending" ? '<p class="hint">In Slack, save the prefilled Request URL so Slack sends its signed challenge. Then verify it here. If the challenge expired, use Slack&rsquo;s Retry button and try again.</p><button type="button" class="btn btn-primary" data-action="slack-identity-verify"' + (state.slackIdentityBusy ? " disabled" : "") + '>' + (state.slackIdentityBusy === "verify" ? "Verifying&hellip;" : "Verify signed callback") + '</button>' : '<p class="hint">Available after the credentials are validated.</p>';
+    var setupAvatarAction = identity.lifecycle === "credentials_pending" && identity.consoleUrl
+      ? '<div class="action-well" style="align-items:center;">' + managedIdentityAvatarHtml(identity) + '<div style="display:flex; flex-direction:column; gap:3px; flex:1;"><span class="field-label">Current Slack avatar</span><span class="hint">Slack owns this image. Change it there, then return here to finish.</span></div>' + slackIdentityAvatarSettingsLinkHtml(identity) + '</div>'
+      : "";
+    var verifyBody = identity.lifecycle === "credentials_pending" ? setupAvatarAction + '<p class="hint">In Slack, save the prefilled Request URL so Slack sends its signed challenge. Then verify it here. If the challenge expired, use Slack&rsquo;s Retry button and try again.</p><button type="button" class="btn btn-primary" data-action="slack-identity-verify"' + (state.slackIdentityBusy ? " disabled" : "") + '>' + (state.slackIdentityBusy === "verify" ? "Verifying&hellip;" : "Verify signed callback") + '</button>' : '<p class="hint">Available after the credentials are validated.</p>';
     var attachmentNote = reconnecting
       ? "This identity is paused until Slack signs the new callback. Verification does not change any Profile&rsquo;s Replies as selection."
       : identity.setupSourceProfileId
@@ -6843,7 +6851,7 @@ details[open].advanced summary::before {
       identityStepHtml(1, "Choose identity and DM routing", intentBody, stage === 1, stage > 1) +
       identityStepHtml(2, "Create and install the Slack app", manifestBody, stage === 2, stage > 2) +
       identityStepHtml(3, "Paste write-only credentials", credentialBody, stage === 3, stage > 3) +
-      identityStepHtml(4, "Verify Slack and finish", verifyBody, stage === 4, false) +
+      identityStepHtml(4, "Set avatar and verify Slack", verifyBody, stage === 4, false) +
       (state.slackIdentityActionError ? '<p class="field-error" role="alert">' + esc(state.slackIdentityActionError) + '</p>' : '') +
       (state.slackIdentityNotice ? '<p class="inline-status" role="status">' + esc(state.slackIdentityNotice) + '</p>' : '') +
       cancelBody + '</div>';
@@ -6866,7 +6874,7 @@ details[open].advanced summary::before {
     var isDefault = identity.kind === "workspace_default";
     var paused = identityRolloutPaused(identity);
     var observed = identity.observedAt ? new Date(identity.observedAt).toLocaleString() : "Not refreshed yet";
-    var consoleLink = identity.consoleUrl ? '<a class="btn btn-soft btn-sm" href="' + esc(identity.consoleUrl) + '" target="_blank" rel="noopener noreferrer">Change name or avatar in Slack &nearr;</a>' : '';
+    var consoleLink = slackIdentityAvatarSettingsLinkHtml(identity);
     var dmOptions = enabledIdentityProfileOptions(state.slackIdentityDmDraft.dmAgentId);
     var dmReady = identity.lifecycle === "connected" || identity.lifecycle === "degraded";
     var dmDestination = identity.dmProfile ? identity.dmProfile.name : "the selected Profile";
