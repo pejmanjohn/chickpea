@@ -2257,15 +2257,16 @@ test('Settings Slack identities is a durable default-first management screen', a
   assert.match(harness.app.innerHTML, /@Chickpea/);
   assert.match(harness.app.innerHTML, /Workspace default/);
   assert.match(harness.app.innerHTML, /@Finance/);
-  assert.match(harness.app.innerHTML, /DM handler/);
-  assert.match(harness.app.innerHTML, /Ops Profile/);
+  assert.match(harness.app.innerHTML, /Direct messages/);
+  assert.match(harness.app.innerHTML, /Go to Ops Profile/);
+  assert.match(harness.app.innerHTML, /Used by 2 Profiles/);
   assert.match(harness.app.innerHTML, /Workspace credentials/);
   assert.match(harness.app.innerHTML, /Stored credentials/);
   assert.match(harness.app.innerHTML, /Add Slack identity/);
   assert.doesNotMatch(harness.app.innerHTML, /Paste.*signing secret/i);
 });
 
-test('an unconfigured workspace-default identity opens management, never dedicated setup', async () => {
+test('an unconfigured workspace-default identity routes to the one Channels setup flow', async () => {
   const identities = multiSlackIdentitiesFixture();
   const workspaceDefault = identities.identities[0];
   assert.ok(workspaceDefault);
@@ -2274,13 +2275,26 @@ test('an unconfigured workspace-default identity opens management, never dedicat
   const harness = runAdminPageHarness({
     initialPath: '/admin/settings/slack/identities',
     slackIdentities: identities,
+    slackConnection: disconnectedSlackFixture(),
   });
   await flushAsync();
 
   assert.match(
     harness.app.innerHTML,
-    /data-action="slack-identity-open-detail" data-identity="slack_identity_default">View<\/button>/,
+    /data-action="open-channels" data-identity="slack_identity_default">Connect @Chickpea<\/button>/,
   );
+  assert.match(harness.app.innerHTML, /Not connected/);
+  assert.match(harness.app.innerHTML, /Connect from Channels/);
+  assert.match(harness.app.innerHTML, /Profile usage/);
+  const workspaceDefaultActionAt = harness.app.innerHTML.indexOf(
+    'data-identity="slack_identity_default"',
+  );
+  assert.notEqual(workspaceDefaultActionAt, -1);
+  const workspaceDefaultRow = harness.app.innerHTML.slice(
+    harness.app.innerHTML.lastIndexOf('<div class="identity-row">', workspaceDefaultActionAt),
+    harness.app.innerHTML.indexOf('</button></div>', workspaceDefaultActionAt) + '</button></div>'.length,
+  );
+  assert.doesNotMatch(workspaceDefaultRow, /DM handler|Direct messages/);
   assert.doesNotMatch(
     harness.app.innerHTML,
     /data-action="slack-identity-open-setup" data-identity="slack_identity_default"/,
@@ -2290,16 +2304,43 @@ test('an unconfigured workspace-default identity opens management, never dedicat
   assert.ok(click);
   click({
     target: actionTarget({
-      'data-action': 'slack-identity-open-detail',
+      'data-action': 'open-channels',
       'data-identity': 'slack_identity_default',
     }),
   });
   await flushAsync();
-  assert.equal(
-    harness.locationPath(),
-    '/admin/settings/slack/identities/slack_identity_default',
+  assert.equal(harness.locationPath(), '/admin/channels');
+  assert.match(harness.app.innerHTML, /Connect @Chickpea/);
+  assert.doesNotMatch(harness.app.innerHTML, /The workspace-default identity cannot be retired/);
+});
+
+test('an incomplete dedicated identity hides DM routing and resumes its own setup', async () => {
+  const identities = multiSlackIdentitiesFixture();
+  const finance = identities.identities.find((identity) =>
+    identity.id === 'slack_identity_finance'
   );
-  assert.match(harness.app.innerHTML, /The workspace-default identity cannot be retired/);
+  assert.ok(finance);
+  finance.lifecycle = 'setup_incomplete';
+  finance.health = 'disconnected';
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/settings/slack/identities',
+    slackIdentities: identities,
+  });
+  await flushAsync();
+
+  const financeActionAt = harness.app.innerHTML.indexOf(
+    'data-identity="slack_identity_finance"',
+  );
+  assert.notEqual(financeActionAt, -1);
+  const financeRow = harness.app.innerHTML.slice(
+    harness.app.innerHTML.lastIndexOf('<div class="identity-row">', financeActionAt),
+    harness.app.innerHTML.indexOf('</button></div>', financeActionAt) + '</button></div>'.length,
+  );
+  assert.match(financeRow, /Profile usage/);
+  assert.match(financeRow, /Used by 1 Profile/);
+  assert.match(financeRow, /data-action="slack-identity-open-setup"/);
+  assert.match(financeRow, /Resume @Finance setup/);
+  assert.doesNotMatch(financeRow, /DM handler|Direct messages/);
 });
 
 test('Settings can create a dedicated identity and land in its stable setup route', async () => {
@@ -2469,6 +2510,7 @@ test('identity detail separates Slack appearance, DM confirmation, reconnect, an
   assert.match(harness.app.innerHTML, /href="https:\/\/api\.slack\.com\/apps\/A_FINANCE\/general"/);
   assert.match(harness.app.innerHTML, /Profile usage/);
   assert.match(harness.app.innerHTML, /Ops Profile/);
+  assert.match(harness.app.innerHTML, /DMs handled by/);
   assert.match(harness.app.innerHTML, /Reconnect or rotate/);
   assert.match(harness.app.innerHTML, /Before retiring: move 1 Profile, turn DMs off/);
 
@@ -2770,7 +2812,7 @@ test('Slack overview controls save behavior, test the connection, update credent
   click({ target: actionTarget({ 'data-action': 'slack-disconnect-confirm' }) });
   await flushAsync();
   assert.equal(harness.slackDisconnectCalls(), 1);
-  assert.match(harness.app.innerHTML, /Connect Slack/);
+  assert.match(harness.app.innerHTML, /Connect @Chickpea/);
 });
 
 test('Slack credential replacement ignores stale identity successes and failures', async () => {
@@ -3201,7 +3243,7 @@ test('New profile opens a blank create screen and validation gates save', async 
   assert.match(harness.app.innerHTML, /Name is required\./);
 });
 
-test('Replies as reuses a connected identity without silently changing its DM handler', async () => {
+test('Replies as reuses a connected identity without exposing DM routing controls', async () => {
   const harness = runAdminPageHarness({ slackIdentities: multiSlackIdentitiesFixture() });
   await flushAsync();
   const click = harness.listeners.click;
@@ -3220,7 +3262,8 @@ test('Replies as reuses a connected identity without silently changing its DM ha
       'slack_identity_finance',
     ),
   });
-  assert.match(harness.app.innerHTML, /DM handler<\/span>[^<]*Ops Profile/);
+  assert.match(harness.app.innerHTML, /Manage @Finance/);
+  assert.doesNotMatch(harness.app.innerHTML, /DM handler|Handles DMs|profile-identity-make-dm/);
   click({ target: actionTarget({ 'data-action': 'save-profile' }) });
   await flushAsync();
 
@@ -3275,63 +3318,27 @@ test('New Slack identity validates first, saves the Profile, then emits the stab
   );
 });
 
-test('making a Profile the identity DM handler is a separate confirmed action', async () => {
+test('Profile identity management links to Identity settings while DM routing stays there', async () => {
   const harness = runAdminPageHarness({ slackIdentities: multiSlackIdentitiesFixture() });
   await flushAsync();
   const click = harness.listeners.click;
-  const change = harness.listeners.change;
-  assert.ok(click && change);
+  assert.ok(click);
 
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': releaseAgent.id }) });
-  change({
-    target: valueTarget(
-      { 'data-action': 'profile-slack-identity' },
-      'slack_identity_finance',
-    ),
-  });
-  click({ target: actionTarget({ 'data-action': 'profile-identity-make-dm' }) });
-  assert.equal(harness.slackIdentityDmPatches.length, 0);
-  assert.match(harness.app.innerHTML, /Replace Ops Profile as the DM handler\?/);
-
-  click({ target: actionTarget({ 'data-action': 'profile-identity-dm-confirm' }) });
-  await flushAsync();
-  assert.deepEqual(harness.slackIdentityDmPatches, [{
-    identityId: 'slack_identity_finance',
-    body: { expectedRevision: 7, dmState: 'on', dmAgentId: releaseAgent.id },
-  }]);
-  assert.match(harness.app.innerHTML, /DM handler<\/span>[^<]*Release Profile/);
-});
-
-test('changing the remembered DM handler does not re-enable an identity whose DMs are off', async () => {
-  const identities = multiSlackIdentitiesFixture();
-  const finance = identities.identities.find((identity) =>
-    identity.id === 'slack_identity_finance'
+  assert.match(
+    harness.app.innerHTML,
+    /data-action="slack-identity-open-detail" data-identity="slack_identity_default">Manage @Chickpea<\/button>/,
   );
-  assert.ok(finance);
-  finance.dmState = 'off';
-  finance.effectiveDmState = 'off';
-  const harness = runAdminPageHarness({ slackIdentities: identities });
-  await flushAsync();
-  const click = harness.listeners.click;
-  const change = harness.listeners.change;
-  assert.ok(click && change);
-
-  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': releaseAgent.id }) });
-  change({
-    target: valueTarget(
-      { 'data-action': 'profile-slack-identity' },
-      'slack_identity_finance',
-    ),
+  assert.doesNotMatch(harness.app.innerHTML, /DM handler|Handles DMs|profile-identity-make-dm/);
+  click({
+    target: actionTarget({
+      'data-action': 'slack-identity-open-detail',
+      'data-identity': 'slack_identity_default',
+    }),
   });
-  click({ target: actionTarget({ 'data-action': 'profile-identity-make-dm' }) });
-  assert.match(harness.app.innerHTML, /The Slack DM conversation and its memory continue\./);
-  click({ target: actionTarget({ 'data-action': 'profile-identity-dm-confirm' }) });
   await flushAsync();
-
-  assert.deepEqual(harness.slackIdentityDmPatches, [{
-    identityId: 'slack_identity_finance',
-    body: { expectedRevision: 7, dmState: 'off', dmAgentId: releaseAgent.id },
-  }]);
+  assert.equal(harness.locationPath(), '/admin/settings/slack/identities/slack_identity_default');
+  assert.match(harness.app.innerHTML, /DMs handled by/);
 });
 
 test('identity membership blockers name channels and require wildcard acknowledgement before any Profile write', async () => {
@@ -3595,7 +3602,7 @@ test('Add to channels explains the disconnected state without requesting a catal
   const harness = runAdminPageHarness({ slackConnection: disconnectedSlackFixture() });
   await openReleaseAttachPicker(harness);
 
-  assert.match(harness.app.innerHTML, /Connect Slack first to list workspace channels\./);
+  assert.match(harness.app.innerHTML, /Connect @Chickpea first to list workspace channels\./);
   assert.deepEqual(harness.channelListCalls, []);
 });
 
@@ -7523,9 +7530,9 @@ test('the navigation rail stays available while channel setup waits for Slack', 
 
   // Disconnected: setup stays focused, but the stable section switcher remains
   // available and the Slack-specific add affordance is visibly disabled.
-  assert.match(harness.app.innerHTML, /Connect Slack/);
+  assert.match(harness.app.innerHTML, /Connect @Chickpea/);
   assert.match(harness.app.innerHTML, /class="rail" aria-label="Channels"/);
-  assert.match(harness.app.innerHTML, /data-action="toggle-add-channel" disabled title="Connect Slack first"/);
+  assert.match(harness.app.innerHTML, /data-action="toggle-add-channel" disabled title="Connect @Chickpea first"/);
   assert.match(harness.app.innerHTML, /class="section-nav-item" data-action="open-profiles"[^>]*>Profiles<\/button>/);
   assert.match(harness.app.innerHTML, /class="section-nav-item" data-action="open-settings"[^>]*>Settings<\/button>/);
   assert.equal(harness.channelListCalls.length, 0);
@@ -7569,8 +7576,8 @@ test('admin page renders the first-run Connect stepper when credentials are miss
 
   // Step 1 is the whole screen: header, not-connected chip, the manifest Create
   // link (events URL prefilled), and the workspace-pick warning.
-  assert.match(harness.app.innerHTML, /Connect Slack/);
-  assert.match(harness.app.innerHTML, /Two steps: create the app/);
+  assert.match(harness.app.innerHTML, /Connect @Chickpea/);
+  assert.match(harness.app.innerHTML, /This is the workspace-default identity/);
   assert.match(harness.app.innerHTML, /Not connected/);
   // The manifest deep-link is the server-provided URL, attribute-escaped.
   assert.match(

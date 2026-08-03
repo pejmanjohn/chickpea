@@ -1775,8 +1775,6 @@ details[open].advanced summary::before {
     // Safe identity summaries for Profile selection. The workspace default is
     // always rendered even if this auxiliary collection endpoint is unavailable.
     slackIdentities: { identities: [], creationEnabled: false, globalDmAllowed: true },
-    profileIdentityBusy: "",
-    profileIdentityDmConfirm: null,
     slackIdentityScreen: "list",
     slackIdentitySelectedId: "",
     slackIdentityDetail: null,
@@ -2180,8 +2178,6 @@ details[open].advanced summary::before {
 
   function resetProfileTransientState() {
     state.profileError = "";
-    state.profileIdentityBusy = "";
-    state.profileIdentityDmConfirm = null;
     state.profileDirty = false;
     state.disableConfirm = false;
     state.profileTab = "instructions";
@@ -2329,7 +2325,7 @@ details[open].advanced summary::before {
 
   function render() {
     var app = document.getElementById("app");
-    app.innerHTML = topbarHtml() + '<div class="body">' + railHtml() + mainHtml() + "</div>" + leavePromptModalHtml() + connectionRemoveModalHtml() + apiConnectionRemoveModalHtml() + slackDisconnectModalHtml() + githubDisconnectModalHtml() + memoryDeleteModalHtml() + scheduledRoutineSummaryModalHtml() + scheduledDeleteModalHtml() + profileIdentityDmModalHtml() + slackIdentityConfirmModalHtml();
+    app.innerHTML = topbarHtml() + '<div class="body">' + railHtml() + mainHtml() + "</div>" + leavePromptModalHtml() + connectionRemoveModalHtml() + apiConnectionRemoveModalHtml() + slackDisconnectModalHtml() + githubDisconnectModalHtml() + memoryDeleteModalHtml() + scheduledRoutineSummaryModalHtml() + scheduledDeleteModalHtml() + slackIdentityConfirmModalHtml();
     // The disconnect confirmation is a true modal: keep the rest of the app
     // out of the focus and accessibility trees until it is resolved.
     if (state.slackDisconnectConfirm) {
@@ -2380,17 +2376,6 @@ details[open].advanced summary::before {
       });
       var routineDeleteCancel = document.querySelector('[data-action="scheduled-delete-cancel"]');
       if (routineDeleteCancel && routineDeleteCancel.focus) routineDeleteCancel.focus();
-    }
-    if (state.profileIdentityDmConfirm) {
-      [document.querySelector(".topbar"), document.querySelector(".body")].forEach(function (region) {
-        if (!region) return;
-        region.inert = true;
-        if (region.setAttribute) region.setAttribute("aria-hidden", "true");
-      });
-      var identityDmFocus = state.profileIdentityBusy
-        ? document.querySelector('[data-role="profile-identity-dm-dialog"]')
-        : document.querySelector('[data-action="profile-identity-dm-confirm"]');
-      if (identityDmFocus && identityDmFocus.focus) identityDmFocus.focus();
     }
     if (state.slackIdentityConfirm) {
       [document.querySelector(".topbar"), document.querySelector(".body")].forEach(function (region) {
@@ -2541,9 +2526,9 @@ details[open].advanced summary::before {
     // in the transient null-connection state (a failed connection fetch).
     var addDisabled = !isSlackConnected();
     html += '<button type="button" class="rail-add" data-action="toggle-add-channel"' +
-      (addDisabled ? ' disabled title="Connect Slack first"' : '') + '>' + icon("plus") + 'Add Slack channel</button>';
+      (addDisabled ? ' disabled title="Connect @Chickpea first"' : '') + '>' + icon("plus") + 'Add Slack channel</button>';
     if (addDisabled) {
-      html += '<p class="hint" style="margin-left:12px; padding:0 10px;">Connect Slack first</p>';
+      html += '<p class="hint" style="margin-left:12px; padding:0 10px;">Connect @Chickpea first</p>';
     }
     return html + '</div>' + sectionSwitcherHtml() + '</nav>';
   }
@@ -2575,7 +2560,7 @@ details[open].advanced summary::before {
 
   function settingsRailHtml() {
     var sections = [
-      { id: "slack", name: "Slack", meta: "Identities and DMs" },
+      { id: "slack", name: "Slack", meta: "Identities" },
       { id: "providers", name: "Model providers", meta: "Keys and models" },
       { id: "github", name: "GitHub", meta: "Accounts and access" },
       { id: "sandbox", name: "Coding sandbox", meta: "Workspace runtime" },
@@ -3292,7 +3277,7 @@ details[open].advanced summary::before {
   function addChannelButtonHtml(classes) {
     var disabled = !isSlackConnected();
     return '<button type="button" class="' + classes + '" data-action="toggle-add-channel"' +
-      (disabled ? ' disabled title="Connect Slack first"' : '') + '>Add channel</button>';
+      (disabled ? ' disabled title="Connect @Chickpea first"' : '') + '>Add channel</button>';
   }
 
   function inviteReminderHtml() {
@@ -3332,7 +3317,7 @@ details[open].advanced summary::before {
       '<button type="button" class="btn btn-ghost btn-sm" data-action="cancel-add-channel">Cancel</button></div>';
     if (!isSlackConnected()) {
       return '<section class="section">' + head +
-        '<div class="empty"><p class="field-label">Connect Slack first</p>' +
+        '<div class="empty"><p class="field-label">Connect @Chickpea first</p>' +
         '<p class="hint">Add the bot token and signing secret above, then come back to pick a channel.</p></div></section>';
     }
     // Workspace — locked to the install (card 05). Never an editable field once
@@ -3405,17 +3390,17 @@ details[open].advanced summary::before {
     if (state.slackStep >= 2) {
       return '<div class="step-block">' +
         '<span class="step-num done">' + icon("check") + '</span>' +
-        '<div class="step-body"><div class="step-done-line"><span class="step-title">Create your Slack app</span>' +
+        '<div class="step-body"><div class="step-done-line"><span class="step-title">Create @Chickpea in Slack</span>' +
         '<span class="hint" style="color:var(--ok);">App created</span></div></div></div>';
     }
     return '<div class="step-block">' +
       '<span class="step-num active">1</span>' +
       '<div class="step-body">' +
-      '<div class="step-title">Create your Slack app</div>' +
+      '<div class="step-title">Create @Chickpea in Slack</div>' +
       '<p class="hint">Opens Slack with a manifest that pre-fills everything, including this install&rsquo;s events URL.</p>' +
       '<div class="field" style="gap:4px;"><span class="tiny-label">Events URL (already in the manifest)</span>' +
       '<span class="chip">' + esc(conn.requestUrl) + '</span></div>' +
-      '<div><a class="btn btn-primary" href="' + esc(conn.manifestUrl) + '" target="_blank" rel="noreferrer" data-action="advance-slack-step">Create your Slack app &nearr;</a></div>' +
+      '<div><a class="btn btn-primary" href="' + esc(conn.manifestUrl) + '" target="_blank" rel="noreferrer" data-action="advance-slack-step">Create @Chickpea in Slack &nearr;</a></div>' +
       // The one unrecoverable choice: Slack forces a workspace pick during
       // creation and the manifest cannot pre-select it. Choosing a different
       // workspace here creates an install the configured bot cannot serve.
@@ -3457,8 +3442,8 @@ details[open].advanced summary::before {
   function slackStepperHtml() {
     var conn = state.slack;
     if (!conn) return "";
-    return '<section class="section"><div class="section-head"><div><h2 class="section-title">Connect Slack</h2>' +
-      '<p class="hint">Two steps: create the app, then install it and paste two values back as you copy them.</p></div>' +
+    return '<section class="section"><div class="section-head"><div><h2 class="section-title">Connect @Chickpea</h2>' +
+      '<p class="hint">This is the workspace-default identity. Create its Slack app, then install it and paste two values back as you copy them.</p></div>' +
       '<span class="badge badge-off"><span class="dot"></span>Not connected</span></div>' +
       '<div class="stepper">' + slackStep1Html(conn) + slackStep2Html() + '</div></section>' +
       '<details class="advanced"><summary>Request URL shows as unverified?</summary>' +
@@ -3625,7 +3610,7 @@ details[open].advanced summary::before {
     var cards = state.agents.map(profileCardHtml).join("");
     return '<div class="main-head"><div style="display:flex; flex-direction:column; gap:6px;">' +
       '<h1 class="page-title">Profiles</h1>' +
-      '<p class="hint" style="max-width:58ch;">A profile is reusable behavior you attach to channels &mdash; its instructions, model, skills, connections, and Slack presence. By default, every Profile always replies as <b style="font-weight:500; color:var(--text);">' + slackMentionHtml() + '</b>; dedicated identities are optional.</p>' +
+      '<p class="hint" style="max-width:58ch;">A profile is reusable behavior you attach to channels &mdash; its instructions, model, skills, connections, and Slack identity. By default, every Profile always replies as <b style="font-weight:500; color:var(--text);">' + slackMentionHtml() + '</b>; dedicated identities are optional.</p>' +
       '</div><button type="button" class="btn btn-primary" style="flex-shrink:0;" data-action="new-profile">New profile</button></div>' +
       '<section class="section"><div class="section-head"><div><h2 class="section-title">Your profiles</h2><p class="hint">Everything Chickpea can be in this workspace.</p></div></div>' +
       (cards || '<div class="empty"><p class="field-label">No profiles yet</p><p class="hint">Create one to give Chickpea a behavior you can attach to channels.</p></div>') +
@@ -5106,12 +5091,22 @@ details[open].advanced summary::before {
     });
   }
 
-  function profileIdentityAvatarHtml(identity) {
-    if (identity && identity.avatarUrl) {
-      return '<img src="' + esc(identity.avatarUrl) + '" alt="" style="width:40px; height:40px; border-radius:10px; object-fit:cover; flex:none;">';
-    }
-    var initial = ((identity && identity.displayName) || "C").slice(0, 1).toUpperCase();
-    return '<span aria-hidden="true" style="width:40px; height:40px; border-radius:10px; display:grid; place-items:center; background:var(--well); font-weight:700; flex:none;">' + esc(initial) + '</span>';
+  function slackIdentityNeedsSetup(identity) {
+    return !!identity &&
+      (identity.lifecycle === "setup_incomplete" || identity.lifecycle === "credentials_pending");
+  }
+
+  function slackIdentityOpenAction(identity) {
+    if (identity && identity.kind === "workspace_default" && slackIdentityNeedsSetup(identity)) return "open-channels";
+    if (identity && identity.kind === "dedicated" && slackIdentityNeedsSetup(identity)) return "slack-identity-open-setup";
+    return "slack-identity-open-detail";
+  }
+
+  function slackIdentityOpenLabel(identity) {
+    var mention = slackIdentityMention(identity);
+    if (identity && identity.kind === "workspace_default" && slackIdentityNeedsSetup(identity)) return "Connect " + mention;
+    if (identity && identity.kind === "dedicated" && slackIdentityNeedsSetup(identity)) return "Resume " + mention + " setup";
+    return "Manage " + mention;
   }
 
   function profileIdentityHtml(draft) {
@@ -5139,23 +5134,19 @@ details[open].advanced summary::before {
         '<p class="hint">Chickpea saves this Profile first, then guides you through a separate Slack app install. Canceling setup leaves the Profile on ' + esc(slackIdentityMention(workspaceDefault)) + '.</p></div></div>';
     } else {
       var selected = selectedProfileSlackIdentity(draft) || workspaceDefault;
-      var handler = selected && selected.dmProfile ? selected.dmProfile.name : "Not configured";
-      var kindBadge = selected && selected.kind === "workspace_default"
-        ? '<span class="badge badge-role">Workspace default</span>'
-        : '<span class="badge">Dedicated identity</span>';
-      var healthBadge = selected
-        ? '<span class="badge ' + (selected.health === "healthy" ? "badge-on" : "badge-off") + '"><span class="dot"></span>' + esc(selected.health || "unknown") + '</span>'
-        : "";
-      var makeHandler = draft.id && selected && selected.dmAgentId !== draft.id
-        ? '<button type="button" class="btn btn-soft btn-sm" data-action="profile-identity-make-dm"' + (state.profileIdentityBusy ? " disabled" : "") + '>Make this Profile the handler</button>'
-        : (draft.id && selected && selected.dmAgentId === draft.id
-          ? '<span class="badge badge-on"><span class="dot"></span>Handles DMs</span>'
-          : "");
-      details = '<div class="well" style="display:flex; gap:12px; align-items:center;">' +
-        profileIdentityAvatarHtml(selected) +
-        '<div style="display:flex; flex-direction:column; gap:5px; min-width:0; flex:1;">' +
-        '<div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center;"><strong>' + esc(slackIdentityMention(selected)) + '</strong>' + kindBadge + healthBadge + '</div>' +
-        '<div class="hint"><span>DM handler</span> &middot; ' + esc(handler) + '</div></div>' + makeHandler + '</div>';
+      if (selected) {
+        var identityStatus = managedIdentityStatus(selected);
+        var identityAction = slackIdentityOpenAction(selected);
+        var identityActionAttributes = identityAction === "open-channels"
+          ? ' data-action="open-channels"'
+          : ' data-action="' + identityAction + '" data-identity="' + esc(selected.id) + '"';
+        var identityNote = identityStatus === "Connected"
+          ? esc(slackIdentityMention(selected)) + " will reply in new conversations."
+          : esc(identityStatus) + ". Finish setup before using this identity for new conversations.";
+        details = '<div class="action-well" style="justify-content:space-between;">' +
+          '<span class="hint">' + identityNote + '</span>' +
+          '<button type="button" class="btn btn-soft btn-sm"' + identityActionAttributes + '>' + esc(slackIdentityOpenLabel(selected)) + '</button></div>';
+      }
     }
 
     var wildcard = profileSlackIdentityChanged(draft) && profileHasUnenumeratedChannels(draft)
@@ -5165,37 +5156,17 @@ details[open].advanced summary::before {
       : "";
 
     return '<section class="section"><div class="section-head"><div><h2 class="section-title">Replies as</h2>' +
-      '<p class="hint">Choose the Slack presence used for new conversations with this Profile. This does not change who handles DMs.</p></div></div>' +
-      '<div class="field"><label class="field-label" for="p-slack-identity">Slack identity</label>' +
+      '<p class="hint">Choose which Slack identity this Profile uses for new conversations.</p></div></div>' +
+      '<div class="field"><label class="field-label" for="p-slack-identity">Identity</label>' +
       '<span class="select-wrap"><select class="input" id="p-slack-identity" data-action="profile-slack-identity">' + options + '</select>' + icon("chevron-down", "select-caret") + '</span></div>' +
       details + wildcard + '</section>';
-  }
-
-  function profileIdentityDmModalHtml() {
-    var pending = state.profileIdentityDmConfirm;
-    if (!pending || !state.profileDraft) return "";
-    var identity = slackIdentityById(pending.identityId);
-    if (!identity) return "";
-    var current = identity.dmProfile ? identity.dmProfile.name : "the current Profile";
-    return '<div class="modal-backdrop"><div class="modal-card" role="dialog" aria-modal="true" aria-label="Change DM handler" data-role="profile-identity-dm-dialog" tabindex="-1">' +
-      '<h2 class="modal-title">Replace ' + esc(current) + ' as the DM handler?</h2>' +
-      '<p class="modal-body">Future DMs to ' + esc(slackIdentityMention(identity)) + ' will use ' + esc(state.profileDraft.name || "this Profile") + '. The Slack DM conversation and its memory continue.</p>' +
-      '<div class="modal-foot"><span class="spacer"></span>' +
-      '<button type="button" class="btn btn-ghost" data-action="profile-identity-dm-cancel"' + (state.profileIdentityBusy ? " disabled" : "") + '>Cancel</button>' +
-      '<button type="button" class="btn btn-primary" data-action="profile-identity-dm-confirm"' + (state.profileIdentityBusy ? " disabled" : "") + '>' + (state.profileIdentityBusy ? "Changing…" : "Make handler") + '</button>' +
-      '</div></div></div>';
-  }
-
-  function focusProfileIdentityDmTrigger() {
-    var trigger = document.querySelector('[data-action="profile-identity-make-dm"]');
-    if (trigger && trigger.focus) trigger.focus();
   }
 
   function profileNameFieldHtml(draft) {
     var err = state.profileError === "Name is required.";
     return '<div class="field"><label class="field-label" for="p-name">Name</label>' +
       '<input class="input" id="p-name" name="name" type="text" value="' + esc(draft.name) + '"' + (err ? ' style="outline:2px solid var(--danger); outline-offset:-1px;"' : "") + ' data-action="profile-name">' +
-      '<p class="hint">Shown here in /admin only. Choose the Slack presence separately under Replies as.</p>' +
+      '<p class="hint">Shown here in /admin only. Choose the Slack identity separately under Replies as.</p>' +
       (err ? '<p class="field-error">Name is required.</p>' : "") + '</div>';
   }
 
@@ -5221,7 +5192,7 @@ details[open].advanced summary::before {
     return '<div style="display:flex; flex-direction:column; gap:6px;">' +
       '<button type="button" class="link-btn" style="align-self:flex-start;" data-action="profiles-back">&larr; Profiles</button>' +
       '<h1 class="page-title">New profile</h1>' +
-      '<p class="hint">Create reusable behavior, then choose whether it inherits ' + slackMentionHtml() + ' or gets a dedicated Slack presence.</p></div>' +
+      '<p class="hint">Create reusable behavior, then choose whether it inherits ' + slackMentionHtml() + ' or gets a dedicated Slack identity.</p></div>' +
       '<section class="section"><div class="section-head"><div><h2 class="section-title">Details</h2></div></div>' +
       '<div class="form-grid">' +
       profileNameFieldHtml(draft) +
@@ -5247,7 +5218,7 @@ details[open].advanced summary::before {
     return '<div class="main-head"><div style="display:flex; flex-direction:column; gap:6px;">' +
       '<button type="button" class="link-btn" style="align-self:flex-start;" data-action="profiles-back">&larr; Profiles</button>' +
       titleRow +
-      '<p class="hint">Edit this reusable behavior and the Slack presence it uses for new conversations.</p></div>' +
+      '<p class="hint">Edit this reusable behavior and the Slack identity it uses for new conversations.</p></div>' +
       '<label style="display:flex; align-items:center; gap:10px;"><span class="hint">' + (draft.enabled ? "Enabled" : "Disabled") + '</span>' +
       '<span class="toggle"><span class="thumb"></span><input type="checkbox" name="profile-enabled" data-action="profile-enable-toggle" ' + (draft.enabled ? "checked" : "") + ' aria-label="Profile enabled"></span></label></div>' +
       disableConfirmHtml(draft) +
@@ -5354,7 +5325,7 @@ details[open].advanced summary::before {
   function attachPickerHtml(draft) {
     if (!state.attachPicker) return "";
     if (!isSlackConnected()) {
-      return '<div class="bundle-row"><span class="hint">Connect Slack first to list workspace channels.</span>' +
+      return '<div class="bundle-row"><span class="hint">Connect @Chickpea first to list workspace channels.</span>' +
         '<span class="spacer"></span><button type="button" class="btn btn-ghost btn-sm" data-action="attach-cancel">Close</button></div>';
     }
     if (state.slackChannelsError) {
@@ -6747,6 +6718,7 @@ details[open].advanced summary::before {
 
   function managedIdentityStatus(identity) {
     if (identityRolloutPaused(identity)) return "Paused by rollout";
+    if (identity.kind === "workspace_default" && identity.lifecycle === "setup_incomplete") return "Not connected";
     if (identity.lifecycle === "setup_incomplete") return "Setup incomplete";
     if (identity.lifecycle === "credentials_pending") return "Signing secret unverified";
     if (identity.lifecycle === "retired") return "Retired locally";
@@ -6766,12 +6738,13 @@ details[open].advanced summary::before {
 
   function managedIdentityDmText(identity) {
     if (!identity.globalDmAllowed && identity.dmState === "on") return "Off by workspace control";
-    if (identity.dmState === "needs_setup") return "Needs a handler";
+    if (identity.dmState === "needs_setup") return "Needs a Profile";
     if (identity.dmState === "off") return "Off";
-    return identity.dmProfile ? identity.dmProfile.name : "Handler unavailable";
+    return identity.dmProfile ? "Go to " + identity.dmProfile.name : "Profile unavailable";
   }
 
   function managedIdentityCredentialText(identity) {
+    if (identity.kind === "workspace_default" && identity.lifecycle === "setup_incomplete") return "Connect from Channels";
     if (identity.credentialProvenance === "workspace_default") return "Workspace credentials";
     if (identity.credentialProvenance === "stored") return "Stored credentials";
     return "No credentials";
@@ -6784,17 +6757,19 @@ details[open].advanced summary::before {
   }
 
   function slackIdentityListRowHtml(identity) {
-    var incomplete = identity.kind === "dedicated" &&
-      (identity.lifecycle === "setup_incomplete" || identity.lifecycle === "credentials_pending");
-    var actionLabel = incomplete ? "Resume setup" : "View";
-    var action = incomplete ? "slack-identity-open-setup" : "slack-identity-open-detail";
+    var actionLabel = slackIdentityOpenLabel(identity);
+    var action = slackIdentityOpenAction(identity);
     var profileCount = (identity.profiles || []).length;
+    var profileUsage = "Used by " + profileCount + " Profile" + (profileCount === 1 ? "" : "s");
+    var dmMeta = slackIdentityNeedsSetup(identity)
+      ? '<div class="identity-meta"><strong>Profile usage</strong><span>' + esc(profileUsage) + '</span></div>'
+      : '<div class="identity-meta"><strong>Direct messages</strong><span>' + esc(managedIdentityDmText(identity)) + '</span><span>' + esc(profileUsage) + '</span></div>';
     return '<div class="identity-row">' + managedIdentityAvatarHtml(identity) +
       '<div class="slack-identity-copy"><span class="slack-identity-name">@' + esc(identity.displayName || "Chickpea") + '</span>' +
       '<span class="hint">' + (identity.kind === "workspace_default" ? "Workspace default" : "Dedicated Slack app") + '</span></div>' +
       '<div class="identity-meta"><strong>Status</strong>' + managedIdentityBadgeHtml(identity) + '<span>' + esc(managedIdentityCredentialText(identity)) + '</span></div>' +
-      '<div class="identity-meta"><strong>DM handler</strong><span>' + esc(managedIdentityDmText(identity)) + '</span><span>' + esc(profileCount + " Profile" + (profileCount === 1 ? "" : "s")) + '</span></div>' +
-      '<button type="button" class="btn btn-soft btn-sm" data-action="' + action + '" data-identity="' + esc(identity.id) + '">' + actionLabel + '</button></div>';
+      dmMeta +
+      '<button type="button" class="btn btn-soft btn-sm" data-action="' + action + '" data-identity="' + esc(identity.id) + '">' + esc(actionLabel) + '</button></div>';
   }
 
   function slackIdentityListHtml() {
@@ -6804,7 +6779,7 @@ details[open].advanced summary::before {
       ? '<button type="button" class="btn btn-primary i-lead" data-action="slack-identity-create-open">' + icon("plus") + 'Add Slack identity</button>'
       : '<span class="hint">Dedicated identity creation is paused by rollout. Existing identities and cleanup remain available.</span>';
     return '<div class="section-head"><div><h1 class="page-title">Slack identities</h1>' +
-      '<p class="hint">Choose the native Slack names, avatars, and DM conversations your Profiles can reply through.</p></div>' + create + '</div>' +
+      '<p class="hint">Manage the Slack apps Chickpea can reply through. Profiles choose an identity under Replies as.</p></div>' + create + '</div>' +
       (state.slackIdentityNotice ? '<p class="inline-status" role="status">' + esc(state.slackIdentityNotice) + '</p>' : '') +
       (!state.slackIdentities.globalDmAllowed ? '<div class="callout">The workspace DM ceiling is off. Identity-level DM settings are preserved, but no Slack identity admits DM work.</div>' : '') +
       '<div class="identity-list">' + (rows || '<div class="empty"><p class="hint">The workspace-default identity appears after Slack is installed.</p></div>') + '</div>';
@@ -6824,7 +6799,7 @@ details[open].advanced summary::before {
       '<div class="callout">A dedicated identity is a real Slack app, not a cosmetic sender name. Profiles can share it after setup.</div>' +
       '<div class="form-grid"><div class="field"><label class="field-label" for="identity-app-name">Slack app name</label><input class="input" id="identity-app-name" name="appName" maxlength="35" required value="' + esc(draft.appName) + '" data-action="slack-identity-create-app-name"><p class="hint">Shown in Slack app settings. 35 characters maximum.</p></div>' +
       '<div class="field"><label class="field-label" for="identity-bot-name">Mention name</label><input class="input" id="identity-bot-name" name="displayName" maxlength="80" required value="' + esc(draft.displayName) + '" data-action="slack-identity-create-display-name"><p class="hint">Slack turns this into the bot&rsquo;s native mention after installation.</p></div></div>' +
-      '<div class="field"><label class="field-label" for="identity-dm-profile">Initial DM Profile</label><span class="select-wrap"><select class="input" id="identity-dm-profile" name="initialDmAgentId" data-action="slack-identity-create-dm">' + enabledIdentityProfileOptions(draft.initialDmAgentId) + '</select>' + icon("chevron-down", "select-caret") + '</span><p class="hint">This Profile handles future DMs to the new app. Creating from Settings does not change its Replies as selection.</p></div>' +
+      '<div class="field"><label class="field-label" for="identity-dm-profile">DMs handled by</label><span class="select-wrap"><select class="input" id="identity-dm-profile" name="initialDmAgentId" data-action="slack-identity-create-dm">' + enabledIdentityProfileOptions(draft.initialDmAgentId) + '</select>' + icon("chevron-down", "select-caret") + '</span><p class="hint">This Profile handles future DMs to the new app. Creating from Settings does not change its Replies as selection.</p></div>' +
       (state.slackIdentityActionError ? '<p class="field-error" role="alert">' + esc(state.slackIdentityActionError) + '</p>' : '') +
       '<div class="save-bar"><button type="button" class="btn btn-ghost" data-action="slack-identities-back">Cancel</button><span class="spacer"></span><button type="submit" class="btn btn-primary"' + (state.slackIdentityBusy ? " disabled" : "") + '>' + (state.slackIdentityBusy ? "Creating&hellip;" : "Continue to Slack setup") + '</button></div></form>';
   }
@@ -6865,7 +6840,7 @@ details[open].advanced summary::before {
       ? '<div class="callout"><b>Reconnect in progress.</b> Replacement credentials are already stored. Finish signed verification, or paste another valid credential pair to restart this step; this established identity cannot be deleted as a setup draft.</div>'
       : '<div class="danger-panel"><div class="danger-copy"><span class="danger-title">Cancel this setup</span><span class="hint">Any pasted credentials and pending callback are erased before the draft is removed. A Profile-origin setup keeps its previous Replies as identity.</span></div><button type="button" class="btn btn-danger btn-sm" data-action="slack-identity-cancel-open"' + (state.slackIdentityBusy ? " disabled" : "") + '>Cancel setup</button></div>';
     return '<button type="button" class="btn btn-ghost btn-sm" data-action="slack-identities-back">&larr; All identities</button><div class="section-head"><div><h1 class="page-title">' + (reconnecting ? "Reconnect " : "Set up ") + '@' + esc(identity.displayName || "identity") + '</h1><p class="hint">Resume safely at any time. ' + attachmentNote + '</p></div></div><div class="identity-wizard">' +
-      identityStepHtml(1, "Choose identity and DM Profile", intentBody, stage === 1, stage > 1) +
+      identityStepHtml(1, "Choose identity and DM routing", intentBody, stage === 1, stage > 1) +
       identityStepHtml(2, "Create and install the Slack app", manifestBody, stage === 2, stage > 2) +
       identityStepHtml(3, "Paste write-only credentials", credentialBody, stage === 3, stage > 3) +
       identityStepHtml(4, "Verify Slack and finish", verifyBody, stage === 4, false) +
@@ -6876,7 +6851,7 @@ details[open].advanced summary::before {
 
   function identityProfilesHtml(identity) {
     var profiles = identity.profiles || [];
-    if (!profiles.length) return '<p class="hint">No Profile currently replies through this identity.</p>';
+    if (!profiles.length) return '<p class="hint">No Profile currently selects this identity under Replies as.</p>';
     return '<div class="identity-profile-list">' + profiles.map(function (profile) {
       return '<div class="identity-profile-row"><span>' + esc(profile.name) + '</span><span class="badge ' + (profile.enabled ? "badge-on" : "badge-off") + '">' + (profile.enabled ? "Enabled" : "Disabled") + '</span></div>';
     }).join("") + '</div>';
@@ -6893,9 +6868,12 @@ details[open].advanced summary::before {
     var observed = identity.observedAt ? new Date(identity.observedAt).toLocaleString() : "Not refreshed yet";
     var consoleLink = identity.consoleUrl ? '<a class="btn btn-soft btn-sm" href="' + esc(identity.consoleUrl) + '" target="_blank" rel="noopener noreferrer">Change name or avatar in Slack &nearr;</a>' : '';
     var dmOptions = enabledIdentityProfileOptions(state.slackIdentityDmDraft.dmAgentId);
-    var dmBody = '<p class="hint">Each Slack app has its own DM conversation. Choose the one Profile that handles future DMs to this identity; memory stays with the Slack conversation.</p>' +
+    var dmReady = identity.lifecycle === "connected" || identity.lifecycle === "degraded";
+    var dmDestination = identity.dmProfile ? identity.dmProfile.name : "the selected Profile";
+    var dmBody = '<p class="hint">Each Slack identity has its own DM conversation. Choose which Profile handles it; memory stays with the Slack conversation.</p>' +
+      (!dmReady && state.slackIdentityDmDraft.dmState === "on" ? '<div class="callout">DMs will go to ' + esc(dmDestination) + ' once this identity is connected.</div>' : '') +
       (!identity.globalDmAllowed ? '<div class="callout">The workspace DM ceiling is off, so this identity is effectively off even if its remembered setting is on.</div>' : '') +
-      '<div class="form-grid"><div class="field"><label class="field-label">Direct messages</label><span class="select-wrap"><select class="input" data-action="slack-identity-dm-state"><option value="on"' + (state.slackIdentityDmDraft.dmState === "on" ? " selected" : "") + '>On</option><option value="off"' + (state.slackIdentityDmDraft.dmState === "off" ? " selected" : "") + '>Off</option></select>' + icon("chevron-down", "select-caret") + '</span></div><div class="field"><label class="field-label">DM Profile</label><span class="select-wrap"><select class="input" data-action="slack-identity-dm-agent">' + dmOptions + '</select>' + icon("chevron-down", "select-caret") + '</span></div></div><button type="button" class="btn btn-soft btn-sm" data-action="slack-identity-dm-save"' + (state.slackIdentityBusy || identity.lifecycle === "retired" ? " disabled" : "") + '>Save DM behavior</button>';
+      '<div class="form-grid"><div class="field"><label class="field-label">Direct messages</label><span class="select-wrap"><select class="input" data-action="slack-identity-dm-state"><option value="on"' + (state.slackIdentityDmDraft.dmState === "on" ? " selected" : "") + '>On</option><option value="off"' + (state.slackIdentityDmDraft.dmState === "off" ? " selected" : "") + '>Off</option></select>' + icon("chevron-down", "select-caret") + '</span></div><div class="field"><label class="field-label">DMs handled by</label><span class="select-wrap"><select class="input" data-action="slack-identity-dm-agent">' + dmOptions + '</select>' + icon("chevron-down", "select-caret") + '</span></div></div><button type="button" class="btn btn-soft btn-sm" data-action="slack-identity-dm-save"' + (state.slackIdentityBusy || identity.lifecycle === "retired" ? " disabled" : "") + '>Save DM behavior</button>';
     var reconnect = state.slackIdentityReconnectOpen ? '<form data-action="slack-identity-reconnect-form"><div class="form-grid"><div class="field"><label class="field-label">New Bot User OAuth Token</label><input class="input mono" type="password" name="botToken" autocomplete="off" value="' + esc(state.slackIdentityCredentialDraft.botToken) + '" data-action="slack-identity-credential-token"></div><div class="field"><label class="field-label">New Signing Secret</label><input class="input mono" type="password" name="signingSecret" autocomplete="off" value="' + esc(state.slackIdentityCredentialDraft.signingSecret) + '" data-action="slack-identity-credential-secret"></div></div><div style="display:flex; gap:8px;"><button type="button" class="btn btn-ghost btn-sm" data-action="slack-identity-reconnect-cancel">Cancel</button><button type="submit" class="btn btn-primary btn-sm"' + (state.slackIdentityBusy ? " disabled" : "") + '>Validate new credentials</button></div></form>' : '<button type="button" class="btn btn-soft btn-sm" data-action="slack-identity-reconnect-open"' + (isDefault || identity.lifecycle === "retired" ? " disabled" : "") + '>Reconnect or rotate</button>';
     var blockers = [];
     if ((identity.profiles || []).length) blockers.push("move " + identity.profiles.length + " Profile" + (identity.profiles.length === 1 ? "" : "s"));
@@ -6908,7 +6886,7 @@ details[open].advanced summary::before {
       (state.slackIdentityNotice ? '<p class="inline-status" role="status">' + esc(state.slackIdentityNotice) + '</p>' : '') +
       (state.slackIdentityActionError ? '<p class="field-error" role="alert">' + esc(state.slackIdentityActionError) + '</p>' : '') +
       '<div class="identity-detail-grid"><section class="section"><div class="section-head"><div><h2 class="section-title">Appearance</h2><p class="hint">Slack is the source of truth.</p></div></div><div class="kv"><dt>Last refreshed</dt><dd>' + esc(observed) + '</dd></div><div class="action-well">' + consoleLink + '<button type="button" class="btn btn-ghost btn-sm" data-action="slack-identity-detail-refresh"' + (state.slackIdentityBusy ? " disabled" : "") + '>' + icon("arrow-path") + 'Refresh</button></div></section>' +
-      '<section class="section"><div class="section-head"><div><h2 class="section-title">Profile usage</h2><p class="hint">Profiles may share one identity; channel assignments still choose behavior.</p></div></div>' + identityProfilesHtml(identity) + '</section>' +
+      '<section class="section"><div class="section-head"><div><h2 class="section-title">Profile usage</h2><p class="hint">Profiles select this identity under Replies as. Channel assignments still choose behavior.</p></div></div>' + identityProfilesHtml(identity) + '</section>' +
       '<section class="section"><div class="section-head"><div><h2 class="section-title">Direct messages</h2></div></div>' + dmBody + '</section>' +
       '<section class="section"><div class="section-head"><div><h2 class="section-title">Connection</h2><p class="hint">' + esc(managedIdentityCredentialDetail(identity)) + '</p></div></div>' + reconnect + '</section></div>' +
       '<div class="danger-panel"><div class="danger-copy"><span class="danger-title">' + (isDefault ? "Workspace identity" : "Retire identity") + '</span>' + retireBody + '</div></div>';
@@ -7455,7 +7433,7 @@ details[open].advanced summary::before {
     var displayName = String(form.get("displayName") || "").trim();
     var dmAgentId = String(form.get("initialDmAgentId") || "");
     if (!appName || !displayName || !dmAgentId) {
-      state.slackIdentityActionError = "Choose both names and an enabled DM Profile.";
+      state.slackIdentityActionError = "Choose both names and an enabled Profile to handle DMs.";
       render();
       return;
     }
@@ -9004,17 +8982,6 @@ details[open].advanced summary::before {
       return;
     }
 
-    if (state.profileIdentityDmConfirm) {
-      if (action === "profile-identity-dm-cancel" && !state.profileIdentityBusy) {
-        state.profileIdentityDmConfirm = null;
-        render();
-        focusProfileIdentityDmTrigger();
-      } else if (action === "profile-identity-dm-confirm") {
-        changeProfileIdentityDmHandler();
-      }
-      return;
-    }
-
     if (state.memoryDeleteConfirm) {
       if (action === "memory-delete-cancel") {
         state.memoryDeleteConfirm = false;
@@ -9352,16 +9319,6 @@ details[open].advanced summary::before {
     if (action === "profile-model") { openModelPicker(); }
     if (action === "pick-model") { var modelInput = document.getElementById("p-model"); if (modelInput) modelInput.value = target.getAttribute("data-model") || ""; collectProfileDraft(); state.profileDirty = true; closeModelPicker(); }
     if (action === "save-profile") { saveProfile(); }
-    if (action === "profile-identity-make-dm" && state.profileDraft) {
-      var dmIdentity = selectedProfileSlackIdentity(state.profileDraft);
-      if (dmIdentity && dmIdentity.dmAgentId !== state.profileDraft.id) {
-        state.profileIdentityDmConfirm = { identityId: dmIdentity.id };
-        state.profileError = "";
-        render();
-        var dmConfirmButton = document.querySelector('[data-action="profile-identity-dm-confirm"]');
-        if (dmConfirmButton && dmConfirmButton.focus) dmConfirmButton.focus();
-      }
-    }
     if (action === "discard-profile") { discardProfile(); }
     if (action === "delete-profile") { deleteProfile(); }
     if (action === "detach-channel") { detachProfileChannel(target.getAttribute("data-workspace"), target.getAttribute("data-channel")); }
@@ -10048,26 +10005,6 @@ details[open].advanced summary::before {
   }
 
   document.addEventListener("keydown", function (event) {
-    if (state.profileIdentityDmConfirm && event.key === "Tab") {
-      event.preventDefault();
-      var dmCancel = document.querySelector('[data-action="profile-identity-dm-cancel"]');
-      var dmConfirm = document.querySelector('[data-action="profile-identity-dm-confirm"]');
-      if (!dmCancel || !dmConfirm) return;
-      var dmNext = event.shiftKey
-        ? (document.activeElement === dmCancel ? dmConfirm : dmCancel)
-        : (document.activeElement === dmConfirm ? dmCancel : dmConfirm);
-      if (dmNext.focus) dmNext.focus();
-      return;
-    }
-    if (state.profileIdentityDmConfirm && (event.key === "Escape" || event.key === "Esc")) {
-      event.preventDefault();
-      if (!state.profileIdentityBusy) {
-        state.profileIdentityDmConfirm = null;
-        render();
-        focusProfileIdentityDmTrigger();
-      }
-      return;
-    }
     if (state.scheduledDeleteConfirm && (event.key === "Escape" || event.key === "Esc")) {
       event.preventDefault();
       if (state.scheduledBusy) return;
@@ -10456,7 +10393,7 @@ details[open].advanced summary::before {
   }
 
   function slackChannelsErrorText(error) {
-    if (error && error.message === "slack_not_configured") return "Connect Slack first to list channels.";
+    if (error && error.message === "slack_not_configured") return "Connect @Chickpea first to list channels.";
     if (error && error.message === "slack_list_failed" && error.detail) {
       return "Slack could not list channels (" + error.detail + ").";
     }
@@ -10480,7 +10417,7 @@ details[open].advanced summary::before {
     var agent = agentById(state.addChannelAgentId) || defaultAgent();
     var fail = function (message) { state.addChannelError = message; render(); };
     if (!agent) { fail("Create a profile before adding a channel."); return; }
-    if (!isSlackConnected()) { fail("Connect Slack first."); return; }
+    if (!isSlackConnected()) { fail("Connect @Chickpea first."); return; }
     var workspaceId = connectedTeamId();
     if (!workspaceId) { fail("Could not determine the connected workspace. Click Refresh and try again."); return; }
     var channelId;
@@ -11819,38 +11756,6 @@ details[open].advanced summary::before {
     }
     return attachProfileSlackIdentity(intent, agentId, false).then(function () {
       return { handoff: false };
-    });
-  }
-
-  function changeProfileIdentityDmHandler() {
-    var pending = state.profileIdentityDmConfirm;
-    var draft = state.profileDraft;
-    var identity = pending && slackIdentityById(pending.identityId);
-    if (!pending || !draft || !draft.id || !identity || state.profileIdentityBusy) return;
-    state.profileIdentityBusy = "dm";
-    state.profileError = "";
-    render();
-    postJson("/admin/api/slack-identities/" + encodeURIComponent(identity.id) + "/dms", "PATCH", {
-      expectedRevision: identity.connectionRevision,
-      // Choosing the remembered handler must not silently turn a deliberately
-      // disabled DM surface back on. needs_setup has no remembered handler, so
-      // this explicit confirmation is the action that enables it.
-      dmState: identity.dmState === "needs_setup" ? "on" : identity.dmState,
-      dmAgentId: draft.id
-    }).then(function (body) {
-      var identities = (state.slackIdentities && state.slackIdentities.identities) || [];
-      state.slackIdentities.identities = identities.map(function (item) {
-        return item.id === body.identity.id ? body.identity : item;
-      });
-      state.profileIdentityBusy = "";
-      state.profileIdentityDmConfirm = null;
-      render();
-    }).catch(function (error) {
-      state.profileIdentityBusy = "";
-      state.profileIdentityDmConfirm = null;
-      state.profileError = profileIdentityErrorText(error);
-      render();
-      focusProfileIdentityDmTrigger();
     });
   }
 
