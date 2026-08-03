@@ -792,6 +792,7 @@ test('connection test distinguishes missing, Slack-rejected, and unreachable cre
 
 test('disconnect deletes only stored Slack connection identity and immediately clears the cache', async () => {
   const settings = new SqliteSettingsStore(':memory:');
+  const config = new SqliteConfigStore(':memory:');
   try {
     await withEnv(NO_SLACK_ENV, async () => {
       await settings.setSetting(SLACK_SETTING_KEYS.botToken, 'xoxb-stored');
@@ -810,7 +811,7 @@ test('disconnect deletes only stored Slack connection identity and immediately c
         botUserId: 'U_STORED',
       });
 
-      const app = appWith(settings);
+      const app = appWith(settings, config);
       const response = await app.request('/admin/api/slack-connection', {
         method: 'DELETE',
         headers: auth(),
@@ -849,28 +850,38 @@ test('disconnect deletes only stored Slack connection identity and immediately c
         signingSecret: undefined,
         botUserId: undefined,
       });
+      assert.deepEqual(
+        (await config.listSlackIdentityAuditEvents()).map(({ eventType }) => eventType),
+        ['slack_identity.credentials_disconnected'],
+      );
     });
   } finally {
     invalidateStoredSlackCredentials();
+    config.close();
     settings.close();
   }
 });
 
-test('workspace disconnect is blocked while a dedicated identity retains credentials', async () => {
+test('workspace disconnect is blocked while even a retired identity retains credentials', async () => {
   const settings = new SqliteSettingsStore(':memory:');
   const config = new SqliteConfigStore(':memory:');
   try {
     await withEnv(NO_SLACK_ENV, async () => {
       await settings.setSetting(SLACK_SETTING_KEYS.botToken, 'xoxb-default');
       await settings.setSetting(SLACK_SETTING_KEYS.signingSecret, 'default-secret');
-      const identity = await config.createSlackIdentity(pendingIdentity({
-        lifecycle: 'connected',
+      const { dmAgentId: _retiredDmAgentId, ...retiredIdentity } = pendingIdentity({
+        lifecycle: 'retired',
         teamId: 'T_ACME',
         appId: 'A0FINANCE',
         botUserId: 'U_FINANCE',
         credentialProvenance: 'stored',
-        health: 'healthy',
-      }));
+        health: 'disconnected',
+        retiredAt: Date.now(),
+      });
+      const identity = await config.createSlackIdentity({
+        ...retiredIdentity,
+        dmState: 'off',
+      });
       await writeSlackIdentityCredentials(settings, identity.id, null, {
         botToken: 'xoxb-finance',
         signingSecret: 'finance-secret',
@@ -1440,9 +1451,10 @@ test('wizard POST validates via auth.test, persists creds + bot user id, and the
     user_id: 'U_TAG_BOT',
   });
   const settings = new SqliteSettingsStore(':memory:');
+  const config = new SqliteConfigStore(':memory:');
   try {
     await withEnv({ ...NO_SLACK_ENV, SLACK_API_URL: baseUrl }, async () => {
-      const app = appWith(settings);
+      const app = appWith(settings, config);
       const response = await postCreds(app, {
         botToken: 'xoxb-pasted',
         signingSecret: 'pasted-secret',
@@ -1479,6 +1491,10 @@ test('wizard POST validates via auth.test, persists creds + bot user id, and the
       assert.equal(resolved.botToken, 'xoxb-pasted');
       assert.equal(resolved.signingSecret, 'pasted-secret');
       assert.equal(resolved.botUserId, 'U_TAG_BOT');
+      assert.deepEqual(
+        (await config.listSlackIdentityAuditEvents()).map(({ eventType }) => eventType),
+        ['slack_identity.credentials_connected'],
+      );
     });
 
     // ...and env values keep per-key precedence over the same store.
@@ -1497,6 +1513,7 @@ test('wizard POST validates via auth.test, persists creds + bot user id, and the
     );
   } finally {
     invalidateStoredSlackCredentials();
+    config.close();
     settings.close();
     await closeServer(server);
   }

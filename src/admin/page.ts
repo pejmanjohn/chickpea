@@ -1699,6 +1699,8 @@ details[open].advanced summary::before {
   var CONNECTOR_LOGOS = ${JSON.stringify(CONNECTOR_LOGOS).replace(/</g, '\\u003c')};
   var API_CONNECTION_METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"];
   var GOOGLE_WORKSPACE_SCOPES = ${JSON.stringify(GOOGLE_WORKSPACE_SCOPE_OPTIONS)};
+  var WORKSPACE_DEFAULT_SLACK_IDENTITY_ID = "slack_identity_default";
+  var NEW_SLACK_IDENTITY_VALUE = "__new__";
   var state = {
     agents: [],
     assignments: [],
@@ -1734,6 +1736,11 @@ details[open].advanced summary::before {
     editingAgentId: null,
     profileDraft: null,
     profileError: "",
+    // Safe identity summaries for Profile selection. The workspace default is
+    // always rendered even if this auxiliary collection endpoint is unavailable.
+    slackIdentities: { identities: [], creationEnabled: false, globalDmAllowed: true },
+    profileIdentityBusy: "",
+    profileIdentityDmConfirm: null,
     // Active capability tab on the profile edit screen. Panels stay mounted
     // ([hidden]) across switches, so no draft state lives here — just which
     // panel is visible.
@@ -2121,6 +2128,8 @@ details[open].advanced summary::before {
 
   function resetProfileTransientState() {
     state.profileError = "";
+    state.profileIdentityBusy = "";
+    state.profileIdentityDmConfirm = null;
     state.profileDirty = false;
     state.disableConfirm = false;
     state.profileTab = "instructions";
@@ -2249,7 +2258,7 @@ details[open].advanced summary::before {
 
   function render() {
     var app = document.getElementById("app");
-    app.innerHTML = topbarHtml() + '<div class="body">' + railHtml() + mainHtml() + "</div>" + leavePromptModalHtml() + connectionRemoveModalHtml() + apiConnectionRemoveModalHtml() + slackDisconnectModalHtml() + githubDisconnectModalHtml() + memoryDeleteModalHtml() + scheduledRoutineSummaryModalHtml() + scheduledDeleteModalHtml();
+    app.innerHTML = topbarHtml() + '<div class="body">' + railHtml() + mainHtml() + "</div>" + leavePromptModalHtml() + connectionRemoveModalHtml() + apiConnectionRemoveModalHtml() + slackDisconnectModalHtml() + githubDisconnectModalHtml() + memoryDeleteModalHtml() + scheduledRoutineSummaryModalHtml() + scheduledDeleteModalHtml() + profileIdentityDmModalHtml();
     // The disconnect confirmation is a true modal: keep the rest of the app
     // out of the focus and accessibility trees until it is resolved.
     if (state.slackDisconnectConfirm) {
@@ -2300,6 +2309,17 @@ details[open].advanced summary::before {
       });
       var routineDeleteCancel = document.querySelector('[data-action="scheduled-delete-cancel"]');
       if (routineDeleteCancel && routineDeleteCancel.focus) routineDeleteCancel.focus();
+    }
+    if (state.profileIdentityDmConfirm) {
+      [document.querySelector(".topbar"), document.querySelector(".body")].forEach(function (region) {
+        if (!region) return;
+        region.inert = true;
+        if (region.setAttribute) region.setAttribute("aria-hidden", "true");
+      });
+      var identityDmFocus = state.profileIdentityBusy
+        ? document.querySelector('[data-role="profile-identity-dm-dialog"]')
+        : document.querySelector('[data-action="profile-identity-dm-confirm"]');
+      if (identityDmFocus && identityDmFocus.focus) identityDmFocus.focus();
     }
     syncUrl();
   }
@@ -2870,7 +2890,7 @@ details[open].advanced summary::before {
     return '<main class="main"><div class="main-inner">' + invite + addPanel +
       '<div class="main-head"><div style="display:flex; flex-direction:column; gap:2px;">' +
       '<h1 class="page-title mono-title">' + esc(channelLabel(assignment)) + '</h1>' +
-      '<p class="hint">What Chickpea can do in this channel. Mentions guarantee a response; ambient participation follows the setting below, always as ' + slackMentionHtml() + '.</p>' +
+      '<p class="hint">What Chickpea can do in this channel. Mentions guarantee a response; ambient participation follows the setting below. New threads reply as ' + esc(slackIdentityMentionForId(state.effective && state.effective.slackIdentityId)) + '.</p>' +
       '</div><label style="display:flex; align-items:center; gap:10px;"><span class="hint">' + (enabled ? "Enabled" : "Disabled") + '</span>' +
       '<span class="toggle"><span class="thumb"></span><input type="checkbox" data-action="channel-enabled" ' + (enabled ? "checked" : "") + ' aria-label="Channel enabled"></span></label></div>' +
       profileSectionHtml(agent, assignment) +
@@ -3442,7 +3462,7 @@ details[open].advanced summary::before {
       // Provider, and Snapshot are diagnostic and move under Advanced (card 07).
       body = '<div class="well"><dl>' +
         '<div class="kv"><dt>Profile</dt><dd>' + esc(profile.name) + ' ' + enabledBadge(profile.enabled) + '</dd></div>' +
-        '<div class="kv"><dt>Replies as</dt><dd>' + slackMentionHtml() + ' &mdash; the install-wide Slack identity shared by every channel</dd></div>' +
+        '<div class="kv"><dt>Replies as</dt><dd>' + esc(slackIdentityMentionForId(state.effective.slackIdentityId)) + ' &mdash; new threads only</dd></div>' +
         '<div class="kv"><dt>Instructions</dt><dd><div class="instructions-preview">' + instructionLayersHtml(state.effective.instructionLayers) + '</div></dd></div>' +
         '</dl></div>';
     }
@@ -3507,7 +3527,7 @@ details[open].advanced summary::before {
     var cards = state.agents.map(profileCardHtml).join("");
     return '<div class="main-head"><div style="display:flex; flex-direction:column; gap:6px;">' +
       '<h1 class="page-title">Profiles</h1>' +
-      '<p class="hint" style="max-width:58ch;">A profile is the reusable behavior you attach to a channel &mdash; its instructions, model, skills, and connections. One profile can answer in many channels, and it always replies as <b style="font-weight:500; color:var(--text);">' + slackMentionHtml() + '</b> &mdash; a profile changes how Chickpea answers, never who it is.</p>' +
+      '<p class="hint" style="max-width:58ch;">A profile is reusable behavior you attach to channels &mdash; its instructions, model, skills, connections, and Slack presence. By default, every Profile always replies as <b style="font-weight:500; color:var(--text);">' + slackMentionHtml() + '</b>; dedicated identities are optional.</p>' +
       '</div><button type="button" class="btn btn-primary" style="flex-shrink:0;" data-action="new-profile">New profile</button></div>' +
       '<section class="section"><div class="section-head"><div><h2 class="section-title">Your profiles</h2><p class="hint">Everything Chickpea can be in this workspace.</p></div></div>' +
       (cards || '<div class="empty"><p class="field-label">No profiles yet</p><p class="hint">Create one to give Chickpea a behavior you can attach to channels.</p></div>') +
@@ -3523,7 +3543,7 @@ details[open].advanced summary::before {
       : '<span class="badge badge-off"><span class="dot"></span>Disabled</span>';
     var modelPart = agent.model ? '<span class="mono">' + esc(agent.model) + '</span>' : "No model pinned";
     var usage = "used in " + channelCountLabel(concrete.length) + (dm ? " + DMs" : "");
-    var meta = modelPart + " &middot; " + usage;
+    var meta = modelPart + " &middot; " + usage + " &middot; replies as " + esc(slackIdentityMentionForId(effectiveSlackIdentityId(agent.slackIdentityId || "")));
     return '<div class="pcard"><div class="pcard-head"><span class="pcard-name">' + esc(agent.name) + '</span>' + roleBadge + stateBadge + '</div>' +
       '<div class="pcard-foot"><span class="hint">' + meta + '</span><span class="spacer"></span>' +
       '<button type="button" class="btn btn-soft btn-sm" data-action="edit-profile" data-agent="' + esc(agent.id) + '">Edit</button></div></div>';
@@ -4938,11 +4958,146 @@ details[open].advanced summary::before {
       '</div></div></div>';
   }
 
+  function workspaceDefaultSlackIdentity() {
+    var identities = (state.slackIdentities && state.slackIdentities.identities) || [];
+    return identities.find(function (identity) { return identity.kind === "workspace_default"; }) || null;
+  }
+
+  function slackIdentityById(identityId) {
+    var identities = (state.slackIdentities && state.slackIdentities.identities) || [];
+    return identities.find(function (identity) { return identity.id === identityId; }) || null;
+  }
+
+  function slackIdentityMention(identity) {
+    return "@" + ((identity && identity.displayName) || "Chickpea");
+  }
+
+  function slackIdentityMentionForId(identityId) {
+    var identity = identityId ? slackIdentityById(identityId) : workspaceDefaultSlackIdentity();
+    if (identity) return slackIdentityMention(identity);
+    if (identityId && identityId !== WORKSPACE_DEFAULT_SLACK_IDENTITY_ID) return identityId;
+    return "@" + ((state.slackIdentity && state.slackIdentity.displayName) || "Chickpea");
+  }
+
+  function effectiveSlackIdentityId(value) {
+    if (value && value !== NEW_SLACK_IDENTITY_VALUE) return value;
+    var workspaceDefault = workspaceDefaultSlackIdentity();
+    return workspaceDefault ? workspaceDefault.id : WORKSPACE_DEFAULT_SLACK_IDENTITY_ID;
+  }
+
+  function selectedProfileSlackIdentity(draft) {
+    if (!draft || draft.slackIdentityId === NEW_SLACK_IDENTITY_VALUE) return null;
+    return slackIdentityById(effectiveSlackIdentityId(draft.slackIdentityId));
+  }
+
+  function profilePersistedSlackIdentityId(draft) {
+    if (!draft || !draft.id) return "";
+    var saved = agentById(draft.id);
+    return (saved && saved.slackIdentityId) || "";
+  }
+
+  function profileSlackIdentityChanged(draft) {
+    return !!draft && (draft.slackIdentityId || "") !== profilePersistedSlackIdentityId(draft);
+  }
+
+  function profileHasUnenumeratedChannels(draft) {
+    if (!draft || !draft.id) return false;
+    return allAssignmentsForAgent(draft.id).some(function (assignment) {
+      return String(assignment.workspaceId || "").indexOf("*") >= 0 ||
+        String(assignment.channelId || "").indexOf("*") >= 0;
+    });
+  }
+
+  function profileIdentityAvatarHtml(identity) {
+    if (identity && identity.avatarUrl) {
+      return '<img src="' + esc(identity.avatarUrl) + '" alt="" style="width:40px; height:40px; border-radius:10px; object-fit:cover; flex:none;">';
+    }
+    var initial = ((identity && identity.displayName) || "C").slice(0, 1).toUpperCase();
+    return '<span aria-hidden="true" style="width:40px; height:40px; border-radius:10px; display:grid; place-items:center; background:var(--well); font-weight:700; flex:none;">' + esc(initial) + '</span>';
+  }
+
+  function profileIdentityHtml(draft) {
+    var workspaceDefault = workspaceDefaultSlackIdentity();
+    var dedicated = ((state.slackIdentities && state.slackIdentities.identities) || []).filter(function (identity) {
+      return identity.kind === "dedicated" &&
+        (identity.lifecycle === "connected" || identity.lifecycle === "degraded");
+    });
+    var selectedValue = draft.slackIdentityId || "";
+    var options = '<option value=""' + (!selectedValue ? " selected" : "") + '>' +
+      esc(slackIdentityMention(workspaceDefault)) + ' — Workspace default</option>';
+    dedicated.forEach(function (identity) {
+      options += '<option value="' + esc(identity.id) + '"' + (selectedValue === identity.id ? " selected" : "") + '>' +
+        esc(slackIdentityMention(identity)) + (identity.health === "degraded" ? " — needs attention" : "") + '</option>';
+    });
+    if (state.slackIdentities && state.slackIdentities.creationEnabled) {
+      options += '<option value="' + NEW_SLACK_IDENTITY_VALUE + '"' + (selectedValue === NEW_SLACK_IDENTITY_VALUE ? " selected" : "") + '>New Slack identity…</option>';
+    }
+
+    var details = "";
+    if (selectedValue === NEW_SLACK_IDENTITY_VALUE) {
+      details = '<div class="well" style="display:flex; gap:12px; align-items:flex-start;">' +
+        '<span aria-hidden="true" style="width:40px; height:40px; border-radius:10px; display:grid; place-items:center; background:var(--well); font-size:20px;">+</span>' +
+        '<div><div class="field-label">Create a dedicated Slack identity</div>' +
+        '<p class="hint">Chickpea saves this Profile first, then guides you through a separate Slack app install. Canceling setup leaves the Profile on ' + esc(slackIdentityMention(workspaceDefault)) + '.</p></div></div>';
+    } else {
+      var selected = selectedProfileSlackIdentity(draft) || workspaceDefault;
+      var handler = selected && selected.dmProfile ? selected.dmProfile.name : "Not configured";
+      var kindBadge = selected && selected.kind === "workspace_default"
+        ? '<span class="badge badge-role">Workspace default</span>'
+        : '<span class="badge">Dedicated identity</span>';
+      var healthBadge = selected
+        ? '<span class="badge ' + (selected.health === "healthy" ? "badge-on" : "badge-off") + '"><span class="dot"></span>' + esc(selected.health || "unknown") + '</span>'
+        : "";
+      var makeHandler = draft.id && selected && selected.dmAgentId !== draft.id
+        ? '<button type="button" class="btn btn-soft btn-sm" data-action="profile-identity-make-dm"' + (state.profileIdentityBusy ? " disabled" : "") + '>Make this Profile the handler</button>'
+        : (draft.id && selected && selected.dmAgentId === draft.id
+          ? '<span class="badge badge-on"><span class="dot"></span>Handles DMs</span>'
+          : "");
+      details = '<div class="well" style="display:flex; gap:12px; align-items:center;">' +
+        profileIdentityAvatarHtml(selected) +
+        '<div style="display:flex; flex-direction:column; gap:5px; min-width:0; flex:1;">' +
+        '<div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center;"><strong>' + esc(slackIdentityMention(selected)) + '</strong>' + kindBadge + healthBadge + '</div>' +
+        '<div class="hint"><span>DM handler</span> &middot; ' + esc(handler) + '</div></div>' + makeHandler + '</div>';
+    }
+
+    var wildcard = profileSlackIdentityChanged(draft) && profileHasUnenumeratedChannels(draft)
+      ? '<div class="well" style="border-color:var(--ember);"><p class="field-label">Some channel rules cannot be enumerated</p>' +
+        '<p class="hint">Chickpea cannot enumerate every destination matched by a wildcard or pattern. Invite the new Slack app wherever those rules match; channels without it will fail closed.</p>' +
+        '<label style="display:flex; gap:8px; align-items:flex-start; margin-top:10px;"><input type="checkbox" data-action="profile-identity-wildcard-ack"' + (draft.acknowledgeUnenumeratedChannels ? " checked" : "") + '> <span>I understand that unverified channels will fail closed.</span></label></div>'
+      : "";
+
+    return '<section class="section"><div class="section-head"><div><h2 class="section-title">Replies as</h2>' +
+      '<p class="hint">Choose the Slack presence used for new conversations with this Profile. This does not change who handles DMs.</p></div></div>' +
+      '<div class="field"><label class="field-label" for="p-slack-identity">Slack identity</label>' +
+      '<span class="select-wrap"><select class="input" id="p-slack-identity" data-action="profile-slack-identity">' + options + '</select>' + icon("chevron-down", "select-caret") + '</span></div>' +
+      details + wildcard + '</section>';
+  }
+
+  function profileIdentityDmModalHtml() {
+    var pending = state.profileIdentityDmConfirm;
+    if (!pending || !state.profileDraft) return "";
+    var identity = slackIdentityById(pending.identityId);
+    if (!identity) return "";
+    var current = identity.dmProfile ? identity.dmProfile.name : "the current Profile";
+    return '<div class="modal-backdrop"><div class="modal-card" role="dialog" aria-modal="true" aria-label="Change DM handler" data-role="profile-identity-dm-dialog" tabindex="-1">' +
+      '<h2 class="modal-title">Replace ' + esc(current) + ' as the DM handler?</h2>' +
+      '<p class="modal-body">Future DMs to ' + esc(slackIdentityMention(identity)) + ' will use ' + esc(state.profileDraft.name || "this Profile") + '. The Slack DM conversation and its memory continue.</p>' +
+      '<div class="modal-foot"><span class="spacer"></span>' +
+      '<button type="button" class="btn btn-ghost" data-action="profile-identity-dm-cancel"' + (state.profileIdentityBusy ? " disabled" : "") + '>Cancel</button>' +
+      '<button type="button" class="btn btn-primary" data-action="profile-identity-dm-confirm"' + (state.profileIdentityBusy ? " disabled" : "") + '>' + (state.profileIdentityBusy ? "Changing…" : "Make handler") + '</button>' +
+      '</div></div></div>';
+  }
+
+  function focusProfileIdentityDmTrigger() {
+    var trigger = document.querySelector('[data-action="profile-identity-make-dm"]');
+    if (trigger && trigger.focus) trigger.focus();
+  }
+
   function profileNameFieldHtml(draft) {
     var err = state.profileError === "Name is required.";
     return '<div class="field"><label class="field-label" for="p-name">Name</label>' +
       '<input class="input" id="p-name" name="name" type="text" value="' + esc(draft.name) + '"' + (err ? ' style="outline:2px solid var(--danger); outline-offset:-1px;"' : "") + ' data-action="profile-name">' +
-      '<p class="hint">Shown here in /admin only. Replies in Slack always post as ' + slackMentionHtml() + '.</p>' +
+      '<p class="hint">Shown here in /admin only. Choose the Slack presence separately under Replies as.</p>' +
       (err ? '<p class="field-error">Name is required.</p>' : "") + '</div>';
   }
 
@@ -4958,7 +5113,7 @@ details[open].advanced summary::before {
   function profileGenericErrorHtml() {
     if (!state.profileError) return "";
     if (state.profileError === "Name is required." || state.profileError === "Profile instructions are required.") return "";
-    return '<p class="field-error">' + esc(state.profileError) + '</p>';
+    return '<p class="field-error" role="alert" aria-live="polite">' + esc(state.profileError) + '</p>';
   }
 
   // ---- Create (card 10) ----------------------------------------------------
@@ -4968,12 +5123,13 @@ details[open].advanced summary::before {
     return '<div style="display:flex; flex-direction:column; gap:6px;">' +
       '<button type="button" class="link-btn" style="align-self:flex-start;" data-action="profiles-back">&larr; Profiles</button>' +
       '<h1 class="page-title">New profile</h1>' +
-      '<p class="hint">Create a reusable behavior you can attach to channels. It always replies as <b style="font-weight:500; color:var(--text);">' + slackMentionHtml() + '</b>.</p></div>' +
+      '<p class="hint">Create reusable behavior, then choose whether it inherits ' + slackMentionHtml() + ' or gets a dedicated Slack presence.</p></div>' +
       '<section class="section"><div class="section-head"><div><h2 class="section-title">Details</h2></div></div>' +
       '<div class="form-grid">' +
       profileNameFieldHtml(draft) +
       modelFieldHtml(draft) +
       '</div></section>' +
+      profileIdentityHtml(draft) +
       profileTabsHtml(draft) +
       '<div class="save-bar">' + profileGenericErrorHtml() +
       '<button type="button" class="btn btn-ghost" data-action="cancel-create">Cancel</button>' +
@@ -4993,7 +5149,7 @@ details[open].advanced summary::before {
     return '<div class="main-head"><div style="display:flex; flex-direction:column; gap:6px;">' +
       '<button type="button" class="link-btn" style="align-self:flex-start;" data-action="profiles-back">&larr; Profiles</button>' +
       titleRow +
-      '<p class="hint">Edit this reusable behavior. It always replies as <b style="font-weight:500; color:var(--text);">' + slackMentionHtml() + '</b>.</p></div>' +
+      '<p class="hint">Edit this reusable behavior and the Slack presence it uses for new conversations.</p></div>' +
       '<label style="display:flex; align-items:center; gap:10px;"><span class="hint">' + (draft.enabled ? "Enabled" : "Disabled") + '</span>' +
       '<span class="toggle"><span class="thumb"></span><input type="checkbox" name="profile-enabled" data-action="profile-enable-toggle" ' + (draft.enabled ? "checked" : "") + ' aria-label="Profile enabled"></span></label></div>' +
       disableConfirmHtml(draft) +
@@ -5001,6 +5157,7 @@ details[open].advanced summary::before {
       '<div class="form-grid">' +
       modelFieldHtml(draft) +
       '</div></section>' +
+      profileIdentityHtml(draft) +
       profileTabsHtml(draft) +
       usedInHtml(draft) +
       profileFooterHtml(draft) +
@@ -7811,6 +7968,10 @@ details[open].advanced summary::before {
       mcpServers: [],
       apiConnections: [],
       repositories: [],
+      // Empty means inherit the workspace-default Slack identity. __new__ is a
+      // browser-only setup intent and is never sent in the generic Profile body.
+      slackIdentityId: "",
+      acknowledgeUnenumeratedChannels: false,
       pendingSecrets: {},
       removedConnections: [],
       pendingApiSecrets: {},
@@ -7845,6 +8006,8 @@ details[open].advanced summary::before {
         if (grant.allRepos !== undefined) copy.allRepos = grant.allRepos;
         return copy;
       }),
+      slackIdentityId: agent.slackIdentityId || "",
+      acknowledgeUnenumeratedChannels: false,
       pendingSecrets: {},
       removedConnections: [],
       pendingApiSecrets: {},
@@ -8074,6 +8237,9 @@ details[open].advanced summary::before {
         return { scopes: body.scopes || [], error: "" };
       }).catch(function (error) {
         return { scopes: null, error: error.serverMessage || error.message || "Could not load memory counts." };
+      }),
+      api("/admin/api/slack-identities").catch(function () {
+        return { identities: [], creationEnabled: false, globalDmAllowed: true };
       })
     ]).then(function (parts) {
       state.agents = parts[0].agents || [];
@@ -8085,6 +8251,7 @@ details[open].advanced summary::before {
       state.slackBehaviorBusy = "";
       state.memoryScopes = parts[5].scopes;
       state.memoryScopesError = parts[5].error;
+      state.slackIdentities = parts[6] || { identities: [], creationEnabled: false, globalDmAllowed: true };
       if (state.active) {
         var assignment = activeAssignment();
         if (assignment) {
@@ -8225,6 +8392,17 @@ details[open].advanced summary::before {
         focusSlackDisconnectAction("github-disconnect-open");
       } else if (action === "github-disconnect-confirm") {
         disconnectGithub();
+      }
+      return;
+    }
+
+    if (state.profileIdentityDmConfirm) {
+      if (action === "profile-identity-dm-cancel" && !state.profileIdentityBusy) {
+        state.profileIdentityDmConfirm = null;
+        render();
+        focusProfileIdentityDmTrigger();
+      } else if (action === "profile-identity-dm-confirm") {
+        changeProfileIdentityDmHandler();
       }
       return;
     }
@@ -8501,6 +8679,16 @@ details[open].advanced summary::before {
     if (action === "profile-model") { openModelPicker(); }
     if (action === "pick-model") { var modelInput = document.getElementById("p-model"); if (modelInput) modelInput.value = target.getAttribute("data-model") || ""; collectProfileDraft(); state.profileDirty = true; closeModelPicker(); }
     if (action === "save-profile") { saveProfile(); }
+    if (action === "profile-identity-make-dm" && state.profileDraft) {
+      var dmIdentity = selectedProfileSlackIdentity(state.profileDraft);
+      if (dmIdentity && dmIdentity.dmAgentId !== state.profileDraft.id) {
+        state.profileIdentityDmConfirm = { identityId: dmIdentity.id };
+        state.profileError = "";
+        render();
+        var dmConfirmButton = document.querySelector('[data-action="profile-identity-dm-confirm"]');
+        if (dmConfirmButton && dmConfirmButton.focus) dmConfirmButton.focus();
+      }
+    }
     if (action === "discard-profile") { discardProfile(); }
     if (action === "delete-profile") { deleteProfile(); }
     if (action === "detach-channel") { detachProfileChannel(target.getAttribute("data-workspace"), target.getAttribute("data-channel")); }
@@ -9040,6 +9228,19 @@ details[open].advanced summary::before {
     // Remember the picked channel so a Refresh / re-render keeps the selection.
     if (action === "select-channel-option") { state.addChannelSelected = target.value; }
     if (action === "attach-channel-option") { state.attachChannelSelected = target.value; }
+    if (action === "profile-slack-identity" && state.profileDraft) {
+      state.profileDraft.slackIdentityId = target.value || "";
+      state.profileDraft.acknowledgeUnenumeratedChannels = false;
+      state.profileError = "";
+      markProfileDirty();
+      render();
+    }
+    if (action === "profile-identity-wildcard-ack" && state.profileDraft) {
+      state.profileDraft.acknowledgeUnenumeratedChannels = !!target.checked;
+      state.profileError = "";
+      markProfileDirty();
+      render();
+    }
     // Profile enable toggle: enabling is harmless, but turning OFF an assigned
     // profile stops it answering everywhere — confirm before staging that.
     if (action === "profile-enable-toggle" && state.profileDraft) {
@@ -9161,6 +9362,26 @@ details[open].advanced summary::before {
   }
 
   document.addEventListener("keydown", function (event) {
+    if (state.profileIdentityDmConfirm && event.key === "Tab") {
+      event.preventDefault();
+      var dmCancel = document.querySelector('[data-action="profile-identity-dm-cancel"]');
+      var dmConfirm = document.querySelector('[data-action="profile-identity-dm-confirm"]');
+      if (!dmCancel || !dmConfirm) return;
+      var dmNext = event.shiftKey
+        ? (document.activeElement === dmCancel ? dmConfirm : dmCancel)
+        : (document.activeElement === dmConfirm ? dmCancel : dmConfirm);
+      if (dmNext.focus) dmNext.focus();
+      return;
+    }
+    if (state.profileIdentityDmConfirm && (event.key === "Escape" || event.key === "Esc")) {
+      event.preventDefault();
+      if (!state.profileIdentityBusy) {
+        state.profileIdentityDmConfirm = null;
+        render();
+        focusProfileIdentityDmTrigger();
+      }
+      return;
+    }
     if (state.scheduledDeleteConfirm && (event.key === "Escape" || event.key === "Esc")) {
       event.preventDefault();
       if (state.scheduledBusy) return;
@@ -10844,6 +11065,109 @@ details[open].advanced summary::before {
     }
   }
 
+  function profileIdentityErrorText(error) {
+    var payload = error && error.payload;
+    if (payload && payload.error === "slack_identity_not_in_channels") {
+      var channels = (payload.channels || []).map(function (channel) {
+        return "#" + (channel.label || channel.channelId);
+      });
+      return "Invite this Slack app to " + channels.join(", ") + " before switching identities.";
+    }
+    if (payload && payload.error === "slack_identity_unenumerated_channels") {
+      return "Acknowledge the wildcard channel warning before switching identities.";
+    }
+    if (payload && payload.error === "profile_slack_identity_changed") {
+      return "This Profile's Slack identity changed in another session. Reload and try again.";
+    }
+    if (payload && payload.error === "slack_identity_changed") {
+      return "This Slack identity changed in another session. Reload and try again.";
+    }
+    return (error && (error.serverMessage || error.message)) || "Could not change the Slack identity.";
+  }
+
+  function profileSlackIdentityIntent(draft) {
+    var selectedValue = draft.slackIdentityId || "";
+    var persistedValue = profilePersistedSlackIdentityId(draft);
+    return {
+      selectedValue: selectedValue,
+      expectedProfileIdentityId: persistedValue || null,
+      acknowledgeUnenumeratedChannels: !!draft.acknowledgeUnenumeratedChannels,
+      changed: selectedValue !== persistedValue,
+      createNew: selectedValue === NEW_SLACK_IDENTITY_VALUE,
+      identity: selectedValue === NEW_SLACK_IDENTITY_VALUE
+        ? null
+        : slackIdentityById(effectiveSlackIdentityId(selectedValue))
+    };
+  }
+
+  function attachProfileSlackIdentity(intent, agentId, preflightOnly) {
+    if (!intent.identity) {
+      var missing = new Error("The selected Slack identity is unavailable. Reload and try again.");
+      return Promise.reject(missing);
+    }
+    var body = {
+      expectedRevision: intent.identity.connectionRevision,
+      expectedProfileIdentityId: intent.expectedProfileIdentityId,
+      acknowledgeUnenumeratedChannels: intent.acknowledgeUnenumeratedChannels
+    };
+    if (preflightOnly) body.preflightOnly = true;
+    return postJson(
+      "/admin/api/slack-identities/" + encodeURIComponent(intent.identity.id) +
+        "/profiles/" + encodeURIComponent(agentId),
+      "POST",
+      body
+    );
+  }
+
+  function completeProfileSlackIdentityIntent(intent, agentId, displayName) {
+    if (!intent.changed) return Promise.resolve({ handoff: false });
+    if (intent.createNew) {
+      return postJson("/admin/api/slack-identities", "POST", {
+        source: "profile",
+        initialDmAgentId: agentId,
+        displayName: displayName
+      }).then(function (body) {
+        location.assign(body.setupUrl);
+        return { handoff: true };
+      });
+    }
+    return attachProfileSlackIdentity(intent, agentId, false).then(function () {
+      return { handoff: false };
+    });
+  }
+
+  function changeProfileIdentityDmHandler() {
+    var pending = state.profileIdentityDmConfirm;
+    var draft = state.profileDraft;
+    var identity = pending && slackIdentityById(pending.identityId);
+    if (!pending || !draft || !draft.id || !identity || state.profileIdentityBusy) return;
+    state.profileIdentityBusy = "dm";
+    state.profileError = "";
+    render();
+    postJson("/admin/api/slack-identities/" + encodeURIComponent(identity.id) + "/dms", "PATCH", {
+      expectedRevision: identity.connectionRevision,
+      // Choosing the remembered handler must not silently turn a deliberately
+      // disabled DM surface back on. needs_setup has no remembered handler, so
+      // this explicit confirmation is the action that enables it.
+      dmState: identity.dmState === "needs_setup" ? "on" : identity.dmState,
+      dmAgentId: draft.id
+    }).then(function (body) {
+      var identities = (state.slackIdentities && state.slackIdentities.identities) || [];
+      state.slackIdentities.identities = identities.map(function (item) {
+        return item.id === body.identity.id ? body.identity : item;
+      });
+      state.profileIdentityBusy = "";
+      state.profileIdentityDmConfirm = null;
+      render();
+    }).catch(function (error) {
+      state.profileIdentityBusy = "";
+      state.profileIdentityDmConfirm = null;
+      state.profileError = profileIdentityErrorText(error);
+      render();
+      focusProfileIdentityDmTrigger();
+    });
+  }
+
   function saveProfile(onSaved, onFailed) {
     var draft = collectProfileDraft();
     // Clear any stale field error BEFORE the commit gates below render — a
@@ -10876,23 +11200,43 @@ details[open].advanced summary::before {
       repositories: draft.repositories || []
     };
     var isEdit = !!draft.id;
+    var identityIntent = profileSlackIdentityIntent(draft);
+    if (
+      identityIntent.changed &&
+      !identityIntent.createNew &&
+      profileHasUnenumeratedChannels(draft) &&
+      !identityIntent.acknowledgeUnenumeratedChannels
+    ) {
+      state.profileError = "Acknowledge the wildcard channel warning before switching identities.";
+      render();
+      if (onFailed) onFailed();
+      return;
+    }
     // Capture the draft carrying the transient secrets + removals BEFORE the
     // post-save re-clone wipes them, so the secret PUT/DELETE still run.
     var secretsDraft = draft;
-    var request;
-    if (isEdit) {
-      body.model = draft.model || null;
-      request = postJson("/admin/api/agents/" + encodeURIComponent(draft.id), "PATCH", body);
-    } else {
+    if (isEdit) body.model = draft.model || null;
+    else {
       if (draft.model) body.model = draft.model;
       body.id = slugId(draft.name);
-      request = postJson("/admin/api/agents", "POST", body);
     }
     var secretAgentId = isEdit ? draft.id : body.id;
-    request.then(async function () {
+    var preflight = isEdit && identityIntent.changed && !identityIntent.createNew
+      ? attachProfileSlackIdentity(identityIntent, draft.id, true)
+      : Promise.resolve();
+    preflight.then(function () {
+      return isEdit
+        ? postJson("/admin/api/agents/" + encodeURIComponent(draft.id), "PATCH", body)
+        : postJson("/admin/api/agents", "POST", body);
+    }).then(async function () {
       state.profileError = "";
       state.profileDirty = false;
       state.disableConfirm = false;
+      if (!isEdit) {
+        draft.id = secretAgentId;
+        state.profileScreen = "edit";
+        state.editingAgentId = secretAgentId;
+      }
       // The profile policy is already saved. Persist both kinds of credentials
       // concurrently, retaining only failed operations for an explicit retry.
       var secretResults = await Promise.all([
@@ -10901,6 +11245,20 @@ details[open].advanced summary::before {
       ]);
       var secretFailures = secretResults[0].failed.concat(secretResults[1].failed);
       var secretsFailed = secretFailures.length > 0;
+      if (!secretsFailed) {
+        var identityCompletion;
+        try {
+          identityCompletion = await completeProfileSlackIdentityIntent(
+            identityIntent,
+            secretAgentId,
+            draft.name
+          );
+        } catch (identityError) {
+          identityError.profilePolicySaved = true;
+          throw identityError;
+        }
+        if (identityCompletion.handoff) return;
+      }
       if (isEdit || secretsFailed) {
         // A failed create becomes an edit of the policy that did persist. Keep
         // that screen open so its pending write-only value remains retryable.
@@ -10948,7 +11306,14 @@ details[open].advanced summary::before {
       state.profileDraft = null;
       state.editingAgentId = null;
       return refreshData();
-    }).catch(function (error) { state.profileError = error.serverMessage || error.message; render(); if (onFailed) onFailed(); });
+    }).catch(function (error) {
+      var identityMessage = profileIdentityErrorText(error);
+      state.profileError = error && error.profilePolicySaved
+        ? "Profile changes were saved, but its Slack identity was not changed. " + identityMessage
+        : identityMessage;
+      render();
+      if (onFailed) onFailed();
+    });
   }
 
   function discardProfile() {

@@ -747,6 +747,7 @@ const slackIdentityAttachProfileSchema = v.strictObject({
   expectedRevision: slackIdentityRevisionSchema,
   expectedProfileIdentityId: v.nullable(v.pipe(v.string(), v.regex(AGENT_ID_PATTERN))),
   acknowledgeUnenumeratedChannels: v.optional(v.boolean(), false),
+  preflightOnly: v.optional(v.boolean(), false),
 });
 const slackIdentityCancelSchema = v.strictObject({
   expectedRevision: slackIdentityRevisionSchema,
@@ -1205,6 +1206,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       : slackIdentityAdminBodyLimit(c, next);
   app.use('/admin/api/slack-identities', limitSlackIdentityMutation);
   app.use('/admin/api/slack-identities/*', limitSlackIdentityMutation);
+  // The legacy workspace-default connection route is an identity mutation too.
+  // Keep its compatibility shape, but give it the same pre-parse byte ceiling.
+  app.use('/admin/api/slack-connection', limitSlackIdentityMutation);
 
   app.post('/admin/api/agents/:agentId/mcp/oauth/:connectionId/start', async (c) => {
     c.header('Cache-Control', 'no-store');
@@ -3264,6 +3268,31 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       try {
         const configStore = store(c);
         const before = await configStore.getSlackIdentity(identityId);
+        if (parsed.output.preflightOnly) {
+          if (before.lifecycle !== 'connected' && before.lifecycle !== 'degraded') {
+            throw new SlackIdentityLifecycleError(
+              before.id,
+              'assign',
+              before.lifecycle,
+            );
+          }
+          if (before.connectionRevision !== parsed.output.expectedRevision) {
+            throw new SlackIdentityRevisionConflictError(
+              before.id,
+              parsed.output.expectedRevision,
+              before.connectionRevision,
+            );
+          }
+          const currentProfile = await configStore.getAgent(agentId);
+          const currentIdentityId = currentProfile.slackIdentityId ?? null;
+          if (currentIdentityId !== parsed.output.expectedProfileIdentityId) {
+            throw new AgentSlackIdentityConflictError(
+              agentId,
+              parsed.output.expectedProfileIdentityId,
+              currentIdentityId,
+            );
+          }
+        }
         const readiness = await preflightSlackIdentityMembership({
           config: configStore,
           settings: settings(c),
@@ -3276,6 +3305,15 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
             parsed.output.acknowledgeUnenumeratedChannels,
         });
         if (!readiness.ready) return c.json(readiness, 409);
+        if (parsed.output.preflightOnly) {
+          return c.json({
+            profile: await configStore.getAgent(agentId),
+            identity: await safeSlackIdentityResponse(c, before),
+            membership: readiness,
+            preflightOnly: true,
+            newThreadsOnly: true,
+          });
+        }
         const profile = await configStore.attachAgentToSlackIdentity(
           agentId,
           identityId,
@@ -3352,6 +3390,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const pendingDeliveryCount = await countSlackIdentityPendingDeliveries(
         slackState(c),
         identityId,
+        true,
       );
       if (
         references.profileIds.length > 0 ||
@@ -3552,9 +3591,18 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
     let settingsStore: SettingsStore;
     let expectedRevision: string | null;
+    let defaultIdentityBefore: SlackIdentity;
+    let priorCredentialSources: SlackCredentialSources;
     try {
       settingsStore = settings(c);
       expectedRevision = await readSlackConnectionRevision(settingsStore);
+      defaultIdentityBefore = await store(c).getSlackIdentity(
+        WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+      );
+      priorCredentialSources = await describeSlackCredentialSources(
+        c.env as PlatformEnv | undefined,
+        settingsStore,
+      );
     } catch (err) {
       return internalError(c, err);
     }
@@ -3633,6 +3681,16 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         signingSecret,
         botUserId: auth.botUserId,
       }, nextRevision);
+      await appendSlackIdentityAudit(
+        store(c),
+        c,
+        priorCredentialSources.botToken === 'missing' ||
+            priorCredentialSources.signingSecret === 'missing'
+          ? 'slack_identity.credentials_connected'
+          : 'slack_identity.credentials_rotated',
+        defaultIdentityBefore,
+        defaultIdentityBefore,
+      );
       return c.json({
         ok: true,
         ...(auth.teamId ? { teamId: auth.teamId } : {}),
@@ -3698,9 +3756,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   app.delete('/admin/api/slack-connection', async (c) => {
     try {
       const settingsStore = settings(c);
+      const configStore = store(c);
+      const defaultIdentityBefore = await configStore.getSlackIdentity(
+        WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+      );
       const dedicatedWithCredentials: Array<{ id: string; name: string }> = [];
-      for (const identity of await store(c).listSlackIdentities()) {
-        if (identity.kind !== 'dedicated' || identity.lifecycle === 'retired') continue;
+      for (const identity of await configStore.listSlackIdentities()) {
+        if (identity.kind !== 'dedicated') continue;
         const credentials = await resolveSlackIdentityCredentials(
           identity.id,
           c.env as PlatformEnv | undefined,
@@ -3764,6 +3826,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         signingSecret: undefined,
         botUserId: undefined,
       }, nextRevision);
+      await appendSlackIdentityAudit(
+        configStore,
+        c,
+        'slack_identity.credentials_disconnected',
+        defaultIdentityBefore,
+        defaultIdentityBefore,
+      );
       return c.json({
         ok: true,
         connected: false,
@@ -4469,10 +4538,16 @@ async function slackIdentityAdminResponse(
   const credentialSources = identity.kind === 'workspace_default'
     ? await workspaceCredentialSources
     : undefined;
+  const workspaceDefaultConnected = identity.kind === 'workspace_default'
+    ? credentialSources?.botToken !== 'missing' &&
+      credentialSources?.signingSecret !== 'missing'
+    : undefined;
   return {
     id: identity.id,
     kind: identity.kind,
-    lifecycle: identity.lifecycle,
+    lifecycle: identity.kind === 'workspace_default'
+      ? (workspaceDefaultConnected ? 'connected' : 'setup_incomplete')
+      : identity.lifecycle,
     teamId: identity.teamId ?? null,
     appId: identity.appId ?? null,
     botUserId: identity.botUserId ?? null,
@@ -4494,7 +4569,9 @@ async function slackIdentityAdminResponse(
       (identity.kind === 'workspace_default' ? 'Chickpea' : null),
     avatarUrl: safeHttpsUrl(identity.observedAvatarUrl),
     observedAt: identity.observedAt ?? null,
-    health: identity.health,
+    health: identity.kind === 'workspace_default' && !workspaceDefaultConnected
+      ? 'disconnected'
+      : identity.health,
     healthDetail: identity.healthDetail ?? null,
     consoleUrl: slackIdentityConsoleUrl(identity.appId),
     profiles: profiles.map(({ id, name, enabled }) => ({ id, name, enabled })),
@@ -4509,7 +4586,11 @@ async function slackIdentityAdminResponse(
 async function countSlackIdentityPendingDeliveries(
   slackStateStore: SlackStateStore,
   identityId: string,
+  failClosed = false,
 ): Promise<number> {
+  if (failClosed) {
+    return slackStateStore.countPendingDeliveriesForSlackIdentity(identityId);
+  }
   try {
     return await slackStateStore.countPendingDeliveriesForSlackIdentity(identityId);
   } catch {
@@ -4674,7 +4755,7 @@ async function appendSlackIdentityAudit(
       requestId,
     }),
     idempotencyKey:
-      `slack_identity:${after.id}:${operation}:${after.connectionRevision}:success`,
+      `slack_identity:${after.id}:${operation}:${after.connectionRevision}:${requestId}:success`,
   });
 }
 
