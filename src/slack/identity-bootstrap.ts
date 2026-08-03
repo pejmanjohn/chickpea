@@ -209,6 +209,10 @@ export async function beginSlackIdentityConnection(
   // deletion, retirement, cancellation, or a newer rotation wins the race.
   const current = await input.config.getSlackIdentity(input.identityId);
   requireConnectableIdentity(current, input.expectedRevision);
+  const reconnecting =
+    current.setupIntent?.reconnecting === true ||
+    current.lifecycle === 'connected' ||
+    current.lifecycle === 'degraded';
   // Cross the ConfigStore boundary first: from this point the identity is
   // unassignable. A crash or credential-CAS failure leaves a resumable pending
   // row with the prior bundle, never a connected row with an unverified secret.
@@ -226,6 +230,10 @@ export async function beginSlackIdentityConnection(
       observedAt: validated.observedAt,
       health: 'healthy',
       healthDetail: null,
+      setupIntent: {
+        ...current.setupIntent,
+        ...(reconnecting ? { reconnecting: true } : {}),
+      },
     },
   );
   await writeSlackIdentityCredentials(

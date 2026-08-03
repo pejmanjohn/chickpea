@@ -47,10 +47,70 @@ import {
   readPendingSlackChallenge,
   verifyPendingSlackChallenge,
 } from '../src/slack/identity-handshake.ts';
+import {
+  buildSlackIdentityManifest,
+  slackManifestPrefillUrl,
+} from '../src/slack/identity-manifest.ts';
+import slackAppManifest from '../slack-app-manifest.json' with { type: 'json' };
 import { withEnv } from './helpers/env.ts';
 import { loopbackListenSkipReason } from './helpers/listen.ts';
 
 const ADMIN_TOKEN = 'wizard-admin-token';
+
+test('dedicated Slack manifests parameterize only identity fields and retain lifecycle events', () => {
+  const requestUrl =
+    'https://chickpea.acme.test/channels/slack/events/identity_ingress_finance_0123456789abcdef';
+  const manifest = buildSlackIdentityManifest(slackAppManifest, {
+    appName: 'Finance Copilot',
+    botDisplayName: 'Finance',
+    requestUrl,
+  });
+
+  assert.equal(manifest.$schema, undefined);
+  assert.equal(manifest.display_information.name, 'Finance Copilot');
+  assert.equal(manifest.features.bot_user.display_name, 'Finance');
+  assert.equal(manifest.settings.event_subscriptions.request_url, requestUrl);
+  assert.ok(manifest.settings.event_subscriptions.bot_events.includes('app_uninstalled'));
+  assert.ok(manifest.settings.event_subscriptions.bot_events.includes('tokens_revoked'));
+  assert.deepEqual(
+    manifest.features.app_home,
+    slackAppManifest.features.app_home,
+    'the canonical app-home contract must be preserved',
+  );
+  assert.deepEqual(
+    manifest.oauth_config,
+    slackAppManifest.oauth_config,
+    'dedicated apps must inherit the canonical scopes',
+  );
+
+  const prefill = new URL(slackManifestPrefillUrl(manifest));
+  assert.equal(`${prefill.origin}${prefill.pathname}`, 'https://api.slack.com/apps');
+  assert.equal(prefill.searchParams.get('new_app'), '1');
+  assert.deepEqual(
+    JSON.parse(prefill.searchParams.get('manifest_json') ?? '{}'),
+    manifest,
+  );
+});
+
+test('dedicated Slack manifest names enforce Slack limits before generation', () => {
+  const base = {
+    appName: 'Finance',
+    botDisplayName: 'Finance',
+    requestUrl: 'https://chickpea.acme.test/channels/slack/events/safe_identity_key',
+  };
+  assert.throws(
+    () => buildSlackIdentityManifest(slackAppManifest, { ...base, appName: 'x'.repeat(36) }),
+    /35 characters or fewer/,
+  );
+  assert.throws(
+    () => buildSlackIdentityManifest(slackAppManifest, { ...base, botDisplayName: 'x'.repeat(81) }),
+    /80 characters or fewer/,
+  );
+  assert.throws(
+    () => buildSlackIdentityManifest(slackAppManifest, { ...base, requestUrl: 'http://unsafe.test/events' }),
+    /HTTPS/,
+  );
+});
 
 function pendingIdentity(overrides: Partial<SlackIdentity> = {}): SlackIdentity {
   return {
@@ -2548,6 +2608,40 @@ test('dedicated identity setup validates a bot, stores isolated credentials, and
       'https://api.slack.com/apps/A0FINANCE/general',
     );
     assert.equal(JSON.stringify(refreshed).includes(signingSecret), false);
+
+    const rotationSecret = 'finance-rotated-signing-secret';
+    const reconnecting = await beginSlackIdentityConnection(
+      {
+        config,
+        settings,
+        identityId: draft.id,
+        expectedRevision: refreshed.identity.connectionRevision,
+        expectedTeamId: 'T_ACME',
+        botToken: 'xoxb-finance-rotated',
+        signingSecret: rotationSecret,
+      },
+      validDedicatedSlackDeps(),
+    );
+    assert.equal(reconnecting.lifecycle, 'credentials_pending');
+    assert.equal(reconnecting.setupIntent?.reconnecting, true);
+    assert.equal(
+      (
+        await recordPendingSlackChallenge(
+          settings,
+          reconnecting,
+          signedChallenge(rotationSecret),
+        )
+      ).accepted,
+      true,
+    );
+    const reconnected = await completeSlackIdentityConnection({
+      config,
+      settings,
+      identityId: draft.id,
+      expectedRevision: reconnecting.connectionRevision,
+    });
+    assert.equal(reconnected.lifecycle, 'connected');
+    assert.equal(reconnected.setupIntent?.reconnecting, undefined);
   } finally {
     config.close();
     settings.close();

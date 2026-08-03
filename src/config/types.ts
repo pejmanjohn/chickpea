@@ -119,8 +119,11 @@ export type SlackIdentityHealth =
   | 'unauthorized';
 
 export interface SlackIdentitySetupIntent {
+  appName?: string;
   displayName?: string;
   sourceAgentId?: string;
+  /** True after an established identity starts credential replacement. */
+  reconnecting?: boolean;
 }
 
 /**

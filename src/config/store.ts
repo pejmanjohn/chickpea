@@ -678,10 +678,17 @@ export class ConfigStoreLogic {
       if (agentId) {
         this.requireAgentSlackIdentity(agentId, expectedAgentIdentityId);
       }
+      const retainedSetupIntent = { ...identity.setupIntent };
+      delete retainedSetupIntent.sourceAgentId;
+      delete retainedSetupIntent.reconnecting;
       const connected = this.updateSlackIdentity(identityId, expectedRevision, {
         lifecycle: 'connected',
         health: 'healthy',
         healthDetail: null,
+        setupIntent:
+          Object.keys(retainedSetupIntent).length > 0
+            ? retainedSetupIntent
+            : null,
       });
       if (agentId) {
         this.updateAgent(agentId, { slackIdentityId: identityId });

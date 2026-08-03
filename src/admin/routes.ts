@@ -236,6 +236,10 @@ import {
   type SlackIdentityBootstrapDeps,
 } from '../slack/identity-bootstrap.ts';
 import {
+  buildSlackIdentityManifest,
+  slackManifestPrefillUrl,
+} from '../slack/identity-manifest.ts';
+import {
   clearSlackIdentityCredentials,
   resolveSlackIdentityCredentials,
   SlackIdentityCredentialRevisionError,
@@ -724,7 +728,13 @@ const slackIdentityRevisionSchema = v.pipe(v.number(), v.integer(), v.minValue(0
 const slackIdentityCreateSchema = v.strictObject({
   source: v.picklist(['profile', 'settings']),
   initialDmAgentId: agentIdSchema,
+  appName: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(35))),
   displayName: v.optional(v.pipe(v.string(), v.trim(), v.maxLength(80))),
+});
+const slackIdentitySetupIntentSchema = v.strictObject({
+  expectedRevision: slackIdentityRevisionSchema,
+  appName: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(35)),
+  displayName: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(80)),
 });
 const slackIdentityConnectSchema = v.strictObject({
   expectedRevision: slackIdentityRevisionSchema,
@@ -3041,6 +3051,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         createdAt: now,
         updatedAt: now,
         setupIntent: {
+          appName:
+            parsed.output.appName ??
+            (parsed.output.displayName || 'Chickpea identity').slice(0, 35),
           ...(parsed.output.displayName
             ? { displayName: parsed.output.displayName }
             : {}),
@@ -3068,6 +3081,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           slackState(c),
         ),
         setupUrl: slackIdentitySetupUrl(identity.id),
+        setup: dedicatedSlackIdentitySetup(identity, requestOrigin(c)),
       }, 201);
     } catch (error) {
       return slackIdentityAdminError(c, error);
@@ -3083,6 +3097,50 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       c.header('Cache-Control', 'no-store');
       return c.json({
         identity: await safeSlackIdentityResponse(c, identity),
+        setup:
+          identity.kind === 'dedicated' &&
+          (identity.lifecycle === 'setup_incomplete' ||
+            identity.lifecycle === 'credentials_pending')
+            ? dedicatedSlackIdentitySetup(identity, requestOrigin(c))
+            : null,
+      });
+    } catch (error) {
+      return slackIdentityAdminError(c, error);
+    }
+  });
+
+  app.patch('/admin/api/slack-identities/:identityId/setup', async (c) => {
+    const identityId = c.req.param('identityId');
+    if (!isSlackIdentityId(identityId)) return invalidRequest(c);
+    const parsed = v.safeParse(
+      slackIdentitySetupIntentSchema,
+      await readJson(c.req),
+    );
+    if (!parsed.success) return invalidRequest(c);
+    try {
+      const configStore = store(c);
+      const before = await configStore.getSlackIdentity(identityId);
+      if (before.kind !== 'dedicated' || before.lifecycle !== 'setup_incomplete') {
+        throw new SlackIdentityLifecycleError(
+          identityId,
+          'edit setup names for',
+          before.lifecycle,
+        );
+      }
+      const identity = await configStore.updateSlackIdentity(
+        identityId,
+        parsed.output.expectedRevision,
+        {
+          setupIntent: {
+            ...before.setupIntent,
+            appName: parsed.output.appName,
+            displayName: parsed.output.displayName,
+          },
+        },
+      );
+      return c.json({
+        identity: await safeSlackIdentityResponse(c, identity),
+        setup: dedicatedSlackIdentitySetup(identity, requestOrigin(c)),
       });
     } catch (error) {
       return slackIdentityAdminError(c, error);
@@ -3146,7 +3204,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     try {
       const configStore = store(c);
       const before = await configStore.getSlackIdentity(identityId);
-      const attachAgentId = before.setupIntent?.sourceAgentId;
+      const attachAgentId = before.setupIntent?.reconnecting
+        ? undefined
+        : before.setupIntent?.sourceAgentId;
       const identity = await completeSlackIdentityConnection({
         config: configStore,
         settings: settings(c),
@@ -3347,6 +3407,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     try {
       const configStore = store(c);
       const before = await configStore.getSlackIdentity(identityId);
+      if (before.setupIntent?.reconnecting) {
+        return c.json({
+          error: 'slack_identity_reconnect_cancel_unsupported',
+          message:
+            'Finish signed verification or replace the credentials again; an established identity cannot be deleted as a setup draft.',
+        }, 409);
+      }
       const canceled = await cancelSlackIdentityConnection({
         config: configStore,
         settings: settings(c),
@@ -4577,6 +4644,7 @@ async function slackIdentityAdminResponse(
     profiles: profiles.map(({ id, name, enabled }) => ({ id, name, enabled })),
     pendingDeliveryCount,
     setupSourceProfileId: identity.setupIntent?.sourceAgentId ?? null,
+    setupReconnecting: identity.setupIntent?.reconnecting === true,
     createdAt: identity.createdAt,
     updatedAt: identity.updatedAt,
     retiredAt: identity.retiredAt ?? null,
@@ -4811,6 +4879,35 @@ function isSlackIdentityId(identityId: string): boolean {
 
 function slackIdentitySetupUrl(identityId: string): string {
   return `/admin/settings/slack/identities/${encodeURIComponent(identityId)}/setup`;
+}
+
+function dedicatedSlackIdentitySetup(identity: SlackIdentity, origin: string) {
+  const appName =
+    identity.setupIntent?.appName ??
+    identity.setupIntent?.displayName ??
+    'Chickpea identity';
+  const botDisplayName = identity.setupIntent?.displayName ?? appName;
+  if (!safeHttpsUrl(origin)) {
+    return {
+      appName,
+      botDisplayName,
+      manifestUrl: null,
+      manifestError:
+        'Open Chickpea at its public HTTPS Admin URL to create this Slack app.',
+    };
+  }
+  const requestUrl = `${origin}/channels/slack/events/${identity.ingressKey}`;
+  const manifest = buildSlackIdentityManifest(slackAppManifest, {
+    appName,
+    botDisplayName,
+    requestUrl,
+  });
+  return {
+    appName,
+    botDisplayName,
+    manifestUrl: slackManifestPrefillUrl(manifest),
+    manifestError: null,
+  };
 }
 
 function toAssignment(input: v.InferOutput<typeof assignmentSchema>): ChannelAssignment {

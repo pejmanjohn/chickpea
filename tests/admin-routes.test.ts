@@ -3851,25 +3851,71 @@ test('Slack identity Admin resources are gated, bounded, and secret-free', async
     assert.equal(unauthorized.status, 401);
 
     await withEnv({ SLACK_TAG_IDENTITY_MODE: 'multi' }, async () => {
-      const created = await app.request('/admin/api/slack-identities', {
+      const created = await app.request('https://chickpea.acme.test/admin/api/slack-identities', {
         method: 'POST',
         headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
         body: JSON.stringify({
           source: 'settings',
           initialDmAgentId: 'agent_finance',
+          appName: 'Finance Copilot',
           displayName: 'Finance',
         }),
       });
       assert.equal(created.status, 201);
       const createdBody = (await created.json()) as {
-        identity: Record<string, unknown>;
+        identity: Record<string, unknown> & { id: string };
         setupUrl: string;
+        setup: { appName: string; botDisplayName: string; manifestUrl: string };
       };
       assert.equal(createdBody.identity.lifecycle, 'setup_incomplete');
       assert.equal(createdBody.identity.dmAgentId, 'agent_finance');
       assert.equal(createdBody.identity.dmState, 'on');
       assert.match(createdBody.setupUrl, /^\/admin\/settings\/slack\/identities\//);
       assert.equal(Object.hasOwn(createdBody.identity, 'ingressKey'), false);
+      assert.equal(createdBody.setup.appName, 'Finance Copilot');
+      assert.equal(createdBody.setup.botDisplayName, 'Finance');
+      const dedicatedManifestUrl = new URL(createdBody.setup.manifestUrl);
+      const dedicatedManifest = JSON.parse(
+        dedicatedManifestUrl.searchParams.get('manifest_json') ?? '{}',
+      ) as {
+        $schema?: string;
+        display_information: { name: string };
+        features: { bot_user: { display_name: string } };
+        settings: { event_subscriptions: { request_url: string; bot_events: string[] } };
+      };
+      assert.equal(dedicatedManifest.$schema, undefined);
+      assert.equal(dedicatedManifest.display_information.name, 'Finance Copilot');
+      assert.equal(dedicatedManifest.features.bot_user.display_name, 'Finance');
+      assert.match(
+        dedicatedManifest.settings.event_subscriptions.request_url,
+        /^https:\/\/chickpea\.acme\.test\/channels\/slack\/events\/[A-Za-z0-9_-]{22,}$/,
+      );
+      assert.ok(dedicatedManifest.settings.event_subscriptions.bot_events.includes('app_uninstalled'));
+      assert.ok(dedicatedManifest.settings.event_subscriptions.bot_events.includes('tokens_revoked'));
+
+      const detail = await app.request(
+        `https://chickpea.acme.test/admin/api/slack-identities/${createdBody.identity.id}`,
+        { headers: auth(ADMIN_TOKEN) },
+      );
+      assert.equal(detail.status, 200);
+      const detailBody = await detail.json() as {
+        identity: Record<string, unknown>;
+        setup: { appName: string; manifestUrl: string };
+      };
+      assert.equal(Object.hasOwn(detailBody.identity, 'ingressKey'), false);
+      assert.equal(detailBody.setup.appName, 'Finance Copilot');
+      assert.equal(detailBody.setup.manifestUrl, createdBody.setup.manifestUrl);
+
+      const localDetail = await app.request(
+        `/admin/api/slack-identities/${createdBody.identity.id}`,
+        { headers: auth(ADMIN_TOKEN) },
+      );
+      assert.equal(localDetail.status, 200);
+      const localDetailBody = await localDetail.json() as {
+        setup: { manifestUrl: string | null; manifestError: string | null };
+      };
+      assert.equal(localDetailBody.setup.manifestUrl, null);
+      assert.match(localDetailBody.setup.manifestError ?? '', /public HTTPS Admin URL/);
 
       const listed = await app.request('/admin/api/slack-identities', {
         headers: auth(ADMIN_TOKEN),
@@ -3908,6 +3954,24 @@ test('Slack identity Admin resources are gated, bounded, and secret-free', async
       },
     ));
     assert.equal(oversized.status, 413);
+    for (const invalidNames of [
+      { appName: 'x'.repeat(36), displayName: 'Finance' },
+      { appName: 'Finance', displayName: 'x'.repeat(81) },
+    ]) {
+      const invalid = await withEnv(
+        { SLACK_TAG_IDENTITY_MODE: 'multi' },
+        () => app.request('/admin/api/slack-identities', {
+          method: 'POST',
+          headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+          body: JSON.stringify({
+            source: 'settings',
+            initialDmAgentId: 'agent_finance',
+            ...invalidNames,
+          }),
+        }),
+      );
+      assert.equal(invalid.status, 400);
+    }
     const oversizedDefault = await app.request(new Request(
       'http://localhost/admin/api/slack-connection',
       {
@@ -4275,6 +4339,35 @@ test('Slack identity cancellation erases pending secrets and retirement reports 
     assert.equal(canceled.status, 200);
     assert.deepEqual(await canceled.json(), { ok: true, deleted: true });
     await assert.rejects(() => store.getSlackIdentity(draft.id), /Unknown Slack identity/);
+
+    const reconnecting = await store.createSlackIdentity({
+      ...draft,
+      id: 'slack_identity_reconnecting',
+      ingressKey: 'identity_ingress_reconnecting_0123456789abcdef',
+      lifecycle: 'credentials_pending',
+      credentialProvenance: 'stored',
+      setupIntent: { appName: 'Finance', displayName: 'Finance', reconnecting: true },
+    });
+    const reconnectCancel = await app.request(
+      '/admin/api/slack-identities/slack_identity_reconnecting/cancel',
+      {
+        method: 'POST',
+        headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+        body: JSON.stringify({
+          expectedRevision: reconnecting.connectionRevision,
+          deleteDraft: true,
+        }),
+      },
+    );
+    assert.equal(reconnectCancel.status, 409);
+    assert.equal(
+      (await reconnectCancel.json() as { error: string }).error,
+      'slack_identity_reconnect_cancel_unsupported',
+    );
+    assert.equal(
+      (await store.getSlackIdentity(reconnecting.id)).lifecycle,
+      'credentials_pending',
+    );
 
     const { dmAgentId: _draftDmAgentId, ...draftWithoutDmAgent } = draft;
     const connected = await store.createSlackIdentity({

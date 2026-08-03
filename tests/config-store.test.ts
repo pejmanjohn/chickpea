@@ -220,6 +220,11 @@ test('identity setup attaches a Profile in the same metadata transaction', async
       lifecycle: 'credentials_pending',
       dmState: 'on',
       dmAgentId: 'agent_finance',
+      setupIntent: {
+        appName: 'Finance Copilot',
+        displayName: 'Finance',
+        sourceAgentId: 'agent_finance',
+      },
     }));
     const connected = await store.completeSlackIdentitySetup(
       pending.id,
@@ -229,6 +234,10 @@ test('identity setup attaches a Profile in the same metadata transaction', async
     );
     assert.equal(connected.lifecycle, 'connected');
     assert.equal((await store.getAgent('agent_finance')).slackIdentityId, pending.id);
+    assert.deepEqual(connected.setupIntent, {
+      appName: 'Finance Copilot',
+      displayName: 'Finance',
+    });
   } finally {
     store.close();
   }
