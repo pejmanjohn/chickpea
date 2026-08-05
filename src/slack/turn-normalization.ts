@@ -33,6 +33,7 @@ export function normalizeSlackTurn(
   payload: SlackEventFixture,
   options: SlackTurnNormalizationOptions = {},
 ): SlackTurnNormalization {
+  payload = stripSlackMessageAppContext(payload);
   if (payload.type !== 'event_callback') {
     return { status: 'ignored', reason: 'non_event_callback' };
   }
@@ -192,9 +193,24 @@ function runnableTurn(input: RunnableTurnInput): SlackTurnNormalization {
 function isDirectConversation(event: SlackMessageEvent): boolean {
   return (
     event.channel_type === 'im' ||
-    event.channel_type === 'app_home' ||
     (event.channel.startsWith('D') && !event.channel_type)
   );
+}
+
+/**
+ * Remove Agent View's active-context attachment before any turn classifier,
+ * dedupe coordinate, prompt, or durable state can observe it. Active context
+ * is intentionally deferred until it has its own authorization contract.
+ */
+export function stripSlackMessageAppContext(payload: SlackEventFixture): SlackEventFixture {
+  if (
+    payload.event.type !== 'message' ||
+    !Object.hasOwn(payload.event, 'app_context')
+  ) {
+    return payload;
+  }
+  const { app_context: _discarded, ...event } = payload.event;
+  return { ...payload, event };
 }
 
 function isChannelConversation(event: SlackMessageEvent): boolean {

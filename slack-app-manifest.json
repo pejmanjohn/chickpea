@@ -15,9 +15,22 @@
       "display_name": "Chickpea",
       "always_online": true
     },
-    "assistant_view": {
-      "assistant_description": "A self-hosted, model-agnostic AI agent for Slack.",
-      "suggested_prompts": []
+    "agent_view": {
+      "agent_description": "A self-hosted, model-agnostic AI agent for Slack.",
+      "suggested_prompts": [
+        {
+          "title": "Summarize supplied text",
+          "message": "Summarize the conversation or material I paste here."
+        },
+        {
+          "title": "Investigate a question",
+          "message": "Investigate this question using only material I supply or you are authorized to access:"
+        },
+        {
+          "title": "Plan a task",
+          "message": "Help me plan this task:"
+        }
+      ]
     }
   },
   "oauth_config": {
@@ -44,10 +57,9 @@
       "request_url": "https://<YOUR_PUBLIC_HOST>/channels/slack/events",
       "bot_events": [
         "app_mention",
-        "assistant_thread_context_changed",
-        "assistant_thread_started",
+        "app_context_changed",
+        "app_home_opened",
         "member_joined_channel",
-        "message.app_home",
         "message.channels",
         "message.groups",
         "message.im",

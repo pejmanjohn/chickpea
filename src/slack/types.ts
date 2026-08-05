@@ -26,30 +26,26 @@ export interface SlackMessageEvent {
     app_id?: string;
     id?: string;
   };
+  /** Agent View context is deliberately discarded before turn normalization. */
+  app_context?: unknown;
 }
 
-export interface SlackAssistantThreadStartedEvent {
-  type: 'assistant_thread_started';
-  event_ts: string;
-  assistant_thread?: {
-    channel_id?: string;
-    thread_ts?: string;
-  };
+export interface SlackAppHomeOpenedEvent {
+  type: 'app_home_opened';
+  user: string;
   channel?: string;
-  thread_ts?: string;
-  user?: string;
+  tab?: string;
+  event_ts: string;
+  /** Lifecycle context is presentation metadata, not execution input. */
+  context?: unknown;
 }
 
-export interface SlackAssistantThreadContextChangedEvent {
-  type: 'assistant_thread_context_changed';
+export interface SlackAppContextChangedEvent {
+  type: 'app_context_changed';
+  user: string;
   event_ts: string;
-  assistant_thread?: {
-    channel_id?: string;
-    thread_ts?: string;
-  };
-  channel?: string;
-  thread_ts?: string;
-  user?: string;
+  /** Lifecycle context is acknowledged and discarded in this release. */
+  context?: unknown;
 }
 
 export interface SlackMemberJoinedChannelEvent {
@@ -78,8 +74,8 @@ export interface SlackReactionAddedEvent {
 export type SlackEvent =
   | SlackAppMentionEvent
   | SlackMessageEvent
-  | SlackAssistantThreadStartedEvent
-  | SlackAssistantThreadContextChangedEvent
+  | SlackAppHomeOpenedEvent
+  | SlackAppContextChangedEvent
   | SlackMemberJoinedChannelEvent
   | SlackReactionAddedEvent;
 

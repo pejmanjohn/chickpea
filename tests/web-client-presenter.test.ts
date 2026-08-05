@@ -441,6 +441,65 @@ test('persisted reaction text fallback stays in the original thread', async () =
   assert.equal(posts[0]?.thread_ts, '1782770400.000100');
 });
 
+test('persisted progressive finalization resumes the exact known stream without a new post', async () => {
+  const calls: Array<{ method: string; input: unknown }> = [];
+  const result = await deliverPersistedSlackPayload(
+    {
+      chat: {
+        async stopStream(input: unknown) {
+          calls.push({ method: 'stop', input });
+          return { ok: true };
+        },
+        async postMessage(input: unknown) {
+          calls.push({ method: 'post', input });
+          return { ok: true, ts: 'should-not-post' };
+        },
+      },
+    } as unknown as WebClient,
+    JSON.stringify({
+      method: 'slack_chat_stream_resume',
+      channel: 'C_BOUND',
+      ts: '1782770400.000950',
+      stop: { chunks: [{ type: 'markdown_text', text: ' suffix' }] },
+    }),
+  );
+  assert.deepEqual(calls.map((call) => call.method), ['stop']);
+  assert.deepEqual(result, {
+    method: 'slack_chat_stream_resume',
+    deliveryRef: 'slack:C_BOUND:1782770400.000950',
+  });
+});
+
+test('persisted correction stops then updates only the exact streamed artifact', async () => {
+  const calls: Array<{ method: string; input: unknown }> = [];
+  await deliverPersistedSlackPayload(
+    {
+      chat: {
+        async stopStream(input: unknown) {
+          calls.push({ method: 'stop', input });
+          return { ok: true };
+        },
+        async update(input: unknown) {
+          calls.push({ method: 'update', input });
+          return { ok: true };
+        },
+      },
+    } as unknown as WebClient,
+    JSON.stringify({
+      method: 'slack_chat_stream_correct',
+      channel: 'C_BOUND',
+      ts: '1782770400.000951',
+      stop: {},
+      update: {
+        channel: 'C_BOUND', ts: '1782770400.000951',
+        text: 'Corrected', blocks: [{ type: 'markdown', text: 'Corrected' }],
+      },
+    }),
+  );
+  assert.deepEqual(calls.map((call) => call.method), ['stop', 'update']);
+  assert.equal((calls[1]?.input as { ts?: string }).ts, '1782770400.000951');
+});
+
 test('work checklist posts once and updates the same message coordinate', async () => {
   const calls: Array<{ method: string; input: unknown }> = [];
   const presenter = presenterWith({

@@ -28,6 +28,8 @@ const cliArgs = process.argv.slice(2);
 const deployArgs = cliArgs.filter((arg) => !['--skip-build', '--preflight-only'].includes(arg));
 const skipBuild = cliArgs.includes('--skip-build');
 const preflightOnly = cliArgs.includes('--preflight-only');
+const agentViewCutoverAuthorized =
+  process.env.SLACK_AGENT_VIEW_CUTOVER_AUTHORIZED === '1';
 
 const BETA_FLUE_CLASSES = Object.freeze([
   'FlueRegistry',
@@ -58,6 +60,41 @@ if (hasCustomConfigFlag(deployArgs)) {
     'Do not pass a custom Wrangler config. Build the Vite artifact and use its generated deploy redirect.',
   );
   process.exit(1);
+}
+
+const AGENT_VIEW_CUTOVER_ERROR =
+  'Agent View cutover is one-way. Refusing to deploy Agent View-only source until ' +
+  'SLACK_AGENT_VIEW_CUTOVER_AUTHORIZED=1 is set for the separately approved coordinated cutover.';
+
+function sourceUsesAgentViewOnly() {
+  const manifestPath = path.join(projectRoot, 'slack-app-manifest.json');
+  let manifest;
+  try {
+    manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`Unable to validate the Slack manifest before deployment: ${detail}`);
+  }
+  const hasAgentView = Boolean(manifest?.features?.agent_view);
+  const hasAssistantView = Boolean(manifest?.features?.assistant_view);
+  if (hasAgentView && hasAssistantView) {
+    throw new Error(
+      'Slack manifest is invalid for deployment: agent_view and assistant_view cannot coexist.',
+    );
+  }
+  return hasAgentView;
+}
+
+const nonDeployingCheck = preflightOnly || deployArgs.includes('--dry-run');
+if (!nonDeployingCheck) {
+  try {
+    if (sourceUsesAgentViewOnly() && !agentViewCutoverAuthorized) {
+      throw new Error(AGENT_VIEW_CUTOVER_ERROR);
+    }
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  }
 }
 
 if (!skipBuild) {
@@ -274,8 +311,20 @@ function validateLedgerCanaryArtifact(artifact) {
   }
 }
 
+function validateAgentViewCutoverArtifact(artifact) {
+  if (
+    !nonDeployingCheck &&
+    artifact.bundle.includes('agent_view') &&
+    artifact.bundle.includes('agent_description') &&
+    !agentViewCutoverAuthorized
+  ) {
+    throw new Error(AGENT_VIEW_CUTOVER_ERROR);
+  }
+}
+
 try {
   const artifact = requireBuiltArtifact();
+  validateAgentViewCutoverArtifact(artifact);
   validateFlue2CutoverArtifact(artifact);
   validateEnabledRoutineArtifact(artifact);
   validateLedgerCanaryArtifact(artifact);

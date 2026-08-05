@@ -11,6 +11,9 @@ import {
 } from '../src/slack/flue-dispatch.ts';
 import { runTurn } from '../src/slack/run-turn.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
+import { compileRuntimePlanV2, deriveRuntimePlanInstanceId } from '../src/agents/runtime-plan.ts';
+import { SqliteWorkStore } from '../src/work/store.ts';
+import { prepareSlackShadowAdmission } from '../src/slack/work-admission.ts';
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -410,4 +413,87 @@ test('a stalled detail status does not delay agent start or final delivery', asy
   detailWrite.resolve(undefined);
   await lateClear.promise;
   assert.equal(clearCalls, 2, 'the late detail write should be cleared after it settles');
+});
+
+test('runTurn freezes eligibility before exposing the receipt-scoped relay factory', async () => {
+  const work = new SqliteWorkStore(':memory:', { now: () => 1_800_000_000_000 });
+  try {
+  const client = {
+    assistant: { threads: { setStatus: async () => ({ ok: true }) } },
+    conversations: { history: async () => ({ ok: true, messages: [] }) },
+    chat: {
+      startStream: async () => ({ ok: true, ts: 'final-ts' }),
+      stopStream: async () => ({ ok: true }),
+      postMessage: async () => ({ ok: true, channel: assignment.channelId, ts: 'final-ts' }),
+    },
+  } as unknown as WebClient;
+  const currentTurn: NormalizedSlackTurn = {
+    ...workTurn('Ev_PROGRESSIVE_ELIGIBILITY'),
+    interactionIntent: { disposition: 'reply', reason: 'substantive_request' },
+  };
+  const runtimePlan = compileRuntimePlanV2({
+    turn: currentTurn,
+    assignment,
+    instructions: assignment.agent.instructions,
+    memoryEpoch: 1,
+    sandboxMode: 'bash',
+  });
+  const captured: unknown[] = [];
+  const admitted = await work.admitShadowRun(prepareSlackShadowAdmission({
+    turn: currentTurn,
+    assignment,
+    sourceVisibility: 'private',
+    admittedAt: 1_800_000_000_000,
+  }));
+
+  await runTurn(currentTurn, assignment, undefined, {
+    client,
+    runId: admitted.run.id,
+    runAttempt: 1,
+    workStore: work,
+    runtimePlanDecision: {
+      runtimePlan,
+      instanceId: deriveRuntimePlanInstanceId(runtimePlan),
+      continuityNoticeRequired: false,
+    },
+    progressiveAttributionProven: true,
+    prepareProgressiveRelay: async (input) => {
+      captured.push(structuredClone(input));
+      return undefined;
+    },
+    usageRecordingEnabled: false,
+    async agentPrompt(input): Promise<AgentDispatchResult> {
+      assert.equal(typeof input.prepareProgressiveRelay, 'function');
+      await input.prepareProgressiveRelay?.({
+        instanceId: deriveRuntimePlanInstanceId(runtimePlan),
+        receipt: {
+          submissionId: 'submission_progressive_eligibility',
+          acceptedAt: '2026-08-02T12:00:00.000Z',
+          uid: 'uid_progressive_eligibility',
+        },
+      });
+      return {
+        text: 'Fresh answer.',
+        requestedModel: assignment.model ?? null,
+        returnedModel: null,
+        reportedUsage: null,
+        usageCompleteness: 'not_reported',
+      };
+    },
+  });
+
+  assert.deepEqual(captured, [{
+    runId: admitted.run.id,
+    runFencingToken: 0,
+    instanceId: deriveRuntimePlanInstanceId(runtimePlan),
+    receipt: {
+      submissionId: 'submission_progressive_eligibility',
+      acceptedAt: '2026-08-02T12:00:00.000Z',
+      uid: 'uid_progressive_eligibility',
+    },
+    eligibility: { allowed: true, reason: 'safe_early_release' },
+  }]);
+  } finally {
+    work.close();
+  }
 });

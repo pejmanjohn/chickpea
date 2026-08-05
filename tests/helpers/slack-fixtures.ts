@@ -1,6 +1,8 @@
 import { readFileSync } from 'node:fs';
 
 import type {
+  SlackAppContextChangedEvent,
+  SlackAppHomeOpenedEvent,
   SlackAppMentionEvent,
   SlackEventFixture,
   SlackMessageEvent,
@@ -23,8 +25,7 @@ type MessageFixtureFile =
   | 'message-channel-thread-reply.json'
   | 'message-private-channel-thread-reply.json'
   | 'message-channel-top-level.json'
-  | 'message-im.json'
-  | 'message-app-home.json';
+  | 'message-im.json';
 
 const fixtureCache = new Map<string, SlackEventFixture>();
 
@@ -60,12 +61,16 @@ export function dmMessage(overrides: MessageFixtureOverrides = {}): MessageFixtu
   return messageFixture('message-im.json', overrides);
 }
 
-export function appHomeMessage(overrides: MessageFixtureOverrides = {}): MessageFixture {
-  return messageFixture('message-app-home.json', overrides);
+export function appHomeOpened(): SlackEventFixture & { event: SlackAppHomeOpenedEvent } {
+  return slackFixture<SlackEventFixture & { event: SlackAppHomeOpenedEvent }>(
+    'app-home-opened.json',
+  );
 }
 
-export function assistantThreadStarted(): SlackEventFixture {
-  return slackFixture<SlackEventFixture>('assistant-thread-started.json');
+export function appContextChanged(): SlackEventFixture & { event: SlackAppContextChangedEvent } {
+  return slackFixture<SlackEventFixture & { event: SlackAppContextChangedEvent }>(
+    'app-context-changed.json',
+  );
 }
 
 export function memberJoinedChannel(overrides: MemberJoinedFixtureOverrides = {}): SlackEventFixture {

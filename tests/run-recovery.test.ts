@@ -12,6 +12,12 @@ import {
 } from '../src/slack/ledger-turn-driver.ts';
 import { AgentPromptFailure } from '../src/slack/flue-dispatch.ts';
 import { TurnJobStoreLogic } from '../src/slack/turn-jobs.ts';
+import {
+  SlackRunPresentationStoreLogic,
+  type SlackPresentationMutation,
+  type SlackRunPresentationV1,
+} from '../src/slack/run-presentations.ts';
+import type { SlackPresentationStatePort } from '../src/slack/agent-view-presentation.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { opaqueId } from '../src/work/admission.ts';
 import { ShadowWorkLifecycle } from '../src/work/lifecycle.ts';
@@ -141,6 +147,156 @@ test('an ambiguous persisted Slack retry enters recovery and cannot be claimed a
     assert.equal(work.claimNextInteractiveRun({
       ownerId: 'third_worker', authorityEpoch: 1, leaseDurationMs: 30_000, claimedAt: ++clock,
     }), undefined);
+  } finally {
+    db.close();
+  }
+});
+
+test('delivery recovery never repeats a stream start without a proven Slack coordinate', async () => {
+  let clock = NOW;
+  const db = openStateDb(':memory:');
+  try {
+    const work = new WorkStoreLogic(db, { now: () => clock });
+    const turns = new TurnJobStoreLogic(db, () => clock);
+    const presentations = new SlackRunPresentationStoreLogic(db, () => clock);
+    const admission = work.admitShadowRun(prepareSubmitRun(submission('stream-start-unknown')));
+    const first = work.claimNextInteractiveRun({
+      ownerId: 'first_worker', authorityEpoch: 1, leaseDurationMs: 30_000, claimedAt: clock,
+    })!;
+    const lifecycle = lifecycleFor(work, admission.run.id, first.fencingToken, () => ++clock);
+    await lifecycle.prepareExecution('Prepared input');
+    await lifecycle.markInvoked();
+    await lifecycle.settleExecution({ outcome: 'succeeded', rawStatus: 'flue_succeeded' });
+    const attemptId = await lifecycle.beforeDelivery({
+      method: 'slack_chat_stream',
+      approvedOutput: 'Persisted answer',
+      renderedPayload: JSON.stringify({
+        method: 'slack_chat_stream',
+        start: { channel: 'C_canary', thread_ts: '100.001', markdown_text: 'Persisted answer' },
+        stop: {},
+      }),
+    });
+    assert.ok(attemptId);
+    let presentation = presentations.create({
+      runId: admission.run.id,
+      turnJobId: 'turn_stream-start-unknown',
+      bindingId: admission.binding.id,
+      workBindingGeneration: admission.binding.generation,
+      runFencingToken: first.fencingToken,
+      root: {
+        workspaceId: 'T_canary', channelId: 'C_canary', threadTs: '100.001',
+        requesterUserId: 'U_member',
+      },
+    });
+    presentation = transitionPresentation(
+      presentations,
+      presentation,
+      { kind: 'stream_start_intent' },
+    );
+    work.releaseRunLease({
+      runId: admission.run.id, ownerId: first.leaseOwner, fencingToken: first.fencingToken,
+      outcome: 'requeue', reasonCode: 'delivery_pending', releasedAt: ++clock,
+    });
+    turns.enqueue(turnJob(admission.run.id, 'stream-start-unknown'));
+    const second = work.claimNextInteractiveRun({
+      ownerId: 'second_worker', authorityEpoch: 1, leaseDurationMs: 30_000, claimedAt: ++clock,
+    })!;
+    let slackCalls = 0;
+    const handler = createLedgerSlackRunHandler({
+      work: work as unknown as WorkStore,
+      turns,
+      client: { chat: { startStream: async () => { slackCalls += 1; } } } as unknown as WebClient,
+      presentationState: presentationPort(presentations, turns),
+      now: () => ++clock,
+    });
+
+    assert.deepEqual(await handler(second), {
+      kind: 'recovery_required',
+      reasonCode: 'slack_presentation_effect_unresolved',
+    });
+    assert.equal(slackCalls, 0);
+    assert.equal(presentation.stream.state, 'starting');
+  } finally {
+    db.close();
+  }
+});
+
+test('delivery recovery finalizes one exact known stream and its presentation', async () => {
+  let clock = NOW;
+  const db = openStateDb(':memory:');
+  try {
+    const work = new WorkStoreLogic(db, { now: () => clock });
+    const turns = new TurnJobStoreLogic(db, () => clock);
+    const presentations = new SlackRunPresentationStoreLogic(db, () => clock);
+    const admission = work.admitShadowRun(prepareSubmitRun(submission('known-stream-recovery')));
+    const first = work.claimNextInteractiveRun({
+      ownerId: 'first_worker', authorityEpoch: 1, leaseDurationMs: 30_000, claimedAt: clock,
+    })!;
+    const lifecycle = lifecycleFor(work, admission.run.id, first.fencingToken, () => ++clock);
+    await lifecycle.prepareExecution('Prepared input');
+    await lifecycle.markInvoked();
+    await lifecycle.settleExecution({ outcome: 'succeeded', rawStatus: 'flue_succeeded' });
+    const attemptId = await lifecycle.beforeDelivery({
+      method: 'slack_chat_stream_resume',
+      approvedOutput: 'Persisted answer',
+      renderedPayload: JSON.stringify({
+        method: 'slack_chat_stream_resume',
+        channel: 'C_canary', ts: '100.002', stop: { chunks: [] },
+        terminalTaskStatus: 'complete',
+      }),
+    });
+    await lifecycle.afterDelivery({
+      attemptId,
+      outcome: 'failed',
+      safeFailureCode: 'slack_stream_finalize_failed',
+    });
+    let presentation = presentations.create({
+      runId: admission.run.id,
+      turnJobId: 'turn_known-stream-recovery',
+      bindingId: admission.binding.id,
+      workBindingGeneration: admission.binding.generation,
+      runFencingToken: first.fencingToken,
+      root: {
+        workspaceId: 'T_canary', channelId: 'C_canary', threadTs: '100.001',
+        requesterUserId: 'U_member',
+      },
+    });
+    for (const mutation of [
+      { kind: 'freeze_progressive_eligibility', eligibility: {
+        allowed: false, reason: 'other' as const,
+      } } as const,
+      { kind: 'stream_start_intent' } as const,
+      { kind: 'stream_started', messageTs: '100.002', flue: {
+        instanceId: 'instance_recovery', submissionId: 'submission_recovery',
+      } } as const,
+      { kind: 'close_stream', outcome: 'terminal_only' as const } as const,
+      { kind: 'mark_finalizing' } as const,
+    ]) {
+      presentation = transitionPresentation(presentations, presentation, mutation);
+    }
+    work.releaseRunLease({
+      runId: admission.run.id, ownerId: first.leaseOwner, fencingToken: first.fencingToken,
+      outcome: 'requeue', reasonCode: 'confirmed_delivery_failure', releasedAt: ++clock,
+    });
+    turns.enqueue(turnJob(admission.run.id, 'known-stream-recovery'));
+    const second = work.claimNextInteractiveRun({
+      ownerId: 'second_worker', authorityEpoch: 1, leaseDurationMs: 30_000, claimedAt: ++clock,
+    })!;
+    const calls: unknown[] = [];
+    const handler = createLedgerSlackRunHandler({
+      work: work as unknown as WorkStore,
+      turns,
+      client: {
+        chat: { stopStream: async (input: unknown) => { calls.push(input); } },
+      } as unknown as WebClient,
+      presentationState: presentationPort(presentations, turns),
+      now: () => ++clock,
+    });
+
+    assert.deepEqual(await handler(second), { kind: 'completed' });
+    assert.deepEqual(calls, [{ channel: 'C_canary', ts: '100.002', chunks: [] }]);
+    assert.equal(work.getRun(admission.run.id)?.deliveryStatus, 'delivered');
+    assert.equal(presentations.get(admission.run.id)?.stream.state, 'finalized');
   } finally {
     db.close();
   }
@@ -346,6 +502,39 @@ function lifecycleFor(
     now,
     mode: 'enforce',
   });
+}
+
+function transitionPresentation(
+  store: SlackRunPresentationStoreLogic,
+  current: SlackRunPresentationV1,
+  mutation: SlackPresentationMutation,
+): SlackRunPresentationV1 {
+  const result = store.transition({
+    runId: current.runId,
+    workBindingGeneration: current.workBindingGeneration,
+    runFencingToken: current.runFencingToken,
+    expectedProjectionVersion: current.projectionVersion,
+    expectedStreamState: current.stream.state,
+    mutation,
+  });
+  assert.equal(result.outcome, 'applied');
+  if (result.outcome !== 'applied') throw new Error('presentation transition failed');
+  return result.presentation;
+}
+
+function presentationPort(
+  store: SlackRunPresentationStoreLogic,
+  turns: TurnJobStoreLogic,
+): SlackPresentationStatePort {
+  return {
+    getRunPresentation: (runId) => store.get(runId),
+    transitionRunPresentation: (input) => store.transition(input),
+    reserveSlackAppend: (workspaceId) => store.reserveAppend(workspaceId),
+    applySlackAppendCooldown: (workspaceId, retryAfterMs) =>
+      store.applyAppendCooldown(workspaceId, retryAfterMs),
+    matchFlueObservation: (instanceId, submissionId) =>
+      turns.matchFlueObservation(instanceId, submissionId),
+  };
 }
 
 function turnJob(runId: string, suffix = 'delivery-retry') {

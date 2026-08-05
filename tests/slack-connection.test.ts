@@ -934,12 +934,19 @@ test('Slack behavior settings default on, persist booleans, and report provenanc
         unassignedHint: { value: true, source: 'default' },
         welcomeOnJoin: { value: true, source: 'default' },
         ambientParticipation: { value: true, source: 'default' },
+        progressiveStreaming: { value: false, source: 'default' },
+        nativeTasks: { value: false, source: 'default' },
       });
 
       const saved = await app.request('/admin/api/slack-behavior', {
         method: 'PUT',
         headers: { ...auth(), 'content-type': 'application/json' },
-        body: JSON.stringify({ allowDms: false, welcomeOnJoin: false }),
+        body: JSON.stringify({
+          allowDms: false,
+          welcomeOnJoin: false,
+          nativeTasks: true,
+          progressiveStreaming: true,
+        }),
       });
       assert.equal(saved.status, 200);
       assert.deepEqual(await saved.json(), {
@@ -947,6 +954,8 @@ test('Slack behavior settings default on, persist booleans, and report provenanc
         unassignedHint: { value: true, source: 'default' },
         welcomeOnJoin: { value: false, source: 'stored' },
         ambientParticipation: { value: true, source: 'default' },
+        progressiveStreaming: { value: true, source: 'stored' },
+        nativeTasks: { value: true, source: 'stored' },
       });
     });
   } finally {
@@ -984,6 +993,8 @@ test('Slack behavior multi-key updates use one atomic settings patch', async () 
         unassignedHint: { value: true, source: 'default' },
         welcomeOnJoin: { value: false, source: 'stored' },
         ambientParticipation: { value: true, source: 'default' },
+        progressiveStreaming: { value: false, source: 'default' },
+        nativeTasks: { value: false, source: 'default' },
       });
       assert.equal(patchCalls, 1);
     });
@@ -1005,6 +1016,8 @@ test('Slack behavior env overrides are read-only and PUT is atomic', async () =>
           unassignedHint: { value: true, source: 'default' },
           welcomeOnJoin: { value: false, source: 'env' },
           ambientParticipation: { value: true, source: 'default' },
+          progressiveStreaming: { value: false, source: 'default' },
+          nativeTasks: { value: false, source: 'default' },
         });
 
         const conflict = await app.request('/admin/api/slack-behavior', {
@@ -1049,6 +1062,8 @@ test('blank Slack behavior env placeholders do not lock browser-managed settings
           unassignedHint: { value: true, source: 'default' },
           welcomeOnJoin: { value: true, source: 'default' },
           ambientParticipation: { value: true, source: 'default' },
+          progressiveStreaming: { value: false, source: 'default' },
+          nativeTasks: { value: false, source: 'default' },
         });
 
         const saved = await app.request('/admin/api/slack-behavior', {
@@ -1062,6 +1077,8 @@ test('blank Slack behavior env placeholders do not lock browser-managed settings
           unassignedHint: { value: false, source: 'stored' },
           welcomeOnJoin: { value: true, source: 'default' },
           ambientParticipation: { value: true, source: 'default' },
+          progressiveStreaming: { value: false, source: 'default' },
+          nativeTasks: { value: false, source: 'default' },
         });
       },
     );
@@ -1118,13 +1135,21 @@ test('wizard GET reports missing credentials and substitutes the request origin 
       const manifest = JSON.parse(manifestUrl.searchParams.get('manifest_json') ?? '{}') as {
         $schema?: string;
         display_information: { name: string };
-        settings: { event_subscriptions: { request_url: string } };
+        features: { agent_view?: unknown; assistant_view?: unknown };
+        settings: {
+          event_subscriptions: { request_url: string; bot_events: string[] };
+          interactivity: { is_enabled: boolean };
+        };
       };
       // The one substitution that removes the copy-the-URL setup step.
       assert.equal(manifest.settings.event_subscriptions.request_url, body.requestUrl);
       // Editor-tooling key must not leak into Slack's manifest import.
       assert.equal(manifest.$schema, undefined);
       assert.equal(manifest.display_information.name, 'Chickpea');
+      assert.ok(manifest.features.agent_view);
+      assert.equal(manifest.features.assistant_view, undefined);
+      assert.ok(manifest.settings.event_subscriptions.bot_events.includes('app_context_changed'));
+      assert.equal(manifest.settings.interactivity.is_enabled, false);
     } finally {
       settings.close();
     }

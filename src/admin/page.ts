@@ -2938,6 +2938,8 @@ details[open].advanced summary::before {
       slackBehaviorRowHtml("unassignedHint", "Help people configure unassigned channels", "When someone mentions " + slackMentionText() + " in an unassigned channel, Chickpea privately shares setup steps.") +
       slackBehaviorRowHtml("welcomeOnJoin", "Post a welcome when " + slackMentionText() + " joins an assigned channel", "Chickpea starts the conversation with a short welcome message.") +
       slackBehaviorRowHtml("ambientParticipation", "Allow ambient participation", "Chickpea may selectively respond to useful unmentioned messages in assigned channels. Turn this off for an installation-wide mention-only rollback.") +
+      slackBehaviorRowHtml("nativeTasks", "Show native task plans", "Project admitted Work as Slack task cards. The existing checklist remains the fallback when Slack rejects the native stream.") +
+      slackBehaviorRowHtml("progressiveStreaming", "Stream safe answer text", "Show answer-only text as it is generated. Memory, recovery, sandbox, and effect-capable turns remain terminal-only.") +
       '</div>' +
       (state.slackBehaviorError
         ? '<div class="inline-status error" role="alert">' + esc(state.slackBehaviorError) +

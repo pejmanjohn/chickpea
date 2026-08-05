@@ -138,7 +138,7 @@ async function forwardToEndpoint(eventsApiPayload) {
   const signature = slackSignature(timestamp, rawBody);
 
   const eventType = eventsApiPayload?.event?.type ?? 'unknown';
-  // channel lives at event.channel for most events; DMs/assistant events may
+  // channel lives at event.channel for most events; DM/lifecycle events may
   // carry it under event.channel or event.item.channel — best-effort for logs.
   const channel =
     eventsApiPayload?.event?.channel ?? eventsApiPayload?.event?.item?.channel ?? 'n/a';

@@ -740,6 +740,8 @@ const slackBehaviorPatchSchema = v.pipe(
       unassignedHint: v.boolean(),
       welcomeOnJoin: v.boolean(),
       ambientParticipation: v.boolean(),
+      progressiveStreaming: v.boolean(),
+      nativeTasks: v.boolean(),
     }),
   ),
   v.check((patch) => Object.keys(patch).length > 0),
@@ -1290,6 +1292,31 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     } catch {
       console.error('[chickpea] runtime drain state unavailable');
       return c.json({ error: 'runtime_drain_unavailable' }, 503);
+    }
+  });
+
+  app.get('/admin/api/runtime/slack-presentations', async (c) => {
+    const workspaceId = c.req.query('workspaceId')?.trim();
+    if (!workspaceId || !/^[A-Za-z0-9_-]{1,200}$/.test(workspaceId)) {
+      return invalidRequest(c);
+    }
+    try {
+      const connected = await readStoredSlackTeamInfo(
+        c.env as PlatformEnv | undefined,
+        settings(c),
+      );
+      if (!connected.teamId || connected.teamId !== workspaceId) {
+        c.header('Cache-Control', 'no-store');
+        return c.json({ error: 'workspace_not_authorized' }, 403);
+      }
+      const presentationStore = slackState(c);
+      const summarize = presentationStore.summarizeRunPresentations;
+      if (!summarize) throw new Error('Slack presentation summary is unavailable.');
+      c.header('Cache-Control', 'no-store');
+      return c.json(await summarize.call(presentationStore, workspaceId));
+    } catch {
+      console.error('[chickpea] Slack presentation summary unavailable');
+      return c.json({ error: 'slack_presentation_summary_unavailable' }, 503);
     }
   });
 

@@ -13,6 +13,7 @@ import { getClient, runTurn, type RunTurnOptions } from './run-turn.ts';
 import {
   deliverPersistedSlackPayload,
   PersistedSlackDeliveryError,
+  type PersistedSlackDeliveryReceipt,
 } from './web-client-presenter.ts';
 import {
   MAX_POST_DISPATCH_ATTEMPTS,
@@ -34,6 +35,11 @@ import type { SlackInteractionProgressPatch } from '../config/state-rpc.ts';
 import type { SlackContinuityNoticeProgress } from '../config/state-rpc.ts';
 import { ContinuityNoticeDeliveryError } from './continuity-notice.ts';
 import { AgentPromptFailure } from './flue-dispatch.ts';
+import type { SlackPresentationStatePort } from './agent-view-presentation.ts';
+import type {
+  SlackPresentationMutation,
+  SlackRunPresentationV1,
+} from './run-presentations.ts';
 
 type MaybePromise<T> = T | Promise<T>;
 
@@ -86,6 +92,7 @@ export interface LedgerSlackRunHandlerOptions {
   platformEnv?: PlatformEnv;
   settingsStore?: SettingsStore;
   usageStore?: UsageStore;
+  presentationState?: SlackPresentationStatePort;
   executeTurn?: LedgerSlackTurnExecutor;
   setActiveWork?: (key: string, generation: string, active: boolean) => MaybePromise<void>;
   now?: () => number;
@@ -159,6 +166,12 @@ export function createLedgerSlackRunHandler(
           await options.turns.recordContinuityNotice(job.id, notice);
         },
         workStore: options.work,
+        ...(options.presentationState
+          ? {
+              presentationState: options.presentationState,
+              progressiveAttributionProven: true,
+            }
+          : {}),
         ...(options.settingsStore ? { settingsStore: options.settingsStore } : {}),
         ...(options.usageStore ? { usageStore: options.usageStore } : {}),
         onInteractionIntent: async (intent) => {
@@ -242,21 +255,58 @@ async function deliverPersistedResponse(
     await clearActiveWork(options, job);
     return { kind: 'recovery_required', reasonCode: 'ledger_render_missing' };
   }
+  const presentation = await options.presentationState?.getRunPresentation(claim.run.id);
+  const renderedMethod = persistedDeliveryMethod(rendered.body);
+  if (presentation && presentationRequiresOperatorRecovery(
+    presentation,
+    renderedMethod,
+    run.deliveryStatus,
+  )) {
+    await options.turns.markRecoveryRequired(job.id, 'slack_presentation_effect_unresolved');
+    await clearActiveWork(options, job);
+    return { kind: 'recovery_required', reasonCode: 'slack_presentation_effect_unresolved' };
+  }
+  if (
+    presentation &&
+    (presentation.stream.state === 'artifact_delivered' ||
+      presentation.stream.state === 'finalized') &&
+    run.deliveryStatus === 'pending' &&
+    run.deliveryAttemptId
+  ) {
+    await options.work.finalizeRunDelivery({
+      runId: claim.run.id,
+      fencingToken: claim.fencingToken,
+      attemptId: run.deliveryAttemptId,
+      outcome: 'delivered',
+      deliveryRef: presentation.stream.messageTs
+        ? `slack:${presentation.root.channelId}:${presentation.stream.messageTs}`
+        : `slack:${presentation.root.channelId}:acknowledged`,
+      terminalDisposition: 'succeeded',
+      finalizedAt: now(),
+    });
+    await options.turns.markDelivered(job.id);
+    await markRecoveredPresentationFinalized(options.presentationState, presentation);
+    await clearActiveWork(options, job);
+    return { kind: 'completed' };
+  }
   const attemptId = opaqueId(
     'delivery',
     `${claim.run.id}:${claim.fencingToken}:persisted`,
   );
   try {
-    const parsed = JSON.parse(rendered.body) as { method?: unknown };
-    const method = typeof parsed?.method === 'string' ? parsed.method : 'invalid';
     await options.work.startRunDelivery({
       runId: claim.run.id,
       fencingToken: claim.fencingToken,
-      method,
+      method: renderedMethod,
       attemptId,
       startedAt: now(),
     });
     const delivered = await deliverPersistedSlackPayload(client, rendered.body);
+    const recoveredPresentation = await recordRecoveredPresentationDelivery(
+      options.presentationState,
+      presentation,
+      delivered,
+    );
     await options.work.finalizeRunDelivery({
       runId: claim.run.id,
       fencingToken: claim.fencingToken,
@@ -267,6 +317,10 @@ async function deliverPersistedResponse(
       finalizedAt: now(),
     });
     await options.turns.markDelivered(job.id);
+    await markRecoveredPresentationFinalized(
+      options.presentationState,
+      recoveredPresentation,
+    );
     await clearActiveWork(options, job);
     return { kind: 'completed' };
   } catch (error) {
@@ -306,6 +360,115 @@ async function deliverPersistedResponse(
     }
     return { kind: 'requeue', reasonCode: 'confirmed_delivery_failure' };
   }
+}
+
+function persistedDeliveryMethod(renderedPayload: string): string {
+  try {
+    const parsed = JSON.parse(renderedPayload) as { method?: unknown };
+    return typeof parsed?.method === 'string' ? parsed.method : 'invalid';
+  } catch {
+    return 'invalid';
+  }
+}
+
+function presentationRequiresOperatorRecovery(
+  presentation: SlackRunPresentationV1,
+  method: string,
+  deliveryStatus: string,
+): boolean {
+  if (presentation.stream.state === 'fallback') {
+    return method !== 'slack_chat_post_message' || deliveryStatus !== 'failed';
+  }
+  if (presentation.stream.state === 'starting' || presentation.stream.state === 'unknown') {
+    // These states have no proven coordinate for a possibly accepted start or
+    // replacement post. Replaying could create a second visible answer.
+    return true;
+  }
+  if (
+    presentation.stream.state === 'streaming' ||
+    presentation.stream.state === 'reconciling' ||
+    presentation.stream.state === 'finalizing'
+  ) {
+    return method !== 'slack_chat_stream_resume' && method !== 'slack_chat_stream_correct';
+  }
+  return false;
+}
+
+async function recordRecoveredPresentationDelivery(
+  state: SlackPresentationStatePort | undefined,
+  initial: SlackRunPresentationV1 | undefined,
+  receipt: PersistedSlackDeliveryReceipt,
+): Promise<SlackRunPresentationV1 | undefined> {
+  if (!state || !initial) return initial;
+  let current = await state.getRunPresentation(initial.runId) ?? initial;
+  try {
+    if (current.stream.state === 'streaming') {
+      current = await applyPresentationMutation(state, current, {
+        kind: 'close_stream',
+        outcome: receipt.method === 'slack_chat_stream_correct'
+          ? 'corrected'
+          : current.stream.acknowledgedByteLength > 0
+            ? 'progressive'
+            : 'terminal_only',
+      });
+    }
+    if (current.stream.state === 'reconciling' && current.plan &&
+        receipt.terminalTaskStatus &&
+        current.plan.tasks.every((task) => task.status !== 'complete' && task.status !== 'error')) {
+      current = await applyPresentationMutation(state, current, {
+        kind: 'set_task_status',
+        status: receipt.terminalTaskStatus,
+      });
+    }
+    if (current.stream.state === 'reconciling') {
+      current = await applyPresentationMutation(state, current, { kind: 'mark_finalizing' });
+    }
+    if (current.stream.state === 'finalizing') {
+      current = await applyPresentationMutation(state, current, {
+        kind: 'mark_artifact_delivered',
+        outcome: current.stream.presentationOutcome ?? 'terminal_only',
+      });
+    }
+  } catch {
+    // Work's exact delivery receipt remains canonical. The presentation row
+    // stays repair-visible if its independent projection could not advance.
+  }
+  return current;
+}
+
+async function markRecoveredPresentationFinalized(
+  state: SlackPresentationStatePort | undefined,
+  initial: SlackRunPresentationV1 | undefined,
+): Promise<void> {
+  if (!state || !initial) return;
+  try {
+    const current = await state.getRunPresentation(initial.runId) ?? initial;
+    if (current.stream.state === 'artifact_delivered') {
+      await applyPresentationMutation(state, current, { kind: 'mark_finalized' });
+    }
+  } catch {
+    // The delivered Work/Run is authoritative; retention can repair this
+    // content-free projection without repeating a Slack effect.
+  }
+}
+
+async function applyPresentationMutation(
+  state: SlackPresentationStatePort,
+  current: SlackRunPresentationV1,
+  mutation: SlackPresentationMutation,
+): Promise<SlackRunPresentationV1> {
+  const result = await state.transitionRunPresentation({
+    runId: current.runId,
+    workBindingGeneration: current.workBindingGeneration,
+    runFencingToken: current.runFencingToken,
+    expectedProjectionVersion: current.projectionVersion,
+    expectedStreamState: current.stream.state,
+    mutation,
+  });
+  if (result.outcome !== 'applied') {
+    throw new Error('Recovered Slack presentation writer is stale.');
+  }
+  return result.presentation;
 }
 
 async function classifyExecutionFailure(

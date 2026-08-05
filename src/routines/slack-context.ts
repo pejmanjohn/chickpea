@@ -14,7 +14,6 @@ const MAX_MEMBER_PAGES = 5;
 export function isRoutineSlackTurn(turn: NormalizedSlackTurn): boolean {
   return (turn.source === 'app_mention' || turn.source === 'implicit_thread_reply') &&
     turn.channelType !== 'im' &&
-    turn.channelType !== 'app_home' &&
     turn.channelType !== 'mpim';
 }
 
