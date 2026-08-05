@@ -100,7 +100,6 @@ import {
 } from './slack/run-presentations.ts';
 import { createLedgerSlackRunHandler } from './slack/ledger-turn-driver.ts';
 import type { SlackPresentationStatePort } from './slack/agent-view-presentation.ts';
-import { resolveSlackCredentials } from './slack/credentials.ts';
 import { setObservedSlackStatus } from './slack/status-registry.ts';
 import {
   deliverAgentFailureFinal,

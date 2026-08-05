@@ -87,7 +87,7 @@ test('Slack turn normalization classifies mentions, thread replies, DMs, and amb
 });
 
 test('Agent View message context is stripped before ordinary DM normalization', () => {
-  const options = { botUserId: 'U_BOT' };
+  const options = { slackIdentityId: 'slack_identity_default', botUserId: 'U_BOT' };
   const absent = dmMessage();
   const empty = dmMessage();
   Object.assign(empty.event, { app_context: {} });
@@ -113,7 +113,10 @@ test('a suggested prompt click remains an ordinary user-rooted DM turn', () => {
   const payload = dmMessage({
     event: { text: 'Help me plan this task:' },
   });
-  const normalized = normalizeSlackTurn(payload, { botUserId: 'U_BOT' });
+  const normalized = normalizeSlackTurn(payload, {
+    slackIdentityId: 'slack_identity_default',
+    botUserId: 'U_BOT',
+  });
 
   assert.ok(normalized.status === 'runnable');
   assert.equal(normalized.turn.source, 'dm_message');
