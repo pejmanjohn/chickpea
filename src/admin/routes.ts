@@ -48,6 +48,7 @@ import {
   AgentSlackIdentityConflictError,
   AgentExistsError,
   AgentStillAssignedError,
+  AgentStillSlackDmHandlerError,
   ModelResolutionError,
   NoAssignmentError,
   SlackIdentityExistsError,
@@ -2678,6 +2679,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       if (err instanceof UnknownAgentError) {
         return c.json({ error: 'not_found' }, 404);
       }
+      if (err instanceof AgentStillSlackDmHandlerError) {
+        return c.json({
+          error: 'agent_slack_dm_handler',
+          profileId: err.agentId,
+          identityIds: err.identityIds.split(', ').filter(Boolean),
+        }, 409);
+      }
       return internalError(c, err);
     }
   });
@@ -2781,6 +2789,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       }
       if (err instanceof AgentStillAssignedError) {
         return c.json({ error: 'agent_still_assigned' }, 409);
+      }
+      if (err instanceof AgentStillSlackDmHandlerError) {
+        return c.json({
+          error: 'agent_slack_dm_handler',
+          profileId: err.agentId,
+          identityIds: err.identityIds.split(', ').filter(Boolean),
+        }, 409);
       }
       return internalError(c, err);
     }
@@ -3058,7 +3073,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
             ? { displayName: parsed.output.displayName }
             : {}),
           ...(parsed.output.source === 'profile'
-            ? { sourceAgentId: dmAgent.id }
+            ? {
+                sourceAgentId: dmAgent.id,
+                sourceAgentSlackIdentityId: dmAgent.slackIdentityId ?? null,
+              }
             : {}),
         },
       });
@@ -3207,6 +3225,14 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const attachAgentId = before.setupIntent?.reconnecting
         ? undefined
         : before.setupIntent?.sourceAgentId;
+      const expectedAgentIdentityId = attachAgentId
+        ? Object.prototype.hasOwnProperty.call(
+            before.setupIntent ?? {},
+            'sourceAgentSlackIdentityId',
+          )
+          ? before.setupIntent?.sourceAgentSlackIdentityId ?? null
+          : parsed.output.expectedProfileIdentityId ?? null
+        : undefined;
       const identity = await completeSlackIdentityConnection({
         config: configStore,
         settings: settings(c),
@@ -3214,7 +3240,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         expectedRevision: parsed.output.expectedRevision,
         ...(attachAgentId ? { attachAgentId } : {}),
         ...(attachAgentId
-          ? { expectedAgentIdentityId: parsed.output.expectedProfileIdentityId ?? null }
+          ? { expectedAgentIdentityId: expectedAgentIdentityId ?? null }
           : {}),
       });
       await appendSlackIdentityAudit(

@@ -114,7 +114,10 @@ test('markDelivered and markError tombstone a job out of the pending scan', () =
 
 test('delivered work keeps only retryable Slack cleanup coordinates', () => {
   const store = newStore();
-  store.enqueue(job('work'));
+  const cleanupJob = job('work');
+  cleanupJob.turn.slackIdentityId = 'slack_identity_finance';
+  cleanupJob.assignment.slackIdentityId = 'slack_identity_finance';
+  store.enqueue(cleanupJob);
   store.recordInteractionIntent('work', {
     disposition: 'work',
     reason: 'substantive_request',
@@ -134,6 +137,7 @@ test('delivered work keeps only retryable Slack cleanup coordinates', () => {
   });
 
   store.markDelivered('work');
+  assert.equal(store.countPendingDeliveriesForSlackIdentity('slack_identity_finance'), 1);
   const cleanup = store.listPendingSlackInteractionCleanups();
   assert.equal(cleanup.length, 1);
   assert.equal(cleanup[0]?.progress.slackInteraction?.checklist?.terminal, 'success');
@@ -147,6 +151,7 @@ test('delivered work keeps only retryable Slack cleanup coordinates', () => {
     checklist: { ...cleanup[0]!.progress.slackInteraction!.checklist!, cleanup: 'done' },
   });
   assert.equal(store.hasPendingSlackInteractionCleanup(), false);
+  assert.equal(store.countPendingDeliveriesForSlackIdentity('slack_identity_finance'), 0);
 });
 
 test('recordAttempt advances the counter the alarm caps on', () => {

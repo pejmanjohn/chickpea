@@ -22,6 +22,7 @@ import { prepareSlackShadowAdmission } from '../src/slack/work-admission.ts';
 import { ShadowWorkLifecycle } from '../src/work/lifecycle.ts';
 import { SqliteWorkStore } from '../src/work/store.ts';
 import type { WorkStore } from '../src/work/types.ts';
+import { captureSlackIdentityOperationalEvents } from './helpers/slack-identity-observability.ts';
 
 test('a wake admitted during a Node drain starts a follow-up drain immediately', async () => {
   const jobs = [relayJob('first')];
@@ -503,18 +504,19 @@ test('an unavailable identity enters recovery without model execution or default
   const activeWork: Array<{ generation: string; active: boolean }> = [];
   const state = relayStateFor([item], recovery, activeWork);
   let executions = 0;
-
-  await drainNodeTurnRelayOnce({
-    state,
-    work: {} as WorkStore,
-    resolveIdentity: async () => {
-      throw new SlackIdentityUnavailableError(
-        'slack_identity_finance',
-        'credentials_missing',
-      );
-    },
-    verifyIdentityAccess: async () => undefined,
-    executeTurn: async () => { executions += 1; },
+  const captured = await captureSlackIdentityOperationalEvents(async () => {
+    await drainNodeTurnRelayOnce({
+      state,
+      work: {} as WorkStore,
+      resolveIdentity: async () => {
+        throw new SlackIdentityUnavailableError(
+          'slack_identity_finance',
+          'credentials_missing',
+        );
+      },
+      verifyIdentityAccess: async () => undefined,
+      executeTurn: async () => { executions += 1; },
+    });
   });
 
   assert.equal(executions, 0);
@@ -523,6 +525,11 @@ test('an unavailable identity enters recovery without model execution or default
     reason: 'slack_identity_unavailable',
   }]);
   assert.deepEqual(activeWork, [{ generation: item.id, active: false }]);
+  assert.ok(captured.events.some((event) =>
+    event.operation === 'egress_unavailable' &&
+    event.outcome === 'operator_repair' &&
+    event.failureClass === 'credentials_missing' &&
+    event.fallbackPrevented === true));
 });
 
 test('a transient identity preflight keeps the turn pending without model work or repair', async () => {
@@ -532,22 +539,28 @@ test('a transient identity preflight keeps the turn pending without model work o
   const jobs = [item];
   const recovery: Array<{ id: string; reason: string }> = [];
   let executions = 0;
-
-  await drainNodeTurnRelayOnce({
-    state: relayStateFor(jobs, recovery),
-    work: {} as WorkStore,
-    resolveIdentity: async () => {
-      throw new SlackIdentityUnavailableError('slack_identity_finance', 'ratelimited', {
-        retryAfterMs: 3_000,
-      });
-    },
-    verifyIdentityAccess: async () => undefined,
-    executeTurn: async () => { executions += 1; },
+  const captured = await captureSlackIdentityOperationalEvents(async () => {
+    await drainNodeTurnRelayOnce({
+      state: relayStateFor(jobs, recovery),
+      work: {} as WorkStore,
+      resolveIdentity: async () => {
+        throw new SlackIdentityUnavailableError('slack_identity_finance', 'ratelimited', {
+          retryAfterMs: 3_000,
+        });
+      },
+      verifyIdentityAccess: async () => undefined,
+      executeTurn: async () => { executions += 1; },
+    });
   });
 
   assert.equal(executions, 0);
   assert.equal(jobs.length, 1);
   assert.deepEqual(recovery, []);
+  assert.ok(captured.events.some((event) =>
+    event.operation === 'egress_unavailable' &&
+    event.outcome === 'retry' &&
+    event.failureClass === 'ratelimited' &&
+    event.fallbackPrevented === true));
 });
 
 function turn(): NormalizedSlackTurn {

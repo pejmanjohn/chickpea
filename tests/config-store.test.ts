@@ -125,6 +125,14 @@ test('fresh stores backfill one workspace-default Slack identity and preserve pr
     },
   );
   assert.match(identities[0]?.ingressKey ?? '', /^[A-Za-z0-9_-]{22,}$/);
+  assert.deepEqual(
+    await store.getSlackIdentityByIngressKey(identities[0]!.ingressKey),
+    identities[0],
+  );
+  assert.equal(
+    await store.getSlackIdentityByIngressKey('unknown_ingress_0123456789abcdef'),
+    undefined,
+  );
   assert.equal(
     (await store.resolveSlackIdentityForAgent('agent_default')).id,
     WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,

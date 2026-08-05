@@ -25,6 +25,7 @@ import { ShadowWorkLifecycle } from '../src/work/lifecycle.ts';
 import { prepareSubmitRun, type SubmitRunInput } from '../src/work/submit-run.ts';
 import { WorkStoreLogic } from '../src/work/store.ts';
 import type { WorkStore } from '../src/work/types.ts';
+import { captureSlackIdentityOperationalEvents } from './helpers/slack-identity-observability.ts';
 
 const NOW = 1_940_000_000_000;
 
@@ -346,17 +347,28 @@ test('a transient ledger identity preflight requeues without quarantining its Tu
       work: work as unknown as WorkStore,
       turns,
       resolveIdentity: async () => {
-        throw new SlackIdentityUnavailableError('slack_identity_default', 'ratelimited');
+        throw new SlackIdentityUnavailableError('slack_identity_default', 'ratelimited', {
+          retryAfterMs: 3_000,
+        });
       },
       verifyIdentityAccess: async () => undefined,
       executeTurn: (async () => { executions += 1; }) as LedgerSlackTurnExecutor,
       now: () => ++clock,
     });
 
-    assert.deepEqual(await handler(claim), {
+    const captured = await captureSlackIdentityOperationalEvents(() => handler(claim));
+    assert.deepEqual(captured.result, {
       kind: 'requeue',
       reasonCode: 'slack_identity_temporarily_unavailable',
+      retryAfterMs: 3_000,
     });
+    assert.deepEqual(captured.events, [{
+      operation: 'egress_unavailable',
+      identityId: 'slack_identity_default',
+      outcome: 'retry',
+      failureClass: 'ratelimited',
+      fallbackPrevented: true,
+    }]);
     assert.equal(executions, 0);
     assert.ok(turns.getPendingByRunId(admission.run.id));
   } finally {

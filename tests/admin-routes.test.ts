@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHmac } from 'node:crypto';
 import { test } from 'node:test';
 
 import { Hono } from 'hono';
@@ -6,7 +7,7 @@ import { Hono } from 'hono';
 import { createAdminRoutes } from '../src/admin/routes.ts';
 import flueApp from '../src/app.ts';
 import type { RuntimeDrainStatus } from '../src/config/state-rpc.ts';
-import type { SlackStateStore } from '../src/slack/claim-store.ts';
+import { SqliteSlackStateStore, type SlackStateStore } from '../src/slack/claim-store.ts';
 import {
   ApiOAuthError,
   apiOAuthSettingKeys,
@@ -48,6 +49,10 @@ import { withEnv } from './helpers/env.ts';
 import { loopbackListenSkipReason } from './helpers/listen.ts';
 import { FakeSlackBackend } from './parity/fake-slack.ts';
 import { writeSlackIdentityCredentials } from '../src/slack/identity-credentials.ts';
+import {
+  readPendingSlackChallenge,
+  recordPendingSlackChallenge,
+} from '../src/slack/identity-handshake.ts';
 import {
   acceptModelCatalogCandidate,
   activateModelCatalog,
@@ -1400,6 +1405,58 @@ test('admin API blocks deleting an agent while assignments still reference it', 
       assignments: [{ workspaceId: 'T_ADMIN', channelId: 'C_ADMIN' }],
     });
   } finally {
+    store.close();
+  }
+});
+
+test('admin API reports Slack DM identity blockers for Profile disable and delete', async () => {
+  const profileId = 'agent_dm_handler';
+  const identityId = 'slack_identity_dm_handler';
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    await store.createAgent(agent({ id: profileId, name: 'DM Handler' }));
+    await store.createSlackIdentity({
+      id: identityId,
+      ingressKey: 'identity_ingress_dm_handler_0123456789abcdef',
+      kind: 'dedicated',
+      lifecycle: 'connected',
+      teamId: 'T_ADMIN',
+      appId: 'A0DMHANDLER',
+      botUserId: 'U_DM_HANDLER',
+      dmState: 'on',
+      dmAgentId: profileId,
+      credentialProvenance: 'stored',
+      connectionRevision: 1,
+      health: 'healthy',
+      createdAt: 1_800_000_000_000,
+      updatedAt: 1_800_000_000_000,
+    });
+    const app = appWithAdminOptions(store, { settings });
+    const expected = {
+      error: 'agent_slack_dm_handler',
+      profileId,
+      identityIds: [identityId],
+    };
+
+    const disabled = await app.request(`/admin/api/agents/${profileId}`, {
+      method: 'PATCH',
+      headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+      body: JSON.stringify({ enabled: false }),
+    });
+    assert.equal(disabled.status, 409);
+    assert.deepEqual(await disabled.json(), expected);
+    assert.equal((await store.getAgent(profileId)).enabled, true);
+
+    const deleted = await app.request(`/admin/api/agents/${profileId}`, {
+      method: 'DELETE',
+      headers: auth(ADMIN_TOKEN),
+    });
+    assert.equal(deleted.status, 409);
+    assert.deepEqual(await deleted.json(), expected);
+    assert.equal((await store.getAgent(profileId)).id, profileId);
+  } finally {
+    settings.close();
     store.close();
   }
 });
@@ -3991,6 +4048,151 @@ test('Slack identity Admin resources are gated, bounded, and secret-free', async
   }
 });
 
+test('Profile-origin identity setup replaces its captured prior identity and rejects stale completion', async () => {
+  const profileId = 'agent_finance';
+  const store = new SqliteConfigStore(':memory:', {
+    agents: [agent({ id: profileId, name: 'Finance' })],
+    assignments: [],
+  });
+  const settings = new SqliteSettingsStore(':memory:');
+  const connectedIdentity = (
+    id: string,
+    ingressKey: string,
+    appId: string,
+  ): SlackIdentity => ({
+    id,
+    ingressKey,
+    kind: 'dedicated',
+    lifecycle: 'connected',
+    teamId: 'T_ACME',
+    appId,
+    botUserId: `U_${appId}`,
+    dmState: 'off',
+    credentialProvenance: 'stored',
+    connectionRevision: 1,
+    health: 'healthy',
+    createdAt: 1_800_000_000_000,
+    updatedAt: 1_800_000_000_000,
+  });
+  try {
+    const prior = await store.createSlackIdentity(connectedIdentity(
+      'slack_identity_prior',
+      'identity_ingress_prior_0123456789abcdef',
+      'A0PRIOR',
+    ));
+    const concurrent = await store.createSlackIdentity(connectedIdentity(
+      'slack_identity_concurrent',
+      'identity_ingress_concurrent_0123456789abcdef',
+      'A0CONCURRENT',
+    ));
+    await store.attachAgentToSlackIdentity(
+      profileId,
+      prior.id,
+      prior.connectionRevision,
+      null,
+    );
+    const app = appWithAdminOptions(store, { settings });
+    const created = await withEnv(
+      { SLACK_TAG_IDENTITY_MODE: 'multi' },
+      () => app.request('/admin/api/slack-identities', {
+        method: 'POST',
+        headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+        body: JSON.stringify({
+          source: 'profile',
+          initialDmAgentId: profileId,
+          displayName: 'Finance Next',
+        }),
+      }),
+    );
+    assert.equal(created.status, 201);
+    const createdBody = await created.json() as { identity: { id: string } };
+    const draft = await store.getSlackIdentity(createdBody.identity.id);
+    assert.equal(draft.setupIntent?.sourceAgentId, profileId);
+    assert.equal(draft.setupIntent?.sourceAgentSlackIdentityId, prior.id);
+
+    const pending = await store.updateSlackIdentity(draft.id, draft.connectionRevision, {
+      lifecycle: 'credentials_pending',
+      teamId: 'T_ACME',
+      appId: 'A0FINANCENEXT',
+      botUserId: 'U_FINANCE_NEXT',
+      credentialProvenance: 'stored',
+      health: 'healthy',
+    });
+    const signingSecret = 'finance-next-signing-secret';
+    await writeSlackIdentityCredentials(settings, pending.id, null, {
+      botToken: 'xoxb-finance-next',
+      signingSecret,
+      botUserId: 'U_FINANCE_NEXT',
+    });
+    const recordChallenge = async () => {
+      const timestamp = String(Math.floor(Date.now() / 1_000));
+      const rawBody = JSON.stringify({
+        type: 'url_verification',
+        challenge: 'finance-next-challenge',
+      });
+      const signature = `v0=${createHmac('sha256', signingSecret)
+        .update(`v0:${timestamp}:${rawBody}`)
+        .digest('hex')}`;
+      const recorded = await recordPendingSlackChallenge(settings, pending, {
+        rawBody,
+        signature,
+        timestamp,
+      });
+      assert.equal(recorded.accepted, true);
+    };
+
+    await store.attachAgentToSlackIdentity(
+      profileId,
+      concurrent.id,
+      concurrent.connectionRevision,
+      prior.id,
+    );
+    await recordChallenge();
+    const stale = await app.request(`/admin/api/slack-identities/${pending.id}/verify`, {
+      method: 'POST',
+      headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        expectedRevision: pending.connectionRevision,
+        expectedProfileIdentityId: null,
+      }),
+    });
+    assert.equal(stale.status, 409);
+    assert.deepEqual(await stale.json(), {
+      error: 'profile_slack_identity_changed',
+      profileId,
+      expectedIdentityId: prior.id,
+      actualIdentityId: concurrent.id,
+    });
+    assert.equal((await store.getAgent(profileId)).slackIdentityId, concurrent.id);
+    assert.ok(await readPendingSlackChallenge(settings, pending.id));
+
+    await store.attachAgentToSlackIdentity(
+      profileId,
+      prior.id,
+      prior.connectionRevision,
+      concurrent.id,
+    );
+    const completed = await app.request(`/admin/api/slack-identities/${pending.id}/verify`, {
+      method: 'POST',
+      headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        expectedRevision: pending.connectionRevision,
+        expectedProfileIdentityId: null,
+      }),
+    });
+    assert.equal(completed.status, 200, await completed.clone().text());
+    assert.equal((await store.getAgent(profileId)).slackIdentityId, pending.id);
+    const connected = await store.getSlackIdentity(pending.id);
+    assert.equal(connected.lifecycle, 'connected');
+    assert.equal(connected.setupIntent?.sourceAgentId, undefined);
+    assert.equal(connected.setupIntent?.sourceAgentSlackIdentityId, undefined);
+    assert.equal(await readPendingSlackChallenge(settings, pending.id), undefined);
+  } finally {
+    settings.close();
+    store.close();
+  }
+});
+
 test('workspace-default Slack identity reports stored credentials as browser-writable', async () => {
   const store = new SqliteConfigStore(':memory:', {
     agents: [agent({ id: 'agent_finance', name: 'Finance' })],
@@ -4410,6 +4612,98 @@ test('Slack identity cancellation erases pending secrets and retirement reports 
     assert.equal(retiredBody.identity.credentialProvenance, 'none');
     assert.equal(retiredBody.slackAppUninstalled, false);
   } finally {
+    settings.close();
+    store.close();
+  }
+});
+
+test('Slack identity retirement waits for delivered Slack interaction cleanup', async () => {
+  const retirementAgent = agent({ id: 'agent_finance', name: 'Finance' });
+  const store = new SqliteConfigStore(':memory:', {
+    agents: [retirementAgent],
+    assignments: [],
+  });
+  const settings = new SqliteSettingsStore(':memory:');
+  const slackState = new SqliteSlackStateStore(':memory:');
+  try {
+    const identity = await store.createSlackIdentity({
+      id: 'slack_identity_cleanup_retire',
+      ingressKey: 'identity_ingress_cleanup_retire_0123456789abcdef',
+      kind: 'dedicated',
+      lifecycle: 'connected',
+      dmState: 'off',
+      credentialProvenance: 'stored',
+      connectionRevision: 3,
+      health: 'healthy',
+      createdAt: 1_800_000_000_000,
+      updatedAt: 1_800_000_000_000,
+    });
+    const jobId = 'msg:C_FINANCE:cleanup-retirement';
+    await slackState.enqueueTurn({
+      id: jobId,
+      evtKey: 'evt:cleanup-retirement',
+      msgKey: jobId,
+      turn: {
+        workspaceId: 'T_ACME',
+        channelId: 'C_FINANCE',
+        eventId: 'Ev_CLEANUP_RETIREMENT',
+        slackIdentityId: identity.id,
+        text: 'finish the task',
+        userId: 'U_MEMBER',
+        messageTs: '1782770400.000100',
+        threadTs: '1782770400.000100',
+        source: 'app_mention',
+        contextMode: 'thread',
+      },
+      assignment: {
+        workspaceId: 'T_ACME',
+        channelId: 'C_FINANCE',
+        agentId: retirementAgent.id,
+        slackIdentityId: identity.id,
+        agent: retirementAgent,
+        model: 'local-stub/admin-agent',
+      },
+    });
+    await slackState.recordSlackInteractionProgress(jobId, {
+      acknowledgment: {
+        channelId: 'C_FINANCE',
+        messageTs: '1782770400.000100',
+        name: 'eyes',
+        created: true,
+        cleanup: 'pending',
+      },
+    });
+    await slackState.markTurnDelivered(jobId);
+
+    const app = appWithAdminOptions(store, { settings, slackState });
+    const endpoint = `/admin/api/slack-identities/${identity.id}/retire`;
+    const blocked = await app.request(endpoint, {
+      method: 'POST',
+      headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+      body: JSON.stringify({ expectedRevision: identity.connectionRevision }),
+    });
+    assert.equal(blocked.status, 409);
+    assert.equal((await blocked.json() as { pendingDeliveryCount: number }).pendingDeliveryCount, 1);
+    assert.equal((await store.getSlackIdentity(identity.id)).lifecycle, 'connected');
+
+    await slackState.recordSlackInteractionProgress(jobId, {
+      acknowledgment: {
+        channelId: 'C_FINANCE',
+        messageTs: '1782770400.000100',
+        name: 'eyes',
+        created: true,
+        cleanup: 'done',
+      },
+    });
+    const retired = await app.request(endpoint, {
+      method: 'POST',
+      headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+      body: JSON.stringify({ expectedRevision: identity.connectionRevision }),
+    });
+    assert.equal(retired.status, 200, await retired.clone().text());
+    assert.equal((await store.getSlackIdentity(identity.id)).lifecycle, 'retired');
+  } finally {
+    slackState.close();
     settings.close();
     store.close();
   }

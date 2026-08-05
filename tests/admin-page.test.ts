@@ -356,7 +356,13 @@ function runAdminPageHarness(
     attachSelectionValue?: string;
     effectiveError?: { status: number; error: string; message?: string };
     effectiveSlackIdentityId?: string;
-    agentWriteError?: { status: number; error: string; message?: string };
+    agentWriteError?: {
+      status: number;
+      error: string;
+      message?: string;
+      profileId?: string;
+      identityIds?: string[];
+    };
     mcpSecretPutFailures?: number;
     mcpSecretDeleteFailures?: number;
     apiConnectionSecretPutFailures?: number;
@@ -1141,6 +1147,8 @@ function runAdminPageHarness(
             {
               error: agentWriteError.error,
               ...(agentWriteError.message ? { message: agentWriteError.message } : {}),
+              ...(agentWriteError.profileId ? { profileId: agentWriteError.profileId } : {}),
+              ...(agentWriteError.identityIds ? { identityIds: agentWriteError.identityIds } : {}),
             },
             agentWriteError.status,
           ),
@@ -1354,6 +1362,8 @@ function runAdminPageHarness(
             {
               error: agentWriteError.error,
               ...(agentWriteError.message ? { message: agentWriteError.message } : {}),
+              ...(agentWriteError.profileId ? { profileId: agentWriteError.profileId } : {}),
+              ...(agentWriteError.identityIds ? { identityIds: agentWriteError.identityIds } : {}),
             },
             agentWriteError.status,
           ),
@@ -1373,6 +1383,25 @@ function runAdminPageHarness(
         });
       }
       return Promise.resolve(completePatch());
+    }
+    if (agentPatchMatch && method === 'DELETE') {
+      const id = decodeURIComponent(agentPatchMatch[1] as string);
+      if (agentWriteError) {
+        return Promise.resolve(
+          jsonResponse(
+            {
+              error: agentWriteError.error,
+              ...(agentWriteError.message ? { message: agentWriteError.message } : {}),
+              ...(agentWriteError.profileId ? { profileId: agentWriteError.profileId } : {}),
+              ...(agentWriteError.identityIds ? { identityIds: agentWriteError.identityIds } : {}),
+            },
+            agentWriteError.status,
+          ),
+        );
+      }
+      const index = agentsList.findIndex((agent) => agent.id === id);
+      if (index >= 0) agentsList.splice(index, 1);
+      return Promise.resolve(jsonResponse(null, 204));
     }
     if (path === '/admin/api/assignments' && method === 'PUT') {
       const body = JSON.parse(options?.body ?? '{}') as AssignmentFixture;
@@ -3220,6 +3249,56 @@ test('the profile editor blocks delete while assigned and confirms disable every
   assert.match(harness.app.innerHTML, /Disable Release Profile\?/);
   assert.match(harness.app.innerHTML, /data-action="disable-confirm"/);
   assert.match(harness.app.innerHTML, /data-action="disable-keep"/);
+});
+
+test('Profile disable and delete explain how to move an active Slack DM binding', async () => {
+  const dmAgent = {
+    ...releaseAgent,
+    id: 'agent_dm_copy',
+    name: 'DM Copy Profile',
+  };
+  const harness = runAdminPageHarness({
+    assignments: [],
+    agents: [dmAgent],
+    slackIdentities: multiSlackIdentitiesFixture(),
+    agentWriteError: {
+      status: 409,
+      error: 'agent_slack_dm_handler',
+      profileId: dmAgent.id,
+      identityIds: ['slack_identity_finance'],
+    },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  const change = harness.listeners.change;
+  assert.ok(click && change);
+  click({ target: actionTarget({ 'data-action': 'open-profiles' }) });
+  click({
+    target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': dmAgent.id }),
+  });
+
+  change({
+    target: {
+      checked: false,
+      closest: () => null,
+      getAttribute(name: string) {
+        return name === 'data-action' ? 'profile-enable-toggle' : null;
+      },
+    } as unknown as FakeTarget,
+  });
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+  assert.match(
+    harness.app.innerHTML,
+    /This Profile still handles DMs for Finance\. In Settings → Slack → Identities, choose another DM Profile or turn off DMs first\./,
+  );
+
+  click({ target: actionTarget({ 'data-action': 'delete-profile' }) });
+  await flushAsync();
+  assert.match(
+    harness.app.innerHTML,
+    /This Profile still handles DMs for Finance\. In Settings → Slack → Identities, choose another DM Profile or turn off DMs first\./,
+  );
 });
 
 test('New profile opens a blank create screen and validation gates save', async () => {

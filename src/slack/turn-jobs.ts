@@ -249,7 +249,10 @@ export class TurnJobStoreLogic {
     const row = this.db.get(
       `SELECT COUNT(*) AS count
        FROM turn_jobs
-       WHERE delivered = 0
+       WHERE (
+           delivered = 0
+           OR (delivered = 1 AND progress_json LIKE '%"cleanup":"pending"%')
+         )
          AND COALESCE(
            json_extract(turn_json, '$.slackIdentityId'),
            json_extract(assignment_json, '$.slackIdentityId'),

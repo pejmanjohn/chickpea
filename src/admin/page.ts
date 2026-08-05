@@ -11698,6 +11698,13 @@ details[open].advanced summary::before {
 
   function profileIdentityErrorText(error) {
     var payload = error && error.payload;
+    if (payload && payload.error === "agent_slack_dm_handler") {
+      var identityLabels = (Array.isArray(payload.identityIds) ? payload.identityIds : []).map(function (identityId) {
+        var identity = slackIdentityById(identityId);
+        return identity ? identity.displayName : identityId;
+      });
+      return "This Profile still handles DMs" + (identityLabels.length ? " for " + identityLabels.join(", ") : "") + ". In Settings → Slack → Identities, choose another DM Profile or turn off DMs first.";
+    }
     if (payload && payload.error === "slack_identity_not_in_channels") {
       var channels = (payload.channels || []).map(function (channel) {
         return "#" + (channel.label || channel.channelId);
@@ -11936,6 +11943,9 @@ details[open].advanced summary::before {
     // of record (409 agent_still_assigned) — surface it honestly if it ever races.
     if (error && error.message === "agent_still_assigned") {
       return "This profile is still attached to a channel. Detach it everywhere first.";
+    }
+    if (error && error.payload && error.payload.error === "agent_slack_dm_handler") {
+      return profileIdentityErrorText(error);
     }
     return (error && error.message) || "Could not delete the profile.";
   }

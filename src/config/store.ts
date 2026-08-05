@@ -165,6 +165,7 @@ export interface ConfigStore {
   ): Promise<ChannelAssignment | undefined>;
   listSlackIdentities(): Promise<SlackIdentity[]>;
   getSlackIdentity(identityId: string): Promise<SlackIdentity>;
+  getSlackIdentityByIngressKey(ingressKey: string): Promise<SlackIdentity | undefined>;
   createSlackIdentity(identity: SlackIdentity): Promise<SlackIdentity>;
   updateSlackIdentity(
     identityId: string,
@@ -497,6 +498,14 @@ export class ConfigStoreLogic {
     return rowToSlackIdentity(row as unknown as SlackIdentityRow);
   }
 
+  getSlackIdentityByIngressKey(ingressKey: string): SlackIdentity | undefined {
+    const row = this.db.get(
+      'SELECT * FROM config_slack_identities WHERE ingress_key = ?',
+      ingressKey,
+    );
+    return row ? rowToSlackIdentity(row as unknown as SlackIdentityRow) : undefined;
+  }
+
   createSlackIdentity(identity: SlackIdentity): SlackIdentity {
     this.validateSlackIdentity(identity);
     let inserted;
@@ -680,6 +689,7 @@ export class ConfigStoreLogic {
       }
       const retainedSetupIntent = { ...identity.setupIntent };
       delete retainedSetupIntent.sourceAgentId;
+      delete retainedSetupIntent.sourceAgentSlackIdentityId;
       delete retainedSetupIntent.reconnecting;
       const connected = this.updateSlackIdentity(identityId, expectedRevision, {
         lifecycle: 'connected',
@@ -1276,6 +1286,10 @@ export class SqliteConfigStore implements ConfigStore {
 
   async getSlackIdentity(identityId: string): Promise<SlackIdentity> {
     return this.logic.getSlackIdentity(identityId);
+  }
+
+  async getSlackIdentityByIngressKey(ingressKey: string): Promise<SlackIdentity | undefined> {
+    return this.logic.getSlackIdentityByIngressKey(ingressKey);
   }
 
   async createSlackIdentity(identity: SlackIdentity): Promise<SlackIdentity> {

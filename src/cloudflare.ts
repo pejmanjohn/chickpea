@@ -37,6 +37,7 @@ import {
   type SlackIdentityExecutionContext,
   type SlackIdentityExecutionResolver,
 } from './slack/identity-execution.ts';
+import { recordSlackIdentityUnavailable } from './slack/identity-observability.ts';
 import type { AssignmentLookupOptions } from './config/resolver.ts';
 import {
   parseSandboxAllowedHosts,
@@ -136,7 +137,11 @@ import { UsageStoreLogic } from './usage/store.ts';
 import { UsageStateError } from './usage/store-error.ts';
 import type { UsageRpcRequest, UsageRpcResponse, UsageStore } from './usage/types.ts';
 import { WorkStoreLogic } from './work/store.ts';
-import { DurableRunDriver } from './work/driver.ts';
+import {
+  DurableRunDriver,
+  runDriverRetryDelayMs,
+  type RunDriverDrainResult,
+} from './work/driver.ts';
 import {
   WorkStateError,
   type WorkRpcRequest,
@@ -627,6 +632,14 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     return this.call((stores) => stores.config.getSlackIdentity(identityId));
   }
 
+  async configGetSlackIdentityByIngressKey(
+    ingressKey: string,
+  ): Promise<StateRpcResult<SlackIdentity | null>> {
+    return this.call(
+      (stores) => stores.config.getSlackIdentityByIngressKey(ingressKey) ?? null,
+    );
+  }
+
   async configCreateSlackIdentity(
     identity: SlackIdentity,
   ): Promise<StateRpcResult<SlackIdentity>> {
@@ -1109,7 +1122,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     if (pending.length === 0) {
       const cleanupPending = stores.turnJobs.hasPendingSlackInteractionCleanup();
       const resolveIdentity = this.createAlarmIdentityResolver(stores);
-      await drainLedgerRuns(
+      const ledgerDrain = await drainLedgerRuns(
         stores,
         this.env as PlatformEnv,
         resolveIdentity,
@@ -1121,7 +1134,9 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         stores.turnJobs.hasPending('ledger') ||
         stores.turnJobs.hasPendingSlackInteractionCleanup()
       ) {
-        await this.ctx.storage.setAlarm(Date.now() + RELAY_RETRY_BACKOFF_MS);
+        await this.ctx.storage.setAlarm(
+          Date.now() + runDriverRetryDelayMs(ledgerDrain, RELAY_RETRY_BACKOFF_MS),
+        );
       }
       return;
     }
@@ -1145,6 +1160,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           error,
           effectiveTurnSlackIdentityId(job.turn),
         );
+        recordSlackIdentityUnavailable(unavailable);
         if (unavailable.retryable) {
           needsRetry = true;
           identityRetryDelayMs = Math.max(
@@ -1407,7 +1423,12 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         }
       }),
     );
-    await drainLedgerRuns(stores, this.env as PlatformEnv, resolveIdentity);
+    const ledgerDrain = await drainLedgerRuns(
+      stores,
+      this.env as PlatformEnv,
+      resolveIdentity,
+    );
+    identityRetryDelayMs = runDriverRetryDelayMs(ledgerDrain, identityRetryDelayMs);
     await drainSlackInteractionCleanups(stores, resolveIdentity);
     needsRetry ||= stores.turnJobs.hasPending('legacy') ||
       stores.turnJobs.hasPending('ledger') ||
@@ -1586,8 +1607,8 @@ async function drainLedgerRuns(
   stores: TagStateStores,
   platformEnv: PlatformEnv,
   resolveIdentity: SlackIdentityExecutionResolver,
-): Promise<void> {
-  await new DurableRunDriver(stores.work, {
+): Promise<RunDriverDrainResult> {
+  return new DurableRunDriver(stores.work, {
     ownerId: 'cloudflare_ledger_run_driver',
     authorityEpoch: 1,
     leaseDurationMs: 30_000,

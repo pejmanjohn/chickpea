@@ -122,6 +122,8 @@ export interface SlackIdentitySetupIntent {
   appName?: string;
   displayName?: string;
   sourceAgentId?: string;
+  /** Profile identity binding captured when Profile-origin setup began. */
+  sourceAgentSlackIdentityId?: string | null;
   /** True after an established identity starts credential replacement. */
   reconnecting?: boolean;
 }

@@ -221,6 +221,9 @@ export interface TagStateRpc {
   // -- config: Slack identities -------------------------------------------
   configListSlackIdentities(): Promise<StateRpcResult<SlackIdentity[]>>;
   configGetSlackIdentity(identityId: string): Promise<StateRpcResult<SlackIdentity>>;
+  configGetSlackIdentityByIngressKey(
+    ingressKey: string,
+  ): Promise<StateRpcResult<SlackIdentity | null>>;
   configCreateSlackIdentity(identity: SlackIdentity): Promise<StateRpcResult<SlackIdentity>>;
   configUpdateSlackIdentity(
     identityId: string,

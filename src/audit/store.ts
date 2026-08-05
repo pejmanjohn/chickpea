@@ -206,7 +206,7 @@ function validateSafeMetadata(input: AppendAuditEvent, raw: string): void {
   }
 }
 
-const SAFE_WORK_METADATA_VALUE = /^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,255}$/;
+const SAFE_AUDIT_METADATA_VALUE = /^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,255}$/;
 
 function validateWorkMetadata(eventType: string, metadata: Record<string, unknown>): void {
   const shapes: Record<string, { keys: readonly string[]; status?: string }> = {
@@ -266,7 +266,7 @@ function validateWorkMetadata(eventType: string, metadata: Record<string, unknow
       }
       continue;
     }
-    if (!SAFE_WORK_METADATA_VALUE.test(value)) {
+    if (!SAFE_AUDIT_METADATA_VALUE.test(value)) {
       throw new Error(`Work audit metadata ${key} is invalid`);
     }
   }
@@ -287,7 +287,6 @@ function actionMetadataKeys(): readonly string[] {
   ];
 }
 
-const SAFE_SLACK_IDENTITY_METADATA_VALUE = /^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,255}$/;
 const SLACK_IDENTITY_EVENT_OPERATIONS: Record<string, string> = {
   'slack_identity.setup_started': 'setup_started',
   'slack_identity.credentials_connected': 'credentials_connected',
@@ -317,7 +316,7 @@ function validateSlackIdentityMetadata(
   for (const [key, value] of Object.entries(metadata)) {
     if (
       typeof value !== 'string' ||
-      !SAFE_SLACK_IDENTITY_METADATA_VALUE.test(value)
+      !SAFE_AUDIT_METADATA_VALUE.test(value)
     ) {
       throw new Error(`Slack identity audit metadata ${key} is invalid`);
     }

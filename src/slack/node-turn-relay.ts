@@ -32,6 +32,7 @@ import {
   type SlackIdentityExecutionContext,
   type SlackIdentityExecutionResolver,
 } from './identity-execution.ts';
+import { recordSlackIdentityUnavailable } from './identity-observability.ts';
 import { MAX_POST_DISPATCH_ATTEMPTS } from './turn-jobs.ts';
 import type { SlackPresentationStatePort } from './agent-view-presentation.ts';
 
@@ -163,6 +164,7 @@ export async function drainNodeTurnRelayOnce(
             error,
             effectiveTurnSlackIdentityId(job.turn),
           );
+          recordSlackIdentityUnavailable(unavailable);
           if (unavailable.retryable) {
             if (!options.state) {
               scheduleNodeTurnRelayRetry(env, unavailable.retryAfterMs);

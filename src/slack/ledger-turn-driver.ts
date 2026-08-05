@@ -40,6 +40,7 @@ import {
   type SlackIdentityExecutionContext,
   type SlackIdentityExecutionResolver,
 } from './identity-execution.ts';
+import { recordSlackIdentityUnavailable } from './identity-observability.ts';
 import type { SlackInteractionIntent } from './interaction-intent.ts';
 import type { SlackInteractionProgressPatch } from '../config/state-rpc.ts';
 import type { SlackContinuityNoticeProgress } from '../config/state-rpc.ts';
@@ -154,8 +155,15 @@ export function createLedgerSlackRunHandler(
           error,
           effectiveTurnSlackIdentityId(job.turn),
         );
+        recordSlackIdentityUnavailable(unavailable);
         if (unavailable.retryable) {
-          return { kind: 'requeue', reasonCode: 'slack_identity_temporarily_unavailable' };
+          return {
+            kind: 'requeue',
+            reasonCode: 'slack_identity_temporarily_unavailable',
+            ...(unavailable.retryAfterMs === undefined
+              ? {}
+              : { retryAfterMs: unavailable.retryAfterMs }),
+          };
         }
         await options.turns.markRecoveryRequired(job.id, 'slack_identity_unavailable');
         await clearActiveWork(options, job);

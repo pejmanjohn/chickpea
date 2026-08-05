@@ -333,6 +333,10 @@ export class CfConfigStore implements ConfigStore {
     return unwrap(await this.stub.configGetSlackIdentity(identityId));
   }
 
+  async getSlackIdentityByIngressKey(ingressKey: string): Promise<SlackIdentity | undefined> {
+    return orUndefined(unwrap(await this.stub.configGetSlackIdentityByIngressKey(ingressKey)));
+  }
+
   async createSlackIdentity(identity: SlackIdentity): Promise<SlackIdentity> {
     return unwrap(await this.stub.configCreateSlackIdentity(identity));
   }

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
-import { DurableRunDriver } from '../src/work/driver.ts';
+import { DurableRunDriver, runDriverRetryDelayMs } from '../src/work/driver.ts';
 import { opaqueId } from '../src/work/admission.ts';
 import { ShadowWorkLifecycle } from '../src/work/lifecycle.ts';
 import { submitRun, type SubmitRunInput } from '../src/work/submit-run.ts';
@@ -48,6 +48,38 @@ test('the dark driver refuses legacy, wrong-epoch, and Workflow authority while 
   assert.equal((await store.getRun(wrongEpoch.run.id))?.status, 'admitted');
   assert.equal((await store.getRun(ledger.run.id))?.status, 'queued');
   assert.equal((await store.getRun(ledger.run.id))?.executionAuthority, 'ledger');
+});
+
+test('the driver exposes the longest retry delay from a bounded requeue batch', async (t) => {
+  const store = new SqliteWorkStore(':memory:', { now: () => NOW });
+  t.after(() => store.close());
+  const short = await submitRun(store, submission('retry-short'));
+  const long = await submitRun(store, submission('retry-long'));
+  const driver = new DurableRunDriver(store, {
+    ownerId: 'driver_retry_delay',
+    authorityEpoch: 1,
+    leaseDurationMs: 30_000,
+    maxClaims: 2,
+    concurrency: 2,
+    now: () => NOW + 1,
+    handle: async (claim) => ({
+      kind: 'requeue',
+      reasonCode: 'identity_retry',
+      retryAfterMs: claim.run.id === short.run.id ? 3_000 : 8_000,
+    }),
+  });
+
+  const result = await driver.drain();
+  assert.deepEqual(result, {
+    claimed: 2,
+    completed: 0,
+    requeued: 2,
+    recoveryRequired: 0,
+    retryAfterMs: 8_000,
+  });
+  assert.equal(runDriverRetryDelayMs(result, 2_000), 8_000);
+  assert.equal((await store.getRun(short.run.id))?.status, 'queued');
+  assert.equal((await store.getRun(long.run.id))?.status, 'queued');
 });
 
 test('lease expiry is safe before submit, ambiguous after submit, and stale fencing loses', async (t) => {

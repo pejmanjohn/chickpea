@@ -1,5 +1,6 @@
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHmac } from 'node:crypto';
 
+import { constantTimeEquals } from '../admin/constant-time.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import type { SlackIdentity } from '../config/types.ts';
 import {
@@ -23,7 +24,7 @@ export interface PendingSlackChallengeEnvelope extends PendingSlackChallengeInpu
 }
 
 export type RecordPendingSlackChallengeResult =
-  | { accepted: true; expiresAt: number }
+  | { accepted: true; challenge: string; expiresAt: number }
   | {
       accepted: false;
       reason:
@@ -36,7 +37,7 @@ export type RecordPendingSlackChallengeResult =
     };
 
 export type VerifyPendingSlackChallengeResult =
-  | { verified: true }
+  | { verified: true; purgeReceipt: string }
   | { verified: false; reason: 'missing' | 'expired' | 'invalid_signature' };
 
 export function slackIdentityPendingEnvelopeSettingKey(identityId: string): string {
@@ -91,7 +92,7 @@ export async function recordPendingSlackChallenge(
     set: [{ key, value: JSON.stringify(envelope) }],
   });
   return applied
-    ? { accepted: true, expiresAt: envelope.expiresAt }
+    ? { accepted: true, challenge: body.challenge, expiresAt: envelope.expiresAt }
     : { accepted: false, reason: 'changed' };
 }
 
@@ -112,7 +113,9 @@ export async function readPendingSlackChallenge(
   return envelope;
 }
 
-/** Verify the recorded raw body, then purge the one-shot envelope on any result. */
+/** Verify the recorded raw body. A valid envelope remains available until the
+ * caller commits dependent metadata, then uses the exact receipt to CAS-delete
+ * it. Invalid and expired envelopes are purged immediately. */
 export async function verifyPendingSlackChallenge(
   store: SettingsStore,
   identityId: string,
@@ -132,11 +135,10 @@ export async function verifyPendingSlackChallenge(
   const expected = `v0=${createHmac('sha256', signingSecret)
     .update(`v0:${envelope.timestamp}:${envelope.rawBody}`)
     .digest('hex')}`;
-  const verified = safeEqual(expected, envelope.signature);
+  const verified = constantTimeEquals(expected, envelope.signature);
+  if (verified) return { verified: true, purgeReceipt: raw };
   await purgePendingSlackChallenge(store, identityId, raw);
-  return verified
-    ? { verified: true }
-    : { verified: false, reason: 'invalid_signature' };
+  return { verified: false, reason: 'invalid_signature' };
 }
 
 export async function purgePendingSlackChallenge(
@@ -211,10 +213,4 @@ function parseTimestamp(value: string): number | undefined {
   if (!/^\d{1,12}$/.test(value)) return undefined;
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) ? parsed : undefined;
-}
-
-function safeEqual(left: string, right: string): boolean {
-  const leftBytes = Buffer.from(left, 'utf8');
-  const rightBytes = Buffer.from(right, 'utf8');
-  return leftBytes.length === rightBytes.length && timingSafeEqual(leftBytes, rightBytes);
 }

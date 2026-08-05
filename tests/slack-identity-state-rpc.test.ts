@@ -77,6 +77,15 @@ test('Cloudflare config proxy preserves Slack identity records and reference ope
       calls.push({ method: 'get', args: [identityId] });
       return { ok: true, value: identity };
     },
+    async configGetSlackIdentityByIngressKey(
+      ingressKey: string,
+    ): Promise<StateRpcResult<SlackIdentity | null>> {
+      calls.push({ method: 'getByIngressKey', args: [ingressKey] });
+      return {
+        ok: true,
+        value: ingressKey === identity.ingressKey ? identity : null,
+      };
+    },
     async configGetSlackIdentityReferences(
       identityId: string,
     ): Promise<StateRpcResult<SlackIdentityReferenceSummary>> {
@@ -120,6 +129,11 @@ test('Cloudflare config proxy preserves Slack identity records and reference ope
 
   assert.deepEqual(await store.listSlackIdentities(), [identity]);
   assert.deepEqual(await store.getSlackIdentity(identity.id), identity);
+  assert.deepEqual(await store.getSlackIdentityByIngressKey(identity.ingressKey), identity);
+  assert.equal(
+    await store.getSlackIdentityByIngressKey('unknown_ingress_0123456789abcdef'),
+    undefined,
+  );
   assert.deepEqual(await store.getSlackIdentityReferences(identity.id), references);
   assert.deepEqual(
     await store.completeSlackIdentitySetup(identity.id, 3, attachedProfile.id, null),
@@ -141,6 +155,8 @@ test('Cloudflare config proxy preserves Slack identity records and reference ope
   assert.deepEqual(calls, [
     { method: 'list', args: [] },
     { method: 'get', args: [identity.id] },
+    { method: 'getByIngressKey', args: [identity.ingressKey] },
+    { method: 'getByIngressKey', args: ['unknown_ingress_0123456789abcdef'] },
     { method: 'references', args: [identity.id] },
     { method: 'completeSetup', args: [identity.id, 3, attachedProfile.id, null] },
     { method: 'attachProfile', args: [attachedProfile.id, identity.id, 3, null] },

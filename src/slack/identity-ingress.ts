@@ -2,11 +2,13 @@ import type { ConfigStore } from '../config/store.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import type { SlackIdentity } from '../config/types.ts';
 import {
+  MAX_PENDING_SLACK_CHALLENGE_BYTES,
   recordPendingSlackChallenge,
   type RecordPendingSlackChallengeResult,
 } from './identity-handshake.ts';
+import { recordSlackIdentityOperationalEvent } from './identity-observability.ts';
 
-export const MAX_SLACK_INGRESS_BYTES = 1_048_576;
+export const MAX_SLACK_INGRESS_BYTES = MAX_PENDING_SLACK_CHALLENGE_BYTES;
 
 const INGRESS_KEY_PATTERN = /^[A-Za-z0-9_-]{22,128}$/;
 const JSON_MEDIA_TYPE = 'application/json';
@@ -29,9 +31,7 @@ export async function resolveSlackIngressCandidate(
   ingressKey: string,
 ): Promise<SlackIngressCandidateResult> {
   if (!INGRESS_KEY_PATTERN.test(ingressKey)) return { found: false };
-  const identity = (await store.listSlackIdentities()).find(
-    (candidate) => candidate.ingressKey === ingressKey,
-  );
+  const identity = await store.getSlackIdentityByIngressKey(ingressKey);
   return identity ? { found: true, identity } : { found: false };
 }
 
@@ -108,13 +108,17 @@ export async function handlePendingSlackIdentityChallenge(
     signature,
     timestamp,
   });
+  recordSlackIdentityOperationalEvent({
+    operation: 'setup_handshake',
+    identityId: identity.id,
+    ...(identity.appId ? { appId: identity.appId } : {}),
+    lifecycle: identity.lifecycle,
+    outcome: result.accepted ? 'accepted' : 'rejected',
+    ...(!result.accepted ? { failureClass: result.reason } : {}),
+  });
   if (!result.accepted) return pendingChallengeFailure(result);
 
-  const challenge = parseChallenge(rawBody);
-  if (!challenge) {
-    return Response.json({ error: 'invalid_request' }, { status: 400 });
-  }
-  return Response.json({ challenge });
+  return Response.json({ challenge: result.challenge });
 }
 
 async function readBoundedBody(
@@ -147,19 +151,6 @@ async function readBoundedBody(
   }
   try {
     return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
-  } catch {
-    return undefined;
-  }
-}
-
-function parseChallenge(rawBody: string): string | undefined {
-  try {
-    const parsed = JSON.parse(rawBody) as unknown;
-    if (!parsed || typeof parsed !== 'object') return undefined;
-    const body = parsed as Record<string, unknown>;
-    return body.type === 'url_verification' && typeof body.challenge === 'string'
-      ? body.challenge
-      : undefined;
   } catch {
     return undefined;
   }

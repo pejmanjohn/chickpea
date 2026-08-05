@@ -14,6 +14,7 @@ import {
 import { resolveSlackIdentityCredentials } from './identity-credentials.ts';
 import { createSlackWebClient } from './web-client.ts';
 import type { NormalizedSlackTurn } from './types.ts';
+import { isDirectSlackTurn } from './work-admission.ts';
 
 type MaybePromise<T> = T | Promise<T>;
 
@@ -167,7 +168,7 @@ export async function verifySlackIdentityTurnAccess(
   if (context.teamId !== turn.workspaceId) {
     throw new SlackIdentityUnavailableError(context.identityId, 'workspace_mismatch');
   }
-  if (isDirectTurn(turn)) return;
+  if (isDirectSlackTurn(turn)) return;
   const conversation = await slackConversationsInfo(context.botToken, turn.channelId);
   if (
     !conversation.ok ||
@@ -189,13 +190,6 @@ export async function verifySlackIdentityTurnAccess(
 
 export function effectiveTurnSlackIdentityId(turn: NormalizedSlackTurn): string {
   return turn.slackIdentityId ?? WORKSPACE_DEFAULT_SLACK_IDENTITY_ID;
-}
-
-function isDirectTurn(turn: NormalizedSlackTurn): boolean {
-  return turn.source === 'dm_message' ||
-    turn.channelType === 'im' ||
-    turn.channelType === 'app_home' ||
-    turn.channelType === 'mpim';
 }
 
 function transientSlackIdentityReason(reasonCode: string): boolean {

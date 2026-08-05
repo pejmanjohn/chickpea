@@ -14,6 +14,7 @@ import {
 } from './identity-credentials.ts';
 import {
   cancelPendingSlackIdentitySecrets,
+  purgePendingSlackChallenge,
   verifyPendingSlackChallenge,
 } from './identity-handshake.ts';
 
@@ -290,12 +291,18 @@ export async function completeSlackIdentityConnection(input: {
           : 'challenge_missing';
     throw new SlackIdentityBootstrapError(code, 'Slack Request URL verification did not match');
   }
-  return input.config.completeSlackIdentitySetup(
+  const connected = await input.config.completeSlackIdentitySetup(
     input.identityId,
     input.expectedRevision,
     input.attachAgentId,
     input.expectedAgentIdentityId,
   );
+  await purgePendingSlackChallenge(
+    input.settings,
+    input.identityId,
+    verification.purgeReceipt,
+  );
+  return connected;
 }
 
 export async function cancelSlackIdentityConnection(input: {

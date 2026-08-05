@@ -62,7 +62,7 @@ The first DM answers with **zero model keys** on a fresh Cloudflare deploy: the 
 - Skills can be imported by pasting any public `owner/repo`, GitHub URL, or skills.sh link. When the GitHub App is connected, the same field can also resolve App-accessible private repositories, and **Browse GitHub** can fill it from the connected installations without limiting public paste to repositories you own.
 - Per-channel assignments: add a channel by workspace + channel ID, choose ambient or mention-only participation, enable/disable it, swap the attached profile, or detach it. Per-channel instructions append to the profile's instructions in that channel only.
 - Model pinning: a combobox showing concrete models grouped by the providers this install actually has configured. Any free-text `provider/model` specifier is accepted; unknown providers get a warning.
-- A read-only Access summary showing the attached profile, install-wide Slack identity, and layered instructions. Advanced shows the resolved model, provider, and short config snapshot hash; the profile's Skills, Connections, and Repositories tabs show its capability grants.
+- A read-only Access summary showing the attached profile, effective Slack identity, and layered instructions. Advanced shows the resolved model, provider, and short config snapshot hash; the profile's Skills, Connections, and Repositories tabs show its capability grants.
 - The first-run Slack connection wizard described above, followed by a live Slack overview that reads the installed bot's current name and avatar, links to the exact Slack settings page for changing them, tests or replaces stored credentials, and confirms disconnects. Ambient participation, DM, unassigned-channel hint, and welcome-message behavior is configurable there; environment-managed values remain visibly read-only.
 - Profile and channel edits apply to new threads without a restart; DMs deliberately track current configuration.
 - Audit Logs > Scheduled Work starts with a compact, filterable routine inventory. Opening one routine separates its saved definition and controls from its Runs and Activity, including revisions, usage, safe failures, Slack receipts, and durable Flue agent attempts. Audit Logs > Memory keeps the workspace/channel memory browser with generated `MEMORY.md` indexes, escaped file previews, optimistic editing, revision history, review resolution, and irreversible deletion. Network Events remains reserved.
@@ -170,7 +170,7 @@ Connect GitHub once in Settings through the GitHub App manifest flow, the only s
 - Workers AI has two runtime paths: the `cloudflare` provider uses the keyless Workers AI binding on Cloudflare, while `cloudflare-workers-ai` uses the REST API with `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID` on Node (or on Cloudflare when those separate REST credentials are supplied).
 - `local-stub` is an offline/dev-only OpenAI-completions-compatible provider registered when `LOCAL_STUB_URL` is set.
 - Each profile can pin its own model from `/admin`; the per-agent selection order is under Configuration below.
-- The Slack-visible identity stays one install-wide bot (named `@Chickpea` by default). Channels > Slack reads its live Slack-owned name and avatar; the reply footer tells you which profile and model answered.
+- Every installation starts with the workspace-default `@Chickpea` identity. Operators may optionally give Profiles distinct native Slack identities; the reply footer still tells you which Profile and model answered.
 
 ## Other ways to run it
 
@@ -215,15 +215,23 @@ Keep `--persist-to` outside `dist-cf/`: the build output is disposable, and a re
 
 For live Slack testing without a public tunnel, enable Socket Mode in the Slack app, create an app-level `xapp-` token with `connections:write`, and put it in `SLACK_APP_TOKEN` alongside `SLACK_SIGNING_SECRET`. `npm run slack:bridge` reads `.env.slack.local` by default (or `--env <path>`) and forwards those events to the local server with genuine v0 signatures. This is dev-only: one bridge may consume events at a time, it acknowledges before local handling so Slack retry semantics are not exercised, and enabling Socket Mode pauses delivery to the HTTP Events Request URL.
 
-### Bot identity
+### Slack identities
 
-`slack-app-manifest.json` owns both the app name and the default bot display name ("Chickpea"), plus the description — the wizard's deep-link carries all of it, so a from-manifest install needs no manual field entry. Channels > Slack shows the live Slack-owned name and avatar, with **Refresh** and an exact **Change in Slack** link; profiles never change that install-wide identity. The avatar is the one manual setup step: upload `assets/bot-avatar.png` (referenced by `src/config/identity.ts`) under the app's Display Information, then verify the live name and icon:
+The existing Slack app is automatically represented as the non-deletable workspace-default `@Chickpea` identity. Profiles inherit it, so a customer who never needs separate personas has no additional setup or credential management. A Profile's **Replies as** setting can instead reuse a connected dedicated identity or begin an optional guided setup for another native Slack app. One dedicated identity may serve several Profiles in channels; the channel assignment still chooses the acting Profile. Each Slack app has its own DM conversation and one independently configured DM Profile.
+
+`slack-app-manifest.json` remains the canonical capability template. Dedicated setup changes only the new app and bot names plus its identity-scoped Request URL, then guides the operator through Slack installation, write-only credential validation, signed callback verification, and Profile attachment. Each dedicated mention name, avatar, and DM surface therefore costs one additional Slack app installation. Invite that app to every assigned channel before switching a Profile; private channels always require a human invitation. Missing membership or unavailable credentials fail closed and never post through `@Chickpea` as a fallback.
+
+Slack owns every live app name and avatar. **Settings → Slack → Identities** reflects the current Slack-hosted appearance and links directly to the verified app's Slack settings page. Chickpea does not upload, proxy, or synchronize avatar files. For the workspace default, `assets/bot-avatar.png` remains the recommended manual image. The legacy live check still verifies its name and icon:
 
 ```bash
 SLACK_BOT_TOKEN="<bot-token>" node scripts/verify-identity-live.mjs
 ```
 
 It calls `auth.test` and `users.info`, compares the display name to the manifest, and classifies the avatar as custom, default, or unknown. Requires the `users:read` bot scope.
+
+Dedicated credentials are stored separately by identity and are never returned to the browser. Use **Reconnect** to replace a token or signing secret; queued delivery keeps the same identity reference and resolves its current token on retry. Before retiring a dedicated identity, move every Profile away from it and turn off its DMs. Retirement deletes Chickpea's local secrets but does not uninstall or revoke the Slack app; complete that separately from the linked Slack settings page.
+
+`SLACK_TAG_IDENTITY_MODE=base` is the default rollout and rollback posture. It keeps `@Chickpea` operational, prevents dedicated creation and execution, preserves existing dedicated references for repair, and never substitutes the base app. Set `multi` only for a deliberately approved pilot after the source and disposable-workspace gates pass. Runtime support diagnostics emit only structured `slack_identity_operational` records containing allowlisted identity/app metadata, route outcome, lifecycle, and content-free failure classes; they never include Slack bodies, credentials, ingress keys, or DM content.
 
 ## Configuration
 
@@ -240,6 +248,7 @@ It calls `auth.test` and `users.info`, compares the display name to the manifest
 | `SLACK_TAG_UNASSIGNED_HINT` | optional | On by default: a mention in an unassigned channel sends the mentioner one rate-limited ephemeral hint linking to `/admin`. `false` disables the hint; the channel itself never sees anything either way. |
 | `SLACK_TAG_WELCOME_ON_JOIN` | optional | On by default: when @Chickpea joins an already-assigned channel, Chickpea posts one short welcome. `false` suppresses it. |
 | `SLACK_TAG_AMBIENT_PARTICIPATION` | optional | On by default: assigned channels evaluate useful unmentioned messages. `false` forces an installation-wide mention-only rollback without changing channel settings or capabilities. |
+| `SLACK_TAG_IDENTITY_MODE` | optional | Dedicated-identity rollout mode. Defaults to `base`, which keeps `@Chickpea` operational while pausing dedicated creation/admission without fallback. Set `multi` only after the disposable multi-app acceptance gates pass. |
 | `SLACK_TAG_LEDGER_CANARY_CHANNELS` | internal rollout only | Exact comma-separated `workspace/channel` pairs (for example `T123/C456`) that assign new eligible interactive Runs to the channel-neutral durable driver. Empty is the committed/release default. Existing Runs never change owner. Explicit Memory/Routine commands, profiles with enabled MCP tools/API connections/repositories, and installations with open or non-empty allowlisted egress remain on the established lane. Read the [runtime rollout runbook](docs/runbooks/agent-runtime-rollout.md) before setting it. |
 | `TAG_ADMIN_TOKEN` | optional | Bearer token for `/admin` and `/admin/api/*`. If unset, every `/admin/*` route returns 404. Flue agents have no public or token-gated HTTP route. |
 | `TAG_ROUTINES_ENABLED` | Cloudflare only, optional | Deployment kill switch for scheduled routine admission. `"0"` (the committed default) performs no heartbeat state scan or unattended work; `"1"` enables the fixed Cloudflare heartbeat after the deploy wrapper validates its bindings and guards. Unsupported on Node. |

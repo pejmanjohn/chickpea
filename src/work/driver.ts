@@ -19,7 +19,7 @@ export interface RunDriverStore {
 
 export type RunDriverHandlerResult =
   | { kind: 'completed' }
-  | { kind: 'requeue'; reasonCode: string }
+  | { kind: 'requeue'; reasonCode: string; retryAfterMs?: number }
   | { kind: 'recovery_required'; reasonCode: string }
   | {
       kind: 'settled';
@@ -44,6 +44,17 @@ export interface RunDriverDrainResult {
   completed: number;
   requeued: number;
   recoveryRequired: number;
+  /** Longest bounded retry delay requested by any requeued claim. */
+  retryAfterMs?: number;
+}
+
+/** Preserve a target's normal retry floor while honoring a handler's longer
+ * Retry-After hint from the bounded drain. */
+export function runDriverRetryDelayMs(
+  result: RunDriverDrainResult,
+  minimumMs: number,
+): number {
+  return Math.max(minimumMs, result.retryAfterMs ?? 0);
 }
 
 /**
@@ -129,6 +140,12 @@ export class DurableRunDriver {
             releasedAt: this.now(),
           });
           result.requeued += 1;
+          if (outcome.retryAfterMs !== undefined) {
+            result.retryAfterMs = Math.max(
+              result.retryAfterMs ?? 0,
+              outcome.retryAfterMs,
+            );
+          }
           stopAfterBatch = true;
           return;
         }

@@ -2,7 +2,6 @@ import { createHash } from 'node:crypto';
 
 import { resolveAgentModel } from '../config/model-policy.ts';
 import {
-  WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
   type ApiConnectionConfig,
   type McpConnectionConfig,
   type RepositoryGrant,
@@ -10,6 +9,7 @@ import {
   type SkillConfig,
 } from '../config/types.ts';
 import { opaqueId } from '../work/admission.ts';
+import { effectiveSlackIdentityId } from '../slack/identity-admission.ts';
 import { slackThreadKey } from '../slack/thread-key.ts';
 import type { NormalizedSlackTurn } from '../slack/types.ts';
 
@@ -107,9 +107,7 @@ export function compileRuntimePlanV2(input: CompileRuntimePlanV2Input): RuntimeP
     schemaVersion: RUNTIME_PLAN_SCHEMA_VERSION,
     continuityPolicy: input.continuityPolicy ?? DEFAULT_CONTINUITY_POLICY,
     agentId: input.assignment.agent.id,
-    slackIdentityId: input.assignment.slackIdentityId ??
-      input.assignment.agent.slackIdentityId ??
-      WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+    slackIdentityId: effectiveSlackIdentityId(input.assignment),
     conversation: {
       workspaceId: input.turn.workspaceId,
       channelId: input.turn.channelId,

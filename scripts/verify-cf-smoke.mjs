@@ -698,8 +698,8 @@ async function main() {
     );
     const firstRunAdmin = await renderAdminWithWorkerdState(baseUrl);
     check(
-      firstRunAdmin.html.includes('Connect Slack') &&
-        firstRunAdmin.html.includes('Create your Slack app') &&
+      firstRunAdmin.html.includes('Connect @Chickpea') &&
+        firstRunAdmin.html.includes('Create @Chickpea in Slack') &&
         firstRunAdmin.html.includes('Events URL (already in the manifest)') &&
         firstRunAdmin.html.includes('data-action="advance-slack-step"'),
       'first-run admin render shows the step-1 Connect stepper',
@@ -751,7 +751,7 @@ async function main() {
     );
     check(
       connectedAdmin.html.length > 0 &&
-        !connectedAdmin.html.includes('Connect Slack') &&
+        !connectedAdmin.html.includes('Connect @Chickpea') &&
         !connectedAdmin.html.includes('class="stepper"'),
       'post-wizard admin render removes the Connect stepper',
     );
