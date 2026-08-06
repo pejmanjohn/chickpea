@@ -101,6 +101,7 @@ export interface SlackStateStore extends SlackClaimStore, SlackThreadRegistry {
   ): Promise<SlackAgentBinding>;
   getAgentBinding(continuityKey: string): Promise<SlackAgentBinding | undefined>;
   runtimeDrainCounts(): Promise<SlackRuntimeDrainCounts>;
+  countPendingDeliveriesForSlackIdentity(identityId: string): Promise<number>;
   /** Node-only durable legacy relay operations; Cloudflare owns these in its DO alarm. */
   listPendingTurns?(): Promise<PendingTurnJob[]>;
   getPendingTurnByRunId?(runId: string): Promise<PendingTurnJob | undefined>;
@@ -142,6 +143,7 @@ export interface SlackStateStore extends SlackClaimStore, SlackThreadRegistry {
   markTurnError?(id: string): Promise<void>;
   markTurnRecoveryRequired?(id: string, reason: string): Promise<void>;
   listTurnRecoveryRequired?(limit?: number): Promise<SlackTurnRecoveryItem[]>;
+  retrySlackIdentityRecovery?(identityId: string): Promise<number>;
   resolveTurnRecoveryRequired?(id: string): Promise<boolean>;
   getRunPresentation?(runId: string): Promise<SlackRunPresentationV1 | undefined>;
   transitionRunPresentation?(
@@ -437,6 +439,10 @@ export class SqliteSlackStateStore implements SlackStateStore {
     return this.turnJobs.runtimeDrainCounts();
   }
 
+  async countPendingDeliveriesForSlackIdentity(identityId: string) {
+    return this.turnJobs.countPendingDeliveriesForSlackIdentity(identityId);
+  }
+
   async listPendingTurns() {
     return this.turnJobs.listPending(MAX_TURN_DRAIN_BATCH);
   }
@@ -507,6 +513,10 @@ export class SqliteSlackStateStore implements SlackStateStore {
 
   async listTurnRecoveryRequired(limit = 50) {
     return this.turnJobs.listRecoveryRequired(limit);
+  }
+
+  async retrySlackIdentityRecovery(identityId: string) {
+    return this.turnJobs.retrySlackIdentityRecovery(identityId);
   }
 
   async resolveTurnRecoveryRequired(id: string) {

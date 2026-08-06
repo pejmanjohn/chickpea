@@ -71,3 +71,47 @@ test('mentioned-channel controls require current bot and actor membership', asyn
     else process.env.SLACK_API_URL = priorApi;
   }
 });
+
+test('routine channel authorization uses an explicitly admitted identity token', async () => {
+  const priorToken = process.env.SLACK_BOT_TOKEN;
+  const priorApi = process.env.SLACK_API_URL;
+  const priorFetch = globalThis.fetch;
+  process.env.SLACK_BOT_TOKEN = 'xoxb-workspace-default';
+  process.env.SLACK_API_URL = 'https://slack.invalid/api/';
+  const authorizations: string[] = [];
+  globalThis.fetch = async (request, init) => {
+    authorizations.push(String(new Headers(init?.headers).get('authorization')));
+    const path = new URL(String(request)).pathname;
+    const body = path.endsWith('/auth.test')
+      ? { ok: true, team_id: 'T_TEST', user_id: 'U_BOT' }
+      : path.endsWith('/conversations.info')
+        ? {
+            ok: true,
+            channel: {
+              id: 'C_TEST', name: 'test', team_id: 'T_TEST', is_member: true,
+              is_private: false, is_archived: false, is_frozen: false,
+            },
+          }
+        : { ok: true, members: ['U_MEMBER', 'U_BOT'], response_metadata: { next_cursor: '' } };
+    return new Response(JSON.stringify(body));
+  };
+  try {
+    assert.equal(
+      await canManageRoutineChannel(
+        'T_TEST',
+        'C_TEST',
+        'U_MEMBER',
+        undefined,
+        'xoxb-finance',
+      ),
+      true,
+    );
+    assert.ok(authorizations.every((value) => value === 'Bearer xoxb-finance'));
+  } finally {
+    globalThis.fetch = priorFetch;
+    if (priorToken === undefined) delete process.env.SLACK_BOT_TOKEN;
+    else process.env.SLACK_BOT_TOKEN = priorToken;
+    if (priorApi === undefined) delete process.env.SLACK_API_URL;
+    else process.env.SLACK_API_URL = priorApi;
+  }
+});

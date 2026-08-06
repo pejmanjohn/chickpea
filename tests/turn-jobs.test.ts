@@ -6,7 +6,11 @@ import {
   deriveRuntimePlanInstanceId,
 } from '../src/agents/runtime-plan.ts';
 import type { TurnJob } from '../src/config/state-rpc.ts';
-import type { CustomAgentConfig, ResolvedAssignment } from '../src/config/types.ts';
+import {
+  WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+  type CustomAgentConfig,
+  type ResolvedAssignment,
+} from '../src/config/types.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { CLAIM_TTL_MS, SlackStateLogic } from '../src/slack/claim-store.ts';
@@ -35,6 +39,7 @@ function turn(overrides: Partial<NormalizedSlackTurn> = {}): NormalizedSlackTurn
     workspaceId: 'T1',
     channelId: 'C1',
     eventId: 'Ev1',
+    slackIdentityId: WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
     text: 'hi',
     userId: 'U1',
     messageTs: '1000.0001',
@@ -46,7 +51,14 @@ function turn(overrides: Partial<NormalizedSlackTurn> = {}): NormalizedSlackTurn
 }
 
 function assignment(): ResolvedAssignment {
-  return { workspaceId: 'T1', channelId: 'C1', agentId: 'agent_test', agent: AGENT, model: 'local-stub/x' };
+  return {
+    workspaceId: 'T1',
+    channelId: 'C1',
+    agentId: 'agent_test',
+    slackIdentityId: WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+    agent: AGENT,
+    model: 'local-stub/x',
+  };
 }
 
 function job(id: string): TurnJob {
@@ -76,6 +88,19 @@ test('enqueue is idempotent by id and round-trips the job payload', () => {
   assert.equal(pending[0]?.assignment.model, 'local-stub/x');
 });
 
+test('TurnJob round-trips a dedicated identity without storing credentials', () => {
+  const store = newStore();
+  const dedicated = job('dedicated');
+  dedicated.turn.slackIdentityId = 'slack_identity_finance';
+  dedicated.assignment.slackIdentityId = 'slack_identity_finance';
+  assert.equal(store.enqueue(dedicated), true);
+
+  const pending = store.listPending()[0];
+  assert.equal(pending?.turn.slackIdentityId, 'slack_identity_finance');
+  assert.equal(pending?.assignment.slackIdentityId, 'slack_identity_finance');
+  assert.doesNotMatch(JSON.stringify(pending), /xoxb-|signingSecret|botToken/i);
+});
+
 test('markDelivered and markError tombstone a job out of the pending scan', () => {
   const store = newStore();
   store.enqueue(job('a'));
@@ -89,7 +114,10 @@ test('markDelivered and markError tombstone a job out of the pending scan', () =
 
 test('delivered work keeps only retryable Slack cleanup coordinates', () => {
   const store = newStore();
-  store.enqueue(job('work'));
+  const cleanupJob = job('work');
+  cleanupJob.turn.slackIdentityId = 'slack_identity_finance';
+  cleanupJob.assignment.slackIdentityId = 'slack_identity_finance';
+  store.enqueue(cleanupJob);
   store.recordInteractionIntent('work', {
     disposition: 'work',
     reason: 'substantive_request',
@@ -109,6 +137,7 @@ test('delivered work keeps only retryable Slack cleanup coordinates', () => {
   });
 
   store.markDelivered('work');
+  assert.equal(store.countPendingDeliveriesForSlackIdentity('slack_identity_finance'), 1);
   const cleanup = store.listPendingSlackInteractionCleanups();
   assert.equal(cleanup.length, 1);
   assert.equal(cleanup[0]?.progress.slackInteraction?.checklist?.terminal, 'success');
@@ -122,6 +151,7 @@ test('delivered work keeps only retryable Slack cleanup coordinates', () => {
     checklist: { ...cleanup[0]!.progress.slackInteraction!.checklist!, cleanup: 'done' },
   });
   assert.equal(store.hasPendingSlackInteractionCleanup(), false);
+  assert.equal(store.countPendingDeliveriesForSlackIdentity('slack_identity_finance'), 0);
 });
 
 test('recordAttempt advances the counter the alarm caps on', () => {
@@ -454,6 +484,42 @@ test('dispatch-started jobs cannot be discarded and cross the 30-day backstop vi
   );
 });
 
+test('verified Slack identity reconnect reopens only matching unavailable-identity turns', () => {
+  const store = newStore();
+  const finance = job('finance-recovery');
+  finance.turn.slackIdentityId = 'slack_identity_finance';
+  finance.assignment.slackIdentityId = 'slack_identity_finance';
+  const legal = job('legal-recovery');
+  legal.turn.slackIdentityId = 'slack_identity_legal';
+  legal.assignment.slackIdentityId = 'slack_identity_legal';
+  const ambiguous = job('finance-ambiguous');
+  ambiguous.turn.slackIdentityId = 'slack_identity_finance';
+  ambiguous.assignment.slackIdentityId = 'slack_identity_finance';
+  const ledger = job('finance-ledger');
+  ledger.turn.slackIdentityId = 'slack_identity_finance';
+  ledger.assignment.slackIdentityId = 'slack_identity_finance';
+  ledger.executionAuthority = 'ledger';
+
+  store.enqueue(finance);
+  store.enqueue(legal);
+  store.enqueue(ambiguous);
+  store.enqueue(ledger);
+  store.markRecoveryRequired(finance.id, 'slack_identity_unavailable');
+  store.markRecoveryRequired(legal.id, 'slack_identity_unavailable');
+  store.markRecoveryRequired(ambiguous.id, 'continuity_notice_delivery_unknown');
+  store.markRecoveryRequired(ledger.id, 'slack_identity_unavailable');
+
+  assert.equal(store.retrySlackIdentityRecovery('slack_identity_finance'), 1);
+  assert.equal(store.retrySlackIdentityRecovery('slack_identity_finance'), 0);
+  assert.deepEqual(store.listPending().map((row) => row.id), [finance.id]);
+  assert.equal(store.listPending()[0]?.recoveryReason, undefined);
+  assert.deepEqual(store.listRecoveryRequired().map((row) => row.id).sort(), [
+    ambiguous.id,
+    ledger.id,
+    legal.id,
+  ]);
+});
+
 test('pending jobs come back in enqueue order', () => {
   let clock = 1;
   const store = newStore(() => clock);
@@ -708,6 +774,8 @@ test('existing turn job tables gain progress storage without losing pending rows
       )`,
     );
     const legacy = job('before-migration');
+    delete legacy.turn.slackIdentityId;
+    delete legacy.assignment.slackIdentityId;
     db.run(
       `INSERT INTO turn_jobs (
         id, evt_key, msg_key, turn_json, assignment_json, attempts, delivered, status, enqueued_at
@@ -724,6 +792,8 @@ test('existing turn job tables gain progress storage without losing pending rows
     assert.equal(pending[0]?.id, 'before-migration');
     assert.equal(pending[0]?.executionAuthority, 'legacy');
     assert.deepEqual(pending[0]?.progress, {});
+    assert.equal(pending[0]?.turn.slackIdentityId, WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
+    assert.equal(pending[0]?.assignment.slackIdentityId, WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
     const bindingColumns = db.all('PRAGMA table_info(slack_agent_bindings)')
       .map((column) => String(column.name));
     assert.deepEqual(bindingColumns, ['continuity_key', 'instance_id', 'uid', 'updated_at']);

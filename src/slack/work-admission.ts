@@ -46,7 +46,7 @@ export async function resolveSlackAdmissionTruth(
   botUserId: string,
   reader: SlackAdmissionTruthReader,
 ): Promise<SlackAdmissionTruth> {
-  const direct = isDirectTurn(turn);
+  const direct = isDirectSlackTurn(turn);
   const [actor, conversation] = await Promise.all([
     reader.user(turn.userId),
     direct ? Promise.resolve(undefined) : reader.conversation(turn.channelId),
@@ -118,7 +118,7 @@ export function prepareSlackShadowAdmission(input: {
   executionAuthority?: RunExecutionAuthority;
 }): AdmitShadowRunInput {
   const { turn, assignment, sourceVisibility, admittedAt } = input;
-  const direct = isDirectTurn(turn);
+  const direct = isDirectSlackTurn(turn);
   const conversationIdentity = direct
     ? `dm:${turn.channelId}`
     : `thread:${turn.channelId}:${turn.threadTs}`;
@@ -181,7 +181,7 @@ function denied(
   return { eligible: false, reason };
 }
 
-function isDirectTurn(turn: NormalizedSlackTurn): boolean {
+export function isDirectSlackTurn(turn: NormalizedSlackTurn): boolean {
   return (
     turn.source === 'dm_message' ||
     turn.channelType === 'im' ||

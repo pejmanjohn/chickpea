@@ -86,6 +86,22 @@ export class AuditStoreLogic {
     return created;
   }
 
+  /** Replay-safe append for revision-derived administrative operations. */
+  appendIdempotent(input: AppendAuditEvent): AuditEvent {
+    if (!input.idempotencyKey) {
+      throw new Error('Idempotent audit events require an idempotency key');
+    }
+    const existing = this.findByIdempotencyKey(input.idempotencyKey);
+    if (existing) return existing;
+    try {
+      return this.append(input);
+    } catch (error) {
+      const replay = this.findByIdempotencyKey(input.idempotencyKey);
+      if (replay) return replay;
+      throw error;
+    }
+  }
+
   get(eventId: string): AuditEvent | undefined {
     const row = this.db.get('SELECT * FROM audit_events WHERE event_id = ?', eventId);
     return row ? rowToAudit(row as unknown as AuditRow) : undefined;
@@ -151,6 +167,15 @@ export class AuditStoreLogic {
     ).changes;
   }
 
+  clearExpiredActorIdsForDomain(domain: AuditEvent['domain'], before: number): number {
+    return this.db.run(
+      `UPDATE audit_events SET actor_id = NULL
+       WHERE domain = ? AND actor_id IS NOT NULL AND created_at < ?`,
+      domain,
+      before,
+    ).changes;
+  }
+
   deleteBefore(domain: AuditEvent['domain'], before: number): number {
     return this.db.run(
       'DELETE FROM audit_events WHERE domain = ? AND created_at < ?',
@@ -176,9 +201,12 @@ function validateSafeMetadata(input: AppendAuditEvent, raw: string): void {
   if (input.domain === 'work') {
     validateWorkMetadata(input.eventType, parsed as Record<string, unknown>);
   }
+  if (input.domain === 'slack_identity') {
+    validateSlackIdentityMetadata(input.eventType, parsed as Record<string, unknown>);
+  }
 }
 
-const SAFE_WORK_METADATA_VALUE = /^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,255}$/;
+const SAFE_AUDIT_METADATA_VALUE = /^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,255}$/;
 
 function validateWorkMetadata(eventType: string, metadata: Record<string, unknown>): void {
   const shapes: Record<string, { keys: readonly string[]; status?: string }> = {
@@ -238,7 +266,7 @@ function validateWorkMetadata(eventType: string, metadata: Record<string, unknow
       }
       continue;
     }
-    if (!SAFE_WORK_METADATA_VALUE.test(value)) {
+    if (!SAFE_AUDIT_METADATA_VALUE.test(value)) {
       throw new Error(`Work audit metadata ${key} is invalid`);
     }
   }
@@ -257,6 +285,42 @@ function actionMetadataKeys(): readonly string[] {
     'status',
     'targetKind',
   ];
+}
+
+const SLACK_IDENTITY_EVENT_OPERATIONS: Record<string, string> = {
+  'slack_identity.setup_started': 'setup_started',
+  'slack_identity.credentials_connected': 'credentials_connected',
+  'slack_identity.credentials_rotated': 'credentials_rotated',
+  'slack_identity.credentials_disconnected': 'credentials_disconnected',
+  'slack_identity.setup_verified': 'setup_verified',
+  'slack_identity.refreshed': 'refreshed',
+  'slack_identity.profile_attached': 'profile_attached',
+  'slack_identity.dm_binding_changed': 'dm_binding_changed',
+  'slack_identity.setup_canceled': 'setup_canceled',
+  'slack_identity.retired': 'retired',
+};
+
+function validateSlackIdentityMetadata(
+  eventType: string,
+  metadata: Record<string, unknown>,
+): void {
+  const operation = SLACK_IDENTITY_EVENT_OPERATIONS[eventType];
+  if (!operation) throw new Error('Slack identity audit event type is not allowlisted');
+  const expectedKeys = ['newLifecycle', 'operation', 'priorLifecycle', 'requestId'];
+  if (JSON.stringify(Object.keys(metadata).sort()) !== JSON.stringify(expectedKeys)) {
+    throw new Error('Slack identity audit metadata shape is invalid');
+  }
+  if (metadata.operation !== operation) {
+    throw new Error('Slack identity audit operation does not match its event type');
+  }
+  for (const [key, value] of Object.entries(metadata)) {
+    if (
+      typeof value !== 'string' ||
+      !SAFE_AUDIT_METADATA_VALUE.test(value)
+    ) {
+      throw new Error(`Slack identity audit metadata ${key} is invalid`);
+    }
+  }
 }
 
 function rowToAudit(row: AuditRow): AuditEvent {

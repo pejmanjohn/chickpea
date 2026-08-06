@@ -49,6 +49,13 @@ import { registerSlackStatusTurn } from './status-registry.ts';
 import type { SlackTurnContext } from './thread-context.ts';
 import { slackThreadKey } from './thread-key.ts';
 import type { NormalizedSlackTurn } from './types.ts';
+import { effectiveSlackIdentityId } from './identity-admission.ts';
+import {
+  effectiveTurnSlackIdentityId,
+  resolveSlackIdentityExecutionContext,
+  SlackIdentityUnavailableError,
+  type SlackIdentityExecutionContext,
+} from './identity-execution.ts';
 import type { FrozenRuntimePlanDecision } from './turn-job-types.ts';
 import type { FlueDispatchReceiptV1 } from './turn-job-types.ts';
 import type { SlackProgressiveReadRelay } from './progressive-relay.ts';
@@ -89,6 +96,9 @@ import {
   SlackAgentViewPresentation,
   type SlackPresentationStatePort,
 } from './agent-view-presentation.ts';
+import { createSlackWebClient } from './web-client.ts';
+
+export { createSlackWebClient } from './web-client.ts';
 
 /**
  * The turn lifecycle, factored out of the Slack channel so BOTH the node detach
@@ -103,38 +113,6 @@ import {
  * (avoiding a Durable Object calling itself over RPC), which is the one reason
  * `runTurn` accepts a client override; everything else is behavior-identical.
  */
-
-/**
- * Build a `@slack/web-api` WebClient with the two workerd fetch fixes the app
- * needs (both no-ops on node). Extracted so the cached channel client and the
- * relay alarm's freshly-resolved client are constructed identically:
- *   1. The WebClient calls its stored fetch as a method (`this.fetchFn(...)`);
- *      workerd rejects fetch invoked with any receiver but globalThis, so we
- *      wrap it to call `globalThis.fetch`.
- *   2. It hardcodes `redirect: 'error'`, which workerd refuses (only
- *      'follow'/'manual' exist at the edge). Slack never redirects, so
- *      'manual' is equivalent without the unsupported value.
- * `retryConfig` is pinned to no retries (deterministic; no 30-minute backoff on
- * a transient upstream). `slackApiUrl` (must end with `/`) lets the offline
- * verification point at a fake Slack.
- */
-export function createSlackWebClient(botToken: string | undefined): WebClient {
-  const slackApiUrl = process.env.SLACK_API_URL;
-  return new WebClient(botToken, {
-    retryConfig: { retries: 0 },
-    // The SDK default is no timeout. Bound every Slack request so an upstream
-    // connection cannot hold a durable turn claim or adapter cleanup forever.
-    timeout: 10_000,
-    fetch: (input, init) => {
-      const patchedInit =
-        isCloudflareTarget() && init?.redirect === 'error'
-          ? { ...init, redirect: 'manual' as RequestRedirect }
-          : init;
-      return globalThis.fetch(input, patchedInit);
-    },
-    ...(slackApiUrl ? { slackApiUrl } : {}),
-  });
-}
 
 /**
  * Lazily-constructed outbound Slack client, keyed by the RESOLVED bot token
@@ -159,6 +137,8 @@ export interface RunTurnOptions {
    * the DO never has to RPC into itself to resolve the bot token.
    */
   client?: WebClient;
+  /** Current non-secret identity execution context resolved by the relay. */
+  identityContext?: SlackIdentityExecutionContext;
   /** Focused-test override for proving replay and delivery lifecycle behavior. */
   agentPrompt?: typeof promptSlackThreadAgent;
   /** Adapter-owned dispatch/read checkpoints restored by the relay. */
@@ -253,7 +233,21 @@ export async function runTurn(
   platformEnv: PlatformEnv | undefined,
   options: RunTurnOptions = {},
 ): Promise<void> {
-  const client = options.client ?? (await getClient(platformEnv));
+  const turnIdentityId = effectiveTurnSlackIdentityId(turn);
+  if (effectiveSlackIdentityId(assignment) !== turnIdentityId) {
+    throw new SlackIdentityUnavailableError(turnIdentityId, 'assignment_identity_mismatch');
+  }
+  const identityContext = options.identityContext ?? (
+    options.client
+      ? undefined
+      : await resolveSlackIdentityExecutionContext(turnIdentityId, platformEnv, {
+          ...(options.settingsStore ? { settings: options.settingsStore } : {}),
+        })
+  );
+  if (identityContext && identityContext.identityId !== turnIdentityId) {
+    throw new SlackIdentityUnavailableError(turnIdentityId, 'execution_identity_mismatch');
+  }
+  const client = identityContext?.client ?? options.client ?? (await getClient(platformEnv));
   // A frozen assignment (from a thread snapshot) carries its model; otherwise
   // resolve it from the agent via policy.
   const resolvedModel = assignment.model ?? tryResolveAgentModel(assignment.agent);
@@ -266,7 +260,9 @@ export async function runTurn(
   // A selected ledger canary deliberately skips that pre-parser;
   // explicit Routine commands are kept off this lane at admission.
   if (!ledgerAuthority && isRoutineSlackTurn(turn)) {
-    const routineText = await handleRoutineSlackRequest(turn, platformEnv);
+    const routineText = await handleRoutineSlackRequest(turn, platformEnv, {
+      ...(identityContext ? { identityContext } : {}),
+    });
     if (routineText !== undefined) {
       const routinePresenter = new WebClientPresenter(client, {
         channelId: turn.channelId,
@@ -325,7 +321,14 @@ export async function runTurn(
   }
   const preparedMemory = memoryCommand
     ? undefined
-    : await prepareMemoryTurn({ turn, platformEnv, client });
+    : await prepareMemoryTurn({
+        turn,
+        platformEnv,
+        client,
+        ...(identityContext
+          ? { botToken: identityContext.botToken, botUserId: identityContext.botUserId }
+          : {}),
+      });
   const conversationKey = preparedMemory?.conversationKey ?? slackThreadKey(turn);
   const runtimePlanDecision = options.runtimePlanDecision ?? (
     preparedMemory && resolvedModel
@@ -540,7 +543,15 @@ export async function runTurn(
       console.warn('[chickpea] Slack Agent View title could not be recorded');
     });
     if (memoryCommand) {
-      const handled = await handleMemoryCommand({ turn, platformEnv, client, presenter });
+      const handled = await handleMemoryCommand({
+        turn,
+        platformEnv,
+        client,
+        presenter,
+        ...(identityContext
+          ? { botToken: identityContext.botToken, botUserId: identityContext.botUserId }
+          : {}),
+      });
       if (handled) {
         await finishDelivery();
         return;

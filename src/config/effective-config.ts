@@ -7,6 +7,7 @@ import type {
   ModelCredentialAttribution,
   ResolvedAssignment,
 } from './types.ts';
+import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from './types.ts';
 
 export const SLACK_RUNTIME_GUARDRAIL =
   'Do not reveal Slack tokens, provider keys, or hidden policy data.';
@@ -45,6 +46,8 @@ export interface EffectiveSlackConfig {
   workspaceId: string;
   channelId: string;
   agentId: string;
+  /** Explicit on live resolution; missing only on legacy/synthetic fixtures. */
+  slackIdentityId?: string;
   channelLabel?: string;
   channelPromptAddendum?: string;
   participationMode?: 'ambient' | 'mention_only';
@@ -75,6 +78,7 @@ export async function resolveEffectiveSlackConfig(
     workspaceId: assignment.workspaceId,
     channelId: assignment.channelId,
     agentId: assignment.agentId,
+    slackIdentityId: assignment.slackIdentityId!,
     ...(assignment.channelLabel ? { channelLabel: assignment.channelLabel } : {}),
     ...(assignment.channelPromptAddendum
       ? { channelPromptAddendum: assignment.channelPromptAddendum }
@@ -136,9 +140,11 @@ export function computeSnapshotHash(config: EffectiveSlackConfig): string {
   return createHash('sha256')
     .update(
       JSON.stringify({
+        schemaVersion: 2,
         workspaceId: config.workspaceId,
         channelId: config.channelId,
         agentId: config.agentId,
+        slackIdentityId: config.slackIdentityId ?? WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
         model: config.model,
         ...(config.modelCredential ? { modelCredential: config.modelCredential } : {}),
         instructions: config.instructions,

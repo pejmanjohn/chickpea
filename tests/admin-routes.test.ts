@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHmac } from 'node:crypto';
 import { test } from 'node:test';
 
 import { Hono } from 'hono';
@@ -6,7 +7,7 @@ import { Hono } from 'hono';
 import { createAdminRoutes } from '../src/admin/routes.ts';
 import flueApp from '../src/app.ts';
 import type { RuntimeDrainStatus } from '../src/config/state-rpc.ts';
-import type { SlackStateStore } from '../src/slack/claim-store.ts';
+import { SqliteSlackStateStore, type SlackStateStore } from '../src/slack/claim-store.ts';
 import {
   ApiOAuthError,
   apiOAuthSettingKeys,
@@ -42,8 +43,16 @@ import type {
   ApiConnectionConfig,
   CustomAgentConfig,
   McpConnectionConfig,
+  SlackIdentity,
 } from '../src/config/types.ts';
 import { withEnv } from './helpers/env.ts';
+import { loopbackListenSkipReason } from './helpers/listen.ts';
+import { FakeSlackBackend } from './parity/fake-slack.ts';
+import { writeSlackIdentityCredentials } from '../src/slack/identity-credentials.ts';
+import {
+  readPendingSlackChallenge,
+  recordPendingSlackChallenge,
+} from '../src/slack/identity-handshake.ts';
 import {
   acceptModelCatalogCandidate,
   activateModelCatalog,
@@ -1400,6 +1409,58 @@ test('admin API blocks deleting an agent while assignments still reference it', 
   }
 });
 
+test('admin API reports Slack DM identity blockers for Profile disable and delete', async () => {
+  const profileId = 'agent_dm_handler';
+  const identityId = 'slack_identity_dm_handler';
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    await store.createAgent(agent({ id: profileId, name: 'DM Handler' }));
+    await store.createSlackIdentity({
+      id: identityId,
+      ingressKey: 'identity_ingress_dm_handler_0123456789abcdef',
+      kind: 'dedicated',
+      lifecycle: 'connected',
+      teamId: 'T_ADMIN',
+      appId: 'A0DMHANDLER',
+      botUserId: 'U_DM_HANDLER',
+      dmState: 'on',
+      dmAgentId: profileId,
+      credentialProvenance: 'stored',
+      connectionRevision: 1,
+      health: 'healthy',
+      createdAt: 1_800_000_000_000,
+      updatedAt: 1_800_000_000_000,
+    });
+    const app = appWithAdminOptions(store, { settings });
+    const expected = {
+      error: 'agent_slack_dm_handler',
+      profileId,
+      identityIds: [identityId],
+    };
+
+    const disabled = await app.request(`/admin/api/agents/${profileId}`, {
+      method: 'PATCH',
+      headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+      body: JSON.stringify({ enabled: false }),
+    });
+    assert.equal(disabled.status, 409);
+    assert.deepEqual(await disabled.json(), expected);
+    assert.equal((await store.getAgent(profileId)).enabled, true);
+
+    const deleted = await app.request(`/admin/api/agents/${profileId}`, {
+      method: 'DELETE',
+      headers: auth(ADMIN_TOKEN),
+    });
+    assert.equal(deleted.status, 409);
+    assert.deepEqual(await deleted.json(), expected);
+    assert.equal((await store.getAgent(profileId)).id, profileId);
+  } finally {
+    settings.close();
+    store.close();
+  }
+});
+
 test('admin API rejects patches that leave an agent without a resolvable model', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   try {
@@ -1917,11 +1978,28 @@ test('effective config endpoint resolves through the runtime assignment path', a
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   try {
     const app = appWithAdmin(store);
+    const identityId = 'slack_identity_admin_effective';
+    await store.createSlackIdentity({
+      id: identityId,
+      ingressKey: 'identity_ingress_admin_effective_0123456789abcdef',
+      kind: 'dedicated',
+      lifecycle: 'connected',
+      teamId: 'T_ADMIN',
+      appId: 'A0ADMINEFFECTIVE',
+      botUserId: 'U_ADMIN_EFFECTIVE',
+      dmState: 'off',
+      credentialProvenance: 'stored',
+      connectionRevision: 1,
+      health: 'healthy',
+      createdAt: 1_800_000_000_000,
+      updatedAt: 1_800_000_000_000,
+    });
     await store.createAgent(
       agent({
         instructions: 'Base profile instructions from the admin test.',
         model: 'local-stub/effective-model',
         skills: [],
+        slackIdentityId: identityId,
       }),
     );
     await store.putAssignment({
@@ -1941,6 +2019,7 @@ test('effective config endpoint resolves through the runtime assignment path', a
     const body = (await response.json()) as {
       config: {
         agentId: string;
+        slackIdentityId: string;
         model: string;
         provider: string;
         instructions: string;
@@ -1948,6 +2027,7 @@ test('effective config endpoint resolves through the runtime assignment path', a
       };
     };
     assert.equal(body.config.agentId, 'agent_admin');
+    assert.equal(body.config.slackIdentityId, identityId);
     assert.equal(body.config.model, 'local-stub/effective-model');
     assert.equal(body.config.provider, 'local-stub');
     assert.match(body.config.instructions, /Base profile instructions from the admin test\./);
@@ -3829,6 +3909,995 @@ test('an assignment race leaves the live agent credentials intact and can retry'
     assert.equal(await settings.getSetting(bearerKey), undefined);
     assert.equal(await settings.getSetting(headerKey), undefined);
     assert.equal(await settings.getSetting(mcpSecretCleanupMarkerKey('agent_race')), undefined);
+  } finally {
+    settings.close();
+    store.close();
+  }
+});
+
+test('Slack identity Admin resources are gated, bounded, and secret-free', async () => {
+  const store = new SqliteConfigStore(':memory:', {
+    agents: [agent({ id: 'agent_finance', name: 'Finance' })],
+    assignments: [],
+  });
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    const app = appWithAdminOptions(store, { settings });
+    const unauthorized = await app.request('/admin/api/slack-identities');
+    assert.equal(unauthorized.status, 401);
+
+    await withEnv({ SLACK_TAG_IDENTITY_MODE: 'multi' }, async () => {
+      const created = await app.request('https://chickpea.acme.test/admin/api/slack-identities', {
+        method: 'POST',
+        headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+        body: JSON.stringify({
+          source: 'settings',
+          initialDmAgentId: 'agent_finance',
+          appName: 'Finance Copilot',
+          displayName: 'Finance',
+        }),
+      });
+      assert.equal(created.status, 201);
+      const createdBody = (await created.json()) as {
+        identity: Record<string, unknown> & { id: string };
+        setupUrl: string;
+        setup: { appName: string; botDisplayName: string; manifestUrl: string };
+      };
+      assert.equal(createdBody.identity.lifecycle, 'setup_incomplete');
+      assert.equal(createdBody.identity.dmAgentId, 'agent_finance');
+      assert.equal(createdBody.identity.dmState, 'on');
+      assert.match(createdBody.setupUrl, /^\/admin\/settings\/slack\/identities\//);
+      assert.equal(Object.hasOwn(createdBody.identity, 'ingressKey'), false);
+      assert.equal(createdBody.setup.appName, 'Finance Copilot');
+      assert.equal(createdBody.setup.botDisplayName, 'Finance');
+      const dedicatedManifestUrl = new URL(createdBody.setup.manifestUrl);
+      const dedicatedManifest = JSON.parse(
+        dedicatedManifestUrl.searchParams.get('manifest_json') ?? '{}',
+      ) as {
+        $schema?: string;
+        display_information: { name: string };
+        features: { bot_user: { display_name: string } };
+        settings: { event_subscriptions: { request_url: string; bot_events: string[] } };
+      };
+      assert.equal(dedicatedManifest.$schema, undefined);
+      assert.equal(dedicatedManifest.display_information.name, 'Finance Copilot');
+      assert.equal(dedicatedManifest.features.bot_user.display_name, 'Finance');
+      assert.match(
+        dedicatedManifest.settings.event_subscriptions.request_url,
+        /^https:\/\/chickpea\.acme\.test\/channels\/slack\/events\/[A-Za-z0-9_-]{22,}$/,
+      );
+      assert.ok(dedicatedManifest.settings.event_subscriptions.bot_events.includes('app_uninstalled'));
+      assert.ok(dedicatedManifest.settings.event_subscriptions.bot_events.includes('tokens_revoked'));
+
+      const detail = await app.request(
+        `https://chickpea.acme.test/admin/api/slack-identities/${createdBody.identity.id}`,
+        { headers: auth(ADMIN_TOKEN) },
+      );
+      assert.equal(detail.status, 200);
+      const detailBody = await detail.json() as {
+        identity: Record<string, unknown>;
+        setup: { appName: string; manifestUrl: string };
+      };
+      assert.equal(Object.hasOwn(detailBody.identity, 'ingressKey'), false);
+      assert.equal(detailBody.setup.appName, 'Finance Copilot');
+      assert.equal(detailBody.setup.manifestUrl, createdBody.setup.manifestUrl);
+
+      const localDetail = await app.request(
+        `/admin/api/slack-identities/${createdBody.identity.id}`,
+        { headers: auth(ADMIN_TOKEN) },
+      );
+      assert.equal(localDetail.status, 200);
+      const localDetailBody = await localDetail.json() as {
+        setup: { manifestUrl: string | null; manifestError: string | null };
+      };
+      assert.equal(localDetailBody.setup.manifestUrl, null);
+      assert.match(localDetailBody.setup.manifestError ?? '', /public HTTPS Admin URL/);
+
+      const listed = await app.request('/admin/api/slack-identities', {
+        headers: auth(ADMIN_TOKEN),
+      });
+      assert.equal(listed.status, 200);
+      const bodyText = await listed.text();
+      assert.doesNotMatch(bodyText, /ingressKey|botToken|signingSecret|xox[bp]-/);
+      const listBody = JSON.parse(bodyText) as {
+        identities: Array<Record<string, unknown>>;
+        creationEnabled: boolean;
+      };
+      assert.equal(listBody.creationEnabled, true);
+      assert.equal(listBody.identities.length, 2);
+      assert.equal(listBody.identities[0]?.kind, 'workspace_default');
+      assert.equal(listBody.identities[0]?.credentialsWritable, false);
+      assert.deepEqual(
+        (listBody.identities[1]?.profiles as Array<{ id: string; name: string }>),
+        [],
+      );
+      assert.deepEqual(
+        (await store.listSlackIdentityAuditEvents()).map(({ eventType }) => eventType),
+        ['slack_identity.setup_started'],
+      );
+    });
+
+    const oversized = await app.request(new Request(
+      'http://localhost/admin/api/slack-identities',
+      {
+        method: 'POST',
+        headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+        body: JSON.stringify({
+          source: 'settings',
+          initialDmAgentId: 'agent_finance',
+          displayName: 'x'.repeat(65_536),
+        }),
+      },
+    ));
+    assert.equal(oversized.status, 413);
+    for (const invalidNames of [
+      { appName: 'x'.repeat(36), displayName: 'Finance' },
+      { appName: 'Finance', displayName: 'x'.repeat(81) },
+    ]) {
+      const invalid = await withEnv(
+        { SLACK_TAG_IDENTITY_MODE: 'multi' },
+        () => app.request('/admin/api/slack-identities', {
+          method: 'POST',
+          headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+          body: JSON.stringify({
+            source: 'settings',
+            initialDmAgentId: 'agent_finance',
+            ...invalidNames,
+          }),
+        }),
+      );
+      assert.equal(invalid.status, 400);
+    }
+    const oversizedDefault = await app.request(new Request(
+      'http://localhost/admin/api/slack-connection',
+      {
+        method: 'POST',
+        headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+        body: JSON.stringify({
+          botToken: `xoxb-${'x'.repeat(65_536)}`,
+          signingSecret: 'not-stored',
+        }),
+      },
+    ));
+    assert.equal(oversizedDefault.status, 413);
+    assert.equal((await store.listSlackIdentities()).length, 2);
+  } finally {
+    settings.close();
+    store.close();
+  }
+});
+
+test('Profile-origin identity setup replaces its captured prior identity and rejects stale completion', async () => {
+  const profileId = 'agent_finance';
+  const store = new SqliteConfigStore(':memory:', {
+    agents: [agent({ id: profileId, name: 'Finance' })],
+    assignments: [],
+  });
+  const settings = new SqliteSettingsStore(':memory:');
+  const connectedIdentity = (
+    id: string,
+    ingressKey: string,
+    appId: string,
+  ): SlackIdentity => ({
+    id,
+    ingressKey,
+    kind: 'dedicated',
+    lifecycle: 'connected',
+    teamId: 'T_ACME',
+    appId,
+    botUserId: `U_${appId}`,
+    dmState: 'off',
+    credentialProvenance: 'stored',
+    connectionRevision: 1,
+    health: 'healthy',
+    createdAt: 1_800_000_000_000,
+    updatedAt: 1_800_000_000_000,
+  });
+  try {
+    const prior = await store.createSlackIdentity(connectedIdentity(
+      'slack_identity_prior',
+      'identity_ingress_prior_0123456789abcdef',
+      'A0PRIOR',
+    ));
+    const concurrent = await store.createSlackIdentity(connectedIdentity(
+      'slack_identity_concurrent',
+      'identity_ingress_concurrent_0123456789abcdef',
+      'A0CONCURRENT',
+    ));
+    await store.attachAgentToSlackIdentity(
+      profileId,
+      prior.id,
+      prior.connectionRevision,
+      null,
+    );
+    const app = appWithAdminOptions(store, { settings });
+    const created = await withEnv(
+      { SLACK_TAG_IDENTITY_MODE: 'multi' },
+      () => app.request('/admin/api/slack-identities', {
+        method: 'POST',
+        headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+        body: JSON.stringify({
+          source: 'profile',
+          initialDmAgentId: profileId,
+          displayName: 'Finance Next',
+        }),
+      }),
+    );
+    assert.equal(created.status, 201);
+    const createdBody = await created.json() as { identity: { id: string } };
+    const draft = await store.getSlackIdentity(createdBody.identity.id);
+    assert.equal(draft.setupIntent?.sourceAgentId, profileId);
+    assert.equal(draft.setupIntent?.sourceAgentSlackIdentityId, prior.id);
+
+    const pending = await store.updateSlackIdentity(draft.id, draft.connectionRevision, {
+      lifecycle: 'credentials_pending',
+      teamId: 'T_ACME',
+      appId: 'A0FINANCENEXT',
+      botUserId: 'U_FINANCE_NEXT',
+      credentialProvenance: 'stored',
+      health: 'healthy',
+    });
+    const signingSecret = 'finance-next-signing-secret';
+    await writeSlackIdentityCredentials(settings, pending.id, null, {
+      botToken: 'xoxb-finance-next',
+      signingSecret,
+      botUserId: 'U_FINANCE_NEXT',
+    });
+    const recordChallenge = async () => {
+      const timestamp = String(Math.floor(Date.now() / 1_000));
+      const rawBody = JSON.stringify({
+        type: 'url_verification',
+        challenge: 'finance-next-challenge',
+      });
+      const signature = `v0=${createHmac('sha256', signingSecret)
+        .update(`v0:${timestamp}:${rawBody}`)
+        .digest('hex')}`;
+      const recorded = await recordPendingSlackChallenge(settings, pending, {
+        rawBody,
+        signature,
+        timestamp,
+      });
+      assert.equal(recorded.accepted, true);
+    };
+
+    await store.attachAgentToSlackIdentity(
+      profileId,
+      concurrent.id,
+      concurrent.connectionRevision,
+      prior.id,
+    );
+    await recordChallenge();
+    const stale = await app.request(`/admin/api/slack-identities/${pending.id}/verify`, {
+      method: 'POST',
+      headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        expectedRevision: pending.connectionRevision,
+        expectedProfileIdentityId: null,
+      }),
+    });
+    assert.equal(stale.status, 409);
+    assert.deepEqual(await stale.json(), {
+      error: 'profile_slack_identity_changed',
+      profileId,
+      expectedIdentityId: prior.id,
+      actualIdentityId: concurrent.id,
+    });
+    assert.equal((await store.getAgent(profileId)).slackIdentityId, concurrent.id);
+    assert.ok(await readPendingSlackChallenge(settings, pending.id));
+
+    await store.attachAgentToSlackIdentity(
+      profileId,
+      prior.id,
+      prior.connectionRevision,
+      concurrent.id,
+    );
+    const completed = await app.request(`/admin/api/slack-identities/${pending.id}/verify`, {
+      method: 'POST',
+      headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        expectedRevision: pending.connectionRevision,
+        expectedProfileIdentityId: null,
+      }),
+    });
+    assert.equal(completed.status, 200, await completed.clone().text());
+    assert.equal((await store.getAgent(profileId)).slackIdentityId, pending.id);
+    const connected = await store.getSlackIdentity(pending.id);
+    assert.equal(connected.lifecycle, 'connected');
+    assert.equal(connected.setupIntent?.sourceAgentId, undefined);
+    assert.equal(connected.setupIntent?.sourceAgentSlackIdentityId, undefined);
+    assert.equal(await readPendingSlackChallenge(settings, pending.id), undefined);
+  } finally {
+    settings.close();
+    store.close();
+  }
+});
+
+test('verified Slack identity reconnect requeues its unavailable delivery recoveries', async () => {
+  const store = new SqliteConfigStore(':memory:', {
+    agents: [agent({ id: 'agent_finance', name: 'Finance' })],
+    assignments: [],
+  });
+  const settings = new SqliteSettingsStore(':memory:');
+  const retried: string[] = [];
+  const slackState = {
+    retrySlackIdentityRecovery: async (identityId: string) => {
+      retried.push(identityId);
+      return 2;
+    },
+    countPendingDeliveriesForSlackIdentity: async () => 0,
+  } as unknown as SlackStateStore;
+  const signingSecret = 'finance-reconnect-signing-secret';
+  try {
+    const reconnecting = await store.createSlackIdentity({
+      id: 'slack_identity_finance',
+      ingressKey: 'identity_ingress_finance_0123456789abcdef',
+      kind: 'dedicated',
+      lifecycle: 'credentials_pending',
+      teamId: 'T_ACME',
+      appId: 'A0FINANCE',
+      botUserId: 'U_FINANCE',
+      dmState: 'on',
+      dmAgentId: 'agent_finance',
+      credentialProvenance: 'stored',
+      connectionRevision: 5,
+      health: 'unknown',
+      setupIntent: {
+        appName: 'Finance',
+        displayName: 'Finance',
+        reconnecting: true,
+      },
+      createdAt: 1_800_000_000_000,
+      updatedAt: 1_800_000_000_000,
+    });
+    await writeSlackIdentityCredentials(settings, reconnecting.id, null, {
+      botToken: 'xoxb-finance-rotated',
+      signingSecret,
+      botUserId: 'U_FINANCE',
+    });
+    const timestamp = String(Math.floor(Date.now() / 1_000));
+    const rawBody = JSON.stringify({
+      type: 'url_verification',
+      challenge: 'finance-reconnect-challenge',
+    });
+    const signature = `v0=${createHmac('sha256', signingSecret)
+      .update(`v0:${timestamp}:${rawBody}`)
+      .digest('hex')}`;
+    const challenge = await recordPendingSlackChallenge(settings, reconnecting, {
+      rawBody,
+      signature,
+      timestamp,
+    });
+    assert.equal(challenge.accepted, true);
+
+    const app = appWithAdminOptions(store, { settings, slackState });
+    const response = await app.request(
+      `/admin/api/slack-identities/${reconnecting.id}/verify`,
+      {
+        method: 'POST',
+        headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+        body: JSON.stringify({
+          expectedRevision: reconnecting.connectionRevision,
+          expectedProfileIdentityId: null,
+        }),
+      },
+    );
+
+    assert.equal(response.status, 200, await response.clone().text());
+    assert.deepEqual(retried, [reconnecting.id]);
+    assert.equal((await store.getSlackIdentity(reconnecting.id)).lifecycle, 'connected');
+  } finally {
+    settings.close();
+    store.close();
+  }
+});
+
+test('workspace-default Slack identity reports stored credentials as browser-writable', async () => {
+  const store = new SqliteConfigStore(':memory:', {
+    agents: [agent({ id: 'agent_finance', name: 'Finance' })],
+    assignments: [],
+  });
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    await settings.setSetting('slack.botToken', 'xoxb-stored');
+    await settings.setSetting('slack.signingSecret', 'stored-secret');
+    const app = appWithAdminOptions(store, { settings });
+
+    const response = await app.request('/admin/api/slack-identities', {
+      headers: auth(ADMIN_TOKEN),
+    });
+
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as {
+      identities: Array<Record<string, unknown>>;
+    };
+    assert.equal(body.identities[0]?.credentialsWritable, true);
+    assert.equal(body.identities[0]?.lifecycle, 'connected');
+  } finally {
+    settings.close();
+    store.close();
+  }
+});
+
+test('Slack identity DM and Profile mutations are explicit and stale-write fenced', async () => {
+  const store = new SqliteConfigStore(':memory:', {
+    agents: [
+      agent({ id: 'agent_finance', name: 'Finance' }),
+      agent({ id: 'agent_legal', name: 'Legal' }),
+    ],
+    assignments: [],
+  });
+  const settings = new SqliteSettingsStore(':memory:');
+  const identity: SlackIdentity = {
+    id: 'slack_identity_finance',
+    ingressKey: 'identity_ingress_finance_0123456789abcdef',
+    kind: 'dedicated',
+    lifecycle: 'connected',
+    teamId: 'T_ACME',
+    appId: 'A0FINANCE',
+    botUserId: 'U_FINANCE',
+    dmState: 'on',
+    dmAgentId: 'agent_finance',
+    credentialProvenance: 'stored',
+    connectionRevision: 4,
+    observedDisplayName: 'Finance',
+    health: 'healthy',
+    createdAt: 1_800_000_000_000,
+    updatedAt: 1_800_000_000_000,
+  };
+  try {
+    await store.createSlackIdentity(identity);
+    const app = appWithAdminOptions(store, { settings });
+    const attached = await withEnv(
+      { SLACK_TAG_IDENTITY_MODE: 'multi' },
+      () => app.request(
+        '/admin/api/slack-identities/slack_identity_finance/profiles/agent_legal',
+        {
+          method: 'POST',
+          headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+          body: JSON.stringify({
+            expectedRevision: 4,
+            expectedProfileIdentityId: null,
+            acknowledgeUnenumeratedChannels: false,
+          }),
+        },
+      ),
+    );
+    assert.equal(attached.status, 200);
+    assert.equal((await store.getAgent('agent_legal')).slackIdentityId, identity.id);
+    assert.equal((await store.getSlackIdentity(identity.id)).dmAgentId, 'agent_finance');
+
+    const changedDm = await app.request(
+      '/admin/api/slack-identities/slack_identity_finance/dms',
+      {
+        method: 'PATCH',
+        headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+        body: JSON.stringify({
+          expectedRevision: 4,
+          dmState: 'off',
+          dmAgentId: 'agent_finance',
+        }),
+      },
+    );
+    assert.equal(changedDm.status, 200);
+    const changed = (await changedDm.json()) as { identity: { connectionRevision: number } };
+    assert.equal(changed.identity.connectionRevision, 5);
+    assert.equal((await store.getSlackIdentity(identity.id)).dmAgentId, 'agent_finance');
+
+    const stale = await app.request(
+      '/admin/api/slack-identities/slack_identity_finance/dms',
+      {
+        method: 'PATCH',
+        headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+        body: JSON.stringify({
+          expectedRevision: 4,
+          dmState: 'on',
+          dmAgentId: 'agent_legal',
+        }),
+      },
+    );
+    assert.equal(stale.status, 409);
+    assert.equal((await store.getSlackIdentity(identity.id)).dmState, 'off');
+    assert.deepEqual(
+      (await store.listSlackIdentityAuditEvents()).map(({ eventType }) => eventType).sort(),
+      [
+        'slack_identity.dm_binding_changed',
+        'slack_identity.profile_attached',
+      ].sort(),
+    );
+  } finally {
+    settings.close();
+    store.close();
+  }
+});
+
+test('Slack identity preflight is Profile-mutation-free and requires wildcard acknowledgement', async () => {
+  const store = new SqliteConfigStore(':memory:', {
+    agents: [agent({ id: 'agent_finance', name: 'Finance' })],
+    assignments: [],
+  });
+  const settings = new SqliteSettingsStore(':memory:');
+  const financeIdentity: SlackIdentity = {
+    id: 'slack_identity_finance',
+    ingressKey: 'identity_ingress_finance_0123456789abcdef',
+    kind: 'dedicated',
+    lifecycle: 'connected',
+    teamId: 'T_ACME',
+    appId: 'A0FINANCE',
+    botUserId: 'U_FINANCE',
+    dmState: 'on',
+    dmAgentId: 'agent_finance',
+    credentialProvenance: 'stored',
+    connectionRevision: 4,
+    health: 'healthy',
+    createdAt: 1_800_000_000_000,
+    updatedAt: 1_800_000_000_000,
+  };
+  const { dmAgentId: _financeDmAgentId, ...financeIdentityWithoutDmAgent } =
+    financeIdentity;
+  const legalIdentity: SlackIdentity = {
+    ...financeIdentityWithoutDmAgent,
+    id: 'slack_identity_legal',
+    ingressKey: 'identity_ingress_legal_0123456789abcdef',
+    appId: 'A0LEGAL',
+    botUserId: 'U_LEGAL',
+    dmState: 'off',
+  };
+  try {
+    await store.createSlackIdentity(financeIdentity);
+    await store.createSlackIdentity(legalIdentity);
+    await store.attachAgentToSlackIdentity(
+      'agent_finance',
+      financeIdentity.id,
+      financeIdentity.connectionRevision,
+      null,
+    );
+    await store.putAssignment({
+      workspaceId: 'T_ACME',
+      channelId: '*',
+      channelLabel: 'all channels',
+      agentId: 'agent_finance',
+      enabled: true,
+    });
+    const app = appWithAdminOptions(store, { settings });
+    const endpoint =
+      '/admin/api/slack-identities/slack_identity_legal/profiles/agent_finance';
+
+    const blocked = await withEnv(
+      { SLACK_TAG_IDENTITY_MODE: 'multi' },
+      () => app.request(endpoint, {
+        method: 'POST',
+        headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+        body: JSON.stringify({
+          expectedRevision: legalIdentity.connectionRevision,
+          expectedProfileIdentityId: financeIdentity.id,
+          acknowledgeUnenumeratedChannels: false,
+          preflightOnly: true,
+        }),
+      }),
+    );
+    assert.equal(blocked.status, 409);
+    assert.equal((await blocked.json() as { error: string }).error, 'slack_identity_unenumerated_channels');
+    assert.equal((await store.getAgent('agent_finance')).slackIdentityId, financeIdentity.id);
+
+    const ready = await withEnv(
+      { SLACK_TAG_IDENTITY_MODE: 'multi' },
+      () => app.request(endpoint, {
+        method: 'POST',
+        headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+        body: JSON.stringify({
+          expectedRevision: legalIdentity.connectionRevision,
+          expectedProfileIdentityId: financeIdentity.id,
+          acknowledgeUnenumeratedChannels: true,
+          preflightOnly: true,
+        }),
+      }),
+    );
+    assert.equal(ready.status, 200);
+    const readyBody = await ready.json() as {
+      preflightOnly: boolean;
+      membership: { ready: boolean; unenumeratedRules: unknown[] };
+    };
+    assert.equal(readyBody.preflightOnly, true);
+    assert.equal(readyBody.membership.ready, true);
+    assert.equal(readyBody.membership.unenumeratedRules.length, 1);
+    assert.equal((await store.getAgent('agent_finance')).slackIdentityId, financeIdentity.id);
+    assert.equal((await store.listSlackIdentityAuditEvents()).length, 0);
+  } finally {
+    settings.close();
+    store.close();
+  }
+});
+
+test('Slack identity preflight names every concrete channel missing the selected app', async (t) => {
+  const skip = await loopbackListenSkipReason();
+  if (skip) return t.skip(skip);
+  const backend = new FakeSlackBackend({
+    slack: {
+      identity: { teamId: 'T_ACME', teamName: 'Acme Inc' },
+      channels: [
+        { id: 'C_PRIVATE', name: 'private-deals', isPrivate: true, isMember: false },
+        { id: 'C_FINANCE', name: 'finance', isPrivate: true, isMember: false },
+      ],
+    },
+  });
+  const fake = await backend.listen();
+  const store = new SqliteConfigStore(':memory:', {
+    agents: [agent({ id: 'agent_finance', name: 'Finance' })],
+    assignments: [
+      {
+        workspaceId: 'T_ACME',
+        channelId: 'C_PRIVATE',
+        channelLabel: 'stale-private-name',
+        agentId: 'agent_finance',
+        enabled: true,
+      },
+      {
+        workspaceId: 'T_ACME',
+        channelId: 'C_FINANCE',
+        agentId: 'agent_finance',
+        enabled: true,
+      },
+    ],
+  });
+  const settings = new SqliteSettingsStore(':memory:');
+  const identity: SlackIdentity = {
+    id: 'slack_identity_finance',
+    ingressKey: 'identity_ingress_finance_0123456789abcdef',
+    kind: 'dedicated',
+    lifecycle: 'connected',
+    teamId: 'T_ACME',
+    appId: 'A0FINANCE',
+    botUserId: 'U_FINANCE',
+    dmState: 'on',
+    dmAgentId: 'agent_finance',
+    credentialProvenance: 'stored',
+    connectionRevision: 4,
+    health: 'healthy',
+    createdAt: 1_800_000_000_000,
+    updatedAt: 1_800_000_000_000,
+  };
+  try {
+    await store.createSlackIdentity(identity);
+    await writeSlackIdentityCredentials(settings, identity.id, null, {
+      botToken: 'xoxb-finance',
+      signingSecret: 'finance-secret',
+      botUserId: 'U_FINANCE',
+    });
+    const app = appWithAdminOptions(store, { settings });
+    const response = await withEnv(
+      {
+        SLACK_TAG_IDENTITY_MODE: 'multi',
+        SLACK_API_URL: `${fake.url}/api/`,
+      },
+      () => app.request(
+        '/admin/api/slack-identities/slack_identity_finance/profiles/agent_finance',
+        {
+          method: 'POST',
+          headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+          body: JSON.stringify({
+            expectedRevision: identity.connectionRevision,
+            expectedProfileIdentityId: null,
+            acknowledgeUnenumeratedChannels: false,
+            preflightOnly: true,
+          }),
+        },
+      ),
+    );
+    assert.equal(response.status, 409);
+    const body = await response.json() as {
+      error: string;
+      channels: Array<{ channelId: string; label: string }>;
+    };
+    assert.equal(body.error, 'slack_identity_not_in_channels');
+    assert.deepEqual(body.channels, [
+      { workspaceId: 'T_ACME', channelId: 'C_FINANCE', label: 'finance' },
+      { workspaceId: 'T_ACME', channelId: 'C_PRIVATE', label: 'private-deals' },
+    ]);
+    assert.equal((await store.getAgent('agent_finance')).slackIdentityId, undefined);
+    assert.equal(backend.callsOfMethod('conversations.join').length, 0);
+  } finally {
+    await fake.close();
+    settings.close();
+    store.close();
+  }
+});
+
+test('Slack identity cancellation erases pending secrets and retirement reports durable blockers', async () => {
+  const store = new SqliteConfigStore(':memory:', {
+    agents: [agent({ id: 'agent_finance', name: 'Finance' })],
+    assignments: [],
+  });
+  const settings = new SqliteSettingsStore(':memory:');
+  let pendingDeliveries = 2;
+  const slackState = {
+    countPendingDeliveriesForSlackIdentity: async () => pendingDeliveries,
+  } as unknown as SlackStateStore;
+  try {
+    const draft: SlackIdentity = {
+      id: 'slack_identity_draft',
+      ingressKey: 'identity_ingress_draft_0123456789abcdef',
+      kind: 'dedicated',
+      lifecycle: 'setup_incomplete',
+      dmState: 'on',
+      dmAgentId: 'agent_finance',
+      credentialProvenance: 'none',
+      connectionRevision: 0,
+      health: 'unknown',
+      createdAt: 1_800_000_000_000,
+      updatedAt: 1_800_000_000_000,
+    };
+    await store.createSlackIdentity(draft);
+    const app = appWithAdminOptions(store, { settings, slackState });
+    const canceled = await app.request(
+      '/admin/api/slack-identities/slack_identity_draft/cancel',
+      {
+        method: 'POST',
+        headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+        body: JSON.stringify({ expectedRevision: 0, deleteDraft: true }),
+      },
+    );
+    assert.equal(canceled.status, 200);
+    assert.deepEqual(await canceled.json(), { ok: true, deleted: true });
+    await assert.rejects(() => store.getSlackIdentity(draft.id), /Unknown Slack identity/);
+
+    const reconnecting = await store.createSlackIdentity({
+      ...draft,
+      id: 'slack_identity_reconnecting',
+      ingressKey: 'identity_ingress_reconnecting_0123456789abcdef',
+      lifecycle: 'credentials_pending',
+      credentialProvenance: 'stored',
+      setupIntent: { appName: 'Finance', displayName: 'Finance', reconnecting: true },
+    });
+    const reconnectCancel = await app.request(
+      '/admin/api/slack-identities/slack_identity_reconnecting/cancel',
+      {
+        method: 'POST',
+        headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+        body: JSON.stringify({
+          expectedRevision: reconnecting.connectionRevision,
+          deleteDraft: true,
+        }),
+      },
+    );
+    assert.equal(reconnectCancel.status, 409);
+    assert.equal(
+      (await reconnectCancel.json() as { error: string }).error,
+      'slack_identity_reconnect_cancel_unsupported',
+    );
+    assert.equal(
+      (await store.getSlackIdentity(reconnecting.id)).lifecycle,
+      'credentials_pending',
+    );
+
+    const { dmAgentId: _draftDmAgentId, ...draftWithoutDmAgent } = draft;
+    const connected = await store.createSlackIdentity({
+      ...draftWithoutDmAgent,
+      id: 'slack_identity_retire',
+      ingressKey: 'identity_ingress_retire_0123456789abcdef',
+      lifecycle: 'connected',
+      dmState: 'off',
+      credentialProvenance: 'stored',
+      connectionRevision: 3,
+      health: 'healthy',
+    });
+    const blocked = await app.request(
+      '/admin/api/slack-identities/slack_identity_retire/retire',
+      {
+        method: 'POST',
+        headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+        body: JSON.stringify({ expectedRevision: connected.connectionRevision }),
+      },
+    );
+    assert.equal(blocked.status, 409);
+    assert.equal((await blocked.json() as { pendingDeliveryCount: number }).pendingDeliveryCount, 2);
+    assert.equal((await store.getSlackIdentity(connected.id)).lifecycle, 'connected');
+
+    pendingDeliveries = 0;
+    const retired = await app.request(
+      '/admin/api/slack-identities/slack_identity_retire/retire',
+      {
+        method: 'POST',
+        headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+        body: JSON.stringify({ expectedRevision: connected.connectionRevision }),
+      },
+    );
+    assert.equal(retired.status, 200);
+    const retiredBody = await retired.json() as {
+      identity: { lifecycle: string; credentialProvenance: string };
+      slackAppUninstalled: boolean;
+    };
+    assert.equal(retiredBody.identity.lifecycle, 'retired');
+    assert.equal(retiredBody.identity.credentialProvenance, 'none');
+    assert.equal(retiredBody.slackAppUninstalled, false);
+  } finally {
+    settings.close();
+    store.close();
+  }
+});
+
+test('Slack identity retirement waits for delivered Slack interaction cleanup', async () => {
+  const retirementAgent = agent({ id: 'agent_finance', name: 'Finance' });
+  const store = new SqliteConfigStore(':memory:', {
+    agents: [retirementAgent],
+    assignments: [],
+  });
+  const settings = new SqliteSettingsStore(':memory:');
+  const slackState = new SqliteSlackStateStore(':memory:');
+  try {
+    const identity = await store.createSlackIdentity({
+      id: 'slack_identity_cleanup_retire',
+      ingressKey: 'identity_ingress_cleanup_retire_0123456789abcdef',
+      kind: 'dedicated',
+      lifecycle: 'connected',
+      dmState: 'off',
+      credentialProvenance: 'stored',
+      connectionRevision: 3,
+      health: 'healthy',
+      createdAt: 1_800_000_000_000,
+      updatedAt: 1_800_000_000_000,
+    });
+    const jobId = 'msg:C_FINANCE:cleanup-retirement';
+    await slackState.enqueueTurn({
+      id: jobId,
+      evtKey: 'evt:cleanup-retirement',
+      msgKey: jobId,
+      turn: {
+        workspaceId: 'T_ACME',
+        channelId: 'C_FINANCE',
+        eventId: 'Ev_CLEANUP_RETIREMENT',
+        slackIdentityId: identity.id,
+        text: 'finish the task',
+        userId: 'U_MEMBER',
+        messageTs: '1782770400.000100',
+        threadTs: '1782770400.000100',
+        source: 'app_mention',
+        contextMode: 'thread',
+      },
+      assignment: {
+        workspaceId: 'T_ACME',
+        channelId: 'C_FINANCE',
+        agentId: retirementAgent.id,
+        slackIdentityId: identity.id,
+        agent: retirementAgent,
+        model: 'local-stub/admin-agent',
+      },
+    });
+    await slackState.recordSlackInteractionProgress(jobId, {
+      acknowledgment: {
+        channelId: 'C_FINANCE',
+        messageTs: '1782770400.000100',
+        name: 'eyes',
+        created: true,
+        cleanup: 'pending',
+      },
+    });
+    await slackState.markTurnDelivered(jobId);
+
+    const app = appWithAdminOptions(store, { settings, slackState });
+    const endpoint = `/admin/api/slack-identities/${identity.id}/retire`;
+    const blocked = await app.request(endpoint, {
+      method: 'POST',
+      headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+      body: JSON.stringify({ expectedRevision: identity.connectionRevision }),
+    });
+    assert.equal(blocked.status, 409);
+    assert.equal((await blocked.json() as { pendingDeliveryCount: number }).pendingDeliveryCount, 1);
+    assert.equal((await store.getSlackIdentity(identity.id)).lifecycle, 'connected');
+
+    await slackState.recordSlackInteractionProgress(jobId, {
+      acknowledgment: {
+        channelId: 'C_FINANCE',
+        messageTs: '1782770400.000100',
+        name: 'eyes',
+        created: true,
+        cleanup: 'done',
+      },
+    });
+    const retired = await app.request(endpoint, {
+      method: 'POST',
+      headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+      body: JSON.stringify({ expectedRevision: identity.connectionRevision }),
+    });
+    assert.equal(retired.status, 200, await retired.clone().text());
+    assert.equal((await store.getSlackIdentity(identity.id)).lifecycle, 'retired');
+  } finally {
+    slackState.close();
+    settings.close();
+    store.close();
+  }
+});
+
+test('Slack identity retirement fails closed when pending delivery inventory is unavailable', async () => {
+  const store = new SqliteConfigStore(':memory:', {
+    agents: [agent({ id: 'agent_finance', name: 'Finance' })],
+    assignments: [],
+  });
+  const settings = new SqliteSettingsStore(':memory:');
+  const slackState = {
+    countPendingDeliveriesForSlackIdentity: async () => {
+      throw new Error('inventory unavailable');
+    },
+  } as unknown as SlackStateStore;
+  try {
+    const identity = await store.createSlackIdentity({
+      id: 'slack_identity_retire_inventory',
+      ingressKey: 'identity_ingress_retire_inventory_0123456789abcdef',
+      kind: 'dedicated',
+      lifecycle: 'connected',
+      dmState: 'off',
+      credentialProvenance: 'stored',
+      connectionRevision: 3,
+      health: 'healthy',
+      createdAt: 1_800_000_000_000,
+      updatedAt: 1_800_000_000_000,
+    });
+    const app = appWithAdminOptions(store, { settings, slackState });
+    const response = await app.request(
+      `/admin/api/slack-identities/${identity.id}/retire`,
+      {
+        method: 'POST',
+        headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+        body: JSON.stringify({ expectedRevision: identity.connectionRevision }),
+      },
+    );
+    assert.equal(response.status, 500);
+    assert.equal((await store.getSlackIdentity(identity.id)).lifecycle, 'connected');
+  } finally {
+    settings.close();
+    store.close();
+  }
+});
+
+test('Slack identity audit records each Profile attachment at the same identity revision', async () => {
+  const store = new SqliteConfigStore(':memory:', {
+    agents: [
+      agent({ id: 'agent_finance', name: 'Finance' }),
+      agent({ id: 'agent_legal', name: 'Legal' }),
+    ],
+    assignments: [],
+  });
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    const identity = await store.createSlackIdentity({
+      id: 'slack_identity_shared_audit',
+      ingressKey: 'identity_ingress_shared_audit_0123456789abcdef',
+      kind: 'dedicated',
+      lifecycle: 'connected',
+      dmState: 'off',
+      credentialProvenance: 'stored',
+      connectionRevision: 4,
+      health: 'healthy',
+      createdAt: 1_800_000_000_000,
+      updatedAt: 1_800_000_000_000,
+    });
+    const app = appWithAdminOptions(store, { settings });
+    for (const profileId of ['agent_finance', 'agent_legal']) {
+      const response = await withEnv(
+        { SLACK_TAG_IDENTITY_MODE: 'multi' },
+        () => app.request(
+          `/admin/api/slack-identities/${identity.id}/profiles/${profileId}`,
+          {
+            method: 'POST',
+            headers: {
+              ...auth(ADMIN_TOKEN),
+              'content-type': 'application/json',
+              'x-request-id': `attach-${profileId}`,
+            },
+            body: JSON.stringify({
+              expectedRevision: identity.connectionRevision,
+              expectedProfileIdentityId: null,
+              acknowledgeUnenumeratedChannels: false,
+            }),
+          },
+        ),
+      );
+      assert.equal(response.status, 200);
+    }
+    const attachmentEvents = await store.listSlackIdentityAuditEvents({
+      eventType: 'slack_identity.profile_attached',
+    });
+    assert.equal(attachmentEvents.length, 2);
+    assert.notEqual(attachmentEvents[0]?.idempotencyKey, attachmentEvents[1]?.idempotencyKey);
   } finally {
     settings.close();
     store.close();

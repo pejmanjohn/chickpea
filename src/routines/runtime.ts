@@ -1,6 +1,13 @@
-import { computeSnapshotHash, resolveEffectiveSlackConfig, type EffectiveSlackConfig } from '../config/effective-config.ts';
+import type { WebClient } from '@slack/web-api';
+
+import {
+  computeSnapshotHash,
+  resolveEffectiveSlackConfig,
+  type EffectiveSlackConfig,
+} from '../config/effective-config.ts';
 import { NoAssignmentError } from '../config/errors.ts';
 import { getConfigStore, type PlatformEnv } from '../config/state-backend.ts';
+import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from '../config/types.ts';
 import {
   resolveSlackCredentials,
   resolveSlackPublicUrl,
@@ -8,6 +15,11 @@ import {
   slackConversationsInfo,
   slackConversationsMembers,
 } from '../slack/credentials.ts';
+import { resolveSlackIdentityCredentials } from '../slack/identity-credentials.ts';
+import {
+  resolveSlackIdentityExecutionContext,
+  type SlackIdentityExecutionResolver,
+} from '../slack/identity-execution.ts';
 import { hashRoutineValue } from './ids.ts';
 import type {
   RoutineDefinition,
@@ -21,8 +33,12 @@ const MEMBERS_MAX_PAGES = 5;
 export interface RoutineRuntimeAccess {
   config: EffectiveSlackConfig;
   accessHash: string;
+  /** Explicit in production; optional only for legacy injected test access. */
+  slackIdentityId?: string;
   botToken: string;
   botUserId: string;
+  /** The exact authenticated client shared by context, memory, and delivery. */
+  client?: WebClient;
   publicUrl?: string | undefined;
 }
 
@@ -38,6 +54,7 @@ export class RoutineRuntimeError extends Error {
 
 interface RoutineAccessDependencies {
   credentials?: typeof resolveSlackCredentials;
+  identityCredentials?: typeof resolveSlackIdentityCredentials;
   authTest?: typeof slackAuthTest;
   conversation?: typeof slackConversationsInfo;
   members?: typeof slackConversationsMembers;
@@ -46,6 +63,7 @@ interface RoutineAccessDependencies {
     channelId: string,
     env: PlatformEnv | undefined,
   ) => Promise<EffectiveSlackConfig>;
+  identityExecution?: SlackIdentityExecutionResolver;
 }
 
 /** Live, fail-closed authorization preflight performed before Agent construction. */
@@ -66,26 +84,60 @@ export async function resolveRoutineRuntimeAccess(
       assignments: config,
     });
   });
-  const getCredentials = dependencies.credentials ?? resolveSlackCredentials;
-  const checkAuth = dependencies.authTest ?? slackAuthTest;
   const getConversation = dependencies.conversation ?? slackConversationsInfo;
   const getMembers = dependencies.members ?? slackConversationsMembers;
 
-  const credentials = await getCredentials(env);
-  if (!credentials.botToken) {
+  let config: EffectiveSlackConfig;
+  try {
+    config = await routineStore(routine.workspaceId, routine.channelId, env);
+  } catch (error) {
+    if (error instanceof NoAssignmentError) {
+      throw new RoutineRuntimeError(
+        'assignment_missing',
+        'This channel no longer has an active Chickpea profile.',
+      );
+    }
+    throw new RoutineRuntimeError('access_denied', 'Current channel access could not be resolved.');
+  }
+  const slackIdentityId = config.slackIdentityId ?? WORKSPACE_DEFAULT_SLACK_IDENTITY_ID;
+  let botToken: string | undefined;
+  let botUserId: string | undefined;
+  let client: WebClient | undefined;
+  const useSharedIdentityGate = Boolean(dependencies.identityExecution) ||
+    (!dependencies.credentials && !dependencies.identityCredentials && !dependencies.authTest);
+  if (useSharedIdentityGate) {
+    try {
+      const identity = await (dependencies.identityExecution ?? ((identityId) =>
+        resolveSlackIdentityExecutionContext(identityId, env)))(slackIdentityId);
+      if (identity.teamId !== routine.workspaceId) throw new Error('workspace mismatch');
+      botToken = identity.botToken;
+      botUserId = identity.botUserId;
+      client = identity.client;
+    } catch {
+      throw new RoutineRuntimeError(
+        'credential_unavailable',
+        'The Slack connection is unavailable for this routine.',
+      );
+    }
+  } else {
+    const credentials = dependencies.identityCredentials
+      ? await dependencies.identityCredentials(slackIdentityId, env)
+      : await (dependencies.credentials ?? resolveSlackCredentials)(env);
+    if (credentials.botToken) {
+      const auth = await (dependencies.authTest ?? slackAuthTest)(credentials.botToken);
+      if (auth.ok && auth.botUserId && (!auth.teamId || auth.teamId === routine.workspaceId)) {
+        botToken = credentials.botToken;
+        botUserId = auth.botUserId;
+      }
+    }
+  }
+  if (!botToken || !botUserId) {
     throw new RoutineRuntimeError(
       'credential_unavailable',
       'The Slack connection is unavailable for this routine.',
     );
   }
-  const auth = await checkAuth(credentials.botToken);
-  if (!auth.ok || !auth.botUserId || (auth.teamId && auth.teamId !== routine.workspaceId)) {
-    throw new RoutineRuntimeError(
-      'credential_unavailable',
-      'The Slack connection is unavailable for this routine.',
-    );
-  }
-  const conversation = await getConversation(credentials.botToken, routine.channelId);
+  const conversation = await getConversation(botToken, routine.channelId);
   const facts = conversation.facts;
   if (
     !conversation.ok ||
@@ -110,11 +162,11 @@ export async function resolveRoutineRuntimeAccess(
         : 'Current Slack channel access could not be verified.',
     );
   }
-  if (routine.creatorUserId === auth.botUserId) {
+  if (routine.creatorUserId === botUserId) {
     throw new RoutineRuntimeError('creator_ineligible', 'The routine creator is no longer eligible.');
   }
   const creatorIsMember = await hasChannelMember(
-    credentials.botToken,
+    botToken,
     routine.channelId,
     routine.creatorUserId,
     getMembers,
@@ -126,23 +178,12 @@ export async function resolveRoutineRuntimeAccess(
     throw new RoutineRuntimeError('access_denied', 'Current channel membership could not be verified.');
   }
 
-  let config: EffectiveSlackConfig;
-  try {
-    config = await routineStore(routine.workspaceId, routine.channelId, env);
-  } catch (error) {
-    if (error instanceof NoAssignmentError) {
-      throw new RoutineRuntimeError(
-        'assignment_missing',
-        'This channel no longer has an active Chickpea profile.',
-      );
-    }
-    throw new RoutineRuntimeError('access_denied', 'Current channel access could not be resolved.');
-  }
   const accessHash = hashRoutineValue(
     JSON.stringify({
       config: computeSnapshotHash(config),
+      slackIdentityId,
       creatorUserId: routine.creatorUserId,
-      botUserId: auth.botUserId,
+      botUserId,
       channelId: facts.id,
       channelPrivate: facts.private,
       channelShared: facts.shared || facts.externallyShared || facts.organizationShared,
@@ -151,8 +192,10 @@ export async function resolveRoutineRuntimeAccess(
   return {
     config,
     accessHash,
-    botToken: credentials.botToken,
-    botUserId: auth.botUserId,
+    slackIdentityId,
+    botToken,
+    botUserId,
+    ...(client ? { client } : {}),
     publicUrl: await resolveSlackPublicUrl(env).catch(() => undefined),
   };
 }

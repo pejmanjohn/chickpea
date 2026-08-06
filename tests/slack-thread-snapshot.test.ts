@@ -16,11 +16,17 @@ import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { PROVIDER_KEY_SETTING_KEYS } from '../src/config/provider-keys.ts';
 import {
   getOrCreateSnapshot,
+  SnapshotStoreLogic,
   snapshotFromEffectiveConfig,
   SqliteAgentSnapshotStore,
 } from '../src/config/snapshot-store.ts';
+import { openStateDb } from '../src/state/node-state-db.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
-import type { ChannelAssignment, CustomAgentConfig } from '../src/config/types.ts';
+import {
+  WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+  type ChannelAssignment,
+  type CustomAgentConfig,
+} from '../src/config/types.ts';
 import { THREAD_TTL_MS } from '../src/slack/claim-store.ts';
 import {
   commitOpenAiSubscriptionCredentials,
@@ -64,6 +70,7 @@ function effConfig(channelId: string, instructions: string = ALPHA): EffectiveSl
     workspaceId: 'T_SNAPSHOT',
     channelId,
     agentId: AGENT_ID,
+    slackIdentityId: WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
     agent: agent(),
     model: 'local-stub/snapshot-unit',
     provider: 'local-stub',
@@ -71,6 +78,86 @@ function effConfig(channelId: string, instructions: string = ALPHA): EffectiveSl
     instructionLayers: [],
   };
 }
+
+test('new snapshots freeze identity and version their hash input', () => {
+  const defaultConfig = effConfig('C_IDENTITY');
+  const dedicatedConfig = {
+    ...defaultConfig,
+    slackIdentityId: 'slack_identity_finance',
+  };
+
+  const defaultSnapshot = snapshotFromEffectiveConfig(defaultConfig, 1_000);
+  const dedicatedSnapshot = snapshotFromEffectiveConfig(dedicatedConfig, 1_001);
+
+  assert.equal(defaultSnapshot.slackIdentityId, WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
+  assert.equal(dedicatedSnapshot.slackIdentityId, 'slack_identity_finance');
+  assert.notEqual(defaultSnapshot.snapshotHash, dedicatedSnapshot.snapshotHash);
+});
+
+test('legacy snapshots resolve to the default identity without rewriting their hash', () => {
+  const db = openStateDb(':memory:');
+  try {
+    const store = new SnapshotStoreLogic(db, () => 2_000);
+    const legacy = snapshotFromEffectiveConfig(effConfig('C_LEGACY_IDENTITY'), 1_000);
+    const legacyHash = 'a'.repeat(64);
+    const raw = { ...legacy, snapshotHash: legacyHash } as Record<string, unknown>;
+    delete raw.slackIdentityId;
+    db.run(
+      `INSERT INTO agent_snapshots (
+        thread_key, snapshot_json, snapshot_hash, created_at
+      ) VALUES (?, ?, ?, ?)`,
+      'T_SNAPSHOT:C_LEGACY_IDENTITY:1',
+      JSON.stringify(raw),
+      legacyHash,
+      1_000,
+    );
+
+    const observed = store.get('T_SNAPSHOT:C_LEGACY_IDENTITY:1');
+    assert.equal(observed?.slackIdentityId, WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
+    assert.equal(observed?.snapshotHash, legacyHash);
+    const persisted = db.get(
+      'SELECT snapshot_json FROM agent_snapshots WHERE thread_key = ?',
+      'T_SNAPSHOT:C_LEGACY_IDENTITY:1',
+    ) as { snapshot_json: string };
+    assert.equal('slackIdentityId' in JSON.parse(persisted.snapshot_json), false);
+  } finally {
+    db.close();
+  }
+});
+
+test('an existing channel thread keeps its identity while a new thread sees the Profile change', async () => {
+  const store = new SqliteAgentSnapshotStore(':memory:', () => 2_000);
+  try {
+    const dedicated = {
+      ...effConfig('C_PROFILE_CHANGE'),
+      slackIdentityId: 'slack_identity_finance',
+    };
+    const original = await getOrCreateSnapshot(
+      store,
+      'T_SNAPSHOT:C_PROFILE_CHANGE:1',
+      () => dedicated,
+      () => 1_000,
+    );
+    const frozen = await getOrCreateSnapshot(
+      store,
+      'T_SNAPSHOT:C_PROFILE_CHANGE:1',
+      () => effConfig('C_PROFILE_CHANGE'),
+      () => 1_500,
+    );
+    const nextThread = await getOrCreateSnapshot(
+      store,
+      'T_SNAPSHOT:C_PROFILE_CHANGE:2',
+      () => effConfig('C_PROFILE_CHANGE'),
+      () => 1_500,
+    );
+
+    assert.equal(original.slackIdentityId, 'slack_identity_finance');
+    assert.equal(frozen.slackIdentityId, 'slack_identity_finance');
+    assert.equal(nextThread.slackIdentityId, WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
+  } finally {
+    store.close();
+  }
+});
 
 test('agent snapshots are purged past the thread TTL, bounding the table', async () => {
   let now = 1_000_000;

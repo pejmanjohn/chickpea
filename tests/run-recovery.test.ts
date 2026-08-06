@@ -11,6 +11,7 @@ import {
   type LedgerSlackTurnExecutor,
 } from '../src/slack/ledger-turn-driver.ts';
 import { AgentPromptFailure } from '../src/slack/flue-dispatch.ts';
+import { SlackIdentityUnavailableError } from '../src/slack/identity-execution.ts';
 import { TurnJobStoreLogic } from '../src/slack/turn-jobs.ts';
 import {
   SlackRunPresentationStoreLogic,
@@ -24,6 +25,7 @@ import { ShadowWorkLifecycle } from '../src/work/lifecycle.ts';
 import { prepareSubmitRun, type SubmitRunInput } from '../src/work/submit-run.ts';
 import { WorkStoreLogic } from '../src/work/store.ts';
 import type { WorkStore } from '../src/work/types.ts';
+import { captureSlackIdentityOperationalEvents } from './helpers/slack-identity-observability.ts';
 
 const NOW = 1_940_000_000_000;
 
@@ -324,6 +326,51 @@ test('a pre-submit executor failure is safely requeued instead of quarantined', 
       kind: 'requeue',
       reasonCode: 'ledger_turn_failed_before_submit',
     });
+  } finally {
+    db.close();
+  }
+});
+
+test('a transient ledger identity preflight requeues without quarantining its TurnJob', async () => {
+  let clock = NOW;
+  const db = openStateDb(':memory:');
+  try {
+    const work = new WorkStoreLogic(db, { now: () => clock });
+    const turns = new TurnJobStoreLogic(db, () => clock);
+    const admission = work.admitShadowRun(prepareSubmitRun(submission('identity-preflight')));
+    turns.enqueue(turnJob(admission.run.id, 'identity-preflight'));
+    const claim = work.claimNextInteractiveRun({
+      ownerId: 'worker', authorityEpoch: 1, leaseDurationMs: 30_000, claimedAt: clock,
+    })!;
+    let executions = 0;
+    const handler = createLedgerSlackRunHandler({
+      work: work as unknown as WorkStore,
+      turns,
+      resolveIdentity: async () => {
+        throw new SlackIdentityUnavailableError('slack_identity_default', 'ratelimited', {
+          retryAfterMs: 3_000,
+        });
+      },
+      verifyIdentityAccess: async () => undefined,
+      executeTurn: (async () => { executions += 1; }) as LedgerSlackTurnExecutor,
+      now: () => ++clock,
+    });
+
+    const captured = await captureSlackIdentityOperationalEvents(() => handler(claim));
+    assert.deepEqual(captured.result, {
+      kind: 'requeue',
+      reasonCode: 'slack_identity_temporarily_unavailable',
+      retryAfterMs: 3_000,
+    });
+    assert.deepEqual(captured.events, [{
+      operation: 'egress_unavailable',
+      identityId: 'slack_identity_default',
+      outcome: 'retry',
+      failureClass: 'ratelimited',
+      fallbackPrevented: true,
+    }]);
+    assert.equal(executions, 0);
+    assert.ok(turns.getPendingByRunId(admission.run.id));
   } finally {
     db.close();
   }

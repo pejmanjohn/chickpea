@@ -8,15 +8,21 @@ import type { WebClient } from '@slack/web-api';
 
 import { deriveRuntimePlanInstanceId } from '../src/agents/runtime-plan.ts';
 import { AgentPromptFailure } from '../src/slack/flue-dispatch.ts';
+import {
+  SlackIdentityUnavailableError,
+  type SlackIdentityExecutionContext,
+} from '../src/slack/identity-execution.ts';
 import type { ResolvedAssignment } from '../src/config/types.ts';
 import { SqliteSlackStateStore, type SlackStateStore } from '../src/slack/claim-store.ts';
 import type { LedgerSlackTurnExecutor } from '../src/slack/ledger-turn-driver.ts';
 import { drainNodeTurnRelayOnce, wakeNodeTurnRelay } from '../src/slack/node-turn-relay.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
+import type { SlackInteractionIntent } from '../src/slack/interaction-intent.ts';
 import { prepareSlackShadowAdmission } from '../src/slack/work-admission.ts';
 import { ShadowWorkLifecycle } from '../src/work/lifecycle.ts';
 import { SqliteWorkStore } from '../src/work/store.ts';
 import type { WorkStore } from '../src/work/types.ts';
+import { captureSlackIdentityOperationalEvents } from './helpers/slack-identity-observability.ts';
 
 test('a wake admitted during a Node drain starts a follow-up drain immediately', async () => {
   const jobs = [relayJob('first')];
@@ -411,6 +417,152 @@ test('delivered Node turns repair a checklist and remove only their created ackn
   }
 });
 
+test('a relay batch isolates one client per referenced Slack identity', async () => {
+  const jobs = ['finance', 'legal', 'support'].map((identity, index) => {
+    const item = relayJob(identity);
+    item.turn.channelId = `C_${identity}`;
+    item.turn.threadTs = `100.${index + 10}`;
+    item.turn.slackIdentityId = `slack_identity_${identity}`;
+    item.assignment.slackIdentityId = `slack_identity_${identity}`;
+    return item;
+  });
+  const state = relayStateFor(jobs);
+  const resolutions: string[] = [];
+  const used: Array<{ identityId: string; client: WebClient | undefined }> = [];
+  const clients = new Map<string, WebClient>();
+
+  await drainNodeTurnRelayOnce({
+    state,
+    work: {} as WorkStore,
+    resolveIdentity: async (identityId) => {
+      resolutions.push(identityId);
+      const client = { identityId } as unknown as WebClient;
+      clients.set(identityId, client);
+      return identityContext(identityId, client);
+    },
+    verifyIdentityAccess: async () => undefined,
+    executeTurn: async (slackTurn, _assignment, _env, options) => {
+      used.push({
+        identityId: slackTurn.slackIdentityId!,
+        client: options?.client,
+      });
+    },
+  });
+
+  assert.deepEqual(resolutions.sort(), [
+    'slack_identity_finance',
+    'slack_identity_legal',
+    'slack_identity_support',
+  ]);
+  assert.equal(used.length, 3);
+  for (const item of used) assert.equal(item.client, clients.get(item.identityId));
+});
+
+test('a retained TurnJob resolves a rotated token for the same identity on its next attempt', async () => {
+  const item = {
+    ...relayJob('rotation'),
+    dispatchStartedAt: 1,
+    dispatchEnvelope: { idempotencyKey: 'msg_relay_rotation' },
+  };
+  item.turn.slackIdentityId = 'slack_identity_finance';
+  item.assignment.slackIdentityId = 'slack_identity_finance';
+  const jobs = [item];
+  const state = relayStateFor(jobs);
+  const firstClient = { tokenVersion: 1 } as unknown as WebClient;
+  const secondClient = { tokenVersion: 2 } as unknown as WebClient;
+  let resolution = 0;
+  const used: Array<WebClient | undefined> = [];
+  const options = {
+    state,
+    work: {} as WorkStore,
+    resolveIdentity: async (identityId: string) =>
+      identityContext(identityId, ++resolution === 1 ? firstClient : secondClient),
+    verifyIdentityAccess: async () => undefined,
+    executeTurn: (async (_turn, _assignment, _env, runOptions) => {
+      used.push(runOptions?.client);
+      if (used.length === 1) throw new AgentPromptFailure('agent', 503, false, true);
+    }) as LedgerSlackTurnExecutor,
+  };
+
+  await drainNodeTurnRelayOnce(options);
+  await drainNodeTurnRelayOnce(options);
+
+  assert.deepEqual(used, [firstClient, secondClient]);
+  assert.equal(resolution, 2);
+});
+
+test('an unavailable identity enters recovery without model execution or default fallback', async () => {
+  const item = relayJob('unavailable');
+  item.turn.slackIdentityId = 'slack_identity_finance';
+  item.assignment.slackIdentityId = 'slack_identity_finance';
+  item.progress.interactionIntent = {
+    disposition: 'work',
+    reason: 'substantive_request',
+    checklist: ['Finish the retained task'],
+  };
+  const recovery: Array<{ id: string; reason: string }> = [];
+  const activeWork: Array<{ generation: string; active: boolean }> = [];
+  const state = relayStateFor([item], recovery, activeWork);
+  let executions = 0;
+  const captured = await captureSlackIdentityOperationalEvents(async () => {
+    await drainNodeTurnRelayOnce({
+      state,
+      work: {} as WorkStore,
+      resolveIdentity: async () => {
+        throw new SlackIdentityUnavailableError(
+          'slack_identity_finance',
+          'credentials_missing',
+        );
+      },
+      verifyIdentityAccess: async () => undefined,
+      executeTurn: async () => { executions += 1; },
+    });
+  });
+
+  assert.equal(executions, 0);
+  assert.deepEqual(recovery, [{
+    id: item.id,
+    reason: 'slack_identity_unavailable',
+  }]);
+  assert.deepEqual(activeWork, [{ generation: item.id, active: false }]);
+  assert.ok(captured.events.some((event) =>
+    event.operation === 'egress_unavailable' &&
+    event.outcome === 'operator_repair' &&
+    event.failureClass === 'credentials_missing' &&
+    event.fallbackPrevented === true));
+});
+
+test('a transient identity preflight keeps the turn pending without model work or repair', async () => {
+  const item = relayJob('identity-retry');
+  item.turn.slackIdentityId = 'slack_identity_finance';
+  item.assignment.slackIdentityId = 'slack_identity_finance';
+  const jobs = [item];
+  const recovery: Array<{ id: string; reason: string }> = [];
+  let executions = 0;
+  const captured = await captureSlackIdentityOperationalEvents(async () => {
+    await drainNodeTurnRelayOnce({
+      state: relayStateFor(jobs, recovery),
+      work: {} as WorkStore,
+      resolveIdentity: async () => {
+        throw new SlackIdentityUnavailableError('slack_identity_finance', 'ratelimited', {
+          retryAfterMs: 3_000,
+        });
+      },
+      verifyIdentityAccess: async () => undefined,
+      executeTurn: async () => { executions += 1; },
+    });
+  });
+
+  assert.equal(executions, 0);
+  assert.equal(jobs.length, 1);
+  assert.deepEqual(recovery, []);
+  assert.ok(captured.events.some((event) =>
+    event.operation === 'egress_unavailable' &&
+    event.outcome === 'retry' &&
+    event.failureClass === 'ratelimited' &&
+    event.fallbackPrevented === true));
+});
+
 function turn(): NormalizedSlackTurn {
   return {
     workspaceId: 'T_node', channelId: 'C_node', eventId: 'Ev_node',
@@ -438,7 +590,53 @@ function relayJob(suffix: string) {
     turn: { ...turn(), eventId: `Ev_${suffix}`, messageTs: `100.${suffix === 'first' ? '001' : '002'}` },
     assignment: assignment(),
     attempts: 0,
-    progress: {},
+    progress: {} as { interactionIntent?: SlackInteractionIntent },
     executionAuthority: 'legacy' as const,
   };
+}
+
+function identityContext(
+  identityId: string,
+  client: WebClient,
+): SlackIdentityExecutionContext {
+  return {
+    identityId,
+    botToken: `token-for-${identityId}`,
+    botUserId: `U_${identityId}`,
+    teamId: 'T_node',
+    client,
+  };
+}
+
+function relayStateFor(
+  jobs: ReturnType<typeof relayJob>[],
+  recovery: Array<{ id: string; reason: string }> = [],
+  activeWork: Array<{ generation: string; active: boolean }> = [],
+): SlackStateStore {
+  return {
+    listPendingTurns: async () => [...jobs],
+    freezeRuntimePlan: async () => { throw new Error('not reached'); },
+    prepareFlueDispatch: async () => { throw new Error('not reached'); },
+    reconcileFlueExistingInstance: async () => { throw new Error('not reached'); },
+    recordFlueReceipt: async (receipt: unknown) => receipt,
+    recordFlueSettlement: async (settlement: unknown) => settlement,
+    recordContinuityNotice: async () => undefined,
+    matchFlueObservation: async () => undefined,
+    markTurnRecoveryRequired: async (id: string, reason: string) => {
+      recovery.push({ id, reason });
+    },
+    recordTurnAttempt: async () => true,
+    recordInteractionIntent: async () => undefined,
+    recordSlackInteractionProgress: async () => undefined,
+    markTurnDelivered: async (id: string) => {
+      const index = jobs.findIndex((job) => job.id === id);
+      if (index >= 0) jobs.splice(index, 1);
+      return true;
+    },
+    discardTurn: async () => true,
+    release: async () => undefined,
+    setActiveWork: async (_key: string, generation: string, active: boolean) => {
+      activeWork.push({ generation, active });
+    },
+  } as unknown as SlackStateStore;
 }

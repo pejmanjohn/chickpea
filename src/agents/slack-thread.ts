@@ -72,11 +72,12 @@ import {
   getSettingsStore,
   type PlatformEnv,
 } from '../config/state-backend.ts';
-import type {
-  ApiConnectionConfig,
-  CustomAgentConfig,
-  RepositoryGrant,
-  SkillConfig,
+import {
+  WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+  type ApiConnectionConfig,
+  type CustomAgentConfig,
+  type RepositoryGrant,
+  type SkillConfig,
 } from '../config/types.ts';
 import {
   isDeniedRepositoryEndpoint,
@@ -110,8 +111,8 @@ import { createWorkspaceArtifactCapability } from '../sandbox/artifact-tool.ts';
 import { createWorkspaceArtifactTool } from '../sandbox/artifact-tool.ts';
 import { workspaceSkillForSandbox } from '../sandbox/workspace-skill.ts';
 import { publishActivityStatus } from '../slack/activity-publisher.ts';
+import { resolveSlackIdentityExecutionContext } from '../slack/identity-execution.ts';
 import { parseSlackThreadKey } from '../slack/thread-key.ts';
-import { getClient } from '../slack/run-turn.ts';
 import { WebClientPresenter } from '../slack/web-client-presenter.ts';
 import { useChickpeaResponseMetadata } from '../usage/response-metadata.ts';
 import { bootstrapRuntimeProviders } from '../runtime-bootstrap.ts';
@@ -737,9 +738,13 @@ export async function createSlackAgentRuntime(
       channel: channelId,
       threadTs: artifactThreadTs,
       postArtifact: async (input) => {
-        presenter ??= getClient(env).then(
-          (client) =>
-            new WebClientPresenter(client, {
+        presenter ??= resolveSlackIdentityExecutionContext(
+          config.slackIdentityId ?? WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+          env,
+          { settings: settingsStore },
+        ).then(
+          (identity) =>
+            new WebClientPresenter(identity.client, {
               channelId,
               threadTs: artifactThreadTs,
               agentName: config.agent.name,
@@ -997,8 +1002,16 @@ function createRuntimePlanArtifactTool(plan: RuntimePlanV2) {
     async postArtifact(input) {
       presenter ??= (async () => {
         const env = await resolveAgentPlatformEnv();
-        const profile = await getConfigStore(env).getAgent(plan.agentId);
-        return new WebClientPresenter(await getClient(env), {
+        const config = getConfigStore(env);
+        const [profile, identity] = await Promise.all([
+          config.getAgent(plan.agentId),
+          resolveSlackIdentityExecutionContext(
+            plan.slackIdentityId ?? WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+            env,
+            { config, settings: getSettingsStore(env) },
+          ),
+        ]);
+        return new WebClientPresenter(identity.client, {
           channelId: plan.conversation.channelId,
           threadTs: plan.conversation.threadTs,
           agentName: profile.name,

@@ -1848,6 +1848,7 @@ function canonicalSafeConfig(input: SafeEffectiveConfigInput): string {
     [
       'schemaVersion',
       'profileId',
+      'slackIdentityId',
       'configuredModel',
       'snapshotDigest',
       'capabilityDigest',
@@ -1863,6 +1864,9 @@ function canonicalSafeConfig(input: SafeEffectiveConfigInput): string {
     throw workError('work_config_invalid', 'Safe configuration schema version is invalid.');
   }
   assertSafeRef(input.profileId, 'Profile ID');
+  if (input.slackIdentityId !== undefined) {
+    assertSafeRef(input.slackIdentityId, 'Slack identity ID');
+  }
   assertSafeModel(input.configuredModel);
   assertDigest(input.snapshotDigest, 'Snapshot digest');
   assertDigest(input.capabilityDigest, 'Capability digest');
@@ -1885,6 +1889,7 @@ function canonicalSafeConfig(input: SafeEffectiveConfigInput): string {
   const canonical = {
     schemaVersion: 1,
     profileId: input.profileId,
+    ...(input.slackIdentityId ? { slackIdentityId: input.slackIdentityId } : {}),
     configuredModel: input.configuredModel,
     snapshotDigest: input.snapshotDigest,
     capabilityDigest: input.capabilityDigest,

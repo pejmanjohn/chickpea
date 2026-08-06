@@ -18,6 +18,7 @@ import {
   compileRuntimePlanV2,
   runtimePlanSandboxConversationKey,
 } from '../agents/runtime-plan.ts';
+import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from '../config/types.ts';
 import {
   canonicalRuntimeModel,
   resolveRuntimeModel,
@@ -335,6 +336,7 @@ async function prepareExecution(
     input.routine,
     access,
     input.env,
+    access.client,
   );
   const useCloudflareSandbox = dependencies.useCloudflareSandbox ?? shouldUseCloudflareSandbox;
   const attemptId = input.admission.attemptId;
@@ -466,6 +468,7 @@ function createEnvelope(input: {
       workspaceId: input.routine.workspaceId,
       channelId: input.routine.channelId,
       agentId: input.access.config.agentId,
+      slackIdentityId: input.access.slackIdentityId ?? WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
       agent: input.access.config.agent,
       model: input.runtimeModel,
     },
@@ -538,7 +541,7 @@ async function finalizeSettlement(
         message: settlement.result.message,
         changeKeyHash: settlement.result.changeKeyHash,
         ...(prepared.workLifecycle ? { workLifecycle: prepared.workLifecycle } : {}),
-      });
+      }, prepared.access.client);
       delivered = true;
     } else {
       await prepared.workLifecycle?.settleWithoutDelivery({ terminalDisposition: 'no_op' });
@@ -802,7 +805,7 @@ async function deliverFailureNoticeBestEffort(
       access: prepared.access,
       publicError,
       ...(prepared.workLifecycle ? { workLifecycle: prepared.workLifecycle } : {}),
-    });
+    }, prepared.access.client);
   } catch {
     // The failed occurrence remains visible in Slack commands and Admin.
   }

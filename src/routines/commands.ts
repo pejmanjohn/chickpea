@@ -2,6 +2,7 @@ import type { PlatformEnv } from '../config/state-backend.ts';
 import { getRoutineStore } from '../config/state-backend.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import type { NormalizedSlackTurn } from '../slack/types.ts';
+import type { SlackIdentityExecutionContext } from '../slack/identity-execution.ts';
 import { resolveSlackCredentials, slackUsersInfo } from '../slack/credentials.ts';
 import {
   createRoutineRunId,
@@ -66,6 +67,7 @@ interface RoutineCommandExecutionContext {
   capability: RoutineCapability;
   now: () => number;
   canManageChannel: typeof canManageRoutineChannel;
+  botToken?: string;
 }
 
 const OPAQUE = '[A-Za-z0-9_-]{1,200}';
@@ -121,18 +123,24 @@ export async function handleRoutineSlackRequest(
   dependencies: {
     store?: RoutineStore;
     parseIntent?: typeof parseRoutineIntent;
-    resolveDefaultTimezone?: (turn: NormalizedSlackTurn, env: PlatformEnv | undefined) => Promise<string>;
+    resolveDefaultTimezone?: (
+      turn: NormalizedSlackTurn,
+      env: PlatformEnv | undefined,
+      botToken?: string,
+    ) => Promise<string>;
     now?: () => number;
     capability?: RoutineCapability;
     canManageChannel?: typeof canManageRoutineChannel;
+    identityContext?: SlackIdentityExecutionContext;
   } = {},
 ): Promise<string | undefined> {
   const store = dependencies.store ?? getRoutineStore(env);
   const now = dependencies.now ?? Date.now;
   const capability = dependencies.capability ?? routineCapability(env);
   const canManageChannel = dependencies.canManageChannel ?? canManageRoutineChannel;
+  const botToken = dependencies.identityContext?.botToken;
   const commandContext: RoutineCommandExecutionContext = {
-    turn, store, env, capability, now, canManageChannel,
+    turn, store, env, capability, now, canManageChannel, ...(botToken ? { botToken } : {}),
   };
   const command = parseRoutineCommand(turn.text);
   if (command) {
@@ -143,7 +151,7 @@ export async function handleRoutineSlackRequest(
     }
   }
   if (!isRoutineIntentCandidate(turn.text)) return undefined;
-  if (!(await canManageChannel(turn.workspaceId, turn.channelId, turn.userId, env))) {
+  if (!(await canManageChannel(turn.workspaceId, turn.channelId, turn.userId, env, botToken))) {
     return notFoundText();
   }
   const explicitMutation = isExplicitRoutineMutationRequest(turn.text);
@@ -151,7 +159,11 @@ export async function handleRoutineSlackRequest(
     return 'Routine schedules must be at least five minutes apart.';
   }
   const defaultTimezone = routineIntentNeedsDefaultTimezone(turn.text)
-    ? await (dependencies.resolveDefaultTimezone ?? resolveRoutineDefaultTimezone)(turn, env)
+    ? await (dependencies.resolveDefaultTimezone ?? resolveRoutineDefaultTimezone)(
+        turn,
+        env,
+        botToken,
+      )
     : 'UTC';
   let intent: RoutineIntent | undefined;
   try {
@@ -179,7 +191,7 @@ export async function handleRoutineSlackRequest(
   try {
     if (intent.action === 'create' || intent.action === 'edit') {
       requireRoutineScheduling(capability);
-      return await saveRoutineIntent(intent, turn, store, now, defaultTimezone, env);
+      return await saveRoutineIntent(intent, turn, store, now, defaultTimezone, env, botToken);
     }
     if (isRoutineManagementIntent(intent)) {
       return await executeNaturalRoutineManagement(intent, commandContext);
@@ -194,7 +206,7 @@ async function executeRoutineCommand(
   command: RoutineCommand,
   context: RoutineCommandExecutionContext,
 ): Promise<string> {
-  const { turn, store, env, capability, now, canManageChannel } = context;
+  const { turn, store, env, capability, now, canManageChannel, botToken } = context;
   const service = new RoutineService(store, { now });
   if (command.kind === 'help' || command.kind === 'invalid') return renderRoutineHelp();
   if (command.kind === 'list') {
@@ -205,7 +217,7 @@ async function executeRoutineCommand(
     const channelId = mentionedId ?? turn.channelId;
     if (
       channelId !== turn.channelId &&
-      !(await canManageChannel(turn.workspaceId, channelId, turn.userId, env))
+      !(await canManageChannel(turn.workspaceId, channelId, turn.userId, env, botToken))
     ) {
       return notFoundText();
     }
@@ -214,7 +226,13 @@ async function executeRoutineCommand(
       : `\n\n_${capability.reason === 'unsupported_target' ? 'Scheduling is currently Cloudflare-only.' : 'Scheduling is disabled by the deployment operator.'}_`;
     return renderRoutineList(await store.listRoutines(turn.workspaceId, channelId), channelId) + suffix;
   }
-  if (!(await canManageChannel(turn.workspaceId, turn.channelId, turn.userId, env))) {
+  if (!(await canManageChannel(
+    turn.workspaceId,
+    turn.channelId,
+    turn.userId,
+    env,
+    botToken,
+  ))) {
     return notFoundText();
   }
   if (command.kind === 'confirm') {
@@ -329,6 +347,7 @@ async function executeRoutineCommand(
         turn.workspaceId,
         turn.channelId,
         env,
+        botToken,
       ),
     }, `routine:slack:${turn.eventId}:clone:${routine.id}`);
     return renderRoutineSaved(created, { action: 'create' });
@@ -351,6 +370,7 @@ async function saveRoutineIntent(
   now: () => number,
   defaultTimezone?: string,
   env?: PlatformEnv,
+  botToken?: string,
 ): Promise<string> {
   const service = new RoutineService(store, { now });
   const resolution = intent.action === 'edit'
@@ -405,6 +425,7 @@ async function saveRoutineIntent(
       turn.workspaceId,
       turn.channelId,
       env,
+      botToken,
     ),
     provenance: {
       sourceKind: 'slack_request' as const,
@@ -549,9 +570,10 @@ function ambiguousNameText(name: string, routines: readonly RoutineDefinition[])
 async function resolveRoutineDefaultTimezone(
   turn: NormalizedSlackTurn,
   env: PlatformEnv | undefined,
+  admittedBotToken?: string,
 ): Promise<string> {
   try {
-    const { botToken } = await resolveSlackCredentials(env);
+    const botToken = admittedBotToken ?? (await resolveSlackCredentials(env)).botToken;
     if (!botToken) return 'UTC';
     const result = await slackUsersInfo(botToken, turn.userId);
     const timezone = result.ok ? result.user?.timezone : undefined;

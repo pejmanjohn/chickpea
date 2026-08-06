@@ -239,9 +239,9 @@ export class FakeSlackBackend {
     this.failConversationReads = slack.failConversationReads ?? false;
     this.failFinalDeliveryOnce = slack.failFinalDeliveryOnce ?? false;
     this.identity = {
-      appId: slack.identity?.appId ?? 'A_FAKE',
+      appId: slack.identity?.appId ?? 'A_DEMO',
       botUserId: slack.identity?.botUserId ?? 'U_BOT',
-      teamId: slack.identity?.teamId ?? 'T_FAKE',
+      teamId: slack.identity?.teamId ?? 'T_DEMO',
       teamName: slack.identity?.teamName ?? 'Fake Workspace',
       displayName: slack.identity?.displayName ?? 'Chickpea',
       realName: slack.identity?.realName ?? 'Chickpea',

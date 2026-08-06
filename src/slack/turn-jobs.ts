@@ -21,6 +21,7 @@ import type {
   TurnJob,
 } from './turn-job-types.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
+import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from '../config/types.ts';
 import type { StateDb } from '../state/state-db.ts';
 import type { SlackRuntimeDrainCounts } from '../config/state-rpc.ts';
 import type { SlackTurnRecoveryItem } from '../config/state-rpc.ts';
@@ -242,6 +243,25 @@ export class TurnJobStoreLogic {
       limit,
     ) as unknown as TurnJobRow[];
     return rows.map((row) => this.decodeRow(row));
+  }
+
+  countPendingDeliveriesForSlackIdentity(identityId: string): number {
+    const row = this.db.get(
+      `SELECT COUNT(*) AS count
+       FROM turn_jobs
+       WHERE (
+           delivered = 0
+           OR (delivered = 1 AND progress_json LIKE '%"cleanup":"pending"%')
+         )
+         AND COALESCE(
+           json_extract(turn_json, '$.slackIdentityId'),
+           json_extract(assignment_json, '$.slackIdentityId'),
+           ?
+         ) = ?`,
+      WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+      identityId,
+    ) as { count?: number } | undefined;
+    return Number(row?.count ?? 0);
   }
 
   getPendingByRunId(runId: string): PendingTurnJob | undefined {
@@ -703,6 +723,33 @@ export class TurnJobStoreLogic {
     }));
   }
 
+  /**
+   * Re-open only compatibility turns whose operator-recovery condition was the
+   * named Slack identity becoming unavailable. Reconnect proves fresh
+   * credentials before calling this method; immutable dispatch/settlement
+   * checkpoints and the attempt counter stay intact so the relay reattaches
+   * instead of paying for a second model run. Ledger-owned turns keep their
+   * Work recovery boundary until a coordinated Run + Turn recovery API exists.
+   */
+  retrySlackIdentityRecovery(identityId: string): number {
+    validateBoundedString(identityId, 'Slack identity id', 160);
+    return this.db.run(
+      `UPDATE turn_jobs
+       SET status = 'pending', recovery_reason = NULL
+       WHERE delivered = 0
+         AND status = 'recovery_required'
+         AND recovery_reason = 'slack_identity_unavailable'
+         AND execution_authority = 'legacy'
+         AND COALESCE(
+           json_extract(turn_json, '$.slackIdentityId'),
+           json_extract(assignment_json, '$.slackIdentityId'),
+           ?
+         ) = ?`,
+      WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+      identityId,
+    ).changes;
+  }
+
   /** Explicit operator terminalization; retained claims continue to dedupe. */
   resolveRecoveryRequired(id: string): boolean {
     validateBoundedString(id, 'TurnJob id', 200);
@@ -935,12 +982,16 @@ export class TurnJobStoreLogic {
   }
 
   private decodeRow(row: TurnJobRow): PendingTurnJob {
+    const turn = JSON.parse(row.turn_json) as NormalizedSlackTurn;
+    const assignment = JSON.parse(row.assignment_json) as ResolvedAssignment;
+    turn.slackIdentityId ??= WORKSPACE_DEFAULT_SLACK_IDENTITY_ID;
+    assignment.slackIdentityId ??= WORKSPACE_DEFAULT_SLACK_IDENTITY_ID;
     return {
       id: row.id,
       evtKey: row.evt_key,
       msgKey: row.msg_key,
-      turn: JSON.parse(row.turn_json) as NormalizedSlackTurn,
-      assignment: JSON.parse(row.assignment_json) as ResolvedAssignment,
+      turn,
+      assignment,
       ...(row.run_id ? { runId: row.run_id } : {}),
       executionAuthority: row.execution_authority,
       attempts: Number(row.attempts),

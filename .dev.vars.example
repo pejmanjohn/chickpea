@@ -18,6 +18,11 @@ TAG_RUN_BODY_RETENTION_DAYS="30"
 # Channel memory is always on for eligible assigned channels. There is no
 # memory feature flag or opt-out secret to configure.
 
+# Optional Slack identity rollout mode. Keep this commented so the Deploy to
+# Cloudflare button does not turn it into a required prompt. The built Worker
+# defaults to base; set SLACK_TAG_IDENTITY_MODE=multi only after completing the
+# dedicated-identity rollout gates.
+
 # Optional: add a catalog provider after deploy. Without one, the seeded Default
 # profile runs keyless on the Workers AI binding (@cf/zai-org/glm-5.2). These
 # deliberately remain comments: the Deploy to Cloudflare button renders every

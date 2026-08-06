@@ -11,11 +11,13 @@ import {
 } from './types.ts';
 
 export interface SlackTurnNormalizationOptions {
+  slackIdentityId: string;
   botUserId?: string;
 }
 
 interface RunnableTurnInput {
   payload: SlackEventFixture;
+  slackIdentityId: string;
   channelId: string;
   text: string;
   userId: string;
@@ -31,7 +33,7 @@ interface RunnableTurnInput {
 
 export function normalizeSlackTurn(
   payload: SlackEventFixture,
-  options: SlackTurnNormalizationOptions = {},
+  options: SlackTurnNormalizationOptions,
 ): SlackTurnNormalization {
   payload = stripSlackMessageAppContext(payload);
   if (payload.type !== 'event_callback') {
@@ -39,12 +41,16 @@ export function normalizeSlackTurn(
   }
 
   if (isSlackAppMentionEvent(payload.event)) {
+    if (isSlackSystemUser(payload.event.user)) {
+      return { status: 'ignored', reason: 'slack_system_user' };
+    }
     if (options.botUserId && payload.event.user === options.botUserId) {
       return { status: 'ignored', reason: 'self_message' };
     }
 
     return runnableTurn({
       payload,
+      slackIdentityId: options.slackIdentityId,
       channelId: payload.event.channel,
       text: payload.event.text,
       userId: payload.event.user,
@@ -57,6 +63,9 @@ export function normalizeSlackTurn(
 
   if (isSlackReactionAddedEvent(payload.event)) {
     const event = payload.event;
+    if (isSlackSystemUser(event.user)) {
+      return { status: 'ignored', reason: 'slack_system_user' };
+    }
     if (options.botUserId && event.user === options.botUserId) {
       return { status: 'ignored', reason: 'self_message' };
     }
@@ -68,6 +77,7 @@ export function normalizeSlackTurn(
     }
     return runnableTurn({
       payload,
+      slackIdentityId: options.slackIdentityId,
       channelId: event.item.channel,
       text: `Reacted :${event.reaction}: to the Slack message at ${event.item.ts}.`,
       userId: event.user,
@@ -94,6 +104,9 @@ export function normalizeSlackTurn(
   if (!event.user) {
     return { status: 'ignored', reason: 'missing_user' };
   }
+  if (isSlackSystemUser(event.user)) {
+    return { status: 'ignored', reason: 'slack_system_user' };
+  }
   if (options.botUserId && event.user === options.botUserId) {
     return { status: 'ignored', reason: 'self_message' };
   }
@@ -107,6 +120,7 @@ export function normalizeSlackTurn(
   if (options.botUserId && event.text.includes(`<@${options.botUserId}>`)) {
     return runnableTurn({
       payload,
+      slackIdentityId: options.slackIdentityId,
       channelId: event.channel,
       text: event.text,
       userId: event.user,
@@ -125,6 +139,7 @@ export function normalizeSlackTurn(
 
     return runnableTurn({
       payload,
+      slackIdentityId: options.slackIdentityId,
       channelId: event.channel,
       text: event.text,
       userId: event.user,
@@ -143,6 +158,7 @@ export function normalizeSlackTurn(
   if (!event.thread_ts) {
     return runnableTurn({
       payload,
+      slackIdentityId: options.slackIdentityId,
       channelId: event.channel,
       text: event.text,
       userId: event.user,
@@ -159,6 +175,7 @@ export function normalizeSlackTurn(
 
   return runnableTurn({
     payload,
+    slackIdentityId: options.slackIdentityId,
     channelId: event.channel,
     text: event.text,
     userId: event.user,
@@ -175,6 +192,7 @@ function runnableTurn(input: RunnableTurnInput): SlackTurnNormalization {
     workspaceId: input.payload.team_id,
     channelId: input.channelId,
     eventId: input.payload.event_id,
+    slackIdentityId: input.slackIdentityId,
     text: input.text,
     userId: input.userId,
     messageTs: input.messageTs,
@@ -219,4 +237,8 @@ function isChannelConversation(event: SlackMessageEvent): boolean {
 
 function isAppAuthoredMessage(event: SlackMessageEvent): boolean {
   return Boolean(event.bot_id || event.app_id || event.bot_profile?.app_id);
+}
+
+function isSlackSystemUser(userId: string): boolean {
+  return userId === 'USLACK' || userId === 'USLACKBOT';
 }

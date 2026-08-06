@@ -1,7 +1,18 @@
 import type { AssignmentLookupOptions } from './resolver.ts';
 import type { SettingsPatch } from './settings-store.ts';
-import type { ConfigAgentPatch, OAuthReauthorizationTarget } from './store.ts';
-import type { AgentSnapshot, ChannelAssignment, CustomAgentConfig } from './types.ts';
+import type {
+  ConfigAgentPatch,
+  OAuthReauthorizationTarget,
+  SlackIdentityPatch,
+} from './store.ts';
+import type {
+  AgentSnapshot,
+  ChannelAssignment,
+  CustomAgentConfig,
+  SlackIdentity,
+  SlackIdentityDmState,
+  SlackIdentityReferenceSummary,
+} from './types.ts';
 import type { MemoryRpcRequest, MemoryRpcResponse } from '../memory/types.ts';
 import type { RoutineRpcRequest, RoutineRpcResponse } from '../routines/types.ts';
 import type { UsageRpcRequest, UsageRpcResponse } from '../usage/types.ts';
@@ -28,6 +39,7 @@ import type {
   SlackRunPresentationV1,
   SlackPresentationSummary,
 } from '../slack/run-presentations.ts';
+import type { AppendAuditEvent, AuditEvent, AuditEventFilter } from '../audit/types.ts';
 
 export type { TurnJob } from '../slack/turn-job-types.ts';
 
@@ -55,6 +67,14 @@ export type StateRpcErrorCode =
   | 'unknown_agent'
   | 'agent_exists'
   | 'agent_still_assigned'
+  | 'agent_slack_dm_handler'
+  | 'agent_slack_identity_conflict'
+  | 'unknown_slack_identity'
+  | 'slack_identity_exists'
+  | 'slack_identity_still_referenced'
+  | 'slack_identity_revision_conflict'
+  | 'slack_identity_lifecycle'
+  | 'workspace_default_slack_identity_protected'
   | 'memory'
   | 'routine'
   | 'usage'
@@ -198,6 +218,66 @@ export interface TagStateRpc {
     channelId: string,
     options?: AssignmentLookupOptions,
   ): Promise<StateRpcResult<ChannelAssignment | null>>;
+  // -- config: Slack identities -------------------------------------------
+  configListSlackIdentities(): Promise<StateRpcResult<SlackIdentity[]>>;
+  configGetSlackIdentity(identityId: string): Promise<StateRpcResult<SlackIdentity>>;
+  configGetSlackIdentityByIngressKey(
+    ingressKey: string,
+  ): Promise<StateRpcResult<SlackIdentity | null>>;
+  configCreateSlackIdentity(identity: SlackIdentity): Promise<StateRpcResult<SlackIdentity>>;
+  configUpdateSlackIdentity(
+    identityId: string,
+    expectedRevision: number,
+    patch: SlackIdentityPatch,
+  ): Promise<StateRpcResult<SlackIdentity>>;
+  configListSlackIdentitiesForAgent(
+    agentId: string,
+  ): Promise<StateRpcResult<SlackIdentity[]>>;
+  configListAgentsForSlackIdentity(
+    identityId: string,
+  ): Promise<StateRpcResult<CustomAgentConfig[]>>;
+  configResolveSlackIdentityForAgent(agentId: string): Promise<StateRpcResult<SlackIdentity>>;
+  configGetSlackIdentityReferences(
+    identityId: string,
+  ): Promise<StateRpcResult<SlackIdentityReferenceSummary>>;
+  configSetSlackIdentityDmBinding(
+    identityId: string,
+    expectedRevision: number,
+    dmState: SlackIdentityDmState,
+    dmAgentId?: string,
+  ): Promise<StateRpcResult<SlackIdentity>>;
+  configCompleteSlackIdentitySetup(
+    identityId: string,
+    expectedRevision: number,
+    agentId?: string,
+    expectedAgentIdentityId?: string | null,
+  ): Promise<StateRpcResult<SlackIdentity>>;
+  configAttachAgentToSlackIdentity(
+    agentId: string,
+    identityId: string,
+    expectedIdentityRevision: number,
+    expectedAgentIdentityId: string | null,
+  ): Promise<StateRpcResult<CustomAgentConfig>>;
+  configRetireSlackIdentity(
+    identityId: string,
+    expectedRevision: number,
+  ): Promise<StateRpcResult<SlackIdentity>>;
+  configDeleteIncompleteSlackIdentity(
+    identityId: string,
+    expectedRevision: number,
+    credentialsErased: boolean,
+  ): Promise<StateRpcResult<boolean>>;
+  configPurgeRetiredSlackIdentity(
+    identityId: string,
+    expectedRevision: number,
+    credentialsErased: boolean,
+  ): Promise<StateRpcResult<boolean>>;
+  configAppendSlackIdentityAudit(
+    input: AppendAuditEvent,
+  ): Promise<StateRpcResult<AuditEvent>>;
+  configListSlackIdentityAuditEvents(
+    filter?: AuditEventFilter,
+  ): Promise<StateRpcResult<AuditEvent[]>>;
   // -- agent snapshots -----------------------------------------------------
   snapshotGet(threadKey: string): Promise<StateRpcResult<AgentSnapshot | null>>;
   snapshotPutIfAbsent(
@@ -257,7 +337,9 @@ export interface TagStateRpc {
   ): Promise<StateRpcResult<null>>;
   slackTurnRecoveryRequired(id: string, reason: string): Promise<StateRpcResult<null>>;
   slackTurnRecoveryList(limit: number): Promise<StateRpcResult<SlackTurnRecoveryItem[]>>;
+  slackIdentityRecoveryRetry(identityId: string): Promise<StateRpcResult<number>>;
   slackTurnRecoveryResolve(id: string): Promise<StateRpcResult<boolean>>;
+  slackIdentityPendingDeliveryCount(identityId: string): Promise<StateRpcResult<number>>;
   slackInteractionProgressRecord(
     id: string,
     patch: SlackInteractionProgressPatch,

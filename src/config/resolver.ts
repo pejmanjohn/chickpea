@@ -1,5 +1,10 @@
 import { DisabledAgentError, NoAssignmentError } from './errors.ts';
-import type { ChannelAssignment, CustomAgentConfig, ResolvedAssignment } from './types.ts';
+import {
+  WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+  type ChannelAssignment,
+  type CustomAgentConfig,
+  type ResolvedAssignment,
+} from './types.ts';
 
 // Store readers are async — the Cloudflare backend answers over Durable
 // Object RPC — and the Node SQLite stores resolve immediately.
@@ -69,6 +74,7 @@ export async function resolveAssignment(
     workspaceId,
     channelId,
     agentId: agent.id,
+    slackIdentityId: agent.slackIdentityId ?? WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
     ...(assignment.channelLabel ? { channelLabel: assignment.channelLabel } : {}),
     ...(assignment.channelPromptAddendum
       ? { channelPromptAddendum: assignment.channelPromptAddendum }

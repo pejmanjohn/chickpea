@@ -291,12 +291,16 @@ export interface SlackAuthTestResult {
   ok: boolean;
   /** Slack's machine error code when ok is false (e.g. 'invalid_auth'). */
   error: string | undefined;
+  /** Slack-provided retry delay for bounded truth reads, when available. */
+  retryAfterMs?: number;
   /** Slack app id for deep-linking install-wide identity settings. */
   appId?: string;
   teamId: string | undefined;
   teamName: string | undefined;
   botName: string | undefined;
   botUserId: string | undefined;
+  /** Present for bot installations; dedicated identities reject user tokens. */
+  botId?: string;
 }
 
 /**
@@ -336,6 +340,7 @@ function parseSlackAuthTest(body: Record<string, unknown>): SlackAuthTestResult 
     teamName: typeof body.team === 'string' ? body.team : undefined,
     botName: typeof body.user === 'string' ? body.user : undefined,
     botUserId: typeof body.user_id === 'string' ? body.user_id : undefined,
+    ...(typeof body.bot_id === 'string' ? { botId: body.bot_id } : {}),
   };
 }
 
@@ -399,13 +404,17 @@ export async function slackIdentityAuthTest(
     return {
       ok: false,
       error: result.error,
+      ...(result.retryAfterMs === undefined ? {} : { retryAfterMs: result.retryAfterMs }),
       teamId: undefined,
       teamName: undefined,
       botName: undefined,
       botUserId: undefined,
     };
   }
-  return parseSlackAuthTest(result.body);
+  return {
+    ...parseSlackAuthTest(result.body),
+    ...(result.retryAfterMs === undefined ? {} : { retryAfterMs: result.retryAfterMs }),
+  };
 }
 
 /** One Slack channel, mapped to the admin-facing shape the proxy returns. */

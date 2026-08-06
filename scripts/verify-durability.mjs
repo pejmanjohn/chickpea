@@ -146,7 +146,7 @@ const { SqliteRoutineStore } = await loadTsModule('src/routines/store.ts');
 const { hashRoutineValue } = await loadTsModule('src/routines/ids.ts');
 const backend = new FakeSlackBackend({
   slack: {
-    identity: { teamId: 'T_DEMO' },
+    identity: { appId: 'A_DEMO', teamId: 'T_DEMO', botUserId: 'U_BOT' },
     channels: [{ id: EXEC_CHANNEL, name: 'exec', isMember: true }],
     channelMembers: { [EXEC_CHANNEL]: ['U_ALICE', 'U_BOT'] },
     workspaceUsers: [

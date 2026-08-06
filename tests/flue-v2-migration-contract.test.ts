@@ -140,7 +140,7 @@ test('application and verification sources contain no removed beta runtime surfa
   assert.doesNotMatch(app, /app\.route\(['"]\/agents/);
 });
 
-test('authored Cloudflare reset preserves app state and replaces only beta Flue classes', async () => {
+test('authored Cloudflare reset preserves app state, replaces beta Flue classes, and enables traces', async () => {
   const { rawConfig } = await experimental_readRawConfig({
     config: path.join(ROOT, 'wrangler.jsonc'),
   });
@@ -171,7 +171,7 @@ test('authored Cloudflare reset preserves app state and replaces only beta Flue 
 });
 
 test(
-  'generated Cloudflare artifact contains only fresh Flue 2 bindings and no workflows',
+  'generated Cloudflare artifact contains fresh Flue 2 bindings, no workflows, and enabled traces',
   { skip: !existsSync(path.join(ROOT, 'dist-cf', 'chickpea', 'wrangler.json')) },
   async () => {
     const configPath = path.join(ROOT, 'dist-cf', 'chickpea', 'wrangler.json');

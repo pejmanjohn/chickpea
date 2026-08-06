@@ -2,6 +2,7 @@ import * as v from 'valibot';
 import type { WebClient } from '@slack/web-api';
 
 import type { PlatformEnv } from '../config/state-backend.ts';
+import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from '../config/types.ts';
 import { prepareMemoryTurn } from '../memory/runtime.ts';
 import { createSlackWebClient } from '../slack/run-turn.ts';
 import type { NormalizedSlackTurn } from '../slack/types.ts';
@@ -65,6 +66,7 @@ export async function prepareRoutinePrompt(
     workspaceId: routine.workspaceId,
     channelId: routine.channelId,
     eventId: run.id,
+    slackIdentityId: access.slackIdentityId ?? WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
     text: revision.taskText,
     userId: routine.creatorUserId,
     messageTs: slackTimestamp(run.scheduledFor),
@@ -74,7 +76,13 @@ export async function prepareRoutinePrompt(
   };
   const [context, memory] = await Promise.all([
     hydrateSlackContextViaWebClient(client, turn, { maxMessages: 20, maxPages: 1 }),
-    prepareMemoryTurn({ turn, platformEnv: env, client }),
+    prepareMemoryTurn({
+      turn,
+      platformEnv: env,
+      client,
+      botToken: access.botToken,
+      botUserId: access.botUserId,
+    }),
   ]);
   const ordinaryPrompt = assembleSlackPrompt(turn, context, {
     ...(memory.promptBlock ? { memoryBlock: memory.promptBlock } : {}),

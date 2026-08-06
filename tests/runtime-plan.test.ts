@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 
 import {
@@ -7,6 +8,7 @@ import {
   parseRuntimePlanV2,
   runtimePlanConversationKey,
   runtimePlanSandboxConversationKey,
+  type RuntimePlanV2,
 } from '../src/agents/runtime-plan.ts';
 import type { CustomAgentConfig, ResolvedAssignment } from '../src/config/types.ts';
 import { sandboxThreadKey } from '../src/sandbox/thread-key.ts';
@@ -158,6 +160,7 @@ test('a complete first-turn plan contains policy descriptors but no auth materia
 
   assert.equal(plan.schemaVersion, 2);
   assert.equal(plan.agentId, 'agent_runtime');
+  assert.equal(plan.slackIdentityId, 'slack_identity_default');
   assert.equal(plan.conversation.workspaceId, 'T_RUNTIME');
   assert.equal(plan.conversation.threadTs, '1783000000.000100');
   assert.equal(plan.conversation.surface, 'channel_thread');
@@ -196,6 +199,53 @@ test('a complete first-turn plan contains policy descriptors but no auth materia
   assert.match(plan.instructions, /sk-live-looking-but-not-secret/);
   assert.equal(parseRuntimePlanV2(structuredClone(plan)).harnessRevision, plan.harnessRevision);
 });
+
+test('Slack identity rotates new plans while legacy plans remain readable', () => {
+  const baseline = compile();
+  const dedicated = compile({
+    assignment: assignment({ slackIdentityId: 'slack_identity_finance' }),
+  });
+  assert.equal(dedicated.slackIdentityId, 'slack_identity_finance');
+  assert.notEqual(dedicated.harnessRevision, baseline.harnessRevision);
+
+  const legacy = structuredClone(baseline);
+  delete legacy.slackIdentityId;
+  legacy.harnessRevision = legacyHarnessRevision(legacy);
+  const parsed = parseRuntimePlanV2(legacy);
+  assert.equal(parsed.slackIdentityId, undefined);
+  assert.equal(parsed.harnessRevision, legacy.harnessRevision);
+});
+
+function legacyHarnessRevision(plan: RuntimePlanV2): string {
+  return createHash('sha256')
+    .update(canonicalJson({
+      schemaVersion: plan.schemaVersion,
+      continuityPolicy: plan.continuityPolicy,
+      agentId: plan.agentId,
+      model: plan.model,
+      instructions: plan.instructions,
+      memoryEpoch: plan.memoryEpoch,
+      skills: plan.skills,
+      mcpConnections: plan.mcpConnections,
+      apiConnections: plan.apiConnections,
+      repositories: plan.repositories,
+      sandbox: plan.sandbox,
+      artifactDestinationKind: plan.artifactDestination.kind,
+    }))
+    .digest('hex');
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
 
 test('equivalent key and set ordering produces one revision and instance id', () => {
   const first = compile();

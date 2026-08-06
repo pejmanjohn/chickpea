@@ -54,10 +54,17 @@ export async function handleMemoryCommand(input: {
   platformEnv: PlatformEnv | undefined;
   client: WebClient;
   presenter: WebClientPresenter;
+  botToken?: string;
+  botUserId?: string;
 }): Promise<boolean> {
   const leadingMention = hasLeadingSlackMention(input.turn.text);
   const resolvedBotUserId = leadingMention
-    ? await resolveCommandBotUserId(input.platformEnv, input.client)
+    ? await resolveCommandBotUserId(
+        input.platformEnv,
+        input.client,
+        input.botToken,
+        input.botUserId,
+      )
     : undefined;
   if (leadingMention && !resolvedBotUserId) return false;
   const command = parseMemoryCommand(input.turn.text, resolvedBotUserId);
@@ -80,6 +87,8 @@ export async function handleMemoryCommand(input: {
       input.client,
       state,
       resolvedBotUserId,
+      input.botToken,
+      input.botUserId,
     );
     responseText = await executeMemoryCommand(command, input.turn, runtime);
     committedReceipt = isReceiptBearingCommand(command);
@@ -111,12 +120,22 @@ export async function prepareMemoryTurn(input: {
   turn: NormalizedSlackTurn;
   platformEnv: PlatformEnv | undefined;
   client: WebClient;
+  botToken?: string;
+  botUserId?: string;
 }): Promise<PreparedMemoryTurn> {
   const baseKey = slackThreadKey(input.turn);
   try {
     const state = getMemoryStateStore(input.platformEnv);
     if (input.turn.source === 'dm_message') return memoryFree(baseKey);
-    const runtime = await resolveRuntime(input.turn, input.platformEnv, input.client, state);
+    const runtime = await resolveRuntime(
+      input.turn,
+      input.platformEnv,
+      input.client,
+      state,
+      undefined,
+      input.botToken,
+      input.botUserId,
+    );
     const entries = await runtime.service.list({ scope: runtime.scope });
     const selection = fitMemorySelectionToPrompt(runtime.scope, selectMemoryEntries({
       entries,
@@ -196,9 +215,13 @@ async function resolveRuntime(
   client: WebClient,
   state: MemoryStateStore,
   resolvedBotUserId?: string,
+  resolvedBotToken?: string,
+  identityBotUserId?: string,
 ): Promise<MemoryRuntime> {
   await runMemoryRetentionHousekeeping(state);
-  const credentials = await resolveSlackCredentials(platformEnv);
+  const credentials = resolvedBotToken
+    ? { botToken: resolvedBotToken, botUserId: identityBotUserId }
+    : await resolveSlackCredentials(platformEnv);
   if (!credentials.botToken) {
     throw new MemoryStateError('memory_slack_unavailable', 'Slack memory is unavailable.');
   }
@@ -603,9 +626,14 @@ export async function runMemoryRetentionHousekeeping(
 async function resolveCommandBotUserId(
   platformEnv: PlatformEnv | undefined,
   client: WebClient,
+  resolvedBotToken?: string,
+  resolvedBotUserId?: string,
 ): Promise<string | undefined> {
   try {
-    const credentials = await resolveSlackCredentials(platformEnv);
+    if (resolvedBotUserId) return resolvedBotUserId;
+    const credentials = resolvedBotToken
+      ? { botToken: resolvedBotToken, botUserId: undefined }
+      : await resolveSlackCredentials(platformEnv);
     if (credentials.botUserId) return credentials.botUserId;
     if (!credentials.botToken) return undefined;
     const auth = await client.auth.test();
