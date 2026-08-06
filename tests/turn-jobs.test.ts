@@ -484,6 +484,42 @@ test('dispatch-started jobs cannot be discarded and cross the 30-day backstop vi
   );
 });
 
+test('verified Slack identity reconnect reopens only matching unavailable-identity turns', () => {
+  const store = newStore();
+  const finance = job('finance-recovery');
+  finance.turn.slackIdentityId = 'slack_identity_finance';
+  finance.assignment.slackIdentityId = 'slack_identity_finance';
+  const legal = job('legal-recovery');
+  legal.turn.slackIdentityId = 'slack_identity_legal';
+  legal.assignment.slackIdentityId = 'slack_identity_legal';
+  const ambiguous = job('finance-ambiguous');
+  ambiguous.turn.slackIdentityId = 'slack_identity_finance';
+  ambiguous.assignment.slackIdentityId = 'slack_identity_finance';
+  const ledger = job('finance-ledger');
+  ledger.turn.slackIdentityId = 'slack_identity_finance';
+  ledger.assignment.slackIdentityId = 'slack_identity_finance';
+  ledger.executionAuthority = 'ledger';
+
+  store.enqueue(finance);
+  store.enqueue(legal);
+  store.enqueue(ambiguous);
+  store.enqueue(ledger);
+  store.markRecoveryRequired(finance.id, 'slack_identity_unavailable');
+  store.markRecoveryRequired(legal.id, 'slack_identity_unavailable');
+  store.markRecoveryRequired(ambiguous.id, 'continuity_notice_delivery_unknown');
+  store.markRecoveryRequired(ledger.id, 'slack_identity_unavailable');
+
+  assert.equal(store.retrySlackIdentityRecovery('slack_identity_finance'), 1);
+  assert.equal(store.retrySlackIdentityRecovery('slack_identity_finance'), 0);
+  assert.deepEqual(store.listPending().map((row) => row.id), [finance.id]);
+  assert.equal(store.listPending()[0]?.recoveryReason, undefined);
+  assert.deepEqual(store.listRecoveryRequired().map((row) => row.id).sort(), [
+    ambiguous.id,
+    ledger.id,
+    legal.id,
+  ]);
+});
+
 test('pending jobs come back in enqueue order', () => {
   let clock = 1;
   const store = newStore(() => clock);

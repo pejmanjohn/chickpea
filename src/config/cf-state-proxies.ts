@@ -568,6 +568,10 @@ export class CfSlackStateStore implements SlackStateStore {
     return unwrap(await this.stub.slackTurnRecoveryList(limit));
   }
 
+  async retrySlackIdentityRecovery(identityId: string) {
+    return unwrap(await this.stub.slackIdentityRecoveryRetry(identityId));
+  }
+
   async resolveTurnRecoveryRequired(id: string) {
     return unwrap(await this.stub.slackTurnRecoveryResolve(id));
   }

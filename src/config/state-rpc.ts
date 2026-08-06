@@ -337,6 +337,7 @@ export interface TagStateRpc {
   ): Promise<StateRpcResult<null>>;
   slackTurnRecoveryRequired(id: string, reason: string): Promise<StateRpcResult<null>>;
   slackTurnRecoveryList(limit: number): Promise<StateRpcResult<SlackTurnRecoveryItem[]>>;
+  slackIdentityRecoveryRetry(identityId: string): Promise<StateRpcResult<number>>;
   slackTurnRecoveryResolve(id: string): Promise<StateRpcResult<boolean>>;
   slackIdentityPendingDeliveryCount(identityId: string): Promise<StateRpcResult<number>>;
   slackInteractionProgressRecord(

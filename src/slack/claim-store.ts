@@ -143,6 +143,7 @@ export interface SlackStateStore extends SlackClaimStore, SlackThreadRegistry {
   markTurnError?(id: string): Promise<void>;
   markTurnRecoveryRequired?(id: string, reason: string): Promise<void>;
   listTurnRecoveryRequired?(limit?: number): Promise<SlackTurnRecoveryItem[]>;
+  retrySlackIdentityRecovery?(identityId: string): Promise<number>;
   resolveTurnRecoveryRequired?(id: string): Promise<boolean>;
   getRunPresentation?(runId: string): Promise<SlackRunPresentationV1 | undefined>;
   transitionRunPresentation?(
@@ -512,6 +513,10 @@ export class SqliteSlackStateStore implements SlackStateStore {
 
   async listTurnRecoveryRequired(limit = 50) {
     return this.turnJobs.listRecoveryRequired(limit);
+  }
+
+  async retrySlackIdentityRecovery(identityId: string) {
+    return this.turnJobs.retrySlackIdentityRecovery(identityId);
   }
 
   async resolveTurnRecoveryRequired(id: string) {

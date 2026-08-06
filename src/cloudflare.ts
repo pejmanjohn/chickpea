@@ -913,6 +913,16 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     return this.call((stores) => stores.turnJobs.listRecoveryRequired(limit));
   }
 
+  async slackIdentityRecoveryRetry(identityId: string) {
+    const result = this.call((stores) =>
+      stores.turnJobs.retrySlackIdentityRecovery(identityId),
+    );
+    if (result.ok && result.value > 0 && (await this.ctx.storage.getAlarm()) === null) {
+      await this.ctx.storage.setAlarm(Date.now() + RELAY_BATCH_WINDOW_MS);
+    }
+    return result;
+  }
+
   async slackTurnRecoveryResolve(id: string) {
     return this.call((stores) => stores.turnJobs.resolveRecoveryRequired(id));
   }

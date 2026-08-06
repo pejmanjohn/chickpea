@@ -117,6 +117,7 @@ export type SlackTurnIgnoreReason =
   | 'unsupported_event_type'
   | 'message_subtype'
   | 'bot_message'
+  | 'slack_system_user'
   | 'missing_user'
   | 'empty_text'
   | 'missing_thread_metadata'

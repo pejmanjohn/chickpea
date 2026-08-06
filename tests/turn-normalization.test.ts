@@ -60,6 +60,13 @@ test('Slack turn normalization classifies mentions, thread replies, DMs, and amb
   assert.equal(dm.turn.sessionThreadTs, 'dm');
   assert.equal(slackThreadKey(dm.turn), 'T_DEMO:D_DEMO_DM:dm');
 
+  for (const systemUser of ['USLACK', 'USLACKBOT']) {
+    assert.deepEqual(
+      normalizeSlackTurn(dmMessage({ event: { user: systemUser } }), options),
+      { status: 'ignored', reason: 'slack_system_user' },
+    );
+  }
+
   const topLevel = normalizeSlackTurn(topLevelChannelMessage(), options);
   assert.ok(topLevel.status === 'runnable');
   assert.equal(topLevel.turn.source, 'ambient_channel_message');

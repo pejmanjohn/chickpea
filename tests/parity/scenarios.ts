@@ -572,6 +572,10 @@ export const scenarios: Scenario[] = [
           event_id: 'Ev_MSG_SUBTYPE',
           event: { subtype: 'message_changed' },
         }),
+        dmMessage({
+          event_id: 'Ev_MSG_SLACK_SYSTEM',
+          event: { user: 'USLACK', text: 'You have been removed from a channel.' },
+        }),
         missingUser,
         channelThreadMessage({ event_id: 'Ev_MSG_EMPTY', event: { text: '   ' } }),
       ];

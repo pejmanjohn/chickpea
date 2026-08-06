@@ -723,6 +723,33 @@ export class TurnJobStoreLogic {
     }));
   }
 
+  /**
+   * Re-open only compatibility turns whose operator-recovery condition was the
+   * named Slack identity becoming unavailable. Reconnect proves fresh
+   * credentials before calling this method; immutable dispatch/settlement
+   * checkpoints and the attempt counter stay intact so the relay reattaches
+   * instead of paying for a second model run. Ledger-owned turns keep their
+   * Work recovery boundary until a coordinated Run + Turn recovery API exists.
+   */
+  retrySlackIdentityRecovery(identityId: string): number {
+    validateBoundedString(identityId, 'Slack identity id', 160);
+    return this.db.run(
+      `UPDATE turn_jobs
+       SET status = 'pending', recovery_reason = NULL
+       WHERE delivered = 0
+         AND status = 'recovery_required'
+         AND recovery_reason = 'slack_identity_unavailable'
+         AND execution_authority = 'legacy'
+         AND COALESCE(
+           json_extract(turn_json, '$.slackIdentityId'),
+           json_extract(assignment_json, '$.slackIdentityId'),
+           ?
+         ) = ?`,
+      WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+      identityId,
+    ).changes;
+  }
+
   /** Explicit operator terminalization; retained claims continue to dedupe. */
   resolveRecoveryRequired(id: string): boolean {
     validateBoundedString(id, 'TurnJob id', 200);

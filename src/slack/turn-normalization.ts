@@ -41,6 +41,9 @@ export function normalizeSlackTurn(
   }
 
   if (isSlackAppMentionEvent(payload.event)) {
+    if (isSlackSystemUser(payload.event.user)) {
+      return { status: 'ignored', reason: 'slack_system_user' };
+    }
     if (options.botUserId && payload.event.user === options.botUserId) {
       return { status: 'ignored', reason: 'self_message' };
     }
@@ -60,6 +63,9 @@ export function normalizeSlackTurn(
 
   if (isSlackReactionAddedEvent(payload.event)) {
     const event = payload.event;
+    if (isSlackSystemUser(event.user)) {
+      return { status: 'ignored', reason: 'slack_system_user' };
+    }
     if (options.botUserId && event.user === options.botUserId) {
       return { status: 'ignored', reason: 'self_message' };
     }
@@ -97,6 +103,9 @@ export function normalizeSlackTurn(
   }
   if (!event.user) {
     return { status: 'ignored', reason: 'missing_user' };
+  }
+  if (isSlackSystemUser(event.user)) {
+    return { status: 'ignored', reason: 'slack_system_user' };
   }
   if (options.botUserId && event.user === options.botUserId) {
     return { status: 'ignored', reason: 'self_message' };
@@ -228,4 +237,8 @@ function isChannelConversation(event: SlackMessageEvent): boolean {
 
 function isAppAuthoredMessage(event: SlackMessageEvent): boolean {
   return Boolean(event.bot_id || event.app_id || event.bot_profile?.app_id);
+}
+
+function isSlackSystemUser(userId: string): boolean {
+  return userId === 'USLACK' || userId === 'USLACKBOT';
 }

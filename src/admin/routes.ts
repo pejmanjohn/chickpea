@@ -3259,6 +3259,18 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           identity,
         );
       }
+      if (before.setupIntent?.reconnecting) {
+        const recoveryStore = slackState(c);
+        const retryRecovery = recoveryStore.retrySlackIdentityRecovery;
+        if (retryRecovery) {
+          const retried = await retryRecovery.call(recoveryStore, identity.id);
+          if (retried > 0) {
+            console.info(
+              `[chickpea] Requeued ${retried} Slack identity recovery turn(s) after reconnect`,
+            );
+          }
+        }
+      }
       return c.json({
         identity: await safeSlackIdentityResponse(c, identity),
         attachedProfileId: attachAgentId ?? null,
@@ -5285,6 +5297,7 @@ function effectiveConfigResponse(config: EffectiveSlackConfig): object {
     workspaceId: config.workspaceId,
     channelId: config.channelId,
     agentId: config.agentId,
+    slackIdentityId: config.slackIdentityId ?? WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
     profile: {
       id: config.agent.id,
       name: config.agent.name,
