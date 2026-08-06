@@ -84,7 +84,6 @@ type SlackIdentityAdminFixture = {
 };
 type SlackIdentitiesFixture = {
   identities: SlackIdentityAdminFixture[];
-  creationEnabled: boolean;
   globalDmAllowed: boolean;
 };
 type SlackChannelFixture = { id: string; name: string; isPrivate?: boolean; isMember?: boolean };
@@ -303,7 +302,7 @@ type ScheduledWorkFixture = {
     target: 'cloudflare' | 'node';
     available: boolean;
     enabled: boolean;
-    reason: 'enabled' | 'operator_disabled' | 'unsupported_target';
+    reason: 'enabled' | 'unsupported_target';
   };
   limits: Record<string, number>;
 };
@@ -653,7 +652,6 @@ function runAdminPageHarness(
         ],
       },
     ],
-    creationEnabled: true,
     globalDmAllowed: true,
   };
   const slackIdentityAttachError = options.slackIdentityAttachError;
@@ -2246,7 +2244,6 @@ function multiSlackIdentitiesFixture(): SlackIdentitiesFixture {
         profiles: [{ id: opsAgent.id, name: opsAgent.name, enabled: true }],
       },
     ],
-    creationEnabled: true,
     globalDmAllowed: true,
   };
 }
@@ -2585,21 +2582,6 @@ test('identity detail separates Slack appearance, DM confirmation, reconnect, an
   assert.match(harness.app.innerHTML, /No Profile&#39;s Replies as selection was changed/);
   assert.equal(financeIdentity.setupSourceProfileId, null);
   assert.equal(financeIdentity.setupReconnecting, false);
-});
-
-test('base rollout keeps dedicated cleanup visible but hides creation', async () => {
-  const identities = multiSlackIdentitiesFixture();
-  identities.creationEnabled = false;
-  const harness = runAdminPageHarness({
-    initialPath: '/admin/settings/slack/identities',
-    slackIdentities: identities,
-  });
-  await flushAsync();
-
-  assert.doesNotMatch(harness.app.innerHTML, />Add Slack identity<\/button>/);
-  assert.match(harness.app.innerHTML, /Dedicated identity creation is paused by rollout/);
-  assert.match(harness.app.innerHTML, /Paused by rollout/);
-  assert.match(harness.app.innerHTML, /data-action="slack-identity-open-detail" data-identity="slack_identity_finance"/);
 });
 
 test('Slack identity loading never blocks core admin rendering', async () => {

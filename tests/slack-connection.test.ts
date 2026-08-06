@@ -15,7 +15,6 @@ import {
   invalidateSlackBotUserIdCache,
   resolveBotUserId,
 } from '../src/channels/slack.ts';
-import { resolveSlackIdentityMode } from '../src/slack/behavior-settings.ts';
 import { SqliteSettingsStore, type SettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import type { SlackIdentity } from '../src/config/types.ts';
@@ -181,7 +180,6 @@ const NO_SLACK_ENV: NodeJS.ProcessEnv = {
   SLACK_TAG_UNASSIGNED_HINT: undefined,
   SLACK_TAG_WELCOME_ON_JOIN: undefined,
   SLACK_TAG_AMBIENT_PARTICIPATION: undefined,
-  SLACK_TAG_IDENTITY_MODE: undefined,
   // requestOrigin() honors SLACK_TAG_PUBLIC_URL as an operator pin; clear it so
   // the request-derived origin tests are hermetic against the dev shell.
   SLACK_TAG_PUBLIC_URL: undefined,
@@ -1947,14 +1945,6 @@ test('events route echoes a url_verification challenge before any signing secret
   );
 });
 
-test('Slack identity mode defaults closed and requires an explicit multi value', async () => {
-  await withEnv({ SLACK_TAG_IDENTITY_MODE: undefined }, async () => {
-    assert.equal(resolveSlackIdentityMode(), 'base');
-    assert.equal(resolveSlackIdentityMode({ SLACK_TAG_IDENTITY_MODE: 'multi' }), 'multi');
-    assert.equal(resolveSlackIdentityMode({ SLACK_TAG_IDENTITY_MODE: 'unexpected' }), 'base');
-  });
-});
-
 test('scoped identity ingress records one bounded pending challenge and rejects secretless events', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'chickpea-slack-identity-ingress-pending-'));
   const path = join(directory, 'state.db');
@@ -2211,16 +2201,6 @@ test('scoped ingress verifies the selected identity secret and binds app plus wo
             });
           assert.equal(validResponse.status, 200, await validResponse.clone().text());
 
-          const db = new DatabaseSync(path);
-          try {
-            assert.equal(
-              db.prepare('SELECT COUNT(*) AS count FROM turn_jobs').get()?.count,
-              0,
-              'base mode acknowledges dedicated callbacks without durable work',
-            );
-          } finally {
-            db.close();
-          }
         } finally {
           config.close();
           settings.close();
@@ -2395,7 +2375,7 @@ test('a verified non-selected identity exits before claims, Work, or Slack API r
   }
 });
 
-test('multi mode admits only a connected selected dedicated identity that is in the channel', async (t) => {
+test('a connected selected dedicated identity is admitted only while it is in the channel', async (t) => {
   const skip = await loopbackListenSkipReason();
   if (skip) {
     t.skip(skip);
@@ -2411,7 +2391,6 @@ test('multi mode admits only a connected selected dedicated identity that is in 
         TAG_DB_PATH: path,
         SLACK_STATE_DB_PATH: path,
         SLACK_API_URL: fake.baseUrl,
-        SLACK_TAG_IDENTITY_MODE: 'multi',
       },
       async () => {
         const config = new SqliteConfigStore(path);
@@ -2556,7 +2535,6 @@ test('scoped identity DMs use each app DM Profile and honor per-identity DMs off
         TAG_DB_PATH: path,
         SLACK_STATE_DB_PATH: path,
         SLACK_API_URL: fake.baseUrl,
-        SLACK_TAG_IDENTITY_MODE: 'multi',
         SLACK_TAG_LEDGER_CANARY_CHANNELS: 'T_ACME/D_FINANCE,T_ACME/D_LEGAL,T_ACME/D_SILENT',
       },
       async () => {

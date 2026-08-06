@@ -3926,7 +3926,7 @@ test('Slack identity Admin resources are gated, bounded, and secret-free', async
     const unauthorized = await app.request('/admin/api/slack-identities');
     assert.equal(unauthorized.status, 401);
 
-    await withEnv({ SLACK_TAG_IDENTITY_MODE: 'multi' }, async () => {
+    await withEnv({}, async () => {
       const created = await app.request('https://chickpea.acme.test/admin/api/slack-identities', {
         method: 'POST',
         headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
@@ -4001,9 +4001,8 @@ test('Slack identity Admin resources are gated, bounded, and secret-free', async
       assert.doesNotMatch(bodyText, /ingressKey|botToken|signingSecret|xox[bp]-/);
       const listBody = JSON.parse(bodyText) as {
         identities: Array<Record<string, unknown>>;
-        creationEnabled: boolean;
       };
-      assert.equal(listBody.creationEnabled, true);
+      assert.equal(Object.hasOwn(listBody, 'creationEnabled'), false);
       assert.equal(listBody.identities.length, 2);
       assert.equal(listBody.identities[0]?.kind, 'workspace_default');
       assert.equal(listBody.identities[0]?.credentialsWritable, false);
@@ -4035,7 +4034,7 @@ test('Slack identity Admin resources are gated, bounded, and secret-free', async
       { appName: 'Finance', displayName: 'x'.repeat(81) },
     ]) {
       const invalid = await withEnv(
-        { SLACK_TAG_IDENTITY_MODE: 'multi' },
+        {},
         () => app.request('/admin/api/slack-identities', {
           method: 'POST',
           headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
@@ -4112,7 +4111,7 @@ test('Profile-origin identity setup replaces its captured prior identity and rej
     );
     const app = appWithAdminOptions(store, { settings });
     const created = await withEnv(
-      { SLACK_TAG_IDENTITY_MODE: 'multi' },
+      {},
       () => app.request('/admin/api/slack-identities', {
         method: 'POST',
         headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
@@ -4348,7 +4347,7 @@ test('Slack identity DM and Profile mutations are explicit and stale-write fence
     await store.createSlackIdentity(identity);
     const app = appWithAdminOptions(store, { settings });
     const attached = await withEnv(
-      { SLACK_TAG_IDENTITY_MODE: 'multi' },
+      {},
       () => app.request(
         '/admin/api/slack-identities/slack_identity_finance/profiles/agent_legal',
         {
@@ -4463,7 +4462,7 @@ test('Slack identity preflight is Profile-mutation-free and requires wildcard ac
       '/admin/api/slack-identities/slack_identity_legal/profiles/agent_finance';
 
     const blocked = await withEnv(
-      { SLACK_TAG_IDENTITY_MODE: 'multi' },
+      {},
       () => app.request(endpoint, {
         method: 'POST',
         headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
@@ -4480,7 +4479,7 @@ test('Slack identity preflight is Profile-mutation-free and requires wildcard ac
     assert.equal((await store.getAgent('agent_finance')).slackIdentityId, financeIdentity.id);
 
     const ready = await withEnv(
-      { SLACK_TAG_IDENTITY_MODE: 'multi' },
+      {},
       () => app.request(endpoint, {
         method: 'POST',
         headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
@@ -4566,7 +4565,6 @@ test('Slack identity preflight names every concrete channel missing the selected
     const app = appWithAdminOptions(store, { settings });
     const response = await withEnv(
       {
-        SLACK_TAG_IDENTITY_MODE: 'multi',
         SLACK_API_URL: `${fake.url}/api/`,
       },
       () => app.request(
@@ -4873,7 +4871,7 @@ test('Slack identity audit records each Profile attachment at the same identity 
     const app = appWithAdminOptions(store, { settings });
     for (const profileId of ['agent_finance', 'agent_legal']) {
       const response = await withEnv(
-        { SLACK_TAG_IDENTITY_MODE: 'multi' },
+        {},
         () => app.request(
           `/admin/api/slack-identities/${identity.id}/profiles/${profileId}`,
           {

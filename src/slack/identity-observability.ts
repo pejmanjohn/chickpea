@@ -5,7 +5,6 @@ export type SlackIdentityOperationalOperation =
   | 'egress_unavailable'
   | 'fanout_ignored'
   | 'ingress_rejected'
-  | 'rollout_paused'
   | 'setup_handshake';
 
 export type SlackIdentityOperationalOutcome =

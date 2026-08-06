@@ -4,7 +4,7 @@ export interface RoutineCapability {
   target: 'cloudflare' | 'node';
   available: boolean;
   enabled: boolean;
-  reason: 'enabled' | 'operator_disabled' | 'unsupported_target';
+  reason: 'enabled' | 'unsupported_target';
 }
 
 export interface RoutineScheduledController {
@@ -27,30 +27,20 @@ export function createRoutineScheduledHandler(input: {
 } {
   return {
     scheduled(controller, env, context): void {
-      const flag = env.TAG_ROUTINES_ENABLED;
-      const capability = resolveRoutineCapability({
-        cloudflare: true,
-        ...(typeof flag === 'string' ? { enabledFlag: flag } : {}),
-      });
       const owner = `heartbeat:${controller.scheduledTime}`;
       const tasks: Promise<unknown>[] = [];
-      // Generic Work recovery/retention is independent from proactive Routine
-      // enablement and cannot dispatch an agent, call a model, or deliver Slack output.
+      // Generic Work recovery/retention cannot dispatch an agent, call a model,
+      // or deliver Slack output; the Routine heartbeat is tracked alongside it.
       if (input.maintenance) {
         tasks.push(input.maintenance(controller.scheduledTime, env));
       }
-      if (capability.enabled) {
-        tasks.push(input.heartbeat(controller.scheduledTime, owner, env));
-      }
-      if (tasks.length > 0) context.waitUntil(Promise.all(tasks));
+      tasks.push(input.heartbeat(controller.scheduledTime, owner, env));
+      context.waitUntil(Promise.all(tasks));
     },
   };
 }
 
-export function resolveRoutineCapability(input: {
-  cloudflare: boolean;
-  enabledFlag?: string;
-}): RoutineCapability {
+export function resolveRoutineCapability(input: { cloudflare: boolean }): RoutineCapability {
   if (!input.cloudflare) {
     return {
       target: 'node',
@@ -59,12 +49,11 @@ export function resolveRoutineCapability(input: {
       reason: 'unsupported_target',
     };
   }
-  const enabled = input.enabledFlag === '1';
   return {
     target: 'cloudflare',
     available: true,
-    enabled,
-    reason: enabled ? 'enabled' : 'operator_disabled',
+    enabled: true,
+    reason: 'enabled',
   };
 }
 
@@ -73,12 +62,6 @@ export function requireRoutineScheduling(capability: RoutineCapability): void {
     throw new RoutineStateError(
       'routines_unavailable_on_target',
       'Routine scheduling is currently available only on Cloudflare deployments.',
-    );
-  }
-  if (!capability.enabled) {
-    throw new RoutineStateError(
-      'routines_disabled',
-      'Routine scheduling is disabled by the deployment operator.',
     );
   }
 }

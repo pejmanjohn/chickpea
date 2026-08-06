@@ -31,7 +31,6 @@ import {
 } from '../config/types.ts';
 import {
   resolveSlackBehaviorSettings,
-  resolveSlackIdentityMode,
 } from '../slack/behavior-settings.ts';
 import {
   classifySlackInteraction,
@@ -469,18 +468,6 @@ function handleSlackEventsForIdentity(
       return;
     }
 
-    if (identity.kind === 'dedicated' && resolveSlackIdentityMode(platformEnv) === 'base') {
-      recordSlackIdentityOperationalEvent({
-        operation: 'rollout_paused',
-        identityId: identity.id,
-        ...(identity.appId ? { appId: identity.appId } : {}),
-        lifecycle: identity.lifecycle,
-        outcome: 'ignored',
-        failureClass: 'base_mode',
-        fallbackPrevented: true,
-      });
-      return;
-    }
     if (identity.kind === 'dedicated' && identity.lifecycle !== 'connected') {
       return;
     }

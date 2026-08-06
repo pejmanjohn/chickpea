@@ -8,15 +8,15 @@ import {
 } from '../src/routines/scheduler-adapter.ts';
 import { RoutineStateError } from '../src/routines/types.ts';
 
-test('routine scheduling is Cloudflare-only and operator-disabled by default', () => {
+test('routine scheduling is permanently enabled on Cloudflare and unavailable on Node', () => {
   assert.deepEqual(resolveRoutineCapability({ cloudflare: true }), {
-    target: 'cloudflare', available: true, enabled: false, reason: 'operator_disabled',
+    target: 'cloudflare', available: true, enabled: true, reason: 'enabled',
   });
-  assert.deepEqual(resolveRoutineCapability({ cloudflare: false, enabledFlag: '1' }), {
+  assert.deepEqual(resolveRoutineCapability({ cloudflare: false }), {
     target: 'node', available: false, enabled: false, reason: 'unsupported_target',
   });
   assert.doesNotThrow(() => requireRoutineScheduling(
-    resolveRoutineCapability({ cloudflare: true, enabledFlag: '1' }),
+    resolveRoutineCapability({ cloudflare: true }),
   ));
   assert.throws(
     () => requireRoutineScheduling(resolveRoutineCapability({ cloudflare: false })),
@@ -25,7 +25,7 @@ test('routine scheduling is Cloudflare-only and operator-disabled by default', (
   );
 });
 
-test('Cloudflare scheduled handler returns before heartbeat work while default-off', async () => {
+test('Cloudflare scheduled handler always runs routine heartbeat work', async () => {
   let calls = 0;
   const waited: Promise<unknown>[] = [];
   const handler = createRoutineScheduledHandler({
@@ -38,19 +38,12 @@ test('Cloudflare scheduled handler returns before heartbeat work while default-o
     {},
     { waitUntil: (promise) => waited.push(promise) },
   );
-  assert.equal(calls, 0);
-  assert.equal(waited.length, 0);
-
-  handler.scheduled(
-    { scheduledTime: Date.UTC(2026, 6, 27, 12, 1) },
-    { TAG_ROUTINES_ENABLED: '1' },
-    { waitUntil: (promise) => waited.push(promise) },
-  );
   await Promise.all(waited);
   assert.equal(calls, 1);
+  assert.equal(waited.length, 1);
 });
 
-test('Cloudflare scheduled handler runs generic Work maintenance while Routines stay disabled', async () => {
+test('Cloudflare scheduled handler composes routine heartbeat with generic Work maintenance', async () => {
   let routineCalls = 0;
   let maintenanceCalls = 0;
   const waited: Promise<unknown>[] = [];
@@ -64,10 +57,10 @@ test('Cloudflare scheduled handler runs generic Work maintenance while Routines 
   });
   handler.scheduled(
     { scheduledTime: Date.UTC(2026, 6, 27, 12) },
-    { TAG_ROUTINES_ENABLED: '0' },
+    {},
     { waitUntil: (promise) => waited.push(promise) },
   );
   await Promise.all(waited);
   assert.equal(maintenanceCalls, 1);
-  assert.equal(routineCalls, 0);
+  assert.equal(routineCalls, 1);
 });
