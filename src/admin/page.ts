@@ -1774,7 +1774,7 @@ details[open].advanced summary::before {
     profileError: "",
     // Safe identity summaries for Profile selection. The workspace default is
     // always rendered even if this auxiliary collection endpoint is unavailable.
-    slackIdentities: { identities: [], creationEnabled: false, globalDmAllowed: true },
+    slackIdentities: { identities: [], globalDmAllowed: true },
     slackIdentityScreen: "list",
     slackIdentitySelectedId: "",
     slackIdentityDetail: null,
@@ -5122,9 +5122,7 @@ details[open].advanced summary::before {
       options += '<option value="' + esc(identity.id) + '"' + (selectedValue === identity.id ? " selected" : "") + '>' +
         esc(slackIdentityMention(identity)) + (identity.health === "degraded" ? " — needs attention" : "") + '</option>';
     });
-    if (state.slackIdentities && state.slackIdentities.creationEnabled) {
-      options += '<option value="' + NEW_SLACK_IDENTITY_VALUE + '"' + (selectedValue === NEW_SLACK_IDENTITY_VALUE ? " selected" : "") + '>New Slack identity…</option>';
-    }
+    options += '<option value="' + NEW_SLACK_IDENTITY_VALUE + '"' + (selectedValue === NEW_SLACK_IDENTITY_VALUE ? " selected" : "") + '>New Slack identity…</option>';
 
     var details = "";
     if (selectedValue === NEW_SLACK_IDENTITY_VALUE) {
@@ -5638,12 +5636,8 @@ details[open].advanced summary::before {
   function scheduledCapabilityHtml(capability) {
     if (!capability) return '';
     if (capability.enabled) return '';
-    var title = capability.enabled ? "Scheduling enabled" : capability.reason === "unsupported_target" ? "Scheduling unavailable on this target" : "Scheduling disabled by operator";
-    var detail = capability.enabled
-      ? "Cloudflare heartbeat admission is active. Routine controls and run history remain available here."
-      : capability.reason === "unsupported_target"
-        ? "This installation is running on Node. Routine definitions remain inspectable, but automatic scheduling is Cloudflare-only in this release."
-        : "This Cloudflare installation has TAG_ROUTINES_ENABLED turned off. Definitions remain inspectable; no automatic occurrences are admitted.";
+    var title = "Scheduling unavailable on this target";
+    var detail = "This installation is running on Node. Routine definitions remain inspectable, but automatic scheduling is Cloudflare-only in this release.";
     var limits = state.scheduledLimits;
     var summary = limits ? '<p class="hint" style="margin:5px 0 0;">Minimum ' + Number(limits.minimumIntervalMinutes) +
       ' minutes · ' + Number(limits.concurrentDeploymentRuns) + ' concurrent runs · ' +
@@ -6717,12 +6711,7 @@ details[open].advanced summary::before {
     return '<a class="btn btn-soft btn-sm" href="' + esc(identity.consoleUrl) + '" target="_blank" rel="noopener noreferrer">Change avatar image in Slack &nearr;</a>';
   }
 
-  function identityRolloutPaused(identity) {
-    return identity && identity.kind === "dedicated" && !state.slackIdentities.creationEnabled && identity.lifecycle !== "retired";
-  }
-
   function managedIdentityStatus(identity) {
-    if (identityRolloutPaused(identity)) return "Paused by rollout";
     if (identity.kind === "workspace_default" && identity.lifecycle === "setup_incomplete") return "Not connected";
     if (identity.lifecycle === "setup_incomplete") return "Setup incomplete";
     if (identity.lifecycle === "credentials_pending") return "Signing secret unverified";
@@ -6780,9 +6769,7 @@ details[open].advanced summary::before {
   function slackIdentityListHtml() {
     var identities = state.slackIdentities.identities || [];
     var rows = identities.map(slackIdentityListRowHtml).join("");
-    var create = state.slackIdentities.creationEnabled
-      ? '<button type="button" class="btn btn-primary i-lead" data-action="slack-identity-create-open">' + icon("plus") + 'Add Slack identity</button>'
-      : '<span class="hint">Dedicated identity creation is paused by rollout. Existing identities and cleanup remain available.</span>';
+    var create = '<button type="button" class="btn btn-primary i-lead" data-action="slack-identity-create-open">' + icon("plus") + 'Add Slack identity</button>';
     return '<div class="section-head"><div><h1 class="page-title">Slack identities</h1>' +
       '<p class="hint">Manage the Slack apps Chickpea can reply through. Profiles choose an identity under Replies as.</p></div>' + create + '</div>' +
       (state.slackIdentityNotice ? '<p class="inline-status" role="status">' + esc(state.slackIdentityNotice) + '</p>' : '') +
@@ -6872,7 +6859,6 @@ details[open].advanced summary::before {
     }
     var identity = state.slackIdentityDetail.identity;
     var isDefault = identity.kind === "workspace_default";
-    var paused = identityRolloutPaused(identity);
     var observed = identity.observedAt ? new Date(identity.observedAt).toLocaleString() : "Not refreshed yet";
     var consoleLink = slackIdentityAvatarSettingsLinkHtml(identity);
     var dmOptions = enabledIdentityProfileOptions(state.slackIdentityDmDraft.dmAgentId);
@@ -6890,7 +6876,6 @@ details[open].advanced summary::before {
     var retireBody = isDefault ? '<p class="hint">The workspace-default identity cannot be retired. Disconnect it from the Slack workspace overview after every credentialed dedicated identity is canceled or retired.</p>' : identity.lifecycle === "retired" ? '<p class="hint">This non-secret tombstone remains while old thread snapshots and delivery references can still name it. The Slack app was not uninstalled or revoked.</p>' : '<p class="hint">Local retirement deletes Chickpea&rsquo;s credentials but does not uninstall or revoke the Slack app. Old frozen threads may become unavailable.</p>' + (blockers.length ? '<p class="field-error">Before retiring: ' + esc(blockers.join(", ")) + '.</p>' : '') + '<button type="button" class="btn btn-danger btn-sm" data-action="slack-identity-retire-open"' + (blockers.length || state.slackIdentityBusy ? " disabled" : "") + '>Retire locally</button>';
     return '<button type="button" class="btn btn-ghost btn-sm" data-action="slack-identities-back">&larr; All identities</button>' +
       '<div class="section-head"><div style="display:flex; align-items:center; gap:12px;">' + managedIdentityAvatarHtml(identity) + '<div><h1 class="page-title">@' + esc(identity.displayName || "Chickpea") + '</h1><p class="hint">' + (isDefault ? "Workspace default" : "Dedicated Slack app") + '</p></div></div>' + managedIdentityBadgeHtml(identity) + '</div>' +
-      (paused ? '<div class="callout">Paused by rollout. It remains visible for repair and cleanup, but callbacks do not create work and Chickpea never falls back to @Chickpea.</div>' : '') +
       (state.slackIdentityNotice ? '<p class="inline-status" role="status">' + esc(state.slackIdentityNotice) + '</p>' : '') +
       (state.slackIdentityActionError ? '<p class="field-error" role="alert">' + esc(state.slackIdentityActionError) + '</p>' : '') +
       '<div class="identity-detail-grid"><section class="section"><div class="section-head"><div><h2 class="section-title">Appearance</h2><p class="hint">Slack is the source of truth.</p></div></div><div class="kv"><dt>Last refreshed</dt><dd>' + esc(observed) + '</dd></div><div class="action-well">' + consoleLink + '<button type="button" class="btn btn-ghost btn-sm" data-action="slack-identity-detail-refresh"' + (state.slackIdentityBusy ? " disabled" : "") + '>' + icon("arrow-path") + 'Refresh</button></div></section>' +
@@ -8833,7 +8818,7 @@ details[open].advanced summary::before {
         return { scopes: null, error: error.serverMessage || error.message || "Could not load memory counts." };
       }),
       api("/admin/api/slack-identities").catch(function () {
-        return { identities: [], creationEnabled: false, globalDmAllowed: true };
+        return { identities: [], globalDmAllowed: true };
       })
     ]).then(function (parts) {
       state.agents = parts[0].agents || [];
@@ -8845,7 +8830,7 @@ details[open].advanced summary::before {
       state.slackBehaviorBusy = "";
       state.memoryScopes = parts[5].scopes;
       state.memoryScopesError = parts[5].error;
-      state.slackIdentities = parts[6] || { identities: [], creationEnabled: false, globalDmAllowed: true };
+      state.slackIdentities = parts[6] || { identities: [], globalDmAllowed: true };
       if (state.active) {
         var assignment = activeAssignment();
         if (assignment) {
@@ -9089,7 +9074,7 @@ details[open].advanced summary::before {
     if (action === "cancel-add-channel") { state.addChannelOpen = false; state.addChannelManual = false; state.addChannelError = ""; state.addChannelAgentId = ""; render(); }
     if (action === "refresh-channels") { loadSlackChannels(true); }
     if (action === "slack-identity-refresh") { loadSlackIdentity(true, true); }
-    if (action === "slack-identity-create-open" && state.slackIdentities.creationEnabled) {
+    if (action === "slack-identity-create-open") {
       resetSlackIdentityManagement("create");
       render();
     }

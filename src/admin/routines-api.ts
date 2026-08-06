@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { Hono, type Context } from 'hono';
 import * as v from 'valibot';
 
-import { isCloudflareTarget, type PlatformEnv } from '../config/state-backend.ts';
+import { isCloudflareTarget } from '../config/state-backend.ts';
 import { RoutineService } from '../routines/service.ts';
 import { routineOperatorLimits } from '../routines/limits.ts';
 import {
@@ -490,12 +490,7 @@ function safeAuditEvent(event: Awaited<ReturnType<RoutineStore['listAuditEvents'
 
 function capabilityFor(c: Context, options: RoutineAdminApiOptions): RoutineCapability {
   if (options.capability) return options.capability(c);
-  const env = c.env as PlatformEnv | undefined;
-  const flag = env?.TAG_ROUTINES_ENABLED;
-  return resolveRoutineCapability({
-    cloudflare: isCloudflareTarget(),
-    ...(typeof flag === 'string' ? { enabledFlag: flag } : {}),
-  });
+  return resolveRoutineCapability({ cloudflare: isCloudflareTarget() });
 }
 
 function parseSafeMetadata(raw: string): Record<string, unknown> {

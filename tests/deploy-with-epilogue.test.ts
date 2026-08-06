@@ -59,7 +59,6 @@ function runHarness(
   envOverrides: NodeJS.ProcessEnv = {},
 ) {
   const env = { ...process.env };
-  delete env.SLACK_AGENT_VIEW_CUTOVER_AUTHORIZED;
   Object.assign(env, envOverrides);
   return spawnSync(process.execPath, [harness.script, ...args], {
     cwd: harness.root,
@@ -80,7 +79,6 @@ function writeCutoverArtifact(
   harness: ReturnType<typeof createHarness>,
   options: {
     cron?: boolean;
-    routinesEnabled?: boolean;
     routineAgents?: boolean;
     selector?: string;
     completeCanary?: boolean;
@@ -106,7 +104,6 @@ function writeCutoverArtifact(
     compatibility_date: options.compatibilityDate ?? '2026-06-01',
     observability: { enabled: true, traces: { enabled: options.tracing ?? true } },
     vars: {
-      TAG_ROUTINES_ENABLED: options.routinesEnabled ? '1' : '0',
       SLACK_TAG_LEDGER_CANARY_CHANNELS: options.selector ?? '',
     },
     triggers: { crons: options.cron === false ? [] : ['* * * * *'] },
@@ -160,7 +157,7 @@ function writeRoutineArtifact(
   harness: ReturnType<typeof createHarness>,
   options: { cron?: boolean; routineAgents?: boolean } = {},
 ) {
-  writeCutoverArtifact(harness, { ...options, routinesEnabled: true });
+  writeCutoverArtifact(harness, options);
 }
 
 function writeCanaryArtifact(
@@ -198,44 +195,37 @@ test('deploy skip-build flag stays private while dry-run still reaches Wrangler'
   assert.deepEqual(commands(harness.logPath), ['wrangler:["deploy","--dry-run"]']);
 });
 
-test('preflight-only validates the generated cutover artifact without invoking Wrangler', (context) => {
+test('preflight-only validates the permanent generated artifact without invoking Wrangler', (context) => {
   const harness = createHarness();
   context.after(() => rmSync(harness.root, { recursive: true, force: true }));
 
   const result = runHarness(harness, ['--skip-build', '--preflight-only']);
 
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /cutover preflight passed/);
+  assert.match(result.stdout, /Permanent Cloudflare capability preflight passed/);
   assert.equal(existsSync(harness.logPath), false);
 });
 
-test('Agent View source refuses a real deploy without explicit cutover authorization', (context) => {
+test('Agent View is the permanent manifest contract and deploys without a cutover latch', (context) => {
   const harness = createHarness();
   context.after(() => rmSync(harness.root, { recursive: true, force: true }));
 
-  const denied = runHarness(harness, ['--skip-build']);
+  const result = runHarness(harness, ['--skip-build']);
 
-  assert.equal(denied.status, 1);
-  assert.match(denied.stderr, /SLACK_AGENT_VIEW_CUTOVER_AUTHORIZED=1/);
-  assert.equal(existsSync(harness.logPath), false);
-
-  const authorized = runHarness(
-    harness,
-    ['--skip-build'],
-    { SLACK_AGENT_VIEW_CUTOVER_AUTHORIZED: '1' },
-  );
-  assert.equal(authorized.status, 0, authorized.stderr);
+  assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(commands(harness.logPath), ['wrangler:["deploy"]']);
 });
 
-test('Agent View deploy guard fails closed for unreadable, malformed, and dual-view manifests', (context) => {
+test('Agent View manifest validation fails closed for unreadable, malformed, dual-view, and legacy manifests', (context) => {
   const missing = createHarness();
   const malformed = createHarness();
   const dualView = createHarness();
+  const legacy = createHarness();
   context.after(() => {
     rmSync(missing.root, { recursive: true, force: true });
     rmSync(malformed.root, { recursive: true, force: true });
     rmSync(dualView.root, { recursive: true, force: true });
+    rmSync(legacy.root, { recursive: true, force: true });
   });
   rmSync(path.join(missing.root, 'slack-app-manifest.json'));
   writeFileSync(path.join(malformed.root, 'slack-app-manifest.json'), '{not-json');
@@ -243,10 +233,15 @@ test('Agent View deploy guard fails closed for unreadable, malformed, and dual-v
     path.join(dualView.root, 'slack-app-manifest.json'),
     JSON.stringify({ features: { agent_view: {}, assistant_view: {} } }),
   );
+  writeFileSync(
+    path.join(legacy.root, 'slack-app-manifest.json'),
+    JSON.stringify({ features: { assistant_view: { assistant_description: 'Legacy source' } } }),
+  );
 
   const missingResult = runHarness(missing, ['--skip-build']);
   const malformedResult = runHarness(malformed, ['--skip-build']);
   const dualViewResult = runHarness(dualView, ['--skip-build']);
+  const legacyResult = runHarness(legacy, ['--skip-build']);
 
   assert.equal(missingResult.status, 1);
   assert.match(missingResult.stderr, /Unable to validate the Slack manifest/);
@@ -254,23 +249,23 @@ test('Agent View deploy guard fails closed for unreadable, malformed, and dual-v
   assert.match(malformedResult.stderr, /Unable to validate the Slack manifest/);
   assert.equal(dualViewResult.status, 1);
   assert.match(dualViewResult.stderr, /agent_view and assistant_view cannot coexist/);
+  assert.equal(legacyResult.status, 1);
+  assert.match(legacyResult.stderr, /requires features\.agent_view/);
   assert.equal(existsSync(missing.logPath), false);
   assert.equal(existsSync(malformed.logPath), false);
   assert.equal(existsSync(dualView.logPath), false);
+  assert.equal(existsSync(legacy.logPath), false);
 });
 
-test('Agent View deploy guard validates the artifact used by skip-build', (context) => {
+test('Agent View validation fails closed when the generated artifact omits the permanent contract', (context) => {
   const harness = createHarness();
   context.after(() => rmSync(harness.root, { recursive: true, force: true }));
-  writeFileSync(
-    path.join(harness.root, 'slack-app-manifest.json'),
-    JSON.stringify({ features: { assistant_view: { assistant_description: 'Legacy source' } } }),
-  );
+  writeCutoverArtifact(harness, { agentViewArtifact: false });
 
-  const result = runHarness(harness, ['--skip-build']);
+  const result = runHarness(harness, ['--skip-build', '--preflight-only']);
 
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /SLACK_AGENT_VIEW_CUTOVER_AUTHORIZED=1/);
+  assert.match(result.stderr, /missing the permanent Agent View contract/);
   assert.equal(existsSync(harness.logPath), false);
 });
 
@@ -357,7 +352,7 @@ test('deploy rejects stale custom Wrangler config flags before any command runs'
   assert.equal(existsSync(harness.logPath), false);
 });
 
-test('enabled routines require Cron, state, and both fresh Flue 2 routine agents', (context) => {
+test('permanent routines require Cron, state, and both fresh Flue 2 routine agents', (context) => {
   const harness = createHarness();
   context.after(() => rmSync(harness.root, { recursive: true, force: true }));
   writeRoutineArtifact(harness);
@@ -368,7 +363,7 @@ test('enabled routines require Cron, state, and both fresh Flue 2 routine agents
   assert.deepEqual(commands(harness.logPath), ['wrangler:["deploy","--dry-run"]']);
 });
 
-test('deploy refuses an enabled routines artifact with a missing heartbeat', (context) => {
+test('deploy refuses the permanent routines artifact with a missing heartbeat', (context) => {
   const harness = createHarness();
   context.after(() => rmSync(harness.root, { recursive: true, force: true }));
   writeRoutineArtifact(harness, { cron: false });
@@ -376,12 +371,12 @@ test('deploy refuses an enabled routines artifact with a missing heartbeat', (co
   const result = runHarness(harness, ['--skip-build', '--dry-run']);
 
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /TAG_ROUTINES_ENABLED=1 is unsafe/);
+  assert.match(result.stderr, /Routine scheduling artifact is unsafe/);
   assert.match(result.stderr, /heartbeat Cron Trigger/);
   assert.equal(existsSync(harness.logPath), false);
 });
 
-test('deploy refuses enabled routines without both generated Flue 2 agents', (context) => {
+test('deploy refuses permanent routines without both generated Flue 2 agents', (context) => {
   const harness = createHarness();
   context.after(() => rmSync(harness.root, { recursive: true, force: true }));
   writeRoutineArtifact(harness, { routineAgents: false });

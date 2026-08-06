@@ -136,7 +136,7 @@ export async function handleRoutineSlackRequest(
 ): Promise<string | undefined> {
   const store = dependencies.store ?? getRoutineStore(env);
   const now = dependencies.now ?? Date.now;
-  const capability = dependencies.capability ?? routineCapability(env);
+  const capability = dependencies.capability ?? routineCapability();
   const canManageChannel = dependencies.canManageChannel ?? canManageRoutineChannel;
   const botToken = dependencies.identityContext?.botToken;
   const commandContext: RoutineCommandExecutionContext = {
@@ -597,12 +597,8 @@ async function scopedRoutine(
     : undefined;
 }
 
-function routineCapability(env: PlatformEnv | undefined): RoutineCapability {
-  const flag = env?.TAG_ROUTINES_ENABLED;
-  return resolveRoutineCapability({
-    cloudflare: isCloudflareTarget(),
-    ...(typeof flag === 'string' ? { enabledFlag: flag } : {}),
-  });
+function routineCapability(): RoutineCapability {
+  return resolveRoutineCapability({ cloudflare: isCloudflareTarget() });
 }
 
 function definitionFromRoutine(

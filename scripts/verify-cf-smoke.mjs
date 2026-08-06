@@ -172,10 +172,6 @@ function verifyBuildArtifacts() {
     'built wrangler.json carries exactly one heartbeat Cron Trigger',
   );
   check(
-    config.vars?.TAG_ROUTINES_ENABLED === '0',
-    'routine admission remains off by default in the built artifact',
-  );
-  check(
     !Object.hasOwn(config.vars ?? {}, 'TAG_OPENAI_SUBSCRIPTION_ENABLED'),
     'built artifact exposes no OpenAI Subscription preview gate',
   );
@@ -646,20 +642,21 @@ async function main() {
     );
 
     const wireBeforeHeartbeat = backend.wireLog.length;
-    const disabledHeartbeat = await fetch(`${baseUrl}/cdn-cgi/handler/scheduled?cron=*+*+*+*+*`);
+    const heartbeat = await fetch(`${baseUrl}/cdn-cgi/handler/scheduled?cron=*+*+*+*+*`);
     await delay(100);
     const scheduledWork = await adminFetch(baseUrl, '/admin/api/audit/scheduled_work/routines');
     check(
-      disabledHeartbeat.status === 200 && backend.wireLog.length === wireBeforeHeartbeat,
-      'disabled heartbeat performs no Slack or model work',
-      `HTTP ${disabledHeartbeat.status} wireDelta=${backend.wireLog.length - wireBeforeHeartbeat}`,
+      heartbeat.status === 200 && backend.wireLog.length === wireBeforeHeartbeat,
+      'empty permanent heartbeat performs no Slack or model work',
+      `HTTP ${heartbeat.status} wireDelta=${backend.wireLog.length - wireBeforeHeartbeat}`,
     );
     check(
       scheduledWork.status === 200 &&
-        scheduledWork.body?.capability?.reason === 'operator_disabled' &&
+        scheduledWork.body?.capability?.reason === 'enabled' &&
+        scheduledWork.body?.capability?.enabled === true &&
         Array.isArray(scheduledWork.body?.routines) &&
         scheduledWork.body.routines.length === 0,
-      'Scheduled Work reports the Cloudflare capability as operator-disabled',
+      'Scheduled Work reports the Cloudflare capability as permanently enabled',
       `HTTP ${scheduledWork.status} reason=${String(scheduledWork.body?.capability?.reason)}`,
     );
 

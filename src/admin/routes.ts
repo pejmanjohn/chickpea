@@ -204,7 +204,6 @@ import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from '../config/types.ts';
 import {
   envManagedSlackBehaviorKeys,
   resolveSlackBehaviorSettings,
-  resolveSlackIdentityMode,
   saveSlackBehaviorSettings,
   type SlackBehaviorPatch,
 } from '../slack/behavior-settings.ts';
@@ -3024,8 +3023,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       c.header('Cache-Control', 'no-store');
       return c.json({
         identities: responses,
-        creationEnabled:
-          resolveSlackIdentityMode(c.env as PlatformEnv | undefined) === 'multi',
         globalDmAllowed: behavior.allowDms.value,
       });
     } catch (error) {
@@ -3034,12 +3031,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   });
 
   app.post('/admin/api/slack-identities', async (c) => {
-    if (resolveSlackIdentityMode(c.env as PlatformEnv | undefined) !== 'multi') {
-      return c.json({
-        error: 'slack_identity_mode_base',
-        message: 'Dedicated Slack identity creation is not enabled for this installation.',
-      }, 409);
-    }
     const parsed = v.safeParse(slackIdentityCreateSchema, await readJson(c.req));
     if (!parsed.success) return invalidRequest(c);
     try {
@@ -3353,10 +3344,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const agentId = c.req.param('agentId');
       if (!isSlackIdentityId(identityId) || !AGENT_ID_PATTERN.test(agentId)) {
         return invalidRequest(c);
-      }
-      if (resolveSlackIdentityMode(c.env as PlatformEnv | undefined) !== 'multi' &&
-          identityId !== WORKSPACE_DEFAULT_SLACK_IDENTITY_ID) {
-        return c.json({ error: 'slack_identity_mode_base' }, 409);
       }
       const parsed = v.safeParse(
         slackIdentityAttachProfileSchema,

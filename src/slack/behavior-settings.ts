@@ -20,7 +20,6 @@ export interface SlackBehaviorSetting {
 
 export type SlackBehaviorSettings = Record<SlackBehaviorKey, SlackBehaviorSetting>;
 export type SlackBehaviorPatch = Partial<Record<SlackBehaviorKey, boolean>>;
-export type SlackIdentityMode = 'base' | 'multi';
 
 export const SLACK_BEHAVIOR_SETTING_KEYS: Record<SlackBehaviorKey, string> = {
   allowDms: 'slack.behavior.allowDms',
@@ -39,17 +38,6 @@ export const SLACK_BEHAVIOR_ENV_KEYS: Record<SlackBehaviorKey, string> = {
   progressiveStreaming: 'SLACK_TAG_PROGRESSIVE_STREAMING',
   nativeTasks: 'SLACK_TAG_NATIVE_TASKS',
 };
-
-export const SLACK_IDENTITY_MODE_ENV_KEY = 'SLACK_TAG_IDENTITY_MODE';
-
-/** Dedicated identity admission is opt-in; unknown values stay fail-closed. */
-export function resolveSlackIdentityMode(env?: PlatformEnv): SlackIdentityMode {
-  const platformValue = env?.[SLACK_IDENTITY_MODE_ENV_KEY];
-  const raw = typeof platformValue === 'string'
-    ? platformValue
-    : process.env[SLACK_IDENTITY_MODE_ENV_KEY];
-  return raw?.trim().toLowerCase() === 'multi' ? 'multi' : 'base';
-}
 
 /**
  * Keep the original env-knob semantics: behavior is on unless the configured

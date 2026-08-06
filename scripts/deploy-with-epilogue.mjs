@@ -28,8 +28,6 @@ const cliArgs = process.argv.slice(2);
 const deployArgs = cliArgs.filter((arg) => !['--skip-build', '--preflight-only'].includes(arg));
 const skipBuild = cliArgs.includes('--skip-build');
 const preflightOnly = cliArgs.includes('--preflight-only');
-const agentViewCutoverAuthorized =
-  process.env.SLACK_AGENT_VIEW_CUTOVER_AUTHORIZED === '1';
 
 const BETA_FLUE_CLASSES = Object.freeze([
   'FlueRegistry',
@@ -62,11 +60,7 @@ if (hasCustomConfigFlag(deployArgs)) {
   process.exit(1);
 }
 
-const AGENT_VIEW_CUTOVER_ERROR =
-  'Agent View cutover is one-way. Refusing to deploy Agent View-only source until ' +
-  'SLACK_AGENT_VIEW_CUTOVER_AUTHORIZED=1 is set for the separately approved coordinated cutover.';
-
-function sourceUsesAgentViewOnly() {
+function validateAgentViewManifest() {
   const manifestPath = path.join(projectRoot, 'slack-app-manifest.json');
   let manifest;
   try {
@@ -82,19 +76,18 @@ function sourceUsesAgentViewOnly() {
       'Slack manifest is invalid for deployment: agent_view and assistant_view cannot coexist.',
     );
   }
-  return hasAgentView;
+  if (!hasAgentView) {
+    throw new Error(
+      'Slack manifest requires features.agent_view as the permanent app-home contract.',
+    );
+  }
 }
 
-const nonDeployingCheck = preflightOnly || deployArgs.includes('--dry-run');
-if (!nonDeployingCheck) {
-  try {
-    if (sourceUsesAgentViewOnly() && !agentViewCutoverAuthorized) {
-      throw new Error(AGENT_VIEW_CUTOVER_ERROR);
-    }
-  } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
-    process.exit(1);
-  }
+try {
+  validateAgentViewManifest();
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(1);
 }
 
 if (!skipBuild) {
@@ -126,13 +119,6 @@ function builtConfigPath() {
     /* a disabled or not-yet-built capability has nothing to validate */
   }
   return undefined;
-}
-
-function cliEnablesRoutines() {
-  return deployArgs.some((arg, index) => {
-    const value = arg === '--var' ? deployArgs[index + 1] : arg.startsWith('--var=') ? arg.slice(6) : '';
-    return /^TAG_ROUTINES_ENABLED[:=]1$/.test(value ?? '');
-  });
 }
 
 function sortedUnique(values) {
@@ -246,9 +232,8 @@ function cliVariable(name) {
   return undefined;
 }
 
-function validateEnabledRoutineArtifact(artifact) {
+function validateRoutineArtifact(artifact) {
   const { config, bundle } = artifact;
-  if (config.vars?.TAG_ROUTINES_ENABLED !== '1' && !cliEnablesRoutines()) return;
   const failures = [];
   const crons = config.triggers?.crons ?? [];
   if (crons.length !== 1 || crons[0] !== '* * * * *') failures.push('one * * * * * heartbeat Cron Trigger');
@@ -275,8 +260,8 @@ function validateEnabledRoutineArtifact(artifact) {
   }
   if (failures.length) {
     throw new Error(
-      'TAG_ROUTINES_ENABLED=1 is unsafe for this artifact; missing ' + failures.join(', ') + '. ' +
-      'Deploy with routines disabled, repair the artifact, and verify the heartbeat before enabling.',
+      'Routine scheduling artifact is unsafe; missing ' + failures.join(', ') + '. ' +
+      'Repair the artifact and verify the heartbeat before deployment.',
     );
   }
 }
@@ -311,22 +296,19 @@ function validateLedgerCanaryArtifact(artifact) {
   }
 }
 
-function validateAgentViewCutoverArtifact(artifact) {
-  if (
-    !nonDeployingCheck &&
-    artifact.bundle.includes('agent_view') &&
-    artifact.bundle.includes('agent_description') &&
-    !agentViewCutoverAuthorized
-  ) {
-    throw new Error(AGENT_VIEW_CUTOVER_ERROR);
+function validateAgentViewArtifact(artifact) {
+  if (!artifact.bundle.includes('agent_view') || !artifact.bundle.includes('agent_description')) {
+    throw new Error(
+      'Generated Cloudflare artifact is missing the permanent Agent View contract.',
+    );
   }
 }
 
 try {
   const artifact = requireBuiltArtifact();
-  validateAgentViewCutoverArtifact(artifact);
+  validateAgentViewArtifact(artifact);
   validateFlue2CutoverArtifact(artifact);
-  validateEnabledRoutineArtifact(artifact);
+  validateRoutineArtifact(artifact);
   validateLedgerCanaryArtifact(artifact);
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));
@@ -334,7 +316,7 @@ try {
 }
 
 if (preflightOnly) {
-  process.stdout.write('Flue 2 generated cutover preflight passed. No deployment was attempted.\n');
+  process.stdout.write('Permanent Cloudflare capability preflight passed. No deployment was attempted.\n');
   process.exit(0);
 }
 
