@@ -2431,6 +2431,7 @@ test('dedicated setup resumes without returned secrets and completes the signed 
   assert.doesNotMatch(harness.app.innerHTML, /Change avatar image in Slack/);
   assert.doesNotMatch(harness.app.innerHTML, /xoxb-live-secret|signing-live-secret/);
   click({ target: actionTarget({ 'data-action': 'slack-identity-credentials-open' }) });
+  assert.match(harness.app.innerHTML, /Reinstall to Workspace/);
   submit({
     preventDefault() {},
     target: submitTarget(
@@ -7688,6 +7689,7 @@ test('admin page renders the first-run Connect stepper when credentials are miss
   // Step 2: the two paired paste fields + the live-validation hint.
   assert.match(harness.app.innerHTML, /name="botToken"/);
   assert.match(harness.app.innerHTML, /name="signingSecret"/);
+  assert.match(harness.app.innerHTML, /Reinstall to Workspace/);
   assert.match(harness.app.innerHTML, /first real Slack event/);
 });
 

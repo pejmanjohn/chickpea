@@ -111,6 +111,24 @@ test('real identity preflight binds the app and classifies Slack authorization f
     assert.equal(context.botUserId, 'U_FINANCE');
     await verifySlackIdentityTurnAccess(context, turn());
 
+    // Slack's documented auth.test response omits app_id. The bootstrap-owned
+    // app binding remains valid as long as the live workspace and bot user
+    // still match; only an explicit conflicting app_id is a repair condition.
+    authBody = {
+      ok: true,
+      team_id: 'T_ACME',
+      team: 'Acme Inc',
+      user: 'Finance',
+      user_id: 'U_FINANCE',
+      bot_id: 'B_FINANCE',
+    };
+    const documentedAuthContext = await resolveSlackIdentityExecutionContext(
+      IDENTITY_ID,
+      undefined,
+      { config, settings },
+    );
+    assert.equal(documentedAuthContext.botUserId, 'U_FINANCE');
+
     conversationBody = { ok: false, error: 'not_in_channel' };
     await assert.rejects(
       () => verifySlackIdentityTurnAccess(context, turn()),

@@ -347,20 +347,31 @@ const scopedIdentityEventsHandler: SlackRouteHandler = async (c, next) => {
   const candidate = await resolveSlackIngressCandidate(stores.config, ingressKey);
   if (!candidate.found) return c.json({ error: 'slack_identity_unknown' }, 401);
 
+  // Pending dedicated identities may already have a stored signing secret.
+  // Keep their ingress on the bounded challenge recorder until setup is
+  // complete so Slack's Retry action replaces an expired handshake instead of
+  // being acknowledged without leaving an envelope for the admin verifier.
+  // The recorder accepts only url_verification payloads; event callbacks still
+  // fail closed while the identity is unavailable.
+  if (
+    candidate.identity.kind === 'dedicated' &&
+    (candidate.identity.lifecycle === 'setup_incomplete' ||
+      candidate.identity.lifecycle === 'credentials_pending')
+  ) {
+    return handlePendingSlackIdentityChallenge(
+      c.req.raw,
+      candidate.identity,
+      stores.settings,
+    );
+  }
+
   const credentials = await resolveSlackIdentityCredentials(
     candidate.identity.id,
     platformEnv,
     stores.settings,
   );
   if (!credentials.signingSecret) {
-    if (candidate.identity.kind !== 'dedicated') {
-      return c.json({ error: 'slack_not_configured' }, 401);
-    }
-    return handlePendingSlackIdentityChallenge(
-      c.req.raw,
-      candidate.identity,
-      stores.settings,
-    );
+    return c.json({ error: 'slack_not_configured' }, 401);
   }
 
   const route = channelForIdentity(

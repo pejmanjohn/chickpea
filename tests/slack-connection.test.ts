@@ -2042,6 +2042,82 @@ test('scoped identity ingress records one bounded pending challenge and rejects 
   }
 });
 
+test('scoped identity ingress records a retried challenge after credentials are stored', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-slack-identity-ingress-retry-'));
+  const path = join(directory, 'state.db');
+  try {
+    await withEnv(
+      { ...NO_SLACK_ENV, TAG_DB_PATH: path, SLACK_STATE_DB_PATH: path },
+      async () => {
+        const config = new SqliteConfigStore(path);
+        const settings = new SqliteSettingsStore(path);
+        try {
+          const identity = await config.createSlackIdentity(pendingIdentity({
+            lifecycle: 'credentials_pending',
+            teamId: 'T_ACME',
+            appId: 'A0FINANCE',
+            botUserId: 'U_FINANCE',
+            credentialProvenance: 'stored',
+            connectionRevision: 1,
+            health: 'healthy',
+          }));
+          await writeSlackIdentityCredentials(settings, identity.id, null, {
+            botToken: 'xoxb-finance',
+            signingSecret: 'finance-secret',
+            botUserId: 'U_FINANCE',
+          });
+          const app = await identityIngressApp();
+          const url = `/channels/slack/events/${identity.ingressKey}`;
+          const challenge = signedSlackEvent('finance-secret', {
+            type: 'url_verification',
+            challenge: 'challenge-finance-retry',
+          });
+
+          const accepted = await app.request(url, {
+            method: 'POST',
+            headers: challenge.headers,
+            body: challenge.body,
+          });
+          assert.equal(accepted.status, 200, await accepted.clone().text());
+          assert.deepEqual(await accepted.json(), { challenge: 'challenge-finance-retry' });
+          assert.equal(
+            (await readPendingSlackChallenge(settings, identity.id))?.rawBody,
+            challenge.body,
+          );
+
+          const event = signedSlackEvent('finance-secret', {
+            type: 'event_callback',
+            api_app_id: 'A0FINANCE',
+            team_id: 'T_ACME',
+            event_id: 'Ev_PENDING_RETRY',
+            event: { type: 'app_mention' },
+          });
+          const denied = await app.request(url, {
+            method: 'POST',
+            headers: event.headers,
+            body: event.body,
+          });
+          assert.equal(denied.status, 401);
+
+          const connected = await completeSlackIdentityConnection({
+            config,
+            settings,
+            identityId: identity.id,
+            expectedRevision: identity.connectionRevision,
+          });
+          assert.equal(connected.lifecycle, 'connected');
+          assert.equal(await readPendingSlackChallenge(settings, identity.id), undefined);
+        } finally {
+          config.close();
+          settings.close();
+        }
+      },
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('scoped ingress verifies the selected identity secret and binds app plus workspace', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'chickpea-slack-identity-ingress-bound-'));
   const path = join(directory, 'state.db');

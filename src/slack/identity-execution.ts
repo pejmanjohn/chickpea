@@ -144,7 +144,12 @@ export async function resolveSlackIdentityExecutionContext(
   if (identity.teamId && identity.teamId !== auth.teamId) {
     throw new SlackIdentityUnavailableError(identityId, 'workspace_mismatch');
   }
-  if (identity.appId && identity.appId !== auth.appId) {
+  // Slack's documented auth.test response does not guarantee app_id. Bind it
+  // when Slack supplies one, but do not turn an omitted optional field into a
+  // false mismatch: the stored app id was established during bootstrap from
+  // users.info, and the workspace plus bot-user checks still fence the
+  // credential to that installation.
+  if (identity.appId && auth.appId && identity.appId !== auth.appId) {
     throw new SlackIdentityUnavailableError(identityId, 'app_identity_mismatch');
   }
   if (identity.botUserId && identity.botUserId !== auth.botUserId) {

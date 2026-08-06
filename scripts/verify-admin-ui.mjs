@@ -70,6 +70,7 @@ async function readEffectiveConfig(app) {
 }
 
 let store;
+let settings;
 let memory;
 let routines;
 let usage;
@@ -79,6 +80,7 @@ try {
   const { Hono } = await import('hono');
   const { createAdminRoutes } = await loadTsModule('src/admin/routes.ts');
   const { SqliteConfigStore } = await loadTsModule('src/config/store.ts');
+  const { SqliteSettingsStore } = await loadTsModule('src/config/settings-store.ts');
   const { SqliteMemoryStateStore } = await loadTsModule('src/memory/store.ts');
   const { SqliteRoutineStore } = await loadTsModule('src/routines/store.ts');
   const { RoutineService } = await loadTsModule('src/routines/service.ts');
@@ -86,6 +88,7 @@ try {
   const { SqliteWorkStore } = await loadTsModule('src/work/store.ts');
   const statePath = join(mkdtempSync(join(tmpdir(), 'chickpea-admin-ui-')), 'state.db');
   store = new SqliteConfigStore(statePath, { agents: [], assignments: [] });
+  settings = new SqliteSettingsStore(statePath);
   memory = new SqliteMemoryStateStore(statePath);
   routines = new SqliteRoutineStore(statePath);
   usage = new SqliteUsageStore(statePath);
@@ -225,6 +228,7 @@ try {
     '/',
     createAdminRoutes({
       store,
+      settings,
       memory,
       routines,
       usage,
@@ -473,6 +477,7 @@ try {
   record('verification harness', false, error instanceof Error ? error.message : String(error));
 } finally {
   store?.close();
+  settings?.close();
   memory?.close();
   routines?.close();
   usage?.close();
