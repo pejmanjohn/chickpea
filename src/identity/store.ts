@@ -36,6 +36,7 @@ import type {
   IdentityStore,
   Invitation,
   Membership,
+  MembershipAccessOverlay,
   Organization,
   OwnerClaim,
   PersonalTokenRecord,
@@ -235,6 +236,11 @@ export class IdentityStoreLogic {
         return { kind: 'auth_operation', operation: this.consumeAuthOperation(request.input) };
       case 'revoke_auth_operation':
         return { kind: 'auth_operation', operation: this.revokeAuthOperation(request.operationId) };
+      case 'get_membership_access_overlay':
+        return {
+          kind: 'membership_access_overlay',
+          overlay: this.getMembershipAccessOverlay(request.membershipId) ?? null,
+        };
       case 'ensure_organization':
         return { kind: 'organization', organization: this.ensureOrganization(request.input) };
       case 'get_organization':
@@ -404,6 +410,24 @@ export class IdentityStoreLogic {
       throw identityError('auth_control_conflict', 'Authentication control changed concurrently.');
     }
     return this.requiredAuthControl(current.installationId);
+  }
+
+  getMembershipAccessOverlay(membershipId: string): MembershipAccessOverlay | undefined {
+    const row = this.db.get(
+      `SELECT membership_id, organization_id, access_status, membership_version,
+              created_at, updated_at
+       FROM identity_membership_access_overlays WHERE membership_id = ?`,
+      strictText(membershipId, 'membershipId', 256),
+    ) as Record<string, unknown> | undefined;
+    if (!row) return undefined;
+    return {
+      membershipId: String(row.membership_id),
+      organizationId: String(row.organization_id),
+      accessStatus: row.access_status === 'suspended' ? 'suspended' : 'active',
+      membershipVersion: Number(row.membership_version),
+      createdAt: Number(row.created_at),
+      updatedAt: Number(row.updated_at),
+    };
   }
 
   createAuthOperation(input: CreateAuthOperationInput): AuthOperation {
@@ -1754,6 +1778,9 @@ export class SqliteIdentityStore implements IdentityStore {
     return this.logic.consumeAuthOperation(input);
   }
   async revokeAuthOperation(operationId: string) { return this.logic.revokeAuthOperation(operationId); }
+  async getMembershipAccessOverlay(membershipId: string) {
+    return this.logic.getMembershipAccessOverlay(membershipId);
+  }
   async ensureOrganization(input: EnsureOrganizationInput) { return this.logic.ensureOrganization(input); }
   async getOrganization() { return this.logic.getOrganization(); }
   async createOwnerClaim(input: CreateOwnerClaimInput) { return this.logic.createOwnerClaim(input); }

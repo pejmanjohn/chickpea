@@ -283,6 +283,11 @@ export class CfIdentityStore implements IdentityStore {
     if (response.kind !== 'auth_operation' || !response.operation) throw unexpectedIdentityResponse();
     return response.operation;
   }
+  async getMembershipAccessOverlay(membershipId: string) {
+    const response = await this.execute({ kind: 'get_membership_access_overlay', membershipId });
+    if (response.kind !== 'membership_access_overlay') throw unexpectedIdentityResponse();
+    return orUndefined(response.overlay);
+  }
   async ensureOrganization(input: EnsureOrganizationInput) {
     const response = await this.execute({ kind: 'ensure_organization', input });
     if (response.kind !== 'organization' || !response.organization) throw unexpectedIdentityResponse();

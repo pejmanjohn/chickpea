@@ -3,7 +3,17 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import { resolveStateDbPath } from '../state/node-state-db.ts';
-import type { BetterAuthDatabaseBackend } from './better-auth-backend.ts';
+import type {
+  BetterAuthDatabaseBackend,
+  BetterAuthMembershipRecord,
+  BetterAuthOrganizationRecord,
+  BetterAuthUserRecord,
+} from './better-auth-backend.ts';
+import {
+  mapBetterAuthMembership,
+  mapBetterAuthOrganization,
+  mapBetterAuthUser,
+} from './better-auth-backend.ts';
 
 interface CachedBackend {
   path: string;
@@ -44,6 +54,51 @@ export class NodeBetterAuthBackend implements BetterAuthDatabaseBackend {
        LIMIT 1`,
     ).get(email);
     return Boolean(row);
+  }
+
+  async getUser(userId: string): Promise<BetterAuthUserRecord | null> {
+    return mapBetterAuthUser(this.database.prepare(
+      'SELECT id, email, name, createdAt, updatedAt FROM "user" WHERE id = ? LIMIT 1',
+    ).get(userId));
+  }
+
+  async findUserByEmail(email: string): Promise<BetterAuthUserRecord | null> {
+    return mapBetterAuthUser(this.database.prepare(
+      'SELECT id, email, name, createdAt, updatedAt FROM "user" WHERE lower(email) = lower(?) LIMIT 1',
+    ).get(email));
+  }
+
+  async getOrganization(organizationId: string): Promise<BetterAuthOrganizationRecord | null> {
+    return mapBetterAuthOrganization(this.database.prepare(
+      'SELECT id, name, createdAt FROM organization WHERE id = ? LIMIT 1',
+    ).get(organizationId));
+  }
+
+  async getMembership(membershipId: string): Promise<BetterAuthMembershipRecord | null> {
+    return mapBetterAuthMembership(this.database.prepare(
+      'SELECT id, organizationId, userId, role, createdAt FROM member WHERE id = ? LIMIT 1',
+    ).get(membershipId));
+  }
+
+  async listMemberships(organizationId: string): Promise<BetterAuthMembershipRecord[]> {
+    return this.database.prepare(
+      `SELECT m.id, m.organizationId, m.userId, m.role, m.createdAt,
+              u.id AS joinedUserId, u.email AS joinedUserEmail,
+              u.name AS joinedUserName, u.createdAt AS joinedUserCreatedAt,
+              u.updatedAt AS joinedUserUpdatedAt
+       FROM member AS m JOIN "user" AS u ON u.id = m.userId
+       WHERE m.organizationId = ? ORDER BY m.createdAt, m.id`,
+    ).all(organizationId).map(mapBetterAuthMembership).filter(isPresent);
+  }
+
+  async getMembershipForUser(
+    userId: string,
+    organizationId: string,
+  ): Promise<BetterAuthMembershipRecord | null> {
+    return mapBetterAuthMembership(this.database.prepare(
+      `SELECT id, organizationId, userId, role, createdAt FROM member
+       WHERE userId = ? AND organizationId = ? LIMIT 1`,
+    ).get(userId, organizationId));
   }
 
   close(): void {
@@ -108,4 +163,8 @@ function parseStoredDate(value: number | string | null | undefined): Date | null
   const numeric = typeof value === 'number' ? value : Number(value);
   const date = new Date(Number.isFinite(numeric) ? numeric : value);
   return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function isPresent<T>(value: T | null): value is T {
+  return value !== null;
 }

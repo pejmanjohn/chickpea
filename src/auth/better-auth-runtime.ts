@@ -2,21 +2,13 @@ import { Hono, type Context } from 'hono';
 
 import {
   getIdentityStore,
-  isCloudflareTarget,
   type PlatformEnv,
 } from '../config/state-backend.ts';
 import type { IdentityStore } from '../identity/types.ts';
 import { createBetterAuthPublicHandler } from './better-auth-routes.ts';
-import {
-  D1BetterAuthBackend,
-  cloudflareLoginAllowed,
-  cloudflarePasswordPrimitive,
-  type CloudflareBetterAuthEnv,
-} from './better-auth-cloudflare.ts';
-import { getNodeBetterAuthBackend } from './better-auth-node.ts';
-import { nativePasswordPrimitive } from './password.ts';
+import { cloudflareLoginAllowed } from './better-auth-cloudflare.ts';
+import { resolveBetterAuthEnvironment } from './better-auth-environment.ts';
 import { AuthRateLimitError, AuthRateLimiter } from './rate-limit.ts';
-import { deriveBetterAuthSecret } from './recovery-secret.ts';
 import { requestAuthSourceKey } from './source-key.ts';
 
 interface BetterAuthRuntimeOptions {
@@ -46,35 +38,33 @@ async function dispatch(c: Context, options: BetterAuthRuntimeOptions): Promise<
     return new Response('Not Found', { status: 404 });
   }
 
-  const recoveryToken = options.recoveryToken ?? recoverySecret(platformEnv);
-  if (!recoveryToken) return Response.json({ error: 'auth_unavailable' }, { status: 503 });
-  const secret = await deriveBetterAuthSecret(recoveryToken);
+  const sourceKey = requestAuthSourceKey(c.req.raw, Boolean(platformEnv?.AUTH_DB));
+  const environment = await resolveBetterAuthEnvironment({
+    control,
+    platformEnv,
+    recoveryToken: options.recoveryToken,
+    passwordShardKey: sourceKey,
+  });
+  if (!environment) return Response.json({ error: 'auth_unavailable' }, { status: 503 });
 
-  if (isCloudflareTarget()) {
-    const env = cloudflareAuthEnv(platformEnv);
-    if (!env) return Response.json({ error: 'auth_unavailable' }, { status: 503 });
-    const sourceKey = requestAuthSourceKey(c.req.raw, true);
+  if (environment.cloudflareEnv) {
     const handler = createBetterAuthPublicHandler({
-      backend: new D1BetterAuthBackend(env.AUTH_DB),
-      baseURL: control.canonicalAdminOrigin,
-      secret,
-      password: cloudflarePasswordPrimitive(env, sourceKey),
-      loginAllowed: (source, email) => cloudflareLoginAllowed(env, source, email),
+      ...environment,
+      loginAllowed: (source, email) => cloudflareLoginAllowed(
+        environment.cloudflareEnv!, source, email,
+      ),
       sourceKey: (request) => requestAuthSourceKey(request, true),
     });
     return handler(c.req.raw);
   }
 
   const limiter = new AuthRateLimiter(identity, {
-    pepper: recoveryToken,
+    pepper: environment.recoveryToken,
     perKeyLimit: 10,
     globalLimit: 500,
   });
   const handler = createBetterAuthPublicHandler({
-    backend: getNodeBetterAuthBackend(),
-    baseURL: control.canonicalAdminOrigin,
-    secret,
-    password: nativePasswordPrimitive(),
+    ...environment,
     loginAllowed: async (source, email) => {
       try {
         await Promise.all([
@@ -97,21 +87,4 @@ async function dispatch(c: Context, options: BetterAuthRuntimeOptions): Promise<
     sourceKey: (request) => requestAuthSourceKey(request, false),
   });
   return handler(c.req.raw);
-}
-
-function recoverySecret(env: PlatformEnv | undefined): string | undefined {
-  const bound = env?.CHICKPEA_RECOVERY_TOKEN;
-  if (typeof bound === 'string' && bound) return bound;
-  const local = process.env.CHICKPEA_RECOVERY_TOKEN;
-  return local || undefined;
-}
-
-function cloudflareAuthEnv(env: PlatformEnv | undefined): CloudflareBetterAuthEnv | undefined {
-  if (!env || typeof env.CHICKPEA_RECOVERY_TOKEN !== 'string') return undefined;
-  const authDb = env.AUTH_DB as { prepare?: unknown } | undefined;
-  const authGuard = env.AUTH_GUARD as { getByName?: unknown } | undefined;
-  if (typeof authDb?.prepare !== 'function' || typeof authGuard?.getByName !== 'function') {
-    return undefined;
-  }
-  return env as unknown as CloudflareBetterAuthEnv;
 }

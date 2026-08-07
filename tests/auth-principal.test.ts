@@ -3,9 +3,17 @@ import { test } from 'node:test';
 
 import { AuthDeniedError, AuthService } from '../src/auth/service.ts';
 import type { Authenticator } from '../src/auth/types.ts';
+import { BetterAuthDirectory, BetterAuthSessionAuthenticator } from '../src/auth/better-auth-principal.ts';
+import { createBetterAuth } from '../src/auth/better-auth.ts';
+import { NodeBetterAuthBackend } from '../src/auth/better-auth-node.ts';
+import { nativePasswordPrimitive } from '../src/auth/password.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 
 const NOW = 1_786_100_000_000;
+const ORIGIN = 'https://app.example';
+const PASSWORD = 'several unrelated words 5729';
+const SECRET = Buffer.from(Uint8Array.from({ length: 32 }, (_, index) => (index * 41 + 7) % 256))
+  .toString('base64url');
 
 test('external authenticators normalize into active internal principals', async () => {
   const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
@@ -105,3 +113,104 @@ test('unknown external identities receive a uniform denial without persistence',
   assert.equal(auditJson.includes('assertion_unknown'), false);
   identity.close();
 });
+
+test('Better Auth sessions resolve through the stable principal boundary and recheck membership', async () => {
+  const backend = new NodeBetterAuthBackend(':memory:');
+  const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
+  const auth = createBetterAuth({
+    backend,
+    baseURL: ORIGIN,
+    secret: SECRET,
+    password: nativePasswordPrimitive(),
+    allowSignUp: true,
+  });
+  const signup = await auth.handler(jsonRequest('/api/auth/sign-up/email', {
+    email: 'owner@example.com', name: 'Owner', password: PASSWORD,
+  }));
+  assert.equal(signup.status, 200, await signup.clone().text());
+  const signupBody = await signup.json() as { user: { id: string } };
+  const organizationId = 'better-org';
+  const membershipId = 'better-member';
+  backend.database.prepare(
+    'INSERT INTO organization (id, name, slug, createdAt) VALUES (?, ?, ?, ?)',
+  ).run(organizationId, 'Chickpea', 'chickpea', NOW);
+  backend.database.prepare(
+    'INSERT INTO member (id, organizationId, userId, role, createdAt) VALUES (?, ?, ?, ?, ?)',
+  ).run(membershipId, organizationId, signupBody.user.id, 'owner', NOW);
+  const control = await identity.ensureAuthControl();
+  await identity.updateAuthControl({
+    expectedRevision: control.revision,
+    authMode: 'password_active',
+    canonicalAdminOrigin: ORIGIN,
+    betterAuthOrganizationId: organizationId,
+  });
+  let suspended = false;
+  const directory = new BetterAuthDirectory({
+    backend,
+    organizationId,
+    canonicalAdminOrigin: ORIGIN,
+    access: {
+      async getMembershipAccessOverlay(id) {
+        return suspended && id === membershipId ? {
+          membershipId,
+          organizationId,
+          accessStatus: 'suspended',
+          membershipVersion: 2,
+          createdAt: NOW,
+          updatedAt: NOW,
+        } : undefined;
+      },
+    },
+  });
+  const service = new AuthService({
+    identity,
+    passwordAuthenticator: new BetterAuthSessionAuthenticator({
+      backend,
+      directory,
+      organizationId,
+      baseURL: ORIGIN,
+      secret: SECRET,
+      password: nativePasswordPrimitive(),
+    }),
+  });
+  const cookie = (signup.headers.get('set-cookie') ?? '').split(';', 1)[0] ?? '';
+  const request = new Request(`${ORIGIN}/admin`, { headers: { cookie } });
+  const principal = await service.authenticateRequest(request);
+  assert.deepEqual({
+    userId: principal.userId,
+    membershipId: principal.membershipId,
+    organizationId: principal.organizationId,
+    role: principal.role,
+    authenticatorKind: principal.authenticatorKind,
+    machine: principal.machine,
+  }, {
+    userId: signupBody.user.id,
+    membershipId,
+    organizationId,
+    role: 'owner',
+    authenticatorKind: 'better_auth',
+    machine: false,
+  });
+
+  suspended = true;
+  await assert.rejects(
+    () => service.authenticateRequest(new Request(`${ORIGIN}/admin`, { headers: { cookie } })),
+    AuthDeniedError,
+  );
+  backend.close();
+  identity.close();
+});
+
+function jsonRequest(path: string, body: Record<string, unknown>): Request {
+  const encoded = JSON.stringify(body);
+  return new Request(`${ORIGIN}${path}`, {
+    method: 'POST',
+    headers: {
+      origin: ORIGIN,
+      'content-type': 'application/json',
+      'content-length': String(Buffer.byteLength(encoded)),
+      'sec-fetch-site': 'same-origin',
+    },
+    body: encoded,
+  });
+}

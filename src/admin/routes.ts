@@ -177,7 +177,11 @@ import type { MemoryStateStore } from '../memory/types.ts';
 import type { RoutineStore } from '../routines/types.ts';
 import type { UsageStore } from '../usage/types.ts';
 import type { WorkStore } from '../work/types.ts';
-import type { AuthProviderConfig, IdentityStore } from '../identity/types.ts';
+import type {
+  AuthProviderConfig,
+  HumanIdentityDirectory,
+  IdentityStore,
+} from '../identity/types.ts';
 import type { SlackStateStore } from '../slack/claim-store.ts';
 import {
   cancelOpenAiSubscriptionAuthorization,
@@ -234,6 +238,14 @@ import {
 } from '../slack/credentials.ts';
 import { constantTimeEquals } from './constant-time.ts';
 import { AuthDeniedError, AuthService, setRequestPrincipal } from '../auth/service.ts';
+import {
+  BetterAuthDirectory,
+  BetterAuthSessionAuthenticator,
+} from '../auth/better-auth-principal.ts';
+import {
+  resolveBetterAuthEnvironment,
+  type BetterAuthEnvironment,
+} from '../auth/better-auth-environment.ts';
 import { AuthorizationError, requirePermission, type Permission } from '../auth/permissions.ts';
 import { validateMutationProvenance } from '../auth/request-provenance.ts';
 import { CloudflareAccessAuthenticator, verifyCloudflareAccessRecoveryAssertion } from '../auth/cloudflare-access.ts';
@@ -246,6 +258,11 @@ import { TokenSessionService } from '../auth/token-session.ts';
 import type { AdminAuthenticationService, AuthPrincipal, ExternalIdentity } from '../auth/types.ts';
 
 type AccessVerificationPurpose = 'activation' | 'recovery';
+interface PasswordAuthContext {
+  environment: BetterAuthEnvironment;
+  directory: BetterAuthDirectory;
+  organizationId: string;
+}
 type AccessAssertionVerifier = (
   request: Request,
   config: AuthProviderConfig,
@@ -268,6 +285,7 @@ interface AdminRoutesOptions {
   usageAdminUi?: boolean | undefined;
   adminToken?: string | undefined;
   authService?: AdminAuthenticationService | undefined;
+  betterAuthEnvironment?: BetterAuthEnvironment | undefined;
   identity?: IdentityStore | undefined;
   recoveryToken?: string | undefined;
   authRateLimiter?: AuthRateLimiter | undefined;
@@ -809,6 +827,7 @@ const turnRecoveryResolveSchema = v.strictObject({
 export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   const app = new Hono();
   const principalByContext = new WeakMap<object, AuthPrincipal>();
+  const passwordAuthByContext = new WeakMap<object, Promise<PasswordAuthContext | undefined>>();
   const tokenFromOptions = Object.hasOwn(options, 'adminToken');
   const store = (c: Context) => options.store ?? getConfigStore(c.env as PlatformEnv | undefined);
   const identity = (c: Context) =>
@@ -855,9 +874,55 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         audience: config.audience,
       }).authenticate(request);
     });
+  const passwordAuthContext = (c: Context): Promise<PasswordAuthContext | undefined> => {
+    const cached = passwordAuthByContext.get(c);
+    if (cached) return cached;
+    const pending = (async () => {
+      const identityStore = identity(c);
+      const control = await identityStore.getAuthControl();
+      if (control?.authMode !== 'password_active' ||
+          !control.betterAuthOrganizationId ||
+          !control.canonicalAdminOrigin) return undefined;
+      const environment = options.betterAuthEnvironment ?? await resolveBetterAuthEnvironment({
+          control,
+          platformEnv: c.env as PlatformEnv | undefined,
+          recoveryToken: recoveryToken(c),
+          passwordShardKey: requestAuthSourceKey(c.req.raw, isCloudflareTarget()),
+        });
+      if (!environment) return undefined;
+      if (environment.baseURL !== control.canonicalAdminOrigin) return undefined;
+      return {
+        environment,
+        directory: new BetterAuthDirectory({
+          backend: environment.backend,
+          access: identityStore,
+          organizationId: control.betterAuthOrganizationId,
+          canonicalAdminOrigin: control.canonicalAdminOrigin,
+        }),
+        organizationId: control.betterAuthOrganizationId,
+      };
+    })();
+    passwordAuthByContext.set(c, pending);
+    return pending;
+  };
+  const humanDirectory = async (c: Context): Promise<HumanIdentityDirectory> =>
+    (await passwordAuthContext(c))?.directory ?? identity(c);
   const configuredAuthService = async (c: Context): Promise<AdminAuthenticationService | undefined> => {
     if (options.authService) return options.authService;
     const identityStore = identity(c);
+    const passwordContext = await passwordAuthContext(c);
+    if (passwordContext) {
+      const { environment, directory, organizationId } = passwordContext;
+      return new AuthService({
+        identity: identityStore,
+        passwordAuthenticator: new BetterAuthSessionAuthenticator({
+          ...environment,
+          directory,
+          organizationId,
+        }),
+        personalTokens: new PersonalTokenService(identityStore, { directory }),
+      });
+    }
     const organization = await identityStore.getOrganization();
     if (!organization) return undefined;
     if (organization.authMode === 'access_active') {
@@ -882,6 +947,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   };
   const legacyAuthenticationAllowed = async (c: Context): Promise<boolean> => {
     if (tokenFromOptions) return options.authService === undefined;
+    const control = await identity(c).getAuthControl();
+    if (control?.authMode === 'password_active') return false;
     const organization = await identity(c).getOrganization();
     return !organization || ['unconfigured', 'access_pending', 'legacy_shared'].includes(organization.authMode);
   };
@@ -1022,10 +1089,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       }
       try {
         const principal = await authService.authenticateRequest(c.req.raw);
+        copyAuthResponseCookies(c, authService.takeResponseHeaders?.(c.req.raw));
         principalByContext.set(c, principal);
         setRequestPrincipal(c.req.raw, principal);
         const permission = permissionForAdminRequest(c, principal);
         try {
+          if (principal.machine && !machinePrincipalAllowed(c)) throw new AuthorizationError();
           requirePermission(principal, permission);
           await identity(c).recordAuthAudit({
             event: 'authorization',
@@ -1055,10 +1124,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           return c.redirect('/admin/account', 303);
         }
         if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(c.req.method)) {
-          const organization = await identity(c).getOrganization();
-          if (!organization?.canonicalAdminOrigin) throw new AuthDeniedError();
+          const origin = (await passwordAuthContext(c))?.environment.baseURL ??
+            (await identity(c).getOrganization())?.canonicalAdminOrigin;
+          if (!origin) throw new AuthDeniedError();
           const provenance = validateMutationProvenance(c.req.raw, principal, {
-            canonicalOrigin: organization.canonicalAdminOrigin,
+            canonicalOrigin: origin,
             maxBodyBytes: MAX_ADMIN_MUTATION_BODY_BYTES,
             requireJson: c.req.method !== 'DELETE',
           });
@@ -1864,10 +1934,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   app.get('/admin/account', async (c) => {
     const principal = principalByContext.get(c);
     if (!principal) return c.json({ error: 'unauthorized' }, 401);
+    const directory = await humanDirectory(c);
     const [organization, user, membership] = await Promise.all([
-      identity(c).getOrganization(),
-      identity(c).getUser(principal.userId),
-      identity(c).getMembershipForUser(principal.userId, principal.organizationId),
+      directory.getOrganization(),
+      directory.getUser(principal.userId),
+      directory.getMembershipForUser(principal.userId, principal.organizationId),
     ]);
     if (!organization || !user || !membership) return c.json({ error: 'account_unavailable' }, 404);
     c.header('Cache-Control', 'no-store');
@@ -1880,7 +1951,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }));
   });
 
-  app.route('/admin/api', createTeamAdminApi({ store: identity }));
+  app.route('/admin/api', createTeamAdminApi({ store: identity, directory: humanDirectory }));
   app.route('/admin/api', createMemoryAdminApi({
     store: memory,
     adminSecret: () => adminToken() ?? '',
@@ -4264,6 +4335,13 @@ function permissionForAdminRequest(c: Context, principal: AuthPrincipal): Permis
   return 'admin.configure';
 }
 
+function machinePrincipalAllowed(c: Context): boolean {
+  const path = c.req.path;
+  return path.startsWith('/admin/api/') &&
+    path !== '/admin/api/account' &&
+    !path.startsWith('/admin/api/team');
+}
+
 function validJsonMutation(c: Context, canonicalOrigin: string): boolean {
   const contentType = c.req.header('content-type')?.split(';', 1)[0]?.trim().toLowerCase();
   const fetchSite = c.req.header('sec-fetch-site')?.toLowerCase();
@@ -4764,6 +4842,13 @@ function workersAiStatus(env: PlatformEnv | undefined): ProviderKeySource {
 function hasWorkersAiBinding(env: PlatformEnv | undefined): boolean {
   const ai = env?.AI;
   return Boolean(ai && typeof ai === 'object' && typeof (ai as { models?: unknown }).models === 'function');
+}
+
+function copyAuthResponseCookies(c: Context, headers: Headers | undefined): void {
+  if (!headers) return;
+  const cookies = (headers as Headers & { getSetCookie?: () => string[] }).getSetCookie?.() ??
+    (headers.get('set-cookie') ? [headers.get('set-cookie')!] : []);
+  for (const cookie of cookies) c.header('Set-Cookie', cookie, { append: true });
 }
 
 function providerApiKeyFromBody(body: unknown): string | undefined {

@@ -60,6 +60,30 @@ test('Cloudflare identity proxy forwards resumable operation state without provi
   }]);
 });
 
+test('Cloudflare identity proxy reads Chickpea membership access overlays', async () => {
+  const calls: IdentityRpcRequest[] = [];
+  const overlay = {
+    membershipId: 'better-member',
+    organizationId: 'better-org',
+    accessStatus: 'suspended' as const,
+    membershipVersion: 3,
+    createdAt: 10,
+    updatedAt: 20,
+  };
+  const stub = {
+    async identityExecute(request: IdentityRpcRequest): Promise<StateRpcResult<IdentityRpcResponse>> {
+      calls.push(request);
+      return { ok: true, value: { kind: 'membership_access_overlay', overlay } };
+    },
+  } as unknown as TagStateRpc;
+  const store = new CfIdentityStore(stub);
+
+  assert.deepEqual(await store.getMembershipAccessOverlay(overlay.membershipId), overlay);
+  assert.deepEqual(calls, [{
+    kind: 'get_membership_access_overlay', membershipId: overlay.membershipId,
+  }]);
+});
+
 test('Cloudflare identity proxy reconstructs typed identity errors', async () => {
   const stub = {
     async identityExecute(): Promise<StateRpcResult<IdentityRpcResponse>> {

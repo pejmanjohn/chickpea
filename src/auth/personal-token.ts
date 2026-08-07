@@ -1,10 +1,15 @@
 import { createHash, randomBytes as nodeRandomBytes, timingSafeEqual } from 'node:crypto';
 
-import type { IdentityStore, PersonalTokenRecord } from '../identity/types.ts';
+import type {
+  HumanIdentityDirectory,
+  IdentityStore,
+  PersonalTokenRecord,
+} from '../identity/types.ts';
 import { AuthDeniedError } from './service.ts';
 import type { AuthPrincipal } from './types.ts';
 
 interface PersonalTokenOptions {
+  directory?: HumanIdentityDirectory;
   now?: () => number;
   randomBytes?: (length: number) => Uint8Array;
 }
@@ -12,6 +17,7 @@ interface PersonalTokenOptions {
 export class PersonalTokenService {
   private readonly now: () => number;
   private readonly randomBytes: (length: number) => Uint8Array;
+  private readonly directory: HumanIdentityDirectory;
 
   constructor(
     private readonly identity: IdentityStore,
@@ -19,6 +25,7 @@ export class PersonalTokenService {
   ) {
     this.now = options.now ?? Date.now;
     this.randomBytes = options.randomBytes ?? ((length) => nodeRandomBytes(length));
+    this.directory = options.directory ?? identity;
   }
 
   async create(userId: string, label: string): Promise<{ token: string; record: PersonalTokenRecord }> {
@@ -63,10 +70,17 @@ export class PersonalTokenService {
     if (!matched) constantHashEquals('0'.repeat(64), candidateHash);
     if (!matched || matched.status !== 'active') throw new AuthDeniedError();
     const [user, membership] = await Promise.all([
-      this.identity.getUser(matched.userId),
-      this.identity.getMembershipForUser(matched.userId),
+      this.directory.getUser(matched.userId),
+      matched.membershipId
+        ? this.directory.getMembership(matched.membershipId)
+        : this.directory.getMembershipForUser(matched.userId, matched.organizationId ?? undefined),
     ]);
-    if (!user || !membership || membership.status !== 'active') throw new AuthDeniedError();
+    if (!user || !membership || membership.status !== 'active' ||
+        membership.userId !== matched.userId ||
+        (matched.membershipId !== null && membership.id !== matched.membershipId) ||
+        (matched.organizationId !== null && membership.organizationId !== matched.organizationId)) {
+      throw new AuthDeniedError();
+    }
     await this.identity.touchPersonalToken(matched.id);
     return {
       userId: user.id,

@@ -26,6 +26,16 @@ export interface AuthPrincipal {
   machine: boolean;
 }
 
+export interface PrincipalAuthenticationResult {
+  principal: AuthPrincipal;
+  responseHeaders?: Headers;
+}
+
+export interface PrincipalAuthenticator {
+  readonly kind: string;
+  authenticate(request: Request): Promise<PrincipalAuthenticationResult | undefined>;
+}
+
 export interface TokenLoginResult {
   principal: AuthPrincipal;
   sessionToken: string;
@@ -34,6 +44,7 @@ export interface TokenLoginResult {
 
 export interface AdminAuthenticationService {
   authenticateRequest(request: Request): Promise<AuthPrincipal>;
+  takeResponseHeaders?(request: Request): Headers | undefined;
   loginWithPersonalToken?(token: string): Promise<TokenLoginResult>;
   logoutSession?(token: string): Promise<void>;
 }

@@ -9,6 +9,7 @@ import { requestPrincipal } from '../auth/service.ts';
 import type { AuthPrincipal } from '../auth/types.ts';
 import { IdentityStateError } from '../identity/errors.ts';
 import type {
+  HumanIdentityDirectory,
   IdentityStore,
   Invitation,
   Membership,
@@ -31,6 +32,7 @@ const membershipPatchSchema = v.pipe(
 
 interface TeamAdminApiOptions {
   store: (c: Context) => IdentityStore;
+  directory?: (c: Context) => Promise<HumanIdentityDirectory>;
   now?: () => number;
   randomBytes?: (length: number) => Uint8Array;
 }
@@ -42,7 +44,7 @@ export function createTeamAdminApi(options: TeamAdminApiOptions): Hono {
 
   app.get('/account', async (c) => {
     const principal = requiredPrincipal(c, 'account.view');
-    const identity = options.store(c);
+    const identity = await directory(options, c);
     const [organization, user, membership] = await Promise.all([
       identity.getOrganization(),
       identity.getUser(principal.userId),
@@ -67,7 +69,7 @@ export function createTeamAdminApi(options: TeamAdminApiOptions): Hono {
   app.get('/team', async (c) => {
     const principal = requiredPrincipal(c, 'team.manage');
     c.header('Cache-Control', 'no-store');
-    return c.json(await teamSnapshot(options.store(c), principal));
+    return c.json(await teamSnapshot(await directory(options, c), options.store(c), principal));
   });
 
   app.post('/team/invitations', async (c) => {
@@ -76,8 +78,9 @@ export function createTeamAdminApi(options: TeamAdminApiOptions): Hono {
     if (!parsed.success) return invalid(c);
     const secret = Buffer.from(randomBytes(32)).toString('base64url');
     try {
-      const identity = options.store(c);
-      const origin = await canonicalInviteOrigin(identity);
+      const identity = await writableStore(options, c);
+      if (!identity) return c.json({ error: 'team_lifecycle_unavailable' }, 409);
+      const origin = await canonicalInviteOrigin(await directory(options, c));
       if (!origin) return c.json({ error: 'canonical_origin_required' }, 409);
       const invitation = await identity.createInvitation({
         organizationId: principal.organizationId,
@@ -102,8 +105,9 @@ export function createTeamAdminApi(options: TeamAdminApiOptions): Hono {
     if (!invitationId) return invalid(c);
     const secret = Buffer.from(randomBytes(32)).toString('base64url');
     try {
-      const identity = options.store(c);
-      const origin = await canonicalInviteOrigin(identity);
+      const identity = await writableStore(options, c);
+      if (!identity) return c.json({ error: 'team_lifecycle_unavailable' }, 409);
+      const origin = await canonicalInviteOrigin(await directory(options, c));
       if (!origin) return c.json({ error: 'canonical_origin_required' }, 409);
       const existing = (await identity.listInvitations()).find((row) => row.id === invitationId);
       if (!existing || existing.organizationId !== principal.organizationId) {
@@ -128,11 +132,13 @@ export function createTeamAdminApi(options: TeamAdminApiOptions): Hono {
     const invitationId = parseId(c.req.param('invitationId'));
     if (!invitationId) return invalid(c);
     try {
-      const existing = (await options.store(c).listInvitations()).find((row) => row.id === invitationId);
+      const store = await writableStore(options, c);
+      if (!store) return c.json({ error: 'team_lifecycle_unavailable' }, 409);
+      const existing = (await store.listInvitations()).find((row) => row.id === invitationId);
       if (!existing || existing.organizationId !== principal.organizationId) {
         return c.json({ error: 'invitation_unavailable' }, 404);
       }
-      const invitation = await options.store(c).revokeInvitation(invitationId);
+      const invitation = await store.revokeInvitation(invitationId);
       return c.json({ invitation: safeInvitation(invitation) });
     } catch (error) {
       return teamError(c, error);
@@ -145,12 +151,14 @@ export function createTeamAdminApi(options: TeamAdminApiOptions): Hono {
     const parsed = v.safeParse(membershipPatchSchema, await readJson(c));
     if (!membershipId || !parsed.success) return invalid(c);
     try {
-      const target = (await options.store(c).listMemberships()).find((row) => row.id === membershipId);
+      const store = await writableStore(options, c);
+      if (!store) return c.json({ error: 'team_lifecycle_unavailable' }, 409);
+      const target = (await store.listMemberships()).find((row) => row.id === membershipId);
       if (!target || target.organizationId !== principal.organizationId) {
         return c.json({ error: 'membership_unavailable' }, 404);
       }
       enforceMembershipGrant(principal, target, parsed.output.role, parsed.output.status);
-      const membership = await options.store(c).updateMembership({
+      const membership = await store.updateMembership({
         membershipId,
         ...(parsed.output.role === undefined ? {} : { role: parsed.output.role }),
         ...(parsed.output.status === undefined ? {} : { status: parsed.output.status }),
@@ -183,17 +191,18 @@ function enforceMembershipGrant(
 }
 
 async function teamSnapshot(
-  store: IdentityStore,
+  directory: HumanIdentityDirectory,
+  control: IdentityStore,
   principal: AuthPrincipal,
 ) {
   const [organization, memberships, bindings, invitations] = await Promise.all([
-    store.getOrganization(),
-    store.listMemberships(),
-    store.listExternalIdentities(),
-    store.listInvitations(),
+    directory.getOrganization(),
+    directory.listMemberships(),
+    control.listExternalIdentities(),
+    control.listInvitations(),
   ]);
   const users = (await Promise.all(
-    memberships.map((membership) => store.getUser(membership.userId)),
+    memberships.map((membership) => directory.getUser(membership.userId)),
   )).filter((user): user is NonNullable<typeof user> => Boolean(user));
   const usersById = new Map(users.map((user) => [user.id, user]));
   const bindingsByUser = new Map(bindings.map((binding) => [binding.userId, binding]));
@@ -238,7 +247,7 @@ function invitationLink(organizationOrigin: string, invitationId: string, secret
   return `${organizationOrigin}/join#invite=${credential}`;
 }
 
-async function canonicalInviteOrigin(store: IdentityStore): Promise<string | undefined> {
+async function canonicalInviteOrigin(store: HumanIdentityDirectory): Promise<string | undefined> {
   const origin = (await store.getOrganization())?.canonicalAdminOrigin;
   if (!origin) return undefined;
   try {
@@ -246,6 +255,19 @@ async function canonicalInviteOrigin(store: IdentityStore): Promise<string | und
   } catch {
     return undefined;
   }
+}
+
+function directory(options: TeamAdminApiOptions, c: Context): Promise<HumanIdentityDirectory> {
+  return options.directory?.(c) ?? Promise.resolve(options.store(c));
+}
+
+async function writableStore(
+  options: TeamAdminApiOptions,
+  c: Context,
+): Promise<IdentityStore | undefined> {
+  const identity = await directory(options, c);
+  const organization = await identity.getOrganization();
+  return organization?.authMode === 'password_active' ? undefined : options.store(c);
 }
 
 function parseId(value: string): string | undefined {

@@ -7,6 +7,7 @@ import type {
   AdminAuthenticationService,
   Authenticator,
   AuthPrincipal,
+  PrincipalAuthenticator,
   TokenLoginResult,
 } from './types.ts';
 
@@ -19,29 +20,48 @@ interface AuthServiceOptions {
   identity: IdentityStore;
   authenticators?: readonly Authenticator[];
   personalTokens?: PersonalTokenService;
+  passwordAuthenticator?: PrincipalAuthenticator;
   tokenSessions?: TokenSessionService;
 }
 
 const principalByRequest = new WeakMap<Request, AuthPrincipal>();
+const responseHeadersByRequest = new WeakMap<Request, Headers>();
 
 export class AuthService implements AdminAuthenticationService {
   constructor(private readonly options: AuthServiceOptions) {}
 
   async authenticateRequest(request: Request): Promise<AuthPrincipal> {
     const requestCorrelationId = correlationId(request);
+    const control = await this.options.identity.getAuthControl();
     const organization = await this.options.identity.getOrganization();
-    const authenticatorKind = organization?.authMode === 'access_active'
+    const authenticatorKind = control?.authMode === 'password_active'
+      ? 'better_auth'
+      : organization?.authMode === 'access_active'
       ? 'cloudflare_access'
       : organization?.authMode === 'token_active'
         ? 'token'
         : 'unavailable';
     let principal: AuthPrincipal;
     try {
-      if (!organization) throw new AuthDeniedError();
-      if (organization.authMode === 'access_active') {
+      if (control?.authMode === 'password_active') {
+        if (!control.betterAuthOrganizationId || !control.canonicalAdminOrigin) {
+          throw new AuthDeniedError();
+        }
+        const authorization = request.headers.get('authorization');
+        if (authorization !== null) {
+          const bearer = bearerToken(authorization);
+          if (!bearer || !this.options.personalTokens) throw new AuthDeniedError();
+          principal = await this.options.personalTokens.authenticate(bearer, true);
+        } else {
+          const result = await this.options.passwordAuthenticator?.authenticate(request);
+          if (!result) throw new AuthDeniedError();
+          principal = result.principal;
+          if (result.responseHeaders) responseHeadersByRequest.set(request, result.responseHeaders);
+        }
+      } else if (organization?.authMode === 'access_active') {
         principal = await this.authenticateExternal(request);
       } else {
-        if (organization.authMode !== 'token_active') throw new AuthDeniedError();
+        if (organization?.authMode !== 'token_active') throw new AuthDeniedError();
         const bearer = bearerToken(request.headers.get('authorization'));
         if (bearer && this.options.personalTokens) {
           principal = await this.options.personalTokens.authenticate(bearer, true);
@@ -73,6 +93,12 @@ export class AuthService implements AdminAuthenticationService {
       membershipId: principal.membershipId,
     });
     return principal;
+  }
+
+  takeResponseHeaders(request: Request): Headers | undefined {
+    const headers = responseHeadersByRequest.get(request);
+    responseHeadersByRequest.delete(request);
+    return headers;
   }
 
   private async authenticateExternal(request: Request): Promise<AuthPrincipal> {

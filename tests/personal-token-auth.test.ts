@@ -2,8 +2,9 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { AuthDeniedError } from '../src/auth/service.ts';
-import { PersonalTokenService } from '../src/auth/personal-token.ts';
+import { digest, PersonalTokenService } from '../src/auth/personal-token.ts';
 import { TokenSessionService } from '../src/auth/token-session.ts';
+import type { HumanIdentityDirectory, Membership } from '../src/identity/types.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 
 const NOW = 1_786_100_000_000;
@@ -77,5 +78,47 @@ test('token sessions recheck expiry, source token, and membership on every reque
   const expiring = await sessions.create(replacement.record, owner.membership.id, 1_000);
   now += 1_001;
   await assert.rejects(() => sessions.authenticate(expiring.token), AuthDeniedError);
+  identity.close();
+});
+
+test('personal tokens use their pinned membership through a provider-neutral directory', async () => {
+  const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
+  const token = 'chp_pat_abcdefghijkl_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN';
+  const user = {
+    id: 'better-user', primaryEmail: 'owner@example.com', displayName: 'Owner',
+    createdAt: NOW, updatedAt: NOW,
+  };
+  const membership: Membership = {
+    id: 'better-member', organizationId: 'better-org', userId: user.id,
+    role: 'owner', status: 'active', createdAt: NOW, updatedAt: NOW,
+  };
+  const directory: HumanIdentityDirectory = {
+    async getOrganization() { return undefined; },
+    async listMemberships() { return [membership]; },
+    async getUser(id) { return id === user.id ? user : undefined; },
+    async findUserByEmail(email) { return email === user.primaryEmail ? user : undefined; },
+    async getMembership(id) { return id === membership.id ? membership : undefined; },
+    async getMembershipForUser(id, organizationId) {
+      return id === user.id && (!organizationId || organizationId === membership.organizationId)
+        ? membership
+        : undefined;
+    },
+  };
+  const record = await identity.createPersonalToken({
+    organizationId: membership.organizationId,
+    membershipId: membership.id,
+    userId: user.id,
+    label: 'Automation',
+    prefix: 'abcdefghijkl',
+    tokenHash: digest(token),
+  });
+  const tokens = new PersonalTokenService(identity, { directory, now: () => NOW });
+  const principal = await tokens.authenticate(token, true);
+  assert.equal(principal.membershipId, membership.id);
+  assert.equal(principal.organizationId, membership.organizationId);
+
+  membership.status = 'suspended';
+  await assert.rejects(() => tokens.authenticate(token, true), AuthDeniedError);
+  assert.equal((await identity.getPersonalToken(record.id))?.lastUsedAt, NOW);
   identity.close();
 });

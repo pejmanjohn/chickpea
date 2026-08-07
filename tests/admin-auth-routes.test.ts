@@ -3,6 +3,10 @@ import { test } from 'node:test';
 
 import { createAdminRoutes } from '../src/admin/routes.ts';
 import { AuthSetupService } from '../src/auth/setup.ts';
+import { createBetterAuth } from '../src/auth/better-auth.ts';
+import { NodeBetterAuthBackend } from '../src/auth/better-auth-node.ts';
+import { digest } from '../src/auth/personal-token.ts';
+import { nativePasswordPrimitive } from '../src/auth/password.ts';
 import type { ExternalIdentity } from '../src/auth/types.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 
@@ -188,3 +192,99 @@ test('recovery requires issuer-backed owner proof, same-origin body, and the off
   assert.equal((await identity.getAuthProviderConfig('cloudflare_access'))?.audience, 'b'.repeat(64));
   identity.close();
 });
+
+test('password-mode admin requests use Better Auth sessions without legacy fallback', async () => {
+  const identity = new SqliteIdentityStore(':memory:');
+  const backend = new NodeBetterAuthBackend(':memory:');
+  const password = nativePasswordPrimitive();
+  const secret = Buffer.from(Uint8Array.from({ length: 32 }, (_, index) => index + 1))
+    .toString('base64url');
+  const privateAuth = createBetterAuth({
+    backend,
+    baseURL: ORIGIN,
+    secret,
+    password,
+    allowSignUp: true,
+  });
+  const signup = await privateAuth.handler(jsonRequest('/api/auth/sign-up/email', {
+    email: 'owner@example.com', name: 'Owner', password: 'several unrelated words 5729',
+  }));
+  assert.equal(signup.status, 200, await signup.clone().text());
+  const body = await signup.json() as { user: { id: string } };
+  backend.database.prepare(
+    'INSERT INTO organization (id, name, slug, createdAt) VALUES (?, ?, ?, ?)',
+  ).run('better-org', 'Chickpea', 'chickpea', Date.now());
+  backend.database.prepare(
+    'INSERT INTO member (id, organizationId, userId, role, createdAt) VALUES (?, ?, ?, ?, ?)',
+  ).run('better-member', 'better-org', body.user.id, 'owner', Date.now());
+  const control = await identity.ensureAuthControl();
+  await identity.updateAuthControl({
+    expectedRevision: control.revision,
+    authMode: 'password_active',
+    canonicalAdminOrigin: ORIGIN,
+    betterAuthOrganizationId: 'better-org',
+  });
+  const app = createAdminRoutes({
+    identity,
+    recoveryToken: RECOVERY,
+    betterAuthEnvironment: {
+      backend,
+      baseURL: ORIGIN,
+      secret,
+      password,
+      recoveryToken: RECOVERY,
+    },
+  });
+  const cookie = (signup.headers.get('set-cookie') ?? '').split(';', 1)[0] ?? '';
+
+  const account = await app.request(`${ORIGIN}/admin/account`, { headers: { cookie } });
+  assert.equal(account.status, 200, await account.clone().text());
+  assert.match(await account.text(), /owner@example\.com/);
+  assert.equal((await app.request(`${ORIGIN}/admin/account`)).status, 401);
+
+  const team = await app.request(`${ORIGIN}/admin/api/team`, { headers: { cookie } });
+  assert.equal(team.status, 200, await team.clone().text());
+  assert.match(await team.text(), /better-member/);
+
+  const crossOrigin = await app.request(`${ORIGIN}/admin/api/team/invitations`, {
+    method: 'POST',
+    headers: {
+      cookie,
+      origin: 'https://attacker.example',
+      'content-type': 'application/json',
+      'sec-fetch-site': 'cross-site',
+    },
+    body: JSON.stringify({ email: 'member@example.com', role: 'member' }),
+  });
+  assert.equal(crossOrigin.status, 403);
+
+  const pat = 'chp_pat_abcdefghijkl_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN';
+  await identity.createPersonalToken({
+    userId: body.user.id,
+    membershipId: 'better-member',
+    organizationId: 'better-org',
+    tokenHash: digest(pat),
+    prefix: 'abcdefghijkl',
+    label: 'Automation',
+  });
+  const machineTeam = await app.request(`${ORIGIN}/admin/api/team`, {
+    headers: { authorization: `Bearer ${pat}` },
+  });
+  assert.equal(machineTeam.status, 403);
+  backend.close();
+  identity.close();
+});
+
+function jsonRequest(path: string, body: Record<string, unknown>): Request {
+  const encoded = JSON.stringify(body);
+  return new Request(`${ORIGIN}${path}`, {
+    method: 'POST',
+    headers: {
+      origin: ORIGIN,
+      'content-type': 'application/json',
+      'content-length': String(Buffer.byteLength(encoded)),
+      'sec-fetch-site': 'same-origin',
+    },
+    body: encoded,
+  });
+}

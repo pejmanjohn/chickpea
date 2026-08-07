@@ -1,7 +1,17 @@
 import { createHash } from 'node:crypto';
 import type { D1Database } from '@cloudflare/workers-types';
 
-import type { BetterAuthDatabaseBackend } from './better-auth-backend.ts';
+import type {
+  BetterAuthDatabaseBackend,
+  BetterAuthMembershipRecord,
+  BetterAuthOrganizationRecord,
+  BetterAuthUserRecord,
+} from './better-auth-backend.ts';
+import {
+  mapBetterAuthMembership,
+  mapBetterAuthOrganization,
+  mapBetterAuthUser,
+} from './better-auth-backend.ts';
 import type { PasswordPrimitive } from './password.ts';
 
 export interface AuthGuardRpc {
@@ -47,6 +57,52 @@ export class D1BetterAuthBackend implements BetterAuthDatabaseBackend {
     ).bind(email).first<{ present: number }>();
     return Boolean(row?.present);
   }
+
+  async getUser(userId: string): Promise<BetterAuthUserRecord | null> {
+    return mapBetterAuthUser(await this.database.prepare(
+      'SELECT id, email, name, createdAt, updatedAt FROM "user" WHERE id = ? LIMIT 1',
+    ).bind(userId).first());
+  }
+
+  async findUserByEmail(email: string): Promise<BetterAuthUserRecord | null> {
+    return mapBetterAuthUser(await this.database.prepare(
+      'SELECT id, email, name, createdAt, updatedAt FROM "user" WHERE lower(email) = lower(?) LIMIT 1',
+    ).bind(email).first());
+  }
+
+  async getOrganization(organizationId: string): Promise<BetterAuthOrganizationRecord | null> {
+    return mapBetterAuthOrganization(await this.database.prepare(
+      'SELECT id, name, createdAt FROM organization WHERE id = ? LIMIT 1',
+    ).bind(organizationId).first());
+  }
+
+  async getMembership(membershipId: string): Promise<BetterAuthMembershipRecord | null> {
+    return mapBetterAuthMembership(await this.database.prepare(
+      'SELECT id, organizationId, userId, role, createdAt FROM member WHERE id = ? LIMIT 1',
+    ).bind(membershipId).first());
+  }
+
+  async listMemberships(organizationId: string): Promise<BetterAuthMembershipRecord[]> {
+    const result = await this.database.prepare(
+      `SELECT m.id, m.organizationId, m.userId, m.role, m.createdAt,
+              u.id AS joinedUserId, u.email AS joinedUserEmail,
+              u.name AS joinedUserName, u.createdAt AS joinedUserCreatedAt,
+              u.updatedAt AS joinedUserUpdatedAt
+       FROM member AS m JOIN "user" AS u ON u.id = m.userId
+       WHERE m.organizationId = ? ORDER BY m.createdAt, m.id`,
+    ).bind(organizationId).all();
+    return result.results.map(mapBetterAuthMembership).filter(isPresent);
+  }
+
+  async getMembershipForUser(
+    userId: string,
+    organizationId: string,
+  ): Promise<BetterAuthMembershipRecord | null> {
+    return mapBetterAuthMembership(await this.database.prepare(
+      `SELECT id, organizationId, userId, role, createdAt FROM member
+       WHERE userId = ? AND organizationId = ? LIMIT 1`,
+    ).bind(userId, organizationId).first());
+  }
 }
 
 export function cloudflarePasswordPrimitive(
@@ -81,4 +137,8 @@ function authGuard(
 
 function stableDigest(value: string): string {
   return createHash('sha256').update(value).digest('base64url');
+}
+
+function isPresent<T>(value: T | null): value is T {
+  return value !== null;
 }

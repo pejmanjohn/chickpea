@@ -373,6 +373,7 @@ export interface ChickpeaIdentityControlStore {
   advanceAuthOperation(input: AdvanceAuthOperationInput): Promise<AuthOperation>;
   consumeAuthOperation(input: ConsumeAuthOperationInput): Promise<AuthOperation>;
   revokeAuthOperation(operationId: string): Promise<AuthOperation>;
+  getMembershipAccessOverlay(membershipId: string): Promise<MembershipAccessOverlay | undefined>;
 }
 
 /**
@@ -439,6 +440,7 @@ export type IdentityRpcRequest =
   | { kind: 'advance_auth_operation'; input: AdvanceAuthOperationInput }
   | { kind: 'consume_auth_operation'; input: ConsumeAuthOperationInput }
   | { kind: 'revoke_auth_operation'; operationId: string }
+  | { kind: 'get_membership_access_overlay'; membershipId: string }
   | { kind: 'ensure_organization'; input: EnsureOrganizationInput }
   | { kind: 'get_organization' }
   | { kind: 'create_owner_claim'; input: CreateOwnerClaimInput }
@@ -494,6 +496,7 @@ export type IdentityRpcRequest =
 export type IdentityRpcResponse =
   | { kind: 'auth_control'; control: AuthControl | null }
   | { kind: 'auth_operation'; operation: AuthOperation | null }
+  | { kind: 'membership_access_overlay'; overlay: MembershipAccessOverlay | null }
   | { kind: 'organization'; organization: Organization | null }
   | { kind: 'owner_claim'; ownerClaim: OwnerClaim | null }
   | { kind: 'identity_resolution'; resolution: IdentityResolution | null }
