@@ -8,12 +8,14 @@ const DRAIN_CATEGORY_KEYS = [
   'admittingOrRunningRoutineOccurrences',
 ];
 
-export async function runDrainCheck({ baseUrl, adminToken, fetchImpl = fetch }) {
+export async function runDrainCheck({ baseUrl, adminToken, sessionCookie, fetchImpl = fetch }) {
   if (typeof baseUrl !== 'string' || baseUrl.length === 0) {
     throw new Error('CF_SMOKE_BASE_URL is required for --check-drain');
   }
-  if (typeof adminToken !== 'string' || adminToken.length === 0) {
-    throw new Error('TAG_ADMIN_TOKEN is required for --check-drain');
+  const hasAdminToken = typeof adminToken === 'string' && adminToken.length > 0;
+  const hasSessionCookie = typeof sessionCookie === 'string' && sessionCookie.length > 0;
+  if (!hasAdminToken && !hasSessionCookie) {
+    throw new Error('an Admin token or browser session is required for --check-drain');
   }
   const endpoint = new URL('/admin/api/runtime/drain', baseUrl);
   if (endpoint.protocol !== 'https:' && endpoint.protocol !== 'http:') {
@@ -21,7 +23,9 @@ export async function runDrainCheck({ baseUrl, adminToken, fetchImpl = fetch }) 
   }
   const response = await fetchImpl(endpoint, {
     cache: 'no-store',
-    headers: { authorization: `Bearer ${adminToken}` },
+    headers: hasSessionCookie
+      ? { cookie: sessionCookie }
+      : { authorization: `Bearer ${adminToken}` },
     redirect: 'error',
     signal: AbortSignal.timeout(DRAIN_REQUEST_TIMEOUT_MS),
   });

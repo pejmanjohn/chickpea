@@ -164,7 +164,10 @@ test('Team page keeps invitations and roles inside Chickpea', async () => {
   assert.equal(harness.location.pathname, '/admin/team');
   assert.match(harness.app.innerHTML, /data-action="open-team"[^>]*aria-current="page"/);
   assert.match(harness.app.innerHTML, /Chickpea invite pending/);
-  assert.match(harness.app.innerHTML, /They verify their email, then Chickpea activates the invited membership/);
+  assert.match(
+    harness.app.innerHTML,
+    /The invitation stays pending until the teammate uses the private link and accepts it/,
+  );
   assert.doesNotMatch(harness.app.innerHTML, /Cloudflare|Zero Trust|policy|Open Access|Access action/i);
 });
 

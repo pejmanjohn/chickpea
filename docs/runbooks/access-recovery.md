@@ -1,6 +1,6 @@
-# Cloudflare Access recovery
+# Cloudflare Access recovery (optional mode)
 
-This runbook repairs authentication without turning the offline recovery credential into a general login.
+This runbook applies only to an existing installation that explicitly uses optional Cloudflare Access authentication. Fresh Chickpea installations use built-in accounts; see [Built-in authentication recovery](password-recovery.md).
 
 ## Before changing Chickpea
 

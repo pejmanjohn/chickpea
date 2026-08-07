@@ -29,7 +29,7 @@ test('Cloudflare deployment exposes the canonical Run body retention control', (
   const wrangler = readFileSync(new URL('../wrangler.jsonc', import.meta.url), 'utf8');
   const devVars = readFileSync(new URL('../.dev.vars.example', import.meta.url), 'utf8');
   assert.match(wrangler, /"TAG_RUN_BODY_RETENTION_DAYS"\s*:\s*"30"/);
-  assert.match(devVars, /^TAG_RUN_BODY_RETENTION_DAYS="30"$/m);
+  assert.doesNotMatch(devVars, /^TAG_RUN_BODY_RETENTION_DAYS=/m);
 });
 
 test('content records an immutable expiry, denies reads at expiry, and purges bodies idempotently', () => {

@@ -70,6 +70,8 @@ const allowedPublicDocs = new Set([
   exportPath('docs', 'authentication.md'),
   exportPath('docs', 'plans', '2026-07-28-001-feat-openai-subscription-auth-plan.md'),
   exportPath('docs', 'runbooks', 'access-recovery.md'),
+  exportPath('docs', 'runbooks', 'auth-db-upgrade.md'),
+  exportPath('docs', 'runbooks', 'password-recovery.md'),
   exportPath('docs', 'runbooks', 'agent-runtime-rollout.md'),
   exportPath('docs', 'runbooks', 'openai-subscription.md'),
   exportPath('docs', 'runbooks', 'slack-interaction-operations.md'),
@@ -340,6 +342,8 @@ function verifyNpmPackManifest() {
     'scripts/recover-auth.mjs',
     'docs/authentication.md',
     'docs/runbooks/access-recovery.md',
+    'docs/runbooks/auth-db-upgrade.md',
+    'docs/runbooks/password-recovery.md',
     'migrations/better-auth/0001_better_auth.sql',
     'scripts/flue-build-cf.mjs',
     'scripts/generate-common-passwords.mjs',
@@ -374,8 +378,7 @@ function verifyNpmPackManifest() {
 
 function verifyAuthenticationExportContract(packageJson) {
   const bindings = packageJson.cloudflare?.bindings ?? {};
-  if (!Object.hasOwn(bindings, 'CHICKPEA_RECOVERY_TOKEN') ||
-      Object.hasOwn(bindings, 'TAG_ADMIN_TOKEN')) {
+  if (JSON.stringify(Object.keys(bindings).sort()) !== JSON.stringify(['CHICKPEA_RECOVERY_TOKEN'])) {
     fail('Deploy metadata must prompt only for CHICKPEA_RECOVERY_TOKEN');
   }
   const recovery = readFileSync(join(scratch, 'scripts', 'recover-auth.mjs'), 'utf8');
@@ -391,6 +394,28 @@ function verifyAuthenticationExportContract(packageJson) {
   const example = readFileSync(join(scratch, '.dev.vars.example'), 'utf8');
   if (!/CHICKPEA_RECOVERY_TOKEN=""/.test(example)) {
     fail('Cloudflare recovery example must keep the credential value empty');
+  }
+  const activeExampleKeys = example.split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith('#') && /^[A-Z][A-Z0-9_]*=/.test(line))
+    .map((line) => line.slice(0, line.indexOf('=')));
+  if (JSON.stringify(activeExampleKeys) !== JSON.stringify(['CHICKPEA_RECOVERY_TOKEN'])) {
+    fail('Cloudflare Deploy example must expose exactly one active recovery-secret prompt');
+  }
+  const wrangler = readFileSync(join(scratch, 'wrangler.jsonc'), 'utf8');
+  if (!/"binding"\s*:\s*"AUTH_DB"/.test(wrangler) ||
+      !/"migrations_dir"\s*:\s*"migrations\/better-auth"/.test(wrangler)) {
+    fail('Cloudflare config must bind AUTH_DB to the reviewed Better Auth migrations');
+  }
+  const publicAuthCopy = [
+    readFileSync(join(scratch, 'README.md'), 'utf8'),
+    readFileSync(join(scratch, 'docs', 'authentication.md'), 'utf8'),
+  ].join('\n');
+  if (/Cloudflare Access is the default|Choose \*\*new Zero Trust organization\*\*/i.test(publicAuthCopy)) {
+    fail('Public authentication copy still describes Access as the fresh-install default');
+  }
+  if (/BETTER_AUTH_SECRET\s*=/.test(publicAuthCopy + example)) {
+    fail('Public setup material must not expose or request a Better Auth secret');
   }
 }
 

@@ -70,7 +70,7 @@ function runHarness(
   });
 }
 
-test('successful deploy hands a fresh install to recovery-backed Access setup', (context) => {
+test('successful deploy hands a fresh install to built-in owner setup', (context) => {
   const harness = createHarness();
   context.after(() => rmSync(harness.root, { recursive: true, force: true }));
 
@@ -81,7 +81,8 @@ test('successful deploy hands a fresh install to recovery-backed Access setup', 
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /https:\/\/chickpea\.example\.workers\.dev\/admin\/setup/);
   assert.match(result.stdout, /CHICKPEA_RECOVERY_TOKEN once/);
-  assert.match(result.stdout, /verified-email sign-in once for both \/admin and \/admin\/\*/);
+  assert.match(result.stdout, /Choose the owner email and password/);
+  assert.doesNotMatch(result.stdout, /Cloudflare Access|Zero Trust/);
   assert.match(result.stdout, /not an Admin login/);
   assert.doesNotMatch(result.stdout, /Sign in with the TAG_ADMIN_TOKEN/);
   const invoked = commands(harness.logPath);

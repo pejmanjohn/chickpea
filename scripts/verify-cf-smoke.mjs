@@ -6,8 +6,8 @@
  * SIGNED Slack events end-to-end. Asserts the parts of the port that only
  * workerd can prove:
  *
- *   1. recovery-backed Access setup is resumable, persists pending identity
- *      state, and refuses to activate without a valid signed assertion,
+ *   1. recovery-backed password setup creates the first named owner and a
+ *      Better Auth browser session without Cloudflare Access,
  *   2. the DO-backed config store seeds and serves /admin/api/agents,
  *   3. the app boots healthy with NO Slack creds: events fail closed (401)
  *      and the wizard GET reports missing credentials + a manifest deep-link
@@ -50,10 +50,8 @@ const CF_WRANGLER_CONFIG = join(CF_OUTPUT_DIR, 'chickpea', 'wrangler.json');
 const CF_SMOKE_WRANGLER_CONFIG = join(CF_OUTPUT_DIR, 'chickpea', 'wrangler.smoke.json');
 const CF_AI_SMOKE_CONFIG = join(CF_OUTPUT_DIR, 'chickpea', 'wrangler.ai-smoke.json');
 const PERSIST_DIR = join(REPO_ROOT, '.wrangler-state');
-const ADMIN_TOKEN = 'test-token';
-const RECOVERY_TOKEN = 'smoke-recovery-token-with-at-least-thirty-two-characters';
-const ACCESS_ISSUER = 'https://smoke.cloudflareaccess.com';
-const ACCESS_AUDIENCE = 'smoke-access-audience';
+const RECOVERY_TOKEN = '9d'.repeat(32);
+const OWNER_PASSWORD = 'several unrelated amber words 5729';
 const WORKSPACE = 'T_SMOKE';
 const CHANNEL = 'C_SMOKE';
 const AI_CHANNEL = 'C_SMOKE_AI';
@@ -86,6 +84,7 @@ const SLOW_MENTION_TS = '1782771000.000100';
 const SLOW_TURN_DELAY_MS = Number(process.env.SMOKE_SLOW_TURN_DELAY_MS ?? 36_000);
 
 const failures = [];
+let adminCookie = '';
 function check(ok, label, detail = '') {
   const status = ok ? 'ok  ' : 'FAIL';
   console.log(`  [${status}] ${label}${detail ? ` — ${detail}` : ''}`);
@@ -224,6 +223,10 @@ function writeSmokeWranglerConfigs() {
   ];
   const smokeConfig = {
     ...productionConfig,
+    d1_databases: (productionConfig.d1_databases ?? []).map((database) =>
+      database.binding === 'AUTH_DB'
+        ? { ...database, database_id: '00000000-0000-0000-0000-000000000001' }
+        : database),
     vars: {
       ...(productionConfig.vars ?? {}),
       // Exercise exactly one internal workspace/channel through the enforced
@@ -271,7 +274,6 @@ function writeDevVars(fakeUrl) {
   writeFileSync(
     join(CF_OUTPUT_DIR, 'chickpea', '.dev.vars'),
     [
-      `TAG_ADMIN_TOKEN=${ADMIN_TOKEN}`,
       `CHICKPEA_RECOVERY_TOKEN=${RECOVERY_TOKEN}`,
       `SLACK_API_URL=${fakeUrl}/api/`,
       `LOCAL_STUB_URL=${fakeUrl}/v1`,
@@ -282,6 +284,27 @@ function writeDevVars(fakeUrl) {
       '',
     ].join('\n'),
   );
+}
+
+function applyLocalAuthMigrations() {
+  const result = spawnSync(
+    WRANGLER_BIN,
+    [
+      'd1',
+      'migrations',
+      'apply',
+      'AUTH_DB',
+      '--local',
+      '--persist-to',
+      PERSIST_DIR,
+      '--config',
+      CF_SMOKE_WRANGLER_CONFIG,
+    ],
+    { cwd: REPO_ROOT, env: { ...process.env, CI: '1' }, stdio: 'inherit' },
+  );
+  if (result.status !== 0) {
+    throw new Error(`local AUTH_DB migrations failed (exit ${result.status})`);
+  }
 }
 
 function spawnWranglerDev() {
@@ -332,11 +355,14 @@ function stopWrangler(handle) {
 }
 
 async function adminFetch(baseUrl, path, init = {}) {
+  const method = String(init.method ?? 'GET').toUpperCase();
+  const mutation = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method);
   const response = await fetch(`${baseUrl}${path}`, {
     ...init,
     headers: {
-      authorization: `Bearer ${ADMIN_TOKEN}`,
+      ...(adminCookie ? { cookie: adminCookie } : {}),
       'content-type': 'application/json',
+      ...(mutation ? { origin: baseUrl, 'sec-fetch-site': 'same-origin' } : {}),
       ...(init.headers ?? {}),
     },
   });
@@ -352,28 +378,29 @@ async function adminFetch(baseUrl, path, init = {}) {
 
 async function adminPageHtml(baseUrl) {
   const response = await fetch(`${baseUrl}/admin`, {
-    headers: { authorization: `Bearer ${ADMIN_TOKEN}` },
+    headers: adminCookie ? { cookie: adminCookie } : {},
   });
   return response.text();
 }
 
-async function configurePendingAccess(baseUrl) {
+async function completePasswordSetup(baseUrl) {
   const setupPage = await fetch(`${baseUrl}/admin/setup`);
   const setupHtml = await setupPage.text();
   check(
     setupPage.status === 200 &&
-      setupHtml.includes('Create Zero Trust organization') &&
-      setupHtml.includes('Use an existing Zero Trust organization') &&
-      setupHtml.includes(`${baseUrl}/admin/*`) &&
+      setupHtml.includes('Create your Chickpea workspace') &&
+      setupHtml.includes('name="ownerEmail"') &&
+      !setupHtml.includes('Zero Trust') &&
       !setupHtml.includes(RECOVERY_TOKEN),
-    'fresh setup renders both Access paths and copyable Admin destinations without echoing recovery',
+    'fresh setup renders built-in owner creation without Access or recovery-secret echo',
     `HTTP ${setupPage.status}`,
   );
   const body = new URLSearchParams({
+    organizationName: 'Smoke Workspace',
+    displayName: 'Smoke Owner',
     ownerEmail: 'owner@example.com',
+    password: OWNER_PASSWORD,
     recoveryToken: RECOVERY_TOKEN,
-    issuer: ACCESS_ISSUER,
-    audience: ACCESS_AUDIENCE,
   }).toString();
   const configured = await fetch(`${baseUrl}/admin/setup`, {
     method: 'POST',
@@ -386,24 +413,24 @@ async function configurePendingAccess(baseUrl) {
     },
     body,
   });
+  adminCookie = (configured.headers.get('set-cookie') ?? '').split(';', 1)[0] ?? '';
   check(
-    configured.status === 303 && configured.headers.get('location') === '/admin/setup/verify',
-    'recovery proof persists Access pending state and advances to verification',
+    configured.status === 303 && configured.headers.get('location') === '/admin/ready' &&
+      /better-auth\.session_token=/.test(adminCookie),
+    'recovery proof creates the owner and returns a Better Auth browser session',
     `HTTP ${configured.status} location=${configured.headers.get('location')}`,
   );
-  const resumed = await fetch(`${baseUrl}/admin/setup`);
-  const resumedHtml = await resumed.text();
+  const resumed = await fetch(`${baseUrl}/admin/setup`, { headers: { cookie: adminCookie } });
   check(
-    resumed.status === 200 && resumedHtml.includes('Configuration saved') &&
-      resumedHtml.includes('Verify identity through Access'),
-    'interrupted setup resumes at the saved verification step',
+    resumed.status === 200 || resumed.status === 303,
+    'completed setup is resumable without creating another owner',
     `HTTP ${resumed.status}`,
   );
-  const unverified = await fetch(`${baseUrl}/admin/setup/verify`, { redirect: 'manual' });
+  const unauthenticated = await fetch(`${baseUrl}/admin/api/agents`);
   check(
-    unverified.status === 401,
-    'Access activation fails closed without a signed assertion',
-    `HTTP ${unverified.status}`,
+    unauthenticated.status === 401,
+    'password-active Admin APIs fail closed without the browser session',
+    `HTTP ${unauthenticated.status}`,
   );
   const publicGithubCallback = await fetch(
     `${baseUrl}/oauth/github/setup/callback?code=invalid&state=invalid`,
@@ -442,10 +469,13 @@ async function renderAdminWithWorkerdState(baseUrl) {
   };
   const authenticatedFetch = (path, options = {}) => {
     const url = path.startsWith('http') ? path : `${baseUrl}${path}`;
+    const method = String(options.method ?? 'GET').toUpperCase();
+    const mutation = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method);
     return fetch(url, {
       ...options,
       headers: {
-        authorization: `Bearer ${ADMIN_TOKEN}`,
+        ...(adminCookie ? { cookie: adminCookie } : {}),
+        ...(mutation ? { origin: baseUrl, 'sec-fetch-site': 'same-origin' } : {}),
         ...(options.headers ?? {}),
       },
     });
@@ -479,7 +509,25 @@ async function renderAdminWithWorkerdState(baseUrl) {
   throw new Error(`admin inline script did not render within ${timeoutMs}ms`);
 }
 
-/** Ready = the admin API answers from the DO-backed store (workerd + DO up). */
+/** Ready = the public setup page answers from the DO-backed store (workerd + DO up). */
+async function waitForSetupReady(handle, baseUrl, timeoutMs = 90_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (handle.child.exitCode !== null) {
+      throw new Error(`wrangler dev exited early (exit ${handle.child.exitCode}):\n${handle.getOutput()}`);
+    }
+    try {
+      const response = await fetch(`${baseUrl}/admin/setup`);
+      if (response.status === 200) return;
+    } catch {
+      // not accepting connections yet
+    }
+    await delay(300);
+  }
+  throw new Error(`wrangler dev never exposed setup:\n${handle.getOutput()}`);
+}
+
+/** Ready after setup = the authenticated Admin API answers with the persisted session. */
 async function waitForAdminReady(handle, baseUrl, timeoutMs = 90_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -488,15 +536,13 @@ async function waitForAdminReady(handle, baseUrl, timeoutMs = 90_000) {
     }
     try {
       const { status, body } = await adminFetch(baseUrl, '/admin/api/agents');
-      if (status === 200 && Array.isArray(body?.agents)) {
-        return body.agents;
-      }
+      if (status === 200 && Array.isArray(body?.agents)) return body.agents;
     } catch {
       // not accepting connections yet
     }
     await delay(300);
   }
-  throw new Error(`wrangler dev never became ready:\n${handle.getOutput()}`);
+  throw new Error(`wrangler dev never restored the authenticated Admin API:\n${handle.getOutput()}`);
 }
 
 async function measureRepresentativeStateWrite(baseUrl) {
@@ -642,6 +688,7 @@ async function main() {
   // Fresh local DO state every run: the seeding + dedupe assertions assume a
   // first-boot Durable Object.
   rmSync(PERSIST_DIR, { recursive: true, force: true });
+  applyLocalAuthMigrations();
 
   const { FakeSlackBackend, FAKE_PROVIDER_KEYS, STUB_REPLY_MARKER } = await loadFake();
   // The fake reports this workspace identity from auth.test (so the wizard
@@ -678,8 +725,13 @@ async function main() {
 
   try {
     console.log('• waiting for wrangler dev (round 1)…');
-    const agents = await waitForAdminReady(wrangler, baseUrl);
-    await configurePendingAccess(baseUrl);
+    await waitForSetupReady(wrangler, baseUrl);
+    await completePasswordSetup(baseUrl);
+    const agentsResult = await adminFetch(baseUrl, '/admin/api/agents');
+    if (agentsResult.status !== 200 || !Array.isArray(agentsResult.body?.agents)) {
+      throw new Error(`authenticated Admin API did not become ready (HTTP ${agentsResult.status})`);
+    }
+    const agents = agentsResult.body.agents;
     const agentIds = agents.map((agent) => agent.id).sort();
     check(
       agentIds.includes('agent_default'),
@@ -708,7 +760,7 @@ async function main() {
       'Usage summary queries the initialized TagStateStore ledger',
       `HTTP ${usageSummary.status} operations=${String(usageSummary.body?.totals?.operationCount)}`,
     );
-    const drainStatus = await runDrainCheck({ baseUrl, adminToken: ADMIN_TOKEN });
+    const drainStatus = await runDrainCheck({ baseUrl, sessionCookie: adminCookie });
     check(
       drainStatus.drained,
       'runtime drain endpoint reaches the initialized TagStateStore aggregate',

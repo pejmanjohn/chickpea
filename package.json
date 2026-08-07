@@ -19,6 +19,8 @@
     "catalog",
     "docs/authentication.md",
     "docs/runbooks/access-recovery.md",
+    "docs/runbooks/auth-db-upgrade.md",
+    "docs/runbooks/password-recovery.md",
     "fixtures",
     "migrations",
     "scripts",

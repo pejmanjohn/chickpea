@@ -1378,11 +1378,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
   };
 
-  // Setup is reachable before an Access application exists. The recovery
-  // credential authorizes only this bounded state transition and is never
-  // exchanged for a browser session. Once configured, Cloudflare Access
-  // protects both /admin and /admin/* at the edge; Chickpea still verifies the
-  // signed assertion before it creates the first owner.
+  // Setup is public only until an authenticator becomes active. The recovery
+  // credential authorizes the bounded owner bootstrap but is never itself a
+  // browser login. Fresh installs create a Better Auth owner/session; the
+  // legacy Access form remains available only for an already-pending install.
   app.use('/admin/setup', authSetupBodyLimit);
   app.use('/admin/setup/*', authSetupBodyLimit);
   app.use('/admin/recovery', authSetupBodyLimit);
@@ -1512,9 +1511,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
   });
 
-  // Recovery is deliberately not a login path. It requires a valid assertion
-  // from the already configured issuer plus the offline recovery credential,
-  // and it can repair only the Access audience.
+  // Recovery is deliberately not a login path. Password mode uses the offline
+  // recovery credential to replace one durable owner password and revokes
+  // authority; optional Access mode additionally requires its signed assertion.
   app.get('/admin/recovery', async (c) => {
     authResponseHeaders(c);
     const token = recoveryToken(c);

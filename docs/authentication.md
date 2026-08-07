@@ -1,74 +1,67 @@
 # Authentication and roles
 
-Chickpea deliberately separates **who signed in** from **what that person may do**.
+Chickpea separates **who signed in** from **what that person may do**. Better Auth owns password credentials, users, browser sessions, organizations, memberships, roles, and invitation records. Chickpea owns setup and recovery capabilities, authorization policy, Slack relationships, audit history, and the normalized principal used by product code.
 
-## Cloudflare deployments
+## Default: built-in accounts
 
-Cloudflare Access is the default authenticator. The intended consumer installer creates the authentication perimeter during deployment; it does not make Chickpea a permanent OAuth or runtime intermediary. The standard Cloudflare Deploy button and CLI remain the advanced/manual fallback and currently require this one-time setup:
+A fresh Cloudflare or Node install uses invitation-only email/password accounts. It needs no Cloudflare Access configuration, email provider, hostname-specific OAuth application, or Chickpea-hosted control plane.
 
-The hosted installer's temporary authority to create resources in a customer's
-Cloudflare account is a separate concern from Access login. Cloudflare Access
-supplies the email one-time-code screen and signed runtime assertion; it does
-not grant the installer Cloudflare account API access. OAuth is one possible
-implementation of the provisioning-authority adapter, not a requirement of
-Access or of Chickpea's identity model. The consumer provisioning mechanism is
-currently blocked on the accepted platform feasibility gate; see
-[Installer and authentication boundaries](../deploy/installer/architecture.md).
+1. Generate a 32-byte deployment recovery secret with `openssl rand -hex 32` and keep it in a password manager.
+2. Deploy with that value as `CHICKPEA_RECOVERY_TOKEN`. It is accepted only as 64-character hexadecimal, padded standard base64, or unpadded base64url that decodes to exactly 32 bytes.
+3. Open `<origin>/admin/setup` and enter the recovery secret, workspace name, owner name, owner email, and a strong password.
+4. Chickpea pins the HTTPS origin, creates the first Better Auth owner and organization, and returns a secure browser session. Loopback development is the only plaintext exception.
+5. Continue directly to Slack setup.
 
-1. Cloudflare deploys the source and prompts for `CHICKPEA_RECOVERY_TOKEN`.
-2. `/admin/setup` uses that offline credential only to create the pending owner claim and save the expected Access issuer, audience, and Admin origin.
-3. You create or reuse a Zero Trust organization, enable a dedicated verified-email login method, and protect exactly `<origin>/admin` and `<origin>/admin/*` in one Self-hosted application. Its authentication-only policy is configured once and does not enumerate Chickpea members.
-4. `/admin/setup/verify` must receive a cryptographically valid `Cf-Access-Jwt-Assertion`. Chickpea verifies its signature, exact issuer, audience, expiry, subject, and email before activating the owner.
-5. Later requests repeat both gates: Access must authenticate the immutable external subject, and Chickpea must resolve it to an active membership with sufficient permissions.
+The deploy secret is not a login credential, password pepper, or invitation. Chickpea derives a separate versioned Better Auth secret with HKDF-SHA-256 and keeps both values out of pages, logs, diagnostics, exports, and product state. Setup is resumable and cannot create a second owner.
 
-Do not protect the whole Worker hostname. `/channels/slack/events`, Slack interactivity, the public GitHub setup callback, and provider OAuth callbacks use their own signatures or single-use state and must remain reachable without an Access session.
+Browser sessions use Better Auth's opaque cookie with `HttpOnly`, `SameSite=Lax`, `Path=/`, and `Secure` on HTTPS. Human credential routes do not accept personal access tokens or agent credentials. State-changing forms and APIs also require the pinned origin and same-site request provenance.
 
-## Chickpea roles
+## Roles
 
-- `owner`: full administration, including owner promotion/demotion and authentication-sensitive recovery.
+- `owner`: full administration, owner promotion/demotion, and authentication-sensitive recovery.
 - `admin`: product configuration, ordinary membership management, and `member`/`admin` invitations; cannot grant or control owners.
-- `member`: a minimal signed-in account and Slack handoff; no configuration console.
+- `member`: a minimal account and Slack handoff; no configuration console.
 
-Suspending or removing a membership takes effect on the next Chickpea request even if Cloudflare still considers the Access session valid. The final active owner cannot be demoted, suspended, or removed.
-
-The authentication-only perimeter deliberately allows any person who can verify an email to reach Chickpea's sign-in boundary. An unknown identity receives the same denial, creates no user or membership, and can read no product data. Only a matching invitation or existing active membership grants Chickpea authority.
+Suspension and removal take effect on the next request and revoke that person's browser sessions and personal access tokens. Chickpea serializes owner changes and never permits the final active owner to be demoted, suspended, or removed.
 
 ## Inviting teammates
 
-An owner or admin creates an exact-email Chickpea invitation with a role. The seven-day link carries its show-once secret only in the URL fragment. A public, no-store `/join` page moves that value into same-tab session storage, removes it from the address bar, then sends the browser through the configured sign-in perimeter. The protected join page clears the stored secret before posting it to Chickpea.
+An owner or admin creates an exact-email, seven-day invitation in Team settings. Chickpea does not send email: the operator copies the show-once link to the invitee through a trusted channel.
 
-The signed assertion email must exactly match the invitation. Chickpea then consumes the secret atomically and binds the stable `(provider, issuer, subject)` identity rather than treating email as the permanent key. Resend rotates the secret; revoke, expiry, a different verified email, and replay all fail closed. No invitation, suspension, removal, resend, or role change edits Cloudflare.
+The capability exists only in the URL fragment. The public, no-store `/join` page moves it into same-tab session storage and removes it from browser history before enrollment. A new invitee creates a display name and password for the fixed invited email. Someone who already has a local Chickpea account signs in normally and resumes the same tab; the invitation never overwrites an existing password.
 
-## Token mode for manual or Node installs
+Acceptance requires the exact invited email and creates the membership only at the final commit. Rotation invalidates the old link. Revoke, expiry, a different signed-in user, and replay all fail closed. Operators can choose `team-only` or invite-only connection visibility independently from the person's Chickpea role.
 
-Access is not required for a manual Node deployment. Explicit token mode uses one show-once personal token per person; browser login exchanges that token for a separate opaque, hashed, `HttpOnly`, `SameSite=Lax` session capped at 24 hours. Revoking the source personal token or suspending the membership invalidates the next request.
+## Password changes and reset
 
-Bootstrap token mode directly against the Node SQLite state:
+A signed-in user changes their own password only after proving the current one. Success revokes every browser session and requires normal login.
 
-```bash
-export CHICKPEA_RECOVERY_TOKEN="$(openssl rand -hex 32)"
-printf '%s\n' "$CHICKPEA_RECOVERY_TOKEN" | \
-  npm run auth:recover -- --bootstrap-token-mode \
-    --state-db ./tmp/flue.db.state \
-    --owner-email owner@example.com \
-    --origin https://chickpea.example.com \
-    --yes
-```
+An owner or authorized admin may create a 30-minute, show-once administrative reset link for a teammate. The fixed target is visible before the new password is accepted. Reset revokes all target sessions and personal access tokens, consumes the capability, and does not create a logged-in session. An admin cannot reset an owner.
 
-The command has no HTTP transport. It stores only the personal-token hash and prints the raw token once. Use the same command without `--bootstrap-token-mode` to rotate a selected owner after credentials are lost; prior personal tokens and their browser sessions are revoked.
+## Owner recovery
 
-## Legacy shared-token migration
+Open `/admin/recovery` and provide the durable owner email, a replacement password, and the deployment recovery secret. Recovery is not sign-in: it replaces exactly one owner credential, revokes the owner's sessions and personal access tokens, consumes the bounded recovery operation, and requires normal login.
 
-`TAG_ADMIN_TOKEN` exists only for an installation created before identity auth. The old credential remains usable while Access setup is pending so an interruption cannot strand the operator. Once Access or token mode activates, shared-token authentication is cut off and cannot be re-enabled as a fallback. Existing Slack credentials and product configuration stay in the same state store.
+Losing both the owner password and `CHICKPEA_RECOVERY_TOKEN` means Chickpea cannot recover the account. Keep the secret outside the deployment account. Follow [Built-in authentication recovery](runbooks/password-recovery.md) for lost credentials or suspected secret compromise.
 
-## Recovery boundaries
+## Existing installs and `AUTH_DB`
 
-- Access edge or identity-provider lockout is repaired in Cloudflare first. Chickpea cannot bypass a policy that prevents the request from reaching the Worker.
-- `/admin/recovery` is inside the Access perimeter. It requires the offline recovery credential plus a valid signature from the configured issuer and can repair only the Access audience or one owner binding.
-- Token-mode recovery uses `npm run auth:recover` with direct SQLite access. No HTTP route accepts the recovery credential as a token-mode login.
+Fresh Cloudflare deploys provision `AUTH_DB` D1 and apply the checked-in Better Auth migrations before the Worker deploy. Existing Access, token, and legacy-shared installations retain their current authenticator and data authority. If such an upgraded installation has no `AUTH_DB` binding, it must continue to boot in its existing mode rather than partially activating password auth. See [Adding the Better Auth database to an existing install](runbooks/auth-db-upgrade.md).
 
-See [Access recovery](runbooks/access-recovery.md) for exact procedures.
+`TAG_ADMIN_TOKEN` is legacy-only and is not an active prompt for new deployments. Do not add it to a fresh installation.
+
+## Optional Cloudflare Access mode
+
+Cloudflare Access remains an advanced authenticator for an installation that explicitly chooses it. It supplies a signed external identity; Chickpea still resolves that identity to a live membership and role. There is never an Access-to-password fallback if Access is incomplete or invalid.
+
+Protect only `<origin>/admin` and `<origin>/admin/*`. Slack events, Slack interactivity, the public GitHub setup callback, invitation/reset bootstrap pages, and provider OAuth callbacks use their own signatures or single-use state and must remain reachable. Existing Access operators should use the separate [Cloudflare Access recovery](runbooks/access-recovery.md) runbook.
+
+## Node deployments
+
+Node uses the same built-in setup, login, invitation, role, reset, and recovery behavior over the process-cached SQLite auth database. Put every non-loopback deployment behind HTTPS, restrict the SQLite file to the service account, back it up with its WAL state, and avoid multiple processes unless you provide a supported shared database.
+
+The older explicit personal-token bootstrap remains a compatibility path for an installation already using token mode. A personal token is a machine credential, not password-lifecycle authority.
 
 ## Hosted compatibility
 
-The product domain stores internal users, organization-scoped memberships, roles, invitations, and permissions independently from Access. Access, personal tokens, and a future Hosted authenticator all return the same normalized principal. Hosted Chickpea can therefore add managed OIDC, SAML, SCIM, hosted sessions, and tenant routing without redefining the role matrix or rewriting Slack product state. The OSS instance remains honestly single-organization and single-workspace; it does not claim runtime-wide multi-tenancy today.
+Product authorization depends on normalized users, organizations, memberships, roles, statuses, and permissions—not Better Auth cookies or Cloudflare assertions. Hosted Chickpea can therefore keep the same product model while moving Better Auth to PostgreSQL and adding managed OIDC/SAML, enterprise session policy, and SCIM-compatible provisioning. Provider/database identifiers may require an explicit mapping during that migration; semantic compatibility does not promise byte-identical stored IDs.
