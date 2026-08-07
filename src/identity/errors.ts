@@ -14,6 +14,8 @@ export type IdentityErrorCode =
   | 'invitation_expired'
   | 'invitation_email_mismatch'
   | 'invitation_token_invalid'
+  | 'personal_token_missing'
+  | 'browser_session_missing'
   | 'identity_invalid';
 
 export class IdentityStateError extends Error {

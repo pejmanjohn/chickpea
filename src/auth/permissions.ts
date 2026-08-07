@@ -1,0 +1,42 @@
+import type { OrganizationRole } from '../identity/types.ts';
+import type { AuthPrincipal } from './types.ts';
+
+export type Permission =
+  | 'account.view'
+  | 'slack.handoff'
+  | 'admin.configure'
+  | 'team.manage'
+  | 'team.manage_owners'
+  | 'auth.manage'
+  | 'auth.recover';
+
+const MEMBER = new Set<Permission>(['account.view', 'slack.handoff']);
+const ADMIN = new Set<Permission>([
+  ...MEMBER,
+  'admin.configure',
+  'team.manage',
+]);
+const OWNER = new Set<Permission>([
+  ...ADMIN,
+  'team.manage_owners',
+  'auth.manage',
+  'auth.recover',
+]);
+
+export class AuthorizationError extends Error {
+  readonly name = 'AuthorizationError';
+  constructor(readonly code: 'forbidden' | 'principal_required' = 'forbidden') {
+    super(code === 'forbidden' ? 'Permission forbidden.' : 'Authenticated principal required.');
+  }
+}
+
+export function permissionForRole(role: OrganizationRole): ReadonlySet<Permission> {
+  if (role === 'owner') return OWNER;
+  if (role === 'admin') return ADMIN;
+  return MEMBER;
+}
+
+export function requirePermission(principal: AuthPrincipal | undefined, permission: Permission): void {
+  if (!principal) throw new AuthorizationError('principal_required');
+  if (!permissionForRole(principal.role).has(permission)) throw new AuthorizationError();
+}

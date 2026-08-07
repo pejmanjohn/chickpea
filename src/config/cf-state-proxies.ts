@@ -9,8 +9,10 @@ import { IdentityStateError } from '../identity/errors.ts';
 import type {
   ClaimOwnerInput,
   ConsumeInvitationInput,
+  CreateBrowserSessionRecordInput,
   CreateInvitationInput,
   CreateOwnerClaimInput,
+  CreatePersonalTokenRecordInput,
   EnsureOrganizationInput,
   IdentityRpcRequest,
   IdentityRpcResponse,
@@ -262,6 +264,19 @@ export class CfIdentityStore implements IdentityStore {
     if (response.kind !== 'memberships') throw unexpectedIdentityResponse();
     return response.memberships;
   }
+  async getUser(userId: string) {
+    const response = await this.execute({ kind: 'get_user', userId });
+    if (response.kind !== 'user') throw unexpectedIdentityResponse();
+    return orUndefined(response.user);
+  }
+  async getMembershipForUser(userId: string, organizationId?: string) {
+    const response = await this.execute({
+      kind: 'get_membership_for_user', userId,
+      ...(organizationId === undefined ? {} : { organizationId }),
+    });
+    if (response.kind !== 'memberships') throw unexpectedIdentityResponse();
+    return response.memberships[0];
+  }
   async updateMembership(input: UpdateMembershipInput) {
     const response = await this.execute({ kind: 'update_membership', input });
     if (response.kind !== 'membership') throw unexpectedIdentityResponse();
@@ -291,6 +306,46 @@ export class CfIdentityStore implements IdentityStore {
     const response = await this.execute({ kind: 'list_invitations' });
     if (response.kind !== 'invitations') throw unexpectedIdentityResponse();
     return response.invitations;
+  }
+  async createPersonalToken(input: CreatePersonalTokenRecordInput) {
+    const response = await this.execute({ kind: 'create_personal_token', input });
+    if (response.kind !== 'personal_token') throw unexpectedIdentityResponse();
+    return response.personalToken;
+  }
+  async findPersonalTokens(prefix: string) {
+    const response = await this.execute({ kind: 'find_personal_tokens', prefix });
+    if (response.kind !== 'personal_tokens') throw unexpectedIdentityResponse();
+    return response.personalTokens;
+  }
+  async getPersonalToken(tokenId: string) {
+    const response = await this.execute({ kind: 'get_personal_token', tokenId });
+    if (response.kind !== 'personal_tokens') throw unexpectedIdentityResponse();
+    return response.personalTokens[0];
+  }
+  async revokePersonalToken(tokenId: string) {
+    const response = await this.execute({ kind: 'revoke_personal_token', tokenId });
+    if (response.kind !== 'personal_token') throw unexpectedIdentityResponse();
+    return response.personalToken;
+  }
+  async touchPersonalToken(tokenId: string) {
+    const response = await this.execute({ kind: 'touch_personal_token', tokenId });
+    if (response.kind !== 'personal_token') throw unexpectedIdentityResponse();
+    return response.personalToken;
+  }
+  async createBrowserSession(input: CreateBrowserSessionRecordInput) {
+    const response = await this.execute({ kind: 'create_browser_session', input });
+    if (response.kind !== 'browser_session') throw unexpectedIdentityResponse();
+    return response.browserSession;
+  }
+  async findBrowserSessions(prefix: string) {
+    const response = await this.execute({ kind: 'find_browser_sessions', prefix });
+    if (response.kind !== 'browser_sessions') throw unexpectedIdentityResponse();
+    return response.browserSessions;
+  }
+  async revokeBrowserSession(sessionId: string) {
+    const response = await this.execute({ kind: 'revoke_browser_session', sessionId });
+    if (response.kind !== 'browser_session') throw unexpectedIdentityResponse();
+    return response.browserSession;
   }
   async exportSummary() {
     const response = await this.execute({ kind: 'export_summary' });

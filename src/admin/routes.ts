@@ -216,6 +216,9 @@ import {
   type SlackTeamInfo,
 } from '../slack/credentials.ts';
 import { constantTimeEquals } from './constant-time.ts';
+import { AuthDeniedError, setRequestPrincipal } from '../auth/service.ts';
+import { AuthorizationError, requirePermission } from '../auth/permissions.ts';
+import type { AdminAuthenticationService } from '../auth/types.ts';
 
 interface AdminRoutesOptions {
   // Injection seam for tests/harnesses: any async ConfigStore serves the
@@ -232,6 +235,7 @@ interface AdminRoutesOptions {
   runtimeDrain?: ((env?: PlatformEnv) => Promise<RuntimeDrainStatus>) | undefined;
   usageAdminUi?: boolean | undefined;
   adminToken?: string | undefined;
+  authService?: AdminAuthenticationService | undefined;
   knownProviders?: ReadonlySet<string> | undefined;
   // Injection seam for the MCP test-connection route, mirroring how the skills
   // resolve route takes a resolver: tests pass a mock so no real network
@@ -288,6 +292,7 @@ interface AdminRoutesOptions {
 }
 
 const ADMIN_COOKIE = 'flue_admin';
+const AUTH_SESSION_COOKIE = 'chickpea_session';
 const MAX_ADMIN_LOGIN_BODY_BYTES = 4_096;
 
 const nonEmptyString = v.pipe(v.string(), v.minLength(1));
@@ -860,6 +865,42 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   });
 
   const adminGate = async (c: Context, next: Next) => {
+    if (options.authService) {
+      if (isAdminLoginPost(c)) {
+        const login = await readAdminLogin(c);
+        try {
+          const result = await options.authService.loginWithPersonalToken?.(login.token ?? '');
+          if (!result) throw new AuthDeniedError();
+          setCookie(c, AUTH_SESSION_COOKIE, result.sessionToken, {
+            path: '/admin',
+            httpOnly: true,
+            sameSite: 'Lax',
+            secure: isHttps(c),
+            expires: new Date(result.expiresAt),
+          });
+          return c.redirect(login.returnTo, 303);
+        } catch {
+          return c.html(
+            renderAdminLogin({ invalidToken: true, returnTo: login.returnTo }),
+            401,
+          );
+        }
+      }
+      try {
+        const principal = await options.authService.authenticateRequest(c.req.raw);
+        setRequestPrincipal(c.req.raw, principal);
+        requirePermission(principal, 'admin.configure');
+        return next();
+      } catch (error) {
+        if (error instanceof AuthorizationError) {
+          return c.json({ error: 'forbidden' }, 403);
+        }
+        if (isAdminPageGet(c)) {
+          return c.html(renderAdminLogin({ returnTo: safeAdminReturnPath(c.req.path) }), 401);
+        }
+        return c.json({ error: 'unauthorized' }, 401);
+      }
+    }
     const expected = adminToken();
     if (!expected) {
       return c.notFound();
@@ -1081,7 +1122,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   // Apply the byte cap before the unauthenticated body is buffered. Keep the
   // missing-token 404 contract by letting adminGate handle disabled admin UI.
   app.use('/admin/login', (c, next) =>
-    adminToken() ? adminLoginBodyLimit(c, next) : next(),
+    adminToken() || options.authService ? adminLoginBodyLimit(c, next) : next(),
   );
   app.use('/admin', adminGate);
   app.use('/admin/*', adminGate);

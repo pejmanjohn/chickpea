@@ -72,6 +72,30 @@ export interface Invitation {
   updatedAt: number;
 }
 
+export interface PersonalTokenRecord {
+  id: string;
+  userId: string;
+  tokenHash: string;
+  prefix: string;
+  label: string;
+  status: 'active' | 'revoked';
+  lastUsedAt: number | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface BrowserSessionRecord {
+  id: string;
+  userId: string;
+  personalTokenId: string;
+  sessionHash: string;
+  prefix: string;
+  expiresAt: number;
+  lastSeenAt: number;
+  revokedAt: number | null;
+  createdAt: number;
+}
+
 export interface IdentityResolution {
   user: User;
   binding: ExternalIdentityBinding;
@@ -132,6 +156,21 @@ export interface ConsumeInvitationInput {
   at?: number;
 }
 
+export interface CreatePersonalTokenRecordInput {
+  userId: string;
+  tokenHash: string;
+  prefix: string;
+  label: string;
+}
+
+export interface CreateBrowserSessionRecordInput {
+  userId: string;
+  personalTokenId: string;
+  sessionHash: string;
+  prefix: string;
+  expiresAt: number;
+}
+
 export interface IdentityExportSummary {
   organization: Organization | null;
   users: User[];
@@ -139,6 +178,8 @@ export interface IdentityExportSummary {
   memberships: Membership[];
   ownerClaim: Omit<OwnerClaim, 'normalizedEmail'> & { emailConfigured: boolean } | null;
   invitations: Array<Omit<Invitation, 'tokenHash' | 'normalizedEmail'> & { emailConfigured: boolean }>;
+  personalTokens: Array<Omit<PersonalTokenRecord, 'tokenHash'>>;
+  browserSessions: Array<Omit<BrowserSessionRecord, 'sessionHash'>>;
 }
 
 export interface IdentityStore {
@@ -155,12 +196,22 @@ export interface IdentityStore {
   ): Promise<IdentityResolution | undefined>;
   listExternalIdentities(): Promise<ExternalIdentityBinding[]>;
   listMemberships(): Promise<Membership[]>;
+  getUser(userId: string): Promise<User | undefined>;
+  getMembershipForUser(userId: string, organizationId?: string): Promise<Membership | undefined>;
   updateMembership(input: UpdateMembershipInput): Promise<Membership>;
   createInvitation(input: CreateInvitationInput): Promise<Invitation>;
   resendInvitation(input: ResendInvitationInput): Promise<Invitation>;
   revokeInvitation(invitationId: string): Promise<Invitation>;
   consumeInvitation(input: ConsumeInvitationInput): Promise<IdentityResolution>;
   listInvitations(): Promise<Invitation[]>;
+  createPersonalToken(input: CreatePersonalTokenRecordInput): Promise<PersonalTokenRecord>;
+  findPersonalTokens(prefix: string): Promise<PersonalTokenRecord[]>;
+  getPersonalToken(tokenId: string): Promise<PersonalTokenRecord | undefined>;
+  revokePersonalToken(tokenId: string): Promise<PersonalTokenRecord>;
+  touchPersonalToken(tokenId: string): Promise<PersonalTokenRecord>;
+  createBrowserSession(input: CreateBrowserSessionRecordInput): Promise<BrowserSessionRecord>;
+  findBrowserSessions(prefix: string): Promise<BrowserSessionRecord[]>;
+  revokeBrowserSession(sessionId: string): Promise<BrowserSessionRecord>;
   exportSummary(): Promise<IdentityExportSummary>;
   listAuditEvents(limit?: number): Promise<AuditEvent[]>;
 }
@@ -180,12 +231,22 @@ export type IdentityRpcRequest =
     }
   | { kind: 'list_external_identities' }
   | { kind: 'list_memberships' }
+  | { kind: 'get_user'; userId: string }
+  | { kind: 'get_membership_for_user'; userId: string; organizationId?: string }
   | { kind: 'update_membership'; input: UpdateMembershipInput }
   | { kind: 'create_invitation'; input: CreateInvitationInput }
   | { kind: 'resend_invitation'; input: ResendInvitationInput }
   | { kind: 'revoke_invitation'; invitationId: string }
   | { kind: 'consume_invitation'; input: ConsumeInvitationInput }
   | { kind: 'list_invitations' }
+  | { kind: 'create_personal_token'; input: CreatePersonalTokenRecordInput }
+  | { kind: 'find_personal_tokens'; prefix: string }
+  | { kind: 'get_personal_token'; tokenId: string }
+  | { kind: 'revoke_personal_token'; tokenId: string }
+  | { kind: 'touch_personal_token'; tokenId: string }
+  | { kind: 'create_browser_session'; input: CreateBrowserSessionRecordInput }
+  | { kind: 'find_browser_sessions'; prefix: string }
+  | { kind: 'revoke_browser_session'; sessionId: string }
   | { kind: 'export_summary' }
   | { kind: 'list_identity_audit_events'; limit?: number };
 
@@ -195,8 +256,13 @@ export type IdentityRpcResponse =
   | { kind: 'identity_resolution'; resolution: IdentityResolution | null }
   | { kind: 'external_identities'; externalIdentities: ExternalIdentityBinding[] }
   | { kind: 'memberships'; memberships: Membership[] }
+  | { kind: 'user'; user: User | null }
   | { kind: 'membership'; membership: Membership }
   | { kind: 'invitation'; invitation: Invitation }
   | { kind: 'invitations'; invitations: Invitation[] }
+  | { kind: 'personal_token'; personalToken: PersonalTokenRecord }
+  | { kind: 'personal_tokens'; personalTokens: PersonalTokenRecord[] }
+  | { kind: 'browser_session'; browserSession: BrowserSessionRecord }
+  | { kind: 'browser_sessions'; browserSessions: BrowserSessionRecord[] }
   | { kind: 'export_summary'; summary: IdentityExportSummary }
   | { kind: 'audit_events'; events: AuditEvent[] };

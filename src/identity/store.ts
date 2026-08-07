@@ -7,10 +7,13 @@ import type { StateDb } from '../state/state-db.ts';
 import { identityError } from './errors.ts';
 import type {
   BindExternalIdentityInput,
+  BrowserSessionRecord,
   ClaimOwnerInput,
   ConsumeInvitationInput,
+  CreateBrowserSessionRecordInput,
   CreateInvitationInput,
   CreateOwnerClaimInput,
+  CreatePersonalTokenRecordInput,
   EnsureOrganizationInput,
   ExternalIdentityBinding,
   IdentityExportSummary,
@@ -22,6 +25,7 @@ import type {
   Membership,
   Organization,
   OwnerClaim,
+  PersonalTokenRecord,
   ResendInvitationInput,
   UpdateMembershipInput,
   User,
@@ -93,6 +97,30 @@ interface InvitationRow {
   updated_at: number;
 }
 
+interface PersonalTokenRow {
+  personal_token_id: string;
+  user_id: string;
+  token_hash: string;
+  prefix: string;
+  label: string;
+  status: PersonalTokenRecord['status'];
+  last_used_at: number | null;
+  created_at: number;
+  updated_at: number;
+}
+
+interface BrowserSessionRow {
+  browser_session_id: string;
+  user_id: string;
+  personal_token_id: string;
+  session_hash: string;
+  prefix: string;
+  expires_at: number;
+  last_seen_at: number;
+  revoked_at: number | null;
+  created_at: number;
+}
+
 const OSS_ORGANIZATION_ID = 'org_oss';
 
 /**
@@ -139,6 +167,12 @@ export class IdentityStoreLogic {
         return { kind: 'external_identities', externalIdentities: this.listExternalIdentities() };
       case 'list_memberships':
         return { kind: 'memberships', memberships: this.listMemberships() };
+      case 'get_user':
+        return { kind: 'user', user: this.getUser(request.userId) ?? null };
+      case 'get_membership_for_user': {
+        const membership = this.getMembershipForUser(request.userId, request.organizationId);
+        return { kind: 'memberships', memberships: membership ? [membership] : [] };
+      }
       case 'update_membership':
         return { kind: 'membership', membership: this.updateMembership(request.input) };
       case 'create_invitation':
@@ -151,6 +185,24 @@ export class IdentityStoreLogic {
         return { kind: 'identity_resolution', resolution: this.consumeInvitation(request.input) };
       case 'list_invitations':
         return { kind: 'invitations', invitations: this.listInvitations() };
+      case 'create_personal_token':
+        return { kind: 'personal_token', personalToken: this.createPersonalToken(request.input) };
+      case 'find_personal_tokens':
+        return { kind: 'personal_tokens', personalTokens: this.findPersonalTokens(request.prefix) };
+      case 'get_personal_token': {
+        const token = this.getPersonalToken(request.tokenId);
+        return { kind: 'personal_tokens', personalTokens: token ? [token] : [] };
+      }
+      case 'revoke_personal_token':
+        return { kind: 'personal_token', personalToken: this.revokePersonalToken(request.tokenId) };
+      case 'touch_personal_token':
+        return { kind: 'personal_token', personalToken: this.touchPersonalToken(request.tokenId) };
+      case 'create_browser_session':
+        return { kind: 'browser_session', browserSession: this.createBrowserSession(request.input) };
+      case 'find_browser_sessions':
+        return { kind: 'browser_sessions', browserSessions: this.findBrowserSessions(request.prefix) };
+      case 'revoke_browser_session':
+        return { kind: 'browser_session', browserSession: this.revokeBrowserSession(request.sessionId) };
       case 'export_summary':
         return { kind: 'export_summary', summary: this.exportSummary() };
       case 'list_identity_audit_events':
@@ -323,6 +375,23 @@ export class IdentityStoreLogic {
     return this.db
       .all('SELECT * FROM identity_memberships ORDER BY created_at, membership_id')
       .map((row) => rowToMembership(row as unknown as MembershipRow));
+  }
+
+  getUser(userId: string): User | undefined {
+    const row = this.db.get('SELECT * FROM identity_users WHERE user_id = ?', userId);
+    return row ? rowToUser(row as unknown as UserRow) : undefined;
+  }
+
+  getMembershipForUser(
+    userId: string,
+    organizationId = OSS_ORGANIZATION_ID,
+  ): Membership | undefined {
+    const row = this.db.get(
+      `SELECT * FROM identity_memberships WHERE user_id = ? AND organization_id = ?`,
+      userId,
+      organizationId,
+    );
+    return row ? rowToMembership(row as unknown as MembershipRow) : undefined;
   }
 
   updateMembership(input: UpdateMembershipInput): Membership {
@@ -530,6 +599,135 @@ export class IdentityStoreLogic {
       .map((row) => rowToInvitation(row as unknown as InvitationRow));
   }
 
+  createPersonalToken(input: CreatePersonalTokenRecordInput): PersonalTokenRecord {
+    if (!this.getUser(input.userId)) {
+      throw identityError('identity_invalid', 'Token user was not found.');
+    }
+    validateTokenHash(input.tokenHash);
+    const prefix = credentialPrefix(input.prefix);
+    const label = nonEmpty(input.label, 'label');
+    const at = this.now();
+    const id = newId('personal_token');
+    this.db.transaction(() => {
+      this.db.run(
+        `INSERT INTO identity_personal_tokens (
+           personal_token_id, user_id, token_hash, prefix, label, status,
+           last_used_at, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, 'active', NULL, ?, ?)`,
+        id,
+        input.userId,
+        input.tokenHash,
+        prefix,
+        label,
+        at,
+        at,
+      );
+      this.appendAudit('identity.personal_token_created', id, at, null);
+    });
+    return this.requiredPersonalToken(id);
+  }
+
+  findPersonalTokens(prefix: string): PersonalTokenRecord[] {
+    return this.db
+      .all(
+        'SELECT * FROM identity_personal_tokens WHERE prefix = ? ORDER BY created_at, personal_token_id',
+        credentialPrefix(prefix),
+      )
+      .map((row) => rowToPersonalToken(row as unknown as PersonalTokenRow));
+  }
+
+  getPersonalToken(tokenId: string): PersonalTokenRecord | undefined {
+    const row = this.db.get(
+      'SELECT * FROM identity_personal_tokens WHERE personal_token_id = ?',
+      tokenId,
+    );
+    return row ? rowToPersonalToken(row as unknown as PersonalTokenRow) : undefined;
+  }
+
+  revokePersonalToken(tokenId: string): PersonalTokenRecord {
+    const token = this.requiredPersonalToken(tokenId);
+    if (token.status === 'revoked') return token;
+    const at = this.now();
+    this.db.transaction(() => {
+      this.db.run(
+        `UPDATE identity_personal_tokens SET status = 'revoked', updated_at = ?
+         WHERE personal_token_id = ?`,
+        at,
+        tokenId,
+      );
+      this.db.run(
+        `UPDATE identity_browser_sessions SET revoked_at = ?
+         WHERE personal_token_id = ? AND revoked_at IS NULL`,
+        at,
+        tokenId,
+      );
+      this.appendAudit('identity.personal_token_revoked', tokenId, at, null);
+    });
+    return this.requiredPersonalToken(tokenId);
+  }
+
+  touchPersonalToken(tokenId: string): PersonalTokenRecord {
+    this.requiredPersonalToken(tokenId);
+    const at = this.now();
+    this.db.run(
+      `UPDATE identity_personal_tokens SET last_used_at = ?, updated_at = ?
+       WHERE personal_token_id = ?`,
+      at,
+      at,
+      tokenId,
+    );
+    return this.requiredPersonalToken(tokenId);
+  }
+
+  createBrowserSession(input: CreateBrowserSessionRecordInput): BrowserSessionRecord {
+    const token = this.requiredPersonalToken(input.personalTokenId);
+    if (token.userId !== input.userId || token.status !== 'active') {
+      throw identityError('identity_invalid', 'Session source token is unavailable.');
+    }
+    validateTokenHash(input.sessionHash);
+    const prefix = credentialPrefix(input.prefix);
+    const at = this.now();
+    if (!Number.isSafeInteger(input.expiresAt) || input.expiresAt <= at) {
+      throw identityError('identity_invalid', 'Session expiry is invalid.');
+    }
+    const id = newId('browser_session');
+    this.db.run(
+      `INSERT INTO identity_browser_sessions (
+         browser_session_id, user_id, personal_token_id, session_hash, prefix,
+         expires_at, last_seen_at, revoked_at, created_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+      id,
+      input.userId,
+      input.personalTokenId,
+      input.sessionHash,
+      prefix,
+      input.expiresAt,
+      at,
+      at,
+    );
+    return this.requiredBrowserSession(id);
+  }
+
+  findBrowserSessions(prefix: string): BrowserSessionRecord[] {
+    return this.db
+      .all(
+        'SELECT * FROM identity_browser_sessions WHERE prefix = ? ORDER BY created_at, browser_session_id',
+        credentialPrefix(prefix),
+      )
+      .map((row) => rowToBrowserSession(row as unknown as BrowserSessionRow));
+  }
+
+  revokeBrowserSession(sessionId: string): BrowserSessionRecord {
+    const session = this.requiredBrowserSession(sessionId);
+    if (session.revokedAt !== null) return session;
+    this.db.run(
+      'UPDATE identity_browser_sessions SET revoked_at = ? WHERE browser_session_id = ?',
+      this.now(),
+      sessionId,
+    );
+    return this.requiredBrowserSession(sessionId);
+  }
+
   exportSummary(): IdentityExportSummary {
     const users = this.db.all('SELECT * FROM identity_users ORDER BY created_at, user_id')
       .map((row) => rowToUser(row as unknown as UserRow));
@@ -552,6 +750,18 @@ export class IdentityStoreLogic {
         ...row,
         emailConfigured: true,
       })),
+      personalTokens: this.db.all(
+        'SELECT * FROM identity_personal_tokens ORDER BY created_at, personal_token_id',
+      ).map((row) => {
+        const { tokenHash: _hash, ...safe } = rowToPersonalToken(row as unknown as PersonalTokenRow);
+        return safe;
+      }),
+      browserSessions: this.db.all(
+        'SELECT * FROM identity_browser_sessions ORDER BY created_at, browser_session_id',
+      ).map((row) => {
+        const { sessionHash: _hash, ...safe } = rowToBrowserSession(row as unknown as BrowserSessionRow);
+        return safe;
+      }),
     };
   }
 
@@ -633,6 +843,40 @@ export class IdentityStoreLogic {
     this.db.exec(
       `CREATE INDEX IF NOT EXISTS identity_invitations_state_idx
        ON identity_invitations (organization_id, status, expires_at)`,
+    );
+    this.db.exec(
+      `CREATE TABLE IF NOT EXISTS identity_personal_tokens (
+        personal_token_id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES identity_users(user_id),
+        token_hash TEXT NOT NULL UNIQUE,
+        prefix TEXT NOT NULL,
+        label TEXT NOT NULL,
+        status TEXT NOT NULL,
+        last_used_at INTEGER,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      )`,
+    );
+    this.db.exec(
+      `CREATE INDEX IF NOT EXISTS identity_personal_tokens_prefix_idx
+       ON identity_personal_tokens (prefix, status)`,
+    );
+    this.db.exec(
+      `CREATE TABLE IF NOT EXISTS identity_browser_sessions (
+        browser_session_id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES identity_users(user_id),
+        personal_token_id TEXT NOT NULL REFERENCES identity_personal_tokens(personal_token_id),
+        session_hash TEXT NOT NULL UNIQUE,
+        prefix TEXT NOT NULL,
+        expires_at INTEGER NOT NULL,
+        last_seen_at INTEGER NOT NULL,
+        revoked_at INTEGER,
+        created_at INTEGER NOT NULL
+      )`,
+    );
+    this.db.exec(
+      `CREATE INDEX IF NOT EXISTS identity_browser_sessions_prefix_idx
+       ON identity_browser_sessions (prefix, expires_at)`,
     );
   }
 
@@ -736,6 +980,28 @@ export class IdentityStoreLogic {
     return rowToInvitation(row as unknown as InvitationRow);
   }
 
+  private requiredPersonalToken(id: string): PersonalTokenRecord {
+    const row = this.db.get(
+      'SELECT * FROM identity_personal_tokens WHERE personal_token_id = ?',
+      id,
+    );
+    if (!row) {
+      throw identityError('personal_token_missing', 'Personal token was not found.', { tokenId: id });
+    }
+    return rowToPersonalToken(row as unknown as PersonalTokenRow);
+  }
+
+  private requiredBrowserSession(id: string): BrowserSessionRecord {
+    const row = this.db.get(
+      'SELECT * FROM identity_browser_sessions WHERE browser_session_id = ?',
+      id,
+    );
+    if (!row) {
+      throw identityError('browser_session_missing', 'Browser session was not found.', { sessionId: id });
+    }
+    return rowToBrowserSession(row as unknown as BrowserSessionRow);
+  }
+
   private requiredResolution(
     provider: string,
     issuer: string,
@@ -769,12 +1035,24 @@ export class SqliteIdentityStore implements IdentityStore {
   }
   async listExternalIdentities() { return this.logic.listExternalIdentities(); }
   async listMemberships() { return this.logic.listMemberships(); }
+  async getUser(userId: string) { return this.logic.getUser(userId); }
+  async getMembershipForUser(userId: string, organizationId?: string) {
+    return this.logic.getMembershipForUser(userId, organizationId);
+  }
   async updateMembership(input: UpdateMembershipInput) { return this.logic.updateMembership(input); }
   async createInvitation(input: CreateInvitationInput) { return this.logic.createInvitation(input); }
   async resendInvitation(input: ResendInvitationInput) { return this.logic.resendInvitation(input); }
   async revokeInvitation(invitationId: string) { return this.logic.revokeInvitation(invitationId); }
   async consumeInvitation(input: ConsumeInvitationInput) { return this.logic.consumeInvitation(input); }
   async listInvitations() { return this.logic.listInvitations(); }
+  async createPersonalToken(input: CreatePersonalTokenRecordInput) { return this.logic.createPersonalToken(input); }
+  async findPersonalTokens(prefix: string) { return this.logic.findPersonalTokens(prefix); }
+  async getPersonalToken(tokenId: string) { return this.logic.getPersonalToken(tokenId); }
+  async revokePersonalToken(tokenId: string) { return this.logic.revokePersonalToken(tokenId); }
+  async touchPersonalToken(tokenId: string) { return this.logic.touchPersonalToken(tokenId); }
+  async createBrowserSession(input: CreateBrowserSessionRecordInput) { return this.logic.createBrowserSession(input); }
+  async findBrowserSessions(prefix: string) { return this.logic.findBrowserSessions(prefix); }
+  async revokeBrowserSession(sessionId: string) { return this.logic.revokeBrowserSession(sessionId); }
   async exportSummary() { return this.logic.exportSummary(); }
   async listAuditEvents(limit?: number) { return this.logic.listAuditEvents(limit); }
   close(): void { this.db.close(); }
@@ -806,6 +1084,14 @@ function validateTokenHash(value: string): void {
   if (!value || value.length > 256 || /\s/.test(value)) {
     throw identityError('identity_invalid', 'Credential hash is invalid.');
   }
+}
+
+function credentialPrefix(value: string): string {
+  const prefix = value.trim();
+  if (!/^[A-Za-z0-9_-]{6,64}$/.test(prefix)) {
+    throw identityError('identity_invalid', 'Credential prefix is invalid.');
+  }
+  return prefix;
 }
 
 function newId(prefix: string): string {
@@ -883,6 +1169,34 @@ function rowToInvitation(row: InvitationRow): Invitation {
     expiresAt: row.expires_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  };
+}
+
+function rowToPersonalToken(row: PersonalTokenRow): PersonalTokenRecord {
+  return {
+    id: row.personal_token_id,
+    userId: row.user_id,
+    tokenHash: row.token_hash,
+    prefix: row.prefix,
+    label: row.label,
+    status: row.status,
+    lastUsedAt: row.last_used_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function rowToBrowserSession(row: BrowserSessionRow): BrowserSessionRecord {
+  return {
+    id: row.browser_session_id,
+    userId: row.user_id,
+    personalTokenId: row.personal_token_id,
+    sessionHash: row.session_hash,
+    prefix: row.prefix,
+    expiresAt: row.expires_at,
+    lastSeenAt: row.last_seen_at,
+    revokedAt: row.revoked_at,
+    createdAt: row.created_at,
   };
 }
 
