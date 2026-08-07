@@ -34,6 +34,20 @@ function formRequest(path: string, values: Record<string, string>, origin = ORIG
   });
 }
 
+function originlessSameOriginFormRequest(path: string, values: Record<string, string>): Request {
+  const body = new URLSearchParams(values).toString();
+  return new Request(`${ORIGIN}${path}`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/x-www-form-urlencoded',
+      'content-length': String(new TextEncoder().encode(body).byteLength),
+      'sec-fetch-site': 'same-origin',
+      'cf-connecting-ip': '203.0.113.10',
+    },
+    body,
+  });
+}
+
 test('public setup accepts recovery proof only in a capped body then activates through Access', async () => {
   const identity = new SqliteIdentityStore(':memory:');
   const app = createAdminRoutes({
@@ -103,6 +117,37 @@ test('setup stays hidden without recovery configuration and caps unauthenticated
   assert.equal(oversized.status, 413);
   assert.equal(await identity.getOrganization(), undefined);
   identity.close();
+});
+
+test('Access-protected setup accepts an originless same-origin form but no weaker fallback', async () => {
+  const values = {
+    ownerEmail: OWNER.verifiedEmail,
+    recoveryToken: RECOVERY,
+    issuer: ISSUER,
+    audience: AUDIENCE,
+  };
+  const acceptedIdentity = new SqliteIdentityStore(':memory:');
+  const accepted = createAdminRoutes({ identity: acceptedIdentity, recoveryToken: RECOVERY });
+  assert.equal((await accepted.request(originlessSameOriginFormRequest('/admin/setup', values))).status, 303);
+  assert.equal((await acceptedIdentity.getOrganization())?.authMode, 'access_pending');
+  acceptedIdentity.close();
+
+  for (const fetchSite of ['same-site', 'cross-site', undefined]) {
+    const identity = new SqliteIdentityStore(':memory:');
+    const app = createAdminRoutes({ identity, recoveryToken: RECOVERY });
+    const body = new URLSearchParams(values).toString();
+    const headers: Record<string, string> = {
+      'content-type': 'application/x-www-form-urlencoded',
+      'content-length': String(new TextEncoder().encode(body).byteLength),
+    };
+    if (fetchSite) headers['sec-fetch-site'] = fetchSite;
+    const denied = await app.request(new Request(`${ORIGIN}/admin/setup`, {
+      method: 'POST', headers, body,
+    }));
+    assert.equal(denied.status, 401);
+    assert.equal(await identity.getOrganization(), undefined);
+    identity.close();
+  }
 });
 
 test('recovery requires issuer-backed owner proof, same-origin body, and the offline credential', async () => {

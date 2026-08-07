@@ -4130,22 +4130,41 @@ function isValidRecoveryConfiguration(token: string): boolean {
 }
 
 function validAuthFormPost(c: Context, expectedOrigin: string): boolean {
-  if (c.req.method !== 'POST') return false;
+  return authFormPostFailureReason(c, expectedOrigin) === null;
+}
+
+function authFormPostFailureReason(c: Context, expectedOrigin: string): string | null {
+  if (c.req.method !== 'POST') return 'method';
+  const fetchSite = c.req.header('sec-fetch-site');
   let normalizedExpected: string;
-  let normalizedActual: string;
   try {
     normalizedExpected = new URL(expectedOrigin).origin;
-    normalizedActual = new URL(c.req.header('origin') ?? '').origin;
   } catch {
-    return false;
+    return 'expected_origin';
   }
-  if (normalizedActual !== normalizedExpected) return false;
-  const fetchSite = c.req.header('sec-fetch-site');
-  if (fetchSite && fetchSite !== 'same-origin' && fetchSite !== 'same-site') return false;
+  const origin = c.req.header('origin');
+  if (origin) {
+    let normalizedActual: string;
+    try {
+      normalizedActual = new URL(origin).origin;
+    } catch {
+      return 'origin_invalid';
+    }
+    if (normalizedActual !== normalizedExpected) return 'origin_mismatch';
+  } else if (fetchSite !== 'same-origin') {
+    // Cloudflare Access can omit Origin on a protected browser form POST. In
+    // that case, Fetch Metadata is the remaining browser-authenticated CSRF
+    // signal: only an exact same-origin navigation is accepted. `same-site`
+    // is deliberately insufficient because a sibling subdomain is not this
+    // Admin origin.
+    return 'origin_missing';
+  }
+  if (fetchSite && fetchSite !== 'same-origin' && fetchSite !== 'same-site') return 'fetch_site';
   const mediaType = c.req.header('content-type')?.split(';', 1)[0]?.trim().toLowerCase();
-  if (mediaType !== 'application/x-www-form-urlencoded') return false;
+  if (mediaType !== 'application/x-www-form-urlencoded') return 'content_type';
   const length = Number(c.req.header('content-length') ?? 0);
-  return Number.isFinite(length) && length >= 0 && length <= MAX_AUTH_SETUP_BODY_BYTES;
+  if (!Number.isFinite(length) || length < 0 || length > MAX_AUTH_SETUP_BODY_BYTES) return 'content_length';
+  return null;
 }
 
 function authSourceKey(c: Context): string {
