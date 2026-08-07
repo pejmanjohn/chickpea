@@ -6,6 +6,15 @@ Chickpea deliberately separates **who signed in** from **what that person may do
 
 Cloudflare Access is the default authenticator. The intended consumer installer creates the authentication perimeter during deployment; it does not make Chickpea a permanent OAuth or runtime intermediary. The standard Cloudflare Deploy button and CLI remain the advanced/manual fallback and currently require this one-time setup:
 
+The hosted installer's temporary authority to create resources in a customer's
+Cloudflare account is a separate concern from Access login. Cloudflare Access
+supplies the email one-time-code screen and signed runtime assertion; it does
+not grant the installer Cloudflare account API access. OAuth is one possible
+implementation of the provisioning-authority adapter, not a requirement of
+Access or of Chickpea's identity model. The consumer provisioning mechanism is
+currently blocked on the accepted platform feasibility gate; see
+[Installer and authentication boundaries](../deploy/installer/architecture.md).
+
 1. Cloudflare deploys the source and prompts for `CHICKPEA_RECOVERY_TOKEN`.
 2. `/admin/setup` uses that offline credential only to create the pending owner claim and save the expected Access issuer, audience, and Admin origin.
 3. You create or reuse a Zero Trust organization, enable a dedicated verified-email login method, and protect exactly `<origin>/admin` and `<origin>/admin/*` in one Self-hosted application. Its authentication-only policy is configured once and does not enumerate Chickpea members.
