@@ -71,9 +71,9 @@ export class PersonalTokenService {
 export function parseCredential(
   value: string,
   kind: 'chp_pat' | 'chp_session',
-): { prefix: string; secret: string } | undefined {
+): { prefix: string } | undefined {
   const match = new RegExp(`^${kind}_([A-Za-z0-9_-]{12})_([A-Za-z0-9_-]{40,128})$`).exec(value);
-  return match ? { prefix: match[1]!, secret: match[2]! } : undefined;
+  return match ? { prefix: match[1]! } : undefined;
 }
 
 export function digest(value: string): string {
