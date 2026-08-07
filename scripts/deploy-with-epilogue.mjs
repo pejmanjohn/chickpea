@@ -45,7 +45,7 @@ const V2_AGENT_BINDINGS = Object.freeze([
   ['FLUE_CHICKPEA_ROUTINE_INTENT_V2_AGENT', 'FlueChickpeaRoutineIntentV2Agent'],
   ['FLUE_CHICKPEA_ROUTINE_EXECUTION_V2_AGENT', 'FlueChickpeaRoutineExecutionV2Agent'],
 ]);
-const PROTECTED_CLASSES = new Set(['TagStateStore', 'Sandbox', 'ContainerProxy']);
+const PROTECTED_CLASSES = new Set(['TagStateStore', 'Sandbox', 'ContainerProxy', 'AuthGuard']);
 
 function hasCustomConfigFlag(args) {
   return args.some((argument) =>
@@ -163,12 +163,21 @@ function validateFlue2CutoverArtifact(artifact) {
   );
   if (!hasBinding('TAG_STATE', 'TagStateStore')) failures.push('TAG_STATE/TagStateStore binding');
   if (!hasBinding('SANDBOX', 'Sandbox')) failures.push('SANDBOX/Sandbox binding');
+  if (!hasBinding('AUTH_GUARD', 'AuthGuard')) failures.push('AUTH_GUARD/AuthGuard binding');
   for (const [name, className] of V2_AGENT_BINDINGS) {
     if (!hasBinding(name, className)) failures.push(`${name}/${className} binding`);
   }
   const betaBindings = bindings.filter((binding) => BETA_FLUE_CLASSES.includes(binding.class_name));
   if (betaBindings.length) failures.push('no beta Flue Durable Object bindings');
   if ((config.workflows ?? []).length !== 0) failures.push('no Flue workflow bindings');
+  const authDb = (config.d1_databases ?? []).find((binding) => binding.binding === 'AUTH_DB');
+  if (!authDb || !String(authDb.migrations_dir ?? '').endsWith('migrations/better-auth')) {
+    failures.push('AUTH_DB with reviewed Better Auth migrations');
+  }
+  const authMigration = migrations.find((migration) => migration.tag === 'v7');
+  if (!authMigration || !sameMembers(authMigration.new_sqlite_classes ?? [], ['AuthGuard'])) {
+    failures.push('v7 AuthGuard SQLite class');
+  }
 
   if (config.observability?.traces?.enabled !== true) {
     failures.push('enabled Workers Traces for metadata-only Flue spans');
@@ -274,11 +283,13 @@ function validateLedgerCanaryArtifact(artifact) {
   }
 }
 
+let builtArtifact;
 try {
   const artifact = requireBuiltArtifact();
   validateFlue2CutoverArtifact(artifact);
   validateEnabledRoutineArtifact(artifact);
   validateLedgerCanaryArtifact(artifact);
+  builtArtifact = artifact;
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));
   process.exit(1);
@@ -287,6 +298,43 @@ try {
 if (preflightOnly) {
   process.stdout.write('Flue 2 generated cutover preflight passed. No deployment was attempted.\n');
   process.exit(0);
+}
+
+// D1 migrations are forward-only and idempotent. Apply them before the Worker
+// starts serving a schema it expects. If deploy later fails, rerunning this
+// command resumes from D1's migration ledger; never attempt schema rollback.
+if (!deployArgs.includes('--dry-run')) {
+  process.stdout.write('Applying reviewed Better Auth migrations to AUTH_DB...\n');
+  const environmentArgs = [];
+  for (let index = 0; index < deployArgs.length; index += 1) {
+    const argument = deployArgs[index];
+    if (argument === '--env' || argument === '-e') {
+      environmentArgs.push(argument, deployArgs[index + 1]);
+      index += 1;
+    } else if (argument.startsWith('--env=')) {
+      environmentArgs.push(argument);
+    }
+  }
+  const migration = spawnSync(
+    process.execPath,
+    [
+      wranglerBin,
+      'd1',
+      'migrations',
+      'apply',
+      'AUTH_DB',
+      '--remote',
+      '--config',
+      builtArtifact.configPath,
+      ...environmentArgs,
+    ],
+    { cwd: projectRoot, stdio: 'inherit' },
+  );
+  if (migration.error) {
+    console.error(`Unable to start AUTH_DB migration: ${migration.error.message}`);
+    process.exit(1);
+  }
+  if (migration.status !== 0) process.exit(migration.status ?? 1);
 }
 
 const child = spawn(

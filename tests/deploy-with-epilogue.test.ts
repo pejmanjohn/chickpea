@@ -84,6 +84,12 @@ test('successful deploy hands a fresh install to recovery-backed Access setup', 
   assert.match(result.stdout, /verified-email sign-in once for both \/admin and \/admin\/\*/);
   assert.match(result.stdout, /not an Admin login/);
   assert.doesNotMatch(result.stdout, /Sign in with the TAG_ADMIN_TOKEN/);
+  const invoked = commands(harness.logPath);
+  assert.match(
+    invoked[0] ?? '',
+    /^wrangler:\["d1","migrations","apply","AUTH_DB","--remote","--config",".*\/dist-cf\/chickpea\/wrangler\.json"\]$/,
+  );
+  assert.equal(invoked[1], 'wrangler:["deploy"]');
 });
 
 function commands(logPath: string): string[] {
@@ -126,6 +132,7 @@ function writeCutoverArtifact(
     durable_objects: { bindings: [
       { name: 'TAG_STATE', class_name: 'TagStateStore' },
       { name: 'SANDBOX', class_name: 'Sandbox' },
+      { name: 'AUTH_GUARD', class_name: 'AuthGuard' },
       { name: 'FLUE_CHICKPEA_SLACK_V2_AGENT', class_name: 'FlueChickpeaSlackV2Agent' },
       ...(options.routineAgents === false ? [] : [
         {
@@ -138,21 +145,30 @@ function writeCutoverArtifact(
         },
       ]),
     ].filter((binding) => binding.name !== options.missingBinding) },
-    workflows: [],
-    migrations: [{
-      tag: 'v6',
-      new_sqlite_classes: [
-        'FlueChickpeaSlackV2Agent',
-        'FlueChickpeaRoutineIntentV2Agent',
-        'FlueChickpeaRoutineExecutionV2Agent',
-      ],
-      deleted_classes: options.deletedClasses ?? [
-        'FlueRegistry',
-        'FlueSlackThreadAgent',
-        'FlueRoutineIntentAgent',
-        'FlueRoutineWorkflow',
-      ],
+    d1_databases: [{
+      binding: 'AUTH_DB',
+      database_name: 'chickpea-auth-db',
+      database_id: 'test-database-id',
+      migrations_dir: '../../migrations/better-auth',
     }],
+    workflows: [],
+    migrations: [
+      {
+        tag: 'v6',
+        new_sqlite_classes: [
+          'FlueChickpeaSlackV2Agent',
+          'FlueChickpeaRoutineIntentV2Agent',
+          'FlueChickpeaRoutineExecutionV2Agent',
+        ],
+        deleted_classes: options.deletedClasses ?? [
+          'FlueRegistry',
+          'FlueSlackThreadAgent',
+          'FlueRoutineIntentAgent',
+          'FlueRoutineWorkflow',
+        ],
+      },
+      { tag: 'v7', new_sqlite_classes: ['AuthGuard'] },
+    ],
   }));
   const canarySeams = options.completeCanary === false
     ? 'SLACK_TAG_LEDGER_CANARY_CHANNELS'

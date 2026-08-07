@@ -21,6 +21,14 @@ export function validateMutationProvenance(
       ? { ok: true }
       : { ok: false, code: 'cross_origin_denied' };
   }
+  return validateBrowserMutationProvenance(request, options);
+}
+
+/** Exact-origin and bounded-body gate for unauthenticated browser forms. */
+export function validateBrowserMutationProvenance(
+  request: Request,
+  options: MutationProvenanceOptions,
+): MutationProvenanceResult {
   const expected = canonicalOrigin(options.canonicalOrigin);
   const origin = request.headers.get('origin');
   if (!expected || !origin || canonicalOrigin(origin) !== expected) {

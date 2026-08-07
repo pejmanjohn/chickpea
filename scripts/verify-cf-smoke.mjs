@@ -138,11 +138,20 @@ function verifyBuildArtifacts() {
     doBindings.some((b) => b.name === 'SANDBOX' && b.class_name === 'Sandbox'),
     'built wrangler.json carries the Sandbox DO binding',
   );
+  check(
+    doBindings.some((b) => b.name === 'AUTH_GUARD' && b.class_name === 'AuthGuard'),
+    'built wrangler.json carries the auth guard DO binding',
+  );
+  const authDb = (config.d1_databases ?? []).find((binding) => binding.binding === 'AUTH_DB');
+  check(
+    Boolean(authDb) && String(authDb.migrations_dir ?? '').endsWith('migrations/better-auth'),
+    'built wrangler.json carries AUTH_DB reviewed migrations',
+  );
   const migrations = config.migrations ?? [];
   const tags = migrations.map((migration) => migration.tag);
   check(
-    ['v1', 'v2', 'v3', 'v4', 'v5', 'v6'].every((tag) => tags.includes(tag)),
-    'built wrangler.json migrations include the append-only v1 through v6 chain',
+    ['v1', 'v2', 'v3', 'v4', 'v5', 'v6', 'v7'].every((tag) => tags.includes(tag)),
+    'built wrangler.json migrations include the append-only v1 through v7 chain',
     tags.join(','),
   );
   const reset = migrations.find((migration) => migration.tag === 'v6');

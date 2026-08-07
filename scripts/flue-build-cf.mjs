@@ -54,5 +54,17 @@ if (!existsSync(path.join(projectRoot, 'src', 'db.node.ts'))) {
 if (existsSync(path.join(projectRoot, 'src', 'db.ts'))) {
   throw new Error('src/db.ts would be auto-discovered by the Cloudflare target.');
 }
+const authGuard = config.durable_objects?.bindings?.find(
+  (binding) => binding.name === 'AUTH_GUARD' && binding.class_name === 'AuthGuard',
+);
+if (!authGuard) throw new Error('Cloudflare deploy config is missing AUTH_GUARD/AuthGuard.');
+const authDb = config.d1_databases?.find((binding) => binding.binding === 'AUTH_DB');
+if (!authDb || !String(authDb.migrations_dir ?? '').endsWith('migrations/better-auth')) {
+  throw new Error('Cloudflare deploy config is missing AUTH_DB reviewed migrations.');
+}
+const authMigration = config.migrations?.find((migration) => migration.tag === 'v7');
+if (!authMigration?.new_sqlite_classes?.includes('AuthGuard')) {
+  throw new Error('Cloudflare deploy config is missing the v7 AuthGuard migration.');
+}
 
 console.log(`Validated Cloudflare Vite artifact: ${path.relative(projectRoot, configPath)}`);
