@@ -12,7 +12,6 @@ import {
   renderAuthRecoveryPage,
   renderAuthSetupCompletePage,
   renderAuthSetupPage,
-  renderInvitationJoinPage,
   renderMemberAccountPage,
 } from './page.ts';
 import { createMemoryAdminApi } from './memory-api.ts';
@@ -20,6 +19,10 @@ import { createRoutineAdminApi } from './routines-api.ts';
 import { createUsageAdminApi } from './usage-api.ts';
 import { createWorkAdminApi } from './work-api.ts';
 import { createTeamAdminApi } from './team-api.ts';
+import {
+  invitationJoinClientScript,
+  renderInvitationJoinPage,
+} from '../join/page.ts';
 // Build-time JSON import: the committed manifest is the single source of the
 // Slack app identity; the wizard deep-link below substitutes the request host
 // so users never hand-edit a request_url.
@@ -1366,8 +1369,15 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   // does not have a Chickpea principal yet. Keep this one route outside the
   // normal Admin gate so the fragment-held invitation can create that binding.
   app.use('/admin/join', invitationJoinBodyLimit);
+  app.get('/admin/join/client.js', (c) => {
+    authResponseHeaders(c);
+    c.header('Content-Type', 'application/javascript; charset=UTF-8');
+    c.header('Content-Security-Policy', invitationJoinCsp());
+    return c.body(invitationJoinClientScript());
+  });
   app.get('/admin/join', async (c) => {
     authResponseHeaders(c);
+    c.header('Content-Security-Policy', invitationJoinCsp());
     try {
       const config = await identity(c).getAuthProviderConfig('cloudflare_access');
       if (!config || config.state !== 'active') throw new AuthDeniedError();
@@ -4118,6 +4128,10 @@ function authResponseHeaders(c: Context): void {
   c.header('Cache-Control', 'no-store');
   c.header('Referrer-Policy', 'no-referrer');
   c.header('X-Content-Type-Options', 'nosniff');
+}
+
+function invitationJoinCsp(): string {
+  return "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
 }
 
 function isValidRecoveryConfiguration(token: string): boolean {

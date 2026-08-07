@@ -15,22 +15,6 @@ export interface Authenticator {
   authenticate(request: Request): Promise<ExternalIdentity | undefined>;
 }
 
-export interface AdmissionAction {
-  provider: string;
-  state: 'action_required' | 'admin_confirmed' | 'assertion_observed';
-  label: string;
-  actionUrl: string | null;
-  instructions: string;
-}
-
-export interface AdmissionProvider {
-  readonly kind: string;
-  describeInvitation(input: {
-    email: string;
-    state: AdmissionAction['state'];
-  }): AdmissionAction;
-}
-
 export interface AuthPrincipal {
   userId: string;
   membershipId: string;

@@ -4,14 +4,19 @@ import vm from 'node:vm';
 
 import {
   renderAdminPage,
-  renderInvitationJoinPage,
   renderMemberAccountPage,
 } from '../src/admin/page.ts';
+import {
+  invitationJoinClientScript,
+  JOIN_STORAGE_KEY,
+  renderInvitationJoinPage,
+} from '../src/join/page.ts';
 
 interface FakeResponse {
   ok: boolean;
   status: number;
   text(): Promise<string>;
+  json(): Promise<unknown>;
 }
 
 type Listener = (event: {
@@ -28,6 +33,7 @@ function response(body: unknown, status = 200): FakeResponse {
     ok: status >= 200 && status < 300,
     status,
     async text() { return JSON.stringify(body); },
+    async json() { return body; },
   };
 }
 
@@ -51,13 +57,6 @@ function teamFixture(viewerRole: 'owner' | 'admin' = 'owner') {
     email: 'joiner@example.com',
     role: 'member',
     status: 'pending',
-    admission: {
-      provider: 'cloudflare_access',
-      state: 'action_required',
-      label: 'Access action required',
-      actionUrl: 'https://one.dash.cloudflare.com/',
-      instructions: 'Add joiner@example.com to the exact-email Allow policy.',
-    },
     expiresAt: 1_786_704_800_000,
     createdAt: 1_786_100_000_000,
     updatedAt: 1_786_100_000_000,
@@ -129,16 +128,8 @@ async function createHarness(viewerRole: 'owner' | 'admin' = 'owner') {
       fixture.team.invitations.unshift(created);
       return response({
         invitation: created,
-        inviteLink: 'https://chickpea.example.com/admin/join#invite=invitation_created.show-once-secret',
+        inviteLink: 'https://chickpea.example.com/join#invite=invitation_created.show-once-secret',
       }, 201);
-    }
-    if (path.endsWith('/admission-confirmed') && method === 'POST') {
-      fixture.invitation.admission = {
-        ...fixture.invitation.admission,
-        state: 'admin_confirmed',
-        label: 'Access marked configured',
-      };
-      return response({ invitation: fixture.invitation });
     }
     if (path === '/admin/api/team/memberships/membership_member' && method === 'PATCH') {
       Object.assign(fixture.team.members[1]!, body);
@@ -168,15 +159,13 @@ async function createHarness(viewerRole: 'owner' | 'admin' = 'owner') {
   return { app, clipboard, fixture, listeners, location, requests };
 }
 
-test('Team page keeps Chickpea invitation and Access admission states distinct', async () => {
+test('Team page keeps invitations and roles inside Chickpea', async () => {
   const harness = await createHarness();
   assert.equal(harness.location.pathname, '/admin/team');
   assert.match(harness.app.innerHTML, /data-action="open-team"[^>]*aria-current="page"/);
   assert.match(harness.app.innerHTML, /Chickpea invite pending/);
-  assert.match(harness.app.innerHTML, /Access action required/);
-  assert.match(harness.app.innerHTML, /only “Access observed” proves a signed assertion arrived/);
-  assert.match(harness.app.innerHTML, /data-action="team-admission-confirm"/);
-  assert.match(harness.app.innerHTML, /target="_blank" rel="noopener noreferrer">Open Access/);
+  assert.match(harness.app.innerHTML, /They verify their email, then Chickpea activates the invited membership/);
+  assert.doesNotMatch(harness.app.innerHTML, /Cloudflare|Zero Trust|policy|Open Access|Access action/i);
 });
 
 test('Team invitation is show-once, copyable, and role changes use the membership API', async () => {
@@ -203,7 +192,7 @@ test('Team invitation is show-once, copyable, and role changes use the membershi
   click({ target: actionTarget({ 'data-action': 'team-copy-link' }) });
   await flush();
   assert.deepEqual(harness.clipboard, [
-    'https://chickpea.example.com/admin/join#invite=invitation_created.show-once-secret',
+    'https://chickpea.example.com/join#invite=invitation_created.show-once-secret',
   ]);
 
   change({
@@ -223,19 +212,44 @@ test('Admin Team UI does not offer owner grants or controls for owner membership
   assert.match(ownerRow, /data-action="team-member-role"[^>]* disabled/);
 });
 
-test('Join and member pages keep the invite out of server HTML and explain the auth boundary', () => {
+test('protected join and member pages keep provider details out of the normal flow', async () => {
   const join = renderInvitationJoinPage({ email: 'joiner@example.com' });
-  assert.match(join, /history\.replaceState\(null, "", location\.pathname\)/);
-  assert.match(join, /location\.hash\.slice\(1\)/);
-  assert.match(join, /body: JSON\.stringify\(\{ invitationId: invitationId, token: token \}\)/);
-  assert.match(join, /token = ""/);
+  assert.match(join, /<script src="\/admin\/join\/client\.js" defer><\/script>/);
+  assert.doesNotMatch(join, /sessionStorage|location\.hash|show-once-secret/);
   assert.match(join, /<meta name="referrer" content="no-referrer">/);
+
+  const credential = 'invitation_join.secret-value';
+  const stored = new Map([[JOIN_STORAGE_KEY, credential]]);
+  const requests: Array<{ path: string; body: string }> = [];
+  let destination = '';
+  const status = { textContent: '', className: '' };
+  vm.runInNewContext(invitationJoinClientScript(), {
+    document: { getElementById() { return status; } },
+    fetch(path: string, options: { body: string }) {
+      requests.push({ path, body: options.body });
+      assert.equal(stored.has(JOIN_STORAGE_KEY), false);
+      return Promise.resolve(response({ redirect: '/admin/account' }));
+    },
+    location: { replace(path: string) { destination = path; } },
+    sessionStorage: {
+      getItem(key: string) { return stored.get(key) ?? null; },
+      removeItem(key: string) { stored.delete(key); },
+    },
+  });
+  await flush();
+  assert.deepEqual(requests, [{
+    path: '/admin/join',
+    body: JSON.stringify({ invitationId: 'invitation_join', token: 'secret-value' }),
+  }]);
+  assert.equal(destination, '/admin/account');
+  assert.equal(stored.size, 0);
 
   const account = renderMemberAccountPage({
     organizationName: 'Chickpea', displayName: 'Joiner', email: 'joiner@example.com',
     role: 'member', status: 'active',
   });
   assert.match(account, /Open Slack/);
-  assert.match(account, /role controls Admin access separately from Cloudflare Access sign-in/);
+  assert.match(account, /role controls what you can do in Chickpea/);
+  assert.doesNotMatch(account, /Cloudflare|Access|Zero Trust/i);
   assert.doesNotMatch(account, /Settings|Profiles|Team/);
 });

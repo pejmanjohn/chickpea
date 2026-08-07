@@ -24,7 +24,6 @@ import type {
   ResendInvitationInput,
   ReplaceAccessOwnerBindingInput,
   UpdateMembershipInput,
-  UpdateInvitationAdmissionInput,
   UpdateOrganizationAuthInput,
 } from '../identity/types.ts';
 import type {
@@ -316,11 +315,6 @@ export class CfIdentityStore implements IdentityStore {
   }
   async revokeInvitation(invitationId: string) {
     const response = await this.execute({ kind: 'revoke_invitation', invitationId });
-    if (response.kind !== 'invitation') throw unexpectedIdentityResponse();
-    return response.invitation;
-  }
-  async updateInvitationAdmission(input: UpdateInvitationAdmissionInput) {
-    const response = await this.execute({ kind: 'update_invitation_admission', input });
     if (response.kind !== 'invitation') throw unexpectedIdentityResponse();
     return response.invitation;
   }

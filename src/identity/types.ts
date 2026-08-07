@@ -65,7 +65,6 @@ export interface Invitation {
   role: OrganizationRole;
   tokenHash: string;
   status: 'pending' | 'accepted' | 'revoked' | 'expired';
-  admissionState: 'action_required' | 'admin_confirmed' | 'assertion_observed';
   inviterMembershipId: string;
   acceptedMembershipId: string | null;
   expiresAt: number;
@@ -204,12 +203,6 @@ export interface ResendInvitationInput {
   expiresAt: number;
 }
 
-export interface UpdateInvitationAdmissionInput {
-  invitationId: string;
-  admissionState: 'admin_confirmed' | 'assertion_observed';
-  actorMembershipId?: string;
-}
-
 export interface ConsumeInvitationInput {
   invitationId: string;
   tokenHash: string;
@@ -275,7 +268,6 @@ export interface IdentityStore {
   createInvitation(input: CreateInvitationInput): Promise<Invitation>;
   resendInvitation(input: ResendInvitationInput): Promise<Invitation>;
   revokeInvitation(invitationId: string): Promise<Invitation>;
-  updateInvitationAdmission(input: UpdateInvitationAdmissionInput): Promise<Invitation>;
   consumeInvitation(input: ConsumeInvitationInput): Promise<IdentityResolution>;
   listInvitations(): Promise<Invitation[]>;
   createPersonalToken(input: CreatePersonalTokenRecordInput): Promise<PersonalTokenRecord>;
@@ -331,7 +323,6 @@ export type IdentityRpcRequest =
   | { kind: 'create_invitation'; input: CreateInvitationInput }
   | { kind: 'resend_invitation'; input: ResendInvitationInput }
   | { kind: 'revoke_invitation'; invitationId: string }
-  | { kind: 'update_invitation_admission'; input: UpdateInvitationAdmissionInput }
   | { kind: 'consume_invitation'; input: ConsumeInvitationInput }
   | { kind: 'list_invitations' }
   | { kind: 'create_personal_token'; input: CreatePersonalTokenRecordInput }

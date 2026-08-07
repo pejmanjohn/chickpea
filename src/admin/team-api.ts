@@ -6,7 +6,7 @@ import * as v from 'valibot';
 import { AuthorizationError, requirePermission } from '../auth/permissions.ts';
 import { digest } from '../auth/personal-token.ts';
 import { requestPrincipal } from '../auth/service.ts';
-import type { AdmissionAction, AdmissionProvider, AuthPrincipal } from '../auth/types.ts';
+import type { AuthPrincipal } from '../auth/types.ts';
 import { IdentityStateError } from '../identity/errors.ts';
 import type {
   IdentityStore,
@@ -33,35 +33,12 @@ interface TeamAdminApiOptions {
   store: (c: Context) => IdentityStore;
   now?: () => number;
   randomBytes?: (length: number) => Uint8Array;
-  admissionProvider?: AdmissionProvider;
-}
-
-export class CloudflareAccessAdmissionProvider implements AdmissionProvider {
-  readonly kind = 'cloudflare_access';
-
-  describeInvitation(input: { email: string; state: AdmissionAction['state'] }): AdmissionAction {
-    const labels: Record<AdmissionAction['state'], string> = {
-      action_required: 'Access action required',
-      admin_confirmed: 'Access marked configured',
-      assertion_observed: 'Access observed',
-    };
-    return {
-      provider: this.kind,
-      state: input.state,
-      label: labels[input.state],
-      actionUrl: input.state === 'assertion_observed' ? null : 'https://one.dash.cloudflare.com/',
-      instructions: input.state === 'assertion_observed'
-        ? 'Cloudflare Access presented a valid signed identity for this member.'
-        : `Add ${input.email} to the exact-email Allow policy for this Chickpea Access application.`,
-    };
-  }
 }
 
 export function createTeamAdminApi(options: TeamAdminApiOptions): Hono {
   const app = new Hono();
   const now = options.now ?? Date.now;
   const randomBytes = options.randomBytes ?? ((length: number) => nodeRandomBytes(length));
-  const admissionProvider = options.admissionProvider ?? new CloudflareAccessAdmissionProvider();
 
   app.get('/account', async (c) => {
     const principal = requiredPrincipal(c, 'account.view');
@@ -90,7 +67,7 @@ export function createTeamAdminApi(options: TeamAdminApiOptions): Hono {
   app.get('/team', async (c) => {
     const principal = requiredPrincipal(c, 'team.manage');
     c.header('Cache-Control', 'no-store');
-    return c.json(await teamSnapshot(options.store(c), admissionProvider, principal));
+    return c.json(await teamSnapshot(options.store(c), principal));
   });
 
   app.post('/team/invitations', async (c) => {
@@ -111,7 +88,7 @@ export function createTeamAdminApi(options: TeamAdminApiOptions): Hono {
         expiresAt: now() + INVITATION_TTL_MS,
       });
       return c.json({
-        invitation: safeInvitation(invitation, admissionProvider),
+        invitation: safeInvitation(invitation),
         inviteLink: invitationLink(origin, invitation.id, secret),
       }, 201);
     } catch (error) {
@@ -138,25 +115,9 @@ export function createTeamAdminApi(options: TeamAdminApiOptions): Hono {
         expiresAt: now() + INVITATION_TTL_MS,
       });
       return c.json({
-        invitation: safeInvitation(invitation, admissionProvider),
+        invitation: safeInvitation(invitation),
         inviteLink: invitationLink(origin, invitation.id, secret),
       });
-    } catch (error) {
-      return teamError(c, error);
-    }
-  });
-
-  app.post('/team/invitations/:invitationId/admission-confirmed', async (c) => {
-    const principal = requiredPrincipal(c, 'team.manage');
-    const invitationId = parseId(c.req.param('invitationId'));
-    if (!invitationId) return invalid(c);
-    try {
-      const invitation = await options.store(c).updateInvitationAdmission({
-        invitationId,
-        admissionState: 'admin_confirmed',
-        actorMembershipId: principal.membershipId,
-      });
-      return c.json({ invitation: safeInvitation(invitation, admissionProvider) });
     } catch (error) {
       return teamError(c, error);
     }
@@ -172,7 +133,7 @@ export function createTeamAdminApi(options: TeamAdminApiOptions): Hono {
         return c.json({ error: 'invitation_unavailable' }, 404);
       }
       const invitation = await options.store(c).revokeInvitation(invitationId);
-      return c.json({ invitation: safeInvitation(invitation, admissionProvider) });
+      return c.json({ invitation: safeInvitation(invitation) });
     } catch (error) {
       return teamError(c, error);
     }
@@ -223,7 +184,6 @@ function enforceMembershipGrant(
 
 async function teamSnapshot(
   store: IdentityStore,
-  admissionProvider: AdmissionProvider,
   principal: AuthPrincipal,
 ) {
   const [organization, memberships, bindings, invitations] = await Promise.all([
@@ -257,20 +217,16 @@ async function teamSnapshot(
         externalIdentity: binding ? { provider: binding.provider, bound: true } : null,
       };
     }),
-    invitations: invitations.map((invitation) => safeInvitation(invitation, admissionProvider)),
+    invitations: invitations.map(safeInvitation),
   };
 }
 
-function safeInvitation(invitation: Invitation, provider: AdmissionProvider) {
+function safeInvitation(invitation: Invitation) {
   return {
     id: invitation.id,
     email: invitation.normalizedEmail,
     role: invitation.role,
     status: invitation.status,
-    admission: provider.describeInvitation({
-      email: invitation.normalizedEmail,
-      state: invitation.admissionState,
-    }),
     expiresAt: invitation.expiresAt,
     createdAt: invitation.createdAt,
     updatedAt: invitation.updatedAt,
@@ -279,7 +235,7 @@ function safeInvitation(invitation: Invitation, provider: AdmissionProvider) {
 
 function invitationLink(organizationOrigin: string, invitationId: string, secret: string): string {
   const credential = encodeURIComponent(`${invitationId}.${secret}`);
-  return `${organizationOrigin}/admin/join#invite=${credential}`;
+  return `${organizationOrigin}/join#invite=${credential}`;
 }
 
 async function canonicalInviteOrigin(store: IdentityStore): Promise<string | undefined> {

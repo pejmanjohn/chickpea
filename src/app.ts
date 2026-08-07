@@ -2,6 +2,7 @@ import { instrument } from '@flue/runtime';
 import { Hono } from 'hono';
 
 import { createAdminRoutes } from './admin/routes.ts';
+import { createJoinRoutes } from './join/routes.ts';
 import { activityStatusForObservation } from './activity/status.ts';
 import {
   observeProviderAuthRoute,
@@ -93,6 +94,7 @@ const app = new Hono();
 // and ledger-authoritative interactive Runs. Ledger admission stays default-off
 // and exact-channel scoped by SLACK_TAG_LEDGER_CANARY_CHANNELS.
 startNodeTurnRelay();
+app.route('/', createJoinRoutes());
 app.route('/', createAdminRoutes());
 app.route('/channels/slack', channel.route());
 

@@ -97,7 +97,7 @@ async function addMember(
   });
 }
 
-test('Team API creates show-once invites and keeps Access admission separate', async () => {
+test('Team API creates show-once Chickpea invites without Cloudflare policy work', async () => {
   const f = await fixture();
   const app = createAdminRoutes({
     identity: f.identity,
@@ -112,32 +112,19 @@ test('Team API creates show-once invites and keeps Access admission separate', a
     }));
     assert.equal(response.status, 201);
     const created = await response.json() as {
-      invitation: { id: string; email: string; status: string; admission: { state: string; label: string } };
+      invitation: { id: string; email: string; status: string };
       inviteLink: string;
     };
     assert.equal(created.invitation.email, 'teammate@example.com');
     assert.equal(created.invitation.status, 'pending');
-    assert.deepEqual(created.invitation.admission, {
-      provider: 'cloudflare_access',
-      state: 'action_required',
-      label: 'Access action required',
-      actionUrl: 'https://one.dash.cloudflare.com/',
-      instructions: 'Add teammate@example.com to the exact-email Allow policy for this Chickpea Access application.',
-    });
-    assert.match(created.inviteLink, /^https:\/\/chickpea\.example\.com\/admin\/join#invite=invitation_/);
+    assert.equal('admission' in created.invitation, false);
+    assert.match(created.inviteLink, /^https:\/\/chickpea\.example\.com\/join#invite=invitation_/);
     assert.equal(created.inviteLink.includes('?'), false);
     assert.equal(created.inviteLink.includes(digest('')), false);
 
     const stored = (await f.identity.listInvitations())[0]!;
     assert.equal(stored.tokenHash.length, 64);
     assert.equal(created.inviteLink.includes(stored.tokenHash), false);
-
-    const confirmed = await app.request(
-      `${ORIGIN}/admin/api/team/invitations/${stored.id}/admission-confirmed`,
-      mutation('POST', {}),
-    );
-    assert.equal(confirmed.status, 200);
-    assert.equal((await f.identity.listInvitations())[0]?.admissionState, 'admin_confirmed');
 
     const snapshot = await app.request(`${ORIGIN}/admin/api/team`);
     const body = await snapshot.json() as { invitations: Array<Record<string, unknown>> };
@@ -224,7 +211,8 @@ test('Access-authenticated invite acceptance removes the fragment secret from se
     });
     assert.equal(landing.status, 200);
     const html = await landing.text();
-    assert.match(html, /history\.replaceState/);
+    assert.match(html, /<script src="\/admin\/join\/client\.js" defer><\/script>/);
+    assert.match(landing.headers.get('content-security-policy') ?? '', /script-src 'self'/);
     assert.equal(html.includes(rawSecret), false);
 
     const accepted = await app.request(`${ORIGIN}/admin/join`, {
@@ -238,7 +226,7 @@ test('Access-authenticated invite acceptance removes the fragment secret from se
     assert.deepEqual(await accepted.json(), { redirect: '/admin/account' });
     const stored = (await f.identity.listInvitations()).find((row) => row.id === invitation.id)!;
     assert.equal(stored.status, 'accepted');
-    assert.equal(stored.admissionState, 'assertion_observed');
+    assert.equal('admissionState' in stored, false);
 
     const replay = await app.request(`${ORIGIN}/admin/join`, {
       ...mutation('POST', { invitationId: invitation.id, token: rawSecret }),

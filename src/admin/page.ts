@@ -1764,9 +1764,8 @@ details[open].advanced summary::before {
     // platform overview from a concrete Slack-channel detail without muddling
     // the reusable Profiles destination into the platform hierarchy.
     view: "channels",
-    // Team is an authorization surface, not a Cloudflare policy editor. The
-    // server returns Chickpea membership/invitation state and a separate
-    // AdmissionProvider action for the Access allow policy.
+    // Team is Chickpea's authorization surface. Authentication providers prove
+    // identity, but invitations, memberships, and roles live here.
     team: null,
     teamLoading: false,
     teamError: "",
@@ -2509,12 +2508,12 @@ details[open].advanced summary::before {
     var showOnce = state.teamInviteLink
       ? '<div class="team-show-once" role="status"><label for="team-invite-link">Copy this invitation link now</label><p class="hint">For safety, Chickpea will not show this secret again after you leave or refresh.</p><div class="team-link-row"><input class="input mono" id="team-invite-link" readonly value="' + esc(state.teamInviteLink) + '"><button type="button" class="btn btn-primary btn-sm" data-action="team-copy-link">Copy link</button><button type="button" class="btn btn-ghost btn-sm" data-action="team-dismiss-link">Done</button></div></div>'
       : '';
-    return '<div class="team-hero"><div><p class="section-eyebrow">People &amp; access</p><h1 class="page-title">Your team</h1><p class="hint">Cloudflare Access proves who signed in. Chickpea invitations and roles decide what they can do.</p></div><span class="team-count">' + members.length + ' member' + (members.length === 1 ? '' : 's') + '</span></div>' +
+    return '<div class="team-hero"><div><p class="section-eyebrow">People &amp; access</p><h1 class="page-title">Your team</h1><p class="hint">Sign-in verifies who someone is. Chickpea invitations and roles decide what they can do.</p></div><span class="team-count">' + members.length + ' member' + (members.length === 1 ? '' : 's') + '</span></div>' +
       notice +
-      '<div class="team-grid"><section class="team-card" aria-labelledby="invite-heading"><h2 id="invite-heading">Invite a teammate</h2><p class="hint">Create the Chickpea invite, then separately allow the exact email in your Cloudflare Access policy.</p><form class="team-form" data-action="team-invite-form"><div class="team-form-row"><label class="sr-only" for="team-invite-email">Email</label><input class="input" id="team-invite-email" data-action="team-invite-email" type="email" autocomplete="email" required placeholder="teammate@example.com" value="' + esc(state.teamInviteDraft.email) + '"><label class="sr-only" for="team-invite-role">Role</label><select class="select" id="team-invite-role" data-action="team-invite-role"><option value="member"' + (state.teamInviteDraft.role === "member" ? ' selected' : '') + '>Member</option><option value="admin"' + (state.teamInviteDraft.role === "admin" ? ' selected' : '') + '>Admin</option></select><button type="submit" class="btn btn-primary"' + (state.teamBusy ? ' disabled' : '') + '>Create invite</button></div></form>' + showOnce + '</section>' +
-      '<section class="team-card" aria-labelledby="admission-heading"><h2 id="admission-heading">Two gates, one clear status</h2><p class="hint"><strong>Chickpea invite pending</strong> means the link is valid. <strong>Access action required</strong> means the email still needs an Allow policy. “Marked configured” is an administrator note; only “Access observed” proves a signed assertion arrived.</p><a class="btn btn-ghost btn-sm" href="https://one.dash.cloudflare.com/" target="_blank" rel="noopener noreferrer">Open Cloudflare Access &nearr;</a></section></div>' +
-      '<section class="team-card" aria-labelledby="members-heading"><h2 id="members-heading">Members</h2><p class="hint">Suspension takes effect on the next Chickpea request, even if Cloudflare still has an active session.</p><div class="team-list">' + (members.length ? members.map(teamMemberRowHtml).join("") : '<p class="team-empty">No memberships yet.</p>') + '</div></section>' +
-      '<section class="team-card" aria-labelledby="invitations-heading"><h2 id="invitations-heading">Invitations</h2><p class="hint">Invitation and Access admission remain separate so the UI never overstates what Cloudflare has verified.</p><div class="team-list">' + (invitations.length ? invitations.map(teamInvitationRowHtml).join("") : '<p class="team-empty">No invitations yet.</p>') + '</div></section>';
+      '<div class="team-grid"><section class="team-card" aria-labelledby="invite-heading"><h2 id="invite-heading">Invite a teammate</h2><p class="hint">Create a private link and send it to your teammate. They verify their email, then Chickpea activates the invited membership.</p><form class="team-form" data-action="team-invite-form"><div class="team-form-row"><label class="sr-only" for="team-invite-email">Email</label><input class="input" id="team-invite-email" data-action="team-invite-email" type="email" autocomplete="email" required placeholder="teammate@example.com" value="' + esc(state.teamInviteDraft.email) + '"><label class="sr-only" for="team-invite-role">Role</label><select class="select" id="team-invite-role" data-action="team-invite-role"><option value="member"' + (state.teamInviteDraft.role === "member" ? ' selected' : '') + '>Member</option><option value="admin"' + (state.teamInviteDraft.role === "admin" ? ' selected' : '') + '>Admin</option></select><button type="submit" class="btn btn-primary"' + (state.teamBusy ? ' disabled' : '') + '>Create invite</button></div></form>' + showOnce + '</section>' +
+      '<section class="team-card" aria-labelledby="join-heading"><h2 id="join-heading">What happens next</h2><p class="hint">The invitation stays pending until the invited email signs in and accepts it. Resending rotates the private link; revoking makes it unusable immediately.</p></section></div>' +
+      '<section class="team-card" aria-labelledby="members-heading"><h2 id="members-heading">Members</h2><p class="hint">Suspension takes effect on the next Chickpea request, even if the signed-in browser stays open.</p><div class="team-list">' + (members.length ? members.map(teamMemberRowHtml).join("") : '<p class="team-empty">No memberships yet.</p>') + '</div></section>' +
+      '<section class="team-card" aria-labelledby="invitations-heading"><h2 id="invitations-heading">Invitations</h2><p class="hint">Pending links can be rotated or revoked. Accepted invitations have already created their membership.</p><div class="team-list">' + (invitations.length ? invitations.map(teamInvitationRowHtml).join("") : '<p class="team-empty">No invitations yet.</p>') + '</div></section>';
   }
 
   function teamMemberRowHtml(member) {
@@ -2533,17 +2532,14 @@ details[open].advanced summary::before {
 
   function teamInvitationRowHtml(invitation) {
     var pending = invitation.status === "pending";
-    var admission = invitation.admission || { state: "action_required", label: "Access action required", actionUrl: "", instructions: "" };
     var busy = state.teamBusy === "invite:" + invitation.id;
     var actions = '';
     if (pending) {
-      if (admission.actionUrl) actions += '<a class="btn btn-ghost btn-sm" href="' + esc(admission.actionUrl) + '" target="_blank" rel="noopener noreferrer">Open Access</a>';
-      if (admission.state === "action_required") actions += '<button type="button" class="btn btn-soft btn-sm" data-action="team-admission-confirm" data-invitation="' + esc(invitation.id) + '"' + (busy ? ' disabled' : '') + '>Mark configured</button>';
       actions += '<button type="button" class="btn btn-soft btn-sm" data-action="team-resend" data-invitation="' + esc(invitation.id) + '"' + (busy ? ' disabled' : '') + '>Resend link</button><button type="button" class="btn btn-danger btn-sm" data-action="team-revoke" data-invitation="' + esc(invitation.id) + '"' + (busy ? ' disabled' : '') + '>Revoke</button>';
     }
-    var inviteLabel = pending ? "Chickpea invite pending" : "Chickpea invite " + invitation.status;
-    var admissionClass = admission.state === "assertion_observed" ? "observed" : (admission.state === "action_required" ? "required" : "");
-    return '<article class="team-row"><div class="team-row-main"><div class="team-row-title">' + esc(invitation.email) + '</div><div class="team-row-sub">' + esc(invitation.role) + ' · expires ' + esc(new Date(invitation.expiresAt).toLocaleString()) + '</div><div class="team-statuses"><span class="team-status">' + esc(inviteLabel) + '</span><span class="team-status ' + admissionClass + '">' + esc(admission.label) + '</span></div><div class="team-row-sub">' + esc(admission.instructions || "") + '</div></div><div class="team-row-actions">' + actions + '</div></article>';
+    var labels = { pending: "Chickpea invite pending", accepted: "Membership activated", revoked: "Invite revoked", expired: "Invite expired" };
+    var guidance = { pending: "Waiting for the invitee. Resending rotates the private link.", accepted: "The invitee verified their email and activated this membership.", revoked: "An administrator revoked this link. Create a new invitation if needed.", expired: "This link expired. Create a new invitation to try again." };
+    return '<article class="team-row"><div class="team-row-main"><div class="team-row-title">' + esc(invitation.email) + '</div><div class="team-row-sub">' + esc(invitation.role) + ' · expires ' + esc(new Date(invitation.expiresAt).toLocaleString()) + '</div><div class="team-statuses"><span class="team-status">' + esc(labels[invitation.status] || invitation.status) + '</span></div><div class="team-row-sub">' + esc(guidance[invitation.status] || "Ask an administrator to retry this invitation.") + '</div></div><div class="team-row-actions">' + actions + '</div></article>';
   }
 
   function profilesRailHtml() {
@@ -2777,7 +2773,7 @@ details[open].advanced summary::before {
       role: state.teamInviteDraft.role === "admin" ? "admin" : "member"
     }).then(function (result) {
       state.teamInviteDraft.email = "";
-      return finishTeamMutation("Invitation created. Complete the separate Cloudflare Access action before sharing it.", result);
+      return finishTeamMutation("Invitation created. Copy the private link and send it to your teammate.", result);
     }).catch(failTeamMutation);
   }
 
@@ -2791,12 +2787,12 @@ details[open].advanced summary::before {
     var path = "/admin/api/team/invitations/" + encodeURIComponent(invitationId);
     var request = action === "revoke"
       ? api(path, { method: "DELETE" })
-      : postJson(path + (action === "resend" ? "/resend" : "/admission-confirmed"), "POST", {});
+      : postJson(path + "/resend", "POST", {});
     var message = action === "revoke"
       ? "Invitation revoked."
       : action === "resend"
         ? "Invitation rotated. Copy the new link now; the prior link no longer works."
-        : "Access marked configured. Chickpea will show Access observed only after a signed assertion arrives.";
+        : "Invitation updated.";
     request.then(function (result) { return finishTeamMutation(message, result); }).catch(failTeamMutation);
   }
 
@@ -8541,7 +8537,6 @@ details[open].advanced summary::before {
     }
     if (action === "team-resend") { mutateTeamInvitation(target.getAttribute("data-invitation") || "", "resend"); }
     if (action === "team-revoke") { mutateTeamInvitation(target.getAttribute("data-invitation") || "", "revoke"); }
-    if (action === "team-admission-confirm") { mutateTeamInvitation(target.getAttribute("data-invitation") || "", "admission"); }
     if (action === "open-usage" && USAGE_ADMIN_UI) { openUsage(); }
     if (action === "open-audit") { openAuditLogs("", "", ""); }
     // Brand-as-home: the reliable exit back to the Channels overview.
@@ -11658,7 +11653,7 @@ h1 { margin:8px 0 6px; font-size:clamp(1.65rem,6vw,2.35rem); } p { color:var(--m
 </style></head><body><main>
   <p class="eyebrow">${escapeHtmlAttribute(input.organizationName)}</p>
   <h1>Hi, ${name}</h1>
-  <p>Your Chickpea account is active. Your role controls Admin access separately from Cloudflare Access sign-in.</p>
+  <p>Your Chickpea account is active. Your role controls what you can do in Chickpea.</p>
   <section class="account" aria-label="Account details">
     <strong>${name}</strong><span class="email">${escapeHtmlAttribute(input.email)}</span>
     <span class="badge">${escapeHtmlAttribute(input.role)} · ${escapeHtmlAttribute(input.status)}</span>
@@ -11666,63 +11661,6 @@ h1 { margin:8px 0 6px; font-size:clamp(1.65rem,6vw,2.35rem); } p { color:var(--m
   <a class="button" href="slack://open">Open Slack</a>
   <p class="note">Need a role change? Ask a Chickpea owner or administrator.</p>
 </main></body></html>`;
-}
-
-export function renderInvitationJoinPage(input: { email: string }): string {
-  return `<!doctype html>
-<html lang="en"><head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="referrer" content="no-referrer"><title>Chickpea · Join</title>${ADMIN_FAVICON}
-<style>
-:root { --canvas:#f4ebd8; --card:#fffdf6; --ink:#3b3220; --muted:#6b5c42; --gold:#dda033; --line:rgba(59,50,32,.14); --danger:#b5473a; }
-* { box-sizing:border-box; } body { margin:0; min-height:100dvh; display:grid; place-items:center; background:var(--canvas); color:var(--ink); font-family:Quicksand,system-ui,sans-serif; padding:20px; }
-main { width:min(540px,100%); background:var(--card); border:1px solid var(--line); border-radius:20px; padding:clamp(24px,6vw,42px); box-shadow:0 10px 30px rgba(59,50,32,.09); }
-h1 { margin:0 0 8px; font-size:clamp(1.7rem,6vw,2.4rem); } p { color:var(--muted); line-height:1.55; } .identity { background:#f8f1df; border-radius:12px; padding:12px 14px; overflow-wrap:anywhere; margin:18px 0; }
-button { width:100%; border:0; border-radius:12px; background:var(--gold); color:var(--ink); padding:12px 18px; font:inherit; font-weight:800; cursor:pointer; box-shadow:0 2.5px 0 #b27e1f; } button:disabled { opacity:.55; cursor:not-allowed; }
-button:focus-visible { outline:3px solid rgba(221,160,51,.45); outline-offset:3px; } .status { min-height:1.5em; margin-top:14px; font-weight:700; } .error { color:var(--danger); }
-</style></head><body><main>
-  <h1>Join this Chickpea</h1>
-  <p>You passed Cloudflare Access. Chickpea will now match that signed identity to the invitation without using email as your permanent login key.</p>
-  <p class="identity">Signed in as <strong>${escapeHtmlAttribute(input.email)}</strong></p>
-  <button id="join" type="button">Accept invitation</button>
-  <p id="status" class="status" role="status" aria-live="polite"></p>
-</main>
-<script>
-(function () {
-  var params = new URLSearchParams(location.hash.slice(1));
-  var credential = params.get("invite") || "";
-  history.replaceState(null, "", location.pathname);
-  var split = credential.indexOf(".");
-  var invitationId = split > 0 ? credential.slice(0, split) : "";
-  var token = split > 0 ? credential.slice(split + 1) : "";
-  var button = document.getElementById("join");
-  var status = document.getElementById("status");
-  if (!invitationId || !token) {
-    credential = ""; token = ""; button.disabled = true;
-    status.className = "status error";
-    status.textContent = "This invitation link is incomplete or has already been removed from this browser.";
-    return;
-  }
-  credential = "";
-  button.addEventListener("click", function () {
-    button.disabled = true; status.className = "status"; status.textContent = "Joining…";
-    fetch("/admin/join", {
-      method: "POST", credentials: "same-origin",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ invitationId: invitationId, token: token })
-    }).then(function (response) {
-      token = "";
-      if (!response.ok) throw new Error("unavailable");
-      return response.json();
-    }).then(function (body) {
-      location.replace(body.redirect || "/admin/account");
-    }).catch(function () {
-      token = ""; status.className = "status error";
-      status.textContent = "This invitation could not be accepted. Ask an administrator for a new link.";
-    });
-  });
-})();
-</script></body></html>`;
 }
 
 function escapeHtmlAttribute(value: string): string {
