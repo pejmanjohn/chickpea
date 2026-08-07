@@ -70,9 +70,12 @@ test('public setup accepts recovery proof only in a capped body then activates t
 
   const activated = await app.request(`${ORIGIN}/admin/setup/verify`);
   assert.equal(activated.status, 303);
-  assert.equal(activated.headers.get('location'), '/admin');
+  assert.equal(activated.headers.get('location'), '/admin/ready');
   assert.equal((await identity.getOrganization())?.authMode, 'access_active');
   assert.equal((await identity.listMemberships())[0]?.role, 'owner');
+
+  const ready = await app.request(`${ORIGIN}/admin/ready`);
+  assert.equal(ready.status, 401);
 
   const replay = await app.request(`${ORIGIN}/admin/setup`);
   assert.equal(replay.status, 303);

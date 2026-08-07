@@ -11396,13 +11396,31 @@ button:hover { background:var(--ember-bright); }
 }
 
 export function renderAuthSetupPage(
-  options: { state: 'fresh' | 'access_pending'; error?: boolean } = { state: 'fresh' },
+  options: {
+    state: 'fresh' | 'access_pending';
+    error?: boolean;
+    origin?: string;
+    issuer?: string | null;
+    audience?: string | null;
+  } = { state: 'fresh' },
 ): string {
   const heading = options.state === 'fresh'
     ? 'Set up your Chickpea workspace'
-    : 'Connect Cloudflare Access';
+    : 'Verify Cloudflare Access';
   const error = options.error
     ? '<p class="error" role="alert">Setup could not be verified. Check the values and try again.</p>'
+    : '';
+  const origin = escapeHtmlAttribute(options.origin ?? 'https://your-worker.workers.dev');
+  const issuer = escapeHtmlAttribute(options.issuer ?? '');
+  const audience = escapeHtmlAttribute(options.audience ?? '');
+  const verify = options.state === 'access_pending'
+    ? `<section class="verify" aria-labelledby="verify-heading">
+        <span class="status">Configuration saved</span>
+        <h2 id="verify-heading">Continue through Access</h2>
+        <p>Open the verification URL in this browser. Cloudflare should ask you to sign in, then Chickpea will match the signed email to the owner claim.</p>
+        <a class="primary" href="/admin/setup/verify">Verify identity through Access</a>
+        <p class="small">If you return here after an interruption, this step resumes from the saved configuration. It never skips the Access assertion.</p>
+      </section>`
     : '';
   return `<!doctype html>
 <html lang="en">
@@ -11415,56 +11433,126 @@ ${ADMIN_FAVICON}
 :root { --canvas:#f4ebd8; --card:#fffdf6; --ink:#3b3220; --muted:#6b5c42; --gold:#dda033; --line:rgba(59,50,32,.14); --danger:#b5473a; }
 * { box-sizing:border-box; }
 body { margin:0; min-height:100dvh; background:var(--canvas); color:var(--ink); font-family:Quicksand,system-ui,sans-serif; padding:32px 20px; }
-main { width:min(760px,100%); margin:0 auto; }
-.progress { color:var(--muted); font-size:.82rem; margin-bottom:12px; }
+.sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
+main { width:min(820px,100%); margin:0 auto; }
+.progress { display:flex; gap:7px; margin:0 0 16px; padding:0; list-style:none; }
+.progress li { flex:1; height:6px; border-radius:999px; background:rgba(59,50,32,.12); }
+.progress li.done,.progress li.current { background:var(--gold); }
 .card { background:var(--card); border:1px solid var(--line); border-radius:18px; padding:clamp(22px,5vw,40px); box-shadow:0 8px 30px rgba(59,50,32,.08); }
 h1 { margin:0 0 8px; font-size:clamp(1.7rem,5vw,2.5rem); }
 h2 { margin:28px 0 8px; font-size:1.1rem; }
 p,li { color:var(--muted); line-height:1.55; }
 ol { padding-left:22px; }
 .paths { display:grid; gap:10px; grid-template-columns:1fr 1fr; }
-.path { border:1px solid var(--line); border-radius:12px; padding:14px; }
+.path { border:1px solid var(--line); border-radius:12px; padding:14px; background:#fff; color:var(--ink); text-align:left; cursor:pointer; }
+.path[aria-pressed="true"] { border-color:var(--gold); box-shadow:0 0 0 2px rgba(221,160,51,.2); }
+.path h2 { margin:0 0 5px; } .path p { margin:0; }
+.guide { display:none; margin-top:14px; border:1px solid var(--line); border-radius:12px; padding:16px; }
+.guide.active { display:block; }
+.copy-grid { display:grid; gap:9px; margin:14px 0; }
+.copy-row { align-items:center; display:grid; gap:8px; grid-template-columns:minmax(0,1fr) auto; }
+.copy-value { background:#f8f1df; border:1px solid var(--line); border-radius:10px; font-family:ui-monospace,"SF Mono",Menlo,monospace; overflow-wrap:anywhere; padding:10px 12px; }
 label { display:block; font-weight:700; margin:16px 0 6px; }
 input,select { width:100%; border:1px solid var(--line); border-radius:10px; padding:11px 12px; font:inherit; background:#fff; }
-input:focus-visible,select:focus-visible,button:focus-visible { outline:3px solid rgba(221,160,51,.45); outline-offset:2px; }
-button { margin-top:22px; border:0; border-radius:12px; background:var(--gold); color:var(--ink); padding:12px 18px; font:inherit; font-weight:800; cursor:pointer; }
+input:focus-visible,select:focus-visible,button:focus-visible,a:focus-visible { outline:3px solid rgba(221,160,51,.45); outline-offset:2px; }
+button,.primary { border:0; border-radius:12px; background:var(--gold); color:var(--ink); padding:12px 18px; font:inherit; font-weight:800; cursor:pointer; text-decoration:none; display:inline-flex; align-items:center; justify-content:center; }
+form > button { margin-top:22px; }
+.secondary { background:#fff; border:1px solid var(--line); padding:8px 11px; }
+.external { display:inline-flex; margin-top:8px; color:var(--ink); font-weight:800; }
+.verify { background:#f8f1df; border:1px solid rgba(221,160,51,.4); border-radius:14px; margin:22px 0; padding:18px; }
+.verify h2 { margin:8px 0; }.status { display:inline-block; background:rgba(111,162,91,.16); color:#4e7a3e; border-radius:999px; padding:4px 9px; font-size:.75rem; font-weight:800; }
+.small { font-size:.8rem; }
 code { background:#f8f1df; border-radius:6px; padding:2px 5px; }
 .error { color:var(--danger); font-weight:700; }
-@media (max-width:620px) { body { padding:16px 10px; } .paths { grid-template-columns:1fr; } .card { border-radius:14px; } }
+@media (max-width:620px) { body { padding:16px 10px; } .paths { grid-template-columns:1fr; } .card { border-radius:14px; } .copy-row { grid-template-columns:1fr; } .copy-row button { width:100%; } }
 </style>
 </head>
 <body>
 <main>
-  <p class="progress">Secure setup · Cloudflare Access</p>
+  <ol class="progress" aria-label="Setup progress"><li class="done"><span class="sr-only">Deploy complete</span></li><li class="${options.state === 'fresh' ? 'current' : 'done'}"><span class="sr-only">Access configuration</span></li><li class="${options.state === 'access_pending' ? 'current' : ''}"><span class="sr-only">Identity verification</span></li><li><span class="sr-only">Slack setup</span></li></ol>
   <section class="card" aria-labelledby="setup-heading">
     <h1 id="setup-heading">${heading}</h1>
-    <p>Chickpea uses Cloudflare Access to authenticate people. Chickpea roles still control what each person may do.</p>
+    <p>Cloudflare Access signs people in. Chickpea keeps its own members and roles, so changing a role or suspending a person takes effect on their next Chickpea request.</p>
     ${error}
+    ${verify}
+    <h2>Choose your Cloudflare path</h2>
     <div class="paths">
-      <section class="path"><h2>Create Zero Trust organization</h2><p>Start here if this Cloudflare account has never used Access.</p></section>
-      <section class="path"><h2>Use an existing Zero Trust organization</h2><p>Reuse your established team name and identity providers.</p></section>
+      <button class="path" type="button" data-path="new" aria-pressed="true"><h2>Create Zero Trust organization</h2><p>Start here if this account has never used Access.</p></button>
+      <button class="path" type="button" data-path="existing" aria-pressed="false"><h2>Use an existing Zero Trust organization</h2><p>Reuse your established team name and identity providers.</p></button>
     </div>
-    <h2>Cloudflare checklist</h2>
-    <ol>
-      <li>Create one self-hosted Access application with destinations <code>/admin</code> and <code>/admin/*</code>.</li>
-      <li>The Cloudflare account identity provider is available by default. Enable email one-time PIN separately when invited teammates need it.</li>
-      <li>Copy the team issuer and application audience back here. Slack events and OAuth callbacks remain public.</li>
-    </ol>
+    <section class="guide active" data-guide="new"><strong>New to Zero Trust</strong><ol><li>Open the Zero Trust dashboard and create your team name.</li><li>Keep the Cloudflare account identity provider, or enable email one-time PIN for teammates.</li><li>Create a Self-hosted Access application using the two Admin destinations below.</li></ol></section>
+    <section class="guide" data-guide="existing"><strong>Existing Zero Trust team</strong><ol><li>Open Access → Applications and create one Self-hosted application.</li><li>Reuse your identity provider and add an exact-email Allow policy for the owner.</li><li>Use the two Admin destinations below; do not protect the whole hostname.</li></ol></section>
+    <a class="external" href="https://one.dash.cloudflare.com/" target="_blank" rel="noopener noreferrer">Open Cloudflare Zero Trust ↗</a>
+    <h2>Protect only Admin</h2>
+    <p>Configure both destinations in one Access application. Slack events and OAuth callbacks must remain public.</p>
+    <div class="copy-grid">
+      <div class="copy-row"><span class="copy-value" data-copy-value>${origin}/admin</span><button class="secondary" type="button" data-copy="${origin}/admin">Copy</button></div>
+      <div class="copy-row"><span class="copy-value" data-copy-value>${origin}/admin/*</span><button class="secondary" type="button" data-copy="${origin}/admin/*">Copy</button></div>
+    </div>
+    <p class="small">For teammate email codes, enable One-time PIN under Settings → Authentication → Login methods, then add each invited address to the Access Allow policy.</p>
+    <h2>Save the Access values</h2>
+    <p>Copy the team issuer and application audience from Cloudflare. Saving does not activate the owner; the next step still requires a signed Access assertion.</p>
     <form method="post" action="/admin/setup">
       <label for="owner-email">Owner email</label>
       <input id="owner-email" name="ownerEmail" type="email" autocomplete="email" required>
       <label for="recovery-token">Recovery token</label>
       <input id="recovery-token" name="recoveryToken" type="password" autocomplete="off" required>
       <label for="access-issuer">Cloudflare team issuer</label>
-      <input id="access-issuer" name="issuer" type="url" placeholder="https://team.cloudflareaccess.com">
+      <input id="access-issuer" name="issuer" type="url" placeholder="https://team.cloudflareaccess.com" value="${issuer}" required>
       <label for="access-audience">Access application audience</label>
-      <input id="access-audience" name="audience" autocomplete="off">
-      <button type="submit">Continue securely</button>
+      <input id="access-audience" name="audience" autocomplete="off" value="${audience}" required>
+      <button type="submit">Save and continue</button>
     </form>
   </section>
 </main>
+<script>
+(function () {
+  var pathButtons = document.querySelectorAll('[data-path]');
+  pathButtons.forEach(function (button) {
+    button.addEventListener('click', function () {
+      var selected = button.getAttribute('data-path');
+      pathButtons.forEach(function (candidate) {
+        candidate.setAttribute('aria-pressed', candidate === button ? 'true' : 'false');
+      });
+      document.querySelectorAll('[data-guide]').forEach(function (guide) {
+        guide.classList.toggle('active', guide.getAttribute('data-guide') === selected);
+      });
+    });
+  });
+  document.querySelectorAll('[data-copy]').forEach(function (button) {
+    button.addEventListener('click', function () {
+      var value = button.getAttribute('data-copy') || '';
+      if (!navigator.clipboard || !navigator.clipboard.writeText) return;
+      navigator.clipboard.writeText(value).then(function () {
+        button.textContent = 'Copied';
+      });
+    });
+  });
+})();
+</script>
 </body>
 </html>`;
+}
+
+export function renderAuthSetupCompletePage(): string {
+  return `<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chickpea · Access connected</title>${ADMIN_FAVICON}
+<style>
+:root { --canvas:#f4ebd8; --card:#fffdf6; --ink:#3b3220; --muted:#6b5c42; --gold:#dda033; --line:rgba(59,50,32,.14); --green:#4e7a3e; }
+* { box-sizing:border-box; } body { margin:0; min-height:100dvh; display:grid; place-items:center; background:var(--canvas); color:var(--ink); font-family:Quicksand,system-ui,sans-serif; padding:20px; }
+main { width:min(580px,100%); background:var(--card); border:1px solid var(--line); border-radius:20px; padding:clamp(26px,6vw,44px); box-shadow:0 10px 30px rgba(59,50,32,.09); text-align:center; }
+.mark { width:54px; height:54px; display:grid; place-items:center; margin:0 auto 18px; border-radius:50%; background:rgba(111,162,91,.16); color:var(--green); font-size:1.6rem; font-weight:900; }
+h1 { margin:0 0 8px; font-size:clamp(1.8rem,6vw,2.5rem); } p { color:var(--muted); line-height:1.55; }
+a { display:inline-flex; align-items:center; justify-content:center; margin-top:18px; min-height:44px; border-radius:12px; padding:11px 20px; background:var(--gold); color:var(--ink); text-decoration:none; font-weight:800; box-shadow:0 2.5px 0 #b27e1f; }
+a:focus-visible { outline:3px solid rgba(221,160,51,.45); outline-offset:3px; }
+</style></head><body><main>
+  <div class="mark" aria-hidden="true">✓</div>
+  <h1>Your Admin is protected</h1>
+  <p>Cloudflare Access authenticated you and Chickpea activated your owner membership. Next, connect the Slack app to this workspace.</p>
+  <a href="/admin">Continue to Slack setup</a>
+</main></body></html>`;
 }
 
 export function renderAuthRecoveryPage(options: { error?: boolean } = {}): string {

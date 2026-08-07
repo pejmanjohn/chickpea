@@ -106,3 +106,19 @@ test('drain-only smoke blocks cutover on nonzero, malformed, or unauthorized sta
     /runtime drain request failed \(HTTP 401\)/,
   );
 });
+
+test('offline recovery credential is not treated as an Admin drain credential', async () => {
+  let authorization = '';
+  await assert.rejects(
+    () => runDrainCheck({
+      baseUrl: 'https://chickpea.example.test',
+      adminToken: 'offline-recovery-value',
+      fetchImpl: async (_input: RequestInfo | URL, init?: RequestInit) => {
+        authorization = new Headers(init?.headers).get('authorization') ?? '';
+        return new Response('unauthorized', { status: 401 });
+      },
+    }),
+    /runtime drain request failed \(HTTP 401\)/,
+  );
+  assert.equal(authorization, 'Bearer offline-recovery-value');
+});

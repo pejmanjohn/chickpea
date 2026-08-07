@@ -37,7 +37,11 @@ function createHarness() {
     );
   `;
   writeFileSync(npmStub, commandLogger('npm'));
-  writeFileSync(wranglerStub, commandLogger('wrangler'));
+  writeFileSync(
+    wranglerStub,
+    commandLogger('wrangler') +
+      `if (process.env.DEPLOY_TEST_URL) process.stdout.write(process.env.DEPLOY_TEST_URL + '\\n');\n`,
+  );
 
   const harness = {
     root,
@@ -52,6 +56,7 @@ function createHarness() {
 function runHarness(
   harness: ReturnType<typeof createHarness>,
   args: string[],
+  env: Record<string, string> = {},
 ) {
   return spawnSync(process.execPath, [harness.script, ...args], {
     cwd: harness.root,
@@ -60,9 +65,26 @@ function runHarness(
       ...process.env,
       DEPLOY_TEST_LOG: harness.logPath,
       npm_execpath: harness.npmStub,
+      ...env,
     },
   });
 }
+
+test('successful deploy hands a fresh install to recovery-backed Access setup', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+
+  const result = runHarness(harness, ['--skip-build'], {
+    DEPLOY_TEST_URL: 'https://chickpea.example.workers.dev',
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /https:\/\/chickpea\.example\.workers\.dev\/admin\/setup/);
+  assert.match(result.stdout, /CHICKPEA_RECOVERY_TOKEN once/);
+  assert.match(result.stdout, /protect both \/admin and \/admin\/\*/);
+  assert.match(result.stdout, /not an Admin login/);
+  assert.doesNotMatch(result.stdout, /Sign in with the TAG_ADMIN_TOKEN/);
+});
 
 function commands(logPath: string): string[] {
   return readFileSync(logPath, 'utf8').trim().split('\n');

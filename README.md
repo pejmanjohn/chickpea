@@ -2,7 +2,7 @@
 
 **Self-hosted, model-agnostic AI agent for Slack. One click to your own Cloudflare account — your first DM answers before you add a single model API key.**
 
-Chickpea is a present Slack teammate: an `@`-mention guarantees engagement, joined-thread replies and DMs continue naturally, and assigned channels may selectively promote useful unmentioned messages. Every channel can get its own profile: separate instructions and model, imported skills, approved MCP/API connections, and exact GitHub repository grants. Channels can retain explicit team memory and own scheduled work on Cloudflare, using the capabilities of their attached profile, all managed from a token-gated `/admin` page. It is built for teams that want an AI agent in Slack without routing messages, tokens, or model traffic through someone else's cloud: your Slack credentials live in your own Cloudflare Durable Object (or your own SQLite file), model calls go directly to the provider you pick, and this project hosts nothing. Built on [Flue](https://www.npmjs.com/package/@flue/runtime). MIT-licensed.
+Chickpea is a present Slack teammate: an `@`-mention guarantees engagement, joined-thread replies and DMs continue naturally, and assigned channels may selectively promote useful unmentioned messages. Every channel can get its own profile: separate instructions and model, imported skills, approved MCP/API connections, and exact GitHub repository grants. Channels can retain explicit team memory and own scheduled work on Cloudflare, using the capabilities of their attached profile, all managed from a role-gated `/admin` page. It is built for teams that want an AI agent in Slack without routing messages, tokens, or model traffic through someone else's cloud: your Slack credentials live in your own Cloudflare Durable Object (or your own SQLite file), model calls go directly to the provider you pick, and this project hosts nothing. Built on [Flue](https://www.npmjs.com/package/@flue/runtime). MIT-licensed.
 
 ![The /admin page on a local install: a connected workspace, a channel with its attached profile, and per-channel instructions](assets/admin-page.png)
 
@@ -10,7 +10,7 @@ Chickpea is a present Slack teammate: an `@`-mention guarantees engagement, join
 
 - One deploy serves **one Slack workspace** — no multi-workspace OAuth distribution yet.
 - On Cloudflare's free tier, the Workers AI and Durable Object daily caps are **hard errors** under load; adding a provider key and pinning profiles away from Workers AI moves model spend.
-- `/admin` auth is a **bearer token**, not SSO.
+- Cloudflare installs use **Cloudflare Access** for sign-in plus Chickpea-owned `owner`, `admin`, and `member` roles. Node/manual installs can explicitly use per-person tokens instead.
 - **Updates are manual**: the Deploy button clones this repo (it does not fork), so upgrading is a re-deploy. The open-source v1 release starts from a clean, consolidated schema; migrations added after that public baseline are append-only.
 - **Durability is single-host** — multi-instance deployments would need a shared store first.
 
@@ -18,12 +18,15 @@ Chickpea is a present Slack teammate: an `@`-mention guarantees engagement, join
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/pejmanjohn/chickpea)
 
-Button to first DM answer in four steps — expect one detour out to Slack's app console (step 3):
+Button to first DM answer in five steps — expect short detours through Cloudflare Zero Trust and Slack's app console:
 
-1. **Click the button.** Cloudflare clones this repo into your GitHub, provisions the Durable Objects, wires Workers Builds CI, and prompts for one secret: `TAG_ADMIN_TOKEN` (generate it with `openssl rand -hex 32`).
-2. **Log in.** Open `https://chickpea.<your-account>.workers.dev/admin` and paste your `TAG_ADMIN_TOKEN` into the sign-in form. The form exchanges it in a POST body for an HttpOnly session cookie; the credential never enters the URL.
-3. **Click "Create your Slack app".** The first-run wizard deep-links Slack's app console with this repo's manifest — the events request URL already points at your worker. Install the app to your workspace. If Slack shows the request URL as unverified, click **Retry** on Event Subscriptions: the worker echoes the verification challenge even before credentials are saved.
-4. **Paste back the bot token and signing secret.** The wizard validates the token live against Slack `auth.test` and stores both in Durable Object state. Env secrets (`wrangler secret put`) always take precedence if you set them later.
+1. **Click the button.** Cloudflare clones this repo into your GitHub, provisions the Durable Objects, wires Workers Builds CI, and prompts for one offline secret: `CHICKPEA_RECOVERY_TOKEN` (generate it with `openssl rand -hex 32`). It authorizes setup and bounded recovery; it is not your ongoing login.
+2. **Open `/admin/setup`.** Choose **new Zero Trust organization** or **existing team**. The guided page gives you copyable values for exactly `https://<worker>/admin` and `https://<worker>/admin/*`. Protect those paths in one Self-hosted Access application—never the whole hostname, because Slack and OAuth callbacks must stay public.
+3. **Verify the first owner.** Paste the Access issuer and application audience into setup, then continue through Access. A signed assertion matching the claimed owner email activates the owner membership and takes you to **Continue to Slack setup**. Refreshing or returning to setup resumes the saved pending state without skipping verification.
+4. **Click "Create your Slack app".** The first-run wizard deep-links Slack's app console with this repo's manifest—the events request URL already points at your worker. Install the app to your workspace. If Slack shows the request URL as unverified, click **Retry** on Event Subscriptions: the worker echoes the verification challenge even before credentials are saved.
+5. **Paste back the bot token and signing secret.** The wizard validates the token live against Slack `auth.test` and stores both in Durable Object state. Env secrets (`wrangler secret put`) always take precedence if you set them later.
+
+See [Authentication and roles](docs/authentication.md) for the boundary between Access sign-in, Chickpea membership, teammate invites, token mode, and future Hosted SSO. Keep the recovery token offline after setup; the [Access recovery runbook](docs/runbooks/access-recovery.md) covers audience changes, owner-binding repair, and edge-policy lockout.
 
 The first DM answers with **zero model keys** on a fresh Cloudflare deploy: the seeded Default profile is explicitly pinned to [`cloudflare/@cf/zai-org/glm-5.2`](https://developers.cloudflare.com/workers-ai/models/glm-5.2/) through the Workers AI binding — that link is its Workers AI model page, so you can check availability on your plan before deploying. If the model errors on your account, the failure surfaces as one sanitized reply in the thread; pin any other model in `/admin`. Add an `ANTHROPIC_API_KEY` secret, or paste it in Settings, to make Claude models available in the picker; keys do not silently switch a pinned profile.
 
@@ -57,7 +60,8 @@ The first DM answers with **zero model keys** on a fresh Cloudflare deploy: the 
 
 ### Operator controls (`/admin`)
 
-- A single self-contained admin page, gated by `TAG_ADMIN_TOKEN` — `Authorization: Bearer` for API callers or a POST-only token form that sets an HttpOnly session cookie.
+- A single self-contained admin page. Cloudflare Access proves the external identity; Chickpea resolves it to an internal membership and enforces `owner`, `admin`, or `member` permissions on every request. A suspended membership is denied even while its Access session remains valid.
+- Team administration keeps two gates explicit: a show-once Chickpea invitation and a separate exact-email Access Allow policy. Invite secrets live in a URL fragment, are removed from browser history before POST, expire after seven days, and rotate on resend.
 - Reusable profiles: name, model, instructions, enabled skills, remote MCP and HTTP API connections with explicit approvals, exact repository grants, and an enable toggle. Disabling a profile blocks DMs and new channel threads; existing channel threads keep the frozen profile snapshot they started with.
 - Skills can be imported by pasting any public `owner/repo`, GitHub URL, or skills.sh link. When the GitHub App is connected, the same field can also resolve App-accessible private repositories, and **Browse GitHub** can fill it from the connected installations without limiting public paste to repositories you own.
 - Per-channel assignments: add a channel by workspace + channel ID, choose ambient or mention-only participation, enable/disable it, swap the attached profile, or detach it. Per-channel instructions append to the profile's instructions in that channel only.
@@ -97,7 +101,7 @@ The bounded defaults are 64 entries per source channel; 512 entries/1 MiB in the
 
 Canonical state is structured SQLite/Durable Object data projected deterministically as portable Markdown and an uncompressed tar export; the filesystem is not required. The generated `MEMORY.md` files are read-only. Import is previewed, path/hash checked, bounded, and applied atomically. Admin edits use expected versions and preserve a draft across conflicts.
 
-`TAG_ADMIN_TOKEN` currently grants broad operator access to public and private retained memory, including view, edit, review, and delete in the admin UI. Deterministic export/import remain API-level portability and recovery capabilities rather than everyday admin controls. Forget/delete scrubs canonical entry and revision content and prevents it from being supplied again, while retaining body-free tombstones and audit facts. It cannot retract copies already present in Slack messages, model-provider processing/logs, prior exports, backups, or separate Flue transcripts; those systems keep their own retention controls.
+An active Chickpea `owner` or `admin` can access retained memory, including view, edit, review, and delete in the Admin UI; ordinary members cannot. Deterministic export/import remain API-level portability and recovery capabilities rather than everyday admin controls. Forget/delete scrubs canonical entry and revision content and prevents it from being supplied again, while retaining body-free tombstones and audit facts. It cannot retract copies already present in Slack messages, model-provider processing/logs, prior exports, backups, or separate Flue transcripts; those systems keep their own retention controls.
 
 ### Routines and scheduled work (Cloudflare)
 
@@ -159,7 +163,7 @@ Connect GitHub once in Settings through the GitHub App manifest flow, the only s
 - Channels are fail-closed, public and private alike: the bot answers only where a profile is explicitly assigned. Being invited to a channel does nothing by itself.
 - A mention in an unassigned channel posts nothing to the channel. The mentioner alone gets one rate-limited ephemeral hint linking to that channel's `/admin` page (`SLACK_TAG_UNASSIGNED_HINT=false` turns even that off).
 - Every operational event is signature-verified; a tampered signature gets a 401 and no side effects. The one pre-setup exception is Slack's unsigned `url_verification` challenge, which is echoed before credentials exist so Retry works mid-setup.
-- If `TAG_ADMIN_TOKEN` is unset, every `/admin` route returns 404 — the admin plane is invisible, not merely locked.
+- A fresh Cloudflare deployment exposes only the recovery-gated setup capability until Access activation. After activation, a valid Access assertion is still insufficient without an active Chickpea membership and role.
 - Bounded channel context may be fetched to classify an eligible ambient message or build an admitted turn, but ignored ambient bodies are not copied into Work, Runs, transcripts, memory, or decision telemetry. There is no passive workspace-message index. Separately, explicit channel memory persists small team-authored notes, their revisions/audit envelope, scope lifecycle, and bounded selection epochs. Each promoted thread keeps its own agent transcript, dedupe claims, and config snapshot.
 - A thread freezes its resolved profile, model, instructions, skills, MCP/API connection approvals, and repository grants at its first durable turn. Admin edits apply to new threads only; in-flight conversations keep the config they started with, even across retries or a later profile edit. DMs deliberately track current config instead.
 - Failures degrade loudly, never silently: a provider error, an unresolvable model, or a context-read failure each still deliver one sanitized final reply and clear the status line.
@@ -180,7 +184,7 @@ Deploys the same artifact the button does:
 
 ```bash
 npm run deploy                           # builds current source, then runs wrangler deploy
-npx wrangler secret put TAG_ADMIN_TOKEN
+npx wrangler secret put CHICKPEA_RECOVERY_TOKEN
 ```
 
 `npm run deploy -- --skip-build` reuses an artifact you just produced with `npm run build`; the default always rebuilds so stale ignored output cannot be deployed accidentally.
@@ -193,7 +197,7 @@ Requires Node >= 22.19 (see `.nvmrc`).
 npm run flue:build                       # Vite Node build -> dist/server.mjs
 ```
 
-Run `dist/server.mjs` on any host. State is file-backed SQLite. Expose the port with a tunnel or reverse proxy and point Slack's Events Request URL at `https://<host>/channels/slack/events`. Both targets run the same source — `src/config/state-backend.ts` picks SQLite or the Durable Object state store at runtime.
+Run `dist/server.mjs` on any host. State is file-backed SQLite. Expose the port with a tunnel or reverse proxy and point Slack's Events Request URL at `https://<host>/channels/slack/events`. Both targets run the same source — `src/config/state-backend.ts` picks SQLite or the Durable Object state store at runtime. Manual Node installs can bootstrap per-person token mode with `npm run auth:recover -- --bootstrap-token-mode --state-db <path> --owner-email <email> --origin <https-origin> --yes`; the recovery proof is read from standard input and the personal token is shown once.
 
 Scheduled routines are the one current capability-tier exception: Node can inspect and shut down existing routine state but cannot create, resume, run, or schedule it. A future persistent scheduler adapter can add another deployment target without changing the product-owned definition/run model.
 
@@ -241,7 +245,8 @@ It calls `auth.test` and `users.info`, compares the display name to the manifest
 | `SLACK_TAG_WELCOME_ON_JOIN` | optional | On by default: when @Chickpea joins an already-assigned channel, Chickpea posts one short welcome. `false` suppresses it. |
 | `SLACK_TAG_AMBIENT_PARTICIPATION` | optional | On by default: assigned channels evaluate useful unmentioned messages. `false` forces an installation-wide mention-only rollback without changing channel settings or capabilities. |
 | `SLACK_TAG_LEDGER_CANARY_CHANNELS` | internal rollout only | Exact comma-separated `workspace/channel` pairs (for example `T123/C456`) that assign new eligible interactive Runs to the channel-neutral durable driver. Empty is the committed/release default. Existing Runs never change owner. Explicit Memory/Routine commands, profiles with enabled MCP tools/API connections/repositories, and installations with open or non-empty allowlisted egress remain on the established lane. Read the [runtime rollout runbook](docs/runbooks/agent-runtime-rollout.md) before setting it. |
-| `TAG_ADMIN_TOKEN` | optional | Bearer token for `/admin` and `/admin/api/*`. If unset, every `/admin/*` route returns 404. Flue agents have no public or token-gated HTTP route. |
+| `CHICKPEA_RECOVERY_TOKEN` | Cloudflare setup; token-mode recovery | Offline credential for first-owner setup and bounded recovery. It never becomes an Admin session or bearer credential. Generate at least 32 random non-whitespace characters and store it outside the browser after setup. |
+| `TAG_ADMIN_TOKEN` | legacy migration only | Shared Admin credential accepted only while an existing installation has not completed identity-auth cutover. Successful Access or token-mode activation permanently stops it from authenticating. Do not configure it for new installs. |
 | `TAG_ROUTINES_ENABLED` | Cloudflare only, optional | Deployment kill switch for scheduled routine admission. `"0"` (the committed default) performs no heartbeat state scan or unattended work; `"1"` enables the fixed Cloudflare heartbeat after the deploy wrapper validates its bindings and guards. Unsupported on Node. |
 | `TAG_DB_PATH` | optional | SQLite path for the durable agent transcript. Default `./tmp/flue.db`; use `:memory:` for ephemeral runs. The default `tmp/**` path is ignored by `flue dev` watch mode. |
 | `SLACK_STATE_DB_PATH` | optional | SQLite path for app-owned state: runtime config, assignments, dedupe claims, joined-thread registry, per-thread config snapshots. Defaults to `<TAG_DB_PATH>.state`; a `:memory:` transcript DB implies a `:memory:` state store, so ephemeral runs stay fully ephemeral. |
@@ -295,21 +300,21 @@ The ledger stores bounded attribution labels, statuses, aggregate token counts, 
 - **The keyless model has no declared context window.** Non-catalog `cloudflare/*` models (including the default `@cf/zai-org/glm-5.2`) resolve through the binding without one, so threshold auto-compaction is disabled and long DM transcripts grow unbounded. Add a provider key and pin a catalog model, such as Claude or GPT, for bounded, auto-compacting context.
 - **Single workspace.** One deploy serves one workspace via a bot token. There is no multi-workspace OAuth distribution yet.
 - **Slack is an adapter, not the runtime aggregate.** Canonical Work, Binding, Run, RunExecution, safe content, and audit records are channel-neutral. Slack owns Slack coordinates, rendering, and delivery. Authenticated Run/session APIs read the canonical ledger, but this release deliberately does not expose a Sessions page in Admin. A future web client can submit and render through the same lifecycle without impersonating a Slack thread; operator-originated web sessions are not part of this release.
-- **`/admin` auth is a token.** A bearer token with a cookie session — no SSO. An optional Cloudflare Access layer is on the roadmap below.
+- **Authentication and authorization are separate.** Cloudflare Access is the default authenticator for Cloudflare OSS installs; Chickpea owns users, memberships, invitations, and roles. Manual Node deployments can use distinct revocable personal tokens and 24-hour browser sessions. Hosted can later add OIDC, SAML, SCIM, and managed sessions without changing Chickpea's role semantics.
 - **The public v1 schema is a clean baseline.** Pre-open-source migration history was consolidated because there are no supported legacy upgrade targets; do not point v1 at a private/pre-release database expecting it to migrate. Migrations introduced after the public v1 baseline are append-only so supported public installs can carry state across later re-deploys.
 - **Durability is single-host.** Dedupe, runtime config, thread registry, and snapshots are restart-durable — on one Durable Object or one SQLite file. Multi-instance deployments would need a shared store first.
 - **No state backup/export on Cloudflare yet**, and the debug story is `wrangler tail`.
 - **Memory export is not a full state backup.** The authenticated Memory API can export deterministic Markdown archives on Cloudflare and Node, but there is not yet a one-click backup for transcripts, config, claims, or every Durable Object table; the debug story remains `wrangler tail`.
 - **The container coding sandbox is Cloudflare-only.** Node and other non-Cloudflare installs use the standard in-memory bash sandbox, not the container coding tier, and Chickpea never gives that sandbox the host filesystem or host git/SSH credentials.
 - **Scheduled routines are Cloudflare-only and off by default.** Node retains inspection and shutdown controls but has no scheduler. Enabling on Cloudflare requires the committed Cron, app-owned occurrence state, and fresh Flue 2 routine agents, which `npm run deploy` validates before upload.
-- **Connection authoring is trusted operator configuration.** Connections can be created only through token-gated `/admin`; use services you trust. MCP URLs must use HTTPS and pass hostname, literal-address, configured-origin, and same-origin redirect guards at save, test, and turn time. On Node, Chickpea resolves every request, rejects the full DNS answer set if any address is private or reserved, and pins the HTTPS connection to the validated public answers; redirect hops are revalidated. Workers expose no DNS-resolution API, so that lane retains the literal/hostname/origin/redirect guards and delegates address routing to the platform. HTTP API connections are separately scoped to exact hosts, path prefixes, and methods, with credentials injected only at the network boundary.
+- **Connection authoring is trusted operator configuration.** Connections can be created only through role-gated `/admin`; use services you trust. MCP URLs must use HTTPS and pass hostname, literal-address, configured-origin, and same-origin redirect guards at save, test, and turn time. On Node, Chickpea resolves every request, rejects the full DNS answer set if any address is private or reserved, and pins the HTTPS connection to the validated public answers; redirect hops are revalidated. Workers expose no DNS-resolution API, so that lane retains the literal/hostname/origin/redirect guards and delegates address routing to the platform. HTTP API connections are separately scoped to exact hosts, path prefixes, and methods, with credentials injected only at the network boundary.
 
 ## Where this is heading
 
 Direction, not commitment — open an issue if one of these matters to you; that is how they get ordered.
 
-- **Optional Cloudflare Access for `/admin`.** In-worker verification of the `Cf-Access-Jwt-Assertion` JWT, skipping the token gate when configured. It has to be in-worker: a hostname-wide Access policy would block Slack's event webhooks.
 - **A guided `npx chickpea deploy`.** The same artifact the button ships, driven from the terminal.
+- **Hosted enterprise identity.** Add managed OIDC/SAML, SCIM, tenant routing, and hosted sessions behind the same normalized authenticator and membership model used by Access and personal-token OSS installs.
 - **Multi-workspace Slack OAuth distribution**, so one deploy can serve several workspaces with per-workspace tokens.
 - **Connection and network audit visibility.** The connection gallery, OAuth lifecycle, API scopes, and DNS-pinned Node transport have shipped; the reserved Network Events audit domain is the next place to expose connector, tool, and egress history without leaking credentials or payloads.
 - **More OpenAI-compatible endpoints in the `/admin` model picker**, such as Ollama and self-hosted gateways. Anthropic, OpenAI, OpenRouter, and both Workers AI paths are already supported.

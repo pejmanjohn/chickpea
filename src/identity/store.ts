@@ -1546,7 +1546,9 @@ function strictText(value: string, field: string, max: number): string {
 function validOrigin(value: string): string {
   try {
     const url = new URL(value);
-    if (url.protocol !== 'https:' || url.username || url.password || url.pathname !== '/' ||
+    const loopbackHttp = url.protocol === 'http:' &&
+      ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+    if ((url.protocol !== 'https:' && !loopbackHttp) || url.username || url.password || url.pathname !== '/' ||
         url.search || url.hash) throw new Error('invalid');
     return url.origin;
   } catch {

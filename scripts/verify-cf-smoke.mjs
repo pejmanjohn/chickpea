@@ -6,11 +6,13 @@
  * SIGNED Slack events end-to-end. Asserts the parts of the port that only
  * workerd can prove:
  *
- *   1. the DO-backed config store seeds and serves /admin/api/agents,
- *   2. the app boots healthy with NO Slack creds: events fail closed (401)
+ *   1. recovery-backed Access setup is resumable, persists pending identity
+ *      state, and refuses to activate without a valid signed assertion,
+ *   2. the DO-backed config store seeds and serves /admin/api/agents,
+ *   3. the app boots healthy with NO Slack creds: events fail closed (401)
  *      and the wizard GET reports missing credentials + a manifest deep-link
  *      carrying this install's substituted request_url,
- *   3. the wizard POST validates the pasted token against (fake) Slack
+ *   4. the wizard POST validates the pasted token against (fake) Slack
  *      auth.test and persists token/secret/bot-user-id in the DO settings,
  *   4. a signed synthetic app_mention verifies against the STORED signing
  *      secret, is admitted, and the turn delivers a final to (fake) Slack
@@ -49,6 +51,9 @@ const CF_SMOKE_WRANGLER_CONFIG = join(CF_OUTPUT_DIR, 'chickpea', 'wrangler.smoke
 const CF_AI_SMOKE_CONFIG = join(CF_OUTPUT_DIR, 'chickpea', 'wrangler.ai-smoke.json');
 const PERSIST_DIR = join(REPO_ROOT, '.wrangler-state');
 const ADMIN_TOKEN = 'test-token';
+const RECOVERY_TOKEN = 'smoke-recovery-token-with-at-least-thirty-two-characters';
+const ACCESS_ISSUER = 'https://smoke.cloudflareaccess.com';
+const ACCESS_AUDIENCE = 'smoke-access-audience';
 const WORKSPACE = 'T_SMOKE';
 const CHANNEL = 'C_SMOKE';
 const AI_CHANNEL = 'C_SMOKE_AI';
@@ -258,6 +263,7 @@ function writeDevVars(fakeUrl) {
     join(CF_OUTPUT_DIR, 'chickpea', '.dev.vars'),
     [
       `TAG_ADMIN_TOKEN=${ADMIN_TOKEN}`,
+      `CHICKPEA_RECOVERY_TOKEN=${RECOVERY_TOKEN}`,
       `SLACK_API_URL=${fakeUrl}/api/`,
       `LOCAL_STUB_URL=${fakeUrl}/v1`,
       'SLACK_TAG_MODEL=local-stub/smoke-model',
@@ -340,6 +346,65 @@ async function adminPageHtml(baseUrl) {
     headers: { authorization: `Bearer ${ADMIN_TOKEN}` },
   });
   return response.text();
+}
+
+async function configurePendingAccess(baseUrl) {
+  const setupPage = await fetch(`${baseUrl}/admin/setup`);
+  const setupHtml = await setupPage.text();
+  check(
+    setupPage.status === 200 &&
+      setupHtml.includes('Create Zero Trust organization') &&
+      setupHtml.includes('Use an existing Zero Trust organization') &&
+      setupHtml.includes(`${baseUrl}/admin/*`) &&
+      !setupHtml.includes(RECOVERY_TOKEN),
+    'fresh setup renders both Access paths and copyable Admin destinations without echoing recovery',
+    `HTTP ${setupPage.status}`,
+  );
+  const body = new URLSearchParams({
+    ownerEmail: 'owner@example.com',
+    recoveryToken: RECOVERY_TOKEN,
+    issuer: ACCESS_ISSUER,
+    audience: ACCESS_AUDIENCE,
+  }).toString();
+  const configured = await fetch(`${baseUrl}/admin/setup`, {
+    method: 'POST',
+    redirect: 'manual',
+    headers: {
+      origin: baseUrl,
+      'sec-fetch-site': 'same-origin',
+      'content-type': 'application/x-www-form-urlencoded',
+      'content-length': String(Buffer.byteLength(body)),
+    },
+    body,
+  });
+  check(
+    configured.status === 303 && configured.headers.get('location') === '/admin/setup/verify',
+    'recovery proof persists Access pending state and advances to verification',
+    `HTTP ${configured.status} location=${configured.headers.get('location')}`,
+  );
+  const resumed = await fetch(`${baseUrl}/admin/setup`);
+  const resumedHtml = await resumed.text();
+  check(
+    resumed.status === 200 && resumedHtml.includes('Configuration saved') &&
+      resumedHtml.includes('Verify identity through Access'),
+    'interrupted setup resumes at the saved verification step',
+    `HTTP ${resumed.status}`,
+  );
+  const unverified = await fetch(`${baseUrl}/admin/setup/verify`, { redirect: 'manual' });
+  check(
+    unverified.status === 401,
+    'Access activation fails closed without a signed assertion',
+    `HTTP ${unverified.status}`,
+  );
+  const publicGithubCallback = await fetch(
+    `${baseUrl}/oauth/github/setup/callback?code=invalid&state=invalid`,
+    { redirect: 'manual' },
+  );
+  check(
+    publicGithubCallback.status === 403,
+    'public GitHub setup callback reaches its single-use state guard outside Admin auth',
+    `HTTP ${publicGithubCallback.status}`,
+  );
 }
 
 async function renderAdminWithWorkerdState(baseUrl) {
@@ -605,6 +670,7 @@ async function main() {
   try {
     console.log('• waiting for wrangler dev (round 1)…');
     const agents = await waitForAdminReady(wrangler, baseUrl);
+    await configurePendingAccess(baseUrl);
     const agentIds = agents.map((agent) => agent.id).sort();
     check(
       agentIds.includes('agent_default'),

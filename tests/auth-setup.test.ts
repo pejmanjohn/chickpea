@@ -32,6 +32,45 @@ test('setup requires recovery proof and persists Access pending state without an
   identity.close();
 });
 
+test('setup accepts plain HTTP only for local loopback development', async () => {
+  for (const canonicalAdminOrigin of [
+    'http://localhost:8788',
+    'http://127.0.0.1:8788',
+    'http://[::1]:8788',
+  ]) {
+    const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
+    const setup = new AuthSetupService(identity, { recoveryToken: RECOVERY, now: () => NOW });
+    await setup.beginAccessSetup({ recoveryToken: RECOVERY, ownerEmail: 'owner@example.com' });
+    await setup.configureAccess({
+      recoveryToken: RECOVERY,
+      issuer: 'https://paperplanelabs.cloudflareaccess.com',
+      audience: 'a'.repeat(64),
+      canonicalAdminOrigin,
+    });
+    assert.equal((await identity.getOrganization())?.canonicalAdminOrigin, canonicalAdminOrigin);
+    identity.close();
+  }
+
+  for (const canonicalAdminOrigin of [
+    'http://chickpea.example.com',
+    'http://localhost.example.com',
+  ]) {
+    const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
+    const setup = new AuthSetupService(identity, { recoveryToken: RECOVERY, now: () => NOW });
+    await setup.beginAccessSetup({ recoveryToken: RECOVERY, ownerEmail: 'owner@example.com' });
+    await assert.rejects(
+      () => setup.configureAccess({
+        recoveryToken: RECOVERY,
+        issuer: 'https://paperplanelabs.cloudflareaccess.com',
+        audience: 'a'.repeat(64),
+        canonicalAdminOrigin,
+      }),
+      /Canonical Admin origin is invalid/,
+    );
+    identity.close();
+  }
+});
+
 test('matching verified owner identity atomically activates Access exactly once', async () => {
   const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
   const setup = new AuthSetupService(identity, { recoveryToken: RECOVERY, now: () => NOW });

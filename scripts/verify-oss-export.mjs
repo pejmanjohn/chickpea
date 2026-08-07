@@ -64,9 +64,18 @@ const forbiddenSourcePathRoots = [
   exportPath('.codex'),
   exportPath('.gstack'),
   exportPath('.superpowers'),
-  exportPath('docs'),
   exportPath('tmp'),
 ];
+
+const allowedPublicDocs = new Set([
+  exportPath('docs', 'architecture', 'agent-runtime-boundary.md'),
+  exportPath('docs', 'authentication.md'),
+  exportPath('docs', 'plans', '2026-07-28-001-feat-openai-subscription-auth-plan.md'),
+  exportPath('docs', 'runbooks', 'access-recovery.md'),
+  exportPath('docs', 'runbooks', 'agent-runtime-rollout.md'),
+  exportPath('docs', 'runbooks', 'openai-subscription.md'),
+  exportPath('docs', 'runbooks', 'slack-interaction-operations.md'),
+]);
 
 const forbiddenSourcePaths = new Set([exportPath('.worktreeinclude')]);
 
@@ -207,6 +216,7 @@ function assertPublicSourceManifest(entries) {
       const normalizedPath = path.toLowerCase();
       return (
         forbiddenSourcePaths.has(normalizedPath) ||
+        (normalizedPath.startsWith('docs/') && !allowedPublicDocs.has(normalizedPath)) ||
         forbiddenSourcePathRoots.some(
           (root) =>
             normalizedPath === root || normalizedPath.startsWith(`${root}/`),
@@ -329,6 +339,9 @@ function verifyNpmPackManifest() {
     'assets/bot-avatar.png',
     'assets/chickpea-mark.svg',
     'scripts/deploy-with-epilogue.mjs',
+    'scripts/recover-auth.mjs',
+    'docs/authentication.md',
+    'docs/runbooks/access-recovery.md',
     'scripts/flue-build-cf.mjs',
     'slack-app-manifest.json',
     'src/app.ts',
@@ -344,7 +357,7 @@ function verifyNpmPackManifest() {
       path.startsWith('.claude/') ||
       path.startsWith('.github/') ||
       path.startsWith('design/') ||
-      path.startsWith('docs/') ||
+      (path.startsWith('docs/') && !allowedPublicDocs.has(path)) ||
       path.startsWith('tmp/'),
   );
   if (missing.length > 0 || forbidden.length > 0) {
@@ -355,6 +368,28 @@ function verifyNpmPackManifest() {
         ...forbidden.map((path) => `forbidden packaged file: ${path}`),
       ].join('\n'),
     );
+  }
+}
+
+function verifyAuthenticationExportContract(packageJson) {
+  const bindings = packageJson.cloudflare?.bindings ?? {};
+  if (!Object.hasOwn(bindings, 'CHICKPEA_RECOVERY_TOKEN') ||
+      Object.hasOwn(bindings, 'TAG_ADMIN_TOKEN')) {
+    fail('Deploy metadata must prompt only for CHICKPEA_RECOVERY_TOKEN');
+  }
+  const recovery = readFileSync(join(scratch, 'scripts', 'recover-auth.mjs'), 'utf8');
+  if (/\bfetch\s*\(/.test(recovery) || /node:https/.test(recovery)) {
+    fail('Token-mode recovery must remain an operator-side state command with no HTTP transport');
+  }
+  const identityTypes = readFileSync(join(scratch, 'src', 'identity', 'types.ts'), 'utf8');
+  if (!identityTypes.includes("Omit<Invitation, 'tokenHash' | 'normalizedEmail'>") ||
+      !identityTypes.includes("Omit<PersonalTokenRecord, 'tokenHash'>") ||
+      !identityTypes.includes("Omit<BrowserSessionRecord, 'sessionHash'>")) {
+    fail('Identity export summary must omit invitation, personal-token, and session hashes');
+  }
+  const example = readFileSync(join(scratch, '.dev.vars.example'), 'utf8');
+  if (!/CHICKPEA_RECOVERY_TOKEN=""/.test(example)) {
+    fail('Cloudflare recovery example must keep the credential value empty');
   }
 }
 
@@ -378,6 +413,8 @@ try {
   if (packageJson.private !== true || !packageJson.description || packageJson.license !== 'MIT' || !packageJson.repository) {
     fail('Export package.json must remain private and include its source metadata');
   }
+
+  verifyAuthenticationExportContract(packageJson);
 
   verifyNpmPackManifest();
 

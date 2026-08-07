@@ -10,6 +10,7 @@ import {
   renderAdminPage,
   renderAuthMigrationPage,
   renderAuthRecoveryPage,
+  renderAuthSetupCompletePage,
   renderAuthSetupPage,
   renderInvitationJoinPage,
   renderMemberAccountPage,
@@ -1213,8 +1214,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (organization && !['unconfigured', 'access_pending'].includes(organization.authMode)) {
       return c.json({ error: 'authentication_unavailable' }, 409);
     }
+    const config = await identity(c).getAuthProviderConfig('cloudflare_access');
     return c.html(renderAuthSetupPage({
       state: organization?.authMode === 'access_pending' ? 'access_pending' : 'fresh',
+      origin: requestOrigin(c),
+      ...(config?.issuer === undefined ? {} : { issuer: config.issuer }),
+      ...(config?.audience === undefined ? {} : { audience: config.audience }),
     }));
   });
 
@@ -1247,7 +1252,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return c.redirect('/admin/setup/verify', 303);
     } catch {
       await limiter.recordFailure('setup', source);
-      return c.html(renderAuthSetupPage({ state: 'fresh', error: true }), 401);
+      return c.html(renderAuthSetupPage({
+        state: 'fresh',
+        error: true,
+        origin: requestOrigin(c),
+      }), 401);
     }
   });
 
@@ -1263,13 +1272,20 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       if (!config || config.state !== 'pending') throw new AuthDeniedError();
       const external = await verifyAccessAssertion(c.req.raw, config, 'activation');
       await new AuthSetupService(identity(c), { recoveryToken: token }).activateAccess(external);
-      return c.redirect('/admin', 303);
+      return c.redirect('/admin/ready', 303);
     } catch {
       const organization = await identity(c).getOrganization();
+      const config = await identity(c).getAuthProviderConfig('cloudflare_access');
       return c.html(
         organization?.authMode === 'legacy_shared'
           ? renderAuthMigrationPage({ error: true })
-          : renderAuthSetupPage({ state: 'access_pending', error: true }),
+          : renderAuthSetupPage({
+            state: 'access_pending',
+            error: true,
+            origin: requestOrigin(c),
+            ...(config?.issuer === undefined ? {} : { issuer: config.issuer }),
+            ...(config?.audience === undefined ? {} : { audience: config.audience }),
+          }),
         401,
       );
     }
@@ -1828,6 +1844,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   });
 
   app.get('/admin', adminPage);
+
+  app.get('/admin/ready', (c) => {
+    c.header('Cache-Control', 'no-store');
+    return c.html(renderAuthSetupCompletePage());
+  });
 
   app.get('/admin/account', async (c) => {
     const principal = principalByContext.get(c);
