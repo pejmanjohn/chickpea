@@ -1,6 +1,7 @@
 import {
   CfAgentSnapshotStore,
   CfConfigStore,
+  CfIdentityStore,
   CfMemoryStateStore,
   CfRoutineStore,
   CfSettingsStore,
@@ -24,6 +25,8 @@ import { SqliteUsageStore } from '../usage/store.ts';
 import type { UsageStore } from '../usage/types.ts';
 import { SqliteWorkStore } from '../work/store.ts';
 import type { WorkStore } from '../work/types.ts';
+import { SqliteIdentityStore } from '../identity/store.ts';
+import type { IdentityStore } from '../identity/types.ts';
 
 export { isCloudflareTarget } from './runtime-target.ts';
 
@@ -47,6 +50,7 @@ export type PlatformEnv = Record<string, unknown>;
 
 /** The full store set a request handler consumes, resolved for one target. */
 export interface AppStores {
+  identity: IdentityStore;
   config: ConfigStore;
   snapshots: AgentSnapshotStore;
   slackState: SlackStateStore;
@@ -66,6 +70,7 @@ interface CachedStore<T extends { close?(): void }> {
 }
 
 let cachedConfigStore: CachedStore<SqliteConfigStore> | undefined;
+let cachedIdentityStore: CachedStore<SqliteIdentityStore> | undefined;
 let cachedSnapshotStore: CachedStore<SqliteAgentSnapshotStore> | undefined;
 let cachedSlackStateStore: CachedStore<SqliteSlackStateStore> | undefined;
 let cachedSettingsStore: CachedStore<SqliteSettingsStore> | undefined;
@@ -98,6 +103,17 @@ export function getConfigStore(env?: PlatformEnv): ConfigStore {
   }
   cachedConfigStore = nodeCached(cachedConfigStore, (path) => new SqliteConfigStore(path));
   return cachedConfigStore.store;
+}
+
+export function getIdentityStore(env?: PlatformEnv): IdentityStore {
+  if (isCloudflareTarget()) {
+    return new CfIdentityStore(tagStateStub(env));
+  }
+  cachedIdentityStore = nodeCached(
+    cachedIdentityStore,
+    (path) => new SqliteIdentityStore(path),
+  );
+  return cachedIdentityStore.store;
 }
 
 export function getAgentSnapshotStore(env?: PlatformEnv): AgentSnapshotStore {
@@ -202,6 +218,7 @@ export async function readRuntimeDrainStatus(env?: PlatformEnv): Promise<Runtime
  */
 export function resolveStores(env?: PlatformEnv): AppStores {
   return {
+    identity: getIdentityStore(env),
     config: getConfigStore(env),
     snapshots: getAgentSnapshotStore(env),
     slackState: getSlackStateStore(env),

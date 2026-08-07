@@ -1,4 +1,10 @@
-export type AuditDomain = 'memory' | 'scheduled_work' | 'network_event' | 'usage' | 'work';
+export type AuditDomain =
+  | 'identity'
+  | 'memory'
+  | 'scheduled_work'
+  | 'network_event'
+  | 'usage'
+  | 'work';
 
 export type WorkAuditEventType =
   | 'work.run_admitted'

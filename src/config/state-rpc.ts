@@ -6,6 +6,7 @@ import type { MemoryRpcRequest, MemoryRpcResponse } from '../memory/types.ts';
 import type { RoutineRpcRequest, RoutineRpcResponse } from '../routines/types.ts';
 import type { UsageRpcRequest, UsageRpcResponse } from '../usage/types.ts';
 import type { WorkRpcRequest, WorkRpcResponse } from '../work/types.ts';
+import type { IdentityRpcRequest, IdentityRpcResponse } from '../identity/types.ts';
 import type {
   SlackCanonicalAdmissionInput,
   SlackCanonicalAdmissionResult,
@@ -48,6 +49,7 @@ export type StateRpcErrorCode =
   | 'unknown_agent'
   | 'agent_exists'
   | 'agent_still_assigned'
+  | 'identity'
   | 'memory'
   | 'routine'
   | 'usage'
@@ -160,6 +162,8 @@ export interface TurnProgress {
  * operation, promise-returning as seen from the caller side of the stub.
  */
 export interface TagStateRpc {
+  // -- identity and organization authorization ----------------------------
+  identityExecute(request: IdentityRpcRequest): Promise<StateRpcResult<IdentityRpcResponse>>;
   // -- config: agents ------------------------------------------------------
   configListAgents(): Promise<StateRpcResult<CustomAgentConfig[]>>;
   configGetAgent(agentId: string): Promise<StateRpcResult<CustomAgentConfig>>;

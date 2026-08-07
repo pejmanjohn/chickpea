@@ -110,6 +110,9 @@ import { UsageStoreLogic } from './usage/store.ts';
 import { UsageStateError } from './usage/store-error.ts';
 import type { UsageRpcRequest, UsageRpcResponse, UsageStore } from './usage/types.ts';
 import { WorkStoreLogic } from './work/store.ts';
+import { IdentityStateError } from './identity/errors.ts';
+import { IdentityStoreLogic } from './identity/store.ts';
+import type { IdentityRpcRequest, IdentityRpcResponse } from './identity/types.ts';
 import { DurableRunDriver } from './work/driver.ts';
 import {
   WorkStateError,
@@ -446,6 +449,7 @@ class DoSqlStateDb implements StateDb {
 }
 
 interface TagStateStores {
+  identity: IdentityStoreLogic;
   config: ConfigStoreLogic;
   snapshots: SnapshotStoreLogic;
   slack: SlackStateLogic;
@@ -487,6 +491,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       // its own tables (and the config store runs migrations + seedOnce), so a
       // fresh DO is fully seeded before it answers its first RPC.
       const stores = {
+        identity: new IdentityStoreLogic(db),
         config: new ConfigStoreLogic(db),
         snapshots: new SnapshotStoreLogic(db),
         slack: new SlackStateLogic(db),
@@ -517,6 +522,12 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
   }
 
   // ── config: agents ───────────────────────────────────────────────────────
+
+  async identityExecute(
+    request: IdentityRpcRequest,
+  ): Promise<StateRpcResult<IdentityRpcResponse>> {
+    return this.call((stores) => stores.identity.execute(request));
+  }
 
   async configListAgents(): Promise<StateRpcResult<CustomAgentConfig[]>> {
     return this.call((stores) => stores.config.listAgents());
@@ -1235,6 +1246,12 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           keys: err.keys,
         });
       }
+      if (err instanceof IdentityStateError) {
+        return rpcError('identity', err.message, {
+          identityCode: err.code,
+          ...err.details,
+        });
+      }
       if (err instanceof MemoryStateError) {
         return rpcError('memory', err.message, {
           memoryCode: err.code,
@@ -1347,7 +1364,7 @@ function localUsageStore(stores: TagStateStores): UsageStore {
 }
 
 function rpcError(
-  code: 'unknown_agent' | 'agent_exists' | 'agent_still_assigned' | 'memory' | 'routine' | 'usage' | 'work' | 'internal',
+  code: 'unknown_agent' | 'agent_exists' | 'agent_still_assigned' | 'identity' | 'memory' | 'routine' | 'usage' | 'work' | 'internal',
   message: string,
   details?: Record<string, string>,
 ): { ok: false; error: { code: typeof code; message: string; details?: Record<string, string> } } {
