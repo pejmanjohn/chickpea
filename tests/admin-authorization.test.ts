@@ -75,6 +75,11 @@ test('Admin routes accept normalized principals and reject member or Slack ident
     invitationId: invite.id, tokenHash: 'member-route-hash', provider: 'bootstrap',
     issuer: 'urn:bootstrap', subject: 'member', verifiedEmail: 'member@example.com', at: now,
   });
+  await identity.updateOrganizationAuth({
+    organizationId: organization.id,
+    authMode: 'token_active',
+    canonicalAdminOrigin: 'https://app.example',
+  });
   const personalTokens = new PersonalTokenService(identity, { now: () => now, randomBytes });
   const tokenSessions = new TokenSessionService(identity, { now: () => now, randomBytes });
   const authService = new AuthService({ identity, personalTokens, tokenSessions });

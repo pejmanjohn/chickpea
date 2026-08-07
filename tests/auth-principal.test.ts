@@ -19,6 +19,11 @@ test('external authenticators normalize into active internal principals', async 
     verifiedEmail: 'owner@example.com',
     at: NOW,
   });
+  await identity.updateOrganizationAuth({
+    organizationId: organization.id,
+    authMode: 'access_active',
+    canonicalAdminOrigin: 'https://app.example',
+  });
   const backupInvite = await identity.createInvitation({
     organizationId: organization.id, email: 'backup@example.com', role: 'owner',
     tokenHash: 'backup-owner-hash', inviterMembershipId: owner.membership.id,

@@ -11143,6 +11143,126 @@ button:hover { background:var(--ember-bright); }
 </html>`;
 }
 
+export function renderAuthSetupPage(
+  options: { state: 'fresh' | 'access_pending'; error?: boolean } = { state: 'fresh' },
+): string {
+  const heading = options.state === 'fresh'
+    ? 'Set up your Chickpea workspace'
+    : 'Connect Cloudflare Access';
+  const error = options.error
+    ? '<p class="error" role="alert">Setup could not be verified. Check the values and try again.</p>'
+    : '';
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chickpea · Secure setup</title>
+${ADMIN_FAVICON}
+<style>
+:root { --canvas:#f4ebd8; --card:#fffdf6; --ink:#3b3220; --muted:#6b5c42; --gold:#dda033; --line:rgba(59,50,32,.14); --danger:#b5473a; }
+* { box-sizing:border-box; }
+body { margin:0; min-height:100dvh; background:var(--canvas); color:var(--ink); font-family:Quicksand,system-ui,sans-serif; padding:32px 20px; }
+main { width:min(760px,100%); margin:0 auto; }
+.progress { color:var(--muted); font-size:.82rem; margin-bottom:12px; }
+.card { background:var(--card); border:1px solid var(--line); border-radius:18px; padding:clamp(22px,5vw,40px); box-shadow:0 8px 30px rgba(59,50,32,.08); }
+h1 { margin:0 0 8px; font-size:clamp(1.7rem,5vw,2.5rem); }
+h2 { margin:28px 0 8px; font-size:1.1rem; }
+p,li { color:var(--muted); line-height:1.55; }
+ol { padding-left:22px; }
+.paths { display:grid; gap:10px; grid-template-columns:1fr 1fr; }
+.path { border:1px solid var(--line); border-radius:12px; padding:14px; }
+label { display:block; font-weight:700; margin:16px 0 6px; }
+input,select { width:100%; border:1px solid var(--line); border-radius:10px; padding:11px 12px; font:inherit; background:#fff; }
+input:focus-visible,select:focus-visible,button:focus-visible { outline:3px solid rgba(221,160,51,.45); outline-offset:2px; }
+button { margin-top:22px; border:0; border-radius:12px; background:var(--gold); color:var(--ink); padding:12px 18px; font:inherit; font-weight:800; cursor:pointer; }
+code { background:#f8f1df; border-radius:6px; padding:2px 5px; }
+.error { color:var(--danger); font-weight:700; }
+@media (max-width:620px) { body { padding:16px 10px; } .paths { grid-template-columns:1fr; } .card { border-radius:14px; } }
+</style>
+</head>
+<body>
+<main>
+  <p class="progress">Secure setup · Cloudflare Access</p>
+  <section class="card" aria-labelledby="setup-heading">
+    <h1 id="setup-heading">${heading}</h1>
+    <p>Chickpea uses Cloudflare Access to authenticate people. Chickpea roles still control what each person may do.</p>
+    ${error}
+    <div class="paths">
+      <section class="path"><h2>Create Zero Trust organization</h2><p>Start here if this Cloudflare account has never used Access.</p></section>
+      <section class="path"><h2>Use an existing Zero Trust organization</h2><p>Reuse your established team name and identity providers.</p></section>
+    </div>
+    <h2>Cloudflare checklist</h2>
+    <ol>
+      <li>Create one self-hosted Access application with destinations <code>/admin</code> and <code>/admin/*</code>.</li>
+      <li>The Cloudflare account identity provider is available by default. Enable email one-time PIN separately when invited teammates need it.</li>
+      <li>Copy the team issuer and application audience back here. Slack events and OAuth callbacks remain public.</li>
+    </ol>
+    <form method="post" action="/admin/setup">
+      <label for="owner-email">Owner email</label>
+      <input id="owner-email" name="ownerEmail" type="email" autocomplete="email" required>
+      <label for="recovery-token">Recovery token</label>
+      <input id="recovery-token" name="recoveryToken" type="password" autocomplete="off" required>
+      <label for="access-issuer">Cloudflare team issuer</label>
+      <input id="access-issuer" name="issuer" type="url" placeholder="https://team.cloudflareaccess.com">
+      <label for="access-audience">Access application audience</label>
+      <input id="access-audience" name="audience" autocomplete="off">
+      <button type="submit">Continue securely</button>
+    </form>
+  </section>
+</main>
+</body>
+</html>`;
+}
+
+export function renderAuthRecoveryPage(options: { error?: boolean } = {}): string {
+  const error = options.error
+    ? '<p class="error" role="alert">Recovery could not be verified.</p>'
+    : '';
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chickpea · Access recovery</title>
+${ADMIN_FAVICON}
+<style>
+:root { --canvas:#f4ebd8; --card:#fffdf6; --ink:#3b3220; --muted:#6b5c42; --gold:#dda033; --line:rgba(59,50,32,.14); --danger:#b5473a; }
+* { box-sizing:border-box; }
+body { margin:0; min-height:100dvh; display:grid; place-items:center; background:var(--canvas); color:var(--ink); font-family:Quicksand,system-ui,sans-serif; padding:24px; }
+main { width:min(520px,100%); background:var(--card); border:1px solid var(--line); border-radius:18px; padding:clamp(22px,5vw,36px); box-shadow:0 8px 30px rgba(59,50,32,.08); }
+h1 { margin:0 0 8px; font-size:clamp(1.5rem,5vw,2rem); }
+p { color:var(--muted); line-height:1.55; }
+label { display:block; font-weight:700; margin:16px 0 6px; }
+input { width:100%; border:1px solid var(--line); border-radius:10px; padding:11px 12px; font:inherit; }
+input:focus-visible,button:focus-visible { outline:3px solid rgba(221,160,51,.45); outline-offset:2px; }
+button { margin-top:22px; border:0; border-radius:12px; background:var(--gold); color:var(--ink); padding:12px 18px; font:inherit; font-weight:800; cursor:pointer; }
+.error { color:var(--danger); font-weight:700; }
+@media (max-width:520px) { body { padding:12px; } main { border-radius:14px; } }
+</style>
+</head>
+<body>
+<main aria-labelledby="recovery-heading">
+  <h1 id="recovery-heading">Repair Cloudflare Access</h1>
+  <p>This does not sign you in. It updates only Chickpea's expected Access application audience after you have repaired the edge policy in Cloudflare.</p>
+  ${error}
+  <form method="post" action="/admin/recovery">
+    <label for="operation">Repair operation</label>
+    <select id="operation" name="operation" required>
+      <option value="audience">Update Access application audience</option>
+      <option value="owner_binding">Replace my owner identity binding</option>
+    </select>
+    <label for="recovery-token">Offline recovery token</label>
+    <input id="recovery-token" name="recoveryToken" type="password" autocomplete="off" required>
+    <label for="access-audience">New Access application audience</label>
+    <input id="access-audience" name="audience" autocomplete="off">
+    <button type="submit">Verify and repair</button>
+  </form>
+</main>
+</body>
+</html>`;
+}
+
 function escapeHtmlAttribute(value: string): string {
   return value
     .replaceAll('&', '&amp;')

@@ -28,6 +28,14 @@ export class AuthService implements AdminAuthenticationService {
   constructor(private readonly options: AuthServiceOptions) {}
 
   async authenticateRequest(request: Request): Promise<AuthPrincipal> {
+    const organization = await this.options.identity.getOrganization();
+    if (!organization) throw new AuthDeniedError();
+
+    if (organization.authMode === 'access_active') {
+      return this.authenticateExternal(request);
+    }
+    if (organization.authMode !== 'token_active') throw new AuthDeniedError();
+
     const bearer = bearerToken(request.headers.get('authorization'));
     if (bearer && this.options.personalTokens) {
       return this.options.personalTokens.authenticate(bearer, true);
@@ -36,6 +44,10 @@ export class AuthService implements AdminAuthenticationService {
     if (session && this.options.tokenSessions) {
       return this.options.tokenSessions.authenticate(session);
     }
+    throw new AuthDeniedError();
+  }
+
+  private async authenticateExternal(request: Request): Promise<AuthPrincipal> {
     for (const authenticator of this.options.authenticators ?? []) {
       const external = await authenticator.authenticate(request);
       if (!external) continue;
@@ -60,6 +72,8 @@ export class AuthService implements AdminAuthenticationService {
   }
 
   async loginWithPersonalToken(token: string): Promise<TokenLoginResult> {
+    const organization = await this.options.identity.getOrganization();
+    if (organization?.authMode !== 'token_active') throw new AuthDeniedError();
     if (!this.options.personalTokens || !this.options.tokenSessions) throw new AuthDeniedError();
     const principal = await this.options.personalTokens.authenticate(token, false);
     const record = await this.options.identity.getPersonalToken(principal.credentialId);

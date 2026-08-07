@@ -5,7 +5,7 @@ import { bodyLimit } from 'hono/body-limit';
 import { getCookie, setCookie } from 'hono/cookie';
 import * as v from 'valibot';
 
-import { renderAdminLogin, renderAdminPage } from './page.ts';
+import { renderAdminLogin, renderAdminPage, renderAuthRecoveryPage, renderAuthSetupPage } from './page.ts';
 import { createMemoryAdminApi } from './memory-api.ts';
 import { createRoutineAdminApi } from './routines-api.ts';
 import { createUsageAdminApi } from './usage-api.ts';
@@ -145,6 +145,7 @@ import { parseSkillSource, resolveSkillSource, SkillImportError } from '../confi
 import type { SettingsStore } from '../config/settings-store.ts';
 import {
   getConfigStore,
+  getIdentityStore,
   getMemoryStateStore,
   getRoutineStore,
   getSettingsStore,
@@ -161,6 +162,7 @@ import type { MemoryStateStore } from '../memory/types.ts';
 import type { RoutineStore } from '../routines/types.ts';
 import type { UsageStore } from '../usage/types.ts';
 import type { WorkStore } from '../work/types.ts';
+import type { AuthProviderConfig, IdentityStore } from '../identity/types.ts';
 import type { SlackStateStore } from '../slack/claim-store.ts';
 import {
   cancelOpenAiSubscriptionAuthorization,
@@ -218,7 +220,18 @@ import {
 import { constantTimeEquals } from './constant-time.ts';
 import { AuthDeniedError, setRequestPrincipal } from '../auth/service.ts';
 import { AuthorizationError, requirePermission } from '../auth/permissions.ts';
-import type { AdminAuthenticationService } from '../auth/types.ts';
+import { CloudflareAccessAuthenticator, verifyCloudflareAccessRecoveryAssertion } from '../auth/cloudflare-access.ts';
+import { AuthRateLimiter } from '../auth/rate-limit.ts';
+import { AuthRecoveryService } from '../auth/recovery.ts';
+import { AuthSetupService, validRecoveryToken } from '../auth/setup.ts';
+import type { AdminAuthenticationService, ExternalIdentity } from '../auth/types.ts';
+
+type AccessVerificationPurpose = 'activation' | 'recovery';
+type AccessAssertionVerifier = (
+  request: Request,
+  config: AuthProviderConfig,
+  purpose: AccessVerificationPurpose,
+) => Promise<ExternalIdentity>;
 
 interface AdminRoutesOptions {
   // Injection seam for tests/harnesses: any async ConfigStore serves the
@@ -236,6 +249,10 @@ interface AdminRoutesOptions {
   usageAdminUi?: boolean | undefined;
   adminToken?: string | undefined;
   authService?: AdminAuthenticationService | undefined;
+  identity?: IdentityStore | undefined;
+  recoveryToken?: string | undefined;
+  authRateLimiter?: AuthRateLimiter | undefined;
+  verifyAccessAssertion?: AccessAssertionVerifier | undefined;
   knownProviders?: ReadonlySet<string> | undefined;
   // Injection seam for the MCP test-connection route, mirroring how the skills
   // resolve route takes a resolver: tests pass a mock so no real network
@@ -294,6 +311,19 @@ interface AdminRoutesOptions {
 const ADMIN_COOKIE = 'flue_admin';
 const AUTH_SESSION_COOKIE = 'chickpea_session';
 const MAX_ADMIN_LOGIN_BODY_BYTES = 4_096;
+const MAX_AUTH_SETUP_BODY_BYTES = 8_192;
+
+const authSetupSchema = v.strictObject({
+  ownerEmail: v.pipe(v.string(), v.trim(), v.email(), v.maxLength(320)),
+  recoveryToken: v.pipe(v.string(), v.minLength(1), v.maxLength(512)),
+  issuer: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(1_024)),
+  audience: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(1_024)),
+});
+const authRecoverySchema = v.strictObject({
+  operation: v.picklist(['audience', 'owner_binding']),
+  recoveryToken: v.pipe(v.string(), v.minLength(1), v.maxLength(512)),
+  audience: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(1_024))),
+});
 
 const nonEmptyString = v.pipe(v.string(), v.minLength(1));
 const modelSpecifier = v.pipe(v.string(), v.regex(/^[^/]+\/.+$/));
@@ -756,6 +786,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   const app = new Hono();
   const tokenFromOptions = Object.hasOwn(options, 'adminToken');
   const store = (c: Context) => options.store ?? getConfigStore(c.env as PlatformEnv | undefined);
+  const identity = (c: Context) =>
+    options.identity ?? getIdentityStore(c.env as PlatformEnv | undefined);
   const settings = (c: Context) =>
     options.settings ?? getSettingsStore(c.env as PlatformEnv | undefined);
   const memory = (c: Context) =>
@@ -777,6 +809,27 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   };
   const adminToken = () =>
     tokenFromOptions ? options.adminToken : process.env.TAG_ADMIN_TOKEN;
+  const recoveryToken = (c: Context): string | undefined => {
+    if (Object.hasOwn(options, 'recoveryToken')) return options.recoveryToken;
+    const bound = (c.env as PlatformEnv | undefined)?.CHICKPEA_RECOVERY_TOKEN;
+    return typeof bound === 'string' ? bound : process.env.CHICKPEA_RECOVERY_TOKEN;
+  };
+  const authRateLimiter = (c: Context, token: string): AuthRateLimiter =>
+    options.authRateLimiter ?? new AuthRateLimiter(identity(c), { pepper: token });
+  const verifyAccessAssertion: AccessAssertionVerifier = options.verifyAccessAssertion ??
+    (async (request, config, purpose) => {
+      if (!config.issuer) throw new AuthDeniedError();
+      if (purpose === 'recovery') {
+        const assertion = request.headers.get('Cf-Access-Jwt-Assertion');
+        if (!assertion) throw new AuthDeniedError();
+        return verifyCloudflareAccessRecoveryAssertion(assertion, { issuer: config.issuer });
+      }
+      if (!config.audience) throw new AuthDeniedError();
+      return new CloudflareAccessAuthenticator({
+        issuer: config.issuer,
+        audience: config.audience,
+      }).authenticate(request);
+    });
   const modelProviders = () =>
     options.knownProviders
       ? listRuntimeModelProviders({ registeredProviders: options.knownProviders })
@@ -862,6 +915,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     maxSize: MAX_ADMIN_LOGIN_BODY_BYTES,
     onError: (c) =>
       c.html(renderAdminLogin({ invalidToken: true, returnTo: '/admin' }), 401),
+  });
+  const authSetupBodyLimit = bodyLimit({
+    maxSize: MAX_AUTH_SETUP_BODY_BYTES,
+    onError: (c) => c.json({ error: 'invalid_request' }, 413),
   });
 
   const adminGate = async (c: Context, next: Next) => {
@@ -959,6 +1016,146 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       secure: isHttps(c),
     });
   };
+
+  // Setup is reachable before an Access application exists. The recovery
+  // credential authorizes only this bounded state transition and is never
+  // exchanged for a browser session. Once configured, Cloudflare Access
+  // protects both /admin and /admin/* at the edge; Chickpea still verifies the
+  // signed assertion before it creates the first owner.
+  app.use('/admin/setup', authSetupBodyLimit);
+  app.use('/admin/setup/*', authSetupBodyLimit);
+  app.use('/admin/recovery', authSetupBodyLimit);
+
+  app.get('/admin/setup', async (c) => {
+    authResponseHeaders(c);
+    const token = recoveryToken(c);
+    if (!token) return c.notFound();
+    if (!isValidRecoveryConfiguration(token)) {
+      return c.json({ error: 'authentication_unavailable' }, 503);
+    }
+    const organization = await identity(c).getOrganization();
+    if (organization?.authMode === 'access_active') return c.redirect('/admin', 303);
+    if (organization && !['unconfigured', 'access_pending'].includes(organization.authMode)) {
+      return c.json({ error: 'authentication_unavailable' }, 409);
+    }
+    return c.html(renderAuthSetupPage({
+      state: organization?.authMode === 'access_pending' ? 'access_pending' : 'fresh',
+    }));
+  });
+
+  app.post('/admin/setup', async (c) => {
+    authResponseHeaders(c);
+    const token = recoveryToken(c);
+    if (!token) return c.notFound();
+    if (!isValidRecoveryConfiguration(token)) {
+      return c.json({ error: 'authentication_unavailable' }, 503);
+    }
+    const source = authSourceKey(c);
+    const limiter = authRateLimiter(c, token);
+    try {
+      await limiter.assertAllowed('setup', source);
+      if (!validAuthFormPost(c, requestOrigin(c))) throw new AuthDeniedError();
+      const form = v.safeParse(authSetupSchema, await readForm(c));
+      if (!form.success) throw new AuthDeniedError();
+      const setup = new AuthSetupService(identity(c), { recoveryToken: token });
+      await setup.beginAccessSetup({
+        recoveryToken: form.output.recoveryToken,
+        ownerEmail: form.output.ownerEmail,
+      });
+      await setup.configureAccess({
+        recoveryToken: form.output.recoveryToken,
+        issuer: form.output.issuer,
+        audience: form.output.audience,
+        canonicalAdminOrigin: requestOrigin(c),
+      });
+      await limiter.recordSuccess('setup', source);
+      return c.redirect('/admin/setup/verify', 303);
+    } catch {
+      await limiter.recordFailure('setup', source);
+      return c.html(renderAuthSetupPage({ state: 'fresh', error: true }), 401);
+    }
+  });
+
+  app.get('/admin/setup/verify', async (c) => {
+    authResponseHeaders(c);
+    const token = recoveryToken(c);
+    if (!token) return c.notFound();
+    if (!isValidRecoveryConfiguration(token)) {
+      return c.json({ error: 'authentication_unavailable' }, 503);
+    }
+    try {
+      const config = await identity(c).getAuthProviderConfig('cloudflare_access');
+      if (!config || config.state !== 'pending') throw new AuthDeniedError();
+      const external = await verifyAccessAssertion(c.req.raw, config, 'activation');
+      await new AuthSetupService(identity(c), { recoveryToken: token }).activateAccess(external);
+      return c.redirect('/admin', 303);
+    } catch {
+      return c.html(renderAuthSetupPage({ state: 'access_pending', error: true }), 401);
+    }
+  });
+
+  // Recovery is deliberately not a login path. It requires a valid assertion
+  // from the already configured issuer plus the offline recovery credential,
+  // and it can repair only the Access audience.
+  app.get('/admin/recovery', async (c) => {
+    authResponseHeaders(c);
+    const token = recoveryToken(c);
+    if (!token) return c.notFound();
+    if (!isValidRecoveryConfiguration(token)) {
+      return c.json({ error: 'authentication_unavailable' }, 503);
+    }
+    try {
+      const config = await identity(c).getAuthProviderConfig('cloudflare_access');
+      if (!config || config.state !== 'active') throw new AuthDeniedError();
+      await verifyAccessAssertion(c.req.raw, config, 'recovery');
+      return c.html(renderAuthRecoveryPage());
+    } catch {
+      return c.json({ error: 'unauthorized' }, 401);
+    }
+  });
+
+  app.post('/admin/recovery', async (c) => {
+    authResponseHeaders(c);
+    const token = recoveryToken(c);
+    if (!token) return c.notFound();
+    if (!isValidRecoveryConfiguration(token)) {
+      return c.json({ error: 'authentication_unavailable' }, 503);
+    }
+    const source = authSourceKey(c);
+    const limiter = authRateLimiter(c, token);
+    try {
+      await limiter.assertAllowed('recovery', source);
+      const organization = await identity(c).getOrganization();
+      if (!organization?.canonicalAdminOrigin ||
+          !validAuthFormPost(c, organization.canonicalAdminOrigin)) {
+        throw new AuthDeniedError();
+      }
+      const form = v.safeParse(authRecoverySchema, await readForm(c));
+      if (!form.success) throw new AuthDeniedError();
+      const config = await identity(c).getAuthProviderConfig('cloudflare_access');
+      if (!config || config.state !== 'active') throw new AuthDeniedError();
+      const external = await verifyAccessAssertion(c.req.raw, config, 'recovery');
+      const recovery = new AuthRecoveryService(identity(c), { recoveryToken: token });
+      if (form.output.operation === 'audience') {
+        if (!form.output.audience) throw new AuthDeniedError();
+        await recovery.repairAudience({
+          recoveryToken: form.output.recoveryToken,
+          identity: external,
+          audience: form.output.audience,
+        });
+      } else {
+        await recovery.replaceOwnerBinding({
+          recoveryToken: form.output.recoveryToken,
+          identity: external,
+        });
+      }
+      await limiter.recordSuccess('recovery', source);
+      return c.redirect('/admin', 303);
+    } catch {
+      await limiter.recordFailure('recovery', source);
+      return c.html(renderAuthRecoveryPage({ error: true }), 401);
+    }
+  });
 
   // CIMD is fetched by the provider, not an administrator's browser. It is
   // intentionally public and contains client policy only — never a client
@@ -3602,6 +3799,51 @@ function safeHttpsUrl(candidate: string | undefined): string | null {
   } catch {
     return null;
   }
+}
+
+function authResponseHeaders(c: Context): void {
+  c.header('Cache-Control', 'no-store');
+  c.header('Referrer-Policy', 'no-referrer');
+  c.header('X-Content-Type-Options', 'nosniff');
+}
+
+function isValidRecoveryConfiguration(token: string): boolean {
+  try {
+    validRecoveryToken(token);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function validAuthFormPost(c: Context, expectedOrigin: string): boolean {
+  if (c.req.method !== 'POST') return false;
+  let normalizedExpected: string;
+  let normalizedActual: string;
+  try {
+    normalizedExpected = new URL(expectedOrigin).origin;
+    normalizedActual = new URL(c.req.header('origin') ?? '').origin;
+  } catch {
+    return false;
+  }
+  if (normalizedActual !== normalizedExpected) return false;
+  const fetchSite = c.req.header('sec-fetch-site');
+  if (fetchSite && fetchSite !== 'same-origin' && fetchSite !== 'same-site') return false;
+  const mediaType = c.req.header('content-type')?.split(';', 1)[0]?.trim().toLowerCase();
+  if (mediaType !== 'application/x-www-form-urlencoded') return false;
+  const length = Number(c.req.header('content-length') ?? 0);
+  return Number.isFinite(length) && length >= 0 && length <= MAX_AUTH_SETUP_BODY_BYTES;
+}
+
+function authSourceKey(c: Context): string {
+  const cloudflareAddress = c.req.header('cf-connecting-ip')?.trim();
+  return cloudflareAddress || `local:${new URL(c.req.url).host}`;
+}
+
+async function readForm(c: Context): Promise<Record<string, string>> {
+  const raw = await c.req.text();
+  if (new TextEncoder().encode(raw).byteLength > MAX_AUTH_SETUP_BODY_BYTES) return {};
+  return Object.fromEntries(new URLSearchParams(raw));
 }
 
 // Per-isolate memo of the last origin we wrote to slack.publicUrl, so the

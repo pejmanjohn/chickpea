@@ -23,7 +23,7 @@ export function validateMutationProvenance(
   }
   const expected = canonicalOrigin(options.canonicalOrigin);
   const origin = request.headers.get('origin');
-  if (!origin || canonicalOrigin(origin) !== expected) {
+  if (!expected || !origin || canonicalOrigin(origin) !== expected) {
     return { ok: false, code: 'cross_origin_denied' };
   }
   const fetchSite = request.headers.get('sec-fetch-site');

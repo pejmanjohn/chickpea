@@ -7,9 +7,13 @@ import type { StateDb } from '../state/state-db.ts';
 import { identityError } from './errors.ts';
 import type {
   BindExternalIdentityInput,
+  ActivateAccessOwnerInput,
+  AuthProviderConfig,
+  AuthRateLimitState,
   BrowserSessionRecord,
   ClaimOwnerInput,
   ConsumeInvitationInput,
+  ConfigureAuthProviderInput,
   CreateBrowserSessionRecordInput,
   CreateInvitationInput,
   CreateOwnerClaimInput,
@@ -27,7 +31,9 @@ import type {
   OwnerClaim,
   PersonalTokenRecord,
   ResendInvitationInput,
+  ReplaceAccessOwnerBindingInput,
   UpdateMembershipInput,
+  UpdateOrganizationAuthInput,
   User,
 } from './types.ts';
 
@@ -121,6 +127,25 @@ interface BrowserSessionRow {
   created_at: number;
 }
 
+interface AuthProviderConfigRow {
+  auth_provider_config_id: string;
+  organization_id: string;
+  kind: string;
+  state: AuthProviderConfig['state'];
+  issuer: string | null;
+  audience: string | null;
+  admission_state: AuthProviderConfig['admissionState'];
+  created_at: number;
+  updated_at: number;
+}
+
+interface AuthRateLimitRow {
+  bucket: string;
+  key_hash: string;
+  window_start: number;
+  failures: number;
+}
+
 const OSS_ORGANIZATION_ID = 'org_oss';
 
 /**
@@ -153,6 +178,13 @@ export class IdentityStoreLogic {
         return { kind: 'owner_claim', ownerClaim: this.getOwnerClaim() ?? null };
       case 'claim_owner':
         return { kind: 'identity_resolution', resolution: this.claimOwner(request.input) };
+      case 'activate_access_owner':
+        return { kind: 'identity_resolution', resolution: this.activateAccessOwner(request.input) };
+      case 'replace_access_owner_binding':
+        return {
+          kind: 'identity_resolution',
+          resolution: this.replaceAccessOwnerBinding(request.input),
+        };
       case 'resolve_external_identity':
         return {
           kind: 'identity_resolution',
@@ -203,6 +235,34 @@ export class IdentityStoreLogic {
         return { kind: 'browser_sessions', browserSessions: this.findBrowserSessions(request.prefix) };
       case 'revoke_browser_session':
         return { kind: 'browser_session', browserSession: this.revokeBrowserSession(request.sessionId) };
+      case 'configure_auth_provider':
+        return { kind: 'auth_provider_config', config: this.configureAuthProvider(request.input) };
+      case 'get_auth_provider_config':
+        return { kind: 'auth_provider_config', config: this.getAuthProviderConfig(request.providerKind) ?? null };
+      case 'update_auth_provider_audience':
+        return {
+          kind: 'auth_provider_config',
+          config: this.updateAuthProviderAudience(
+            request.providerKind,
+            request.audience,
+            request.actorMembershipId,
+          ),
+        };
+      case 'update_organization_auth':
+        return { kind: 'organization', organization: this.updateOrganizationAuth(request.input) };
+      case 'get_auth_rate_limit':
+        return {
+          kind: 'auth_rate_limit',
+          state: this.getAuthRateLimit(request.bucket, request.keyHash) ?? null,
+        };
+      case 'record_auth_rate_failure':
+        return {
+          kind: 'auth_rate_limit',
+          state: this.recordAuthRateFailure(request.bucket, request.keyHash, request.windowStart),
+        };
+      case 'clear_auth_rate_limit':
+        this.clearAuthRateLimit(request.bucket, request.keyHash);
+        return { kind: 'ok' };
       case 'export_summary':
         return { kind: 'export_summary', summary: this.exportSummary() };
       case 'list_identity_audit_events':
@@ -330,6 +390,129 @@ export class IdentityStoreLogic {
         throw identityError('owner_already_claimed', 'The owner claim has already been consumed.');
       }
       this.appendAudit('identity.owner_claimed', ids.membership, at, ids.membership);
+    });
+    return this.requiredResolution(input.provider, input.issuer, input.subject, input.organizationId);
+  }
+
+  activateAccessOwner(input: ActivateAccessOwnerInput): IdentityResolution {
+    this.requireOrganization(input.organizationId);
+    const email = normalizeEmail(input.verifiedEmail);
+    validateExternalIdentity(input);
+    const issuer = strictText(input.issuer, 'issuer', 1_024);
+    const audience = strictText(input.audience, 'audience', 1_024);
+    const canonicalAdminOrigin = validOrigin(input.canonicalAdminOrigin);
+    const existing = this.resolveExternalIdentity(
+      input.provider, issuer, input.subject, input.organizationId,
+    );
+    const claim = this.getOwnerClaim();
+    if (!claim) throw identityError('owner_claim_missing', 'Owner setup has not been initialized.');
+    if (claim.status === 'claimed') {
+      if (existing?.binding.id === claim.bindingId && existing.membership.role === 'owner') return existing;
+      throw identityError('owner_already_claimed', 'The owner claim has already been consumed.');
+    }
+    if (claim.normalizedEmail !== email) {
+      throw identityError('owner_email_mismatch', 'The verified identity does not match the owner claim.');
+    }
+    if (existing) {
+      throw identityError('external_identity_conflict', 'The external identity is already bound.', {
+        bindingId: existing.binding.id,
+      });
+    }
+    const provider = this.getAuthProviderConfig(input.provider);
+    if (!provider || provider.state !== 'pending' || provider.issuer !== issuer || provider.audience !== audience) {
+      throw identityError('identity_invalid', 'Access provider configuration is not ready.');
+    }
+
+    const at = input.at ?? this.now();
+    const ids = { user: newId('user'), binding: newId('binding'), membership: newId('membership') };
+    this.db.transaction(() => {
+      this.insertIdentity(ids, input, email, 'owner', at);
+      if (this.db.run(
+        `UPDATE identity_owner_claims SET status = 'claimed', binding_id = ?, updated_at = ?
+         WHERE owner_claim_id = ? AND status = 'pending'`,
+        ids.binding, at, claim.id,
+      ).changes !== 1) {
+        throw identityError('owner_already_claimed', 'The owner claim has already been consumed.');
+      }
+      this.db.run(
+        `UPDATE identity_auth_provider_configs SET state = 'active', updated_at = ?
+         WHERE auth_provider_config_id = ? AND state = 'pending'`,
+        at, provider.id,
+      );
+      this.db.run(
+        `UPDATE identity_organizations
+         SET auth_mode = 'access_active', canonical_admin_origin = ?, updated_at = ?
+         WHERE organization_id = ?`,
+        canonicalAdminOrigin, at, input.organizationId,
+      );
+      this.appendAudit('identity.access_activated', ids.membership, at, ids.membership);
+    });
+    return this.requiredResolution(input.provider, issuer, input.subject, input.organizationId);
+  }
+
+  replaceAccessOwnerBinding(input: ReplaceAccessOwnerBindingInput): IdentityResolution {
+    const organization = this.requireOrganization(input.organizationId);
+    if (organization.authMode !== 'access_active') {
+      throw identityError('identity_invalid', 'Access authentication is not active.');
+    }
+    validateExternalIdentity(input);
+    const email = normalizeEmail(input.verifiedEmail);
+    const provider = this.getAuthProviderConfig(input.provider);
+    if (!provider || provider.state !== 'active' || provider.issuer !== input.issuer) {
+      throw identityError('identity_invalid', 'Access provider configuration is not active.');
+    }
+    const claim = this.getOwnerClaim();
+    if (!claim || claim.status !== 'claimed' || !claim.bindingId) {
+      throw identityError('owner_claim_missing', 'The active owner binding was not found.');
+    }
+    const currentRow = this.db.get(
+      'SELECT * FROM identity_external_bindings WHERE binding_id = ?',
+      claim.bindingId,
+    );
+    const current = currentRow
+      ? rowToBinding(currentRow as unknown as BindingRow)
+      : undefined;
+    if (!current || current.provider !== input.provider || current.issuer !== input.issuer ||
+        normalizeEmail(current.verifiedEmail) !== email) {
+      throw identityError('owner_email_mismatch', 'The verified identity does not match the owner.');
+    }
+    const membership = this.getMembershipForUser(current.userId, input.organizationId);
+    if (!membership || membership.role !== 'owner' || membership.status !== 'active') {
+      throw identityError('last_owner_required', 'An active owner binding is required.');
+    }
+    const existing = this.resolveExternalIdentity(
+      input.provider, input.issuer, input.subject, input.organizationId,
+    );
+    if (existing) {
+      if (existing.binding.id === current.id && existing.membership.id === membership.id) return existing;
+      throw identityError('external_identity_conflict', 'The external identity is already bound.');
+    }
+
+    const at = input.at ?? this.now();
+    const replacementId = newId('binding');
+    this.db.transaction(() => {
+      this.db.run(
+        `INSERT INTO identity_external_bindings (
+           binding_id, user_id, provider, issuer, subject, verified_email, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        replacementId,
+        current.userId,
+        input.provider,
+        input.issuer,
+        input.subject,
+        email,
+        at,
+        at,
+      );
+      if (this.db.run(
+        `UPDATE identity_owner_claims SET binding_id = ?, updated_at = ?
+         WHERE owner_claim_id = ? AND binding_id = ? AND status = 'claimed'`,
+        replacementId, at, claim.id, current.id,
+      ).changes !== 1) {
+        throw identityError('owner_already_claimed', 'The owner binding changed during recovery.');
+      }
+      this.db.run('DELETE FROM identity_external_bindings WHERE binding_id = ?', current.id);
+      this.appendAudit('identity.access_owner_binding_replaced', membership.id, at, membership.id);
     });
     return this.requiredResolution(input.provider, input.issuer, input.subject, input.organizationId);
   }
@@ -728,6 +911,122 @@ export class IdentityStoreLogic {
     return this.requiredBrowserSession(sessionId);
   }
 
+  configureAuthProvider(input: ConfigureAuthProviderInput): AuthProviderConfig {
+    this.requireOrganization(input.organizationId);
+    const kind = nonEmpty(input.kind, 'kind');
+    const issuer = input.issuer === undefined || input.issuer === null
+      ? null : strictText(input.issuer, 'issuer', 1_024);
+    const audience = input.audience === undefined || input.audience === null
+      ? null : strictText(input.audience, 'audience', 1_024);
+    const existing = this.getAuthProviderConfig(kind);
+    const at = this.now();
+    if (existing) {
+      this.db.run(
+        `UPDATE identity_auth_provider_configs
+         SET state = ?, issuer = ?, audience = ?, admission_state = ?, updated_at = ?
+         WHERE auth_provider_config_id = ?`,
+        input.state, issuer, audience, input.admissionState ?? existing.admissionState,
+        at, existing.id,
+      );
+      const updated = this.requiredAuthProviderConfig(kind);
+      this.appendAudit('identity.auth_provider_configured', updated.id, at, null, {
+        state: updated.state,
+      });
+      return updated;
+    }
+    const id = newId('auth_provider');
+    this.db.run(
+      `INSERT INTO identity_auth_provider_configs (
+         auth_provider_config_id, organization_id, kind, state, issuer, audience,
+         admission_state, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      id, input.organizationId, kind, input.state, issuer, audience,
+      input.admissionState ?? null, at, at,
+    );
+    this.appendAudit('identity.auth_provider_configured', id, at, null, { state: input.state });
+    return this.requiredAuthProviderConfig(kind);
+  }
+
+  getAuthProviderConfig(kind: string): AuthProviderConfig | undefined {
+    const row = this.db.get(
+      'SELECT * FROM identity_auth_provider_configs WHERE organization_id = ? AND kind = ?',
+      OSS_ORGANIZATION_ID, kind,
+    );
+    return row ? rowToAuthProviderConfig(row as unknown as AuthProviderConfigRow) : undefined;
+  }
+
+  updateAuthProviderAudience(
+    kind: string,
+    audience: string,
+    actorMembershipId?: string,
+  ): AuthProviderConfig {
+    const current = this.requiredAuthProviderConfig(kind);
+    if (current.state !== 'active') {
+      throw identityError('identity_invalid', 'Authentication provider is not active.');
+    }
+    const at = this.now();
+    this.db.run(
+      `UPDATE identity_auth_provider_configs SET audience = ?, updated_at = ?
+       WHERE auth_provider_config_id = ?`,
+      strictText(audience, 'audience', 1_024), at, current.id,
+    );
+    this.appendAudit('identity.auth_provider_audience_repaired', current.id, at, actorMembershipId ?? null);
+    return this.requiredAuthProviderConfig(kind);
+  }
+
+  updateOrganizationAuth(input: UpdateOrganizationAuthInput): Organization {
+    this.requireOrganization(input.organizationId);
+    const origin = input.canonicalAdminOrigin === undefined
+      ? this.requiredOrganization().canonicalAdminOrigin
+      : input.canonicalAdminOrigin === null ? null : validOrigin(input.canonicalAdminOrigin);
+    const at = this.now();
+    this.db.run(
+      `UPDATE identity_organizations SET auth_mode = ?, canonical_admin_origin = ?, updated_at = ?
+       WHERE organization_id = ?`,
+      input.authMode, origin, at, input.organizationId,
+    );
+    this.appendAudit('identity.organization_auth_updated', input.organizationId, at, null, {
+      mode: input.authMode,
+    });
+    return this.requiredOrganization();
+  }
+
+  getAuthRateLimit(bucket: string, keyHash: string): AuthRateLimitState | undefined {
+    const row = this.db.get(
+      'SELECT * FROM identity_auth_rate_limits WHERE bucket = ? AND key_hash = ?',
+      nonEmpty(bucket, 'bucket'), credentialHash(keyHash),
+    );
+    return row ? rowToAuthRateLimit(row as unknown as AuthRateLimitRow) : undefined;
+  }
+
+  recordAuthRateFailure(bucket: string, keyHash: string, windowStart: number): AuthRateLimitState {
+    const safeBucket = nonEmpty(bucket, 'bucket');
+    const safeHash = credentialHash(keyHash);
+    if (!Number.isSafeInteger(windowStart) || windowStart < 0) {
+      throw identityError('identity_invalid', 'Rate-limit window is invalid.');
+    }
+    this.db.run(
+      `INSERT INTO identity_auth_rate_limits (bucket, key_hash, window_start, failures)
+       VALUES (?, ?, ?, 1)
+       ON CONFLICT (bucket, key_hash) DO UPDATE SET
+         failures = CASE
+           WHEN identity_auth_rate_limits.window_start = excluded.window_start
+             THEN identity_auth_rate_limits.failures + 1
+           ELSE 1
+         END,
+         window_start = excluded.window_start`,
+      safeBucket, safeHash, windowStart,
+    );
+    return this.getAuthRateLimit(safeBucket, safeHash)!;
+  }
+
+  clearAuthRateLimit(bucket: string, keyHash: string): void {
+    this.db.run(
+      'DELETE FROM identity_auth_rate_limits WHERE bucket = ? AND key_hash = ?',
+      nonEmpty(bucket, 'bucket'), credentialHash(keyHash),
+    );
+  }
+
   exportSummary(): IdentityExportSummary {
     const users = this.db.all('SELECT * FROM identity_users ORDER BY created_at, user_id')
       .map((row) => rowToUser(row as unknown as UserRow));
@@ -878,6 +1177,29 @@ export class IdentityStoreLogic {
       `CREATE INDEX IF NOT EXISTS identity_browser_sessions_prefix_idx
        ON identity_browser_sessions (prefix, expires_at)`,
     );
+    this.db.exec(
+      `CREATE TABLE IF NOT EXISTS identity_auth_provider_configs (
+        auth_provider_config_id TEXT PRIMARY KEY,
+        organization_id TEXT NOT NULL REFERENCES identity_organizations(organization_id),
+        kind TEXT NOT NULL,
+        state TEXT NOT NULL,
+        issuer TEXT,
+        audience TEXT,
+        admission_state TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        UNIQUE (organization_id, kind)
+      )`,
+    );
+    this.db.exec(
+      `CREATE TABLE IF NOT EXISTS identity_auth_rate_limits (
+        bucket TEXT NOT NULL,
+        key_hash TEXT NOT NULL,
+        window_start INTEGER NOT NULL,
+        failures INTEGER NOT NULL,
+        PRIMARY KEY (bucket, key_hash)
+      )`,
+    );
   }
 
   private insertIdentity(
@@ -1002,6 +1324,12 @@ export class IdentityStoreLogic {
     return rowToBrowserSession(row as unknown as BrowserSessionRow);
   }
 
+  private requiredAuthProviderConfig(kind: string): AuthProviderConfig {
+    const config = this.getAuthProviderConfig(kind);
+    if (!config) throw identityError('identity_invalid', 'Authentication provider was not found.');
+    return config;
+  }
+
   private requiredResolution(
     provider: string,
     issuer: string,
@@ -1030,6 +1358,10 @@ export class SqliteIdentityStore implements IdentityStore {
   async createOwnerClaim(input: CreateOwnerClaimInput) { return this.logic.createOwnerClaim(input); }
   async getOwnerClaim() { return this.logic.getOwnerClaim(); }
   async claimOwner(input: ClaimOwnerInput) { return this.logic.claimOwner(input); }
+  async activateAccessOwner(input: ActivateAccessOwnerInput) { return this.logic.activateAccessOwner(input); }
+  async replaceAccessOwnerBinding(input: ReplaceAccessOwnerBindingInput) {
+    return this.logic.replaceAccessOwnerBinding(input);
+  }
   async resolveExternalIdentity(provider: string, issuer: string, subject: string, organizationId?: string) {
     return this.logic.resolveExternalIdentity(provider, issuer, subject, organizationId);
   }
@@ -1053,6 +1385,23 @@ export class SqliteIdentityStore implements IdentityStore {
   async createBrowserSession(input: CreateBrowserSessionRecordInput) { return this.logic.createBrowserSession(input); }
   async findBrowserSessions(prefix: string) { return this.logic.findBrowserSessions(prefix); }
   async revokeBrowserSession(sessionId: string) { return this.logic.revokeBrowserSession(sessionId); }
+  async configureAuthProvider(input: ConfigureAuthProviderInput) { return this.logic.configureAuthProvider(input); }
+  async getAuthProviderConfig(kind: string) { return this.logic.getAuthProviderConfig(kind); }
+  async updateAuthProviderAudience(kind: string, audience: string, actorMembershipId?: string) {
+    return this.logic.updateAuthProviderAudience(kind, audience, actorMembershipId);
+  }
+  async updateOrganizationAuth(input: UpdateOrganizationAuthInput) {
+    return this.logic.updateOrganizationAuth(input);
+  }
+  async getAuthRateLimit(bucket: string, keyHash: string) {
+    return this.logic.getAuthRateLimit(bucket, keyHash);
+  }
+  async recordAuthRateFailure(bucket: string, keyHash: string, windowStart: number) {
+    return this.logic.recordAuthRateFailure(bucket, keyHash, windowStart);
+  }
+  async clearAuthRateLimit(bucket: string, keyHash: string) {
+    this.logic.clearAuthRateLimit(bucket, keyHash);
+  }
   async exportSummary() { return this.logic.exportSummary(); }
   async listAuditEvents(limit?: number) { return this.logic.listAuditEvents(limit); }
   close(): void { this.db.close(); }
@@ -1092,6 +1441,32 @@ function credentialPrefix(value: string): string {
     throw identityError('identity_invalid', 'Credential prefix is invalid.');
   }
   return prefix;
+}
+
+function credentialHash(value: string): string {
+  if (!/^[a-f0-9]{64}$/.test(value)) {
+    throw identityError('identity_invalid', 'Credential digest is invalid.');
+  }
+  return value;
+}
+
+function strictText(value: string, field: string, max: number): string {
+  const result = value.trim();
+  if (!result || result.length > max || /[\u0000-\u001f\u007f]/.test(result)) {
+    throw identityError('identity_invalid', `${field} is invalid.`);
+  }
+  return result;
+}
+
+function validOrigin(value: string): string {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== 'https:' || url.username || url.password || url.pathname !== '/' ||
+        url.search || url.hash) throw new Error('invalid');
+    return url.origin;
+  } catch {
+    throw identityError('identity_invalid', 'Canonical Admin origin is invalid.');
+  }
 }
 
 function newId(prefix: string): string {
@@ -1197,6 +1572,29 @@ function rowToBrowserSession(row: BrowserSessionRow): BrowserSessionRecord {
     lastSeenAt: row.last_seen_at,
     revokedAt: row.revoked_at,
     createdAt: row.created_at,
+  };
+}
+
+function rowToAuthProviderConfig(row: AuthProviderConfigRow): AuthProviderConfig {
+  return {
+    id: row.auth_provider_config_id,
+    organizationId: row.organization_id,
+    kind: row.kind,
+    state: row.state,
+    issuer: row.issuer,
+    audience: row.audience,
+    admissionState: row.admission_state,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function rowToAuthRateLimit(row: AuthRateLimitRow): AuthRateLimitState {
+  return {
+    bucket: row.bucket,
+    keyHash: row.key_hash,
+    windowStart: row.window_start,
+    failures: row.failures,
   };
 }
 

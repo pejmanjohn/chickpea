@@ -96,6 +96,25 @@ export interface BrowserSessionRecord {
   createdAt: number;
 }
 
+export interface AuthProviderConfig {
+  id: string;
+  organizationId: string;
+  kind: string;
+  state: 'pending' | 'active' | 'disabled';
+  issuer: string | null;
+  audience: string | null;
+  admissionState: 'action_required' | 'admin_confirmed' | 'assertion_observed' | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface AuthRateLimitState {
+  bucket: string;
+  keyHash: string;
+  windowStart: number;
+  failures: number;
+}
+
 export interface IdentityResolution {
   user: User;
   binding: ExternalIdentityBinding;
@@ -122,6 +141,28 @@ export interface BindExternalIdentityInput {
 }
 
 export type ClaimOwnerInput = BindExternalIdentityInput;
+
+export interface ConfigureAuthProviderInput {
+  organizationId: string;
+  kind: string;
+  state: AuthProviderConfig['state'];
+  issuer?: string | null;
+  audience?: string | null;
+  admissionState?: AuthProviderConfig['admissionState'];
+}
+
+export interface UpdateOrganizationAuthInput {
+  organizationId: string;
+  authMode: AuthMode;
+  canonicalAdminOrigin?: string | null;
+}
+
+export interface ActivateAccessOwnerInput extends ClaimOwnerInput {
+  audience: string;
+  canonicalAdminOrigin: string;
+}
+
+export interface ReplaceAccessOwnerBindingInput extends BindExternalIdentityInput {}
 
 export interface UpdateMembershipInput {
   membershipId: string;
@@ -188,6 +229,8 @@ export interface IdentityStore {
   createOwnerClaim(input: CreateOwnerClaimInput): Promise<OwnerClaim>;
   getOwnerClaim(): Promise<OwnerClaim | undefined>;
   claimOwner(input: ClaimOwnerInput): Promise<IdentityResolution>;
+  activateAccessOwner(input: ActivateAccessOwnerInput): Promise<IdentityResolution>;
+  replaceAccessOwnerBinding(input: ReplaceAccessOwnerBindingInput): Promise<IdentityResolution>;
   resolveExternalIdentity(
     provider: string,
     issuer: string,
@@ -212,6 +255,21 @@ export interface IdentityStore {
   createBrowserSession(input: CreateBrowserSessionRecordInput): Promise<BrowserSessionRecord>;
   findBrowserSessions(prefix: string): Promise<BrowserSessionRecord[]>;
   revokeBrowserSession(sessionId: string): Promise<BrowserSessionRecord>;
+  configureAuthProvider(input: ConfigureAuthProviderInput): Promise<AuthProviderConfig>;
+  getAuthProviderConfig(kind: string): Promise<AuthProviderConfig | undefined>;
+  updateAuthProviderAudience(
+    kind: string,
+    audience: string,
+    actorMembershipId?: string,
+  ): Promise<AuthProviderConfig>;
+  updateOrganizationAuth(input: UpdateOrganizationAuthInput): Promise<Organization>;
+  getAuthRateLimit(bucket: string, keyHash: string): Promise<AuthRateLimitState | undefined>;
+  recordAuthRateFailure(
+    bucket: string,
+    keyHash: string,
+    windowStart: number,
+  ): Promise<AuthRateLimitState>;
+  clearAuthRateLimit(bucket: string, keyHash: string): Promise<void>;
   exportSummary(): Promise<IdentityExportSummary>;
   listAuditEvents(limit?: number): Promise<AuditEvent[]>;
 }
@@ -222,6 +280,8 @@ export type IdentityRpcRequest =
   | { kind: 'create_owner_claim'; input: CreateOwnerClaimInput }
   | { kind: 'get_owner_claim' }
   | { kind: 'claim_owner'; input: ClaimOwnerInput }
+  | { kind: 'activate_access_owner'; input: ActivateAccessOwnerInput }
+  | { kind: 'replace_access_owner_binding'; input: ReplaceAccessOwnerBindingInput }
   | {
       kind: 'resolve_external_identity';
       provider: string;
@@ -247,6 +307,18 @@ export type IdentityRpcRequest =
   | { kind: 'create_browser_session'; input: CreateBrowserSessionRecordInput }
   | { kind: 'find_browser_sessions'; prefix: string }
   | { kind: 'revoke_browser_session'; sessionId: string }
+  | { kind: 'configure_auth_provider'; input: ConfigureAuthProviderInput }
+  | { kind: 'get_auth_provider_config'; providerKind: string }
+  | {
+      kind: 'update_auth_provider_audience';
+      providerKind: string;
+      audience: string;
+      actorMembershipId?: string;
+    }
+  | { kind: 'update_organization_auth'; input: UpdateOrganizationAuthInput }
+  | { kind: 'get_auth_rate_limit'; bucket: string; keyHash: string }
+  | { kind: 'record_auth_rate_failure'; bucket: string; keyHash: string; windowStart: number }
+  | { kind: 'clear_auth_rate_limit'; bucket: string; keyHash: string }
   | { kind: 'export_summary' }
   | { kind: 'list_identity_audit_events'; limit?: number };
 
@@ -264,5 +336,8 @@ export type IdentityRpcResponse =
   | { kind: 'personal_tokens'; personalTokens: PersonalTokenRecord[] }
   | { kind: 'browser_session'; browserSession: BrowserSessionRecord }
   | { kind: 'browser_sessions'; browserSessions: BrowserSessionRecord[] }
+  | { kind: 'auth_provider_config'; config: AuthProviderConfig | null }
+  | { kind: 'auth_rate_limit'; state: AuthRateLimitState | null }
+  | { kind: 'ok' }
   | { kind: 'export_summary'; summary: IdentityExportSummary }
   | { kind: 'audit_events'; events: AuditEvent[] };

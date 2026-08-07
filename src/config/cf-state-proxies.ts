@@ -8,7 +8,9 @@ import type { AgentSnapshot, ChannelAssignment, CustomAgentConfig } from './type
 import { IdentityStateError } from '../identity/errors.ts';
 import type {
   ClaimOwnerInput,
+  ActivateAccessOwnerInput,
   ConsumeInvitationInput,
+  ConfigureAuthProviderInput,
   CreateBrowserSessionRecordInput,
   CreateInvitationInput,
   CreateOwnerClaimInput,
@@ -18,7 +20,9 @@ import type {
   IdentityRpcResponse,
   IdentityStore,
   ResendInvitationInput,
+  ReplaceAccessOwnerBindingInput,
   UpdateMembershipInput,
+  UpdateOrganizationAuthInput,
 } from '../identity/types.ts';
 import type {
   SlackCanonicalAdmissionInput,
@@ -246,6 +250,16 @@ export class CfIdentityStore implements IdentityStore {
     if (response.kind !== 'identity_resolution' || !response.resolution) throw unexpectedIdentityResponse();
     return response.resolution;
   }
+  async activateAccessOwner(input: ActivateAccessOwnerInput) {
+    const response = await this.execute({ kind: 'activate_access_owner', input });
+    if (response.kind !== 'identity_resolution' || !response.resolution) throw unexpectedIdentityResponse();
+    return response.resolution;
+  }
+  async replaceAccessOwnerBinding(input: ReplaceAccessOwnerBindingInput) {
+    const response = await this.execute({ kind: 'replace_access_owner_binding', input });
+    if (response.kind !== 'identity_resolution' || !response.resolution) throw unexpectedIdentityResponse();
+    return response.resolution;
+  }
   async resolveExternalIdentity(provider: string, issuer: string, subject: string, organizationId?: string) {
     const response = await this.execute({
       kind: 'resolve_external_identity', provider, issuer, subject,
@@ -346,6 +360,43 @@ export class CfIdentityStore implements IdentityStore {
     const response = await this.execute({ kind: 'revoke_browser_session', sessionId });
     if (response.kind !== 'browser_session') throw unexpectedIdentityResponse();
     return response.browserSession;
+  }
+  async configureAuthProvider(input: ConfigureAuthProviderInput) {
+    const response = await this.execute({ kind: 'configure_auth_provider', input });
+    if (response.kind !== 'auth_provider_config' || !response.config) throw unexpectedIdentityResponse();
+    return response.config;
+  }
+  async getAuthProviderConfig(providerKind: string) {
+    const response = await this.execute({ kind: 'get_auth_provider_config', providerKind });
+    if (response.kind !== 'auth_provider_config') throw unexpectedIdentityResponse();
+    return orUndefined(response.config);
+  }
+  async updateAuthProviderAudience(providerKind: string, audience: string, actorMembershipId?: string) {
+    const response = await this.execute({
+      kind: 'update_auth_provider_audience', providerKind, audience,
+      ...(actorMembershipId === undefined ? {} : { actorMembershipId }),
+    });
+    if (response.kind !== 'auth_provider_config' || !response.config) throw unexpectedIdentityResponse();
+    return response.config;
+  }
+  async updateOrganizationAuth(input: UpdateOrganizationAuthInput) {
+    const response = await this.execute({ kind: 'update_organization_auth', input });
+    if (response.kind !== 'organization' || !response.organization) throw unexpectedIdentityResponse();
+    return response.organization;
+  }
+  async getAuthRateLimit(bucket: string, keyHash: string) {
+    const response = await this.execute({ kind: 'get_auth_rate_limit', bucket, keyHash });
+    if (response.kind !== 'auth_rate_limit') throw unexpectedIdentityResponse();
+    return orUndefined(response.state);
+  }
+  async recordAuthRateFailure(bucket: string, keyHash: string, windowStart: number) {
+    const response = await this.execute({ kind: 'record_auth_rate_failure', bucket, keyHash, windowStart });
+    if (response.kind !== 'auth_rate_limit' || !response.state) throw unexpectedIdentityResponse();
+    return response.state;
+  }
+  async clearAuthRateLimit(bucket: string, keyHash: string) {
+    const response = await this.execute({ kind: 'clear_auth_rate_limit', bucket, keyHash });
+    if (response.kind !== 'ok') throw unexpectedIdentityResponse();
   }
   async exportSummary() {
     const response = await this.execute({ kind: 'export_summary' });
