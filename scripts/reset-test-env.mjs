@@ -25,7 +25,7 @@
  *
  *   5. Fresh install: click Deploy to Cloudflare, set
  *      CHICKPEA_RECOVERY_TOKEN (openssl rand -hex 32), open /admin/setup,
- *      configure the path-scoped Access application, verify the owner, and
+ *      configure the path-scoped authentication perimeter once, verify the owner, and
  *      follow the Slack manifest deep-link to connect a fresh app.
  *
  * Usage:
@@ -63,7 +63,7 @@ console.log(`2. Cloudflare worker:         ${worker ? `delete "${worker}"` : '(p
 console.log('3. Slack app:                 delete at https://api.slack.com/apps  (MANUAL — no API)');
 console.log(`4. Local dev state:           remove ${localTargets.join(', ')}`);
 console.log(`5. Fresh install:             ${DEPLOY_URL}`);
-console.log('   Onboarding:                /admin/setup → Access → Slack');
+console.log('   Onboarding:                /admin/setup → verified email → Slack');
 console.log('─'.repeat(52));
 
 if (!apply) {

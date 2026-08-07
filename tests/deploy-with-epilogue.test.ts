@@ -81,7 +81,7 @@ test('successful deploy hands a fresh install to recovery-backed Access setup', 
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /https:\/\/chickpea\.example\.workers\.dev\/admin\/setup/);
   assert.match(result.stdout, /CHICKPEA_RECOVERY_TOKEN once/);
-  assert.match(result.stdout, /protect both \/admin and \/admin\/\*/);
+  assert.match(result.stdout, /verified-email sign-in once for both \/admin and \/admin\/\*/);
   assert.match(result.stdout, /not an Admin login/);
   assert.doesNotMatch(result.stdout, /Sign in with the TAG_ADMIN_TOKEN/);
 });

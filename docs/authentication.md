@@ -2,13 +2,13 @@
 
 Chickpea deliberately separates **who signed in** from **what that person may do**.
 
-## Cloudflare one-click installs
+## Cloudflare deployments
 
-Cloudflare Access is the default authenticator. The one-click deploy still puts the Worker, Durable Objects, and credentials in your Cloudflare account; Chickpea does not become a permanent OAuth or deployment intermediary.
+Cloudflare Access is the default authenticator. The intended consumer installer creates the authentication perimeter during deployment; it does not make Chickpea a permanent OAuth or runtime intermediary. The standard Cloudflare Deploy button and CLI remain the advanced/manual fallback and currently require this one-time setup:
 
 1. Cloudflare deploys the source and prompts for `CHICKPEA_RECOVERY_TOKEN`.
 2. `/admin/setup` uses that offline credential only to create the pending owner claim and save the expected Access issuer, audience, and Admin origin.
-3. You create or reuse a Zero Trust team and protect exactly `<origin>/admin` and `<origin>/admin/*` in one Self-hosted application.
+3. You create or reuse a Zero Trust organization, enable a dedicated verified-email login method, and protect exactly `<origin>/admin` and `<origin>/admin/*` in one Self-hosted application. Its authentication-only policy is configured once and does not enumerate Chickpea members.
 4. `/admin/setup/verify` must receive a cryptographically valid `Cf-Access-Jwt-Assertion`. Chickpea verifies its signature, exact issuer, audience, expiry, subject, and email before activating the owner.
 5. Later requests repeat both gates: Access must authenticate the immutable external subject, and Chickpea must resolve it to an active membership with sufficient permissions.
 
@@ -22,14 +22,13 @@ Do not protect the whole Worker hostname. `/channels/slack/events`, Slack intera
 
 Suspending or removing a membership takes effect on the next Chickpea request even if Cloudflare still considers the Access session valid. The final active owner cannot be demoted, suspended, or removed.
 
+The authentication-only perimeter deliberately allows any person who can verify an email to reach Chickpea's sign-in boundary. An unknown identity receives the same denial, creates no user or membership, and can read no product data. Only a matching invitation or existing active membership grants Chickpea authority.
+
 ## Inviting teammates
 
-An invitation has two intentionally separate gates:
+An owner or admin creates an exact-email Chickpea invitation with a role. The seven-day link carries its show-once secret only in the URL fragment. A public, no-store `/join` page moves that value into same-tab session storage, removes it from the address bar, then sends the browser through the configured sign-in perimeter. The protected join page clears the stored secret before posting it to Chickpea.
 
-1. **Chickpea invitation:** an owner or admin creates an exact-email invitation with a role. The seven-day link contains a show-once secret in the URL fragment, which the browser removes from history before POSTing. Resend rotates the secret; revoke and expiry fail closed.
-2. **Access admission:** an administrator adds the same exact email to the Access application's Allow policy. If using email codes, first enable One-time PIN under Zero Trust authentication login methods.
-
-“Access marked configured” is an administrator note, not proof. Only a valid signed assertion changes the invitation to “Access observed.” The assertion email must exactly match the invitation, then Chickpea binds the stable `(provider, issuer, subject)` identity rather than treating email as the permanent key.
+The signed assertion email must exactly match the invitation. Chickpea then consumes the secret atomically and binds the stable `(provider, issuer, subject)` identity rather than treating email as the permanent key. Resend rotates the secret; revoke, expiry, a different verified email, and replay all fail closed. No invitation, suspension, removal, resend, or role change edits Cloudflare.
 
 ## Token mode for manual or Node installs
 

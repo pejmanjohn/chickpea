@@ -11466,6 +11466,7 @@ code { background:#f8f1df; border-radius:6px; padding:2px 5px; }
 <main>
   <ol class="progress" aria-label="Setup progress"><li class="done"><span class="sr-only">Deploy complete</span></li><li class="${options.state === 'fresh' ? 'current' : 'done'}"><span class="sr-only">Access configuration</span></li><li class="${options.state === 'access_pending' ? 'current' : ''}"><span class="sr-only">Identity verification</span></li><li><span class="sr-only">Slack setup</span></li></ol>
   <section class="card" aria-labelledby="setup-heading">
+    <p class="small"><strong>Advanced manual setup</strong></p>
     <h1 id="setup-heading">${heading}</h1>
     <p>Cloudflare Access signs people in. Chickpea keeps its own members and roles, so changing a role or suspending a person takes effect on their next Chickpea request.</p>
     ${error}
@@ -11475,8 +11476,8 @@ code { background:#f8f1df; border-radius:6px; padding:2px 5px; }
       <button class="path" type="button" data-path="new" aria-pressed="true"><h2>Create Zero Trust organization</h2><p>Start here if this account has never used Access.</p></button>
       <button class="path" type="button" data-path="existing" aria-pressed="false"><h2>Use an existing Zero Trust organization</h2><p>Reuse your established team name and identity providers.</p></button>
     </div>
-    <section class="guide active" data-guide="new"><strong>New to Zero Trust</strong><ol><li>Open the Zero Trust dashboard and create your team name.</li><li>Keep the Cloudflare account identity provider, or enable email one-time PIN for teammates.</li><li>Create a Self-hosted Access application using the two Admin destinations below.</li></ol></section>
-    <section class="guide" data-guide="existing"><strong>Existing Zero Trust team</strong><ol><li>Open Access → Applications and create one Self-hosted application.</li><li>Reuse your identity provider and add an exact-email Allow policy for the owner.</li><li>Use the two Admin destinations below; do not protect the whole hostname.</li></ol></section>
+    <section class="guide active" data-guide="new"><strong>New to Zero Trust</strong><ol><li>Open the Zero Trust dashboard and activate the Free plan if Cloudflare asks.</li><li>Enable a dedicated verified-email login method, such as email one-time PIN.</li><li>Create one Self-hosted application for the two Admin destinations and one authentication-only policy for that login method.</li></ol></section>
+    <section class="guide" data-guide="existing"><strong>Existing Zero Trust team</strong><ol><li>Create a separately named Chickpea verified-email login method and Self-hosted application.</li><li>Attach one authentication-only policy for that login method; do not enumerate Chickpea members.</li><li>Use the two Admin destinations below and leave unrelated applications, policies, and providers unchanged.</li></ol></section>
     <a class="external" href="https://one.dash.cloudflare.com/" target="_blank" rel="noopener noreferrer">Open Cloudflare Zero Trust ↗</a>
     <h2>Protect only Admin</h2>
     <p>Configure both destinations in one Access application. Slack events and OAuth callbacks must remain public.</p>
@@ -11484,7 +11485,7 @@ code { background:#f8f1df; border-radius:6px; padding:2px 5px; }
       <div class="copy-row"><span class="copy-value" data-copy-value>${origin}/admin</span><button class="secondary" type="button" data-copy="${origin}/admin">Copy</button></div>
       <div class="copy-row"><span class="copy-value" data-copy-value>${origin}/admin/*</span><button class="secondary" type="button" data-copy="${origin}/admin/*">Copy</button></div>
     </div>
-    <p class="small">For teammate email codes, enable One-time PIN under Settings → Authentication → Login methods, then add each invited address to the Access Allow policy.</p>
+    <p class="small">Configure this perimeter once. Anyone who verifies an email may reach Chickpea's uniform sign-in denial, but only an existing membership or exact-email invitation grants access. Later teammate changes happen only in Chickpea.</p>
     <h2>Save the Access values</h2>
     <p>Copy the team issuer and application audience from Cloudflare. Saving does not activate the owner; the next step still requires a signed Access assertion.</p>
     <form method="post" action="/admin/setup">

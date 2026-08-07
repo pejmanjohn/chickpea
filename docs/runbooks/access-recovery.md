@@ -6,7 +6,7 @@ This runbook repairs authentication without turning the offline recovery credent
 
 1. Open Cloudflare Zero Trust from the same account that owns the Worker.
 2. Confirm the Self-hosted Access application still covers both `<origin>/admin` and `<origin>/admin/*`.
-3. Confirm the owner is admitted by an Allow policy and the expected identity provider is enabled.
+3. Confirm the application's authentication-only policy and dedicated verified-email login method are enabled. Chickpea membership, not an email allowlist here, authorizes the owner.
 4. Test the Access login. If Cloudflare blocks the request before it reaches Chickpea, repair that edge policy first.
 
 Slack and OAuth callbacks must remain outside the Access application. Do not expand the application to the entire Worker hostname as a recovery shortcut.
@@ -34,7 +34,7 @@ Use this only when the same owner now has a different immutable Access subjectâ€
 
 ## Complete edge lockout
 
-Chickpea cannot receive `/admin/recovery` while Access denies every request. Use the Cloudflare dashboard owner account to restore an Allow policy or identity provider. If the application was deleted, recreate it with both Admin destinations and then perform the audience repair above. Do not add `TAG_ADMIN_TOKEN`: active Access mode never falls back to the legacy shared credential.
+Chickpea cannot receive `/admin/recovery` while Access denies every request. Use the Cloudflare dashboard owner account to restore the authentication-only policy or dedicated email login method. If the application was deleted, recreate it with both Admin destinations and then perform the audience repair above. Do not add `TAG_ADMIN_TOKEN`: active Access mode never falls back to the legacy shared credential.
 
 ## Token-mode recovery
 

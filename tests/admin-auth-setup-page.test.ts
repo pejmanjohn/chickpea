@@ -10,8 +10,11 @@ test('Access setup page covers new and existing Zero Trust teams accessibly', ()
   });
   assert.match(html, /Create Zero Trust organization/i);
   assert.match(html, /existing Zero Trust organization/i);
-  assert.match(html, /Cloudflare account identity provider/i);
+  assert.match(html, /Advanced manual setup/i);
   assert.match(html, /one-time PIN/i);
+  assert.match(html, /authentication-only policy/i);
+  assert.match(html, /Later teammate changes happen only in Chickpea/i);
+  assert.doesNotMatch(html, /add each invited address|exact-email Allow policy/i);
   assert.match(html, /https:\/\/chickpea\.example\.com\/admin/);
   assert.match(html, /https:\/\/chickpea\.example\.com\/admin\/\*/);
   assert.match(html, /data-copy=/);
