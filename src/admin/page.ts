@@ -1663,6 +1663,44 @@ details[open].advanced summary::before {
   .usage-contract { align-items: flex-start; flex-direction: column; }
 }
 
+/* ---- team and invitation admission ------------------------------------- */
+.team-main { display: grid; gap: 22px; }
+.team-hero { align-items: flex-start; display: flex; gap: 16px; justify-content: space-between; }
+.team-count { background: var(--ember-tint); border-radius: 999px; color: var(--ember-deep); font-size: .75rem; font-weight: 800; padding: 6px 10px; white-space: nowrap; }
+.team-grid { display: grid; gap: 16px; grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); }
+.team-card { background: var(--bg); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--card-shadow); padding: 18px; }
+.team-card h2 { color: var(--text); font-size: 1rem; margin: 0 0 5px; }
+.team-form { display: grid; gap: 12px; margin-top: 16px; }
+.team-form-row { display: grid; gap: 10px; grid-template-columns: minmax(0, 1fr) 130px auto; }
+.team-list { display: grid; gap: 10px; }
+.team-row { align-items: center; background: rgba(255,255,255,.48); border: 1px solid var(--line); border-radius: 12px; display: grid; gap: 12px; grid-template-columns: minmax(0, 1fr) auto; padding: 14px; }
+.team-row-main { min-width: 0; }
+.team-row-title { color: var(--text); font-size: .875rem; font-weight: 800; overflow-wrap: anywhere; }
+.team-row-sub { color: var(--text-2); font-size: .75rem; line-height: 1.5; margin-top: 3px; overflow-wrap: anywhere; }
+.team-row-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 7px; justify-content: flex-end; }
+.team-row-actions .select { min-width: 110px; width: auto; }
+.team-statuses { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.team-status { background: var(--well); border: 1px solid var(--line); border-radius: 999px; color: var(--text-2); font-size: .6875rem; font-weight: 800; padding: 4px 8px; }
+.team-status.observed, .team-status.active { background: var(--ok-tint); color: var(--ok); }
+.team-status.required, .team-status.suspended { background: var(--ember-tint); color: var(--ember-deep); }
+.team-show-once { background: var(--ember-tint); border: 1px solid rgba(176,84,21,.22); border-radius: 12px; margin-top: 14px; padding: 14px; }
+.team-show-once label { color: var(--text); display: block; font-size: .75rem; font-weight: 800; margin-bottom: 7px; }
+.team-link-row { align-items: center; display: flex; gap: 8px; }
+.team-link-row .input { flex: 1; min-width: 0; }
+.team-empty { color: var(--text-2); font-size: .8125rem; padding: 8px 0; }
+@media (max-width: 880px) {
+  .team-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 620px) {
+  .team-hero, .team-row { align-items: stretch; grid-template-columns: 1fr; }
+  .team-hero { flex-direction: column; }
+  .team-count { width: max-content; }
+  .team-form-row { grid-template-columns: 1fr; }
+  .team-row-actions { justify-content: flex-start; }
+  .team-row-actions .select { flex: 1; min-width: 0; }
+  .team-link-row { align-items: stretch; flex-direction: column; }
+}
+
 </style>
 </head>
 <body>
@@ -1726,6 +1764,16 @@ details[open].advanced summary::before {
     // platform overview from a concrete Slack-channel detail without muddling
     // the reusable Profiles destination into the platform hierarchy.
     view: "channels",
+    // Team is an authorization surface, not a Cloudflare policy editor. The
+    // server returns Chickpea membership/invitation state and a separate
+    // AdmissionProvider action for the Access allow policy.
+    team: null,
+    teamLoading: false,
+    teamError: "",
+    teamBusy: "",
+    teamNotice: "",
+    teamInviteLink: "",
+    teamInviteDraft: { email: "", role: "member" },
     channelScreen: "overview",
     profileScreen: "list",
     profileLastAgentId: null,
@@ -2174,6 +2222,7 @@ details[open].advanced summary::before {
 
   function canonicalPath() {
     if (state.view === "usage") return "/admin/usage";
+    if (state.view === "team") return "/admin/team";
     if (state.view === "settings") return "/admin/settings/" + encodeURIComponent(state.settingsSection);
     if (state.view === "audit") {
       if (state.auditDomain === "scheduled-work") {
@@ -2211,6 +2260,7 @@ details[open].advanced summary::before {
     });
     state.leavePrompt = null;
     if (parts[1] === "usage" && USAGE_ADMIN_UI) { applyUsageQuery(location.search || ""); openUsage(); return; }
+    if (parts[1] === "team") { openTeam(); return; }
     if (parts[1] === "settings") { openSettings(parts[2] || "providers"); return; }
     if (parts[1] === "audit-logs") {
       if (parts[2] === "scheduled-work") {
@@ -2336,6 +2386,7 @@ details[open].advanced summary::before {
       '<div class="actions actions-list">' + connectedBadge +
       '<button type="button" class="btn btn-soft' + (primarySection() === "channels" ? " nav-active" : "") + '" data-action="open-channels" data-section-switcher="true">Channels</button>' +
       '<button type="button" class="btn btn-soft' + (primarySection() === "profiles" ? " nav-active" : "") + '" data-action="open-profiles" data-section-switcher="true">Profiles</button>' +
+      '<button type="button" class="btn btn-soft' + (primarySection() === "team" ? " nav-active" : "") + '" data-action="open-team" data-section-switcher="true">Team</button>' +
       (USAGE_ADMIN_UI ? '<button type="button" class="btn btn-soft' + (primarySection() === "usage" ? " nav-active" : "") + '" data-action="open-usage" data-section-switcher="true">Usage</button>' : '') +
       '<button type="button" class="btn btn-soft' + (primarySection() === "settings" ? " nav-active" : "") + '" data-action="open-settings" data-section-switcher="true">Settings</button></div>' +
       "</header>";
@@ -2349,7 +2400,8 @@ details[open].advanced summary::before {
     var active = primarySection();
     var sections = [
       { id: "channels", label: "Channels", action: "open-channels" },
-      { id: "profiles", label: "Profiles", action: "open-profiles" }
+      { id: "profiles", label: "Profiles", action: "open-profiles" },
+      { id: "team", label: "Team", action: "open-team" }
     ];
     if (USAGE_ADMIN_UI) sections.push({ id: "usage", label: "Usage", action: "open-usage" });
     sections.push({ id: "settings", label: "Settings", action: "open-settings" });
@@ -2371,6 +2423,7 @@ details[open].advanced summary::before {
 
   function railHtml() {
     if (state.view === "usage") return usageRailHtml();
+    if (state.view === "team") return teamRailHtml();
     if (state.view === "profiles") return profilesRailHtml();
     if (state.view === "settings") return settingsRailHtml();
     if (state.view === "audit") return state.auditDomain === "scheduled-work" ? scheduledWorkRailHtml() : auditRailHtml();
@@ -2425,6 +2478,72 @@ details[open].advanced summary::before {
       '<div class="rail-head"><span class="section-eyebrow">Usage</span></div>' +
       '<button type="button" class="chan-item active" data-action="open-usage"><span class="chan-name">Overview</span><span class="chan-meta">Spend and usage</span></button>' +
       '</div>' + sectionSwitcherHtml() + '</nav>';
+  }
+
+  function teamRailHtml() {
+    var members = state.team && state.team.members ? state.team.members : [];
+    var invitations = state.team && state.team.invitations ? state.team.invitations : [];
+    var pending = invitations.filter(function (invitation) { return invitation.status === "pending"; });
+    return '<nav class="rail" aria-label="Team"><div class="rail-context">' +
+      '<div class="rail-head"><span class="section-eyebrow">Team</span></div>' +
+      '<button type="button" class="chan-item active" data-action="open-team" aria-current="page"><span class="chan-name">People</span><span class="chan-meta">' + members.length + ' active records</span></button>' +
+      '<div class="ws-row">Invitations</div>' +
+      '<div class="empty" style="margin:8px; padding:12px;"><p class="hint" style="margin:0;">' + (pending.length ? pending.length + ' pending' : 'No pending invites') + '</p></div>' +
+      '</div>' + sectionSwitcherHtml() + '</nav>';
+  }
+
+  function teamMainHtml() {
+    var team = state.team;
+    if (state.teamLoading && !team) {
+      return '<div class="empty"><h1 class="page-title">Loading your team&hellip;</h1><p class="hint">Reading Chickpea memberships and invitations.</p></div>';
+    }
+    if (!team) {
+      return '<div class="empty"><h1 class="page-title">Team is unavailable</h1><p class="error">' + esc(state.teamError || "Could not load team access.") + '</p><button type="button" class="btn btn-soft" data-action="team-retry">Retry</button></div>';
+    }
+    var members = team.members || [];
+    var invitations = team.invitations || [];
+    var pending = invitations.filter(function (invitation) { return invitation.status === "pending"; });
+    var notice = state.teamError
+      ? '<p class="error" role="alert">' + esc(state.teamError) + '</p>'
+      : (state.teamNotice ? '<p class="hint" role="status">' + esc(state.teamNotice) + '</p>' : '');
+    var showOnce = state.teamInviteLink
+      ? '<div class="team-show-once" role="status"><label for="team-invite-link">Copy this invitation link now</label><p class="hint">For safety, Chickpea will not show this secret again after you leave or refresh.</p><div class="team-link-row"><input class="input mono" id="team-invite-link" readonly value="' + esc(state.teamInviteLink) + '"><button type="button" class="btn btn-primary btn-sm" data-action="team-copy-link">Copy link</button><button type="button" class="btn btn-ghost btn-sm" data-action="team-dismiss-link">Done</button></div></div>'
+      : '';
+    return '<div class="team-hero"><div><p class="section-eyebrow">People &amp; access</p><h1 class="page-title">Your team</h1><p class="hint">Cloudflare Access proves who signed in. Chickpea invitations and roles decide what they can do.</p></div><span class="team-count">' + members.length + ' member' + (members.length === 1 ? '' : 's') + '</span></div>' +
+      notice +
+      '<div class="team-grid"><section class="team-card" aria-labelledby="invite-heading"><h2 id="invite-heading">Invite a teammate</h2><p class="hint">Create the Chickpea invite, then separately allow the exact email in your Cloudflare Access policy.</p><form class="team-form" data-action="team-invite-form"><div class="team-form-row"><label class="sr-only" for="team-invite-email">Email</label><input class="input" id="team-invite-email" data-action="team-invite-email" type="email" autocomplete="email" required placeholder="teammate@example.com" value="' + esc(state.teamInviteDraft.email) + '"><label class="sr-only" for="team-invite-role">Role</label><select class="select" id="team-invite-role" data-action="team-invite-role"><option value="member"' + (state.teamInviteDraft.role === "member" ? ' selected' : '') + '>Member</option><option value="admin"' + (state.teamInviteDraft.role === "admin" ? ' selected' : '') + '>Admin</option></select><button type="submit" class="btn btn-primary"' + (state.teamBusy ? ' disabled' : '') + '>Create invite</button></div></form>' + showOnce + '</section>' +
+      '<section class="team-card" aria-labelledby="admission-heading"><h2 id="admission-heading">Two gates, one clear status</h2><p class="hint"><strong>Chickpea invite pending</strong> means the link is valid. <strong>Access action required</strong> means the email still needs an Allow policy. “Marked configured” is an administrator note; only “Access observed” proves a signed assertion arrived.</p><a class="btn btn-ghost btn-sm" href="https://one.dash.cloudflare.com/" target="_blank" rel="noopener noreferrer">Open Cloudflare Access &nearr;</a></section></div>' +
+      '<section class="team-card" aria-labelledby="members-heading"><h2 id="members-heading">Members</h2><p class="hint">Suspension takes effect on the next Chickpea request, even if Cloudflare still has an active session.</p><div class="team-list">' + (members.length ? members.map(teamMemberRowHtml).join("") : '<p class="team-empty">No memberships yet.</p>') + '</div></section>' +
+      '<section class="team-card" aria-labelledby="invitations-heading"><h2 id="invitations-heading">Invitations</h2><p class="hint">Invitation and Access admission remain separate so the UI never overstates what Cloudflare has verified.</p><div class="team-list">' + (invitations.length ? invitations.map(teamInvitationRowHtml).join("") : '<p class="team-empty">No invitations yet.</p>') + '</div></section>';
+  }
+
+  function teamMemberRowHtml(member) {
+    var viewer = state.team && state.team.viewer ? state.team.viewer : { role: "admin", membershipId: "" };
+    var canManageOwner = viewer.role === "owner";
+    var busy = state.teamBusy === "member:" + member.id;
+    var roleOptions = ["member", "admin"].concat(canManageOwner ? ["owner"] : []);
+    var roleSelect = '<select class="select" aria-label="Role for ' + esc(member.email || "member") + '" data-action="team-member-role" data-membership="' + esc(member.id) + '"' + (busy || (member.role === "owner" && !canManageOwner) ? ' disabled' : '') + '>' + roleOptions.map(function (role) {
+      return '<option value="' + role + '"' + (member.role === role ? ' selected' : '') + '>' + role.charAt(0).toUpperCase() + role.slice(1) + '</option>';
+    }).join("") + '</select>';
+    var statusSelect = '<select class="select" aria-label="Status for ' + esc(member.email || "member") + '" data-action="team-member-status" data-membership="' + esc(member.id) + '"' + (busy || (member.role === "owner" && !canManageOwner) ? ' disabled' : '') + '>' + ["active", "suspended", "removed"].map(function (status) {
+      return '<option value="' + status + '"' + (member.status === status ? ' selected' : '') + '>' + status.charAt(0).toUpperCase() + status.slice(1) + '</option>';
+    }).join("") + '</select>';
+    return '<article class="team-row"><div class="team-row-main"><div class="team-row-title">' + esc(member.displayName || member.email || "Member") + (viewer.membershipId === member.id ? ' <span class="hint">(you)</span>' : '') + '</div><div class="team-row-sub">' + esc(member.email || "No email") + '</div><div class="team-statuses"><span class="team-status ' + (member.status === "active" ? "active" : member.status === "suspended" ? "suspended" : "") + '">' + esc(member.status) + '</span><span class="team-status ' + (member.externalIdentity && member.externalIdentity.bound ? "observed" : "required") + '">' + (member.externalIdentity && member.externalIdentity.bound ? 'Identity bound' : 'Identity not bound') + '</span></div></div><div class="team-row-actions">' + roleSelect + statusSelect + '</div></article>';
+  }
+
+  function teamInvitationRowHtml(invitation) {
+    var pending = invitation.status === "pending";
+    var admission = invitation.admission || { state: "action_required", label: "Access action required", actionUrl: "", instructions: "" };
+    var busy = state.teamBusy === "invite:" + invitation.id;
+    var actions = '';
+    if (pending) {
+      if (admission.actionUrl) actions += '<a class="btn btn-ghost btn-sm" href="' + esc(admission.actionUrl) + '" target="_blank" rel="noopener noreferrer">Open Access</a>';
+      if (admission.state === "action_required") actions += '<button type="button" class="btn btn-soft btn-sm" data-action="team-admission-confirm" data-invitation="' + esc(invitation.id) + '"' + (busy ? ' disabled' : '') + '>Mark configured</button>';
+      actions += '<button type="button" class="btn btn-soft btn-sm" data-action="team-resend" data-invitation="' + esc(invitation.id) + '"' + (busy ? ' disabled' : '') + '>Resend link</button><button type="button" class="btn btn-danger btn-sm" data-action="team-revoke" data-invitation="' + esc(invitation.id) + '"' + (busy ? ' disabled' : '') + '>Revoke</button>';
+    }
+    var inviteLabel = pending ? "Chickpea invite pending" : "Chickpea invite " + invitation.status;
+    var admissionClass = admission.state === "assertion_observed" ? "observed" : (admission.state === "action_required" ? "required" : "");
+    return '<article class="team-row"><div class="team-row-main"><div class="team-row-title">' + esc(invitation.email) + '</div><div class="team-row-sub">' + esc(invitation.role) + ' · expires ' + esc(new Date(invitation.expiresAt).toLocaleString()) + '</div><div class="team-statuses"><span class="team-status">' + esc(inviteLabel) + '</span><span class="team-status ' + admissionClass + '">' + esc(admission.label) + '</span></div><div class="team-row-sub">' + esc(admission.instructions || "") + '</div></div><div class="team-row-actions">' + actions + '</div></article>';
   }
 
   function profilesRailHtml() {
@@ -2594,6 +2713,104 @@ details[open].advanced summary::before {
       if (filterName) params.set(filterName, state.usageOperationFilter.value);
     }
     return path + "?" + params.toString();
+  }
+
+  function openTeam() {
+    var entering = state.view !== "team";
+    state.view = "team";
+    state.profileScreen = "list";
+    state.disableConfirm = false;
+    state.teamError = "";
+    state.teamNotice = "";
+    if (entering) state.teamInviteLink = "";
+    render();
+    loadTeam();
+  }
+
+  function loadTeam() {
+    state.teamLoading = true;
+    state.teamError = "";
+    render();
+    return api("/admin/api/team").then(function (body) {
+      state.team = body;
+      state.teamLoading = false;
+      render();
+      return body;
+    }).catch(function (error) {
+      state.teamLoading = false;
+      state.teamError = error.serverMessage || error.message || "Could not load team access.";
+      render();
+      return null;
+    });
+  }
+
+  function finishTeamMutation(message, result) {
+    if (result && result.inviteLink) state.teamInviteLink = result.inviteLink;
+    state.teamNotice = message;
+    return loadTeam().then(function () {
+      state.teamBusy = "";
+      render();
+    });
+  }
+
+  function failTeamMutation(error) {
+    state.teamBusy = "";
+    state.teamError = error.serverMessage || error.message || "The team change could not be saved.";
+    render();
+  }
+
+  function createTeamInvitation() {
+    if (state.teamBusy) return;
+    var email = String(state.teamInviteDraft.email || "").trim();
+    if (!email || email.indexOf("@") < 1) {
+      state.teamError = "Enter a valid teammate email.";
+      render();
+      return;
+    }
+    state.teamBusy = "invite:create";
+    state.teamError = "";
+    state.teamNotice = "";
+    state.teamInviteLink = "";
+    render();
+    postJson("/admin/api/team/invitations", "POST", {
+      email: email,
+      role: state.teamInviteDraft.role === "admin" ? "admin" : "member"
+    }).then(function (result) {
+      state.teamInviteDraft.email = "";
+      return finishTeamMutation("Invitation created. Complete the separate Cloudflare Access action before sharing it.", result);
+    }).catch(failTeamMutation);
+  }
+
+  function mutateTeamInvitation(invitationId, action) {
+    if (state.teamBusy || !invitationId) return;
+    state.teamBusy = "invite:" + invitationId;
+    state.teamError = "";
+    state.teamNotice = "";
+    if (action === "resend") state.teamInviteLink = "";
+    render();
+    var path = "/admin/api/team/invitations/" + encodeURIComponent(invitationId);
+    var request = action === "revoke"
+      ? api(path, { method: "DELETE" })
+      : postJson(path + (action === "resend" ? "/resend" : "/admission-confirmed"), "POST", {});
+    var message = action === "revoke"
+      ? "Invitation revoked."
+      : action === "resend"
+        ? "Invitation rotated. Copy the new link now; the prior link no longer works."
+        : "Access marked configured. Chickpea will show Access observed only after a signed assertion arrives.";
+    request.then(function (result) { return finishTeamMutation(message, result); }).catch(failTeamMutation);
+  }
+
+  function updateTeamMembership(membershipId, field, value) {
+    if (state.teamBusy || !membershipId) return;
+    state.teamBusy = "member:" + membershipId;
+    state.teamError = "";
+    state.teamNotice = "";
+    render();
+    var body = {};
+    body[field] = value;
+    postJson("/admin/api/team/memberships/" + encodeURIComponent(membershipId), "PATCH", body)
+      .then(function () { return finishTeamMutation("Membership updated.", null); })
+      .catch(failTeamMutation);
   }
 
   function openUsage() {
@@ -2818,6 +3035,9 @@ details[open].advanced summary::before {
   function mainHtml() {
     if (state.view === "usage") {
       return '<main class="main"><div class="main-inner usage-main">' + usageMainHtml() + '</div></main>';
+    }
+    if (state.view === "team") {
+      return '<main class="main"><div class="main-inner team-main">' + teamMainHtml() + '</div></main>';
     }
     // Profiles is a first-class main-panel destination (master-detail, per cards
     // 09-12) that takes precedence over the channel chrome — reachable from the
@@ -8247,7 +8467,7 @@ details[open].advanced summary::before {
       return;
     }
     if (state.view === "audit" && state.memoryDirty && (
-      action === "open-channels" || action === "open-profiles" || action === "open-settings" ||
+      action === "open-channels" || action === "open-profiles" || action === "open-team" || action === "open-settings" ||
       action === "open-audit" || action === "open-usage" || action === "go-home" || action === "audit-tab-scheduled"
     )) {
       state.memoryError = "Save or discard the current memory draft before navigating away.";
@@ -8307,6 +8527,21 @@ details[open].advanced summary::before {
       }
       enterProfiles(requestedProfileId);
     }
+    if (action === "open-team") { openTeam(); }
+    if (action === "team-retry") { loadTeam(); }
+    if (action === "team-dismiss-link") { state.teamInviteLink = ""; state.teamNotice = ""; render(); }
+    if (action === "team-copy-link" && state.teamInviteLink) {
+      navigator.clipboard.writeText(state.teamInviteLink).then(function () {
+        state.teamNotice = "Invitation link copied.";
+        render();
+      }).catch(function () {
+        state.teamError = "Copy failed. Select the link and copy it manually.";
+        render();
+      });
+    }
+    if (action === "team-resend") { mutateTeamInvitation(target.getAttribute("data-invitation") || "", "resend"); }
+    if (action === "team-revoke") { mutateTeamInvitation(target.getAttribute("data-invitation") || "", "revoke"); }
+    if (action === "team-admission-confirm") { mutateTeamInvitation(target.getAttribute("data-invitation") || "", "admission"); }
     if (action === "open-usage" && USAGE_ADMIN_UI) { openUsage(); }
     if (action === "open-audit") { openAuditLogs("", "", ""); }
     // Brand-as-home: the reliable exit back to the Channels overview.
@@ -8812,6 +9047,10 @@ details[open].advanced summary::before {
   document.addEventListener("input", function (event) {
     var target = event.target;
     var action = target.getAttribute && target.getAttribute("data-action");
+    if (action === "team-invite-email") {
+      state.teamInviteDraft.email = target.value;
+      state.teamError = "";
+    }
     if (state.memoryDraft) {
       if (action === "memory-description") { state.memoryDraft.description = target.value; markMemoryDirty(); }
       if (action === "memory-body") { state.memoryDraft.body = target.value; markMemoryDirty(); }
@@ -8935,6 +9174,16 @@ details[open].advanced summary::before {
   document.addEventListener("change", function (event) {
     var target = event.target;
     var action = target.getAttribute && target.getAttribute("data-action");
+    if (action === "team-invite-role") {
+      state.teamInviteDraft.role = target.value === "admin" ? "admin" : "member";
+      state.teamError = "";
+    }
+    if (action === "team-member-role") {
+      updateTeamMembership(target.getAttribute("data-membership") || "", "role", target.value);
+    }
+    if (action === "team-member-status") {
+      updateTeamMembership(target.getAttribute("data-membership") || "", "status", target.value);
+    }
     if (action === "usage-range") {
       var usagePeriod = String(target.value || "last_30_days");
       var allowedUsagePeriods = ["last_7_days", "last_30_days", "last_90_days", "this_month", "last_month", "this_week", "last_week", "custom"];
@@ -9139,6 +9388,7 @@ details[open].advanced summary::before {
     var action = form.getAttribute("data-action");
     if (!action) return;
     event.preventDefault();
+    if (action === "team-invite-form") createTeamInvitation();
     if (action === "add-channel-form") addChannel(new FormData(form));
     if (action === "slack-connect-form") submitSlackConnection(new FormData(form));
     if (action === "github-manifest-form") submitGithubManifest(new FormData(form));
@@ -10791,7 +11041,7 @@ details[open].advanced summary::before {
   // The four ways to leave the profile editor: the top-nav Profiles/Settings,
   // the brand-home logo, and the "<- Profiles" back link.
   function isEditLeaveAction(action) {
-    return action === "open-channels" || action === "open-profiles" || action === "open-settings" ||
+    return action === "open-channels" || action === "open-profiles" || action === "open-team" || action === "open-settings" ||
       action === "open-audit" || action === "open-usage" || action === "go-home" || action === "profiles-back" ||
       action === "edit-profile" || action === "new-profile";
   }
@@ -10825,6 +11075,8 @@ details[open].advanced summary::before {
       openAuditLogs("", "", "");
     } else if (action === "open-usage") {
       openUsage();
+    } else if (action === "open-team") {
+      openTeam();
     } else if (action === "go-home" || action === "open-channels") {
       openChannels();
     } else if (action === "edit-profile") {
@@ -11293,6 +11545,96 @@ input:focus-visible,button:focus-visible { outline:3px solid rgba(221,160,51,.45
     <button type="submit">Save and verify through Access</button>
   </form>
 </main></body></html>`;
+}
+
+export function renderMemberAccountPage(input: {
+  organizationName: string;
+  displayName: string | null;
+  email: string;
+  role: 'owner' | 'admin' | 'member';
+  status: 'active' | 'suspended' | 'removed';
+}): string {
+  const name = escapeHtmlAttribute(input.displayName || input.email);
+  return `<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chickpea · Your account</title>${ADMIN_FAVICON}
+<style>
+:root { --canvas:#f4ebd8; --card:#fffdf6; --ink:#3b3220; --muted:#6b5c42; --gold:#dda033; --line:rgba(59,50,32,.14); --green:#6fa25b; }
+* { box-sizing:border-box; } body { margin:0; min-height:100dvh; display:grid; place-items:center; background:var(--canvas); color:var(--ink); font-family:Quicksand,system-ui,sans-serif; padding:20px; }
+main { width:min(560px,100%); background:var(--card); border:1px solid var(--line); border-radius:20px; padding:clamp(24px,6vw,42px); box-shadow:0 10px 30px rgba(59,50,32,.09); }
+h1 { margin:8px 0 6px; font-size:clamp(1.65rem,6vw,2.35rem); } p { color:var(--muted); line-height:1.55; } .eyebrow { font-size:.78rem; font-weight:800; text-transform:uppercase; letter-spacing:.08em; }
+.account { border:1px solid var(--line); border-radius:14px; padding:16px; margin:22px 0; display:grid; gap:5px; } .email { overflow-wrap:anywhere; } .badge { width:max-content; background:rgba(111,162,91,.16); color:#4e7a3e; border-radius:999px; padding:4px 10px; font-weight:800; font-size:.75rem; }
+.button { display:inline-flex; align-items:center; justify-content:center; min-height:42px; padding:10px 18px; border-radius:12px; background:var(--gold); color:var(--ink); font-weight:800; text-decoration:none; box-shadow:0 2.5px 0 #b27e1f; }
+.button:focus-visible { outline:3px solid rgba(221,160,51,.45); outline-offset:3px; } .note { margin-top:20px; font-size:.82rem; }
+</style></head><body><main>
+  <p class="eyebrow">${escapeHtmlAttribute(input.organizationName)}</p>
+  <h1>Hi, ${name}</h1>
+  <p>Your Chickpea account is active. Your role controls Admin access separately from Cloudflare Access sign-in.</p>
+  <section class="account" aria-label="Account details">
+    <strong>${name}</strong><span class="email">${escapeHtmlAttribute(input.email)}</span>
+    <span class="badge">${escapeHtmlAttribute(input.role)} · ${escapeHtmlAttribute(input.status)}</span>
+  </section>
+  <a class="button" href="slack://open">Open Slack</a>
+  <p class="note">Need a role change? Ask a Chickpea owner or administrator.</p>
+</main></body></html>`;
+}
+
+export function renderInvitationJoinPage(input: { email: string }): string {
+  return `<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer"><title>Chickpea · Join</title>${ADMIN_FAVICON}
+<style>
+:root { --canvas:#f4ebd8; --card:#fffdf6; --ink:#3b3220; --muted:#6b5c42; --gold:#dda033; --line:rgba(59,50,32,.14); --danger:#b5473a; }
+* { box-sizing:border-box; } body { margin:0; min-height:100dvh; display:grid; place-items:center; background:var(--canvas); color:var(--ink); font-family:Quicksand,system-ui,sans-serif; padding:20px; }
+main { width:min(540px,100%); background:var(--card); border:1px solid var(--line); border-radius:20px; padding:clamp(24px,6vw,42px); box-shadow:0 10px 30px rgba(59,50,32,.09); }
+h1 { margin:0 0 8px; font-size:clamp(1.7rem,6vw,2.4rem); } p { color:var(--muted); line-height:1.55; } .identity { background:#f8f1df; border-radius:12px; padding:12px 14px; overflow-wrap:anywhere; margin:18px 0; }
+button { width:100%; border:0; border-radius:12px; background:var(--gold); color:var(--ink); padding:12px 18px; font:inherit; font-weight:800; cursor:pointer; box-shadow:0 2.5px 0 #b27e1f; } button:disabled { opacity:.55; cursor:not-allowed; }
+button:focus-visible { outline:3px solid rgba(221,160,51,.45); outline-offset:3px; } .status { min-height:1.5em; margin-top:14px; font-weight:700; } .error { color:var(--danger); }
+</style></head><body><main>
+  <h1>Join this Chickpea</h1>
+  <p>You passed Cloudflare Access. Chickpea will now match that signed identity to the invitation without using email as your permanent login key.</p>
+  <p class="identity">Signed in as <strong>${escapeHtmlAttribute(input.email)}</strong></p>
+  <button id="join" type="button">Accept invitation</button>
+  <p id="status" class="status" role="status" aria-live="polite"></p>
+</main>
+<script>
+(function () {
+  var params = new URLSearchParams(location.hash.slice(1));
+  var credential = params.get("invite") || "";
+  history.replaceState(null, "", location.pathname);
+  var split = credential.indexOf(".");
+  var invitationId = split > 0 ? credential.slice(0, split) : "";
+  var token = split > 0 ? credential.slice(split + 1) : "";
+  var button = document.getElementById("join");
+  var status = document.getElementById("status");
+  if (!invitationId || !token) {
+    credential = ""; token = ""; button.disabled = true;
+    status.className = "status error";
+    status.textContent = "This invitation link is incomplete or has already been removed from this browser.";
+    return;
+  }
+  credential = "";
+  button.addEventListener("click", function () {
+    button.disabled = true; status.className = "status"; status.textContent = "Joining…";
+    fetch("/admin/join", {
+      method: "POST", credentials: "same-origin",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ invitationId: invitationId, token: token })
+    }).then(function (response) {
+      token = "";
+      if (!response.ok) throw new Error("unavailable");
+      return response.json();
+    }).then(function (body) {
+      location.replace(body.redirect || "/admin/account");
+    }).catch(function () {
+      token = ""; status.className = "status error";
+      status.textContent = "This invitation could not be accepted. Ask an administrator for a new link.";
+    });
+  });
+})();
+</script></body></html>`;
 }
 
 function escapeHtmlAttribute(value: string): string {

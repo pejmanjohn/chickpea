@@ -34,6 +34,7 @@ import type {
   ResendInvitationInput,
   ReplaceAccessOwnerBindingInput,
   UpdateMembershipInput,
+  UpdateInvitationAdmissionInput,
   UpdateOrganizationAuthInput,
   User,
 } from './types.ts';
@@ -97,6 +98,7 @@ interface InvitationRow {
   role: Invitation['role'];
   token_hash: string;
   status: Invitation['status'];
+  admission_state: Invitation['admissionState'];
   inviter_membership_id: string;
   accepted_membership_id: string | null;
   expires_at: number;
@@ -214,6 +216,8 @@ export class IdentityStoreLogic {
         return { kind: 'invitation', invitation: this.resendInvitation(request.input) };
       case 'revoke_invitation':
         return { kind: 'invitation', invitation: this.revokeInvitation(request.invitationId) };
+      case 'update_invitation_admission':
+        return { kind: 'invitation', invitation: this.updateInvitationAdmission(request.input) };
       case 'consume_invitation':
         return { kind: 'identity_resolution', resolution: this.consumeInvitation(request.input) };
       case 'list_invitations':
@@ -647,9 +651,9 @@ export class IdentityStoreLogic {
       this.db.run(
         `INSERT INTO identity_invitations (
            invitation_id, organization_id, normalized_email, role, token_hash,
-           status, inviter_membership_id, accepted_membership_id, expires_at,
+           status, admission_state, inviter_membership_id, accepted_membership_id, expires_at,
            created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, 'pending', ?, NULL, ?, ?, ?)`,
+         ) VALUES (?, ?, ?, ?, ?, 'pending', 'action_required', ?, NULL, ?, ?, ?)`,
         id,
         input.organizationId,
         email,
@@ -711,6 +715,40 @@ export class IdentityStoreLogic {
     return this.requiredInvitation(invitationId);
   }
 
+  updateInvitationAdmission(input: UpdateInvitationAdmissionInput): Invitation {
+    const invitation = this.requiredInvitation(input.invitationId);
+    if (invitation.status !== 'pending') {
+      throw identityError('invitation_not_pending', 'Invitation is no longer pending.', {
+        invitationId: invitation.id,
+      });
+    }
+    if (input.admissionState === 'admin_confirmed') {
+      const actor = input.actorMembershipId
+        ? this.getMembership(input.actorMembershipId)
+        : undefined;
+      if (!actor || actor.organizationId !== invitation.organizationId ||
+          actor.status !== 'active' || !['owner', 'admin'].includes(actor.role)) {
+        throw identityError('inviter_not_authorized', 'The admission state cannot be changed.');
+      }
+    }
+    const at = this.now();
+    this.db.run(
+      `UPDATE identity_invitations SET admission_state = ?, updated_at = ?
+       WHERE invitation_id = ? AND status = 'pending'`,
+      input.admissionState,
+      at,
+      invitation.id,
+    );
+    this.appendAudit(
+      'identity.invitation_admission_updated',
+      invitation.id,
+      at,
+      input.actorMembershipId ?? null,
+      { state: input.admissionState },
+    );
+    return this.requiredInvitation(invitation.id);
+  }
+
   consumeInvitation(input: ConsumeInvitationInput): IdentityResolution {
     validateTokenHash(input.tokenHash);
     validateExternalIdentity(input);
@@ -756,7 +794,8 @@ export class IdentityStoreLogic {
         invitation.role, at);
       const accepted = this.db.run(
         `UPDATE identity_invitations
-         SET status = 'accepted', accepted_membership_id = ?, updated_at = ?
+         SET status = 'accepted', admission_state = 'assertion_observed',
+             accepted_membership_id = ?, updated_at = ?
          WHERE invitation_id = ? AND status = 'pending' AND token_hash = ?`,
         ids.membership,
         at,
@@ -1157,6 +1196,7 @@ export class IdentityStoreLogic {
         role TEXT NOT NULL,
         token_hash TEXT NOT NULL,
         status TEXT NOT NULL,
+        admission_state TEXT NOT NULL DEFAULT 'action_required',
         inviter_membership_id TEXT NOT NULL REFERENCES identity_memberships(membership_id),
         accepted_membership_id TEXT REFERENCES identity_memberships(membership_id),
         expires_at INTEGER NOT NULL,
@@ -1164,6 +1204,12 @@ export class IdentityStoreLogic {
         updated_at INTEGER NOT NULL
       )`,
     );
+    const invitationColumns = this.db.all('PRAGMA table_info(identity_invitations)');
+    if (!invitationColumns.some((column) => column.name === 'admission_state')) {
+      this.db.exec(
+        "ALTER TABLE identity_invitations ADD COLUMN admission_state TEXT NOT NULL DEFAULT 'action_required'",
+      );
+    }
     this.db.exec(
       `CREATE INDEX IF NOT EXISTS identity_invitations_state_idx
        ON identity_invitations (organization_id, status, expires_at)`,
@@ -1400,6 +1446,9 @@ export class SqliteIdentityStore implements IdentityStore {
   async createInvitation(input: CreateInvitationInput) { return this.logic.createInvitation(input); }
   async resendInvitation(input: ResendInvitationInput) { return this.logic.resendInvitation(input); }
   async revokeInvitation(invitationId: string) { return this.logic.revokeInvitation(invitationId); }
+  async updateInvitationAdmission(input: UpdateInvitationAdmissionInput) {
+    return this.logic.updateInvitationAdmission(input);
+  }
   async consumeInvitation(input: ConsumeInvitationInput) { return this.logic.consumeInvitation(input); }
   async listInvitations() { return this.logic.listInvitations(); }
   async createPersonalToken(input: CreatePersonalTokenRecordInput) { return this.logic.createPersonalToken(input); }
@@ -1575,6 +1624,7 @@ function rowToInvitation(row: InvitationRow): Invitation {
     role: row.role,
     tokenHash: row.token_hash,
     status: row.status,
+    admissionState: row.admission_state,
     inviterMembershipId: row.inviter_membership_id,
     acceptedMembershipId: row.accepted_membership_id,
     expiresAt: row.expires_at,

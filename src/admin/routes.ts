@@ -11,11 +11,14 @@ import {
   renderAuthMigrationPage,
   renderAuthRecoveryPage,
   renderAuthSetupPage,
+  renderInvitationJoinPage,
+  renderMemberAccountPage,
 } from './page.ts';
 import { createMemoryAdminApi } from './memory-api.ts';
 import { createRoutineAdminApi } from './routines-api.ts';
 import { createUsageAdminApi } from './usage-api.ts';
 import { createWorkAdminApi } from './work-api.ts';
+import { createTeamAdminApi } from './team-api.ts';
 // Build-time JSON import: the committed manifest is the single source of the
 // Slack app identity; the wizard deep-link below substitutes the request host
 // so users never hand-edit a request_url.
@@ -227,13 +230,13 @@ import {
 } from '../slack/credentials.ts';
 import { constantTimeEquals } from './constant-time.ts';
 import { AuthDeniedError, AuthService, setRequestPrincipal } from '../auth/service.ts';
-import { AuthorizationError, requirePermission } from '../auth/permissions.ts';
+import { AuthorizationError, requirePermission, type Permission } from '../auth/permissions.ts';
 import { validateMutationProvenance } from '../auth/request-provenance.ts';
 import { CloudflareAccessAuthenticator, verifyCloudflareAccessRecoveryAssertion } from '../auth/cloudflare-access.ts';
 import { AuthRateLimiter } from '../auth/rate-limit.ts';
 import { AuthRecoveryService } from '../auth/recovery.ts';
 import { AuthSetupService, validRecoveryToken } from '../auth/setup.ts';
-import { PersonalTokenService } from '../auth/personal-token.ts';
+import { digest, PersonalTokenService } from '../auth/personal-token.ts';
 import { TokenSessionService } from '../auth/token-session.ts';
 import type { AdminAuthenticationService, AuthPrincipal, ExternalIdentity } from '../auth/types.ts';
 
@@ -330,6 +333,10 @@ const authSetupSchema = v.strictObject({
   recoveryToken: v.pipe(v.string(), v.minLength(1), v.maxLength(512)),
   issuer: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(1_024)),
   audience: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(1_024)),
+});
+const invitationJoinSchema = v.strictObject({
+  invitationId: v.pipe(v.string(), v.regex(/^invitation_[A-Za-z0-9_-]{1,180}$/)),
+  token: v.pipe(v.string(), v.minLength(32), v.maxLength(256), v.regex(/^[A-Za-z0-9_-]+$/)),
 });
 const authRecoverySchema = v.strictObject({
   operation: v.picklist(['audience', 'owner_binding']),
@@ -963,6 +970,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     maxSize: MAX_AUTH_SETUP_BODY_BYTES,
     onError: (c) => c.json({ error: 'invalid_request' }, 413),
   });
+  const invitationJoinBodyLimit = bodyLimit({
+    maxSize: MAX_AUTH_SETUP_BODY_BYTES,
+    onError: (c) => c.json({ error: 'join_unavailable' }, 401),
+  });
   const adminMutationBodyLimit = bodyLimit({
     maxSize: MAX_ADMIN_MUTATION_BODY_BYTES,
     onError: (c) => c.json({ error: 'request_too_large' }, 413),
@@ -1008,12 +1019,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         const principal = await authService.authenticateRequest(c.req.raw);
         principalByContext.set(c, principal);
         setRequestPrincipal(c.req.raw, principal);
+        const permission = permissionForAdminRequest(c, principal);
         try {
-          requirePermission(principal, 'admin.configure');
+          requirePermission(principal, permission);
           await identity(c).recordAuthAudit({
             event: 'authorization',
             outcome: 'success',
-            action: 'admin.configure',
+            action: permission,
             correlationId: principal.correlationId,
             authenticatorKind: principal.authenticatorKind,
             userId: principal.userId,
@@ -1024,7 +1036,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
             await identity(c).recordAuthAudit({
               event: 'authorization',
               outcome: 'denied',
-              action: 'admin.configure',
+              action: permission,
               correlationId: principal.correlationId,
               authenticatorKind: principal.authenticatorKind,
               userId: principal.userId,
@@ -1033,6 +1045,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
             });
           }
           throw error;
+        }
+        if (principal.role === 'member' && isAdminPageGet(c) && c.req.path !== '/admin/account') {
+          return c.redirect('/admin/account', 303);
         }
         if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(c.req.method)) {
           const organization = await identity(c).getOrganization();
@@ -1329,6 +1344,72 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   // states minted before upgrade; both paths delegate to the same consumer.
   app.get('/oauth/github/setup/callback', completeGithubSetupCallback);
   app.get('/admin/api/github/setup/callback', completeGithubSetupCallback);
+
+  // The Access edge has authenticated this browser, but an invited identity
+  // does not have a Chickpea principal yet. Keep this one route outside the
+  // normal Admin gate so the fragment-held invitation can create that binding.
+  app.use('/admin/join', invitationJoinBodyLimit);
+  app.get('/admin/join', async (c) => {
+    authResponseHeaders(c);
+    try {
+      const config = await identity(c).getAuthProviderConfig('cloudflare_access');
+      if (!config || config.state !== 'active') throw new AuthDeniedError();
+      const external = await verifyAccessAssertion(c.req.raw, config, 'activation');
+      const existing = await identity(c).resolveExternalIdentity(
+        external.provider,
+        external.issuer,
+        external.subject,
+      );
+      if (existing?.membership.status === 'active') return c.redirect('/admin/account', 303);
+      return c.html(renderInvitationJoinPage({ email: external.verifiedEmail }));
+    } catch {
+      return c.json({ error: 'join_unavailable' }, 401);
+    }
+  });
+  app.post('/admin/join', async (c) => {
+    authResponseHeaders(c);
+    const token = recoveryToken(c);
+    if (!token || !isValidRecoveryConfiguration(token)) {
+      return c.json({ error: 'join_unavailable' }, 401);
+    }
+    const source = authSourceKey(c);
+    const limiter = authRateLimiter(c, token);
+    try {
+      await limiter.assertAllowed('invite', source);
+      const organization = await identity(c).getOrganization();
+      const config = await identity(c).getAuthProviderConfig('cloudflare_access');
+      if (!organization?.canonicalAdminOrigin || !config || config.state !== 'active') {
+        throw new AuthDeniedError();
+      }
+      if (!validJsonMutation(c, organization.canonicalAdminOrigin)) throw new AuthDeniedError();
+      const parsed = v.safeParse(invitationJoinSchema, await readJson(c.req));
+      if (!parsed.success) throw new AuthDeniedError();
+      const external = await verifyAccessAssertion(c.req.raw, config, 'activation');
+      const resolution = await identity(c).consumeInvitation({
+        invitationId: parsed.output.invitationId,
+        tokenHash: digest(parsed.output.token),
+        provider: external.provider,
+        issuer: external.issuer,
+        subject: external.subject,
+        verifiedEmail: external.verifiedEmail,
+        ...(external.displayName === undefined ? {} : { displayName: external.displayName }),
+      });
+      await identity(c).recordAuthAudit({
+        event: 'authentication',
+        outcome: 'success',
+        action: 'team.invitation_accept',
+        correlationId: `join_${digest(external.credentialId).slice(0, 24)}`,
+        authenticatorKind: external.provider,
+        userId: resolution.user.id,
+        membershipId: resolution.membership.id,
+      });
+      await limiter.recordSuccess('invite', source);
+      return c.json({ redirect: '/admin/account' });
+    } catch {
+      await limiter.recordFailure('invite', source);
+      return c.json({ error: 'join_unavailable' }, 401);
+    }
+  });
 
   // CIMD is fetched by the provider, not an administrator's browser. It is
   // intentionally public and contains client policy only — never a client
@@ -1748,6 +1829,26 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
 
   app.get('/admin', adminPage);
 
+  app.get('/admin/account', async (c) => {
+    const principal = principalByContext.get(c);
+    if (!principal) return c.json({ error: 'unauthorized' }, 401);
+    const [organization, user, membership] = await Promise.all([
+      identity(c).getOrganization(),
+      identity(c).getUser(principal.userId),
+      identity(c).getMembershipForUser(principal.userId, principal.organizationId),
+    ]);
+    if (!organization || !user || !membership) return c.json({ error: 'account_unavailable' }, 404);
+    c.header('Cache-Control', 'no-store');
+    return c.html(renderMemberAccountPage({
+      organizationName: organization.displayName,
+      displayName: user.displayName,
+      email: user.primaryEmail,
+      role: membership.role,
+      status: membership.status,
+    }));
+  });
+
+  app.route('/admin/api', createTeamAdminApi({ store: identity }));
   app.route('/admin/api', createMemoryAdminApi({
     store: memory,
     adminSecret: () => adminToken() ?? '',
@@ -4099,6 +4200,23 @@ function isAdminPageGet(c: Context): boolean {
   return (
     pathname === '/admin' ||
     (pathname.startsWith('/admin/') && !pathname.startsWith('/admin/api/'))
+  );
+}
+
+function permissionForAdminRequest(c: Context, principal: AuthPrincipal): Permission {
+  if (principal.role === 'member' && isAdminPageGet(c)) return 'account.view';
+  if (c.req.path === '/admin/account' || c.req.path === '/admin/api/account') return 'account.view';
+  if (c.req.path === '/admin/team' || c.req.path.startsWith('/admin/api/team')) return 'team.manage';
+  return 'admin.configure';
+}
+
+function validJsonMutation(c: Context, canonicalOrigin: string): boolean {
+  const contentType = c.req.header('content-type')?.split(';', 1)[0]?.trim().toLowerCase();
+  const fetchSite = c.req.header('sec-fetch-site')?.toLowerCase();
+  return (
+    contentType === 'application/json' &&
+    c.req.header('origin') === canonicalOrigin &&
+    (fetchSite === undefined || fetchSite === 'same-origin' || fetchSite === 'same-site')
   );
 }
 
