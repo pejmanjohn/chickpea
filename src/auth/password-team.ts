@@ -5,6 +5,7 @@ import { digest } from './personal-token.ts';
 import { assertPasswordPolicy } from './password-policy.ts';
 import type { BetterAuthEnvironment } from './better-auth-environment.ts';
 import { createBetterAuth } from './better-auth.ts';
+import { setCookieValues } from './cookies.ts';
 
 const INVITATION_TTL_MS = 7 * 24 * 60 * 60 * 1_000;
 const RESET_TTL_MS = 30 * 60 * 1_000;
@@ -615,8 +616,7 @@ function capabilityLink(
 
 function cookieRequestHeaders(responseHeaders: Headers): Headers {
   const headers = new Headers();
-  const cookies = (responseHeaders as Headers & { getSetCookie?: () => string[] }).getSetCookie?.() ??
-    (responseHeaders.get('set-cookie') ? [responseHeaders.get('set-cookie')!] : []);
+  const cookies = setCookieValues(responseHeaders);
   headers.set('cookie', cookies.map((cookie) => cookie.split(';', 1)[0]).join('; '));
   return headers;
 }

@@ -53,7 +53,6 @@ async function dispatch(c: Context, options: BetterAuthRuntimeOptions): Promise<
   const handler = createBetterAuthEnvironmentPublicHandler({
     environment,
     identity,
-    cloudflare: Boolean(environment.cloudflareEnv),
   });
   return handler(c.req.raw);
 }
@@ -61,7 +60,6 @@ async function dispatch(c: Context, options: BetterAuthRuntimeOptions): Promise<
 export function createBetterAuthEnvironmentPublicHandler(input: {
   environment: BetterAuthEnvironment;
   identity: IdentityStore;
-  cloudflare: boolean;
 }) {
   const { environment, identity } = input;
   if (environment.cloudflareEnv) {

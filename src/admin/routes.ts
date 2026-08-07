@@ -245,6 +245,7 @@ import {
   type SlackTeamInfo,
 } from '../slack/credentials.ts';
 import { constantTimeEquals } from './constant-time.ts';
+import { setCookieValues } from '../auth/cookies.ts';
 import { AuthDeniedError, AuthService, setRequestPrincipal } from '../auth/service.ts';
 import {
   BetterAuthDirectory,
@@ -1134,7 +1135,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           const handler = createBetterAuthEnvironmentPublicHandler({
             environment: passwordContext.environment,
             identity: identity(c),
-            cloudflare: Boolean(passwordContext.environment.cloudflareEnv),
           });
           const response = await handler(betterAuthJsonRequest(
             c.req.raw,
@@ -2244,7 +2244,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const handler = createBetterAuthEnvironmentPublicHandler({
       environment: context.environment,
       identity: identity(c),
-      cloudflare: Boolean(context.environment.cloudflareEnv),
     });
     const response = await handler(betterAuthJsonRequest(
       c.req.raw,
@@ -5278,9 +5277,7 @@ function hasWorkersAiBinding(env: PlatformEnv | undefined): boolean {
 
 function copyAuthResponseCookies(c: Context, headers: Headers | undefined): void {
   if (!headers) return;
-  const cookies = (headers as Headers & { getSetCookie?: () => string[] }).getSetCookie?.() ??
-    (headers.get('set-cookie') ? [headers.get('set-cookie')!] : []);
-  for (const cookie of cookies) c.header('Set-Cookie', cookie, { append: true });
+  for (const cookie of setCookieValues(headers)) c.header('Set-Cookie', cookie, { append: true });
 }
 
 function providerApiKeyFromBody(body: unknown): string | undefined {
