@@ -86,7 +86,7 @@ test('Admin routes accept normalized principals and reject member or Slack ident
   const ownerToken = await personalTokens.create(owner.user.id, 'Owner API');
   const memberToken = await personalTokens.create(member.user.id, 'Member API');
   const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
-  const app = createAdminRoutes({ authService, store: config });
+  const app = createAdminRoutes({ authService, identity, store: config });
 
   assert.equal((await app.request('/admin/api/agents')).status, 401);
   assert.equal((await app.request('/admin/api/agents', {

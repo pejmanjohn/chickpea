@@ -54,11 +54,28 @@ test('external authenticators normalize into active internal principals', async 
   assert.equal(principal.role, 'owner');
   assert.equal(principal.authenticatorKind, 'test_oidc');
 
+  const successAudit = (await identity.listAuditEvents()).find(
+    (event) => event.eventType === 'identity.authentication' && event.outcome === 'success',
+  );
+  assert.equal(successAudit?.actorId, owner.membership.id);
+  assert.equal(successAudit?.subjectId, owner.user.id);
+  assert.deepEqual(JSON.parse(successAudit?.metadataJson ?? '{}'), {
+    action: 'admin.authenticate',
+    correlationId: principal.correlationId,
+    authenticatorKind: 'test_oidc',
+  });
+
   await identity.updateMembership({ membershipId: owner.membership.id, status: 'suspended' });
   await assert.rejects(
     () => service.authenticateRequest(new Request('https://app.example/admin')),
     (error: unknown) => error instanceof AuthDeniedError,
   );
+  const deniedAudit = (await identity.listAuditEvents()).find(
+    (event) => event.eventType === 'identity.authentication' && event.outcome === 'denied',
+  );
+  assert.equal(deniedAudit?.actorId, null);
+  assert.equal(deniedAudit?.subjectId, null);
+  assert.equal(deniedAudit?.reasonCode, 'authentication_denied');
   identity.close();
 });
 
@@ -83,5 +100,8 @@ test('unknown external identities receive a uniform denial without persistence',
   );
   assert.equal((await identity.listMemberships()).length, 0);
   assert.equal((await identity.listExternalIdentities()).length, 0);
+  const auditJson = JSON.stringify(await identity.listAuditEvents());
+  assert.equal(auditJson.includes('unknown@example.com'), false);
+  assert.equal(auditJson.includes('assertion_unknown'), false);
   identity.close();
 });

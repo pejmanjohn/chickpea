@@ -30,6 +30,7 @@ import type {
   Organization,
   OwnerClaim,
   PersonalTokenRecord,
+  RecordIdentityAuthAuditInput,
   ResendInvitationInput,
   ReplaceAccessOwnerBindingInput,
   UpdateMembershipInput,
@@ -262,6 +263,9 @@ export class IdentityStoreLogic {
         };
       case 'clear_auth_rate_limit':
         this.clearAuthRateLimit(request.bucket, request.keyHash);
+        return { kind: 'ok' };
+      case 'record_identity_auth_audit':
+        this.recordAuthAudit(request.input);
         return { kind: 'ok' };
       case 'export_summary':
         return { kind: 'export_summary', summary: this.exportSummary() };
@@ -1068,6 +1072,27 @@ export class IdentityStoreLogic {
     return this.audit.list({ domain: 'identity', limit });
   }
 
+  recordAuthAudit(input: RecordIdentityAuthAuditInput): void {
+    const action = safeAuditToken(input.action, 'action');
+    const correlationId = safeAuditToken(input.correlationId, 'correlationId');
+    const authenticatorKind = safeAuditToken(input.authenticatorKind, 'authenticatorKind');
+    const reasonCode = input.reasonCode === undefined || input.reasonCode === null
+      ? null
+      : safeAuditToken(input.reasonCode, 'reasonCode');
+    this.audit.append({
+      eventId: newId('audit'),
+      domain: 'identity',
+      eventType: `identity.${input.event}`,
+      outcome: input.outcome,
+      actorClass: input.membershipId ? 'membership' : 'system',
+      actorId: input.membershipId ?? null,
+      subjectId: input.userId ?? null,
+      createdAt: input.at ?? this.now(),
+      reasonCode,
+      metadataJson: JSON.stringify({ action, correlationId, authenticatorKind }),
+    });
+  }
+
   private initializeSchema(): void {
     this.db.exec(
       `CREATE TABLE IF NOT EXISTS identity_organizations (
@@ -1402,6 +1427,9 @@ export class SqliteIdentityStore implements IdentityStore {
   async clearAuthRateLimit(bucket: string, keyHash: string) {
     this.logic.clearAuthRateLimit(bucket, keyHash);
   }
+  async recordAuthAudit(input: RecordIdentityAuthAuditInput) {
+    this.logic.recordAuthAudit(input);
+  }
   async exportSummary() { return this.logic.exportSummary(); }
   async listAuditEvents(limit?: number) { return this.logic.listAuditEvents(limit); }
   close(): void { this.db.close(); }
@@ -1413,6 +1441,14 @@ function normalizeEmail(value: string): string {
     throw identityError('identity_invalid', 'Email address is invalid.');
   }
   return email;
+}
+
+function safeAuditToken(value: string, field: string): string {
+  const result = value.trim();
+  if (!result || result.length > 128 || !/^[A-Za-z0-9][A-Za-z0-9._:/-]*$/.test(result)) {
+    throw identityError('identity_invalid', `Auth audit ${field} is invalid.`);
+  }
+  return result;
 }
 
 function nonEmpty(value: string, field: string): string {

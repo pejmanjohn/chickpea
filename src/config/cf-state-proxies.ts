@@ -19,6 +19,7 @@ import type {
   IdentityRpcRequest,
   IdentityRpcResponse,
   IdentityStore,
+  RecordIdentityAuthAuditInput,
   ResendInvitationInput,
   ReplaceAccessOwnerBindingInput,
   UpdateMembershipInput,
@@ -396,6 +397,10 @@ export class CfIdentityStore implements IdentityStore {
   }
   async clearAuthRateLimit(bucket: string, keyHash: string) {
     const response = await this.execute({ kind: 'clear_auth_rate_limit', bucket, keyHash });
+    if (response.kind !== 'ok') throw unexpectedIdentityResponse();
+  }
+  async recordAuthAudit(input: RecordIdentityAuthAuditInput) {
+    const response = await this.execute({ kind: 'record_identity_auth_audit', input });
     if (response.kind !== 'ok') throw unexpectedIdentityResponse();
   }
   async exportSummary() {

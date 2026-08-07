@@ -5,7 +5,13 @@ import { bodyLimit } from 'hono/body-limit';
 import { getCookie, setCookie } from 'hono/cookie';
 import * as v from 'valibot';
 
-import { renderAdminLogin, renderAdminPage, renderAuthRecoveryPage, renderAuthSetupPage } from './page.ts';
+import {
+  renderAdminLogin,
+  renderAdminPage,
+  renderAuthMigrationPage,
+  renderAuthRecoveryPage,
+  renderAuthSetupPage,
+} from './page.ts';
 import { createMemoryAdminApi } from './memory-api.ts';
 import { createRoutineAdminApi } from './routines-api.ts';
 import { createUsageAdminApi } from './usage-api.ts';
@@ -58,6 +64,7 @@ import {
 } from '../config/egress.ts';
 import {
   createInstallationToken,
+  consumeGithubSetupState,
   exchangeGithubAppManifest,
   getGithubConnection,
   getRepositoryInstallation,
@@ -70,6 +77,7 @@ import {
   listInstallationRepos,
   listInstallations,
   normalizePrivateKeyPem,
+  saveGithubSetupState,
 } from '../config/github-app.ts';
 import { classifyMcpError, McpBlockedUrlError, mcpDebugText, safeMcpFailureText } from '../config/mcp-errors.ts';
 import {
@@ -218,13 +226,16 @@ import {
   type SlackTeamInfo,
 } from '../slack/credentials.ts';
 import { constantTimeEquals } from './constant-time.ts';
-import { AuthDeniedError, setRequestPrincipal } from '../auth/service.ts';
+import { AuthDeniedError, AuthService, setRequestPrincipal } from '../auth/service.ts';
 import { AuthorizationError, requirePermission } from '../auth/permissions.ts';
+import { validateMutationProvenance } from '../auth/request-provenance.ts';
 import { CloudflareAccessAuthenticator, verifyCloudflareAccessRecoveryAssertion } from '../auth/cloudflare-access.ts';
 import { AuthRateLimiter } from '../auth/rate-limit.ts';
 import { AuthRecoveryService } from '../auth/recovery.ts';
 import { AuthSetupService, validRecoveryToken } from '../auth/setup.ts';
-import type { AdminAuthenticationService, ExternalIdentity } from '../auth/types.ts';
+import { PersonalTokenService } from '../auth/personal-token.ts';
+import { TokenSessionService } from '../auth/token-session.ts';
+import type { AdminAuthenticationService, AuthPrincipal, ExternalIdentity } from '../auth/types.ts';
 
 type AccessVerificationPurpose = 'activation' | 'recovery';
 type AccessAssertionVerifier = (
@@ -312,6 +323,7 @@ const ADMIN_COOKIE = 'flue_admin';
 const AUTH_SESSION_COOKIE = 'chickpea_session';
 const MAX_ADMIN_LOGIN_BODY_BYTES = 4_096;
 const MAX_AUTH_SETUP_BODY_BYTES = 8_192;
+const MAX_ADMIN_MUTATION_BODY_BYTES = 1024 * 1024;
 
 const authSetupSchema = v.strictObject({
   ownerEmail: v.pipe(v.string(), v.trim(), v.email(), v.maxLength(320)),
@@ -784,6 +796,7 @@ const turnRecoveryResolveSchema = v.strictObject({
 });
 export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   const app = new Hono();
+  const principalByContext = new WeakMap<object, AuthPrincipal>();
   const tokenFromOptions = Object.hasOwn(options, 'adminToken');
   const store = (c: Context) => options.store ?? getConfigStore(c.env as PlatformEnv | undefined);
   const identity = (c: Context) =>
@@ -830,6 +843,36 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         audience: config.audience,
       }).authenticate(request);
     });
+  const configuredAuthService = async (c: Context): Promise<AdminAuthenticationService | undefined> => {
+    if (options.authService) return options.authService;
+    const identityStore = identity(c);
+    const organization = await identityStore.getOrganization();
+    if (!organization) return undefined;
+    if (organization.authMode === 'access_active') {
+      const config = await identityStore.getAuthProviderConfig('cloudflare_access');
+      if (!config?.issuer || !config.audience || config.state !== 'active') return undefined;
+      return new AuthService({
+        identity: identityStore,
+        authenticators: [new CloudflareAccessAuthenticator({
+          issuer: config.issuer,
+          audience: config.audience,
+        })],
+      });
+    }
+    if (organization.authMode === 'token_active') {
+      return new AuthService({
+        identity: identityStore,
+        personalTokens: new PersonalTokenService(identityStore),
+        tokenSessions: new TokenSessionService(identityStore),
+      });
+    }
+    return undefined;
+  };
+  const legacyAuthenticationAllowed = async (c: Context): Promise<boolean> => {
+    if (tokenFromOptions) return options.authService === undefined;
+    const organization = await identity(c).getOrganization();
+    return !organization || ['unconfigured', 'access_pending', 'legacy_shared'].includes(organization.authMode);
+  };
   const modelProviders = () =>
     options.knownProviders
       ? listRuntimeModelProviders({ registeredProviders: options.knownProviders })
@@ -920,13 +963,29 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     maxSize: MAX_AUTH_SETUP_BODY_BYTES,
     onError: (c) => c.json({ error: 'invalid_request' }, 413),
   });
+  const adminMutationBodyLimit = bodyLimit({
+    maxSize: MAX_ADMIN_MUTATION_BODY_BYTES,
+    onError: (c) => c.json({ error: 'request_too_large' }, 413),
+  });
 
   const adminGate = async (c: Context, next: Next) => {
-    if (options.authService) {
+    let authService: AdminAuthenticationService | undefined;
+    try {
+      authService = await configuredAuthService(c);
+    } catch {
+      return c.json({ error: 'authentication_unavailable' }, 503);
+    }
+    if (authService) {
       if (isAdminLoginPost(c)) {
         const login = await readAdminLogin(c);
+        const limiterToken = recoveryToken(c);
+        const limiter = limiterToken && isValidRecoveryConfiguration(limiterToken)
+          ? authRateLimiter(c, limiterToken)
+          : undefined;
+        const source = authSourceKey(c);
         try {
-          const result = await options.authService.loginWithPersonalToken?.(login.token ?? '');
+          await limiter?.assertAllowed('login', source);
+          const result = await authService.loginWithPersonalToken?.(login.token ?? '');
           if (!result) throw new AuthDeniedError();
           setCookie(c, AUTH_SESSION_COOKIE, result.sessionToken, {
             path: '/admin',
@@ -935,8 +994,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
             secure: isHttps(c),
             expires: new Date(result.expiresAt),
           });
+          await limiter?.recordSuccess('login', source);
           return c.redirect(login.returnTo, 303);
         } catch {
+          await limiter?.recordFailure('login', source);
           return c.html(
             renderAdminLogin({ invalidToken: true, returnTo: login.returnTo }),
             401,
@@ -944,9 +1005,53 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         }
       }
       try {
-        const principal = await options.authService.authenticateRequest(c.req.raw);
+        const principal = await authService.authenticateRequest(c.req.raw);
+        principalByContext.set(c, principal);
         setRequestPrincipal(c.req.raw, principal);
-        requirePermission(principal, 'admin.configure');
+        try {
+          requirePermission(principal, 'admin.configure');
+          await identity(c).recordAuthAudit({
+            event: 'authorization',
+            outcome: 'success',
+            action: 'admin.configure',
+            correlationId: principal.correlationId,
+            authenticatorKind: principal.authenticatorKind,
+            userId: principal.userId,
+            membershipId: principal.membershipId,
+          });
+        } catch (error) {
+          if (error instanceof AuthorizationError) {
+            await identity(c).recordAuthAudit({
+              event: 'authorization',
+              outcome: 'denied',
+              action: 'admin.configure',
+              correlationId: principal.correlationId,
+              authenticatorKind: principal.authenticatorKind,
+              userId: principal.userId,
+              membershipId: principal.membershipId,
+              reasonCode: 'permission_denied',
+            });
+          }
+          throw error;
+        }
+        if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(c.req.method)) {
+          const organization = await identity(c).getOrganization();
+          if (!organization?.canonicalAdminOrigin) throw new AuthDeniedError();
+          const provenance = validateMutationProvenance(c.req.raw, principal, {
+            canonicalOrigin: organization.canonicalAdminOrigin,
+            maxBodyBytes: MAX_ADMIN_MUTATION_BODY_BYTES,
+            requireJson: c.req.method !== 'DELETE',
+          });
+          if (!provenance.ok) {
+            if (provenance.code === 'body_too_large') {
+              return c.json({ error: 'request_too_large' }, 413);
+            }
+            if (provenance.code === 'content_type_denied') {
+              return c.json({ error: 'unsupported_media_type' }, 415);
+            }
+            return c.json({ error: 'forbidden' }, 403);
+          }
+        }
         return next();
       } catch (error) {
         if (error instanceof AuthorizationError) {
@@ -957,6 +1062,15 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         }
         return c.json({ error: 'unauthorized' }, 401);
       }
+    }
+    let legacyAllowed = false;
+    try {
+      legacyAllowed = await legacyAuthenticationAllowed(c);
+    } catch {
+      return c.json({ error: 'authentication_unavailable' }, 503);
+    }
+    if (!legacyAllowed) {
+      return c.json({ error: 'authentication_unavailable' }, 503);
     }
     const expected = adminToken();
     if (!expected) {
@@ -978,7 +1092,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         );
       }
       setAdminCookie(c, cookieValue);
-      return c.redirect(login.returnTo, 303);
+      return c.redirect(tokenFromOptions ? login.returnTo : '/admin/migrate', 303);
     }
 
     const candidate = bearerToken(c.req.header('authorization'));
@@ -1002,6 +1116,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       }
       return c.json({ error: 'unauthorized' }, 401);
     }
+    if (!tokenFromOptions && c.req.method === 'GET' && c.req.path === '/admin') {
+      return c.redirect('/admin/migrate', 303);
+    }
     return next();
   };
 
@@ -1017,6 +1134,48 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     });
   };
 
+  const completeGithubSetupCallback = async (c: Context): Promise<Response> => {
+    c.header('Cache-Control', 'no-store');
+    c.header('Referrer-Policy', 'no-referrer');
+    const parsed = v.safeParse(githubCallbackSchema, { code: c.req.query('code') });
+    if (!parsed.success) return invalidRequest(c);
+    try {
+      const state = c.req.query('state')?.trim() ?? '';
+      const setupState = await consumeGithubSetupState(settings(c), state);
+      if (!setupState) return c.json({ error: 'invalid_setup_state' }, 403);
+      if (setupState.membershipId) {
+        const membership = (await identity(c).listMemberships()).find(
+          (candidate) => candidate.id === setupState.membershipId,
+        );
+        if (!membership || membership.status !== 'active' ||
+            !['owner', 'admin'].includes(membership.role)) {
+          return c.json({ error: 'invalid_setup_state' }, 403);
+        }
+      }
+      const conversion = await exchangeGithubAppManifest(parsed.output.code);
+      await settings(c).applySettingsPatch({
+        set: [
+          { key: GITHUB_SETTING_KEYS.appId, value: String(conversion.id) },
+          { key: GITHUB_SETTING_KEYS.appSlug, value: conversion.slug },
+          {
+            key: GITHUB_SETTING_KEYS.privateKey,
+            value: normalizePrivateKeyPem(conversion.privateKeyPem),
+          },
+          ...(conversion.webhookSecret
+            ? [{ key: GITHUB_SETTING_KEYS.webhookSecret, value: conversion.webhookSecret }]
+            : []),
+        ],
+        ...(conversion.webhookSecret ? {} : { delete: [GITHUB_SETTING_KEYS.webhookSecret] }),
+      });
+      return c.redirect(
+        `https://github.com/apps/${encodeURIComponent(conversion.slug)}/installations/new`,
+        302,
+      );
+    } catch (error) {
+      return internalError(c, error);
+    }
+  };
+
   // Setup is reachable before an Access application exists. The recovery
   // credential authorizes only this bounded state transition and is never
   // exchanged for a browser session. Once configured, Cloudflare Access
@@ -1025,6 +1184,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   app.use('/admin/setup', authSetupBodyLimit);
   app.use('/admin/setup/*', authSetupBodyLimit);
   app.use('/admin/recovery', authSetupBodyLimit);
+  app.use('/admin/migrate', authSetupBodyLimit);
 
   app.get('/admin/setup', async (c) => {
     authResponseHeaders(c);
@@ -1090,7 +1250,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       await new AuthSetupService(identity(c), { recoveryToken: token }).activateAccess(external);
       return c.redirect('/admin', 303);
     } catch {
-      return c.html(renderAuthSetupPage({ state: 'access_pending', error: true }), 401);
+      const organization = await identity(c).getOrganization();
+      return c.html(
+        organization?.authMode === 'legacy_shared'
+          ? renderAuthMigrationPage({ error: true })
+          : renderAuthSetupPage({ state: 'access_pending', error: true }),
+        401,
+      );
     }
   });
 
@@ -1156,6 +1322,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return c.html(renderAuthRecoveryPage({ error: true }), 401);
     }
   });
+
+  // GitHub calls this endpoint without a Chickpea or Access session. The
+  // single-use state is the authorization boundary and is bound to the Admin
+  // membership that initiated the manifest flow. Keep the old path public for
+  // states minted before upgrade; both paths delegate to the same consumer.
+  app.get('/oauth/github/setup/callback', completeGithubSetupCallback);
+  app.get('/admin/api/github/setup/callback', completeGithubSetupCallback);
 
   // CIMD is fetched by the provider, not an administrator's browser. It is
   // intentionally public and contains client policy only — never a client
@@ -1318,12 +1491,21 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
 
   // Apply the byte cap before the unauthenticated body is buffered. Keep the
   // missing-token 404 contract by letting adminGate handle disabled admin UI.
-  app.use('/admin/login', (c, next) =>
-    adminToken() || options.authService ? adminLoginBodyLimit(c, next) : next(),
-  );
+  app.use('/admin/login', adminLoginBodyLimit);
   app.use('/admin', adminGate);
   app.use('/admin/*', adminGate);
+  app.use('/admin/api/*', (c, next) =>
+    ['POST', 'PUT', 'PATCH', 'DELETE'].includes(c.req.method)
+      ? adminMutationBodyLimit(c, next)
+      : next(),
+  );
   app.use('/admin/api/*', async (c, next) => {
+    // Body-limit middleware may replace the Request object while retaining the
+    // Hono Context. Reattach the trusted principal to that exact Request so
+    // routed sub-apps (work/memory/etc.) receive attribution, never a
+    // caller-supplied identity header.
+    const principal = principalByContext.get(c);
+    if (principal) setRequestPrincipal(c.req.raw, principal);
     const platformEnv = c.env as PlatformEnv | undefined;
     // The cutover drain probe must be observational: do not let the general
     // admin middleware reconcile provider keys or pin request-origin state.
@@ -1344,7 +1526,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       c.req.method === 'POST' && c.req.path === '/admin/api/slack-connection/test';
     const slackDisconnect =
       c.req.method === 'DELETE' && c.req.path === '/admin/api/slack-connection';
-    if (!slackConnectionTest && !slackDisconnect) {
+    // Identity-authenticated installs pin their canonical Admin origin during
+    // setup. Never let an arbitrary later request host rewrite it (or the
+    // Slack public URL derived from it). Legacy installs retain the historical
+    // opportunistic behavior until migration completes.
+    if (!principal && !slackConnectionTest && !slackDisconnect) {
       await persistRequestOrigin(c, settingsStore);
     }
     return next();
@@ -1509,6 +1695,56 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     c.header('Cache-Control', 'no-store');
     return c.html(renderAdminPage({ usageAdminUi: usageAdminUi(c) }));
   };
+
+  app.get('/admin/migrate', async (c) => {
+    authResponseHeaders(c);
+    const organization = await identity(c).getOrganization();
+    if (organization?.authMode === 'access_active' || organization?.authMode === 'token_active') {
+      return c.redirect('/admin', 303);
+    }
+    const token = recoveryToken(c);
+    if (!token || !isValidRecoveryConfiguration(token)) {
+      return c.json({ error: 'authentication_unavailable' }, 503);
+    }
+    return c.html(renderAuthMigrationPage());
+  });
+
+  app.post('/admin/migrate', async (c) => {
+    authResponseHeaders(c);
+    const token = recoveryToken(c);
+    if (!token || !isValidRecoveryConfiguration(token)) {
+      return c.json({ error: 'authentication_unavailable' }, 503);
+    }
+    const source = authSourceKey(c);
+    const limiter = authRateLimiter(c, token);
+    try {
+      await limiter.assertAllowed('setup', source);
+      if (!validAuthFormPost(c, requestOrigin(c))) throw new AuthDeniedError();
+      const form = v.safeParse(authSetupSchema, await readForm(c));
+      if (!form.success) throw new AuthDeniedError();
+      const setup = new AuthSetupService(identity(c), { recoveryToken: token });
+      const pending = await setup.beginAccessSetup({
+        recoveryToken: form.output.recoveryToken,
+        ownerEmail: form.output.ownerEmail,
+      });
+      await setup.configureAccess({
+        recoveryToken: form.output.recoveryToken,
+        issuer: form.output.issuer,
+        audience: form.output.audience,
+        canonicalAdminOrigin: requestOrigin(c),
+      });
+      await identity(c).updateOrganizationAuth({
+        organizationId: pending.organization.id,
+        authMode: 'legacy_shared',
+        canonicalAdminOrigin: requestOrigin(c),
+      });
+      await limiter.recordSuccess('setup', source);
+      return c.redirect('/admin/setup/verify', 303);
+    } catch {
+      await limiter.recordFailure('setup', source);
+      return c.html(renderAuthMigrationPage({ error: true }), 401);
+    }
+  });
 
   app.get('/admin', adminPage);
 
@@ -2082,10 +2318,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     // logged-in admin a callback URL carrying a code for an attacker-owned
     // App and silently overwrite this deployment's GitHub credentials.
     const setupState = randomUUID().replaceAll('-', '');
-    await settings(c).setSetting(
-      GITHUB_SETTING_KEYS.setupState,
-      `${setupState}:${Date.now()}`,
-    );
+    await saveGithubSetupState(settings(c), {
+      state: setupState,
+      mintedAt: Date.now(),
+      membershipId: principalByContext.get(c)?.membershipId ?? null,
+    });
     const base = org
       ? `https://github.com/organizations/${org}/settings/apps/new`
       : 'https://github.com/settings/apps/new';
@@ -2105,7 +2342,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       manifest: {
         name: `chickpea-${suffix}`,
         url: origin,
-        redirect_url: `${origin}/admin/api/github/setup/callback`,
+        redirect_url: `${origin}/oauth/github/setup/callback`,
         // After the user finishes installing the app (picking repos), GitHub
         // returns them here — closing the create→install→back loop without a
         // manual "now go refresh Settings" step.
@@ -2123,53 +2360,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         },
       },
     });
-  });
-
-  app.get('/admin/api/github/setup/callback', async (c) => {
-    const parsed = v.safeParse(githubCallbackSchema, { code: c.req.query('code') });
-    if (!parsed.success) {
-      return invalidRequest(c);
-    }
-    try {
-      // Consume the single-use setup state BEFORE exchanging the code: a
-      // mismatched or replayed callback must never reach the credential write.
-      const state = c.req.query('state')?.trim() ?? '';
-      const stored = await settings(c).getSetting(GITHUB_SETTING_KEYS.setupState);
-      await settings(c).applySettingsPatch({ delete: [GITHUB_SETTING_KEYS.setupState] });
-      const [storedState, mintedAtRaw] = (stored ?? '').split(':');
-      const mintedAt = Number(mintedAtRaw);
-      const fresh = Number.isFinite(mintedAt) && Date.now() - mintedAt < 15 * 60 * 1_000;
-      if (!state || !storedState || state !== storedState || !fresh) {
-        return c.json({ error: 'invalid_setup_state' }, 403);
-      }
-      const conversion = await exchangeGithubAppManifest(parsed.output.code);
-      await settings(c).applySettingsPatch({
-        set: [
-          { key: GITHUB_SETTING_KEYS.appId, value: String(conversion.id) },
-          { key: GITHUB_SETTING_KEYS.appSlug, value: conversion.slug },
-          {
-            key: GITHUB_SETTING_KEYS.privateKey,
-            value: normalizePrivateKeyPem(conversion.privateKeyPem),
-          },
-          // Apps created without a webhook (localhost dev) return no secret.
-          ...(conversion.webhookSecret
-            ? [{ key: GITHUB_SETTING_KEYS.webhookSecret, value: conversion.webhookSecret }]
-            : []),
-        ],
-        // A prior install may have left a webhook secret; clear it when the
-        // new App has none so stale state can't linger.
-        ...(conversion.webhookSecret ? {} : { delete: [GITHUB_SETTING_KEYS.webhookSecret] }),
-      });
-      // A registered app is useless until it's installed somewhere, so send
-      // the operator straight to GitHub's install page — one continuous flow:
-      // create → (this callback) → pick repos → setup_url back to Settings.
-      return c.redirect(
-        `https://github.com/apps/${encodeURIComponent(conversion.slug)}/installations/new`,
-        302,
-      );
-    } catch (err) {
-      return internalError(c, err);
-    }
   });
 
   app.delete('/admin/api/github', async (c) => {

@@ -115,6 +115,18 @@ export interface AuthRateLimitState {
   failures: number;
 }
 
+export interface RecordIdentityAuthAuditInput {
+  event: 'authentication' | 'authorization';
+  outcome: 'success' | 'denied';
+  action: string;
+  correlationId: string;
+  authenticatorKind: string;
+  userId?: string | null;
+  membershipId?: string | null;
+  reasonCode?: string | null;
+  at?: number;
+}
+
 export interface IdentityResolution {
   user: User;
   binding: ExternalIdentityBinding;
@@ -270,6 +282,7 @@ export interface IdentityStore {
     windowStart: number,
   ): Promise<AuthRateLimitState>;
   clearAuthRateLimit(bucket: string, keyHash: string): Promise<void>;
+  recordAuthAudit(input: RecordIdentityAuthAuditInput): Promise<void>;
   exportSummary(): Promise<IdentityExportSummary>;
   listAuditEvents(limit?: number): Promise<AuditEvent[]>;
 }
@@ -319,6 +332,7 @@ export type IdentityRpcRequest =
   | { kind: 'get_auth_rate_limit'; bucket: string; keyHash: string }
   | { kind: 'record_auth_rate_failure'; bucket: string; keyHash: string; windowStart: number }
   | { kind: 'clear_auth_rate_limit'; bucket: string; keyHash: string }
+  | { kind: 'record_identity_auth_audit'; input: RecordIdentityAuthAuditInput }
   | { kind: 'export_summary' }
   | { kind: 'list_identity_audit_events'; limit?: number };
 

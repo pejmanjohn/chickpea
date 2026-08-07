@@ -11263,6 +11263,38 @@ button { margin-top:22px; border:0; border-radius:12px; background:var(--gold); 
 </html>`;
 }
 
+export function renderAuthMigrationPage(options: { error?: boolean } = {}): string {
+  const error = options.error
+    ? '<p class="error" role="alert">Migration could not be saved. Your existing Admin login is still active.</p>'
+    : '';
+  return `<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chickpea · Upgrade authentication</title>${ADMIN_FAVICON}
+<style>
+:root { --canvas:#f4ebd8; --card:#fffdf6; --ink:#3b3220; --muted:#6b5c42; --gold:#dda033; --line:rgba(59,50,32,.14); --danger:#b5473a; }
+* { box-sizing:border-box; } body { margin:0; min-height:100dvh; background:var(--canvas); color:var(--ink); font-family:Quicksand,system-ui,sans-serif; padding:24px; }
+main { width:min(680px,100%); margin:0 auto; background:var(--card); border:1px solid var(--line); border-radius:18px; padding:clamp(22px,5vw,38px); box-shadow:0 8px 30px rgba(59,50,32,.08); }
+h1 { margin:0 0 8px; font-size:clamp(1.6rem,5vw,2.3rem); } p,li { color:var(--muted); line-height:1.55; } .notice { border:1px solid var(--line); border-radius:12px; padding:14px; }
+label { display:block; font-weight:700; margin:16px 0 6px; } input { width:100%; border:1px solid var(--line); border-radius:10px; padding:11px 12px; font:inherit; }
+input:focus-visible,button:focus-visible { outline:3px solid rgba(221,160,51,.45); outline-offset:2px; } button { margin-top:22px; border:0; border-radius:12px; background:var(--gold); color:var(--ink); padding:12px 18px; font:inherit; font-weight:800; cursor:pointer; }
+.error { color:var(--danger); font-weight:700; } @media (max-width:560px) { body { padding:12px; } main { border-radius:14px; } }
+</style></head><body><main>
+  <p>Authentication upgrade</p>
+  <h1>Give every person their own identity</h1>
+  <p class="notice">Your existing shared Admin token remains usable until a matching Cloudflare Access identity activates the owner account. After activation, it stops authenticating immediately.</p>
+  ${error}
+  <ol><li>Create or reuse a Cloudflare Zero Trust team.</li><li>Protect both <code>/admin</code> and <code>/admin/*</code> in one Access application.</li><li>Save the issuer and audience here, then verify through Access.</li></ol>
+  <form method="post" action="/admin/migrate">
+    <label for="owner-email">First owner email</label><input id="owner-email" name="ownerEmail" type="email" autocomplete="email" required>
+    <label for="recovery-token">Offline recovery token</label><input id="recovery-token" name="recoveryToken" type="password" autocomplete="off" required>
+    <label for="access-issuer">Cloudflare team issuer</label><input id="access-issuer" name="issuer" type="url" placeholder="https://team.cloudflareaccess.com" required>
+    <label for="access-audience">Access application audience</label><input id="access-audience" name="audience" autocomplete="off" required>
+    <button type="submit">Save and verify through Access</button>
+  </form>
+</main></body></html>`;
+}
+
 function escapeHtmlAttribute(value: string): string {
   return value
     .replaceAll('&', '&amp;')

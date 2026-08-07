@@ -88,7 +88,8 @@ export class AuthSetupService {
       }
       throw new AuthDeniedError();
     }
-    if (organization.authMode !== 'access_pending' || config.state !== 'pending') {
+    if (!['access_pending', 'legacy_shared'].includes(organization.authMode) ||
+        config.state !== 'pending') {
       throw new AuthDeniedError();
     }
 
