@@ -5,6 +5,10 @@ import * as v from 'valibot';
 
 import { AuthorizationError, requirePermission } from '../auth/permissions.ts';
 import { digest } from '../auth/personal-token.ts';
+import {
+  PasswordLifecycleError,
+  type PasswordTeamLifecycleService,
+} from '../auth/password-team.ts';
 import { requestPrincipal } from '../auth/service.ts';
 import type { AuthPrincipal } from '../auth/types.ts';
 import { IdentityStateError } from '../identity/errors.ts';
@@ -33,6 +37,7 @@ const membershipPatchSchema = v.pipe(
 interface TeamAdminApiOptions {
   store: (c: Context) => IdentityStore;
   directory?: (c: Context) => Promise<HumanIdentityDirectory>;
+  passwordLifecycle?: (c: Context) => Promise<PasswordTeamLifecycleService | undefined>;
   now?: () => number;
   randomBytes?: (length: number) => Uint8Array;
 }
@@ -69,15 +74,30 @@ export function createTeamAdminApi(options: TeamAdminApiOptions): Hono {
   app.get('/team', async (c) => {
     const principal = requiredPrincipal(c, 'team.manage');
     c.header('Cache-Control', 'no-store');
-    return c.json(await teamSnapshot(await directory(options, c), options.store(c), principal));
+    const lifecycle = await options.passwordLifecycle?.(c);
+    return c.json(await teamSnapshot(
+      await directory(options, c),
+      options.store(c),
+      principal,
+      lifecycle,
+      c.req.raw.headers,
+    ));
   });
 
   app.post('/team/invitations', async (c) => {
     const principal = requiredPrincipal(c, 'team.manage');
     const parsed = v.safeParse(inviteSchema, await readJson(c));
     if (!parsed.success) return invalid(c);
-    const secret = Buffer.from(randomBytes(32)).toString('base64url');
     try {
+      const lifecycle = await options.passwordLifecycle?.(c);
+      if (lifecycle) {
+        const result = await lifecycle.createInvitation({
+          ...parsed.output,
+          headers: c.req.raw.headers,
+        });
+        return c.json(result, 201);
+      }
+      const secret = Buffer.from(randomBytes(32)).toString('base64url');
       const identity = await writableStore(options, c);
       if (!identity) return c.json({ error: 'team_lifecycle_unavailable' }, 409);
       const origin = await canonicalInviteOrigin(await directory(options, c));
@@ -103,8 +123,15 @@ export function createTeamAdminApi(options: TeamAdminApiOptions): Hono {
     const principal = requiredPrincipal(c, 'team.manage');
     const invitationId = parseId(c.req.param('invitationId'));
     if (!invitationId) return invalid(c);
-    const secret = Buffer.from(randomBytes(32)).toString('base64url');
     try {
+      const lifecycle = await options.passwordLifecycle?.(c);
+      if (lifecycle) {
+        return c.json(await lifecycle.rotateInvitation({
+          operationId: invitationId,
+          headers: c.req.raw.headers,
+        }));
+      }
+      const secret = Buffer.from(randomBytes(32)).toString('base64url');
       const identity = await writableStore(options, c);
       if (!identity) return c.json({ error: 'team_lifecycle_unavailable' }, 409);
       const origin = await canonicalInviteOrigin(await directory(options, c));
@@ -132,6 +159,12 @@ export function createTeamAdminApi(options: TeamAdminApiOptions): Hono {
     const invitationId = parseId(c.req.param('invitationId'));
     if (!invitationId) return invalid(c);
     try {
+      const lifecycle = await options.passwordLifecycle?.(c);
+      if (lifecycle) {
+        return c.json({
+          invitation: await lifecycle.revokeInvitation(invitationId, c.req.raw.headers),
+        });
+      }
       const store = await writableStore(options, c);
       if (!store) return c.json({ error: 'team_lifecycle_unavailable' }, 409);
       const existing = (await store.listInvitations()).find((row) => row.id === invitationId);
@@ -151,13 +184,25 @@ export function createTeamAdminApi(options: TeamAdminApiOptions): Hono {
     const parsed = v.safeParse(membershipPatchSchema, await readJson(c));
     if (!membershipId || !parsed.success) return invalid(c);
     try {
-      const store = await writableStore(options, c);
-      if (!store) return c.json({ error: 'team_lifecycle_unavailable' }, 409);
-      const target = (await store.listMemberships()).find((row) => row.id === membershipId);
+      const identity = await directory(options, c);
+      const target = await identity.getMembership(membershipId);
       if (!target || target.organizationId !== principal.organizationId) {
         return c.json({ error: 'membership_unavailable' }, 404);
       }
       enforceMembershipGrant(principal, target, parsed.output.role, parsed.output.status);
+      const lifecycle = await options.passwordLifecycle?.(c);
+      if (lifecycle) {
+        const membership = await lifecycle.updateMembership({
+          membership: target,
+          ...(parsed.output.role === undefined ? {} : { role: parsed.output.role }),
+          ...(parsed.output.status === undefined ? {} : { status: parsed.output.status }),
+          actorMembershipId: principal.membershipId,
+          headers: c.req.raw.headers,
+        });
+        return c.json({ membership });
+      }
+      const store = await writableStore(options, c);
+      if (!store) return c.json({ error: 'team_lifecycle_unavailable' }, 409);
       const membership = await store.updateMembership({
         membershipId,
         ...(parsed.output.role === undefined ? {} : { role: parsed.output.role }),
@@ -165,6 +210,24 @@ export function createTeamAdminApi(options: TeamAdminApiOptions): Hono {
         actorMembershipId: principal.membershipId,
       });
       return c.json({ membership });
+    } catch (error) {
+      return teamError(c, error);
+    }
+  });
+
+  app.post('/team/memberships/:membershipId/reset', async (c) => {
+    const principal = requiredPrincipal(c, 'team.manage');
+    const membershipId = parseId(c.req.param('membershipId'));
+    if (!membershipId) return invalid(c);
+    try {
+      const lifecycle = await options.passwordLifecycle?.(c);
+      if (!lifecycle) return c.json({ error: 'reset_unavailable' }, 409);
+      const target = await (await directory(options, c)).getMembership(membershipId);
+      if (!target || target.organizationId !== principal.organizationId) {
+        return c.json({ error: 'membership_unavailable' }, 404);
+      }
+      if (target.role === 'owner') requirePermission(principal, 'team.manage_owners');
+      return c.json(await lifecycle.createAdministrativeReset({ membership: target }), 201);
     } catch (error) {
       return teamError(c, error);
     }
@@ -194,12 +257,16 @@ async function teamSnapshot(
   directory: HumanIdentityDirectory,
   control: IdentityStore,
   principal: AuthPrincipal,
+  passwordLifecycle?: PasswordTeamLifecycleService,
+  headers?: Headers,
 ) {
   const [organization, memberships, bindings, invitations] = await Promise.all([
     directory.getOrganization(),
     directory.listMemberships(),
     control.listExternalIdentities(),
-    control.listInvitations(),
+    passwordLifecycle && headers
+      ? passwordLifecycle.listInvitations(headers)
+      : control.listInvitations(),
   ]);
   const users = (await Promise.all(
     memberships.map((membership) => directory.getUser(membership.userId)),
@@ -223,17 +290,27 @@ async function teamSnapshot(
         displayName: user?.displayName ?? null,
         role: membership.role,
         status: membership.status,
-        externalIdentity: binding ? { provider: binding.provider, bound: true } : null,
+        externalIdentity: binding
+          ? { provider: binding.provider, bound: true }
+          : passwordLifecycle ? { provider: 'password', bound: true } : null,
       };
     }),
     invitations: invitations.map(safeInvitation),
   };
 }
 
-function safeInvitation(invitation: Invitation) {
+function safeInvitation(invitation: Invitation | {
+  id: string;
+  email: string;
+  role: OrganizationRole;
+  status: Invitation['status'];
+  expiresAt: number;
+  createdAt: number;
+  updatedAt: number;
+}) {
   return {
     id: invitation.id,
-    email: invitation.normalizedEmail,
+    email: 'normalizedEmail' in invitation ? invitation.normalizedEmail : invitation.email,
     role: invitation.role,
     status: invitation.status,
     expiresAt: invitation.expiresAt,
@@ -289,6 +366,12 @@ function invalid(c: Context) {
 
 function teamError(c: Context, error: unknown) {
   if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+  if (error instanceof PasswordLifecycleError) {
+    if (error.code === 'already_enrolled' || error.code === 'conflict') {
+      return c.json({ error: error.code }, 409);
+    }
+    return c.json({ error: 'resource_unavailable' }, 404);
+  }
   if (error instanceof IdentityStateError) {
     if (['invitation_missing', 'membership_missing'].includes(error.code)) {
       return c.json({ error: 'resource_unavailable' }, 404);

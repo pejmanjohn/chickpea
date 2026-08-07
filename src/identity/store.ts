@@ -44,6 +44,7 @@ import type {
   RecordIdentityAuthAuditInput,
   ResendInvitationInput,
   ReplaceAccessOwnerBindingInput,
+  SetMembershipAccessOverlayInput,
   UpdateMembershipInput,
   UpdateAuthControlInput,
   UpdateOrganizationAuthInput,
@@ -231,6 +232,11 @@ export class IdentityStoreLogic {
           kind: 'auth_operation',
           operation: this.findAuthOperation(request.operationKind, request.capabilityHash) ?? null,
         };
+      case 'list_auth_operations':
+        return {
+          kind: 'auth_operations',
+          operations: this.listAuthOperations(request.operationKind, request.organizationId),
+        };
       case 'advance_auth_operation':
         return { kind: 'auth_operation', operation: this.advanceAuthOperation(request.input) };
       case 'consume_auth_operation':
@@ -243,6 +249,11 @@ export class IdentityStoreLogic {
         return {
           kind: 'membership_access_overlay',
           overlay: this.getMembershipAccessOverlay(request.membershipId) ?? null,
+        };
+      case 'set_membership_access_overlay':
+        return {
+          kind: 'membership_access_overlay',
+          overlay: this.setMembershipAccessOverlay(request.input),
         };
       case 'ensure_organization':
         return { kind: 'organization', organization: this.ensureOrganization(request.input) };
@@ -433,6 +444,71 @@ export class IdentityStoreLogic {
     };
   }
 
+  setMembershipAccessOverlay(input: SetMembershipAccessOverlayInput): MembershipAccessOverlay {
+    const membershipId = strictText(input.membershipId, 'membershipId', 256);
+    const organizationId = strictText(input.organizationId, 'organizationId', 256);
+    const actorMembershipId = input.actorMembershipId === undefined
+      ? null
+      : strictText(input.actorMembershipId, 'actorMembershipId', 256);
+    const accessStatus = input.accessStatus;
+    if (accessStatus !== 'active' && accessStatus !== 'suspended') {
+      throw identityError('identity_invalid', 'Membership access status is invalid.');
+    }
+    const current = this.getMembershipAccessOverlay(membershipId);
+    const ownerMembershipIds = input.ownerMembershipIds?.map((id) =>
+      strictText(id, 'ownerMembershipId', 256));
+    if (ownerMembershipIds && new Set(ownerMembershipIds).size !== ownerMembershipIds.length) {
+      throw identityError('identity_invalid', 'Owner membership list contains duplicates.');
+    }
+    if (accessStatus === 'suspended' && ownerMembershipIds?.includes(membershipId)) {
+      const hasOtherActiveOwner = ownerMembershipIds.some((ownerId) =>
+        ownerId !== membershipId &&
+        this.getMembershipAccessOverlay(ownerId)?.accessStatus !== 'suspended');
+      if (!hasOtherActiveOwner) {
+        throw identityError('last_owner_required', 'At least one active owner is required.', {
+          membershipId,
+        });
+      }
+    }
+    const expectedVersion = input.expectedVersion;
+    if (expectedVersion !== undefined &&
+        (!Number.isSafeInteger(expectedVersion) || expectedVersion < 0 ||
+         (current?.membershipVersion ?? 0) !== expectedVersion)) {
+      throw identityError('auth_operation_conflict', 'Membership access changed concurrently.');
+    }
+    if (current && current.organizationId !== organizationId) {
+      throw identityError('identity_invalid', 'Membership access organization is immutable.');
+    }
+    const at = input.at ?? this.now();
+    const nextVersion = (current?.membershipVersion ?? 0) + 1;
+    this.db.transaction(() => {
+      this.db.run(
+        `INSERT INTO identity_membership_access_overlays (
+           membership_id, organization_id, access_status, membership_version,
+           created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(membership_id) DO UPDATE SET
+           access_status = excluded.access_status,
+           membership_version = excluded.membership_version,
+           updated_at = excluded.updated_at`,
+        membershipId,
+        organizationId,
+        accessStatus,
+        nextVersion,
+        current?.createdAt ?? at,
+        at,
+      );
+      this.appendAudit(
+        'identity.membership_access_updated',
+        membershipId,
+        at,
+        actorMembershipId,
+        { accessStatus, membershipVersion: String(nextVersion) },
+      );
+    });
+    return this.getMembershipAccessOverlay(membershipId)!;
+  }
+
   createAuthOperation(input: CreateAuthOperationInput): AuthOperation {
     const id = input.id === undefined ? newId('auth_operation') : strictText(input.id, 'operationId', 256);
     const email = normalizeEmail(input.expectedEmail);
@@ -510,6 +586,25 @@ export class IdentityStoreLogic {
       kind, credentialHash(capabilityHash),
     );
     return row ? rowToAuthOperation(row as unknown as AuthOperationRow) : undefined;
+  }
+
+  listAuthOperations(kind?: AuthOperationKind, organizationId?: string): AuthOperation[] {
+    if (kind !== undefined) validateAuthOperationKind(kind);
+    const normalizedOrganizationId = organizationId === undefined
+      ? undefined
+      : strictText(organizationId, 'organizationId', 256);
+    return this.db
+      .all(
+        `SELECT * FROM identity_auth_operations
+         WHERE (? IS NULL OR kind = ?)
+           AND (? IS NULL OR organization_id = ?)
+         ORDER BY created_at, operation_id`,
+        kind ?? null,
+        kind ?? null,
+        normalizedOrganizationId ?? null,
+        normalizedOrganizationId ?? null,
+      )
+      .map((row) => rowToAuthOperation(row as unknown as AuthOperationRow));
   }
 
   advanceAuthOperation(input: AdvanceAuthOperationInput): AuthOperation {
@@ -1823,6 +1918,9 @@ export class SqliteIdentityStore implements IdentityStore {
   async findAuthOperation(kind: AuthOperationKind, capabilityHash: string) {
     return this.logic.findAuthOperation(kind, capabilityHash);
   }
+  async listAuthOperations(kind?: AuthOperationKind, organizationId?: string) {
+    return this.logic.listAuthOperations(kind, organizationId);
+  }
   async advanceAuthOperation(input: AdvanceAuthOperationInput) {
     return this.logic.advanceAuthOperation(input);
   }
@@ -1835,6 +1933,9 @@ export class SqliteIdentityStore implements IdentityStore {
   async revokeAuthOperation(operationId: string) { return this.logic.revokeAuthOperation(operationId); }
   async getMembershipAccessOverlay(membershipId: string) {
     return this.logic.getMembershipAccessOverlay(membershipId);
+  }
+  async setMembershipAccessOverlay(input: SetMembershipAccessOverlayInput) {
+    return this.logic.setMembershipAccessOverlay(input);
   }
   async ensureOrganization(input: EnsureOrganizationInput) { return this.logic.ensureOrganization(input); }
   async getOrganization() { return this.logic.getOrganization(); }

@@ -25,7 +25,11 @@ import { createWorkAdminApi } from './work-api.ts';
 import { createTeamAdminApi } from './team-api.ts';
 import {
   invitationJoinClientScript,
+  passwordInvitationClientScript,
+  passwordResetClientScript,
   renderInvitationJoinPage,
+  renderPasswordInvitationPage,
+  renderPasswordResetPage,
 } from '../join/page.ts';
 // Build-time JSON import: the committed manifest is the single source of the
 // Slack app identity; the wizard deep-link below substitutes the request host
@@ -265,6 +269,11 @@ import {
   validRecoveryToken,
 } from '../auth/setup.ts';
 import { assertPasswordPolicy } from '../auth/password-policy.ts';
+import {
+  PasswordEnrollmentService,
+  PasswordLifecycleError,
+  PasswordTeamLifecycleService,
+} from '../auth/password-team.ts';
 import { digest, PersonalTokenService } from '../auth/personal-token.ts';
 import { TokenSessionService } from '../auth/token-session.ts';
 import type { AdminAuthenticationService, AuthPrincipal, ExternalIdentity } from '../auth/types.ts';
@@ -388,6 +397,22 @@ const passwordRecoverySchema = v.strictObject({
 const invitationJoinSchema = v.strictObject({
   invitationId: v.pipe(v.string(), v.regex(/^invitation_[A-Za-z0-9_-]{1,180}$/)),
   token: v.pipe(v.string(), v.minLength(32), v.maxLength(256), v.regex(/^[A-Za-z0-9_-]+$/)),
+});
+const passwordInvitationSchema = v.strictObject({
+  operationId: v.pipe(v.string(), v.regex(/^auth_operation_[A-Za-z0-9_-]{1,220}$/)),
+  token: v.pipe(v.string(), v.minLength(32), v.maxLength(256), v.regex(/^[A-Za-z0-9_-]+$/)),
+  displayName: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(128))),
+  password: v.optional(v.pipe(v.string(), v.minLength(1), v.maxLength(512))),
+});
+const passwordCapabilityInspectionSchema = v.strictObject({
+  operationId: v.pipe(v.string(), v.regex(/^auth_operation_[A-Za-z0-9_-]{1,220}$/)),
+  token: v.pipe(v.string(), v.minLength(32), v.maxLength(256), v.regex(/^[A-Za-z0-9_-]+$/)),
+});
+const passwordResetSchema = v.strictObject({
+  operationId: v.pipe(v.string(), v.regex(/^auth_operation_[A-Za-z0-9_-]{1,220}$/)),
+  token: v.pipe(v.string(), v.minLength(32), v.maxLength(256), v.regex(/^[A-Za-z0-9_-]+$/)),
+  inspect: v.optional(v.literal(true)),
+  newPassword: v.optional(v.pipe(v.string(), v.minLength(1), v.maxLength(512))),
 });
 const authRecoverySchema = v.strictObject({
   operation: v.picklist(['audience', 'owner_binding']),
@@ -935,6 +960,16 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   };
   const humanDirectory = async (c: Context): Promise<HumanIdentityDirectory> =>
     (await passwordAuthContext(c))?.directory ?? identity(c);
+  const passwordTeamLifecycle = async (c: Context): Promise<PasswordTeamLifecycleService | undefined> => {
+    const context = await passwordAuthContext(c);
+    return context
+      ? new PasswordTeamLifecycleService(
+          identity(c),
+          context.environment,
+          context.organizationId,
+        )
+      : undefined;
+  };
   const configuredAuthService = async (c: Context): Promise<AdminAuthenticationService | undefined> => {
     if (options.authService) return options.authService;
     const identityStore = identity(c);
@@ -1204,7 +1239,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           authResponseHeaders(c);
           return c.html(
             (await passwordAuthContext(c))
-              ? renderPasswordLogin({ returnTo: safeAdminReturnPath(c.req.path) })
+              ? renderPasswordLogin({
+                  returnTo: safeAdminReturnPath(c.req.query('returnTo') ?? c.req.path),
+                })
               : renderAdminLogin({ returnTo: safeAdminReturnPath(c.req.path) }),
             401,
           );
@@ -1572,20 +1609,37 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   app.get('/oauth/github/setup/callback', completeGithubSetupCallback);
   app.get('/admin/api/github/setup/callback', completeGithubSetupCallback);
 
-  // The Access edge has authenticated this browser, but an invited identity
-  // does not have a Chickpea principal yet. Keep this one route outside the
-  // normal Admin gate so the fragment-held invitation can create that binding.
+  // Invitation and reset capabilities arrive in URL fragments and are moved to
+  // same-tab storage before these routes run. Keep the bounded enrollment
+  // wrappers outside the ordinary Admin gate: they authenticate only the exact
+  // operation, while Better Auth signup itself remains dark.
   app.use('/admin/join', invitationJoinBodyLimit);
+  app.use('/admin/join/*', invitationJoinBodyLimit);
+  app.use('/admin/reset', invitationJoinBodyLimit);
+  app.use('/admin/reset/*', invitationJoinBodyLimit);
   app.get('/admin/join/client.js', (c) => {
     authResponseHeaders(c);
     c.header('Content-Type', 'application/javascript; charset=UTF-8');
     c.header('Content-Security-Policy', invitationJoinCsp());
     return c.body(invitationJoinClientScript());
   });
+  app.get('/admin/join/password-client.js', (c) => {
+    authResponseHeaders(c);
+    c.header('Content-Type', 'application/javascript; charset=UTF-8');
+    c.header('Content-Security-Policy', invitationJoinCsp());
+    return c.body(passwordInvitationClientScript());
+  });
+  app.get('/admin/reset/client.js', (c) => {
+    authResponseHeaders(c);
+    c.header('Content-Type', 'application/javascript; charset=UTF-8');
+    c.header('Content-Security-Policy', invitationJoinCsp());
+    return c.body(passwordResetClientScript());
+  });
   app.get('/admin/join', async (c) => {
     authResponseHeaders(c);
     c.header('Content-Security-Policy', invitationJoinCsp());
     try {
+      if (await passwordAuthContext(c)) return c.html(renderPasswordInvitationPage());
       const config = await identity(c).getAuthProviderConfig('cloudflare_access');
       if (!config || config.state !== 'active') throw new AuthDeniedError();
       const external = await verifyAccessAssertion(c.req.raw, config, 'activation');
@@ -1600,6 +1654,38 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return c.json({ error: 'join_unavailable' }, 401);
     }
   });
+  app.post('/admin/join/inspect', async (c) => {
+    authResponseHeaders(c);
+    const token = recoveryToken(c);
+    if (!token || !isValidRecoveryConfiguration(token)) {
+      return c.json({ error: 'join_unavailable' }, 401);
+    }
+    const source = authSourceKey(c);
+    const limiter = authRateLimiter(c, token);
+    try {
+      await limiter.assertAllowed('invite', source);
+      const context = await passwordAuthContext(c);
+      if (!context || !validJsonMutation(c, context.environment.baseURL)) {
+        throw new AuthDeniedError();
+      }
+      const parsed = v.safeParse(passwordCapabilityInspectionSchema, await readJson(c.req));
+      if (!parsed.success) throw new AuthDeniedError();
+      const inspected = await new PasswordEnrollmentService(
+        identity(c),
+        context.environment,
+        context.organizationId,
+      ).inspectInvitation({
+        operationId: parsed.output.operationId,
+        secret: parsed.output.token,
+        headers: c.req.raw.headers,
+      });
+      await limiter.recordSuccess('invite', source);
+      return c.json(inspected);
+    } catch (error) {
+      await limiter.recordFailure('invite', source);
+      return passwordCapabilityError(c, error, 'join_unavailable');
+    }
+  });
   app.post('/admin/join', async (c) => {
     authResponseHeaders(c);
     const token = recoveryToken(c);
@@ -1610,6 +1696,36 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const limiter = authRateLimiter(c, token);
     try {
       await limiter.assertAllowed('invite', source);
+      const passwordContext = await passwordAuthContext(c);
+      if (passwordContext) {
+        if (!validJsonMutation(c, passwordContext.environment.baseURL)) throw new AuthDeniedError();
+        const parsed = v.safeParse(passwordInvitationSchema, await readJson(c.req));
+        if (!parsed.success) throw new AuthDeniedError();
+        const result = await new PasswordEnrollmentService(
+          identity(c),
+          passwordContext.environment,
+          passwordContext.organizationId,
+        ).completeInvitation({
+          operationId: parsed.output.operationId,
+          secret: parsed.output.token,
+          headers: c.req.raw.headers,
+          ...(parsed.output.displayName === undefined
+            ? {} : { displayName: parsed.output.displayName }),
+          ...(parsed.output.password === undefined ? {} : { password: parsed.output.password }),
+        });
+        copyAuthResponseCookies(c, result.headers);
+        await identity(c).recordAuthAudit({
+          event: 'authentication',
+          outcome: 'success',
+          action: 'team.invitation_accept',
+          correlationId: `join_${digest(parsed.output.operationId).slice(0, 24)}`,
+          authenticatorKind: 'better_auth',
+          userId: result.userId,
+          membershipId: result.membershipId,
+        });
+        await limiter.recordSuccess('invite', source);
+        return c.json({ redirect: '/admin/account' });
+      }
       const organization = await identity(c).getOrganization();
       const config = await identity(c).getAuthProviderConfig('cloudflare_access');
       if (!organization?.canonicalAdminOrigin || !config || config.state !== 'active') {
@@ -1639,9 +1755,63 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       });
       await limiter.recordSuccess('invite', source);
       return c.json({ redirect: '/admin/account' });
-    } catch {
+    } catch (error) {
       await limiter.recordFailure('invite', source);
-      return c.json({ error: 'join_unavailable' }, 401);
+      return passwordCapabilityError(c, error, 'join_unavailable');
+    }
+  });
+
+  app.get('/admin/reset', async (c) => {
+    authResponseHeaders(c);
+    c.header('Content-Security-Policy', invitationJoinCsp());
+    return await passwordAuthContext(c)
+      ? c.html(renderPasswordResetPage())
+      : c.json({ error: 'reset_unavailable' }, 404);
+  });
+  app.post('/admin/reset', async (c) => {
+    authResponseHeaders(c);
+    const token = recoveryToken(c);
+    if (!token || !isValidRecoveryConfiguration(token)) {
+      return c.json({ error: 'reset_unavailable' }, 401);
+    }
+    const source = authSourceKey(c);
+    const limiter = authRateLimiter(c, token);
+    try {
+      await limiter.assertAllowed('recovery', source);
+      const context = await passwordAuthContext(c);
+      if (!context || !validJsonMutation(c, context.environment.baseURL)) {
+        throw new AuthDeniedError();
+      }
+      const parsed = v.safeParse(passwordResetSchema, await readJson(c.req));
+      if (!parsed.success || (parsed.output.inspect !== true && !parsed.output.newPassword)) {
+        throw new AuthDeniedError();
+      }
+      const service = new PasswordEnrollmentService(
+        identity(c),
+        context.environment,
+        context.organizationId,
+      );
+      if (parsed.output.inspect === true) {
+        const inspected = await service.inspectReset({
+          operationId: parsed.output.operationId,
+          secret: parsed.output.token,
+          headers: c.req.raw.headers,
+        });
+        await limiter.recordSuccess('recovery', source);
+        return c.json(inspected);
+      }
+      await service.completeReset({
+        operationId: parsed.output.operationId,
+        secret: parsed.output.token,
+        newPassword: parsed.output.newPassword!,
+        headers: c.req.raw.headers,
+      });
+      await limiter.recordSuccess('recovery', source);
+      clearBetterAuthCookies(c);
+      return c.json({ redirect: '/admin/login' });
+    } catch (error) {
+      await limiter.recordFailure('recovery', source);
+      return passwordCapabilityError(c, error, 'reset_unavailable');
     }
   });
 
@@ -2150,7 +2320,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
 
   app.get('/account', (c) => c.redirect('/admin/account', 303));
 
-  app.route('/admin/api', createTeamAdminApi({ store: identity, directory: humanDirectory }));
+  app.route('/admin/api', createTeamAdminApi({
+    store: identity,
+    directory: humanDirectory,
+    passwordLifecycle: passwordTeamLifecycle,
+  }));
   app.route('/admin/api', createMemoryAdminApi({
     store: memory,
     adminSecret: () => adminToken() ?? '',
@@ -4398,10 +4572,32 @@ function authResponseHeaders(c: Context): void {
   c.header('Cache-Control', 'no-store');
   c.header('Referrer-Policy', 'no-referrer');
   c.header('X-Content-Type-Options', 'nosniff');
+  c.header('X-Frame-Options', 'DENY');
+  c.header('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  c.header(
+    'Content-Security-Policy',
+    "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+  );
 }
 
 function invitationJoinCsp(): string {
   return "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
+}
+
+function passwordCapabilityError(
+  c: Context,
+  error: unknown,
+  fallback: 'join_unavailable' | 'reset_unavailable',
+) {
+  if (error instanceof PasswordLifecycleError && [
+    'conflict',
+    'existing_account',
+    'already_enrolled',
+    'suspended',
+  ].includes(error.code)) {
+    return c.json({ error: error.code }, 409);
+  }
+  return c.json({ error: fallback }, 401);
 }
 
 function isValidRecoveryConfiguration(token: string): boolean {

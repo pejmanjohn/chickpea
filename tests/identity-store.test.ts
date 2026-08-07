@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
+import { digest } from '../src/auth/personal-token.ts';
 import { IdentityStateError } from '../src/identity/errors.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 
@@ -306,6 +307,46 @@ test('resumable auth operations advance monotonically and keep opaque Better Aut
   assert.equal(exported.includes(capabilityHash), false);
   assert.equal(exported.includes('owner@example.com'), false);
   store.close();
+});
+
+test('auth operation listings and membership access overlays stay in Chickpea control state', async () => {
+  const store = new SqliteIdentityStore(':memory:', { now: () => NOW });
+  try {
+    const first = await store.createAuthOperation({
+      kind: 'invitation_enrollment',
+      organizationId: 'better-auth-org',
+      expectedEmail: 'invitee@example.com',
+      capabilityHash: digest('operation-capability-one'),
+      expiresAt: NOW + 10_000,
+    });
+    await store.createAuthOperation({
+      kind: 'administrative_reset',
+      organizationId: 'better-auth-org',
+      expectedEmail: 'invitee@example.com',
+      capabilityHash: digest('operation-capability-two'),
+      expiresAt: NOW + 10_000,
+    });
+    assert.deepEqual(
+      (await store.listAuthOperations('invitation_enrollment', 'better-auth-org')).map((row) => row.id),
+      [first.id],
+    );
+    const suspended = await store.setMembershipAccessOverlay({
+      membershipId: 'better-auth-member',
+      organizationId: 'better-auth-org',
+      accessStatus: 'suspended',
+      expectedVersion: 0,
+    });
+    assert.equal(suspended.membershipVersion, 1);
+    assert.equal((await store.getMembershipAccessOverlay('better-auth-member'))?.accessStatus, 'suspended');
+    await assert.rejects(() => store.setMembershipAccessOverlay({
+      membershipId: 'better-auth-member',
+      organizationId: 'better-auth-org',
+      accessStatus: 'active',
+      expectedVersion: 0,
+    }));
+  } finally {
+    store.close();
+  }
 });
 
 test('personal tokens accept explicit opaque directory IDs without cross-store rows', async () => {

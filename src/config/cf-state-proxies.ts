@@ -29,6 +29,7 @@ import type {
   RecordIdentityAuthAuditInput,
   ResendInvitationInput,
   ReplaceAccessOwnerBindingInput,
+  SetMembershipAccessOverlayInput,
   UpdateMembershipInput,
   UpdateAuthControlInput,
   UpdateOrganizationAuthInput,
@@ -269,6 +270,15 @@ export class CfIdentityStore implements IdentityStore {
     if (response.kind !== 'auth_operation') throw unexpectedIdentityResponse();
     return orUndefined(response.operation);
   }
+  async listAuthOperations(kind?: AuthOperationKind, organizationId?: string) {
+    const response = await this.execute({
+      kind: 'list_auth_operations',
+      ...(kind === undefined ? {} : { operationKind: kind }),
+      ...(organizationId === undefined ? {} : { organizationId }),
+    });
+    if (response.kind !== 'auth_operations') throw unexpectedIdentityResponse();
+    return response.operations;
+  }
   async advanceAuthOperation(input: AdvanceAuthOperationInput) {
     const response = await this.execute({ kind: 'advance_auth_operation', input });
     if (response.kind !== 'auth_operation' || !response.operation) throw unexpectedIdentityResponse();
@@ -293,6 +303,13 @@ export class CfIdentityStore implements IdentityStore {
     const response = await this.execute({ kind: 'get_membership_access_overlay', membershipId });
     if (response.kind !== 'membership_access_overlay') throw unexpectedIdentityResponse();
     return orUndefined(response.overlay);
+  }
+  async setMembershipAccessOverlay(input: SetMembershipAccessOverlayInput) {
+    const response = await this.execute({ kind: 'set_membership_access_overlay', input });
+    if (response.kind !== 'membership_access_overlay' || !response.overlay) {
+      throw unexpectedIdentityResponse();
+    }
+    return response.overlay;
   }
   async ensureOrganization(input: EnsureOrganizationInput) {
     const response = await this.execute({ kind: 'ensure_organization', input });

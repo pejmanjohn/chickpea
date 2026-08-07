@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import vm from 'node:vm';
 
 import { createJoinRoutes } from '../src/join/routes.ts';
-import { JOIN_STORAGE_KEY } from '../src/join/page.ts';
+import { JOIN_STORAGE_KEY, RESET_STORAGE_KEY } from '../src/join/page.ts';
 
 test('public join bootstrap is inert, no-store, and first-party only', async () => {
   const app = createJoinRoutes();
@@ -90,4 +90,32 @@ test('incomplete join fragments are removed without creating invitation state', 
   assert.equal(stored.size, 0);
   assert.equal(navigated, false);
   assert.match(status.textContent, /new invitation link/i);
+});
+
+test('reset bootstrap keeps the capability in same-tab storage and out of server-visible URLs', async () => {
+  const app = createJoinRoutes();
+  const response = await app.request('https://chickpea.example.com/reset/bootstrap.js');
+  const script = await response.text();
+  const credential = `auth_operation_reset.${'r'.repeat(48)}`;
+  const stored = new Map<string, string>();
+  const events: string[] = [];
+  vm.runInNewContext(script, {
+    URLSearchParams,
+    document: { getElementById() { return { textContent: '' }; } },
+    history: { replaceState(_state: unknown, _title: string, path: string) { events.push(`history:${path}`); } },
+    location: {
+      hash: `#reset=${credential}`,
+      pathname: '/reset',
+      search: '',
+      replace(path: string) { events.push(`navigate:${path}`); },
+    },
+    sessionStorage: {
+      setItem(key: string, value: string) { stored.set(key, value); },
+      removeItem(key: string) { stored.delete(key); },
+    },
+  });
+  assert.equal(response.status, 200);
+  assert.equal(stored.get(RESET_STORAGE_KEY), credential);
+  assert.deepEqual(events, ['history:/reset', 'navigate:/admin/reset']);
+  assert.equal(events.join(' ').includes(credential), false);
 });

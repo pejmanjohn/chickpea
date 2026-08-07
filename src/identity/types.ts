@@ -173,6 +173,16 @@ export interface MembershipAccessOverlay {
   updatedAt: number;
 }
 
+export interface SetMembershipAccessOverlayInput {
+  membershipId: string;
+  organizationId: string;
+  accessStatus: MembershipAccessOverlay['accessStatus'];
+  expectedVersion?: number;
+  ownerMembershipIds?: string[];
+  actorMembershipId?: string;
+  at?: number;
+}
+
 export interface RecordIdentityAuthAuditInput {
   event: 'authentication' | 'authorization';
   outcome: 'success' | 'denied';
@@ -380,11 +390,13 @@ export interface ChickpeaIdentityControlStore {
   createAuthOperation(input: CreateAuthOperationInput): Promise<AuthOperation>;
   getAuthOperation(operationId: string): Promise<AuthOperation | undefined>;
   findAuthOperation(kind: AuthOperationKind, capabilityHash: string): Promise<AuthOperation | undefined>;
+  listAuthOperations(kind?: AuthOperationKind, organizationId?: string): Promise<AuthOperation[]>;
   advanceAuthOperation(input: AdvanceAuthOperationInput): Promise<AuthOperation>;
   consumeAuthOperation(input: ConsumeAuthOperationInput): Promise<AuthOperation>;
   completePasswordSetup(input: CompletePasswordSetupInput): Promise<AuthControl>;
   revokeAuthOperation(operationId: string): Promise<AuthOperation>;
   getMembershipAccessOverlay(membershipId: string): Promise<MembershipAccessOverlay | undefined>;
+  setMembershipAccessOverlay(input: SetMembershipAccessOverlayInput): Promise<MembershipAccessOverlay>;
 }
 
 /**
@@ -448,11 +460,13 @@ export type IdentityRpcRequest =
   | { kind: 'create_auth_operation'; input: CreateAuthOperationInput }
   | { kind: 'get_auth_operation'; operationId: string }
   | { kind: 'find_auth_operation'; operationKind: AuthOperationKind; capabilityHash: string }
+  | { kind: 'list_auth_operations'; operationKind?: AuthOperationKind; organizationId?: string }
   | { kind: 'advance_auth_operation'; input: AdvanceAuthOperationInput }
   | { kind: 'consume_auth_operation'; input: ConsumeAuthOperationInput }
   | { kind: 'complete_password_setup'; input: CompletePasswordSetupInput }
   | { kind: 'revoke_auth_operation'; operationId: string }
   | { kind: 'get_membership_access_overlay'; membershipId: string }
+  | { kind: 'set_membership_access_overlay'; input: SetMembershipAccessOverlayInput }
   | { kind: 'ensure_organization'; input: EnsureOrganizationInput }
   | { kind: 'get_organization' }
   | { kind: 'create_owner_claim'; input: CreateOwnerClaimInput }
@@ -508,6 +522,7 @@ export type IdentityRpcRequest =
 export type IdentityRpcResponse =
   | { kind: 'auth_control'; control: AuthControl | null }
   | { kind: 'auth_operation'; operation: AuthOperation | null }
+  | { kind: 'auth_operations'; operations: AuthOperation[] }
   | { kind: 'membership_access_overlay'; overlay: MembershipAccessOverlay | null }
   | { kind: 'organization'; organization: Organization | null }
   | { kind: 'owner_claim'; ownerClaim: OwnerClaim | null }

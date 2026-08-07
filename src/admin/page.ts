@@ -1772,6 +1772,7 @@ details[open].advanced summary::before {
     teamBusy: "",
     teamNotice: "",
     teamInviteLink: "",
+    teamResetLink: "",
     teamInviteDraft: { email: "", role: "member" },
     channelScreen: "overview",
     profileScreen: "list",
@@ -2508,11 +2509,14 @@ details[open].advanced summary::before {
     var showOnce = state.teamInviteLink
       ? '<div class="team-show-once" role="status"><label for="team-invite-link">Copy this invitation link now</label><p class="hint">For safety, Chickpea will not show this secret again after you leave or refresh.</p><div class="team-link-row"><input class="input mono" id="team-invite-link" readonly value="' + esc(state.teamInviteLink) + '"><button type="button" class="btn btn-primary btn-sm" data-action="team-copy-link">Copy link</button><button type="button" class="btn btn-ghost btn-sm" data-action="team-dismiss-link">Done</button></div></div>'
       : '';
+    var resetOnce = state.teamResetLink
+      ? '<div class="team-show-once" role="status"><label for="team-reset-link">Copy this password reset link now</label><p class="hint">Send it privately to the named teammate. It expires quickly and cannot be shown again after you leave or refresh.</p><div class="team-link-row"><input class="input mono" id="team-reset-link" readonly value="' + esc(state.teamResetLink) + '"><button type="button" class="btn btn-primary btn-sm" data-action="team-copy-reset">Copy link</button><button type="button" class="btn btn-ghost btn-sm" data-action="team-dismiss-reset">Done</button></div></div>'
+      : '';
     return '<div class="team-hero"><div><p class="section-eyebrow">People &amp; access</p><h1 class="page-title">Your team</h1><p class="hint">Sign-in verifies who someone is. Chickpea invitations and roles decide what they can do.</p></div><span class="team-count">' + members.length + ' member' + (members.length === 1 ? '' : 's') + '</span></div>' +
       notice +
-      '<div class="team-grid"><section class="team-card" aria-labelledby="invite-heading"><h2 id="invite-heading">Invite a teammate</h2><p class="hint">Create a private link and send it to your teammate. They verify their email, then Chickpea activates the invited membership.</p><form class="team-form" data-action="team-invite-form"><div class="team-form-row"><label class="sr-only" for="team-invite-email">Email</label><input class="input" id="team-invite-email" data-action="team-invite-email" type="email" autocomplete="email" required placeholder="teammate@example.com" value="' + esc(state.teamInviteDraft.email) + '"><label class="sr-only" for="team-invite-role">Role</label><select class="select" id="team-invite-role" data-action="team-invite-role"><option value="member"' + (state.teamInviteDraft.role === "member" ? ' selected' : '') + '>Member</option><option value="admin"' + (state.teamInviteDraft.role === "admin" ? ' selected' : '') + '>Admin</option></select><button type="submit" class="btn btn-primary"' + (state.teamBusy ? ' disabled' : '') + '>Create invite</button></div></form>' + showOnce + '</section>' +
-      '<section class="team-card" aria-labelledby="join-heading"><h2 id="join-heading">What happens next</h2><p class="hint">The invitation stays pending until the invited email signs in and accepts it. Resending rotates the private link; revoking makes it unusable immediately.</p></section></div>' +
-      '<section class="team-card" aria-labelledby="members-heading"><h2 id="members-heading">Members</h2><p class="hint">Suspension takes effect on the next Chickpea request, even if the signed-in browser stays open.</p><div class="team-list">' + (members.length ? members.map(teamMemberRowHtml).join("") : '<p class="team-empty">No memberships yet.</p>') + '</div></section>' +
+      '<div class="team-grid"><section class="team-card" aria-labelledby="invite-heading"><h2 id="invite-heading">Invite a teammate</h2><p class="hint">Create a private enrollment link and send it through a trusted channel. Possession of the link authorizes the exact invited email; Chickpea does not send or verify email.</p><form class="team-form" data-action="team-invite-form"><div class="team-form-row"><label class="sr-only" for="team-invite-email">Email</label><input class="input" id="team-invite-email" data-action="team-invite-email" type="email" autocomplete="email" required placeholder="teammate@example.com" value="' + esc(state.teamInviteDraft.email) + '"><label class="sr-only" for="team-invite-role">Role</label><select class="select" id="team-invite-role" data-action="team-invite-role"><option value="member"' + (state.teamInviteDraft.role === "member" ? ' selected' : '') + '>Member</option><option value="admin"' + (state.teamInviteDraft.role === "admin" ? ' selected' : '') + '>Admin</option></select><button type="submit" class="btn btn-primary"' + (state.teamBusy ? ' disabled' : '') + '>Create invite</button></div></form>' + showOnce + '</section>' +
+      '<section class="team-card" aria-labelledby="join-heading"><h2 id="join-heading">What happens next</h2><p class="hint">The invitation stays pending until the teammate uses the private link and accepts it. Resending rotates the link; revoking makes it unusable immediately.</p></section></div>' +
+      resetOnce + '<section class="team-card" aria-labelledby="members-heading"><h2 id="members-heading">Members</h2><p class="hint">Suspension takes effect on the next Chickpea request, even if the signed-in browser stays open.</p><div class="team-list">' + (members.length ? members.map(teamMemberRowHtml).join("") : '<p class="team-empty">No memberships yet.</p>') + '</div></section>' +
       '<section class="team-card" aria-labelledby="invitations-heading"><h2 id="invitations-heading">Invitations</h2><p class="hint">Pending links can be rotated or revoked. Accepted invitations have already created their membership.</p><div class="team-list">' + (invitations.length ? invitations.map(teamInvitationRowHtml).join("") : '<p class="team-empty">No invitations yet.</p>') + '</div></section>';
   }
 
@@ -2527,7 +2531,8 @@ details[open].advanced summary::before {
     var statusSelect = '<select class="select" aria-label="Status for ' + esc(member.email || "member") + '" data-action="team-member-status" data-membership="' + esc(member.id) + '"' + (busy || (member.role === "owner" && !canManageOwner) ? ' disabled' : '') + '>' + ["active", "suspended", "removed"].map(function (status) {
       return '<option value="' + status + '"' + (member.status === status ? ' selected' : '') + '>' + status.charAt(0).toUpperCase() + status.slice(1) + '</option>';
     }).join("") + '</select>';
-    return '<article class="team-row"><div class="team-row-main"><div class="team-row-title">' + esc(member.displayName || member.email || "Member") + (viewer.membershipId === member.id ? ' <span class="hint">(you)</span>' : '') + '</div><div class="team-row-sub">' + esc(member.email || "No email") + '</div><div class="team-statuses"><span class="team-status ' + (member.status === "active" ? "active" : member.status === "suspended" ? "suspended" : "") + '">' + esc(member.status) + '</span><span class="team-status ' + (member.externalIdentity && member.externalIdentity.bound ? "observed" : "required") + '">' + (member.externalIdentity && member.externalIdentity.bound ? 'Identity bound' : 'Identity not bound') + '</span></div></div><div class="team-row-actions">' + roleSelect + statusSelect + '</div></article>';
+    var resetButton = '<button type="button" class="btn btn-soft btn-sm" data-action="team-reset-password" data-membership="' + esc(member.id) + '"' + (busy || (member.role === "owner" && !canManageOwner) ? ' disabled' : '') + '>Reset password</button>';
+    return '<article class="team-row"><div class="team-row-main"><div class="team-row-title">' + esc(member.displayName || member.email || "Member") + (viewer.membershipId === member.id ? ' <span class="hint">(you)</span>' : '') + '</div><div class="team-row-sub">' + esc(member.email || "No email") + '</div><div class="team-statuses"><span class="team-status ' + (member.status === "active" ? "active" : member.status === "suspended" ? "suspended" : "") + '">' + esc(member.status) + '</span><span class="team-status ' + (member.externalIdentity && member.externalIdentity.bound ? "observed" : "required") + '">' + (member.externalIdentity && member.externalIdentity.bound ? 'Identity bound' : 'Identity not bound') + '</span></div></div><div class="team-row-actions">' + roleSelect + statusSelect + resetButton + '</div></article>';
   }
 
   function teamInvitationRowHtml(invitation) {
@@ -2538,7 +2543,7 @@ details[open].advanced summary::before {
       actions += '<button type="button" class="btn btn-soft btn-sm" data-action="team-resend" data-invitation="' + esc(invitation.id) + '"' + (busy ? ' disabled' : '') + '>Resend link</button><button type="button" class="btn btn-danger btn-sm" data-action="team-revoke" data-invitation="' + esc(invitation.id) + '"' + (busy ? ' disabled' : '') + '>Revoke</button>';
     }
     var labels = { pending: "Chickpea invite pending", accepted: "Membership activated", revoked: "Invite revoked", expired: "Invite expired" };
-    var guidance = { pending: "Waiting for the invitee. Resending rotates the private link.", accepted: "The invitee verified their email and activated this membership.", revoked: "An administrator revoked this link. Create a new invitation if needed.", expired: "This link expired. Create a new invitation to try again." };
+    var guidance = { pending: "Waiting for the invitee. Resending rotates the private link.", accepted: "The invitee used the private link and activated this membership.", revoked: "An administrator revoked this link. Create a new invitation if needed.", expired: "This link expired. Create a new invitation to try again." };
     return '<article class="team-row"><div class="team-row-main"><div class="team-row-title">' + esc(invitation.email) + '</div><div class="team-row-sub">' + esc(invitation.role) + ' · expires ' + esc(new Date(invitation.expiresAt).toLocaleString()) + '</div><div class="team-statuses"><span class="team-status">' + esc(labels[invitation.status] || invitation.status) + '</span></div><div class="team-row-sub">' + esc(guidance[invitation.status] || "Ask an administrator to retry this invitation.") + '</div></div><div class="team-row-actions">' + actions + '</div></article>';
   }
 
@@ -2718,7 +2723,7 @@ details[open].advanced summary::before {
     state.disableConfirm = false;
     state.teamError = "";
     state.teamNotice = "";
-    if (entering) state.teamInviteLink = "";
+    if (entering) { state.teamInviteLink = ""; state.teamResetLink = ""; }
     render();
     loadTeam();
   }
@@ -2742,6 +2747,7 @@ details[open].advanced summary::before {
 
   function finishTeamMutation(message, result) {
     if (result && result.inviteLink) state.teamInviteLink = result.inviteLink;
+    if (result && result.resetLink) state.teamResetLink = result.resetLink;
     state.teamNotice = message;
     return loadTeam().then(function () {
       state.teamBusy = "";
@@ -2806,6 +2812,18 @@ details[open].advanced summary::before {
     body[field] = value;
     postJson("/admin/api/team/memberships/" + encodeURIComponent(membershipId), "PATCH", body)
       .then(function () { return finishTeamMutation("Membership updated.", null); })
+      .catch(failTeamMutation);
+  }
+
+  function createTeamPasswordReset(membershipId) {
+    if (state.teamBusy || !membershipId) return;
+    state.teamBusy = "member:" + membershipId;
+    state.teamError = "";
+    state.teamNotice = "";
+    state.teamResetLink = "";
+    render();
+    postJson("/admin/api/team/memberships/" + encodeURIComponent(membershipId) + "/reset", "POST", {})
+      .then(function (result) { return finishTeamMutation("Password reset created. Copy the private link and send it to the teammate.", result); })
       .catch(failTeamMutation);
   }
 
@@ -8526,6 +8544,7 @@ details[open].advanced summary::before {
     if (action === "open-team") { openTeam(); }
     if (action === "team-retry") { loadTeam(); }
     if (action === "team-dismiss-link") { state.teamInviteLink = ""; state.teamNotice = ""; render(); }
+    if (action === "team-dismiss-reset") { state.teamResetLink = ""; state.teamNotice = ""; render(); }
     if (action === "team-copy-link" && state.teamInviteLink) {
       navigator.clipboard.writeText(state.teamInviteLink).then(function () {
         state.teamNotice = "Invitation link copied.";
@@ -8537,6 +8556,16 @@ details[open].advanced summary::before {
     }
     if (action === "team-resend") { mutateTeamInvitation(target.getAttribute("data-invitation") || "", "resend"); }
     if (action === "team-revoke") { mutateTeamInvitation(target.getAttribute("data-invitation") || "", "revoke"); }
+    if (action === "team-reset-password") { createTeamPasswordReset(target.getAttribute("data-membership") || ""); }
+    if (action === "team-copy-reset" && state.teamResetLink) {
+      navigator.clipboard.writeText(state.teamResetLink).then(function () {
+        state.teamNotice = "Password reset link copied.";
+        render();
+      }).catch(function () {
+        state.teamError = "Copy failed. Select the reset link and copy it manually.";
+        render();
+      });
+    }
     if (action === "open-usage" && USAGE_ADMIN_UI) { openUsage(); }
     if (action === "open-audit") { openAuditLogs("", "", ""); }
     // Brand-as-home: the reliable exit back to the Channels overview.
