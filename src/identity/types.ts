@@ -4,6 +4,7 @@ export type OrganizationRole = 'owner' | 'admin' | 'member';
 export type MembershipStatus = 'active' | 'suspended' | 'removed';
 export type AuthMode =
   | 'unconfigured'
+  | 'password_active'
   | 'access_pending'
   | 'access_active'
   | 'token_active'
@@ -84,16 +85,52 @@ export interface PersonalTokenRecord {
   updatedAt: number;
 }
 
+export interface PasswordCredentialMaterial {
+  algorithm: 'pbkdf2-sha256';
+  parameterVersion: number;
+  iterations: number;
+  salt: string;
+  verifier: string;
+}
+
+export interface PasswordCredentialRecord extends PasswordCredentialMaterial {
+  id: string;
+  userId: string;
+  credentialVersion: number;
+  status: 'active' | 'disabled';
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface PasswordResetCapabilityRecord {
+  id: string;
+  userId: string;
+  tokenHash: string;
+  kind: 'admin_reset' | 'owner_recovery';
+  status: 'pending' | 'consumed' | 'revoked' | 'expired';
+  createdByMembershipId: string | null;
+  expiresAt: number;
+  consumedAt: number | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface BrowserSessionRecord {
   id: string;
   userId: string;
-  personalTokenId: string;
+  membershipId: string;
+  authenticatorKind: 'password' | 'personal_token';
+  personalTokenId: string | null;
+  credentialId: string | null;
+  credentialVersion: number | null;
   sessionHash: string;
   prefix: string;
-  expiresAt: number;
+  idleExpiresAt: number;
+  absoluteExpiresAt: number;
   lastSeenAt: number;
   revokedAt: number | null;
   createdAt: number;
+  updatedAt: number;
 }
 
 export interface AuthProviderConfig {
@@ -234,6 +271,61 @@ export interface CreateBrowserSessionRecordInput {
   expiresAt: number;
 }
 
+export interface PasswordBrowserSessionMaterial {
+  sessionHash: string;
+  prefix: string;
+  idleExpiresAt: number;
+  absoluteExpiresAt: number;
+}
+
+export interface PasswordAccountResolution {
+  user: User;
+  membership: Membership;
+  credential: PasswordCredentialRecord;
+  session: BrowserSessionRecord;
+}
+
+export interface SetupPasswordOwnerInput {
+  organizationDisplayName: string;
+  email: string;
+  displayName?: string | null;
+  canonicalAdminOrigin: string;
+  credential: PasswordCredentialMaterial;
+  session: PasswordBrowserSessionMaterial;
+}
+
+export interface EnrollPasswordInvitationInput {
+  invitationId: string;
+  tokenHash: string;
+  displayName?: string | null;
+  credential: PasswordCredentialMaterial;
+  session: PasswordBrowserSessionMaterial;
+  at?: number;
+}
+
+export interface ReplacePasswordCredentialInput {
+  userId: string;
+  credential: PasswordCredentialMaterial;
+  session: PasswordBrowserSessionMaterial;
+  at?: number;
+}
+
+export interface CreatePasswordResetCapabilityInput {
+  userId: string;
+  tokenHash: string;
+  kind: PasswordResetCapabilityRecord['kind'];
+  createdByMembershipId?: string | null;
+  expiresAt: number;
+}
+
+export interface ConsumePasswordResetCapabilityInput {
+  capabilityId: string;
+  tokenHash: string;
+  credential: PasswordCredentialMaterial;
+  session: PasswordBrowserSessionMaterial;
+  at?: number;
+}
+
 export interface IdentityExportSummary {
   organization: Organization | null;
   users: User[];
@@ -243,6 +335,8 @@ export interface IdentityExportSummary {
   invitations: Array<Omit<Invitation, 'tokenHash' | 'normalizedEmail'> & { emailConfigured: boolean }>;
   personalTokens: Array<Omit<PersonalTokenRecord, 'tokenHash'>>;
   browserSessions: Array<Omit<BrowserSessionRecord, 'sessionHash'>>;
+  passwordCredentials: Array<Omit<PasswordCredentialRecord, 'salt' | 'verifier'>>;
+  passwordResetCapabilities: Array<Omit<PasswordResetCapabilityRecord, 'tokenHash'>>;
 }
 
 export interface IdentityStore {
@@ -279,6 +373,20 @@ export interface IdentityStore {
   createBrowserSession(input: CreateBrowserSessionRecordInput): Promise<BrowserSessionRecord>;
   findBrowserSessions(prefix: string): Promise<BrowserSessionRecord[]>;
   revokeBrowserSession(sessionId: string): Promise<BrowserSessionRecord>;
+  setupPasswordOwner(input: SetupPasswordOwnerInput): Promise<PasswordAccountResolution>;
+  enrollPasswordInvitation(input: EnrollPasswordInvitationInput): Promise<PasswordAccountResolution>;
+  findUserByEmail(email: string): Promise<User | undefined>;
+  getActivePasswordCredential(userId: string): Promise<PasswordCredentialRecord | undefined>;
+  replacePasswordCredential(input: ReplacePasswordCredentialInput): Promise<PasswordAccountResolution>;
+  createPasswordResetCapability(
+    input: CreatePasswordResetCapabilityInput,
+  ): Promise<PasswordResetCapabilityRecord>;
+  consumePasswordResetCapability(
+    input: ConsumePasswordResetCapabilityInput,
+  ): Promise<PasswordAccountResolution>;
+  revokePasswordResetCapability(capabilityId: string): Promise<PasswordResetCapabilityRecord>;
+  touchBrowserSession(sessionId: string, idleExpiresAt: number): Promise<BrowserSessionRecord>;
+  revokeUserBrowserSessions(userId: string): Promise<number>;
   configureAuthProvider(input: ConfigureAuthProviderInput): Promise<AuthProviderConfig>;
   getAuthProviderConfig(kind: string): Promise<AuthProviderConfig | undefined>;
   updateAuthProviderAudience(
@@ -334,6 +442,16 @@ export type IdentityRpcRequest =
   | { kind: 'create_browser_session'; input: CreateBrowserSessionRecordInput }
   | { kind: 'find_browser_sessions'; prefix: string }
   | { kind: 'revoke_browser_session'; sessionId: string }
+  | { kind: 'setup_password_owner'; input: SetupPasswordOwnerInput }
+  | { kind: 'enroll_password_invitation'; input: EnrollPasswordInvitationInput }
+  | { kind: 'find_user_by_email'; email: string }
+  | { kind: 'get_active_password_credential'; userId: string }
+  | { kind: 'replace_password_credential'; input: ReplacePasswordCredentialInput }
+  | { kind: 'create_password_reset_capability'; input: CreatePasswordResetCapabilityInput }
+  | { kind: 'consume_password_reset_capability'; input: ConsumePasswordResetCapabilityInput }
+  | { kind: 'revoke_password_reset_capability'; capabilityId: string }
+  | { kind: 'touch_browser_session'; sessionId: string; idleExpiresAt: number }
+  | { kind: 'revoke_user_browser_sessions'; userId: string }
   | { kind: 'configure_auth_provider'; input: ConfigureAuthProviderInput }
   | { kind: 'get_auth_provider_config'; providerKind: string }
   | {
@@ -365,6 +483,10 @@ export type IdentityRpcResponse =
   | { kind: 'personal_tokens'; personalTokens: PersonalTokenRecord[] }
   | { kind: 'browser_session'; browserSession: BrowserSessionRecord }
   | { kind: 'browser_sessions'; browserSessions: BrowserSessionRecord[] }
+  | { kind: 'password_account_resolution'; resolution: PasswordAccountResolution }
+  | { kind: 'password_credential'; credential: PasswordCredentialRecord | null }
+  | { kind: 'password_reset_capability'; capability: PasswordResetCapabilityRecord }
+  | { kind: 'count'; count: number }
   | { kind: 'auth_provider_config'; config: AuthProviderConfig | null }
   | { kind: 'auth_rate_limit'; state: AuthRateLimitState | null }
   | { kind: 'ok' }

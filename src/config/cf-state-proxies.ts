@@ -10,12 +10,15 @@ import type {
   ActivateAccessOwnerInput,
   BootstrapTokenOwnerInput,
   ClaimOwnerInput,
+  ConsumePasswordResetCapabilityInput,
   ConsumeInvitationInput,
   ConfigureAuthProviderInput,
   CreateBrowserSessionRecordInput,
   CreateInvitationInput,
   CreateOwnerClaimInput,
   CreatePersonalTokenRecordInput,
+  CreatePasswordResetCapabilityInput,
+  EnrollPasswordInvitationInput,
   EnsureOrganizationInput,
   IdentityRpcRequest,
   IdentityRpcResponse,
@@ -23,6 +26,8 @@ import type {
   RecordIdentityAuthAuditInput,
   ResendInvitationInput,
   ReplaceAccessOwnerBindingInput,
+  ReplacePasswordCredentialInput,
+  SetupPasswordOwnerInput,
   UpdateMembershipInput,
   UpdateOrganizationAuthInput,
 } from '../identity/types.ts';
@@ -372,6 +377,56 @@ export class CfIdentityStore implements IdentityStore {
     const response = await this.execute({ kind: 'revoke_browser_session', sessionId });
     if (response.kind !== 'browser_session') throw unexpectedIdentityResponse();
     return response.browserSession;
+  }
+  async setupPasswordOwner(input: SetupPasswordOwnerInput) {
+    const response = await this.execute({ kind: 'setup_password_owner', input });
+    if (response.kind !== 'password_account_resolution') throw unexpectedIdentityResponse();
+    return response.resolution;
+  }
+  async enrollPasswordInvitation(input: EnrollPasswordInvitationInput) {
+    const response = await this.execute({ kind: 'enroll_password_invitation', input });
+    if (response.kind !== 'password_account_resolution') throw unexpectedIdentityResponse();
+    return response.resolution;
+  }
+  async findUserByEmail(email: string) {
+    const response = await this.execute({ kind: 'find_user_by_email', email });
+    if (response.kind !== 'user') throw unexpectedIdentityResponse();
+    return orUndefined(response.user);
+  }
+  async getActivePasswordCredential(userId: string) {
+    const response = await this.execute({ kind: 'get_active_password_credential', userId });
+    if (response.kind !== 'password_credential') throw unexpectedIdentityResponse();
+    return orUndefined(response.credential);
+  }
+  async replacePasswordCredential(input: ReplacePasswordCredentialInput) {
+    const response = await this.execute({ kind: 'replace_password_credential', input });
+    if (response.kind !== 'password_account_resolution') throw unexpectedIdentityResponse();
+    return response.resolution;
+  }
+  async createPasswordResetCapability(input: CreatePasswordResetCapabilityInput) {
+    const response = await this.execute({ kind: 'create_password_reset_capability', input });
+    if (response.kind !== 'password_reset_capability') throw unexpectedIdentityResponse();
+    return response.capability;
+  }
+  async consumePasswordResetCapability(input: ConsumePasswordResetCapabilityInput) {
+    const response = await this.execute({ kind: 'consume_password_reset_capability', input });
+    if (response.kind !== 'password_account_resolution') throw unexpectedIdentityResponse();
+    return response.resolution;
+  }
+  async revokePasswordResetCapability(capabilityId: string) {
+    const response = await this.execute({ kind: 'revoke_password_reset_capability', capabilityId });
+    if (response.kind !== 'password_reset_capability') throw unexpectedIdentityResponse();
+    return response.capability;
+  }
+  async touchBrowserSession(sessionId: string, idleExpiresAt: number) {
+    const response = await this.execute({ kind: 'touch_browser_session', sessionId, idleExpiresAt });
+    if (response.kind !== 'browser_session') throw unexpectedIdentityResponse();
+    return response.browserSession;
+  }
+  async revokeUserBrowserSessions(userId: string) {
+    const response = await this.execute({ kind: 'revoke_user_browser_sessions', userId });
+    if (response.kind !== 'count') throw unexpectedIdentityResponse();
+    return response.count;
   }
   async configureAuthProvider(input: ConfigureAuthProviderInput) {
     const response = await this.execute({ kind: 'configure_auth_provider', input });

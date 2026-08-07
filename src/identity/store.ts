@@ -5,6 +5,7 @@ import type { AuditEvent } from '../audit/types.ts';
 import { openStateDb, type NodeStateDb } from '../state/node-state-db.ts';
 import type { StateDb } from '../state/state-db.ts';
 import { identityError } from './errors.ts';
+import { installIdentityMigrations } from './migrations.ts';
 import type {
   BindExternalIdentityInput,
   ActivateAccessOwnerInput,
@@ -13,12 +14,15 @@ import type {
   BootstrapTokenOwnerInput,
   BrowserSessionRecord,
   ClaimOwnerInput,
+  ConsumePasswordResetCapabilityInput,
   ConsumeInvitationInput,
   ConfigureAuthProviderInput,
   CreateBrowserSessionRecordInput,
   CreateInvitationInput,
   CreateOwnerClaimInput,
   CreatePersonalTokenRecordInput,
+  CreatePasswordResetCapabilityInput,
+  EnrollPasswordInvitationInput,
   EnsureOrganizationInput,
   ExternalIdentityBinding,
   IdentityExportSummary,
@@ -30,10 +34,17 @@ import type {
   Membership,
   Organization,
   OwnerClaim,
+  PasswordAccountResolution,
+  PasswordBrowserSessionMaterial,
+  PasswordCredentialMaterial,
+  PasswordCredentialRecord,
+  PasswordResetCapabilityRecord,
   PersonalTokenRecord,
   RecordIdentityAuthAuditInput,
   ResendInvitationInput,
   ReplaceAccessOwnerBindingInput,
+  ReplacePasswordCredentialInput,
+  SetupPasswordOwnerInput,
   UpdateMembershipInput,
   UpdateOrganizationAuthInput,
   User,
@@ -120,13 +131,46 @@ interface PersonalTokenRow {
 interface BrowserSessionRow {
   browser_session_id: string;
   user_id: string;
-  personal_token_id: string;
+  membership_id: string;
+  authenticator_kind: BrowserSessionRecord['authenticatorKind'];
+  personal_token_id: string | null;
+  credential_id: string | null;
+  credential_version: number | null;
   session_hash: string;
   prefix: string;
-  expires_at: number;
+  idle_expires_at: number;
+  absolute_expires_at: number;
   last_seen_at: number;
   revoked_at: number | null;
   created_at: number;
+  updated_at: number;
+}
+
+interface PasswordCredentialRow {
+  password_credential_id: string;
+  user_id: string;
+  algorithm: PasswordCredentialRecord['algorithm'];
+  parameter_version: number;
+  iterations: number;
+  salt: string;
+  verifier: string;
+  credential_version: number;
+  status: PasswordCredentialRecord['status'];
+  created_at: number;
+  updated_at: number;
+}
+
+interface PasswordResetCapabilityRow {
+  password_reset_capability_id: string;
+  user_id: string;
+  token_hash: string;
+  kind: PasswordResetCapabilityRecord['kind'];
+  status: PasswordResetCapabilityRecord['status'];
+  created_by_membership_id: string | null;
+  expires_at: number;
+  consumed_at: number | null;
+  created_at: number;
+  updated_at: number;
 }
 
 interface AuthProviderConfigRow {
@@ -241,6 +285,47 @@ export class IdentityStoreLogic {
         return { kind: 'browser_sessions', browserSessions: this.findBrowserSessions(request.prefix) };
       case 'revoke_browser_session':
         return { kind: 'browser_session', browserSession: this.revokeBrowserSession(request.sessionId) };
+      case 'setup_password_owner':
+        return { kind: 'password_account_resolution', resolution: this.setupPasswordOwner(request.input) };
+      case 'enroll_password_invitation':
+        return {
+          kind: 'password_account_resolution',
+          resolution: this.enrollPasswordInvitation(request.input),
+        };
+      case 'find_user_by_email':
+        return { kind: 'user', user: this.findUserByEmail(request.email) ?? null };
+      case 'get_active_password_credential':
+        return {
+          kind: 'password_credential',
+          credential: this.getActivePasswordCredential(request.userId) ?? null,
+        };
+      case 'replace_password_credential':
+        return {
+          kind: 'password_account_resolution',
+          resolution: this.replacePasswordCredential(request.input),
+        };
+      case 'create_password_reset_capability':
+        return {
+          kind: 'password_reset_capability',
+          capability: this.createPasswordResetCapability(request.input),
+        };
+      case 'consume_password_reset_capability':
+        return {
+          kind: 'password_account_resolution',
+          resolution: this.consumePasswordResetCapability(request.input),
+        };
+      case 'revoke_password_reset_capability':
+        return {
+          kind: 'password_reset_capability',
+          capability: this.revokePasswordResetCapability(request.capabilityId),
+        };
+      case 'touch_browser_session':
+        return {
+          kind: 'browser_session',
+          browserSession: this.touchBrowserSession(request.sessionId, request.idleExpiresAt),
+        };
+      case 'revoke_user_browser_sessions':
+        return { kind: 'count', count: this.revokeUserBrowserSessions(request.userId) };
       case 'configure_auth_provider':
         return { kind: 'auth_provider_config', config: this.configureAuthProvider(request.input) };
       case 'get_auth_provider_config':
@@ -937,6 +1022,10 @@ export class IdentityStoreLogic {
     if (token.userId !== input.userId || token.status !== 'active') {
       throw identityError('identity_invalid', 'Session source token is unavailable.');
     }
+    const membership = this.getMembershipForUser(input.userId);
+    if (!membership || membership.status !== 'active') {
+      throw identityError('membership_missing', 'An active membership is required.');
+    }
     validateTokenHash(input.sessionHash);
     const prefix = credentialPrefix(input.prefix);
     const at = this.now();
@@ -946,15 +1035,19 @@ export class IdentityStoreLogic {
     const id = newId('browser_session');
     this.db.run(
       `INSERT INTO identity_browser_sessions (
-         browser_session_id, user_id, personal_token_id, session_hash, prefix,
-         expires_at, last_seen_at, revoked_at, created_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+         browser_session_id, user_id, membership_id, authenticator_kind,
+         personal_token_id, credential_id, credential_version, session_hash, prefix,
+         idle_expires_at, absolute_expires_at, last_seen_at, revoked_at, created_at, updated_at
+       ) VALUES (?, ?, ?, 'personal_token', ?, NULL, NULL, ?, ?, ?, ?, ?, NULL, ?, ?)`,
       id,
       input.userId,
+      membership.id,
       input.personalTokenId,
       input.sessionHash,
       prefix,
       input.expiresAt,
+      input.expiresAt,
+      at,
       at,
       at,
     );
@@ -973,12 +1066,309 @@ export class IdentityStoreLogic {
   revokeBrowserSession(sessionId: string): BrowserSessionRecord {
     const session = this.requiredBrowserSession(sessionId);
     if (session.revokedAt !== null) return session;
+    const at = this.now();
     this.db.run(
-      'UPDATE identity_browser_sessions SET revoked_at = ? WHERE browser_session_id = ?',
-      this.now(),
+      `UPDATE identity_browser_sessions SET revoked_at = ?, updated_at = ?
+       WHERE browser_session_id = ?`,
+      at,
+      at,
       sessionId,
     );
     return this.requiredBrowserSession(sessionId);
+  }
+
+  setupPasswordOwner(input: SetupPasswordOwnerInput): PasswordAccountResolution {
+    const email = normalizeEmail(input.email);
+    const organizationDisplayName = strictText(
+      input.organizationDisplayName,
+      'organizationDisplayName',
+      256,
+    );
+    const canonicalAdminOrigin = validOrigin(input.canonicalAdminOrigin);
+    validatePasswordCredential(input.credential);
+    validatePasswordSession(input.session, this.now());
+    const ids = {
+      user: newId('user'), membership: newId('membership'),
+      credential: newId('password_credential'), session: newId('browser_session'),
+    };
+    const at = this.now();
+    this.db.transaction(() => {
+      const organization = this.getOrganization();
+      const memberCount = Number(
+        this.db.get('SELECT COUNT(*) AS count FROM identity_memberships')?.count ?? 0,
+      );
+      if ((organization && organization.authMode !== 'unconfigured') || memberCount !== 0) {
+        throw identityError('password_setup_complete', 'Owner setup is no longer available.');
+      }
+      if (organization) {
+        this.db.run(
+          `UPDATE identity_organizations
+           SET display_name = ?, auth_mode = 'password_active', canonical_admin_origin = ?, updated_at = ?
+           WHERE organization_id = ? AND auth_mode = 'unconfigured'`,
+          organizationDisplayName, canonicalAdminOrigin, at, organization.id,
+        );
+      } else {
+        this.db.run(
+          `INSERT INTO identity_organizations (
+             organization_id, display_name, auth_mode, canonical_admin_origin, created_at, updated_at
+           ) VALUES (?, ?, 'password_active', ?, ?, ?)`,
+          OSS_ORGANIZATION_ID, organizationDisplayName, canonicalAdminOrigin, at, at,
+        );
+      }
+      this.db.run(
+        `INSERT INTO identity_users (
+           user_id, primary_email, display_name, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?)`,
+        ids.user, email, input.displayName?.trim() || null, at, at,
+      );
+      this.db.run(
+        `INSERT INTO identity_memberships (
+           membership_id, organization_id, user_id, role, status, created_at, updated_at
+         ) VALUES (?, ?, ?, 'owner', 'active', ?, ?)`,
+        ids.membership, OSS_ORGANIZATION_ID, ids.user, at, at,
+      );
+      this.insertPasswordCredential(ids.credential, ids.user, 1, input.credential, at);
+      this.insertPasswordSession(
+        ids.session,
+        ids.user,
+        ids.membership,
+        ids.credential,
+        1,
+        input.session,
+        at,
+      );
+      this.appendAudit('identity.password_owner_setup', ids.user, at, ids.membership);
+    });
+    return this.requiredPasswordAccount(ids.user, ids.credential, ids.session);
+  }
+
+  enrollPasswordInvitation(input: EnrollPasswordInvitationInput): PasswordAccountResolution {
+    validateTokenHash(input.tokenHash);
+    validatePasswordCredential(input.credential);
+    const at = input.at ?? this.now();
+    validatePasswordSession(input.session, at);
+    const invitation = this.requiredInvitation(input.invitationId);
+    if (invitation.status !== 'pending') {
+      throw identityError('invitation_not_pending', 'Invitation is no longer pending.');
+    }
+    if (invitation.expiresAt <= at) {
+      this.db.run(
+        `UPDATE identity_invitations SET status = 'expired', updated_at = ?
+         WHERE invitation_id = ? AND status = 'pending'`,
+        at, invitation.id,
+      );
+      throw identityError('invitation_expired', 'Invitation has expired.');
+    }
+    if (invitation.tokenHash !== input.tokenHash) {
+      throw identityError('invitation_token_invalid', 'Invitation is unavailable.');
+    }
+    if (this.findUserByEmail(invitation.normalizedEmail)) {
+      throw identityError('membership_conflict', 'An account already exists for this email.');
+    }
+    const ids = {
+      user: newId('user'), membership: newId('membership'),
+      credential: newId('password_credential'), session: newId('browser_session'),
+    };
+    this.db.transaction(() => {
+      this.db.run(
+        `INSERT INTO identity_users (
+           user_id, primary_email, display_name, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?)`,
+        ids.user, invitation.normalizedEmail, input.displayName?.trim() || null, at, at,
+      );
+      this.db.run(
+        `INSERT INTO identity_memberships (
+           membership_id, organization_id, user_id, role, status, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, 'active', ?, ?)`,
+        ids.membership, invitation.organizationId, ids.user, invitation.role, at, at,
+      );
+      this.insertPasswordCredential(ids.credential, ids.user, 1, input.credential, at);
+      this.insertPasswordSession(
+        ids.session, ids.user, ids.membership, ids.credential, 1, input.session, at,
+      );
+      const accepted = this.db.run(
+        `UPDATE identity_invitations
+         SET status = 'accepted', accepted_membership_id = ?, updated_at = ?
+         WHERE invitation_id = ? AND status = 'pending' AND token_hash = ?`,
+        ids.membership, at, invitation.id, input.tokenHash,
+      );
+      if (accepted.changes !== 1) {
+        throw identityError('invitation_not_pending', 'Invitation is no longer pending.');
+      }
+      this.appendAudit('identity.password_invitation_enrolled', invitation.id, at, ids.membership, {
+        role: invitation.role,
+      });
+    });
+    return this.requiredPasswordAccount(ids.user, ids.credential, ids.session);
+  }
+
+  findUserByEmail(email: string): User | undefined {
+    const row = this.db.get(
+      'SELECT * FROM identity_users WHERE primary_email = ? ORDER BY created_at LIMIT 1',
+      normalizeEmail(email),
+    );
+    return row ? rowToUser(row as unknown as UserRow) : undefined;
+  }
+
+  getActivePasswordCredential(userId: string): PasswordCredentialRecord | undefined {
+    const row = this.db.get(
+      `SELECT * FROM identity_password_credentials
+       WHERE user_id = ? AND status = 'active' ORDER BY credential_version DESC LIMIT 1`,
+      nonEmpty(userId, 'userId'),
+    );
+    return row ? rowToPasswordCredential(row as unknown as PasswordCredentialRow) : undefined;
+  }
+
+  replacePasswordCredential(input: ReplacePasswordCredentialInput): PasswordAccountResolution {
+    validatePasswordCredential(input.credential);
+    const at = input.at ?? this.now();
+    validatePasswordSession(input.session, at);
+    const current = this.getActivePasswordCredential(input.userId);
+    if (!current) {
+      throw identityError('password_credential_missing', 'Password credential was not found.');
+    }
+    const membership = this.getMembershipForUser(input.userId);
+    if (!membership || membership.status !== 'active') {
+      throw identityError('membership_missing', 'An active membership is required.');
+    }
+    const credentialId = newId('password_credential');
+    const sessionId = newId('browser_session');
+    const version = current.credentialVersion + 1;
+    this.db.transaction(() => {
+      this.db.run(
+        `UPDATE identity_password_credentials SET status = 'disabled', updated_at = ?
+         WHERE password_credential_id = ? AND status = 'active'`,
+        at, current.id,
+      );
+      this.insertPasswordCredential(credentialId, input.userId, version, input.credential, at);
+      this.revokeUserBrowserSessionsInTransaction(input.userId, at);
+      this.insertPasswordSession(
+        sessionId, input.userId, membership.id, credentialId, version, input.session, at,
+      );
+      this.appendAudit('identity.password_credential_replaced', credentialId, at, membership.id, {
+        credentialVersion: String(version),
+      });
+    });
+    return this.requiredPasswordAccount(input.userId, credentialId, sessionId);
+  }
+
+  createPasswordResetCapability(
+    input: CreatePasswordResetCapabilityInput,
+  ): PasswordResetCapabilityRecord {
+    const user = this.getUser(input.userId);
+    if (!user) throw identityError('identity_invalid', 'Reset target was not found.');
+    validateTokenHash(input.tokenHash);
+    const at = this.now();
+    if (!Number.isSafeInteger(input.expiresAt) || input.expiresAt <= at) {
+      throw identityError('identity_invalid', 'Reset expiry must be in the future.');
+    }
+    const actorId = input.createdByMembershipId ?? null;
+    if (actorId) this.requireResetAuthority(actorId, input.userId);
+    const id = newId('password_reset');
+    this.db.transaction(() => {
+      this.db.run(
+        `UPDATE identity_password_reset_capabilities SET status = 'revoked', updated_at = ?
+         WHERE user_id = ? AND kind = ? AND status = 'pending'`,
+        at, input.userId, input.kind,
+      );
+      this.db.run(
+        `INSERT INTO identity_password_reset_capabilities (
+           password_reset_capability_id, user_id, token_hash, kind, status,
+           created_by_membership_id, expires_at, consumed_at, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, 'pending', ?, ?, NULL, ?, ?)`,
+        id, input.userId, input.tokenHash, input.kind, actorId, input.expiresAt, at, at,
+      );
+      this.appendAudit('identity.password_reset_created', id, at, actorId, { kind: input.kind });
+    });
+    return this.requiredPasswordResetCapability(id);
+  }
+
+  consumePasswordResetCapability(
+    input: ConsumePasswordResetCapabilityInput,
+  ): PasswordAccountResolution {
+    validateTokenHash(input.tokenHash);
+    validatePasswordCredential(input.credential);
+    const at = input.at ?? this.now();
+    validatePasswordSession(input.session, at);
+    const capability = this.requiredPasswordResetCapability(input.capabilityId);
+    if (capability.status !== 'pending' || capability.tokenHash !== input.tokenHash) {
+      throw identityError('password_reset_unavailable', 'Password reset is unavailable.');
+    }
+    if (capability.expiresAt <= at) {
+      this.db.run(
+        `UPDATE identity_password_reset_capabilities SET status = 'expired', updated_at = ?
+         WHERE password_reset_capability_id = ? AND status = 'pending'`,
+        at, capability.id,
+      );
+      throw identityError('password_reset_expired', 'Password reset has expired.');
+    }
+    const current = this.getActivePasswordCredential(capability.userId);
+    if (!current) {
+      throw identityError('password_credential_missing', 'Password credential was not found.');
+    }
+    const membership = this.getMembershipForUser(capability.userId);
+    if (!membership || membership.status !== 'active') {
+      throw identityError('membership_missing', 'An active membership is required.');
+    }
+    const credentialId = newId('password_credential');
+    const sessionId = newId('browser_session');
+    const version = current.credentialVersion + 1;
+    this.db.transaction(() => {
+      const consumed = this.db.run(
+        `UPDATE identity_password_reset_capabilities
+         SET status = 'consumed', consumed_at = ?, updated_at = ?
+         WHERE password_reset_capability_id = ? AND status = 'pending' AND token_hash = ?`,
+        at, at, capability.id, input.tokenHash,
+      );
+      if (consumed.changes !== 1) {
+        throw identityError('password_reset_unavailable', 'Password reset is unavailable.');
+      }
+      this.db.run(
+        `UPDATE identity_password_credentials SET status = 'disabled', updated_at = ?
+         WHERE password_credential_id = ? AND status = 'active'`,
+        at, current.id,
+      );
+      this.insertPasswordCredential(
+        credentialId, capability.userId, version, input.credential, at,
+      );
+      this.revokeUserBrowserSessionsInTransaction(capability.userId, at);
+      this.insertPasswordSession(
+        sessionId, capability.userId, membership.id, credentialId, version, input.session, at,
+      );
+      this.appendAudit('identity.password_reset_consumed', capability.id, at, membership.id);
+    });
+    return this.requiredPasswordAccount(capability.userId, credentialId, sessionId);
+  }
+
+  revokePasswordResetCapability(capabilityId: string): PasswordResetCapabilityRecord {
+    const capability = this.requiredPasswordResetCapability(capabilityId);
+    if (capability.status !== 'pending') return capability;
+    const at = this.now();
+    this.db.run(
+      `UPDATE identity_password_reset_capabilities SET status = 'revoked', updated_at = ?
+       WHERE password_reset_capability_id = ? AND status = 'pending'`,
+      at, capability.id,
+    );
+    return this.requiredPasswordResetCapability(capability.id);
+  }
+
+  touchBrowserSession(sessionId: string, idleExpiresAt: number): BrowserSessionRecord {
+    const session = this.requiredBrowserSession(sessionId);
+    const at = this.now();
+    if (session.revokedAt !== null || !Number.isSafeInteger(idleExpiresAt) ||
+        idleExpiresAt <= at || idleExpiresAt > session.absoluteExpiresAt) {
+      throw identityError('identity_invalid', 'Session idle expiry is invalid.');
+    }
+    this.db.run(
+      `UPDATE identity_browser_sessions SET idle_expires_at = ?, last_seen_at = ?, updated_at = ?
+       WHERE browser_session_id = ? AND revoked_at IS NULL`,
+      idleExpiresAt, at, at, session.id,
+    );
+    return this.requiredBrowserSession(session.id);
+  }
+
+  revokeUserBrowserSessions(userId: string): number {
+    return this.revokeUserBrowserSessionsInTransaction(nonEmpty(userId, 'userId'), this.now());
   }
 
   configureAuthProvider(input: ConfigureAuthProviderInput): AuthProviderConfig {
@@ -1131,6 +1521,24 @@ export class IdentityStoreLogic {
         const { sessionHash: _hash, ...safe } = rowToBrowserSession(row as unknown as BrowserSessionRow);
         return safe;
       }),
+      passwordCredentials: this.db.all(
+        `SELECT * FROM identity_password_credentials
+         ORDER BY created_at, password_credential_id`,
+      ).map((row) => {
+        const { salt: _salt, verifier: _verifier, ...safe } = rowToPasswordCredential(
+          row as unknown as PasswordCredentialRow,
+        );
+        return safe;
+      }),
+      passwordResetCapabilities: this.db.all(
+        `SELECT * FROM identity_password_reset_capabilities
+         ORDER BY created_at, password_reset_capability_id`,
+      ).map((row) => {
+        const { tokenHash: _hash, ...safe } = rowToPasswordResetCapability(
+          row as unknown as PasswordResetCapabilityRow,
+        );
+        return safe;
+      }),
     };
   }
 
@@ -1160,137 +1568,7 @@ export class IdentityStoreLogic {
   }
 
   private initializeSchema(): void {
-    this.db.exec(
-      `CREATE TABLE IF NOT EXISTS identity_organizations (
-        organization_id TEXT PRIMARY KEY,
-        display_name TEXT NOT NULL,
-        auth_mode TEXT NOT NULL,
-        canonical_admin_origin TEXT,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
-      )`,
-    );
-    this.db.exec(
-      `CREATE TABLE IF NOT EXISTS identity_users (
-        user_id TEXT PRIMARY KEY,
-        primary_email TEXT NOT NULL,
-        display_name TEXT,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
-      )`,
-    );
-    this.db.exec(
-      `CREATE TABLE IF NOT EXISTS identity_external_bindings (
-        binding_id TEXT PRIMARY KEY,
-        user_id TEXT NOT NULL REFERENCES identity_users(user_id),
-        provider TEXT NOT NULL,
-        issuer TEXT NOT NULL,
-        subject TEXT NOT NULL,
-        verified_email TEXT NOT NULL,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL,
-        UNIQUE (provider, issuer, subject)
-      )`,
-    );
-    this.db.exec(
-      `CREATE TABLE IF NOT EXISTS identity_memberships (
-        membership_id TEXT PRIMARY KEY,
-        organization_id TEXT NOT NULL REFERENCES identity_organizations(organization_id),
-        user_id TEXT NOT NULL REFERENCES identity_users(user_id),
-        role TEXT NOT NULL,
-        status TEXT NOT NULL,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL,
-        UNIQUE (organization_id, user_id)
-      )`,
-    );
-    this.db.exec(
-      `CREATE TABLE IF NOT EXISTS identity_owner_claims (
-        owner_claim_id TEXT PRIMARY KEY,
-        organization_id TEXT NOT NULL UNIQUE REFERENCES identity_organizations(organization_id),
-        normalized_email TEXT NOT NULL,
-        status TEXT NOT NULL,
-        binding_id TEXT REFERENCES identity_external_bindings(binding_id),
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
-      )`,
-    );
-    this.db.exec(
-      `CREATE TABLE IF NOT EXISTS identity_invitations (
-        invitation_id TEXT PRIMARY KEY,
-        organization_id TEXT NOT NULL REFERENCES identity_organizations(organization_id),
-        normalized_email TEXT NOT NULL,
-        role TEXT NOT NULL,
-        token_hash TEXT NOT NULL,
-        status TEXT NOT NULL,
-        inviter_membership_id TEXT NOT NULL REFERENCES identity_memberships(membership_id),
-        accepted_membership_id TEXT REFERENCES identity_memberships(membership_id),
-        expires_at INTEGER NOT NULL,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
-      )`,
-    );
-    this.db.exec(
-      `CREATE INDEX IF NOT EXISTS identity_invitations_state_idx
-       ON identity_invitations (organization_id, status, expires_at)`,
-    );
-    this.db.exec(
-      `CREATE TABLE IF NOT EXISTS identity_personal_tokens (
-        personal_token_id TEXT PRIMARY KEY,
-        user_id TEXT NOT NULL REFERENCES identity_users(user_id),
-        token_hash TEXT NOT NULL UNIQUE,
-        prefix TEXT NOT NULL,
-        label TEXT NOT NULL,
-        status TEXT NOT NULL,
-        last_used_at INTEGER,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
-      )`,
-    );
-    this.db.exec(
-      `CREATE INDEX IF NOT EXISTS identity_personal_tokens_prefix_idx
-       ON identity_personal_tokens (prefix, status)`,
-    );
-    this.db.exec(
-      `CREATE TABLE IF NOT EXISTS identity_browser_sessions (
-        browser_session_id TEXT PRIMARY KEY,
-        user_id TEXT NOT NULL REFERENCES identity_users(user_id),
-        personal_token_id TEXT NOT NULL REFERENCES identity_personal_tokens(personal_token_id),
-        session_hash TEXT NOT NULL UNIQUE,
-        prefix TEXT NOT NULL,
-        expires_at INTEGER NOT NULL,
-        last_seen_at INTEGER NOT NULL,
-        revoked_at INTEGER,
-        created_at INTEGER NOT NULL
-      )`,
-    );
-    this.db.exec(
-      `CREATE INDEX IF NOT EXISTS identity_browser_sessions_prefix_idx
-       ON identity_browser_sessions (prefix, expires_at)`,
-    );
-    this.db.exec(
-      `CREATE TABLE IF NOT EXISTS identity_auth_provider_configs (
-        auth_provider_config_id TEXT PRIMARY KEY,
-        organization_id TEXT NOT NULL REFERENCES identity_organizations(organization_id),
-        kind TEXT NOT NULL,
-        state TEXT NOT NULL,
-        issuer TEXT,
-        audience TEXT,
-        admission_state TEXT,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL,
-        UNIQUE (organization_id, kind)
-      )`,
-    );
-    this.db.exec(
-      `CREATE TABLE IF NOT EXISTS identity_auth_rate_limits (
-        bucket TEXT NOT NULL,
-        key_hash TEXT NOT NULL,
-        window_start INTEGER NOT NULL,
-        failures INTEGER NOT NULL,
-        PRIMARY KEY (bucket, key_hash)
-      )`,
-    );
+    installIdentityMigrations(this.db);
   }
 
   private insertIdentity(
@@ -1446,6 +1724,102 @@ export class IdentityStoreLogic {
     return rowToBrowserSession(row as unknown as BrowserSessionRow);
   }
 
+  private requiredPasswordCredential(id: string): PasswordCredentialRecord {
+    const row = this.db.get(
+      'SELECT * FROM identity_password_credentials WHERE password_credential_id = ?',
+      id,
+    );
+    if (!row) {
+      throw identityError('password_credential_missing', 'Password credential was not found.');
+    }
+    return rowToPasswordCredential(row as unknown as PasswordCredentialRow);
+  }
+
+  private requiredPasswordResetCapability(id: string): PasswordResetCapabilityRecord {
+    const row = this.db.get(
+      `SELECT * FROM identity_password_reset_capabilities
+       WHERE password_reset_capability_id = ?`,
+      id,
+    );
+    if (!row) throw identityError('password_reset_missing', 'Password reset was not found.');
+    return rowToPasswordResetCapability(row as unknown as PasswordResetCapabilityRow);
+  }
+
+  private insertPasswordCredential(
+    id: string,
+    userId: string,
+    version: number,
+    material: PasswordCredentialMaterial,
+    at: number,
+  ): void {
+    this.db.run(
+      `INSERT INTO identity_password_credentials (
+         password_credential_id, user_id, algorithm, parameter_version, iterations,
+         salt, verifier, credential_version, status, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
+      id, userId, material.algorithm, material.parameterVersion, material.iterations,
+      material.salt, material.verifier, version, at, at,
+    );
+  }
+
+  private insertPasswordSession(
+    id: string,
+    userId: string,
+    membershipId: string,
+    credentialId: string,
+    credentialVersion: number,
+    material: PasswordBrowserSessionMaterial,
+    at: number,
+  ): void {
+    this.db.run(
+      `INSERT INTO identity_browser_sessions (
+         browser_session_id, user_id, membership_id, authenticator_kind,
+         personal_token_id, credential_id, credential_version, session_hash, prefix,
+         idle_expires_at, absolute_expires_at, last_seen_at, revoked_at, created_at, updated_at
+       ) VALUES (?, ?, ?, 'password', NULL, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
+      id, userId, membershipId, credentialId, credentialVersion,
+      material.sessionHash, credentialPrefix(material.prefix), material.idleExpiresAt,
+      material.absoluteExpiresAt, at, at, at,
+    );
+  }
+
+  private revokeUserBrowserSessionsInTransaction(userId: string, at: number): number {
+    return this.db.run(
+      `UPDATE identity_browser_sessions SET revoked_at = ?, updated_at = ?
+       WHERE user_id = ? AND revoked_at IS NULL`,
+      at, at, userId,
+    ).changes;
+  }
+
+  private requireResetAuthority(actorMembershipId: string, targetUserId: string): void {
+    const actor = this.requiredMembership(actorMembershipId);
+    if (actor.status !== 'active' || !['owner', 'admin'].includes(actor.role)) {
+      throw identityError('inviter_not_authorized', 'The actor cannot reset this account.');
+    }
+    const target = this.getMembershipForUser(targetUserId, actor.organizationId);
+    if (!target || (target.role === 'owner' && actor.role !== 'owner')) {
+      throw identityError('inviter_not_authorized', 'The actor cannot reset this account.');
+    }
+  }
+
+  private requiredPasswordAccount(
+    userId: string,
+    credentialId: string,
+    sessionId: string,
+  ): PasswordAccountResolution {
+    const user = this.getUser(userId);
+    const membership = this.getMembershipForUser(userId);
+    if (!user || !membership) {
+      throw identityError('identity_invalid', 'Password account was not readable after creation.');
+    }
+    return {
+      user,
+      membership,
+      credential: this.requiredPasswordCredential(credentialId),
+      session: this.requiredBrowserSession(sessionId),
+    };
+  }
+
   private requiredAuthProviderConfig(kind: string): AuthProviderConfig {
     const config = this.getAuthProviderConfig(kind);
     if (!config) throw identityError('identity_invalid', 'Authentication provider was not found.');
@@ -1513,6 +1887,34 @@ export class SqliteIdentityStore implements IdentityStore {
   async createBrowserSession(input: CreateBrowserSessionRecordInput) { return this.logic.createBrowserSession(input); }
   async findBrowserSessions(prefix: string) { return this.logic.findBrowserSessions(prefix); }
   async revokeBrowserSession(sessionId: string) { return this.logic.revokeBrowserSession(sessionId); }
+  async setupPasswordOwner(input: SetupPasswordOwnerInput) {
+    return this.logic.setupPasswordOwner(input);
+  }
+  async enrollPasswordInvitation(input: EnrollPasswordInvitationInput) {
+    return this.logic.enrollPasswordInvitation(input);
+  }
+  async findUserByEmail(email: string) { return this.logic.findUserByEmail(email); }
+  async getActivePasswordCredential(userId: string) {
+    return this.logic.getActivePasswordCredential(userId);
+  }
+  async replacePasswordCredential(input: ReplacePasswordCredentialInput) {
+    return this.logic.replacePasswordCredential(input);
+  }
+  async createPasswordResetCapability(input: CreatePasswordResetCapabilityInput) {
+    return this.logic.createPasswordResetCapability(input);
+  }
+  async consumePasswordResetCapability(input: ConsumePasswordResetCapabilityInput) {
+    return this.logic.consumePasswordResetCapability(input);
+  }
+  async revokePasswordResetCapability(capabilityId: string) {
+    return this.logic.revokePasswordResetCapability(capabilityId);
+  }
+  async touchBrowserSession(sessionId: string, idleExpiresAt: number) {
+    return this.logic.touchBrowserSession(sessionId, idleExpiresAt);
+  }
+  async revokeUserBrowserSessions(userId: string) {
+    return this.logic.revokeUserBrowserSessions(userId);
+  }
   async configureAuthProvider(input: ConfigureAuthProviderInput) { return this.logic.configureAuthProvider(input); }
   async getAuthProviderConfig(kind: string) { return this.logic.getAuthProviderConfig(kind); }
   async updateAuthProviderAudience(kind: string, audience: string, actorMembershipId?: string) {
@@ -1571,6 +1973,30 @@ function validateExternalIdentity(input: Pick<BindExternalIdentityInput, 'provid
 function validateTokenHash(value: string): void {
   if (!value || value.length > 256 || /\s/.test(value)) {
     throw identityError('identity_invalid', 'Credential hash is invalid.');
+  }
+}
+
+function validatePasswordCredential(material: PasswordCredentialMaterial): void {
+  if (material.algorithm !== 'pbkdf2-sha256' ||
+      !Number.isSafeInteger(material.parameterVersion) || material.parameterVersion <= 0 ||
+      !Number.isSafeInteger(material.iterations) || material.iterations <= 0) {
+    throw identityError('identity_invalid', 'Password credential parameters are invalid.');
+  }
+  for (const value of [material.salt, material.verifier]) {
+    if (!value || value.length > 1_024 || /\s/.test(value)) {
+      throw identityError('identity_invalid', 'Password credential material is invalid.');
+    }
+  }
+}
+
+function validatePasswordSession(material: PasswordBrowserSessionMaterial, at: number): void {
+  validateTokenHash(material.sessionHash);
+  credentialPrefix(material.prefix);
+  if (!Number.isSafeInteger(material.idleExpiresAt) ||
+      !Number.isSafeInteger(material.absoluteExpiresAt) ||
+      material.idleExpiresAt <= at ||
+      material.absoluteExpiresAt < material.idleExpiresAt) {
+    throw identityError('identity_invalid', 'Password session expiry is invalid.');
   }
 }
 
@@ -1706,13 +2132,52 @@ function rowToBrowserSession(row: BrowserSessionRow): BrowserSessionRecord {
   return {
     id: row.browser_session_id,
     userId: row.user_id,
+    membershipId: row.membership_id,
+    authenticatorKind: row.authenticator_kind,
     personalTokenId: row.personal_token_id,
+    credentialId: row.credential_id,
+    credentialVersion: row.credential_version,
     sessionHash: row.session_hash,
     prefix: row.prefix,
-    expiresAt: row.expires_at,
+    idleExpiresAt: row.idle_expires_at,
+    absoluteExpiresAt: row.absolute_expires_at,
     lastSeenAt: row.last_seen_at,
     revokedAt: row.revoked_at,
     createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function rowToPasswordCredential(row: PasswordCredentialRow): PasswordCredentialRecord {
+  return {
+    id: row.password_credential_id,
+    userId: row.user_id,
+    algorithm: row.algorithm,
+    parameterVersion: row.parameter_version,
+    iterations: row.iterations,
+    salt: row.salt,
+    verifier: row.verifier,
+    credentialVersion: row.credential_version,
+    status: row.status,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function rowToPasswordResetCapability(
+  row: PasswordResetCapabilityRow,
+): PasswordResetCapabilityRecord {
+  return {
+    id: row.password_reset_capability_id,
+    userId: row.user_id,
+    tokenHash: row.token_hash,
+    kind: row.kind,
+    status: row.status,
+    createdByMembershipId: row.created_by_membership_id,
+    expiresAt: row.expires_at,
+    consumedAt: row.consumed_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
   };
 }
 

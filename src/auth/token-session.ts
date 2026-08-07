@@ -54,7 +54,11 @@ export class TokenSessionService {
     const sessions = parsed ? await this.identity.findBrowserSessions(parsed.prefix) : [];
     const session = sessions.find((item) => constantHashEquals(item.sessionHash, candidateHash));
     if (!session) constantHashEquals('0'.repeat(64), candidateHash);
-    if (!session || session.revokedAt !== null || session.expiresAt <= this.now()) throw new AuthDeniedError();
+    if (!session || session.authenticatorKind !== 'personal_token' ||
+        session.personalTokenId === null || session.revokedAt !== null ||
+        session.idleExpiresAt <= this.now() || session.absoluteExpiresAt <= this.now()) {
+      throw new AuthDeniedError();
+    }
     const [sourceToken, user, membership] = await Promise.all([
       this.identity.getPersonalToken(session.personalTokenId),
       this.identity.getUser(session.userId),
