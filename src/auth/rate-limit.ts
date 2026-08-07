@@ -3,7 +3,8 @@ import { createHmac } from 'node:crypto';
 import type { IdentityStore } from '../identity/types.ts';
 
 const WINDOW_MS = 15 * 60_000;
-const GLOBAL_KEY = 'global';
+const GLOBAL_SCOPE = 'global';
+const SPECIFIC_SCOPE = 'specific';
 
 interface AuthRateLimiterOptions {
   pepper: string;
@@ -38,8 +39,8 @@ export class AuthRateLimiter {
     const now = this.now();
     const windowStart = currentWindow(now);
     const [specific, global] = await Promise.all([
-      this.identity.getAuthRateLimit(bucket, this.keyHash(bucket, rawKey)),
-      this.identity.getAuthRateLimit(bucket, this.keyHash(bucket, GLOBAL_KEY)),
+      this.identity.getAuthRateLimit(bucket, this.keyHash(bucket, SPECIFIC_SCOPE, rawKey)),
+      this.identity.getAuthRateLimit(bucket, this.keyHash(bucket, GLOBAL_SCOPE)),
     ]);
     if ((specific?.windowStart === windowStart && specific.failures >= this.perKeyLimit) ||
         (global?.windowStart === windowStart && global.failures >= this.globalLimit)) {
@@ -50,17 +51,31 @@ export class AuthRateLimiter {
   async recordFailure(bucket: string, rawKey: string): Promise<void> {
     const windowStart = currentWindow(this.now());
     await Promise.all([
-      this.identity.recordAuthRateFailure(bucket, this.keyHash(bucket, rawKey), windowStart),
-      this.identity.recordAuthRateFailure(bucket, this.keyHash(bucket, GLOBAL_KEY), windowStart),
+      this.identity.recordAuthRateFailure(
+        bucket,
+        this.keyHash(bucket, SPECIFIC_SCOPE, rawKey),
+        windowStart,
+      ),
+      this.identity.recordAuthRateFailure(
+        bucket,
+        this.keyHash(bucket, GLOBAL_SCOPE),
+        windowStart,
+      ),
     ]);
   }
 
   async recordSuccess(bucket: string, rawKey: string): Promise<void> {
-    await this.identity.clearAuthRateLimit(bucket, this.keyHash(bucket, rawKey));
+    await this.identity.clearAuthRateLimit(bucket, this.keyHash(bucket, SPECIFIC_SCOPE, rawKey));
   }
 
-  private keyHash(bucket: string, raw: string): string {
-    return createHmac('sha256', this.pepper).update(bucket).update('\0').update(raw).digest('hex');
+  private keyHash(bucket: string, scope: string, raw = ''): string {
+    return createHmac('sha256', this.pepper)
+      .update(bucket)
+      .update('\0')
+      .update(scope)
+      .update('\0')
+      .update(raw)
+      .digest('hex');
   }
 }
 

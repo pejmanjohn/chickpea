@@ -46,20 +46,17 @@ export async function recoverTokenMode(options) {
       if (!options.ownerEmail || !options.origin) {
         throw new Error('Token-mode bootstrap requires --owner-email and --origin.');
       }
-      organization = await identity.ensureOrganization({ displayName: 'Chickpea' });
-      await identity.createOwnerClaim({ organizationId: organization.id, email: options.ownerEmail });
-      await identity.claimOwner({
-        organizationId: organization.id,
+      await identity.bootstrapTokenOwner({
+        displayName: 'Chickpea',
+        canonicalAdminOrigin: options.origin,
+        organizationId: 'org_oss',
         provider: 'operator_token',
         issuer: 'urn:chickpea:operator',
         subject: `owner_${randomUUID()}`,
         verifiedEmail: options.ownerEmail,
       });
-      organization = await identity.updateOrganizationAuth({
-        organizationId: organization.id,
-        authMode: 'token_active',
-        canonicalAdminOrigin: options.origin,
-      });
+      organization = await identity.getOrganization();
+      if (!organization) throw new Error('Token authentication did not initialize.');
     }
     if (organization.authMode !== 'token_active') {
       throw new Error(
@@ -85,18 +82,14 @@ export async function recoverTokenMode(options) {
       );
     }
 
-    const prior = (await identity.exportSummary()).personalTokens.filter(
-      (token) => token.userId === selected.user.id && token.status === 'active',
-    );
-    const created = await new PersonalTokenService(identity).create(
+    const created = await new PersonalTokenService(identity).rotate(
       selected.user.id,
       `Operator recovery ${new Date().toISOString().slice(0, 10)}`,
     );
-    for (const token of prior) await identity.revokePersonalToken(token.id);
     return {
       changed: true,
       ownerEmail: selected.user.primaryEmail,
-      revokedTokens: prior.length,
+      revokedTokens: created.revokedCount,
       token: created.token,
     };
   } finally {

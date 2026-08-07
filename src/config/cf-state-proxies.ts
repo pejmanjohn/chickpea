@@ -7,8 +7,9 @@ import type { ConfigAgentPatch, ConfigStore, OAuthReauthorizationTarget } from '
 import type { AgentSnapshot, ChannelAssignment, CustomAgentConfig } from './types.ts';
 import { IdentityStateError } from '../identity/errors.ts';
 import type {
-  ClaimOwnerInput,
   ActivateAccessOwnerInput,
+  BootstrapTokenOwnerInput,
+  ClaimOwnerInput,
   ConsumeInvitationInput,
   ConfigureAuthProviderInput,
   CreateBrowserSessionRecordInput,
@@ -252,6 +253,11 @@ export class CfIdentityStore implements IdentityStore {
     if (response.kind !== 'identity_resolution' || !response.resolution) throw unexpectedIdentityResponse();
     return response.resolution;
   }
+  async bootstrapTokenOwner(input: BootstrapTokenOwnerInput) {
+    const response = await this.execute({ kind: 'bootstrap_token_owner', input });
+    if (response.kind !== 'identity_resolution' || !response.resolution) throw unexpectedIdentityResponse();
+    return response.resolution;
+  }
   async activateAccessOwner(input: ActivateAccessOwnerInput) {
     const response = await this.execute({ kind: 'activate_access_owner', input });
     if (response.kind !== 'identity_resolution' || !response.resolution) throw unexpectedIdentityResponse();
@@ -332,6 +338,11 @@ export class CfIdentityStore implements IdentityStore {
     const response = await this.execute({ kind: 'create_personal_token', input });
     if (response.kind !== 'personal_token') throw unexpectedIdentityResponse();
     return response.personalToken;
+  }
+  async rotatePersonalToken(input: CreatePersonalTokenRecordInput) {
+    const response = await this.execute({ kind: 'rotate_personal_token', input });
+    if (response.kind !== 'personal_token_rotation') throw unexpectedIdentityResponse();
+    return response.result;
   }
   async findPersonalTokens(prefix: string) {
     const response = await this.execute({ kind: 'find_personal_tokens', prefix });

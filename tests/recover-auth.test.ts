@@ -112,6 +112,28 @@ test('explicit token-mode bootstrap creates one owner and a show-once token', as
   identity.close();
 });
 
+test('invalid bootstrap input leaves no partial owner claim and can be retried', async (context) => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-auth-bootstrap-retry-'));
+  const path = join(directory, 'state.sqlite');
+  context.after(() => rmSync(directory, { recursive: true, force: true }));
+
+  const invalid = run(path, [
+    '--bootstrap-token-mode', '--owner-email', 'owner@example.com',
+    '--origin', 'https://chickpea.example.com/path', '--yes',
+  ]);
+  assert.equal(invalid.status, 1);
+  assert.match(invalid.stderr, /origin is invalid/i);
+  const identity = new SqliteIdentityStore(path);
+  assert.equal(await identity.getOrganization(), undefined);
+  assert.equal(await identity.getOwnerClaim(), undefined);
+  identity.close();
+
+  const retry = run(path, [
+    '--bootstrap-token-mode', '--owner-email', 'owner@example.com', '--origin', ORIGIN, '--yes',
+  ]);
+  assert.equal(retry.status, 0, retry.stderr);
+});
+
 test('recovery executable has no HTTP transport or recovery route', () => {
   const source = readFileSync(SCRIPT, 'utf8');
   assert.doesNotMatch(source, /\bfetch\s*\(/);

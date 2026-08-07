@@ -175,6 +175,11 @@ export interface ActivateAccessOwnerInput extends ClaimOwnerInput {
   canonicalAdminOrigin: string;
 }
 
+export interface BootstrapTokenOwnerInput extends ClaimOwnerInput {
+  displayName: string;
+  canonicalAdminOrigin: string;
+}
+
 export interface ReplaceAccessOwnerBindingInput extends BindExternalIdentityInput {}
 
 export interface UpdateMembershipInput {
@@ -223,6 +228,11 @@ export interface CreatePersonalTokenRecordInput {
   label: string;
 }
 
+export interface RotatePersonalTokenResult {
+  personalToken: PersonalTokenRecord;
+  revokedCount: number;
+}
+
 export interface CreateBrowserSessionRecordInput {
   userId: string;
   personalTokenId: string;
@@ -248,6 +258,7 @@ export interface IdentityStore {
   createOwnerClaim(input: CreateOwnerClaimInput): Promise<OwnerClaim>;
   getOwnerClaim(): Promise<OwnerClaim | undefined>;
   claimOwner(input: ClaimOwnerInput): Promise<IdentityResolution>;
+  bootstrapTokenOwner(input: BootstrapTokenOwnerInput): Promise<IdentityResolution>;
   activateAccessOwner(input: ActivateAccessOwnerInput): Promise<IdentityResolution>;
   replaceAccessOwnerBinding(input: ReplaceAccessOwnerBindingInput): Promise<IdentityResolution>;
   resolveExternalIdentity(
@@ -268,6 +279,7 @@ export interface IdentityStore {
   consumeInvitation(input: ConsumeInvitationInput): Promise<IdentityResolution>;
   listInvitations(): Promise<Invitation[]>;
   createPersonalToken(input: CreatePersonalTokenRecordInput): Promise<PersonalTokenRecord>;
+  rotatePersonalToken(input: CreatePersonalTokenRecordInput): Promise<RotatePersonalTokenResult>;
   findPersonalTokens(prefix: string): Promise<PersonalTokenRecord[]>;
   getPersonalToken(tokenId: string): Promise<PersonalTokenRecord | undefined>;
   revokePersonalToken(tokenId: string): Promise<PersonalTokenRecord>;
@@ -301,6 +313,7 @@ export type IdentityRpcRequest =
   | { kind: 'create_owner_claim'; input: CreateOwnerClaimInput }
   | { kind: 'get_owner_claim' }
   | { kind: 'claim_owner'; input: ClaimOwnerInput }
+  | { kind: 'bootstrap_token_owner'; input: BootstrapTokenOwnerInput }
   | { kind: 'activate_access_owner'; input: ActivateAccessOwnerInput }
   | { kind: 'replace_access_owner_binding'; input: ReplaceAccessOwnerBindingInput }
   | {
@@ -322,6 +335,7 @@ export type IdentityRpcRequest =
   | { kind: 'consume_invitation'; input: ConsumeInvitationInput }
   | { kind: 'list_invitations' }
   | { kind: 'create_personal_token'; input: CreatePersonalTokenRecordInput }
+  | { kind: 'rotate_personal_token'; input: CreatePersonalTokenRecordInput }
   | { kind: 'find_personal_tokens'; prefix: string }
   | { kind: 'get_personal_token'; tokenId: string }
   | { kind: 'revoke_personal_token'; tokenId: string }
@@ -356,6 +370,7 @@ export type IdentityRpcResponse =
   | { kind: 'invitation'; invitation: Invitation }
   | { kind: 'invitations'; invitations: Invitation[] }
   | { kind: 'personal_token'; personalToken: PersonalTokenRecord }
+  | { kind: 'personal_token_rotation'; result: RotatePersonalTokenResult }
   | { kind: 'personal_tokens'; personalTokens: PersonalTokenRecord[] }
   | { kind: 'browser_session'; browserSession: BrowserSessionRecord }
   | { kind: 'browser_sessions'; browserSessions: BrowserSessionRecord[] }

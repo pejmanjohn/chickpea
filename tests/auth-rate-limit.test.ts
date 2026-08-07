@@ -21,3 +21,15 @@ test('auth limiter persists per-key and global windows without storing raw ident
   await assert.doesNotReject(() => limiter.assertAllowed('setup', 'owner@example.com'));
   identity.close();
 });
+
+test('the literal source key global cannot collide with the global limiter bucket', async () => {
+  const identity = new SqliteIdentityStore(':memory:');
+  const limiter = new AuthRateLimiter(identity, {
+    pepper: 'rate-limit-pepper-at-least-thirty-two-chars',
+    perKeyLimit: 2,
+    globalLimit: 3,
+  });
+  await limiter.recordFailure('setup', 'global');
+  await assert.doesNotReject(() => limiter.assertAllowed('setup', 'global'));
+  identity.close();
+});

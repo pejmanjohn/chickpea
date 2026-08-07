@@ -22,16 +22,33 @@ export class PersonalTokenService {
   }
 
   async create(userId: string, label: string): Promise<{ token: string; record: PersonalTokenRecord }> {
+    const material = this.tokenMaterial();
+    const record = await this.identity.createPersonalToken({ userId, label, ...material.record });
+    return { token: material.token, record };
+  }
+
+  async rotate(userId: string, label: string): Promise<{
+    token: string;
+    record: PersonalTokenRecord;
+    revokedCount: number;
+  }> {
+    const material = this.tokenMaterial();
+    const result = await this.identity.rotatePersonalToken({ userId, label, ...material.record });
+    return {
+      token: material.token,
+      record: result.personalToken,
+      revokedCount: result.revokedCount,
+    };
+  }
+
+  private tokenMaterial(): {
+    token: string;
+    record: Pick<PersonalTokenRecord, 'tokenHash' | 'prefix'>;
+  } {
     const secret = Buffer.from(this.randomBytes(32)).toString('base64url');
     const prefix = secret.slice(0, 12);
     const token = `chp_pat_${prefix}_${secret}`;
-    const record = await this.identity.createPersonalToken({
-      userId,
-      tokenHash: digest(token),
-      prefix,
-      label,
-    });
-    return { token, record };
+    return { token, record: { tokenHash: digest(token), prefix } };
   }
 
   async authenticate(token: string, machine: boolean): Promise<AuthPrincipal> {

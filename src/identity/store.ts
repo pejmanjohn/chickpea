@@ -10,6 +10,7 @@ import type {
   ActivateAccessOwnerInput,
   AuthProviderConfig,
   AuthRateLimitState,
+  BootstrapTokenOwnerInput,
   BrowserSessionRecord,
   ClaimOwnerInput,
   ConsumeInvitationInput,
@@ -181,6 +182,8 @@ export class IdentityStoreLogic {
         return { kind: 'owner_claim', ownerClaim: this.getOwnerClaim() ?? null };
       case 'claim_owner':
         return { kind: 'identity_resolution', resolution: this.claimOwner(request.input) };
+      case 'bootstrap_token_owner':
+        return { kind: 'identity_resolution', resolution: this.bootstrapTokenOwner(request.input) };
       case 'activate_access_owner':
         return { kind: 'identity_resolution', resolution: this.activateAccessOwner(request.input) };
       case 'replace_access_owner_binding':
@@ -224,6 +227,8 @@ export class IdentityStoreLogic {
         return { kind: 'invitations', invitations: this.listInvitations() };
       case 'create_personal_token':
         return { kind: 'personal_token', personalToken: this.createPersonalToken(request.input) };
+      case 'rotate_personal_token':
+        return { kind: 'personal_token_rotation', result: this.rotatePersonalToken(request.input) };
       case 'find_personal_tokens':
         return { kind: 'personal_tokens', personalTokens: this.findPersonalTokens(request.prefix) };
       case 'get_personal_token': {
@@ -400,6 +405,58 @@ export class IdentityStoreLogic {
       this.appendAudit('identity.owner_claimed', ids.membership, at, ids.membership);
     });
     return this.requiredResolution(input.provider, input.issuer, input.subject, input.organizationId);
+  }
+
+  bootstrapTokenOwner(input: BootstrapTokenOwnerInput): IdentityResolution {
+    if (input.organizationId !== OSS_ORGANIZATION_ID) {
+      throw identityError('identity_invalid', 'Token authentication organization is invalid.');
+    }
+    const displayName = nonEmpty(input.displayName, 'displayName');
+    const email = normalizeEmail(input.verifiedEmail);
+    validateExternalIdentity(input);
+    const canonicalAdminOrigin = validOrigin(input.canonicalAdminOrigin);
+    if (this.getOrganization()) {
+      throw identityError('identity_invalid', 'Token authentication is already initialized.');
+    }
+
+    const at = input.at ?? this.now();
+    const ownerClaimId = newId('owner_claim');
+    const ids = { user: newId('user'), binding: newId('binding'), membership: newId('membership') };
+    this.db.transaction(() => {
+      this.db.run(
+        `INSERT INTO identity_organizations (
+           organization_id, display_name, auth_mode, canonical_admin_origin,
+           created_at, updated_at
+         ) VALUES (?, ?, 'unconfigured', NULL, ?, ?)`,
+        OSS_ORGANIZATION_ID, displayName, at, at,
+      );
+      this.db.run(
+        `INSERT INTO identity_owner_claims (
+           owner_claim_id, organization_id, normalized_email, status,
+           binding_id, created_at, updated_at
+         ) VALUES (?, ?, ?, 'pending', NULL, ?, ?)`,
+        ownerClaimId, OSS_ORGANIZATION_ID, email, at, at,
+      );
+      this.insertIdentity(ids, input, email, 'owner', at);
+      if (this.db.run(
+        `UPDATE identity_owner_claims
+         SET status = 'claimed', binding_id = ?, updated_at = ?
+         WHERE owner_claim_id = ? AND status = 'pending'`,
+        ids.binding, at, ownerClaimId,
+      ).changes !== 1) {
+        throw identityError('owner_already_claimed', 'The owner claim has already been consumed.');
+      }
+      this.db.run(
+        `UPDATE identity_organizations
+         SET auth_mode = 'token_active', canonical_admin_origin = ?, updated_at = ?
+         WHERE organization_id = ?`,
+        canonicalAdminOrigin, at, OSS_ORGANIZATION_ID,
+      );
+      this.appendAudit('identity.organization_initialized', OSS_ORGANIZATION_ID, at);
+      this.appendAudit('identity.owner_claim_created', ownerClaimId, at);
+      this.appendAudit('identity.token_auth_activated', ids.membership, at, ids.membership);
+    });
+    return this.requiredResolution(input.provider, input.issuer, input.subject, OSS_ORGANIZATION_ID);
   }
 
   activateAccessOwner(input: ActivateAccessOwnerInput): IdentityResolution {
@@ -826,31 +883,40 @@ export class IdentityStoreLogic {
   }
 
   createPersonalToken(input: CreatePersonalTokenRecordInput): PersonalTokenRecord {
-    if (!this.getUser(input.userId)) {
-      throw identityError('identity_invalid', 'Token user was not found.');
-    }
-    validateTokenHash(input.tokenHash);
-    const prefix = credentialPrefix(input.prefix);
-    const label = nonEmpty(input.label, 'label');
-    const at = this.now();
-    const id = newId('personal_token');
+    const token = this.preparePersonalToken(input);
     this.db.transaction(() => {
-      this.db.run(
-        `INSERT INTO identity_personal_tokens (
-           personal_token_id, user_id, token_hash, prefix, label, status,
-           last_used_at, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, 'active', NULL, ?, ?)`,
-        id,
-        input.userId,
-        input.tokenHash,
-        prefix,
-        label,
-        at,
-        at,
-      );
-      this.appendAudit('identity.personal_token_created', id, at, null);
+      this.insertPersonalToken(input, token);
+      this.appendAudit('identity.personal_token_created', token.id, token.at, null);
     });
-    return this.requiredPersonalToken(id);
+    return this.requiredPersonalToken(token.id);
+  }
+
+  rotatePersonalToken(input: CreatePersonalTokenRecordInput): {
+    personalToken: PersonalTokenRecord;
+    revokedCount: number;
+  } {
+    const token = this.preparePersonalToken(input);
+    let revokedCount = 0;
+    this.db.transaction(() => {
+      this.insertPersonalToken(input, token);
+      this.db.run(
+        `UPDATE identity_browser_sessions SET revoked_at = ?
+         WHERE revoked_at IS NULL AND personal_token_id IN (
+           SELECT personal_token_id FROM identity_personal_tokens
+           WHERE user_id = ? AND personal_token_id <> ? AND status = 'active'
+         )`,
+        token.at, input.userId, token.id,
+      );
+      revokedCount = this.db.run(
+        `UPDATE identity_personal_tokens SET status = 'revoked', updated_at = ?
+         WHERE user_id = ? AND personal_token_id <> ? AND status = 'active'`,
+        token.at, input.userId, token.id,
+      ).changes;
+      this.appendAudit('identity.personal_token_rotated', token.id, token.at, null, {
+        revokedCount: String(revokedCount),
+      });
+    });
+    return { personalToken: this.requiredPersonalToken(token.id), revokedCount };
   }
 
   findPersonalTokens(prefix: string): PersonalTokenRecord[] {
@@ -1316,6 +1382,37 @@ export class IdentityStoreLogic {
     );
   }
 
+  private preparePersonalToken(input: CreatePersonalTokenRecordInput): {
+    id: string;
+    prefix: string;
+    label: string;
+    at: number;
+  } {
+    if (!this.getUser(input.userId)) {
+      throw identityError('identity_invalid', 'Token user was not found.');
+    }
+    validateTokenHash(input.tokenHash);
+    return {
+      id: newId('personal_token'),
+      prefix: credentialPrefix(input.prefix),
+      label: nonEmpty(input.label, 'label'),
+      at: this.now(),
+    };
+  }
+
+  private insertPersonalToken(
+    input: CreatePersonalTokenRecordInput,
+    token: { id: string; prefix: string; label: string; at: number },
+  ): void {
+    this.db.run(
+      `INSERT INTO identity_personal_tokens (
+         personal_token_id, user_id, token_hash, prefix, label, status,
+         last_used_at, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, 'active', NULL, ?, ?)`,
+      token.id, input.userId, input.tokenHash, token.prefix, token.label, token.at, token.at,
+    );
+  }
+
   private appendAudit(
     eventType: string,
     subjectId: string,
@@ -1429,6 +1526,9 @@ export class SqliteIdentityStore implements IdentityStore {
   async createOwnerClaim(input: CreateOwnerClaimInput) { return this.logic.createOwnerClaim(input); }
   async getOwnerClaim() { return this.logic.getOwnerClaim(); }
   async claimOwner(input: ClaimOwnerInput) { return this.logic.claimOwner(input); }
+  async bootstrapTokenOwner(input: BootstrapTokenOwnerInput) {
+    return this.logic.bootstrapTokenOwner(input);
+  }
   async activateAccessOwner(input: ActivateAccessOwnerInput) { return this.logic.activateAccessOwner(input); }
   async replaceAccessOwnerBinding(input: ReplaceAccessOwnerBindingInput) {
     return this.logic.replaceAccessOwnerBinding(input);
@@ -1452,6 +1552,9 @@ export class SqliteIdentityStore implements IdentityStore {
   async consumeInvitation(input: ConsumeInvitationInput) { return this.logic.consumeInvitation(input); }
   async listInvitations() { return this.logic.listInvitations(); }
   async createPersonalToken(input: CreatePersonalTokenRecordInput) { return this.logic.createPersonalToken(input); }
+  async rotatePersonalToken(input: CreatePersonalTokenRecordInput) {
+    return this.logic.rotatePersonalToken(input);
+  }
   async findPersonalTokens(prefix: string) { return this.logic.findPersonalTokens(prefix); }
   async getPersonalToken(tokenId: string) { return this.logic.getPersonalToken(tokenId); }
   async revokePersonalToken(tokenId: string) { return this.logic.revokePersonalToken(tokenId); }

@@ -103,14 +103,14 @@ export async function consumeGithubSetupState(
 ): Promise<GithubSetupState | undefined> {
   const stored = await settings.getSetting(GITHUB_SETTING_KEYS.setupState);
   if (!stored) return undefined;
+  const parsed = parseGithubSetupState(stored);
+  if (!parsed || parsed.state !== candidate) return undefined;
   const consumed = await settings.applySettingsPatch({
     expected: { key: GITHUB_SETTING_KEYS.setupState, value: stored },
     delete: [GITHUB_SETTING_KEYS.setupState],
   });
   if (!consumed) return undefined;
-  const parsed = parseGithubSetupState(stored);
-  if (!parsed || parsed.state !== candidate || now < parsed.mintedAt ||
-      now - parsed.mintedAt >= GITHUB_SETUP_STATE_TTL_MS) {
+  if (now < parsed.mintedAt || now - parsed.mintedAt >= GITHUB_SETUP_STATE_TTL_MS) {
     return undefined;
   }
   return parsed;

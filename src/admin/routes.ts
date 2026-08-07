@@ -235,6 +235,7 @@ import { AuthorizationError, requirePermission, type Permission } from '../auth/
 import { validateMutationProvenance } from '../auth/request-provenance.ts';
 import { CloudflareAccessAuthenticator, verifyCloudflareAccessRecoveryAssertion } from '../auth/cloudflare-access.ts';
 import { AuthRateLimiter } from '../auth/rate-limit.ts';
+import { requestAuthSourceKey } from '../auth/source-key.ts';
 import { AuthRecoveryService } from '../auth/recovery.ts';
 import { AuthSetupService, validRecoveryToken } from '../auth/setup.ts';
 import { digest, PersonalTokenService } from '../auth/personal-token.ts';
@@ -4148,8 +4149,7 @@ function validAuthFormPost(c: Context, expectedOrigin: string): boolean {
 }
 
 function authSourceKey(c: Context): string {
-  const cloudflareAddress = c.req.header('cf-connecting-ip')?.trim();
-  return cloudflareAddress || `local:${new URL(c.req.url).host}`;
+  return requestAuthSourceKey(c.req.raw);
 }
 
 async function readForm(c: Context): Promise<Record<string, string>> {

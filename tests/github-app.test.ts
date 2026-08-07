@@ -1053,14 +1053,19 @@ test('GitHub manifest callback refuses missing, mismatched, stale, and replayed 
       // Mismatched state.
       await settings.setSetting('github.setup_state', `expected:${Date.now()}`);
       assert.equal((await request('code=c2&state=wrong')).status, 403);
-      // The mismatch consumed the stored state — a replay with the right value fails too.
-      assert.equal((await request('code=c3&state=expected')).status, 403);
+      assert.equal(
+        await settings.getSetting('github.setup_state') !== undefined,
+        true,
+        'a mismatched public callback must not consume the real pending state',
+      );
       // Stale state (minted 16 minutes ago).
       await settings.setSetting(
         'github.setup_state',
         `stale-state:${Date.now() - 16 * 60 * 1_000}`,
       );
       assert.equal((await request('code=c4&state=stale-state')).status, 403);
+      assert.equal(await settings.getSetting('github.setup_state'), undefined);
+      assert.equal((await request('code=c5&state=stale-state')).status, 403);
     });
     assert.equal(exchanges, 0, 'no rejected callback may reach the code exchange');
     assert.equal(await settings.getSetting('github.app.id'), undefined);
