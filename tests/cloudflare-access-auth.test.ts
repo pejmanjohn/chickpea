@@ -9,7 +9,7 @@ import {
 } from '../src/auth/cloudflare-access.ts';
 import { AuthDeniedError } from '../src/auth/service.ts';
 
-const ISSUER = 'https://paperplanelabs.cloudflareaccess.com';
+const ISSUER = 'https://example.cloudflareaccess.com';
 const AUDIENCE = 'a'.repeat(64);
 
 async function fixture() {

@@ -8,7 +8,7 @@ import { SqliteIdentityStore } from '../src/identity/store.ts';
 
 const NOW = 1_786_200_000_000;
 const RECOVERY = 'recovery-token-with-more-than-thirty-two-characters';
-const ISSUER = 'https://paperplanelabs.cloudflareaccess.com';
+const ISSUER = 'https://example.cloudflareaccess.com';
 
 async function activeStore() {
   const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });

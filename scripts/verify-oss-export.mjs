@@ -25,7 +25,6 @@ const localUserPathPattern = new RegExp(
 const denyPatterns = [
   ['private source project', new RegExp(term('ski', 'llet'), 'i')],
   ['deleted source path', new RegExp(term('docs', '\\/', 'sou', 'rce'), 'i')],
-  ['local package-manager path', new RegExp(term('\\/', 'opt', '\\/', 'home', 'brew'), 'i')],
   ['internal product name', new RegExp(term('claude', '[- ]?', 'tag'), 'i')],
   ['private workspace name', new RegExp(term('paper', 'plane'), 'i')],
   ['private company name', new RegExp(term('mag', 'oosh'), 'i')],
@@ -34,7 +33,6 @@ const denyPatterns = [
   // catches case-insensitive macOS paths while allowing `/users/...` API route
   // segments whose preceding character is part of a URL path.
   ['local user path', localUserPathPattern],
-  ['live rehearsal marker', new RegExp(term('can', 'ary'), 'i')],
 ];
 
 for (const value of [

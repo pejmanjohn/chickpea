@@ -1,22 +1,22 @@
 **Comparison Target**
 
-- Source visual truth: `/Users/pejman/.codex/generated_images/019faae1-7b73-77a1-9bfd-4c490f6462af/exec-de9fcbee-b175-424c-864b-d905dc29b424.png`
+- Source visual truth: `<local-artifacts>/generated_images/019faae1-7b73-77a1-9bfd-4c490f6462af/exec-de9fcbee-b175-424c-864b-d905dc29b424.png`
 - Browser-rendered implementation: `http://127.0.0.1:3591/admin/usage`
-- Implementation screenshot: `/Users/pejman/.codex/visualizations/2026/07/28/019faae1-7b73-77a1-9bfd-4c490f6462af/admin-navigation/usage-desktop.png`
+- Implementation screenshot: `<local-artifacts>/visualizations/2026/07/28/019faae1-7b73-77a1-9bfd-4c490f6462af/admin-navigation/usage-desktop.png`
 - Desktop viewport and CSS size: `1487x1058`
 - Source pixels: `1487x1058`; implementation pixels: `1487x1058`; device scale factor: `1`. No density normalization was needed.
 - State: signed-in local Node Admin, Usage enabled, channel breakdown selected, realistic four-activity usage fixture loaded, desktop section switcher active on Usage.
 
 **Full-view Comparison Evidence**
 
-- Same-input comparison: `/Users/pejman/.codex/visualizations/2026/07/28/019faae1-7b73-77a1-9bfd-4c490f6462af/admin-navigation/usage-comparison-final.png`
+- Same-input comparison: `<local-artifacts>/visualizations/2026/07/28/019faae1-7b73-77a1-9bfd-4c490f6462af/admin-navigation/usage-comparison-final.png`
 - The implementation preserves the selected mockup's hierarchy, warm palette, rail/main proportions, text-only section switcher, active states, usage controls, guidance, summary cards, channel-first tables, and compact density.
 - The implementation is slightly roomier inside the main content card because it uses the existing Admin layout tokens. This is an acceptable product-system constraint and does not change hierarchy, wrapping, or above-the-fold information.
 
 **Focused Region Comparison Evidence**
 
-- Navigation comparison: `/Users/pejman/.codex/visualizations/2026/07/28/019faae1-7b73-77a1-9bfd-4c490f6462af/admin-navigation/navigation-focus-comparison.png`
-- Usage-header comparison: `/Users/pejman/.codex/visualizations/2026/07/28/019faae1-7b73-77a1-9bfd-4c490f6462af/admin-navigation/usage-top-focus-comparison.png`
+- Navigation comparison: `<local-artifacts>/visualizations/2026/07/28/019faae1-7b73-77a1-9bfd-4c490f6462af/admin-navigation/navigation-focus-comparison.png`
+- Usage-header comparison: `<local-artifacts>/visualizations/2026/07/28/019faae1-7b73-77a1-9bfd-4c490f6462af/admin-navigation/usage-top-focus-comparison.png`
 - These native-density crops make the section hierarchy, labels, typography, active treatments, controls, guidance, cards, and spacing readable without relying only on the full-page view.
 
 **Required Fidelity Surfaces**
@@ -33,21 +33,21 @@
 
 **Comparison History**
 
-- Pass 1 comparison: `/Users/pejman/.codex/visualizations/2026/07/28/019faae1-7b73-77a1-9bfd-4c490f6462af/admin-navigation/usage-comparison-pass-1.png`
+- Pass 1 comparison: `<local-artifacts>/visualizations/2026/07/28/019faae1-7b73-77a1-9bfd-4c490f6462af/admin-navigation/usage-comparison-pass-1.png`
   - [P1] The section switcher was placed at the end of the rail but the overall desktop frame was not viewport-constrained, so long Usage content pushed the supposedly persistent section controls below the visible viewport.
 - Fix made:
   - Constrained the desktop frame to `100dvh`, kept the body from expanding beyond the frame, and made the main panel the scrolling region while the rail stays fixed.
 - Post-fix evidence:
-  - `/Users/pejman/.codex/visualizations/2026/07/28/019faae1-7b73-77a1-9bfd-4c490f6462af/admin-navigation/usage-desktop.png` shows all four section controls visible while the long main table continues below the fold.
+  - `<local-artifacts>/visualizations/2026/07/28/019faae1-7b73-77a1-9bfd-4c490f6462af/admin-navigation/usage-desktop.png` shows all four section controls visible while the long main table continues below the fold.
   - Browser measurements confirmed no horizontal overflow and a scrollable main panel (`clientHeight 974`, `scrollHeight 1140`).
-  - `/Users/pejman/.codex/visualizations/2026/07/28/019faae1-7b73-77a1-9bfd-4c490f6462af/admin-navigation/usage-comparison-final.png` is the same-state post-fix comparison.
+  - `<local-artifacts>/visualizations/2026/07/28/019faae1-7b73-77a1-9bfd-4c490f6462af/admin-navigation/usage-comparison-final.png` is the same-state post-fix comparison.
 
 **Additional Screen and Responsive Evidence**
 
-- Profiles: `/Users/pejman/.codex/visualizations/2026/07/28/019faae1-7b73-77a1-9bfd-4c490f6462af/admin-navigation/profiles-desktop.png`
-- Settings: `/Users/pejman/.codex/visualizations/2026/07/28/019faae1-7b73-77a1-9bfd-4c490f6462af/admin-navigation/settings-desktop.png`
-- Mobile Usage: `/Users/pejman/.codex/visualizations/2026/07/28/019faae1-7b73-77a1-9bfd-4c490f6462af/admin-navigation/usage-mobile.png` at `390x844`
-- Mobile menu: `/Users/pejman/.codex/visualizations/2026/07/28/019faae1-7b73-77a1-9bfd-4c490f6462af/admin-navigation/mobile-menu.png` at `390x844`
+- Profiles: `<local-artifacts>/visualizations/2026/07/28/019faae1-7b73-77a1-9bfd-4c490f6462af/admin-navigation/profiles-desktop.png`
+- Settings: `<local-artifacts>/visualizations/2026/07/28/019faae1-7b73-77a1-9bfd-4c490f6462af/admin-navigation/settings-desktop.png`
+- Mobile Usage: `<local-artifacts>/visualizations/2026/07/28/019faae1-7b73-77a1-9bfd-4c490f6462af/admin-navigation/usage-mobile.png` at `390x844`
+- Mobile menu: `<local-artifacts>/visualizations/2026/07/28/019faae1-7b73-77a1-9bfd-4c490f6462af/admin-navigation/mobile-menu.png` at `390x844`
 - The mobile layout has no document or main-panel horizontal overflow. The desktop switcher correctly yields to the existing mobile hamburger, which exposes Channels, Profiles, Usage, and Settings with one active section.
 
 **Primary Interactions Tested**

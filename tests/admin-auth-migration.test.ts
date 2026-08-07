@@ -11,7 +11,7 @@ import { withEnv } from './helpers/env.ts';
 const LEGACY = 'legacy-shared-admin-token';
 const RECOVERY = 'recovery-token-with-more-than-thirty-two-characters';
 const ORIGIN = 'https://app.example';
-const ISSUER = 'https://paperplanelabs.cloudflareaccess.com';
+const ISSUER = 'https://example.cloudflareaccess.com';
 const OWNER: ExternalIdentity = {
   kind: 'external_identity', provider: 'cloudflare_access', issuer: ISSUER,
   subject: 'owner-subject', verifiedEmail: 'owner@example.com', credentialId: 'assertion',

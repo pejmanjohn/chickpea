@@ -7,7 +7,7 @@ import type { ExternalIdentity } from '../src/auth/types.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 
 const RECOVERY = 'recovery-token-with-more-than-thirty-two-characters';
-const ISSUER = 'https://paperplanelabs.cloudflareaccess.com';
+const ISSUER = 'https://example.cloudflareaccess.com';
 const AUDIENCE = 'a'.repeat(64);
 const ORIGIN = 'https://app.example';
 const OWNER: ExternalIdentity = {

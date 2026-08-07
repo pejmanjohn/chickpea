@@ -22,13 +22,13 @@ test('setup requires recovery proof and persists Access pending state without an
   assert.equal((await identity.listMemberships()).length, 0);
   await setup.configureAccess({
     recoveryToken: RECOVERY,
-    issuer: 'https://paperplanelabs.cloudflareaccess.com',
+    issuer: 'https://example.cloudflareaccess.com',
     audience: 'a'.repeat(64),
     canonicalAdminOrigin: 'https://chickpea.example.com',
   });
   const config = await identity.getAuthProviderConfig('cloudflare_access');
   assert.equal(config?.state, 'pending');
-  assert.equal(config?.issuer, 'https://paperplanelabs.cloudflareaccess.com');
+  assert.equal(config?.issuer, 'https://example.cloudflareaccess.com');
   identity.close();
 });
 
@@ -43,7 +43,7 @@ test('setup accepts plain HTTP only for local loopback development', async () =>
     await setup.beginAccessSetup({ recoveryToken: RECOVERY, ownerEmail: 'owner@example.com' });
     await setup.configureAccess({
       recoveryToken: RECOVERY,
-      issuer: 'https://paperplanelabs.cloudflareaccess.com',
+      issuer: 'https://example.cloudflareaccess.com',
       audience: 'a'.repeat(64),
       canonicalAdminOrigin,
     });
@@ -61,7 +61,7 @@ test('setup accepts plain HTTP only for local loopback development', async () =>
     await assert.rejects(
       () => setup.configureAccess({
         recoveryToken: RECOVERY,
-        issuer: 'https://paperplanelabs.cloudflareaccess.com',
+        issuer: 'https://example.cloudflareaccess.com',
         audience: 'a'.repeat(64),
         canonicalAdminOrigin,
       }),
@@ -76,12 +76,12 @@ test('matching verified owner identity atomically activates Access exactly once'
   const setup = new AuthSetupService(identity, { recoveryToken: RECOVERY, now: () => NOW });
   await setup.beginAccessSetup({ recoveryToken: RECOVERY, ownerEmail: 'owner@example.com' });
   await setup.configureAccess({
-    recoveryToken: RECOVERY, issuer: 'https://paperplanelabs.cloudflareaccess.com',
+    recoveryToken: RECOVERY, issuer: 'https://example.cloudflareaccess.com',
     audience: 'a'.repeat(64), canonicalAdminOrigin: 'https://chickpea.example.com',
   });
   const external = {
     kind: 'external_identity' as const, provider: 'cloudflare_access',
-    issuer: 'https://paperplanelabs.cloudflareaccess.com', subject: 'owner-subject',
+    issuer: 'https://example.cloudflareaccess.com', subject: 'owner-subject',
     verifiedEmail: 'owner@example.com', credentialId: 'access_assertion',
   };
   const first = await setup.activateAccess(external);
