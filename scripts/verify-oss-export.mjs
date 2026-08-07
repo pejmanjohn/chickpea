@@ -421,7 +421,7 @@ try {
   run('node', ['scripts/verify-flue-offline-turn.mjs'], { cwd: scratch });
   run('npm', ['run', 'verify:durability'], { cwd: scratch });
   run('npm', ['run', 'verify:providers'], { cwd: scratch });
-  run('npm', ['run', 'deploy', '--', '--dry-run'], { cwd: scratch });
+  run('npm', ['run', 'deploy', '--', '--preflight-only'], { cwd: scratch });
 
   console.log('OSS export verification passed');
   passed = true;
