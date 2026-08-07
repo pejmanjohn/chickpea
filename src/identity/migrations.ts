@@ -1,16 +1,16 @@
 import type { StateDb } from '../state/state-db.ts';
 
-export const IDENTITY_SCHEMA_VERSION = 2;
+export const IDENTITY_SCHEMA_VERSION = 3;
 
 interface IdentityMigration {
   version: number;
-  statements: readonly string[];
+  apply(db: StateDb): void;
 }
 
 /**
- * The schema that existed before identity migrations were introduced. Keeping
- * it as migration 1 lets a fresh database and an existing OSS database take
- * the same numbered path without guessing which target is running it.
+ * The shipped U8 schema. Existing Access/token/shared installations continue
+ * to use these tables until their mode-specific U14 migration. Fresh password
+ * installations never make this directory canonical.
  */
 export const IDENTITY_SCHEMA_V1_STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS identity_organizations (
@@ -120,87 +120,73 @@ export const IDENTITY_SCHEMA_V1_STATEMENTS = [
   )`,
 ] as const;
 
-const GENERALIZED_CREDENTIAL_STATEMENTS = [
-  `CREATE TABLE identity_password_credentials (
-    password_credential_id TEXT PRIMARY KEY,
-    user_id TEXT NOT NULL REFERENCES identity_users(user_id),
-    algorithm TEXT NOT NULL,
-    parameter_version INTEGER NOT NULL CHECK (parameter_version > 0),
-    iterations INTEGER NOT NULL CHECK (iterations > 0),
-    salt TEXT NOT NULL,
-    verifier TEXT NOT NULL,
-    credential_version INTEGER NOT NULL CHECK (credential_version > 0),
-    status TEXT NOT NULL CHECK (status IN ('active', 'disabled')),
+const CHICKPEA_CONTROL_STATEMENTS = [
+  `CREATE TABLE IF NOT EXISTS identity_auth_controls (
+    installation_id TEXT PRIMARY KEY,
+    auth_mode TEXT NOT NULL,
+    canonical_admin_origin TEXT,
+    better_auth_organization_id TEXT,
+    revision INTEGER NOT NULL CHECK (revision > 0),
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
   )`,
-  `CREATE UNIQUE INDEX identity_password_credentials_active_user_idx
-   ON identity_password_credentials (user_id) WHERE status = 'active'`,
-  `CREATE TABLE identity_password_reset_capabilities (
-    password_reset_capability_id TEXT PRIMARY KEY,
-    user_id TEXT NOT NULL REFERENCES identity_users(user_id),
-    token_hash TEXT NOT NULL UNIQUE,
-    kind TEXT NOT NULL CHECK (kind IN ('admin_reset', 'owner_recovery')),
+  `CREATE TABLE IF NOT EXISTS identity_auth_operations (
+    operation_id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    organization_id TEXT,
+    expected_normalized_email TEXT NOT NULL,
+    capability_hash TEXT NOT NULL UNIQUE,
     status TEXT NOT NULL CHECK (status IN ('pending', 'consumed', 'revoked', 'expired')),
-    created_by_membership_id TEXT REFERENCES identity_memberships(membership_id),
+    step INTEGER NOT NULL CHECK (step >= 0),
+    better_auth_user_id TEXT,
+    better_auth_organization_id TEXT,
+    better_auth_membership_id TEXT,
+    better_auth_invitation_id TEXT,
+    target_credential_version INTEGER,
     expires_at INTEGER NOT NULL,
     consumed_at INTEGER,
+    revoked_at INTEGER,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
   )`,
-  `CREATE INDEX identity_password_reset_capabilities_state_idx
-   ON identity_password_reset_capabilities (user_id, status, expires_at)`,
-  'DROP INDEX identity_browser_sessions_prefix_idx',
-  'ALTER TABLE identity_browser_sessions RENAME TO identity_browser_sessions_legacy',
-  `CREATE TABLE identity_browser_sessions (
-    browser_session_id TEXT PRIMARY KEY,
-    user_id TEXT NOT NULL REFERENCES identity_users(user_id),
-    membership_id TEXT NOT NULL REFERENCES identity_memberships(membership_id),
-    authenticator_kind TEXT NOT NULL CHECK (authenticator_kind IN ('password', 'personal_token')),
-    personal_token_id TEXT REFERENCES identity_personal_tokens(personal_token_id),
-    credential_id TEXT REFERENCES identity_password_credentials(password_credential_id),
-    credential_version INTEGER,
-    session_hash TEXT NOT NULL UNIQUE,
-    prefix TEXT NOT NULL,
-    idle_expires_at INTEGER NOT NULL,
-    absolute_expires_at INTEGER NOT NULL,
-    last_seen_at INTEGER NOT NULL,
-    revoked_at INTEGER,
+  `CREATE INDEX IF NOT EXISTS identity_auth_operations_state_idx
+   ON identity_auth_operations (kind, status, expires_at)`,
+  `CREATE TABLE IF NOT EXISTS identity_membership_access_overlays (
+    membership_id TEXT PRIMARY KEY,
+    organization_id TEXT NOT NULL,
+    access_status TEXT NOT NULL CHECK (access_status IN ('active', 'suspended')),
+    membership_version INTEGER NOT NULL CHECK (membership_version > 0),
     created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL,
-    CHECK (idle_expires_at <= absolute_expires_at),
-    CHECK (
-      (authenticator_kind = 'personal_token' AND personal_token_id IS NOT NULL AND
-       credential_id IS NULL AND credential_version IS NULL) OR
-      (authenticator_kind = 'password' AND personal_token_id IS NULL AND
-       credential_id IS NOT NULL AND credential_version > 0)
-    )
+    updated_at INTEGER NOT NULL
   )`,
-  `INSERT INTO identity_browser_sessions (
-     browser_session_id, user_id, membership_id, authenticator_kind,
-     personal_token_id, credential_id, credential_version, session_hash, prefix,
-     idle_expires_at, absolute_expires_at, last_seen_at, revoked_at, created_at, updated_at
-   )
-   SELECT legacy.browser_session_id, legacy.user_id,
-          (SELECT membership_id FROM identity_memberships membership
-           WHERE membership.user_id = legacy.user_id ORDER BY membership.created_at LIMIT 1),
-          'personal_token', legacy.personal_token_id, NULL, NULL,
-          legacy.session_hash, legacy.prefix, legacy.expires_at, legacy.expires_at,
-          legacy.last_seen_at, legacy.revoked_at, legacy.created_at, legacy.last_seen_at
-   FROM identity_browser_sessions_legacy legacy`,
-  'DROP TABLE identity_browser_sessions_legacy',
-  `CREATE INDEX identity_browser_sessions_prefix_idx
-   ON identity_browser_sessions (prefix, idle_expires_at, absolute_expires_at)`,
-  `CREATE INDEX identity_browser_sessions_credential_idx
-   ON identity_browser_sessions (credential_id, credential_version, revoked_at)`,
+  `CREATE INDEX IF NOT EXISTS identity_membership_access_overlays_org_idx
+   ON identity_membership_access_overlays (organization_id, access_status)`,
 ] as const;
 
 const MIGRATIONS: readonly IdentityMigration[] = [
-  { version: 1, statements: IDENTITY_SCHEMA_V1_STATEMENTS },
-  { version: 2, statements: GENERALIZED_CREDENTIAL_STATEMENTS },
+  { version: 1, apply: (db) => runStatements(db, IDENTITY_SCHEMA_V1_STATEMENTS) },
+  {
+    version: 2,
+    apply: (db) => {
+      runStatements(db, CHICKPEA_CONTROL_STATEMENTS);
+      rebuildChickpeaCredentialTables(db);
+    },
+  },
+  {
+    // bba9f97 briefly used version 2 for a custom PBKDF2/session schema. That
+    // code never shipped, but this compatibility step makes an existing dev
+    // database converge without re-running or trusting that schema.
+    version: 3,
+    apply: (db) => {
+      runStatements(db, CHICKPEA_CONTROL_STATEMENTS);
+      rebuildChickpeaCredentialTables(db);
+      db.exec('DROP TABLE IF EXISTS identity_password_reset_capabilities');
+      db.exec('DROP TABLE IF EXISTS identity_password_credentials');
+    },
+  },
 ];
 
-/** Apply each identity schema change exactly once on Node or DO SQLite. */
+/** Apply each Chickpea state change exactly once on Node or DO SQLite. */
 export function installIdentityMigrations(db: StateDb): void {
   db.exec(
     `CREATE TABLE IF NOT EXISTS identity_migrations (
@@ -213,7 +199,7 @@ export function installIdentityMigrations(db: StateDb): void {
       if (db.get('SELECT 1 AS applied FROM identity_migrations WHERE version = ?', migration.version)) {
         return;
       }
-      for (const statement of migration.statements) db.exec(statement);
+      migration.apply(db);
       db.run(
         'INSERT INTO identity_migrations (version, applied_at) VALUES (?, ?)',
         migration.version,
@@ -221,4 +207,128 @@ export function installIdentityMigrations(db: StateDb): void {
       );
     });
   }
+}
+
+function runStatements(db: StateDb, statements: readonly string[]): void {
+  for (const statement of statements) db.exec(statement);
+}
+
+function rebuildChickpeaCredentialTables(db: StateDb): void {
+  rebuildLegacyBrowserSessions(db);
+  rebuildPersonalTokens(db);
+}
+
+function rebuildPersonalTokens(db: StateDb): void {
+  const columns = tableColumns(db, 'identity_personal_tokens');
+  if (columns.has('organization_id') && columns.has('membership_id')) return;
+
+  db.exec('DROP INDEX IF EXISTS identity_personal_tokens_prefix_idx');
+  db.exec('ALTER TABLE identity_personal_tokens RENAME TO identity_personal_tokens_pre_control');
+  db.exec(
+    `CREATE TABLE identity_personal_tokens (
+      personal_token_id TEXT PRIMARY KEY,
+      organization_id TEXT,
+      user_id TEXT NOT NULL,
+      membership_id TEXT,
+      token_hash TEXT NOT NULL UNIQUE,
+      prefix TEXT NOT NULL,
+      label TEXT NOT NULL,
+      status TEXT NOT NULL,
+      last_used_at INTEGER,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    )`,
+  );
+  db.exec(
+    `INSERT INTO identity_personal_tokens (
+       personal_token_id, organization_id, user_id, membership_id, token_hash,
+       prefix, label, status, last_used_at, created_at, updated_at
+     )
+     SELECT token.personal_token_id,
+            (SELECT membership.organization_id FROM identity_memberships membership
+             WHERE membership.user_id = token.user_id ORDER BY membership.created_at LIMIT 1),
+            token.user_id,
+            (SELECT membership.membership_id FROM identity_memberships membership
+             WHERE membership.user_id = token.user_id ORDER BY membership.created_at LIMIT 1),
+            token.token_hash, token.prefix, token.label, token.status,
+            token.last_used_at, token.created_at, token.updated_at
+     FROM identity_personal_tokens_pre_control token`,
+  );
+  db.exec('DROP TABLE identity_personal_tokens_pre_control');
+  db.exec(
+    `CREATE INDEX identity_personal_tokens_prefix_idx
+     ON identity_personal_tokens (prefix, status)`,
+  );
+}
+
+function rebuildLegacyBrowserSessions(db: StateDb): void {
+  const columns = tableColumns(db, 'identity_browser_sessions');
+  if (columns.has('organization_id') && columns.has('membership_id') && columns.has('expires_at')) {
+    return;
+  }
+
+  const generalized = columns.has('authenticator_kind');
+  db.exec('DROP INDEX IF EXISTS identity_browser_sessions_prefix_idx');
+  db.exec('DROP INDEX IF EXISTS identity_browser_sessions_credential_idx');
+  db.exec('ALTER TABLE identity_browser_sessions RENAME TO identity_browser_sessions_pre_control');
+  db.exec(
+    `CREATE TABLE identity_browser_sessions (
+      browser_session_id TEXT PRIMARY KEY,
+      organization_id TEXT,
+      user_id TEXT NOT NULL,
+      membership_id TEXT,
+      personal_token_id TEXT NOT NULL,
+      session_hash TEXT NOT NULL UNIQUE,
+      prefix TEXT NOT NULL,
+      expires_at INTEGER NOT NULL,
+      last_seen_at INTEGER NOT NULL,
+      revoked_at INTEGER,
+      created_at INTEGER NOT NULL
+    )`,
+  );
+  if (generalized) {
+    db.exec(
+      `INSERT INTO identity_browser_sessions (
+         browser_session_id, organization_id, user_id, membership_id,
+         personal_token_id, session_hash, prefix, expires_at, last_seen_at,
+         revoked_at, created_at
+       )
+       SELECT session.browser_session_id,
+              (SELECT membership.organization_id FROM identity_memberships membership
+               WHERE membership.membership_id = session.membership_id),
+              session.user_id, session.membership_id, session.personal_token_id,
+              session.session_hash, session.prefix,
+              MIN(session.idle_expires_at, session.absolute_expires_at),
+              session.last_seen_at, session.revoked_at, session.created_at
+       FROM identity_browser_sessions_pre_control session
+       WHERE session.authenticator_kind = 'personal_token'
+         AND session.personal_token_id IS NOT NULL`,
+    );
+  } else {
+    db.exec(
+      `INSERT INTO identity_browser_sessions (
+         browser_session_id, organization_id, user_id, membership_id,
+         personal_token_id, session_hash, prefix, expires_at, last_seen_at,
+         revoked_at, created_at
+       )
+       SELECT session.browser_session_id,
+              (SELECT membership.organization_id FROM identity_memberships membership
+               WHERE membership.user_id = session.user_id ORDER BY membership.created_at LIMIT 1),
+              session.user_id,
+              (SELECT membership.membership_id FROM identity_memberships membership
+               WHERE membership.user_id = session.user_id ORDER BY membership.created_at LIMIT 1),
+              session.personal_token_id, session.session_hash, session.prefix,
+              session.expires_at, session.last_seen_at, session.revoked_at, session.created_at
+       FROM identity_browser_sessions_pre_control session`,
+    );
+  }
+  db.exec('DROP TABLE identity_browser_sessions_pre_control');
+  db.exec(
+    `CREATE INDEX identity_browser_sessions_prefix_idx
+     ON identity_browser_sessions (prefix, expires_at)`,
+  );
+}
+
+function tableColumns(db: StateDb, table: string): Set<string> {
+  return new Set(db.all(`PRAGMA table_info(${table})`).map((row) => String(row.name)));
 }

@@ -8,27 +8,28 @@ import type { AgentSnapshot, ChannelAssignment, CustomAgentConfig } from './type
 import { IdentityStateError } from '../identity/errors.ts';
 import type {
   ActivateAccessOwnerInput,
+  AdvanceAuthOperationInput,
+  AuthOperationKind,
   BootstrapTokenOwnerInput,
   ClaimOwnerInput,
-  ConsumePasswordResetCapabilityInput,
+  ConsumeAuthOperationInput,
   ConsumeInvitationInput,
   ConfigureAuthProviderInput,
   CreateBrowserSessionRecordInput,
+  CreateAuthOperationInput,
   CreateInvitationInput,
   CreateOwnerClaimInput,
   CreatePersonalTokenRecordInput,
-  CreatePasswordResetCapabilityInput,
-  EnrollPasswordInvitationInput,
   EnsureOrganizationInput,
+  EnsureAuthControlInput,
   IdentityRpcRequest,
   IdentityRpcResponse,
   IdentityStore,
   RecordIdentityAuthAuditInput,
   ResendInvitationInput,
   ReplaceAccessOwnerBindingInput,
-  ReplacePasswordCredentialInput,
-  SetupPasswordOwnerInput,
   UpdateMembershipInput,
+  UpdateAuthControlInput,
   UpdateOrganizationAuthInput,
 } from '../identity/types.ts';
 import type {
@@ -232,6 +233,56 @@ function unwrap<T>(result: StateRpcResult<T>): T {
 export class CfIdentityStore implements IdentityStore {
   constructor(private readonly stub: TagStateRpc) {}
 
+  async ensureAuthControl(input: EnsureAuthControlInput = {}) {
+    const response = await this.execute({ kind: 'ensure_auth_control', input });
+    if (response.kind !== 'auth_control' || !response.control) throw unexpectedIdentityResponse();
+    return response.control;
+  }
+  async getAuthControl(installationId?: string) {
+    const response = await this.execute({
+      kind: 'get_auth_control',
+      ...(installationId === undefined ? {} : { installationId }),
+    });
+    if (response.kind !== 'auth_control') throw unexpectedIdentityResponse();
+    return orUndefined(response.control);
+  }
+  async updateAuthControl(input: UpdateAuthControlInput) {
+    const response = await this.execute({ kind: 'update_auth_control', input });
+    if (response.kind !== 'auth_control' || !response.control) throw unexpectedIdentityResponse();
+    return response.control;
+  }
+  async createAuthOperation(input: CreateAuthOperationInput) {
+    const response = await this.execute({ kind: 'create_auth_operation', input });
+    if (response.kind !== 'auth_operation' || !response.operation) throw unexpectedIdentityResponse();
+    return response.operation;
+  }
+  async getAuthOperation(operationId: string) {
+    const response = await this.execute({ kind: 'get_auth_operation', operationId });
+    if (response.kind !== 'auth_operation') throw unexpectedIdentityResponse();
+    return orUndefined(response.operation);
+  }
+  async findAuthOperation(kind: AuthOperationKind, capabilityHash: string) {
+    const response = await this.execute({
+      kind: 'find_auth_operation', operationKind: kind, capabilityHash,
+    });
+    if (response.kind !== 'auth_operation') throw unexpectedIdentityResponse();
+    return orUndefined(response.operation);
+  }
+  async advanceAuthOperation(input: AdvanceAuthOperationInput) {
+    const response = await this.execute({ kind: 'advance_auth_operation', input });
+    if (response.kind !== 'auth_operation' || !response.operation) throw unexpectedIdentityResponse();
+    return response.operation;
+  }
+  async consumeAuthOperation(input: ConsumeAuthOperationInput) {
+    const response = await this.execute({ kind: 'consume_auth_operation', input });
+    if (response.kind !== 'auth_operation' || !response.operation) throw unexpectedIdentityResponse();
+    return response.operation;
+  }
+  async revokeAuthOperation(operationId: string) {
+    const response = await this.execute({ kind: 'revoke_auth_operation', operationId });
+    if (response.kind !== 'auth_operation' || !response.operation) throw unexpectedIdentityResponse();
+    return response.operation;
+  }
   async ensureOrganization(input: EnsureOrganizationInput) {
     const response = await this.execute({ kind: 'ensure_organization', input });
     if (response.kind !== 'organization' || !response.organization) throw unexpectedIdentityResponse();
@@ -295,6 +346,16 @@ export class CfIdentityStore implements IdentityStore {
     if (response.kind !== 'user') throw unexpectedIdentityResponse();
     return orUndefined(response.user);
   }
+  async findUserByEmail(email: string) {
+    const response = await this.execute({ kind: 'find_user_by_email', email });
+    if (response.kind !== 'user') throw unexpectedIdentityResponse();
+    return orUndefined(response.user);
+  }
+  async getMembership(membershipId: string) {
+    const response = await this.execute({ kind: 'get_membership', membershipId });
+    if (response.kind !== 'membership') throw unexpectedIdentityResponse();
+    return orUndefined(response.membership);
+  }
   async getMembershipForUser(userId: string, organizationId?: string) {
     const response = await this.execute({
       kind: 'get_membership_for_user', userId,
@@ -305,7 +366,7 @@ export class CfIdentityStore implements IdentityStore {
   }
   async updateMembership(input: UpdateMembershipInput) {
     const response = await this.execute({ kind: 'update_membership', input });
-    if (response.kind !== 'membership') throw unexpectedIdentityResponse();
+    if (response.kind !== 'membership' || !response.membership) throw unexpectedIdentityResponse();
     return response.membership;
   }
   async createInvitation(input: CreateInvitationInput) {
@@ -377,56 +438,6 @@ export class CfIdentityStore implements IdentityStore {
     const response = await this.execute({ kind: 'revoke_browser_session', sessionId });
     if (response.kind !== 'browser_session') throw unexpectedIdentityResponse();
     return response.browserSession;
-  }
-  async setupPasswordOwner(input: SetupPasswordOwnerInput) {
-    const response = await this.execute({ kind: 'setup_password_owner', input });
-    if (response.kind !== 'password_account_resolution') throw unexpectedIdentityResponse();
-    return response.resolution;
-  }
-  async enrollPasswordInvitation(input: EnrollPasswordInvitationInput) {
-    const response = await this.execute({ kind: 'enroll_password_invitation', input });
-    if (response.kind !== 'password_account_resolution') throw unexpectedIdentityResponse();
-    return response.resolution;
-  }
-  async findUserByEmail(email: string) {
-    const response = await this.execute({ kind: 'find_user_by_email', email });
-    if (response.kind !== 'user') throw unexpectedIdentityResponse();
-    return orUndefined(response.user);
-  }
-  async getActivePasswordCredential(userId: string) {
-    const response = await this.execute({ kind: 'get_active_password_credential', userId });
-    if (response.kind !== 'password_credential') throw unexpectedIdentityResponse();
-    return orUndefined(response.credential);
-  }
-  async replacePasswordCredential(input: ReplacePasswordCredentialInput) {
-    const response = await this.execute({ kind: 'replace_password_credential', input });
-    if (response.kind !== 'password_account_resolution') throw unexpectedIdentityResponse();
-    return response.resolution;
-  }
-  async createPasswordResetCapability(input: CreatePasswordResetCapabilityInput) {
-    const response = await this.execute({ kind: 'create_password_reset_capability', input });
-    if (response.kind !== 'password_reset_capability') throw unexpectedIdentityResponse();
-    return response.capability;
-  }
-  async consumePasswordResetCapability(input: ConsumePasswordResetCapabilityInput) {
-    const response = await this.execute({ kind: 'consume_password_reset_capability', input });
-    if (response.kind !== 'password_account_resolution') throw unexpectedIdentityResponse();
-    return response.resolution;
-  }
-  async revokePasswordResetCapability(capabilityId: string) {
-    const response = await this.execute({ kind: 'revoke_password_reset_capability', capabilityId });
-    if (response.kind !== 'password_reset_capability') throw unexpectedIdentityResponse();
-    return response.capability;
-  }
-  async touchBrowserSession(sessionId: string, idleExpiresAt: number) {
-    const response = await this.execute({ kind: 'touch_browser_session', sessionId, idleExpiresAt });
-    if (response.kind !== 'browser_session') throw unexpectedIdentityResponse();
-    return response.browserSession;
-  }
-  async revokeUserBrowserSessions(userId: string) {
-    const response = await this.execute({ kind: 'revoke_user_browser_sessions', userId });
-    if (response.kind !== 'count') throw unexpectedIdentityResponse();
-    return response.count;
   }
   async configureAuthProvider(input: ConfigureAuthProviderInput) {
     const response = await this.execute({ kind: 'configure_auth_provider', input });

@@ -39,7 +39,9 @@ export class TokenSessionService {
     const raw = `chp_session_${prefix}_${secret}`;
     const expiresAt = this.now() + boundedTtl;
     await this.identity.createBrowserSession({
+      organizationId: membership.organizationId,
       userId: token.userId,
+      membershipId: membership.id,
       personalTokenId: token.id,
       sessionHash: digest(raw),
       prefix,
@@ -54,17 +56,17 @@ export class TokenSessionService {
     const sessions = parsed ? await this.identity.findBrowserSessions(parsed.prefix) : [];
     const session = sessions.find((item) => constantHashEquals(item.sessionHash, candidateHash));
     if (!session) constantHashEquals('0'.repeat(64), candidateHash);
-    if (!session || session.authenticatorKind !== 'personal_token' ||
-        session.personalTokenId === null || session.revokedAt !== null ||
-        session.idleExpiresAt <= this.now() || session.absoluteExpiresAt <= this.now()) {
-      throw new AuthDeniedError();
-    }
+    if (!session || session.revokedAt !== null || session.expiresAt <= this.now()) throw new AuthDeniedError();
     const [sourceToken, user, membership] = await Promise.all([
       this.identity.getPersonalToken(session.personalTokenId),
       this.identity.getUser(session.userId),
-      this.identity.getMembershipForUser(session.userId),
+      session.membershipId
+        ? this.identity.getMembership(session.membershipId)
+        : this.identity.getMembershipForUser(session.userId),
     ]);
-    if (!sourceToken || sourceToken.status !== 'active' || !user || !membership || membership.status !== 'active') {
+    if (!sourceToken || sourceToken.status !== 'active' || !user || !membership ||
+        membership.userId !== session.userId || membership.status !== 'active' ||
+        (session.organizationId !== null && membership.organizationId !== session.organizationId)) {
       throw new AuthDeniedError();
     }
     return {

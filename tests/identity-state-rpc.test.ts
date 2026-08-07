@@ -24,6 +24,42 @@ test('Cloudflare identity proxy forwards lifecycle requests and typed values', a
   assert.deepEqual(calls, [{ kind: 'ensure_organization', input: { displayName: 'Chickpea' } }]);
 });
 
+test('Cloudflare identity proxy forwards resumable operation state without provider types', async () => {
+  const calls: IdentityRpcRequest[] = [];
+  const operation = {
+    id: 'operation_setup_1', kind: 'owner_setup' as const,
+    organizationId: null, expectedNormalizedEmail: 'owner@example.com',
+    capabilityHash: 'a'.repeat(64), status: 'pending' as const, step: 1,
+    betterAuthUserId: 'opaque-user', betterAuthOrganizationId: null,
+    betterAuthMembershipId: null, betterAuthInvitationId: null,
+    targetCredentialVersion: null, expiresAt: 20, consumedAt: null,
+    revokedAt: null, createdAt: 10, updatedAt: 10,
+  };
+  const stub = {
+    async identityExecute(request: IdentityRpcRequest): Promise<StateRpcResult<IdentityRpcResponse>> {
+      calls.push(request);
+      return { ok: true, value: { kind: 'auth_operation', operation } };
+    },
+  } as unknown as TagStateRpc;
+  const store = new CfIdentityStore(stub);
+
+  assert.deepEqual(await store.advanceAuthOperation({
+    operationId: operation.id,
+    capabilityHash: operation.capabilityHash,
+    step: 1,
+    betterAuthUserId: 'opaque-user',
+  }), operation);
+  assert.deepEqual(calls, [{
+    kind: 'advance_auth_operation',
+    input: {
+      operationId: operation.id,
+      capabilityHash: operation.capabilityHash,
+      step: 1,
+      betterAuthUserId: 'opaque-user',
+    },
+  }]);
+});
+
 test('Cloudflare identity proxy reconstructs typed identity errors', async () => {
   const stub = {
     async identityExecute(): Promise<StateRpcResult<IdentityRpcResponse>> {
@@ -66,7 +102,8 @@ test('Cloudflare identity proxy preserves bootstrap and rotation lifecycle resul
     },
   };
   const personalToken = {
-    id: 'personal_token_new', userId: 'user_owner', tokenHash: 'a'.repeat(64),
+    id: 'personal_token_new', organizationId: 'org_oss', userId: 'user_owner',
+    membershipId: 'membership_owner', tokenHash: 'a'.repeat(64),
     prefix: 'abcdefghijkl', label: 'Recovery', status: 'active' as const,
     lastUsedAt: null, createdAt: 20, updatedAt: 20,
   };

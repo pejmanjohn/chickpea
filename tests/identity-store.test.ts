@@ -6,23 +6,6 @@ import { SqliteIdentityStore } from '../src/identity/store.ts';
 
 const NOW = 1_786_000_000_000;
 
-const PASSWORD_CREDENTIAL = {
-  algorithm: 'pbkdf2-sha256' as const,
-  parameterVersion: 1,
-  iterations: 600_000,
-  salt: 'c2FsdC1mb3ItdGVzdHM',
-  verifier: 'dmVyaWZpZXItZm9yLXRlc3Rz',
-};
-
-function passwordSession(suffix: string, at = NOW) {
-  return {
-    sessionHash: `session-hash-${suffix}`,
-    prefix: `prefix_${suffix}`,
-    idleExpiresAt: at + 4 * 60 * 60_000,
-    absoluteExpiresAt: at + 24 * 60 * 60_000,
-  };
-}
-
 function ownerInput() {
   return {
     organizationId: 'org_oss',
@@ -219,122 +202,135 @@ test('the same external binding cannot be reassigned through another invitation'
   store.close();
 });
 
-test('password owner setup is atomic, one-time, and secret-safe', async () => {
+test('Chickpea auth control uses optimistic revisions without creating legacy identity', async () => {
   const store = new SqliteIdentityStore(':memory:', { now: () => NOW });
-  const setup = await store.setupPasswordOwner({
-    organizationDisplayName: 'Acme',
-    email: 'Owner@Example.com',
-    displayName: 'Owner',
-    canonicalAdminOrigin: 'https://chickpea.example.com',
-    credential: PASSWORD_CREDENTIAL,
-    session: passwordSession('owner'),
-  });
+  const initial = await store.ensureAuthControl();
+  assert.equal(initial.authMode, 'unconfigured');
+  assert.equal(initial.revision, 1);
+  assert.equal(await store.getOrganization(), undefined);
 
-  assert.equal(setup.user.primaryEmail, 'owner@example.com');
-  assert.equal(setup.membership.role, 'owner');
-  assert.equal(setup.credential.credentialVersion, 1);
-  assert.equal(setup.session.authenticatorKind, 'password');
-  assert.equal(setup.session.membershipId, setup.membership.id);
-  assert.equal((await store.getOrganization())?.authMode, 'password_active');
+  const pinned = await store.updateAuthControl({
+    expectedRevision: 1,
+    authMode: 'password_active',
+    canonicalAdminOrigin: 'https://chickpea.example.com',
+    betterAuthOrganizationId: 'ba-org/opaque',
+  });
+  assert.equal(pinned.revision, 2);
+  assert.equal(pinned.betterAuthOrganizationId, 'ba-org/opaque');
 
   await assert.rejects(
-    () => store.setupPasswordOwner({
-      organizationDisplayName: 'Other',
-      email: 'other@example.com',
-      canonicalAdminOrigin: 'https://chickpea.example.com',
-      credential: PASSWORD_CREDENTIAL,
-      session: passwordSession('other'),
+    () => store.updateAuthControl({ expectedRevision: 1, authMode: 'invalid' }),
+    (error: unknown) =>
+      error instanceof IdentityStateError && error.code === 'auth_control_conflict',
+  );
+  store.close();
+});
+
+test('resumable auth operations advance monotonically and keep opaque Better Auth IDs immutable', async () => {
+  const store = new SqliteIdentityStore(':memory:', { now: () => NOW });
+  const capabilityHash = 'a'.repeat(64);
+  const created = await store.createAuthOperation({
+    id: 'operation_setup_1',
+    kind: 'owner_setup',
+    expectedEmail: 'Owner@Example.com',
+    capabilityHash,
+    expiresAt: NOW + 60_000,
+  });
+  assert.equal(created.expectedNormalizedEmail, 'owner@example.com');
+  assert.equal(created.step, 0);
+
+  const userCreated = await store.advanceAuthOperation({
+    operationId: created.id,
+    capabilityHash,
+    step: 1,
+    betterAuthUserId: 'ba-user/opaque',
+  });
+  assert.equal(userCreated.step, 1);
+  assert.equal(userCreated.betterAuthUserId, 'ba-user/opaque');
+  assert.equal(
+    (await store.advanceAuthOperation({
+      operationId: created.id,
+      capabilityHash,
+      step: 1,
+      betterAuthUserId: 'ba-user/opaque',
+    })).step,
+    1,
+  );
+  await assert.rejects(
+    () => store.advanceAuthOperation({
+      operationId: created.id,
+      capabilityHash,
+      step: 3,
     }),
     (error: unknown) =>
-      error instanceof IdentityStateError && error.code === 'password_setup_complete',
+      error instanceof IdentityStateError && error.code === 'auth_operation_step_invalid',
   );
-  assert.equal((await store.listMemberships()).length, 1);
+  await assert.rejects(
+    () => store.advanceAuthOperation({
+      operationId: created.id,
+      capabilityHash,
+      step: 2,
+      betterAuthUserId: 'different-user',
+    }),
+    (error: unknown) =>
+      error instanceof IdentityStateError && error.code === 'auth_operation_conflict',
+  );
+
+  const membershipCreated = await store.advanceAuthOperation({
+    operationId: created.id,
+    capabilityHash,
+    step: 2,
+    betterAuthOrganizationId: 'ba-org/opaque',
+    betterAuthMembershipId: 'ba-member/opaque',
+  });
+  assert.equal(membershipCreated.step, 2);
+  assert.equal(
+    (await store.consumeAuthOperation({
+      operationId: created.id,
+      capabilityHash,
+      expectedStep: 2,
+    })).status,
+    'consumed',
+  );
+  await assert.rejects(
+    () => store.consumeAuthOperation({
+      operationId: created.id,
+      capabilityHash,
+      expectedStep: 2,
+    }),
+    (error: unknown) =>
+      error instanceof IdentityStateError && error.code === 'auth_operation_unavailable',
+  );
 
   const exported = JSON.stringify(await store.exportSummary());
-  assert.equal(exported.includes(PASSWORD_CREDENTIAL.salt), false);
-  assert.equal(exported.includes(PASSWORD_CREDENTIAL.verifier), false);
-  assert.equal(exported.includes(passwordSession('owner').sessionHash), false);
+  assert.equal(exported.includes(capabilityHash), false);
+  assert.equal(exported.includes('owner@example.com'), false);
   store.close();
 });
 
-test('password invitation enrollment is single-use and creates an independent member', async () => {
+test('personal tokens accept explicit opaque directory IDs without cross-store rows', async () => {
   const store = new SqliteIdentityStore(':memory:', { now: () => NOW });
-  const owner = await store.setupPasswordOwner({
-    organizationDisplayName: 'Acme',
-    email: 'owner@example.com',
-    canonicalAdminOrigin: 'https://chickpea.example.com',
-    credential: PASSWORD_CREDENTIAL,
-    session: passwordSession('owner'),
+  const token = await store.createPersonalToken({
+    organizationId: 'ba-org/opaque',
+    userId: 'ba-user/opaque',
+    membershipId: 'ba-member/opaque',
+    tokenHash: 'b'.repeat(64),
+    prefix: 'opaque12',
+    label: 'Automation',
   });
-  const invitation = await store.createInvitation({
-    organizationId: owner.membership.organizationId,
-    email: 'member@example.com',
-    role: 'member',
-    tokenHash: 'invite-hash',
-    inviterMembershipId: owner.membership.id,
+  assert.equal(token.organizationId, 'ba-org/opaque');
+  assert.equal(token.membershipId, 'ba-member/opaque');
+
+  const session = await store.createBrowserSession({
+    organizationId: token.organizationId,
+    userId: token.userId,
+    membershipId: token.membershipId,
+    personalTokenId: token.id,
+    sessionHash: 'c'.repeat(64),
+    prefix: 'session12',
     expiresAt: NOW + 60_000,
   });
-
-  const member = await store.enrollPasswordInvitation({
-    invitationId: invitation.id,
-    tokenHash: 'invite-hash',
-    displayName: 'Member',
-    credential: { ...PASSWORD_CREDENTIAL, salt: 'bWVtYmVyLXNhbHQ' },
-    session: passwordSession('member'),
-  });
-  assert.equal(member.user.primaryEmail, 'member@example.com');
-  assert.equal(member.membership.role, 'member');
-  assert.notEqual(member.user.id, owner.user.id);
-
-  await assert.rejects(
-    () => store.enrollPasswordInvitation({
-      invitationId: invitation.id,
-      tokenHash: 'invite-hash',
-      credential: PASSWORD_CREDENTIAL,
-      session: passwordSession('replay'),
-    }),
-    (error: unknown) =>
-      error instanceof IdentityStateError && error.code === 'invitation_not_pending',
-  );
-  store.close();
-});
-
-test('reset consumption rotates credential version, revokes sessions, and rejects replay', async () => {
-  const store = new SqliteIdentityStore(':memory:', { now: () => NOW });
-  const owner = await store.setupPasswordOwner({
-    organizationDisplayName: 'Acme',
-    email: 'owner@example.com',
-    canonicalAdminOrigin: 'https://chickpea.example.com',
-    credential: PASSWORD_CREDENTIAL,
-    session: passwordSession('before'),
-  });
-  const reset = await store.createPasswordResetCapability({
-    userId: owner.user.id,
-    tokenHash: 'reset-hash',
-    kind: 'owner_recovery',
-    expiresAt: NOW + 60_000,
-  });
-
-  const rotated = await store.consumePasswordResetCapability({
-    capabilityId: reset.id,
-    tokenHash: 'reset-hash',
-    credential: { ...PASSWORD_CREDENTIAL, salt: 'cm90YXRlZC1zYWx0' },
-    session: passwordSession('after'),
-  });
-  assert.equal(rotated.credential.credentialVersion, 2);
-  assert.equal(rotated.session.credentialVersion, 2);
-  assert.equal((await store.findBrowserSessions('prefix_before'))[0]?.revokedAt, NOW);
-  assert.equal((await store.findBrowserSessions('prefix_after'))[0]?.revokedAt, null);
-
-  await assert.rejects(
-    () => store.consumePasswordResetCapability({
-      capabilityId: reset.id,
-      tokenHash: 'reset-hash',
-      credential: PASSWORD_CREDENTIAL,
-      session: passwordSession('again'),
-    }),
-    (error: unknown) =>
-      error instanceof IdentityStateError && error.code === 'password_reset_unavailable',
-  );
+  assert.equal(session.organizationId, 'ba-org/opaque');
+  assert.equal(session.membershipId, 'ba-member/opaque');
   store.close();
 });

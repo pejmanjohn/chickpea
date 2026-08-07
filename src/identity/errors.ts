@@ -16,11 +16,13 @@ export type IdentityErrorCode =
   | 'invitation_token_invalid'
   | 'personal_token_missing'
   | 'browser_session_missing'
-  | 'password_setup_complete'
-  | 'password_credential_missing'
-  | 'password_reset_missing'
-  | 'password_reset_unavailable'
-  | 'password_reset_expired'
+  | 'auth_control_missing'
+  | 'auth_control_conflict'
+  | 'auth_operation_missing'
+  | 'auth_operation_conflict'
+  | 'auth_operation_unavailable'
+  | 'auth_operation_expired'
+  | 'auth_operation_step_invalid'
   | 'identity_invalid';
 
 export class IdentityStateError extends Error {
