@@ -48,8 +48,11 @@ export class PasswordOwnerSetupService {
     const email = normalizeSetupEmail(input.email);
     assertPasswordPolicy(input.password, { email, organizationName });
 
-    const control = await this.identity.ensureAuthControl();
-    if (control.authMode !== 'unconfigured') throw new AuthDeniedError();
+    const [control, legacyOrganization] = await Promise.all([
+      this.identity.ensureAuthControl(),
+      this.identity.getOrganization(),
+    ]);
+    if (control.authMode !== 'unconfigured' || legacyOrganization) throw new AuthDeniedError();
     const capabilityHash = ownerSetupCapabilityHash(recovery, email, canonicalOrigin);
     let operation = await this.identity.findAuthOperation('owner_setup', capabilityHash);
     operation ??= await this.identity.createAuthOperation({
@@ -71,7 +74,12 @@ export class PasswordOwnerSetupService {
     if (!userId) {
       const existing = await this.environment.backend.findUserByEmail(email);
       if (existing) {
-        await verifyPasswordWithPrivateSession(auth, email, input.password);
+        const memberships = await this.environment.backend.listMembershipsForUser(existing.id);
+        if (existing.createdAt >= operation.createdAt && memberships.length === 0) {
+          await replacePrivateCredential(auth, this.environment, existing.id, input.password);
+        } else {
+          await verifyPasswordWithPrivateSession(auth, email, input.password);
+        }
         userId = existing.id;
       } else {
         const signup = await auth.api.signUpEmail({
@@ -333,6 +341,22 @@ async function verifyPasswordWithPrivateSession(
   } catch {
     throw new AuthDeniedError();
   }
+}
+
+async function replacePrivateCredential(
+  auth: ReturnType<typeof createBetterAuth>,
+  environment: BetterAuthEnvironment,
+  userId: string,
+  password: string,
+): Promise<void> {
+  const context = await auth.$context;
+  const account = (await context.internalAdapter.findAccounts(userId)).find(
+    (candidate) => candidate.providerId === 'credential' && candidate.password,
+  );
+  if (!account) throw new AuthDeniedError();
+  const verifier = await environment.password.hash(password);
+  await context.internalAdapter.updateAccount(account.id, { password: verifier });
+  await context.internalAdapter.deleteUserSessions(userId);
 }
 
 function bounded(value: string, label: string): string {

@@ -12,6 +12,7 @@ import type { IdentityStore } from '../src/identity/types.ts';
 const ORIGIN = 'https://chickpea.example';
 const RECOVERY = '7b'.repeat(32);
 const PASSWORD = 'several unrelated words 5729';
+const REPLACEMENT_PASSWORD = 'different unrelated words 4821';
 
 test('recovery-gated owner setup commits authority last and returns a usable Better Auth session', async () => {
   const identity = new SqliteIdentityStore(':memory:');
@@ -133,9 +134,19 @@ test('owner setup resumes after either Better Auth/control-store boundary withou
 
     await assert.rejects(() => new PasswordOwnerSetupService(flakyIdentity, environment).complete(input));
     assert.equal((await identity.getAuthControl())?.authMode, 'unconfigured');
-    const result = await new PasswordOwnerSetupService(identity, environment).complete(input);
+    const result = await new PasswordOwnerSetupService(identity, environment).complete({
+      ...input,
+      password: failedStep === 1 ? REPLACEMENT_PASSWORD : PASSWORD,
+    });
     assert.equal((await identity.getAuthOperation(result.operationId))?.status, 'consumed');
     assert.equal((await backend.listMembershipsForUser(result.userId)).length, 1);
+    const auth = createBetterAuth({ ...environment, allowSignUp: false });
+    assert.equal(Boolean(await auth.api.signInEmail({
+      body: {
+        email: input.email,
+        password: failedStep === 1 ? REPLACEMENT_PASSWORD : PASSWORD,
+      },
+    })), true);
     backend.close();
     identity.close();
   }

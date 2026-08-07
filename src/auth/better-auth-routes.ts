@@ -22,8 +22,9 @@ export interface BetterAuthPublicHandlerInput {
   baseURL: string;
   secret: string;
   password: PasswordPrimitive;
-  loginAllowed(source: string, email: string): Promise<boolean>;
-  loginResult?(source: string, email: string, success: boolean): Promise<void>;
+  loginSourceAllowed(source: string): Promise<boolean>;
+  loginIdentityAllowed(email: string): Promise<boolean>;
+  loginResult?(source: string, email: string, credentialExists: boolean, success: boolean): Promise<void>;
   sourceKey(request: Request): string;
 }
 
@@ -56,19 +57,21 @@ export function createBetterAuthPublicHandler(input: BetterAuthPublicHandlerInpu
       if (!body) return uniformLoginFailure();
       const email = normalizeEmail(body.email);
       const source = input.sourceKey(request);
-      const allowed = await input.loginAllowed(source, email);
-      if (!allowed) return uniformLoginFailure();
+      if (!await input.loginSourceAllowed(source)) return uniformLoginFailure();
 
       const credentialExists = email.length > 0 &&
         await input.backend.hasPasswordCredential(email);
+      if (credentialExists && !await input.loginIdentityAllowed(email)) {
+        return uniformLoginFailure();
+      }
       if (!credentialExists) {
         await input.password.verify({ hash: DUMMY_PASSWORD_RECORD, password: body.password });
-        await input.loginResult?.(source, email, false);
+        await input.loginResult?.(source, email, false, false);
         return uniformLoginFailure();
       }
 
       const response = await auth.handler(request);
-      await input.loginResult?.(source, email, response.ok);
+      await input.loginResult?.(source, email, true, response.ok);
       return response.ok ? response : uniformLoginFailure();
     }
 

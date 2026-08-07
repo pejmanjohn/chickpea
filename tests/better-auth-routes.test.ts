@@ -39,12 +39,17 @@ test('public Better Auth boundary exposes only session login and logout with uni
     },
   };
   let allowLogin = true;
+  let identityLimitChecks = 0;
   const handler = createBetterAuthPublicHandler({
     backend,
     baseURL: ORIGIN,
     secret: SECRET,
     password: measuredPassword,
-    loginAllowed: async () => allowLogin,
+    loginSourceAllowed: async () => allowLogin,
+    loginIdentityAllowed: async () => {
+      identityLimitChecks += 1;
+      return allowLogin;
+    },
     sourceKey: () => 'test-source',
   });
 
@@ -66,6 +71,7 @@ test('public Better Auth boundary exposes only session login and logout with uni
   assert.equal(unknown.status, 401);
   assert.equal(await unknown.text(), wrongBody);
   assert.equal(verifyCalls, 2, 'unknown users must perform one dummy scrypt');
+  assert.equal(identityLimitChecks, 1, 'unknown users must not allocate an identity limiter shard');
 
   allowLogin = false;
   const throttled = await handler(jsonRequest('/api/auth/sign-in/email', {
@@ -105,7 +111,8 @@ test('public Better Auth mutation boundary rejects origin and content-type ambig
     baseURL: ORIGIN,
     secret: SECRET,
     password: nativePasswordPrimitive(),
-    loginAllowed: async () => true,
+    loginSourceAllowed: async () => true,
+    loginIdentityAllowed: async () => true,
     sourceKey: () => 'test-source',
   });
 

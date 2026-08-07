@@ -233,7 +233,8 @@ export class PasswordTeamLifecycleService {
     if (input.membership.organizationId !== this.organizationId) {
       throw new PasswordLifecycleError('unavailable');
     }
-    const removesActiveOwner = input.membership.role === 'owner' && (
+    const removesActiveOwner = input.membership.role === 'owner' &&
+      input.membership.status === 'active' && (
       input.role !== undefined && input.role !== 'owner' ||
       input.status === 'suspended' ||
       input.status === 'removed'
@@ -241,43 +242,82 @@ export class PasswordTeamLifecycleService {
     const ownerMembershipIds = removesActiveOwner
       ? await this.activeOwnerMembershipIds(input.membership.id)
       : undefined;
-    if (input.role !== undefined && input.role !== input.membership.role) {
-      await this.api.updateMemberRole({
-        body: {
-          memberId: input.membership.id,
-          role: input.role,
-          organizationId: this.organizationId,
-        },
-        headers: input.headers,
-      });
-    }
-    if (input.status === 'removed') {
-      await this.api.removeMember({
-        body: { memberIdOrEmail: input.membership.id, organizationId: this.organizationId },
-        headers: input.headers,
-      });
-      await this.revokeTargetAuthority(input.membership.userId);
-      return { ...input.membership, role: input.role ?? input.membership.role, status: 'removed' };
-    }
-    if (input.status === 'active' || input.status === 'suspended') {
+    const requiresReservation = removesActiveOwner &&
+      (input.status === 'removed' || input.role !== undefined && input.role !== 'owner');
+    let reservation: Awaited<ReturnType<IdentityStore['setMembershipAccessOverlay']>> | undefined;
+    if (requiresReservation && ownerMembershipIds) {
       const current = await this.control.getMembershipAccessOverlay(input.membership.id);
-      await this.control.setMembershipAccessOverlay({
+      reservation = await this.control.setMembershipAccessOverlay({
         membershipId: input.membership.id,
         organizationId: this.organizationId,
-        accessStatus: input.status,
+        accessStatus: 'suspended',
         expectedVersion: current?.membershipVersion ?? 0,
         actorMembershipId: input.actorMembershipId,
-        ...(input.membership.role === 'owner' && input.status === 'suspended' && ownerMembershipIds
-          ? { ownerMembershipIds }
-          : {}),
+        ownerMembershipIds,
       });
-      if (input.status === 'suspended') await this.revokeTargetAuthority(input.membership.userId);
+    }
+    let externalMutationCommitted = false;
+    try {
+      if (input.role !== undefined && input.role !== input.membership.role) {
+        await this.api.updateMemberRole({
+          body: {
+            memberId: input.membership.id,
+            role: input.role,
+            organizationId: this.organizationId,
+          },
+          headers: input.headers,
+        });
+        externalMutationCommitted = true;
+      }
+      if (input.status === 'removed') {
+        await this.api.removeMember({
+          body: { memberIdOrEmail: input.membership.id, organizationId: this.organizationId },
+          headers: input.headers,
+        });
+        externalMutationCommitted = true;
+        await this.revokeTargetAuthority(input.membership.userId);
+        return { ...input.membership, role: input.role ?? input.membership.role, status: 'removed' };
+      }
+      if (input.status === 'active' || input.status === 'suspended') {
+        const current = await this.control.getMembershipAccessOverlay(input.membership.id);
+        await this.control.setMembershipAccessOverlay({
+          membershipId: input.membership.id,
+          organizationId: this.organizationId,
+          accessStatus: input.status,
+          expectedVersion: current?.membershipVersion ?? 0,
+          actorMembershipId: input.actorMembershipId,
+          ...(input.membership.role === 'owner' && input.status === 'suspended' && ownerMembershipIds
+            ? { ownerMembershipIds }
+            : {}),
+        });
+        if (input.status === 'suspended') await this.revokeTargetAuthority(input.membership.userId);
+      } else if (reservation) {
+        await this.releaseOwnerReservation(reservation, input.actorMembershipId);
+      }
+    } catch (error) {
+      if (reservation && !externalMutationCommitted) {
+        await this.releaseOwnerReservation(reservation, input.actorMembershipId).catch(() => undefined);
+      }
+      throw error;
     }
     return {
       ...input.membership,
       role: input.role ?? input.membership.role,
       status: input.status ?? input.membership.status,
     };
+  }
+
+  private async releaseOwnerReservation(
+    reservation: Awaited<ReturnType<IdentityStore['setMembershipAccessOverlay']>>,
+    actorMembershipId: string,
+  ): Promise<void> {
+    await this.control.setMembershipAccessOverlay({
+      membershipId: reservation.membershipId,
+      organizationId: reservation.organizationId,
+      accessStatus: 'active',
+      expectedVersion: reservation.membershipVersion,
+      actorMembershipId,
+    });
   }
 
   async createAdministrativeReset(input: {

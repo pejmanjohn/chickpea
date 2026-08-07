@@ -201,6 +201,79 @@ test('password-mode invitation, enrollment, suspension, and administrative reset
   }
 });
 
+test('concurrent owner demotion or removal retains one active owner', async () => {
+  for (const mutation of [{ role: 'admin' }, { status: 'removed' }] as const) {
+    const identity = new SqliteIdentityStore(':memory:');
+    const backend = new NodeBetterAuthBackend(':memory:');
+    const environment = {
+      backend,
+      baseURL: ORIGIN,
+      password: nativePasswordPrimitive(),
+      recoveryToken: RECOVERY,
+      secret: await deriveBetterAuthSecret(RECOVERY),
+    };
+    const app = createAdminRoutes({ identity, betterAuthEnvironment: environment, recoveryToken: RECOVERY });
+    try {
+      const setup = await app.request(formRequest('/admin/setup', {
+        organizationName: 'Acme', displayName: 'Owner One', ownerEmail: 'owner@example.com',
+        password: OWNER_PASSWORD, recoveryToken: RECOVERY,
+      }));
+      const firstCookie = cookieHeader(setup.headers.get('set-cookie'));
+      const invitationResponse = await app.request(jsonRequest('/admin/api/team/invitations', 'POST', {
+        email: 'second-owner@example.com', role: 'admin',
+      }, firstCookie));
+      assert.equal(invitationResponse.status, 201, await invitationResponse.clone().text());
+      const invitationLink = (await invitationResponse.json() as { inviteLink: string }).inviteLink;
+      const [operationId, token] = new URL(invitationLink).hash.slice('#invite='.length).split('.');
+      const enrolled = await app.request(jsonRequest('/admin/join', 'POST', {
+        operationId,
+        token,
+        displayName: 'Owner Two',
+        password: MEMBER_PASSWORD,
+      }));
+      assert.equal(enrolled.status, 200, await enrolled.clone().text());
+      const secondCookie = cookieHeader(enrolled.headers.get('set-cookie'));
+      const control = await identity.getAuthControl();
+      const memberships = await backend.listMemberships(control!.betterAuthOrganizationId!);
+      const firstOwner = memberships.find((membership) => membership.role === 'owner')!;
+      const secondAdmin = memberships.find((membership) => membership.id !== firstOwner.id)!;
+      const promoted = await app.request(jsonRequest(
+        `/admin/api/team/memberships/${secondAdmin.id}`,
+        'PATCH',
+        { role: 'owner' },
+        firstCookie,
+      ));
+      assert.equal(promoted.status, 200, await promoted.clone().text());
+
+      const results = await Promise.all([
+        app.request(jsonRequest(
+          `/admin/api/team/memberships/${firstOwner.id}`,
+          'PATCH',
+          mutation,
+          secondCookie,
+        )),
+        app.request(jsonRequest(
+          `/admin/api/team/memberships/${secondAdmin.id}`,
+          'PATCH',
+          mutation,
+          firstCookie,
+        )),
+      ]);
+      const statuses = results.map((response) => response.status);
+      assert.equal(statuses.filter((status) => status === 200).length, 1);
+      assert.equal(statuses.every((status) => [200, 401, 409].includes(status)), true);
+      const remainingOwners = (await backend.listMemberships(control!.betterAuthOrganizationId!))
+        .filter((membership) => membership.role === 'owner');
+      assert.equal(remainingOwners.length, 1);
+      const overlay = await identity.getMembershipAccessOverlay(remainingOwners[0]!.id);
+      assert.notEqual(overlay?.accessStatus, 'suspended');
+    } finally {
+      backend.close();
+      identity.close();
+    }
+  }
+});
+
 test('an existing credentialed invitee signs in normally and resumes the exact same-tab invitation', async () => {
   const identity = new SqliteIdentityStore(':memory:');
   const backend = new NodeBetterAuthBackend(':memory:');

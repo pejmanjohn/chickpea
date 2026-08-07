@@ -6,7 +6,10 @@ import {
 } from '../config/state-backend.ts';
 import type { IdentityStore } from '../identity/types.ts';
 import { createBetterAuthPublicHandler } from './better-auth-routes.ts';
-import { cloudflareLoginAllowed } from './better-auth-cloudflare.ts';
+import {
+  cloudflareLoginIdentityAllowed,
+  cloudflareLoginSourceAllowed,
+} from './better-auth-cloudflare.ts';
 import {
   resolveBetterAuthEnvironment,
   type BetterAuthEnvironment,
@@ -65,8 +68,11 @@ export function createBetterAuthEnvironmentPublicHandler(input: {
   if (environment.cloudflareEnv) {
     return createBetterAuthPublicHandler({
       ...environment,
-      loginAllowed: (source, email) => cloudflareLoginAllowed(
-        environment.cloudflareEnv!, source, email,
+      loginSourceAllowed: (source) => cloudflareLoginSourceAllowed(
+        environment.cloudflareEnv!, source,
+      ),
+      loginIdentityAllowed: (email) => cloudflareLoginIdentityAllowed(
+        environment.cloudflareEnv!, email,
       ),
       sourceKey: (request) => requestAuthSourceKey(request, true),
     });
@@ -79,24 +85,30 @@ export function createBetterAuthEnvironmentPublicHandler(input: {
   });
   return createBetterAuthPublicHandler({
     ...environment,
-    loginAllowed: async (source, email) => {
+    loginSourceAllowed: async (source) => {
       try {
-        await Promise.all([
-          limiter.assertAllowed('better_auth_login_source', source),
-          limiter.assertAllowed('better_auth_login_identity', email),
-        ]);
+        await limiter.assertAllowed('better_auth_login_source', source);
         return true;
       } catch (error) {
         if (error instanceof AuthRateLimitError) return false;
         throw error;
       }
     },
-    loginResult: async (source, email, success) => {
+    loginIdentityAllowed: async (email) => {
+      try {
+        await limiter.assertAllowed('better_auth_login_identity', email);
+        return true;
+      } catch (error) {
+        if (error instanceof AuthRateLimitError) return false;
+        throw error;
+      }
+    },
+    loginResult: async (source, email, credentialExists, success) => {
       const operation = success ? 'recordSuccess' : 'recordFailure';
-      await Promise.all([
-        limiter[operation]('better_auth_login_source', source),
-        limiter[operation]('better_auth_login_identity', email),
-      ]);
+      await limiter[operation]('better_auth_login_source', source);
+      if (credentialExists) {
+        await limiter[operation]('better_auth_login_identity', email);
+      }
     },
     sourceKey: (request) => requestAuthSourceKey(request, false),
   });

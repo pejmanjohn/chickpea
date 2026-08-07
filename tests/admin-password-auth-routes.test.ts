@@ -118,6 +118,40 @@ test('password setup rejects a malicious return destination and machine credenti
   identity.close();
 });
 
+test('fresh password setup cannot replace an existing legacy organization', async () => {
+  for (const authMode of ['access_pending', 'token_active'] as const) {
+    const identity = new SqliteIdentityStore(':memory:');
+    const backend = new NodeBetterAuthBackend(':memory:');
+    const organization = await identity.ensureOrganization({ displayName: 'Existing Chickpea' });
+    await identity.updateOrganizationAuth({
+      organizationId: organization.id,
+      authMode,
+      canonicalAdminOrigin: ORIGIN,
+    });
+    const environment = {
+      backend,
+      baseURL: ORIGIN,
+      password: nativePasswordPrimitive(),
+      recoveryToken: RECOVERY,
+      secret: await deriveBetterAuthSecret(RECOVERY),
+    };
+    const app = createAdminRoutes({ identity, betterAuthEnvironment: environment, recoveryToken: RECOVERY });
+    const denied = await app.request(formRequest('/admin/setup', {
+      organizationName: 'Replacement',
+      displayName: 'Attacker',
+      ownerEmail: 'attacker@example.com',
+      password: PASSWORD,
+      recoveryToken: RECOVERY,
+    }));
+    assert.equal(denied.status, 401);
+    assert.equal((await identity.getOrganization())?.authMode, authMode);
+    assert.equal(await identity.getAuthControl(), undefined);
+    assert.equal(await backend.findUserByEmail('attacker@example.com'), null);
+    backend.close();
+    identity.close();
+  }
+});
+
 function formRequest(
   path: string,
   values: Record<string, string>,

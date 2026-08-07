@@ -1432,6 +1432,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const rawForm = await readForm(c);
       passwordSetup = Object.hasOwn(rawForm, 'password');
       if (passwordSetup) {
+        const organization = await identity(c).getOrganization();
+        if (organization) throw new AuthDeniedError();
         const form = v.safeParse(passwordOwnerSetupSchema, rawForm);
         if (!form.success) throw new AuthDeniedError();
         const environment = options.betterAuthEnvironment ??

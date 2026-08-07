@@ -15,7 +15,7 @@
  * failed deploy), and stdout is scanned line-by-line rather than buffered.
  */
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -60,7 +60,7 @@ if (hasCustomConfigFlag(deployArgs)) {
   process.exit(1);
 }
 
-if (!skipBuild) {
+function buildCloudflareArtifact() {
   process.stdout.write('Building the Cloudflare artifact from current source...\n');
   const npmExecPath = process.env.npm_execpath;
   const buildCommand = npmExecPath
@@ -78,6 +78,8 @@ if (!skipBuild) {
     process.exit(build.status ?? 1);
   }
 }
+
+if (!skipBuild) buildCloudflareArtifact();
 
 function builtConfigPath() {
   try {
@@ -300,21 +302,113 @@ if (preflightOnly) {
   process.exit(0);
 }
 
+function deploymentResourceArgs() {
+  const args = [];
+  for (let index = 0; index < deployArgs.length; index += 1) {
+    const argument = deployArgs[index];
+    if (['--env', '-e', '--profile'].includes(argument)) {
+      args.push(argument, deployArgs[index + 1]);
+      index += 1;
+    } else if (argument.startsWith('--env=') || argument.startsWith('--profile=')) {
+      args.push(argument);
+    }
+  }
+  return args;
+}
+
+function ensureAuthDatabase(artifact) {
+  const authDb = (artifact.config.d1_databases ?? []).find(
+    (binding) => binding.binding === 'AUTH_DB',
+  );
+  if (typeof authDb?.database_id === 'string' && authDb.database_id.trim()) return artifact;
+  const existingId = existingAuthDatabaseId(authDb?.database_name || 'chickpea-auth-db');
+  if (existingId) {
+    process.stdout.write('Reusing the customer-owned AUTH_DB database...\n');
+    authDb.database_id = existingId;
+    writeFileSync(artifact.configPath, `${JSON.stringify(artifact.config, null, 2)}\n`);
+    return requireBuiltArtifact();
+  }
+  const rootConfig = path.join(projectRoot, 'wrangler.jsonc');
+  process.stdout.write('Provisioning the customer-owned AUTH_DB database...\n');
+  const provision = spawnSync(
+    process.execPath,
+    [
+      wranglerBin,
+      'd1',
+      'create',
+      authDb?.database_name || 'chickpea-auth-db',
+      '--binding',
+      'AUTH_DB',
+      '--update-config',
+      '--config',
+      rootConfig,
+      ...deploymentResourceArgs(),
+    ],
+    { cwd: projectRoot, stdio: 'inherit' },
+  );
+  if (provision.error) {
+    console.error(`Unable to start AUTH_DB provisioning: ${provision.error.message}`);
+    process.exit(1);
+  }
+  if (provision.status !== 0) {
+    console.error(
+      'AUTH_DB provisioning failed. If the database already exists, copy its ID into ' +
+      'wrangler.jsonc and rerun npm run deploy.',
+    );
+    process.exit(provision.status ?? 1);
+  }
+  buildCloudflareArtifact();
+  const rebuilt = requireBuiltArtifact();
+  validateFlue2CutoverArtifact(rebuilt);
+  const rebuiltAuthDb = (rebuilt.config.d1_databases ?? []).find(
+    (binding) => binding.binding === 'AUTH_DB',
+  );
+  if (typeof rebuiltAuthDb?.database_id !== 'string' || !rebuiltAuthDb.database_id.trim()) {
+    console.error('AUTH_DB provisioning did not persist a database ID in the deployment artifact.');
+    process.exit(1);
+  }
+  return rebuilt;
+}
+
+function existingAuthDatabaseId(databaseName) {
+  const list = spawnSync(
+    process.execPath,
+    [wranglerBin, 'd1', 'list', '--json', ...deploymentResourceArgs()],
+    { cwd: projectRoot, encoding: 'utf8', stdio: ['inherit', 'pipe', 'inherit'] },
+  );
+  if (list.error) {
+    console.error(`Unable to inspect AUTH_DB resources: ${list.error.message}`);
+    process.exit(1);
+  }
+  if (list.status !== 0) process.exit(list.status ?? 1);
+  let databases;
+  try {
+    databases = JSON.parse(list.stdout);
+  } catch {
+    console.error('AUTH_DB discovery returned an unreadable response.');
+    process.exit(1);
+  }
+  if (!Array.isArray(databases)) {
+    console.error('AUTH_DB discovery returned an unexpected response.');
+    process.exit(1);
+  }
+  const matches = databases.filter((database) => database?.name === databaseName);
+  if (matches.length > 1) {
+    console.error(`Multiple D1 databases are named ${databaseName}; refusing to guess.`);
+    process.exit(1);
+  }
+  const id = matches[0]?.uuid ?? matches[0]?.id;
+  return typeof id === 'string' && id.trim() ? id.trim() : undefined;
+}
+
+if (!deployArgs.includes('--dry-run')) builtArtifact = ensureAuthDatabase(builtArtifact);
+
 // D1 migrations are forward-only and idempotent. Apply them before the Worker
 // starts serving a schema it expects. If deploy later fails, rerunning this
 // command resumes from D1's migration ledger; never attempt schema rollback.
 if (!deployArgs.includes('--dry-run')) {
   process.stdout.write('Applying reviewed Better Auth migrations to AUTH_DB...\n');
-  const environmentArgs = [];
-  for (let index = 0; index < deployArgs.length; index += 1) {
-    const argument = deployArgs[index];
-    if (argument === '--env' || argument === '-e') {
-      environmentArgs.push(argument, deployArgs[index + 1]);
-      index += 1;
-    } else if (argument.startsWith('--env=')) {
-      environmentArgs.push(argument);
-    }
-  }
+  const environmentArgs = deploymentResourceArgs();
   const migration = spawnSync(
     process.execPath,
     [

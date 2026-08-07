@@ -12,7 +12,7 @@ import {
   mapBetterAuthOrganization,
   mapBetterAuthUser,
 } from './better-auth-backend.ts';
-import type { PasswordPrimitive } from './password.ts';
+import { DUMMY_PASSWORD_RECORD, verifierShard, type PasswordPrimitive } from './password.ts';
 
 export interface AuthGuardRpc {
   hashPassword(password: string): Promise<string>;
@@ -118,20 +118,28 @@ export function cloudflarePasswordPrimitive(
 ): PasswordPrimitive {
   return {
     hash: (password) => authGuard(env, 'kdf-hash', shardKey).hashPassword(password),
-    verify: (input) => authGuard(env, 'kdf-verify', input.hash).verifyPassword(input),
+    verify: (input) => authGuard(
+      env,
+      'kdf-verify',
+      input.hash === DUMMY_PASSWORD_RECORD
+        ? shardKey
+        : verifierShard(input.hash) ?? shardKey,
+    ).verifyPassword(input),
   };
 }
 
-export async function cloudflareLoginAllowed(
+export async function cloudflareLoginSourceAllowed(
   env: CloudflareBetterAuthEnv,
   source: string,
+): Promise<boolean> {
+  return authGuard(env, 'source-rate', source).allow('sign-in', 50, 10_000);
+}
+
+export async function cloudflareLoginIdentityAllowed(
+  env: CloudflareBetterAuthEnv,
   email: string,
 ): Promise<boolean> {
-  const [sourceAllowed, identityAllowed] = await Promise.all([
-    authGuard(env, 'source-rate', source).allow('sign-in', 50, 10_000),
-    authGuard(env, 'identity-rate', email).allow('sign-in', 5, 10_000),
-  ]);
-  return sourceAllowed && identityAllowed;
+  return authGuard(env, 'identity-rate', email).allow('sign-in', 5, 10_000);
 }
 
 function authGuard(

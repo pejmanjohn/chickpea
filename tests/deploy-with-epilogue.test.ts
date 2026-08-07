@@ -6,6 +6,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -36,11 +37,38 @@ function createHarness() {
       ${JSON.stringify(label)} + ':' + JSON.stringify(process.argv.slice(2)) + '\\n',
     );
   `;
-  writeFileSync(npmStub, commandLogger('npm'));
+  writeFileSync(
+    npmStub,
+    commandLogger('npm') + `
+      import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+      import path from 'node:path';
+      if (process.argv[2] === 'run' && process.argv[3] === 'build') {
+        const rootConfig = path.join(process.cwd(), 'wrangler.jsonc');
+        const builtConfig = path.join(process.cwd(), 'dist-cf', 'chickpea', 'wrangler.json');
+        if (existsSync(rootConfig) && existsSync(builtConfig)) {
+          writeFileSync(builtConfig, readFileSync(rootConfig));
+        }
+      }
+    `,
+  );
   writeFileSync(
     wranglerStub,
-    commandLogger('wrangler') +
-      `if (process.env.DEPLOY_TEST_URL) process.stdout.write(process.env.DEPLOY_TEST_URL + '\\n');\n`,
+    commandLogger('wrangler') + `
+      import { readFileSync, writeFileSync } from 'node:fs';
+      const args = process.argv.slice(2);
+      if (args[0] === 'd1' && args[1] === 'list' && args.includes('--json')) {
+        process.stdout.write(process.env.DEPLOY_TEST_D1_LIST || '[]');
+        process.exit(0);
+      }
+      if (args[0] === 'd1' && args[1] === 'create' && args.includes('--update-config')) {
+        const configPath = args[args.indexOf('--config') + 1];
+        const config = JSON.parse(readFileSync(configPath, 'utf8'));
+        const authDb = config.d1_databases.find((entry) => entry.binding === 'AUTH_DB');
+        authDb.database_id = 'provisioned-database-id';
+        writeFileSync(configPath, JSON.stringify(config));
+      }
+      if (process.env.DEPLOY_TEST_URL) process.stdout.write(process.env.DEPLOY_TEST_URL + '\\n');
+    `,
   );
 
   const harness = {
@@ -93,6 +121,66 @@ test('successful deploy hands a fresh install to built-in owner setup', (context
   assert.equal(invoked[1], 'wrangler:["deploy"]');
 });
 
+test('fresh deploy provisions AUTH_DB before migrations and rebuilds the binding', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+  writeCutoverArtifact(harness, { databaseId: '' });
+
+  const result = runHarness(harness, ['--skip-build'], {
+    DEPLOY_TEST_URL: 'https://chickpea.example.workers.dev',
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Provisioning the customer-owned AUTH_DB database/);
+  const canonicalRoot = realpathSync(harness.root);
+  assert.deepEqual(commands(harness.logPath), [
+    'wrangler:["d1","list","--json"]',
+    `wrangler:["d1","create","chickpea-auth-db","--binding","AUTH_DB","--update-config","--config","${path.join(canonicalRoot, 'wrangler.jsonc')}"]`,
+    'npm:["run","build"]',
+    `wrangler:["d1","migrations","apply","AUTH_DB","--remote","--config","${path.join(canonicalRoot, 'dist-cf', 'chickpea', 'wrangler.json')}"]`,
+    'wrangler:["deploy"]',
+  ]);
+});
+
+test('fresh source reuses an existing named AUTH_DB without creating another', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+  writeCutoverArtifact(harness, { databaseId: '' });
+
+  const result = runHarness(harness, ['--skip-build'], {
+    DEPLOY_TEST_D1_LIST: JSON.stringify([{ name: 'chickpea-auth-db', uuid: 'existing-database-id' }]),
+    DEPLOY_TEST_URL: 'https://chickpea.example.workers.dev',
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Reusing the customer-owned AUTH_DB database/);
+  const canonicalRoot = realpathSync(harness.root);
+  assert.deepEqual(commands(harness.logPath), [
+    'wrangler:["d1","list","--json"]',
+    `wrangler:["d1","migrations","apply","AUTH_DB","--remote","--config","${path.join(canonicalRoot, 'dist-cf', 'chickpea', 'wrangler.json')}"]`,
+    'wrangler:["deploy"]',
+  ]);
+  const config = JSON.parse(readFileSync(path.join(
+    harness.root,
+    'dist-cf',
+    'chickpea',
+    'wrangler.json',
+  ), 'utf8'));
+  assert.equal(config.d1_databases[0].database_id, 'existing-database-id');
+});
+
+test('dry-run never provisions a missing AUTH_DB', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+  writeCutoverArtifact(harness, { databaseId: '' });
+
+  const result = runHarness(harness, ['--skip-build', '--dry-run']);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.doesNotMatch(result.stdout, /Provisioning the customer-owned AUTH_DB database/);
+  assert.deepEqual(commands(harness.logPath), ['wrangler:["deploy","--dry-run"]']);
+});
+
 function commands(logPath: string): string[] {
   return readFileSync(logPath, 'utf8').trim().split('\n');
 }
@@ -111,6 +199,7 @@ function writeCutoverArtifact(
     tracing?: boolean;
     cloudflareTracer?: boolean;
     sandboxCommandRedaction?: boolean;
+    databaseId?: string;
   } = {},
 ) {
   const builtDir = path.join(harness.root, 'dist-cf', 'chickpea');
@@ -120,7 +209,7 @@ function writeCutoverArtifact(
   writeFileSync(path.join(redirectDir, 'config.json'), JSON.stringify({
     configPath: '../../dist-cf/chickpea/wrangler.json',
   }));
-  writeFileSync(path.join(builtDir, 'wrangler.json'), JSON.stringify({
+  const config = {
     name: 'chickpea',
     main: 'index.js',
     compatibility_date: options.compatibilityDate ?? '2026-06-01',
@@ -149,7 +238,7 @@ function writeCutoverArtifact(
     d1_databases: [{
       binding: 'AUTH_DB',
       database_name: 'chickpea-auth-db',
-      database_id: 'test-database-id',
+      database_id: options.databaseId ?? 'test-database-id',
       migrations_dir: '../../migrations/better-auth',
     }],
     workflows: [],
@@ -170,7 +259,9 @@ function writeCutoverArtifact(
       },
       { tag: 'v7', new_sqlite_classes: ['AuthGuard'] },
     ],
-  }));
+  };
+  writeFileSync(path.join(builtDir, 'wrangler.json'), JSON.stringify(config));
+  writeFileSync(path.join(harness.root, 'wrangler.jsonc'), JSON.stringify(config));
   const canarySeams = options.completeCanary === false
     ? 'SLACK_TAG_LEDGER_CANARY_CHANNELS'
     : 'SLACK_TAG_LEDGER_CANARY_CHANNELS delivery_receipt_persist_unknown slack_agent_bindings';
