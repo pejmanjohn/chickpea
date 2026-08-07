@@ -11390,6 +11390,115 @@ button:hover { background:var(--ember-bright); }
 </html>`;
 }
 
+export function renderPasswordLogin(
+  options: { invalid?: boolean; returnTo?: string } = {},
+): string {
+  const error = options.invalid
+    ? '<div class="error" id="auth-error" role="alert" tabindex="-1">Email or password was not accepted.</div>'
+    : '';
+  return renderPasswordPage({
+    title: 'Sign in to Chickpea',
+    eyebrow: 'Welcome back',
+    error,
+    body: `<form method="post" action="/admin/login">
+      <label for="email">Email</label>
+      <input id="email" name="email" type="email" autocomplete="username" required autofocus>
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required ${options.invalid ? 'aria-describedby="auth-error"' : ''}>
+      <input name="returnTo" type="hidden" value="${escapeHtmlAttribute(options.returnTo ?? '/admin')}">
+      <button type="submit">Sign in</button>
+    </form>`,
+  });
+}
+
+export function renderPasswordOwnerSetupPage(options: { error?: boolean } = {}): string {
+  const error = options.error
+    ? '<div class="error" id="auth-error" role="alert" tabindex="-1">Setup could not be completed. Check every field and your recovery secret, then retry.</div>'
+    : '';
+  return renderPasswordPage({
+    title: 'Create your Chickpea workspace',
+    eyebrow: 'Your deployment is ready',
+    error,
+    intro: 'Create the first owner account. Your recovery secret stays offline and no email service is required.',
+    body: `<form method="post" action="/admin/setup">
+      <label for="organization-name">Organization name</label>
+      <input id="organization-name" name="organizationName" autocomplete="organization" required maxlength="128">
+      <label for="display-name">Your name</label>
+      <input id="display-name" name="displayName" autocomplete="name" required maxlength="128">
+      <label for="owner-email">Email</label>
+      <input id="owner-email" name="ownerEmail" type="email" autocomplete="username" required maxlength="320">
+      <label for="password">Password <span>15 or more characters</span></label>
+      <input id="password" name="password" type="password" autocomplete="new-password" required minlength="15" maxlength="256">
+      <label for="recovery-token">Deployment recovery secret</label>
+      <input id="recovery-token" name="recoveryToken" type="password" autocomplete="off" required ${options.error ? 'aria-describedby="auth-error"' : ''}>
+      <button type="submit">Create owner account</button>
+    </form>`,
+  });
+}
+
+export function renderPasswordChangePage(options: { error?: boolean } = {}): string {
+  const error = options.error
+    ? '<div class="error" id="auth-error" role="alert" tabindex="-1">Password could not be changed.</div>'
+    : '';
+  return renderPasswordPage({
+    title: 'Change your password',
+    eyebrow: 'Account security',
+    error,
+    intro: 'After this change, Chickpea signs out every browser session and asks you to sign in again.',
+    body: `<form method="post" action="/admin/account/password">
+      <label for="current-password">Current password</label>
+      <input id="current-password" name="currentPassword" type="password" autocomplete="current-password" required>
+      <label for="new-password">New password <span>15 or more characters</span></label>
+      <input id="new-password" name="newPassword" type="password" autocomplete="new-password" required minlength="15" maxlength="256" ${options.error ? 'aria-describedby="auth-error"' : ''}>
+      <button type="submit">Change password and sign out</button>
+    </form>`,
+  });
+}
+
+export function renderPasswordRecoveryPage(options: { error?: boolean; success?: boolean } = {}): string {
+  const error = options.error
+    ? '<div class="error" id="auth-error" role="alert" tabindex="-1">Recovery could not be completed.</div>'
+    : '';
+  if (options.success) {
+    return renderPasswordPage({
+      title: 'Password recovered',
+      eyebrow: 'Recovery complete',
+      intro: 'All prior browser sessions were revoked. Sign in normally with the new password.',
+      body: '<a class="primary" href="/admin/login">Continue to sign in</a>',
+    });
+  }
+  return renderPasswordPage({
+    title: 'Recover the owner account',
+    eyebrow: 'Offline recovery',
+    error,
+    intro: 'This does not sign you in. It replaces one owner password using the deployment recovery secret.',
+    body: `<form method="post" action="/admin/recovery">
+      <label for="owner-email">Owner email</label>
+      <input id="owner-email" name="ownerEmail" type="email" autocomplete="username" required maxlength="320">
+      <label for="new-password">New password <span>15 or more characters</span></label>
+      <input id="new-password" name="newPassword" type="password" autocomplete="new-password" required minlength="15" maxlength="256">
+      <label for="recovery-token">Deployment recovery secret</label>
+      <input id="recovery-token" name="recoveryToken" type="password" autocomplete="off" required ${options.error ? 'aria-describedby="auth-error"' : ''}>
+      <button type="submit">Replace owner password</button>
+    </form>`,
+  });
+}
+
+function renderPasswordPage(input: {
+  title: string;
+  eyebrow: string;
+  body: string;
+  intro?: string;
+  error?: string;
+}): string {
+  return `<!doctype html><html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Chickpea · ${escapeHtmlAttribute(input.title)}</title>${ADMIN_FAVICON}
+<style>
+:root{--canvas:#f4ebd8;--card:#fffdf6;--ink:#3b3220;--muted:#6b5c42;--gold:#dda033;--line:rgba(59,50,32,.16);--danger:#a83f34}*{box-sizing:border-box}body{margin:0;min-height:100dvh;display:grid;place-items:center;background:var(--canvas);color:var(--ink);font-family:system-ui,-apple-system,sans-serif;padding:16px}main{width:min(520px,100%);background:var(--card);border:1px solid var(--line);border-radius:20px;padding:clamp(22px,6vw,42px);box-shadow:0 12px 34px rgba(59,50,32,.09)}.eyebrow{margin:0;color:var(--muted);font-size:.78rem;font-weight:800;text-transform:uppercase;letter-spacing:.08em}h1{margin:7px 0 9px;font-size:clamp(1.7rem,7vw,2.45rem);line-height:1.08}p{color:var(--muted);line-height:1.55}label{display:flex;justify-content:space-between;gap:12px;margin:17px 0 6px;font-weight:750}label span{color:var(--muted);font-size:.76rem;font-weight:500}input{width:100%;min-height:46px;border:1px solid var(--line);border-radius:11px;background:#fff;padding:11px 12px;font:inherit}button,.primary{display:flex;align-items:center;justify-content:center;width:100%;min-height:46px;margin-top:22px;border:0;border-radius:12px;background:var(--gold);color:var(--ink);font:inherit;font-weight:800;text-decoration:none;cursor:pointer;box-shadow:0 2.5px 0 #b27e1f}input:focus-visible,button:focus-visible,.primary:focus-visible{outline:3px solid rgba(176,84,21,.42);outline-offset:2px}.error{margin:16px 0;border-left:4px solid var(--danger);background:#fff3ee;color:var(--danger);padding:12px;font-weight:700;line-height:1.45}@media(max-width:360px){body{padding:8px}main{border-radius:14px;padding:20px 16px}label{display:block}label span{display:block;margin-top:2px}}
+</style></head><body><main aria-labelledby="auth-title"><p class="eyebrow">${escapeHtmlAttribute(input.eyebrow)}</p><h1 id="auth-title">${escapeHtmlAttribute(input.title)}</h1>${input.intro ? `<p>${escapeHtmlAttribute(input.intro)}</p>` : ''}${input.error ?? ''}${input.body}</main></body></html>`;
+}
+
 export function renderAuthSetupPage(
   options: {
     state: 'fresh' | 'access_pending';
@@ -11660,6 +11769,8 @@ h1 { margin:8px 0 6px; font-size:clamp(1.65rem,6vw,2.35rem); } p { color:var(--m
     <span class="badge">${escapeHtmlAttribute(input.role)} · ${escapeHtmlAttribute(input.status)}</span>
   </section>
   <a class="button" href="slack://open">Open Slack</a>
+  <p><a href="/admin/account/password">Change password</a></p>
+  <form method="post" action="/admin/logout"><button class="button" type="submit">Sign out</button></form>
   <p class="note">Need a role change? Ask a Chickpea owner or administrator.</p>
 </main></body></html>`;
 }

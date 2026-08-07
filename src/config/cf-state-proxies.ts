@@ -13,6 +13,7 @@ import type {
   BootstrapTokenOwnerInput,
   ClaimOwnerInput,
   ConsumeAuthOperationInput,
+  CompletePasswordSetupInput,
   ConsumeInvitationInput,
   ConfigureAuthProviderInput,
   CreateBrowserSessionRecordInput,
@@ -277,6 +278,11 @@ export class CfIdentityStore implements IdentityStore {
     const response = await this.execute({ kind: 'consume_auth_operation', input });
     if (response.kind !== 'auth_operation' || !response.operation) throw unexpectedIdentityResponse();
     return response.operation;
+  }
+  async completePasswordSetup(input: CompletePasswordSetupInput) {
+    const response = await this.execute({ kind: 'complete_password_setup', input });
+    if (response.kind !== 'auth_control' || !response.control) throw unexpectedIdentityResponse();
+    return response.control;
   }
   async revokeAuthOperation(operationId: string) {
     const response = await this.execute({ kind: 'revoke_auth_operation', operationId });

@@ -7,7 +7,10 @@ import {
 import type { IdentityStore } from '../identity/types.ts';
 import { createBetterAuthPublicHandler } from './better-auth-routes.ts';
 import { cloudflareLoginAllowed } from './better-auth-cloudflare.ts';
-import { resolveBetterAuthEnvironment } from './better-auth-environment.ts';
+import {
+  resolveBetterAuthEnvironment,
+  type BetterAuthEnvironment,
+} from './better-auth-environment.ts';
 import { AuthRateLimitError, AuthRateLimiter } from './rate-limit.ts';
 import { requestAuthSourceKey } from './source-key.ts';
 
@@ -47,15 +50,28 @@ async function dispatch(c: Context, options: BetterAuthRuntimeOptions): Promise<
   });
   if (!environment) return Response.json({ error: 'auth_unavailable' }, { status: 503 });
 
+  const handler = createBetterAuthEnvironmentPublicHandler({
+    environment,
+    identity,
+    cloudflare: Boolean(environment.cloudflareEnv),
+  });
+  return handler(c.req.raw);
+}
+
+export function createBetterAuthEnvironmentPublicHandler(input: {
+  environment: BetterAuthEnvironment;
+  identity: IdentityStore;
+  cloudflare: boolean;
+}) {
+  const { environment, identity } = input;
   if (environment.cloudflareEnv) {
-    const handler = createBetterAuthPublicHandler({
+    return createBetterAuthPublicHandler({
       ...environment,
       loginAllowed: (source, email) => cloudflareLoginAllowed(
         environment.cloudflareEnv!, source, email,
       ),
       sourceKey: (request) => requestAuthSourceKey(request, true),
     });
-    return handler(c.req.raw);
   }
 
   const limiter = new AuthRateLimiter(identity, {
@@ -63,7 +79,7 @@ async function dispatch(c: Context, options: BetterAuthRuntimeOptions): Promise<
     perKeyLimit: 10,
     globalLimit: 500,
   });
-  const handler = createBetterAuthPublicHandler({
+  return createBetterAuthPublicHandler({
     ...environment,
     loginAllowed: async (source, email) => {
       try {
@@ -86,5 +102,4 @@ async function dispatch(c: Context, options: BetterAuthRuntimeOptions): Promise<
     },
     sourceKey: (request) => requestAuthSourceKey(request, false),
   });
-  return handler(c.req.raw);
 }

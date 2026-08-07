@@ -29,12 +29,30 @@ interface ResolveBetterAuthEnvironmentInput {
   passwordShardKey?: string | undefined;
 }
 
+interface ResolveBetterAuthBootstrapEnvironmentInput {
+  canonicalOrigin: string;
+  platformEnv?: PlatformEnv | undefined;
+  recoveryToken?: string | undefined;
+  passwordShardKey?: string | undefined;
+}
+
 export async function resolveBetterAuthEnvironment(
   input: ResolveBetterAuthEnvironmentInput,
 ): Promise<BetterAuthEnvironment | undefined> {
   if (input.control.authMode !== 'password_active' ||
       !input.control.canonicalAdminOrigin ||
       !input.control.betterAuthOrganizationId) return undefined;
+  return resolveBetterAuthBootstrapEnvironment({
+    canonicalOrigin: input.control.canonicalAdminOrigin,
+    platformEnv: input.platformEnv,
+    recoveryToken: input.recoveryToken,
+    passwordShardKey: input.passwordShardKey ?? input.control.installationId,
+  });
+}
+
+export async function resolveBetterAuthBootstrapEnvironment(
+  input: ResolveBetterAuthBootstrapEnvironmentInput,
+): Promise<BetterAuthEnvironment | undefined> {
   const recoveryToken = input.recoveryToken ?? recoverySecret(input.platformEnv);
   if (!recoveryToken) return undefined;
   const secret = await deriveBetterAuthSecret(recoveryToken);
@@ -44,10 +62,10 @@ export async function resolveBetterAuthEnvironment(
     if (!cloudflareEnv) return undefined;
     return {
       backend: new D1BetterAuthBackend(cloudflareEnv.AUTH_DB),
-      baseURL: input.control.canonicalAdminOrigin,
+      baseURL: input.canonicalOrigin,
       password: cloudflarePasswordPrimitive(
         cloudflareEnv,
-        input.passwordShardKey ?? input.control.installationId,
+        input.passwordShardKey ?? 'owner-setup',
       ),
       secret,
       recoveryToken,
@@ -57,7 +75,7 @@ export async function resolveBetterAuthEnvironment(
 
   return {
     backend: getNodeBetterAuthBackend(),
-    baseURL: input.control.canonicalAdminOrigin,
+    baseURL: input.canonicalOrigin,
     password: nativePasswordPrimitive(),
     recoveryToken,
     secret,

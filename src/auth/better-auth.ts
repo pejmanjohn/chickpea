@@ -16,6 +16,7 @@ export interface CreateBetterAuthInput {
   secret: string;
   password: PasswordPrimitive;
   allowSignUp?: boolean;
+  autoSignInAfterSignUp?: boolean;
 }
 
 export function createBetterAuth(input: CreateBetterAuthInput) {
@@ -35,6 +36,7 @@ function createOptions(input: CreateBetterAuthInput & { baseURL: string }): Bett
     emailAndPassword: {
       disableSignUp: !(input.allowSignUp ?? false),
       enabled: true,
+      autoSignIn: input.autoSignInAfterSignUp ?? true,
       minPasswordLength: 15,
       // Chickpea enforces 128 Unicode code points and 512 UTF-8 bytes before
       // trusted credential writes. This ceiling keeps Better Auth from

@@ -337,6 +337,16 @@ export interface ConsumeAuthOperationInput {
   at?: number;
 }
 
+export interface CompletePasswordSetupInput {
+  operationId: string;
+  capabilityHash: string;
+  expectedStep: number;
+  expectedControlRevision: number;
+  canonicalAdminOrigin: string;
+  betterAuthOrganizationId: string;
+  at?: number;
+}
+
 export interface IdentityExportSummary {
   organization: Organization | null;
   users: User[];
@@ -372,6 +382,7 @@ export interface ChickpeaIdentityControlStore {
   findAuthOperation(kind: AuthOperationKind, capabilityHash: string): Promise<AuthOperation | undefined>;
   advanceAuthOperation(input: AdvanceAuthOperationInput): Promise<AuthOperation>;
   consumeAuthOperation(input: ConsumeAuthOperationInput): Promise<AuthOperation>;
+  completePasswordSetup(input: CompletePasswordSetupInput): Promise<AuthControl>;
   revokeAuthOperation(operationId: string): Promise<AuthOperation>;
   getMembershipAccessOverlay(membershipId: string): Promise<MembershipAccessOverlay | undefined>;
 }
@@ -439,6 +450,7 @@ export type IdentityRpcRequest =
   | { kind: 'find_auth_operation'; operationKind: AuthOperationKind; capabilityHash: string }
   | { kind: 'advance_auth_operation'; input: AdvanceAuthOperationInput }
   | { kind: 'consume_auth_operation'; input: ConsumeAuthOperationInput }
+  | { kind: 'complete_password_setup'; input: CompletePasswordSetupInput }
   | { kind: 'revoke_auth_operation'; operationId: string }
   | { kind: 'get_membership_access_overlay'; membershipId: string }
   | { kind: 'ensure_organization'; input: EnsureOrganizationInput }

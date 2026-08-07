@@ -94,6 +94,13 @@ export class D1BetterAuthBackend implements BetterAuthDatabaseBackend {
     return result.results.map(mapBetterAuthMembership).filter(isPresent);
   }
 
+  async listMembershipsForUser(userId: string): Promise<BetterAuthMembershipRecord[]> {
+    const result = await this.database.prepare(
+      'SELECT id, organizationId, userId, role, createdAt FROM member WHERE userId = ? ORDER BY createdAt, id',
+    ).bind(userId).all();
+    return result.results.map(mapBetterAuthMembership).filter(isPresent);
+  }
+
   async getMembershipForUser(
     userId: string,
     organizationId: string,

@@ -83,6 +83,7 @@ export interface BetterAuthDatabaseBackend {
   getOrganization(organizationId: string): Promise<BetterAuthOrganizationRecord | null>;
   getMembership(membershipId: string): Promise<BetterAuthMembershipRecord | null>;
   listMemberships(organizationId: string): Promise<BetterAuthMembershipRecord[]>;
+  listMembershipsForUser(userId: string): Promise<BetterAuthMembershipRecord[]>;
   getMembershipForUser(
     userId: string,
     organizationId: string,

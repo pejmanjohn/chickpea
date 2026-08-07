@@ -2,11 +2,15 @@ import { createHash, randomUUID } from 'node:crypto';
 
 import { Hono, type Context, type Next } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
-import { getCookie, setCookie } from 'hono/cookie';
+import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import * as v from 'valibot';
 
 import {
   renderAdminLogin,
+  renderPasswordChangePage,
+  renderPasswordLogin,
+  renderPasswordOwnerSetupPage,
+  renderPasswordRecoveryPage,
   renderAdminPage,
   renderAuthMigrationPage,
   renderAuthRecoveryPage,
@@ -243,16 +247,24 @@ import {
   BetterAuthSessionAuthenticator,
 } from '../auth/better-auth-principal.ts';
 import {
+  resolveBetterAuthBootstrapEnvironment,
   resolveBetterAuthEnvironment,
   type BetterAuthEnvironment,
 } from '../auth/better-auth-environment.ts';
+import { createBetterAuthEnvironmentPublicHandler } from '../auth/better-auth-runtime.ts';
+import { createBetterAuth } from '../auth/better-auth.ts';
 import { AuthorizationError, requirePermission, type Permission } from '../auth/permissions.ts';
 import { validateMutationProvenance } from '../auth/request-provenance.ts';
 import { CloudflareAccessAuthenticator, verifyCloudflareAccessRecoveryAssertion } from '../auth/cloudflare-access.ts';
 import { AuthRateLimiter } from '../auth/rate-limit.ts';
 import { requestAuthSourceKey } from '../auth/source-key.ts';
-import { AuthRecoveryService } from '../auth/recovery.ts';
-import { AuthSetupService, validRecoveryToken } from '../auth/setup.ts';
+import { AuthRecoveryService, PasswordOwnerRecoveryService } from '../auth/recovery.ts';
+import {
+  AuthSetupService,
+  PasswordOwnerSetupService,
+  validRecoveryToken,
+} from '../auth/setup.ts';
+import { assertPasswordPolicy } from '../auth/password-policy.ts';
 import { digest, PersonalTokenService } from '../auth/personal-token.ts';
 import { TokenSessionService } from '../auth/token-session.ts';
 import type { AdminAuthenticationService, AuthPrincipal, ExternalIdentity } from '../auth/types.ts';
@@ -356,6 +368,22 @@ const authSetupSchema = v.strictObject({
   recoveryToken: v.pipe(v.string(), v.minLength(1), v.maxLength(512)),
   issuer: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(1_024)),
   audience: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(1_024)),
+});
+const passwordOwnerSetupSchema = v.strictObject({
+  ownerEmail: v.pipe(v.string(), v.trim(), v.email(), v.maxLength(320)),
+  displayName: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(128)),
+  organizationName: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(128)),
+  password: v.pipe(v.string(), v.minLength(1), v.maxLength(512)),
+  recoveryToken: v.pipe(v.string(), v.minLength(1), v.maxLength(512)),
+});
+const passwordChangeSchema = v.strictObject({
+  currentPassword: v.pipe(v.string(), v.minLength(1), v.maxLength(512)),
+  newPassword: v.pipe(v.string(), v.minLength(1), v.maxLength(512)),
+});
+const passwordRecoverySchema = v.strictObject({
+  ownerEmail: v.pipe(v.string(), v.trim(), v.email(), v.maxLength(320)),
+  newPassword: v.pipe(v.string(), v.minLength(1), v.maxLength(512)),
+  recoveryToken: v.pipe(v.string(), v.minLength(1), v.maxLength(512)),
 });
 const invitationJoinSchema = v.strictObject({
   invitationId: v.pipe(v.string(), v.regex(/^invitation_[A-Za-z0-9_-]{1,180}$/)),
@@ -1061,6 +1089,30 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (authService) {
       if (isAdminLoginPost(c)) {
         const login = await readAdminLogin(c);
+        const passwordContext = await passwordAuthContext(c);
+        if (passwordContext) {
+          authResponseHeaders(c);
+          if (!login.email || !login.password ||
+              !validAuthFormPost(c, passwordContext.environment.baseURL)) {
+            return c.html(renderPasswordLogin({ invalid: true, returnTo: login.returnTo }), 401);
+          }
+          const handler = createBetterAuthEnvironmentPublicHandler({
+            environment: passwordContext.environment,
+            identity: identity(c),
+            cloudflare: Boolean(passwordContext.environment.cloudflareEnv),
+          });
+          const response = await handler(betterAuthJsonRequest(
+            c.req.raw,
+            passwordContext.environment.baseURL,
+            '/api/auth/sign-in/email',
+            { email: login.email, password: login.password },
+          ));
+          if (!response.ok) {
+            return c.html(renderPasswordLogin({ invalid: true, returnTo: login.returnTo }), 401);
+          }
+          copyAuthResponseCookies(c, response.headers);
+          return c.redirect(login.returnTo, 303);
+        }
         const limiterToken = recoveryToken(c);
         const limiter = limiterToken && isValidRecoveryConfiguration(limiterToken)
           ? authRateLimiter(c, limiterToken)
@@ -1120,7 +1172,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           }
           throw error;
         }
-        if (principal.role === 'member' && isAdminPageGet(c) && c.req.path !== '/admin/account') {
+        if (principal.role === 'member' && isAdminPageGet(c) &&
+            !['/admin/account', '/admin/account/password'].includes(c.req.path)) {
           return c.redirect('/admin/account', 303);
         }
         if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(c.req.method)) {
@@ -1130,7 +1183,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           const provenance = validateMutationProvenance(c.req.raw, principal, {
             canonicalOrigin: origin,
             maxBodyBytes: MAX_ADMIN_MUTATION_BODY_BYTES,
-            requireJson: c.req.method !== 'DELETE',
+            requireJson: c.req.method !== 'DELETE' && !isHumanAuthFormMutation(c),
           });
           if (!provenance.ok) {
             if (provenance.code === 'body_too_large') {
@@ -1148,10 +1201,32 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           return c.json({ error: 'forbidden' }, 403);
         }
         if (isAdminPageGet(c)) {
-          return c.html(renderAdminLogin({ returnTo: safeAdminReturnPath(c.req.path) }), 401);
+          authResponseHeaders(c);
+          return c.html(
+            (await passwordAuthContext(c))
+              ? renderPasswordLogin({ returnTo: safeAdminReturnPath(c.req.path) })
+              : renderAdminLogin({ returnTo: safeAdminReturnPath(c.req.path) }),
+            401,
+          );
         }
         return c.json({ error: 'unauthorized' }, 401);
       }
+    }
+    try {
+      const control = await identity(c).ensureAuthControl();
+      if (
+        control?.authMode === 'unconfigured' &&
+        isAdminPageGet(c) &&
+        recoveryToken(c) &&
+        !adminToken()
+      ) {
+        return c.redirect('/admin/setup', 303);
+      }
+      if (control?.authMode === 'invalid' && isAdminPageGet(c) && recoveryToken(c)) {
+        return c.redirect('/admin/recovery', 303);
+      }
+    } catch {
+      return c.json({ error: 'authentication_unavailable' }, 503);
     }
     let legacyAllowed = false;
     try {
@@ -1283,12 +1358,20 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (!isValidRecoveryConfiguration(token)) {
       return c.json({ error: 'authentication_unavailable' }, 503);
     }
-    const organization = await identity(c).getOrganization();
+    const identityStore = identity(c);
+    const [control, organization] = await Promise.all([
+      identityStore.ensureAuthControl(),
+      identityStore.getOrganization(),
+    ]);
+    if (control.authMode === 'password_active') return c.redirect('/admin/login', 303);
     if (organization?.authMode === 'access_active') return c.redirect('/admin', 303);
     if (organization && !['unconfigured', 'access_pending'].includes(organization.authMode)) {
       return c.json({ error: 'authentication_unavailable' }, 409);
     }
-    const config = await identity(c).getAuthProviderConfig('cloudflare_access');
+    if (!organization && control.authMode === 'unconfigured') {
+      return c.html(renderPasswordOwnerSetupPage());
+    }
+    const config = await identityStore.getAuthProviderConfig('cloudflare_access');
     return c.html(renderAuthSetupPage({
       state: organization?.authMode === 'access_pending' ? 'access_pending' : 'fresh',
       origin: requestOrigin(c),
@@ -1306,10 +1389,36 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
     const source = authSourceKey(c);
     const limiter = authRateLimiter(c, token);
+    let passwordSetup = false;
     try {
       await limiter.assertAllowed('setup', source);
       if (!validAuthFormPost(c, requestOrigin(c))) throw new AuthDeniedError();
-      const form = v.safeParse(authSetupSchema, await readForm(c));
+      const rawForm = await readForm(c);
+      passwordSetup = Object.hasOwn(rawForm, 'password');
+      if (passwordSetup) {
+        const form = v.safeParse(passwordOwnerSetupSchema, rawForm);
+        if (!form.success) throw new AuthDeniedError();
+        const environment = options.betterAuthEnvironment ??
+          await resolveBetterAuthBootstrapEnvironment({
+            canonicalOrigin: requestOrigin(c),
+            platformEnv: c.env as PlatformEnv | undefined,
+            recoveryToken: token,
+            passwordShardKey: source,
+          });
+        if (!environment) throw new AuthDeniedError();
+        const result = await new PasswordOwnerSetupService(identity(c), environment).complete({
+          canonicalOrigin: requestOrigin(c),
+          displayName: form.output.displayName,
+          email: form.output.ownerEmail,
+          organizationName: form.output.organizationName,
+          password: form.output.password,
+          recoveryToken: form.output.recoveryToken,
+        });
+        copyAuthResponseCookies(c, result.headers);
+        await limiter.recordSuccess('setup', source);
+        return c.redirect('/admin/ready', 303);
+      }
+      const form = v.safeParse(authSetupSchema, rawForm);
       if (!form.success) throw new AuthDeniedError();
       const setup = new AuthSetupService(identity(c), { recoveryToken: token });
       await setup.beginAccessSetup({
@@ -1326,11 +1435,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return c.redirect('/admin/setup/verify', 303);
     } catch {
       await limiter.recordFailure('setup', source);
-      return c.html(renderAuthSetupPage({
-        state: 'fresh',
-        error: true,
-        origin: requestOrigin(c),
-      }), 401);
+      return c.html(
+        passwordSetup
+          ? renderPasswordOwnerSetupPage({ error: true })
+          : renderAuthSetupPage({ state: 'fresh', error: true, origin: requestOrigin(c) }),
+        401,
+      );
     }
   });
 
@@ -1376,6 +1486,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return c.json({ error: 'authentication_unavailable' }, 503);
     }
     try {
+      const control = await identity(c).getAuthControl();
+      if (control?.authMode === 'password_active') {
+        if (!await passwordAuthContext(c)) throw new AuthDeniedError();
+        return c.html(renderPasswordRecoveryPage());
+      }
       const config = await identity(c).getAuthProviderConfig('cloudflare_access');
       if (!config || config.state !== 'active') throw new AuthDeniedError();
       await verifyAccessAssertion(c.req.raw, config, 'recovery');
@@ -1394,8 +1509,25 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
     const source = authSourceKey(c);
     const limiter = authRateLimiter(c, token);
+    let passwordRecovery = false;
     try {
       await limiter.assertAllowed('recovery', source);
+      const control = await identity(c).getAuthControl();
+      passwordRecovery = control?.authMode === 'password_active';
+      if (passwordRecovery) {
+        if (!control?.canonicalAdminOrigin ||
+            !validAuthFormPost(c, control.canonicalAdminOrigin)) throw new AuthDeniedError();
+        const form = v.safeParse(passwordRecoverySchema, await readForm(c));
+        const context = await passwordAuthContext(c);
+        if (!form.success || !context) throw new AuthDeniedError();
+        await new PasswordOwnerRecoveryService(identity(c), context.environment).replacePassword({
+          recoveryToken: form.output.recoveryToken,
+          email: form.output.ownerEmail,
+          newPassword: form.output.newPassword,
+        });
+        await limiter.recordSuccess('recovery', source);
+        return c.html(renderPasswordRecoveryPage({ success: true }));
+      }
       const organization = await identity(c).getOrganization();
       if (!organization?.canonicalAdminOrigin ||
           !validAuthFormPost(c, organization.canonicalAdminOrigin)) {
@@ -1424,7 +1556,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return c.redirect('/admin', 303);
     } catch {
       await limiter.recordFailure('recovery', source);
-      return c.html(renderAuthRecoveryPage({ error: true }), 401);
+      return c.html(
+        passwordRecovery
+          ? renderPasswordRecoveryPage({ error: true })
+          : renderAuthRecoveryPage({ error: true }),
+        401,
+      );
     }
   });
 
@@ -1931,6 +2068,66 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     return c.html(renderAuthSetupCompletePage());
   });
 
+  app.post('/admin/logout', async (c) => {
+    authResponseHeaders(c);
+    const context = await passwordAuthContext(c);
+    if (!context) return c.redirect('/admin/login', 303);
+    const handler = createBetterAuthEnvironmentPublicHandler({
+      environment: context.environment,
+      identity: identity(c),
+      cloudflare: Boolean(context.environment.cloudflareEnv),
+    });
+    const response = await handler(betterAuthJsonRequest(
+      c.req.raw,
+      context.environment.baseURL,
+      '/api/auth/sign-out',
+      {},
+    ));
+    copyAuthResponseCookies(c, response.headers);
+    clearBetterAuthCookies(c);
+    return c.redirect('/admin/login', 303);
+  });
+
+  app.get('/admin/account/password', async (c) => {
+    authResponseHeaders(c);
+    if (!await passwordAuthContext(c)) return c.notFound();
+    return c.html(renderPasswordChangePage());
+  });
+
+  app.post('/admin/account/password', async (c) => {
+    authResponseHeaders(c);
+    const principal = principalByContext.get(c);
+    const context = await passwordAuthContext(c);
+    if (!principal || principal.machine || !context) return c.json({ error: 'forbidden' }, 403);
+    try {
+      const parsed = v.safeParse(passwordChangeSchema, await readForm(c));
+      if (!parsed.success) throw new AuthDeniedError();
+      const [user, organization] = await Promise.all([
+        context.directory.getUser(principal.userId),
+        context.directory.getOrganization(),
+      ]);
+      if (!user || !organization) throw new AuthDeniedError();
+      assertPasswordPolicy(parsed.output.newPassword, {
+        email: user.primaryEmail,
+        organizationName: organization.displayName,
+      });
+      const auth = createBetterAuth({ ...context.environment, allowSignUp: false });
+      await auth.api.changePassword({
+        body: {
+          currentPassword: parsed.output.currentPassword,
+          newPassword: parsed.output.newPassword,
+          revokeOtherSessions: false,
+        },
+        headers: c.req.raw.headers,
+      });
+      await auth.api.revokeSessions({ headers: c.req.raw.headers });
+      clearBetterAuthCookies(c);
+      return c.redirect('/admin/login', 303);
+    } catch {
+      return c.html(renderPasswordChangePage({ error: true }), 400);
+    }
+  });
+
   app.get('/admin/account', async (c) => {
     const principal = principalByContext.get(c);
     if (!principal) return c.json({ error: 'unauthorized' }, 401);
@@ -1950,6 +2147,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       status: membership.status,
     }));
   });
+
+  app.get('/account', (c) => c.redirect('/admin/account', 303));
 
   app.route('/admin/api', createTeamAdminApi({ store: identity, directory: humanDirectory }));
   app.route('/admin/api', createMemoryAdminApi({
@@ -4330,7 +4529,10 @@ function isAdminPageGet(c: Context): boolean {
 
 function permissionForAdminRequest(c: Context, principal: AuthPrincipal): Permission {
   if (principal.role === 'member' && isAdminPageGet(c)) return 'account.view';
-  if (c.req.path === '/admin/account' || c.req.path === '/admin/api/account') return 'account.view';
+  if (c.req.path === '/admin/account' || c.req.path === '/admin/api/account' ||
+      c.req.path === '/admin/account/password' || c.req.path === '/admin/logout') {
+    return 'account.view';
+  }
   if (c.req.path === '/admin/team' || c.req.path.startsWith('/admin/api/team')) return 'team.manage';
   return 'admin.configure';
 }
@@ -4358,25 +4560,60 @@ function isAdminLoginPost(c: Context): boolean {
 
 async function readAdminLogin(
   c: Context,
-): Promise<{ token: string | undefined; returnTo: string }> {
+): Promise<{
+  token: string | undefined;
+  email: string | undefined;
+  password: string | undefined;
+  returnTo: string;
+}> {
   const contentType = c.req.header('content-type')?.split(';', 1)[0]?.trim().toLowerCase();
   const contentLength = Number(c.req.header('content-length'));
   if (
     contentType !== 'application/x-www-form-urlencoded' ||
     (Number.isFinite(contentLength) && contentLength > MAX_ADMIN_LOGIN_BODY_BYTES)
   ) {
-    return { token: undefined, returnTo: '/admin' };
+    return { token: undefined, email: undefined, password: undefined, returnTo: '/admin' };
   }
 
   const raw = await c.req.text();
   if (new TextEncoder().encode(raw).byteLength > MAX_ADMIN_LOGIN_BODY_BYTES) {
-    return { token: undefined, returnTo: '/admin' };
+    return { token: undefined, email: undefined, password: undefined, returnTo: '/admin' };
   }
   const params = new URLSearchParams(raw);
   return {
     token: params.get('token') ?? undefined,
+    email: params.get('email') ?? undefined,
+    password: params.get('password') ?? undefined,
     returnTo: safeAdminReturnPath(params.get('returnTo')),
   };
+}
+
+function isHumanAuthFormMutation(c: Context): boolean {
+  return c.req.method === 'POST' && [
+    '/admin/account/password',
+    '/admin/logout',
+  ].includes(c.req.path);
+}
+
+function betterAuthJsonRequest(
+  source: Request,
+  baseURL: string,
+  path: string,
+  body: Record<string, unknown>,
+): Request {
+  const encoded = JSON.stringify(body);
+  const headers = new Headers(source.headers);
+  headers.set('origin', baseURL);
+  headers.set('content-type', 'application/json');
+  headers.set('content-length', String(new TextEncoder().encode(encoded).byteLength));
+  headers.set('sec-fetch-site', 'same-origin');
+  return new Request(`${baseURL}${path}`, { method: 'POST', headers, body: encoded });
+}
+
+function clearBetterAuthCookies(c: Context): void {
+  for (const name of ['__Secure-better-auth.session_token', 'better-auth.session_token']) {
+    deleteCookie(c, name, { path: '/', secure: name.startsWith('__Secure-') });
+  }
 }
 
 function safeAdminReturnPath(candidate: string | null | undefined): string {

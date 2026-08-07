@@ -20,6 +20,7 @@ import type {
   ClaimOwnerInput,
   ConsumeInvitationInput,
   ConsumeAuthOperationInput,
+  CompletePasswordSetupInput,
   ConfigureAuthProviderInput,
   CreateBrowserSessionRecordInput,
   CreateInvitationInput,
@@ -234,6 +235,8 @@ export class IdentityStoreLogic {
         return { kind: 'auth_operation', operation: this.advanceAuthOperation(request.input) };
       case 'consume_auth_operation':
         return { kind: 'auth_operation', operation: this.consumeAuthOperation(request.input) };
+      case 'complete_password_setup':
+        return { kind: 'auth_control', control: this.completePasswordSetup(request.input) };
       case 'revoke_auth_operation':
         return { kind: 'auth_operation', operation: this.revokeAuthOperation(request.operationId) };
       case 'get_membership_access_overlay':
@@ -587,6 +590,55 @@ export class IdentityStoreLogic {
       throw identityError('auth_operation_unavailable', 'Authentication operation is unavailable.');
     }
     return this.requiredAuthOperation(current.id);
+  }
+
+  completePasswordSetup(input: CompletePasswordSetupInput): AuthControl {
+    const at = input.at ?? this.now();
+    return this.db.transaction(() => {
+      const operation = this.requiredPendingAuthOperation(
+        input.operationId,
+        input.capabilityHash,
+        at,
+      );
+      const control = this.requiredAuthControl(DEFAULT_INSTALLATION_ID);
+      const origin = validOrigin(input.canonicalAdminOrigin);
+      const organizationId = strictText(
+        input.betterAuthOrganizationId,
+        'betterAuthOrganizationId',
+        256,
+      );
+      if (operation.kind !== 'owner_setup' || operation.step !== input.expectedStep ||
+          operation.betterAuthOrganizationId !== organizationId ||
+          !operation.betterAuthUserId || !operation.betterAuthMembershipId ||
+          control.authMode !== 'unconfigured' ||
+          control.revision !== input.expectedControlRevision) {
+        throw identityError('auth_operation_conflict', 'Owner setup changed concurrently.');
+      }
+      const activated = this.db.run(
+        `UPDATE identity_auth_controls
+         SET auth_mode = 'password_active', canonical_admin_origin = ?,
+             better_auth_organization_id = ?, revision = revision + 1, updated_at = ?
+         WHERE installation_id = ? AND auth_mode = 'unconfigured' AND revision = ?`,
+        origin, organizationId, at, control.installationId, control.revision,
+      );
+      const consumed = this.db.run(
+        `UPDATE identity_auth_operations
+         SET status = 'consumed', consumed_at = ?, updated_at = ?
+         WHERE operation_id = ? AND status = 'pending' AND step = ?`,
+        at, at, operation.id, operation.step,
+      );
+      if (activated.changes !== 1 || consumed.changes !== 1) {
+        throw identityError('auth_operation_conflict', 'Owner setup changed concurrently.');
+      }
+      this.appendAudit(
+        'identity.password_owner_setup_completed',
+        control.installationId,
+        at,
+        operation.betterAuthMembershipId,
+        { organizationId },
+      );
+      return this.requiredAuthControl(control.installationId);
+    });
   }
 
   revokeAuthOperation(operationId: string): AuthOperation {
@@ -1776,6 +1828,9 @@ export class SqliteIdentityStore implements IdentityStore {
   }
   async consumeAuthOperation(input: ConsumeAuthOperationInput) {
     return this.logic.consumeAuthOperation(input);
+  }
+  async completePasswordSetup(input: CompletePasswordSetupInput) {
+    return this.logic.completePasswordSetup(input);
   }
   async revokeAuthOperation(operationId: string) { return this.logic.revokeAuthOperation(operationId); }
   async getMembershipAccessOverlay(membershipId: string) {
