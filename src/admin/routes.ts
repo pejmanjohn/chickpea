@@ -5409,10 +5409,14 @@ function authFormPostFailureReason(c: Context, expectedOrigin: string): string |
     return 'expected_origin';
   }
   const origin = c.req.header('origin');
-  if (origin === 'null' && isLoopbackHttpOrigin(normalizedExpected)) {
-    // Headless Chrome and embedded local-preview browsers can give a loopback
-    // document an opaque origin. The one-time recovery capability remains the
-    // setup authority; accept this browser quirk only on local HTTP previews.
+  if (origin === 'null' && (
+    isLoopbackHttpOrigin(normalizedExpected) || fetchSite === 'same-origin'
+  )) {
+    // Headless Chrome and embedded browsers can give their document an opaque
+    // origin. On hosted HTTPS, accept that only when the browser-controlled
+    // Fetch Metadata header still proves the navigation is same-origin. Local
+    // loopback previews keep their existing capability-gated exception because
+    // some embedded clients omit Fetch Metadata there.
   } else if (origin) {
     let normalizedActual: string;
     try {

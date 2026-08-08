@@ -199,6 +199,56 @@ test('local preview human auth forms accept the opaque Origin emitted by embedde
   identity.close();
 });
 
+test('hosted setup accepts an opaque Origin only with browser-authenticated same-origin metadata', async () => {
+  const fixture = async () => {
+    const identity = new SqliteIdentityStore(':memory:');
+    const backend = new NodeBetterAuthBackend(':memory:');
+    const environment = {
+      backend,
+      baseURL: ORIGIN,
+      password: nativePasswordPrimitive(),
+      recoveryToken: RECOVERY,
+      secret: await deriveBetterAuthSecret(RECOVERY),
+    };
+    const app = createAdminRoutes({ identity, betterAuthEnvironment: environment, recoveryToken: RECOVERY });
+    return { app, backend, identity };
+  };
+  const body = new URLSearchParams({
+    organizationName: 'Embedded Browser',
+    ownerEmail: 'embedded@example.com',
+    password: PASSWORD,
+    recoveryToken: RECOVERY,
+  }).toString();
+  const request = (fetchSite?: string) => new Request(`${ORIGIN}/admin/setup`, {
+    method: 'POST',
+    headers: {
+      origin: 'null',
+      'content-type': 'application/x-www-form-urlencoded',
+      'content-length': String(new TextEncoder().encode(body).byteLength),
+      ...(fetchSite ? { 'sec-fetch-site': fetchSite } : {}),
+    },
+    body,
+  });
+
+  const deniedFixture = await fixture();
+  for (const fetchSite of [undefined, 'same-site', 'cross-site']) {
+    const denied = await deniedFixture.app.request(request(fetchSite));
+    assert.equal(denied.status, 401, `expected ${fetchSite ?? 'missing'} Fetch Metadata to be denied`);
+    assert.equal(await deniedFixture.identity.getOrganization(), undefined);
+  }
+  deniedFixture.backend.close();
+  deniedFixture.identity.close();
+
+  const acceptedFixture = await fixture();
+  const accepted = await acceptedFixture.app.request(request('same-origin'));
+  assert.equal(accepted.status, 303, await accepted.clone().text());
+  assert.equal(accepted.headers.get('location'), '/admin/ready');
+  assert.match(cookieHeader(accepted.headers.get('set-cookie')), /better-auth\.session_token=/);
+
+  acceptedFixture.backend.close();
+  acceptedFixture.identity.close();
+});
+
 test('password setup rejects a malicious return destination and machine credentials on human routes', async () => {
   const identity = new SqliteIdentityStore(':memory:');
   const backend = new NodeBetterAuthBackend(':memory:');
