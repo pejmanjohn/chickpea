@@ -1822,6 +1822,10 @@ details[open].advanced summary::before {
     teamInviteEmail: "",
     teamInviteCopied: false,
     teamResetLink: "",
+    // Removal is a separate destructive action, never a select option. The
+    // confirmation keeps an accidental status-picker change from permanently
+    // deleting the Better Auth membership and its Chickpea authority.
+    teamRemoveConfirm: null,
     teamInviteDraft: { email: "" },
     channelScreen: "overview",
     profileScreen: "list",
@@ -2386,7 +2390,16 @@ details[open].advanced summary::before {
 
   function render() {
     var app = document.getElementById("app");
-    app.innerHTML = topbarHtml() + '<div class="body">' + railHtml() + mainHtml() + "</div>" + leavePromptModalHtml() + connectionRemoveModalHtml() + apiConnectionRemoveModalHtml() + slackDisconnectModalHtml() + githubDisconnectModalHtml() + memoryDeleteModalHtml() + scheduledRoutineSummaryModalHtml() + scheduledDeleteModalHtml() + slackIdentityConfirmModalHtml();
+    app.innerHTML = topbarHtml() + '<div class="body">' + railHtml() + mainHtml() + "</div>" + teamRemoveModalHtml() + leavePromptModalHtml() + connectionRemoveModalHtml() + apiConnectionRemoveModalHtml() + slackDisconnectModalHtml() + githubDisconnectModalHtml() + memoryDeleteModalHtml() + scheduledRoutineSummaryModalHtml() + scheduledDeleteModalHtml() + slackIdentityConfirmModalHtml();
+    if (state.teamRemoveConfirm) {
+      [document.querySelector(".topbar"), document.querySelector(".body")].forEach(function (region) {
+        if (!region) return;
+        region.inert = true;
+        if (region.setAttribute) region.setAttribute("aria-hidden", "true");
+      });
+      var teamRemoveCancel = document.querySelector('[data-action="team-remove-cancel"]');
+      if (teamRemoveCancel && teamRemoveCancel.focus) teamRemoveCancel.focus();
+    }
     // The disconnect confirmation is a true modal: keep the rest of the app
     // out of the focus and accessibility trees until it is resolved.
     if (state.slackDisconnectConfirm) {
@@ -2652,12 +2665,23 @@ details[open].advanced summary::before {
     var viewer = state.team && state.team.viewer ? state.team.viewer : { role: "admin", membershipId: "" };
     var canManageOwner = viewer.role === "owner";
     var busy = state.teamBusy === "member:" + member.id;
-    var statusSelect = '<span class="select-wrap team-status-control"><select class="input" name="membership-status-' + esc(member.id) + '" aria-label="Status for ' + esc(member.email || "member") + '" data-action="team-member-status" data-membership="' + esc(member.id) + '"' + (busy || (member.role === "owner" && !canManageOwner) ? ' disabled' : '') + '>' + ["active", "suspended", "removed"].map(function (status) {
+    var statusSelect = member.role === "owner" ? '' : '<span class="select-wrap team-status-control"><select class="input" name="membership-status-' + esc(member.id) + '" aria-label="Status for ' + esc(member.email || "member") + '" data-action="team-member-status" data-membership="' + esc(member.id) + '"' + (busy ? ' disabled' : '') + '>' + ["active", "suspended"].map(function (status) {
       return '<option value="' + status + '"' + (member.status === status ? ' selected' : '') + '>' + status.charAt(0).toUpperCase() + status.slice(1) + '</option>';
     }).join("") + '</select>' + icon("chevron-down", "select-caret") + '</span>';
     var resetButton = '<button type="button" class="btn btn-soft btn-sm" data-action="team-reset-password" data-membership="' + esc(member.id) + '"' + (busy || (member.role === "owner" && !canManageOwner) ? ' disabled' : '') + '>Reset password</button>';
+    var removeButton = member.role === "owner" ? '' : '<button type="button" class="btn btn-danger btn-sm" data-action="team-remove-open" data-membership="' + esc(member.id) + '"' + (busy ? ' disabled' : '') + '>Remove</button>';
     var ownerMarker = member.role === "owner" ? '<span class="team-status owner">Owner</span>' : '';
-    return '<article class="team-row"><div class="team-row-main"><div class="team-row-title">' + esc(member.displayName || member.email || "Teammate") + (viewer.membershipId === member.id ? ' <span class="hint">(you)</span>' : '') + '</div><div class="team-row-sub">' + esc(member.email || "No email") + '</div><div class="team-statuses">' + ownerMarker + '<span class="team-status ' + (member.status === "active" ? "active" : member.status === "suspended" ? "suspended" : "") + '">' + esc(member.status) + '</span></div></div><div class="team-row-actions">' + statusSelect + resetButton + '</div></article>';
+    return '<article class="team-row"><div class="team-row-main"><div class="team-row-title">' + esc(member.displayName || member.email || "Teammate") + (viewer.membershipId === member.id ? ' <span class="hint">(you)</span>' : '') + '</div><div class="team-row-sub">' + esc(member.email || "No email") + '</div><div class="team-statuses">' + ownerMarker + '<span class="team-status ' + (member.status === "active" ? "active" : member.status === "suspended" ? "suspended" : "") + '">' + esc(member.status) + '</span></div></div><div class="team-row-actions">' + statusSelect + resetButton + removeButton + '</div></article>';
+  }
+
+  function teamRemoveModalHtml() {
+    var confirmation = state.teamRemoveConfirm;
+    if (!confirmation) return "";
+    var label = confirmation.displayName || confirmation.email || "this teammate";
+    return '<div class="modal-backdrop"><div class="modal-card" role="dialog" aria-modal="true" aria-label="Remove teammate">' +
+      '<h2 class="modal-title">Remove ' + esc(label) + '?</h2>' +
+      '<p class="modal-body">They will immediately lose access to this Chickpea workspace. Their membership is deleted and cannot be restored from this screen; invite them again to give access back.</p>' +
+      '<div class="modal-foot"><button type="button" class="btn btn-ghost" data-action="team-remove-cancel">Keep teammate</button><span class="spacer"></span><button type="button" class="btn btn-danger" data-action="team-remove-confirm">Remove teammate</button></div></div></div>';
   }
 
   function teamInvitationRowHtml(invitation) {
@@ -9206,6 +9230,18 @@ details[open].advanced summary::before {
     if (!target) return;
     var action = target.getAttribute("data-action");
 
+    if (state.teamRemoveConfirm) {
+      if (action === "team-remove-cancel") {
+        state.teamRemoveConfirm = null;
+        render();
+      } else if (action === "team-remove-confirm") {
+        var confirmedMembershipId = state.teamRemoveConfirm.membershipId;
+        state.teamRemoveConfirm = null;
+        updateTeamMembership(confirmedMembershipId, "status", "removed");
+      }
+      return;
+    }
+
     // While the Slack disconnect dialog is open, its two buttons are the only
     // actionable controls. The background is inert too, but this guard keeps
     // synthetic/programmatic clicks from bypassing the modal contract.
@@ -9344,6 +9380,18 @@ details[open].advanced summary::before {
     }
     if (action === "team-revoke") { revokeTeamInvitation(target.getAttribute("data-invitation") || ""); }
     if (action === "team-reset-password") { createTeamPasswordReset(target.getAttribute("data-membership") || ""); }
+    if (action === "team-remove-open") {
+      var removeMembershipId = target.getAttribute("data-membership") || "";
+      var removeMember = state.team && (state.team.members || []).find(function (member) { return member.id === removeMembershipId; });
+      if (removeMember && removeMember.role !== "owner" && !state.teamBusy) {
+        state.teamRemoveConfirm = {
+          membershipId: removeMember.id,
+          email: removeMember.email || "",
+          displayName: removeMember.displayName || ""
+        };
+        render();
+      }
+    }
     if (action === "team-copy-reset" && state.teamResetLink) {
       navigator.clipboard.writeText(state.teamResetLink).then(function () {
         state.teamNotice = "Password reset link copied.";

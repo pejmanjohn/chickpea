@@ -198,6 +198,8 @@ test('Team page keeps invitations and membership status inside Chickpea', async 
   assert.match(harness.app.innerHTML, /name="email"/);
   assert.match(harness.app.innerHTML, /team-status-control/);
   assert.match(harness.app.innerHTML, />Owner</);
+  assert.match(harness.app.innerHTML, /data-action="team-remove-open"/);
+  assert.doesNotMatch(harness.app.innerHTML, /<option value="removed"/);
   assert.match(harness.app.innerHTML, /<span class="chan-name">Members<\/span><span class="chan-meta">2 members<\/span>/);
   assert.doesNotMatch(harness.app.innerHTML, /active records|Identity bound|Identity not bound|This same link works until/);
   assert.doesNotMatch(harness.app.innerHTML, /team-invite-role|team-member-role/);
@@ -265,6 +267,24 @@ test('Team join links stay stable, copyable, and membership status stays managea
   const patch = harness.requests.find((request) =>
     request.path === '/admin/api/team/memberships/membership_member' && request.method === 'PATCH');
   assert.deepEqual(patch?.body, { status: 'suspended' });
+
+  click({ target: actionTarget({
+    'data-action': 'team-remove-open',
+    'data-membership': 'membership_member',
+  }) });
+  assert.match(harness.app.innerHTML, /aria-label="Remove teammate"/);
+  assert.match(harness.app.innerHTML, /Remove Member\?/);
+  assert.match(harness.app.innerHTML, /cannot be restored from this screen/);
+  assert.equal(harness.requests.filter((request) => request.body &&
+    (request.body as { status?: string }).status === 'removed').length, 0);
+
+  click({ target: actionTarget({ 'data-action': 'team-remove-confirm' }) });
+  await flush();
+  const removePatch = harness.requests.find((request) =>
+    request.path === '/admin/api/team/memberships/membership_member' &&
+    request.method === 'PATCH' &&
+    (request.body as { status?: string }).status === 'removed');
+  assert.deepEqual(removePatch?.body, { status: 'removed' });
 });
 
 test('Team invitation replaces raw network failures with safe recovery guidance', async () => {
@@ -288,6 +308,7 @@ test('Admin Team UI marks the owner without exposing role controls', async () =>
   const harness = await createHarness('admin');
   const ownerRow = harness.app.innerHTML.match(/<article class="team-row">[\s\S]*?owner@example\.com[\s\S]*?<\/article>/)?.[0] ?? '';
   assert.match(ownerRow, />Owner</);
+  assert.doesNotMatch(ownerRow, /team-member-status|team-remove-open/);
   assert.doesNotMatch(harness.app.innerHTML, /team-member-role|team-invite-role/);
 });
 
