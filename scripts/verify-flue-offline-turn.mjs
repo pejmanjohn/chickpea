@@ -81,11 +81,27 @@ function record(name, passed, detail) {
   console.log(`${passed ? 'PASS' : 'FAIL'}  ${name}${detail ? ` — ${detail}` : ''}`);
 }
 
-const backend = new FakeSlackBackend();
+const backend = new FakeSlackBackend({
+  slack: {
+    // The runtime now revalidates the selected Slack identity's workspace and
+    // channel membership immediately before model work. Keep the offline wire
+    // fixture explicit so this gate exercises that preflight instead of being
+    // rejected before context hydration.
+    channels: [
+      {
+        id: EXEC_CHANNEL,
+        name: 'exec-briefing',
+        isMember: true,
+        teamId: 'T_DEMO',
+      },
+    ],
+  },
+});
 const fake = await backend.listen();
 console.log(`fake Slack/provider backend listening at ${fake.url}`);
 
 let child;
+let getServerOutput = () => '';
 try {
   const serverEntry = await buildNodeServer();
   console.log(`built node server; node ${assertNodeVersion()}`);
@@ -103,6 +119,7 @@ try {
   });
   child = spawned.child;
   const { baseUrl, eventsUrl, getOutput } = spawned;
+  getServerOutput = getOutput;
   await waitForReady(child, eventsUrl, getOutput);
   console.log(`flue node server ready at ${baseUrl}`);
 
@@ -267,5 +284,9 @@ try {
 }
 
 const failed = results.filter((result) => !result.passed);
+if (failed.length > 0) {
+  const output = getServerOutput().trim();
+  if (output) console.error(`\nNode server output:\n${output}`);
+}
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`);
 process.exit(failed.length === 0 ? 0 : 1);
