@@ -95,7 +95,12 @@ function teamFixture(viewerRole: 'owner' | 'admin' = 'owner') {
 
 async function createHarness(
   viewerRole: 'owner' | 'admin' = 'owner',
-  harnessOptions: { failInviteRequest?: boolean; failClipboard?: boolean } = {},
+  harnessOptions: {
+    failInviteRequest?: boolean;
+    clipboardFailures?: number;
+    clipboardAbsent?: boolean;
+    deferClipboard?: boolean;
+  } = {},
 ) {
   const fixture = teamFixture(viewerRole);
   let html = '';
@@ -106,6 +111,12 @@ async function createHarness(
   const listeners: Record<string, Listener> = {};
   const requests: Array<{ path: string; method: string; body: unknown }> = [];
   const clipboard: string[] = [];
+  const pendingClipboardWrites: Array<{
+    value: string;
+    resolve(): void;
+    reject(error: Error): void;
+  }> = [];
+  let clipboardFailures = harnessOptions.clipboardFailures ?? 0;
   const location = { pathname: '/admin/team', search: '' };
   const applyPath = (path: string) => {
     const url = new URL(path, 'https://chickpea.example.com');
@@ -164,6 +175,23 @@ async function createHarness(
   };
   const script = renderAdminPage().match(/<script>([\s\S]*?)<\/script>/)?.[1];
   assert.ok(script);
+  const navigator = harnessOptions.clipboardAbsent ? {} : {
+    clipboard: {
+      writeText(value: string) {
+        if (clipboardFailures > 0) {
+          clipboardFailures -= 1;
+          return Promise.reject(new Error('Clipboard permission denied'));
+        }
+        if (harnessOptions.deferClipboard) {
+          return new Promise<void>((resolve, reject) => {
+            pendingClipboardWrites.push({ value, resolve, reject });
+          });
+        }
+        clipboard.push(value);
+        return Promise.resolve();
+      },
+    },
+  };
   vm.runInNewContext(script, {
     console,
     Date,
@@ -173,19 +201,11 @@ async function createHarness(
     location,
     URL,
     URLSearchParams,
-    navigator: {
-      clipboard: {
-        writeText(value: string) {
-          if (harnessOptions.failClipboard) return Promise.reject(new Error('Clipboard permission denied'));
-          clipboard.push(value);
-          return Promise.resolve();
-        },
-      },
-    },
+    navigator,
     window: { addEventListener() {} },
   }, { filename: 'admin-team-page-inline.js' });
   await flush();
-  return { app, clipboard, fixture, listeners, location, requests };
+  return { app, clipboard, fixture, listeners, location, pendingClipboardWrites, requests };
 }
 
 test('Team page keeps invitations and membership status inside Chickpea', async () => {
@@ -292,7 +312,7 @@ test('Team join links stay stable, copyable, and membership status stays managea
 });
 
 test('Team join links become selectable when clipboard access is denied', async () => {
-  const harness = await createHarness('owner', { failClipboard: true });
+  const harness = await createHarness('owner', { clipboardFailures: 1 });
   const input = harness.listeners.input;
   const submit = harness.listeners.submit;
   const click = harness.listeners.click;
@@ -313,6 +333,61 @@ test('Team join links become selectable when clipboard access is denied', async 
     harness.app.innerHTML,
     /value="https:\/\/chickpea\.example\.com\/join#invite=invitation_created\.stable-secret"/,
   );
+
+  click({ target: actionTarget({ 'data-action': 'team-copy-link' }) });
+  await flush();
+  assert.deepEqual(harness.clipboard, [
+    'https://chickpea.example.com/join#invite=invitation_created.stable-secret',
+  ]);
+  assert.doesNotMatch(harness.app.innerHTML, /Copy failed|id="team-invite-link"/);
+  assert.match(harness.app.innerHTML, />Copied<\/button>/);
+});
+
+test('Team join links stay selectable when the Clipboard API is unavailable', async () => {
+  const harness = await createHarness('owner', { clipboardAbsent: true });
+  const input = harness.listeners.input;
+  const submit = harness.listeners.submit;
+  const click = harness.listeners.click;
+  assert.ok(input && submit && click);
+
+  input({ target: actionTarget({ 'data-action': 'team-invite-email' }, 'manual-copy@example.com') });
+  submit({
+    target: actionTarget({ 'data-action': 'team-invite-form' }),
+    preventDefault() {},
+  });
+  await flush();
+  click({ target: actionTarget({ 'data-action': 'team-copy-link' }) });
+
+  assert.match(harness.app.innerHTML, /Copy failed\. Select the join link below and copy it manually\./);
+  assert.match(harness.app.innerHTML, /id="team-invite-link"[^>]*readonly/);
+});
+
+test('Team ignores a stale clipboard failure after its invitation is revoked', async () => {
+  const harness = await createHarness('owner', { deferClipboard: true });
+  const input = harness.listeners.input;
+  const submit = harness.listeners.submit;
+  const click = harness.listeners.click;
+  assert.ok(input && submit && click);
+
+  input({ target: actionTarget({ 'data-action': 'team-invite-email' }, 'stale-copy@example.com') });
+  submit({
+    target: actionTarget({ 'data-action': 'team-invite-form' }),
+    preventDefault() {},
+  });
+  await flush();
+  click({ target: actionTarget({ 'data-action': 'team-copy-link' }) });
+  assert.equal(harness.pendingClipboardWrites.length, 1);
+
+  click({ target: actionTarget({
+    'data-action': 'team-revoke',
+    'data-invitation': 'invitation_created',
+  }) });
+  await flush();
+  harness.pendingClipboardWrites[0]!.reject(new Error('Clipboard permission denied'));
+  await flush();
+
+  assert.doesNotMatch(harness.app.innerHTML, /Copy failed|id="team-invite-link"/);
+  assert.doesNotMatch(harness.app.innerHTML, /Join link ready for/);
 });
 
 test('Team invitation replaces raw network failures with safe recovery guidance', async () => {

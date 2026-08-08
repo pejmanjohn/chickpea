@@ -1822,6 +1822,7 @@ details[open].advanced summary::before {
     teamInviteEmail: "",
     teamInviteCopied: false,
     teamInviteManualCopy: false,
+    teamInviteCopyVersion: 0,
     teamResetLink: "",
     // Removal is a separate destructive action, never a select option. The
     // confirmation keeps an accidental status-picker change from permanently
@@ -2881,6 +2882,7 @@ details[open].advanced summary::before {
       state.teamInviteEmail = "";
       state.teamInviteCopied = false;
       state.teamInviteManualCopy = false;
+      state.teamInviteCopyVersion += 1;
       state.teamResetLink = "";
     }
     render();
@@ -2948,6 +2950,7 @@ details[open].advanced summary::before {
     state.teamInviteEmail = "";
     state.teamInviteCopied = false;
     state.teamInviteManualCopy = false;
+    state.teamInviteCopyVersion += 1;
     render();
     postJson("/admin/api/team/invitations", "POST", { email: email }).then(function (result) {
       state.teamInviteDraft.email = "";
@@ -2965,6 +2968,7 @@ details[open].advanced summary::before {
     state.teamInviteEmail = "";
     state.teamInviteCopied = false;
     state.teamInviteManualCopy = false;
+    state.teamInviteCopyVersion += 1;
     render();
     var path = "/admin/api/team/invitations/" + encodeURIComponent(invitationId);
     api(path, { method: "DELETE" })
@@ -9361,15 +9365,34 @@ details[open].advanced summary::before {
     if (action === "team-retry") { loadTeam(); }
     if (action === "team-dismiss-reset") { state.teamResetLink = ""; state.teamNotice = ""; render(); }
     if (action === "team-copy-link" && state.teamInviteLink) {
-      navigator.clipboard.writeText(state.teamInviteLink).then(function () {
+      var copiedInviteLink = state.teamInviteLink;
+      var copyVersion = state.teamInviteCopyVersion + 1;
+      var copyFailureMessage = "Copy failed. Select the join link below and copy it manually.";
+      state.teamInviteCopyVersion = copyVersion;
+      var showManualInviteCopy = function () {
+        if (state.teamInviteCopyVersion !== copyVersion || state.teamInviteLink !== copiedInviteLink) return;
+        state.teamInviteManualCopy = true;
+        state.teamError = copyFailureMessage;
+        render();
+      };
+      if (!navigator.clipboard || !navigator.clipboard.writeText) {
+        showManualInviteCopy();
+        return;
+      }
+      var clipboardWrite;
+      try {
+        clipboardWrite = navigator.clipboard.writeText(copiedInviteLink);
+      } catch (_error) {
+        showManualInviteCopy();
+        return;
+      }
+      Promise.resolve(clipboardWrite).then(function () {
+        if (state.teamInviteCopyVersion !== copyVersion || state.teamInviteLink !== copiedInviteLink) return;
         state.teamInviteCopied = true;
         state.teamInviteManualCopy = false;
+        if (state.teamError === copyFailureMessage) state.teamError = "";
         render();
-      }).catch(function () {
-        state.teamInviteManualCopy = true;
-        state.teamError = "Copy failed. Select the join link below and copy it manually.";
-        render();
-      });
+      }).catch(showManualInviteCopy);
     }
     if (action === "team-copy-invitation") {
       var invitationLink = target.getAttribute("data-link") || "";
