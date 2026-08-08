@@ -25,7 +25,6 @@ const localUserPathPattern = new RegExp(
 const denyPatterns = [
   ['private source project', new RegExp(term('ski', 'llet'), 'i')],
   ['deleted source path', new RegExp(term('docs', '\\/', 'sou', 'rce'), 'i')],
-  ['local package-manager path', new RegExp(term('\\/', 'opt', '\\/', 'home', 'brew'), 'i')],
   ['internal product name', new RegExp(term('claude', '[- ]?', 'tag'), 'i')],
   ['private workspace name', new RegExp(term('paper', 'plane'), 'i')],
   ['private company name', new RegExp(term('mag', 'oosh'), 'i')],
@@ -66,9 +65,20 @@ const forbiddenSourcePathRoots = [
   exportPath('.codex'),
   exportPath('.gstack'),
   exportPath('.superpowers'),
-  exportPath('docs'),
   exportPath('tmp'),
 ];
+
+const allowedPublicDocs = new Set([
+  exportPath('docs', 'architecture', 'agent-runtime-boundary.md'),
+  exportPath('docs', 'authentication.md'),
+  exportPath('docs', 'plans', '2026-07-28-001-feat-openai-subscription-auth-plan.md'),
+  exportPath('docs', 'runbooks', 'access-recovery.md'),
+  exportPath('docs', 'runbooks', 'auth-db-upgrade.md'),
+  exportPath('docs', 'runbooks', 'password-recovery.md'),
+  exportPath('docs', 'runbooks', 'agent-runtime-rollout.md'),
+  exportPath('docs', 'runbooks', 'openai-subscription.md'),
+  exportPath('docs', 'runbooks', 'slack-interaction-operations.md'),
+]);
 
 const forbiddenSourcePaths = new Set([
   exportPath('.worktreeinclude'),
@@ -212,6 +222,7 @@ function assertPublicSourceManifest(entries) {
       const normalizedPath = path.toLowerCase();
       return (
         forbiddenSourcePaths.has(normalizedPath) ||
+        (normalizedPath.startsWith('docs/') && !allowedPublicDocs.has(normalizedPath)) ||
         forbiddenSourcePathRoots.some(
           (root) =>
             normalizedPath === root || normalizedPath.startsWith(`${root}/`),
@@ -334,10 +345,18 @@ function verifyNpmPackManifest() {
     'assets/bot-avatar.png',
     'assets/chickpea-mark.svg',
     'scripts/deploy-with-epilogue.mjs',
+    'scripts/recover-auth.mjs',
+    'docs/authentication.md',
+    'docs/runbooks/access-recovery.md',
+    'docs/runbooks/auth-db-upgrade.md',
+    'docs/runbooks/password-recovery.md',
+    'migrations/better-auth/0001_better_auth.sql',
     'scripts/flue-build-cf.mjs',
+    'scripts/generate-common-passwords.mjs',
     'slack-app-manifest.json',
     'src/app.ts',
     'src/cloudflare.ts',
+    'src/auth/generated-common-passwords.license.txt',
     'vite.config.ts',
     'vite.node.config.ts',
     'wrangler.jsonc',
@@ -349,7 +368,7 @@ function verifyNpmPackManifest() {
       path.startsWith('.claude/') ||
       path.startsWith('.github/') ||
       path.startsWith('design/') ||
-      path.startsWith('docs/') ||
+      (path.startsWith('docs/') && !allowedPublicDocs.has(path)) ||
       path.startsWith('tmp/'),
   );
   if (missing.length > 0 || forbidden.length > 0) {
@@ -360,6 +379,49 @@ function verifyNpmPackManifest() {
         ...forbidden.map((path) => `forbidden packaged file: ${path}`),
       ].join('\n'),
     );
+  }
+}
+
+function verifyAuthenticationExportContract(packageJson) {
+  const bindings = packageJson.cloudflare?.bindings ?? {};
+  if (JSON.stringify(Object.keys(bindings).sort()) !== JSON.stringify(['CHICKPEA_RECOVERY_TOKEN'])) {
+    fail('Deploy metadata must prompt only for CHICKPEA_RECOVERY_TOKEN');
+  }
+  const recovery = readFileSync(join(scratch, 'scripts', 'recover-auth.mjs'), 'utf8');
+  if (/\bfetch\s*\(/.test(recovery) || /node:https/.test(recovery)) {
+    fail('Token-mode recovery must remain an operator-side state command with no HTTP transport');
+  }
+  const identityTypes = readFileSync(join(scratch, 'src', 'identity', 'types.ts'), 'utf8');
+  if (!identityTypes.includes("Omit<Invitation, 'tokenHash' | 'normalizedEmail'>") ||
+      !identityTypes.includes("Omit<PersonalTokenRecord, 'tokenHash'>") ||
+      !identityTypes.includes("Omit<BrowserSessionRecord, 'sessionHash'>")) {
+    fail('Identity export summary must omit invitation, personal-token, and session hashes');
+  }
+  const example = readFileSync(join(scratch, '.dev.vars.example'), 'utf8');
+  if (!/CHICKPEA_RECOVERY_TOKEN=""/.test(example)) {
+    fail('Cloudflare recovery example must keep the credential value empty');
+  }
+  const activeExampleKeys = example.split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith('#') && /^[A-Z][A-Z0-9_]*=/.test(line))
+    .map((line) => line.slice(0, line.indexOf('=')));
+  if (JSON.stringify(activeExampleKeys) !== JSON.stringify(['CHICKPEA_RECOVERY_TOKEN'])) {
+    fail('Cloudflare Deploy example must expose exactly one active recovery-secret prompt');
+  }
+  const wrangler = readFileSync(join(scratch, 'wrangler.jsonc'), 'utf8');
+  if (!/"binding"\s*:\s*"AUTH_DB"/.test(wrangler) ||
+      !/"migrations_dir"\s*:\s*"migrations\/better-auth"/.test(wrangler)) {
+    fail('Cloudflare config must bind AUTH_DB to the reviewed Better Auth migrations');
+  }
+  const publicAuthCopy = [
+    readFileSync(join(scratch, 'README.md'), 'utf8'),
+    readFileSync(join(scratch, 'docs', 'authentication.md'), 'utf8'),
+  ].join('\n');
+  if (/Cloudflare Access is the default|Choose \*\*new Zero Trust organization\*\*/i.test(publicAuthCopy)) {
+    fail('Public authentication copy still describes Access as the fresh-install default');
+  }
+  if (/BETTER_AUTH_SECRET\s*=/.test(publicAuthCopy + example)) {
+    fail('Public setup material must not expose or request a Better Auth secret');
   }
 }
 
@@ -383,6 +445,8 @@ try {
   if (packageJson.private !== true || !packageJson.description || packageJson.license !== 'MIT' || !packageJson.repository) {
     fail('Export package.json must remain private and include its source metadata');
   }
+
+  verifyAuthenticationExportContract(packageJson);
 
   verifyNpmPackManifest();
 

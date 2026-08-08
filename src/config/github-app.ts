@@ -74,6 +74,71 @@ export interface GithubManifestConversion {
   webhookSecret?: string;
 }
 
+export interface GithubSetupState {
+  state: string;
+  mintedAt: number;
+  membershipId: string | null;
+}
+
+const GITHUB_SETUP_STATE_TTL_MS = 15 * 60 * 1_000;
+
+export async function saveGithubSetupState(
+  settings: SettingsStore,
+  input: GithubSetupState,
+): Promise<void> {
+  if (!/^[a-f0-9]{32}$/.test(input.state) || !Number.isSafeInteger(input.mintedAt) ||
+      (input.membershipId !== null && !/^membership_[A-Za-z0-9_-]+$/.test(input.membershipId))) {
+    throw new Error('GitHub setup state is invalid.');
+  }
+  await settings.setSetting(GITHUB_SETTING_KEYS.setupState, JSON.stringify({
+    version: 2,
+    ...input,
+  }));
+}
+
+export async function consumeGithubSetupState(
+  settings: SettingsStore,
+  candidate: string,
+  now = Date.now(),
+): Promise<GithubSetupState | undefined> {
+  const stored = await settings.getSetting(GITHUB_SETTING_KEYS.setupState);
+  if (!stored) return undefined;
+  const parsed = parseGithubSetupState(stored);
+  if (!parsed || parsed.state !== candidate) return undefined;
+  const consumed = await settings.applySettingsPatch({
+    expected: { key: GITHUB_SETTING_KEYS.setupState, value: stored },
+    delete: [GITHUB_SETTING_KEYS.setupState],
+  });
+  if (!consumed) return undefined;
+  if (now < parsed.mintedAt || now - parsed.mintedAt >= GITHUB_SETUP_STATE_TTL_MS) {
+    return undefined;
+  }
+  return parsed;
+}
+
+function parseGithubSetupState(raw: string): GithubSetupState | undefined {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!isRecord(parsed) || parsed.version !== 2 || typeof parsed.state !== 'string' ||
+        typeof parsed.mintedAt !== 'number' ||
+        !(typeof parsed.membershipId === 'string' || parsed.membershipId === null)) {
+      return undefined;
+    }
+    return {
+      state: parsed.state,
+      mintedAt: parsed.mintedAt,
+      membershipId: parsed.membershipId,
+    };
+  } catch {
+    // Migration compatibility for setup states minted by the legacy callback.
+    const separator = raw.lastIndexOf(':');
+    if (separator <= 0) return undefined;
+    const state = raw.slice(0, separator);
+    const mintedAt = Number(raw.slice(separator + 1));
+    return Number.isSafeInteger(mintedAt) ? { state, mintedAt, membershipId: null } : undefined;
+  }
+}
+
 type FetchImpl = typeof fetch;
 
 interface CachedInstallationToken {

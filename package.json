@@ -17,7 +17,12 @@
     "SETUP_AGENT.md",
     "assets",
     "catalog",
+    "docs/authentication.md",
+    "docs/runbooks/access-recovery.md",
+    "docs/runbooks/auth-db-upgrade.md",
+    "docs/runbooks/password-recovery.md",
     "fixtures",
+    "migrations",
     "scripts",
     "src",
     "tests",
@@ -32,6 +37,11 @@
   "type": "module",
   "engines": {
     "node": ">=22.19.0"
+  },
+  "overrides": {
+    "@flue/slack": {
+      "hono": "4.13.1"
+    }
   },
   "scripts": {
     "test": "npm run typecheck && node --test --import tsx tests/*.test.ts tests/usage/*.test.ts",
@@ -59,6 +69,8 @@
     "verify:model-catalog:served": "node scripts/check-model-catalog-freshness.mjs",
     "verify:model-compatibility:live": "node --import tsx scripts/verify-model-compatibility-live.mjs",
     "verify:oss-export": "node scripts/verify-oss-export.mjs",
+    "auth:recover": "node --import tsx scripts/recover-auth.mjs",
+    "auth:blocklist:build": "node scripts/generate-common-passwords.mjs",
     "slack:bridge": "node scripts/slack-socket-bridge.mjs",
     "reset:test-env": "node scripts/reset-test-env.mjs"
   },
@@ -71,18 +83,22 @@
     "@modelcontextprotocol/sdk": "1.30.0",
     "@slack/web-api": "^8.0.0",
     "agents": "^0.20.1",
+    "better-auth": "1.6.26",
     "croner": "10.0.1",
-    "hono": "^4.12.27",
+    "hono": "^4.13.1",
+    "jose": "6.2.8",
     "just-bash": "3.0.2",
     "valibot": "^1.4.2"
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "1.50.0",
+    "@cloudflare/workers-types": "5.20260801.1",
     "@flue/cli": "2.0.0",
     "@flue/vite": "2.0.0",
     "@slack/socket-mode": "^2.0.7",
     "@slack/types": "3.0.0",
     "@types/node": "26.0.0",
+    "@zxcvbn-ts/language-common": "4.1.3",
     "tsx": "^4.22.4",
     "typescript": "6.0.3",
     "vite": "^8.1.2",
@@ -93,14 +109,15 @@
     "products": [
       "Workers",
       "Durable Objects",
+      "D1",
       "Workers AI"
     ],
     "categories": [
       "ai"
     ],
     "bindings": {
-      "TAG_ADMIN_TOKEN": {
-        "description": "Admin token gating the /admin route. Generate one with: openssl rand -hex 32"
+      "CHICKPEA_RECOVERY_TOKEN": {
+        "description": "Offline credential used once for owner setup and later only for bounded recovery. It is not an Admin login. Generate with: openssl rand -hex 32"
       }
     }
   }

@@ -2,14 +2,37 @@ import { createHash, randomUUID } from 'node:crypto';
 
 import { Hono, type Context, type Next } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
-import { getCookie, setCookie } from 'hono/cookie';
+import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import * as v from 'valibot';
 
-import { renderAdminLogin, renderAdminPage } from './page.ts';
+import {
+  renderAdminLogin,
+  renderPasswordChangePage,
+  renderPasswordLogin,
+  renderPasswordOwnerSetupPage,
+  renderPasswordRecoveryPage,
+  renderAdminPage,
+  renderAuthMigrationPage,
+  renderAuthRecoveryPage,
+  renderAuthSetupCompletePage,
+  renderAuthSetupPage,
+  renderMemberAccountPage,
+  passwordFormClientScript,
+} from './page.ts';
 import { createMemoryAdminApi } from './memory-api.ts';
 import { createRoutineAdminApi } from './routines-api.ts';
 import { createUsageAdminApi } from './usage-api.ts';
 import { createWorkAdminApi } from './work-api.ts';
+import { createTeamAdminApi } from './team-api.ts';
+import { passwordOwnerSetupClientScript } from '../auth/setup-handoff.ts';
+import {
+  invitationJoinClientScript,
+  passwordInvitationClientScript,
+  passwordResetClientScript,
+  renderInvitationJoinPage,
+  renderPasswordInvitationPage,
+  renderPasswordResetPage,
+} from '../join/page.ts';
 // Build-time JSON import: the committed manifest is the single source of the
 // Slack app identity; the wizard deep-link below substitutes the request host
 // so users never hand-edit a request_url.
@@ -66,6 +89,7 @@ import {
 } from '../config/egress.ts';
 import {
   createInstallationToken,
+  consumeGithubSetupState,
   exchangeGithubAppManifest,
   getGithubConnection,
   getRepositoryInstallation,
@@ -78,6 +102,7 @@ import {
   listInstallationRepos,
   listInstallations,
   normalizePrivateKeyPem,
+  saveGithubSetupState,
 } from '../config/github-app.ts';
 import { classifyMcpError, McpBlockedUrlError, mcpDebugText, safeMcpFailureText } from '../config/mcp-errors.ts';
 import {
@@ -153,6 +178,7 @@ import { parseSkillSource, resolveSkillSource, SkillImportError } from '../confi
 import type { SettingsStore } from '../config/settings-store.ts';
 import {
   getConfigStore,
+  getIdentityStore,
   getMemoryStateStore,
   getRoutineStore,
   getSettingsStore,
@@ -169,6 +195,11 @@ import type { MemoryStateStore } from '../memory/types.ts';
 import type { RoutineStore } from '../routines/types.ts';
 import type { UsageStore } from '../usage/types.ts';
 import type { WorkStore } from '../work/types.ts';
+import type {
+  AuthProviderConfig,
+  HumanIdentityDirectory,
+  IdentityStore,
+} from '../identity/types.ts';
 import type { SlackStateStore } from '../slack/claim-store.ts';
 import {
   cancelOpenAiSubscriptionAuthorization,
@@ -246,6 +277,51 @@ import {
 } from '../slack/identity-credentials.ts';
 import type { SlackIdentityAuditEventType } from '../audit/types.ts';
 import { constantTimeEquals } from './constant-time.ts';
+import { setCookieValues } from '../auth/cookies.ts';
+import { AuthDeniedError, AuthService, setRequestPrincipal } from '../auth/service.ts';
+import {
+  BetterAuthDirectory,
+  BetterAuthSessionAuthenticator,
+} from '../auth/better-auth-principal.ts';
+import {
+  resolveBetterAuthBootstrapEnvironment,
+  resolveBetterAuthEnvironment,
+  type BetterAuthEnvironment,
+} from '../auth/better-auth-environment.ts';
+import { createBetterAuthEnvironmentPublicHandler } from '../auth/better-auth-runtime.ts';
+import { createBetterAuth } from '../auth/better-auth.ts';
+import { AuthorizationError, requirePermission, type Permission } from '../auth/permissions.ts';
+import { validateMutationProvenance } from '../auth/request-provenance.ts';
+import { CloudflareAccessAuthenticator, verifyCloudflareAccessRecoveryAssertion } from '../auth/cloudflare-access.ts';
+import { AuthRateLimiter } from '../auth/rate-limit.ts';
+import { requestAuthSourceKey } from '../auth/source-key.ts';
+import { AuthRecoveryService, PasswordOwnerRecoveryService } from '../auth/recovery.ts';
+import {
+  AuthSetupService,
+  PasswordOwnerSetupService,
+  validRecoveryToken,
+} from '../auth/setup.ts';
+import { PasswordPolicyError, assertPasswordPolicy } from '../auth/password-policy.ts';
+import {
+  PasswordEnrollmentService,
+  PasswordLifecycleError,
+  PasswordTeamLifecycleService,
+} from '../auth/password-team.ts';
+import { digest, PersonalTokenService } from '../auth/personal-token.ts';
+import { TokenSessionService } from '../auth/token-session.ts';
+import type { AdminAuthenticationService, AuthPrincipal, ExternalIdentity } from '../auth/types.ts';
+
+type AccessVerificationPurpose = 'activation' | 'recovery';
+interface PasswordAuthContext {
+  environment: BetterAuthEnvironment;
+  directory: BetterAuthDirectory;
+  organizationId: string;
+}
+type AccessAssertionVerifier = (
+  request: Request,
+  config: AuthProviderConfig,
+  purpose: AccessVerificationPurpose,
+) => Promise<ExternalIdentity>;
 
 interface AdminRoutesOptions {
   // Injection seam for tests/harnesses: any async ConfigStore serves the
@@ -262,6 +338,12 @@ interface AdminRoutesOptions {
   runtimeDrain?: ((env?: PlatformEnv) => Promise<RuntimeDrainStatus>) | undefined;
   usageAdminUi?: boolean | undefined;
   adminToken?: string | undefined;
+  authService?: AdminAuthenticationService | undefined;
+  betterAuthEnvironment?: BetterAuthEnvironment | undefined;
+  identity?: IdentityStore | undefined;
+  recoveryToken?: string | undefined;
+  authRateLimiter?: AuthRateLimiter | undefined;
+  verifyAccessAssertion?: AccessAssertionVerifier | undefined;
   knownProviders?: ReadonlySet<string> | undefined;
   // Injection seam for the MCP test-connection route, mirroring how the skills
   // resolve route takes a resolver: tests pass a mock so no real network
@@ -319,8 +401,58 @@ interface AdminRoutesOptions {
 }
 
 const ADMIN_COOKIE = 'flue_admin';
+const AUTH_SESSION_COOKIE = 'chickpea_session';
 const MAX_ADMIN_LOGIN_BODY_BYTES = 4_096;
 const MAX_SLACK_IDENTITY_ADMIN_BODY_BYTES = 64 * 1_024;
+const MAX_AUTH_SETUP_BODY_BYTES = 8_192;
+const MAX_ADMIN_MUTATION_BODY_BYTES = 1024 * 1024;
+
+const authSetupSchema = v.strictObject({
+  ownerEmail: v.pipe(v.string(), v.trim(), v.email(), v.maxLength(320)),
+  recoveryToken: v.pipe(v.string(), v.minLength(1), v.maxLength(512)),
+  issuer: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(1_024)),
+  audience: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(1_024)),
+});
+const passwordOwnerSetupSchema = v.strictObject({
+  ownerEmail: v.pipe(v.string(), v.trim(), v.email(), v.maxLength(320)),
+  organizationName: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(128)),
+  password: v.pipe(v.string(), v.minLength(1), v.maxLength(512)),
+  recoveryToken: v.pipe(v.string(), v.minLength(1), v.maxLength(512)),
+});
+const passwordChangeSchema = v.strictObject({
+  currentPassword: v.pipe(v.string(), v.minLength(1), v.maxLength(512)),
+  newPassword: v.pipe(v.string(), v.minLength(1), v.maxLength(512)),
+});
+const passwordRecoverySchema = v.strictObject({
+  ownerEmail: v.pipe(v.string(), v.trim(), v.email(), v.maxLength(320)),
+  newPassword: v.pipe(v.string(), v.minLength(1), v.maxLength(512)),
+  recoveryToken: v.pipe(v.string(), v.minLength(1), v.maxLength(512)),
+});
+const invitationJoinSchema = v.strictObject({
+  invitationId: v.pipe(v.string(), v.regex(/^invitation_[A-Za-z0-9_-]{1,180}$/)),
+  token: v.pipe(v.string(), v.minLength(32), v.maxLength(256), v.regex(/^[A-Za-z0-9_-]+$/)),
+});
+const passwordInvitationSchema = v.strictObject({
+  operationId: v.pipe(v.string(), v.regex(/^auth_operation_[A-Za-z0-9_-]{1,220}$/)),
+  token: v.pipe(v.string(), v.minLength(32), v.maxLength(256), v.regex(/^[A-Za-z0-9_-]+$/)),
+  displayName: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(128))),
+  password: v.optional(v.pipe(v.string(), v.minLength(1), v.maxLength(512))),
+});
+const passwordCapabilityInspectionSchema = v.strictObject({
+  operationId: v.pipe(v.string(), v.regex(/^auth_operation_[A-Za-z0-9_-]{1,220}$/)),
+  token: v.pipe(v.string(), v.minLength(32), v.maxLength(256), v.regex(/^[A-Za-z0-9_-]+$/)),
+});
+const passwordResetSchema = v.strictObject({
+  operationId: v.pipe(v.string(), v.regex(/^auth_operation_[A-Za-z0-9_-]{1,220}$/)),
+  token: v.pipe(v.string(), v.minLength(32), v.maxLength(256), v.regex(/^[A-Za-z0-9_-]+$/)),
+  inspect: v.optional(v.literal(true)),
+  newPassword: v.optional(v.pipe(v.string(), v.minLength(1), v.maxLength(512))),
+});
+const authRecoverySchema = v.strictObject({
+  operation: v.picklist(['audience', 'owner_binding']),
+  recoveryToken: v.pipe(v.string(), v.minLength(1), v.maxLength(512)),
+  audience: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(1_024))),
+});
 
 const nonEmptyString = v.pipe(v.string(), v.minLength(1));
 const modelSpecifier = v.pipe(v.string(), v.regex(/^[^/]+\/.+$/));
@@ -823,8 +955,12 @@ const turnRecoveryResolveSchema = v.strictObject({
 });
 export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   const app = new Hono();
+  const principalByContext = new WeakMap<object, AuthPrincipal>();
+  const passwordAuthByContext = new WeakMap<object, Promise<PasswordAuthContext | undefined>>();
   const tokenFromOptions = Object.hasOwn(options, 'adminToken');
   const store = (c: Context) => options.store ?? getConfigStore(c.env as PlatformEnv | undefined);
+  const identity = (c: Context) =>
+    options.identity ?? getIdentityStore(c.env as PlatformEnv | undefined);
   const settings = (c: Context) =>
     options.settings ?? getSettingsStore(c.env as PlatformEnv | undefined);
   const memory = (c: Context) =>
@@ -846,6 +982,115 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   };
   const adminToken = () =>
     tokenFromOptions ? options.adminToken : process.env.TAG_ADMIN_TOKEN;
+  const recoveryToken = (c: Context): string | undefined => {
+    if (Object.hasOwn(options, 'recoveryToken')) return options.recoveryToken;
+    const bound = (c.env as PlatformEnv | undefined)?.CHICKPEA_RECOVERY_TOKEN;
+    return typeof bound === 'string' ? bound : process.env.CHICKPEA_RECOVERY_TOKEN;
+  };
+  const authRateLimiter = (c: Context, token: string): AuthRateLimiter =>
+    options.authRateLimiter ?? new AuthRateLimiter(identity(c), { pepper: token });
+  const verifyAccessAssertion: AccessAssertionVerifier = options.verifyAccessAssertion ??
+    (async (request, config, purpose) => {
+      if (!config.issuer) throw new AuthDeniedError();
+      if (purpose === 'recovery') {
+        const assertion = request.headers.get('Cf-Access-Jwt-Assertion');
+        if (!assertion) throw new AuthDeniedError();
+        return verifyCloudflareAccessRecoveryAssertion(assertion, { issuer: config.issuer });
+      }
+      if (!config.audience) throw new AuthDeniedError();
+      return new CloudflareAccessAuthenticator({
+        issuer: config.issuer,
+        audience: config.audience,
+      }).authenticate(request);
+    });
+  const passwordAuthContext = (c: Context): Promise<PasswordAuthContext | undefined> => {
+    const cached = passwordAuthByContext.get(c);
+    if (cached) return cached;
+    const pending = (async () => {
+      const identityStore = identity(c);
+      const control = await identityStore.getAuthControl();
+      if (control?.authMode !== 'password_active' ||
+          !control.betterAuthOrganizationId ||
+          !control.canonicalAdminOrigin) return undefined;
+      const environment = options.betterAuthEnvironment ?? await resolveBetterAuthEnvironment({
+          control,
+          platformEnv: c.env as PlatformEnv | undefined,
+          recoveryToken: recoveryToken(c),
+          passwordShardKey: requestAuthSourceKey(c.req.raw, isCloudflareTarget()),
+        });
+      if (!environment) return undefined;
+      if (environment.baseURL !== control.canonicalAdminOrigin) return undefined;
+      return {
+        environment,
+        directory: new BetterAuthDirectory({
+          backend: environment.backend,
+          access: identityStore,
+          organizationId: control.betterAuthOrganizationId,
+          canonicalAdminOrigin: control.canonicalAdminOrigin,
+        }),
+        organizationId: control.betterAuthOrganizationId,
+      };
+    })();
+    passwordAuthByContext.set(c, pending);
+    return pending;
+  };
+  const humanDirectory = async (c: Context): Promise<HumanIdentityDirectory> =>
+    (await passwordAuthContext(c))?.directory ?? identity(c);
+  const passwordTeamLifecycle = async (c: Context): Promise<PasswordTeamLifecycleService | undefined> => {
+    const context = await passwordAuthContext(c);
+    return context
+      ? new PasswordTeamLifecycleService(
+          identity(c),
+          context.environment,
+          context.organizationId,
+        )
+      : undefined;
+  };
+  const configuredAuthService = async (c: Context): Promise<AdminAuthenticationService | undefined> => {
+    if (options.authService) return options.authService;
+    const identityStore = identity(c);
+    const passwordContext = await passwordAuthContext(c);
+    if (passwordContext) {
+      const { environment, directory, organizationId } = passwordContext;
+      return new AuthService({
+        identity: identityStore,
+        passwordAuthenticator: new BetterAuthSessionAuthenticator({
+          ...environment,
+          directory,
+          organizationId,
+        }),
+        personalTokens: new PersonalTokenService(identityStore, { directory }),
+      });
+    }
+    const organization = await identityStore.getOrganization();
+    if (!organization) return undefined;
+    if (organization.authMode === 'access_active') {
+      const config = await identityStore.getAuthProviderConfig('cloudflare_access');
+      if (!config?.issuer || !config.audience || config.state !== 'active') return undefined;
+      return new AuthService({
+        identity: identityStore,
+        authenticators: [new CloudflareAccessAuthenticator({
+          issuer: config.issuer,
+          audience: config.audience,
+        })],
+      });
+    }
+    if (organization.authMode === 'token_active') {
+      return new AuthService({
+        identity: identityStore,
+        personalTokens: new PersonalTokenService(identityStore),
+        tokenSessions: new TokenSessionService(identityStore),
+      });
+    }
+    return undefined;
+  };
+  const legacyAuthenticationAllowed = async (c: Context): Promise<boolean> => {
+    if (tokenFromOptions) return options.authService === undefined;
+    const control = await identity(c).getAuthControl();
+    if (control?.authMode === 'password_active') return false;
+    const organization = await identity(c).getOrganization();
+    return !organization || ['unconfigured', 'access_pending', 'legacy_shared'].includes(organization.authMode);
+  };
   const modelProviders = () =>
     options.knownProviders
       ? listRuntimeModelProviders({ registeredProviders: options.knownProviders })
@@ -957,8 +1202,200 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     maxSize: MAX_SLACK_IDENTITY_ADMIN_BODY_BYTES,
     onError: (c) => c.json({ error: 'payload_too_large' }, 413),
   });
+  const authSetupBodyLimit = bodyLimit({
+    maxSize: MAX_AUTH_SETUP_BODY_BYTES,
+    onError: (c) => c.json({ error: 'invalid_request' }, 413),
+  });
+  const invitationJoinBodyLimit = bodyLimit({
+    maxSize: MAX_AUTH_SETUP_BODY_BYTES,
+    onError: (c) => c.json({ error: 'join_unavailable' }, 401),
+  });
+  const adminMutationBodyLimit = bodyLimit({
+    maxSize: MAX_ADMIN_MUTATION_BODY_BYTES,
+    onError: (c) => c.json({ error: 'request_too_large' }, 413),
+  });
 
   const adminGate = async (c: Context, next: Next) => {
+    let authService: AdminAuthenticationService | undefined;
+    try {
+      authService = await configuredAuthService(c);
+    } catch {
+      return c.json({ error: 'authentication_unavailable' }, 503);
+    }
+    if (authService) {
+      if (isAdminLoginPost(c)) {
+        const login = await readAdminLogin(c);
+        const passwordContext = await passwordAuthContext(c);
+        if (passwordContext) {
+          authResponseHeaders(c);
+          if (!login.email || !login.password ||
+              !validAuthFormPost(c, passwordContext.environment.baseURL)) {
+            return c.html(renderPasswordLogin({
+              invalid: true,
+              returnTo: login.returnTo,
+              email: login.email ?? '',
+            }), 401);
+          }
+          const handler = createBetterAuthEnvironmentPublicHandler({
+            environment: passwordContext.environment,
+            identity: identity(c),
+            directory: passwordContext.directory,
+          });
+          const response = await handler(betterAuthJsonRequest(
+            c.req.raw,
+            passwordContext.environment.baseURL,
+            '/api/auth/sign-in/email',
+            { email: login.email, password: login.password },
+          ));
+          if (!response.ok) {
+            return c.html(renderPasswordLogin({
+              invalid: true,
+              returnTo: login.returnTo,
+              email: login.email ?? '',
+            }), 401);
+          }
+          copyAuthResponseCookies(c, response.headers);
+          return c.redirect(login.returnTo, 303);
+        }
+        const limiterToken = recoveryToken(c);
+        const limiter = limiterToken && isValidRecoveryConfiguration(limiterToken)
+          ? authRateLimiter(c, limiterToken)
+          : undefined;
+        const source = authSourceKey(c);
+        try {
+          await limiter?.assertAllowed('login', source);
+          const result = await authService.loginWithPersonalToken?.(login.token ?? '');
+          if (!result) throw new AuthDeniedError();
+          setCookie(c, AUTH_SESSION_COOKIE, result.sessionToken, {
+            path: '/admin',
+            httpOnly: true,
+            sameSite: 'Lax',
+            secure: isHttps(c),
+            expires: new Date(result.expiresAt),
+          });
+          await limiter?.recordSuccess('login', source);
+          return c.redirect(login.returnTo, 303);
+        } catch {
+          await limiter?.recordFailure('login', source);
+          return c.html(
+            renderAdminLogin({ invalidToken: true, returnTo: login.returnTo }),
+            401,
+          );
+        }
+      }
+      try {
+        const principal = await authService.authenticateRequest(c.req.raw);
+        copyAuthResponseCookies(c, authService.takeResponseHeaders?.(c.req.raw));
+        principalByContext.set(c, principal);
+        setRequestPrincipal(c.req.raw, principal);
+        const permission = permissionForAdminRequest(c, principal);
+        try {
+          if (principal.machine && !machinePrincipalAllowed(c)) throw new AuthorizationError();
+          requirePermission(principal, permission);
+          await identity(c).recordAuthAudit({
+            event: 'authorization',
+            outcome: 'success',
+            action: permission,
+            correlationId: principal.correlationId,
+            authenticatorKind: principal.authenticatorKind,
+            userId: principal.userId,
+            membershipId: principal.membershipId,
+          });
+        } catch (error) {
+          if (error instanceof AuthorizationError) {
+            await identity(c).recordAuthAudit({
+              event: 'authorization',
+              outcome: 'denied',
+              action: permission,
+              correlationId: principal.correlationId,
+              authenticatorKind: principal.authenticatorKind,
+              userId: principal.userId,
+              membershipId: principal.membershipId,
+              reasonCode: 'permission_denied',
+            });
+          }
+          throw error;
+        }
+        if (principal.role === 'member' && isAdminPageGet(c) &&
+            !['/admin/account', '/admin/account/password'].includes(c.req.path)) {
+          return c.redirect('/admin/account', 303);
+        }
+        if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(c.req.method)) {
+          const origin = (await passwordAuthContext(c))?.environment.baseURL ??
+            (await identity(c).getOrganization())?.canonicalAdminOrigin;
+          if (!origin) throw new AuthDeniedError();
+          if (isHumanAuthFormMutation(c)) {
+            const formFailure = authFormPostFailureReason(c, origin);
+            if (formFailure) {
+              if (formFailure === 'content_length') {
+                return c.json({ error: 'request_too_large' }, 413);
+              }
+              if (formFailure === 'content_type') {
+                return c.json({ error: 'unsupported_media_type' }, 415);
+              }
+              return c.json({ error: 'forbidden' }, 403);
+            }
+            return next();
+          }
+          const provenance = validateMutationProvenance(c.req.raw, principal, {
+            canonicalOrigin: origin,
+            maxBodyBytes: MAX_ADMIN_MUTATION_BODY_BYTES,
+            requireJson: c.req.method !== 'DELETE',
+          });
+          if (!provenance.ok) {
+            if (provenance.code === 'body_too_large') {
+              return c.json({ error: 'request_too_large' }, 413);
+            }
+            if (provenance.code === 'content_type_denied') {
+              return c.json({ error: 'unsupported_media_type' }, 415);
+            }
+            return c.json({ error: 'forbidden' }, 403);
+          }
+        }
+        return next();
+      } catch (error) {
+        if (error instanceof AuthorizationError) {
+          return c.json({ error: 'forbidden' }, 403);
+        }
+        if (isAdminPageGet(c)) {
+          authResponseHeaders(c);
+          return c.html(
+            (await passwordAuthContext(c))
+              ? renderPasswordLogin({
+                  returnTo: safeAdminReturnPath(c.req.query('returnTo') ?? c.req.path),
+                })
+              : renderAdminLogin({ returnTo: safeAdminReturnPath(c.req.path) }),
+            401,
+          );
+        }
+        return c.json({ error: 'unauthorized' }, 401);
+      }
+    }
+    try {
+      const control = await identity(c).ensureAuthControl();
+      if (
+        control?.authMode === 'unconfigured' &&
+        isAdminPageGet(c) &&
+        recoveryToken(c) &&
+        !adminToken()
+      ) {
+        return c.redirect('/admin/setup', 303);
+      }
+      if (control?.authMode === 'invalid' && isAdminPageGet(c) && recoveryToken(c)) {
+        return c.redirect('/admin/recovery', 303);
+      }
+    } catch {
+      return c.json({ error: 'authentication_unavailable' }, 503);
+    }
+    let legacyAllowed = false;
+    try {
+      legacyAllowed = await legacyAuthenticationAllowed(c);
+    } catch {
+      return c.json({ error: 'authentication_unavailable' }, 503);
+    }
+    if (!legacyAllowed) {
+      return c.json({ error: 'authentication_unavailable' }, 503);
+    }
     const expected = adminToken();
     if (!expected) {
       return c.notFound();
@@ -979,7 +1416,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         );
       }
       setAdminCookie(c, cookieValue);
-      return c.redirect(login.returnTo, 303);
+      return c.redirect(tokenFromOptions ? login.returnTo : '/admin/migrate', 303);
     }
 
     const candidate = bearerToken(c.req.header('authorization'));
@@ -1003,6 +1440,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       }
       return c.json({ error: 'unauthorized' }, 401);
     }
+    if (!tokenFromOptions && c.req.method === 'GET' && c.req.path === '/admin') {
+      return c.redirect('/admin/migrate', 303);
+    }
     return next();
   };
 
@@ -1017,6 +1457,504 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       secure: isHttps(c),
     });
   };
+
+  const completeGithubSetupCallback = async (c: Context): Promise<Response> => {
+    c.header('Cache-Control', 'no-store');
+    c.header('Referrer-Policy', 'no-referrer');
+    const parsed = v.safeParse(githubCallbackSchema, { code: c.req.query('code') });
+    if (!parsed.success) return invalidRequest(c);
+    try {
+      const state = c.req.query('state')?.trim() ?? '';
+      const setupState = await consumeGithubSetupState(settings(c), state);
+      if (!setupState) return c.json({ error: 'invalid_setup_state' }, 403);
+      if (setupState.membershipId) {
+        const membership = (await identity(c).listMemberships()).find(
+          (candidate) => candidate.id === setupState.membershipId,
+        );
+        if (!membership || membership.status !== 'active' ||
+            !['owner', 'admin'].includes(membership.role)) {
+          return c.json({ error: 'invalid_setup_state' }, 403);
+        }
+      }
+      const conversion = await exchangeGithubAppManifest(parsed.output.code);
+      await settings(c).applySettingsPatch({
+        set: [
+          { key: GITHUB_SETTING_KEYS.appId, value: String(conversion.id) },
+          { key: GITHUB_SETTING_KEYS.appSlug, value: conversion.slug },
+          {
+            key: GITHUB_SETTING_KEYS.privateKey,
+            value: normalizePrivateKeyPem(conversion.privateKeyPem),
+          },
+          ...(conversion.webhookSecret
+            ? [{ key: GITHUB_SETTING_KEYS.webhookSecret, value: conversion.webhookSecret }]
+            : []),
+        ],
+        ...(conversion.webhookSecret ? {} : { delete: [GITHUB_SETTING_KEYS.webhookSecret] }),
+      });
+      return c.redirect(
+        `https://github.com/apps/${encodeURIComponent(conversion.slug)}/installations/new`,
+        302,
+      );
+    } catch (error) {
+      return internalError(c, error);
+    }
+  };
+
+  // Setup is public only until an authenticator becomes active. The recovery
+  // credential authorizes the bounded owner bootstrap but is never itself a
+  // browser login. Fresh installs create a Better Auth owner/session; the
+  // legacy Access form remains available only for an already-pending install.
+  app.use('/admin/setup', authSetupBodyLimit);
+  app.use('/admin/setup/*', authSetupBodyLimit);
+  app.use('/admin/recovery', authSetupBodyLimit);
+  app.use('/admin/migrate', authSetupBodyLimit);
+
+  app.get('/admin/setup/client.js', (c) => {
+    authResponseHeaders(c);
+    c.header('Content-Type', 'application/javascript; charset=UTF-8');
+    return c.body(passwordOwnerSetupClientScript());
+  });
+
+  app.get('/admin/setup', async (c) => {
+    authResponseHeaders(c);
+    const token = recoveryToken(c);
+    if (!token) return c.notFound();
+    if (!isValidRecoveryConfiguration(token)) {
+      return c.json({ error: 'authentication_unavailable' }, 503);
+    }
+    const identityStore = identity(c);
+    const [control, organization] = await Promise.all([
+      identityStore.ensureAuthControl(),
+      identityStore.getOrganization(),
+    ]);
+    if (control.authMode === 'password_active') return c.redirect('/admin/login', 303);
+    if (organization?.authMode === 'access_active') return c.redirect('/admin', 303);
+    if (!organization && control.authMode === 'unconfigured') {
+      return c.html(renderPasswordOwnerSetupPage());
+    }
+    if (organization?.authMode === 'access_pending') {
+      const config = await identityStore.getAuthProviderConfig('cloudflare_access');
+      return c.html(renderAuthSetupPage({
+        state: 'access_pending',
+        origin: requestOrigin(c),
+        ...(config?.issuer === undefined ? {} : { issuer: config.issuer }),
+        ...(config?.audience === undefined ? {} : { audience: config.audience }),
+      }));
+    }
+    return c.json({ error: 'authentication_unavailable' }, 409);
+  });
+
+  app.post('/admin/setup', async (c) => {
+    authResponseHeaders(c);
+    const token = recoveryToken(c);
+    if (!token) return c.notFound();
+    if (!isValidRecoveryConfiguration(token)) {
+      return c.json({ error: 'authentication_unavailable' }, 503);
+    }
+    const source = authSourceKey(c);
+    const limiter = authRateLimiter(c, token);
+    let passwordSetup = false;
+    let ownerSetupValues: { organizationName?: string; ownerEmail?: string } = {};
+    try {
+      await limiter.assertAllowed('setup', source);
+      if (!validAuthFormPost(c, requestOrigin(c))) throw new AuthDeniedError();
+      const rawForm = await readForm(c);
+      passwordSetup = Object.hasOwn(rawForm, 'password');
+      if (passwordSetup) {
+        ownerSetupValues = {
+          organizationName: preservedFormValue(rawForm.organizationName, 128),
+          ownerEmail: preservedFormValue(rawForm.ownerEmail, 320),
+        };
+        const organization = await identity(c).getOrganization();
+        if (organization) throw new AuthDeniedError();
+        const form = v.safeParse(passwordOwnerSetupSchema, rawForm);
+        if (!form.success) throw new AuthDeniedError();
+        const environment = options.betterAuthEnvironment ??
+          await resolveBetterAuthBootstrapEnvironment({
+            canonicalOrigin: requestOrigin(c),
+            platformEnv: c.env as PlatformEnv | undefined,
+            recoveryToken: token,
+            passwordShardKey: source,
+          });
+        if (!environment) throw new AuthDeniedError();
+        const result = await new PasswordOwnerSetupService(identity(c), environment).complete({
+          canonicalOrigin: requestOrigin(c),
+          email: form.output.ownerEmail,
+          organizationName: form.output.organizationName,
+          password: form.output.password,
+          recoveryToken: form.output.recoveryToken,
+        });
+        copyAuthResponseCookies(c, result.headers);
+        await limiter.recordSuccess('setup', source);
+        return c.redirect('/admin/ready', 303);
+      }
+      // Fresh OSS setup is password-based. Cloudflare Access remains readable
+      // only for installations that were already pending before this flow;
+      // stale copies of the retired form must never create a new Access setup.
+      throw new AuthDeniedError();
+    } catch (error) {
+      await limiter.recordFailure('setup', source);
+      const organization = await identity(c).getOrganization();
+      const config = organization?.authMode === 'access_pending'
+        ? await identity(c).getAuthProviderConfig('cloudflare_access')
+        : undefined;
+      return c.html(
+        !passwordSetup && organization?.authMode === 'access_pending'
+          ? renderAuthSetupPage({
+            state: 'access_pending',
+            error: true,
+            origin: requestOrigin(c),
+            ...(config?.issuer === undefined ? {} : { issuer: config.issuer }),
+            ...(config?.audience === undefined ? {} : { audience: config.audience }),
+          })
+          : renderPasswordOwnerSetupPage({
+            error: error instanceof PasswordPolicyError ? error.code : true,
+            ...ownerSetupValues,
+          }),
+        401,
+      );
+    }
+  });
+
+  app.get('/admin/setup/verify', async (c) => {
+    authResponseHeaders(c);
+    const token = recoveryToken(c);
+    if (!token) return c.notFound();
+    if (!isValidRecoveryConfiguration(token)) {
+      return c.json({ error: 'authentication_unavailable' }, 503);
+    }
+    try {
+      const config = await identity(c).getAuthProviderConfig('cloudflare_access');
+      if (!config || config.state !== 'pending') throw new AuthDeniedError();
+      const external = await verifyAccessAssertion(c.req.raw, config, 'activation');
+      await new AuthSetupService(identity(c), { recoveryToken: token }).activateAccess(external);
+      return c.redirect('/admin/ready', 303);
+    } catch {
+      const organization = await identity(c).getOrganization();
+      const config = await identity(c).getAuthProviderConfig('cloudflare_access');
+      return c.html(
+        organization?.authMode === 'legacy_shared'
+          ? renderAuthMigrationPage({ error: true })
+          : renderAuthSetupPage({
+            state: 'access_pending',
+            error: true,
+            origin: requestOrigin(c),
+            ...(config?.issuer === undefined ? {} : { issuer: config.issuer }),
+            ...(config?.audience === undefined ? {} : { audience: config.audience }),
+          }),
+        401,
+      );
+    }
+  });
+
+  // Recovery is deliberately not a login path. Password mode uses the offline
+  // recovery credential to replace one durable owner password and revokes
+  // authority; optional Access mode additionally requires its signed assertion.
+  app.get('/admin/recovery', async (c) => {
+    authResponseHeaders(c);
+    const token = recoveryToken(c);
+    if (!token) return c.notFound();
+    if (!isValidRecoveryConfiguration(token)) {
+      return c.json({ error: 'authentication_unavailable' }, 503);
+    }
+    try {
+      const control = await identity(c).getAuthControl();
+      if (control?.authMode === 'password_active') {
+        if (!await passwordAuthContext(c)) throw new AuthDeniedError();
+        return c.html(renderPasswordRecoveryPage());
+      }
+      const config = await identity(c).getAuthProviderConfig('cloudflare_access');
+      if (!config || config.state !== 'active') throw new AuthDeniedError();
+      await verifyAccessAssertion(c.req.raw, config, 'recovery');
+      return c.html(renderAuthRecoveryPage());
+    } catch {
+      return c.json({ error: 'unauthorized' }, 401);
+    }
+  });
+
+  app.post('/admin/recovery', async (c) => {
+    authResponseHeaders(c);
+    const token = recoveryToken(c);
+    if (!token) return c.notFound();
+    if (!isValidRecoveryConfiguration(token)) {
+      return c.json({ error: 'authentication_unavailable' }, 503);
+    }
+    const source = authSourceKey(c);
+    const limiter = authRateLimiter(c, token);
+    let passwordRecovery = false;
+    try {
+      await limiter.assertAllowed('recovery', source);
+      const control = await identity(c).getAuthControl();
+      passwordRecovery = control?.authMode === 'password_active';
+      if (passwordRecovery) {
+        if (!control?.canonicalAdminOrigin ||
+            !validAuthFormPost(c, control.canonicalAdminOrigin)) throw new AuthDeniedError();
+        const form = v.safeParse(passwordRecoverySchema, await readForm(c));
+        const context = await passwordAuthContext(c);
+        if (!form.success || !context) throw new AuthDeniedError();
+        await new PasswordOwnerRecoveryService(identity(c), context.environment).replacePassword({
+          recoveryToken: form.output.recoveryToken,
+          email: form.output.ownerEmail,
+          newPassword: form.output.newPassword,
+        });
+        await limiter.recordSuccess('recovery', source);
+        return c.html(renderPasswordRecoveryPage({ success: true }));
+      }
+      const organization = await identity(c).getOrganization();
+      if (!organization?.canonicalAdminOrigin ||
+          !validAuthFormPost(c, organization.canonicalAdminOrigin)) {
+        throw new AuthDeniedError();
+      }
+      const form = v.safeParse(authRecoverySchema, await readForm(c));
+      if (!form.success) throw new AuthDeniedError();
+      const config = await identity(c).getAuthProviderConfig('cloudflare_access');
+      if (!config || config.state !== 'active') throw new AuthDeniedError();
+      const external = await verifyAccessAssertion(c.req.raw, config, 'recovery');
+      const recovery = new AuthRecoveryService(identity(c), { recoveryToken: token });
+      if (form.output.operation === 'audience') {
+        if (!form.output.audience) throw new AuthDeniedError();
+        await recovery.repairAudience({
+          recoveryToken: form.output.recoveryToken,
+          identity: external,
+          audience: form.output.audience,
+        });
+      } else {
+        await recovery.replaceOwnerBinding({
+          recoveryToken: form.output.recoveryToken,
+          identity: external,
+        });
+      }
+      await limiter.recordSuccess('recovery', source);
+      return c.redirect('/admin', 303);
+    } catch {
+      await limiter.recordFailure('recovery', source);
+      return c.html(
+        passwordRecovery
+          ? renderPasswordRecoveryPage({ error: true })
+          : renderAuthRecoveryPage({ error: true }),
+        401,
+      );
+    }
+  });
+
+  // GitHub calls this endpoint without a Chickpea or Access session. The
+  // single-use state is the authorization boundary and is bound to the Admin
+  // membership that initiated the manifest flow. Keep the old path public for
+  // states minted before upgrade; both paths delegate to the same consumer.
+  app.get('/oauth/github/setup/callback', completeGithubSetupCallback);
+  app.get('/admin/api/github/setup/callback', completeGithubSetupCallback);
+
+  // Invitation and reset capabilities arrive in URL fragments and are moved to
+  // same-tab storage before these routes run. Keep the bounded enrollment
+  // wrappers outside the ordinary Admin gate: they authenticate only the exact
+  // operation, while Better Auth signup itself remains dark.
+  app.use('/admin/join', invitationJoinBodyLimit);
+  app.use('/admin/join/*', invitationJoinBodyLimit);
+  app.use('/admin/reset', invitationJoinBodyLimit);
+  app.use('/admin/reset/*', invitationJoinBodyLimit);
+  app.get('/admin/join/client.js', (c) => {
+    authResponseHeaders(c);
+    c.header('Content-Type', 'application/javascript; charset=UTF-8');
+    c.header('Content-Security-Policy', invitationJoinCsp());
+    return c.body(invitationJoinClientScript());
+  });
+  app.get('/admin/join/password-client.js', (c) => {
+    authResponseHeaders(c);
+    c.header('Content-Type', 'application/javascript; charset=UTF-8');
+    c.header('Content-Security-Policy', invitationJoinCsp());
+    return c.body(passwordInvitationClientScript());
+  });
+  app.get('/admin/reset/client.js', (c) => {
+    authResponseHeaders(c);
+    c.header('Content-Type', 'application/javascript; charset=UTF-8');
+    c.header('Content-Security-Policy', invitationJoinCsp());
+    return c.body(passwordResetClientScript());
+  });
+  app.get('/admin/password/client.js', (c) => {
+    authResponseHeaders(c);
+    c.header('Content-Type', 'application/javascript; charset=UTF-8');
+    c.header('Content-Security-Policy', invitationJoinCsp());
+    return c.body(passwordFormClientScript());
+  });
+  app.get('/admin/join', async (c) => {
+    authResponseHeaders(c);
+    c.header('Content-Security-Policy', invitationJoinCsp());
+    try {
+      if (await passwordAuthContext(c)) return c.html(renderPasswordInvitationPage());
+      const config = await identity(c).getAuthProviderConfig('cloudflare_access');
+      if (!config || config.state !== 'active') throw new AuthDeniedError();
+      const external = await verifyAccessAssertion(c.req.raw, config, 'activation');
+      const existing = await identity(c).resolveExternalIdentity(
+        external.provider,
+        external.issuer,
+        external.subject,
+      );
+      if (existing?.membership.status === 'active') return c.redirect('/admin/account', 303);
+      return c.html(renderInvitationJoinPage({ email: external.verifiedEmail }));
+    } catch {
+      return c.json({ error: 'join_unavailable' }, 401);
+    }
+  });
+  app.post('/admin/join/inspect', async (c) => {
+    authResponseHeaders(c);
+    const token = recoveryToken(c);
+    if (!token || !isValidRecoveryConfiguration(token)) {
+      return c.json({ error: 'join_unavailable' }, 401);
+    }
+    const source = authSourceKey(c);
+    const limiter = authRateLimiter(c, token);
+    try {
+      await limiter.assertAllowed('invite', source);
+      const context = await passwordAuthContext(c);
+      if (!context || !validJsonMutation(c, context.environment.baseURL)) {
+        throw new AuthDeniedError();
+      }
+      const parsed = v.safeParse(passwordCapabilityInspectionSchema, await readJson(c.req));
+      if (!parsed.success) throw new AuthDeniedError();
+      const inspected = await new PasswordEnrollmentService(
+        identity(c),
+        context.environment,
+        context.organizationId,
+      ).inspectInvitation({
+        operationId: parsed.output.operationId,
+        secret: parsed.output.token,
+        headers: c.req.raw.headers,
+      });
+      await limiter.recordSuccess('invite', source);
+      return c.json(inspected);
+    } catch (error) {
+      await limiter.recordFailure('invite', source);
+      return passwordCapabilityError(c, error, 'join_unavailable');
+    }
+  });
+  app.post('/admin/join', async (c) => {
+    authResponseHeaders(c);
+    const token = recoveryToken(c);
+    if (!token || !isValidRecoveryConfiguration(token)) {
+      return c.json({ error: 'join_unavailable' }, 401);
+    }
+    const source = authSourceKey(c);
+    const limiter = authRateLimiter(c, token);
+    try {
+      await limiter.assertAllowed('invite', source);
+      const passwordContext = await passwordAuthContext(c);
+      if (passwordContext) {
+        if (!validJsonMutation(c, passwordContext.environment.baseURL)) throw new AuthDeniedError();
+        const parsed = v.safeParse(passwordInvitationSchema, await readJson(c.req));
+        if (!parsed.success) throw new AuthDeniedError();
+        const result = await new PasswordEnrollmentService(
+          identity(c),
+          passwordContext.environment,
+          passwordContext.organizationId,
+        ).completeInvitation({
+          operationId: parsed.output.operationId,
+          secret: parsed.output.token,
+          headers: c.req.raw.headers,
+          ...(parsed.output.displayName === undefined
+            ? {} : { displayName: parsed.output.displayName }),
+          ...(parsed.output.password === undefined ? {} : { password: parsed.output.password }),
+        });
+        copyAuthResponseCookies(c, result.headers);
+        await identity(c).recordAuthAudit({
+          event: 'authentication',
+          outcome: 'success',
+          action: 'team.invitation_accept',
+          correlationId: `join_${digest(parsed.output.operationId).slice(0, 24)}`,
+          authenticatorKind: 'better_auth',
+          userId: result.userId,
+          membershipId: result.membershipId,
+        });
+        await limiter.recordSuccess('invite', source);
+        return c.json({ redirect: '/admin/channels' });
+      }
+      const organization = await identity(c).getOrganization();
+      const config = await identity(c).getAuthProviderConfig('cloudflare_access');
+      if (!organization?.canonicalAdminOrigin || !config || config.state !== 'active') {
+        throw new AuthDeniedError();
+      }
+      if (!validJsonMutation(c, organization.canonicalAdminOrigin)) throw new AuthDeniedError();
+      const parsed = v.safeParse(invitationJoinSchema, await readJson(c.req));
+      if (!parsed.success) throw new AuthDeniedError();
+      const external = await verifyAccessAssertion(c.req.raw, config, 'activation');
+      const resolution = await identity(c).consumeInvitation({
+        invitationId: parsed.output.invitationId,
+        tokenHash: digest(parsed.output.token),
+        provider: external.provider,
+        issuer: external.issuer,
+        subject: external.subject,
+        verifiedEmail: external.verifiedEmail,
+        ...(external.displayName === undefined ? {} : { displayName: external.displayName }),
+      });
+      await identity(c).recordAuthAudit({
+        event: 'authentication',
+        outcome: 'success',
+        action: 'team.invitation_accept',
+        correlationId: `join_${digest(external.credentialId).slice(0, 24)}`,
+        authenticatorKind: external.provider,
+        userId: resolution.user.id,
+        membershipId: resolution.membership.id,
+      });
+      await limiter.recordSuccess('invite', source);
+      return c.json({ redirect: '/admin/channels' });
+    } catch (error) {
+      await limiter.recordFailure('invite', source);
+      return passwordCapabilityError(c, error, 'join_unavailable');
+    }
+  });
+
+  app.get('/admin/reset', async (c) => {
+    authResponseHeaders(c);
+    c.header('Content-Security-Policy', invitationJoinCsp());
+    return await passwordAuthContext(c)
+      ? c.html(renderPasswordResetPage())
+      : c.json({ error: 'reset_unavailable' }, 404);
+  });
+  app.post('/admin/reset', async (c) => {
+    authResponseHeaders(c);
+    const token = recoveryToken(c);
+    if (!token || !isValidRecoveryConfiguration(token)) {
+      return c.json({ error: 'reset_unavailable' }, 401);
+    }
+    const source = authSourceKey(c);
+    const limiter = authRateLimiter(c, token);
+    try {
+      await limiter.assertAllowed('recovery', source);
+      const context = await passwordAuthContext(c);
+      if (!context || !validJsonMutation(c, context.environment.baseURL)) {
+        throw new AuthDeniedError();
+      }
+      const parsed = v.safeParse(passwordResetSchema, await readJson(c.req));
+      if (!parsed.success || (parsed.output.inspect !== true && !parsed.output.newPassword)) {
+        throw new AuthDeniedError();
+      }
+      const service = new PasswordEnrollmentService(
+        identity(c),
+        context.environment,
+        context.organizationId,
+      );
+      if (parsed.output.inspect === true) {
+        const inspected = await service.inspectReset({
+          operationId: parsed.output.operationId,
+          secret: parsed.output.token,
+          headers: c.req.raw.headers,
+        });
+        await limiter.recordSuccess('recovery', source);
+        return c.json(inspected);
+      }
+      await service.completeReset({
+        operationId: parsed.output.operationId,
+        secret: parsed.output.token,
+        newPassword: parsed.output.newPassword!,
+        headers: c.req.raw.headers,
+      });
+      await limiter.recordSuccess('recovery', source);
+      clearBetterAuthCookies(c);
+      return c.json({ redirect: '/admin/login' });
+    } catch (error) {
+      await limiter.recordFailure('recovery', source);
+      return passwordCapabilityError(c, error, 'reset_unavailable');
+    }
+  });
 
   // CIMD is fetched by the provider, not an administrator's browser. It is
   // intentionally public and contains client policy only — never a client
@@ -1179,12 +2117,21 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
 
   // Apply the byte cap before the unauthenticated body is buffered. Keep the
   // missing-token 404 contract by letting adminGate handle disabled admin UI.
-  app.use('/admin/login', (c, next) =>
-    adminToken() ? adminLoginBodyLimit(c, next) : next(),
-  );
+  app.use('/admin/login', adminLoginBodyLimit);
   app.use('/admin', adminGate);
   app.use('/admin/*', adminGate);
+  app.use('/admin/api/*', (c, next) =>
+    ['POST', 'PUT', 'PATCH', 'DELETE'].includes(c.req.method)
+      ? adminMutationBodyLimit(c, next)
+      : next(),
+  );
   app.use('/admin/api/*', async (c, next) => {
+    // Body-limit middleware may replace the Request object while retaining the
+    // Hono Context. Reattach the trusted principal to that exact Request so
+    // routed sub-apps (work/memory/etc.) receive attribution, never a
+    // caller-supplied identity header.
+    const principal = principalByContext.get(c);
+    if (principal) setRequestPrincipal(c.req.raw, principal);
     const platformEnv = c.env as PlatformEnv | undefined;
     // The cutover drain probe must be observational: do not let the general
     // admin middleware reconcile provider keys or pin request-origin state.
@@ -1205,7 +2152,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       c.req.method === 'POST' && c.req.path === '/admin/api/slack-connection/test';
     const slackDisconnect =
       c.req.method === 'DELETE' && c.req.path === '/admin/api/slack-connection';
-    if (!slackConnectionTest && !slackDisconnect) {
+    // Identity-authenticated installs pin their canonical Admin origin during
+    // setup. Never let an arbitrary later request host rewrite it (or the
+    // Slack public URL derived from it). Legacy installs retain the historical
+    // opportunistic behavior until migration completes.
+    if (!principal && !slackConnectionTest && !slackDisconnect) {
       await persistRequestOrigin(c, settingsStore);
     }
     return next();
@@ -1380,8 +2331,150 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     return c.html(renderAdminPage({ usageAdminUi: usageAdminUi(c) }));
   };
 
+  app.get('/admin/migrate', async (c) => {
+    authResponseHeaders(c);
+    const organization = await identity(c).getOrganization();
+    if (organization?.authMode === 'access_active' || organization?.authMode === 'token_active') {
+      return c.redirect('/admin', 303);
+    }
+    const token = recoveryToken(c);
+    if (!token || !isValidRecoveryConfiguration(token)) {
+      return c.json({ error: 'authentication_unavailable' }, 503);
+    }
+    return c.html(renderAuthMigrationPage());
+  });
+
+  app.post('/admin/migrate', async (c) => {
+    authResponseHeaders(c);
+    const token = recoveryToken(c);
+    if (!token || !isValidRecoveryConfiguration(token)) {
+      return c.json({ error: 'authentication_unavailable' }, 503);
+    }
+    const source = authSourceKey(c);
+    const limiter = authRateLimiter(c, token);
+    try {
+      await limiter.assertAllowed('setup', source);
+      if (!validAuthFormPost(c, requestOrigin(c))) throw new AuthDeniedError();
+      const form = v.safeParse(authSetupSchema, await readForm(c));
+      if (!form.success) throw new AuthDeniedError();
+      const setup = new AuthSetupService(identity(c), { recoveryToken: token });
+      const pending = await setup.beginAccessSetup({
+        recoveryToken: form.output.recoveryToken,
+        ownerEmail: form.output.ownerEmail,
+      });
+      await setup.configureAccess({
+        recoveryToken: form.output.recoveryToken,
+        issuer: form.output.issuer,
+        audience: form.output.audience,
+        canonicalAdminOrigin: requestOrigin(c),
+      });
+      await identity(c).updateOrganizationAuth({
+        organizationId: pending.organization.id,
+        authMode: 'legacy_shared',
+        canonicalAdminOrigin: requestOrigin(c),
+      });
+      await limiter.recordSuccess('setup', source);
+      return c.redirect('/admin/setup/verify', 303);
+    } catch {
+      await limiter.recordFailure('setup', source);
+      return c.html(renderAuthMigrationPage({ error: true }), 401);
+    }
+  });
+
   app.get('/admin', adminPage);
 
+  app.get('/admin/ready', (c) => {
+    c.header('Cache-Control', 'no-store');
+    return c.html(renderAuthSetupCompletePage());
+  });
+
+  app.post('/admin/logout', async (c) => {
+    authResponseHeaders(c);
+    const context = await passwordAuthContext(c);
+    if (!context) return c.redirect('/admin/login', 303);
+    const handler = createBetterAuthEnvironmentPublicHandler({
+      environment: context.environment,
+      identity: identity(c),
+      directory: context.directory,
+    });
+    const response = await handler(betterAuthJsonRequest(
+      c.req.raw,
+      context.environment.baseURL,
+      '/api/auth/sign-out',
+      {},
+    ));
+    copyAuthResponseCookies(c, response.headers);
+    clearBetterAuthCookies(c);
+    return c.redirect('/admin/login', 303);
+  });
+
+  app.get('/admin/account/password', async (c) => {
+    authResponseHeaders(c);
+    if (!await passwordAuthContext(c)) return c.notFound();
+    return c.html(renderPasswordChangePage());
+  });
+
+  app.post('/admin/account/password', async (c) => {
+    authResponseHeaders(c);
+    const principal = principalByContext.get(c);
+    const context = await passwordAuthContext(c);
+    if (!principal || principal.machine || !context) return c.json({ error: 'forbidden' }, 403);
+    try {
+      const parsed = v.safeParse(passwordChangeSchema, await readForm(c));
+      if (!parsed.success) throw new AuthDeniedError();
+      const [user, organization] = await Promise.all([
+        context.directory.getUser(principal.userId),
+        context.directory.getOrganization(),
+      ]);
+      if (!user || !organization) throw new AuthDeniedError();
+      assertPasswordPolicy(parsed.output.newPassword, {
+        email: user.primaryEmail,
+        organizationName: organization.displayName,
+      });
+      const auth = createBetterAuth({ ...context.environment, allowSignUp: false });
+      await auth.api.changePassword({
+        body: {
+          currentPassword: parsed.output.currentPassword,
+          newPassword: parsed.output.newPassword,
+          revokeOtherSessions: false,
+        },
+        headers: c.req.raw.headers,
+      });
+      await auth.api.revokeSessions({ headers: c.req.raw.headers });
+      clearBetterAuthCookies(c);
+      return c.redirect('/admin/login', 303);
+    } catch {
+      return c.html(renderPasswordChangePage({ error: true }), 400);
+    }
+  });
+
+  app.get('/admin/account', async (c) => {
+    const principal = principalByContext.get(c);
+    if (!principal) return c.json({ error: 'unauthorized' }, 401);
+    const directory = await humanDirectory(c);
+    const [organization, user, membership] = await Promise.all([
+      directory.getOrganization(),
+      directory.getUser(principal.userId),
+      directory.getMembershipForUser(principal.userId, principal.organizationId),
+    ]);
+    if (!organization || !user || !membership) return c.json({ error: 'account_unavailable' }, 404);
+    c.header('Cache-Control', 'no-store');
+    return c.html(renderMemberAccountPage({
+      organizationName: organization.displayName,
+      displayName: user.displayName,
+      email: user.primaryEmail,
+      role: membership.role,
+      status: membership.status,
+    }));
+  });
+
+  app.get('/account', (c) => c.redirect('/admin/account', 303));
+
+  app.route('/admin/api', createTeamAdminApi({
+    store: identity,
+    directory: humanDirectory,
+    passwordLifecycle: passwordTeamLifecycle,
+  }));
   app.route('/admin/api', createMemoryAdminApi({
     store: memory,
     adminSecret: () => adminToken() ?? '',
@@ -1977,10 +3070,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     // logged-in admin a callback URL carrying a code for an attacker-owned
     // App and silently overwrite this deployment's GitHub credentials.
     const setupState = randomUUID().replaceAll('-', '');
-    await settings(c).setSetting(
-      GITHUB_SETTING_KEYS.setupState,
-      `${setupState}:${Date.now()}`,
-    );
+    await saveGithubSetupState(settings(c), {
+      state: setupState,
+      mintedAt: Date.now(),
+      membershipId: principalByContext.get(c)?.membershipId ?? null,
+    });
     const base = org
       ? `https://github.com/organizations/${org}/settings/apps/new`
       : 'https://github.com/settings/apps/new';
@@ -2000,7 +3094,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       manifest: {
         name: `chickpea-${suffix}`,
         url: origin,
-        redirect_url: `${origin}/admin/api/github/setup/callback`,
+        redirect_url: `${origin}/oauth/github/setup/callback`,
         // After the user finishes installing the app (picking repos), GitHub
         // returns them here — closing the create→install→back loop without a
         // manual "now go refresh Settings" step.
@@ -2018,53 +3112,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         },
       },
     });
-  });
-
-  app.get('/admin/api/github/setup/callback', async (c) => {
-    const parsed = v.safeParse(githubCallbackSchema, { code: c.req.query('code') });
-    if (!parsed.success) {
-      return invalidRequest(c);
-    }
-    try {
-      // Consume the single-use setup state BEFORE exchanging the code: a
-      // mismatched or replayed callback must never reach the credential write.
-      const state = c.req.query('state')?.trim() ?? '';
-      const stored = await settings(c).getSetting(GITHUB_SETTING_KEYS.setupState);
-      await settings(c).applySettingsPatch({ delete: [GITHUB_SETTING_KEYS.setupState] });
-      const [storedState, mintedAtRaw] = (stored ?? '').split(':');
-      const mintedAt = Number(mintedAtRaw);
-      const fresh = Number.isFinite(mintedAt) && Date.now() - mintedAt < 15 * 60 * 1_000;
-      if (!state || !storedState || state !== storedState || !fresh) {
-        return c.json({ error: 'invalid_setup_state' }, 403);
-      }
-      const conversion = await exchangeGithubAppManifest(parsed.output.code);
-      await settings(c).applySettingsPatch({
-        set: [
-          { key: GITHUB_SETTING_KEYS.appId, value: String(conversion.id) },
-          { key: GITHUB_SETTING_KEYS.appSlug, value: conversion.slug },
-          {
-            key: GITHUB_SETTING_KEYS.privateKey,
-            value: normalizePrivateKeyPem(conversion.privateKeyPem),
-          },
-          // Apps created without a webhook (localhost dev) return no secret.
-          ...(conversion.webhookSecret
-            ? [{ key: GITHUB_SETTING_KEYS.webhookSecret, value: conversion.webhookSecret }]
-            : []),
-        ],
-        // A prior install may have left a webhook secret; clear it when the
-        // new App has none so stale state can't linger.
-        ...(conversion.webhookSecret ? {} : { delete: [GITHUB_SETTING_KEYS.webhookSecret] }),
-      });
-      // A registered app is useless until it's installed somewhere, so send
-      // the operator straight to GitHub's install page — one continuous flow:
-      // create → (this callback) → pick repos → setup_url back to Settings.
-      return c.redirect(
-        `https://github.com/apps/${encodeURIComponent(conversion.slug)}/installations/new`,
-        302,
-      );
-    } catch (err) {
-      return internalError(c, err);
-    }
   });
 
   app.delete('/admin/api/github', async (c) => {
@@ -4307,6 +5354,105 @@ function safeHttpsUrl(candidate: string | undefined): string | null {
   }
 }
 
+function authResponseHeaders(c: Context): void {
+  c.header('Cache-Control', 'no-store');
+  c.header('Referrer-Policy', 'no-referrer');
+  c.header('X-Content-Type-Options', 'nosniff');
+  c.header('X-Frame-Options', 'DENY');
+  c.header('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  c.header(
+    'Content-Security-Policy',
+    "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+  );
+}
+
+function invitationJoinCsp(): string {
+  return "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
+}
+
+function passwordCapabilityError(
+  c: Context,
+  error: unknown,
+  fallback: 'join_unavailable' | 'reset_unavailable',
+) {
+  if (error instanceof PasswordLifecycleError && [
+    'conflict',
+    'existing_account',
+    'already_enrolled',
+    'suspended',
+  ].includes(error.code)) {
+    return c.json({ error: error.code }, 409);
+  }
+  return c.json({ error: fallback }, 401);
+}
+
+function isValidRecoveryConfiguration(token: string): boolean {
+  try {
+    validRecoveryToken(token);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function validAuthFormPost(c: Context, expectedOrigin: string): boolean {
+  return authFormPostFailureReason(c, expectedOrigin) === null;
+}
+
+function authFormPostFailureReason(c: Context, expectedOrigin: string): string | null {
+  if (c.req.method !== 'POST') return 'method';
+  const fetchSite = c.req.header('sec-fetch-site');
+  let normalizedExpected: string;
+  try {
+    normalizedExpected = new URL(expectedOrigin).origin;
+  } catch {
+    return 'expected_origin';
+  }
+  const origin = c.req.header('origin');
+  if (origin === 'null' && isLoopbackHttpOrigin(normalizedExpected)) {
+    // Headless Chrome and embedded local-preview browsers can give a loopback
+    // document an opaque origin. The one-time recovery capability remains the
+    // setup authority; accept this browser quirk only on local HTTP previews.
+  } else if (origin) {
+    let normalizedActual: string;
+    try {
+      normalizedActual = new URL(origin).origin;
+    } catch {
+      return 'origin_invalid';
+    }
+    if (normalizedActual !== normalizedExpected) return 'origin_mismatch';
+  } else if (fetchSite !== 'same-origin') {
+    // Cloudflare Access can omit Origin on a protected browser form POST. In
+    // that case, Fetch Metadata is the remaining browser-authenticated CSRF
+    // signal: only an exact same-origin navigation is accepted. `same-site`
+    // is deliberately insufficient because a sibling subdomain is not this
+    // Admin origin.
+    return 'origin_missing';
+  }
+  if (fetchSite && fetchSite !== 'same-origin' && fetchSite !== 'same-site') return 'fetch_site';
+  const mediaType = c.req.header('content-type')?.split(';', 1)[0]?.trim().toLowerCase();
+  if (mediaType !== 'application/x-www-form-urlencoded') return 'content_type';
+  const length = Number(c.req.header('content-length') ?? 0);
+  if (!Number.isFinite(length) || length < 0 || length > MAX_AUTH_SETUP_BODY_BYTES) return 'content_length';
+  return null;
+}
+
+function isLoopbackHttpOrigin(value: string): boolean {
+  const url = new URL(value);
+  return url.protocol === 'http:' &&
+    ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+}
+
+function authSourceKey(c: Context): string {
+  return requestAuthSourceKey(c.req.raw);
+}
+
+async function readForm(c: Context): Promise<Record<string, string>> {
+  const raw = await c.req.text();
+  if (new TextEncoder().encode(raw).byteLength > MAX_AUTH_SETUP_BODY_BYTES) return {};
+  return Object.fromEntries(new URLSearchParams(raw));
+}
+
 // Per-isolate memo of the last origin we wrote to slack.publicUrl, so the
 // opportunistic persist below is a no-op read/write on the steady state (every
 // admin request would otherwise hit the settings store).
@@ -4373,31 +5519,97 @@ function isAdminPageGet(c: Context): boolean {
   );
 }
 
+function permissionForAdminRequest(c: Context, principal: AuthPrincipal): Permission {
+  if (principal.role === 'member' && isAdminPageGet(c)) return 'account.view';
+  if (c.req.path === '/admin/account' || c.req.path === '/admin/api/account' ||
+      c.req.path === '/admin/account/password' || c.req.path === '/admin/logout') {
+    return 'account.view';
+  }
+  if (c.req.path === '/admin/team' || c.req.path.startsWith('/admin/api/team')) return 'team.manage';
+  return 'admin.configure';
+}
+
+function machinePrincipalAllowed(c: Context): boolean {
+  const path = c.req.path;
+  return path.startsWith('/admin/api/') &&
+    path !== '/admin/api/account' &&
+    !path.startsWith('/admin/api/team');
+}
+
+function validJsonMutation(c: Context, canonicalOrigin: string): boolean {
+  const contentType = c.req.header('content-type')?.split(';', 1)[0]?.trim().toLowerCase();
+  const fetchSite = c.req.header('sec-fetch-site')?.toLowerCase();
+  return (
+    contentType === 'application/json' &&
+    c.req.header('origin') === canonicalOrigin &&
+    (fetchSite === undefined || fetchSite === 'same-origin' || fetchSite === 'same-site')
+  );
+}
+
 function isAdminLoginPost(c: Context): boolean {
   return c.req.method === 'POST' && c.req.path === '/admin/login';
 }
 
 async function readAdminLogin(
   c: Context,
-): Promise<{ token: string | undefined; returnTo: string }> {
+): Promise<{
+  token: string | undefined;
+  email: string | undefined;
+  password: string | undefined;
+  returnTo: string;
+}> {
   const contentType = c.req.header('content-type')?.split(';', 1)[0]?.trim().toLowerCase();
   const contentLength = Number(c.req.header('content-length'));
   if (
     contentType !== 'application/x-www-form-urlencoded' ||
     (Number.isFinite(contentLength) && contentLength > MAX_ADMIN_LOGIN_BODY_BYTES)
   ) {
-    return { token: undefined, returnTo: '/admin' };
+    return { token: undefined, email: undefined, password: undefined, returnTo: '/admin' };
   }
 
   const raw = await c.req.text();
   if (new TextEncoder().encode(raw).byteLength > MAX_ADMIN_LOGIN_BODY_BYTES) {
-    return { token: undefined, returnTo: '/admin' };
+    return { token: undefined, email: undefined, password: undefined, returnTo: '/admin' };
   }
   const params = new URLSearchParams(raw);
   return {
     token: params.get('token') ?? undefined,
+    email: params.get('email') ?? undefined,
+    password: params.get('password') ?? undefined,
     returnTo: safeAdminReturnPath(params.get('returnTo')),
   };
+}
+
+function isHumanAuthFormMutation(c: Context): boolean {
+  return c.req.method === 'POST' && [
+    '/admin/account/password',
+    '/admin/logout',
+  ].includes(c.req.path);
+}
+
+function preservedFormValue(value: unknown, maxLength: number): string {
+  return typeof value === 'string' ? value.slice(0, maxLength) : '';
+}
+
+function betterAuthJsonRequest(
+  source: Request,
+  baseURL: string,
+  path: string,
+  body: Record<string, unknown>,
+): Request {
+  const encoded = JSON.stringify(body);
+  const headers = new Headers(source.headers);
+  headers.set('origin', baseURL);
+  headers.set('content-type', 'application/json');
+  headers.set('content-length', String(new TextEncoder().encode(encoded).byteLength));
+  headers.set('sec-fetch-site', 'same-origin');
+  return new Request(`${baseURL}${path}`, { method: 'POST', headers, body: encoded });
+}
+
+function clearBetterAuthCookies(c: Context): void {
+  for (const name of ['__Secure-better-auth.session_token', 'better-auth.session_token']) {
+    deleteCookie(c, name, { path: '/', secure: name.startsWith('__Secure-') });
+  }
 }
 
 function safeAdminReturnPath(candidate: string | null | undefined): string {
@@ -5191,6 +6403,11 @@ function workersAiStatus(env: PlatformEnv | undefined): ProviderKeySource {
 function hasWorkersAiBinding(env: PlatformEnv | undefined): boolean {
   const ai = env?.AI;
   return Boolean(ai && typeof ai === 'object' && typeof (ai as { models?: unknown }).models === 'function');
+}
+
+function copyAuthResponseCookies(c: Context, headers: Headers | undefined): void {
+  if (!headers) return;
+  for (const cookie of setCookieValues(headers)) c.header('Set-Cookie', cookie, { append: true });
 }
 
 function providerApiKeyFromBody(body: unknown): string | undefined {

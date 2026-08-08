@@ -6,6 +6,11 @@ import { renderAdminPage } from '../src/admin/page.ts';
 import { connectorSkillsForConnections } from '../src/config/connector-skills.ts';
 import { seededAgents, seededAssignments } from '../src/config/seed.ts';
 
+test('admin navigation exposes the signed-in account surface', () => {
+  const html = renderAdminPage();
+  assert.match(html, /href="\/admin\/account">Account<\/a>/);
+});
+
 interface FakeResponse {
   ok: boolean;
   status: number;

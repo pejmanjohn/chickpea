@@ -15,7 +15,7 @@
  * failed deploy), and stdout is scanned line-by-line rather than buffered.
  */
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -45,7 +45,7 @@ const V2_AGENT_BINDINGS = Object.freeze([
   ['FLUE_CHICKPEA_ROUTINE_INTENT_V2_AGENT', 'FlueChickpeaRoutineIntentV2Agent'],
   ['FLUE_CHICKPEA_ROUTINE_EXECUTION_V2_AGENT', 'FlueChickpeaRoutineExecutionV2Agent'],
 ]);
-const PROTECTED_CLASSES = new Set(['TagStateStore', 'Sandbox', 'ContainerProxy']);
+const PROTECTED_CLASSES = new Set(['TagStateStore', 'Sandbox', 'ContainerProxy', 'AuthGuard']);
 
 function hasCustomConfigFlag(args) {
   return args.some((argument) =>
@@ -90,7 +90,7 @@ try {
   process.exit(1);
 }
 
-if (!skipBuild) {
+function buildCloudflareArtifact() {
   process.stdout.write('Building the Cloudflare artifact from current source...\n');
   const npmExecPath = process.env.npm_execpath;
   const buildCommand = npmExecPath
@@ -108,6 +108,8 @@ if (!skipBuild) {
     process.exit(build.status ?? 1);
   }
 }
+
+if (!skipBuild) buildCloudflareArtifact();
 
 function builtConfigPath() {
   try {
@@ -186,12 +188,21 @@ function validateFlue2CutoverArtifact(artifact) {
   );
   if (!hasBinding('TAG_STATE', 'TagStateStore')) failures.push('TAG_STATE/TagStateStore binding');
   if (!hasBinding('SANDBOX', 'Sandbox')) failures.push('SANDBOX/Sandbox binding');
+  if (!hasBinding('AUTH_GUARD', 'AuthGuard')) failures.push('AUTH_GUARD/AuthGuard binding');
   for (const [name, className] of V2_AGENT_BINDINGS) {
     if (!hasBinding(name, className)) failures.push(`${name}/${className} binding`);
   }
   const betaBindings = bindings.filter((binding) => BETA_FLUE_CLASSES.includes(binding.class_name));
   if (betaBindings.length) failures.push('no beta Flue Durable Object bindings');
   if ((config.workflows ?? []).length !== 0) failures.push('no Flue workflow bindings');
+  const authDb = (config.d1_databases ?? []).find((binding) => binding.binding === 'AUTH_DB');
+  if (!authDb || !String(authDb.migrations_dir ?? '').endsWith('migrations/better-auth')) {
+    failures.push('AUTH_DB with reviewed Better Auth migrations');
+  }
+  const authMigration = migrations.find((migration) => migration.tag === 'v7');
+  if (!authMigration || !sameMembers(authMigration.new_sqlite_classes ?? [], ['AuthGuard'])) {
+    failures.push('v7 AuthGuard SQLite class');
+  }
 
   if (config.observability?.traces?.enabled !== true) {
     failures.push('enabled Workers Traces for metadata-only Flue spans');
@@ -304,12 +315,14 @@ function validateAgentViewArtifact(artifact) {
   }
 }
 
+let builtArtifact;
 try {
   const artifact = requireBuiltArtifact();
   validateAgentViewArtifact(artifact);
   validateFlue2CutoverArtifact(artifact);
   validateRoutineArtifact(artifact);
   validateLedgerCanaryArtifact(artifact);
+  builtArtifact = artifact;
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));
   process.exit(1);
@@ -318,6 +331,135 @@ try {
 if (preflightOnly) {
   process.stdout.write('Permanent Cloudflare capability preflight passed. No deployment was attempted.\n');
   process.exit(0);
+}
+
+function deploymentResourceArgs() {
+  const args = [];
+  for (let index = 0; index < deployArgs.length; index += 1) {
+    const argument = deployArgs[index];
+    if (['--env', '-e', '--profile'].includes(argument)) {
+      args.push(argument, deployArgs[index + 1]);
+      index += 1;
+    } else if (argument.startsWith('--env=') || argument.startsWith('--profile=')) {
+      args.push(argument);
+    }
+  }
+  return args;
+}
+
+function ensureAuthDatabase(artifact) {
+  const authDb = (artifact.config.d1_databases ?? []).find(
+    (binding) => binding.binding === 'AUTH_DB',
+  );
+  if (typeof authDb?.database_id === 'string' && authDb.database_id.trim()) return artifact;
+  const existingId = existingAuthDatabaseId(authDb?.database_name || 'chickpea-auth-db');
+  if (existingId) {
+    process.stdout.write('Reusing the customer-owned AUTH_DB database...\n');
+    authDb.database_id = existingId;
+    writeFileSync(artifact.configPath, `${JSON.stringify(artifact.config, null, 2)}\n`);
+    return requireBuiltArtifact();
+  }
+  const rootConfig = path.join(projectRoot, 'wrangler.jsonc');
+  process.stdout.write('Provisioning the customer-owned AUTH_DB database...\n');
+  const provision = spawnSync(
+    process.execPath,
+    [
+      wranglerBin,
+      'd1',
+      'create',
+      authDb?.database_name || 'chickpea-auth-db',
+      '--binding',
+      'AUTH_DB',
+      '--update-config',
+      '--config',
+      rootConfig,
+      ...deploymentResourceArgs(),
+    ],
+    { cwd: projectRoot, stdio: 'inherit' },
+  );
+  if (provision.error) {
+    console.error(`Unable to start AUTH_DB provisioning: ${provision.error.message}`);
+    process.exit(1);
+  }
+  if (provision.status !== 0) {
+    console.error(
+      'AUTH_DB provisioning failed. If the database already exists, copy its ID into ' +
+      'wrangler.jsonc and rerun npm run deploy.',
+    );
+    process.exit(provision.status ?? 1);
+  }
+  buildCloudflareArtifact();
+  const rebuilt = requireBuiltArtifact();
+  validateFlue2CutoverArtifact(rebuilt);
+  const rebuiltAuthDb = (rebuilt.config.d1_databases ?? []).find(
+    (binding) => binding.binding === 'AUTH_DB',
+  );
+  if (typeof rebuiltAuthDb?.database_id !== 'string' || !rebuiltAuthDb.database_id.trim()) {
+    console.error('AUTH_DB provisioning did not persist a database ID in the deployment artifact.');
+    process.exit(1);
+  }
+  return rebuilt;
+}
+
+function existingAuthDatabaseId(databaseName) {
+  const list = spawnSync(
+    process.execPath,
+    [wranglerBin, 'd1', 'list', '--json', ...deploymentResourceArgs()],
+    { cwd: projectRoot, encoding: 'utf8', stdio: ['inherit', 'pipe', 'inherit'] },
+  );
+  if (list.error) {
+    console.error(`Unable to inspect AUTH_DB resources: ${list.error.message}`);
+    process.exit(1);
+  }
+  if (list.status !== 0) process.exit(list.status ?? 1);
+  let databases;
+  try {
+    databases = JSON.parse(list.stdout);
+  } catch {
+    console.error('AUTH_DB discovery returned an unreadable response.');
+    process.exit(1);
+  }
+  if (!Array.isArray(databases)) {
+    console.error('AUTH_DB discovery returned an unexpected response.');
+    process.exit(1);
+  }
+  const matches = databases.filter((database) => database?.name === databaseName);
+  if (matches.length > 1) {
+    console.error(`Multiple D1 databases are named ${databaseName}; refusing to guess.`);
+    process.exit(1);
+  }
+  const id = matches[0]?.uuid ?? matches[0]?.id;
+  return typeof id === 'string' && id.trim() ? id.trim() : undefined;
+}
+
+if (!deployArgs.includes('--dry-run')) builtArtifact = ensureAuthDatabase(builtArtifact);
+
+// D1 migrations are forward-only and idempotent. Apply them before the Worker
+// starts serving a schema it expects. If deploy later fails, rerunning this
+// command resumes from D1's migration ledger; never attempt schema rollback.
+if (!deployArgs.includes('--dry-run')) {
+  process.stdout.write('Applying reviewed Better Auth migrations to AUTH_DB...\n');
+  const environmentArgs = deploymentResourceArgs();
+  const migration = spawnSync(
+    process.execPath,
+    [
+      wranglerBin,
+      'd1',
+      'migrations',
+      'apply',
+      'AUTH_DB',
+      '--remote',
+      '--config',
+      builtArtifact.configPath,
+      ...environmentArgs,
+    ],
+    { cwd: projectRoot, stdio: 'inherit' },
+  );
+  if (migration.error) {
+    console.error(`Unable to start AUTH_DB migration: ${migration.error.message}`);
+    process.exit(1);
+  }
+  if (migration.status !== 0) process.exit(migration.status ?? 1);
 }
 
 const child = spawn(
@@ -384,12 +526,13 @@ child.on('close', (code) => {
         '  ✔ Deployed. Chickpea is live.',
         '',
         '  Next steps:',
-        `    1. Open  ${deployedUrl}/admin`,
-        '    2. Sign in with the TAG_ADMIN_TOKEN you set at deploy time.',
-        '    3. Click "Connect Slack" and follow the two steps.',
+        `    1. Open  ${deployedUrl}/admin/setup`,
+        '    2. Use CHICKPEA_RECOVERY_TOKEN once to create the first owner.',
+        '    3. Choose the owner email and password, then continue to Slack setup.',
         '',
-        '  New to the Slack side? Hand SETUP_AGENT.md to an AI agent,',
-        '  or follow it yourself — it has the exact console click path.',
+        '  Keep the recovery credential in a password manager after setup.',
+        '  It is not an Admin login. Losing it and the owner password prevents recovery.',
+        '  docs/authentication.md covers accounts and optional Access; SETUP_AGENT.md covers Slack.',
         RULE,
         '',
       ].join('\n'),
@@ -401,11 +544,11 @@ child.on('close', (code) => {
         RULE,
         '  ✔ Deploy finished.',
         '',
-        '  Your admin URL is:  https://<worker-name>.<your-subdomain>.workers.dev/admin',
+        '  Your setup URL is:  https://<worker-name>.<your-subdomain>.workers.dev/admin/setup',
         `    (worker name: ${workerName()} — find <your-subdomain> in the Cloudflare`,
         '     dashboard → Workers & Pages → your account subdomain)',
         '',
-        '  Then: sign in with your TAG_ADMIN_TOKEN and click "Connect Slack".',
+        '  Then: create the first owner at /admin/setup and continue to Slack.',
         RULE,
         '',
       ].join('\n'),

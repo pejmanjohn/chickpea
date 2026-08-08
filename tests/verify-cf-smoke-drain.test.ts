@@ -54,6 +54,22 @@ test('drain-only smoke accepts an authenticated all-zero deployment without expo
   assert.doesNotMatch(JSON.stringify(result), /operator-secret/);
 });
 
+test('drain-only smoke accepts a Better Auth browser session without a legacy token', async () => {
+  let cookie = '';
+  await runDrainCheck({
+    baseUrl: 'https://chickpea.example.test/',
+    sessionCookie: 'better-auth.session_token=opaque-session',
+    fetchImpl: async (_input: RequestInfo | URL, init?: RequestInit) => {
+      cookie = new Headers(init?.headers).get('cookie') ?? '';
+      return new Response(JSON.stringify(ZERO_STATUS), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    },
+  });
+  assert.equal(cookie, 'better-auth.session_token=opaque-session');
+});
+
 test('drain-only smoke blocks cutover on nonzero, malformed, or unauthorized state', async () => {
   await assert.rejects(
     () => runDrainCheck({
@@ -105,4 +121,20 @@ test('drain-only smoke blocks cutover on nonzero, malformed, or unauthorized sta
     }),
     /runtime drain request failed \(HTTP 401\)/,
   );
+});
+
+test('offline recovery credential is not treated as an Admin drain credential', async () => {
+  let authorization = '';
+  await assert.rejects(
+    () => runDrainCheck({
+      baseUrl: 'https://chickpea.example.test',
+      adminToken: 'offline-recovery-value',
+      fetchImpl: async (_input: RequestInfo | URL, init?: RequestInit) => {
+        authorization = new Headers(init?.headers).get('authorization') ?? '';
+        return new Response('unauthorized', { status: 401 });
+      },
+    }),
+    /runtime drain request failed \(HTTP 401\)/,
+  );
+  assert.equal(authorization, 'Bearer offline-recovery-value');
 });

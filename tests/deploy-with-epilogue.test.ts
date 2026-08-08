@@ -6,6 +6,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -36,8 +37,39 @@ function createHarness() {
       ${JSON.stringify(label)} + ':' + JSON.stringify(process.argv.slice(2)) + '\\n',
     );
   `;
-  writeFileSync(npmStub, commandLogger('npm'));
-  writeFileSync(wranglerStub, commandLogger('wrangler'));
+  writeFileSync(
+    npmStub,
+    commandLogger('npm') + `
+      import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+      import path from 'node:path';
+      if (process.argv[2] === 'run' && process.argv[3] === 'build') {
+        const rootConfig = path.join(process.cwd(), 'wrangler.jsonc');
+        const builtConfig = path.join(process.cwd(), 'dist-cf', 'chickpea', 'wrangler.json');
+        if (existsSync(rootConfig) && existsSync(builtConfig)) {
+          writeFileSync(builtConfig, readFileSync(rootConfig));
+        }
+      }
+    `,
+  );
+  writeFileSync(
+    wranglerStub,
+    commandLogger('wrangler') + `
+      import { readFileSync, writeFileSync } from 'node:fs';
+      const args = process.argv.slice(2);
+      if (args[0] === 'd1' && args[1] === 'list' && args.includes('--json')) {
+        process.stdout.write(process.env.DEPLOY_TEST_D1_LIST || '[]');
+        process.exit(0);
+      }
+      if (args[0] === 'd1' && args[1] === 'create' && args.includes('--update-config')) {
+        const configPath = args[args.indexOf('--config') + 1];
+        const config = JSON.parse(readFileSync(configPath, 'utf8'));
+        const authDb = config.d1_databases.find((entry) => entry.binding === 'AUTH_DB');
+        authDb.database_id = 'provisioned-database-id';
+        writeFileSync(configPath, JSON.stringify(config));
+      }
+      if (process.env.DEPLOY_TEST_URL) process.stdout.write(process.env.DEPLOY_TEST_URL + '\\n');
+    `,
+  );
   writeFileSync(
     path.join(root, 'slack-app-manifest.json'),
     JSON.stringify({ features: { agent_view: { agent_description: 'Test agent' } } }),
@@ -71,6 +103,89 @@ function runHarness(
   });
 }
 
+test('successful deploy hands a fresh install to built-in owner setup', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+
+  const result = runHarness(harness, ['--skip-build'], {
+    DEPLOY_TEST_URL: 'https://chickpea.example.workers.dev',
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /https:\/\/chickpea\.example\.workers\.dev\/admin\/setup/);
+  assert.match(result.stdout, /CHICKPEA_RECOVERY_TOKEN once/);
+  assert.match(result.stdout, /Choose the owner email and password/);
+  assert.doesNotMatch(result.stdout, /Cloudflare Access|Zero Trust/);
+  assert.match(result.stdout, /not an Admin login/);
+  assert.doesNotMatch(result.stdout, /Sign in with the TAG_ADMIN_TOKEN/);
+  const invoked = commands(harness.logPath);
+  assert.match(
+    invoked[0] ?? '',
+    /^wrangler:\["d1","migrations","apply","AUTH_DB","--remote","--config",".*\/dist-cf\/chickpea\/wrangler\.json"\]$/,
+  );
+  assert.equal(invoked[1], 'wrangler:["deploy"]');
+});
+
+test('fresh deploy provisions AUTH_DB before migrations and rebuilds the binding', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+  writeCutoverArtifact(harness, { databaseId: '' });
+
+  const result = runHarness(harness, ['--skip-build'], {
+    DEPLOY_TEST_URL: 'https://chickpea.example.workers.dev',
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Provisioning the customer-owned AUTH_DB database/);
+  const canonicalRoot = realpathSync(harness.root);
+  assert.deepEqual(commands(harness.logPath), [
+    'wrangler:["d1","list","--json"]',
+    `wrangler:["d1","create","chickpea-auth-db","--binding","AUTH_DB","--update-config","--config","${path.join(canonicalRoot, 'wrangler.jsonc')}"]`,
+    'npm:["run","build"]',
+    `wrangler:["d1","migrations","apply","AUTH_DB","--remote","--config","${path.join(canonicalRoot, 'dist-cf', 'chickpea', 'wrangler.json')}"]`,
+    'wrangler:["deploy"]',
+  ]);
+});
+
+test('fresh source reuses an existing named AUTH_DB without creating another', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+  writeCutoverArtifact(harness, { databaseId: '' });
+
+  const result = runHarness(harness, ['--skip-build'], {
+    DEPLOY_TEST_D1_LIST: JSON.stringify([{ name: 'chickpea-auth-db', uuid: 'existing-database-id' }]),
+    DEPLOY_TEST_URL: 'https://chickpea.example.workers.dev',
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Reusing the customer-owned AUTH_DB database/);
+  const canonicalRoot = realpathSync(harness.root);
+  assert.deepEqual(commands(harness.logPath), [
+    'wrangler:["d1","list","--json"]',
+    `wrangler:["d1","migrations","apply","AUTH_DB","--remote","--config","${path.join(canonicalRoot, 'dist-cf', 'chickpea', 'wrangler.json')}"]`,
+    'wrangler:["deploy"]',
+  ]);
+  const config = JSON.parse(readFileSync(path.join(
+    harness.root,
+    'dist-cf',
+    'chickpea',
+    'wrangler.json',
+  ), 'utf8'));
+  assert.equal(config.d1_databases[0].database_id, 'existing-database-id');
+});
+
+test('dry-run never provisions a missing AUTH_DB', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+  writeCutoverArtifact(harness, { databaseId: '' });
+
+  const result = runHarness(harness, ['--skip-build', '--dry-run']);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.doesNotMatch(result.stdout, /Provisioning the customer-owned AUTH_DB database/);
+  assert.deepEqual(commands(harness.logPath), ['wrangler:["deploy","--dry-run"]']);
+});
+
 function commands(logPath: string): string[] {
   return readFileSync(logPath, 'utf8').trim().split('\n');
 }
@@ -89,6 +204,7 @@ function writeCutoverArtifact(
     cloudflareTracer?: boolean;
     sandboxCommandRedaction?: boolean;
     agentViewArtifact?: boolean;
+    databaseId?: string;
   } = {},
 ) {
   const builtDir = path.join(harness.root, 'dist-cf', 'chickpea');
@@ -98,7 +214,7 @@ function writeCutoverArtifact(
   writeFileSync(path.join(redirectDir, 'config.json'), JSON.stringify({
     configPath: '../../dist-cf/chickpea/wrangler.json',
   }));
-  writeFileSync(path.join(builtDir, 'wrangler.json'), JSON.stringify({
+  const config = {
     name: 'chickpea',
     main: 'index.js',
     compatibility_date: options.compatibilityDate ?? '2026-06-01',
@@ -110,6 +226,7 @@ function writeCutoverArtifact(
     durable_objects: { bindings: [
       { name: 'TAG_STATE', class_name: 'TagStateStore' },
       { name: 'SANDBOX', class_name: 'Sandbox' },
+      { name: 'AUTH_GUARD', class_name: 'AuthGuard' },
       { name: 'FLUE_CHICKPEA_SLACK_V2_AGENT', class_name: 'FlueChickpeaSlackV2Agent' },
       ...(options.routineAgents === false ? [] : [
         {
@@ -122,22 +239,33 @@ function writeCutoverArtifact(
         },
       ]),
     ].filter((binding) => binding.name !== options.missingBinding) },
-    workflows: [],
-    migrations: [{
-      tag: 'v6',
-      new_sqlite_classes: [
-        'FlueChickpeaSlackV2Agent',
-        'FlueChickpeaRoutineIntentV2Agent',
-        'FlueChickpeaRoutineExecutionV2Agent',
-      ],
-      deleted_classes: options.deletedClasses ?? [
-        'FlueRegistry',
-        'FlueSlackThreadAgent',
-        'FlueRoutineIntentAgent',
-        'FlueRoutineWorkflow',
-      ],
+    d1_databases: [{
+      binding: 'AUTH_DB',
+      database_name: 'chickpea-auth-db',
+      database_id: options.databaseId ?? 'test-database-id',
+      migrations_dir: '../../migrations/better-auth',
     }],
-  }));
+    workflows: [],
+    migrations: [
+      {
+        tag: 'v6',
+        new_sqlite_classes: [
+          'FlueChickpeaSlackV2Agent',
+          'FlueChickpeaRoutineIntentV2Agent',
+          'FlueChickpeaRoutineExecutionV2Agent',
+        ],
+        deleted_classes: options.deletedClasses ?? [
+          'FlueRegistry',
+          'FlueSlackThreadAgent',
+          'FlueRoutineIntentAgent',
+          'FlueRoutineWorkflow',
+        ],
+      },
+      { tag: 'v7', new_sqlite_classes: ['AuthGuard'] },
+    ],
+  };
+  writeFileSync(path.join(builtDir, 'wrangler.json'), JSON.stringify(config));
+  writeFileSync(path.join(harness.root, 'wrangler.jsonc'), JSON.stringify(config));
   const canarySeams = options.completeCanary === false
     ? 'SLACK_TAG_LEDGER_CANARY_CHANNELS'
     : 'SLACK_TAG_LEDGER_CANARY_CHANNELS delivery_receipt_persist_unknown slack_agent_bindings';
@@ -213,7 +341,12 @@ test('Agent View is the permanent manifest contract and deploys without a cutove
   const result = runHarness(harness, ['--skip-build']);
 
   assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(commands(harness.logPath), ['wrangler:["deploy"]']);
+  const invoked = commands(harness.logPath);
+  assert.match(
+    invoked[0] ?? '',
+    /^wrangler:\["d1","migrations","apply","AUTH_DB","--remote","--config",".*\/dist-cf\/chickpea\/wrangler\.json"\]$/,
+  );
+  assert.equal(invoked[1], 'wrangler:["deploy"]');
 });
 
 test('Agent View manifest validation fails closed for unreadable, malformed, dual-view, and legacy manifests', (context) => {

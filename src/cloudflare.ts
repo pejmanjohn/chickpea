@@ -136,6 +136,9 @@ import { UsageStoreLogic } from './usage/store.ts';
 import { UsageStateError } from './usage/store-error.ts';
 import type { UsageRpcRequest, UsageRpcResponse, UsageStore } from './usage/types.ts';
 import { WorkStoreLogic } from './work/store.ts';
+import { IdentityStateError } from './identity/errors.ts';
+import { IdentityStoreLogic } from './identity/store.ts';
+import type { IdentityRpcRequest, IdentityRpcResponse } from './identity/types.ts';
 import {
   DurableRunDriver,
   runDriverRetryDelayMs,
@@ -152,6 +155,7 @@ import {
 } from './routines/admission.ts';
 import { RoutineScheduler } from './routines/scheduler.ts';
 import { executeRoutineOccurrence } from './routines/execution.ts';
+import { AuthGuardLogic } from './auth/auth-guard.ts';
 
 // The generated default captures model and tool content. Register the native
 // Cloudflare adapter explicitly for this Cloudflare-only entry so Workers
@@ -166,6 +170,23 @@ instrument(createCloudflareTracing({ content: false }));
 registerCloudflareBindingProvider(env.AI);
 
 export { ContainerProxy } from '@cloudflare/sandbox';
+
+/** Password KDF and unauthenticated throttle shard for the built-in auth path. */
+export class AuthGuard extends DurableObject {
+  readonly #logic = new AuthGuardLogic(this.ctx.storage);
+
+  hashPassword(password: string): Promise<string> {
+    return this.#logic.hashPassword(password);
+  }
+
+  verifyPassword(input: { hash: string; password: string }): Promise<boolean> {
+    return this.#logic.verifyPassword(input);
+  }
+
+  allow(bucket: string, limit: number, windowMs: number): boolean {
+    return this.#logic.allow(bucket, limit, windowMs);
+  }
+}
 
 type SandboxOutboundContext = {
   containerId: string;
@@ -476,6 +497,7 @@ class DoSqlStateDb implements StateDb {
 }
 
 interface TagStateStores {
+  identity: IdentityStoreLogic;
   config: ConfigStoreLogic;
   snapshots: SnapshotStoreLogic;
   slack: SlackStateLogic;
@@ -518,6 +540,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       // its own tables (and the config store runs migrations + seedOnce), so a
       // fresh DO is fully seeded before it answers its first RPC.
       const stores = {
+        identity: new IdentityStoreLogic(db),
         config: new ConfigStoreLogic(db),
         snapshots: new SnapshotStoreLogic(db),
         slack: new SlackStateLogic(db),
@@ -549,6 +572,12 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
   }
 
   // ── config: agents ───────────────────────────────────────────────────────
+
+  async identityExecute(
+    request: IdentityRpcRequest,
+  ): Promise<StateRpcResult<IdentityRpcResponse>> {
+    return this.call((stores) => stores.identity.execute(request));
+  }
 
   async configListAgents(): Promise<StateRpcResult<CustomAgentConfig[]>> {
     return this.call((stores) => stores.config.listAgents());
@@ -1549,6 +1578,12 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       if (err instanceof WorkspaceDefaultSlackIdentityProtectedError) {
         return rpcError('workspace_default_slack_identity_protected', err.message, {
           action: err.action,
+        });
+      }
+      if (err instanceof IdentityStateError) {
+        return rpcError('identity', err.message, {
+          identityCode: err.code,
+          ...err.details,
         });
       }
       if (err instanceof MemoryStateError) {

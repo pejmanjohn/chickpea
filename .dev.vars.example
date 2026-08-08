@@ -3,17 +3,20 @@
 # purpose: the /admin Slack-connection wizard collects and stores them after
 # deploy, once the worker URL exists.
 
-# Admin token gating every /admin route (page + API). The app returns 404 for
-# /admin until this is set. Any long random string works — generate one with:
+# Offline credential for first-owner setup and bounded recovery. It is never a
+# browser login token. Generate one with:
 #   openssl rand -hex 32
 # Deliberately empty: the Deploy to Cloudflare button pre-fills its prompt with
 # the value written here, and a placeholder would deploy as the real token.
-TAG_ADMIN_TOKEN=""
-USAGE_RUNTIME_RECORDING="1"
-USAGE_ESTIMATES="1"
-USAGE_ADMIN_UI="1"
-CHICKPEA_INSTALLATION_ID="chickpea"
-TAG_RUN_BODY_RETENTION_DAYS="30"
+CHICKPEA_RECOVERY_TOKEN=""
+
+# Legacy shared Admin login for existing installations during migration only.
+# Fresh deployments must not enable it:
+# TAG_ADMIN_TOKEN=""
+
+# Non-secret Cloudflare defaults live in wrangler.jsonc so the Deploy form has
+# exactly one active prompt. Override them with `wrangler deploy --var` only
+# when you deliberately need a different value.
 
 # Channel memory is always on for eligible assigned channels. There is no
 # memory feature flag or opt-out secret to configure.

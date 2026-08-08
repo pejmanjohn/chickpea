@@ -1,4 +1,5 @@
 export type AuditDomain =
+  | 'identity'
   | 'memory'
   | 'scheduled_work'
   | 'network_event'

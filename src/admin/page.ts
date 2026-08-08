@@ -2,6 +2,10 @@ import { isCloudflareTarget } from '../config/runtime-target.ts';
 import { CONNECTOR_LOGOS } from '../config/connector-logos.ts';
 import { CONNECTOR_PRESETS, GOOGLE_WORKSPACE_SERVICE_PRESETS } from '../config/presets.ts';
 import { GOOGLE_WORKSPACE_SCOPE_OPTIONS } from '../config/api-oauth-policy.ts';
+import {
+  PASSWORD_MIN_CODE_POINTS,
+  type PasswordPolicyErrorCode,
+} from '../auth/password-policy.ts';
 
 const ADMIN_FAVICON = `<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='8 9 32 32'%3E%3Ccircle cx='24' cy='25' r='15.5' fill='%23E3AC45'/%3E%3Ccircle cx='17' cy='17.5' r='4.2' fill='%23F4D084'/%3E%3Ccircle cx='18.5' cy='24' r='1.9' fill='%233B3220'/%3E%3Ccircle cx='29.5' cy='24' r='1.9' fill='%233B3220'/%3E%3Cpath d='M19 29 Q24 32.5 29 29' fill='none' stroke='%233B3220' stroke-width='1.8' stroke-linecap='round'/%3E%3Ccircle cx='15.5' cy='28.5' r='2' fill='%23DC8A4F' opacity='0.4'/%3E%3Ccircle cx='32.5' cy='28.5' r='2' fill='%23DC8A4F' opacity='0.4'/%3E%3C/svg%3E">`;
 const SLACK_LOGO_DATA_URL =
@@ -374,10 +378,12 @@ button, input, textarea, select { font: inherit; }
   border-radius: 11px;
   color: var(--text-2);
   cursor: pointer;
+  display: block;
   font-size: .8125rem;
   font-weight: 500;
   padding: 8px 10px;
   text-align: left;
+  text-decoration: none;
   width: 100%;
 }
 .section-nav-item:hover { background: #f6eedc; color: var(--text); }
@@ -1699,6 +1705,47 @@ details[open].advanced summary::before {
   .usage-contract { align-items: flex-start; flex-direction: column; }
 }
 
+/* ---- team and invitation admission ------------------------------------- */
+.team-main { display: grid; gap: 22px; }
+.team-hero { align-items: flex-start; display: flex; gap: 16px; justify-content: space-between; }
+.team-count { background: var(--ember-tint); border-radius: 999px; color: var(--ember-deep); font-size: .75rem; font-weight: 800; padding: 6px 10px; white-space: nowrap; }
+.team-card { background: var(--bg); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--card-shadow); padding: 18px; }
+.team-card h2 { color: var(--text); font-size: 1rem; margin: 0 0 5px; }
+.team-form { display: grid; gap: 12px; margin-top: 16px; }
+.team-form-row { display: grid; gap: 10px; grid-template-columns: minmax(0, 1fr) auto; }
+.team-list { display: grid; gap: 10px; }
+.team-row { align-items: center; background: rgba(255,255,255,.48); border: 1px solid var(--line); border-radius: 12px; display: grid; gap: 12px; grid-template-columns: minmax(0, 1fr) auto; padding: 14px; }
+.team-row-main { min-width: 0; }
+.team-row-title { color: var(--text); font-size: .875rem; font-weight: 800; overflow-wrap: anywhere; }
+.team-row-sub { color: var(--text-2); font-size: .75rem; line-height: 1.5; margin-top: 3px; overflow-wrap: anywhere; }
+.team-row-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 7px; justify-content: flex-end; }
+.team-status-control { min-width: 132px; width: auto; }
+.team-status-control select.input { border-radius: 11px; font-size: .75rem; min-height: 32px; padding-block: 6px; }
+.team-status-control select.input:disabled { cursor: not-allowed; opacity: .55; }
+.team-statuses { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.team-status { background: var(--well); border: 1px solid var(--line); border-radius: 999px; color: var(--text-2); font-size: .6875rem; font-weight: 800; padding: 4px 8px; }
+.team-status.active { background: var(--ok-tint); color: var(--ok); }
+.team-status.owner { background: var(--ember-tint); border-color: rgba(221,160,51,.34); color: var(--ember-deep); }
+.team-status.suspended { background: var(--ember-tint); color: var(--ember-deep); }
+.team-created-flash { align-items: center; background: var(--ember-tint); border: 1px solid rgba(176,84,21,.22); border-radius: 12px; display: flex; gap: 14px; justify-content: space-between; margin-top: 14px; padding: 12px 14px; }
+.team-created-flash strong { color: var(--text); display: block; font-size: .8125rem; }
+.team-created-flash span { color: var(--text-2); display: block; font-size: .75rem; margin-top: 2px; overflow-wrap: anywhere; }
+.team-show-once { background: var(--ember-tint); border: 1px solid rgba(176,84,21,.22); border-radius: 12px; margin-top: 14px; padding: 14px; }
+.team-show-once label { color: var(--text); display: block; font-size: .75rem; font-weight: 800; margin-bottom: 7px; }
+.team-link-row { align-items: center; display: flex; gap: 8px; }
+.team-link-row .input { flex: 1; min-width: 0; }
+.team-empty { color: var(--text-2); font-size: .8125rem; padding: 8px 0; }
+@media (max-width: 620px) {
+  .team-hero, .team-row { align-items: stretch; grid-template-columns: 1fr; }
+  .team-hero { flex-direction: column; }
+  .team-count { width: max-content; }
+  .team-form-row { grid-template-columns: 1fr; }
+  .team-row-actions { justify-content: flex-start; }
+  .team-status-control { flex: 1; min-width: 0; }
+  .team-created-flash { align-items: stretch; flex-direction: column; }
+  .team-link-row { align-items: stretch; flex-direction: column; }
+}
+
 </style>
 </head>
 <body>
@@ -1764,6 +1811,18 @@ details[open].advanced summary::before {
     // platform overview from a concrete Slack-channel detail without muddling
     // the reusable Profiles destination into the platform hierarchy.
     view: "channels",
+    // Team is Chickpea's authorization surface. Authentication providers prove
+    // identity, while Chickpea owns invitations and membership status.
+    team: null,
+    teamLoading: false,
+    teamError: "",
+    teamBusy: "",
+    teamNotice: "",
+    teamInviteLink: "",
+    teamInviteEmail: "",
+    teamInviteCopied: false,
+    teamResetLink: "",
+    teamInviteDraft: { email: "" },
     channelScreen: "overview",
     profileScreen: "list",
     profileLastAgentId: null,
@@ -2231,6 +2290,7 @@ details[open].advanced summary::before {
 
   function canonicalPath() {
     if (state.view === "usage") return "/admin/usage";
+    if (state.view === "team") return "/admin/team";
     if (state.view === "settings") {
       if (state.settingsSection === "slack") {
         var identityBase = "/admin/settings/slack/identities";
@@ -2280,6 +2340,7 @@ details[open].advanced summary::before {
     });
     state.leavePrompt = null;
     if (parts[1] === "usage" && USAGE_ADMIN_UI) { applyUsageQuery(location.search || ""); openUsage(); return; }
+    if (parts[1] === "team") { openTeam(); return; }
     if (parts[1] === "settings") {
       if (parts[2] === "slack" && parts[3] === "identities") {
         openSlackIdentitiesRoute(parts[4] || "", parts[5] || "");
@@ -2449,8 +2510,10 @@ details[open].advanced summary::before {
       '<div class="actions actions-list">' + connectedBadge +
       '<button type="button" class="btn btn-soft' + (primarySection() === "channels" ? " nav-active" : "") + '" data-action="open-channels" data-section-switcher="true">Channels</button>' +
       '<button type="button" class="btn btn-soft' + (primarySection() === "profiles" ? " nav-active" : "") + '" data-action="open-profiles" data-section-switcher="true">Profiles</button>' +
+      '<button type="button" class="btn btn-soft' + (primarySection() === "team" ? " nav-active" : "") + '" data-action="open-team" data-section-switcher="true">Team</button>' +
       (USAGE_ADMIN_UI ? '<button type="button" class="btn btn-soft' + (primarySection() === "usage" ? " nav-active" : "") + '" data-action="open-usage" data-section-switcher="true">Usage</button>' : '') +
-      '<button type="button" class="btn btn-soft' + (primarySection() === "settings" ? " nav-active" : "") + '" data-action="open-settings" data-section-switcher="true">Settings</button></div>' +
+      '<button type="button" class="btn btn-soft' + (primarySection() === "settings" ? " nav-active" : "") + '" data-action="open-settings" data-section-switcher="true">Settings</button>' +
+      '<a class="btn btn-soft" href="/admin/account">Account</a></div>' +
       "</header>";
   }
 
@@ -2462,7 +2525,8 @@ details[open].advanced summary::before {
     var active = primarySection();
     var sections = [
       { id: "channels", label: "Channels", action: "open-channels" },
-      { id: "profiles", label: "Profiles", action: "open-profiles" }
+      { id: "profiles", label: "Profiles", action: "open-profiles" },
+      { id: "team", label: "Team", action: "open-team" }
     ];
     if (USAGE_ADMIN_UI) sections.push({ id: "usage", label: "Usage", action: "open-usage" });
     sections.push({ id: "settings", label: "Settings", action: "open-settings" });
@@ -2471,7 +2535,7 @@ details[open].advanced summary::before {
         var selected = active === section.id;
         return '<button type="button" class="section-nav-item' + (selected ? " active" : "") + '" data-action="' + section.action + '" data-section-switcher="true"' +
           (selected ? ' aria-current="page"' : '') + '>' + section.label + '</button>';
-      }).join("") + '</nav>';
+      }).join("") + '<a class="section-nav-item" href="/admin/account">Account</a></nav>';
   }
 
   // The connected workspace's display name for a rail group header: the friendly
@@ -2484,6 +2548,7 @@ details[open].advanced summary::before {
 
   function railHtml() {
     if (state.view === "usage") return usageRailHtml();
+    if (state.view === "team") return teamRailHtml();
     if (state.view === "profiles") return profilesRailHtml();
     if (state.view === "settings") return settingsRailHtml();
     if (state.view === "audit") return state.auditDomain === "scheduled-work" ? scheduledWorkRailHtml() : auditRailHtml();
@@ -2538,6 +2603,73 @@ details[open].advanced summary::before {
       '<div class="rail-head"><span class="section-eyebrow">Usage</span></div>' +
       '<button type="button" class="chan-item active" data-action="open-usage"><span class="chan-name">Overview</span><span class="chan-meta">Spend and usage</span></button>' +
       '</div>' + sectionSwitcherHtml() + '</nav>';
+  }
+
+  function teamRailHtml() {
+    var members = state.team && state.team.members ? state.team.members : [];
+    var invitations = state.team && state.team.invitations ? state.team.invitations : [];
+    var pending = invitations.filter(function (invitation) {
+      return invitation.status === "pending" && Number(invitation.expiresAt) > Date.now();
+    });
+    return '<nav class="rail" aria-label="Team"><div class="rail-context">' +
+      '<div class="rail-head"><span class="section-eyebrow">Team</span></div>' +
+      '<button type="button" class="chan-item active" data-action="open-team" aria-current="page"><span class="chan-name">Members</span><span class="chan-meta">' + members.length + ' member' + (members.length === 1 ? '' : 's') + '</span></button>' +
+      '<div class="ws-row">Join links</div>' +
+      '<div class="empty" style="margin:8px; padding:12px;"><p class="hint" style="margin:0;">' + (pending.length ? pending.length + ' pending' : 'No pending links') + '</p></div>' +
+      '</div>' + sectionSwitcherHtml() + '</nav>';
+  }
+
+  function teamMainHtml() {
+    var team = state.team;
+    if (state.teamLoading && !team) {
+      return '<div class="empty"><h1 class="page-title">Loading your team&hellip;</h1><p class="hint">Reading Chickpea memberships and invitations.</p></div>';
+    }
+    if (!team) {
+      return '<div class="empty"><h1 class="page-title">Team is unavailable</h1><p class="error">' + esc(state.teamError || "Could not load team access.") + '</p><button type="button" class="btn btn-soft" data-action="team-retry">Retry</button></div>';
+    }
+    var members = team.members || [];
+    var invitations = team.invitations || [];
+    var pending = invitations.filter(function (invitation) {
+      return invitation.status === "pending" && Number(invitation.expiresAt) > Date.now();
+    });
+    var notice = state.teamError
+      ? '<p class="error" role="alert">' + esc(state.teamError) + '</p>'
+      : (state.teamNotice ? '<p class="hint" role="status">' + esc(state.teamNotice) + '</p>' : '');
+    var createdFlash = state.teamInviteLink && state.teamInviteEmail
+      ? '<div class="team-created-flash" role="status"><div><strong>Join link ready for</strong><span>' + esc(state.teamInviteEmail) + '</span></div><button type="button" class="btn btn-primary btn-sm" data-action="team-copy-link">' + (state.teamInviteCopied ? 'Copied' : 'Copy link') + '</button></div>'
+      : '';
+    var resetOnce = state.teamResetLink
+      ? '<div class="team-show-once" role="status"><label for="team-reset-link">Copy this password reset link now</label><p class="hint">Send it privately to the named teammate. It expires quickly and cannot be shown again after you leave or refresh.</p><div class="team-link-row"><input class="input mono" id="team-reset-link" readonly value="' + esc(state.teamResetLink) + '"><button type="button" class="btn btn-primary btn-sm" data-action="team-copy-reset">Copy link</button><button type="button" class="btn btn-ghost btn-sm" data-action="team-dismiss-reset">Done</button></div></div>'
+      : '';
+    return '<div class="team-hero"><div><p class="section-eyebrow">People &amp; access</p><h1 class="page-title">Your team</h1><p class="hint">Everyone you invite can administer this Chickpea workspace. The person who created it remains the owner.</p></div><span class="team-count">' + members.length + ' member' + (members.length === 1 ? '' : 's') + '</span></div>' +
+      notice +
+      '<section class="team-card" aria-labelledby="invite-heading"><h2 id="invite-heading">Create a teammate join link</h2><p class="hint">Chickpea does not send email. Enter the exact email address, then copy and share the private link yourself.</p><form class="team-form" data-action="team-invite-form"><label class="field-label" for="team-invite-email">Email</label><div class="team-form-row"><input class="input" id="team-invite-email" name="email" data-action="team-invite-email" type="email" autocomplete="email" required placeholder="teammate@example.com" value="' + esc(state.teamInviteDraft.email) + '"><button type="submit" class="btn btn-primary"' + (state.teamBusy ? ' disabled' : '') + '>Create link</button></div></form>' + createdFlash + '</section>' +
+      resetOnce + '<section class="team-card" aria-labelledby="members-heading"><h2 id="members-heading">Members</h2><p class="hint">Suspension takes effect on the next Chickpea request, even if the signed-in browser stays open.</p><div class="team-list">' + (members.length ? members.map(teamMemberRowHtml).join("") : '<p class="team-empty">No memberships yet.</p>') + '</div></section>' +
+      '<section class="team-card" aria-labelledby="invitations-heading"><h2 id="invitations-heading">Pending join links</h2><p class="hint">Each teammate has one private link. Copy it whenever needed, or revoke it to stop access.</p><div class="team-list">' + (pending.length ? pending.map(teamInvitationRowHtml).join("") : '<p class="team-empty">No pending join links.</p>') + '</div></section>';
+  }
+
+  function teamMemberRowHtml(member) {
+    var viewer = state.team && state.team.viewer ? state.team.viewer : { role: "admin", membershipId: "" };
+    var canManageOwner = viewer.role === "owner";
+    var busy = state.teamBusy === "member:" + member.id;
+    var statusSelect = '<span class="select-wrap team-status-control"><select class="input" name="membership-status-' + esc(member.id) + '" aria-label="Status for ' + esc(member.email || "member") + '" data-action="team-member-status" data-membership="' + esc(member.id) + '"' + (busy || (member.role === "owner" && !canManageOwner) ? ' disabled' : '') + '>' + ["active", "suspended", "removed"].map(function (status) {
+      return '<option value="' + status + '"' + (member.status === status ? ' selected' : '') + '>' + status.charAt(0).toUpperCase() + status.slice(1) + '</option>';
+    }).join("") + '</select>' + icon("chevron-down", "select-caret") + '</span>';
+    var resetButton = '<button type="button" class="btn btn-soft btn-sm" data-action="team-reset-password" data-membership="' + esc(member.id) + '"' + (busy || (member.role === "owner" && !canManageOwner) ? ' disabled' : '') + '>Reset password</button>';
+    var ownerMarker = member.role === "owner" ? '<span class="team-status owner">Owner</span>' : '';
+    return '<article class="team-row"><div class="team-row-main"><div class="team-row-title">' + esc(member.displayName || member.email || "Teammate") + (viewer.membershipId === member.id ? ' <span class="hint">(you)</span>' : '') + '</div><div class="team-row-sub">' + esc(member.email || "No email") + '</div><div class="team-statuses">' + ownerMarker + '<span class="team-status ' + (member.status === "active" ? "active" : member.status === "suspended" ? "suspended" : "") + '">' + esc(member.status) + '</span></div></div><div class="team-row-actions">' + statusSelect + resetButton + '</div></article>';
+  }
+
+  function teamInvitationRowHtml(invitation) {
+    var busy = state.teamBusy === "invite:" + invitation.id;
+    var copyAction = invitation.inviteLink
+      ? '<button type="button" class="btn btn-soft btn-sm" data-action="team-copy-invitation" data-link="' + esc(invitation.inviteLink) + '"' + (busy ? ' disabled' : '') + '>Copy link</button>'
+      : '';
+    var actions = copyAction + '<button type="button" class="btn btn-danger btn-sm" data-action="team-revoke" data-invitation="' + esc(invitation.id) + '"' + (busy ? ' disabled' : '') + '>Revoke</button>';
+    var guidance = invitation.inviteLink
+      ? ''
+      : '<div class="team-row-sub">This link was created with older deployment credentials and cannot be displayed. Revoke it before creating a replacement.</div>';
+    return '<article class="team-row"><div class="team-row-main"><div class="team-row-title">' + esc(invitation.email) + '</div><div class="team-row-sub">Expires ' + esc(new Date(invitation.expiresAt).toLocaleString()) + '</div><div class="team-statuses"><span class="team-status">Waiting to join</span></div>' + guidance + '</div><div class="team-row-actions">' + actions + '</div></article>';
   }
 
   function profilesRailHtml() {
@@ -2708,6 +2840,131 @@ details[open].advanced summary::before {
       if (filterName) params.set(filterName, state.usageOperationFilter.value);
     }
     return path + "?" + params.toString();
+  }
+
+  function openTeam() {
+    var entering = state.view !== "team";
+    state.view = "team";
+    state.profileScreen = "list";
+    state.disableConfirm = false;
+    state.teamError = "";
+    state.teamNotice = "";
+    if (entering) {
+      state.teamInviteLink = "";
+      state.teamInviteEmail = "";
+      state.teamInviteCopied = false;
+      state.teamResetLink = "";
+    }
+    render();
+    loadTeam();
+  }
+
+  function loadTeam() {
+    state.teamLoading = true;
+    state.teamError = "";
+    render();
+    return api("/admin/api/team").then(function (body) {
+      state.team = body;
+      state.teamLoading = false;
+      render();
+      return body;
+    }).catch(function (error) {
+      state.teamLoading = false;
+      state.teamError = error.serverMessage || error.message || "Could not load team access.";
+      render();
+      return null;
+    });
+  }
+
+  function finishTeamMutation(message, result) {
+    if (result && result.inviteLink) state.teamInviteLink = result.inviteLink;
+    if (result && result.resetLink) state.teamResetLink = result.resetLink;
+    state.teamNotice = message;
+    return loadTeam().then(function () {
+      state.teamBusy = "";
+      render();
+    });
+  }
+
+  function teamMutationErrorText(error) {
+    var message = error && (error.serverMessage || error.message);
+    var networkFailure = !error || error.status == null && (
+      message === "Failed to fetch" ||
+      message === "Load failed" ||
+      message === "NetworkError when attempting to fetch resource."
+    );
+    if (networkFailure) {
+      return "Chickpea could not be reached. Reload this page to check whether the change succeeded before trying again.";
+    }
+    return message || "The team change could not be saved.";
+  }
+
+  function failTeamMutation(error) {
+    state.teamBusy = "";
+    state.teamError = teamMutationErrorText(error);
+    render();
+  }
+
+  function createTeamInvitation() {
+    if (state.teamBusy) return;
+    var email = String(state.teamInviteDraft.email || "").trim();
+    if (!email || email.indexOf("@") < 1) {
+      state.teamError = "Enter a valid teammate email.";
+      render();
+      return;
+    }
+    state.teamBusy = "invite:create";
+    state.teamError = "";
+    state.teamNotice = "";
+    state.teamInviteLink = "";
+    state.teamInviteEmail = "";
+    state.teamInviteCopied = false;
+    render();
+    postJson("/admin/api/team/invitations", "POST", { email: email }).then(function (result) {
+      state.teamInviteDraft.email = "";
+      state.teamInviteEmail = result && result.invitation && result.invitation.email ? result.invitation.email : email;
+      return finishTeamMutation("", result);
+    }).catch(failTeamMutation);
+  }
+
+  function revokeTeamInvitation(invitationId) {
+    if (state.teamBusy || !invitationId) return;
+    state.teamBusy = "invite:" + invitationId;
+    state.teamError = "";
+    state.teamNotice = "";
+    state.teamInviteLink = "";
+    state.teamInviteEmail = "";
+    state.teamInviteCopied = false;
+    render();
+    var path = "/admin/api/team/invitations/" + encodeURIComponent(invitationId);
+    api(path, { method: "DELETE" })
+      .then(function (result) { return finishTeamMutation("Join link revoked.", result); })
+      .catch(failTeamMutation);
+  }
+
+  function updateTeamMembership(membershipId, field, value) {
+    if (state.teamBusy || !membershipId) return;
+    state.teamBusy = "member:" + membershipId;
+    state.teamError = "";
+    state.teamNotice = "";
+    render();
+    var body = {};
+    body[field] = value;
+    postJson("/admin/api/team/memberships/" + encodeURIComponent(membershipId), "PATCH", body)
+      .then(function () { return finishTeamMutation("Membership updated.", null); })
+      .catch(failTeamMutation);
+  }
+
+  function createTeamPasswordReset(membershipId) {
+    if (state.teamBusy || !membershipId) return;
+    state.teamBusy = "member:" + membershipId;
+    state.teamError = "";
+    state.teamNotice = "";
+    state.teamResetLink = "";
+    render();
+    postJson("/admin/api/team/memberships/" + encodeURIComponent(membershipId) + "/reset", "POST", {})
+      .then(function (result) { return finishTeamMutation("Password reset created. Copy the private link and send it to the teammate.", result); })
+      .catch(failTeamMutation);
   }
 
   function openUsage() {
@@ -2932,6 +3189,9 @@ details[open].advanced summary::before {
   function mainHtml() {
     if (state.view === "usage") {
       return '<main class="main"><div class="main-inner usage-main">' + usageMainHtml() + '</div></main>';
+    }
+    if (state.view === "team") {
+      return '<main class="main"><div class="main-inner team-main">' + teamMainHtml() + '</div></main>';
     }
     // Profiles is a first-class main-panel destination (master-detail, per cards
     // 09-12) that takes precedence over the channel chrome — reachable from the
@@ -8995,7 +9255,7 @@ details[open].advanced summary::before {
       return;
     }
     if (state.view === "audit" && state.memoryDirty && (
-      action === "open-channels" || action === "open-profiles" || action === "open-settings" ||
+      action === "open-channels" || action === "open-profiles" || action === "open-team" || action === "open-settings" ||
       action === "open-audit" || action === "open-usage" || action === "go-home" || action === "audit-tab-scheduled"
     )) {
       state.memoryError = "Save or discard the current memory draft before navigating away.";
@@ -9054,6 +9314,44 @@ details[open].advanced summary::before {
         requestedProfileId = state.editingAgentId || state.profileLastAgentId || (state.agents[0] && state.agents[0].id) || "";
       }
       enterProfiles(requestedProfileId);
+    }
+    if (action === "open-team") { openTeam(); }
+    if (action === "team-retry") { loadTeam(); }
+    if (action === "team-dismiss-reset") { state.teamResetLink = ""; state.teamNotice = ""; render(); }
+    if (action === "team-copy-link" && state.teamInviteLink) {
+      navigator.clipboard.writeText(state.teamInviteLink).then(function () {
+        state.teamInviteCopied = true;
+        render();
+      }).catch(function () {
+        state.teamError = "Copy failed. Select the link and copy it manually.";
+        render();
+      });
+    }
+    if (action === "team-copy-invitation") {
+      var invitationLink = target.getAttribute("data-link") || "";
+      if (invitationLink) {
+        navigator.clipboard.writeText(invitationLink).then(function () {
+          state.teamNotice = "Join link copied.";
+          render();
+        }).catch(function () {
+          state.teamError = "Copy failed. Reload the page and try again.";
+          render();
+        });
+      } else {
+        state.teamError = "This join link is no longer available to copy. Revoke it before creating a replacement.";
+        render();
+      }
+    }
+    if (action === "team-revoke") { revokeTeamInvitation(target.getAttribute("data-invitation") || ""); }
+    if (action === "team-reset-password") { createTeamPasswordReset(target.getAttribute("data-membership") || ""); }
+    if (action === "team-copy-reset" && state.teamResetLink) {
+      navigator.clipboard.writeText(state.teamResetLink).then(function () {
+        state.teamNotice = "Password reset link copied.";
+        render();
+      }).catch(function () {
+        state.teamError = "Copy failed. Select the reset link and copy it manually.";
+        render();
+      });
     }
     if (action === "open-usage" && USAGE_ADMIN_UI) { openUsage(); }
     if (action === "open-audit") { openAuditLogs("", "", ""); }
@@ -9625,6 +9923,10 @@ details[open].advanced summary::before {
   document.addEventListener("input", function (event) {
     var target = event.target;
     var action = target.getAttribute && target.getAttribute("data-action");
+    if (action === "team-invite-email") {
+      state.teamInviteDraft.email = target.value;
+      state.teamError = "";
+    }
     if (state.memoryDraft) {
       if (action === "memory-description") { state.memoryDraft.description = target.value; markMemoryDirty(); }
       if (action === "memory-body") { state.memoryDraft.body = target.value; markMemoryDirty(); }
@@ -9757,6 +10059,9 @@ details[open].advanced summary::before {
     if (action === "slack-identity-create-dm") state.slackIdentityCreateDraft.initialDmAgentId = target.value;
     if (action === "slack-identity-dm-state") state.slackIdentityDmDraft.dmState = target.value === "on" ? "on" : "off";
     if (action === "slack-identity-dm-agent") state.slackIdentityDmDraft.dmAgentId = target.value;
+    if (action === "team-member-status") {
+      updateTeamMembership(target.getAttribute("data-membership") || "", "status", target.value);
+    }
     if (action === "usage-range") {
       var usagePeriod = String(target.value || "last_30_days");
       var allowedUsagePeriods = ["last_7_days", "last_30_days", "last_90_days", "this_month", "last_month", "this_week", "last_week", "custom"];
@@ -9974,6 +10279,7 @@ details[open].advanced summary::before {
     var action = form.getAttribute("data-action");
     if (!action) return;
     event.preventDefault();
+    if (action === "team-invite-form") createTeamInvitation();
     if (action === "add-channel-form") addChannel(new FormData(form));
     if (action === "slack-connect-form") submitSlackConnection(new FormData(form));
     if (action === "slack-identity-create-form") createManagedSlackIdentity(new FormData(form));
@@ -11630,7 +11936,7 @@ details[open].advanced summary::before {
   // The four ways to leave the profile editor: the top-nav Profiles/Settings,
   // the brand-home logo, and the "<- Profiles" back link.
   function isEditLeaveAction(action) {
-    return action === "open-channels" || action === "open-profiles" || action === "open-settings" ||
+    return action === "open-channels" || action === "open-profiles" || action === "open-team" || action === "open-settings" ||
       action === "open-audit" || action === "open-usage" || action === "go-home" || action === "profiles-back" ||
       action === "edit-profile" || action === "new-profile";
   }
@@ -11664,6 +11970,8 @@ details[open].advanced summary::before {
       openAuditLogs("", "", "");
     } else if (action === "open-usage") {
       openUsage();
+    } else if (action === "open-team") {
+      openTeam();
     } else if (action === "go-home" || action === "open-channels") {
       openChannels();
     } else if (action === "edit-profile") {
@@ -12102,6 +12410,436 @@ button:hover { background:var(--ember-bright); }
 </form>
 </body>
 </html>`;
+}
+
+export function renderPasswordLogin(
+  options: { invalid?: boolean; returnTo?: string; email?: string } = {},
+): string {
+  const error = options.invalid
+    ? '<div class="error" id="auth-error" role="alert" tabindex="-1">Email or password was not accepted.</div>'
+    : '';
+  return renderPasswordPage({
+    title: 'Sign in to Chickpea',
+    eyebrow: 'Welcome back',
+    error,
+    body: `<form method="post" action="/admin/login">
+      <label for="email">Email</label>
+      <input id="email" name="email" type="email" autocomplete="username" required autofocus value="${escapeHtmlAttribute(options.email ?? '')}">
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required ${options.invalid ? 'aria-describedby="auth-error"' : ''}>
+      <input name="returnTo" type="hidden" value="${escapeHtmlAttribute(options.returnTo ?? '/admin')}">
+      <button type="submit">Sign in</button>
+    </form>`,
+  });
+}
+
+export function renderPasswordOwnerSetupPage(
+  options: {
+    error?: boolean | PasswordPolicyErrorCode;
+    organizationName?: string;
+    ownerEmail?: string;
+  } = {},
+): string {
+  const errorMessage = options.error === 'too_short'
+    ? `Use a password with at least ${PASSWORD_MIN_CODE_POINTS} characters.`
+    : options.error === 'too_long'
+      ? 'Use a password with no more than 128 characters.'
+      : options.error === 'common'
+        ? 'That password is too common. Choose a less predictable password.'
+        : options.error === 'context'
+          ? 'Do not include Chickpea, your organization name, or the name from your email address in the password.'
+          : options.error
+            ? 'Setup could not be completed. Check the account details and try again.'
+            : '';
+  const error = errorMessage
+    ? `<div class="error" id="auth-error" role="alert" tabindex="-1">${escapeHtmlAttribute(errorMessage)}</div>`
+    : '';
+  return renderPasswordPage({
+    title: 'Create your Chickpea workspace',
+    eyebrow: 'Your deployment is ready',
+    error,
+    intro: 'Create the first owner account. No email service is required.',
+    body: `<p id="owner-setup-status" role="status" aria-live="polite">Opening your private setup link&hellip;</p>
+    <section id="owner-setup-fallback" hidden>
+      <label for="owner-setup-manual-capability">Setup code</label>
+      <input id="owner-setup-manual-capability" type="password" autocomplete="off">
+      <p class="field-help">Paste the setup code from your deploy results.</p>
+      <p id="owner-setup-manual-error" class="field-error" role="alert" aria-live="polite" hidden></p>
+      <button id="owner-setup-manual-continue" type="button">Continue to account setup</button>
+    </section>
+    <form id="owner-setup-form" method="post" action="/admin/setup" hidden>
+      <label for="organization-name">Organization name</label>
+      <input id="organization-name" name="organizationName" autocomplete="organization" required maxlength="128" value="${escapeHtmlAttribute(options.organizationName ?? '')}">
+      <label for="owner-email">Email</label>
+      <input id="owner-email" name="ownerEmail" type="email" autocomplete="username" required maxlength="320" value="${escapeHtmlAttribute(options.ownerEmail ?? '')}">
+      <label for="password">Password <span>${PASSWORD_MIN_CODE_POINTS} or more characters</span></label>
+      <input id="password" name="password" type="password" autocomplete="new-password" required minlength="${PASSWORD_MIN_CODE_POINTS}" maxlength="256" aria-describedby="password-help password-error">
+      <p id="password-help" class="field-help">Use at least ${PASSWORD_MIN_CODE_POINTS} characters. Spaces are allowed.</p>
+      <p id="password-error" class="field-error" role="alert" aria-live="polite" hidden></p>
+      <input id="owner-setup-capability" name="recoveryToken" type="hidden">
+      <button id="owner-setup-submit" type="submit" disabled>Create owner account</button>
+    </form><script src="/admin/setup/client.js" defer></script>`,
+  });
+}
+
+export function renderPasswordChangePage(options: { error?: boolean } = {}): string {
+  const error = options.error
+    ? '<div class="error" id="auth-error" role="alert" tabindex="-1">Password could not be changed.</div>'
+    : '';
+  return renderPasswordPage({
+    title: 'Change your password',
+    eyebrow: 'Account security',
+    error,
+    intro: 'After this change, Chickpea signs out every browser session and asks you to sign in again.',
+    body: `<form method="post" action="/admin/account/password">
+      <label for="current-password">Current password</label>
+      <input id="current-password" name="currentPassword" type="password" autocomplete="current-password" required>
+      <label for="new-password">New password <span>${PASSWORD_MIN_CODE_POINTS} or more characters</span></label>
+      <input id="new-password" name="newPassword" type="password" autocomplete="new-password" required minlength="${PASSWORD_MIN_CODE_POINTS}" maxlength="256" aria-describedby="${options.error ? 'auth-error ' : ''}password-help password-error">
+      <p id="password-help" class="field-help">Use at least ${PASSWORD_MIN_CODE_POINTS} characters. Spaces are allowed.</p>
+      <p id="password-error" class="field-error" role="alert" aria-live="polite" hidden></p>
+      <button type="submit">Change password and sign out</button>
+    </form><script src="/admin/password/client.js" defer></script>`,
+  });
+}
+
+export function renderPasswordRecoveryPage(options: { error?: boolean; success?: boolean } = {}): string {
+  const error = options.error
+    ? '<div class="error" id="auth-error" role="alert" tabindex="-1">Recovery could not be completed.</div>'
+    : '';
+  if (options.success) {
+    return renderPasswordPage({
+      title: 'Password recovered',
+      eyebrow: 'Recovery complete',
+      intro: 'All prior browser sessions were revoked. Sign in normally with the new password.',
+      body: '<a class="primary" href="/admin/login">Continue to sign in</a>',
+    });
+  }
+  return renderPasswordPage({
+    title: 'Recover the owner account',
+    eyebrow: 'Offline recovery',
+    error,
+    intro: 'This does not sign you in. It replaces one owner password using the deployment recovery secret.',
+    body: `<form method="post" action="/admin/recovery">
+      <label for="owner-email">Owner email</label>
+      <input id="owner-email" name="ownerEmail" type="email" autocomplete="username" required maxlength="320">
+      <label for="new-password">New password <span>${PASSWORD_MIN_CODE_POINTS} or more characters</span></label>
+      <input id="new-password" name="newPassword" type="password" autocomplete="new-password" required minlength="${PASSWORD_MIN_CODE_POINTS}" maxlength="256" aria-describedby="password-help password-error">
+      <p id="password-help" class="field-help">Use at least ${PASSWORD_MIN_CODE_POINTS} characters. Spaces are allowed.</p>
+      <p id="password-error" class="field-error" role="alert" aria-live="polite" hidden></p>
+      <label for="recovery-token">Deployment recovery secret</label>
+      <input id="recovery-token" name="recoveryToken" type="password" autocomplete="off" required ${options.error ? 'aria-describedby="auth-error"' : ''}>
+      <button type="submit">Replace owner password</button>
+    </form><script src="/admin/password/client.js" defer></script>`,
+  });
+}
+
+export function passwordFormClientScript(): string {
+  return `(function(){
+    var input=document.getElementById('new-password');
+    var error=document.getElementById('password-error');
+    if(!input||!error)return;
+    function validate(){
+      var remaining=Math.max(0,${PASSWORD_MIN_CODE_POINTS}-Array.from(input.value).length);
+      error.textContent=remaining?remaining+' more character'+(remaining===1?'':'s')+' needed.':'';
+      error.hidden=!remaining||!input.value;
+      if(error.hidden)input.removeAttribute('aria-invalid');else input.setAttribute('aria-invalid','true');
+      return remaining===0;
+    }
+    input.addEventListener('input',validate);
+    input.form&&input.form.addEventListener('submit',function(event){if(!validate()){event.preventDefault();input.focus();}});
+  })();`;
+}
+
+function renderPasswordPage(input: {
+  title: string;
+  eyebrow: string;
+  body: string;
+  intro?: string;
+  error?: string;
+}): string {
+  return `<!doctype html><html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Chickpea · ${escapeHtmlAttribute(input.title)}</title>${ADMIN_FAVICON}
+<style>
+:root{--canvas:#f4ebd8;--card:#fffdf6;--ink:#3b3220;--muted:#6b5c42;--gold:#dda033;--line:rgba(59,50,32,.16);--danger:#a83f34}*{box-sizing:border-box}body{margin:0;min-height:100dvh;display:grid;place-items:center;background:var(--canvas);color:var(--ink);font-family:system-ui,-apple-system,sans-serif;padding:16px}main{width:min(520px,100%);background:var(--card);border:1px solid var(--line);border-radius:20px;padding:clamp(22px,6vw,42px);box-shadow:0 12px 34px rgba(59,50,32,.09)}.eyebrow{margin:0;color:var(--muted);font-size:.78rem;font-weight:800;text-transform:uppercase;letter-spacing:.08em}h1{margin:7px 0 9px;font-size:clamp(1.7rem,7vw,2.45rem);line-height:1.08}p{color:var(--muted);line-height:1.55}label{display:flex;justify-content:space-between;gap:12px;margin:17px 0 6px;font-weight:750}label span{color:var(--muted);font-size:.76rem;font-weight:500}input{width:100%;min-height:46px;border:1px solid var(--line);border-radius:11px;background:#fff;padding:11px 12px;font:inherit}input[aria-invalid="true"]{border-color:var(--danger)}.field-help,.field-error{margin:6px 0 0;font-size:.82rem;line-height:1.4}.field-error{color:var(--danger);font-weight:700}button,.primary{display:flex;align-items:center;justify-content:center;width:100%;min-height:46px;margin-top:22px;border:0;border-radius:12px;background:var(--gold);color:var(--ink);font:inherit;font-weight:800;text-decoration:none;cursor:pointer;box-shadow:0 2.5px 0 #b27e1f}button:disabled{cursor:not-allowed;opacity:.46;box-shadow:none}input:focus-visible,button:focus-visible,.primary:focus-visible{outline:3px solid rgba(176,84,21,.42);outline-offset:2px}.error{margin:16px 0;border-left:4px solid var(--danger);background:#fff3ee;color:var(--danger);padding:12px;font-weight:700;line-height:1.45}[hidden]{display:none!important}@media(max-width:360px){body{padding:8px}main{border-radius:14px;padding:20px 16px}label{display:block}label span{display:block;margin-top:2px}}
+</style></head><body><main aria-labelledby="auth-title"><p class="eyebrow">${escapeHtmlAttribute(input.eyebrow)}</p><h1 id="auth-title">${escapeHtmlAttribute(input.title)}</h1>${input.intro ? `<p>${escapeHtmlAttribute(input.intro)}</p>` : ''}${input.error ?? ''}${input.body}</main></body></html>`;
+}
+
+export function renderAuthSetupPage(
+  options: {
+    state: 'fresh' | 'access_pending';
+    error?: boolean;
+    origin?: string;
+    issuer?: string | null;
+    audience?: string | null;
+  } = { state: 'fresh' },
+): string {
+  const heading = options.state === 'fresh'
+    ? 'Set up your Chickpea workspace'
+    : 'Verify Cloudflare Access';
+  const error = options.error
+    ? '<p class="error" role="alert">Setup could not be verified. Check the values and try again.</p>'
+    : '';
+  const origin = escapeHtmlAttribute(options.origin ?? 'https://your-worker.workers.dev');
+  const issuer = escapeHtmlAttribute(options.issuer ?? '');
+  const audience = escapeHtmlAttribute(options.audience ?? '');
+  const verify = options.state === 'access_pending'
+    ? `<section class="verify" aria-labelledby="verify-heading">
+        <span class="status">Configuration saved</span>
+        <h2 id="verify-heading">Continue through Access</h2>
+        <p>Open the verification URL in this browser. Cloudflare should ask you to sign in, then Chickpea will match the signed email to the owner claim.</p>
+        <a class="primary" href="/admin/setup/verify">Verify identity through Access</a>
+        <p class="small">If you return here after an interruption, this step resumes from the saved configuration. It never skips the Access assertion.</p>
+      </section>`
+    : '';
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chickpea · Secure setup</title>
+${ADMIN_FAVICON}
+<style>
+:root { --canvas:#f4ebd8; --card:#fffdf6; --ink:#3b3220; --muted:#6b5c42; --gold:#dda033; --line:rgba(59,50,32,.14); --danger:#b5473a; }
+* { box-sizing:border-box; }
+body { margin:0; min-height:100dvh; background:var(--canvas); color:var(--ink); font-family:Quicksand,system-ui,sans-serif; padding:32px 20px; }
+.sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
+main { width:min(820px,100%); margin:0 auto; }
+.progress { display:flex; gap:7px; margin:0 0 16px; padding:0; list-style:none; }
+.progress li { flex:1; height:6px; border-radius:999px; background:rgba(59,50,32,.12); }
+.progress li.done,.progress li.current { background:var(--gold); }
+.card { background:var(--card); border:1px solid var(--line); border-radius:18px; padding:clamp(22px,5vw,40px); box-shadow:0 8px 30px rgba(59,50,32,.08); }
+h1 { margin:0 0 8px; font-size:clamp(1.7rem,5vw,2.5rem); }
+h2 { margin:28px 0 8px; font-size:1.1rem; }
+p,li { color:var(--muted); line-height:1.55; }
+ol { padding-left:22px; }
+.paths { display:grid; gap:10px; grid-template-columns:1fr 1fr; }
+.path { border:1px solid var(--line); border-radius:12px; padding:14px; background:#fff; color:var(--ink); text-align:left; cursor:pointer; }
+.path[aria-pressed="true"] { border-color:var(--gold); box-shadow:0 0 0 2px rgba(221,160,51,.2); }
+.path h2 { margin:0 0 5px; } .path p { margin:0; }
+.guide { display:none; margin-top:14px; border:1px solid var(--line); border-radius:12px; padding:16px; }
+.guide.active { display:block; }
+.copy-grid { display:grid; gap:9px; margin:14px 0; }
+.copy-row { align-items:center; display:grid; gap:8px; grid-template-columns:minmax(0,1fr) auto; }
+.copy-value { background:#f8f1df; border:1px solid var(--line); border-radius:10px; font-family:ui-monospace,"SF Mono",Menlo,monospace; overflow-wrap:anywhere; padding:10px 12px; }
+label { display:block; font-weight:700; margin:16px 0 6px; }
+input,select { width:100%; border:1px solid var(--line); border-radius:10px; padding:11px 12px; font:inherit; background:#fff; }
+input:focus-visible,select:focus-visible,button:focus-visible,a:focus-visible { outline:3px solid rgba(221,160,51,.45); outline-offset:2px; }
+button,.primary { border:0; border-radius:12px; background:var(--gold); color:var(--ink); padding:12px 18px; font:inherit; font-weight:800; cursor:pointer; text-decoration:none; display:inline-flex; align-items:center; justify-content:center; }
+form > button { margin-top:22px; }
+.secondary { background:#fff; border:1px solid var(--line); padding:8px 11px; }
+.external { display:inline-flex; margin-top:8px; color:var(--ink); font-weight:800; }
+.verify { background:#f8f1df; border:1px solid rgba(221,160,51,.4); border-radius:14px; margin:22px 0; padding:18px; }
+.verify h2 { margin:8px 0; }.status { display:inline-block; background:rgba(111,162,91,.16); color:#4e7a3e; border-radius:999px; padding:4px 9px; font-size:.75rem; font-weight:800; }
+.small { font-size:.8rem; }
+code { background:#f8f1df; border-radius:6px; padding:2px 5px; }
+.error { color:var(--danger); font-weight:700; }
+@media (max-width:620px) { body { padding:16px 10px; } .paths { grid-template-columns:1fr; } .card { border-radius:14px; } .copy-row { grid-template-columns:1fr; } .copy-row button { width:100%; } }
+</style>
+</head>
+<body>
+<main>
+  <ol class="progress" aria-label="Setup progress"><li class="done"><span class="sr-only">Deploy complete</span></li><li class="${options.state === 'fresh' ? 'current' : 'done'}"><span class="sr-only">Access configuration</span></li><li class="${options.state === 'access_pending' ? 'current' : ''}"><span class="sr-only">Identity verification</span></li><li><span class="sr-only">Slack setup</span></li></ol>
+  <section class="card" aria-labelledby="setup-heading">
+    <p class="small"><strong>Advanced manual setup</strong></p>
+    <h1 id="setup-heading">${heading}</h1>
+    <p>Cloudflare Access signs people in. Chickpea keeps its own members and roles, so changing a role or suspending a person takes effect on their next Chickpea request.</p>
+    ${error}
+    ${verify}
+    <h2>Choose your Cloudflare path</h2>
+    <div class="paths">
+      <button class="path" type="button" data-path="new" aria-pressed="true"><h2>Create Zero Trust organization</h2><p>Start here if this account has never used Access.</p></button>
+      <button class="path" type="button" data-path="existing" aria-pressed="false"><h2>Use an existing Zero Trust organization</h2><p>Reuse your established team name and identity providers.</p></button>
+    </div>
+    <section class="guide active" data-guide="new"><strong>New to Zero Trust</strong><ol><li>Open the Zero Trust dashboard and activate the Free plan if Cloudflare asks.</li><li>Enable a dedicated verified-email login method, such as email one-time PIN.</li><li>Create one Self-hosted application for the two Admin destinations and one authentication-only policy for that login method.</li></ol></section>
+    <section class="guide" data-guide="existing"><strong>Existing Zero Trust team</strong><ol><li>Create a separately named Chickpea verified-email login method and Self-hosted application.</li><li>Attach one authentication-only policy for that login method; do not enumerate Chickpea members.</li><li>Use the two Admin destinations below and leave unrelated applications, policies, and providers unchanged.</li></ol></section>
+    <a class="external" href="https://one.dash.cloudflare.com/" target="_blank" rel="noopener noreferrer">Open Cloudflare Zero Trust ↗</a>
+    <h2>Protect only Admin</h2>
+    <p>Configure both destinations in one Access application. Slack events and OAuth callbacks must remain public.</p>
+    <div class="copy-grid">
+      <div class="copy-row"><span class="copy-value" data-copy-value>${origin}/admin</span><button class="secondary" type="button" data-copy="${origin}/admin">Copy</button></div>
+      <div class="copy-row"><span class="copy-value" data-copy-value>${origin}/admin/*</span><button class="secondary" type="button" data-copy="${origin}/admin/*">Copy</button></div>
+    </div>
+    <p class="small">Configure this perimeter once. Anyone who verifies an email may reach Chickpea's uniform sign-in denial, but only an existing membership or exact-email invitation grants access. Later teammate changes happen only in Chickpea.</p>
+    <h2>Save the Access values</h2>
+    <p>Copy the team issuer and application audience from Cloudflare. Saving does not activate the owner; the next step still requires a signed Access assertion.</p>
+    <form method="post" action="/admin/setup">
+      <label for="owner-email">Owner email</label>
+      <input id="owner-email" name="ownerEmail" type="email" autocomplete="email" required>
+      <label for="recovery-token">Recovery token</label>
+      <input id="recovery-token" name="recoveryToken" type="password" autocomplete="off" required>
+      <label for="access-issuer">Cloudflare team issuer</label>
+      <input id="access-issuer" name="issuer" type="url" placeholder="https://team.cloudflareaccess.com" value="${issuer}" required>
+      <label for="access-audience">Access application audience</label>
+      <input id="access-audience" name="audience" autocomplete="off" value="${audience}" required>
+      <button type="submit">Save and continue</button>
+    </form>
+  </section>
+</main>
+<script>
+(function () {
+  var pathButtons = document.querySelectorAll('[data-path]');
+  pathButtons.forEach(function (button) {
+    button.addEventListener('click', function () {
+      var selected = button.getAttribute('data-path');
+      pathButtons.forEach(function (candidate) {
+        candidate.setAttribute('aria-pressed', candidate === button ? 'true' : 'false');
+      });
+      document.querySelectorAll('[data-guide]').forEach(function (guide) {
+        guide.classList.toggle('active', guide.getAttribute('data-guide') === selected);
+      });
+    });
+  });
+  document.querySelectorAll('[data-copy]').forEach(function (button) {
+    button.addEventListener('click', function () {
+      var value = button.getAttribute('data-copy') || '';
+      if (!navigator.clipboard || !navigator.clipboard.writeText) return;
+      navigator.clipboard.writeText(value).then(function () {
+        button.textContent = 'Copied';
+      });
+    });
+  });
+})();
+</script>
+</body>
+</html>`;
+}
+
+export function renderAuthSetupCompletePage(): string {
+  return `<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chickpea · Workspace ready</title>${ADMIN_FAVICON}
+<style>
+:root { --canvas:#f4ebd8; --card:#fffdf6; --ink:#3b3220; --muted:#6b5c42; --gold:#dda033; --line:rgba(59,50,32,.14); --green:#4e7a3e; }
+* { box-sizing:border-box; } body { margin:0; min-height:100dvh; display:grid; place-items:center; background:var(--canvas); color:var(--ink); font-family:Quicksand,system-ui,sans-serif; padding:20px; }
+main { width:min(580px,100%); background:var(--card); border:1px solid var(--line); border-radius:20px; padding:clamp(26px,6vw,44px); box-shadow:0 10px 30px rgba(59,50,32,.09); text-align:center; }
+.mark { width:54px; height:54px; display:grid; place-items:center; margin:0 auto 18px; border-radius:50%; background:rgba(111,162,91,.16); color:var(--green); font-size:1.6rem; font-weight:900; }
+h1 { margin:0 0 8px; font-size:clamp(1.8rem,6vw,2.5rem); } p { color:var(--muted); line-height:1.55; }
+a { display:inline-flex; align-items:center; justify-content:center; margin-top:18px; min-height:44px; border-radius:12px; padding:11px 20px; background:var(--gold); color:var(--ink); text-decoration:none; font-weight:800; box-shadow:0 2.5px 0 #b27e1f; }
+a:focus-visible { outline:3px solid rgba(221,160,51,.45); outline-offset:3px; }
+</style></head><body><main>
+  <div class="mark" aria-hidden="true">✓</div>
+  <h1>Your Chickpea is ready</h1>
+  <p>Your owner account and workspace are ready. Next, connect the Slack app to this workspace.</p>
+  <a href="/admin">Continue to Slack setup</a>
+</main><script src="/admin/setup/client.js" defer></script></body></html>`;
+}
+
+export function renderAuthRecoveryPage(options: { error?: boolean } = {}): string {
+  const error = options.error
+    ? '<p class="error" role="alert">Recovery could not be verified.</p>'
+    : '';
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chickpea · Access recovery</title>
+${ADMIN_FAVICON}
+<style>
+:root { --canvas:#f4ebd8; --card:#fffdf6; --ink:#3b3220; --muted:#6b5c42; --gold:#dda033; --line:rgba(59,50,32,.14); --danger:#b5473a; }
+* { box-sizing:border-box; }
+body { margin:0; min-height:100dvh; display:grid; place-items:center; background:var(--canvas); color:var(--ink); font-family:Quicksand,system-ui,sans-serif; padding:24px; }
+main { width:min(520px,100%); background:var(--card); border:1px solid var(--line); border-radius:18px; padding:clamp(22px,5vw,36px); box-shadow:0 8px 30px rgba(59,50,32,.08); }
+h1 { margin:0 0 8px; font-size:clamp(1.5rem,5vw,2rem); }
+p { color:var(--muted); line-height:1.55; }
+label { display:block; font-weight:700; margin:16px 0 6px; }
+input { width:100%; border:1px solid var(--line); border-radius:10px; padding:11px 12px; font:inherit; }
+input:focus-visible,button:focus-visible { outline:3px solid rgba(221,160,51,.45); outline-offset:2px; }
+button { margin-top:22px; border:0; border-radius:12px; background:var(--gold); color:var(--ink); padding:12px 18px; font:inherit; font-weight:800; cursor:pointer; }
+.error { color:var(--danger); font-weight:700; }
+@media (max-width:520px) { body { padding:12px; } main { border-radius:14px; } }
+</style>
+</head>
+<body>
+<main aria-labelledby="recovery-heading">
+  <h1 id="recovery-heading">Repair Cloudflare Access</h1>
+  <p>This does not sign you in. It updates only Chickpea's expected Access application audience after you have repaired the edge policy in Cloudflare.</p>
+  ${error}
+  <form method="post" action="/admin/recovery">
+    <label for="operation">Repair operation</label>
+    <select id="operation" name="operation" required>
+      <option value="audience">Update Access application audience</option>
+      <option value="owner_binding">Replace my owner identity binding</option>
+    </select>
+    <label for="recovery-token">Offline recovery token</label>
+    <input id="recovery-token" name="recoveryToken" type="password" autocomplete="off" required>
+    <label for="access-audience">New Access application audience</label>
+    <input id="access-audience" name="audience" autocomplete="off">
+    <button type="submit">Verify and repair</button>
+  </form>
+</main>
+</body>
+</html>`;
+}
+
+export function renderAuthMigrationPage(options: { error?: boolean } = {}): string {
+  const error = options.error
+    ? '<p class="error" role="alert">Migration could not be saved. Your existing Admin login is still active.</p>'
+    : '';
+  return `<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chickpea · Upgrade authentication</title>${ADMIN_FAVICON}
+<style>
+:root { --canvas:#f4ebd8; --card:#fffdf6; --ink:#3b3220; --muted:#6b5c42; --gold:#dda033; --line:rgba(59,50,32,.14); --danger:#b5473a; }
+* { box-sizing:border-box; } body { margin:0; min-height:100dvh; background:var(--canvas); color:var(--ink); font-family:Quicksand,system-ui,sans-serif; padding:24px; }
+main { width:min(680px,100%); margin:0 auto; background:var(--card); border:1px solid var(--line); border-radius:18px; padding:clamp(22px,5vw,38px); box-shadow:0 8px 30px rgba(59,50,32,.08); }
+h1 { margin:0 0 8px; font-size:clamp(1.6rem,5vw,2.3rem); } p,li { color:var(--muted); line-height:1.55; } .notice { border:1px solid var(--line); border-radius:12px; padding:14px; }
+label { display:block; font-weight:700; margin:16px 0 6px; } input { width:100%; border:1px solid var(--line); border-radius:10px; padding:11px 12px; font:inherit; }
+input:focus-visible,button:focus-visible { outline:3px solid rgba(221,160,51,.45); outline-offset:2px; } button { margin-top:22px; border:0; border-radius:12px; background:var(--gold); color:var(--ink); padding:12px 18px; font:inherit; font-weight:800; cursor:pointer; }
+.error { color:var(--danger); font-weight:700; } @media (max-width:560px) { body { padding:12px; } main { border-radius:14px; } }
+</style></head><body><main>
+  <p>Authentication upgrade</p>
+  <h1>Give every person their own identity</h1>
+  <p class="notice">Your existing shared Admin token remains usable until a matching Cloudflare Access identity activates the owner account. After activation, it stops authenticating immediately.</p>
+  ${error}
+  <ol><li>Create or reuse a Cloudflare Zero Trust team.</li><li>Protect both <code>/admin</code> and <code>/admin/*</code> in one Access application.</li><li>Save the issuer and audience here, then verify through Access.</li></ol>
+  <form method="post" action="/admin/migrate">
+    <label for="owner-email">First owner email</label><input id="owner-email" name="ownerEmail" type="email" autocomplete="email" required>
+    <label for="recovery-token">Offline recovery token</label><input id="recovery-token" name="recoveryToken" type="password" autocomplete="off" required>
+    <label for="access-issuer">Cloudflare team issuer</label><input id="access-issuer" name="issuer" type="url" placeholder="https://team.cloudflareaccess.com" required>
+    <label for="access-audience">Access application audience</label><input id="access-audience" name="audience" autocomplete="off" required>
+    <button type="submit">Save and verify through Access</button>
+  </form>
+</main></body></html>`;
+}
+
+export function renderMemberAccountPage(input: {
+  organizationName: string;
+  displayName: string | null;
+  email: string;
+  role: 'owner' | 'admin' | 'member';
+  status: 'active' | 'suspended' | 'removed';
+}): string {
+  const name = escapeHtmlAttribute(input.displayName || input.email);
+  return `<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chickpea · Your account</title>${ADMIN_FAVICON}
+<style>
+:root { --canvas:#f4ebd8; --card:#fffdf6; --ink:#3b3220; --muted:#6b5c42; --gold:#dda033; --line:rgba(59,50,32,.14); --green:#6fa25b; }
+* { box-sizing:border-box; } body { margin:0; min-height:100dvh; display:grid; place-items:center; background:var(--canvas); color:var(--ink); font-family:Quicksand,system-ui,sans-serif; padding:20px; }
+main { width:min(560px,100%); background:var(--card); border:1px solid var(--line); border-radius:20px; padding:clamp(24px,6vw,42px); box-shadow:0 10px 30px rgba(59,50,32,.09); }
+h1 { margin:8px 0 6px; font-size:clamp(1.65rem,6vw,2.35rem); } p { color:var(--muted); line-height:1.55; } .eyebrow { font-size:.78rem; font-weight:800; text-transform:uppercase; letter-spacing:.08em; }
+.account { border:1px solid var(--line); border-radius:14px; padding:16px; margin:22px 0; display:grid; gap:5px; } .email { overflow-wrap:anywhere; } .badge { width:max-content; background:rgba(111,162,91,.16); color:#4e7a3e; border-radius:999px; padding:4px 10px; font-weight:800; font-size:.75rem; }
+.button { display:inline-flex; align-items:center; justify-content:center; min-height:42px; padding:10px 18px; border-radius:12px; background:var(--gold); color:var(--ink); font-weight:800; text-decoration:none; box-shadow:0 2.5px 0 #b27e1f; }
+.button:focus-visible { outline:3px solid rgba(221,160,51,.45); outline-offset:3px; } .note { margin-top:20px; font-size:.82rem; }
+</style></head><body><main>
+  <p class="eyebrow">${escapeHtmlAttribute(input.organizationName)}</p>
+  <h1>Hi, ${name}</h1>
+  <p>Your Chickpea account is active.</p>
+  <section class="account" aria-label="Account details">
+    <strong>${name}</strong><span class="email">${escapeHtmlAttribute(input.email)}</span>
+    ${input.role === 'owner' ? '<span class="badge">Owner</span>' : ''}<span class="badge">${escapeHtmlAttribute(input.status)}</span>
+  </section>
+  <a class="button" href="slack://open">Open Slack</a>
+  <p><a href="/admin/account/password">Change password</a></p>
+  <form method="post" action="/admin/logout"><button class="button" type="submit">Sign out</button></form>
+  <p class="note">Need help signing in? Ask the Chickpea owner.</p>
+</main></body></html>`;
 }
 
 function escapeHtmlAttribute(value: string): string {

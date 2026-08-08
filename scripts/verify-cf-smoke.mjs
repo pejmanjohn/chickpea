@@ -6,11 +6,13 @@
  * SIGNED Slack events end-to-end. Asserts the parts of the port that only
  * workerd can prove:
  *
- *   1. the DO-backed config store seeds and serves /admin/api/agents,
- *   2. the app boots healthy with NO Slack creds: events fail closed (401)
+ *   1. recovery-backed password setup creates the first named owner and a
+ *      Better Auth browser session without Cloudflare Access,
+ *   2. the DO-backed config store seeds and serves /admin/api/agents,
+ *   3. the app boots healthy with NO Slack creds: events fail closed (401)
  *      and the wizard GET reports missing credentials + a manifest deep-link
  *      carrying this install's substituted request_url,
- *   3. the wizard POST validates the pasted token against (fake) Slack
+ *   4. the wizard POST validates the pasted token against (fake) Slack
  *      auth.test and persists token/secret/bot-user-id in the DO settings,
  *   4. a signed synthetic app_mention verifies against the STORED signing
  *      secret, is admitted, and the turn delivers a final to (fake) Slack
@@ -48,7 +50,8 @@ const CF_WRANGLER_CONFIG = join(CF_OUTPUT_DIR, 'chickpea', 'wrangler.json');
 const CF_SMOKE_WRANGLER_CONFIG = join(CF_OUTPUT_DIR, 'chickpea', 'wrangler.smoke.json');
 const CF_AI_SMOKE_CONFIG = join(CF_OUTPUT_DIR, 'chickpea', 'wrangler.ai-smoke.json');
 const PERSIST_DIR = join(REPO_ROOT, '.wrangler-state');
-const ADMIN_TOKEN = 'test-token';
+const RECOVERY_TOKEN = '9d'.repeat(32);
+const OWNER_PASSWORD = 'several unrelated amber words 5729';
 const WORKSPACE = 'T_SMOKE';
 const CHANNEL = 'C_SMOKE';
 const AI_CHANNEL = 'C_SMOKE_AI';
@@ -81,6 +84,7 @@ const SLOW_MENTION_TS = '1782771000.000100';
 const SLOW_TURN_DELAY_MS = Number(process.env.SMOKE_SLOW_TURN_DELAY_MS ?? 36_000);
 
 const failures = [];
+let adminCookie = '';
 function check(ok, label, detail = '') {
   const status = ok ? 'ok  ' : 'FAIL';
   console.log(`  [${status}] ${label}${detail ? ` — ${detail}` : ''}`);
@@ -133,11 +137,20 @@ function verifyBuildArtifacts() {
     doBindings.some((b) => b.name === 'SANDBOX' && b.class_name === 'Sandbox'),
     'built wrangler.json carries the Sandbox DO binding',
   );
+  check(
+    doBindings.some((b) => b.name === 'AUTH_GUARD' && b.class_name === 'AuthGuard'),
+    'built wrangler.json carries the auth guard DO binding',
+  );
+  const authDb = (config.d1_databases ?? []).find((binding) => binding.binding === 'AUTH_DB');
+  check(
+    Boolean(authDb) && String(authDb.migrations_dir ?? '').endsWith('migrations/better-auth'),
+    'built wrangler.json carries AUTH_DB reviewed migrations',
+  );
   const migrations = config.migrations ?? [];
   const tags = migrations.map((migration) => migration.tag);
   check(
-    ['v1', 'v2', 'v3', 'v4', 'v5', 'v6'].every((tag) => tags.includes(tag)),
-    'built wrangler.json migrations include the append-only v1 through v6 chain',
+    ['v1', 'v2', 'v3', 'v4', 'v5', 'v6', 'v7'].every((tag) => tags.includes(tag)),
+    'built wrangler.json migrations include the append-only v1 through v7 chain',
     tags.join(','),
   );
   const reset = migrations.find((migration) => migration.tag === 'v6');
@@ -206,6 +219,10 @@ function writeSmokeWranglerConfigs() {
   ];
   const smokeConfig = {
     ...productionConfig,
+    d1_databases: (productionConfig.d1_databases ?? []).map((database) =>
+      database.binding === 'AUTH_DB'
+        ? { ...database, database_id: '00000000-0000-0000-0000-000000000001' }
+        : database),
     vars: {
       ...(productionConfig.vars ?? {}),
       // Exercise exactly one internal workspace/channel through the enforced
@@ -253,7 +270,7 @@ function writeDevVars(fakeUrl) {
   writeFileSync(
     join(CF_OUTPUT_DIR, 'chickpea', '.dev.vars'),
     [
-      `TAG_ADMIN_TOKEN=${ADMIN_TOKEN}`,
+      `CHICKPEA_RECOVERY_TOKEN=${RECOVERY_TOKEN}`,
       `SLACK_API_URL=${fakeUrl}/api/`,
       `LOCAL_STUB_URL=${fakeUrl}/v1`,
       'SLACK_TAG_MODEL=local-stub/smoke-model',
@@ -263,6 +280,27 @@ function writeDevVars(fakeUrl) {
       '',
     ].join('\n'),
   );
+}
+
+function applyLocalAuthMigrations() {
+  const result = spawnSync(
+    WRANGLER_BIN,
+    [
+      'd1',
+      'migrations',
+      'apply',
+      'AUTH_DB',
+      '--local',
+      '--persist-to',
+      PERSIST_DIR,
+      '--config',
+      CF_SMOKE_WRANGLER_CONFIG,
+    ],
+    { cwd: REPO_ROOT, env: { ...process.env, CI: '1' }, stdio: 'inherit' },
+  );
+  if (result.status !== 0) {
+    throw new Error(`local AUTH_DB migrations failed (exit ${result.status})`);
+  }
 }
 
 function spawnWranglerDev() {
@@ -313,11 +351,14 @@ function stopWrangler(handle) {
 }
 
 async function adminFetch(baseUrl, path, init = {}) {
+  const method = String(init.method ?? 'GET').toUpperCase();
+  const mutation = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method);
   const response = await fetch(`${baseUrl}${path}`, {
     ...init,
     headers: {
-      authorization: `Bearer ${ADMIN_TOKEN}`,
+      ...(adminCookie ? { cookie: adminCookie } : {}),
       'content-type': 'application/json',
+      ...(mutation ? { origin: baseUrl, 'sec-fetch-site': 'same-origin' } : {}),
       ...(init.headers ?? {}),
     },
   });
@@ -333,9 +374,71 @@ async function adminFetch(baseUrl, path, init = {}) {
 
 async function adminPageHtml(baseUrl) {
   const response = await fetch(`${baseUrl}/admin`, {
-    headers: { authorization: `Bearer ${ADMIN_TOKEN}` },
+    headers: adminCookie ? { cookie: adminCookie } : {},
   });
   return response.text();
+}
+
+async function completePasswordSetup(baseUrl) {
+  const setupPage = await fetch(`${baseUrl}/admin/setup`);
+  const setupHtml = await setupPage.text();
+  check(
+    setupPage.status === 200 &&
+      setupHtml.includes('Create your Chickpea workspace') &&
+      setupHtml.includes('name="ownerEmail"') &&
+      setupHtml.includes('/admin/setup/client.js') &&
+      !setupHtml.includes('Your name') &&
+      !setupHtml.includes('Deployment recovery secret') &&
+      !setupHtml.includes('Zero Trust') &&
+      !setupHtml.includes(RECOVERY_TOKEN),
+    'fresh setup renders built-in owner creation without Access or recovery-secret echo',
+    `HTTP ${setupPage.status}`,
+  );
+  const body = new URLSearchParams({
+    organizationName: 'Smoke Workspace',
+    ownerEmail: 'owner@example.com',
+    password: OWNER_PASSWORD,
+    recoveryToken: RECOVERY_TOKEN,
+  }).toString();
+  const configured = await fetch(`${baseUrl}/admin/setup`, {
+    method: 'POST',
+    redirect: 'manual',
+    headers: {
+      origin: baseUrl,
+      'sec-fetch-site': 'same-origin',
+      'content-type': 'application/x-www-form-urlencoded',
+      'content-length': String(Buffer.byteLength(body)),
+    },
+    body,
+  });
+  adminCookie = (configured.headers.get('set-cookie') ?? '').split(';', 1)[0] ?? '';
+  check(
+    configured.status === 303 && configured.headers.get('location') === '/admin/ready' &&
+      /better-auth\.session_token=/.test(adminCookie),
+    'recovery proof creates the owner and returns a Better Auth browser session',
+    `HTTP ${configured.status} location=${configured.headers.get('location')}`,
+  );
+  const resumed = await fetch(`${baseUrl}/admin/setup`, { headers: { cookie: adminCookie } });
+  check(
+    resumed.status === 200 || resumed.status === 303,
+    'completed setup is resumable without creating another owner',
+    `HTTP ${resumed.status}`,
+  );
+  const unauthenticated = await fetch(`${baseUrl}/admin/api/agents`);
+  check(
+    unauthenticated.status === 401,
+    'password-active Admin APIs fail closed without the browser session',
+    `HTTP ${unauthenticated.status}`,
+  );
+  const publicGithubCallback = await fetch(
+    `${baseUrl}/oauth/github/setup/callback?code=invalid&state=invalid`,
+    { redirect: 'manual' },
+  );
+  check(
+    publicGithubCallback.status === 403,
+    'public GitHub setup callback reaches its single-use state guard outside Admin auth',
+    `HTTP ${publicGithubCallback.status}`,
+  );
 }
 
 async function renderAdminWithWorkerdState(baseUrl) {
@@ -364,10 +467,13 @@ async function renderAdminWithWorkerdState(baseUrl) {
   };
   const authenticatedFetch = (path, options = {}) => {
     const url = path.startsWith('http') ? path : `${baseUrl}${path}`;
+    const method = String(options.method ?? 'GET').toUpperCase();
+    const mutation = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method);
     return fetch(url, {
       ...options,
       headers: {
-        authorization: `Bearer ${ADMIN_TOKEN}`,
+        ...(adminCookie ? { cookie: adminCookie } : {}),
+        ...(mutation ? { origin: baseUrl, 'sec-fetch-site': 'same-origin' } : {}),
         ...(options.headers ?? {}),
       },
     });
@@ -401,7 +507,25 @@ async function renderAdminWithWorkerdState(baseUrl) {
   throw new Error(`admin inline script did not render within ${timeoutMs}ms`);
 }
 
-/** Ready = the admin API answers from the DO-backed store (workerd + DO up). */
+/** Ready = the public setup page answers from the DO-backed store (workerd + DO up). */
+async function waitForSetupReady(handle, baseUrl, timeoutMs = 90_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (handle.child.exitCode !== null) {
+      throw new Error(`wrangler dev exited early (exit ${handle.child.exitCode}):\n${handle.getOutput()}`);
+    }
+    try {
+      const response = await fetch(`${baseUrl}/admin/setup`);
+      if (response.status === 200) return;
+    } catch {
+      // not accepting connections yet
+    }
+    await delay(300);
+  }
+  throw new Error(`wrangler dev never exposed setup:\n${handle.getOutput()}`);
+}
+
+/** Ready after setup = the authenticated Admin API answers with the persisted session. */
 async function waitForAdminReady(handle, baseUrl, timeoutMs = 90_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -410,15 +534,13 @@ async function waitForAdminReady(handle, baseUrl, timeoutMs = 90_000) {
     }
     try {
       const { status, body } = await adminFetch(baseUrl, '/admin/api/agents');
-      if (status === 200 && Array.isArray(body?.agents)) {
-        return body.agents;
-      }
+      if (status === 200 && Array.isArray(body?.agents)) return body.agents;
     } catch {
       // not accepting connections yet
     }
     await delay(300);
   }
-  throw new Error(`wrangler dev never became ready:\n${handle.getOutput()}`);
+  throw new Error(`wrangler dev never restored the authenticated Admin API:\n${handle.getOutput()}`);
 }
 
 async function measureRepresentativeStateWrite(baseUrl) {
@@ -564,6 +686,7 @@ async function main() {
   // Fresh local DO state every run: the seeding + dedupe assertions assume a
   // first-boot Durable Object.
   rmSync(PERSIST_DIR, { recursive: true, force: true });
+  applyLocalAuthMigrations();
 
   const { FakeSlackBackend, FAKE_PROVIDER_KEYS, STUB_REPLY_MARKER } = await loadFake();
   // The fake reports this workspace identity from auth.test (so the wizard
@@ -605,7 +728,13 @@ async function main() {
 
   try {
     console.log('• waiting for wrangler dev (round 1)…');
-    const agents = await waitForAdminReady(wrangler, baseUrl);
+    await waitForSetupReady(wrangler, baseUrl);
+    await completePasswordSetup(baseUrl);
+    const agentsResult = await adminFetch(baseUrl, '/admin/api/agents');
+    if (agentsResult.status !== 200 || !Array.isArray(agentsResult.body?.agents)) {
+      throw new Error(`authenticated Admin API did not become ready (HTTP ${agentsResult.status})`);
+    }
+    const agents = agentsResult.body.agents;
     const agentIds = agents.map((agent) => agent.id).sort();
     check(
       agentIds.includes('agent_default'),
@@ -634,7 +763,7 @@ async function main() {
       'Usage summary queries the initialized TagStateStore ledger',
       `HTTP ${usageSummary.status} operations=${String(usageSummary.body?.totals?.operationCount)}`,
     );
-    const drainStatus = await runDrainCheck({ baseUrl, adminToken: ADMIN_TOKEN });
+    const drainStatus = await runDrainCheck({ baseUrl, sessionCookie: adminCookie });
     check(
       drainStatus.drained,
       'runtime drain endpoint reaches the initialized TagStateStore aggregate',

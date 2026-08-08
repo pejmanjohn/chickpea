@@ -10,6 +10,7 @@ import { test } from 'node:test';
 import { Hono } from 'hono';
 
 import { createAdminRoutes } from '../src/admin/routes.ts';
+import type { AdminAuthenticationService } from '../src/auth/types.ts';
 import {
   createInstallationToken,
   getCachedInstallationToken,
@@ -25,6 +26,7 @@ import {
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import type { CustomAgentConfig } from '../src/config/types.ts';
+import { SqliteIdentityStore } from '../src/identity/store.ts';
 import { withEnv } from './helpers/env.ts';
 
 const ADMIN_TOKEN = 'github-admin-token';
@@ -690,15 +692,18 @@ test('GitHub manifest route uses the resolved request origin and requested organ
       );
       const setupState = targetUrl.searchParams.get('state') ?? '';
       assert.match(setupState, /^[a-f0-9]{32}$/);
-      assert.match(
-        (await settings.getSetting('github.setup_state')) ?? '',
-        new RegExp(`^${setupState}:\\d+$`),
-      );
+      const storedSetupState = JSON.parse(
+        (await settings.getSetting('github.setup_state')) ?? '{}',
+      ) as { version?: number; state?: string; mintedAt?: number; membershipId?: string | null };
+      assert.equal(storedSetupState.version, 2);
+      assert.equal(storedSetupState.state, setupState);
+      assert.equal(typeof storedSetupState.mintedAt, 'number');
+      assert.equal(storedSetupState.membershipId, null);
       assert.match(body.manifest.name, /^chickpea-[a-z0-9]{6}$/);
       assert.equal(body.manifest.url, 'https://chickpea.example.com');
       assert.equal(
         body.manifest.redirect_url,
-        'https://chickpea.example.com/admin/api/github/setup/callback',
+        'https://chickpea.example.com/oauth/github/setup/callback',
       );
       assert.equal(body.manifest.setup_url, 'https://chickpea.example.com/admin/settings');
       assert.deepEqual(body.manifest.hook_attributes, {
@@ -740,7 +745,7 @@ test('GitHub manifest omits the hook on non-public origins (localhost dev)', asy
         assert.equal(response.status, 200);
         const body = (await response.json()) as { manifest: Record<string, unknown> };
         assert.equal('hook_attributes' in body.manifest, false, host);
-        assert.equal(body.manifest.redirect_url, `http://${host}/admin/api/github/setup/callback`);
+        assert.equal(body.manifest.redirect_url, `http://${host}/oauth/github/setup/callback`);
       }
     });
   } finally {
@@ -771,8 +776,8 @@ test('GitHub manifest callback stores a normalized private key and redirects to 
     await settings.setSetting('github.setup_state', `valid-state:${Date.now()}`);
     await withFetch(fetchImpl, async () => {
       const response = await adminApp(store, settings).request(
-        '/admin/api/github/setup/callback?code=setup-code&state=valid-state',
-        { headers: auth(), redirect: 'manual' },
+        '/oauth/github/setup/callback?code=setup-code&state=valid-state',
+        { redirect: 'manual' },
       );
       assert.equal(response.status, 302);
       assert.equal(
@@ -791,6 +796,82 @@ test('GitHub manifest callback stores a normalized private key and redirects to 
   } finally {
     store.close();
     settings.close();
+  }
+});
+
+test('GitHub setup state is membership-bound, public at callback time, and consumed once under races', async () => {
+  const { pkcs1 } = rsaKeys();
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  const identity = new SqliteIdentityStore(':memory:');
+  const organization = await identity.ensureOrganization({ displayName: 'Chickpea' });
+  await identity.createOwnerClaim({ organizationId: organization.id, email: 'owner@example.com' });
+  const owner = await identity.claimOwner({
+    organizationId: organization.id, provider: 'test', issuer: 'https://issuer.example',
+    subject: 'owner', verifiedEmail: 'owner@example.com',
+  });
+  await identity.updateOrganizationAuth({
+    organizationId: organization.id,
+    authMode: 'access_active',
+    canonicalAdminOrigin: 'https://chickpea.example.com',
+  });
+  const authService: AdminAuthenticationService = {
+    async authenticateRequest() {
+      return {
+        userId: owner.user.id,
+        membershipId: owner.membership.id,
+        organizationId: organization.id,
+        role: 'owner',
+        authenticatorKind: 'test',
+        credentialId: 'test-credential',
+        correlationId: 'request-github',
+        machine: false,
+      };
+    },
+  };
+  const app = createAdminRoutes({ store, settings, identity, authService });
+  let exchanges = 0;
+  const fetchImpl: typeof fetch = async () => {
+    exchanges += 1;
+    return new Response(
+      JSON.stringify({ id: 2468, slug: 'chickpea-bound', pem: pkcs1, webhook_secret: null }),
+      { status: 201, headers: { 'content-type': 'application/json' } },
+    );
+  };
+  try {
+    const manifest = await app.request('https://chickpea.example.com/admin/api/github/manifest', {
+      method: 'POST',
+      headers: {
+        origin: 'https://chickpea.example.com',
+        'sec-fetch-site': 'same-origin',
+        'content-type': 'application/json',
+      },
+      body: '{}',
+    });
+    assert.equal(manifest.status, 200);
+    const target = new URL(((await manifest.json()) as { target: string }).target);
+    const state = target.searchParams.get('state') ?? '';
+    const stored = JSON.parse((await settings.getSetting('github.setup_state')) ?? '{}') as {
+      membershipId?: string;
+    };
+    assert.equal(stored.membershipId, owner.membership.id);
+
+    await withFetch(fetchImpl, async () => {
+      const callbacks = await Promise.all([
+        app.request(`/oauth/github/setup/callback?code=setup-code&state=${state}`, {
+          redirect: 'manual',
+        }),
+        app.request(`/oauth/github/setup/callback?code=setup-code&state=${state}`, {
+          redirect: 'manual',
+        }),
+      ]);
+      assert.deepEqual(callbacks.map((response) => response.status).sort(), [302, 403]);
+    });
+    assert.equal(exchanges, 1);
+  } finally {
+    store.close();
+    settings.close();
+    identity.close();
   }
 });
 
@@ -972,14 +1053,19 @@ test('GitHub manifest callback refuses missing, mismatched, stale, and replayed 
       // Mismatched state.
       await settings.setSetting('github.setup_state', `expected:${Date.now()}`);
       assert.equal((await request('code=c2&state=wrong')).status, 403);
-      // The mismatch consumed the stored state — a replay with the right value fails too.
-      assert.equal((await request('code=c3&state=expected')).status, 403);
+      assert.equal(
+        await settings.getSetting('github.setup_state') !== undefined,
+        true,
+        'a mismatched public callback must not consume the real pending state',
+      );
       // Stale state (minted 16 minutes ago).
       await settings.setSetting(
         'github.setup_state',
         `stale-state:${Date.now() - 16 * 60 * 1_000}`,
       );
       assert.equal((await request('code=c4&state=stale-state')).status, 403);
+      assert.equal(await settings.getSetting('github.setup_state'), undefined);
+      assert.equal((await request('code=c5&state=stale-state')).status, 403);
     });
     assert.equal(exchanges, 0, 'no rejected callback may reach the code exchange');
     assert.equal(await settings.getSetting('github.app.id'), undefined);
