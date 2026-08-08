@@ -60,6 +60,40 @@ test('Cloudflare identity proxy forwards resumable operation state without provi
   }]);
 });
 
+test('Cloudflare identity proxy forwards pending operation reservations', async () => {
+  const calls: IdentityRpcRequest[] = [];
+  const input = {
+    id: 'operation_invite_1',
+    kind: 'invitation_enrollment' as const,
+    organizationId: 'better-org',
+    expectedEmail: 'invitee@example.com',
+    capabilityHash: 'a'.repeat(64),
+    expiresAt: 20,
+  };
+  const operation = {
+    id: input.id, kind: input.kind, organizationId: input.organizationId,
+    expectedNormalizedEmail: input.expectedEmail, capabilityHash: input.capabilityHash,
+    status: 'pending' as const, step: 0, betterAuthUserId: null,
+    betterAuthOrganizationId: null, betterAuthMembershipId: null,
+    betterAuthInvitationId: null, targetCredentialVersion: null,
+    expiresAt: input.expiresAt, consumedAt: null, revokedAt: null,
+    createdAt: 10, updatedAt: 10,
+  };
+  const stub = {
+    async identityExecute(request: IdentityRpcRequest): Promise<StateRpcResult<IdentityRpcResponse>> {
+      calls.push(request);
+      return {
+        ok: true,
+        value: { kind: 'auth_operation_reservation', operation, created: false },
+      };
+    },
+  } as unknown as TagStateRpc;
+  const store = new CfIdentityStore(stub);
+
+  assert.deepEqual(await store.reservePendingAuthOperation(input), { operation, created: false });
+  assert.deepEqual(calls, [{ kind: 'reserve_pending_auth_operation', input }]);
+});
+
 test('Cloudflare identity proxy reads Chickpea membership access overlays', async () => {
   const calls: IdentityRpcRequest[] = [];
   const overlay = {

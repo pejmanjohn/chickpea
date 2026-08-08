@@ -8,7 +8,7 @@ A fresh Cloudflare or Node install uses invitation-only email/password accounts.
 
 1. Generate a 32-byte deployment recovery secret with `openssl rand -hex 32` and keep it in a password manager.
 2. Deploy with that value as `CHICKPEA_RECOVERY_TOKEN`. It is accepted only as 64-character hexadecimal, padded standard base64, or unpadded base64url that decodes to exactly 32 bytes.
-3. Open `<origin>/admin/setup` and enter the recovery secret, workspace name, owner name, owner email, and a strong password.
+3. Open `<origin>/admin/setup` from the private deploy handoff and enter the workspace name, owner email, and a strong password.
 4. Chickpea pins the HTTPS origin, creates the first Better Auth owner and organization, and returns a secure browser session. Loopback development is the only plaintext exception.
 5. Continue directly to Slack setup.
 
@@ -19,18 +19,19 @@ Browser sessions use Better Auth's opaque cookie with `HttpOnly`, `SameSite=Lax`
 ## Roles
 
 - `owner`: full administration, owner promotion/demotion, and authentication-sensitive recovery.
-- `admin`: product configuration, ordinary membership management, and `member`/`admin` invitations; cannot grant or control owners.
-- `member`: a minimal account and Slack handoff; no configuration console.
+- `admin`: product configuration and ordinary teammate management; cannot grant or control owners.
+
+The launch UI does not expose role selection. The person who creates the workspace is marked as Owner; every teammate added through a join link is an administrator.
 
 Suspension and removal take effect on the next request and revoke that person's browser sessions and personal access tokens. Chickpea serializes owner changes and never permits the final active owner to be demoted, suspended, or removed.
 
 ## Inviting teammates
 
-An owner or admin creates an exact-email, seven-day invitation in Team settings. Chickpea does not send email: the operator copies the show-once link to the invitee through a trusted channel.
+An owner or admin creates an exact-email, seven-day join link in Team settings. Chickpea does not send email: the operator copies the link to the invitee through a trusted channel. While it is pending, the same link remains available to authorized administrators; creating a link for the same email returns that existing link instead of producing another invitation.
 
 The capability exists only in the URL fragment. The public, no-store `/join` page moves it into same-tab session storage and removes it from browser history before enrollment. A new invitee creates a display name and password for the fixed invited email. Someone who already has a local Chickpea account signs in normally and resumes the same tab; the invitation never overwrites an existing password.
 
-Acceptance requires the exact invited email and creates the membership only at the final commit. Rotation invalidates the old link. Revoke, expiry, a different signed-in user, and replay all fail closed. Operators can choose `team-only` or invite-only connection visibility independently from the person's Chickpea role.
+Acceptance requires the exact invited email and creates the membership only at the final commit. Revoke or expiry invalidates the link; creating a new link after either event produces a new capability. A different signed-in user and replay both fail closed. Operators can choose `team-only` or invite-only connection visibility independently from the person's Chickpea role.
 
 ## Password changes and reset
 

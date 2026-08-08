@@ -28,7 +28,6 @@ test('password-mode invitation, enrollment, suspension, and administrative reset
   try {
     const setup = await app.request(formRequest('/admin/setup', {
       organizationName: 'Acme',
-      displayName: 'Owner',
       ownerEmail: 'owner@example.com',
       password: OWNER_PASSWORD,
       recoveryToken: RECOVERY,
@@ -36,37 +35,55 @@ test('password-mode invitation, enrollment, suspension, and administrative reset
     assert.equal(setup.status, 303, await setup.clone().text());
     const ownerCookie = cookieHeader(setup.headers.get('set-cookie'));
 
-    const created = await app.request(jsonRequest('/admin/api/team/invitations', 'POST', {
-      email: 'Joiner@Example.com', role: 'member',
-    }, ownerCookie));
-    assert.equal(created.status, 201, await created.clone().text());
-    const invitation = await created.json() as {
+    const raced = await Promise.all([
+      app.request(jsonRequest('/admin/api/team/invitations', 'POST', {
+        email: 'Joiner@Example.com',
+      }, ownerCookie)),
+      app.request(jsonRequest('/admin/api/team/invitations', 'POST', {
+        email: 'joiner@example.com',
+      }, ownerCookie)),
+    ]);
+    assert.deepEqual(raced.map((response) => response.status).sort(), [200, 201]);
+    const racedInvitations = await Promise.all(raced.map(async (response) => response.json() as Promise<{
       invitation: { id: string; email: string; status: string };
       inviteLink: string;
-    };
+    }>));
+    assert.equal(racedInvitations[0]?.inviteLink, racedInvitations[1]?.inviteLink);
+    const invitation = racedInvitations[0]!;
     assert.equal(invitation.invitation.email, 'joiner@example.com');
     assert.equal(invitation.invitation.status, 'pending');
     assert.match(invitation.inviteLink, /^https:\/\/chickpea\.example\/join#invite=auth_operation_/);
     assert.equal(invitation.inviteLink.includes('?'), false);
     const originalCredential = new URL(invitation.inviteLink).hash.slice('#invite='.length);
-    const [originalOperationId, originalToken] = originalCredential.split('.');
-    assert.ok(originalOperationId && originalToken);
-    const rotated = await app.request(jsonRequest(
+    const [operationId, token] = originalCredential.split('.');
+    assert.ok(operationId && token);
+
+    const team = await app.request(`${ORIGIN}/admin/api/team`, {
+      headers: { cookie: ownerCookie },
+    });
+    assert.equal(team.status, 200, await team.clone().text());
+    const pending = (await team.json() as {
+      invitations: Array<{ email: string; status: string; inviteLink?: string }>;
+    }).invitations;
+    assert.equal(pending.length, 1);
+    assert.equal(pending[0]?.email, 'joiner@example.com');
+    assert.equal(pending[0]?.status, 'pending');
+    assert.equal(pending[0]?.inviteLink, invitation.inviteLink);
+
+    const duplicate = await app.request(jsonRequest('/admin/api/team/invitations', 'POST', {
+      email: 'joiner@example.com',
+    }, ownerCookie));
+    assert.equal(duplicate.status, 200, await duplicate.clone().text());
+    assert.equal((await duplicate.json() as { inviteLink: string }).inviteLink, invitation.inviteLink);
+    assert.equal((await identity.listAuthOperations('invitation_enrollment')).length, 1);
+
+    const obsoleteResend = await app.request(jsonRequest(
       `/admin/api/team/invitations/${invitation.invitation.id}/resend`,
       'POST',
       {},
       ownerCookie,
     ));
-    assert.equal(rotated.status, 200, await rotated.clone().text());
-    const rotatedLink = (await rotated.json() as { inviteLink: string }).inviteLink;
-    const [operationId, token] = new URL(rotatedLink).hash.slice('#invite='.length).split('.');
-    assert.ok(operationId && token);
-    assert.notEqual(operationId, originalOperationId);
-    assert.equal((await identity.getAuthOperation(originalOperationId))?.status, 'revoked');
-    const rotatedReplay = await app.request(jsonRequest('/admin/join/inspect', 'POST', {
-      operationId: originalOperationId, token: originalToken,
-    }));
-    assert.equal(rotatedReplay.status, 401);
+    assert.equal(obsoleteResend.status, 404);
 
     const joinPage = await app.request(`${ORIGIN}/admin/join`);
     assert.equal(joinPage.status, 200);
@@ -97,21 +114,10 @@ test('password-mode invitation, enrollment, suspension, and administrative reset
     const control = await identity.getAuthControl();
     const member = await backend.getMembershipForUser(joiner.id, control!.betterAuthOrganizationId!);
     assert.ok(member);
-    assert.equal(member.role, 'member');
+    assert.equal(member.role, 'admin');
     assert.equal((await app.request(`${ORIGIN}/admin/account`, {
       headers: { cookie: memberCookie },
     })).status, 200);
-    assert.equal((await app.request(`${ORIGIN}/admin/api/team`, {
-      headers: { cookie: memberCookie },
-    })).status, 403);
-
-    const promoted = await app.request(jsonRequest(
-      `/admin/api/team/memberships/${member.id}`,
-      'PATCH',
-      { role: 'admin' },
-      ownerCookie,
-    ));
-    assert.equal(promoted.status, 200, await promoted.clone().text());
     assert.equal((await app.request(`${ORIGIN}/admin/api/team`, {
       headers: { cookie: memberCookie },
     })).status, 200);
@@ -124,13 +130,6 @@ test('password-mode invitation, enrollment, suspension, and administrative reset
       memberCookie,
     ));
     assert.equal(resetOwnerByAdmin.status, 403);
-    const demoted = await app.request(jsonRequest(
-      `/admin/api/team/memberships/${member.id}`,
-      'PATCH',
-      { role: 'member' },
-      ownerCookie,
-    ));
-    assert.equal(demoted.status, 200, await demoted.clone().text());
     const lastOwner = await app.request(jsonRequest(
       `/admin/api/team/memberships/${ownerMembership.id}`,
       'PATCH',
@@ -154,6 +153,13 @@ test('password-mode invitation, enrollment, suspension, and administrative reset
     assert.equal((await app.request(`${ORIGIN}/admin/account`, {
       headers: { cookie: memberCookie },
     })).status, 401);
+    const suspendedLogin = await app.request(formRequest('/admin/login', {
+      email: 'joiner@example.com', password: MEMBER_PASSWORD, returnTo: '/admin/account',
+    }));
+    assert.equal(suspendedLogin.status, 401, await suspendedLogin.clone().text());
+    const suspendedLoginHtml = await suspendedLogin.text();
+    assert.match(suspendedLoginHtml, /Email or password was not accepted/);
+    assert.match(suspendedLoginHtml, /value="joiner@example\.com"/);
     const restored = await app.request(jsonRequest(
       `/admin/api/team/memberships/${member.id}`,
       'PATCH',
@@ -215,7 +221,7 @@ test('concurrent owner demotion or removal retains one active owner', async () =
     const app = createAdminRoutes({ identity, betterAuthEnvironment: environment, recoveryToken: RECOVERY });
     try {
       const setup = await app.request(formRequest('/admin/setup', {
-        organizationName: 'Acme', displayName: 'Owner One', ownerEmail: 'owner@example.com',
+        organizationName: 'Acme', ownerEmail: 'owner@example.com',
         password: OWNER_PASSWORD, recoveryToken: RECOVERY,
       }));
       const firstCookie = cookieHeader(setup.headers.get('set-cookie'));
@@ -287,7 +293,7 @@ test('an existing credentialed invitee signs in normally and resumes the exact s
   const app = createAdminRoutes({ identity, betterAuthEnvironment: environment, recoveryToken: RECOVERY });
   try {
     const setup = await app.request(formRequest('/admin/setup', {
-      organizationName: 'Acme', displayName: 'Owner', ownerEmail: 'owner@example.com',
+      organizationName: 'Acme', ownerEmail: 'owner@example.com',
       password: OWNER_PASSWORD, recoveryToken: RECOVERY,
     }));
     const ownerCookie = cookieHeader(setup.headers.get('set-cookie'));
@@ -297,7 +303,7 @@ test('an existing credentialed invitee signs in normally and resumes the exact s
     });
 
     const created = await app.request(jsonRequest('/admin/api/team/invitations', 'POST', {
-      email: 'existing@example.com', role: 'member',
+      email: 'existing@example.com',
     }, ownerCookie));
     assert.equal(created.status, 201, await created.clone().text());
     const link = (await created.json() as { inviteLink: string }).inviteLink;

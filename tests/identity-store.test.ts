@@ -349,6 +349,34 @@ test('auth operation listings and membership access overlays stay in Chickpea co
   }
 });
 
+test('pending auth-operation reservations reuse one operation per organization, kind, and email', async () => {
+  const store = new SqliteIdentityStore(':memory:', { now: () => NOW });
+  try {
+    const input = {
+      id: 'operation_invite_one',
+      kind: 'invitation_enrollment' as const,
+      organizationId: 'better-auth-org',
+      expectedEmail: 'Invitee@Example.com',
+      capabilityHash: digest('stable-invitation-capability-one'),
+      expiresAt: NOW + 10_000,
+    };
+    const first = await store.reservePendingAuthOperation(input);
+    const replay = await store.reservePendingAuthOperation({
+      ...input,
+      id: 'operation_invite_two',
+      expectedEmail: 'invitee@example.com',
+      capabilityHash: digest('stable-invitation-capability-two'),
+    });
+
+    assert.equal(first.created, true);
+    assert.equal(replay.created, false);
+    assert.equal(replay.operation.id, first.operation.id);
+    assert.equal((await store.listAuthOperations('invitation_enrollment', 'better-auth-org')).length, 1);
+  } finally {
+    store.close();
+  }
+});
+
 test('personal tokens accept explicit opaque directory IDs without cross-store rows', async () => {
   const store = new SqliteIdentityStore(':memory:', { now: () => NOW });
   const token = await store.createPersonalToken({

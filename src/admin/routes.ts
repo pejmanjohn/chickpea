@@ -17,12 +17,14 @@ import {
   renderAuthSetupCompletePage,
   renderAuthSetupPage,
   renderMemberAccountPage,
+  passwordFormClientScript,
 } from './page.ts';
 import { createMemoryAdminApi } from './memory-api.ts';
 import { createRoutineAdminApi } from './routines-api.ts';
 import { createUsageAdminApi } from './usage-api.ts';
 import { createWorkAdminApi } from './work-api.ts';
 import { createTeamAdminApi } from './team-api.ts';
+import { passwordOwnerSetupClientScript } from '../auth/setup-handoff.ts';
 import {
   invitationJoinClientScript,
   passwordInvitationClientScript,
@@ -269,7 +271,7 @@ import {
   PasswordOwnerSetupService,
   validRecoveryToken,
 } from '../auth/setup.ts';
-import { assertPasswordPolicy } from '../auth/password-policy.ts';
+import { PasswordPolicyError, assertPasswordPolicy } from '../auth/password-policy.ts';
 import {
   PasswordEnrollmentService,
   PasswordLifecycleError,
@@ -381,7 +383,6 @@ const authSetupSchema = v.strictObject({
 });
 const passwordOwnerSetupSchema = v.strictObject({
   ownerEmail: v.pipe(v.string(), v.trim(), v.email(), v.maxLength(320)),
-  displayName: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(128)),
   organizationName: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(128)),
   password: v.pipe(v.string(), v.minLength(1), v.maxLength(512)),
   recoveryToken: v.pipe(v.string(), v.minLength(1), v.maxLength(512)),
@@ -1130,11 +1131,16 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           authResponseHeaders(c);
           if (!login.email || !login.password ||
               !validAuthFormPost(c, passwordContext.environment.baseURL)) {
-            return c.html(renderPasswordLogin({ invalid: true, returnTo: login.returnTo }), 401);
+            return c.html(renderPasswordLogin({
+              invalid: true,
+              returnTo: login.returnTo,
+              email: login.email ?? '',
+            }), 401);
           }
           const handler = createBetterAuthEnvironmentPublicHandler({
             environment: passwordContext.environment,
             identity: identity(c),
+            directory: passwordContext.directory,
           });
           const response = await handler(betterAuthJsonRequest(
             c.req.raw,
@@ -1143,7 +1149,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
             { email: login.email, password: login.password },
           ));
           if (!response.ok) {
-            return c.html(renderPasswordLogin({ invalid: true, returnTo: login.returnTo }), 401);
+            return c.html(renderPasswordLogin({
+              invalid: true,
+              returnTo: login.returnTo,
+              email: login.email ?? '',
+            }), 401);
           }
           copyAuthResponseCookies(c, response.headers);
           return c.redirect(login.returnTo, 303);
@@ -1215,10 +1225,23 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           const origin = (await passwordAuthContext(c))?.environment.baseURL ??
             (await identity(c).getOrganization())?.canonicalAdminOrigin;
           if (!origin) throw new AuthDeniedError();
+          if (isHumanAuthFormMutation(c)) {
+            const formFailure = authFormPostFailureReason(c, origin);
+            if (formFailure) {
+              if (formFailure === 'content_length') {
+                return c.json({ error: 'request_too_large' }, 413);
+              }
+              if (formFailure === 'content_type') {
+                return c.json({ error: 'unsupported_media_type' }, 415);
+              }
+              return c.json({ error: 'forbidden' }, 403);
+            }
+            return next();
+          }
           const provenance = validateMutationProvenance(c.req.raw, principal, {
             canonicalOrigin: origin,
             maxBodyBytes: MAX_ADMIN_MUTATION_BODY_BYTES,
-            requireJson: c.req.method !== 'DELETE' && !isHumanAuthFormMutation(c),
+            requireJson: c.req.method !== 'DELETE',
           });
           if (!provenance.ok) {
             if (provenance.code === 'body_too_large') {
@@ -1387,6 +1410,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   app.use('/admin/recovery', authSetupBodyLimit);
   app.use('/admin/migrate', authSetupBodyLimit);
 
+  app.get('/admin/setup/client.js', (c) => {
+    authResponseHeaders(c);
+    c.header('Content-Type', 'application/javascript; charset=UTF-8');
+    return c.body(passwordOwnerSetupClientScript());
+  });
+
   app.get('/admin/setup', async (c) => {
     authResponseHeaders(c);
     const token = recoveryToken(c);
@@ -1401,19 +1430,19 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     ]);
     if (control.authMode === 'password_active') return c.redirect('/admin/login', 303);
     if (organization?.authMode === 'access_active') return c.redirect('/admin', 303);
-    if (organization && !['unconfigured', 'access_pending'].includes(organization.authMode)) {
-      return c.json({ error: 'authentication_unavailable' }, 409);
-    }
     if (!organization && control.authMode === 'unconfigured') {
       return c.html(renderPasswordOwnerSetupPage());
     }
-    const config = await identityStore.getAuthProviderConfig('cloudflare_access');
-    return c.html(renderAuthSetupPage({
-      state: organization?.authMode === 'access_pending' ? 'access_pending' : 'fresh',
-      origin: requestOrigin(c),
-      ...(config?.issuer === undefined ? {} : { issuer: config.issuer }),
-      ...(config?.audience === undefined ? {} : { audience: config.audience }),
-    }));
+    if (organization?.authMode === 'access_pending') {
+      const config = await identityStore.getAuthProviderConfig('cloudflare_access');
+      return c.html(renderAuthSetupPage({
+        state: 'access_pending',
+        origin: requestOrigin(c),
+        ...(config?.issuer === undefined ? {} : { issuer: config.issuer }),
+        ...(config?.audience === undefined ? {} : { audience: config.audience }),
+      }));
+    }
+    return c.json({ error: 'authentication_unavailable' }, 409);
   });
 
   app.post('/admin/setup', async (c) => {
@@ -1426,12 +1455,17 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const source = authSourceKey(c);
     const limiter = authRateLimiter(c, token);
     let passwordSetup = false;
+    let ownerSetupValues: { organizationName?: string; ownerEmail?: string } = {};
     try {
       await limiter.assertAllowed('setup', source);
       if (!validAuthFormPost(c, requestOrigin(c))) throw new AuthDeniedError();
       const rawForm = await readForm(c);
       passwordSetup = Object.hasOwn(rawForm, 'password');
       if (passwordSetup) {
+        ownerSetupValues = {
+          organizationName: preservedFormValue(rawForm.organizationName, 128),
+          ownerEmail: preservedFormValue(rawForm.ownerEmail, 320),
+        };
         const organization = await identity(c).getOrganization();
         if (organization) throw new AuthDeniedError();
         const form = v.safeParse(passwordOwnerSetupSchema, rawForm);
@@ -1446,7 +1480,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         if (!environment) throw new AuthDeniedError();
         const result = await new PasswordOwnerSetupService(identity(c), environment).complete({
           canonicalOrigin: requestOrigin(c),
-          displayName: form.output.displayName,
           email: form.output.ownerEmail,
           organizationName: form.output.organizationName,
           password: form.output.password,
@@ -1456,27 +1489,29 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         await limiter.recordSuccess('setup', source);
         return c.redirect('/admin/ready', 303);
       }
-      const form = v.safeParse(authSetupSchema, rawForm);
-      if (!form.success) throw new AuthDeniedError();
-      const setup = new AuthSetupService(identity(c), { recoveryToken: token });
-      await setup.beginAccessSetup({
-        recoveryToken: form.output.recoveryToken,
-        ownerEmail: form.output.ownerEmail,
-      });
-      await setup.configureAccess({
-        recoveryToken: form.output.recoveryToken,
-        issuer: form.output.issuer,
-        audience: form.output.audience,
-        canonicalAdminOrigin: requestOrigin(c),
-      });
-      await limiter.recordSuccess('setup', source);
-      return c.redirect('/admin/setup/verify', 303);
-    } catch {
+      // Fresh OSS setup is password-based. Cloudflare Access remains readable
+      // only for installations that were already pending before this flow;
+      // stale copies of the retired form must never create a new Access setup.
+      throw new AuthDeniedError();
+    } catch (error) {
       await limiter.recordFailure('setup', source);
+      const organization = await identity(c).getOrganization();
+      const config = organization?.authMode === 'access_pending'
+        ? await identity(c).getAuthProviderConfig('cloudflare_access')
+        : undefined;
       return c.html(
-        passwordSetup
-          ? renderPasswordOwnerSetupPage({ error: true })
-          : renderAuthSetupPage({ state: 'fresh', error: true, origin: requestOrigin(c) }),
+        !passwordSetup && organization?.authMode === 'access_pending'
+          ? renderAuthSetupPage({
+            state: 'access_pending',
+            error: true,
+            origin: requestOrigin(c),
+            ...(config?.issuer === undefined ? {} : { issuer: config.issuer }),
+            ...(config?.audience === undefined ? {} : { audience: config.audience }),
+          })
+          : renderPasswordOwnerSetupPage({
+            error: error instanceof PasswordPolicyError ? error.code : true,
+            ...ownerSetupValues,
+          }),
         401,
       );
     }
@@ -1636,6 +1671,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     c.header('Content-Security-Policy', invitationJoinCsp());
     return c.body(passwordResetClientScript());
   });
+  app.get('/admin/password/client.js', (c) => {
+    authResponseHeaders(c);
+    c.header('Content-Type', 'application/javascript; charset=UTF-8');
+    c.header('Content-Security-Policy', invitationJoinCsp());
+    return c.body(passwordFormClientScript());
+  });
   app.get('/admin/join', async (c) => {
     authResponseHeaders(c);
     c.header('Content-Security-Policy', invitationJoinCsp());
@@ -1725,7 +1766,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           membershipId: result.membershipId,
         });
         await limiter.recordSuccess('invite', source);
-        return c.json({ redirect: '/admin/account' });
+        return c.json({ redirect: '/admin/channels' });
       }
       const organization = await identity(c).getOrganization();
       const config = await identity(c).getAuthProviderConfig('cloudflare_access');
@@ -1755,7 +1796,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         membershipId: resolution.membership.id,
       });
       await limiter.recordSuccess('invite', source);
-      return c.json({ redirect: '/admin/account' });
+      return c.json({ redirect: '/admin/channels' });
     } catch (error) {
       await limiter.recordFailure('invite', source);
       return passwordCapabilityError(c, error, 'join_unavailable');
@@ -2246,6 +2287,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const handler = createBetterAuthEnvironmentPublicHandler({
       environment: context.environment,
       identity: identity(c),
+      directory: context.directory,
     });
     const response = await handler(betterAuthJsonRequest(
       c.req.raw,
@@ -4623,7 +4665,11 @@ function authFormPostFailureReason(c: Context, expectedOrigin: string): string |
     return 'expected_origin';
   }
   const origin = c.req.header('origin');
-  if (origin) {
+  if (origin === 'null' && isLoopbackHttpOrigin(normalizedExpected)) {
+    // Headless Chrome and embedded local-preview browsers can give a loopback
+    // document an opaque origin. The one-time recovery capability remains the
+    // setup authority; accept this browser quirk only on local HTTP previews.
+  } else if (origin) {
     let normalizedActual: string;
     try {
       normalizedActual = new URL(origin).origin;
@@ -4645,6 +4691,12 @@ function authFormPostFailureReason(c: Context, expectedOrigin: string): string |
   const length = Number(c.req.header('content-length') ?? 0);
   if (!Number.isFinite(length) || length < 0 || length > MAX_AUTH_SETUP_BODY_BYTES) return 'content_length';
   return null;
+}
+
+function isLoopbackHttpOrigin(value: string): boolean {
+  const url = new URL(value);
+  return url.protocol === 'http:' &&
+    ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
 }
 
 function authSourceKey(c: Context): string {
@@ -4789,6 +4841,10 @@ function isHumanAuthFormMutation(c: Context): boolean {
     '/admin/account/password',
     '/admin/logout',
   ].includes(c.req.path);
+}
+
+function preservedFormValue(value: unknown, maxLength: number): string {
+  return typeof value === 'string' ? value.slice(0, maxLength) : '';
 }
 
 function betterAuthJsonRequest(

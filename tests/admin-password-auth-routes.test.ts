@@ -24,15 +24,39 @@ test('fresh password setup, login, self-change, logout, and owner recovery form 
   };
   const app = createAdminRoutes({ identity, betterAuthEnvironment: environment, recoveryToken: RECOVERY });
 
+  const passwordClient = await app.request(`${ORIGIN}/admin/password/client.js`);
+  assert.equal(passwordClient.status, 200);
+  assert.match(passwordClient.headers.get('content-type') ?? '', /^application\/javascript/);
+  assert.match(await passwordClient.text(), /more character/);
+
   const entry = await app.request(`${ORIGIN}/admin`);
   assert.equal(entry.status, 303);
   assert.equal(entry.headers.get('location'), '/admin/setup');
   const setupPage = await app.request(`${ORIGIN}/admin/setup`);
   assert.equal(setupPage.status, 200);
-  assert.match(await setupPage.text(), /Create your Chickpea workspace/);
+  const setupHtml = await setupPage.text();
+  assert.match(setupHtml, /Create your Chickpea workspace/);
+  assert.match(setupHtml, /\/admin\/setup\/client\.js/);
+  assert.match(setupHtml, /minlength="8"/);
+  assert.match(setupHtml, /id="password-error"/);
+  assert.doesNotMatch(setupHtml, /Your name|Deployment recovery secret/);
+  const setupClient = await app.request(`${ORIGIN}/admin/setup/client.js`);
+  assert.equal(setupClient.status, 200);
+  assert.match(setupClient.headers.get('content-type') ?? '', /^application\/javascript/);
+  assert.doesNotMatch(await setupClient.text(), new RegExp(RECOVERY));
+  const shortSetup = await app.request(formRequest('/admin/setup', {
+    organizationName: 'Acme',
+    ownerEmail: 'owner@example.com',
+    password: 'short',
+    recoveryToken: RECOVERY,
+  }));
+  assert.equal(shortSetup.status, 401);
+  const shortSetupHtml = await shortSetup.text();
+  assert.match(shortSetupHtml, /at least 8 characters/);
+  assert.match(shortSetupHtml, /value="Acme"/);
+  assert.match(shortSetupHtml, /value="owner@example\.com"/);
   const setup = await app.request(formRequest('/admin/setup', {
     organizationName: 'Acme',
-    displayName: 'Owner Person',
     ownerEmail: 'owner@example.com',
     password: PASSWORD,
     recoveryToken: RECOVERY,
@@ -55,7 +79,9 @@ test('fresh password setup, login, self-change, logout, and owner recovery form 
     email: 'owner@example.com', password: 'wrong but deliberately long password', returnTo: '/admin',
   }));
   assert.equal(wrong.status, 401);
-  assert.match(await wrong.text(), /Email or password was not accepted/);
+  const wrongHtml = await wrong.text();
+  assert.match(wrongHtml, /Email or password was not accepted/);
+  assert.match(wrongHtml, /value="owner@example\.com"/);
 
   const login = await app.request(formRequest('/admin/login', {
     email: 'owner@example.com', password: PASSWORD, returnTo: '/admin/account',
@@ -91,6 +117,88 @@ test('fresh password setup, login, self-change, logout, and owner recovery form 
   identity.close();
 });
 
+test('local preview human auth forms accept the opaque Origin emitted by embedded browsers', async () => {
+  const origin = 'http://127.0.0.1:5174';
+  const identity = new SqliteIdentityStore(':memory:');
+  const backend = new NodeBetterAuthBackend(':memory:');
+  const environment = {
+    backend,
+    baseURL: origin,
+    password: nativePasswordPrimitive(),
+    recoveryToken: RECOVERY,
+    secret: await deriveBetterAuthSecret(RECOVERY),
+  };
+  const app = createAdminRoutes({ identity, betterAuthEnvironment: environment, recoveryToken: RECOVERY });
+  const body = new URLSearchParams({
+    organizationName: 'Local Preview',
+    ownerEmail: 'owner@example.com',
+    password: PASSWORD,
+    recoveryToken: RECOVERY,
+  }).toString();
+  const response = await app.request(new Request(`${origin}/admin/setup`, {
+    method: 'POST',
+    headers: {
+      origin: 'null',
+      'content-type': 'application/x-www-form-urlencoded',
+      'content-length': String(new TextEncoder().encode(body).byteLength),
+    },
+    body,
+  }));
+  assert.equal(response.status, 303, await response.clone().text());
+  assert.equal(response.headers.get('location'), '/admin/ready');
+  const setupCookie = cookieHeader(response.headers.get('set-cookie'));
+
+  const changeBody = new URLSearchParams({
+    currentPassword: PASSWORD,
+    newPassword: NEXT_PASSWORD,
+  }).toString();
+  const changed = await app.request(new Request(`${origin}/admin/account/password`, {
+    method: 'POST',
+    headers: {
+      cookie: setupCookie,
+      origin: 'null',
+      'content-type': 'application/x-www-form-urlencoded',
+      'content-length': String(new TextEncoder().encode(changeBody).byteLength),
+    },
+    body: changeBody,
+  }));
+  assert.equal(changed.status, 303, await changed.clone().text());
+  assert.equal(changed.headers.get('location'), '/admin/login');
+
+  const loginBody = new URLSearchParams({
+    email: 'owner@example.com',
+    password: NEXT_PASSWORD,
+    returnTo: '/admin/account',
+  }).toString();
+  const login = await app.request(new Request(`${origin}/admin/login`, {
+    method: 'POST',
+    headers: {
+      origin: 'null',
+      'content-type': 'application/x-www-form-urlencoded',
+      'content-length': String(new TextEncoder().encode(loginBody).byteLength),
+    },
+    body: loginBody,
+  }));
+  assert.equal(login.status, 303, await login.clone().text());
+  const loginCookie = cookieHeader(login.headers.get('set-cookie'));
+
+  const logoutBody = '';
+  const loggedOut = await app.request(new Request(`${origin}/admin/logout`, {
+    method: 'POST',
+    headers: {
+      cookie: loginCookie,
+      origin: 'null',
+      'content-type': 'application/x-www-form-urlencoded',
+      'content-length': String(new TextEncoder().encode(logoutBody).byteLength),
+    },
+    body: logoutBody,
+  }));
+  assert.equal(loggedOut.status, 303, await loggedOut.clone().text());
+  assert.equal(loggedOut.headers.get('location'), '/admin/login');
+  backend.close();
+  identity.close();
+});
+
 test('password setup rejects a malicious return destination and machine credentials on human routes', async () => {
   const identity = new SqliteIdentityStore(':memory:');
   const backend = new NodeBetterAuthBackend(':memory:');
@@ -103,7 +211,7 @@ test('password setup rejects a malicious return destination and machine credenti
   };
   const app = createAdminRoutes({ identity, betterAuthEnvironment: environment, recoveryToken: RECOVERY });
   await app.request(formRequest('/admin/setup', {
-    organizationName: 'Acme', displayName: 'Owner', ownerEmail: 'owner@example.com',
+    organizationName: 'Acme', ownerEmail: 'owner@example.com',
     password: PASSWORD, recoveryToken: RECOVERY,
   }));
   const login = await app.request(formRequest('/admin/login', {
@@ -138,7 +246,6 @@ test('fresh password setup cannot replace an existing legacy organization', asyn
     const app = createAdminRoutes({ identity, betterAuthEnvironment: environment, recoveryToken: RECOVERY });
     const denied = await app.request(formRequest('/admin/setup', {
       organizationName: 'Replacement',
-      displayName: 'Attacker',
       ownerEmail: 'attacker@example.com',
       password: PASSWORD,
       recoveryToken: RECOVERY,

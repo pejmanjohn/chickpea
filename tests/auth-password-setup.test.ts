@@ -29,7 +29,6 @@ test('recovery-gated owner setup commits authority last and returns a usable Bet
 
   const result = await setup.complete({
     canonicalOrigin: ORIGIN,
-    displayName: 'Pejman Owner',
     email: 'Owner@Example.com',
     organizationName: 'Acme',
     password: PASSWORD,
@@ -42,6 +41,7 @@ test('recovery-gated owner setup commits authority last and returns a usable Bet
   assert.equal(control?.betterAuthOrganizationId, result.organizationId);
   assert.match(result.headers.get('set-cookie') ?? '', /better-auth\.session_token=/);
   assert.equal((await backend.getUser(result.userId))?.email, 'owner@example.com');
+  assert.equal((await backend.getUser(result.userId))?.name, 'Owner');
   assert.equal((await backend.getMembership(result.membershipId))?.role, 'owner');
   const operation = await identity.getAuthOperation(result.operationId);
   assert.equal(operation?.status, 'consumed');
@@ -59,7 +59,6 @@ test('recovery-gated owner setup commits authority last and returns a usable Bet
 
   await assert.rejects(() => setup.complete({
     canonicalOrigin: ORIGIN,
-    displayName: 'Pejman Owner',
     email: 'owner@example.com',
     organizationName: 'Acme',
     password: PASSWORD,
@@ -83,7 +82,6 @@ test('wrong recovery proof creates no Better Auth user or Chickpea authority', a
 
   await assert.rejects(() => setup.complete({
     canonicalOrigin: ORIGIN,
-    displayName: 'Owner',
     email: 'owner@example.com',
     organizationName: 'Acme',
     password: PASSWORD,
@@ -125,7 +123,6 @@ test('owner setup resumes after either Better Auth/control-store boundary withou
     }) as IdentityStore;
     const input = {
       canonicalOrigin: ORIGIN,
-      displayName: 'Owner',
       email: 'owner@example.com',
       organizationName: 'Acme',
       password: PASSWORD,

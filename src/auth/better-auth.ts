@@ -4,6 +4,7 @@ import { organization } from 'better-auth/plugins';
 
 import type { BetterAuthDatabaseBackend } from './better-auth-backend.ts';
 import type { PasswordPrimitive } from './password.ts';
+import { PASSWORD_MIN_CODE_POINTS } from './password-policy.ts';
 
 export const BETTER_AUTH_BASE_PATH = '/api/auth';
 export const SESSION_IDLE_SECONDS = 4 * 60 * 60;
@@ -37,7 +38,7 @@ function createOptions(input: CreateBetterAuthInput & { baseURL: string }): Bett
       disableSignUp: !(input.allowSignUp ?? false),
       enabled: true,
       autoSignIn: input.autoSignInAfterSignUp ?? true,
-      minPasswordLength: 15,
+      minPasswordLength: PASSWORD_MIN_CODE_POINTS,
       // Chickpea enforces 128 Unicode code points and 512 UTF-8 bytes before
       // trusted credential writes. This ceiling keeps Better Auth from
       // rejecting a valid 128-code-point non-BMP password by UTF-16 length.

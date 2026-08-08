@@ -38,8 +38,10 @@ test('pending Access setup resumes at verification without skipping configuratio
   assert.match(html, /value="audience-value"/);
 });
 
-test('completed Access setup has one explicit Slack handoff', () => {
+test('completed setup has an auth-neutral Slack handoff', () => {
   const html = renderAuthSetupCompletePage();
-  assert.match(html, /Your Admin is protected/);
+  assert.match(html, /Your Chickpea is ready/);
+  assert.match(html, /owner account and workspace are ready/);
+  assert.doesNotMatch(html, /Cloudflare Access/);
   assert.match(html, /href="\/admin">Continue to Slack setup/);
 });

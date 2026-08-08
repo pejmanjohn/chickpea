@@ -390,6 +390,9 @@ async function completePasswordSetup(baseUrl) {
     setupPage.status === 200 &&
       setupHtml.includes('Create your Chickpea workspace') &&
       setupHtml.includes('name="ownerEmail"') &&
+      setupHtml.includes('/admin/setup/client.js') &&
+      !setupHtml.includes('Your name') &&
+      !setupHtml.includes('Deployment recovery secret') &&
       !setupHtml.includes('Zero Trust') &&
       !setupHtml.includes(RECOVERY_TOKEN),
     'fresh setup renders built-in owner creation without Access or recovery-secret echo',
@@ -397,7 +400,6 @@ async function completePasswordSetup(baseUrl) {
   );
   const body = new URLSearchParams({
     organizationName: 'Smoke Workspace',
-    displayName: 'Smoke Owner',
     ownerEmail: 'owner@example.com',
     password: OWNER_PASSWORD,
     recoveryToken: RECOVERY_TOKEN,

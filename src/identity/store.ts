@@ -225,6 +225,10 @@ export class IdentityStoreLogic {
         return { kind: 'auth_control', control: this.updateAuthControl(request.input) };
       case 'create_auth_operation':
         return { kind: 'auth_operation', operation: this.createAuthOperation(request.input) };
+      case 'reserve_pending_auth_operation': {
+        const reservation = this.reservePendingAuthOperation(request.input);
+        return { kind: 'auth_operation_reservation', ...reservation };
+      }
       case 'get_auth_operation':
         return { kind: 'auth_operation', operation: this.getAuthOperation(request.operationId) ?? null };
       case 'find_auth_operation':
@@ -568,6 +572,49 @@ export class IdentityStoreLogic {
       throw identityError('auth_operation_conflict', 'Authentication operation already exists.');
     }
     return this.requiredAuthOperation(id);
+  }
+
+  reservePendingAuthOperation(input: CreateAuthOperationInput): {
+    operation: AuthOperation;
+    created: boolean;
+  } {
+    const email = normalizeEmail(input.expectedEmail);
+    credentialHash(input.capabilityHash);
+    const organizationId = input.organizationId === undefined || input.organizationId === null
+      ? null
+      : strictText(input.organizationId, 'organizationId', 256);
+    const targetCredentialVersion = input.targetCredentialVersion ?? null;
+    if (targetCredentialVersion !== null &&
+        (!Number.isSafeInteger(targetCredentialVersion) || targetCredentialVersion <= 0)) {
+      throw identityError('identity_invalid', 'Target credential version is invalid.');
+    }
+    validateAuthOperationKind(input.kind);
+    const at = this.now();
+    if (!Number.isSafeInteger(input.expiresAt) || input.expiresAt <= at) {
+      throw identityError('identity_invalid', 'Operation expiry must be in the future.');
+    }
+    this.db.run(
+      `UPDATE identity_auth_operations
+       SET status = 'expired', updated_at = ?
+       WHERE kind = ? AND organization_id IS ? AND expected_normalized_email = ?
+         AND status = 'pending' AND expires_at <= ?`,
+      at, input.kind, organizationId, email, at,
+    );
+    const existingRow = this.db.get(
+      `SELECT * FROM identity_auth_operations
+       WHERE kind = ? AND organization_id IS ? AND expected_normalized_email = ?
+         AND status = 'pending'
+       ORDER BY created_at, operation_id
+       LIMIT 1`,
+      input.kind, organizationId, email,
+    );
+    if (existingRow) {
+      return {
+        operation: rowToAuthOperation(existingRow as unknown as AuthOperationRow),
+        created: false,
+      };
+    }
+    return { operation: this.createAuthOperation(input), created: true };
   }
 
   getAuthOperation(operationId: string): AuthOperation | undefined {
@@ -1914,6 +1961,9 @@ export class SqliteIdentityStore implements IdentityStore {
   async getAuthControl(installationId?: string) { return this.logic.getAuthControl(installationId); }
   async updateAuthControl(input: UpdateAuthControlInput) { return this.logic.updateAuthControl(input); }
   async createAuthOperation(input: CreateAuthOperationInput) { return this.logic.createAuthOperation(input); }
+  async reservePendingAuthOperation(input: CreateAuthOperationInput) {
+    return this.logic.reservePendingAuthOperation(input);
+  }
   async getAuthOperation(operationId: string) { return this.logic.getAuthOperation(operationId); }
   async findAuthOperation(kind: AuthOperationKind, capabilityHash: string) {
     return this.logic.findAuthOperation(kind, capabilityHash);

@@ -24,7 +24,9 @@ const INVITATION_TTL_MS = 7 * 24 * 60 * 60 * 1_000;
 const opaqueId = v.pipe(v.string(), v.regex(/^[A-Za-z0-9_-]{1,200}$/));
 const inviteSchema = v.strictObject({
   email: v.pipe(v.string(), v.trim(), v.email(), v.maxLength(320)),
-  role: v.picklist(['member', 'admin']),
+  // Keep parsing the prior field so a stale page gets a deliberate reload
+  // response instead of silently turning its former member choice into admin.
+  role: v.optional(v.picklist(['member', 'admin'])),
 });
 const membershipPatchSchema = v.pipe(
   v.strictObject({
@@ -88,14 +90,16 @@ export function createTeamAdminApi(options: TeamAdminApiOptions): Hono {
     const principal = requiredPrincipal(c, 'team.manage');
     const parsed = v.safeParse(inviteSchema, await readJson(c));
     if (!parsed.success) return invalid(c);
+    if (parsed.output.role === 'member') return c.json({ error: 'reload_required' }, 409);
     try {
       const lifecycle = await options.passwordLifecycle?.(c);
       if (lifecycle) {
         const result = await lifecycle.createInvitation({
-          ...parsed.output,
+          email: parsed.output.email,
+          role: 'admin',
           headers: c.req.raw.headers,
         });
-        return c.json(result, 201);
+        return c.json(result, result.created ? 201 : 200);
       }
       const secret = Buffer.from(randomBytes(32)).toString('base64url');
       const identity = await writableStore(options, c);
@@ -105,7 +109,7 @@ export function createTeamAdminApi(options: TeamAdminApiOptions): Hono {
       const invitation = await identity.createInvitation({
         organizationId: principal.organizationId,
         email: parsed.output.email,
-        role: parsed.output.role,
+        role: 'admin',
         tokenHash: digest(secret),
         inviterMembershipId: principal.membershipId,
         expiresAt: now() + INVITATION_TTL_MS,
@@ -114,41 +118,6 @@ export function createTeamAdminApi(options: TeamAdminApiOptions): Hono {
         invitation: safeInvitation(invitation),
         inviteLink: invitationLink(origin, invitation.id, secret),
       }, 201);
-    } catch (error) {
-      return teamError(c, error);
-    }
-  });
-
-  app.post('/team/invitations/:invitationId/resend', async (c) => {
-    const principal = requiredPrincipal(c, 'team.manage');
-    const invitationId = parseId(c.req.param('invitationId'));
-    if (!invitationId) return invalid(c);
-    try {
-      const lifecycle = await options.passwordLifecycle?.(c);
-      if (lifecycle) {
-        return c.json(await lifecycle.rotateInvitation({
-          operationId: invitationId,
-          headers: c.req.raw.headers,
-        }));
-      }
-      const secret = Buffer.from(randomBytes(32)).toString('base64url');
-      const identity = await writableStore(options, c);
-      if (!identity) return c.json({ error: 'team_lifecycle_unavailable' }, 409);
-      const origin = await canonicalInviteOrigin(await directory(options, c));
-      if (!origin) return c.json({ error: 'canonical_origin_required' }, 409);
-      const existing = (await identity.listInvitations()).find((row) => row.id === invitationId);
-      if (!existing || existing.organizationId !== principal.organizationId) {
-        return c.json({ error: 'invitation_unavailable' }, 404);
-      }
-      const invitation = await identity.resendInvitation({
-        invitationId,
-        tokenHash: digest(secret),
-        expiresAt: now() + INVITATION_TTL_MS,
-      });
-      return c.json({
-        invitation: safeInvitation(invitation),
-        inviteLink: invitationLink(origin, invitation.id, secret),
-      });
     } catch (error) {
       return teamError(c, error);
     }
@@ -265,7 +234,7 @@ async function teamSnapshot(
     directory.listMemberships(),
     control.listExternalIdentities(),
     passwordLifecycle && headers
-      ? passwordLifecycle.listInvitations(headers)
+      ? passwordLifecycle.listPendingInvitations(headers)
       : control.listInvitations(),
   ]);
   const users = (await Promise.all(
@@ -307,6 +276,7 @@ function safeInvitation(invitation: Invitation | {
   expiresAt: number;
   createdAt: number;
   updatedAt: number;
+  inviteLink?: string | null;
 }) {
   return {
     id: invitation.id,
@@ -316,6 +286,9 @@ function safeInvitation(invitation: Invitation | {
     expiresAt: invitation.expiresAt,
     createdAt: invitation.createdAt,
     updatedAt: invitation.updatedAt,
+    ...('inviteLink' in invitation && invitation.inviteLink
+      ? { inviteLink: invitation.inviteLink }
+      : {}),
   };
 }
 

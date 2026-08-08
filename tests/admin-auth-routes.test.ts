@@ -52,7 +52,7 @@ function originlessSameOriginFormRequest(path: string, values: Record<string, st
   });
 }
 
-test('public setup accepts recovery proof only in a capped body then activates through Access', async () => {
+test('fresh setup stays password-first while an existing pending Access installation can finish', async () => {
   const identity = new SqliteIdentityStore(':memory:');
   const app = createAdminRoutes({
     identity,
@@ -65,26 +65,33 @@ test('public setup accepts recovery proof only in a capped body then activates t
 
   const setupPage = await app.request(`${ORIGIN}/admin/setup`);
   assert.equal(setupPage.status, 200);
-  assert.doesNotMatch(await setupPage.text(), new RegExp(RECOVERY));
+  const setupHtml = await setupPage.text();
+  assert.match(setupHtml, /Create your Chickpea workspace/);
+  assert.doesNotMatch(setupHtml, /Zero Trust|Cloudflare Access/);
+  assert.doesNotMatch(setupHtml, new RegExp(RECOVERY));
 
-  const wrong = await app.request(formRequest('/admin/setup', {
-    ownerEmail: OWNER.verifiedEmail,
-    recoveryToken: 'wrong',
-    issuer: ISSUER,
-    audience: AUDIENCE,
-  }));
-  assert.equal(wrong.status, 401);
-  assert.equal(await identity.getOrganization(), undefined);
-
-  const configured = await app.request(formRequest('/admin/setup', {
+  const retiredForm = await app.request(formRequest('/admin/setup', {
     ownerEmail: OWNER.verifiedEmail,
     recoveryToken: RECOVERY,
     issuer: ISSUER,
     audience: AUDIENCE,
   }));
-  assert.equal(configured.status, 303);
-  assert.equal(configured.headers.get('location'), '/admin/setup/verify');
+  assert.equal(retiredForm.status, 401);
+  assert.match(await retiredForm.text(), /Create your Chickpea workspace/);
+  assert.equal(await identity.getOrganization(), undefined);
+
+  const legacySetup = new AuthSetupService(identity, { recoveryToken: RECOVERY });
+  await legacySetup.beginAccessSetup({ recoveryToken: RECOVERY, ownerEmail: OWNER.verifiedEmail });
+  await legacySetup.configureAccess({
+    recoveryToken: RECOVERY,
+    issuer: ISSUER,
+    audience: AUDIENCE,
+    canonicalAdminOrigin: ORIGIN,
+  });
   assert.equal((await identity.getOrganization())?.authMode, 'access_pending');
+  const pending = await app.request(`${ORIGIN}/admin/setup`);
+  assert.equal(pending.status, 200);
+  assert.match(await pending.text(), /Verify Cloudflare Access/);
 
   const activated = await app.request(`${ORIGIN}/admin/setup/verify`);
   assert.equal(activated.status, 303);
@@ -123,18 +130,20 @@ test('setup stays hidden without recovery configuration and caps unauthenticated
   identity.close();
 });
 
-test('Access-protected setup accepts an originless same-origin form but no weaker fallback', async () => {
+test('the retired fresh Access form cannot initialize authentication from any provenance', async () => {
   const values = {
     ownerEmail: OWNER.verifiedEmail,
     recoveryToken: RECOVERY,
     issuer: ISSUER,
     audience: AUDIENCE,
   };
-  const acceptedIdentity = new SqliteIdentityStore(':memory:');
-  const accepted = createAdminRoutes({ identity: acceptedIdentity, recoveryToken: RECOVERY });
-  assert.equal((await accepted.request(originlessSameOriginFormRequest('/admin/setup', values))).status, 303);
-  assert.equal((await acceptedIdentity.getOrganization())?.authMode, 'access_pending');
-  acceptedIdentity.close();
+  const originlessIdentity = new SqliteIdentityStore(':memory:');
+  const originless = createAdminRoutes({ identity: originlessIdentity, recoveryToken: RECOVERY });
+  const originlessResponse = await originless.request(originlessSameOriginFormRequest('/admin/setup', values));
+  assert.equal(originlessResponse.status, 401);
+  assert.match(await originlessResponse.text(), /Create your Chickpea workspace/);
+  assert.equal(await originlessIdentity.getOrganization(), undefined);
+  originlessIdentity.close();
 
   for (const fetchSite of ['same-site', 'cross-site', undefined]) {
     const identity = new SqliteIdentityStore(':memory:');

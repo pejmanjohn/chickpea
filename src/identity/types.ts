@@ -388,6 +388,10 @@ export interface ChickpeaIdentityControlStore {
   getAuthControl(installationId?: string): Promise<AuthControl | undefined>;
   updateAuthControl(input: UpdateAuthControlInput): Promise<AuthControl>;
   createAuthOperation(input: CreateAuthOperationInput): Promise<AuthOperation>;
+  reservePendingAuthOperation(input: CreateAuthOperationInput): Promise<{
+    operation: AuthOperation;
+    created: boolean;
+  }>;
   getAuthOperation(operationId: string): Promise<AuthOperation | undefined>;
   findAuthOperation(kind: AuthOperationKind, capabilityHash: string): Promise<AuthOperation | undefined>;
   listAuthOperations(kind?: AuthOperationKind, organizationId?: string): Promise<AuthOperation[]>;
@@ -458,6 +462,7 @@ export type IdentityRpcRequest =
   | { kind: 'get_auth_control'; installationId?: string }
   | { kind: 'update_auth_control'; input: UpdateAuthControlInput }
   | { kind: 'create_auth_operation'; input: CreateAuthOperationInput }
+  | { kind: 'reserve_pending_auth_operation'; input: CreateAuthOperationInput }
   | { kind: 'get_auth_operation'; operationId: string }
   | { kind: 'find_auth_operation'; operationKind: AuthOperationKind; capabilityHash: string }
   | { kind: 'list_auth_operations'; operationKind?: AuthOperationKind; organizationId?: string }
@@ -522,6 +527,7 @@ export type IdentityRpcRequest =
 export type IdentityRpcResponse =
   | { kind: 'auth_control'; control: AuthControl | null }
   | { kind: 'auth_operation'; operation: AuthOperation | null }
+  | { kind: 'auth_operation_reservation'; operation: AuthOperation; created: boolean }
   | { kind: 'auth_operations'; operations: AuthOperation[] }
   | { kind: 'membership_access_overlay'; overlay: MembershipAccessOverlay | null }
   | { kind: 'organization'; organization: Organization | null }

@@ -57,6 +57,7 @@ function teamFixture(viewerRole: 'owner' | 'admin' = 'owner') {
     email: 'joiner@example.com',
     role: 'member',
     status: 'pending',
+    inviteLink: 'https://chickpea.example.com/join#invite=invitation_pending.stable-secret',
     expiresAt: 1_786_704_800_000,
     createdAt: 1_786_100_000_000,
     updatedAt: 1_786_100_000_000,
@@ -76,12 +77,26 @@ function teamFixture(viewerRole: 'owner' | 'admin' = 'owner') {
         externalIdentity: { provider: 'cloudflare_access', bound: true },
       },
     ],
-    invitations: [invitation],
+    invitations: [
+      invitation,
+      {
+        ...invitation,
+        id: 'invitation_unavailable',
+        email: 'unavailable@example.com',
+        inviteLink: undefined,
+      },
+      { ...invitation, id: 'invitation_accepted', email: 'accepted@example.com', status: 'accepted' },
+      { ...invitation, id: 'invitation_revoked', email: 'revoked@example.com', status: 'revoked' },
+      { ...invitation, id: 'invitation_expired', email: 'expired@example.com', status: 'expired' },
+    ],
   };
   return { team, invitation };
 }
 
-async function createHarness(viewerRole: 'owner' | 'admin' = 'owner') {
+async function createHarness(
+  viewerRole: 'owner' | 'admin' = 'owner',
+  harnessOptions: { failInviteRequest?: boolean } = {},
+) {
   const fixture = teamFixture(viewerRole);
   let html = '';
   const app = {
@@ -119,17 +134,27 @@ async function createHarness(viewerRole: 'owner' | 'admin' = 'owner') {
     if (path === '/admin/api/audit/memory/scopes') return response({ scopes: [] });
     if (path === '/admin/api/team' && method === 'GET') return response(fixture.team);
     if (path === '/admin/api/team/invitations' && method === 'POST') {
+      if (harnessOptions.failInviteRequest) throw new TypeError('Failed to fetch');
       const created = {
         ...fixture.invitation,
         id: 'invitation_created',
         email: String((body as { email: string }).email).toLowerCase(),
-        role: (body as { role: string }).role,
+        role: 'admin',
+        inviteLink: 'https://chickpea.example.com/join#invite=invitation_created.stable-secret',
       };
       fixture.team.invitations.unshift(created);
       return response({
         invitation: created,
-        inviteLink: 'https://chickpea.example.com/join#invite=invitation_created.show-once-secret',
+        inviteLink: created.inviteLink,
       }, 201);
+    }
+    if (path.startsWith('/admin/api/team/invitations/') && method === 'DELETE') {
+      const invitationId = path.split('/').at(-1);
+      const index = fixture.team.invitations.findIndex((invitation) => invitation.id === invitationId);
+      const [revoked] = index >= 0 ? fixture.team.invitations.splice(index, 1) : [];
+      return revoked
+        ? response({ invitation: { ...revoked, status: 'revoked' } })
+        : response({ error: 'not_found' }, 404);
     }
     if (path === '/admin/api/team/memberships/membership_member' && method === 'PATCH') {
       Object.assign(fixture.team.members[1]!, body);
@@ -159,19 +184,27 @@ async function createHarness(viewerRole: 'owner' | 'admin' = 'owner') {
   return { app, clipboard, fixture, listeners, location, requests };
 }
 
-test('Team page keeps invitations and roles inside Chickpea', async () => {
+test('Team page keeps invitations and membership status inside Chickpea', async () => {
   const harness = await createHarness();
   assert.equal(harness.location.pathname, '/admin/team');
   assert.match(harness.app.innerHTML, /data-action="open-team"[^>]*aria-current="page"/);
-  assert.match(harness.app.innerHTML, /Chickpea invite pending/);
-  assert.match(
-    harness.app.innerHTML,
-    /The invitation stays pending until the teammate uses the private link and accepts it/,
-  );
+  assert.match(harness.app.innerHTML, /Waiting to join/);
+  assert.match(harness.app.innerHTML, /joiner@example\.com/);
+  assert.match(harness.app.innerHTML, /unavailable@example\.com/);
+  assert.match(harness.app.innerHTML, /older deployment credentials/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-link="undefined"/);
+  assert.doesNotMatch(harness.app.innerHTML, /accepted@example\.com|revoked@example\.com|expired@example\.com/);
+  assert.doesNotMatch(harness.app.innerHTML, /What happens next|team-grid/);
+  assert.match(harness.app.innerHTML, /name="email"/);
+  assert.match(harness.app.innerHTML, /team-status-control/);
+  assert.match(harness.app.innerHTML, />Owner</);
+  assert.match(harness.app.innerHTML, /<span class="chan-name">Members<\/span><span class="chan-meta">2 members<\/span>/);
+  assert.doesNotMatch(harness.app.innerHTML, /active records|Identity bound|Identity not bound|This same link works until/);
+  assert.doesNotMatch(harness.app.innerHTML, /team-invite-role|team-member-role/);
   assert.doesNotMatch(harness.app.innerHTML, /Cloudflare|Zero Trust|policy|Open Access|Access action/i);
 });
 
-test('Team invitation is show-once, copyable, and role changes use the membership API', async () => {
+test('Team join links stay stable, copyable, and membership status stays manageable', async () => {
   const harness = await createHarness();
   const input = harness.listeners.input;
   const change = harness.listeners.change;
@@ -180,7 +213,6 @@ test('Team invitation is show-once, copyable, and role changes use the membershi
   assert.ok(input && change && submit && click);
 
   input({ target: actionTarget({ 'data-action': 'team-invite-email' }, 'New@Example.com') });
-  change({ target: actionTarget({ 'data-action': 'team-invite-role' }, 'admin') });
   submit({
     target: actionTarget({ 'data-action': 'team-invite-form' }),
     preventDefault() {},
@@ -188,31 +220,75 @@ test('Team invitation is show-once, copyable, and role changes use the membershi
   await flush();
   const create = harness.requests.find((request) =>
     request.path === '/admin/api/team/invitations' && request.method === 'POST');
-  assert.deepEqual(create?.body, { email: 'New@Example.com', role: 'admin' });
-  assert.match(harness.app.innerHTML, /Copy this invitation link now/);
-  assert.match(harness.app.innerHTML, /show-once-secret/);
+  assert.deepEqual(create?.body, { email: 'New@Example.com' });
+  assert.match(harness.app.innerHTML, /Join link ready for/);
+  assert.match(harness.app.innerHTML, /new@example\.com/);
+  assert.doesNotMatch(harness.app.innerHTML, /id="team-invite-link"|>Done<|show this secret again|Resend link|rotates the private link/);
 
   click({ target: actionTarget({ 'data-action': 'team-copy-link' }) });
   await flush();
   assert.deepEqual(harness.clipboard, [
-    'https://chickpea.example.com/join#invite=invitation_created.show-once-secret',
+    'https://chickpea.example.com/join#invite=invitation_created.stable-secret',
+  ]);
+  assert.match(harness.app.innerHTML, />Copied<\/button>/);
+
+  const copyControl = harness.app.innerHTML.match(
+    /<button[^>]*data-action="team-copy-invitation"[^>]*data-link="[^"]+"[^>]*>/,
+  )?.[0];
+  assert.ok(copyControl);
+  const renderedLink = copyControl.match(/data-link="([^"]+)"/)?.[1];
+  assert.ok(renderedLink);
+  click({ target: actionTarget({ 'data-action': 'team-copy-invitation', 'data-link': renderedLink }) });
+  await flush();
+  assert.deepEqual(harness.clipboard, [
+    'https://chickpea.example.com/join#invite=invitation_created.stable-secret',
+    renderedLink,
   ]);
 
+  const revokeControl = harness.app.innerHTML.match(
+    /<button[^>]*data-action="team-revoke"[^>]*data-invitation="invitation_created"[^>]*>/,
+  )?.[0];
+  assert.ok(revokeControl);
+  click({ target: actionTarget({
+    'data-action': 'team-revoke',
+    'data-invitation': revokeControl.match(/data-invitation="([^"]+)"/)?.[1] ?? '',
+  }) });
+  await flush();
+  assert.doesNotMatch(harness.app.innerHTML, /Join link ready/);
+  assert.ok(harness.requests.some((request) =>
+    request.path === '/admin/api/team/invitations/invitation_created' && request.method === 'DELETE'));
+
   change({
-    target: actionTarget({ 'data-action': 'team-member-role', 'data-membership': 'membership_member' }, 'admin'),
+    target: actionTarget({ 'data-action': 'team-member-status', 'data-membership': 'membership_member' }, 'suspended'),
   });
   await flush();
   const patch = harness.requests.find((request) =>
     request.path === '/admin/api/team/memberships/membership_member' && request.method === 'PATCH');
-  assert.deepEqual(patch?.body, { role: 'admin' });
+  assert.deepEqual(patch?.body, { status: 'suspended' });
 });
 
-test('Admin Team UI does not offer owner grants or controls for owner memberships', async () => {
+test('Team invitation replaces raw network failures with safe recovery guidance', async () => {
+  const harness = await createHarness('owner', { failInviteRequest: true });
+  const input = harness.listeners.input;
+  const submit = harness.listeners.submit;
+  assert.ok(input && submit);
+
+  input({ target: actionTarget({ 'data-action': 'team-invite-email' }, 'teammate@example.com') });
+  submit({
+    target: actionTarget({ 'data-action': 'team-invite-form' }),
+    preventDefault() {},
+  });
+  await flush();
+
+  assert.doesNotMatch(harness.app.innerHTML, /Failed to fetch/);
+  assert.match(harness.app.innerHTML, /Reload this page to check whether the change succeeded/);
+});
+
+test('Admin Team UI marks the owner without exposing role controls', async () => {
   const harness = await createHarness('admin');
-  const memberRow = harness.app.innerHTML.match(/<article class="team-row">[\s\S]*?member@example\.com[\s\S]*?<\/article>/)?.[0] ?? '';
-  assert.doesNotMatch(memberRow, /<option value="owner"/);
   const ownerRow = harness.app.innerHTML.match(/<article class="team-row">[\s\S]*?owner@example\.com[\s\S]*?<\/article>/)?.[0] ?? '';
-  assert.match(ownerRow, /data-action="team-member-role"[^>]* disabled/);
+  assert.match(ownerRow, />Owner</);
+  assert.doesNotMatch(harness.app.innerHTML, /team-member-role|team-invite-role/);
 });
 
 test('protected join and member pages keep provider details out of the normal flow', async () => {
@@ -231,7 +307,7 @@ test('protected join and member pages keep provider details out of the normal fl
     fetch(path: string, options: { body: string }) {
       requests.push({ path, body: options.body });
       assert.equal(stored.has(JOIN_STORAGE_KEY), false);
-      return Promise.resolve(response({ redirect: '/admin/account' }));
+      return Promise.resolve(response({ redirect: '/admin/channels' }));
     },
     location: { replace(path: string) { destination = path; } },
     sessionStorage: {
@@ -244,7 +320,7 @@ test('protected join and member pages keep provider details out of the normal fl
     path: '/admin/join',
     body: JSON.stringify({ invitationId: 'invitation_join', token: 'secret-value' }),
   }]);
-  assert.equal(destination, '/admin/account');
+  assert.equal(destination, '/admin/channels');
   assert.equal(stored.size, 0);
 
   const account = renderMemberAccountPage({
@@ -252,7 +328,8 @@ test('protected join and member pages keep provider details out of the normal fl
     role: 'member', status: 'active',
   });
   assert.match(account, /Open Slack/);
-  assert.match(account, /role controls what you can do in Chickpea/);
+  assert.match(account, /Your Chickpea account is active/);
+  assert.doesNotMatch(account, />member</i);
   assert.doesNotMatch(account, /Cloudflare|Access|Zero Trust/i);
   assert.doesNotMatch(account, /Settings|Profiles|Team/);
 });

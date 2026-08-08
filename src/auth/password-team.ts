@@ -1,6 +1,6 @@
-import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 
-import type { IdentityStore, Membership, OrganizationRole } from '../identity/types.ts';
+import type { AuthOperation, IdentityStore, Membership, OrganizationRole } from '../identity/types.ts';
 import { digest } from './personal-token.ts';
 import { assertPasswordPolicy } from './password-policy.ts';
 import type { BetterAuthEnvironment } from './better-auth-environment.ts';
@@ -8,6 +8,7 @@ import { createBetterAuth } from './better-auth.ts';
 import { setCookieValues } from './cookies.ts';
 
 const INVITATION_TTL_MS = 7 * 24 * 60 * 60 * 1_000;
+const INVITATION_LINK_CONTEXT = 'chickpea/invitation-link/v1';
 const RESET_TTL_MS = 30 * 60 * 1_000;
 
 export type PasswordLifecycleErrorCode =
@@ -34,6 +35,11 @@ export interface PasswordInvitationSummary {
   updatedAt: number;
 }
 
+export interface PasswordPendingInvitationSummary extends Omit<PasswordInvitationSummary, 'status'> {
+  status: 'pending';
+  inviteLink: string | null;
+}
+
 interface BetterAuthInvitation {
   id: string;
   organizationId: string;
@@ -46,7 +52,7 @@ interface BetterAuthInvitation {
 
 interface OrganizationApi {
   createInvitation(input: {
-    body: { email: string; role: string; organizationId: string; resend?: boolean };
+    body: { email: string; role: string; organizationId: string };
     headers: Headers;
   }): Promise<BetterAuthInvitation>;
   listInvitations(input: {
@@ -90,50 +96,61 @@ export class PasswordTeamLifecycleService {
     this.api = this.auth.api as unknown as OrganizationApi;
   }
 
-  async listInvitations(headers: Headers): Promise<PasswordInvitationSummary[]> {
-    const [invitations, operations] = await Promise.all([
-      this.api.listInvitations({ query: { organizationId: this.organizationId }, headers }),
-      this.control.listAuthOperations('invitation_enrollment', this.organizationId),
-    ]);
+  async listPendingInvitations(headers: Headers): Promise<PasswordPendingInvitationSummary[]> {
+    const { invitations, operations } = await this.invitationState(headers);
+    return this.pendingInvitationSummaries(invitations, operations);
+  }
+
+  private pendingInvitationSummaries(
+    invitations: BetterAuthInvitation[],
+    operations: AuthOperation[],
+  ): PasswordPendingInvitationSummary[] {
     const byInvitation = new Map(invitations.map((invitation) => [invitation.id, invitation]));
-    return operations
-      .filter((operation) => operation.betterAuthInvitationId && byInvitation.has(operation.betterAuthInvitationId))
-      .map((operation) => invitationSummary(
-        operation,
-        byInvitation.get(operation.betterAuthInvitationId!)!,
-        this.now(),
-      ));
+    return operations.flatMap((operation) => {
+      if (operation.status !== 'pending' || operation.expiresAt <= this.now() ||
+          !operation.betterAuthInvitationId) return [];
+      const invitation = byInvitation.get(operation.betterAuthInvitationId);
+      if (!invitation || invitation.status !== 'pending') return [];
+      const summary = invitationSummary(operation, invitation, this.now());
+      return summary.status === 'pending'
+        ? [{ ...summary, status: 'pending' as const, inviteLink: this.stableInvitationLink(operation) ?? null }]
+        : [];
+    });
   }
 
   async createInvitation(input: {
     email: string;
     role: 'admin' | 'member';
     headers: Headers;
-  }): Promise<{ invitation: PasswordInvitationSummary; inviteLink: string }> {
+  }): Promise<{ invitation: PasswordPendingInvitationSummary; inviteLink: string; created: boolean }> {
     const email = normalizeEmail(input.email);
     const existing = await this.environment.backend.findUserByEmail(email);
     if (existing && await this.environment.backend.getMembershipForUser(existing.id, this.organizationId)) {
       throw new PasswordLifecycleError('already_enrolled');
     }
-    const priorOperations = await this.control.listAuthOperations(
-      'invitation_enrollment',
-      this.organizationId,
-    );
-    if (priorOperations.some((operation) =>
-      operation.status === 'pending' &&
-      operation.expiresAt > this.now() &&
-      operation.expectedNormalizedEmail === email)) {
-      throw new PasswordLifecycleError('conflict');
+    const state = await this.invitationState(input.headers);
+    const current = this.pendingInvitationSummaries(state.invitations, state.operations)
+      .find((invitation) => invitation.email === email);
+    if (current?.inviteLink) {
+      return { invitation: current, inviteLink: current.inviteLink, created: false };
     }
-    const secret = Buffer.from(this.random(32)).toString('base64url');
+    await this.retireLegacyInvitations(state.operations, state.invitations, email, input.headers);
+    const operationId = `auth_operation_${Buffer.from(this.random(18)).toString('base64url')}`;
+    const secret = stableInvitationSecret(this.environment.secret, operationId);
     const expiresAt = this.now() + INVITATION_TTL_MS;
-    const operation = await this.control.createAuthOperation({
+    const reservation = await this.control.reservePendingAuthOperation({
+      id: operationId,
       kind: 'invitation_enrollment',
       organizationId: this.organizationId,
       expectedEmail: email,
       capabilityHash: digest(secret),
       expiresAt,
     });
+    const operation = reservation.operation;
+    if (!reservation.created) {
+      const invitation = await this.waitForReservedInvitation(operation, input.headers);
+      return { invitation, inviteLink: invitation.inviteLink!, created: false };
+    }
     try {
       const invitation = await this.api.createInvitation({
         body: { email, role: input.role, organizationId: this.organizationId },
@@ -146,63 +163,18 @@ export class PasswordTeamLifecycleService {
         betterAuthOrganizationId: this.organizationId,
         betterAuthInvitationId: invitation.id,
       });
+      const inviteLink = capabilityLink(this.environment.baseURL, '/join', 'invite', ready.id, secret);
       return {
-        invitation: invitationSummary(ready, invitation, this.now()),
-        inviteLink: capabilityLink(this.environment.baseURL, '/join', 'invite', ready.id, secret),
+        invitation: {
+          ...invitationSummary(ready, invitation, this.now()),
+          status: 'pending',
+          inviteLink,
+        },
+        inviteLink,
+        created: true,
       };
     } catch (error) {
       await this.control.revokeAuthOperation(operation.id).catch(() => undefined);
-      throw error;
-    }
-  }
-
-  async rotateInvitation(input: {
-    operationId: string;
-    headers: Headers;
-  }): Promise<{ invitation: PasswordInvitationSummary; inviteLink: string }> {
-    const current = await this.requiredOperation(input.operationId, 'invitation_enrollment');
-    if (!current.betterAuthInvitationId) throw new PasswordLifecycleError('unavailable');
-    const listed = await this.api.listInvitations({
-      query: { organizationId: this.organizationId },
-      headers: input.headers,
-    });
-    const prior = listed.find((invitation) => invitation.id === current.betterAuthInvitationId);
-    if (!prior || prior.status !== 'pending' || !isInvitationRole(prior.role)) {
-      throw new PasswordLifecycleError('unavailable');
-    }
-    const secret = Buffer.from(this.random(32)).toString('base64url');
-    const expiresAt = this.now() + INVITATION_TTL_MS;
-    const replacement = await this.control.createAuthOperation({
-      kind: 'invitation_enrollment',
-      organizationId: this.organizationId,
-      expectedEmail: current.expectedNormalizedEmail,
-      capabilityHash: digest(secret),
-      expiresAt,
-    });
-    try {
-      const invitation = await this.api.createInvitation({
-        body: {
-          email: current.expectedNormalizedEmail,
-          role: prior.role,
-          organizationId: this.organizationId,
-          resend: true,
-        },
-        headers: input.headers,
-      });
-      const ready = await this.control.advanceAuthOperation({
-        operationId: replacement.id,
-        capabilityHash: digest(secret),
-        step: 1,
-        betterAuthOrganizationId: this.organizationId,
-        betterAuthInvitationId: invitation.id,
-      });
-      await this.control.revokeAuthOperation(current.id);
-      return {
-        invitation: invitationSummary(ready, invitation, this.now()),
-        inviteLink: capabilityLink(this.environment.baseURL, '/join', 'invite', ready.id, secret),
-      };
-    } catch (error) {
-      await this.control.revokeAuthOperation(replacement.id).catch(() => undefined);
       throw error;
     }
   }
@@ -372,6 +344,76 @@ export class PasswordTeamLifecycleService {
     const tokens = (await this.control.exportSummary()).personalTokens
       .filter((token) => token.userId === userId && token.status === 'active');
     await Promise.all(tokens.map((token) => this.control.revokePersonalToken(token.id)));
+  }
+
+  private stableInvitationLink(operation: AuthOperation): string | undefined {
+    const secret = stableInvitationSecret(this.environment.secret, operation.id);
+    if (!hashEquals(operation.capabilityHash, digest(secret))) return undefined;
+    return capabilityLink(this.environment.baseURL, '/join', 'invite', operation.id, secret);
+  }
+
+  private async invitationState(headers: Headers): Promise<{
+    invitations: BetterAuthInvitation[];
+    operations: AuthOperation[];
+  }> {
+    const [invitations, operations] = await Promise.all([
+      this.api.listInvitations({ query: { organizationId: this.organizationId }, headers }),
+      this.control.listAuthOperations('invitation_enrollment', this.organizationId),
+    ]);
+    return { invitations, operations };
+  }
+
+  private async waitForReservedInvitation(
+    reserved: AuthOperation,
+    headers: Headers,
+  ): Promise<PasswordPendingInvitationSummary> {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const operation = attempt === 0 ? reserved : await this.control.getAuthOperation(reserved.id);
+      if (!operation || operation.status !== 'pending' || operation.expiresAt <= this.now()) {
+        throw new PasswordLifecycleError('conflict');
+      }
+      if (operation.betterAuthInvitationId) {
+        const invitations = await this.api.listInvitations({
+          query: { organizationId: this.organizationId },
+          headers,
+        });
+        const invitation = invitations.find((entry) => entry.id === operation.betterAuthInvitationId);
+        const inviteLink = this.stableInvitationLink(operation);
+        if (invitation?.status === 'pending' && inviteLink) {
+          return {
+            ...invitationSummary(operation, invitation, this.now()),
+            status: 'pending',
+            inviteLink,
+          };
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    throw new PasswordLifecycleError('conflict');
+  }
+
+  private async retireLegacyInvitations(
+    operations: AuthOperation[],
+    invitations: BetterAuthInvitation[],
+    email: string,
+    headers: Headers,
+  ): Promise<void> {
+    const legacy = operations.filter((operation) =>
+      operation.status === 'pending' &&
+      operation.expiresAt > this.now() &&
+      operation.expectedNormalizedEmail === email &&
+      !this.stableInvitationLink(operation));
+    if (!legacy.length) return;
+    const byId = new Map(invitations.map((invitation) => [invitation.id, invitation]));
+    for (const operation of legacy) {
+      const invitation = operation.betterAuthInvitationId
+        ? byId.get(operation.betterAuthInvitationId)
+        : undefined;
+      if (invitation?.status === 'pending') {
+        await this.api.cancelInvitation({ body: { invitationId: invitation.id }, headers });
+      }
+      await this.control.revokeAuthOperation(operation.id);
+    }
   }
 
   private async activeOwnerMembershipIds(targetMembershipId: string): Promise<string[]> {
@@ -607,6 +649,12 @@ export class PasswordEnrollmentService {
       ? { id, email: normalizeEmail(email) }
       : undefined;
   }
+}
+
+function stableInvitationSecret(environmentSecret: string, operationId: string): string {
+  return createHmac('sha256', Buffer.from(environmentSecret, 'base64url'))
+    .update(`${INVITATION_LINK_CONTEXT}\0${operationId}`)
+    .digest('base64url');
 }
 
 function invitationSummary(

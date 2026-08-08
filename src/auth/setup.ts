@@ -13,7 +13,6 @@ const OWNER_SETUP_TTL_MS = 24 * 60 * 60 * 1_000;
 
 export interface CompletePasswordOwnerSetupInput {
   recoveryToken: string;
-  displayName: string;
   email: string;
   password: string;
   organizationName: string;
@@ -43,9 +42,9 @@ export class PasswordOwnerSetupService {
     );
     const canonicalOrigin = requireSupportedOrigin(input.canonicalOrigin);
     if (canonicalOrigin !== this.environment.baseURL) throw new AuthDeniedError();
-    const displayName = boundedHumanText(input.displayName, 'displayName');
     const organizationName = boundedHumanText(input.organizationName, 'organizationName');
     const email = normalizeSetupEmail(input.email);
+    const displayName = displayNameFromEmail(email);
     assertPasswordPolicy(input.password, { email, organizationName });
 
     const [control, legacyOrganization] = await Promise.all([
@@ -321,6 +320,16 @@ function normalizeSetupEmail(value: string): string {
   if (email.length < 3 || email.length > 320 ||
       !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new AuthDeniedError();
   return email;
+}
+
+function displayNameFromEmail(email: string): string {
+  const local = (email.split('@', 1)[0] ?? '').split('+', 1)[0] ?? '';
+  const words = local.normalize('NFKC').split(/[._-]+/u).filter(Boolean);
+  const displayName = words.map((word) => {
+    const [first = '', ...rest] = Array.from(word);
+    return first.toLocaleUpperCase() + rest.join('');
+  }).join(' ');
+  return boundedHumanText(displayName || 'Owner', 'displayName');
 }
 
 function boundedHumanText(value: string, field: string): string {

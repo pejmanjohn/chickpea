@@ -2,6 +2,10 @@ import { isCloudflareTarget } from '../config/runtime-target.ts';
 import { CONNECTOR_LOGOS } from '../config/connector-logos.ts';
 import { CONNECTOR_PRESETS, GOOGLE_WORKSPACE_SERVICE_PRESETS } from '../config/presets.ts';
 import { GOOGLE_WORKSPACE_SCOPE_OPTIONS } from '../config/api-oauth-policy.ts';
+import {
+  PASSWORD_MIN_CODE_POINTS,
+  type PasswordPolicyErrorCode,
+} from '../auth/password-policy.ts';
 
 const ADMIN_FAVICON = `<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='8 9 32 32'%3E%3Ccircle cx='24' cy='25' r='15.5' fill='%23E3AC45'/%3E%3Ccircle cx='17' cy='17.5' r='4.2' fill='%23F4D084'/%3E%3Ccircle cx='18.5' cy='24' r='1.9' fill='%233B3220'/%3E%3Ccircle cx='29.5' cy='24' r='1.9' fill='%233B3220'/%3E%3Cpath d='M19 29 Q24 32.5 29 29' fill='none' stroke='%233B3220' stroke-width='1.8' stroke-linecap='round'/%3E%3Ccircle cx='15.5' cy='28.5' r='2' fill='%23DC8A4F' opacity='0.4'/%3E%3Ccircle cx='32.5' cy='28.5' r='2' fill='%23DC8A4F' opacity='0.4'/%3E%3C/svg%3E">`;
 const SLACK_LOGO_DATA_URL =
@@ -374,10 +378,12 @@ button, input, textarea, select { font: inherit; }
   border-radius: 11px;
   color: var(--text-2);
   cursor: pointer;
+  display: block;
   font-size: .8125rem;
   font-weight: 500;
   padding: 8px 10px;
   text-align: left;
+  text-decoration: none;
   width: 100%;
 }
 .section-nav-item:hover { background: #f6eedc; color: var(--text); }
@@ -1667,37 +1673,40 @@ details[open].advanced summary::before {
 .team-main { display: grid; gap: 22px; }
 .team-hero { align-items: flex-start; display: flex; gap: 16px; justify-content: space-between; }
 .team-count { background: var(--ember-tint); border-radius: 999px; color: var(--ember-deep); font-size: .75rem; font-weight: 800; padding: 6px 10px; white-space: nowrap; }
-.team-grid { display: grid; gap: 16px; grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); }
 .team-card { background: var(--bg); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--card-shadow); padding: 18px; }
 .team-card h2 { color: var(--text); font-size: 1rem; margin: 0 0 5px; }
 .team-form { display: grid; gap: 12px; margin-top: 16px; }
-.team-form-row { display: grid; gap: 10px; grid-template-columns: minmax(0, 1fr) 130px auto; }
+.team-form-row { display: grid; gap: 10px; grid-template-columns: minmax(0, 1fr) auto; }
 .team-list { display: grid; gap: 10px; }
 .team-row { align-items: center; background: rgba(255,255,255,.48); border: 1px solid var(--line); border-radius: 12px; display: grid; gap: 12px; grid-template-columns: minmax(0, 1fr) auto; padding: 14px; }
 .team-row-main { min-width: 0; }
 .team-row-title { color: var(--text); font-size: .875rem; font-weight: 800; overflow-wrap: anywhere; }
 .team-row-sub { color: var(--text-2); font-size: .75rem; line-height: 1.5; margin-top: 3px; overflow-wrap: anywhere; }
 .team-row-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 7px; justify-content: flex-end; }
-.team-row-actions .select { min-width: 110px; width: auto; }
+.team-status-control { min-width: 132px; width: auto; }
+.team-status-control select.input { border-radius: 11px; font-size: .75rem; min-height: 32px; padding-block: 6px; }
+.team-status-control select.input:disabled { cursor: not-allowed; opacity: .55; }
 .team-statuses { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .team-status { background: var(--well); border: 1px solid var(--line); border-radius: 999px; color: var(--text-2); font-size: .6875rem; font-weight: 800; padding: 4px 8px; }
-.team-status.observed, .team-status.active { background: var(--ok-tint); color: var(--ok); }
-.team-status.required, .team-status.suspended { background: var(--ember-tint); color: var(--ember-deep); }
+.team-status.active { background: var(--ok-tint); color: var(--ok); }
+.team-status.owner { background: var(--ember-tint); border-color: rgba(221,160,51,.34); color: var(--ember-deep); }
+.team-status.suspended { background: var(--ember-tint); color: var(--ember-deep); }
+.team-created-flash { align-items: center; background: var(--ember-tint); border: 1px solid rgba(176,84,21,.22); border-radius: 12px; display: flex; gap: 14px; justify-content: space-between; margin-top: 14px; padding: 12px 14px; }
+.team-created-flash strong { color: var(--text); display: block; font-size: .8125rem; }
+.team-created-flash span { color: var(--text-2); display: block; font-size: .75rem; margin-top: 2px; overflow-wrap: anywhere; }
 .team-show-once { background: var(--ember-tint); border: 1px solid rgba(176,84,21,.22); border-radius: 12px; margin-top: 14px; padding: 14px; }
 .team-show-once label { color: var(--text); display: block; font-size: .75rem; font-weight: 800; margin-bottom: 7px; }
 .team-link-row { align-items: center; display: flex; gap: 8px; }
 .team-link-row .input { flex: 1; min-width: 0; }
 .team-empty { color: var(--text-2); font-size: .8125rem; padding: 8px 0; }
-@media (max-width: 880px) {
-  .team-grid { grid-template-columns: 1fr; }
-}
 @media (max-width: 620px) {
   .team-hero, .team-row { align-items: stretch; grid-template-columns: 1fr; }
   .team-hero { flex-direction: column; }
   .team-count { width: max-content; }
   .team-form-row { grid-template-columns: 1fr; }
   .team-row-actions { justify-content: flex-start; }
-  .team-row-actions .select { flex: 1; min-width: 0; }
+  .team-status-control { flex: 1; min-width: 0; }
+  .team-created-flash { align-items: stretch; flex-direction: column; }
   .team-link-row { align-items: stretch; flex-direction: column; }
 }
 
@@ -1765,15 +1774,17 @@ details[open].advanced summary::before {
     // the reusable Profiles destination into the platform hierarchy.
     view: "channels",
     // Team is Chickpea's authorization surface. Authentication providers prove
-    // identity, but invitations, memberships, and roles live here.
+    // identity, while Chickpea owns invitations and membership status.
     team: null,
     teamLoading: false,
     teamError: "",
     teamBusy: "",
     teamNotice: "",
     teamInviteLink: "",
+    teamInviteEmail: "",
+    teamInviteCopied: false,
     teamResetLink: "",
-    teamInviteDraft: { email: "", role: "member" },
+    teamInviteDraft: { email: "" },
     channelScreen: "overview",
     profileScreen: "list",
     profileLastAgentId: null,
@@ -2388,7 +2399,8 @@ details[open].advanced summary::before {
       '<button type="button" class="btn btn-soft' + (primarySection() === "profiles" ? " nav-active" : "") + '" data-action="open-profiles" data-section-switcher="true">Profiles</button>' +
       '<button type="button" class="btn btn-soft' + (primarySection() === "team" ? " nav-active" : "") + '" data-action="open-team" data-section-switcher="true">Team</button>' +
       (USAGE_ADMIN_UI ? '<button type="button" class="btn btn-soft' + (primarySection() === "usage" ? " nav-active" : "") + '" data-action="open-usage" data-section-switcher="true">Usage</button>' : '') +
-      '<button type="button" class="btn btn-soft' + (primarySection() === "settings" ? " nav-active" : "") + '" data-action="open-settings" data-section-switcher="true">Settings</button></div>' +
+      '<button type="button" class="btn btn-soft' + (primarySection() === "settings" ? " nav-active" : "") + '" data-action="open-settings" data-section-switcher="true">Settings</button>' +
+      '<a class="btn btn-soft" href="/admin/account">Account</a></div>' +
       "</header>";
   }
 
@@ -2410,7 +2422,7 @@ details[open].advanced summary::before {
         var selected = active === section.id;
         return '<button type="button" class="section-nav-item' + (selected ? " active" : "") + '" data-action="' + section.action + '" data-section-switcher="true"' +
           (selected ? ' aria-current="page"' : '') + '>' + section.label + '</button>';
-      }).join("") + '</nav>';
+      }).join("") + '<a class="section-nav-item" href="/admin/account">Account</a></nav>';
   }
 
   // The connected workspace's display name for a rail group header: the friendly
@@ -2483,12 +2495,14 @@ details[open].advanced summary::before {
   function teamRailHtml() {
     var members = state.team && state.team.members ? state.team.members : [];
     var invitations = state.team && state.team.invitations ? state.team.invitations : [];
-    var pending = invitations.filter(function (invitation) { return invitation.status === "pending"; });
+    var pending = invitations.filter(function (invitation) {
+      return invitation.status === "pending" && Number(invitation.expiresAt) > Date.now();
+    });
     return '<nav class="rail" aria-label="Team"><div class="rail-context">' +
       '<div class="rail-head"><span class="section-eyebrow">Team</span></div>' +
-      '<button type="button" class="chan-item active" data-action="open-team" aria-current="page"><span class="chan-name">People</span><span class="chan-meta">' + members.length + ' active records</span></button>' +
-      '<div class="ws-row">Invitations</div>' +
-      '<div class="empty" style="margin:8px; padding:12px;"><p class="hint" style="margin:0;">' + (pending.length ? pending.length + ' pending' : 'No pending invites') + '</p></div>' +
+      '<button type="button" class="chan-item active" data-action="open-team" aria-current="page"><span class="chan-name">Members</span><span class="chan-meta">' + members.length + ' member' + (members.length === 1 ? '' : 's') + '</span></button>' +
+      '<div class="ws-row">Join links</div>' +
+      '<div class="empty" style="margin:8px; padding:12px;"><p class="hint" style="margin:0;">' + (pending.length ? pending.length + ' pending' : 'No pending links') + '</p></div>' +
       '</div>' + sectionSwitcherHtml() + '</nav>';
   }
 
@@ -2502,49 +2516,47 @@ details[open].advanced summary::before {
     }
     var members = team.members || [];
     var invitations = team.invitations || [];
-    var pending = invitations.filter(function (invitation) { return invitation.status === "pending"; });
+    var pending = invitations.filter(function (invitation) {
+      return invitation.status === "pending" && Number(invitation.expiresAt) > Date.now();
+    });
     var notice = state.teamError
       ? '<p class="error" role="alert">' + esc(state.teamError) + '</p>'
       : (state.teamNotice ? '<p class="hint" role="status">' + esc(state.teamNotice) + '</p>' : '');
-    var showOnce = state.teamInviteLink
-      ? '<div class="team-show-once" role="status"><label for="team-invite-link">Copy this invitation link now</label><p class="hint">For safety, Chickpea will not show this secret again after you leave or refresh.</p><div class="team-link-row"><input class="input mono" id="team-invite-link" readonly value="' + esc(state.teamInviteLink) + '"><button type="button" class="btn btn-primary btn-sm" data-action="team-copy-link">Copy link</button><button type="button" class="btn btn-ghost btn-sm" data-action="team-dismiss-link">Done</button></div></div>'
+    var createdFlash = state.teamInviteLink && state.teamInviteEmail
+      ? '<div class="team-created-flash" role="status"><div><strong>Join link ready for</strong><span>' + esc(state.teamInviteEmail) + '</span></div><button type="button" class="btn btn-primary btn-sm" data-action="team-copy-link">' + (state.teamInviteCopied ? 'Copied' : 'Copy link') + '</button></div>'
       : '';
     var resetOnce = state.teamResetLink
       ? '<div class="team-show-once" role="status"><label for="team-reset-link">Copy this password reset link now</label><p class="hint">Send it privately to the named teammate. It expires quickly and cannot be shown again after you leave or refresh.</p><div class="team-link-row"><input class="input mono" id="team-reset-link" readonly value="' + esc(state.teamResetLink) + '"><button type="button" class="btn btn-primary btn-sm" data-action="team-copy-reset">Copy link</button><button type="button" class="btn btn-ghost btn-sm" data-action="team-dismiss-reset">Done</button></div></div>'
       : '';
-    return '<div class="team-hero"><div><p class="section-eyebrow">People &amp; access</p><h1 class="page-title">Your team</h1><p class="hint">Sign-in verifies who someone is. Chickpea invitations and roles decide what they can do.</p></div><span class="team-count">' + members.length + ' member' + (members.length === 1 ? '' : 's') + '</span></div>' +
+    return '<div class="team-hero"><div><p class="section-eyebrow">People &amp; access</p><h1 class="page-title">Your team</h1><p class="hint">Everyone you invite can administer this Chickpea workspace. The person who created it remains the owner.</p></div><span class="team-count">' + members.length + ' member' + (members.length === 1 ? '' : 's') + '</span></div>' +
       notice +
-      '<div class="team-grid"><section class="team-card" aria-labelledby="invite-heading"><h2 id="invite-heading">Invite a teammate</h2><p class="hint">Create a private enrollment link and send it through a trusted channel. Possession of the link authorizes the exact invited email; Chickpea does not send or verify email.</p><form class="team-form" data-action="team-invite-form"><div class="team-form-row"><label class="sr-only" for="team-invite-email">Email</label><input class="input" id="team-invite-email" data-action="team-invite-email" type="email" autocomplete="email" required placeholder="teammate@example.com" value="' + esc(state.teamInviteDraft.email) + '"><label class="sr-only" for="team-invite-role">Role</label><select class="select" id="team-invite-role" data-action="team-invite-role"><option value="member"' + (state.teamInviteDraft.role === "member" ? ' selected' : '') + '>Member</option><option value="admin"' + (state.teamInviteDraft.role === "admin" ? ' selected' : '') + '>Admin</option></select><button type="submit" class="btn btn-primary"' + (state.teamBusy ? ' disabled' : '') + '>Create invite</button></div></form>' + showOnce + '</section>' +
-      '<section class="team-card" aria-labelledby="join-heading"><h2 id="join-heading">What happens next</h2><p class="hint">The invitation stays pending until the teammate uses the private link and accepts it. Resending rotates the link; revoking makes it unusable immediately.</p></section></div>' +
+      '<section class="team-card" aria-labelledby="invite-heading"><h2 id="invite-heading">Create a teammate join link</h2><p class="hint">Chickpea does not send email. Enter the exact email address, then copy and share the private link yourself.</p><form class="team-form" data-action="team-invite-form"><label class="field-label" for="team-invite-email">Email</label><div class="team-form-row"><input class="input" id="team-invite-email" name="email" data-action="team-invite-email" type="email" autocomplete="email" required placeholder="teammate@example.com" value="' + esc(state.teamInviteDraft.email) + '"><button type="submit" class="btn btn-primary"' + (state.teamBusy ? ' disabled' : '') + '>Create link</button></div></form>' + createdFlash + '</section>' +
       resetOnce + '<section class="team-card" aria-labelledby="members-heading"><h2 id="members-heading">Members</h2><p class="hint">Suspension takes effect on the next Chickpea request, even if the signed-in browser stays open.</p><div class="team-list">' + (members.length ? members.map(teamMemberRowHtml).join("") : '<p class="team-empty">No memberships yet.</p>') + '</div></section>' +
-      '<section class="team-card" aria-labelledby="invitations-heading"><h2 id="invitations-heading">Invitations</h2><p class="hint">Pending links can be rotated or revoked. Accepted invitations have already created their membership.</p><div class="team-list">' + (invitations.length ? invitations.map(teamInvitationRowHtml).join("") : '<p class="team-empty">No invitations yet.</p>') + '</div></section>';
+      '<section class="team-card" aria-labelledby="invitations-heading"><h2 id="invitations-heading">Pending join links</h2><p class="hint">Each teammate has one private link. Copy it whenever needed, or revoke it to stop access.</p><div class="team-list">' + (pending.length ? pending.map(teamInvitationRowHtml).join("") : '<p class="team-empty">No pending join links.</p>') + '</div></section>';
   }
 
   function teamMemberRowHtml(member) {
     var viewer = state.team && state.team.viewer ? state.team.viewer : { role: "admin", membershipId: "" };
     var canManageOwner = viewer.role === "owner";
     var busy = state.teamBusy === "member:" + member.id;
-    var roleOptions = ["member", "admin"].concat(canManageOwner ? ["owner"] : []);
-    var roleSelect = '<select class="select" aria-label="Role for ' + esc(member.email || "member") + '" data-action="team-member-role" data-membership="' + esc(member.id) + '"' + (busy || (member.role === "owner" && !canManageOwner) ? ' disabled' : '') + '>' + roleOptions.map(function (role) {
-      return '<option value="' + role + '"' + (member.role === role ? ' selected' : '') + '>' + role.charAt(0).toUpperCase() + role.slice(1) + '</option>';
-    }).join("") + '</select>';
-    var statusSelect = '<select class="select" aria-label="Status for ' + esc(member.email || "member") + '" data-action="team-member-status" data-membership="' + esc(member.id) + '"' + (busy || (member.role === "owner" && !canManageOwner) ? ' disabled' : '') + '>' + ["active", "suspended", "removed"].map(function (status) {
+    var statusSelect = '<span class="select-wrap team-status-control"><select class="input" name="membership-status-' + esc(member.id) + '" aria-label="Status for ' + esc(member.email || "member") + '" data-action="team-member-status" data-membership="' + esc(member.id) + '"' + (busy || (member.role === "owner" && !canManageOwner) ? ' disabled' : '') + '>' + ["active", "suspended", "removed"].map(function (status) {
       return '<option value="' + status + '"' + (member.status === status ? ' selected' : '') + '>' + status.charAt(0).toUpperCase() + status.slice(1) + '</option>';
-    }).join("") + '</select>';
+    }).join("") + '</select>' + icon("chevron-down", "select-caret") + '</span>';
     var resetButton = '<button type="button" class="btn btn-soft btn-sm" data-action="team-reset-password" data-membership="' + esc(member.id) + '"' + (busy || (member.role === "owner" && !canManageOwner) ? ' disabled' : '') + '>Reset password</button>';
-    return '<article class="team-row"><div class="team-row-main"><div class="team-row-title">' + esc(member.displayName || member.email || "Member") + (viewer.membershipId === member.id ? ' <span class="hint">(you)</span>' : '') + '</div><div class="team-row-sub">' + esc(member.email || "No email") + '</div><div class="team-statuses"><span class="team-status ' + (member.status === "active" ? "active" : member.status === "suspended" ? "suspended" : "") + '">' + esc(member.status) + '</span><span class="team-status ' + (member.externalIdentity && member.externalIdentity.bound ? "observed" : "required") + '">' + (member.externalIdentity && member.externalIdentity.bound ? 'Identity bound' : 'Identity not bound') + '</span></div></div><div class="team-row-actions">' + roleSelect + statusSelect + resetButton + '</div></article>';
+    var ownerMarker = member.role === "owner" ? '<span class="team-status owner">Owner</span>' : '';
+    return '<article class="team-row"><div class="team-row-main"><div class="team-row-title">' + esc(member.displayName || member.email || "Teammate") + (viewer.membershipId === member.id ? ' <span class="hint">(you)</span>' : '') + '</div><div class="team-row-sub">' + esc(member.email || "No email") + '</div><div class="team-statuses">' + ownerMarker + '<span class="team-status ' + (member.status === "active" ? "active" : member.status === "suspended" ? "suspended" : "") + '">' + esc(member.status) + '</span></div></div><div class="team-row-actions">' + statusSelect + resetButton + '</div></article>';
   }
 
   function teamInvitationRowHtml(invitation) {
-    var pending = invitation.status === "pending";
     var busy = state.teamBusy === "invite:" + invitation.id;
-    var actions = '';
-    if (pending) {
-      actions += '<button type="button" class="btn btn-soft btn-sm" data-action="team-resend" data-invitation="' + esc(invitation.id) + '"' + (busy ? ' disabled' : '') + '>Resend link</button><button type="button" class="btn btn-danger btn-sm" data-action="team-revoke" data-invitation="' + esc(invitation.id) + '"' + (busy ? ' disabled' : '') + '>Revoke</button>';
-    }
-    var labels = { pending: "Chickpea invite pending", accepted: "Membership activated", revoked: "Invite revoked", expired: "Invite expired" };
-    var guidance = { pending: "Waiting for the invitee. Resending rotates the private link.", accepted: "The invitee used the private link and activated this membership.", revoked: "An administrator revoked this link. Create a new invitation if needed.", expired: "This link expired. Create a new invitation to try again." };
-    return '<article class="team-row"><div class="team-row-main"><div class="team-row-title">' + esc(invitation.email) + '</div><div class="team-row-sub">' + esc(invitation.role) + ' · expires ' + esc(new Date(invitation.expiresAt).toLocaleString()) + '</div><div class="team-statuses"><span class="team-status">' + esc(labels[invitation.status] || invitation.status) + '</span></div><div class="team-row-sub">' + esc(guidance[invitation.status] || "Ask an administrator to retry this invitation.") + '</div></div><div class="team-row-actions">' + actions + '</div></article>';
+    var copyAction = invitation.inviteLink
+      ? '<button type="button" class="btn btn-soft btn-sm" data-action="team-copy-invitation" data-link="' + esc(invitation.inviteLink) + '"' + (busy ? ' disabled' : '') + '>Copy link</button>'
+      : '';
+    var actions = copyAction + '<button type="button" class="btn btn-danger btn-sm" data-action="team-revoke" data-invitation="' + esc(invitation.id) + '"' + (busy ? ' disabled' : '') + '>Revoke</button>';
+    var guidance = invitation.inviteLink
+      ? ''
+      : '<div class="team-row-sub">This link was created with older deployment credentials and cannot be displayed. Revoke it before creating a replacement.</div>';
+    return '<article class="team-row"><div class="team-row-main"><div class="team-row-title">' + esc(invitation.email) + '</div><div class="team-row-sub">Expires ' + esc(new Date(invitation.expiresAt).toLocaleString()) + '</div><div class="team-statuses"><span class="team-status">Waiting to join</span></div>' + guidance + '</div><div class="team-row-actions">' + actions + '</div></article>';
   }
 
   function profilesRailHtml() {
@@ -2723,7 +2735,12 @@ details[open].advanced summary::before {
     state.disableConfirm = false;
     state.teamError = "";
     state.teamNotice = "";
-    if (entering) { state.teamInviteLink = ""; state.teamResetLink = ""; }
+    if (entering) {
+      state.teamInviteLink = "";
+      state.teamInviteEmail = "";
+      state.teamInviteCopied = false;
+      state.teamResetLink = "";
+    }
     render();
     loadTeam();
   }
@@ -2755,9 +2772,22 @@ details[open].advanced summary::before {
     });
   }
 
+  function teamMutationErrorText(error) {
+    var message = error && (error.serverMessage || error.message);
+    var networkFailure = !error || error.status == null && (
+      message === "Failed to fetch" ||
+      message === "Load failed" ||
+      message === "NetworkError when attempting to fetch resource."
+    );
+    if (networkFailure) {
+      return "Chickpea could not be reached. Reload this page to check whether the change succeeded before trying again.";
+    }
+    return message || "The team change could not be saved.";
+  }
+
   function failTeamMutation(error) {
     state.teamBusy = "";
-    state.teamError = error.serverMessage || error.message || "The team change could not be saved.";
+    state.teamError = teamMutationErrorText(error);
     render();
   }
 
@@ -2773,33 +2803,29 @@ details[open].advanced summary::before {
     state.teamError = "";
     state.teamNotice = "";
     state.teamInviteLink = "";
+    state.teamInviteEmail = "";
+    state.teamInviteCopied = false;
     render();
-    postJson("/admin/api/team/invitations", "POST", {
-      email: email,
-      role: state.teamInviteDraft.role === "admin" ? "admin" : "member"
-    }).then(function (result) {
+    postJson("/admin/api/team/invitations", "POST", { email: email }).then(function (result) {
       state.teamInviteDraft.email = "";
-      return finishTeamMutation("Invitation created. Copy the private link and send it to your teammate.", result);
+      state.teamInviteEmail = result && result.invitation && result.invitation.email ? result.invitation.email : email;
+      return finishTeamMutation("", result);
     }).catch(failTeamMutation);
   }
 
-  function mutateTeamInvitation(invitationId, action) {
+  function revokeTeamInvitation(invitationId) {
     if (state.teamBusy || !invitationId) return;
     state.teamBusy = "invite:" + invitationId;
     state.teamError = "";
     state.teamNotice = "";
-    if (action === "resend") state.teamInviteLink = "";
+    state.teamInviteLink = "";
+    state.teamInviteEmail = "";
+    state.teamInviteCopied = false;
     render();
     var path = "/admin/api/team/invitations/" + encodeURIComponent(invitationId);
-    var request = action === "revoke"
-      ? api(path, { method: "DELETE" })
-      : postJson(path + "/resend", "POST", {});
-    var message = action === "revoke"
-      ? "Invitation revoked."
-      : action === "resend"
-        ? "Invitation rotated. Copy the new link now; the prior link no longer works."
-        : "Invitation updated.";
-    request.then(function (result) { return finishTeamMutation(message, result); }).catch(failTeamMutation);
+    api(path, { method: "DELETE" })
+      .then(function (result) { return finishTeamMutation("Join link revoked.", result); })
+      .catch(failTeamMutation);
   }
 
   function updateTeamMembership(membershipId, field, value) {
@@ -8543,19 +8569,32 @@ details[open].advanced summary::before {
     }
     if (action === "open-team") { openTeam(); }
     if (action === "team-retry") { loadTeam(); }
-    if (action === "team-dismiss-link") { state.teamInviteLink = ""; state.teamNotice = ""; render(); }
     if (action === "team-dismiss-reset") { state.teamResetLink = ""; state.teamNotice = ""; render(); }
     if (action === "team-copy-link" && state.teamInviteLink) {
       navigator.clipboard.writeText(state.teamInviteLink).then(function () {
-        state.teamNotice = "Invitation link copied.";
+        state.teamInviteCopied = true;
         render();
       }).catch(function () {
         state.teamError = "Copy failed. Select the link and copy it manually.";
         render();
       });
     }
-    if (action === "team-resend") { mutateTeamInvitation(target.getAttribute("data-invitation") || "", "resend"); }
-    if (action === "team-revoke") { mutateTeamInvitation(target.getAttribute("data-invitation") || "", "revoke"); }
+    if (action === "team-copy-invitation") {
+      var invitationLink = target.getAttribute("data-link") || "";
+      if (invitationLink) {
+        navigator.clipboard.writeText(invitationLink).then(function () {
+          state.teamNotice = "Join link copied.";
+          render();
+        }).catch(function () {
+          state.teamError = "Copy failed. Reload the page and try again.";
+          render();
+        });
+      } else {
+        state.teamError = "This join link is no longer available to copy. Revoke it before creating a replacement.";
+        render();
+      }
+    }
+    if (action === "team-revoke") { revokeTeamInvitation(target.getAttribute("data-invitation") || ""); }
     if (action === "team-reset-password") { createTeamPasswordReset(target.getAttribute("data-membership") || ""); }
     if (action === "team-copy-reset" && state.teamResetLink) {
       navigator.clipboard.writeText(state.teamResetLink).then(function () {
@@ -9198,13 +9237,6 @@ details[open].advanced summary::before {
   document.addEventListener("change", function (event) {
     var target = event.target;
     var action = target.getAttribute && target.getAttribute("data-action");
-    if (action === "team-invite-role") {
-      state.teamInviteDraft.role = target.value === "admin" ? "admin" : "member";
-      state.teamError = "";
-    }
-    if (action === "team-member-role") {
-      updateTeamMembership(target.getAttribute("data-membership") || "", "role", target.value);
-    }
     if (action === "team-member-status") {
       updateTeamMembership(target.getAttribute("data-membership") || "", "status", target.value);
     }
@@ -11420,7 +11452,7 @@ button:hover { background:var(--ember-bright); }
 }
 
 export function renderPasswordLogin(
-  options: { invalid?: boolean; returnTo?: string } = {},
+  options: { invalid?: boolean; returnTo?: string; email?: string } = {},
 ): string {
   const error = options.invalid
     ? '<div class="error" id="auth-error" role="alert" tabindex="-1">Email or password was not accepted.</div>'
@@ -11431,7 +11463,7 @@ export function renderPasswordLogin(
     error,
     body: `<form method="post" action="/admin/login">
       <label for="email">Email</label>
-      <input id="email" name="email" type="email" autocomplete="username" required autofocus>
+      <input id="email" name="email" type="email" autocomplete="username" required autofocus value="${escapeHtmlAttribute(options.email ?? '')}">
       <label for="password">Password</label>
       <input id="password" name="password" type="password" autocomplete="current-password" required ${options.invalid ? 'aria-describedby="auth-error"' : ''}>
       <input name="returnTo" type="hidden" value="${escapeHtmlAttribute(options.returnTo ?? '/admin')}">
@@ -11440,28 +11472,52 @@ export function renderPasswordLogin(
   });
 }
 
-export function renderPasswordOwnerSetupPage(options: { error?: boolean } = {}): string {
-  const error = options.error
-    ? '<div class="error" id="auth-error" role="alert" tabindex="-1">Setup could not be completed. Check every field and your recovery secret, then retry.</div>'
+export function renderPasswordOwnerSetupPage(
+  options: {
+    error?: boolean | PasswordPolicyErrorCode;
+    organizationName?: string;
+    ownerEmail?: string;
+  } = {},
+): string {
+  const errorMessage = options.error === 'too_short'
+    ? `Use a password with at least ${PASSWORD_MIN_CODE_POINTS} characters.`
+    : options.error === 'too_long'
+      ? 'Use a password with no more than 128 characters.'
+      : options.error === 'common'
+        ? 'That password is too common. Choose a less predictable password.'
+        : options.error === 'context'
+          ? 'Do not include Chickpea, your organization name, or the name from your email address in the password.'
+          : options.error
+            ? 'Setup could not be completed. Check the account details and try again.'
+            : '';
+  const error = errorMessage
+    ? `<div class="error" id="auth-error" role="alert" tabindex="-1">${escapeHtmlAttribute(errorMessage)}</div>`
     : '';
   return renderPasswordPage({
     title: 'Create your Chickpea workspace',
     eyebrow: 'Your deployment is ready',
     error,
-    intro: 'Create the first owner account. Your recovery secret stays offline and no email service is required.',
-    body: `<form method="post" action="/admin/setup">
+    intro: 'Create the first owner account. No email service is required.',
+    body: `<p id="owner-setup-status" role="status" aria-live="polite">Opening your private setup link&hellip;</p>
+    <section id="owner-setup-fallback" hidden>
+      <label for="owner-setup-manual-capability">Setup code</label>
+      <input id="owner-setup-manual-capability" type="password" autocomplete="off">
+      <p class="field-help">Paste the setup code from your deploy results.</p>
+      <p id="owner-setup-manual-error" class="field-error" role="alert" aria-live="polite" hidden></p>
+      <button id="owner-setup-manual-continue" type="button">Continue to account setup</button>
+    </section>
+    <form id="owner-setup-form" method="post" action="/admin/setup" hidden>
       <label for="organization-name">Organization name</label>
-      <input id="organization-name" name="organizationName" autocomplete="organization" required maxlength="128">
-      <label for="display-name">Your name</label>
-      <input id="display-name" name="displayName" autocomplete="name" required maxlength="128">
+      <input id="organization-name" name="organizationName" autocomplete="organization" required maxlength="128" value="${escapeHtmlAttribute(options.organizationName ?? '')}">
       <label for="owner-email">Email</label>
-      <input id="owner-email" name="ownerEmail" type="email" autocomplete="username" required maxlength="320">
-      <label for="password">Password <span>15 or more characters</span></label>
-      <input id="password" name="password" type="password" autocomplete="new-password" required minlength="15" maxlength="256">
-      <label for="recovery-token">Deployment recovery secret</label>
-      <input id="recovery-token" name="recoveryToken" type="password" autocomplete="off" required ${options.error ? 'aria-describedby="auth-error"' : ''}>
-      <button type="submit">Create owner account</button>
-    </form>`,
+      <input id="owner-email" name="ownerEmail" type="email" autocomplete="username" required maxlength="320" value="${escapeHtmlAttribute(options.ownerEmail ?? '')}">
+      <label for="password">Password <span>${PASSWORD_MIN_CODE_POINTS} or more characters</span></label>
+      <input id="password" name="password" type="password" autocomplete="new-password" required minlength="${PASSWORD_MIN_CODE_POINTS}" maxlength="256" aria-describedby="password-help password-error">
+      <p id="password-help" class="field-help">Use at least ${PASSWORD_MIN_CODE_POINTS} characters. Spaces are allowed.</p>
+      <p id="password-error" class="field-error" role="alert" aria-live="polite" hidden></p>
+      <input id="owner-setup-capability" name="recoveryToken" type="hidden">
+      <button id="owner-setup-submit" type="submit" disabled>Create owner account</button>
+    </form><script src="/admin/setup/client.js" defer></script>`,
   });
 }
 
@@ -11477,10 +11533,12 @@ export function renderPasswordChangePage(options: { error?: boolean } = {}): str
     body: `<form method="post" action="/admin/account/password">
       <label for="current-password">Current password</label>
       <input id="current-password" name="currentPassword" type="password" autocomplete="current-password" required>
-      <label for="new-password">New password <span>15 or more characters</span></label>
-      <input id="new-password" name="newPassword" type="password" autocomplete="new-password" required minlength="15" maxlength="256" ${options.error ? 'aria-describedby="auth-error"' : ''}>
+      <label for="new-password">New password <span>${PASSWORD_MIN_CODE_POINTS} or more characters</span></label>
+      <input id="new-password" name="newPassword" type="password" autocomplete="new-password" required minlength="${PASSWORD_MIN_CODE_POINTS}" maxlength="256" aria-describedby="${options.error ? 'auth-error ' : ''}password-help password-error">
+      <p id="password-help" class="field-help">Use at least ${PASSWORD_MIN_CODE_POINTS} characters. Spaces are allowed.</p>
+      <p id="password-error" class="field-error" role="alert" aria-live="polite" hidden></p>
       <button type="submit">Change password and sign out</button>
-    </form>`,
+    </form><script src="/admin/password/client.js" defer></script>`,
   });
 }
 
@@ -11504,13 +11562,32 @@ export function renderPasswordRecoveryPage(options: { error?: boolean; success?:
     body: `<form method="post" action="/admin/recovery">
       <label for="owner-email">Owner email</label>
       <input id="owner-email" name="ownerEmail" type="email" autocomplete="username" required maxlength="320">
-      <label for="new-password">New password <span>15 or more characters</span></label>
-      <input id="new-password" name="newPassword" type="password" autocomplete="new-password" required minlength="15" maxlength="256">
+      <label for="new-password">New password <span>${PASSWORD_MIN_CODE_POINTS} or more characters</span></label>
+      <input id="new-password" name="newPassword" type="password" autocomplete="new-password" required minlength="${PASSWORD_MIN_CODE_POINTS}" maxlength="256" aria-describedby="password-help password-error">
+      <p id="password-help" class="field-help">Use at least ${PASSWORD_MIN_CODE_POINTS} characters. Spaces are allowed.</p>
+      <p id="password-error" class="field-error" role="alert" aria-live="polite" hidden></p>
       <label for="recovery-token">Deployment recovery secret</label>
       <input id="recovery-token" name="recoveryToken" type="password" autocomplete="off" required ${options.error ? 'aria-describedby="auth-error"' : ''}>
       <button type="submit">Replace owner password</button>
-    </form>`,
+    </form><script src="/admin/password/client.js" defer></script>`,
   });
+}
+
+export function passwordFormClientScript(): string {
+  return `(function(){
+    var input=document.getElementById('new-password');
+    var error=document.getElementById('password-error');
+    if(!input||!error)return;
+    function validate(){
+      var remaining=Math.max(0,${PASSWORD_MIN_CODE_POINTS}-Array.from(input.value).length);
+      error.textContent=remaining?remaining+' more character'+(remaining===1?'':'s')+' needed.':'';
+      error.hidden=!remaining||!input.value;
+      if(error.hidden)input.removeAttribute('aria-invalid');else input.setAttribute('aria-invalid','true');
+      return remaining===0;
+    }
+    input.addEventListener('input',validate);
+    input.form&&input.form.addEventListener('submit',function(event){if(!validate()){event.preventDefault();input.focus();}});
+  })();`;
 }
 
 function renderPasswordPage(input: {
@@ -11524,7 +11601,7 @@ function renderPasswordPage(input: {
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Chickpea · ${escapeHtmlAttribute(input.title)}</title>${ADMIN_FAVICON}
 <style>
-:root{--canvas:#f4ebd8;--card:#fffdf6;--ink:#3b3220;--muted:#6b5c42;--gold:#dda033;--line:rgba(59,50,32,.16);--danger:#a83f34}*{box-sizing:border-box}body{margin:0;min-height:100dvh;display:grid;place-items:center;background:var(--canvas);color:var(--ink);font-family:system-ui,-apple-system,sans-serif;padding:16px}main{width:min(520px,100%);background:var(--card);border:1px solid var(--line);border-radius:20px;padding:clamp(22px,6vw,42px);box-shadow:0 12px 34px rgba(59,50,32,.09)}.eyebrow{margin:0;color:var(--muted);font-size:.78rem;font-weight:800;text-transform:uppercase;letter-spacing:.08em}h1{margin:7px 0 9px;font-size:clamp(1.7rem,7vw,2.45rem);line-height:1.08}p{color:var(--muted);line-height:1.55}label{display:flex;justify-content:space-between;gap:12px;margin:17px 0 6px;font-weight:750}label span{color:var(--muted);font-size:.76rem;font-weight:500}input{width:100%;min-height:46px;border:1px solid var(--line);border-radius:11px;background:#fff;padding:11px 12px;font:inherit}button,.primary{display:flex;align-items:center;justify-content:center;width:100%;min-height:46px;margin-top:22px;border:0;border-radius:12px;background:var(--gold);color:var(--ink);font:inherit;font-weight:800;text-decoration:none;cursor:pointer;box-shadow:0 2.5px 0 #b27e1f}input:focus-visible,button:focus-visible,.primary:focus-visible{outline:3px solid rgba(176,84,21,.42);outline-offset:2px}.error{margin:16px 0;border-left:4px solid var(--danger);background:#fff3ee;color:var(--danger);padding:12px;font-weight:700;line-height:1.45}@media(max-width:360px){body{padding:8px}main{border-radius:14px;padding:20px 16px}label{display:block}label span{display:block;margin-top:2px}}
+:root{--canvas:#f4ebd8;--card:#fffdf6;--ink:#3b3220;--muted:#6b5c42;--gold:#dda033;--line:rgba(59,50,32,.16);--danger:#a83f34}*{box-sizing:border-box}body{margin:0;min-height:100dvh;display:grid;place-items:center;background:var(--canvas);color:var(--ink);font-family:system-ui,-apple-system,sans-serif;padding:16px}main{width:min(520px,100%);background:var(--card);border:1px solid var(--line);border-radius:20px;padding:clamp(22px,6vw,42px);box-shadow:0 12px 34px rgba(59,50,32,.09)}.eyebrow{margin:0;color:var(--muted);font-size:.78rem;font-weight:800;text-transform:uppercase;letter-spacing:.08em}h1{margin:7px 0 9px;font-size:clamp(1.7rem,7vw,2.45rem);line-height:1.08}p{color:var(--muted);line-height:1.55}label{display:flex;justify-content:space-between;gap:12px;margin:17px 0 6px;font-weight:750}label span{color:var(--muted);font-size:.76rem;font-weight:500}input{width:100%;min-height:46px;border:1px solid var(--line);border-radius:11px;background:#fff;padding:11px 12px;font:inherit}input[aria-invalid="true"]{border-color:var(--danger)}.field-help,.field-error{margin:6px 0 0;font-size:.82rem;line-height:1.4}.field-error{color:var(--danger);font-weight:700}button,.primary{display:flex;align-items:center;justify-content:center;width:100%;min-height:46px;margin-top:22px;border:0;border-radius:12px;background:var(--gold);color:var(--ink);font:inherit;font-weight:800;text-decoration:none;cursor:pointer;box-shadow:0 2.5px 0 #b27e1f}button:disabled{cursor:not-allowed;opacity:.46;box-shadow:none}input:focus-visible,button:focus-visible,.primary:focus-visible{outline:3px solid rgba(176,84,21,.42);outline-offset:2px}.error{margin:16px 0;border-left:4px solid var(--danger);background:#fff3ee;color:var(--danger);padding:12px;font-weight:700;line-height:1.45}[hidden]{display:none!important}@media(max-width:360px){body{padding:8px}main{border-radius:14px;padding:20px 16px}label{display:block}label span{display:block;margin-top:2px}}
 </style></head><body><main aria-labelledby="auth-title"><p class="eyebrow">${escapeHtmlAttribute(input.eyebrow)}</p><h1 id="auth-title">${escapeHtmlAttribute(input.title)}</h1>${input.intro ? `<p>${escapeHtmlAttribute(input.intro)}</p>` : ''}${input.error ?? ''}${input.body}</main></body></html>`;
 }
 
@@ -11672,7 +11749,7 @@ export function renderAuthSetupCompletePage(): string {
   return `<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Chickpea · Access connected</title>${ADMIN_FAVICON}
+<title>Chickpea · Workspace ready</title>${ADMIN_FAVICON}
 <style>
 :root { --canvas:#f4ebd8; --card:#fffdf6; --ink:#3b3220; --muted:#6b5c42; --gold:#dda033; --line:rgba(59,50,32,.14); --green:#4e7a3e; }
 * { box-sizing:border-box; } body { margin:0; min-height:100dvh; display:grid; place-items:center; background:var(--canvas); color:var(--ink); font-family:Quicksand,system-ui,sans-serif; padding:20px; }
@@ -11683,10 +11760,10 @@ a { display:inline-flex; align-items:center; justify-content:center; margin-top:
 a:focus-visible { outline:3px solid rgba(221,160,51,.45); outline-offset:3px; }
 </style></head><body><main>
   <div class="mark" aria-hidden="true">✓</div>
-  <h1>Your Admin is protected</h1>
-  <p>Cloudflare Access authenticated you and Chickpea activated your owner membership. Next, connect the Slack app to this workspace.</p>
+  <h1>Your Chickpea is ready</h1>
+  <p>Your owner account and workspace are ready. Next, connect the Slack app to this workspace.</p>
   <a href="/admin">Continue to Slack setup</a>
-</main></body></html>`;
+</main><script src="/admin/setup/client.js" defer></script></body></html>`;
 }
 
 export function renderAuthRecoveryPage(options: { error?: boolean } = {}): string {
@@ -11792,15 +11869,15 @@ h1 { margin:8px 0 6px; font-size:clamp(1.65rem,6vw,2.35rem); } p { color:var(--m
 </style></head><body><main>
   <p class="eyebrow">${escapeHtmlAttribute(input.organizationName)}</p>
   <h1>Hi, ${name}</h1>
-  <p>Your Chickpea account is active. Your role controls what you can do in Chickpea.</p>
+  <p>Your Chickpea account is active.</p>
   <section class="account" aria-label="Account details">
     <strong>${name}</strong><span class="email">${escapeHtmlAttribute(input.email)}</span>
-    <span class="badge">${escapeHtmlAttribute(input.role)} · ${escapeHtmlAttribute(input.status)}</span>
+    ${input.role === 'owner' ? '<span class="badge">Owner</span>' : ''}<span class="badge">${escapeHtmlAttribute(input.status)}</span>
   </section>
   <a class="button" href="slack://open">Open Slack</a>
   <p><a href="/admin/account/password">Change password</a></p>
   <form method="post" action="/admin/logout"><button class="button" type="submit">Sign out</button></form>
-  <p class="note">Need a role change? Ask a Chickpea owner or administrator.</p>
+  <p class="note">Need help signing in? Ask the Chickpea owner.</p>
 </main></body></html>`;
 }
 

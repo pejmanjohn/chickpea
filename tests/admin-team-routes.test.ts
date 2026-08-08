@@ -108,7 +108,6 @@ test('Team API creates show-once Chickpea invites without Cloudflare policy work
   try {
     const response = await app.request(`${ORIGIN}/admin/api/team/invitations`, mutation('POST', {
       email: 'Teammate@Example.com',
-      role: 'admin',
     }));
     assert.equal(response.status, 201);
     const created = await response.json() as {
@@ -123,6 +122,7 @@ test('Team API creates show-once Chickpea invites without Cloudflare policy work
     assert.equal(created.inviteLink.includes(digest('')), false);
 
     const stored = (await f.identity.listInvitations())[0]!;
+    assert.equal(stored.role, 'admin');
     assert.equal(stored.tokenHash.length, 64);
     assert.equal(created.inviteLink.includes(stored.tokenHash), false);
 
@@ -131,6 +131,27 @@ test('Team API creates show-once Chickpea invites without Cloudflare policy work
     assert.equal(snapshot.status, 200);
     assert.equal(JSON.stringify(body).includes('tokenHash'), false);
     assert.equal(JSON.stringify(body).includes(stored.tokenHash), false);
+  } finally {
+    f.config.close(); f.settings.close(); f.identity.close();
+  }
+});
+
+test('Team API rejects a stale page that still requests the removed member role', async () => {
+  const f = await fixture();
+  const app = createAdminRoutes({
+    identity: f.identity,
+    store: f.config,
+    settings: f.settings,
+    authService: authService(principal(f.owner)),
+  });
+  try {
+    const response = await app.request(`${ORIGIN}/admin/api/team/invitations`, mutation('POST', {
+      email: 'teammate@example.com',
+      role: 'member',
+    }));
+    assert.equal(response.status, 409);
+    assert.deepEqual(await response.json(), { error: 'reload_required' });
+    assert.equal((await f.identity.listInvitations()).length, 0);
   } finally {
     f.config.close(); f.settings.close(); f.identity.close();
   }
@@ -223,7 +244,7 @@ test('Access-authenticated invite acceptance removes the fragment secret from se
       },
     });
     assert.equal(accepted.status, 200);
-    assert.deepEqual(await accepted.json(), { redirect: '/admin/account' });
+    assert.deepEqual(await accepted.json(), { redirect: '/admin/channels' });
     const stored = (await f.identity.listInvitations()).find((row) => row.id === invitation.id)!;
     assert.equal(stored.status, 'accepted');
     assert.equal('admissionState' in stored, false);

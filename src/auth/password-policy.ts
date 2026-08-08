@@ -17,7 +17,7 @@ export interface PasswordPolicyContext {
 }
 
 const COMMON_PASSWORD_SET = new Set<string>(COMMON_PASSWORDS);
-const MIN_CODE_POINTS = 15;
+export const PASSWORD_MIN_CODE_POINTS = 8;
 const MAX_CODE_POINTS = 128;
 const MAX_UTF8_BYTES = 512;
 
@@ -26,7 +26,7 @@ export function assertPasswordPolicy(
   context: PasswordPolicyContext = {},
 ): void {
   const codePointLength = Array.from(password).length;
-  if (codePointLength < MIN_CODE_POINTS) throw new PasswordPolicyError('too_short');
+  if (codePointLength < PASSWORD_MIN_CODE_POINTS) throw new PasswordPolicyError('too_short');
   if (codePointLength > MAX_CODE_POINTS || new TextEncoder().encode(password).length > MAX_UTF8_BYTES) {
     throw new PasswordPolicyError('too_long');
   }

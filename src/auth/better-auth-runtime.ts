@@ -4,7 +4,7 @@ import {
   getIdentityStore,
   type PlatformEnv,
 } from '../config/state-backend.ts';
-import type { IdentityStore } from '../identity/types.ts';
+import type { HumanIdentityDirectory, IdentityStore } from '../identity/types.ts';
 import { createBetterAuthPublicHandler } from './better-auth-routes.ts';
 import {
   cloudflareLoginIdentityAllowed,
@@ -16,6 +16,7 @@ import {
 } from './better-auth-environment.ts';
 import { AuthRateLimitError, AuthRateLimiter } from './rate-limit.ts';
 import { requestAuthSourceKey } from './source-key.ts';
+import { BetterAuthDirectory } from './better-auth-principal.ts';
 
 interface BetterAuthRuntimeOptions {
   identity?: IdentityStore;
@@ -40,7 +41,8 @@ async function dispatch(c: Context, options: BetterAuthRuntimeOptions): Promise<
   const platformEnv = c.env as PlatformEnv | undefined;
   const identity = options.identity ?? getIdentityStore(platformEnv);
   const control = await identity.getAuthControl();
-  if (control?.authMode !== 'password_active' || !control.canonicalAdminOrigin) {
+  if (control?.authMode !== 'password_active' || !control.canonicalAdminOrigin ||
+      !control.betterAuthOrganizationId) {
     return new Response('Not Found', { status: 404 });
   }
 
@@ -56,6 +58,12 @@ async function dispatch(c: Context, options: BetterAuthRuntimeOptions): Promise<
   const handler = createBetterAuthEnvironmentPublicHandler({
     environment,
     identity,
+    directory: new BetterAuthDirectory({
+      backend: environment.backend,
+      access: identity,
+      organizationId: control.betterAuthOrganizationId,
+      canonicalAdminOrigin: control.canonicalAdminOrigin,
+    }),
   });
   return handler(c.req.raw);
 }
@@ -63,17 +71,20 @@ async function dispatch(c: Context, options: BetterAuthRuntimeOptions): Promise<
 export function createBetterAuthEnvironmentPublicHandler(input: {
   environment: BetterAuthEnvironment;
   identity: IdentityStore;
+  directory?: HumanIdentityDirectory;
 }) {
   const { environment, identity } = input;
+  const directory = input.directory ?? identity;
+  const identityIsAdmitted = (email: string) => loginAdmissionAllows(identity, directory, email);
   if (environment.cloudflareEnv) {
     return createBetterAuthPublicHandler({
       ...environment,
       loginSourceAllowed: (source) => cloudflareLoginSourceAllowed(
         environment.cloudflareEnv!, source,
       ),
-      loginIdentityAllowed: (email) => cloudflareLoginIdentityAllowed(
-        environment.cloudflareEnv!, email,
-      ),
+      loginIdentityAllowed: async (email) =>
+        await cloudflareLoginIdentityAllowed(environment.cloudflareEnv!, email) &&
+        await identityIsAdmitted(email),
       sourceKey: (request) => requestAuthSourceKey(request, true),
     });
   }
@@ -97,7 +108,7 @@ export function createBetterAuthEnvironmentPublicHandler(input: {
     loginIdentityAllowed: async (email) => {
       try {
         await limiter.assertAllowed('better_auth_login_identity', email);
-        return true;
+        return identityIsAdmitted(email);
       } catch (error) {
         if (error instanceof AuthRateLimitError) return false;
         throw error;
@@ -112,4 +123,27 @@ export function createBetterAuthEnvironmentPublicHandler(input: {
     },
     sourceKey: (request) => requestAuthSourceKey(request, false),
   });
+}
+
+async function loginAdmissionAllows(
+  identity: IdentityStore,
+  directory: HumanIdentityDirectory,
+  email: string,
+): Promise<boolean> {
+  const [organization, user] = await Promise.all([
+    directory.getOrganization(),
+    directory.findUserByEmail(email),
+  ]);
+  if (!organization || !user) return false;
+  const membership = await directory.getMembershipForUser(user.id, organization.id);
+  if (membership?.status === 'active') return true;
+  if (membership) return false;
+  const pendingInvitations = await identity.listAuthOperations(
+    'invitation_enrollment',
+    organization.id,
+  );
+  return pendingInvitations.some((operation) =>
+    operation.status === 'pending' &&
+    operation.expiresAt > Date.now() &&
+    operation.expectedNormalizedEmail === email);
 }

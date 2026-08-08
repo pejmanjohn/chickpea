@@ -5,13 +5,24 @@ import {
   PasswordPolicyError,
   assertPasswordPolicy,
 } from '../src/auth/password-policy.ts';
+import {
+  passwordInvitationClientScript,
+  passwordResetClientScript,
+  renderPasswordInvitationPage,
+  renderPasswordResetPage,
+} from '../src/join/page.ts';
+import {
+  passwordFormClientScript,
+  renderPasswordChangePage,
+  renderPasswordRecoveryPage,
+} from '../src/admin/page.ts';
 
 test('password policy enforces Unicode length bounds without composition rules', () => {
   assert.throws(
-    () => assertPasswordPolicy('a'.repeat(14)),
+    () => assertPasswordPolicy('a'.repeat(7)),
     (error: unknown) => error instanceof PasswordPolicyError && error.code === 'too_short',
   );
-  assert.doesNotThrow(() => assertPasswordPolicy('a'.repeat(15)));
+  assert.doesNotThrow(() => assertPasswordPolicy('a'.repeat(8)));
   assert.doesNotThrow(() => assertPasswordPolicy(' '.repeat(16)));
   assert.doesNotThrow(() => assertPasswordPolicy('🫛'.repeat(128)));
   assert.throws(
@@ -37,4 +48,24 @@ test('password policy rejects pinned common and deployment-context passwords saf
     (error: unknown) => error instanceof PasswordPolicyError && error.code === 'context',
   );
   assert.doesNotThrow(() => assertPasswordPolicy('several unrelated words 5729'));
+});
+
+test('invitation and reset forms expose the shared password requirement and live feedback', () => {
+  for (const html of [renderPasswordInvitationPage(), renderPasswordResetPage()]) {
+    assert.match(html, /8 or more characters/);
+    assert.match(html, /Use at least 8 characters/);
+    assert.match(html, /minlength="8"/);
+  }
+  assert.match(passwordInvitationClientScript(), /more .*characters.*needed/);
+  assert.match(passwordResetClientScript(), /more .*characters.*needed/);
+});
+
+test('change and offline recovery forms expose the shared password requirement and live feedback', () => {
+  for (const html of [renderPasswordChangePage(), renderPasswordRecoveryPage()]) {
+    assert.match(html, /8 or more characters/);
+    assert.match(html, /Use at least 8 characters/);
+    assert.match(html, /minlength="8"/);
+    assert.match(html, /\/admin\/password\/client\.js/);
+  }
+  assert.match(passwordFormClientScript(), /more character/);
 });

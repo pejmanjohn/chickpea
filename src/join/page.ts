@@ -1,3 +1,5 @@
+import { PASSWORD_MIN_CODE_POINTS } from '../auth/password-policy.ts';
+
 const JOIN_FAVICON = `<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='8 9 32 32'%3E%3Ccircle cx='24' cy='25' r='15.5' fill='%23E3AC45'/%3E%3Ccircle cx='17' cy='17.5' r='4.2' fill='%23F4D084'/%3E%3Ccircle cx='18.5' cy='24' r='1.9' fill='%233B3220'/%3E%3Ccircle cx='29.5' cy='24' r='1.9' fill='%233B3220'/%3E%3Cpath d='M19 29 Q24 32.5 29 29' fill='none' stroke='%233B3220' stroke-width='1.8' stroke-linecap='round'/%3E%3C/svg%3E">`;
 
 export const JOIN_STORAGE_KEY = 'chickpea.invitation.v1';
@@ -9,6 +11,7 @@ const JOIN_STYLE = `<style>
 main { width:min(540px,100%); background:var(--card); border:1px solid var(--line); border-radius:20px; padding:clamp(24px,6vw,42px); box-shadow:0 10px 30px rgba(59,50,32,.09); }
 h1 { margin:0 0 8px; font-size:clamp(1.7rem,6vw,2.4rem); } p { color:var(--muted); line-height:1.55; } .identity { background:#f8f1df; border-radius:12px; padding:12px 14px; overflow-wrap:anywhere; margin:18px 0; }
 .status { min-height:1.5em; margin-top:14px; font-weight:700; } .error { color:var(--danger); }
+.field-help,.field-error { font-size:.82rem; margin:6px 0 0; } .field-error { color:var(--danger); font-weight:700; }
 form { display:grid; gap:16px; margin-top:22px; } label { display:grid; gap:7px; font-weight:700; }
 input { width:100%; min-height:46px; border:1px solid var(--line); border-radius:10px; padding:10px 12px; background:#fff; color:var(--ink); font:inherit; }
 input:focus,button:focus,a:focus { outline:3px solid rgba(221,160,51,.34); outline-offset:2px; }
@@ -133,7 +136,7 @@ export function invitationJoinClientScript(): string {
     if (!response.ok) throw new Error("unavailable");
     return response.json();
   }).then(function (body) {
-    location.replace(body.redirect || "/admin/account");
+    location.replace(body.redirect || "/admin/channels");
   }).catch(function () {
     token = "";
     invitationId = "";
@@ -156,7 +159,9 @@ export function renderPasswordInvitationPage(): string {
   <p id="identity" class="identity" hidden></p>
   <form id="enrollment" hidden>
     <label>Display name<input id="display-name" name="displayName" autocomplete="name" maxlength="128" required></label>
-    <label>Create a password<input id="password" name="password" type="password" autocomplete="new-password" minlength="15" maxlength="512" required></label>
+    <label>Create a password <span>${PASSWORD_MIN_CODE_POINTS} or more characters</span><input id="password" name="password" type="password" autocomplete="new-password" minlength="${PASSWORD_MIN_CODE_POINTS}" maxlength="512" aria-describedby="enrollment-password-help enrollment-password-error" required></label>
+    <p id="enrollment-password-help" class="field-help">Use at least ${PASSWORD_MIN_CODE_POINTS} characters. Spaces are allowed.</p>
+    <p id="enrollment-password-error" class="field-error" role="alert" aria-live="polite" hidden></p>
     <button type="submit">Create account and join</button>
   </form>
   <div id="existing" hidden><p>That email already has an account. Sign in normally to continue this exact invitation.</p><a class="button" href="/admin/login?returnTo=%2Fadmin%2Fjoin">Sign in to continue</a></div>
@@ -173,6 +178,8 @@ export function passwordInvitationClientScript(): string {
   var context = document.getElementById("context");
   var identity = document.getElementById("identity");
   var form = document.getElementById("enrollment");
+  var passwordInput = document.getElementById("password");
+  var passwordError = document.getElementById("enrollment-password-error");
   var existing = document.getElementById("existing");
   var authenticated = document.getElementById("authenticated");
   var accept = document.getElementById("accept");
@@ -183,6 +190,21 @@ export function passwordInvitationClientScript(): string {
   var token = split > 0 ? credential.slice(split + 1) : "";
   function fail(message) {
     if (status) { status.className = "status error"; status.textContent = message; }
+  }
+  function validatePassword(showMessage) {
+    if (!passwordInput) return true;
+    var remaining = ${PASSWORD_MIN_CODE_POINTS} - Array.from(passwordInput.value || "").length;
+    var valid = remaining <= 0;
+    var message = remaining + " more " + (remaining === 1 ? "character" : "characters") + " needed.";
+    passwordInput.setCustomValidity(valid ? "" : message);
+    if (valid) {
+      passwordInput.removeAttribute("aria-invalid");
+      if (passwordError) { passwordError.hidden = true; passwordError.textContent = ""; }
+    } else if (showMessage) {
+      passwordInput.setAttribute("aria-invalid", "true");
+      if (passwordError) { passwordError.hidden = false; passwordError.textContent = message; }
+    }
+    return valid;
   }
   function post(path, body) {
     return fetch(path, { method:"POST", credentials:"same-origin", headers:{"content-type":"application/json"}, body:JSON.stringify(body) });
@@ -196,7 +218,7 @@ export function passwordInvitationClientScript(): string {
     }).then(function (body) {
       try { sessionStorage.removeItem(key); } catch (_) {}
       token = ""; operationId = ""; credential = "";
-      location.replace(body.redirect || "/admin/account");
+      location.replace(body.redirect || "/admin/channels");
     }).catch(function (error) {
       if (error && error.message === "existing_account") {
         if (form) form.hidden = true;
@@ -221,8 +243,10 @@ export function passwordInvitationClientScript(): string {
   }).catch(function (error) {
     fail(error && error.message === "conflict" ? "You are signed in as a different user. Sign out, then reopen this invitation." : "This invitation is unavailable. Ask an administrator for a new link.");
   });
+  if (passwordInput) passwordInput.addEventListener("input", function () { validatePassword(Boolean(passwordInput.value)); });
   if (form) form.addEventListener("submit", function (event) {
     event.preventDefault();
+    if (!validatePassword(true) || !form.checkValidity()) { form.reportValidity(); return; }
     complete({ displayName:document.getElementById("display-name").value, password:document.getElementById("password").value });
   });
   if (accept) accept.addEventListener("click", function () { complete({}); });
@@ -239,7 +263,9 @@ export function renderPasswordResetPage(): string {
   <p id="context">Checking your private reset link&hellip;</p>
   <p id="identity" class="identity" hidden></p>
   <form id="reset-form" hidden>
-    <label>New password<input id="new-password" name="newPassword" type="password" autocomplete="new-password" minlength="15" maxlength="512" required></label>
+    <label>New password <span>${PASSWORD_MIN_CODE_POINTS} or more characters</span><input id="new-password" name="newPassword" type="password" autocomplete="new-password" minlength="${PASSWORD_MIN_CODE_POINTS}" maxlength="512" aria-describedby="reset-password-help reset-password-error" required></label>
+    <p id="reset-password-help" class="field-help">Use at least ${PASSWORD_MIN_CODE_POINTS} characters. Spaces are allowed.</p>
+    <p id="reset-password-error" class="field-error" role="alert" aria-live="polite" hidden></p>
     <button type="submit">Replace password</button>
   </form>
   <p id="status" class="status" role="status" aria-live="polite"></p>
@@ -254,12 +280,29 @@ export function passwordResetClientScript(): string {
   var context = document.getElementById("context");
   var identity = document.getElementById("identity");
   var form = document.getElementById("reset-form");
+  var passwordInput = document.getElementById("new-password");
+  var passwordError = document.getElementById("reset-password-error");
   var credential = "";
   try { credential = sessionStorage.getItem(key) || ""; } catch (_) {}
   var split = credential.indexOf(".");
   var operationId = split > 0 ? credential.slice(0, split) : "";
   var token = split > 0 ? credential.slice(split + 1) : "";
   function fail(message) { if (status) { status.className="status error"; status.textContent=message; } }
+  function validatePassword(showMessage) {
+    if (!passwordInput) return true;
+    var remaining = ${PASSWORD_MIN_CODE_POINTS} - Array.from(passwordInput.value || "").length;
+    var valid = remaining <= 0;
+    var message = remaining + " more " + (remaining === 1 ? "character" : "characters") + " needed.";
+    passwordInput.setCustomValidity(valid ? "" : message);
+    if (valid) {
+      passwordInput.removeAttribute("aria-invalid");
+      if (passwordError) { passwordError.hidden=true; passwordError.textContent=""; }
+    } else if (showMessage) {
+      passwordInput.setAttribute("aria-invalid", "true");
+      if (passwordError) { passwordError.hidden=false; passwordError.textContent=message; }
+    }
+    return valid;
+  }
   function post(body) { return fetch("/admin/reset", { method:"POST", credentials:"same-origin", headers:{"content-type":"application/json"}, body:JSON.stringify(body) }); }
   if (!operationId || !token) { fail("This reset link is unavailable in this browser. Ask an administrator for a new link."); return; }
   post({ operationId:operationId, token:token, inspect:true }).then(function (response) {
@@ -271,8 +314,10 @@ export function passwordResetClientScript(): string {
     if (identity) { identity.hidden=false; identity.textContent=body.email; }
     if (form) form.hidden=false;
   }).catch(function (error) { fail(error.message === "conflict" ? "You are signed in as a different user. Sign out before using this reset link." : "This reset link is unavailable or expired. Ask an administrator for a new link."); });
+  if (passwordInput) passwordInput.addEventListener("input", function () { validatePassword(Boolean(passwordInput.value)); });
   if (form) form.addEventListener("submit", function (event) {
     event.preventDefault();
+    if (!validatePassword(true) || !form.checkValidity()) { form.reportValidity(); return; }
     if (status) { status.className="status"; status.textContent="Replacing your password…"; }
     post({ operationId:operationId, token:token, newPassword:document.getElementById("new-password").value }).then(function (response) {
       if (response.status === 409) throw new Error("conflict");
