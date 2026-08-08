@@ -8,7 +8,7 @@ export function usageEstimatesEnabled(
   processEnv: NodeJS.ProcessEnv = process.env,
 ): boolean {
   const value = platformEnv?.USAGE_ESTIMATES ?? processEnv.USAGE_ESTIMATES;
-  return value === '1' || value === 'true';
+  return value === undefined || value === '1' || value === 'true';
 }
 
 export function estimateUsage(

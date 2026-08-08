@@ -14,9 +14,9 @@ CHICKPEA_RECOVERY_TOKEN=""
 # Fresh deployments must not enable it:
 # TAG_ADMIN_TOKEN=""
 
-# Non-secret Cloudflare defaults live in wrangler.jsonc so the Deploy form has
-# exactly one active prompt. Override them with `wrangler deploy --var` only
-# when you deliberately need a different value.
+# Non-secret defaults live in product code so Cloudflare does not expose them
+# as customer-editable Deploy fields. Advanced operators may still set the
+# documented runtime kill switches after deployment when needed.
 
 # Channel memory is always on for eligible assigned channels. There is no
 # memory feature flag or opt-out secret to configure.

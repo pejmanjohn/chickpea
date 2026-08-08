@@ -487,7 +487,7 @@ export function usageRuntimeRecordingEnabled(
   processEnv: NodeJS.ProcessEnv = process.env,
 ): boolean {
   const value = platformEnv?.USAGE_RUNTIME_RECORDING ?? processEnv.USAGE_RUNTIME_RECORDING;
-  return value === '1' || value === 'true';
+  return value === undefined || value === '1' || value === 'true';
 }
 
 function splitModelSpecifier(value: string | null): { provider: string | null; model: string | null } {

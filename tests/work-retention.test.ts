@@ -25,10 +25,10 @@ test('Run body retention defaults to 30 days and fails closed outside 1-365', ()
   }
 });
 
-test('Cloudflare deployment exposes the canonical Run body retention control', () => {
+test('Cloudflare deployment keeps the canonical Run body retention default internal', () => {
   const wrangler = readFileSync(new URL('../wrangler.jsonc', import.meta.url), 'utf8');
   const devVars = readFileSync(new URL('../.dev.vars.example', import.meta.url), 'utf8');
-  assert.match(wrangler, /"TAG_RUN_BODY_RETENTION_DAYS"\s*:\s*"30"/);
+  assert.doesNotMatch(wrangler, /TAG_RUN_BODY_RETENTION_DAYS/);
   assert.doesNotMatch(devVars, /^TAG_RUN_BODY_RETENTION_DAYS=/m);
 });
 

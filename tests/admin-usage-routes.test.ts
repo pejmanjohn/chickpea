@@ -11,23 +11,13 @@ import { SqliteUsageStore } from '../src/usage/store.ts';
 import { SqliteWorkStore } from '../src/work/store.ts';
 import type { BindingId, RunId, WorkId, WorkStore } from '../src/work/types.ts';
 
-test('committed deployment defaults enable each Usage layer with independent kill switches', async () => {
+test('committed deployment internalizes Usage defaults and keeps independent kill switches', async () => {
   const config = readFileSync(new URL('../wrangler.jsonc', import.meta.url), 'utf8');
-  const value = (name: string): string | undefined =>
-    new RegExp(`"${name}"\\s*:\\s*"([^"]+)"`).exec(config)?.[1];
-  const deploymentEnv = {
-    USAGE_RUNTIME_RECORDING: value('USAGE_RUNTIME_RECORDING'),
-    USAGE_ESTIMATES: value('USAGE_ESTIMATES'),
-    USAGE_ADMIN_UI: value('USAGE_ADMIN_UI'),
-  };
+  assert.doesNotMatch(config, /"vars"\s*:/);
+  const deploymentEnv = {};
 
-  assert.deepEqual(deploymentEnv, {
-    USAGE_RUNTIME_RECORDING: '1',
-    USAGE_ESTIMATES: '1',
-    USAGE_ADMIN_UI: '1',
-  });
-  assert.equal(usageRuntimeRecordingEnabled(deploymentEnv), true);
-  assert.equal(usageEstimatesEnabled(deploymentEnv), true);
+  assert.equal(usageRuntimeRecordingEnabled(deploymentEnv, {}), true);
+  assert.equal(usageEstimatesEnabled(deploymentEnv, {}), true);
 
   const usage = new SqliteUsageStore(':memory:');
   try {
@@ -98,14 +88,14 @@ test('usage Admin APIs are authenticated, bounded, and expose no content fields'
     assert.equal(unauthorized.status, 401);
 
     const headers = { authorization: 'Bearer usage-test-token' };
-    const disabledPage = await app.request('/admin', { headers });
-    assert.match(await disabledPage.text(), /var USAGE_ADMIN_UI = false/);
-    const enabledPage = await createAdminRoutes({
+    const enabledPage = await app.request('/admin', { headers });
+    assert.match(await enabledPage.text(), /var USAGE_ADMIN_UI = true/);
+    const disabledPage = await createAdminRoutes({
       adminToken: 'usage-test-token',
       usage,
-      usageAdminUi: true,
+      usageAdminUi: false,
     }).request('/admin/usage', { headers });
-    assert.match(await enabledPage.text(), /var USAGE_ADMIN_UI = true/);
+    assert.match(await disabledPage.text(), /var USAGE_ADMIN_UI = false/);
     const summary = await app.request(
       '/admin/api/usage/summary?from=1&to=3000&groupBy=provider',
       { headers },

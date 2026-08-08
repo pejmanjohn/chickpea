@@ -978,7 +978,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (options.usageAdminUi !== undefined) return options.usageAdminUi;
     const platformValue = (c.env as PlatformEnv | undefined)?.USAGE_ADMIN_UI;
     const value = platformValue ?? process.env.USAGE_ADMIN_UI;
-    return value === '1' || value === 'true';
+    return value === undefined || value === '1' || value === 'true';
   };
   const adminToken = () =>
     tokenFromOptions ? options.adminToken : process.env.TAG_ADMIN_TOKEN;

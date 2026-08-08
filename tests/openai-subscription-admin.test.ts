@@ -15,6 +15,7 @@ import type {
 } from '../src/openai-subscription/device-auth.ts';
 import { commitOpenAiSubscriptionCredentials } from '../src/openai-subscription/credentials.ts';
 import { OpenAiSubscriptionError } from '../src/openai-subscription/errors.ts';
+import { MODEL_CATALOG_SETTING_KEYS } from '../src/model-catalog/store.ts';
 import { OPENAI_SUBSCRIPTION_MODELS } from '../src/openai-subscription/protocol.ts';
 import { FAKE_PROVIDER_KEYS, FakeProvidersBackend } from './helpers/fake-providers.ts';
 import { withEnv } from './helpers/env.ts';
@@ -185,6 +186,7 @@ test('OpenAI method selection is installation-wide and validates connections and
   const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   const settings = new SqliteSettingsStore(':memory:');
   t.after(() => { config.close(); settings.close(); });
+  await settings.setSetting(MODEL_CATALOG_SETTING_KEYS.mode, 'bundled');
   const app = new Hono();
   app.route('/', createAdminRoutes({
     store: config,

@@ -189,8 +189,8 @@ function verifyBuildArtifacts() {
     'built artifact exposes no OpenAI Subscription preview gate',
   );
   check(
-    config.vars?.SLACK_TAG_LEDGER_CANARY_CHANNELS === '',
-    'interactive ledger admission remains off by default in the built artifact',
+    Object.keys(config.vars ?? {}).length === 0,
+    'built artifact exposes no customer-editable runtime defaults',
   );
   check(
     config.observability?.traces?.enabled === true,

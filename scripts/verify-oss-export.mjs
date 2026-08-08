@@ -409,6 +409,9 @@ function verifyAuthenticationExportContract(packageJson) {
     fail('Cloudflare Deploy example must expose exactly one active recovery-secret prompt');
   }
   const wrangler = readFileSync(join(scratch, 'wrangler.jsonc'), 'utf8');
+  if (/"vars"\s*:/.test(wrangler)) {
+    fail('Cloudflare Deploy config must not expose runtime defaults as customer-editable fields');
+  }
   if (!/"binding"\s*:\s*"AUTH_DB"/.test(wrangler) ||
       !/"migrations_dir"\s*:\s*"migrations\/better-auth"/.test(wrangler)) {
     fail('Cloudflare config must bind AUTH_DB to the reviewed Better Auth migrations');
