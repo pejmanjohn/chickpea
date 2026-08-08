@@ -140,7 +140,21 @@ async function runLiveProvider(provider, serverEntry, fake, backend) {
 }
 
 const { FakeSlackBackend } = await loadFake();
-const backend = new FakeSlackBackend({ provider: { mode: 'ok' } });
+const backend = new FakeSlackBackend({
+  slack: {
+    // Slack stays fake in this live-provider verifier, but identity preflight
+    // is real. Make the signed C_EXEC fixture a member of the demo workspace.
+    channels: [
+      {
+        id: 'C_EXEC',
+        name: 'exec-briefing',
+        isMember: true,
+        teamId: 'T_DEMO',
+      },
+    ],
+  },
+  provider: { mode: 'ok' },
+});
 const fake = await backend.listen();
 console.log(`fake Slack backend listening at ${fake.url}`);
 

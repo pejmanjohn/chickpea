@@ -87,7 +87,22 @@ async function runProvider({ serverEntry, fake, backend, netGuardLog, model, rep
 
 const netGuardLog = join(mkdtempSync(join(tmpdir(), 'flue-prov-guard-')), 'external-hosts.log');
 const { FakeSlackBackend } = await loadFake();
-const backend = new FakeSlackBackend({ provider: { mode: 'ok' } });
+const backend = new FakeSlackBackend({
+  slack: {
+    // The runtime revalidates the selected Slack identity's workspace and
+    // channel membership immediately before model work. Keep the signed
+    // C_EXEC fixture explicit so these checks reach each provider route.
+    channels: [
+      {
+        id: 'C_EXEC',
+        name: 'exec-briefing',
+        isMember: true,
+        teamId: 'T_DEMO',
+      },
+    ],
+  },
+  provider: { mode: 'ok' },
+});
 const fake = await backend.listen();
 console.log(`fake backend listening at ${fake.url}`);
 

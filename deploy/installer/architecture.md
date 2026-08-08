@@ -51,3 +51,9 @@ The earlier feasibility investigation into automatically provisioning Access is 
 - Human credential routes reject PATs and agent tools.
 - Slack/provider callbacks remain public only at their signature or single-use-state boundary.
 - Existing Access/token/shared installations boot in their prior mode if `AUTH_DB` is absent. Binding the database does not silently migrate or activate passwords.
+
+## Pre-release installer hardening
+
+- [ ] Replace the prototype owner-setup fragment handoff with an installer-issued, single-use, short-lived setup capability. The current bridge moves `#setup=...` into same-tab storage and immediately removes it from browser history, but it still transports the persistent `CHICKPEA_RECOVERY_TOKEN`. The released onboarding must keep that recovery credential out of browser setup URLs entirely.
+- [ ] Have the custom onboarding layer mint and deliver the setup capability only after the customer-owned deployment is ready, bind it to the intended installation and owner-claim operation, store only a digest, consume it atomically, and reject expiry or replay without falling back to the recovery credential.
+- [ ] Preserve a manual `/admin/setup` recovery path for operators who intentionally supply the offline recovery credential, while making the ordinary one-click journey use the one-time capability. Cloudflare's standard Deploy button remains the source deployment primitive; the private handoff belongs to the custom onboarding layer around it. See [Cloudflare's Deploy button documentation](https://developers.cloudflare.com/workers/platform/deploy-buttons/).
