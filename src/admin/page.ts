@@ -1821,6 +1821,7 @@ details[open].advanced summary::before {
     teamInviteLink: "",
     teamInviteEmail: "",
     teamInviteCopied: false,
+    teamInviteManualCopy: false,
     teamResetLink: "",
     // Removal is a separate destructive action, never a select option. The
     // confirmation keeps an accidental status-picker change from permanently
@@ -2649,7 +2650,9 @@ details[open].advanced summary::before {
       ? '<p class="error" role="alert">' + esc(state.teamError) + '</p>'
       : (state.teamNotice ? '<p class="hint" role="status">' + esc(state.teamNotice) + '</p>' : '');
     var createdFlash = state.teamInviteLink && state.teamInviteEmail
-      ? '<div class="team-created-flash" role="status"><div><strong>Join link ready for</strong><span>' + esc(state.teamInviteEmail) + '</span></div><button type="button" class="btn btn-primary btn-sm" data-action="team-copy-link">' + (state.teamInviteCopied ? 'Copied' : 'Copy link') + '</button></div>'
+      ? (state.teamInviteManualCopy
+        ? '<div class="team-show-once" role="status"><label for="team-invite-link">Copy this teammate join link manually</label><p class="hint">Clipboard access was denied. Select the full link below, then copy and share it privately.</p><div class="team-link-row"><input class="input mono" id="team-invite-link" readonly value="' + esc(state.teamInviteLink) + '"><button type="button" class="btn btn-primary btn-sm" data-action="team-copy-link">Copy link</button></div></div>'
+        : '<div class="team-created-flash" role="status"><div><strong>Join link ready for</strong><span>' + esc(state.teamInviteEmail) + '</span></div><button type="button" class="btn btn-primary btn-sm" data-action="team-copy-link">' + (state.teamInviteCopied ? 'Copied' : 'Copy link') + '</button></div>')
       : '';
     var resetOnce = state.teamResetLink
       ? '<div class="team-show-once" role="status"><label for="team-reset-link">Copy this password reset link now</label><p class="hint">Send it privately to the named teammate. It expires quickly and cannot be shown again after you leave or refresh.</p><div class="team-link-row"><input class="input mono" id="team-reset-link" readonly value="' + esc(state.teamResetLink) + '"><button type="button" class="btn btn-primary btn-sm" data-action="team-copy-reset">Copy link</button><button type="button" class="btn btn-ghost btn-sm" data-action="team-dismiss-reset">Done</button></div></div>'
@@ -2877,6 +2880,7 @@ details[open].advanced summary::before {
       state.teamInviteLink = "";
       state.teamInviteEmail = "";
       state.teamInviteCopied = false;
+      state.teamInviteManualCopy = false;
       state.teamResetLink = "";
     }
     render();
@@ -2943,6 +2947,7 @@ details[open].advanced summary::before {
     state.teamInviteLink = "";
     state.teamInviteEmail = "";
     state.teamInviteCopied = false;
+    state.teamInviteManualCopy = false;
     render();
     postJson("/admin/api/team/invitations", "POST", { email: email }).then(function (result) {
       state.teamInviteDraft.email = "";
@@ -2959,6 +2964,7 @@ details[open].advanced summary::before {
     state.teamInviteLink = "";
     state.teamInviteEmail = "";
     state.teamInviteCopied = false;
+    state.teamInviteManualCopy = false;
     render();
     var path = "/admin/api/team/invitations/" + encodeURIComponent(invitationId);
     api(path, { method: "DELETE" })
@@ -9357,9 +9363,11 @@ details[open].advanced summary::before {
     if (action === "team-copy-link" && state.teamInviteLink) {
       navigator.clipboard.writeText(state.teamInviteLink).then(function () {
         state.teamInviteCopied = true;
+        state.teamInviteManualCopy = false;
         render();
       }).catch(function () {
-        state.teamError = "Copy failed. Select the link and copy it manually.";
+        state.teamInviteManualCopy = true;
+        state.teamError = "Copy failed. Select the join link below and copy it manually.";
         render();
       });
     }

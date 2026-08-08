@@ -95,7 +95,7 @@ function teamFixture(viewerRole: 'owner' | 'admin' = 'owner') {
 
 async function createHarness(
   viewerRole: 'owner' | 'admin' = 'owner',
-  harnessOptions: { failInviteRequest?: boolean } = {},
+  harnessOptions: { failInviteRequest?: boolean; failClipboard?: boolean } = {},
 ) {
   const fixture = teamFixture(viewerRole);
   let html = '';
@@ -175,7 +175,11 @@ async function createHarness(
     URLSearchParams,
     navigator: {
       clipboard: {
-        writeText(value: string) { clipboard.push(value); return Promise.resolve(); },
+        writeText(value: string) {
+          if (harnessOptions.failClipboard) return Promise.reject(new Error('Clipboard permission denied'));
+          clipboard.push(value);
+          return Promise.resolve();
+        },
       },
     },
     window: { addEventListener() {} },
@@ -285,6 +289,30 @@ test('Team join links stay stable, copyable, and membership status stays managea
     request.method === 'PATCH' &&
     (request.body as { status?: string }).status === 'removed');
   assert.deepEqual(removePatch?.body, { status: 'removed' });
+});
+
+test('Team join links become selectable when clipboard access is denied', async () => {
+  const harness = await createHarness('owner', { failClipboard: true });
+  const input = harness.listeners.input;
+  const submit = harness.listeners.submit;
+  const click = harness.listeners.click;
+  assert.ok(input && submit && click);
+
+  input({ target: actionTarget({ 'data-action': 'team-invite-email' }, 'manual-copy@example.com') });
+  submit({
+    target: actionTarget({ 'data-action': 'team-invite-form' }),
+    preventDefault() {},
+  });
+  await flush();
+  click({ target: actionTarget({ 'data-action': 'team-copy-link' }) });
+  await flush();
+
+  assert.match(harness.app.innerHTML, /Copy failed\. Select the join link below and copy it manually\./);
+  assert.match(harness.app.innerHTML, /id="team-invite-link"[^>]*readonly/);
+  assert.match(
+    harness.app.innerHTML,
+    /value="https:\/\/chickpea\.example\.com\/join#invite=invitation_created\.stable-secret"/,
+  );
 });
 
 test('Team invitation replaces raw network failures with safe recovery guidance', async () => {
