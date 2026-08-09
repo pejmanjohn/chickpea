@@ -158,6 +158,14 @@ OAuth connections surface their current identity and lifecycle state, including 
 
 Connect GitHub once in Settings through the GitHub App manifest flow, the only supported authentication path for repository access and the coding sandbox. Then pick exactly which repositories each profile can use from its Repositories tab. On Cloudflare Workers, Chickpea mints down-scoped, short-lived App installation tokens per turn and injects them only at the coding sandbox egress boundary; credentials never enter agent instructions or the sandbox environment. The container coding tier requires Cloudflare Workers. Node and other non-Cloudflare installs keep the standard in-memory bash sandbox, with no host filesystem or host git/SSH credential access.
 
+### Optional coding sandbox
+
+The default Deploy to Cloudflare path is intentionally slim: it does not create a Sandbox binding, build the Ubuntu-based image, or provision a Container application. Ordinary Slack replies and Chickpea administration do not need that infrastructure.
+
+To add repository-backed coding later, open **Settings → Coding sandbox → Install coding sandbox**. Chickpea records the request, but deployment authority remains in your Cloudflare account. In **Cloudflare dashboard → Workers & Pages → your Worker → Settings → Builds → Variables**, add the non-secret build variable `CHICKPEA_DEPLOY_PROFILE` with value `sandbox`, then choose **Retry deployment**. If Retry reuses the earlier core artifact, start a fresh dashboard build. A local or CI operator can instead run `npm run deploy:sandbox`. The Sandbox profile requires Workers Paid, and its first image build can take several minutes.
+
+After the deployment finishes, use **Check again**, verify the application is ready under **Cloudflare dashboard → Containers → Container applications**, connect GitHub, grant at least one repository to a profile, and explicitly enable the runtime. Disabling is immediate but does not delete the retained Container application or image. For a full removal, disable first, remove the build variable, redeploy the core profile, verify normal Slack behavior, and only then delete the retained Container resources. If upgrading an older Sandbox beta, keep the Sandbox build profile before the update to retain its binding; choosing the default slim profile intentionally removes Container access and requires runtime enablement to remain off until Sandbox is reinstalled. See the [coding sandbox deployment runbook](docs/runbooks/coding-sandbox-deployment.md) for upgrades, rollback, and troubleshooting.
+
 ### Privacy and fail-closed guarantees
 
 - Channels are fail-closed, public and private alike: the bot answers only where a profile is explicitly assigned. Being invited to a channel does nothing by itself.

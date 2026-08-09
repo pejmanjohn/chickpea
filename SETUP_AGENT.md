@@ -17,13 +17,20 @@ before step 2; it is the one choice that cannot be corrected later without
 reinstalling. Let your human paste secrets if your environment's policy
 prefers that; everything else is clicking.
 
-**GitHub features are configured separately:** repository access and the
-coding sandbox both require the GitHub App created from Chickpea's Settings
-page. Finish Slack setup here, then use **Settings → GitHub → Create GitHub
-App** before adding repositories to a profile. The container coding sandbox
-requires Cloudflare Workers. Node and other non-Cloudflare installs use the
+**GitHub features are configured separately:** finish Slack setup here, then
+use **Settings → GitHub → Create GitHub App** before adding repositories to a
+profile. The GitHub App is also a prerequisite for the optional coding
+sandbox.
+
+**The default Cloudflare deployment is intentionally slim:** it does not
+build the Ubuntu coding image or provision Container infrastructure. Ordinary
+Slack replies do not need it. To add it later, use **Settings → Coding sandbox
+→ Install coding sandbox**, then follow the exact Cloudflare redeploy steps
+shown there. The Sandbox profile requires Workers Paid; the first image build
+can take several minutes. Node and other non-Cloudflare installs use the
 standard in-memory bash sandbox, without host filesystem or host git/SSH
-credential access.
+credential access. The complete install, enable, rollback, and cleanup flow is
+in the [coding sandbox deployment runbook](docs/runbooks/coding-sandbox-deployment.md).
 
 ## Steps
 

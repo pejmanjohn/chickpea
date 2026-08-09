@@ -1992,6 +1992,9 @@ details[open].advanced summary::before {
     sandboxLoaded: false,
     sandboxError: "",
     sandboxSaving: false,
+    sandboxConfirm: "",
+    sandboxReadyAttested: false,
+    sandboxNotice: "",
     // Profile-local repository selection UI. The picker is a working selection
     // only; Apply writes grants into profileDraft and the existing profile Save
     // action remains the sole persistence path.
@@ -2085,7 +2088,6 @@ details[open].advanced summary::before {
   };
   var egressDraft = { mode: "allowlist", domains: [""] };
   var sandboxDraft = {
-    enabled: false,
     allowedHosts: ["registry.npmjs.org", "pypi.org", "files.pythonhosted.org"],
     monthlySessionCap: 200
   };
@@ -2392,7 +2394,7 @@ details[open].advanced summary::before {
 
   function render() {
     var app = document.getElementById("app");
-    app.innerHTML = topbarHtml() + '<div class="body">' + railHtml() + mainHtml() + "</div>" + teamRemoveModalHtml() + leavePromptModalHtml() + connectionRemoveModalHtml() + apiConnectionRemoveModalHtml() + slackDisconnectModalHtml() + githubDisconnectModalHtml() + memoryDeleteModalHtml() + scheduledRoutineSummaryModalHtml() + scheduledDeleteModalHtml() + slackIdentityConfirmModalHtml();
+    app.innerHTML = topbarHtml() + '<div class="body">' + railHtml() + mainHtml() + "</div>" + teamRemoveModalHtml() + leavePromptModalHtml() + connectionRemoveModalHtml() + apiConnectionRemoveModalHtml() + slackDisconnectModalHtml() + githubDisconnectModalHtml() + sandboxConfirmModalHtml() + memoryDeleteModalHtml() + scheduledRoutineSummaryModalHtml() + scheduledDeleteModalHtml() + slackIdentityConfirmModalHtml();
     if (state.teamRemoveConfirm) {
       [document.querySelector(".topbar"), document.querySelector(".body")].forEach(function (region) {
         if (!region) return;
@@ -2425,6 +2427,19 @@ details[open].advanced summary::before {
       if (state.githubBusy === "disconnect") focusGithubDisconnectDialog();
       else if (state.githubDisconnectError) focusSlackLiveRegion("github-disconnect-error");
       else focusSlackDisconnectAction("github-disconnect-cancel");
+    }
+    if (state.sandboxConfirm) {
+      [document.querySelector(".topbar"), document.querySelector(".body")].forEach(function (region) {
+        if (!region) return;
+        region.inert = true;
+        if (region.setAttribute) region.setAttribute("aria-hidden", "true");
+      });
+      var sandboxConfirmFocus = state.sandboxSaving
+        ? document.querySelector('[data-role="sandbox-confirm-dialog"]')
+        : state.sandboxError
+          ? document.querySelector('[data-role="sandbox-confirm-error"]')
+          : document.querySelector('[data-action="sandbox-confirm-cancel"]');
+      if (sandboxConfirmFocus && sandboxConfirmFocus.focus) sandboxConfirmFocus.focus();
     }
     if (state.memoryDeleteConfirm) {
       [document.querySelector(".topbar"), document.querySelector(".body")].forEach(function (region) {
@@ -3462,6 +3477,27 @@ details[open].advanced summary::before {
       '<p class="modal-body">Chickpea will remove the stored GitHub App credentials. Environment-configured App credentials, if present, remain active. ' + profileWarning + appNote + '</p>' +
       (state.githubDisconnectError ? '<p class="error" style="margin-top:10px;" role="alert" aria-live="assertive" tabindex="-1" data-role="github-disconnect-error">' + esc(state.githubDisconnectError) + '</p>' : "") +
       '<div class="modal-foot"><button type="button" class="btn btn-ghost" data-action="github-disconnect-cancel"' + (state.githubBusy === "disconnect" ? " disabled" : "") + '>Keep connected</button><span class="spacer"></span>' + button + '</div></div></div>';
+  }
+
+  function sandboxConfirmModalHtml() {
+    if (!state.sandboxConfirm) return "";
+    var busy = !!state.sandboxSaving;
+    var busyStatus = busy
+      ? '<p class="sr-only" role="status" aria-live="polite">' + (state.sandboxSaving === "install" ? "Requesting installation." : "Enabling coding sandbox.") + '</p>'
+      : '';
+    if (state.sandboxConfirm === "install") {
+      return '<div class="modal-backdrop"><div class="modal-card" role="dialog" aria-modal="true" aria-label="Install coding sandbox" tabindex="-1" data-role="sandbox-confirm-dialog"><h2 class="modal-title">Install coding sandbox?</h2>' +
+        '<p class="modal-body">Requires Cloudflare Workers Paid. The first image build can take several minutes because Cloudflare builds the Ubuntu-based coding image. Disabling later does not remove the Container application or image, so retained infrastructure may continue to exist in your account.</p>' +
+        (state.sandboxError ? '<p class="field-error" role="alert" aria-live="assertive" tabindex="-1" data-role="sandbox-confirm-error">' + esc(state.sandboxError) + '</p>' : '') +
+        busyStatus +
+        '<div class="modal-foot"><button type="button" class="btn btn-ghost" data-action="sandbox-confirm-cancel"' + (busy ? " disabled" : "") + '>Not now</button><span class="spacer"></span><button type="button" class="btn btn-primary" data-action="sandbox-install-confirm"' + (busy ? " disabled" : "") + '>' + (state.sandboxSaving === "install" ? "Requesting&hellip;" : "Request installation") + '</button></div></div></div>';
+    }
+    return '<div class="modal-backdrop"><div class="modal-card" role="dialog" aria-modal="true" aria-label="Enable coding sandbox" tabindex="-1" data-role="sandbox-confirm-dialog"><h2 class="modal-title">Enable coding sandbox?</h2>' +
+      '<p class="modal-body">First verify the rollout at Cloudflare dashboard &rarr; Containers &rarr; Container applications. Open this Worker&rsquo;s Sandbox application and confirm its latest rollout reports ready.</p>' +
+      '<label class="conn-tool"><span class="import-check' + (state.sandboxReadyAttested ? " on" : "") + '"><input type="checkbox" data-action="sandbox-ready-attestation" ' + (state.sandboxReadyAttested ? "checked " : "") + (busy ? "disabled " : "") + 'aria-label="I confirmed the Container application is ready"></span><span class="tool-body"><span class="tool-name">I confirmed the Container application is ready</span></span></label>' +
+      (state.sandboxError ? '<p class="field-error" role="alert" aria-live="assertive" tabindex="-1" data-role="sandbox-confirm-error">' + esc(state.sandboxError) + '</p>' : '') +
+      busyStatus +
+      '<div class="modal-foot"><button type="button" class="btn btn-ghost" data-action="sandbox-confirm-cancel"' + (busy ? " disabled" : "") + '>Go back</button><span class="spacer"></span><button type="button" class="btn btn-primary" data-action="sandbox-enable-confirm"' + (!state.sandboxReadyAttested || busy ? " disabled" : "") + '>' + (state.sandboxSaving === "enable" ? "Enabling&hellip;" : "Enable coding sandbox") + '</button></div></div></div>';
   }
 
   function focusSlackDisconnectAction(action) {
@@ -6940,11 +6976,17 @@ details[open].advanced summary::before {
 
   function sandboxSectionHtml() {
     var status = state.sandboxStatus;
-    var badge = status && status.enabled
-      ? '<span class="badge badge-on"><span class="dot"></span>On</span>'
-      : '<span class="badge badge-off"><span class="dot"></span>Off</span>';
+    var badge = '<span class="badge badge-off">Unavailable</span>';
+    if (status) {
+      if (status.target === "node") badge = '<span class="badge badge-off">Unsupported on Node</span>';
+      else if (!status.installed && status.installRequested) badge = '<span class="badge badge-off">Redeploy required</span>';
+      else if (!status.installed) badge = '<span class="badge badge-off">Not installed in this deployment</span>';
+      else if (status.storedEnabled && (!status.githubConnected || !status.repositoryGrantReady)) badge = '<span class="badge badge-off">On, setup required</span>';
+      else if (status.storedEnabled) badge = '<span class="badge badge-on"><span class="dot"></span>On</span>';
+      else badge = '<span class="badge badge-off">Installed but off</span>';
+    }
     var head = '<div class="section-head"><div><h2 class="section-title">Coding sandbox</h2>' +
-      '<p class="hint">Makes a full coding workspace available when a profile has enabled repository grants. The model decides whether a task needs it.</p></div>' + badge + '</div>';
+      '<p class="hint">An optional Cloudflare Container for repository-backed coding tasks. Ordinary Chickpea and Slack replies do not need it.</p></div>' + badge + '</div>';
     if (!state.sandboxLoaded) {
       return '<section class="section" id="sandbox-settings">' + head + '<p class="hint">Loading sandbox settings&hellip;</p></section>';
     }
@@ -6954,6 +6996,64 @@ details[open].advanced summary::before {
         '<div><button type="button" class="btn btn-soft btn-sm i-lead" data-action="sandbox-refresh">' + icon("arrow-path") + 'Retry</button></div></section>';
     }
     var disabled = state.sandboxSaving ? " disabled" : "";
+    var paidNote = status.workersPaidNote
+      ? '<p class="hint">' + esc(status.workersPaidNote) + '</p>'
+      : "";
+    var live = state.sandboxError
+      ? '<p class="field-error" role="alert" aria-live="assertive">' + esc(state.sandboxError) + '</p>'
+      : state.sandboxNotice
+        ? '<p class="inline-status ok" role="status" aria-live="polite">' + esc(state.sandboxNotice) + '</p>'
+        : '';
+    var progressLabels = {
+      cancel: "Canceling the installation request.",
+      check: "Checking the live deployment.",
+      disable: "Disabling the coding sandbox.",
+      advanced: "Saving advanced Sandbox settings."
+    };
+    var progress = state.sandboxSaving && progressLabels[state.sandboxSaving]
+      ? '<p class="sr-only" role="status" aria-live="polite">' + progressLabels[state.sandboxSaving] + '</p>'
+      : '';
+    if (status.target === "node") {
+      return '<section class="section" id="sandbox-settings">' + head +
+        '<div class="callout"><p class="field-label">Cloudflare-only capability</p><p class="hint">Node and other non-Cloudflare installations use the standard in-memory bash sandbox. Chickpea never gives that sandbox the host filesystem or host git/SSH credentials.</p></div>' + live + '</section>';
+    }
+
+    var body = '';
+    if (!status.installed && !status.installRequested) {
+      body = '<div class="action-well"><div class="danger-copy"><span class="field-label">Not installed in this deployment</span><span class="hint">The slim deployment does not build Ubuntu or create Container infrastructure. A Container application or image from an earlier install may still remain in Cloudflare until you remove it.</span></div>' +
+        '<button type="button" class="btn btn-primary" data-action="sandbox-install-open"' + disabled + '>Install coding sandbox</button></div>';
+    } else if (!status.installed) {
+      body = '<div class="action-well"><div class="danger-copy"><span class="field-label">Redeploy required</span><span class="hint">Chickpea saved your request, but Chickpea cannot redeploy itself because deployment authority stays in your Cloudflare account.</span></div>' +
+        '<button type="button" class="btn btn-primary" data-action="sandbox-check-again"' + disabled + '>' + (state.sandboxSaving === "check" ? "Checking&hellip;" : "Check again") + '</button>' +
+        '<button type="button" class="btn btn-ghost" data-action="sandbox-cancel-install"' + disabled + '>' + (state.sandboxSaving === "cancel" ? "Canceling&hellip;" : "Cancel request") + '</button></div>' +
+        '<div class="callout"><p class="field-label">Finish in Cloudflare</p><p class="hint">Open Cloudflare dashboard &rarr; Workers &amp; Pages &rarr; your Worker &rarr; Settings &rarr; Builds &rarr; Variables. Add the non-secret build variable below, then choose <b>Retry deployment</b>.</p><div class="team-link-row"><input class="input mono" id="sandbox-build-variable" readonly value="CHICKPEA_DEPLOY_PROFILE=sandbox" aria-label="Sandbox build variable"><button type="button" class="btn btn-soft btn-sm" data-action="sandbox-copy-profile"' + disabled + '>Copy variable</button></div><p class="hint">If Retry reuses the earlier core artifact, start a fresh dashboard build. Local or CI operators can instead run <span class="mono">npm run deploy:sandbox</span>. The first image build can take several minutes.</p></div>';
+    } else {
+      var prerequisite = '';
+      if (!status.githubConnected) {
+        prerequisite = '<button type="button" class="btn btn-primary" data-action="open-settings" data-section="github-settings">Connect GitHub</button>';
+      } else if (!status.repositoryGrantReady) {
+        prerequisite = '<button type="button" class="btn btn-primary" data-action="open-profiles">Manage repository access</button>';
+      }
+      var runtimeAction = prerequisite;
+      if (!runtimeAction && !status.storedEnabled) {
+        runtimeAction = '<button type="button" class="btn btn-primary" data-action="sandbox-enable-open"' + disabled + '>Enable coding sandbox</button>';
+      }
+      if (status.storedEnabled) {
+        runtimeAction += '<button type="button" class="btn btn-soft" data-action="sandbox-disable"' + disabled + '>' + (state.sandboxSaving === "disable" ? "Disabling&hellip;" : "Disable") + '</button>';
+      }
+      var statusCopy = status.storedEnabled
+        ? (prerequisite ? 'The saved runtime preference is on, but coding tasks cannot use the Container until setup is complete.' : 'Repository-backed coding tasks can use the Cloudflare Container.')
+        : (prerequisite ? 'Complete the required repository setup before enabling.' : 'The Container is installed. Enable it only after Cloudflare reports the rollout ready.');
+      body = '<div class="action-well"><div class="danger-copy"><span class="field-label">' + (status.storedEnabled ? (prerequisite ? "On, setup required" : "On") : "Installed but off") + '</span><span class="hint">' + statusCopy + '</span></div>' + runtimeAction + '</div>' +
+        '<p class="hint">Disabling is immediate, but the Container application and image remain in Cloudflare and may retain costs. To remove them, disable first, remove <span class="mono">CHICKPEA_DEPLOY_PROFILE</span> from Builds, redeploy the core profile, verify normal Slack behavior, and then delete the retained Container application and image.</p>' +
+        sandboxAdvancedHtml(disabled);
+    }
+
+    var beta = '<div class="callout"><p class="field-label">Updating an older Sandbox beta?</p><p class="hint">Keep the Sandbox build profile before your next update to retain the binding. Choosing the default slim profile intentionally removes Container access and leaves runtime enablement ineffective until you reinstall.</p></div>';
+    return '<section class="section" id="sandbox-settings">' + head + body + paidNote + beta + live + progress + '</section>';
+  }
+
+  function sandboxAdvancedHtml(disabled) {
     var hostOptions = ["registry.npmjs.org", "pypi.org", "files.pythonhosted.org"];
     var hostRows = hostOptions.map(function (host) {
       var checked = sandboxDraft.allowedHosts.indexOf(host) >= 0;
@@ -6961,29 +7061,17 @@ details[open].advanced summary::before {
         '<input type="checkbox" data-action="sandbox-host" data-host="' + esc(host) + '" ' + (checked ? "checked " : "") + disabled + ' aria-label="Allow ' + esc(host) + '"></span>' +
         '<span class="tool-body"><span class="tool-name">' + esc(host) + '</span></span></label>';
     }).join("");
-    var paidNote = status.workersPaidNote
-      ? '<p class="hint">' + esc(status.workersPaidNote) + '</p>'
-      : "";
-    var enableNote = status.target === "cloudflare"
-      ? 'Runs coding tasks in real containers on your Cloudflare account; requires Workers Paid; ~1 cent/session.'
-      : 'The coding sandbox requires Cloudflare Workers. Node and other non-Cloudflare installs keep the standard in-memory bash sandbox.';
-    return '<section class="section" id="sandbox-settings">' + head +
-      '<div class="bundle-row"><div class="danger-copy"><span class="field-label">Enable coding sandbox</span>' +
-      '<span class="hint">' + enableNote + '</span></div>' +
-      '<label class="toggle"><span class="thumb"></span><input type="checkbox" data-action="sandbox-enabled" ' + (sandboxDraft.enabled ? "checked " : "") + disabled + ' aria-label="Enable coding sandbox"></label></div>' +
-      paidNote +
-      '<details class="advanced"><summary>Advanced</summary><div class="adv-rows">' +
+    return '<details class="advanced"><summary>Advanced</summary><div class="adv-rows">' +
       '<div class="field"><label class="field-label" for="sandbox-instance-type">Instance type</label>' +
       '<input class="input mono" id="sandbox-instance-type" value="standard-1" readonly aria-readonly="true">' +
-      '<p class="hint">Fixed at deploy time. To change it, edit <span class="mono">wrangler.jsonc</span> <span class="mono">containers[].instance_type</span> and redeploy.</p></div>' +
+      '<p class="hint">Fixed by the Sandbox deployment profile.</p></div>' +
       '<div class="field" style="margin-top:14px;"><label class="field-label" for="sandbox-monthly-cap">Monthly session cap</label>' +
       '<input class="input mono" id="sandbox-monthly-cap" type="number" min="0" max="100000" step="1" value="' + esc(String(sandboxDraft.monthlySessionCap)) + '" data-action="sandbox-monthly-cap"' + disabled + '>' +
       '<p class="hint">New coding sessions decline cleanly at this UTC-month limit. Set to <span class="mono">0</span> for no cap.</p></div>' +
       '<div class="field" style="margin-top:14px;"><span class="field-label">Package registry access</span>' +
       '<p class="hint">GitHub access comes from profile repository grants. These are the only optional package hosts.</p>' + hostRows + '</div>' +
       '</div></details>' +
-      (state.sandboxError ? '<p class="field-error" role="alert">' + esc(state.sandboxError) + '</p>' : "") +
-      '<div><button type="button" class="btn btn-primary" data-action="sandbox-save"' + disabled + '>' + (state.sandboxSaving ? "Saving&hellip;" : "Save") + '</button></div></section>';
+      '<div><button type="button" class="btn btn-soft" data-action="sandbox-save"' + disabled + '>' + (state.sandboxSaving === "advanced" ? "Saving&hellip;" : "Save advanced settings") + '</button></div>';
   }
 
   function managedSlackIdentity(identityId) {
@@ -7938,6 +8026,10 @@ details[open].advanced summary::before {
     state.githubError = "";
     state.egressLoaded = false;
     state.sandboxLoaded = false;
+    state.sandboxConfirm = "";
+    state.sandboxReadyAttested = false;
+    state.sandboxNotice = "";
+    state.sandboxError = "";
     state.modelCatalogLoaded = false;
     state.modelCatalogError = "";
     if (state.settingsSection === "slack") {
@@ -8530,7 +8622,6 @@ details[open].advanced summary::before {
 
   function seedSandboxDraft(status) {
     sandboxDraft = {
-      enabled: !!status.enabled,
       allowedHosts: (status.allowedHosts || []).slice(),
       monthlySessionCap: status.monthlySessionCapConfigured === false
         ? 200
@@ -8551,26 +8642,106 @@ details[open].advanced summary::before {
     });
   }
 
-  function saveSandbox() {
+  function sandboxMutationError(error, fallback) {
+    return (error && (error.serverMessage || error.message)) || fallback;
+  }
+
+  function applySandboxStatus(body) {
+    state.sandboxStatus = body;
+    seedSandboxDraft(body);
+  }
+
+  function requestSandboxInstall() {
     if (state.sandboxSaving) return;
-    state.sandboxSaving = true;
+    state.sandboxSaving = "install";
     state.sandboxError = "";
+    state.sandboxNotice = "";
     render();
-    postJson("/admin/api/sandbox/status", "PUT", {
-      enabled: sandboxDraft.enabled,
-      allowedHosts: sandboxDraft.allowedHosts.slice(),
-      monthlySessionCap: sandboxDraft.monthlySessionCap
-    }).then(function (body) {
-      state.sandboxStatus = body;
-      seedSandboxDraft(body);
+    postJson("/admin/api/sandbox/install", "POST", {}).then(function (body) {
+      applySandboxStatus(body);
       state.sandboxSaving = false;
-      state.sandboxError = "";
+      state.sandboxConfirm = "";
+      state.sandboxNotice = "Installation requested. Redeploy required.";
       render();
     }).catch(function (error) {
       state.sandboxSaving = false;
-      state.sandboxError = (error && (error.serverMessage || error.message)) || "Could not save sandbox settings.";
+      state.sandboxError = sandboxMutationError(error, "Could not request Sandbox installation.");
       render();
     });
+  }
+
+  function cancelSandboxInstall() {
+    if (state.sandboxSaving) return;
+    state.sandboxSaving = "cancel";
+    state.sandboxError = "";
+    state.sandboxNotice = "";
+    render();
+    api("/admin/api/sandbox/install", { method: "DELETE" }).then(function (body) {
+      applySandboxStatus(body);
+      state.sandboxSaving = false;
+      state.sandboxNotice = "Installation request canceled. Coding Sandbox remains off.";
+      render();
+    }).catch(function (error) {
+      state.sandboxSaving = false;
+      state.sandboxError = sandboxMutationError(error, "Could not cancel the installation request.");
+      render();
+    });
+  }
+
+  function checkSandboxInstall() {
+    if (state.sandboxSaving) return;
+    state.sandboxSaving = "check";
+    state.sandboxError = "";
+    state.sandboxNotice = "";
+    render();
+    api("/admin/api/sandbox/status").then(function (body) {
+      applySandboxStatus(body);
+      state.sandboxSaving = false;
+      state.sandboxNotice = body.installed
+        ? "Coding Sandbox installation found."
+        : "No Sandbox binding yet. Finish the Cloudflare redeploy and check again.";
+      render();
+    }).catch(function (error) {
+      state.sandboxSaving = false;
+      state.sandboxError = sandboxMutationError(error, "Could not check Sandbox installation.");
+      render();
+    });
+  }
+
+  function putSandbox(enabled, readinessConfirmed, action) {
+    if (state.sandboxSaving) return;
+    state.sandboxSaving = action;
+    state.sandboxError = "";
+    state.sandboxNotice = "";
+    render();
+    var body = {
+      enabled: enabled,
+      allowedHosts: sandboxDraft.allowedHosts.slice(),
+      monthlySessionCap: sandboxDraft.monthlySessionCap
+    };
+    if (readinessConfirmed) body.readinessConfirmed = true;
+    postJson("/admin/api/sandbox/status", "PUT", body).then(function (result) {
+      applySandboxStatus(result);
+      state.sandboxSaving = false;
+      state.sandboxConfirm = "";
+      state.sandboxReadyAttested = false;
+      state.sandboxError = "";
+      state.sandboxNotice = action === "enable"
+        ? "Coding Sandbox enabled."
+        : action === "disable"
+          ? "Coding Sandbox disabled. Container infrastructure remains installed."
+          : "Advanced Sandbox settings saved.";
+      render();
+    }).catch(function (error) {
+      state.sandboxSaving = false;
+      state.sandboxError = sandboxMutationError(error, "Could not save Sandbox settings.");
+      render();
+    });
+  }
+
+  function saveSandbox() {
+    var status = state.sandboxStatus || {};
+    putSandbox(!!status.storedEnabled, !!status.storedEnabled, "advanced");
   }
 
   function saveEgress() {
@@ -9281,6 +9452,21 @@ details[open].advanced summary::before {
       return;
     }
 
+    if (state.sandboxConfirm) {
+      if (action === "sandbox-confirm-cancel") {
+        if (state.sandboxSaving) return;
+        state.sandboxConfirm = "";
+        state.sandboxReadyAttested = false;
+        state.sandboxError = "";
+        render();
+      } else if (action === "sandbox-install-confirm") {
+        requestSandboxInstall();
+      } else if (action === "sandbox-enable-confirm" && state.sandboxReadyAttested) {
+        putSandbox(true, true, "enable");
+      }
+      return;
+    }
+
     if (state.memoryDeleteConfirm) {
       if (action === "memory-delete-cancel") {
         state.memoryDeleteConfirm = false;
@@ -9648,6 +9834,39 @@ details[open].advanced summary::before {
     if (state.sandboxSaving && action.indexOf("sandbox-") === 0) return;
     if (action === "sandbox-refresh") { loadSandboxStatus().then(render); }
     if (action === "sandbox-save") { saveSandbox(); }
+    if (action === "sandbox-install-open") {
+      state.sandboxConfirm = "install";
+      state.sandboxError = "";
+      state.sandboxNotice = "";
+      render();
+    }
+    if (action === "sandbox-enable-open") {
+      state.sandboxConfirm = "enable";
+      state.sandboxReadyAttested = false;
+      state.sandboxError = "";
+      state.sandboxNotice = "";
+      render();
+    }
+    if (action === "sandbox-check-again") { checkSandboxInstall(); }
+    if (action === "sandbox-cancel-install") { cancelSandboxInstall(); }
+    if (action === "sandbox-disable") { putSandbox(false, false, "disable"); }
+    if (action === "sandbox-copy-profile") {
+      var sandboxBuildVariable = "CHICKPEA_DEPLOY_PROFILE=sandbox";
+      var sandboxBuildVariableInput = document.getElementById("sandbox-build-variable");
+      var selectSandboxBuildVariable = function () {
+        if (sandboxBuildVariableInput && sandboxBuildVariableInput.select) sandboxBuildVariableInput.select();
+        state.sandboxNotice = "Clipboard access was unavailable. The build variable is selected for manual copy.";
+        render();
+      };
+      if (!navigator.clipboard || !navigator.clipboard.writeText) {
+        selectSandboxBuildVariable();
+      } else {
+        navigator.clipboard.writeText(sandboxBuildVariable).then(function () {
+          state.sandboxNotice = "Sandbox build variable copied.";
+          render();
+        }).catch(selectSandboxBuildVariable);
+      }
+    }
     if (state.egressSaving && action.indexOf("egress-") === 0) return;
     if (action === "egress-mode") {
       egressDraft.mode = target.getAttribute("data-mode") || "allowlist";
@@ -10202,8 +10421,8 @@ details[open].advanced summary::before {
       loadScheduledRoutines();
     }
     if (action === "scheduled-filter-status") state.scheduledFilters.status = target.value;
-    if (action === "sandbox-enabled" && !state.sandboxSaving) {
-      sandboxDraft.enabled = !!target.checked;
+    if (action === "sandbox-ready-attestation" && !state.sandboxSaving) {
+      state.sandboxReadyAttested = !!target.checked;
       state.sandboxError = "";
       render();
     }
@@ -10383,6 +10602,21 @@ details[open].advanced summary::before {
   }
 
   document.addEventListener("keydown", function (event) {
+    if (state.sandboxConfirm && state.sandboxSaving && event.key === "Tab") {
+      event.preventDefault();
+      var pendingSandboxDialog = document.querySelector('[data-role="sandbox-confirm-dialog"]');
+      if (pendingSandboxDialog && pendingSandboxDialog.focus) pendingSandboxDialog.focus();
+      return;
+    }
+    if (state.sandboxConfirm && (event.key === "Escape" || event.key === "Esc")) {
+      event.preventDefault();
+      if (state.sandboxSaving) return;
+      state.sandboxConfirm = "";
+      state.sandboxReadyAttested = false;
+      state.sandboxError = "";
+      render();
+      return;
+    }
     if (state.scheduledDeleteConfirm && (event.key === "Escape" || event.key === "Esc")) {
       event.preventDefault();
       if (state.scheduledBusy) return;

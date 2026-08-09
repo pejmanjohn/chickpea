@@ -271,12 +271,18 @@ type EgressPolicyFixture = {
   domains: string[];
 };
 type SandboxStatusFixture = {
+  installRequested: boolean;
+  installed: boolean;
+  storedEnabled: boolean;
   enabled: boolean;
   instanceType: string;
   allowedHosts: string[];
   monthlySessionCap: number;
   monthlySessionCapConfigured: boolean;
   target: 'cloudflare' | 'node';
+  githubConnected: boolean;
+  repositoryGrantReady: boolean;
+  unmetPrerequisites: string[];
   workersPaidNote: string | null;
 };
 type ModelCatalogStatusFixture = {
@@ -353,6 +359,7 @@ function runAdminPageHarness(
     openAiSubscriptionPollResult?: Record<string, unknown>;
     egressPolicy?: EgressPolicyFixture;
     sandboxStatus?: SandboxStatusFixture;
+    sandboxMutationError?: { status: number; error: string; message?: string };
     modelCatalogStatus?: ModelCatalogStatusFixture;
     deferModelCatalogStatus?: boolean;
     modelCatalogRefreshError?: { status: number; error: string; message?: string };
@@ -444,9 +451,11 @@ function runAdminPageHarness(
   egressPuts: EgressPolicyFixture[];
   sandboxPuts: Array<{
     enabled: boolean;
+    readinessConfirmed?: boolean;
     allowedHosts: string[];
     monthlySessionCap: number;
   }>;
+  sandboxInstallCalls: Array<'POST' | 'DELETE'>;
   modelCatalogRefreshCalls(): number;
   resolveModelCatalogStatus(result: ModelCatalogStatusFixture): void;
   agentPatchBodies: Array<{ id: string; body: Record<string, unknown> }>;
@@ -559,9 +568,11 @@ function runAdminPageHarness(
   const egressPuts: EgressPolicyFixture[] = [];
   const sandboxPuts: Array<{
     enabled: boolean;
+    readinessConfirmed?: boolean;
     allowedHosts: string[];
     monthlySessionCap: number;
   }> = [];
+  const sandboxInstallCalls: Array<'POST' | 'DELETE'> = [];
   let modelCatalogRefreshCalls = 0;
   let modelCatalogStatusResolver: ((response: FakeResponse) => void) | undefined;
   let deferModelCatalogStatus = options.deferModelCatalogStatus ?? false;
@@ -807,16 +818,25 @@ function runAdminPageHarness(
     domains: [],
   };
   let sandboxStatus: SandboxStatusFixture = options.sandboxStatus ?? {
+    installRequested: false,
+    installed: false,
+    storedEnabled: false,
     enabled: false,
     instanceType: 'standard-1',
     allowedHosts: ['registry.npmjs.org', 'pypi.org', 'files.pythonhosted.org'],
     monthlySessionCap: 0,
     monthlySessionCapConfigured: false,
     target: options.cloudflare ? 'cloudflare' : 'node',
+    githubConnected: false,
+    repositoryGrantReady: false,
+    unmetPrerequisites: options.cloudflare
+      ? ['sandbox_binding', 'github_app', 'repository_grant']
+      : ['cloudflare_target', 'sandbox_binding', 'github_app', 'repository_grant'],
     workersPaidNote: options.cloudflare
       ? 'Requires Workers Paid. Real containers run on your Cloudflare account; a typical session costs about 1 cent.'
       : null,
   };
+  const sandboxMutationError = options.sandboxMutationError;
   let modelCatalogStatus: ModelCatalogStatusFixture = options.modelCatalogStatus ?? {
     mode: 'hosted',
     source: 'bundled',
@@ -1520,18 +1540,26 @@ function runAdminPageHarness(
     }
     if (path === '/admin/api/sandbox/status') {
       if (method === 'PUT') {
+        if (sandboxMutationError) {
+          return Promise.resolve(jsonResponse(sandboxMutationError, sandboxMutationError.status));
+        }
         const body = JSON.parse(options?.body ?? '{}') as {
           enabled: boolean;
+          readinessConfirmed?: boolean;
           allowedHosts: string[];
           monthlySessionCap: number;
         };
         sandboxPuts.push({
           enabled: body.enabled,
+          ...(body.readinessConfirmed !== undefined
+            ? { readinessConfirmed: body.readinessConfirmed }
+            : {}),
           allowedHosts: [...body.allowedHosts],
           monthlySessionCap: body.monthlySessionCap,
         });
         sandboxStatus = {
           ...sandboxStatus,
+          storedEnabled: body.enabled,
           enabled: body.enabled,
           allowedHosts: [...body.allowedHosts],
           monthlySessionCap: body.monthlySessionCap,
@@ -1544,6 +1572,19 @@ function runAdminPageHarness(
           allowedHosts: [...sandboxStatus.allowedHosts],
         }),
       );
+    }
+    if (path === '/admin/api/sandbox/install' && (method === 'POST' || method === 'DELETE')) {
+      if (sandboxMutationError) {
+        return Promise.resolve(jsonResponse(sandboxMutationError, sandboxMutationError.status));
+      }
+      sandboxInstallCalls.push(method);
+      sandboxStatus = method === 'POST'
+        ? { ...sandboxStatus, installRequested: true }
+        : { ...sandboxStatus, installRequested: false, storedEnabled: false, enabled: false };
+      return Promise.resolve(jsonResponse({
+        ...sandboxStatus,
+        allowedHosts: [...sandboxStatus.allowedHosts],
+      }));
     }
     const favMatch = path.match(/^\/admin\/api\/providers\/([^/]+)\/favorites$/);
     if (favMatch) {
@@ -2083,6 +2124,7 @@ function runAdminPageHarness(
     favoritesPuts,
     egressPuts,
     sandboxPuts,
+    sandboxInstallCalls,
     modelCatalogRefreshCalls: () => modelCatalogRefreshCalls,
     resolveModelCatalogStatus(result) {
       const resolve = modelCatalogStatusResolver;
@@ -7908,8 +7950,8 @@ test('a stale model-list status response cannot overwrite a completed refresh', 
   assert.doesNotMatch(harness.app.innerHTML, /revision 3/);
 });
 
-test('Settings renders the off-by-default Coding sandbox card with cost and collapsed advanced controls', async () => {
-  const harness = runAdminPageHarness({ cloudflare: true });
+test('Settings renders Coding sandbox as unsupported on Node with no misleading install or enable control', async () => {
+  const harness = runAdminPageHarness();
   await flushAsync();
   const click = harness.listeners.click;
   assert.ok(click);
@@ -7919,69 +7961,207 @@ test('Settings renders the off-by-default Coding sandbox card with cost and coll
 
   const html = harness.app.innerHTML;
   assert.match(html, /<h2 class="section-title">Coding sandbox<\/h2>/);
-  assert.match(
-    html,
-    /real containers on your Cloudflare account; requires Workers Paid; ~1 cent\/session/,
-  );
-  assert.match(html, /data-action="sandbox-enabled"/);
-  assert.doesNotMatch(html, /data-action="sandbox-enabled" checked/);
-  assert.match(html, /<details class="advanced"><summary>Advanced<\/summary>/);
-  assert.match(html, /id="sandbox-instance-type" value="standard-1" readonly/);
-  assert.match(html, /wrangler\.jsonc/);
-  assert.match(html, /containers\[\]\.instance_type/);
-  assert.doesNotMatch(html, /data-action="sandbox-instance"/);
-  assert.match(html, /data-action="sandbox-host" data-host="registry\.npmjs\.org"/);
-  assert.doesNotMatch(html, /data-action="sandbox-local"/);
-  assert.doesNotMatch(html, /data-action="profile-sandbox"/);
+  assert.match(html, /Unsupported on Node/);
+  assert.match(html, /standard in-memory bash sandbox/);
+  assert.doesNotMatch(html, /data-action="sandbox-install-open"/);
+  assert.doesNotMatch(html, /data-action="sandbox-enable-open"/);
+  assert.doesNotMatch(html, /data-action="sandbox-enabled"/);
 });
 
-test('Settings explains the Cloudflare-only coding tier and saves install-level controls', async () => {
-  const harness = runAdminPageHarness();
+test('Settings requests a paid Sandbox install, hands off one Cloudflare variable, and supports check or cancel', async () => {
+  const harness = runAdminPageHarness({ cloudflare: true });
   await flushAsync();
   const click = harness.listeners.click;
-  const change = harness.listeners.change;
-  assert.ok(click && change);
+  assert.ok(click);
 
   click({ target: actionTarget({ 'data-action': 'open-settings' }) });
   await flushAsync();
 
-  assert.match(
-    harness.app.innerHTML,
-    /The coding sandbox requires Cloudflare Workers\. Node and other non-Cloudflare installs keep the standard in-memory bash sandbox\./,
-  );
-  assert.doesNotMatch(harness.app.innerHTML, /data-action="sandbox-local"/);
+  assert.match(harness.app.innerHTML, /Not installed in this deployment/);
+  assert.match(harness.app.innerHTML, /Container application or image from an earlier install may still remain/);
+  assert.match(harness.app.innerHTML, /data-action="sandbox-install-open"/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="sandbox-enable-open"/);
 
-  const changedTarget = (
-    attributes: Record<string, string>,
-    values: { checked?: boolean; value?: string },
-  ) =>
-    ({
-      ...values,
-      closest: () => null,
-      getAttribute(name: string) {
-        return attributes[name] ?? null;
-      },
-    }) as unknown as FakeTarget;
-
-  change({
-    target: changedTarget({ 'data-action': 'sandbox-enabled' }, { checked: true }),
-  });
-  change({
-    target: changedTarget(
-      { 'data-action': 'sandbox-host', 'data-host': 'pypi.org' },
-      { checked: false },
-    ),
-  });
-  click({ target: actionTarget({ 'data-action': 'sandbox-save' }) });
+  click({ target: actionTarget({ 'data-action': 'sandbox-install-open' }) });
+  assert.match(harness.app.innerHTML, /Install coding sandbox\?/);
+  assert.match(harness.app.innerHTML, /role="dialog" aria-modal="true" aria-label="Install coding sandbox"/);
+  assert.equal(harness.topbarRegion.inert, true);
+  assert.equal(harness.bodyRegion.inert, true);
+  assert.match(harness.app.innerHTML, /Requires Cloudflare Workers Paid/);
+  assert.match(harness.app.innerHTML, /first image build can take several minutes/);
+  assert.match(harness.app.innerHTML, /Disabling later does not remove the Container application or image/);
+  click({ target: actionTarget({ 'data-action': 'sandbox-install-confirm' }) });
+  assert.match(harness.app.innerHTML, /Requesting&hellip;/);
+  assert.match(harness.app.innerHTML, /role="status" aria-live="polite">Requesting installation\./);
   await flushAsync();
 
-  assert.deepEqual(harness.sandboxPuts, [
-    {
-      enabled: true,
-      allowedHosts: ['registry.npmjs.org', 'files.pythonhosted.org'],
-      monthlySessionCap: 200,
+  assert.deepEqual(harness.sandboxInstallCalls, ['POST']);
+  assert.match(harness.app.innerHTML, /Redeploy required/);
+  assert.match(harness.app.innerHTML, /Workers &amp; Pages.*your Worker.*Settings.*Builds.*Variables/);
+  assert.match(harness.app.innerHTML, /CHICKPEA_DEPLOY_PROFILE/);
+  assert.match(harness.app.innerHTML, /sandbox/);
+  assert.match(harness.app.innerHTML, /Retry deployment/);
+  assert.match(harness.app.innerHTML, /start a fresh dashboard build/);
+  assert.match(harness.app.innerHTML, /npm run deploy:sandbox/);
+  assert.match(harness.app.innerHTML, /Chickpea cannot redeploy itself/);
+  assert.match(harness.app.innerHTML, /data-action="sandbox-check-again"/);
+  assert.match(harness.app.innerHTML, /data-action="sandbox-cancel-install"/);
+
+  click({ target: actionTarget({ 'data-action': 'sandbox-copy-profile' }) });
+  await flushAsync();
+  assert.deepEqual(harness.clipboardWrites, ['CHICKPEA_DEPLOY_PROFILE=sandbox']);
+  assert.match(harness.app.innerHTML, /Sandbox build variable copied/);
+
+  click({ target: actionTarget({ 'data-action': 'sandbox-check-again' }) });
+  assert.match(harness.app.innerHTML, /role="status" aria-live="polite">Checking the live deployment\./);
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /role="status" aria-live="polite">No Sandbox binding yet/);
+
+  click({ target: actionTarget({ 'data-action': 'sandbox-cancel-install' }) });
+  await flushAsync();
+  assert.deepEqual(harness.sandboxInstallCalls, ['POST', 'DELETE']);
+  assert.match(harness.app.innerHTML, /Installation request canceled/);
+  assert.match(harness.app.innerHTML, /Not installed in this deployment/);
+});
+
+test('installed Sandbox gates enablement on GitHub and grants, then requires a readiness attestation', async () => {
+  const installedBase: SandboxStatusFixture = {
+    installRequested: true,
+    installed: true,
+    storedEnabled: false,
+    enabled: false,
+    instanceType: 'standard-1',
+    allowedHosts: ['registry.npmjs.org', 'pypi.org', 'files.pythonhosted.org'],
+    monthlySessionCap: 200,
+    monthlySessionCapConfigured: true,
+    target: 'cloudflare',
+    githubConnected: false,
+    repositoryGrantReady: false,
+    unmetPrerequisites: ['github_app', 'repository_grant'],
+    workersPaidNote: 'server copy <must be escaped>',
+  };
+  const missingGithub = runAdminPageHarness({ cloudflare: true, sandboxStatus: installedBase });
+  await flushAsync();
+  missingGithub.listeners.click?.({ target: actionTarget({ 'data-action': 'open-settings' }) });
+  await flushAsync();
+  assert.match(missingGithub.app.innerHTML, /Installed but off/);
+  assert.match(missingGithub.app.innerHTML, /data-action="open-settings" data-section="github-settings">Connect GitHub/);
+  assert.doesNotMatch(missingGithub.app.innerHTML, /data-action="sandbox-enable-open"/);
+  assert.match(missingGithub.app.innerHTML, /server copy &lt;must be escaped&gt;/);
+
+  const missingGrant = runAdminPageHarness({
+    cloudflare: true,
+    sandboxStatus: {
+      ...installedBase,
+      githubConnected: true,
+      unmetPrerequisites: ['repository_grant'],
     },
-  ]);
+  });
+  await flushAsync();
+  missingGrant.listeners.click?.({ target: actionTarget({ 'data-action': 'open-settings' }) });
+  await flushAsync();
+  assert.match(missingGrant.app.innerHTML, /data-action="open-profiles">Manage repository access/);
+  assert.doesNotMatch(missingGrant.app.innerHTML, /data-action="sandbox-enable-open"/);
+
+  const ready = runAdminPageHarness({
+    cloudflare: true,
+    sandboxStatus: {
+      ...installedBase,
+      githubConnected: true,
+      repositoryGrantReady: true,
+      unmetPrerequisites: [],
+    },
+  });
+  await flushAsync();
+  const click = ready.listeners.click;
+  const change = ready.listeners.change;
+  assert.ok(click && change);
+  click({ target: actionTarget({ 'data-action': 'open-settings' }) });
+  await flushAsync();
+  assert.match(ready.app.innerHTML, /data-action="sandbox-enable-open"/);
+  assert.match(ready.app.innerHTML, /<details class="advanced"><summary>Advanced<\/summary>/);
+
+  click({ target: actionTarget({ 'data-action': 'sandbox-enable-open' }) });
+  assert.match(ready.app.innerHTML, /Enable coding sandbox\?/);
+  assert.match(ready.app.innerHTML, /Cloudflare dashboard.*Containers.*Container applications/);
+  assert.match(ready.app.innerHTML, /data-action="sandbox-ready-attestation"/);
+  assert.match(ready.app.innerHTML, /data-action="sandbox-enable-confirm" disabled/);
+  change({ target: valueTarget({ 'data-action': 'sandbox-ready-attestation' }, '', true) });
+  assert.doesNotMatch(ready.app.innerHTML, /data-action="sandbox-enable-confirm" disabled/);
+  click({ target: actionTarget({ 'data-action': 'sandbox-enable-confirm' }) });
+  assert.match(ready.app.innerHTML, /Enabling&hellip;/);
+  await flushAsync();
+  assert.deepEqual(ready.sandboxPuts, [{
+    enabled: true,
+    readinessConfirmed: true,
+    allowedHosts: ['registry.npmjs.org', 'pypi.org', 'files.pythonhosted.org'],
+    monthlySessionCap: 200,
+  }]);
+  assert.match(ready.app.innerHTML, />On</);
+});
+
+test('On/setup-required is truthful, keeps prerequisite as the primary action, and disables immediately', async () => {
+  const harness = runAdminPageHarness({
+    cloudflare: true,
+    sandboxStatus: {
+      installRequested: true,
+      installed: true,
+      storedEnabled: true,
+      enabled: true,
+      instanceType: 'standard-1',
+      allowedHosts: ['registry.npmjs.org'],
+      monthlySessionCap: 200,
+      monthlySessionCapConfigured: true,
+      target: 'cloudflare',
+      githubConnected: false,
+      repositoryGrantReady: false,
+      unmetPrerequisites: ['github_app', 'repository_grant'],
+      workersPaidNote: 'Requires Workers Paid.',
+    },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'open-settings' }) });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /On, setup required/);
+  assert.match(harness.app.innerHTML, /data-action="open-settings" data-section="github-settings">Connect GitHub/);
+  assert.match(harness.app.innerHTML, /data-action="sandbox-disable"/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="sandbox-enable-open"/);
+
+  click({ target: actionTarget({ 'data-action': 'sandbox-disable' }) });
+  assert.match(harness.app.innerHTML, /Disabling&hellip;/);
+  await flushAsync();
+  assert.deepEqual(harness.sandboxPuts, [{
+    enabled: false,
+    allowedHosts: ['registry.npmjs.org'],
+    monthlySessionCap: 200,
+  }]);
+  assert.match(harness.app.innerHTML, /Installed but off/);
+  assert.match(harness.app.innerHTML, /Container application and image remain/);
+});
+
+test('Sandbox mutation errors are accessible, escaped, and leave the last confirmed state visible', async () => {
+  const harness = runAdminPageHarness({
+    cloudflare: true,
+    sandboxMutationError: {
+      status: 503,
+      error: 'sandbox_unavailable',
+      message: 'Retry <script>alert(1)</script>',
+    },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'open-settings' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'sandbox-install-open' }) });
+  click({ target: actionTarget({ 'data-action': 'sandbox-install-confirm' }) });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /role="alert" aria-live="assertive"/);
+  assert.match(harness.app.innerHTML, /Retry &lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+  assert.doesNotMatch(harness.app.innerHTML, /Retry <script>/);
+  assert.match(harness.app.innerHTML, /Not installed in this deployment/);
 });
 
 test('Settings omits the redundant always-on channel memory status block', async () => {
