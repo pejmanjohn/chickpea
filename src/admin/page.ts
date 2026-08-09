@@ -13122,7 +13122,14 @@ details[open].advanced summary::before {
   }
 
   var initialRoute = canNavigate ? location.pathname : "/admin";
-  if (initialRoute === "/admin/onboarding") state.view = "onboarding";
+  if (initialRoute === "/admin/onboarding") {
+    state.view = "onboarding";
+    // Paint the dedicated setup shell before any API request settles. The
+    // server HTML contains the normal Admin skeleton, so waiting for
+    // refreshData() would briefly expose post-setup navigation after the owner
+    // form redirects here.
+    render();
+  }
   if (USAGE_ADMIN_UI && initialRoute === "/admin/usage") applyUsageQuery(location.search || "");
   state.oauthReturn = canNavigate ? oauthReturnFromSearch(location.search || "") : null;
   refreshData(false).then(function () {

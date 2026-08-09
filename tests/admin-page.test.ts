@@ -7933,6 +7933,10 @@ test('onboarding never paints normal Admin navigation before its first routed re
       completedAt: null,
     },
   });
+
+  assert.equal(harness.renderHistory.length, 1, 'the onboarding shell should render synchronously');
+  assert.match(harness.renderHistory[0] ?? '', /class="onboarding-shell"/);
+  assert.doesNotMatch(harness.renderHistory[0] ?? '', /aria-label="Admin navigation"/);
   await flushAsync();
 
   assert.ok(harness.renderHistory.length > 0);
