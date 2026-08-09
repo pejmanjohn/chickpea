@@ -14,7 +14,10 @@ import type {
   RoutineDefinitionContent,
   RoutineRun,
 } from '../src/routines/types.ts';
-import { ROUTINE_RESULT_DATA_NAME } from '../src/agents/routine-execution.ts';
+import {
+  parseRoutineExecutionInitialData,
+  ROUTINE_RESULT_DATA_NAME,
+} from '../src/agents/routine-execution.ts';
 
 const NOW = Date.UTC(2026, 6, 27, 12);
 
@@ -166,6 +169,7 @@ test('an interrupted local read stays resumable and the next execution reads the
   const releasedSandboxKeys: string[] = [];
   const sandboxDependencies = {
     ...dependencies(),
+    sandboxInstalled: () => true,
     useCloudflareSandbox: async () => true,
     prepareSandbox: async (_env: unknown, conversationKey: string) => {
       preparedSandboxKeys.push(conversationKey);
@@ -210,6 +214,7 @@ test('an ambiguous dispatch keeps its sandbox until the frozen request settles',
   let releases = 0;
   const sandboxDependencies = {
     ...dependencies(events),
+    sandboxInstalled: () => true,
     useCloudflareSandbox: async () => {
       sandboxSelectionCalls += 1;
       return sandboxSelectionCalls === 1;
@@ -267,6 +272,7 @@ test('concurrent routine occurrences isolate sandbox preparation and release by 
   let firstExecution: Promise<Awaited<ReturnType<typeof executeRoutineOccurrence>>> | undefined;
   const sandboxDependencies = {
     ...dependencies(),
+    sandboxInstalled: () => true,
     useCloudflareSandbox: async () => true,
     prepareSandbox: async (_env: unknown, conversationKey: string, turnId: string) => {
       prepared.push({ conversationKey, turnId });
@@ -321,6 +327,7 @@ test('a sandbox preparation failure terminalizes the already-started occurrence 
       env: {}, store, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt,
     }, {
       ...dependencies(),
+      sandboxInstalled: () => true,
       useCloudflareSandbox: async () => true,
       prepareSandbox: async () => { throw new Error('sandbox unavailable'); },
       releaseSandbox: async () => { releases += 1; },
@@ -330,6 +337,35 @@ test('a sandbox preparation failure terminalizes the already-started occurrence 
     assert.equal(outcome, 'completed');
     assert.equal(releases, 1);
     assert.equal((await store.getRun(fixture.run.id))?.status, 'failed');
+  } finally {
+    store.close();
+  }
+});
+
+test('an admitted routine with a pre-dispatch cloud plan narrows when the binding disappeared', async () => {
+  const store = new SqliteRoutineStore(':memory:', () => NOW);
+  let preparations = 0;
+  try {
+    const fixture = await admittedFixture(store, 'binding_removed');
+    const first = await executeRoutineOccurrence({
+      env: {}, store, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt,
+    }, {
+      ...dependencies(),
+      sandboxInstalled: () => false,
+      useCloudflareSandbox: async () => true,
+      prepareSandbox: async () => { preparations += 1; },
+      handle: fakeHandle({}),
+    });
+
+    assert.equal(first, 'completed');
+    assert.equal(preparations, 0);
+    const completed = await store.getRun(fixture.run.id);
+    assert.equal(completed?.status, 'no_op');
+    assert.equal(
+      parseRoutineExecutionInitialData(completed?.flueAgentEnvelope?.initialData).runtimePlan
+        .sandbox.mode,
+      'bash',
+    );
   } finally {
     store.close();
   }

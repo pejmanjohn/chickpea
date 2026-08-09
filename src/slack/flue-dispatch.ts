@@ -129,6 +129,8 @@ export interface PromptSlackAgentInput {
   }) => Promise<SlackProgressiveReadRelay | undefined>;
   /** Focused contract seam; production uses the real Flue handle. */
   handle?: ReturnType<typeof init>;
+  /** Focused seam; production uses the Cloudflare Sandbox turn preparer. */
+  prepareSandbox?: typeof prepareCloudflareSandboxTurn;
 }
 
 /**
@@ -147,7 +149,11 @@ export async function promptSlackThreadAgent(
 
   if (input.useCloudflareSandbox) {
     try {
-      await prepareCloudflareSandboxTurn(input.env, input.conversationKey, input.turnId);
+      await (input.prepareSandbox ?? prepareCloudflareSandboxTurn)(
+        input.env,
+        input.conversationKey,
+        input.turnId,
+      );
     } catch {
       throw new AgentPromptFailure('sandbox');
     }

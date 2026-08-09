@@ -34,11 +34,15 @@ import {
   type PlatformEnv,
 } from '../config/state-backend.ts';
 import { OpenAiSubscriptionError } from '../openai-subscription/errors.ts';
+import { sandboxBindingInstalled } from '../sandbox/select.ts';
 import {
   prepareCloudflareSandboxTurn,
   releaseCloudflareSandboxTurn,
 } from '../slack/flue-dispatch.ts';
-import { shouldUseCloudflareSandbox } from '../slack/run-turn.ts';
+import {
+  resolveCloudflareSandboxDecision,
+  shouldUseCloudflareSandbox,
+} from '../slack/run-turn.ts';
 import {
   CHICKPEA_RESPONSE_METADATA_KEY,
   type ChickpeaResponseMetadata,
@@ -57,6 +61,7 @@ import {
   deliverRoutineFailureNotice,
   deliverRoutineResult,
 } from './delivery.ts';
+import { SANDBOX_UNAVAILABLE_FALLBACK_NOTICE } from '../slack/web-client-presenter.ts';
 import {
   normalizeRoutineModelResult,
   prepareRoutinePrompt,
@@ -87,6 +92,8 @@ interface RoutineExecutionDependencies {
   resolveModel?: typeof resolveRuntimeModel;
   preparePrompt?: typeof prepareRoutinePrompt;
   useCloudflareSandbox?: typeof shouldUseCloudflareSandbox;
+  resolveSandboxDecision?: typeof resolveCloudflareSandboxDecision;
+  sandboxInstalled?: typeof sandboxBindingInstalled;
   prepareSandbox?: typeof prepareCloudflareSandboxTurn;
   releaseSandbox?: typeof releaseCloudflareSandboxTurn;
   resolveCredential?: typeof resolveModelCredentialAttribution;
@@ -110,6 +117,7 @@ interface PreparedExecution {
   usageRecorder?: RoutineUsageRecorder;
   workLifecycle?: ShadowWorkLifecycle;
   usedCloudflareSandbox: boolean;
+  sandboxUnavailableFallback: boolean;
 }
 
 /** Execute or reattach one durable routine attempt from app-owned checkpoints. */
@@ -252,6 +260,11 @@ export async function executeRoutineOccurrence(
     }
     await prepared.prompt.confirmMemory();
     const result = routineResult(reply, prepared.run, prepared.routine);
+    if (prepared.sandboxUnavailableFallback) {
+      result.message = result.message
+        ? `${SANDBOX_UNAVAILABLE_FALLBACK_NOTICE}\n\n${result.message}`
+        : SANDBOX_UNAVAILABLE_FALLBACK_NOTICE;
+    }
     const settlement: RoutineAgentSettlementV1 = {
       schemaVersion: 1,
       outcome: 'completed',
@@ -338,20 +351,37 @@ async function prepareExecution(
     input.env,
     access.client,
   );
-  const useCloudflareSandbox = dependencies.useCloudflareSandbox ?? shouldUseCloudflareSandbox;
   const attemptId = input.admission.attemptId;
   if (!attemptId) throw new Error('Routine attempt identity is unavailable.');
   let envelope = input.run.flueAgentEnvelope;
+  let sandboxUnavailableFallback = false;
   if (!envelope) {
-    const selectedCloudflareSandbox = await useCloudflareSandbox(access.config, input.env);
+    const sandboxDecision = dependencies.useCloudflareSandbox
+      ? await (async () => {
+          const cloudflareRequested = await dependencies.useCloudflareSandbox!(
+            access.config,
+            input.env,
+          );
+          const installed = (dependencies.sandboxInstalled ?? sandboxBindingInstalled)(input.env);
+          return {
+            selection: cloudflareRequested && installed ? 'cloudflare' as const : 'bash' as const,
+            unavailableFallback: cloudflareRequested && !installed,
+          };
+        })()
+      : await (dependencies.resolveSandboxDecision ?? resolveCloudflareSandboxDecision)(
+          access.config,
+          input.env,
+          settingsStore,
+        );
     envelope = createEnvelope({
       routine: input.routine,
       access,
       prompt,
       attemptId,
       runtimeModel: runtimeModel.model,
-      sandboxMode: selectedCloudflareSandbox ? 'cloudflare' : 'bash',
+      sandboxMode: sandboxDecision.selection,
     });
+    sandboxUnavailableFallback = sandboxDecision.unavailableFallback;
   }
   const initialData = executionInitialData(envelope);
   const usedCloudflareSandbox = initialData.runtimePlan.sandbox.mode === 'cloudflare';
@@ -451,6 +481,7 @@ async function prepareExecution(
     ...(usageRecorder ? { usageRecorder } : {}),
     ...(workLifecycle ? { workLifecycle } : {}),
     usedCloudflareSandbox: prepareSandbox,
+    sandboxUnavailableFallback,
   };
 }
 

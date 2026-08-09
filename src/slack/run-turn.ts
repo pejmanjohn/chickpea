@@ -63,13 +63,18 @@ import {
   decideProgressiveEligibility,
   type ProgressiveEligibilityDecision,
 } from './progressive-eligibility.ts';
-import { selectSandbox } from '../sandbox/select.ts';
+import {
+  resolveSandboxSelection,
+  sandboxBindingInstalled,
+  type SandboxSelectionDecision,
+} from '../sandbox/select.ts';
 import {
   assembleSlackPrompt,
   hydrateSlackContextViaWebClient,
 } from './web-client-context.ts';
 import {
   AGENT_FAILURE_TEXT,
+  SANDBOX_UNAVAILABLE_FALLBACK_NOTICE,
   WebClientPresenter,
   type SlackReactionReceipt,
 } from './web-client-presenter.ts';
@@ -330,17 +335,31 @@ export async function runTurn(
           : {}),
       });
   const conversationKey = preparedMemory?.conversationKey ?? slackThreadKey(turn);
-  const runtimePlanDecision = options.runtimePlanDecision ?? (
-    preparedMemory && resolvedModel
-      ? await freezeRuntimePlanForTurn({
+  let sandboxUnavailableFallback = false;
+  let runtimePlanDecision = options.runtimePlanDecision;
+  if (!runtimePlanDecision && preparedMemory && resolvedModel) {
+    const frozen = await freezeRuntimePlanForTurn({
           turn,
           assignment,
           platformEnv,
           memoryEpoch: preparedMemory.memoryEpoch,
+          ...(options.settingsStore ? { settingsStore: options.settingsStore } : {}),
           ...(options.onRuntimePlan ? { persist: options.onRuntimePlan } : {}),
-        })
-      : undefined
-  );
+        });
+    runtimePlanDecision = frozen.decision;
+    sandboxUnavailableFallback = frozen.unavailableFallback;
+  }
+  const sandboxAdmissionUnstarted =
+    !options.flueDispatch?.dispatchEnvelope &&
+    !options.flueDispatch?.dispatchReceipt &&
+    !options.flueDispatch?.flueSettlement;
+  if (
+    runtimePlanDecision?.runtimePlan.sandbox.mode === 'cloudflare' &&
+    !sandboxBindingInstalled(platformEnv) &&
+    sandboxAdmissionUnstarted
+  ) {
+    sandboxUnavailableFallback = true;
+  }
   const agentConversationKey = options.continuityKey ?? conversationKey;
   const workLifecycle = options.runId && options.replayText === undefined && resolvedModel
     ? await createSlackShadowLifecycle({
@@ -698,7 +717,8 @@ export async function runTurn(
       }
       try {
         usedCloudflareSandbox = runtimePlanDecision
-          ? runtimePlanDecision.runtimePlan.sandbox.mode === 'cloudflare'
+          ? runtimePlanDecision.runtimePlan.sandbox.mode === 'cloudflare' &&
+            !(sandboxUnavailableFallback && sandboxAdmissionUnstarted)
           : await shouldUseCloudflareSandbox(assignment, platformEnv);
         if (!options.agentPrompt && !options.flueDispatch) {
           throw new Error('Durable Flue dispatch state is unavailable.');
@@ -768,7 +788,9 @@ export async function runTurn(
           beforeResult: ensureRequiredContinuityNotice,
           ...(prepareProgressiveRelay ? { prepareProgressiveRelay } : {}),
         });
-        text = agentResult.text;
+        text = sandboxUnavailableFallback
+          ? `${SANDBOX_UNAVAILABLE_FALLBACK_NOTICE}\n\n${agentResult.text}`
+          : agentResult.text;
         await workLifecycle?.settleExecution({
           outcome: 'succeeded',
           rawStatus: 'flue_succeeded',
@@ -1071,26 +1093,37 @@ export async function shouldUseCloudflareSandbox(
   assignment: ResolvedAssignment,
   env: PlatformEnv | undefined,
 ): Promise<boolean> {
-  if (!isCloudflareTarget()) return false;
+  return (await resolveCloudflareSandboxDecision(assignment, env)).selection === 'cloudflare';
+}
+
+export async function resolveCloudflareSandboxDecision(
+  assignment: ResolvedAssignment,
+  env: PlatformEnv | undefined,
+  store?: SettingsStore,
+): Promise<SandboxSelectionDecision> {
+  if (!isCloudflareTarget()) return { selection: 'bash', unavailableFallback: false };
   const repositories = assignment.agent.repositories ?? [];
-  if (repositories.length === 0) return false;
+  if (repositories.length === 0) {
+    return { selection: 'bash', unavailableFallback: false };
+  }
 
   try {
-    const settingsStore = getSettingsStore(env);
+    const settingsStore = store ?? getSettingsStore(env);
     const [settings, connection] = await Promise.all([
       resolveSandboxSettings(settingsStore),
       getGithubConnection(settingsStore),
     ]);
-    return selectSandbox({
+    return resolveSandboxSelection({
       target: 'cloudflare',
+      installed: sandboxBindingInstalled(env),
       enabled: settings.enabled,
       appConnected: connection.mode === 'app',
       repositoryGrants: repositories,
-    }) === 'cloudflare';
+    });
   } catch {
     // The agent factory resolves the same live settings and will fail closed.
     // Avoid touching a container when its policy cannot be established here.
-    return false;
+    return { selection: 'bash', unavailableFallback: false };
   }
 }
 
@@ -1098,12 +1131,17 @@ async function freezeRuntimePlanForTurn(input: {
   turn: NormalizedSlackTurn;
   assignment: ResolvedAssignment;
   platformEnv: PlatformEnv | undefined;
+  settingsStore?: SettingsStore;
   memoryEpoch: number;
   persist?: (candidate: RuntimePlanV2) => FrozenRuntimePlanDecision | Promise<FrozenRuntimePlanDecision>;
-}): Promise<FrozenRuntimePlanDecision> {
-  const sandboxMode = await resolveRuntimePlanSandboxMode(
+}): Promise<{
+  decision: FrozenRuntimePlanDecision;
+  unavailableFallback: boolean;
+}> {
+  const sandboxDecision = await resolveRuntimePlanSandboxSelection(
     input.assignment,
     input.platformEnv,
+    input.settingsStore,
   );
   const instructions =
     'instructions' in input.assignment && typeof input.assignment.instructions === 'string'
@@ -1114,7 +1152,7 @@ async function freezeRuntimePlanForTurn(input: {
     assignment: input.assignment,
     instructions,
     memoryEpoch: input.memoryEpoch,
-    sandboxMode,
+    sandboxMode: sandboxDecision.selection,
   });
   const decision = input.persist
     ? await input.persist(candidate)
@@ -1129,25 +1167,18 @@ async function freezeRuntimePlanForTurn(input: {
   ) {
     throw new Error('Frozen RuntimePlanV2 belongs to another Slack conversation.');
   }
-  return decision;
+  return { decision, unavailableFallback: sandboxDecision.unavailableFallback };
 }
 
-async function resolveRuntimePlanSandboxMode(
+async function resolveRuntimePlanSandboxSelection(
   assignment: ResolvedAssignment,
   env: PlatformEnv | undefined,
-): Promise<'bash' | 'cloudflare'> {
-  if (!isCloudflareTarget()) return 'bash';
-  const settingsStore = getSettingsStore(env);
-  const [settings, connection] = await Promise.all([
-    resolveSandboxSettings(settingsStore),
-    getGithubConnection(settingsStore),
-  ]);
-  return selectSandbox({
-    target: 'cloudflare',
-    enabled: settings.enabled,
-    appConnected: connection.mode === 'app',
-    repositoryGrants: assignment.agent.repositories ?? [],
-  });
+  store?: SettingsStore,
+): Promise<SandboxSelectionDecision> {
+  if (!isCloudflareTarget()) {
+    return { selection: 'bash', unavailableFallback: false };
+  }
+  return resolveCloudflareSandboxDecision(assignment, env, store);
 }
 
 export const MEMORY_CHANGED_RETRY_TEXT =

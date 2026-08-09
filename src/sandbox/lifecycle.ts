@@ -3,6 +3,7 @@ import { FlueError } from '@flue/runtime';
 import { SandboxUnavailableError } from './errors.ts';
 
 export const CLOUDFLARE_SANDBOX_OPTIONS = {
+  transport: 'rpc',
   keepAlive: false,
   sleepAfter: '5m',
   // This participates in the Durable Object identity. Keep the legacy value

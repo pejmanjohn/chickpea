@@ -8,12 +8,14 @@ import type { SlackInteractionProgressPatch } from '../src/config/state-rpc.ts';
 import {
   AgentPromptFailure,
   type AgentDispatchResult,
+  type SlackFlueDispatchState,
 } from '../src/slack/flue-dispatch.ts';
 import { runTurn } from '../src/slack/run-turn.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { compileRuntimePlanV2, deriveRuntimePlanInstanceId } from '../src/agents/runtime-plan.ts';
 import { SqliteWorkStore } from '../src/work/store.ts';
 import { prepareSlackShadowAdmission } from '../src/slack/work-admission.ts';
+import { SANDBOX_UNAVAILABLE_FALLBACK_NOTICE } from '../src/slack/web-client-presenter.ts';
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -495,5 +497,90 @@ test('runTurn freezes eligibility before exposing the receipt-scoped relay facto
   }]);
   } finally {
     work.close();
+  }
+});
+
+test('a frozen Cloudflare plan narrows before admission when its live binding disappeared', async () => {
+  const previousNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  Object.defineProperty(globalThis, 'navigator', {
+    configurable: true,
+    value: { userAgent: 'Cloudflare-Workers' },
+  });
+  const repositoryAssignment: ResolvedAssignment = {
+    ...assignment,
+    agent: {
+      ...assignment.agent,
+      repositories: [{
+        id: 'repo-runtime-fallback',
+        installationId: 42,
+        accountLogin: 'Acme',
+        fullName: 'Acme/RuntimeFallback',
+        enabled: true,
+      }],
+    },
+  };
+  const turn: NormalizedSlackTurn = {
+    ...workTurn('Ev_SANDBOX_BINDING_REMOVED'),
+    interactionIntent: { disposition: 'reply', reason: 'substantive_request' },
+  };
+  const runtimePlan = compileRuntimePlanV2({
+    turn,
+    assignment: repositoryAssignment,
+    instructions: repositoryAssignment.agent.instructions,
+    memoryEpoch: 1,
+    sandboxMode: 'cloudflare',
+  });
+  const finalPayloads: unknown[] = [];
+  const client = {
+    assistant: { threads: { setStatus: async () => ({ ok: true }) } },
+    conversations: { history: async () => ({ ok: true, messages: [] }) },
+    chat: {
+      startStream: async (input: unknown) => {
+        finalPayloads.push(input);
+        return { ok: true, ts: 'final-ts' };
+      },
+      stopStream: async (input: unknown) => {
+        finalPayloads.push(input);
+        return { ok: true };
+      },
+      postMessage: async (input: unknown) => {
+        finalPayloads.push(input);
+        return { ok: true, channel: assignment.channelId, ts: 'final-ts' };
+      },
+    },
+  } as unknown as WebClient;
+  const flueDispatch: SlackFlueDispatchState = {
+    prepare: async () => { throw new Error('focused agent override owns dispatch'); },
+    recordReceipt: async (receipt) => receipt,
+    recordSettlement: async (settlement) => settlement,
+    reconcileExistingInstance: async () => { throw new Error('not used'); },
+    markRecoveryRequired: async () => {},
+  };
+  try {
+    await runTurn(turn, repositoryAssignment, {}, {
+      client,
+      runtimePlanDecision: {
+        runtimePlan,
+        instanceId: deriveRuntimePlanInstanceId(runtimePlan),
+        continuityNoticeRequired: false,
+      },
+      flueDispatch,
+      usageRecordingEnabled: false,
+      async agentPrompt(input): Promise<AgentDispatchResult> {
+        assert.equal(input.useCloudflareSandbox, false);
+        return {
+          text: 'Normal response without repository access.',
+          requestedModel: repositoryAssignment.model ?? null,
+          returnedModel: null,
+          reportedUsage: null,
+          usageCompleteness: 'not_reported',
+        };
+      },
+    });
+    assert.match(JSON.stringify(finalPayloads), new RegExp(SANDBOX_UNAVAILABLE_FALLBACK_NOTICE));
+    assert.doesNotMatch(JSON.stringify(finalPayloads), /control-plane|binding|credential|token/i);
+  } finally {
+    if (previousNavigator) Object.defineProperty(globalThis, 'navigator', previousNavigator);
+    else delete (globalThis as { navigator?: unknown }).navigator;
   }
 });

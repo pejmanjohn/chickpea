@@ -174,6 +174,7 @@ import {
   SANDBOX_PACKAGE_REGISTRY_HOSTS,
   SANDBOX_SETTING_KEYS,
 } from '../config/sandbox-settings.ts';
+import { validEnabledRepositoryGrants } from '../sandbox/egress-handler.ts';
 import { parseSkillSource, resolveSkillSource, SkillImportError } from '../config/skill-import.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import {
@@ -917,24 +918,53 @@ const egressPolicySchema = v.object({
 
 const sandboxSettingsSchema = v.object({
   enabled: v.boolean(),
+  readinessConfirmed: v.optional(v.boolean()),
   allowedHosts: v.array(v.picklist(SANDBOX_PACKAGE_REGISTRY_HOSTS)),
   monthlySessionCap: v.pipe(v.number(), v.integer(), v.minValue(0), v.maxValue(100_000)),
 });
 
-async function sandboxStatus(store: SettingsStore) {
-  const resolved = await resolveSandboxSettings(store);
+async function sandboxStatus(
+  settingsStore: SettingsStore,
+  configStore: ConfigStore,
+  env: PlatformEnv | undefined,
+) {
+  const [resolved, github, agents] = await Promise.all([
+    resolveSandboxSettings(settingsStore),
+    getGithubConnection(settingsStore),
+    configStore.listAgents(),
+  ]);
   const cloudflare = isCloudflareTarget();
+  const installed = cloudflare && sandboxBindingInstalled(env);
+  const githubConnected = github.mode === 'app';
+  const repositoryGrantReady = validEnabledRepositoryGrants(
+    agents.flatMap((agent) => agent.repositories),
+  ).length > 0;
+  const unmetPrerequisites: string[] = [];
+  if (!cloudflare) unmetPrerequisites.push('cloudflare_target');
+  if (!installed) unmetPrerequisites.push('sandbox_binding');
+  if (!githubConnected) unmetPrerequisites.push('github_app');
+  if (!repositoryGrantReady) unmetPrerequisites.push('repository_grant');
   return {
-    enabled: resolved.enabled,
+    installRequested: resolved.installRequested,
+    installed,
+    storedEnabled: resolved.enabled,
+    enabled: installed && resolved.enabled,
     instanceType: resolved.instanceType,
     allowedHosts: resolved.allowedHosts,
     monthlySessionCap: resolved.monthlySessionCap,
     monthlySessionCapConfigured: resolved.monthlySessionCapConfigured,
     target: cloudflare ? ('cloudflare' as const) : ('node' as const),
+    githubConnected,
+    repositoryGrantReady,
+    unmetPrerequisites,
     workersPaidNote: cloudflare
       ? 'Requires Workers Paid. Real containers run on your Cloudflare account; a typical session costs about 1 cent.'
       : null,
   };
+}
+
+function sandboxBindingInstalled(env: PlatformEnv | undefined): boolean {
+  return env?.SANDBOX !== undefined || env?.Sandbox !== undefined;
 }
 
 const slackBehaviorPatchSchema = v.pipe(
@@ -989,6 +1019,26 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   };
   const authRateLimiter = (c: Context, token: string): AuthRateLimiter =>
     options.authRateLimiter ?? new AuthRateLimiter(identity(c), { pepper: token });
+  const recordSandboxAudit = async (
+    c: Context,
+    action: 'sandbox.install.request' | 'sandbox.install.cancel' |
+      'sandbox.runtime.enable' | 'sandbox.runtime.disable',
+    outcome: 'success' | 'denied',
+    reasonCode?: string,
+  ): Promise<void> => {
+    const principal = principalByContext.get(c);
+    await identity(c).recordAuthAudit({
+      event: 'authorization',
+      outcome,
+      action,
+      correlationId: principal?.correlationId ?? randomUUID(),
+      authenticatorKind: principal?.authenticatorKind ?? 'legacy_admin_token',
+      ...(principal
+        ? { userId: principal.userId, membershipId: principal.membershipId }
+        : {}),
+      ...(reasonCode ? { reasonCode } : {}),
+    });
+  };
   const verifyAccessAssertion: AccessAssertionVerifier = options.verifyAccessAssertion ??
     (async (request, config, purpose) => {
       if (!config.issuer) throw new AuthDeniedError();
@@ -2965,7 +3015,37 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   });
 
   app.get('/admin/api/sandbox/status', async (c) => {
-    return c.json(await sandboxStatus(settings(c)));
+    return c.json(await sandboxStatus(
+      settings(c),
+      store(c),
+      c.env as PlatformEnv | undefined,
+    ));
+  });
+
+  app.post('/admin/api/sandbox/install', async (c) => {
+    if (!isCloudflareTarget()) {
+      await recordSandboxAudit(c, 'sandbox.install.request', 'denied', 'target_unsupported');
+      return c.json({ error: 'sandbox_unsupported' }, 409);
+    }
+    await settings(c).setSetting(SANDBOX_SETTING_KEYS.installRequested, 'true');
+    await recordSandboxAudit(c, 'sandbox.install.request', 'success');
+    return c.json(await sandboxStatus(
+      settings(c),
+      store(c),
+      c.env as PlatformEnv | undefined,
+    ));
+  });
+
+  app.delete('/admin/api/sandbox/install', async (c) => {
+    await settings(c).applySettingsPatch({
+      delete: [SANDBOX_SETTING_KEYS.installRequested, SANDBOX_SETTING_KEYS.enabled],
+    });
+    await recordSandboxAudit(c, 'sandbox.install.cancel', 'success');
+    return c.json(await sandboxStatus(
+      settings(c),
+      store(c),
+      c.env as PlatformEnv | undefined,
+    ));
   });
 
   app.put('/admin/api/sandbox/status', async (c) => {
@@ -2974,6 +3054,18 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return invalidRequest(c);
     }
     const sandbox = parsed.output;
+    if (sandbox.enabled && !isCloudflareTarget()) {
+      await recordSandboxAudit(c, 'sandbox.runtime.enable', 'denied', 'target_unsupported');
+      return c.json({ error: 'sandbox_unsupported' }, 409);
+    }
+    if (sandbox.enabled && !sandboxBindingInstalled(c.env as PlatformEnv | undefined)) {
+      await recordSandboxAudit(c, 'sandbox.runtime.enable', 'denied', 'binding_missing');
+      return c.json({ error: 'sandbox_not_installed' }, 409);
+    }
+    if (sandbox.enabled && sandbox.readinessConfirmed !== true) {
+      await recordSandboxAudit(c, 'sandbox.runtime.enable', 'denied', 'readiness_unconfirmed');
+      return c.json({ error: 'sandbox_readiness_confirmation_required' }, 409);
+    }
     await settings(c).applySettingsPatch({
       set: [
         { key: SANDBOX_SETTING_KEYS.enabled, value: String(sandbox.enabled) },
@@ -2987,7 +3079,16 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         },
       ],
     });
-    return c.json(await sandboxStatus(settings(c)));
+    await recordSandboxAudit(
+      c,
+      sandbox.enabled ? 'sandbox.runtime.enable' : 'sandbox.runtime.disable',
+      'success',
+    );
+    return c.json(await sandboxStatus(
+      settings(c),
+      store(c),
+      c.env as PlatformEnv | undefined,
+    ));
   });
 
   app.get('/admin/api/memory/settings', async (c) => {

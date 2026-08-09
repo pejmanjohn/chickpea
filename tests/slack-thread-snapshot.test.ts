@@ -8,6 +8,7 @@ import { test } from 'node:test';
 import {
   intersectFrozenRepositoryGrants,
   legacySlackThreadAgent as slackThreadAgent,
+  resolveSandboxScopedRepositoryAccess,
 } from '../src/agents/slack-thread.ts';
 import type { EffectiveSlackConfig } from '../src/config/effective-config.ts';
 import { GITHUB_SETTING_KEYS } from '../src/config/github-app.ts';
@@ -384,6 +385,49 @@ test('repository grant added only to the live profile does not join a frozen thr
     intersectFrozenRepositoryGrants([frozen], [frozen, liveOnly]),
     [frozen],
   );
+});
+
+test('a narrowed or frozen bash plan never resolves repository credentials', async () => {
+  const repository = {
+    id: 'repo-sandbox-fallback',
+    installationId: 42,
+    accountLogin: 'Acme',
+    fullName: 'Acme/Fallback',
+    enabled: true,
+  };
+  let credentialResolutions = 0;
+  const resolve = async () => {
+    credentialResolutions += 1;
+    return {
+      grants: [repository],
+      connectors: [{
+        allowedHosts: ['github.com'],
+        pathPrefixes: ['/Acme/Fallback'],
+        allowedMethods: ['GET'],
+        headerName: 'Authorization',
+        headerValue: 'Bearer repository-secret-must-not-resolve',
+      }],
+      credentialMode: 'app' as const,
+      governsGithubHosts: true,
+    };
+  };
+
+  for (const input of [
+    { unavailableFallback: true, forcedSandbox: 'cloudflare' as const },
+    { unavailableFallback: false, forcedSandbox: 'bash' as const },
+  ]) {
+    const access = await resolveSandboxScopedRepositoryAccess({
+      repositories: [repository],
+      ...input,
+      resolve,
+    });
+    assert.deepEqual(access, {
+      grants: [],
+      connectors: [],
+      governsGithubHosts: true,
+    });
+  }
+  assert.equal(credentialResolutions, 0);
 });
 
 test('slack-thread uses frozen repository grants with a live token that stays out of model-visible surfaces', async () => {

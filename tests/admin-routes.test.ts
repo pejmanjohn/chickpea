@@ -39,6 +39,8 @@ import {
 import type { McpConnectInput, McpDiscoveryResult } from '../src/config/mcp-test.ts';
 import { SqliteSettingsStore, type SettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore, type ConfigStore } from '../src/config/store.ts';
+import { SqliteIdentityStore } from '../src/identity/store.ts';
+import type { IdentityStore } from '../src/identity/types.ts';
 import type {
   ApiConnectionConfig,
   CustomAgentConfig,
@@ -123,6 +125,7 @@ interface AdminHarnessOptions {
   modelCatalogTimeoutMs?: number;
   runtimeDrain?: () => Promise<RuntimeDrainStatus>;
   slackState?: SlackStateStore;
+  identity?: IdentityStore;
 }
 
 function appWithAdmin(store: ConfigStore, adminToken?: string): Hono {
@@ -174,6 +177,7 @@ function appWithAdminOptions(store: ConfigStore, options: AdminHarnessOptions = 
         : {}),
       ...(options.runtimeDrain ? { runtimeDrain: options.runtimeDrain } : {}),
       ...(options.slackState ? { slackState: options.slackState } : {}),
+      ...(options.identity ? { identity: options.identity } : {}),
     }),
   );
   return app;
@@ -274,6 +278,20 @@ function googleApiConnection(
 
 function auth(token: string): HeadersInit {
   return { authorization: `Bearer ${token}` };
+}
+
+async function withCloudflareUserAgent<T>(run: () => Promise<T>): Promise<T> {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  Object.defineProperty(globalThis, 'navigator', {
+    value: { userAgent: 'Cloudflare-Workers' },
+    configurable: true,
+  });
+  try {
+    return await run();
+  } finally {
+    if (previous) Object.defineProperty(globalThis, 'navigator', previous);
+    else delete (globalThis as { navigator?: unknown }).navigator;
+  }
 }
 
 function agent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig {
@@ -2964,60 +2982,250 @@ test('profile-scoped MCP test classifies a hung connection as timeout (HTTP 200,
   }
 });
 
-test('admin sandbox settings are auth-gated and round-trip install-level controls', async () => {
+test('admin sandbox state is auth-gated and Node cannot request or enable containers', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   const settings = new SqliteSettingsStore(':memory:');
   try {
     const app = appWithAdminOptions(store, { settings });
 
-    const unauthorized = await app.request('/admin/api/sandbox/status');
-    assert.equal(unauthorized.status, 401);
-    assert.deepEqual(await unauthorized.json(), { error: 'unauthorized' });
+    for (const [method, path] of [
+      ['GET', '/admin/api/sandbox/status'],
+      ['POST', '/admin/api/sandbox/install'],
+      ['DELETE', '/admin/api/sandbox/install'],
+      ['PUT', '/admin/api/sandbox/status'],
+    ] as const) {
+      const response = await app.request(path, {
+        method,
+        ...(method === 'PUT'
+          ? {
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                enabled: false,
+                allowedHosts: [],
+                monthlySessionCap: 0,
+              }),
+            }
+          : {}),
+      });
+      assert.equal(response.status, 401);
+    }
 
     const initial = await app.request('/admin/api/sandbox/status', {
       headers: auth(ADMIN_TOKEN),
     });
     assert.equal(initial.status, 200);
     assert.deepEqual(await initial.json(), {
+      installRequested: false,
+      installed: false,
+      storedEnabled: false,
       enabled: false,
       instanceType: 'standard-1',
       allowedHosts: ['registry.npmjs.org', 'pypi.org', 'files.pythonhosted.org'],
       monthlySessionCap: 0,
       monthlySessionCapConfigured: false,
       target: 'node',
+      githubConnected: false,
+      repositoryGrantReady: false,
+      unmetPrerequisites: ['cloudflare_target', 'sandbox_binding', 'github_app', 'repository_grant'],
       workersPaidNote: null,
     });
 
-    const saved = await app.request('/admin/api/sandbox/status', {
+    const requested = await app.request('/admin/api/sandbox/install', {
+      method: 'POST',
+      headers: auth(ADMIN_TOKEN),
+    });
+    assert.equal(requested.status, 409);
+    assert.deepEqual(await requested.json(), { error: 'sandbox_unsupported' });
+
+    const enable = await app.request('/admin/api/sandbox/status', {
       method: 'PUT',
       headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
       body: JSON.stringify({
         enabled: true,
-        // A legacy caller may still send this field, but it is no longer part
-        // of the PUT contract and cannot alter the deploy-time value.
-        instanceType: 'standard-2',
-        allowedHosts: ['registry.npmjs.org', 'files.pythonhosted.org', 'registry.npmjs.org'],
-        monthlySessionCap: 450,
+        readinessConfirmed: true,
+        allowedHosts: [],
+        monthlySessionCap: 0,
       }),
     });
-    assert.equal(saved.status, 200);
-    const savedBody = {
-      enabled: true,
-      instanceType: 'standard-1',
-      allowedHosts: ['registry.npmjs.org', 'files.pythonhosted.org'],
-      monthlySessionCap: 450,
-      monthlySessionCapConfigured: true,
-      target: 'node',
-      workersPaidNote: null,
-    };
-    assert.deepEqual(await saved.json(), savedBody);
-
-    const reflected = await app.request('/admin/api/sandbox/status', {
-      headers: auth(ADMIN_TOKEN),
-    });
-    assert.equal(reflected.status, 200);
-    assert.deepEqual(await reflected.json(), savedBody);
+    assert.equal(enable.status, 409);
+    assert.deepEqual(await enable.json(), { error: 'sandbox_unsupported' });
+    assert.equal(await settings.getSetting('sandbox.enabled'), undefined);
   } finally {
+    settings.close();
+    store.close();
+  }
+});
+
+test('core Cloudflare install request is idempotent and cancel atomically keeps later redeploy off', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  const identity = new SqliteIdentityStore(':memory:');
+  try {
+    const app = appWithAdminOptions(store, { settings, identity });
+    await withCloudflareUserAgent(async () => {
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const requested = await app.request('/admin/api/sandbox/install', {
+          method: 'POST',
+          headers: auth(ADMIN_TOKEN),
+        }, {});
+        assert.equal(requested.status, 200);
+        const body = await requested.json() as Record<string, unknown>;
+        assert.equal(body.installRequested, true);
+        assert.equal(body.installed, false);
+        assert.equal(body.storedEnabled, false);
+        assert.equal(body.enabled, false);
+      }
+
+      const enable = await app.request('/admin/api/sandbox/status', {
+        method: 'PUT',
+        headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+        body: JSON.stringify({
+          enabled: true,
+          readinessConfirmed: true,
+          allowedHosts: ['registry.npmjs.org'],
+          monthlySessionCap: 50,
+        }),
+      }, {});
+      assert.equal(enable.status, 409);
+      assert.deepEqual(await enable.json(), { error: 'sandbox_not_installed' });
+
+      // A stale pre-change enabled flag remains visible but is never effective.
+      await settings.setSetting('sandbox.enabled', 'true');
+      const stale = await app.request('/admin/api/sandbox/status', {
+        headers: auth(ADMIN_TOKEN),
+      }, {});
+      const staleBody = await stale.json() as Record<string, unknown>;
+      assert.equal(staleBody.storedEnabled, true);
+      assert.equal(staleBody.enabled, false);
+
+      const canceled = await app.request('/admin/api/sandbox/install', {
+        method: 'DELETE',
+        headers: auth(ADMIN_TOKEN),
+      }, {});
+      assert.equal(canceled.status, 200);
+      const canceledBody = await canceled.json() as Record<string, unknown>;
+      assert.equal(canceledBody.installRequested, false);
+      assert.equal(canceledBody.storedEnabled, false);
+      assert.equal(canceledBody.enabled, false);
+      assert.equal(await settings.getSetting('sandbox.installRequested'), undefined);
+      assert.equal(await settings.getSetting('sandbox.enabled'), undefined);
+
+      // A later Sandbox-profile redeploy cannot revive the canceled setting.
+      const afterRedeploy = await app.request('/admin/api/sandbox/status', {
+        headers: auth(ADMIN_TOKEN),
+      }, { SANDBOX: {} });
+      const afterRedeployBody = await afterRedeploy.json() as Record<string, unknown>;
+      assert.equal(afterRedeployBody.installed, true);
+      assert.equal(afterRedeployBody.storedEnabled, false);
+      assert.equal(afterRedeployBody.enabled, false);
+    });
+
+    const actions = (await identity.listAuditEvents())
+      .map((event) => JSON.parse(event.metadataJson) as { action?: string })
+      .map((metadata) => metadata.action)
+      .filter((action) => action?.startsWith('sandbox.'));
+    assert.ok(actions.includes('sandbox.install.request'));
+    assert.ok(actions.includes('sandbox.install.cancel'));
+  } finally {
+    identity.close();
+    settings.close();
+    store.close();
+  }
+});
+
+test('installed Cloudflare sandbox remains off until confirmed enable and reports GitHub grant readiness', async () => {
+  const readyAgent = agent({
+    repositories: [{
+      id: 'repo-alpha',
+      installationId: 50_001,
+      accountLogin: 'Acme',
+      fullName: 'Acme/Alpha',
+      enabled: true,
+    }],
+  });
+  const store = new SqliteConfigStore(':memory:', { agents: [readyAgent], assignments: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  const identity = new SqliteIdentityStore(':memory:');
+  try {
+    const app = appWithAdminOptions(store, { settings, identity });
+    await withCloudflareUserAgent(async () => {
+      const installed = await app.request('/admin/api/sandbox/status', {
+        headers: auth(ADMIN_TOKEN),
+      }, { Sandbox: {} });
+      assert.deepEqual(await installed.json(), {
+        installRequested: false,
+        installed: true,
+        storedEnabled: false,
+        enabled: false,
+        instanceType: 'standard-1',
+        allowedHosts: ['registry.npmjs.org', 'pypi.org', 'files.pythonhosted.org'],
+        monthlySessionCap: 0,
+        monthlySessionCapConfigured: false,
+        target: 'cloudflare',
+        githubConnected: false,
+        repositoryGrantReady: true,
+        unmetPrerequisites: ['github_app'],
+        workersPaidNote: 'Requires Workers Paid. Real containers run on your Cloudflare account; a typical session costs about 1 cent.',
+      });
+
+      const unconfirmed = await app.request('/admin/api/sandbox/status', {
+        method: 'PUT',
+        headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+        body: JSON.stringify({
+          enabled: true,
+          allowedHosts: ['registry.npmjs.org'],
+          monthlySessionCap: 450,
+        }),
+      }, { SANDBOX: {} });
+      assert.equal(unconfirmed.status, 409);
+      assert.deepEqual(await unconfirmed.json(), { error: 'sandbox_readiness_confirmation_required' });
+
+      await settings.setSetting('github.app.id', '1234');
+      await settings.setSetting('github.app.private_key', 'test-private-key');
+      const enabled = await app.request('/admin/api/sandbox/status', {
+        method: 'PUT',
+        headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+        body: JSON.stringify({
+          enabled: true,
+          readinessConfirmed: true,
+          // A legacy caller may still send this ignored deploy-time field.
+          instanceType: 'standard-2',
+          allowedHosts: ['registry.npmjs.org', 'files.pythonhosted.org', 'registry.npmjs.org'],
+          monthlySessionCap: 450,
+        }),
+      }, { SANDBOX: {} });
+      assert.equal(enabled.status, 200);
+      const enabledBody = await enabled.json() as Record<string, unknown>;
+      assert.equal(enabledBody.storedEnabled, true);
+      assert.equal(enabledBody.enabled, true);
+      assert.equal(enabledBody.githubConnected, true);
+      assert.equal(enabledBody.repositoryGrantReady, true);
+      assert.deepEqual(enabledBody.unmetPrerequisites, []);
+
+      const disabled = await app.request('/admin/api/sandbox/status', {
+        method: 'PUT',
+        headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+        body: JSON.stringify({
+          enabled: false,
+          allowedHosts: ['registry.npmjs.org'],
+          monthlySessionCap: 450,
+        }),
+      }, { SANDBOX: {} });
+      assert.equal(disabled.status, 200);
+      const disabledBody = await disabled.json() as Record<string, unknown>;
+      assert.equal(disabledBody.installed, true);
+      assert.equal(disabledBody.storedEnabled, false);
+      assert.equal(disabledBody.enabled, false);
+    });
+
+    const actions = (await identity.listAuditEvents())
+      .map((event) => JSON.parse(event.metadataJson) as { action?: string })
+      .map((metadata) => metadata.action)
+      .filter((action) => action?.startsWith('sandbox.'));
+    assert.ok(actions.includes('sandbox.runtime.enable'));
+    assert.ok(actions.includes('sandbox.runtime.disable'));
+  } finally {
+    identity.close();
     settings.close();
     store.close();
   }

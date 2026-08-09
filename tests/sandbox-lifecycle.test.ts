@@ -21,6 +21,7 @@ import {
 
 test('Cloudflare sandbox guardrail options pin sleep and prohibit keep-alive', () => {
   assert.deepEqual(CLOUDFLARE_SANDBOX_OPTIONS, {
+    transport: 'rpc',
     keepAlive: false,
     sleepAfter: '5m',
     normalizeId: false,

@@ -100,7 +100,12 @@ import {
   type DestroyableSandbox,
 } from '../sandbox/lifecycle.ts';
 import { SandboxSessionCapError } from '../sandbox/errors.ts';
-import { selectSandbox, type SandboxSelection } from '../sandbox/select.ts';
+import {
+  resolveSandboxSelection,
+  sandboxBindingInstalled,
+  selectSandbox,
+  type SandboxSelection,
+} from '../sandbox/select.ts';
 import { reserveMonthlySandboxSession } from '../sandbox/session-cap.ts';
 import { sandboxThreadKey } from '../sandbox/thread-key.ts';
 import {
@@ -164,6 +169,23 @@ export interface ResolvedApiConnectionForTurn {
   connectors: ResolvedApiConnection[];
   displayName: string;
   policy: ApiConnectionConfig;
+}
+
+export async function resolveSandboxScopedRepositoryAccess(input: {
+  repositories: readonly RepositoryGrant[];
+  env?: PlatformEnv;
+  forcedSandbox?: SandboxSelection;
+  unavailableFallback: boolean;
+  resolve?: typeof resolveRepositoryAccess;
+}): Promise<ResolvedRepositoryAccess> {
+  if (input.unavailableFallback || input.forcedSandbox === 'bash') {
+    return {
+      grants: [],
+      connectors: [],
+      governsGithubHosts: input.repositories.some((grant) => grant.enabled),
+    };
+  }
+  return (input.resolve ?? resolveRepositoryAccess)(input.repositories, input.env);
 }
 
 export interface ApiConnectionResolutionDependencies {
@@ -564,14 +586,12 @@ export async function createSlackAgentRuntime(
   // skipping that connection rather than aborting the turn.
   const [
     egressPolicy,
-    repositoryAccess,
     resolvedApiConnections,
     sandboxSettings,
     githubAppConnected,
   ] =
     await Promise.all([
       resolveEgressPolicy(env),
-      resolveRepositoryAccess(repositoryGrants, env),
       resolveApiConnectionsForTurn(config.agent.id, config.agent.apiConnections ?? [], env),
       resolveSandboxSettings(settingsStore),
       getGithubConnection(settingsStore).then(
@@ -579,12 +599,32 @@ export async function createSlackAgentRuntime(
         () => false,
       ),
     ]);
-  const sandboxSelection = input.forcedSandbox ?? selectSandbox({
+  const installed = sandboxBindingInstalled(env);
+  const configuredSandbox = resolveSandboxSelection({
     target: isCloudflareTarget() ? 'cloudflare' : 'node',
+    installed,
     enabled: sandboxSettings.enabled,
     appConnected: githubAppConnected,
-    repositoryGrants: repositoryAccess.grants,
+    repositoryGrants,
   });
+  const unavailableFallback =
+    configuredSandbox.unavailableFallback ||
+    (input.forcedSandbox === 'cloudflare' && !installed);
+  const repositoryAccess = await resolveSandboxScopedRepositoryAccess({
+    repositories: repositoryGrants,
+    ...(env ? { env } : {}),
+    ...(input.forcedSandbox ? { forcedSandbox: input.forcedSandbox } : {}),
+    unavailableFallback,
+  });
+  const sandboxSelection = input.forcedSandbox
+    ? input.forcedSandbox === 'cloudflare' && installed ? 'cloudflare' : 'bash'
+    : selectSandbox({
+        target: isCloudflareTarget() ? 'cloudflare' : 'node',
+        installed,
+        enabled: sandboxSettings.enabled,
+        appConnected: githubAppConnected,
+        repositoryGrants: repositoryAccess.grants,
+      });
   const workspaceSkill = workspaceSkillForSandbox(sandboxSelection);
 
   // Repository credentials take precedence over legacy/custom GitHub
@@ -1052,7 +1092,7 @@ async function resolveAgentSandbox(options: AgentSandboxOptions): Promise<Sandbo
   ]);
   const binding = options.env?.SANDBOX ?? options.env?.Sandbox;
   if (!binding) {
-    throw new Error('SANDBOX Durable Object binding is unavailable');
+    return options.fallback;
   }
   const sandboxKey = sandboxThreadKey(options.conversationKey);
   let turnId: string | undefined;

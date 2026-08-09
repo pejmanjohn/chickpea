@@ -41,6 +41,9 @@ export const SANDBOX_FAILURE_TEXT =
 export const SANDBOX_SESSION_CAP_FAILURE_TEXT =
   "I couldn't open a coding workspace because this installation's monthly sandbox session limit has been reached. An administrator can review it in Settings.";
 
+export const SANDBOX_UNAVAILABLE_FALLBACK_NOTICE =
+  'Coding Sandbox was unavailable for this turn, so normal behavior was used without repository access.';
+
 /** Unknown failures must not be misattributed to the model provider. */
 export const AGENT_FAILURE_TEXT =
   'I reached the Slack thread, but the agent run failed before completion. I did not expose internal error details in Slack.';

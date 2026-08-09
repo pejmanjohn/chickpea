@@ -331,6 +331,36 @@ test('saved receipt reattaches with read and saved settlement skips Flue entirel
   assert.equal(beforeResult, 1, 'saved settlement still runs the pre-reply notice seam');
 });
 
+test('sandbox activation failure is sanitized and never replays dispatch in normal mode', async () => {
+  let preparations = 0;
+  let dispatches = 0;
+  const dispatchState = state();
+  await assert.rejects(
+    () => promptSlackThreadAgent({
+      ...promptInput(dispatchState, handle({
+        async dispatch() {
+          dispatches += 1;
+          return RECEIPT;
+        },
+      })),
+      useCloudflareSandbox: true,
+      prepareSandbox: async () => {
+        preparations += 1;
+        throw new Error('private container control-plane detail');
+      },
+    }),
+    (error: unknown) =>
+      error instanceof AgentPromptFailure &&
+      error.kind === 'sandbox' &&
+      !error.retryable &&
+      !error.recoveryRequired,
+  );
+  assert.equal(preparations, 1);
+  assert.equal(dispatches, 0, 'activation failure must not admit or replay model work');
+  assert.equal(dispatchState.dispatchEnvelope, undefined);
+  assert.equal(dispatchState.dispatchReceipt, undefined);
+});
+
 test('receipt-scoped relay is prepared after durable receipt and drains after settlement', async () => {
   const operations: string[] = [];
   const relay: SlackProgressiveReadRelay = {
