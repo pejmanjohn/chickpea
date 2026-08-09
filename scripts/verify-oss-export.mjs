@@ -344,6 +344,7 @@ function verifyNpmPackManifest() {
     'assets/admin-page.png',
     'assets/bot-avatar.png',
     'assets/chickpea-mark.svg',
+    'scripts/cloudflare-deployment-profile.mjs',
     'scripts/deploy-with-epilogue.mjs',
     'scripts/recover-auth.mjs',
     'docs/authentication.md',
@@ -458,15 +459,9 @@ try {
   run('node', ['scripts/verify-flue-offline-turn.mjs'], { cwd: scratch });
   run('npm', ['run', 'verify:durability'], { cwd: scratch });
   run('npm', ['run', 'verify:providers'], { cwd: scratch });
-  // The OSS gate validates the generated Worker bundle and redirected Wrangler
-  // configuration; it must not require a local Docker daemon merely to inspect
-  // a source export. Wrangler still reports the configured container while
-  // skipping the image build/rollout, which belongs in the deployment lane.
-  run(
-    'npm',
-    ['run', 'deploy', '--', '--dry-run', '--containers-rollout=none'],
-    { cwd: scratch },
-  );
+  // The default source export is the slim core profile, so its full build and
+  // Wrangler dry run must succeed without a Docker-specific escape hatch.
+  run('npm', ['run', 'deploy', '--', '--dry-run'], { cwd: scratch });
 
   console.log('OSS export verification passed');
   passed = true;

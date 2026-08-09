@@ -17,6 +17,7 @@ import { fileURLToPath } from 'node:url';
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DEPLOY_SCRIPT = path.join(PROJECT_ROOT, 'scripts', 'deploy-with-epilogue.mjs');
+const PROFILE_SCRIPT = path.join(PROJECT_ROOT, 'scripts', 'cloudflare-deployment-profile.mjs');
 
 function createHarness() {
   const root = mkdtempSync(path.join(tmpdir(), 'chickpea-deploy-wrapper-'));
@@ -29,6 +30,7 @@ function createHarness() {
   mkdirSync(scriptsDir, { recursive: true });
   mkdirSync(wranglerDir, { recursive: true });
   copyFileSync(DEPLOY_SCRIPT, path.join(scriptsDir, 'deploy-with-epilogue.mjs'));
+  copyFileSync(PROFILE_SCRIPT, path.join(scriptsDir, 'cloudflare-deployment-profile.mjs'));
 
   const commandLogger = (label: string) => `
     import { appendFileSync } from 'node:fs';
@@ -46,7 +48,11 @@ function createHarness() {
         const rootConfig = path.join(process.cwd(), 'wrangler.jsonc');
         const builtConfig = path.join(process.cwd(), 'dist-cf', 'chickpea', 'wrangler.json');
         if (existsSync(rootConfig) && existsSync(builtConfig)) {
-          writeFileSync(builtConfig, readFileSync(rootConfig));
+          const config = JSON.parse(readFileSync(rootConfig, 'utf8'));
+          if (process.env.DEPLOY_TEST_BUILD_DROP_DATABASE_ID === '1') {
+            delete config.d1_databases.find((entry) => entry.binding === 'AUTH_DB').database_id;
+          }
+          writeFileSync(builtConfig, JSON.stringify(config));
         }
       }
     `,
@@ -174,6 +180,27 @@ test('fresh source reuses an existing named AUTH_DB without creating another', (
   assert.equal(config.d1_databases[0].database_id, 'existing-database-id');
 });
 
+test('fresh AUTH_DB provisioning revalidates the rebuilt database identity before migration or upload', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+  writeCutoverArtifact(harness, { databaseId: '' });
+
+  const result = runHarness(harness, ['--skip-build'], {
+    DEPLOY_TEST_BUILD_DROP_DATABASE_ID: '1',
+  });
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /resolved AUTH_DB database identity/);
+  const invoked = commands(harness.logPath);
+  assert.deepEqual(invoked.slice(0, 3), [
+    'wrangler:["d1","list","--json"]',
+    `wrangler:["d1","create","chickpea-auth-db","--binding","AUTH_DB","--update-config","--config","${path.join(realpathSync(harness.root), 'wrangler.jsonc')}"]`,
+    'npm:["run","build"]',
+  ]);
+  assert.equal(invoked.some((command) => command.includes('"migrations","apply"')), false);
+  assert.equal(invoked.some((command) => command === 'wrangler:["deploy"]'), false);
+});
+
 test('dry-run never provisions a missing AUTH_DB', (context) => {
   const harness = createHarness();
   context.after(() => rmSync(harness.root, { recursive: true, force: true }));
@@ -205,6 +232,15 @@ function writeCutoverArtifact(
     sandboxCommandRedaction?: boolean;
     agentViewArtifact?: boolean;
     databaseId?: string;
+    profile?: 'core' | 'sandbox';
+    workerName?: string;
+    sandboxBinding?: { name: string; class_name: string };
+    sandboxContainer?: {
+      class_name: string;
+      image: string;
+      instance_type: string;
+      max_instances: number;
+    };
   } = {},
 ) {
   const builtDir = path.join(harness.root, 'dist-cf', 'chickpea');
@@ -214,8 +250,16 @@ function writeCutoverArtifact(
   writeFileSync(path.join(redirectDir, 'config.json'), JSON.stringify({
     configPath: '../../dist-cf/chickpea/wrangler.json',
   }));
+  const profile = options.profile ?? 'core';
+  const sandboxBinding = options.sandboxBinding ?? { name: 'SANDBOX', class_name: 'Sandbox' };
+  const sandboxContainer = options.sandboxContainer ?? {
+    class_name: 'Sandbox',
+    image: path.join(realpathSync(harness.root), 'Dockerfile'),
+    instance_type: 'standard-1',
+    max_instances: 25,
+  };
   const config = {
-    name: 'chickpea',
+    name: options.workerName ?? 'chickpea',
     main: 'index.js',
     compatibility_date: options.compatibilityDate ?? '2026-06-01',
     observability: { enabled: true, traces: { enabled: options.tracing ?? true } },
@@ -225,7 +269,7 @@ function writeCutoverArtifact(
     triggers: { crons: options.cron === false ? [] : ['* * * * *'] },
     durable_objects: { bindings: [
       { name: 'TAG_STATE', class_name: 'TagStateStore' },
-      { name: 'SANDBOX', class_name: 'Sandbox' },
+      ...(profile === 'sandbox' ? [sandboxBinding] : []),
       { name: 'AUTH_GUARD', class_name: 'AuthGuard' },
       { name: 'FLUE_CHICKPEA_SLACK_V2_AGENT', class_name: 'FlueChickpeaSlackV2Agent' },
       ...(options.routineAgents === false ? [] : [
@@ -246,7 +290,9 @@ function writeCutoverArtifact(
       migrations_dir: '../../migrations/better-auth',
     }],
     workflows: [],
+    ...(profile === 'sandbox' ? { containers: [sandboxContainer] } : {}),
     migrations: [
+      { tag: 'v3', new_sqlite_classes: ['Sandbox'] },
       {
         tag: 'v6',
         new_sqlite_classes: [
@@ -310,6 +356,127 @@ test('deploy builds by default before forwarding dry-run to Wrangler', (context)
     'npm:["run","build"]',
     'wrangler:["deploy","--dry-run"]',
   ]);
+});
+
+test('sandbox deploy rebuilds by default and keeps the selector internal', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+  writeCutoverArtifact(harness, { profile: 'sandbox' });
+
+  const result = runHarness(harness, ['--dry-run', '--containers-rollout=none'], {
+    CHICKPEA_DEPLOY_PROFILE: 'sandbox',
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Building the Cloudflare artifact from current source/);
+  assert.deepEqual(commands(harness.logPath), [
+    'npm:["run","build"]',
+    'wrangler:["deploy","--dry-run","--containers-rollout=none"]',
+  ]);
+});
+
+test('Worker identity mismatch fails before D1 or deploy mutation', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+  const configPath = path.join(harness.root, 'dist-cf', 'chickpea', 'wrangler.json');
+  const config = JSON.parse(readFileSync(configPath, 'utf8'));
+  config.name = 'other-worker';
+  writeFileSync(configPath, JSON.stringify(config));
+
+  const result = runHarness(harness, ['--skip-build']);
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Worker identity chickpea.*other-worker/);
+  assert.equal(existsSync(harness.logPath), false);
+});
+
+test('deploy resolves one profile and rejects a stale artifact before Wrangler mutation', (context) => {
+  const core = createHarness();
+  const sandbox = createHarness();
+  const unknown = createHarness();
+  context.after(() => {
+    rmSync(core.root, { recursive: true, force: true });
+    rmSync(sandbox.root, { recursive: true, force: true });
+    rmSync(unknown.root, { recursive: true, force: true });
+  });
+  writeCutoverArtifact(sandbox, { profile: 'sandbox' });
+
+  const coreAsSandbox = runHarness(core, ['--skip-build', '--dry-run'], {
+    CHICKPEA_DEPLOY_PROFILE: 'sandbox',
+  });
+  const sandboxAsCore = runHarness(sandbox, ['--skip-build', '--dry-run']);
+  const unknownResult = runHarness(unknown, ['--dry-run'], {
+    CHICKPEA_DEPLOY_PROFILE: 'experimental',
+  });
+
+  assert.equal(coreAsSandbox.status, 1);
+  assert.match(coreAsSandbox.stderr, /profile mismatch.*sandbox.*core/i);
+  assert.equal(sandboxAsCore.status, 1);
+  assert.match(sandboxAsCore.stderr, /profile mismatch.*core.*sandbox/i);
+  assert.equal(unknownResult.status, 1);
+  assert.match(unknownResult.stderr, /Invalid CHICKPEA_DEPLOY_PROFILE/);
+  assert.equal(existsSync(core.logPath), false);
+  assert.equal(existsSync(sandbox.logPath), false);
+  assert.equal(existsSync(unknown.logPath), false);
+});
+
+test('sandbox preflight requires the exact reviewed binding and container shape', (context) => {
+  const missingContainer = createHarness();
+  const wrongBinding = createHarness();
+  const wrongCapacity = createHarness();
+  context.after(() => {
+    rmSync(missingContainer.root, { recursive: true, force: true });
+    rmSync(wrongBinding.root, { recursive: true, force: true });
+    rmSync(wrongCapacity.root, { recursive: true, force: true });
+  });
+  writeCutoverArtifact(missingContainer, { profile: 'sandbox' });
+  const missingConfig = path.join(missingContainer.root, 'dist-cf', 'chickpea', 'wrangler.json');
+  const missingBody = JSON.parse(readFileSync(missingConfig, 'utf8'));
+  delete missingBody.containers;
+  writeFileSync(missingConfig, JSON.stringify(missingBody));
+  writeCutoverArtifact(wrongBinding, {
+    profile: 'sandbox',
+    sandboxBinding: { name: 'SANDBOX', class_name: 'WrongSandbox' },
+  });
+  writeCutoverArtifact(wrongCapacity, {
+    profile: 'sandbox',
+    sandboxContainer: {
+      class_name: 'Sandbox',
+      image: path.join(realpathSync(wrongCapacity.root), 'Dockerfile'),
+      instance_type: 'standard-1',
+      max_instances: 1,
+    },
+  });
+
+  for (const harness of [missingContainer, wrongBinding, wrongCapacity]) {
+    const result = runHarness(harness, ['--skip-build', '--preflight-only'], {
+      CHICKPEA_DEPLOY_PROFILE: 'sandbox',
+    });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /partial or duplicate Sandbox infrastructure/i);
+    assert.equal(existsSync(harness.logPath), false);
+  }
+});
+
+test('preflight preserves the v3 Sandbox class migration in both profiles', (context) => {
+  const core = createHarness();
+  const sandbox = createHarness();
+  context.after(() => {
+    rmSync(core.root, { recursive: true, force: true });
+    rmSync(sandbox.root, { recursive: true, force: true });
+  });
+  writeCutoverArtifact(sandbox, { profile: 'sandbox' });
+  for (const [harness, profile] of [[core, 'core'], [sandbox, 'sandbox']] as const) {
+    const configPath = path.join(harness.root, 'dist-cf', 'chickpea', 'wrangler.json');
+    const config = JSON.parse(readFileSync(configPath, 'utf8'));
+    config.migrations.find((migration: { tag: string }) => migration.tag === 'v3').new_sqlite_classes = [];
+    writeFileSync(configPath, JSON.stringify(config));
+    const result = runHarness(harness, ['--skip-build', '--preflight-only'], {
+      CHICKPEA_DEPLOY_PROFILE: profile,
+    });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /v3 Sandbox SQLite class/);
+  }
 });
 
 test('deploy skip-build flag stays private while dry-run still reaches Wrangler', (context) => {
@@ -432,25 +599,25 @@ test('preflight rejects unexpected or protected destructive class operations', (
 });
 
 test('preflight rejects missing bindings, missing content-free tracing, and stale dates', (context) => {
-  const missingSandbox = createHarness();
+  const missingState = createHarness();
   const tracingDisabled = createHarness();
   const missingTracer = createHarness();
   const missingSandboxRedaction = createHarness();
   const stale = createHarness();
   context.after(() => {
-    rmSync(missingSandbox.root, { recursive: true, force: true });
+    rmSync(missingState.root, { recursive: true, force: true });
     rmSync(tracingDisabled.root, { recursive: true, force: true });
     rmSync(missingTracer.root, { recursive: true, force: true });
     rmSync(missingSandboxRedaction.root, { recursive: true, force: true });
     rmSync(stale.root, { recursive: true, force: true });
   });
-  writeCutoverArtifact(missingSandbox, { missingBinding: 'SANDBOX' });
+  writeCutoverArtifact(missingState, { missingBinding: 'TAG_STATE' });
   writeCutoverArtifact(tracingDisabled, { tracing: false });
   writeCutoverArtifact(missingTracer, { cloudflareTracer: false });
   writeCutoverArtifact(missingSandboxRedaction, { sandboxCommandRedaction: false });
   writeCutoverArtifact(stale, { compatibilityDate: '2026-03-31' });
 
-  const sandboxResult = runHarness(missingSandbox, ['--skip-build', '--preflight-only']);
+  const stateResult = runHarness(missingState, ['--skip-build', '--preflight-only']);
   const tracingDisabledResult = runHarness(
     tracingDisabled,
     ['--skip-build', '--preflight-only'],
@@ -462,8 +629,8 @@ test('preflight rejects missing bindings, missing content-free tracing, and stal
   );
   const staleResult = runHarness(stale, ['--skip-build', '--preflight-only']);
 
-  assert.equal(sandboxResult.status, 1);
-  assert.match(sandboxResult.stderr, /SANDBOX\/Sandbox binding/);
+  assert.equal(stateResult.status, 1);
+  assert.match(stateResult.stderr, /TAG_STATE\/TagStateStore binding/);
   assert.equal(tracingDisabledResult.status, 1);
   assert.match(tracingDisabledResult.stderr, /enabled Workers Traces/);
   assert.equal(missingTracerResult.status, 1);

@@ -20,6 +20,11 @@ import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
+import {
+  classifyCloudflareDeploymentProfile,
+  resolveCloudflareDeploymentProfile,
+} from './cloudflare-deployment-profile.mjs';
+
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 // Invoke wrangler's bin with the current node (mirrors flue-build-cf.mjs):
 // works whether or not node_modules/.bin is on PATH.
@@ -28,6 +33,15 @@ const cliArgs = process.argv.slice(2);
 const deployArgs = cliArgs.filter((arg) => !['--skip-build', '--preflight-only'].includes(arg));
 const skipBuild = cliArgs.includes('--skip-build');
 const preflightOnly = cliArgs.includes('--preflight-only');
+let deploymentProfile;
+try {
+  // Resolve once so build, preflight, D1 setup, and deploy cannot disagree if
+  // a caller mutates process.env later in this process.
+  deploymentProfile = resolveCloudflareDeploymentProfile();
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(1);
+}
 
 const BETA_FLUE_CLASSES = Object.freeze([
   'FlueRegistry',
@@ -161,6 +175,81 @@ function requireBuiltArtifact() {
   return { configPath, config, bundle };
 }
 
+function expectedWorkerName() {
+  const override = process.env.WRANGLER_CI_OVERRIDE_NAME?.trim();
+  if (override) return override;
+  try {
+    const source = readFileSync(path.join(projectRoot, 'wrangler.jsonc'), 'utf8');
+    const match = source.match(/"name"\s*:\s*"([^"]+)"/);
+    if (match?.[1]) return match[1];
+  } catch {
+    /* the generated artifact validation below will report the missing identity */
+  }
+  return undefined;
+}
+
+function validateArtifactIdentity(artifact, { requireDatabaseId = false } = {}) {
+  const { config, configPath } = artifact;
+  const failures = [];
+  const expectedName = expectedWorkerName();
+  if (typeof config.name !== 'string' || !config.name.trim()) {
+    failures.push('a generated Worker name');
+  } else if (expectedName && config.name !== expectedName) {
+    failures.push(`Worker identity ${expectedName} (found ${config.name})`);
+  }
+  if (
+    typeof config.topLevelName === 'string' &&
+    config.topLevelName !== config.name
+  ) {
+    failures.push(`one Worker identity (name=${config.name}, topLevelName=${config.topLevelName})`);
+  }
+  const main = typeof config.main === 'string'
+    ? path.resolve(path.dirname(configPath), config.main)
+    : undefined;
+  if (!main || !existsSync(main)) failures.push('a real generated Worker entry');
+
+  const authDatabases = (config.d1_databases ?? []).filter(
+    (binding) => binding?.binding === 'AUTH_DB',
+  );
+  if (authDatabases.length !== 1) {
+    failures.push('exactly one AUTH_DB binding');
+  } else {
+    const authDb = authDatabases[0];
+    if (typeof authDb.database_name !== 'string' || !authDb.database_name.trim()) {
+      failures.push('an AUTH_DB database name');
+    }
+    if (!String(authDb.migrations_dir ?? '').endsWith('migrations/better-auth')) {
+      failures.push('AUTH_DB with reviewed Better Auth migrations');
+    }
+    if (
+      requireDatabaseId &&
+      (typeof authDb.database_id !== 'string' || !authDb.database_id.trim())
+    ) {
+      failures.push('the resolved AUTH_DB database identity');
+    }
+  }
+  if (failures.length) {
+    throw new Error(`Cloudflare deployment identity preflight failed; missing or unsafe ${failures.join(', ')}.`);
+  }
+}
+
+function validateDeploymentProfile(artifact) {
+  let actualProfile;
+  try {
+    actualProfile = classifyCloudflareDeploymentProfile(artifact.config);
+  } catch (error) {
+    throw new Error(
+      `Cloudflare ${deploymentProfile} profile preflight failed: ` +
+      (error instanceof Error ? error.message : String(error)),
+    );
+  }
+  if (actualProfile !== deploymentProfile) {
+    throw new Error(
+      `Cloudflare deployment profile mismatch: requested ${deploymentProfile}, generated ${actualProfile}.`,
+    );
+  }
+}
+
 function validateFlue2CutoverArtifact(artifact) {
   const { config, bundle } = artifact;
   const failures = [];
@@ -181,13 +270,16 @@ function validateFlue2CutoverArtifact(artifact) {
   if (!reset || !sameMembers(reset.new_sqlite_classes ?? [], V2_AGENT_CLASSES)) {
     failures.push('v6 fresh Flue 2 SQLite agent classes');
   }
+  const sandboxMigration = migrations.find((migration) => migration.tag === 'v3');
+  if (!sandboxMigration || !sameMembers(sandboxMigration.new_sqlite_classes ?? [], ['Sandbox'])) {
+    failures.push('v3 Sandbox SQLite class');
+  }
 
   const bindings = config.durable_objects?.bindings ?? [];
   const hasBinding = (name, className) => bindings.some(
     (binding) => binding.name === name && binding.class_name === className,
   );
   if (!hasBinding('TAG_STATE', 'TagStateStore')) failures.push('TAG_STATE/TagStateStore binding');
-  if (!hasBinding('SANDBOX', 'Sandbox')) failures.push('SANDBOX/Sandbox binding');
   if (!hasBinding('AUTH_GUARD', 'AuthGuard')) failures.push('AUTH_GUARD/AuthGuard binding');
   for (const [name, className] of V2_AGENT_BINDINGS) {
     if (!hasBinding(name, className)) failures.push(`${name}/${className} binding`);
@@ -315,14 +407,20 @@ function validateAgentViewArtifact(artifact) {
   }
 }
 
-let builtArtifact;
-try {
-  const artifact = requireBuiltArtifact();
+function validateDeploymentArtifact(artifact, options = {}) {
+  validateArtifactIdentity(artifact, options);
+  validateDeploymentProfile(artifact);
   validateAgentViewArtifact(artifact);
   validateFlue2CutoverArtifact(artifact);
   validateRoutineArtifact(artifact);
   validateLedgerCanaryArtifact(artifact);
-  builtArtifact = artifact;
+  return artifact;
+}
+
+let builtArtifact;
+try {
+  const artifact = requireBuiltArtifact();
+  builtArtifact = validateDeploymentArtifact(artifact);
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));
   process.exit(1);
@@ -357,7 +455,7 @@ function ensureAuthDatabase(artifact) {
     process.stdout.write('Reusing the customer-owned AUTH_DB database...\n');
     authDb.database_id = existingId;
     writeFileSync(artifact.configPath, `${JSON.stringify(artifact.config, null, 2)}\n`);
-    return requireBuiltArtifact();
+    return validateDeploymentArtifact(requireBuiltArtifact(), { requireDatabaseId: true });
   }
   const rootConfig = path.join(projectRoot, 'wrangler.jsonc');
   process.stdout.write('Provisioning the customer-owned AUTH_DB database...\n');
@@ -390,15 +488,7 @@ function ensureAuthDatabase(artifact) {
   }
   buildCloudflareArtifact();
   const rebuilt = requireBuiltArtifact();
-  validateFlue2CutoverArtifact(rebuilt);
-  const rebuiltAuthDb = (rebuilt.config.d1_databases ?? []).find(
-    (binding) => binding.binding === 'AUTH_DB',
-  );
-  if (typeof rebuiltAuthDb?.database_id !== 'string' || !rebuiltAuthDb.database_id.trim()) {
-    console.error('AUTH_DB provisioning did not persist a database ID in the deployment artifact.');
-    process.exit(1);
-  }
-  return rebuilt;
+  return validateDeploymentArtifact(rebuilt, { requireDatabaseId: true });
 }
 
 function existingAuthDatabaseId(databaseName) {
@@ -432,7 +522,18 @@ function existingAuthDatabaseId(databaseName) {
   return typeof id === 'string' && id.trim() ? id.trim() : undefined;
 }
 
-if (!deployArgs.includes('--dry-run')) builtArtifact = ensureAuthDatabase(builtArtifact);
+if (!deployArgs.includes('--dry-run')) {
+  try {
+    builtArtifact = ensureAuthDatabase(builtArtifact);
+    // This is the final gate immediately before the first mutation of an
+    // existing customer resource. It intentionally reruns after both D1 reuse
+    // injection and D1 provisioning/rebuild.
+    builtArtifact = validateDeploymentArtifact(builtArtifact, { requireDatabaseId: true });
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  }
+}
 
 // D1 migrations are forward-only and idempotent. Apply them before the Worker
 // starts serving a schema it expects. If deploy later fails, rerunning this

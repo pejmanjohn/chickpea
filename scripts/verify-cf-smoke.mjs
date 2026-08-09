@@ -43,6 +43,10 @@ import {
   delay,
 } from './lib/offline-harness.mjs';
 import { runDrainCheck } from './lib/cf-drain-check.mjs';
+import {
+  classifyCloudflareDeploymentProfile,
+  resolveCloudflareDeploymentProfile,
+} from './cloudflare-deployment-profile.mjs';
 
 const WRANGLER_BIN = join(REPO_ROOT, 'node_modules', '.bin', 'wrangler');
 const CF_OUTPUT_DIR = join(REPO_ROOT, 'dist-cf');
@@ -116,6 +120,18 @@ function buildCloudflareTarget() {
 
 function verifyBuildArtifacts() {
   const config = JSON.parse(readFileSync(CF_WRANGLER_CONFIG, 'utf8'));
+  const expectedProfile = resolveCloudflareDeploymentProfile();
+  let actualProfile;
+  try {
+    actualProfile = classifyCloudflareDeploymentProfile(config);
+  } catch (error) {
+    check(false, `built wrangler.json has an exact ${expectedProfile} deployment profile`, String(error));
+  }
+  check(
+    actualProfile === expectedProfile,
+    `built wrangler.json matches the requested ${expectedProfile} deployment profile`,
+    `generated ${actualProfile ?? 'invalid'}`,
+  );
   const artifactRoot = join(CF_OUTPUT_DIR, 'chickpea');
   const bundle = readdirSync(artifactRoot, { recursive: true })
     .filter((entry) => typeof entry === 'string' && entry.endsWith('.js'))
@@ -133,10 +149,18 @@ function verifyBuildArtifacts() {
       `built wrangler.json carries ${name}/${className}`,
     );
   }
-  check(
-    doBindings.some((b) => b.name === 'SANDBOX' && b.class_name === 'Sandbox'),
-    'built wrangler.json carries the Sandbox DO binding',
-  );
+  if (expectedProfile === 'sandbox') {
+    check(
+      doBindings.some((b) => b.name === 'SANDBOX' && b.class_name === 'Sandbox'),
+      'Sandbox build carries the reviewed Sandbox DO binding',
+    );
+  } else {
+    check(
+      !doBindings.some((b) => b.name === 'SANDBOX' || b.class_name === 'Sandbox'),
+      'core build carries no Sandbox DO binding',
+    );
+    check((config.containers ?? []).length === 0, 'core build declares no Container application');
+  }
   check(
     doBindings.some((b) => b.name === 'AUTH_GUARD' && b.class_name === 'AuthGuard'),
     'built wrangler.json carries the auth guard DO binding',
@@ -153,6 +177,11 @@ function verifyBuildArtifacts() {
     'built wrangler.json migrations include the append-only v1 through v7 chain',
     tags.join(','),
   );
+  const sandboxMigration = migrations.find((migration) => migration.tag === 'v3');
+  check(
+    sameArray(sandboxMigration?.new_sqlite_classes ?? [], ['Sandbox']),
+    'built wrangler.json preserves the v3 Sandbox class migration in every profile',
+  );
   const reset = migrations.find((migration) => migration.tag === 'v6');
   check(
     sameArray(
@@ -161,16 +190,18 @@ function verifyBuildArtifacts() {
     ),
     'v6 deletes exactly the four beta Flue classes',
   );
-  const sandboxContainer = (config.containers ?? []).find(
-    (container) => container.class_name === 'Sandbox',
-  );
-  check(
-    sandboxContainer?.instance_type === 'standard-1' && sandboxContainer?.max_instances === 25,
-    'built wrangler.json keeps the bounded multi-thread Sandbox capacity',
-    sandboxContainer
-      ? `${sandboxContainer.instance_type} / ${sandboxContainer.max_instances} max instances`
-      : 'missing',
-  );
+  if (expectedProfile === 'sandbox') {
+    const sandboxContainer = (config.containers ?? []).find(
+      (container) => container.class_name === 'Sandbox',
+    );
+    check(
+      sandboxContainer?.instance_type === 'standard-1' && sandboxContainer?.max_instances === 25,
+      'Sandbox build keeps the bounded multi-thread capacity',
+      sandboxContainer
+        ? `${sandboxContainer.instance_type} / ${sandboxContainer.max_instances} max instances`
+        : 'missing',
+    );
+  }
   const redirect = join(REPO_ROOT, '.wrangler', 'deploy', 'config.json');
   const redirectBody = existsSync(redirect) ? readFileSync(redirect, 'utf8') : '';
   check(redirectBody.includes('dist-cf'), '.wrangler/deploy/config.json points into dist-cf');
@@ -236,10 +267,10 @@ function writeSmokeWranglerConfigs() {
       { binding: 'AI', service: AI_SMOKE_SERVICE },
     ],
   };
-  // The production container declaration was asserted above. This disposable
-  // workerd config never calls the coding tier, and Wrangler 4.103 still tries
-  // to invoke Docker despite dev.enable_containers=false, so omit only the
-  // smoke copy of the image declaration.
+  // A Sandbox-profile structure smoke never calls the coding tier, and local
+  // Wrangler may invoke Docker despite dev.enable_containers=false. Core has
+  // no declaration; for Sandbox only, omit it from this disposable copy after
+  // the exact production shape was asserted above.
   delete smokeConfig.containers;
   delete smokeConfig.ai;
   writeFileSync(CF_SMOKE_WRANGLER_CONFIG, `${JSON.stringify(smokeConfig, null, 2)}\n`);

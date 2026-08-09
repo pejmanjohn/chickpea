@@ -7,6 +7,9 @@ import { fileURLToPath } from 'node:url';
 
 import { experimental_readRawConfig } from 'wrangler';
 
+// @ts-expect-error The executable deployment helper intentionally has no declaration file.
+import { classifyCloudflareDeploymentProfile } from '../scripts/cloudflare-deployment-profile.mjs';
+
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const BETA_CLASSES = [
   'FlueRegistry',
@@ -36,6 +39,7 @@ interface AuthoredWranglerConfig {
   compatibility_date?: string;
   observability?: { traces?: { enabled?: boolean } };
   durable_objects?: { bindings?: Array<{ name: string; class_name: string }> };
+  containers?: Array<{ class_name?: string }>;
   migrations?: DurableObjectMigration[];
 }
 
@@ -156,9 +160,12 @@ test('authored Cloudflare reset preserves app state, replaces beta Flue classes,
   assert.ok(bindings.some((binding) =>
     binding.name === 'TAG_STATE' && binding.class_name === 'TagStateStore'
   ));
-  assert.ok(bindings.some((binding) =>
-    binding.name === 'SANDBOX' && binding.class_name === 'Sandbox'
-  ));
+  assert.equal(bindings.some((binding) =>
+    binding.name === 'SANDBOX' || binding.class_name === 'Sandbox'
+  ), false);
+  assert.deepEqual(config.containers ?? [], []);
+  const sandboxMigration = migrations.find((migration) => migration.tag === 'v3');
+  assert.deepEqual(sandboxMigration?.new_sqlite_classes, ['Sandbox']);
   const destructive = migrations.flatMap((migration) => [
     ...(migration.deleted_classes ?? []),
     ...(migration.renamed_classes ?? []).flatMap((rename) => [rename.from, rename.to]),
@@ -180,6 +187,7 @@ test(
       compatibility_date?: string;
       observability?: { traces?: { enabled?: boolean } };
       durable_objects?: { bindings?: Array<{ name: string; class_name: string }> };
+      containers?: Array<{ class_name?: string }>;
       workflows?: unknown[];
       migrations?: Array<{
         tag: string;
@@ -190,12 +198,16 @@ test(
     const bindings = (config.durable_objects?.bindings ?? []).map(
       (binding) => `${binding.name}/${binding.class_name}`,
     );
+    const deploymentProfile = classifyCloudflareDeploymentProfile(config);
     assert.deepEqual(
       sorted(bindings.filter((binding) => binding.startsWith('FLUE_'))),
       V2_BINDINGS,
     );
     assert.ok(bindings.includes('TAG_STATE/TagStateStore'));
-    assert.ok(bindings.includes('SANDBOX/Sandbox'));
+    assert.equal(
+      bindings.includes('SANDBOX/Sandbox'),
+      deploymentProfile === 'sandbox',
+    );
     assert.deepEqual(config.workflows ?? [], []);
     assert.equal(config.observability?.traces?.enabled, true);
     assert.ok((config.compatibility_date ?? '') >= '2026-04-01');
@@ -203,6 +215,8 @@ test(
     const reset = (config.migrations ?? []).find((migration) => migration.tag === 'v6');
     assert.deepEqual(sorted(reset?.new_sqlite_classes ?? []), V2_CLASSES);
     assert.deepEqual(sorted(reset?.deleted_classes ?? []), BETA_CLASSES);
+    const sandboxMigration = (config.migrations ?? []).find((migration) => migration.tag === 'v3');
+    assert.deepEqual(sandboxMigration?.new_sqlite_classes, ['Sandbox']);
 
     const mainBundle = await readFile(
       path.join(path.dirname(configPath), config.main ?? 'index.js'),
