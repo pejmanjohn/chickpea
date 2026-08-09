@@ -33,6 +33,14 @@ const cliArgs = process.argv.slice(2);
 const deployArgs = cliArgs.filter((arg) => !['--skip-build', '--preflight-only'].includes(arg));
 const skipBuild = cliArgs.includes('--skip-build');
 const preflightOnly = cliArgs.includes('--preflight-only');
+// Workers Builds runs its configured build command immediately before its
+// configured deploy command in the same build workspace. Reuse that exact
+// artifact, but only when both Workers-specific markers are present; local
+// deploys and generic CI retain the build-before-deploy safety boundary.
+const reuseWorkersBuildArtifact =
+  process.env.WORKERS_CI === '1' &&
+  typeof process.env.WORKERS_CI_BUILD_UUID === 'string' &&
+  process.env.WORKERS_CI_BUILD_UUID.trim().length > 0;
 let deploymentProfile;
 try {
   // Resolve once so build, preflight, D1 setup, and deploy cannot disagree if
@@ -123,7 +131,7 @@ function buildCloudflareArtifact() {
   }
 }
 
-if (!skipBuild) buildCloudflareArtifact();
+if (!skipBuild && !reuseWorkersBuildArtifact) buildCloudflareArtifact();
 
 function builtConfigPath() {
   try {

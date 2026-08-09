@@ -358,6 +358,20 @@ test('deploy builds by default before forwarding dry-run to Wrangler', (context)
   ]);
 });
 
+test('Workers Builds reuses its just-built artifact while retaining deploy preflight', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+
+  const result = runHarness(harness, ['--dry-run'], {
+    WORKERS_CI: '1',
+    WORKERS_CI_BUILD_UUID: 'workers-build-uuid',
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.doesNotMatch(result.stdout, /Building the Cloudflare artifact from current source/);
+  assert.deepEqual(commands(harness.logPath), ['wrangler:["deploy","--dry-run"]']);
+});
+
 test('sandbox deploy rebuilds by default and keeps the selector internal', (context) => {
   const harness = createHarness();
   context.after(() => rmSync(harness.root, { recursive: true, force: true }));
