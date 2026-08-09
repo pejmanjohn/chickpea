@@ -10,6 +10,8 @@ import { test } from 'node:test';
 import { Hono } from 'hono';
 
 import { createAdminRoutes } from '../src/admin/routes.ts';
+import { NodeBetterAuthBackend } from '../src/auth/better-auth-node.ts';
+import { nativePasswordPrimitive } from '../src/auth/password.ts';
 import type { AdminAuthenticationService } from '../src/auth/types.ts';
 import {
   createInstallationToken,
@@ -891,6 +893,78 @@ test('GitHub setup state is membership-bound, public at callback time, and consu
     store.close();
     settings.close();
     identity.close();
+  }
+});
+
+test('GitHub setup callback validates Better Auth memberships against the human directory', async () => {
+  const { pkcs1 } = rsaKeys();
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  const identity = new SqliteIdentityStore(':memory:');
+  const backend = new NodeBetterAuthBackend(':memory:');
+  const now = Date.now();
+  const origin = 'https://chickpea.example.com';
+  const organizationId = 'f771afb0-c732-44f0-868d-803e26034393';
+  const userId = 'aa1be7ed-8626-4cf8-9f2a-c4815741a8d6';
+  const membershipId = 'c092ca9e-4aa0-4987-aa9f-72e2bef08815';
+  backend.database.prepare(
+    'INSERT INTO "user" (id, name, email, emailVerified, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)',
+  ).run(userId, 'Owner', 'owner@example.com', 1, now, now);
+  backend.database.prepare(
+    'INSERT INTO organization (id, name, slug, createdAt) VALUES (?, ?, ?, ?)',
+  ).run(organizationId, 'Acme', 'acme', now);
+  backend.database.prepare(
+    'INSERT INTO member (id, organizationId, userId, role, createdAt) VALUES (?, ?, ?, ?, ?)',
+  ).run(membershipId, organizationId, userId, 'owner', now);
+  const control = await identity.ensureAuthControl();
+  await identity.updateAuthControl({
+    expectedRevision: control.revision,
+    authMode: 'password_active',
+    canonicalAdminOrigin: origin,
+    betterAuthOrganizationId: organizationId,
+  });
+  await saveGithubSetupState(settings, {
+    state: 'b'.repeat(32),
+    mintedAt: now,
+    membershipId,
+  });
+  const app = createAdminRoutes({
+    store,
+    settings,
+    identity,
+    recoveryToken: '9d'.repeat(32),
+    betterAuthEnvironment: {
+      backend,
+      baseURL: origin,
+      password: nativePasswordPrimitive(),
+      recoveryToken: '9d'.repeat(32),
+      secret: 'test-github-better-auth-secret-32-bytes',
+    },
+  });
+  const fetchImpl: typeof fetch = async () => new Response(JSON.stringify({
+    id: 97531,
+    slug: 'chickpea-better-auth',
+    pem: pkcs1,
+    webhook_secret: null,
+  }), { status: 201, headers: { 'content-type': 'application/json' } });
+  try {
+    await withFetch(fetchImpl, async () => {
+      const response = await app.request(
+        `${origin}/oauth/github/setup/callback?code=setup-code&state=${'b'.repeat(32)}`,
+        { redirect: 'manual' },
+      );
+      assert.equal(response.status, 302);
+      assert.equal(
+        response.headers.get('location'),
+        'https://github.com/apps/chickpea-better-auth/installations/new',
+      );
+    });
+    assert.equal(await settings.getSetting('github.app.id'), '97531');
+  } finally {
+    backend.close();
+    identity.close();
+    settings.close();
+    store.close();
   }
 });
 

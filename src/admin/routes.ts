@@ -1520,7 +1520,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const setupState = await consumeGithubSetupState(settings(c), state);
       if (!setupState) return c.json({ error: 'invalid_setup_state' }, 403);
       if (setupState.membershipId) {
-        const membership = (await identity(c).listMemberships()).find(
+        const membership = (await (await humanDirectory(c)).listMemberships()).find(
           (candidate) => candidate.id === setupState.membershipId,
         );
         if (!membership || membership.status !== 'active' ||
