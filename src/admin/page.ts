@@ -436,6 +436,7 @@ button, input, textarea, select { font: inherit; }
 .onboarding-form .field { display: grid; gap: 7px; }
 .onboarding-form .input { background: var(--well); min-height: 44px; }
 .onboarding-form-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 12px; justify-content: space-between; padding-top: 4px; }
+.onboarding-panel > details.advanced { margin-top: 18px; padding-top: 12px; }
 .onboarding-error { align-items: flex-start; display: grid; gap: 10px; grid-column: 1 / -1; width: 100%; }
 .onboarding-error-scopes { color: var(--text-2); font-family: var(--mono); font-size: .75rem; overflow-wrap: anywhere; }
 .onboarding-workspace-row { align-items: center; border: 1px solid var(--line); border-radius: 13px; display: flex; gap: 16px; justify-content: space-between; margin-top: 26px; padding: 13px 15px; }
@@ -1993,8 +1994,8 @@ details[open].advanced summary::before {
     slackError: "",
     slackRepair: null,
     slackBusy: false,
-    // First-run stepper: step 1 (create the app) until the operator opens the
-    // manifest, then step 2 (install, copy & paste). Client-side only — Slack
+    // First-run Slack handoff: 1 opens the manifest, 2 is the explicit return
+    // checkpoint, and 3 reveals install credentials. Client-side only — Slack
     // owns app creation, so there is no server signal for the transition.
     slackStep: 1,
     // Set from a just-completed connect (POST result carries team + botName);
@@ -3357,24 +3358,35 @@ details[open].advanced summary::before {
         '<div class="onboarding-actions"><a class="btn btn-primary" href="' + esc(conn.manifestUrl) + '" target="_blank" rel="noopener noreferrer" data-action="advance-slack-step">' +
         '<span class="onboarding-slack-logo slack-logo-image" aria-hidden="true"></span>Create @Chickpea in Slack</a></div></section>';
     }
+    if (state.slackStep === 2) {
+      return '<section class="onboarding-panel"><p class="onboarding-eyebrow">Step 1 of 3</p>' +
+        '<h1 class="onboarding-title">Return here after Slack shows Chickpea</h1>' +
+        '<p class="onboarding-lede">Slack should open a manifest for an app named Chickpea. If signing in drops you on AI Agent, Blank app, or the app list, close that dialog and open Chickpea setup again from here.</p>' +
+        '<div class="onboarding-actions"><button type="button" class="btn btn-primary" data-action="slack-app-created">I created the Chickpea app</button>' +
+        '<a class="btn btn-soft" href="' + esc(conn.manifestUrl) + '" target="_blank" rel="noopener noreferrer"><span class="onboarding-slack-logo slack-logo-image" aria-hidden="true"></span>Open Chickpea setup in Slack</a></div>' +
+        '<button type="button" class="btn btn-ghost btn-sm" data-action="back-to-slack-create">Back</button></section>';
+    }
     var submit = state.slackBusy
       ? '<button type="submit" class="btn btn-primary" disabled><span class="spinner"></span>Connecting&hellip;</button>'
       : '<button type="submit" class="btn btn-primary">Validate and connect</button>';
     var repair = state.slackRepair;
-    var repairHtml = repair && repair.consoleUrl
-      ? '<a class="btn btn-soft btn-sm" href="' + esc(repair.consoleUrl) + '" target="_blank" rel="noopener noreferrer">Reinstall in Slack</a>'
+    var repairUrl = repair && repair.consoleUrl ? repair.consoleUrl : "https://api.slack.com/apps";
+    var repairHtml = repair
+      ? '<div class="onboarding-error" role="alert" aria-live="assertive" tabindex="-1" data-role="slack-connection-error"><h2 class="section-title">Apply Chickpea&rsquo;s Slack permissions</h2>' +
+        '<p class="hint">Slack issued a starter token before the complete manifest permissions were authorized. Reinstall the app, allow the requested permissions, then paste the refreshed Bot User OAuth Token.</p>' +
+        '<a class="btn btn-primary btn-sm" href="' + esc(repairUrl) + '" target="_blank" rel="noopener noreferrer">Reinstall @Chickpea in Slack</a></div>'
       : '';
     var missingScopes = repair && repair.missingScopes && repair.missingScopes.length
       ? '<p class="onboarding-error-scopes">Missing: ' + esc(repair.missingScopes.join(", ")) + '</p>'
       : '';
-    var errorHtml = state.slackError
+    var errorHtml = state.slackError && !repair
       ? '<div class="onboarding-error" role="alert" aria-live="assertive" tabindex="-1" data-role="slack-connection-error"><p class="field-error">' + esc(state.slackError) + '</p>' + missingScopes + repairHtml + '</div>'
-      : '';
+      : (repair ? repairHtml + missingScopes : '');
     return '<section class="onboarding-panel">' +
-      '<div class="onboarding-return-note"><span class="onboarding-return-icon" aria-hidden="true">&rarr;</span><span><strong>Continue in Slack, then return here.</strong><br>If Slack asked you to sign in, open the setup link again after signing in.</span></div>' +
+      '<div class="onboarding-return-note"><span class="onboarding-return-icon" aria-hidden="true">&rarr;</span><span><strong>Install Chickpea in Slack, then return here.</strong><br>If Slack asked you to sign in, reopen the setup link. In OAuth &amp; Permissions, click Install to Workspace or Reinstall to Workspace before copying the token.</span></div>' +
       '<p class="onboarding-eyebrow">Step 1 of 3</p><h1 class="onboarding-title">Finish connecting Slack</h1>' +
       '<p class="onboarding-lede">Install the app in Slack, then paste the two values Slack gives you. Chickpea checks the workspace, permissions, and channel access before continuing.</p>' +
-      '<div class="onboarding-actions"><a class="btn btn-soft" href="' + esc(conn.manifestUrl) + '" target="_blank" rel="noopener noreferrer" data-action="advance-slack-step"><span class="onboarding-slack-logo slack-logo-image" aria-hidden="true"></span>Open Slack setup again</a></div>' +
+      '<div class="onboarding-actions"><a class="btn btn-soft" href="' + esc(conn.manifestUrl) + '" target="_blank" rel="noopener noreferrer"><span class="onboarding-slack-logo slack-logo-image" aria-hidden="true"></span>Open Slack setup again</a></div>' +
       '<form class="onboarding-form" data-action="slack-connect-form">' +
       '<div class="field"><label class="field-label" for="onboarding-signing-secret">Signing secret</label>' +
       '<input class="input mono" id="onboarding-signing-secret" name="signingSecret" type="password" autocomplete="off" value="' + esc(state.slackDraft.signingSecret) + '"></div>' +
@@ -3967,7 +3979,7 @@ details[open].advanced summary::before {
       return '<div class="step-block">' +
         '<span class="step-num done">' + icon("check") + '</span>' +
         '<div class="step-body"><div class="step-done-line"><span class="step-title">Create @Chickpea in Slack</span>' +
-        '<span class="hint" style="color:var(--ok);">App created</span></div></div></div>';
+        '<span class="hint" style="color:var(--ok);">' + (state.slackStep >= 3 ? 'App created' : 'Setup opened') + '</span></div></div></div>';
     }
     return '<div class="step-block">' +
       '<span class="step-num active">1</span>' +
@@ -3993,10 +4005,20 @@ details[open].advanced summary::before {
         '<span class="step-num idle">2</span>' +
         '<span class="step-body"><span class="step-title">Install, copy &amp; paste</span></span></button></div>';
     }
+    if (state.slackStep === 2) {
+      return '<div class="step-block"><span class="step-num active">2</span><div class="step-body">' +
+        '<div class="step-title">Confirm Slack created Chickpea</div>' +
+        '<p class="hint">Slack should show an app named Chickpea created from the manifest. If signing in dropped you on AI Agent, Blank app, or the app list, reopen the setup link.</p>' +
+        '<div style="display:flex; gap:10px; flex-wrap:wrap;"><button type="button" class="btn btn-primary" data-action="slack-app-created">I created the Chickpea app</button>' +
+        '<a class="btn btn-soft" href="' + esc(state.slack.manifestUrl) + '" target="_blank" rel="noopener noreferrer">Open Chickpea setup in Slack</a></div>' +
+        '</div></div>';
+    }
     var validateBtn = state.slackBusy
       ? '<button type="submit" class="btn btn-primary" disabled><span class="spinner"></span>Validating&hellip;</button>'
       : '<button type="submit" class="btn btn-primary">Validate &amp; save</button>';
-    var validateTail = state.slackError
+    var validateTail = state.slackRepair
+      ? '<div role="alert" aria-live="assertive" tabindex="-1" data-role="slack-connection-error"><p class="field-error">Apply Chickpea&rsquo;s Slack permissions before continuing.</p><a class="btn btn-primary btn-sm" href="' + esc(state.slackRepair.consoleUrl || "https://api.slack.com/apps") + '" target="_blank" rel="noopener noreferrer">Reinstall @Chickpea in Slack</a></div>'
+      : state.slackError
       ? '<span class="field-error" role="alert" aria-live="assertive" tabindex="-1" data-role="slack-connection-error">' + esc(state.slackError) + '</span>'
       : (state.slackBusy ? "" : '<span class="hint">The token is checked live against Slack before anything is saved. The signing secret is verified on the first real Slack event.</span>');
     return '<div class="step-block">' +
@@ -4048,9 +4070,9 @@ details[open].advanced summary::before {
 
   function submitSlackConnection(formData) {
     if (state.slackConnectionBusy) return;
-    // Submitting the paste form means step 2 is the active surface — pin it so a
+    // Submitting the paste form means the credential surface is active — pin it so a
     // validation error renders against the fields (not a collapsed step).
-    state.slackStep = 2;
+    state.slackStep = 3;
     var botToken = String(formData.get("botToken") || "").trim();
     var signingSecret = String(formData.get("signingSecret") || "").trim();
     state.slackDraft = { botToken: botToken, signingSecret: signingSecret };
@@ -4087,6 +4109,9 @@ details[open].advanced summary::before {
             consoleUrl: (error.payload && error.payload.consoleUrl) || ""
           }
         : null;
+      if (state.slackRepair) {
+        state.slackDraft = { botToken: "", signingSecret: signingSecret };
+      }
       state.slackError = slackErrorText(error.message, error.detail, error.serverMessage, error.payload);
       render();
       focusSlackLiveRegion("slack-connection-error");
@@ -10050,6 +10075,7 @@ details[open].advanced summary::before {
     // Stepper: mark step 1 done and reveal step 2. Not preventing default lets
     // the Create anchor still open Slack in a new tab.
     if (action === "advance-slack-step") { state.slackStep = 2; state.slackError = ""; state.slackRepair = null; render(); }
+    if (action === "slack-app-created") { state.slackStep = 3; state.slackError = ""; state.slackRepair = null; render(); }
     if (action === "back-to-slack-create") { state.slackStep = 1; state.slackError = ""; state.slackRepair = null; render(); }
     if (action === "refresh-onboarding-channels") { loadSlackChannels(true); }
     if (action === "retry-onboarding") { state.onboardingError = ""; loadOnboarding(true); }
@@ -13096,6 +13122,7 @@ details[open].advanced summary::before {
   }
 
   var initialRoute = canNavigate ? location.pathname : "/admin";
+  if (initialRoute === "/admin/onboarding") state.view = "onboarding";
   if (USAGE_ADMIN_UI && initialRoute === "/admin/usage") applyUsageQuery(location.search || "");
   state.oauthReturn = canNavigate ? oauthReturnFromSearch(location.search || "") : null;
   refreshData(false).then(function () {
@@ -13343,7 +13370,7 @@ function renderPasswordPage(input: {
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Chickpea · ${escapeHtmlAttribute(input.title)}</title>${ADMIN_FAVICON}
 <style>
-:root{--canvas:#f4ebd8;--card:#fffdf6;--ink:#3b3220;--muted:#6b5c42;--gold:#dda033;--line:rgba(59,50,32,.16);--danger:#a83f34}*{box-sizing:border-box}body{margin:0;min-height:100dvh;display:grid;place-items:center;background:var(--canvas);color:var(--ink);font-family:system-ui,-apple-system,sans-serif;padding:16px}main{width:min(520px,100%);background:var(--card);border:1px solid var(--line);border-radius:20px;padding:clamp(22px,6vw,42px);box-shadow:0 12px 34px rgba(59,50,32,.09)}.eyebrow{margin:0;color:var(--muted);font-size:.78rem;font-weight:800;text-transform:uppercase;letter-spacing:.08em}h1{margin:7px 0 9px;font-size:clamp(1.7rem,7vw,2.45rem);line-height:1.08}p{color:var(--muted);line-height:1.55}label{display:flex;justify-content:space-between;gap:12px;margin:17px 0 6px;font-weight:750}label span{color:var(--muted);font-size:.76rem;font-weight:500}input{width:100%;min-height:46px;border:1px solid var(--line);border-radius:11px;background:#fff;padding:11px 12px;font:inherit}input[aria-invalid="true"]{border-color:var(--danger)}.field-help,.field-error{margin:6px 0 0;font-size:.82rem;line-height:1.4}.field-error{color:var(--danger);font-weight:700}button,.primary{display:flex;align-items:center;justify-content:center;width:100%;min-height:46px;margin-top:22px;border:0;border-radius:12px;background:var(--gold);color:var(--ink);font:inherit;font-weight:800;text-decoration:none;cursor:pointer;box-shadow:0 2.5px 0 #b27e1f}button:disabled{cursor:not-allowed;opacity:.46;box-shadow:none}input:focus-visible,button:focus-visible,.primary:focus-visible{outline:3px solid rgba(176,84,21,.42);outline-offset:2px}.error{margin:16px 0;border-left:4px solid var(--danger);background:#fff3ee;color:var(--danger);padding:12px;font-weight:700;line-height:1.45}[hidden]{display:none!important}@media(max-width:360px){body{padding:8px}main{border-radius:14px;padding:20px 16px}label{display:block}label span{display:block;margin-top:2px}}
+:root{--canvas:#f4ebd8;--card:#fffdf6;--ink:#3b3220;--muted:#6b5c42;--gold:#dda033;--line:rgba(59,50,32,.16);--danger:#a83f34}*{box-sizing:border-box}body{margin:0;min-height:100dvh;display:grid;place-items:center;background:var(--canvas);color:var(--ink);font-family:system-ui,-apple-system,sans-serif;padding:16px}main{width:min(520px,100%);background:var(--card);border:1px solid var(--line);border-radius:20px;padding:clamp(22px,6vw,42px);box-shadow:0 12px 34px rgba(59,50,32,.09)}.eyebrow{margin:0;color:var(--muted);font-size:.78rem;font-weight:800;text-transform:uppercase;letter-spacing:.08em}h1{margin:7px 0 9px;font-size:clamp(1.7rem,7vw,2.45rem);line-height:1.08}p{color:var(--muted);line-height:1.55}label{display:flex;justify-content:space-between;gap:12px;margin:17px 0 6px;font-weight:750}label span{color:var(--muted);font-size:.76rem;font-weight:500}input{width:100%;min-height:46px;border:1px solid var(--line);border-radius:11px;background:#fff;padding:11px 12px;font:inherit}input[aria-invalid="true"]{border-color:var(--danger)}.field-help,.field-error{margin:6px 0 0;font-size:.82rem;line-height:1.4}.field-error{color:var(--danger);font-weight:700}button,.primary{display:flex;align-items:center;justify-content:center;width:100%;min-height:46px;margin-top:22px;border:0;border-radius:12px;background:var(--gold);color:var(--ink);font:inherit;font-weight:800;text-decoration:none;cursor:pointer;box-shadow:0 2.5px 0 #b27e1f;transition:transform .08s ease,box-shadow .08s ease}button:active:not(:disabled){transform:translateY(2px);box-shadow:0 .5px 0 #b27e1f}button[aria-busy="true"]::before{content:"";width:16px;height:16px;margin-right:9px;border:2px solid rgba(59,50,32,.28);border-top-color:var(--ink);border-radius:50%;animation:spin .7s linear infinite}button:disabled{cursor:not-allowed;opacity:.62;box-shadow:none}input:focus-visible,button:focus-visible,.primary:focus-visible{outline:3px solid rgba(176,84,21,.42);outline-offset:2px}.error{margin:16px 0;border-left:4px solid var(--danger);background:#fff3ee;color:var(--danger);padding:12px;font-weight:700;line-height:1.45}[hidden]{display:none!important}@keyframes spin{to{transform:rotate(360deg)}}@media(max-width:360px){body{padding:8px}main{border-radius:14px;padding:20px 16px}label{display:block}label span{display:block;margin-top:2px}}
 </style></head><body><main aria-labelledby="auth-title"><p class="eyebrow">${escapeHtmlAttribute(input.eyebrow)}</p><h1 id="auth-title">${escapeHtmlAttribute(input.title)}</h1>${input.intro ? `<p>${escapeHtmlAttribute(input.intro)}</p>` : ''}${input.error ?? ''}${input.body}</main></body></html>`;
 }
 

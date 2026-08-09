@@ -425,6 +425,7 @@ function runAdminPageHarness(
   } = {},
 ): {
   app: FakeElement;
+  renderHistory: string[];
   modalRoot: FakeElement;
   favContainers: Record<string, FakeElement>;
   listeners: Record<string, Listener>;
@@ -529,6 +530,7 @@ function runAdminPageHarness(
   const topbarRegion = makeRegion();
   const bodyRegion = makeRegion();
   let appHtml = '';
+  const renderHistory: string[] = [];
   let renderGeneration = 0;
   let sandboxBuildVariableSelectedAttached = false;
   let focusedAction: string | null = null;
@@ -552,6 +554,7 @@ function runAdminPageHarness(
     },
     set innerHTML(value: string) {
       appHtml = value;
+      renderHistory.push(value);
       renderGeneration += 1;
       focusedAction = null;
       activeElement = null;
@@ -2156,6 +2159,7 @@ function runAdminPageHarness(
 
   return {
     app,
+    renderHistory,
     modalRoot,
     favContainers,
     listeners,
@@ -7854,6 +7858,12 @@ test('onboarding starts with one Slack creation action and progressively reveals
   assert.doesNotMatch(harness.app.innerHTML, /name="botToken"/);
 
   harness.listeners.click?.({ target: actionTarget({ 'data-action': 'advance-slack-step' }) });
+  assert.match(harness.app.innerHTML, /Return here after Slack shows Chickpea/);
+  assert.match(harness.app.innerHTML, /Open Chickpea setup in Slack/);
+  assert.match(harness.app.innerHTML, /data-action="slack-app-created"/);
+  assert.doesNotMatch(harness.app.innerHTML, /name="botToken"/);
+
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'slack-app-created' }) });
   assert.match(harness.app.innerHTML, /name="botToken"/);
   assert.match(harness.app.innerHTML, /name="signingSecret"/);
   assert.match(harness.app.innerHTML, /data-action="back-to-slack-create"/);
@@ -7888,6 +7898,7 @@ test('onboarding names missing Slack permissions and links directly to reinstall
   });
   await flushAsync();
   harness.listeners.click?.({ target: actionTarget({ 'data-action': 'advance-slack-step' }) });
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'slack-app-created' }) });
   harness.listeners.submit?.({
     target: submitTarget(
       { 'data-action': 'slack-connect-form' },
@@ -7897,12 +7908,38 @@ test('onboarding names missing Slack permissions and links directly to reinstall
   });
   await flushAsync();
 
-  assert.match(harness.app.innerHTML, /Slack has not applied all required permissions/);
+  assert.match(harness.app.innerHTML, /Apply Chickpea(?:&rsquo;|')s Slack permissions/);
+  assert.match(harness.app.innerHTML, /Slack issued a starter token before the complete manifest permissions were authorized/);
   assert.match(harness.app.innerHTML, /assistant:write/);
   assert.match(harness.app.innerHTML, /channels:read/);
   assert.match(harness.app.innerHTML, /href="https:\/\/api\.slack\.com\/apps\/A_REPAIR\/oauth"/);
-  assert.match(harness.app.innerHTML, />Reinstall in Slack/);
+  assert.match(harness.app.innerHTML, />Reinstall @Chickpea in Slack/);
+  assert.match(harness.app.innerHTML, /name="signingSecret"[^>]*value="safe-placeholder"/);
+  assert.match(harness.app.innerHTML, /name="botToken"[^>]*value=""/);
   assert.doesNotMatch(harness.app.innerHTML, /older Slack authorization/);
+});
+
+test('onboarding never paints normal Admin navigation before its first routed render', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/onboarding',
+    assignments: [],
+    slackConnection: disconnectedSlackFixture(),
+    onboarding: {
+      stage: 'connect_slack',
+      revision: '{"version":1}',
+      workspace: null,
+      channel: null,
+      tryStartedAt: null,
+      completedAt: null,
+    },
+  });
+  await flushAsync();
+
+  assert.ok(harness.renderHistory.length > 0);
+  assert.ok(
+    harness.renderHistory.every((html) => !html.includes('aria-label="Admin navigation"')),
+    'the onboarding route must not flash the post-setup Admin shell',
+  );
 });
 
 test('onboarding gives compact recovery for each Slack verification failure code', async () => {
@@ -8079,6 +8116,11 @@ test('admin page renders the first-run Connect stepper when credentials are miss
   const click = harness.listeners.click;
   assert.ok(click);
   click({ target: actionTarget({ 'data-action': 'advance-slack-step' }) });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /Open Chickpea setup in Slack/);
+  assert.doesNotMatch(harness.app.innerHTML, /name="botToken"/);
+  click({ target: actionTarget({ 'data-action': 'slack-app-created' }) });
   await flushAsync();
 
   // Step 2: the two paired paste fields + the live-validation hint.

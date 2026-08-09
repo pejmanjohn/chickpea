@@ -56,7 +56,12 @@ export type RecordPendingSlackChallengeResult =
     };
 
 export type VerifyPendingSlackChallengeResult =
-  | { verified: true; purgeReceipt: string }
+  | {
+      verified: true;
+      purgeReceipt: string;
+      appId?: string;
+      teamId?: string;
+    }
   | {
       verified: false;
       reason:
@@ -192,7 +197,12 @@ export async function verifyPendingSlackChallenge(
   if (options.expectedTeamId && body.teamId && body.teamId !== options.expectedTeamId) {
     return { verified: false, reason: 'workspace_mismatch' };
   }
-  return { verified: true, purgeReceipt: raw };
+  return {
+    verified: true,
+    purgeReceipt: raw,
+    ...(body.appId ? { appId: body.appId } : {}),
+    ...(body.teamId ? { teamId: body.teamId } : {}),
+  };
 }
 
 export async function purgePendingSlackChallenge(

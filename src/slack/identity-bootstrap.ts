@@ -501,7 +501,7 @@ export function slackIdentityConsoleUrl(appId: string | undefined): string {
     : 'https://api.slack.com/apps';
 }
 
-function slackIdentityOAuthUrl(appId: string | undefined): string | undefined {
+export function slackIdentityOAuthUrl(appId: string | undefined): string | undefined {
   return appId && SLACK_APP_ID_PATTERN.test(appId)
     ? `https://api.slack.com/apps/${appId}/oauth`
     : undefined;

@@ -199,6 +199,8 @@ test('successful deploy generates stable auth after sustained setup-route readin
   }
   assert.match(result.stdout, /Chickpea setup is responding/);
   assert.match(result.stdout, /may take another 1–2 minutes/);
+  assert.match(result.stdout, /🔐 PRIVATE SETUP LINK/);
+  assert.match(result.stdout, /👉 https:\/\/chickpea\.example\.workers\.dev\/admin\/setup#setup=/);
   const invoked = commands(harness.logPath);
   assert.match(invoked[0] ?? '', /^wrangler:\["secret","list","--format","json","--config",/);
   assert.match(

@@ -1609,6 +1609,55 @@ test('wizard GET reports env credentials but withholds connected until lifecycle
   );
 });
 
+test('wizard turns a starter-scope token into an app-specific reinstall handoff', async (t) => {
+  const skip = await loopbackListenSkipReason();
+  if (skip) {
+    t.skip(skip);
+    return;
+  }
+  const { server, baseUrl } = await listenFakeSlack(
+    {
+      ok: true,
+      team_id: 'T_ACME',
+      team: 'Acme Inc',
+      user: 'chickpea',
+      user_id: 'U_STARTER_BOT',
+      bot_id: 'B_STARTER',
+    },
+    undefined,
+    { 'x-oauth-scopes': 'channels:history,chat:write' },
+  );
+  const settings = new SqliteSettingsStore(':memory:');
+  const config = new SqliteConfigStore(':memory:');
+  try {
+    await withEnv({ ...NO_SLACK_ENV, SLACK_API_URL: baseUrl }, async () => {
+      await recordWorkspaceDefaultChallenge(config, settings, 'starter-secret', {
+        appId: 'A0STARTER',
+      });
+      const response = await postCreds(appWith(settings, config), {
+        botToken: 'xoxb-starter',
+        signingSecret: 'starter-secret',
+      });
+      assert.equal(response.status, 422);
+      const body = (await response.json()) as {
+        error: string;
+        missingScopes: string[];
+        consoleUrl?: string;
+      };
+      assert.equal(body.error, 'slack_missing_scopes');
+      assert.match(body.consoleUrl ?? '', /^https:\/\/api\.slack\.com\/apps\/A0STARTER\/oauth$/);
+      assert.ok(body.missingScopes.includes('assistant:write'));
+      assert.equal(await settings.getSetting(SLACK_SETTING_KEYS.botToken), undefined);
+      assert.ok(await readPendingSlackChallenge(settings, 'slack_identity_default'));
+    });
+  } finally {
+    invalidateStoredSlackCredentials();
+    config.close();
+    settings.close();
+    await closeServer(server);
+  }
+});
+
 test('wizard POST requires the signed challenge and live Slack readiness before connecting', async (t) => {
   const skip = await loopbackListenSkipReason();
   if (skip) {

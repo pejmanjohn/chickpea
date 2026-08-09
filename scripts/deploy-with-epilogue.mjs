@@ -789,9 +789,9 @@ function printPrivateSetupLink(baseUrl, setup, readiness) {
       '',
       '  Cloudflare may take another 1–2 minutes to make this URL available to you.',
       '',
-      '  Open this private setup link:',
+      '  🔐 PRIVATE SETUP LINK — COPY AND OPEN THIS',
       RULE,
-      privateSetupUrl,
+      `👉 ${privateSetupUrl}`,
     ].join('\n'),
   );
 }
@@ -804,9 +804,9 @@ function printPrivateSetupPath(setup) {
       RULE,
       '  ✔ Worker deployed.',
       '',
-      '  Wrangler did not report a public origin. Open this private path on your configured Chickpea domain:',
+      '  🔐 PRIVATE SETUP PATH — copy and open this on your configured Chickpea domain',
       RULE,
-      `${privatePath.pathname}${privatePath.hash}`,
+      `👉 ${privatePath.pathname}${privatePath.hash}`,
     ].join('\n'),
   );
 }

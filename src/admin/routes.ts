@@ -277,6 +277,7 @@ import {
   completeSlackIdentityConnection,
   refreshSlackIdentityHealth,
   slackIdentityConsoleUrl,
+  slackIdentityOAuthUrl,
   SlackIdentityBootstrapError,
   validateSlackIdentityBotInstallation,
   type SlackIdentityBootstrapDeps,
@@ -5118,6 +5119,29 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         options.slackIdentityBootstrap,
       );
     } catch (error) {
+      if (
+        error instanceof SlackIdentityBootstrapError &&
+        error.code === 'slack_missing_scopes' &&
+        !error.consoleUrl
+      ) {
+        const verification = await verifyPendingSlackChallenge(
+          settingsStore,
+          WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+          signingSecret,
+        );
+        if (verification.verified) {
+          return slackIdentityAdminError(
+            c,
+            new SlackIdentityBootstrapError(
+              error.code,
+              error.message,
+              error.missingScopes,
+              error.detail,
+              slackIdentityOAuthUrl(verification.appId),
+            ),
+          );
+        }
+      }
       return slackIdentityAdminError(c, error);
     }
 
