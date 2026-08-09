@@ -41,7 +41,7 @@ test('owner setup client has no manual capability entry fallback', () => {
 });
 
 test('deploy capability creates one fixed-name owner workspace and expires from deploy time', async () => {
-  const issuedAt = Date.UTC(2026, 7, 8, 12);
+  const issuedAt = Date.now();
   const minted = await mintSetupCapability({ now: () => issuedAt });
   const identity = new SqliteIdentityStore(':memory:');
   const backend = new NodeBetterAuthBackend(':memory:');
