@@ -72,11 +72,25 @@ export function passwordOwnerSetupClientScript(): string {
       passwordConfirmation.addEventListener("input", function () { validatePasswordConfirmation(Boolean(passwordConfirmation.value)); });
       passwordConfirmation.addEventListener("blur", function () { validatePasswordConfirmation(Boolean(passwordConfirmation.value)); });
     }
+    var submitting = false;
     if (form.addEventListener) form.addEventListener("submit", function (event) {
+      if (submitting) {
+        if (event && event.preventDefault) event.preventDefault();
+        return;
+      }
       var passwordAccepted = validatePassword(true);
       var confirmationAccepted = validatePasswordConfirmation(true);
       var formAccepted = form.checkValidity ? form.checkValidity() : passwordAccepted && confirmationAccepted;
-      if (passwordAccepted && confirmationAccepted && formAccepted) return;
+      if (passwordAccepted && confirmationAccepted && formAccepted) {
+        submitting = true;
+        if (submit) {
+          submit.disabled = true;
+          submit.textContent = "Creating\u2026";
+          if (submit.setAttribute) submit.setAttribute("aria-busy", "true");
+        }
+        if (form.setAttribute) form.setAttribute("aria-busy", "true");
+        return;
+      }
       if (event && event.preventDefault) event.preventDefault();
       if (!passwordAccepted && password && password.focus) password.focus();
       else if (!confirmationAccepted && passwordConfirmation && passwordConfirmation.focus) passwordConfirmation.focus();

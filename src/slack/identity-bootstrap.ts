@@ -51,6 +51,7 @@ export class SlackIdentityBootstrapError extends Error {
     message: string,
     readonly missingScopes?: readonly string[],
     readonly detail?: string,
+    readonly consoleUrl?: string,
   ) {
     super(message);
     this.name = 'SlackIdentityBootstrapError';
@@ -130,6 +131,8 @@ export async function validateSlackIdentityBotInstallation(
       'slack_missing_scopes',
       `Reinstall this Slack app to grant the required permissions: ${missingScopes.join(', ')}`,
       missingScopes,
+      undefined,
+      slackIdentityOAuthUrl(auth.appId),
     );
   }
   if (!auth.botId) {
@@ -205,6 +208,9 @@ export async function validateSlackIdentityBotInstallation(
         throw new SlackIdentityBootstrapError(
           'slack_missing_scopes',
           'Reinstall this Slack app to grant channel-list access',
+          undefined,
+          undefined,
+          slackIdentityOAuthUrl(appId),
         );
       }
       if (page.error === 'invalid_auth' || page.error === 'token_revoked') {
@@ -493,6 +499,12 @@ export function slackIdentityConsoleUrl(appId: string | undefined): string {
   return appId && SLACK_APP_ID_PATTERN.test(appId)
     ? `https://api.slack.com/apps/${appId}/general`
     : 'https://api.slack.com/apps';
+}
+
+function slackIdentityOAuthUrl(appId: string | undefined): string | undefined {
+  return appId && SLACK_APP_ID_PATTERN.test(appId)
+    ? `https://api.slack.com/apps/${appId}/oauth`
+    : undefined;
 }
 
 function requireConnectableIdentity(identity: SlackIdentity, expectedRevision: number): void {

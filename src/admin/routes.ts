@@ -6624,6 +6624,7 @@ function slackIdentityAdminError(c: Context, error: unknown) {
       message: error.message,
       ...(error.detail ? { detail: error.detail } : {}),
       ...(error.missingScopes ? { missingScopes: error.missingScopes } : {}),
+      ...(error.consoleUrl ? { consoleUrl: error.consoleUrl } : {}),
     }, status);
   }
   return internalError(c, error);

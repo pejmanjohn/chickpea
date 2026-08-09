@@ -2094,7 +2094,7 @@ test('wizard POST rejects a valid Slack token whose installation is missing mani
   const { server, baseUrl } = await listenFakeSlack(
     {
       ok: true,
-      app_id: 'A_STALE',
+      app_id: 'A0STALE',
       team_id: 'T_ACME',
       team: 'Acme Inc',
       user_id: 'U_STALE',
@@ -2114,9 +2114,11 @@ test('wizard POST rejects a valid Slack token whose installation is missing mani
         error: string;
         message: string;
         missingScopes: string[];
+        consoleUrl: string;
       };
       assert.equal(body.error, 'slack_missing_scopes');
       assert.match(body.message, /grant the required permissions/i);
+      assert.equal(body.consoleUrl, 'https://api.slack.com/apps/A0STALE/oauth');
       assert.deepEqual(
         body.missingScopes,
         slackAppManifest.oauth_config.scopes.bot.filter(

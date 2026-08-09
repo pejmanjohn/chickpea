@@ -124,6 +124,66 @@ test('owner setup gives immediate password-length feedback and blocks short subm
   assert.equal(password.customValidity, '');
 });
 
+test('owner setup immediately acknowledges an accepted submission and blocks duplicates', () => {
+  const formListeners: Record<string, (event: { preventDefault(): void }) => void> = {};
+  const password = {
+    value: 'long enough',
+    addEventListener() {},
+    setCustomValidity() {},
+    setAttribute() {},
+    removeAttribute() {},
+  };
+  const confirmation = {
+    value: 'long enough',
+    addEventListener() {},
+    setCustomValidity() {},
+    setAttribute() {},
+    removeAttribute() {},
+  };
+  const submit = {
+    disabled: true,
+    textContent: 'Create owner account',
+    attributes: new Map<string, string>(),
+    setAttribute(name: string, value: string) { this.attributes.set(name, value); },
+  };
+  const form = {
+    hidden: true,
+    attributes: new Map<string, string>(),
+    addEventListener(name: string, listener: (event: { preventDefault(): void }) => void) { formListeners[name] = listener; },
+    checkValidity() { return true; },
+    reportValidity() {},
+    setAttribute(name: string, value: string) { this.attributes.set(name, value); },
+  };
+  const elements: Record<string, object> = {
+    'owner-setup-form': form,
+    'owner-setup-status': { hidden: false, textContent: '' },
+    'owner-setup-capability': { value: '' },
+    'owner-setup-submit': submit,
+    password,
+    'password-error': { hidden: true, textContent: '' },
+    'password-confirmation': confirmation,
+    'password-confirmation-error': { hidden: true, textContent: '' },
+  };
+  vm.runInNewContext(passwordOwnerSetupClientScript(), {
+    URLSearchParams,
+    document: { getElementById(id: string) { return elements[id] ?? null; } },
+    history: { replaceState() {} },
+    location: { hash: `#setup=${CAPABILITY}`, pathname: '/admin/setup', search: '' },
+    sessionStorage: { getItem() { return null; }, setItem() {}, removeItem() {} },
+  });
+
+  let prevented = false;
+  formListeners.submit?.({ preventDefault() { prevented = true; } });
+  assert.equal(prevented, false);
+  assert.equal(submit.disabled, true);
+  assert.equal(submit.textContent, 'Creating…');
+  assert.equal(submit.attributes.get('aria-busy'), 'true');
+  assert.equal(form.attributes.get('aria-busy'), 'true');
+
+  formListeners.submit?.({ preventDefault() { prevented = true; } });
+  assert.equal(prevented, true);
+});
+
 test('the successful ready page clears the setup capability from same-tab storage', () => {
   const stored = new Map([[STORAGE_KEY, CAPABILITY]]);
   vm.runInNewContext(passwordOwnerSetupClientScript(), {

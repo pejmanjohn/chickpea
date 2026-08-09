@@ -345,7 +345,14 @@ function runAdminPageHarness(
     deferSlackIdentity?: boolean;
     deferSlackIdentityConnect?: boolean;
     slackTestError?: { status: number; error: string; detail?: string };
-    slackPostError?: { status: number; error: string; detail?: string; message?: string };
+    slackPostError?: {
+      status: number;
+      error: string;
+      detail?: string;
+      message?: string;
+      missingScopes?: string[];
+      consoleUrl?: string;
+    };
     slackDisconnectError?: { status: number; error: string };
     initialPath?: string;
     slackChannels?: SlackChannelsFixture;
@@ -2961,7 +2968,7 @@ test('Slack overview controls save behavior, test the connection, update credent
   assert.match(harness.app.innerHTML, /Connect @Chickpea/);
 });
 
-test('Slack connection test explains that an under-scoped token needs reinstalling', async () => {
+test('Slack connection test explains that required permissions are not applied yet', async () => {
   const harness = runAdminPageHarness({
     slackTestError: { status: 422, error: 'slack_missing_scopes' },
   });
@@ -2972,8 +2979,8 @@ test('Slack connection test explains that an under-scoped token needs reinstalli
   click({ target: actionTarget({ 'data-action': 'slack-test' }) });
   await flushAsync();
 
-  assert.match(harness.app.innerHTML, /bot token is from an older Slack authorization/);
-  assert.match(harness.app.innerHTML, /Reinstall Chickpea in Slack/);
+  assert.match(harness.app.innerHTML, /Slack has not applied all required permissions/);
+  assert.match(harness.app.innerHTML, /Reinstall the app/);
 });
 
 test('Slack credential replacement ignores stale identity successes and failures', async () => {
@@ -7835,15 +7842,67 @@ test('onboarding starts with one Slack creation action and progressively reveals
   await flushAsync();
 
   assert.equal(harness.locationPath(), '/admin/onboarding');
+  assert.match(harness.app.innerHTML, /class="onboarding-shell"/);
+  assert.match(harness.app.innerHTML, /aria-label="Onboarding progress"/);
+  assert.match(harness.app.innerHTML, /Step 1 of 3/);
   assert.match(harness.app.innerHTML, /Connect @Chickpea/);
+  assert.match(harness.app.innerHTML, /slack-logo-image/);
   assert.equal((harness.app.innerHTML.match(/data-action="advance-slack-step"/g) ?? []).length, 1);
+  assert.doesNotMatch(harness.app.innerHTML, /<nav class="rail"/);
+  assert.doesNotMatch(harness.app.innerHTML, /aria-label="Admin navigation"/);
   assert.doesNotMatch(harness.app.innerHTML, /Events URL/);
   assert.doesNotMatch(harness.app.innerHTML, /name="botToken"/);
 
   harness.listeners.click?.({ target: actionTarget({ 'data-action': 'advance-slack-step' }) });
   assert.match(harness.app.innerHTML, /name="botToken"/);
   assert.match(harness.app.innerHTML, /name="signingSecret"/);
+  assert.match(harness.app.innerHTML, /data-action="back-to-slack-create"/);
+  assert.match(harness.app.innerHTML, /Open Slack setup again/);
+  assert.match(harness.app.innerHTML, /If Slack asked you to sign in/);
   assert.match(harness.app.innerHTML, /Where do I find these\?/);
+
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'back-to-slack-create' }) });
+  assert.doesNotMatch(harness.app.innerHTML, /name="botToken"/);
+  assert.equal((harness.app.innerHTML.match(/data-action="advance-slack-step"/g) ?? []).length, 1);
+});
+
+test('onboarding names missing Slack permissions and links directly to reinstall', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/onboarding',
+    assignments: [],
+    slackConnection: disconnectedSlackFixture(),
+    slackPostError: {
+      status: 422,
+      error: 'slack_missing_scopes',
+      missingScopes: ['assistant:write', 'channels:read'],
+      consoleUrl: 'https://api.slack.com/apps/A_REPAIR/oauth',
+    },
+    onboarding: {
+      stage: 'connect_slack',
+      revision: '{"version":1}',
+      workspace: null,
+      channel: null,
+      tryStartedAt: null,
+      completedAt: null,
+    },
+  });
+  await flushAsync();
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'advance-slack-step' }) });
+  harness.listeners.submit?.({
+    target: submitTarget(
+      { 'data-action': 'slack-connect-form' },
+      { botToken: 'xoxb-under-scoped', signingSecret: 'safe-placeholder' },
+    ),
+    preventDefault() {},
+  });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /Slack has not applied all required permissions/);
+  assert.match(harness.app.innerHTML, /assistant:write/);
+  assert.match(harness.app.innerHTML, /channels:read/);
+  assert.match(harness.app.innerHTML, /href="https:\/\/api\.slack\.com\/apps\/A_REPAIR\/oauth"/);
+  assert.match(harness.app.innerHTML, />Reinstall in Slack/);
+  assert.doesNotMatch(harness.app.innerHTML, /older Slack authorization/);
 });
 
 test('onboarding gives compact recovery for each Slack verification failure code', async () => {
@@ -7967,7 +8026,7 @@ test('onboarding stays on channel selection until Slack membership is positively
   assert.match(harness.app.innerHTML, /Choose where Chickpea should start/);
 });
 
-test('Try Chickpea keeps the exact prompt copyable and completion restores normal navigation', async () => {
+test('Try Chickpea keeps the exact prompt copyable and exits to normal navigation on request', async () => {
   const harness = runAdminPageHarness({
     initialPath: '/admin/onboarding',
     onboarding: {
@@ -7982,13 +8041,15 @@ test('Try Chickpea keeps the exact prompt copyable and completion restores norma
   await flushAsync();
 
   assert.match(harness.app.innerHTML, /Chickpea is ready/);
-  assert.match(harness.app.innerHTML, /aria-label="Admin navigation"/);
+  assert.doesNotMatch(harness.app.innerHTML, /aria-label="Admin navigation"/);
   assert.match(harness.app.innerHTML, /readonly value="@Chickpea summarize/);
   harness.listeners.click?.({ target: actionTarget({ 'data-action': 'copy-onboarding-prompt' }) });
   await flushAsync();
   assert.deepEqual(harness.clipboardWrites, [
     '@Chickpea summarize the recent discussion in this channel and list any open questions.',
   ]);
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'open-channels' }) });
+  assert.match(harness.app.innerHTML, /aria-label="Admin navigation"/);
 });
 
 test('admin page renders the first-run Connect stepper when credentials are missing', async () => {
