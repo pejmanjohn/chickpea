@@ -10,6 +10,10 @@ import {
   type AgentDispatchResult,
   type SlackFlueDispatchState,
 } from '../src/slack/flue-dispatch.ts';
+import type {
+  FlueDispatchEnvelopeV1,
+  FlueDispatchReceiptV1,
+} from '../src/slack/turn-job-types.ts';
 import { runTurn } from '../src/slack/run-turn.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { compileRuntimePlanV2, deriveRuntimePlanInstanceId } from '../src/agents/runtime-plan.ts';
@@ -500,7 +504,7 @@ test('runTurn freezes eligibility before exposing the receipt-scoped relay facto
   }
 });
 
-test('a frozen Cloudflare plan narrows before admission when its live binding disappeared', async () => {
+test('a frozen Cloudflare plan narrows unsettled dispatches when its live binding disappeared', async () => {
   const previousNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
   Object.defineProperty(globalThis, 'navigator', {
     configurable: true,
@@ -549,34 +553,54 @@ test('a frozen Cloudflare plan narrows before admission when its live binding di
       },
     },
   } as unknown as WebClient;
-  const flueDispatch: SlackFlueDispatchState = {
-    prepare: async () => { throw new Error('focused agent override owns dispatch'); },
-    recordReceipt: async (receipt) => receipt,
-    recordSettlement: async (settlement) => settlement,
-    reconcileExistingInstance: async () => { throw new Error('not used'); },
-    markRecoveryRequired: async () => {},
-  };
   try {
-    await runTurn(turn, repositoryAssignment, {}, {
-      client,
-      runtimePlanDecision: {
-        runtimePlan,
+    for (const checkpoint of ['unstarted', 'envelope', 'receipt'] as const) {
+      const dispatchEnvelope: FlueDispatchEnvelopeV1 = {
+        schemaVersion: 1,
+        agentName: 'chickpea-slack-v2',
         instanceId: deriveRuntimePlanInstanceId(runtimePlan),
-        continuityNoticeRequired: false,
-      },
-      flueDispatch,
-      usageRecordingEnabled: false,
-      async agentPrompt(input): Promise<AgentDispatchResult> {
-        assert.equal(input.useCloudflareSandbox, false);
-        return {
-          text: 'Normal response without repository access.',
-          requestedModel: repositoryAssignment.model ?? null,
-          returnedModel: null,
-          reportedUsage: null,
-          usageCompleteness: 'not_reported',
-        };
-      },
-    });
+        uid: null,
+        message: { kind: 'user', body: `durable ${checkpoint} message` },
+        initialData: runtimePlan,
+        idempotencyKey: `sandbox-binding-removed:${checkpoint}`,
+      };
+      const dispatchReceipt: FlueDispatchReceiptV1 = {
+        submissionId: `submission_sandbox_binding_removed_${checkpoint}`,
+        acceptedAt: '2026-08-08T18:00:00.000Z',
+        uid: `uid_sandbox_binding_removed_${checkpoint}`,
+      };
+      const flueDispatch: SlackFlueDispatchState = {
+        ...(checkpoint === 'unstarted' ? {} : { dispatchEnvelope }),
+        ...(checkpoint === 'receipt' ? { dispatchReceipt } : {}),
+        prepare: async () => { throw new Error('focused agent override owns dispatch'); },
+        recordReceipt: async (receipt) => receipt,
+        recordSettlement: async (settlement) => settlement,
+        reconcileExistingInstance: async () => { throw new Error('not used'); },
+        markRecoveryRequired: async () => {},
+      };
+      await runTurn({ ...turn, eventId: `${turn.eventId}_${checkpoint}` }, repositoryAssignment, {}, {
+        client,
+        runtimePlanDecision: {
+          runtimePlan,
+          instanceId: deriveRuntimePlanInstanceId(runtimePlan),
+          continuityNoticeRequired: false,
+        },
+        flueDispatch,
+        usageRecordingEnabled: false,
+        async agentPrompt(input): Promise<AgentDispatchResult> {
+          assert.equal(input.useCloudflareSandbox, false, checkpoint);
+          assert.equal(input.state.dispatchEnvelope, checkpoint === 'unstarted' ? undefined : dispatchEnvelope);
+          assert.equal(input.state.dispatchReceipt, checkpoint === 'receipt' ? dispatchReceipt : undefined);
+          return {
+            text: 'Normal response without repository access.',
+            requestedModel: repositoryAssignment.model ?? null,
+            returnedModel: null,
+            reportedUsage: null,
+            usageCompleteness: 'not_reported',
+          };
+        },
+      });
+    }
     assert.match(JSON.stringify(finalPayloads), new RegExp(SANDBOX_UNAVAILABLE_FALLBACK_NOTICE));
     assert.doesNotMatch(JSON.stringify(finalPayloads), /control-plane|binding|credential|token/i);
   } finally {

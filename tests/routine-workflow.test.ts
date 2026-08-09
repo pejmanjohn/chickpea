@@ -371,6 +371,47 @@ test('an admitted routine with a pre-dispatch cloud plan narrows when the bindin
   }
 });
 
+test('a persisted cloud plan narrows when the binding disappears before resume', async () => {
+  const store = new SqliteRoutineStore(':memory:', () => NOW);
+  const preparations: string[] = [];
+  try {
+    const fixture = await admittedFixture(store, 'persisted_binding_removed');
+    const first = await executeRoutineOccurrence({
+      env: {}, store, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt,
+    }, {
+      ...dependencies(),
+      sandboxInstalled: () => true,
+      useCloudflareSandbox: async () => true,
+      prepareSandbox: async (_env: unknown, key: string) => { preparations.push(key); },
+      handle: fakeHandle({ dispatchError: new Error('dispatch interrupted') }),
+    });
+    assert.equal(first, 'resumable');
+    const persisted = (await store.getRun(fixture.run.id))?.flueAgentEnvelope;
+    assert.equal(
+      parseRoutineExecutionInitialData(persisted?.initialData).runtimePlan.sandbox.mode,
+      'cloudflare',
+    );
+
+    const resumed = await executeRoutineOccurrence({
+      env: {}, store, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt,
+    }, {
+      ...dependencies(),
+      sandboxInstalled: () => false,
+      useCloudflareSandbox: async () => { throw new Error('must preserve stored plan'); },
+      prepareSandbox: async () => { throw new Error('must not prepare missing binding'); },
+      handle: fakeHandle({}),
+    });
+
+    assert.equal(resumed, 'completed');
+    assert.equal(preparations.length, 1);
+    const completed = await store.getRun(fixture.run.id);
+    assert.equal(completed?.status, 'no_op');
+    assert.deepEqual(completed?.flueAgentEnvelope, persisted);
+  } finally {
+    store.close();
+  }
+});
+
 test('missing, multiple, and free-form JSON results fail as result_invalid without delivery', async () => {
   for (const [suffix, data] of [
     ['missing', {}],

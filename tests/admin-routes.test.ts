@@ -3231,6 +3231,55 @@ test('installed Cloudflare sandbox remains off until confirmed enable and report
   }
 });
 
+test('Sandbox advanced settings update cannot re-enable a runtime disabled by another tab', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  const identity = new SqliteIdentityStore(':memory:');
+  try {
+    const app = appWithAdminOptions(store, { settings, identity });
+    await withCloudflareUserAgent(async () => {
+      await settings.applySettingsPatch({
+        set: [
+          { key: 'sandbox.enabled', value: 'true' },
+          { key: 'sandbox.allowedHosts', value: JSON.stringify(['registry.npmjs.org']) },
+          { key: 'sandbox.monthlySessionCap', value: '200' },
+        ],
+      });
+
+      // Simulate the later disable from another Admin tab.
+      const disabled = await app.request('/admin/api/sandbox/status', {
+        method: 'PUT',
+        headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+        body: JSON.stringify({
+          enabled: false,
+          allowedHosts: ['registry.npmjs.org'],
+          monthlySessionCap: 200,
+        }),
+      }, { SANDBOX: {} });
+      assert.equal(disabled.status, 200);
+
+      const advanced = await app.request('/admin/api/sandbox/status', {
+        method: 'PATCH',
+        headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+        body: JSON.stringify({
+          allowedHosts: ['registry.npmjs.org', 'pypi.org'],
+          monthlySessionCap: 300,
+        }),
+      }, { SANDBOX: {} });
+      assert.equal(advanced.status, 200);
+      const advancedBody = await advanced.json() as Record<string, unknown>;
+      assert.equal(advancedBody.storedEnabled, false);
+      assert.equal(advancedBody.enabled, false);
+      assert.deepEqual(advancedBody.allowedHosts, ['registry.npmjs.org', 'pypi.org']);
+      assert.equal(advancedBody.monthlySessionCap, 300);
+    });
+  } finally {
+    identity.close();
+    settings.close();
+    store.close();
+  }
+});
+
 test('admin memory status is auth-gated, always on, and cannot be disabled', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   try {

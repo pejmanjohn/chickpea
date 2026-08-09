@@ -6,7 +6,7 @@ export type SandboxSelection = 'bash' | 'cloudflare';
 export interface SandboxSelectionInput {
   target: 'cloudflare' | 'node';
   /** Live binding availability, never a persisted proxy for installation. */
-  installed?: boolean;
+  installed: boolean;
   enabled: boolean;
   appConnected: boolean;
   repositoryGrants: readonly RepositoryGrant[];
@@ -44,12 +44,12 @@ export function resolveSandboxSelection(
   input: SandboxSelectionInput,
 ): SandboxSelectionDecision {
   const selection = selectSandbox(input);
-  const requestedWithBinding = selectSandbox({ ...input, installed: true });
+  const unavailableFallback =
+    input.target === 'cloudflare' &&
+    !input.installed &&
+    selectSandbox({ ...input, installed: true }) === 'cloudflare';
   return {
     selection,
-    unavailableFallback:
-      input.target === 'cloudflare' &&
-      input.installed === false &&
-      requestedWithBinding === 'cloudflare',
+    unavailableFallback,
   };
 }

@@ -384,7 +384,10 @@ async function prepareExecution(
     sandboxUnavailableFallback = sandboxDecision.unavailableFallback;
   }
   const initialData = executionInitialData(envelope);
-  const usedCloudflareSandbox = initialData.runtimePlan.sandbox.mode === 'cloudflare';
+  const cloudflareSandboxRequested = initialData.runtimePlan.sandbox.mode === 'cloudflare';
+  const sandboxInstalled = (dependencies.sandboxInstalled ?? sandboxBindingInstalled)(input.env);
+  sandboxUnavailableFallback ||= cloudflareSandboxRequested && !sandboxInstalled;
+  const usedCloudflareSandbox = cloudflareSandboxRequested && sandboxInstalled;
   const sandboxConversationKey = runtimePlanSandboxConversationKey(
     initialData.runtimePlan,
     envelope.instanceId,

@@ -174,11 +174,10 @@ export interface ResolvedApiConnectionForTurn {
 export async function resolveSandboxScopedRepositoryAccess(input: {
   repositories: readonly RepositoryGrant[];
   env?: PlatformEnv;
-  forcedSandbox?: SandboxSelection;
   unavailableFallback: boolean;
   resolve?: typeof resolveRepositoryAccess;
 }): Promise<ResolvedRepositoryAccess> {
-  if (input.unavailableFallback || input.forcedSandbox === 'bash') {
+  if (input.unavailableFallback) {
     return {
       grants: [],
       connectors: [],
@@ -613,7 +612,6 @@ export async function createSlackAgentRuntime(
   const repositoryAccess = await resolveSandboxScopedRepositoryAccess({
     repositories: repositoryGrants,
     ...(env ? { env } : {}),
-    ...(input.forcedSandbox ? { forcedSandbox: input.forcedSandbox } : {}),
     unavailableFallback,
   });
   const sandboxSelection = input.forcedSandbox

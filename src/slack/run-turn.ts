@@ -349,14 +349,14 @@ export async function runTurn(
     runtimePlanDecision = frozen.decision;
     sandboxUnavailableFallback = frozen.unavailableFallback;
   }
-  const sandboxAdmissionUnstarted =
-    !options.flueDispatch?.dispatchEnvelope &&
-    !options.flueDispatch?.dispatchReceipt &&
-    !options.flueDispatch?.flueSettlement;
+  // A frozen plan is durable, but binding availability is not. Preserve its
+  // envelope/receipt for idempotent reattachment while narrowing any work that
+  // has not settled yet; settled replies must replay their saved result.
+  const sandboxDispatchUnsettled = !options.flueDispatch?.flueSettlement;
   if (
     runtimePlanDecision?.runtimePlan.sandbox.mode === 'cloudflare' &&
     !sandboxBindingInstalled(platformEnv) &&
-    sandboxAdmissionUnstarted
+    sandboxDispatchUnsettled
   ) {
     sandboxUnavailableFallback = true;
   }
@@ -718,7 +718,7 @@ export async function runTurn(
       try {
         usedCloudflareSandbox = runtimePlanDecision
           ? runtimePlanDecision.runtimePlan.sandbox.mode === 'cloudflare' &&
-            !(sandboxUnavailableFallback && sandboxAdmissionUnstarted)
+            !sandboxUnavailableFallback
           : await shouldUseCloudflareSandbox(assignment, platformEnv);
         if (!options.agentPrompt && !options.flueDispatch) {
           throw new Error('Durable Flue dispatch state is unavailable.');

@@ -175,6 +175,7 @@ import {
   SANDBOX_SETTING_KEYS,
 } from '../config/sandbox-settings.ts';
 import { validEnabledRepositoryGrants } from '../sandbox/egress-handler.ts';
+import { sandboxBindingInstalled } from '../sandbox/select.ts';
 import { parseSkillSource, resolveSkillSource, SkillImportError } from '../config/skill-import.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import {
@@ -923,6 +924,11 @@ const sandboxSettingsSchema = v.object({
   monthlySessionCap: v.pipe(v.number(), v.integer(), v.minValue(0), v.maxValue(100_000)),
 });
 
+const sandboxAdvancedSettingsSchema = v.object({
+  allowedHosts: v.array(v.picklist(SANDBOX_PACKAGE_REGISTRY_HOSTS)),
+  monthlySessionCap: v.pipe(v.number(), v.integer(), v.minValue(0), v.maxValue(100_000)),
+});
+
 async function sandboxStatus(
   settingsStore: SettingsStore,
   configStore: ConfigStore,
@@ -961,10 +967,6 @@ async function sandboxStatus(
       ? 'Requires Workers Paid. Real containers run on your Cloudflare account; a typical session costs about 1 cent.'
       : null,
   };
-}
-
-function sandboxBindingInstalled(env: PlatformEnv | undefined): boolean {
-  return env?.SANDBOX !== undefined || env?.Sandbox !== undefined;
 }
 
 const slackBehaviorPatchSchema = v.pipe(
@@ -1022,7 +1024,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   const recordSandboxAudit = async (
     c: Context,
     action: 'sandbox.install.request' | 'sandbox.install.cancel' |
-      'sandbox.runtime.enable' | 'sandbox.runtime.disable',
+      'sandbox.runtime.enable' | 'sandbox.runtime.disable' | 'sandbox.advanced.update',
     outcome: 'success' | 'denied',
     reasonCode?: string,
   ): Promise<void> => {
@@ -3084,6 +3086,32 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       sandbox.enabled ? 'sandbox.runtime.enable' : 'sandbox.runtime.disable',
       'success',
     );
+    return c.json(await sandboxStatus(
+      settings(c),
+      store(c),
+      c.env as PlatformEnv | undefined,
+    ));
+  });
+
+  app.patch('/admin/api/sandbox/status', async (c) => {
+    const parsed = v.safeParse(sandboxAdvancedSettingsSchema, await readJson(c.req));
+    if (!parsed.success) {
+      return invalidRequest(c);
+    }
+    const sandbox = parsed.output;
+    await settings(c).applySettingsPatch({
+      set: [
+        {
+          key: SANDBOX_SETTING_KEYS.allowedHosts,
+          value: JSON.stringify([...new Set(sandbox.allowedHosts)]),
+        },
+        {
+          key: SANDBOX_SETTING_KEYS.monthlySessionCap,
+          value: String(sandbox.monthlySessionCap),
+        },
+      ],
+    });
+    await recordSandboxAudit(c, 'sandbox.advanced.update', 'success');
     return c.json(await sandboxStatus(
       settings(c),
       store(c),

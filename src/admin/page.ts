@@ -6980,6 +6980,7 @@ details[open].advanced summary::before {
     if (status) {
       if (status.target === "node") badge = '<span class="badge badge-off">Unsupported on Node</span>';
       else if (!status.installed && status.installRequested) badge = '<span class="badge badge-off">Redeploy required</span>';
+      else if (!status.installed && status.storedEnabled) badge = '<span class="badge badge-off">Not installed; saved On state</span>';
       else if (!status.installed) badge = '<span class="badge badge-off">Not installed in this deployment</span>';
       else if (status.storedEnabled && (!status.githubConnected || !status.repositoryGrantReady)) badge = '<span class="badge badge-off">On, setup required</span>';
       else if (status.storedEnabled) badge = '<span class="badge badge-on"><span class="dot"></span>On</span>';
@@ -7020,8 +7021,11 @@ details[open].advanced summary::before {
 
     var body = '';
     if (!status.installed && !status.installRequested) {
-      body = '<div class="action-well"><div class="danger-copy"><span class="field-label">Not installed in this deployment</span><span class="hint">The slim deployment does not build Ubuntu or create Container infrastructure. A Container application or image from an earlier install may still remain in Cloudflare until you remove it.</span></div>' +
-        '<button type="button" class="btn btn-primary" data-action="sandbox-install-open"' + disabled + '>Install coding sandbox</button></div>';
+      body = status.storedEnabled
+        ? '<div class="action-well"><div class="danger-copy"><span class="field-label">Saved On state from an earlier deployment</span><span class="hint">The Container is not installed, so this state is ineffective. Clear it before reinstalling so a later Sandbox redeploy cannot reactivate coding work implicitly.</span></div>' +
+          '<button type="button" class="btn btn-soft" data-action="sandbox-cancel-install"' + disabled + '>' + (state.sandboxSaving === "cancel" ? "Clearing&hellip;" : "Clear saved state") + '</button></div>'
+        : '<div class="action-well"><div class="danger-copy"><span class="field-label">Not installed in this deployment</span><span class="hint">The slim deployment does not build Ubuntu or create Container infrastructure. A Container application or image from an earlier install may still remain in Cloudflare until you remove it.</span></div>' +
+          '<button type="button" class="btn btn-primary" data-action="sandbox-install-open"' + disabled + '>Install coding sandbox</button></div>';
     } else if (!status.installed) {
       body = '<div class="action-well"><div class="danger-copy"><span class="field-label">Redeploy required</span><span class="hint">Chickpea saved your request, but Chickpea cannot redeploy itself because deployment authority stays in your Cloudflare account.</span></div>' +
         '<button type="button" class="btn btn-primary" data-action="sandbox-check-again"' + disabled + '>' + (state.sandboxSaving === "check" ? "Checking&hellip;" : "Check again") + '</button>' +
@@ -8672,6 +8676,7 @@ details[open].advanced summary::before {
 
   function cancelSandboxInstall() {
     if (state.sandboxSaving) return;
+    var clearingSavedState = !!(state.sandboxStatus && state.sandboxStatus.storedEnabled && !state.sandboxStatus.installRequested);
     state.sandboxSaving = "cancel";
     state.sandboxError = "";
     state.sandboxNotice = "";
@@ -8679,7 +8684,9 @@ details[open].advanced summary::before {
     api("/admin/api/sandbox/install", { method: "DELETE" }).then(function (body) {
       applySandboxStatus(body);
       state.sandboxSaving = false;
-      state.sandboxNotice = "Installation request canceled. Coding Sandbox remains off.";
+      state.sandboxNotice = clearingSavedState
+        ? "Saved Sandbox state cleared. Coding Sandbox remains off."
+        : "Installation request canceled. Coding Sandbox remains off.";
       render();
     }).catch(function (error) {
       state.sandboxSaving = false;
@@ -8740,8 +8747,25 @@ details[open].advanced summary::before {
   }
 
   function saveSandbox() {
-    var status = state.sandboxStatus || {};
-    putSandbox(!!status.storedEnabled, !!status.storedEnabled, "advanced");
+    if (state.sandboxSaving) return;
+    state.sandboxSaving = "advanced";
+    state.sandboxError = "";
+    state.sandboxNotice = "";
+    render();
+    postJson("/admin/api/sandbox/status", "PATCH", {
+      allowedHosts: sandboxDraft.allowedHosts.slice(),
+      monthlySessionCap: sandboxDraft.monthlySessionCap
+    }).then(function (result) {
+      applySandboxStatus(result);
+      state.sandboxSaving = false;
+      state.sandboxError = "";
+      state.sandboxNotice = "Advanced Sandbox settings saved.";
+      render();
+    }).catch(function (error) {
+      state.sandboxSaving = false;
+      state.sandboxError = sandboxMutationError(error, "Could not save Sandbox settings.");
+      render();
+    });
   }
 
   function saveEgress() {
@@ -9852,19 +9876,24 @@ details[open].advanced summary::before {
     if (action === "sandbox-disable") { putSandbox(false, false, "disable"); }
     if (action === "sandbox-copy-profile") {
       var sandboxBuildVariable = "CHICKPEA_DEPLOY_PROFILE=sandbox";
-      var sandboxBuildVariableInput = document.getElementById("sandbox-build-variable");
       var selectSandboxBuildVariable = function () {
-        if (sandboxBuildVariableInput && sandboxBuildVariableInput.select) sandboxBuildVariableInput.select();
         state.sandboxNotice = "Clipboard access was unavailable. The build variable is selected for manual copy.";
         render();
+        var sandboxBuildVariableInput = document.getElementById("sandbox-build-variable");
+        if (sandboxBuildVariableInput && sandboxBuildVariableInput.focus) sandboxBuildVariableInput.focus();
+        if (sandboxBuildVariableInput && sandboxBuildVariableInput.select) sandboxBuildVariableInput.select();
       };
       if (!navigator.clipboard || !navigator.clipboard.writeText) {
         selectSandboxBuildVariable();
       } else {
-        navigator.clipboard.writeText(sandboxBuildVariable).then(function () {
-          state.sandboxNotice = "Sandbox build variable copied.";
-          render();
-        }).catch(selectSandboxBuildVariable);
+        try {
+          Promise.resolve(navigator.clipboard.writeText(sandboxBuildVariable)).then(function () {
+            state.sandboxNotice = "Sandbox build variable copied.";
+            render();
+          }).catch(selectSandboxBuildVariable);
+        } catch (_) {
+          selectSandboxBuildVariable();
+        }
       }
     }
     if (state.egressSaving && action.indexOf("egress-") === 0) return;

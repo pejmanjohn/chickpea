@@ -387,7 +387,7 @@ test('repository grant added only to the live profile does not join a frozen thr
   );
 });
 
-test('a narrowed or frozen bash plan never resolves repository credentials', async () => {
+test('a missing-binding fallback strips repository credentials but intentional bash keeps repository access', async () => {
   const repository = {
     id: 'repo-sandbox-fallback',
     installationId: 42,
@@ -412,22 +412,27 @@ test('a narrowed or frozen bash plan never resolves repository credentials', asy
     };
   };
 
-  for (const input of [
-    { unavailableFallback: true, forcedSandbox: 'cloudflare' as const },
-    { unavailableFallback: false, forcedSandbox: 'bash' as const },
-  ]) {
-    const access = await resolveSandboxScopedRepositoryAccess({
-      repositories: [repository],
-      ...input,
-      resolve,
-    });
-    assert.deepEqual(access, {
-      grants: [],
-      connectors: [],
-      governsGithubHosts: true,
-    });
-  }
+  const fallback = await resolveSandboxScopedRepositoryAccess({
+    repositories: [repository],
+    unavailableFallback: true,
+    resolve,
+  });
+  assert.deepEqual(fallback, {
+    grants: [],
+    connectors: [],
+    governsGithubHosts: true,
+  });
   assert.equal(credentialResolutions, 0);
+
+  const intentionalBash = await resolveSandboxScopedRepositoryAccess({
+    repositories: [repository],
+    unavailableFallback: false,
+    resolve,
+  });
+  assert.equal(credentialResolutions, 1);
+  assert.deepEqual(intentionalBash.grants, [repository]);
+  assert.equal(intentionalBash.connectors.length, 1);
+  assert.equal(intentionalBash.governsGithubHosts, true);
 });
 
 test('slack-thread uses frozen repository grants with a live token that stays out of model-visible surfaces', async () => {

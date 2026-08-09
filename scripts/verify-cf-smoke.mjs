@@ -24,8 +24,10 @@
  *   7. a tampered signature is rejected (the stored secret is really used).
  *
  * No secrets, no external traffic: every outbound URL points at 127.0.0.1.
- * Exit 0 on success, 1 with diagnostics on failure. SMOKE_SKIP_BUILD=1 reuses
- * an existing dist-cf (iteration speed); CI should run the full build.
+ * Exit 0 on success, 1 with diagnostics on failure. The default/core run
+ * builds and structurally validates Sandbox before rebuilding and booting core;
+ * SMOKE_SKIP_BUILD=1 is available only to an explicit Sandbox-profile run that
+ * reuses an existing dist-cf artifact for iteration speed.
  */
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -103,24 +105,24 @@ function sameArray(actual, expected) {
   );
 }
 
-function buildCloudflareTarget() {
-  if (process.env.SMOKE_SKIP_BUILD === '1' && existsSync(CF_WRANGLER_CONFIG)) {
-    console.log('• SMOKE_SKIP_BUILD=1 — reusing existing dist-cf build');
+function buildCloudflareTarget(profile, { reuseExisting = false } = {}) {
+  if (reuseExisting && process.env.SMOKE_SKIP_BUILD === '1' && existsSync(CF_WRANGLER_CONFIG)) {
+    console.log(`• SMOKE_SKIP_BUILD=1 — reusing existing ${profile} dist-cf build`);
     return;
   }
-  console.log('• building Cloudflare target (Vite → dist-cf)…');
+  console.log(`• building ${profile} Cloudflare target (Vite → dist-cf)…`);
   const result = spawnSync('npm', ['run', 'flue:build:cf'], {
     cwd: REPO_ROOT,
+    env: { ...process.env, CHICKPEA_DEPLOY_PROFILE: profile },
     stdio: 'inherit',
   });
   if (result.status !== 0) {
-    throw new Error(`flue:build:cf failed (exit ${result.status})`);
+    throw new Error(`${profile} flue:build:cf failed (exit ${result.status})`);
   }
 }
 
-function verifyBuildArtifacts() {
+function verifyBuildArtifacts(expectedProfile = resolveCloudflareDeploymentProfile()) {
   const config = JSON.parse(readFileSync(CF_WRANGLER_CONFIG, 'utf8'));
-  const expectedProfile = resolveCloudflareDeploymentProfile();
   let actualProfile;
   try {
     actualProfile = classifyCloudflareDeploymentProfile(config);
@@ -706,11 +708,25 @@ async function main() {
     return;
   }
   assertNodeVersion();
-  buildCloudflareTarget();
-  console.log('• verifying build artifacts…');
-  verifyBuildArtifacts();
-  if (failures.length > 0) {
-    throw new Error('build artifacts failed verification');
+  const requestedProfile = resolveCloudflareDeploymentProfile();
+  const buildAndVerify = (profile, options) => {
+    buildCloudflareTarget(profile, options);
+    console.log(`• verifying ${profile} build artifacts…`);
+    verifyBuildArtifacts(profile);
+    if (failures.length > 0) {
+      throw new Error(`${profile} build artifacts failed verification`);
+    }
+  };
+  if (requestedProfile === 'core') {
+    // The core workerd scenario is the normal smoke target, but it cannot
+    // validate the optional overlay after its own rebuild. Validate the real
+    // generated Sandbox artifact first, then rebuild core for local boot.
+    buildAndVerify('sandbox');
+    buildAndVerify('core');
+  } else {
+    // An explicit Sandbox smoke retains its one-profile behavior, including
+    // the documented iteration-only reuse path.
+    buildAndVerify('sandbox', { reuseExisting: true });
   }
   writeSmokeWranglerConfigs();
 

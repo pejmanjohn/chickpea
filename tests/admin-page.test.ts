@@ -360,6 +360,7 @@ function runAdminPageHarness(
     egressPolicy?: EgressPolicyFixture;
     sandboxStatus?: SandboxStatusFixture;
     sandboxMutationError?: { status: number; error: string; message?: string };
+    clipboard?: 'available' | 'missing' | 'reject' | 'throw';
     modelCatalogStatus?: ModelCatalogStatusFixture;
     deferModelCatalogStatus?: boolean;
     modelCatalogRefreshError?: { status: number; error: string; message?: string };
@@ -455,7 +456,12 @@ function runAdminPageHarness(
     allowedHosts: string[];
     monthlySessionCap: number;
   }>;
+  sandboxAdvancedPatches: Array<{
+    allowedHosts: string[];
+    monthlySessionCap: number;
+  }>;
   sandboxInstallCalls: Array<'POST' | 'DELETE'>;
+  sandboxBuildVariableSelectedAttached(): boolean;
   modelCatalogRefreshCalls(): number;
   resolveModelCatalogStatus(result: ModelCatalogStatusFixture): void;
   agentPatchBodies: Array<{ id: string; body: Record<string, unknown> }>;
@@ -506,6 +512,8 @@ function runAdminPageHarness(
   const topbarRegion = makeRegion();
   const bodyRegion = makeRegion();
   let appHtml = '';
+  let renderGeneration = 0;
+  let sandboxBuildVariableSelectedAttached = false;
   let focusedAction: string | null = null;
   let activeElement: { focus(): void } | null = null;
   const focusElements: Record<string, { focus(): void }> = {};
@@ -527,6 +535,7 @@ function runAdminPageHarness(
     },
     set innerHTML(value: string) {
       appHtml = value;
+      renderGeneration += 1;
       focusedAction = null;
       activeElement = null;
       resetRegion(topbarRegion);
@@ -569,6 +578,10 @@ function runAdminPageHarness(
   const sandboxPuts: Array<{
     enabled: boolean;
     readinessConfirmed?: boolean;
+    allowedHosts: string[];
+    monthlySessionCap: number;
+  }> = [];
+  const sandboxAdvancedPatches: Array<{
     allowedHosts: string[];
     monthlySessionCap: number;
   }> = [];
@@ -892,6 +905,15 @@ function runAdminPageHarness(
             skillBrowseFocusCalls += 1;
           },
           setSelectionRange() {},
+        };
+      }
+      if (id === 'sandbox-build-variable' && appHtml.includes('id="sandbox-build-variable"')) {
+        var attachedGeneration = renderGeneration;
+        return {
+          focus() {},
+          select() {
+            sandboxBuildVariableSelectedAttached = attachedGeneration === renderGeneration;
+          },
         };
       }
       return null;
@@ -1566,6 +1588,22 @@ function runAdminPageHarness(
           monthlySessionCapConfigured: true,
         };
       }
+      if (method === 'PATCH') {
+        const body = JSON.parse(options?.body ?? '{}') as {
+          allowedHosts: string[];
+          monthlySessionCap: number;
+        };
+        sandboxAdvancedPatches.push({
+          allowedHosts: [...body.allowedHosts],
+          monthlySessionCap: body.monthlySessionCap,
+        });
+        sandboxStatus = {
+          ...sandboxStatus,
+          allowedHosts: [...body.allowedHosts],
+          monthlySessionCap: body.monthlySessionCap,
+          monthlySessionCapConfigured: true,
+        };
+      }
       return Promise.resolve(
         jsonResponse({
           ...sandboxStatus,
@@ -2058,14 +2096,18 @@ function runAdminPageHarness(
       },
       URL,
       URLSearchParams,
-      navigator: {
-        clipboard: {
-          writeText(text: string) {
-            clipboardWrites.push(text);
-            return Promise.resolve();
+      navigator: options.clipboard === 'missing'
+        ? {}
+        : {
+          clipboard: {
+            writeText(text: string) {
+              clipboardWrites.push(text);
+              if (options.clipboard === 'throw') throw new Error('clipboard blocked');
+              if (options.clipboard === 'reject') return Promise.reject(new Error('clipboard blocked'));
+              return Promise.resolve();
+            },
           },
         },
-      },
       window,
       history,
       location,
@@ -2124,7 +2166,9 @@ function runAdminPageHarness(
     favoritesPuts,
     egressPuts,
     sandboxPuts,
+    sandboxAdvancedPatches,
     sandboxInstallCalls,
+    sandboxBuildVariableSelectedAttached: () => sandboxBuildVariableSelectedAttached,
     modelCatalogRefreshCalls: () => modelCatalogRefreshCalls,
     resolveModelCatalogStatus(result) {
       const resolve = modelCatalogStatusResolver;
@@ -8140,6 +8184,103 @@ test('On/setup-required is truthful, keeps prerequisite as the primary action, a
   assert.match(harness.app.innerHTML, /Installed but off/);
   assert.match(harness.app.innerHTML, /Container application and image remain/);
 });
+
+test('Saving Sandbox advanced settings never replays cached runtime enablement', async () => {
+  const harness = runAdminPageHarness({
+    cloudflare: true,
+    sandboxStatus: {
+      installRequested: true,
+      installed: true,
+      storedEnabled: true,
+      enabled: true,
+      instanceType: 'standard-1',
+      allowedHosts: ['registry.npmjs.org'],
+      monthlySessionCap: 200,
+      monthlySessionCapConfigured: true,
+      target: 'cloudflare',
+      githubConnected: true,
+      repositoryGrantReady: true,
+      unmetPrerequisites: [],
+      workersPaidNote: 'Requires Workers Paid.',
+    },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  const change = harness.listeners.change;
+  assert.ok(click && change);
+  click({ target: actionTarget({ 'data-action': 'open-settings' }) });
+  await flushAsync();
+
+  // A second tab can disable the runtime after this tab loaded its cached
+  // storedEnabled=true status. Saving this tab's advanced draft must not write
+  // either runtime field back.
+  change({ target: valueTarget({ 'data-action': 'sandbox-host', 'data-host': 'pypi.org' }, '', true) });
+  click({ target: actionTarget({ 'data-action': 'sandbox-save' }) });
+  await flushAsync();
+
+  assert.deepEqual(harness.sandboxPuts, []);
+  assert.deepEqual(harness.sandboxAdvancedPatches, [{
+    allowedHosts: ['registry.npmjs.org', 'pypi.org'],
+    monthlySessionCap: 200,
+  }]);
+});
+
+test('a stale saved On state after core rollback is visible and must be cleared before reinstalling', async () => {
+  const harness = runAdminPageHarness({
+    cloudflare: true,
+    sandboxStatus: {
+      installRequested: false,
+      installed: false,
+      storedEnabled: true,
+      enabled: false,
+      instanceType: 'standard-1',
+      allowedHosts: ['registry.npmjs.org'],
+      monthlySessionCap: 200,
+      monthlySessionCapConfigured: true,
+      target: 'cloudflare',
+      githubConnected: true,
+      repositoryGrantReady: true,
+      unmetPrerequisites: ['sandbox_binding'],
+      workersPaidNote: 'Requires Workers Paid.',
+    },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'open-settings' }) });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /Not installed; saved On state/);
+  assert.match(harness.app.innerHTML, /Clear saved state/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="sandbox-install-open"/);
+
+  click({ target: actionTarget({ 'data-action': 'sandbox-cancel-install' }) });
+  await flushAsync();
+
+  assert.deepEqual(harness.sandboxInstallCalls, ['DELETE']);
+  assert.match(harness.app.innerHTML, /Saved Sandbox state cleared/);
+  assert.match(harness.app.innerHTML, /data-action="sandbox-install-open"/);
+});
+
+for (const clipboard of ['missing', 'reject', 'throw'] as const) {
+  test(`Sandbox build-variable copy selects the attached input when clipboard is ${clipboard}`, async () => {
+    const harness = runAdminPageHarness({ cloudflare: true, clipboard });
+    await flushAsync();
+    const click = harness.listeners.click;
+    assert.ok(click);
+    click({ target: actionTarget({ 'data-action': 'open-settings' }) });
+    await flushAsync();
+    click({ target: actionTarget({ 'data-action': 'sandbox-install-open' }) });
+    click({ target: actionTarget({ 'data-action': 'sandbox-install-confirm' }) });
+    await flushAsync();
+
+    click({ target: actionTarget({ 'data-action': 'sandbox-copy-profile' }) });
+    await flushAsync();
+
+    assert.match(harness.app.innerHTML, /Clipboard access was unavailable/);
+    assert.equal(harness.sandboxBuildVariableSelectedAttached(), true);
+  });
+}
 
 test('Sandbox mutation errors are accessible, escaped, and leave the last confirmed state visible', async () => {
   const harness = runAdminPageHarness({
