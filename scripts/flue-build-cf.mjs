@@ -13,6 +13,11 @@ import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
+import {
+  classifyCloudflareDeploymentProfile,
+  resolveCloudflareDeploymentProfile,
+} from './cloudflare-deployment-profile.mjs';
+
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const expectedOutputRoot = path.join(projectRoot, 'dist-cf');
 const redirectPath = path.join(projectRoot, '.wrangler', 'deploy', 'config.json');
@@ -45,6 +50,13 @@ if (!existsSync(configPath)) {
 }
 
 const config = JSON.parse(readFileSync(configPath, 'utf8'));
+const expectedProfile = resolveCloudflareDeploymentProfile();
+const actualProfile = classifyCloudflareDeploymentProfile(config);
+if (actualProfile !== expectedProfile) {
+  throw new Error(
+    `Cloudflare artifact profile mismatch: expected ${expectedProfile}, generated ${actualProfile}.`,
+  );
+}
 if (typeof config.main !== 'string' || !existsSync(path.resolve(path.dirname(configPath), config.main))) {
   throw new Error('Cloudflare deploy config does not point at a built Worker entry.');
 }
@@ -67,4 +79,6 @@ if (!authMigration?.new_sqlite_classes?.includes('AuthGuard')) {
   throw new Error('Cloudflare deploy config is missing the v7 AuthGuard migration.');
 }
 
-console.log(`Validated Cloudflare Vite artifact: ${path.relative(projectRoot, configPath)}`);
+console.log(
+  `Validated ${actualProfile} Cloudflare Vite artifact: ${path.relative(projectRoot, configPath)}`,
+);
