@@ -1,6 +1,8 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "chickpea",
+  "workers_dev": true,
+  "preview_urls": false,
   "compatibility_date": "2026-06-01",
   "compatibility_flags": ["nodejs_compat"],
   // Without this, a fresh install captures NO logs at all — the sanitized

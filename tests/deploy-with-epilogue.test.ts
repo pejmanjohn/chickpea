@@ -108,8 +108,13 @@ function createHarness() {
     `,
   );
   writeFileSync(fetchStub, `
+    let fetchCount = 0;
     globalThis.fetch = async (input, init) => {
-      const status = Number(process.env.DEPLOY_TEST_SETUP_STATUS || '200');
+      const statuses = (process.env.DEPLOY_TEST_SETUP_STATUSES
+        || process.env.DEPLOY_TEST_SETUP_STATUS
+        || '200').split(',').map(Number);
+      const status = statuses[Math.min(fetchCount, statuses.length - 1)];
+      fetchCount += 1;
       const headers = status >= 300 && status < 400 ? { location: '/admin' } : undefined;
       if (process.env.DEPLOY_TEST_FETCH_LOG) {
         const { appendFileSync } = await import('node:fs');
@@ -152,13 +157,14 @@ function runHarness(
       DEPLOY_TEST_LOG: harness.logPath,
       DEPLOY_TEST_SECRET_CAPTURE: harness.secretCapturePath,
       DEPLOY_TEST_FETCH_LOG: path.join(harness.root, 'fetch.log'),
+      DEPLOY_TEST_READINESS_INTERVAL_MS: '0',
       npm_execpath: harness.npmStub,
       NODE_OPTIONS: `${env.NODE_OPTIONS ?? ''} --import=${harness.fetchStub}`.trim(),
     },
   });
 }
 
-test('successful deploy generates stable auth and one readiness-gated private setup link', async (context) => {
+test('successful deploy generates stable auth after sustained setup-route readiness', async (context) => {
   const harness = createHarness();
   context.after(() => rmSync(harness.root, { recursive: true, force: true }));
 
@@ -185,10 +191,14 @@ test('successful deploy generates stable auth and one readiness-gated private se
   assert.match(capture.values.CHICKPEA_AUTH_SECRET, /^[A-Za-z0-9_-]{43}$/);
   assert.equal(existsSync(capture.path), false);
   const fetches = readFileSync(path.join(harness.root, 'fetch.log'), 'utf8').trim().split('\n');
-  assert.deepEqual(JSON.parse(fetches.at(-1) ?? '{}'), {
-    url: 'https://chickpea.example.workers.dev/admin/setup',
-    redirect: 'manual',
-  });
+  assert.equal(fetches.length, 3);
+  for (const fetch of fetches) {
+    const parsed = JSON.parse(fetch);
+    assert.match(parsed.url, /^https:\/\/chickpea\.example\.workers\.dev\/admin\/setup\?readiness=\d+-\d+$/);
+    assert.equal(parsed.redirect, 'manual');
+  }
+  assert.match(result.stdout, /Chickpea setup is responding/);
+  assert.match(result.stdout, /may take another 1–2 minutes/);
   const invoked = commands(harness.logPath);
   assert.match(invoked[0] ?? '', /^wrangler:\["secret","list","--format","json","--config",/);
   assert.match(
@@ -196,6 +206,40 @@ test('successful deploy generates stable auth and one readiness-gated private se
     /^wrangler:\["d1","migrations","apply","AUTH_DB","--remote","--config",".*\/dist-cf\/chickpea\/wrangler\.json"\]$/,
   );
   assert.match(invoked[2] ?? '', /^wrangler:\["deploy","--secrets-file",".*"\]$/);
+});
+
+test('a transient healthy response does not end the route-readiness gate', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+
+  const result = runHarness(harness, ['--skip-build'], {
+    DEPLOY_TEST_URL: 'https://chickpea.example.workers.dev',
+    DEPLOY_TEST_SETUP_STATUSES: '200,404,200,200,200',
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const fetches = readFileSync(path.join(harness.root, 'fetch.log'), 'utf8').trim().split('\n');
+  assert.equal(fetches.length, 5);
+  assert.match(result.stdout, /Chickpea setup is responding/);
+  assert.doesNotMatch(result.stdout, /still activating/);
+});
+
+test('an unsettled public route is reported honestly without claiming readiness', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+
+  const result = runHarness(harness, ['--skip-build'], {
+    DEPLOY_TEST_URL: 'https://chickpea.example.workers.dev',
+    DEPLOY_TEST_SETUP_STATUS: '404',
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const fetches = readFileSync(path.join(harness.root, 'fetch.log'), 'utf8').trim().split('\n');
+  assert.equal(fetches.length, 8);
+  assert.match(result.stdout, /Worker deployed\. Cloudflare is still activating its public URL/);
+  assert.match(result.stdout, /may take another 1–2 minutes/);
+  assert.doesNotMatch(result.stdout, /Chickpea (?:setup|Admin) is (?:ready|responding)|Chickpea is live/);
+  assert.match(result.stdout, /\/admin\/setup#setup=[A-Za-z0-9_-]{43}/);
 });
 
 test('successful custom-route deploy preserves the private setup path when Wrangler reports no origin', (context) => {
@@ -269,6 +313,9 @@ test('new Worker not-found is fresh, but a denied secret inventory stops before 
 
   assert.equal(freshResult.status, 0, freshResult.stderr);
   assert.equal(existsSync(fresh.secretCapturePath), true);
+  assert.match(freshResult.stdout, /Checking the public setup URL/);
+  const freshFetches = readFileSync(path.join(fresh.root, 'fetch.log'), 'utf8').trim().split('\n');
+  assert.equal(freshFetches.length, 3);
   assert.equal(deniedResult.status, 1);
   assert.match(deniedResult.stderr, /must allow secret listing/);
   assert.equal(commands(denied.logPath).length, 1);
@@ -318,6 +365,10 @@ test('redirected setup surface does not print a private link', (context) => {
 
   assert.equal(result.status, 0, result.stderr);
   assert.doesNotMatch(result.stdout, /#setup=/);
+  assert.match(result.stdout, /Chickpea Admin is responding/);
+  assert.match(result.stdout, /may take another 1–2 minutes/);
+  const fetches = readFileSync(path.join(harness.root, 'fetch.log'), 'utf8').trim().split('\n');
+  assert.equal(fetches.length, 3);
 });
 
 test('fresh deploy provisions AUTH_DB before migrations and rebuilds the binding', (context) => {

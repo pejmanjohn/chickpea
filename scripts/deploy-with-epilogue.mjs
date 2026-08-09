@@ -723,29 +723,54 @@ child.stdout.on('data', (chunk) => {
 });
 
 const RULE = '────────────────────────────────────────────────────────';
+const READINESS_REQUIRED_SUCCESSES = 3;
+const READINESS_MAX_ATTEMPTS = 8;
+const READINESS_INTERVAL_MS = (() => {
+  // Keep the production settling window meaningful while allowing the
+  // integration harness to exercise every state without sleeping.
+  const testOverride = process.env.DEPLOY_TEST_READINESS_INTERVAL_MS;
+  if (testOverride === undefined) return 2_000;
+  const parsed = Number(testOverride);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : 2_000;
+})();
 
 async function setupSurfaceReadiness(baseUrl) {
   const url = new URL('/admin/setup', baseUrl);
-  const retryDelays = [500, 1_000, 2_000, 4_000, 5_000, 5_000, 5_000];
-  for (let attempt = 0; attempt <= retryDelays.length; attempt += 1) {
+  let candidate = '';
+  let consecutiveSuccesses = 0;
+  for (let attempt = 0; attempt < READINESS_MAX_ATTEMPTS; attempt += 1) {
+    url.searchParams.set('readiness', `${Date.now()}-${attempt}`);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 5_000);
+    let observed = '';
     try {
       const response = await fetch(url, {
         method: 'GET',
         redirect: 'manual',
-        headers: { accept: 'text/html' },
+        cache: 'no-store',
+        headers: { accept: 'text/html', 'cache-control': 'no-cache' },
         signal: controller.signal,
       });
-      if (response.status === 200) return 'ready';
-      if (response.status >= 300 && response.status < 400) return 'configured';
+      if (response.status === 200) observed = 'ready';
+      if (response.status >= 300 && response.status < 400) observed = 'configured';
+      await response.body?.cancel();
     } catch {
       // Deployment propagation is eventually consistent; retry below.
     } finally {
       clearTimeout(timeout);
     }
-    if (attempt < retryDelays.length) {
-      await new Promise((resolve) => setTimeout(resolve, retryDelays[attempt]));
+
+    if (observed && observed === candidate) {
+      consecutiveSuccesses += 1;
+    } else {
+      candidate = observed;
+      consecutiveSuccesses = observed ? 1 : 0;
+    }
+    if (consecutiveSuccesses >= READINESS_REQUIRED_SUCCESSES) {
+      return candidate;
+    }
+    if (attempt < READINESS_MAX_ATTEMPTS - 1) {
+      await new Promise((resolve) => setTimeout(resolve, READINESS_INTERVAL_MS));
     }
   }
   return 'unavailable';
@@ -753,16 +778,18 @@ async function setupSurfaceReadiness(baseUrl) {
 
 function printPrivateSetupLink(baseUrl, setup, readiness) {
   const privateSetupUrl = setupCapabilityUrl(baseUrl, setup.capability);
-  const propagationNotice = readiness === 'unavailable'
-    ? '  The public route is still propagating. If the page does not open yet, wait a minute and retry this same link.\n\n'
-    : '';
+  const status = readiness === 'ready'
+    ? '  ✔ Worker deployed. Chickpea setup is responding.'
+    : '  ✔ Worker deployed. Cloudflare is still activating its public URL.';
   process.stdout.write(
     [
       '',
       RULE,
-      '  ✔ Deployed. Chickpea is live.',
+      status,
       '',
-      propagationNotice + '  Open this private setup link:',
+      '  Cloudflare may take another 1–2 minutes to make this URL available to you.',
+      '',
+      '  Open this private setup link:',
       RULE,
       privateSetupUrl,
     ].join('\n'),
@@ -775,7 +802,7 @@ function printPrivateSetupPath(setup) {
     [
       '',
       RULE,
-      '  ✔ Deployed. Chickpea is live.',
+      '  ✔ Worker deployed.',
       '',
       '  Wrangler did not report a public origin. Open this private path on your configured Chickpea domain:',
       RULE,
@@ -794,10 +821,13 @@ child.on('close', async (code) => {
     process.exit(0);
   }
   if (deployedUrl && deploymentAuthority) {
+    process.stdout.write('\nChecking the public setup URL...\n');
     const readiness = await setupSurfaceReadiness(deployedUrl);
     if (readiness === 'configured') {
       process.stdout.write(
-        `\n${RULE}\n  ✔ Chickpea is deployed and already configured.\n  Open ${deployedUrl}/admin\n${RULE}\n`,
+        `\n${RULE}\n  ✔ Worker deployed. Chickpea Admin is responding.\n\n` +
+        '  Cloudflare may take another 1–2 minutes to make this URL available to you.\n\n' +
+        `  Open ${deployedUrl}/admin\n${RULE}\n`,
       );
       process.exit(0);
     }
