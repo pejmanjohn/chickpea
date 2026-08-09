@@ -39,18 +39,26 @@ import {
 import type { McpConnectInput, McpDiscoveryResult } from '../src/config/mcp-test.ts';
 import { SqliteSettingsStore, type SettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore, type ConfigStore } from '../src/config/store.ts';
+import { beginOnboardingJourney } from '../src/config/onboarding-state.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 import type { IdentityStore } from '../src/identity/types.ts';
-import type {
+import {
+  WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+  type SlackIdentity,
   ApiConnectionConfig,
   CustomAgentConfig,
   McpConnectionConfig,
-  SlackIdentity,
 } from '../src/config/types.ts';
 import { withEnv } from './helpers/env.ts';
 import { loopbackListenSkipReason } from './helpers/listen.ts';
 import { FakeSlackBackend } from './parity/fake-slack.ts';
 import { writeSlackIdentityCredentials } from '../src/slack/identity-credentials.ts';
+import {
+  SLACK_SETTING_KEYS,
+  type SlackConversationsInfoResult,
+} from '../src/slack/credentials.ts';
+import { opaqueId } from '../src/work/admission.ts';
+import type { WorkRunListItem, WorkStore } from '../src/work/types.ts';
 import {
   readPendingSlackChallenge,
   recordPendingSlackChallenge,
@@ -126,6 +134,11 @@ interface AdminHarnessOptions {
   runtimeDrain?: () => Promise<RuntimeDrainStatus>;
   slackState?: SlackStateStore;
   identity?: IdentityStore;
+  work?: WorkStore;
+  slackConversationsInfo?: (
+    botToken: string,
+    channelId: string,
+  ) => Promise<SlackConversationsInfoResult>;
 }
 
 function appWithAdmin(store: ConfigStore, adminToken?: string): Hono {
@@ -178,6 +191,10 @@ function appWithAdminOptions(store: ConfigStore, options: AdminHarnessOptions = 
       ...(options.runtimeDrain ? { runtimeDrain: options.runtimeDrain } : {}),
       ...(options.slackState ? { slackState: options.slackState } : {}),
       ...(options.identity ? { identity: options.identity } : {}),
+      ...(options.work ? { work: options.work } : {}),
+      ...(options.slackConversationsInfo
+        ? { slackConversationsInfo: options.slackConversationsInfo }
+        : {}),
     }),
   );
   return app;
@@ -278,6 +295,74 @@ function googleApiConnection(
 
 function auth(token: string): HeadersInit {
   return { authorization: `Bearer ${token}` };
+}
+
+function deliveredOnboardingRun(
+  workspaceId: string,
+  channelId: string,
+  createdAt: number,
+): WorkRunListItem {
+  return {
+    work: { id: 'work_onboarding' as WorkRunListItem['work']['id'], kind: 'conversation', lifecycle: 'open', maximumSensitivity: 'private', createdAt: createdAt - 10, updatedAt: createdAt, closedAt: null },
+    binding: {
+      id: 'binding_onboarding' as WorkRunListItem['binding']['id'],
+      workId: 'work_onboarding' as WorkRunListItem['binding']['workId'],
+      adapterKind: 'slack',
+      externalAccountId: opaqueId('account', `slack:${workspaceId}`),
+      externalConversationId: 'conversation_opaque',
+      generation: 1,
+      lifecycle: 'active',
+      sourceVisibility: 'private',
+      configMode: 'resolve_each_run',
+      pinnedConfigRevisionId: null,
+      orderingKey: `slack:${workspaceId}:${channelId}`,
+      createdAt: createdAt - 10,
+      expiredAt: null,
+    },
+    run: {
+      id: 'run_onboarding' as WorkRunListItem['run']['id'],
+      workId: 'work_onboarding' as WorkRunListItem['run']['workId'],
+      bindingId: 'binding_onboarding' as WorkRunListItem['run']['bindingId'],
+      kind: 'interactive',
+      admissionSequence: 1,
+      triggerKind: 'slack_app_mention',
+      triggerRef: 'slack:event:onboarding',
+      dedupeKey: 'event-onboarding',
+      actorRef: null,
+      actorTrustTier: 'member',
+      sourceContextWatermark: null,
+      triggerContentRef: null,
+      preparedInputRef: null,
+      configRevisionId: 'config_onboarding' as WorkRunListItem['run']['configRevisionId'],
+      effectiveCapabilityDigest: 'a'.repeat(64),
+      executionAuthority: 'ledger',
+      coordinatorKind: 'interactive',
+      authorityEpoch: 1,
+      policyApprovedOutputRef: null,
+      renderedPayloadRef: null,
+      status: 'settled',
+      terminalDisposition: 'succeeded',
+      deliveryStatus: 'delivered',
+      deliveryMethod: 'slack_chat_postMessage',
+      deliveryAttemptId: 'attempt-onboarding',
+      deliveryRef: `slack:${channelId}:1900000000.000001`,
+      deliveryFinalizedAt: createdAt,
+      leaseOwner: null,
+      leaseUntil: null,
+      fencingToken: 1,
+      safeFailureCode: null,
+      recoveryResolutionKind: null,
+      recoveryAdminCredentialId: null,
+      recoveryOperatorLabel: null,
+      recoveryAuthOrigin: null,
+      recoveryReasonCode: null,
+      recoveryRequestId: null,
+      recoveryResolvedAt: null,
+      createdAt,
+      updatedAt: createdAt,
+      settledAt: createdAt,
+    },
+  };
 }
 
 async function withCloudflareUserAgent<T>(run: () => Promise<T>): Promise<T> {
@@ -1518,6 +1603,117 @@ test('admin API rejects patches that leave an agent without a resolvable model',
       },
     );
   } finally {
+    store.close();
+  }
+});
+
+test('onboarding API derives live stages and completes only after a delivered selected-channel mention', async () => {
+  const store = new SqliteConfigStore(':memory:');
+  const settings = new SqliteSettingsStore(':memory:');
+  let delivered: WorkRunListItem | undefined;
+  let onboardingChannelMember = true;
+  const work = {
+    async listRuns() {
+      return { items: delivered ? [delivered] : [], nextCursor: null };
+    },
+  } as unknown as WorkStore;
+  try {
+    const journey = await beginOnboardingJourney(settings, 1_800_000_000_000);
+    const app = appWithAdminOptions(store, {
+      settings,
+      work,
+      slackConversationsInfo: async (_botToken, channelId) => ({
+        ok: true,
+        error: undefined,
+        channel: {
+          id: channelId,
+          name: 'start-here',
+          isPrivate: false,
+          isMember: onboardingChannelMember,
+        },
+        facts: undefined,
+        retryAfterMs: undefined,
+      }),
+    });
+
+    const disconnected = await app.request('/admin/api/onboarding', { headers: auth(ADMIN_TOKEN) });
+    assert.equal(disconnected.status, 200);
+    assert.equal((await disconnected.json() as { stage: string }).stage, 'connect_slack');
+
+    const identity = await store.getSlackIdentity(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
+    await store.updateSlackIdentity(identity.id, identity.connectionRevision, {
+      lifecycle: 'connected',
+      teamId: 'TDESIGN',
+      botUserId: 'U_CHICKPEA',
+      credentialProvenance: 'stored',
+      health: 'healthy',
+    });
+    await settings.applySettingsPatch({
+      set: [
+        { key: SLACK_SETTING_KEYS.botToken, value: 'xoxb-test' },
+        { key: SLACK_SETTING_KEYS.signingSecret, value: 'signing-test' },
+        { key: SLACK_SETTING_KEYS.botUserId, value: 'U_CHICKPEA' },
+        { key: SLACK_SETTING_KEYS.teamId, value: 'TDESIGN' },
+        { key: SLACK_SETTING_KEYS.teamName, value: 'Acme Inc' },
+      ],
+    });
+
+    const choose = await app.request('/admin/api/onboarding', { headers: auth(ADMIN_TOKEN) });
+    assert.equal(choose.status, 200);
+    const chooseBody = await choose.json() as { stage: string; revision: string };
+    assert.equal(chooseBody.stage, 'choose_channel');
+    assert.equal(chooseBody.revision, journey.revision);
+
+    await store.putAssignment({
+      workspaceId: 'TDESIGN',
+      channelId: 'CSTART',
+      channelLabel: 'start-here',
+      agentId: 'agent_default',
+      enabled: true,
+    });
+    onboardingChannelMember = false;
+    const notJoined = await app.request('/admin/api/onboarding/try', {
+      method: 'POST',
+      headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        expectedRevision: chooseBody.revision,
+        workspaceId: 'TDESIGN',
+        channelId: 'CSTART',
+        channelName: 'start-here',
+      }),
+    });
+    assert.equal(notJoined.status, 409);
+    assert.deepEqual(await notJoined.json(), { error: 'slack_channel_membership_required' });
+
+    onboardingChannelMember = true;
+    const started = await app.request('/admin/api/onboarding/try', {
+      method: 'POST',
+      headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        expectedRevision: chooseBody.revision,
+        workspaceId: 'TDESIGN',
+        channelId: 'CSTART',
+        channelName: 'client-label-is-not-authoritative',
+      }),
+    });
+    assert.equal(started.status, 200);
+    const startedBody = await started.json() as {
+      stage: string;
+      channel: { id: string; name: string };
+      tryStartedAt: number;
+    };
+    assert.equal(startedBody.stage, 'try');
+    assert.deepEqual(startedBody.channel, { id: 'CSTART', name: 'start-here' });
+
+    const stillTrying = await app.request('/admin/api/onboarding', { headers: auth(ADMIN_TOKEN) });
+    assert.equal((await stillTrying.json() as { stage: string }).stage, 'try');
+
+    delivered = deliveredOnboardingRun('TDESIGN', 'CSTART', startedBody.tryStartedAt + 1);
+    const complete = await app.request('/admin/api/onboarding', { headers: auth(ADMIN_TOKEN) });
+    assert.equal(complete.status, 200);
+    assert.equal((await complete.json() as { stage: string }).stage, 'complete');
+  } finally {
+    settings.close();
     store.close();
   }
 });

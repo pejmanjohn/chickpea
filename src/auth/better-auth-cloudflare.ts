@@ -27,7 +27,8 @@ interface AuthGuardNamespace {
 export interface CloudflareBetterAuthEnv {
   AUTH_DB: D1Database;
   AUTH_GUARD: AuthGuardNamespace;
-  CHICKPEA_RECOVERY_TOKEN: string;
+  CHICKPEA_AUTH_SECRET?: string;
+  CHICKPEA_RECOVERY_TOKEN?: string;
 }
 
 export class D1BetterAuthBackend implements BetterAuthDatabaseBackend {

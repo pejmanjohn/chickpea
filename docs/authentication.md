@@ -6,13 +6,12 @@ Chickpea separates **who signed in** from **what that person may do**. Better Au
 
 A fresh Cloudflare or Node install uses invitation-only email/password accounts. It needs no Cloudflare Access configuration, email provider, hostname-specific OAuth application, or Chickpea-hosted control plane.
 
-1. Generate a 32-byte deployment recovery secret with `openssl rand -hex 32` and keep it in a password manager.
-2. Deploy with that value as `CHICKPEA_RECOVERY_TOKEN`. It is accepted only as 64-character hexadecimal, padded standard base64, or unpadded base64url that decodes to exactly 32 bytes.
-3. Open `<origin>/admin/setup` from the private deploy handoff and enter the workspace name, owner email, and a strong password.
-4. Chickpea pins the HTTPS origin, creates the first Better Auth owner and organization, and returns a secure browser session. Loopback development is the only plaintext exception.
-5. Continue directly to Slack setup.
+1. Deploy. Cloudflare automatically creates and preserves `CHICKPEA_AUTH_SECRET`; Node operators configure an equivalent stable 32-byte value.
+2. Open the private fragment link printed by the deploy (or by `npm run setup:link -- <origin>` on Node).
+3. Enter the owner email, password, and password confirmation. The initial organization is named `Chickpea`, and the display name is derived from the email.
+4. Chickpea pins the HTTPS origin, atomically creates the first Better Auth owner and organization, returns a secure browser session, and continues to `/admin/onboarding`.
 
-The deploy secret is not a login credential, password pepper, or invitation. Chickpea derives a separate versioned Better Auth secret with HKDF-SHA-256 and keeps both values out of pages, logs, diagnostics, exports, and product state. Setup is resumable and cannot create a second owner.
+The setup capability is separate from signing authority. Only its digest and deployment time enter Worker configuration; the browser removes the raw fragment before a request and consumes it through the resumable first-owner operation. The capability expires after 24 hours, cannot create a second owner, and can be replaced by retrying deployment without rotating active sessions.
 
 Browser sessions use Better Auth's opaque cookie with `HttpOnly`, `SameSite=Lax`, `Path=/`, and `Secure` on HTTPS. Human credential routes do not accept personal access tokens or agent credentials. State-changing forms and APIs also require the pinned origin and same-site request provenance.
 
@@ -41,9 +40,7 @@ An owner or authorized admin may create a 30-minute, show-once administrative re
 
 ## Owner recovery
 
-Open `/admin/recovery` and provide the durable owner email, a replacement password, and the deployment recovery secret. Recovery is not sign-in: it replaces exactly one owner credential, revokes the owner's sessions and personal access tokens, consumes the bounded recovery operation, and requires normal login.
-
-Losing both the owner password and `CHICKPEA_RECOVERY_TOKEN` means Chickpea cannot recover the account. Keep the secret outside the deployment account. Follow [Built-in authentication recovery](runbooks/password-recovery.md) for lost credentials or suspected secret compromise.
+Recovery is disabled by default. A Cloudflare account holder creates a temporary `CHICKPEA_RECOVERY_TOKEN`, opens `/admin/recovery`, and provides the durable owner email, replacement password, and temporary value. Recovery is not sign-in: it replaces exactly one owner credential, revokes the owner's sessions and personal access tokens, consumes that configured capability, and requires normal login. Cloudflare secrets are write-only, so operators create or replace the value; they do not retrieve an old one. Follow [Built-in authentication recovery](runbooks/password-recovery.md).
 
 ## Existing installs and `AUTH_DB`
 

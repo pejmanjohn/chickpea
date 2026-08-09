@@ -387,8 +387,8 @@ function verifyNpmPackManifest() {
 
 function verifyAuthenticationExportContract(packageJson) {
   const bindings = packageJson.cloudflare?.bindings ?? {};
-  if (JSON.stringify(Object.keys(bindings).sort()) !== JSON.stringify(['CHICKPEA_RECOVERY_TOKEN'])) {
-    fail('Deploy metadata must prompt only for CHICKPEA_RECOVERY_TOKEN');
+  if (Object.keys(bindings).length !== 0) {
+    fail('Consumer Deploy metadata must not prompt for a Chickpea credential');
   }
   const recovery = readFileSync(join(scratch, 'scripts', 'recover-auth.mjs'), 'utf8');
   if (/\bfetch\s*\(/.test(recovery) || /node:https/.test(recovery)) {
@@ -401,15 +401,12 @@ function verifyAuthenticationExportContract(packageJson) {
     fail('Identity export summary must omit invitation, personal-token, and session hashes');
   }
   const example = readFileSync(join(scratch, '.dev.vars.example'), 'utf8');
-  if (!/CHICKPEA_RECOVERY_TOKEN=""/.test(example)) {
-    fail('Cloudflare recovery example must keep the credential value empty');
-  }
   const activeExampleKeys = example.split('\n')
     .map((line) => line.trim())
     .filter((line) => line && !line.startsWith('#') && /^[A-Z][A-Z0-9_]*=/.test(line))
     .map((line) => line.slice(0, line.indexOf('=')));
-  if (JSON.stringify(activeExampleKeys) !== JSON.stringify(['CHICKPEA_RECOVERY_TOKEN'])) {
-    fail('Cloudflare Deploy example must expose exactly one active recovery-secret prompt');
+  if (activeExampleKeys.length !== 0) {
+    fail('Cloudflare Deploy example must expose no active secret prompt');
   }
   const wrangler = readFileSync(join(scratch, 'wrangler.jsonc'), 'utf8');
   if (/"vars"\s*:/.test(wrangler)) {

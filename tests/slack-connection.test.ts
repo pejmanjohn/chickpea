@@ -42,8 +42,11 @@ import {
 } from '../src/slack/identity-bootstrap.ts';
 import {
   MAX_PENDING_SLACK_CHALLENGE_BYTES,
+  PENDING_SLACK_CHALLENGE_PIN_MS,
+  PENDING_SLACK_CHALLENGE_TTL_MS,
   recordPendingSlackChallenge,
   readPendingSlackChallenge,
+  SLACK_REQUEST_FRESHNESS_MS,
   verifyPendingSlackChallenge,
 } from '../src/slack/identity-handshake.ts';
 import {
@@ -131,12 +134,24 @@ function pendingIdentity(overrides: Partial<SlackIdentity> = {}): SlackIdentity 
 
 function signedChallenge(
   secret: string,
-  options: { challenge?: string; timestamp?: number } = {},
+  options: {
+    challenge?: string;
+    timestamp?: number;
+    appId?: string;
+    teamId?: string;
+    includeIdentity?: boolean;
+  } = {},
 ): { rawBody: string; signature: string; timestamp: string } {
   const timestamp = String(options.timestamp ?? Math.floor(Date.now() / 1_000));
   const rawBody = JSON.stringify({
     type: 'url_verification',
     challenge: options.challenge ?? 'challenge-finance',
+    ...(options.includeIdentity === false
+      ? {}
+      : {
+          api_app_id: options.appId ?? 'A0FINANCE',
+          team_id: options.teamId ?? 'T_ACME',
+        }),
   });
   return {
     rawBody,
@@ -145,6 +160,43 @@ function signedChallenge(
       .update(`v0:${timestamp}:${rawBody}`)
       .digest('hex')}`,
   };
+}
+
+async function recordWorkspaceDefaultChallenge(
+  config: SqliteConfigStore,
+  settings: SettingsStore,
+  signingSecret: string,
+  options: { appId?: string; teamId?: string; now?: number } = {},
+): Promise<void> {
+  const identity = await config.getSlackIdentity('slack_identity_default');
+  const now = options.now ?? Date.now();
+  const recorded = await recordPendingSlackChallenge(
+    settings,
+    identity,
+    signedChallenge(signingSecret, {
+      timestamp: Math.floor(now / 1_000),
+      appId: options.appId ?? 'A0CHICKPEA',
+      teamId: options.teamId ?? 'T_ACME',
+    }),
+    { now },
+  );
+  assert.equal(recorded.accepted, true);
+}
+
+async function markWorkspaceDefaultConnected(
+  config: SqliteConfigStore,
+  overrides: Partial<SlackIdentity> = {},
+): Promise<SlackIdentity> {
+  const identity = await config.getSlackIdentity('slack_identity_default');
+  return config.updateSlackIdentity(identity.id, identity.connectionRevision, {
+    lifecycle: 'connected',
+    teamId: 'T_ACME',
+    appId: 'A0CHICKPEA',
+    botUserId: 'U_OLD',
+    credentialProvenance: 'stored',
+    health: 'healthy',
+    ...overrides,
+  });
 }
 
 function validDedicatedSlackDeps() {
@@ -238,6 +290,7 @@ function listenFakeSlack(
   authTestBody: Record<string, unknown>,
   usersInfoBody?: Record<string, unknown> | ReadonlyArray<Record<string, unknown>>,
   authTestHeaders: Readonly<Record<string, string>> = {},
+  conversationsListBody: Record<string, unknown> = { ok: true, channels: [] },
 ): Promise<{
   server: Server;
   baseUrl: string;
@@ -264,6 +317,11 @@ function listenFakeSlack(
         res.end(JSON.stringify(nextUsersInfoBody));
         return;
       }
+    }
+    if (req.url?.endsWith('/conversations.list')) {
+      authHeaders.push(req.headers.authorization ?? '');
+      res.end(JSON.stringify(conversationsListBody));
+      return;
     }
     res.statusCode = 404;
     res.end('{"ok":false,"error":"unknown_method"}');
@@ -373,11 +431,26 @@ function listenControlledFakeSlack(authTestBody: Record<string, unknown>): Promi
   const { promise: released, resolve: releaseAuth } = Promise.withResolvers<void>();
   const server = createServer((req, res) => {
     res.setHeader('content-type', 'application/json');
+    if (req.url?.endsWith('/users.info')) {
+      res.end(JSON.stringify({
+        ok: true,
+        user: {
+          id: 'U_NEW',
+          profile: { display_name: 'Chickpea', api_app_id: 'A0CHICKPEA' },
+        },
+      }));
+      return;
+    }
+    if (req.url?.endsWith('/conversations.list')) {
+      res.end(JSON.stringify({ ok: true, channels: [] }));
+      return;
+    }
     if (!req.url?.endsWith('/auth.test')) {
       res.statusCode = 404;
       res.end('{"ok":false,"error":"unknown_method"}');
       return;
     }
+    res.setHeader('x-oauth-scopes', slackAppManifest.oauth_config.scopes.bot.join(','));
     markStarted();
     void released.then(() => res.end(JSON.stringify(authTestBody)));
   });
@@ -484,7 +557,7 @@ test('Slack identity returns the live bot name, avatar, and exact app settings l
       const response = await appWith(settings).request('/admin/api/slack-identity', {
         headers: auth(),
       });
-      assert.equal(response.status, 200);
+      assert.equal(response.status, 200, await response.clone().text());
       assert.deepEqual(await response.json(), {
         displayName: 'Chickpea Helper',
         avatarUrl: 'https://avatars.slack-edge.com/2026-07-28/chickpea_512.png',
@@ -1426,8 +1499,10 @@ test('Slack behavior PUT rejects empty, unknown, and non-boolean bodies', async 
 test('wizard GET reports missing credentials and substitutes the request origin into the manifest link', async () => {
   await withEnv(NO_SLACK_ENV, async () => {
     const settings = new SqliteSettingsStore(':memory:');
+    const config = new SqliteConfigStore(':memory:');
     try {
-      const app = appWith(settings);
+      const identity = await config.getSlackIdentity('slack_identity_default');
+      const app = appWith(settings, config);
       const response = await app.request('https://tag.example.workers.dev/admin/api/slack-connection', {
         headers: auth(),
       });
@@ -1444,7 +1519,10 @@ test('wizard GET reports missing credentials and substitutes the request origin 
         botUserId: 'missing',
       });
       assert.equal(body.connected, false);
-      assert.equal(body.requestUrl, 'https://tag.example.workers.dev/channels/slack/events');
+      assert.equal(
+        body.requestUrl,
+        `https://tag.example.workers.dev/channels/slack/events/${identity.ingressKey}`,
+      );
 
       const manifestUrl = new URL(body.manifestUrl);
       assert.equal(`${manifestUrl.origin}${manifestUrl.pathname}`, 'https://api.slack.com/apps');
@@ -1468,6 +1546,7 @@ test('wizard GET reports missing credentials and substitutes the request origin 
       assert.ok(manifest.settings.event_subscriptions.bot_events.includes('app_context_changed'));
       assert.equal(manifest.settings.interactivity.is_enabled, false);
     } finally {
+      config.close();
       settings.close();
     }
   });
@@ -1476,8 +1555,10 @@ test('wizard GET reports missing credentials and substitutes the request origin 
 test('wizard GET honors x-forwarded-proto/host when deriving the events URL', async () => {
   await withEnv(NO_SLACK_ENV, async () => {
     const settings = new SqliteSettingsStore(':memory:');
+    const config = new SqliteConfigStore(':memory:');
     try {
-      const app = appWith(settings);
+      const identity = await config.getSlackIdentity('slack_identity_default');
+      const app = appWith(settings, config);
       const response = await app.request('http://127.0.0.1:8787/admin/api/slack-connection', {
         headers: {
           ...auth(),
@@ -1486,15 +1567,19 @@ test('wizard GET honors x-forwarded-proto/host when deriving the events URL', as
         },
       });
       const body = (await response.json()) as { requestUrl: string; manifestUrl: string };
-      assert.equal(body.requestUrl, 'https://chickpea.acme.workers.dev/channels/slack/events');
+      assert.equal(
+        body.requestUrl,
+        `https://chickpea.acme.workers.dev/channels/slack/events/${identity.ingressKey}`,
+      );
       assert.ok(body.manifestUrl.includes(encodeURIComponent(body.requestUrl)));
     } finally {
+      config.close();
       settings.close();
     }
   });
 });
 
-test('wizard GET reports env-configured credentials as read-only env sources', async () => {
+test('wizard GET reports env credentials but withholds connected until lifecycle proof', async () => {
   await withEnv(
     {
       ...NO_SLACK_ENV,
@@ -1516,7 +1601,7 @@ test('wizard GET reports env-configured credentials as read-only env sources', a
           signingSecret: 'env',
           botUserId: 'env',
         });
-        assert.equal(body.connected, true);
+        assert.equal(body.connected, false);
       } finally {
         settings.close();
       }
@@ -1524,40 +1609,80 @@ test('wizard GET reports env-configured credentials as read-only env sources', a
   );
 });
 
-test('wizard POST validates via auth.test, persists creds + bot user id, and the resolver serves them', async (t) => {
+test('wizard POST requires the signed challenge and live Slack readiness before connecting', async (t) => {
   const skip = await loopbackListenSkipReason();
   if (skip) {
     t.skip(skip);
     return;
   }
-  const { server, baseUrl } = await listenFakeSlack({
-    ok: true,
-    team: 'Acme Inc',
-    user: 'tag',
-    user_id: 'U_TAG_BOT',
-  });
+  const { server, baseUrl } = await listenFakeSlack(
+    {
+      ok: true,
+      app_id: 'A0CHICKPEA',
+      team_id: 'T_ACME',
+      team: 'Acme Inc',
+      user: 'tag',
+      user_id: 'U_TAG_BOT',
+      bot_id: 'B_TAG',
+    },
+    [
+      {
+        ok: true,
+        user: {
+          id: 'U_TAG_BOT',
+          profile: { display_name: 'Chickpea', api_app_id: 'A0CHICKPEA' },
+        },
+      },
+      {
+        ok: true,
+        user: {
+          id: 'U_TAG_BOT',
+          profile: { display_name: 'Chickpea', api_app_id: 'A0CHICKPEA' },
+        },
+      },
+    ],
+    { 'x-oauth-scopes': slackAppManifest.oauth_config.scopes.bot.join(',') },
+  );
   const settings = new SqliteSettingsStore(':memory:');
   const config = new SqliteConfigStore(':memory:');
   try {
     await withEnv({ ...NO_SLACK_ENV, SLACK_API_URL: baseUrl }, async () => {
+      await recordWorkspaceDefaultChallenge(config, settings, 'pasted-secret');
       const app = appWith(settings, config);
+      const rejectedSecret = await postCreds(app, {
+        botToken: 'xoxb-pasted',
+        signingSecret: 'wrong-secret',
+      });
+      assert.equal(rejectedSecret.status, 422);
+      assert.equal(
+        ((await rejectedSecret.json()) as { error: string }).error,
+        'challenge_invalid_signature',
+      );
+      assert.ok(await readPendingSlackChallenge(settings, 'slack_identity_default'));
+      assert.equal(await settings.getSetting(SLACK_SETTING_KEYS.botToken), undefined);
+
       const response = await postCreds(app, {
         botToken: 'xoxb-pasted',
         signingSecret: 'pasted-secret',
       });
-      assert.equal(response.status, 200);
+      assert.equal(response.status, 200, await response.clone().text());
       const body = (await response.json()) as Record<string, unknown>;
       assert.equal(body.ok, true);
       assert.equal(body.team, 'Acme Inc');
       assert.equal(body.botName, 'tag');
       assert.equal(body.botUserId, 'U_TAG_BOT');
-      // The signing secret cannot be validated here — the response says when
-      // it is proven instead.
-      assert.match(String(body.note), /first signed/i);
+      assert.match(String(body.note), /Request URL verified/i);
 
       assert.equal(await settings.getSetting(SLACK_SETTING_KEYS.botToken), 'xoxb-pasted');
       assert.equal(await settings.getSetting(SLACK_SETTING_KEYS.signingSecret), 'pasted-secret');
       assert.equal(await settings.getSetting(SLACK_SETTING_KEYS.botUserId), 'U_TAG_BOT');
+      assert.equal(await readPendingSlackChallenge(settings, 'slack_identity_default'), undefined);
+      const connectedIdentity = await config.getSlackIdentity('slack_identity_default');
+      assert.equal(connectedIdentity.lifecycle, 'connected');
+      assert.equal(connectedIdentity.health, 'healthy');
+      assert.equal(connectedIdentity.appId, 'A0CHICKPEA');
+      assert.equal(connectedIdentity.teamId, 'T_ACME');
+      assert.equal(connectedIdentity.botUserId, 'U_TAG_BOT');
 
       const statuses = await app.request('/admin/api/slack-connection', { headers: auth() });
       const statusBody = (await statuses.json()) as {
@@ -1605,15 +1730,42 @@ test('wizard POST validates via auth.test, persists creds + bot user id, and the
   }
 });
 
-test('wizard rotation replaces the whole connection record and clears omitted metadata', async (t) => {
+test('wizard rotation replaces the whole connection record with freshly validated metadata', async (t) => {
   const skip = await loopbackListenSkipReason();
   if (skip) {
     t.skip(skip);
     return;
   }
-  const { server, baseUrl } = await listenFakeSlack({ ok: true });
+  const { server, baseUrl } = await listenFakeSlack(
+    {
+      ok: true,
+      app_id: 'A0CHICKPEA',
+      team_id: 'T_ACME',
+      user_id: 'U_NEW',
+      bot_id: 'B_NEW',
+    },
+    [
+      {
+        ok: true,
+        user: {
+          id: 'U_NEW',
+          profile: { display_name: 'Chickpea', api_app_id: 'A0CHICKPEA' },
+        },
+      },
+      {
+        ok: true,
+        user: {
+          id: 'U_NEW',
+          profile: { display_name: 'Chickpea', api_app_id: 'A0CHICKPEA' },
+        },
+      },
+    ],
+    { 'x-oauth-scopes': slackAppManifest.oauth_config.scopes.bot.join(',') },
+  );
   const settings = new SqliteSettingsStore(':memory:');
+  const config = new SqliteConfigStore(':memory:');
   try {
+    await markWorkspaceDefaultConnected(config);
     await settings.setSetting(SLACK_SETTING_KEYS.connectionRevision, 'revision-old');
     await settings.setSetting(SLACK_SETTING_KEYS.botToken, 'xoxb-old');
     await settings.setSetting(SLACK_SETTING_KEYS.signingSecret, 'secret-old');
@@ -1632,15 +1784,24 @@ test('wizard rotation replaces the whole connection record and clears omitted me
         signingSecret: 'secret-old',
         botUserId: 'U_OLD',
       });
-      const response = await postCreds(appWith(settings), {
+      const rejected = await postCreds(appWith(settings, config), {
         botToken: 'xoxb-new',
         signingSecret: 'secret-new',
       });
-      assert.equal(response.status, 200);
+      assert.equal(rejected.status, 422);
+      assert.equal(
+        ((await rejected.json()) as { error: string }).error,
+        'signing_secret_change_requires_reconnect',
+      );
+      const response = await postCreds(appWith(settings, config), {
+        botToken: 'xoxb-new',
+        signingSecret: 'secret-old',
+      });
+      assert.equal(response.status, 200, await response.clone().text());
       assert.deepEqual(await resolveSlackCredentials(), {
         botToken: 'xoxb-new',
-        signingSecret: 'secret-new',
-        botUserId: undefined,
+        signingSecret: 'secret-old',
+        botUserId: 'U_NEW',
       });
     });
 
@@ -1658,10 +1819,18 @@ test('wizard rotation replaces the whole connection record and clears omitted me
     assert.ok(revision);
     assert.deepEqual(
       [token, secret, botUserId, teamId, teamName, fingerprint],
-      ['xoxb-new', 'secret-new', undefined, undefined, undefined, undefined],
+      [
+        'xoxb-new',
+        'secret-old',
+        'U_NEW',
+        'T_ACME',
+        undefined,
+        slackTokenFingerprint('xoxb-new'),
+      ],
     );
   } finally {
     invalidateStoredSlackCredentials();
+    config.close();
     settings.close();
     await closeServer(server);
   }
@@ -1673,13 +1842,26 @@ test('wizard rotation leaves the prior connection and cache intact when the atom
     t.skip(skip);
     return;
   }
-  const { server, baseUrl } = await listenFakeSlack({
-    ok: true,
-    team_id: 'T_NEW',
-    team: 'New Team',
-    user_id: 'U_NEW',
-  });
+  const { server, baseUrl } = await listenFakeSlack(
+    {
+      ok: true,
+      app_id: 'A0CHICKPEA',
+      team_id: 'T_OLD',
+      team: 'Old Team',
+      user_id: 'U_NEW',
+      bot_id: 'B_NEW',
+    },
+    {
+      ok: true,
+      user: {
+        id: 'U_NEW',
+        profile: { display_name: 'Chickpea', api_app_id: 'A0CHICKPEA' },
+      },
+    },
+    { 'x-oauth-scopes': slackAppManifest.oauth_config.scopes.bot.join(',') },
+  );
   const persisted = new SqliteSettingsStore(':memory:');
+  const config = new SqliteConfigStore(':memory:');
   const failing: SettingsStore = {
     getSetting: (key) => persisted.getSetting(key),
     getSettings: (keys) => persisted.getSettings(keys),
@@ -1691,6 +1873,7 @@ test('wizard rotation leaves the prior connection and cache intact when the atom
     mergeSettingStringSet: (key, values) => persisted.mergeSettingStringSet(key, values),
   };
   try {
+    await markWorkspaceDefaultConnected(config, { teamId: 'T_OLD' });
     await persisted.setSetting(SLACK_SETTING_KEYS.connectionRevision, 'revision-old');
     await persisted.setSetting(SLACK_SETTING_KEYS.botToken, 'xoxb-old');
     await persisted.setSetting(SLACK_SETTING_KEYS.signingSecret, 'secret-old');
@@ -1701,9 +1884,9 @@ test('wizard rotation leaves the prior connection and cache intact when the atom
     );
 
     await withEnv({ ...NO_SLACK_ENV, SLACK_API_URL: baseUrl }, async () => {
-      const response = await postCreds(appWith(failing), {
+      const response = await postCreds(appWith(failing, config), {
         botToken: 'xoxb-new',
-        signingSecret: 'secret-new',
+        signingSecret: 'secret-old',
       });
       assert.equal(response.status, 500);
       assert.deepEqual(await response.json(), { error: 'internal_error' });
@@ -1722,6 +1905,7 @@ test('wizard rotation leaves the prior connection and cache intact when the atom
     assert.equal(resolved.signingSecret, 'secret-old');
   } finally {
     invalidateStoredSlackCredentials();
+    config.close();
     persisted.close();
     await closeServer(server);
   }
@@ -1735,20 +1919,24 @@ test('a delayed wizard rotation cannot recreate a connection after disconnect wi
   }
   const controlled = await listenControlledFakeSlack({
     ok: true,
-    team_id: 'T_NEW',
-    team: 'New Team',
+    app_id: 'A0CHICKPEA',
+    team_id: 'T_ACME',
+    team: 'Acme Inc',
     user_id: 'U_NEW',
+    bot_id: 'B_NEW',
   });
   const settings = new SqliteSettingsStore(':memory:');
+  const config = new SqliteConfigStore(':memory:');
   try {
+    await markWorkspaceDefaultConnected(config);
     await settings.setSetting(SLACK_SETTING_KEYS.botToken, 'xoxb-old');
     await settings.setSetting(SLACK_SETTING_KEYS.signingSecret, 'secret-old');
-    const app = appWith(settings);
+    const app = appWith(settings, config);
 
     await withEnv({ ...NO_SLACK_ENV, SLACK_API_URL: controlled.baseUrl }, async () => {
       const pendingRotation = postCreds(app, {
         botToken: 'xoxb-new',
-        signingSecret: 'secret-new',
+        signingSecret: 'secret-old',
       });
       await controlled.authStarted;
 
@@ -1761,10 +1949,10 @@ test('a delayed wizard rotation cannot recreate a connection after disconnect wi
       controlled.releaseAuth();
       const staleRotation = await pendingRotation;
       assert.equal(staleRotation.status, 409);
-      assert.deepEqual(await staleRotation.json(), {
-        error: 'slack_connection_changed',
-        message: 'Slack connection changed while credentials were being validated. Try again.',
-      });
+      assert.equal(
+        ((await staleRotation.json()) as { error: string }).error,
+        'slack_identity_changed',
+      );
     });
 
     const [revision, token, secret, teamId] = await settings.getSettings([
@@ -1778,6 +1966,7 @@ test('a delayed wizard rotation cannot recreate a connection after disconnect wi
   } finally {
     controlled.releaseAuth();
     invalidateStoredSlackCredentials();
+    config.close();
     settings.close();
     await closeServer(controlled.server);
   }
@@ -1921,18 +2110,77 @@ test('wizard POST rejects a valid Slack token whose installation is missing mani
         signingSecret: 'stale-secret',
       });
       assert.equal(response.status, 422);
-      assert.deepEqual(await response.json(), {
-        error: 'slack_missing_scopes',
-        missingScopes: slackAppManifest.oauth_config.scopes.bot.filter(
+      const body = (await response.json()) as {
+        error: string;
+        message: string;
+        missingScopes: string[];
+      };
+      assert.equal(body.error, 'slack_missing_scopes');
+      assert.match(body.message, /grant the required permissions/i);
+      assert.deepEqual(
+        body.missingScopes,
+        slackAppManifest.oauth_config.scopes.bot.filter(
           (scope) => !['channels:history', 'chat:write'].includes(scope),
         ),
-      });
+      );
       assert.equal(await settings.getSetting(SLACK_SETTING_KEYS.botToken), undefined);
       assert.equal(await settings.getSetting(SLACK_SETTING_KEYS.signingSecret), undefined);
       assert.equal(await settings.getSetting(SLACK_SETTING_KEYS.connectionRevision), undefined);
     });
   } finally {
     invalidateStoredSlackCredentials();
+    settings.close();
+    await closeServer(server);
+  }
+});
+
+test('wizard POST requires conversations.list readiness before connecting', async (t) => {
+  const skip = await loopbackListenSkipReason();
+  if (skip) {
+    t.skip(skip);
+    return;
+  }
+  const { server, baseUrl } = await listenFakeSlack(
+    {
+      ok: true,
+      app_id: 'A0CHICKPEA',
+      team_id: 'T_ACME',
+      user_id: 'U_TAG_BOT',
+      bot_id: 'B_TAG',
+    },
+    {
+      ok: true,
+      user: {
+        id: 'U_TAG_BOT',
+        profile: { display_name: 'Chickpea', api_app_id: 'A0CHICKPEA' },
+      },
+    },
+    { 'x-oauth-scopes': slackAppManifest.oauth_config.scopes.bot.join(',') },
+    { ok: false, error: 'missing_scope' },
+  );
+  const settings = new SqliteSettingsStore(':memory:');
+  const config = new SqliteConfigStore(':memory:');
+  try {
+    await recordWorkspaceDefaultChallenge(config, settings, 'pasted-secret');
+    await withEnv({ ...NO_SLACK_ENV, SLACK_API_URL: baseUrl }, async () => {
+      const response = await postCreds(appWith(settings, config), {
+        botToken: 'xoxb-pasted',
+        signingSecret: 'pasted-secret',
+      });
+      assert.equal(response.status, 422);
+      assert.equal(
+        ((await response.json()) as { error: string }).error,
+        'slack_missing_scopes',
+      );
+      assert.equal(await settings.getSetting(SLACK_SETTING_KEYS.botToken), undefined);
+      assert.ok(await readPendingSlackChallenge(settings, 'slack_identity_default'));
+      assert.equal(
+        (await config.getSlackIdentity('slack_identity_default')).lifecycle,
+        'setup_incomplete',
+      );
+    });
+  } finally {
+    config.close();
     settings.close();
     await closeServer(server);
   }
@@ -1979,7 +2227,7 @@ test('events route fails closed (401) when no signing secret is configured anywh
   });
 });
 
-test('events route echoes a url_verification challenge before any signing secret exists (bootstrap)', async () => {
+test('fixed events route rejects anonymous url_verification before any signing secret exists', async () => {
   await withEnv(
     { ...NO_SLACK_ENV, TAG_DB_PATH: ':memory:', SLACK_STATE_DB_PATH: undefined },
     async () => {
@@ -1990,16 +2238,19 @@ test('events route echoes a url_verification challenge before any signing secret
       const json = (body: unknown, status?: number) =>
         Response.json(body, { status: status ?? 200 });
 
-      // A challenge body with no secret configured is accepted ONCE so a
-      // manifest-created app can verify its request URL before the wizard runs.
+      // Fresh installs use their opaque ingress. The compatibility route must
+      // never accept unsigned setup material.
       const challengeCtx = {
         env: undefined,
         req: { json: async () => ({ type: 'url_verification', challenge: 'abc123' }) },
         json,
       };
-      const ok = (await route.handler(challengeCtx as never, undefined as never)) as Response;
-      assert.equal(ok.status, 200);
-      assert.deepEqual(await ok.json(), { challenge: 'abc123' });
+      const deniedChallenge = (await route.handler(
+        challengeCtx as never,
+        undefined as never,
+      )) as Response;
+      assert.equal(deniedChallenge.status, 401);
+      assert.deepEqual(await deniedChallenge.json(), { error: 'slack_not_configured' });
 
       // A NON-challenge event with no secret still fails closed.
       const eventCtx = {
@@ -2012,6 +2263,49 @@ test('events route echoes a url_verification challenge before any signing secret
       assert.deepEqual(await denied.json(), { error: 'slack_not_configured' });
     },
   );
+});
+
+test('workspace-default opaque ingress retains a fresh signed challenge for setup', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-slack-default-ingress-pending-'));
+  const path = join(directory, 'state.db');
+  try {
+    await withEnv(
+      { ...NO_SLACK_ENV, TAG_DB_PATH: path, SLACK_STATE_DB_PATH: path },
+      async () => {
+        const config = new SqliteConfigStore(path);
+        const settings = new SqliteSettingsStore(path);
+        try {
+          const identity = await config.getSlackIdentity('slack_identity_default');
+          const app = await identityIngressApp();
+          const challenge = signedSlackEvent('future-secret', {
+            type: 'url_verification',
+            challenge: 'challenge-default',
+            api_app_id: 'A0CHICKPEA',
+            team_id: 'T_ACME',
+          });
+          const response = await app.request(
+            `/channels/slack/events/${identity.ingressKey}`,
+            {
+              method: 'POST',
+              headers: challenge.headers,
+              body: challenge.body,
+            },
+          );
+          assert.equal(response.status, 200, await response.clone().text());
+          assert.deepEqual(await response.json(), { challenge: 'challenge-default' });
+          assert.equal(
+            (await readPendingSlackChallenge(settings, identity.id))?.rawBody,
+            challenge.body,
+          );
+        } finally {
+          config.close();
+          settings.close();
+        }
+      },
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test('scoped identity ingress records one bounded pending challenge and rejects secretless events', async () => {
@@ -2537,13 +2831,35 @@ test('a connected selected dedicated identity is admitted only while it is in th
 
           fake.setMember(false);
           const nonMember = event('Ev_MULTI_NOT_MEMBER', '1782770400.000400');
-          const nonMemberResponse = await app.request(url, {
-            method: 'POST',
-            headers: nonMember.headers,
-            body: nonMember.body,
-          });
-          assert.equal(nonMemberResponse.status, 200, await nonMemberResponse.clone().text());
-          await new Promise<void>((resolve) => setTimeout(resolve, 25));
+          let rejectedForMembership = false;
+          const previousInfo = console.info;
+          console.info = (...args: unknown[]) => {
+            previousInfo(...args);
+            if (args[0] !== '[chickpea] slack_identity_operational') return;
+            try {
+              const event = JSON.parse(String(args[1])) as { failureClass?: string };
+              if (event.failureClass === 'not_in_channel') rejectedForMembership = true;
+            } catch {
+              // Ignore unrelated non-JSON console output.
+            }
+          };
+          try {
+            const nonMemberResponse = await app.request(url, {
+              method: 'POST',
+              headers: nonMember.headers,
+              body: nonMember.body,
+            });
+            assert.equal(nonMemberResponse.status, 200, await nonMemberResponse.clone().text());
+            // Event execution continues after Slack's acknowledgement. Wait
+            // for the semantic rejection before taking the baseline used to
+            // prove a degraded identity makes no further Slack calls.
+            for (let attempt = 0; attempt < 3_000 && !rejectedForMembership; attempt += 1) {
+              await new Promise<void>((resolve) => setTimeout(resolve, 10));
+            }
+          } finally {
+            console.info = previousInfo;
+          }
+          assert.equal(rejectedForMembership, true);
 
           fake.setMember(true);
           const beforeDisconnectCalls = fake.authHeaders.length;
@@ -3002,16 +3318,22 @@ test('requestOrigin honors SLACK_TAG_PUBLIC_URL as an operator pin over the requ
     { ...NO_SLACK_ENV, SLACK_TAG_PUBLIC_URL: 'https://pinned.example.com/' },
     async () => {
       const settings = new SqliteSettingsStore(':memory:');
+      const config = new SqliteConfigStore(':memory:');
       try {
-        const app = appWith(settings);
+        const identity = await config.getSlackIdentity('slack_identity_default');
+        const app = appWith(settings, config);
         // Request arrives on a different host AND carries a forged x-forwarded-*
         // — the pin must win over both, with the trailing slash trimmed.
         const response = await app.request('https://socket.internal/admin/api/slack-connection', {
           headers: { ...auth(), 'x-forwarded-host': 'attacker.example', 'x-forwarded-proto': 'http' },
         });
         const body = (await response.json()) as { requestUrl: string };
-        assert.equal(body.requestUrl, 'https://pinned.example.com/channels/slack/events');
+        assert.equal(
+          body.requestUrl,
+          `https://pinned.example.com/channels/slack/events/${identity.ingressKey}`,
+        );
       } finally {
+        config.close();
         settings.close();
       }
     },
@@ -3021,8 +3343,10 @@ test('requestOrigin honors SLACK_TAG_PUBLIC_URL as an operator pin over the requ
 test('requestOrigin on Node takes the LAST x-forwarded hop, not a client-forged first', async () => {
   await withEnv(NO_SLACK_ENV, async () => {
     const settings = new SqliteSettingsStore(':memory:');
+    const config = new SqliteConfigStore(':memory:');
     try {
-      const app = appWith(settings);
+      const identity = await config.getSlackIdentity('slack_identity_default');
+      const app = appWith(settings, config);
       // A client can pre-seed the first hop; the proxy nearest us appends the
       // real one. The derivation must trust the LAST value.
       const response = await app.request('http://127.0.0.1:8787/admin/api/slack-connection', {
@@ -3033,8 +3357,12 @@ test('requestOrigin on Node takes the LAST x-forwarded hop, not a client-forged 
         },
       });
       const body = (await response.json()) as { requestUrl: string };
-      assert.equal(body.requestUrl, 'https://chickpea.real.workers.dev/channels/slack/events');
+      assert.equal(
+        body.requestUrl,
+        `https://chickpea.real.workers.dev/channels/slack/events/${identity.ingressKey}`,
+      );
     } finally {
+      config.close();
       settings.close();
     }
   });
@@ -3410,6 +3738,69 @@ test('dedicated identity setup requires a known workspace before calling Slack',
   }
 });
 
+test('a fresh Slack challenge replaces an abandoned app after the anti-flood window', async () => {
+  const config = new SqliteConfigStore(':memory:');
+  const settings = new SqliteSettingsStore(':memory:');
+  const now = 1_700_000_000_000;
+  try {
+    const draft = await config.createSlackIdentity(pendingIdentity());
+    const first = signedChallenge('first-secret', { timestamp: Math.floor(now / 1_000) });
+    assert.equal((await recordPendingSlackChallenge(settings, draft, first, { now })).accepted, true);
+
+    const stillPinnedAt = now + PENDING_SLACK_CHALLENGE_PIN_MS;
+    const pinned = signedChallenge('pinned-secret', {
+      timestamp: Math.floor(stillPinnedAt / 1_000),
+    });
+    assert.deepEqual(
+      await recordPendingSlackChallenge(settings, draft, pinned, { now: stillPinnedAt }),
+      { accepted: false, reason: 'rate_limited' },
+    );
+
+    const replacementAt = now + PENDING_SLACK_CHALLENGE_PIN_MS + 1;
+    const replacement = signedChallenge('replacement-secret', {
+      timestamp: Math.floor(replacementAt / 1_000),
+    });
+    assert.equal(
+      (await recordPendingSlackChallenge(settings, draft, replacement, { now: replacementAt })).accepted,
+      true,
+    );
+    assert.equal(
+      (await readPendingSlackChallenge(settings, draft.id, { now: replacementAt + 1 }))?.rawBody,
+      replacement.rawBody,
+    );
+  } finally {
+    config.close();
+    settings.close();
+  }
+});
+
+test('the documented Slack URL-verification payload verifies without optional app or team ids', async () => {
+  const config = new SqliteConfigStore(':memory:');
+  const settings = new SqliteSettingsStore(':memory:');
+  const now = 1_700_000_000_000;
+  const secret = 'documented-payload-secret';
+  try {
+    const draft = await config.createSlackIdentity(pendingIdentity());
+    const envelope = signedChallenge(secret, {
+      timestamp: Math.floor(now / 1_000),
+      includeIdentity: false,
+    });
+    assert.equal(
+      (await recordPendingSlackChallenge(settings, draft, envelope, { now })).accepted,
+      true,
+    );
+    const verified = await verifyPendingSlackChallenge(settings, draft.id, secret, {
+      now: now + 1,
+      expectedAppId: 'A0FINANCE',
+      expectedTeamId: 'T_ACME',
+    });
+    assert.equal(verified.verified, true);
+  } finally {
+    config.close();
+    settings.close();
+  }
+});
+
 test('pending Slack challenges are bounded, rate-limited, and atomically cleared with credentials', async () => {
   const config = new SqliteConfigStore(':memory:');
   const settings = new SqliteSettingsStore(':memory:');
@@ -3429,16 +3820,28 @@ test('pending Slack challenges are bounded, rate-limited, and atomically cleared
     );
     assert.deepEqual(oversized, { accepted: false, reason: 'oversized' });
 
+    const staleEnvelope = signedChallenge(secret, {
+      timestamp: Math.floor((now - SLACK_REQUEST_FRESHNESS_MS - 1) / 1_000),
+    });
+    assert.deepEqual(
+      await recordPendingSlackChallenge(settings, draft, staleEnvelope, { now }),
+      { accepted: false, reason: 'stale_timestamp' },
+    );
+
     const envelope = signedChallenge(secret, { timestamp: Math.floor(now / 1_000) });
     const first = await recordPendingSlackChallenge(settings, draft, envelope, { now });
     assert.equal(first.accepted, true);
+    if (first.accepted) {
+      assert.equal(first.appId, 'A0FINANCE');
+      assert.equal(first.teamId, 'T_ACME');
+    }
     assert.deepEqual(
       await recordPendingSlackChallenge(settings, draft, envelope, { now: now + 1 }),
       { accepted: false, reason: 'rate_limited' },
     );
     assert.deepEqual(
       await verifyPendingSlackChallenge(settings, draft.id, secret, {
-        now: now + 5 * 60_000 + 1,
+        now: now + PENDING_SLACK_CHALLENGE_TTL_MS + 1,
       }),
       { verified: false, reason: 'expired' },
     );
@@ -3458,13 +3861,20 @@ test('pending Slack challenges are bounded, rate-limited, and atomically cleared
       }),
       { verified: false, reason: 'invalid_signature' },
     );
-    assert.equal(
-      (
-        await recordPendingSlackChallenge(settings, draft, envelope, {
-          now: now + 4,
-        })
-      ).accepted,
-      true,
+    assert.ok(await readPendingSlackChallenge(settings, draft.id, { now: now + 4 }));
+    assert.deepEqual(
+      await verifyPendingSlackChallenge(settings, draft.id, secret, {
+        now: now + 4,
+        expectedAppId: 'A0OTHER',
+      }),
+      { verified: false, reason: 'app_mismatch' },
+    );
+    assert.deepEqual(
+      await verifyPendingSlackChallenge(settings, draft.id, secret, {
+        now: now + 4,
+        expectedTeamId: 'T_OTHER',
+      }),
+      { verified: false, reason: 'workspace_mismatch' },
     );
     const verified = await verifyPendingSlackChallenge(settings, draft.id, secret, {
       now: now + 5,

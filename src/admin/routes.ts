@@ -26,6 +26,10 @@ import { createWorkAdminApi } from './work-api.ts';
 import { createTeamAdminApi } from './team-api.ts';
 import { passwordOwnerSetupClientScript } from '../auth/setup-handoff.ts';
 import {
+  SETUP_CAPABILITY_DIGEST_BINDING,
+  SETUP_CAPABILITY_ISSUED_AT_BINDING,
+} from '../auth/setup-capability.mjs';
+import {
   invitationJoinClientScript,
   passwordInvitationClientScript,
   passwordResetClientScript,
@@ -53,6 +57,13 @@ import {
   type ApiOAuthRef,
 } from '../config/api-oauth.ts';
 import { isValidApiOAuthConnectionPolicy } from '../config/api-oauth-policy.ts';
+import {
+  beginOnboardingJourney,
+  completeOnboardingJourney,
+  readOnboardingJourney,
+  startOnboardingTry,
+  type OnboardingSnapshot,
+} from '../config/onboarding-state.ts';
 import {
   clearConnectorCredential,
   deleteConnectorSecrets,
@@ -197,6 +208,7 @@ import type { MemoryStateStore } from '../memory/types.ts';
 import type { RoutineStore } from '../routines/types.ts';
 import type { UsageStore } from '../usage/types.ts';
 import type { WorkStore } from '../work/types.ts';
+import { hasDeliveredOnboardingReply } from './onboarding-proof.ts';
 import type {
   AuthProviderConfig,
   HumanIdentityDirectory,
@@ -266,7 +278,9 @@ import {
   refreshSlackIdentityHealth,
   slackIdentityConsoleUrl,
   SlackIdentityBootstrapError,
+  validateSlackIdentityBotInstallation,
   type SlackIdentityBootstrapDeps,
+  type SlackIdentityBootstrapErrorCode,
 } from '../slack/identity-bootstrap.ts';
 import {
   buildSlackIdentityManifest,
@@ -278,6 +292,11 @@ import {
   resolveSlackIdentityCredentials,
   SlackIdentityCredentialRevisionError,
 } from '../slack/identity-credentials.ts';
+import {
+  purgePendingSlackChallenge,
+  slackIdentityPendingEnvelopeSettingKey,
+  verifyPendingSlackChallenge,
+} from '../slack/identity-handshake.ts';
 import type { SlackIdentityAuditEventType } from '../audit/types.ts';
 import { constantTimeEquals } from './constant-time.ts';
 import { setCookieValues } from '../auth/cookies.ts';
@@ -344,6 +363,7 @@ interface AdminRoutesOptions {
   authService?: AdminAuthenticationService | undefined;
   betterAuthEnvironment?: BetterAuthEnvironment | undefined;
   identity?: IdentityStore | undefined;
+  authSecret?: string | undefined;
   recoveryToken?: string | undefined;
   authRateLimiter?: AuthRateLimiter | undefined;
   verifyAccessAssertion?: AccessAssertionVerifier | undefined;
@@ -401,6 +421,7 @@ interface AdminRoutesOptions {
   modelCatalogFetch?: typeof fetch | undefined;
   modelCatalogTimeoutMs?: number | undefined;
   slackIdentityBootstrap?: SlackIdentityBootstrapDeps | undefined;
+  slackConversationsInfo?: typeof slackConversationsInfo | undefined;
 }
 
 const ADMIN_COOKIE = 'flue_admin';
@@ -418,8 +439,9 @@ const authSetupSchema = v.strictObject({
 });
 const passwordOwnerSetupSchema = v.strictObject({
   ownerEmail: v.pipe(v.string(), v.trim(), v.email(), v.maxLength(320)),
-  organizationName: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(128)),
+  organizationName: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(128))),
   password: v.pipe(v.string(), v.minLength(1), v.maxLength(512)),
+  passwordConfirmation: v.pipe(v.string(), v.minLength(1), v.maxLength(512)),
   recoveryToken: v.pipe(v.string(), v.minLength(1), v.maxLength(512)),
 });
 const passwordChangeSchema = v.strictObject({
@@ -859,6 +881,13 @@ const slackConnectionSchema = v.object({
   signingSecret: nonEmptyString,
 });
 
+const onboardingTrySchema = v.strictObject({
+  expectedRevision: v.pipe(v.string(), v.minLength(1), v.maxLength(2_048)),
+  workspaceId: v.pipe(v.string(), v.trim(), v.regex(/^[A-Z0-9]{2,32}$/i)),
+  channelId: v.pipe(v.string(), v.trim(), v.regex(/^[A-Z0-9]{2,32}$/i)),
+  channelName: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(80)),
+});
+
 const slackIdentityRevisionSchema = v.pipe(v.number(), v.integer(), v.minValue(0));
 const slackIdentityCreateSchema = v.strictObject({
   source: v.picklist(['profile', 'settings']),
@@ -1020,6 +1049,26 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const bound = (c.env as PlatformEnv | undefined)?.CHICKPEA_RECOVERY_TOKEN;
     return typeof bound === 'string' ? bound : process.env.CHICKPEA_RECOVERY_TOKEN;
   };
+  const authSecret = (c: Context): string | undefined => {
+    if (Object.hasOwn(options, 'authSecret')) return options.authSecret;
+    const bound = (c.env as PlatformEnv | undefined)?.CHICKPEA_AUTH_SECRET;
+    return typeof bound === 'string' ? bound : process.env.CHICKPEA_AUTH_SECRET;
+  };
+  const setupCapability = (c: Context): { digest: string; issuedAt: number } | undefined => {
+    const env = c.env as PlatformEnv | undefined;
+    const digestValue = env?.[SETUP_CAPABILITY_DIGEST_BINDING] ??
+      process.env[SETUP_CAPABILITY_DIGEST_BINDING];
+    const issuedValue = env?.[SETUP_CAPABILITY_ISSUED_AT_BINDING] ??
+      process.env[SETUP_CAPABILITY_ISSUED_AT_BINDING];
+    const digest = typeof digestValue === 'string' ? digestValue : undefined;
+    const issuedAt = typeof issuedValue === 'string' || typeof issuedValue === 'number'
+      ? Number(issuedValue)
+      : Number.NaN;
+    return digest && Number.isSafeInteger(issuedAt) ? { digest, issuedAt } : undefined;
+  };
+  const ownerSetupAvailable = (c: Context): boolean => Boolean(
+    (setupCapability(c) && authSecret(c)) || recoveryToken(c),
+  );
   const authRateLimiter = (c: Context, token: string): AuthRateLimiter =>
     options.authRateLimiter ?? new AuthRateLimiter(identity(c), { pepper: token });
   const recordSandboxAudit = async (
@@ -1429,7 +1478,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       if (
         control?.authMode === 'unconfigured' &&
         isAdminPageGet(c) &&
-        recoveryToken(c) &&
+        ownerSetupAvailable(c) &&
         !adminToken()
       ) {
         return c.redirect('/admin/setup', 303);
@@ -1571,8 +1620,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   app.get('/admin/setup', async (c) => {
     authResponseHeaders(c);
     const token = recoveryToken(c);
-    if (!token) return c.notFound();
-    if (!isValidRecoveryConfiguration(token)) {
+    const capability = setupCapability(c);
+    if (!ownerSetupAvailable(c)) return c.notFound();
+    if (!capability && token && !isValidRecoveryConfiguration(token)) {
       return c.json({ error: 'authentication_unavailable' }, 503);
     }
     const identityStore = identity(c);
@@ -1600,14 +1650,17 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   app.post('/admin/setup', async (c) => {
     authResponseHeaders(c);
     const token = recoveryToken(c);
-    if (!token) return c.notFound();
-    if (!isValidRecoveryConfiguration(token)) {
+    const capability = setupCapability(c);
+    if (!ownerSetupAvailable(c)) return c.notFound();
+    if (!capability && token && !isValidRecoveryConfiguration(token)) {
       return c.json({ error: 'authentication_unavailable' }, 503);
     }
     const source = authSourceKey(c);
-    const limiter = authRateLimiter(c, token);
+    const limiterPepper = authSecret(c) ?? token ?? capability?.digest;
+    if (!limiterPepper) return c.notFound();
+    const limiter = authRateLimiter(c, limiterPepper);
     let passwordSetup = false;
-    let ownerSetupValues: { organizationName?: string; ownerEmail?: string } = {};
+    let ownerSetupValues: { ownerEmail?: string } = {};
     try {
       await limiter.assertAllowed('setup', source);
       if (!validAuthFormPost(c, requestOrigin(c))) throw new AuthDeniedError();
@@ -1615,31 +1668,37 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       passwordSetup = Object.hasOwn(rawForm, 'password');
       if (passwordSetup) {
         ownerSetupValues = {
-          organizationName: preservedFormValue(rawForm.organizationName, 128),
           ownerEmail: preservedFormValue(rawForm.ownerEmail, 320),
         };
         const organization = await identity(c).getOrganization();
         if (organization) throw new AuthDeniedError();
         const form = v.safeParse(passwordOwnerSetupSchema, rawForm);
         if (!form.success) throw new AuthDeniedError();
+        if (form.output.password !== form.output.passwordConfirmation) throw new AuthDeniedError();
         const environment = options.betterAuthEnvironment ??
           await resolveBetterAuthBootstrapEnvironment({
             canonicalOrigin: requestOrigin(c),
             platformEnv: c.env as PlatformEnv | undefined,
             recoveryToken: token,
+            authSecret: authSecret(c),
             passwordShardKey: source,
           });
         if (!environment) throw new AuthDeniedError();
-        const result = await new PasswordOwnerSetupService(identity(c), environment).complete({
+        const result = await new PasswordOwnerSetupService(
+          identity(c),
+          environment,
+          Date.now,
+          capability,
+          async () => { await beginOnboardingJourney(settings(c)); },
+        ).complete({
           canonicalOrigin: requestOrigin(c),
           email: form.output.ownerEmail,
-          organizationName: form.output.organizationName,
           password: form.output.password,
           recoveryToken: form.output.recoveryToken,
         });
         copyAuthResponseCookies(c, result.headers);
         await limiter.recordSuccess('setup', source);
-        return c.redirect('/admin/ready', 303);
+        return c.redirect('/admin/onboarding', 303);
       }
       // Fresh OSS setup is password-based. Cloudflare Access remains readable
       // only for installations that were already pending before this flow;
@@ -3989,6 +4048,168 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
   });
 
+  const onboardingSlackContext = async (c: Context) => {
+    const settingsStore = settings(c);
+    const [credentials, teamInfo, defaultIdentity] = await Promise.all([
+      describeSlackCredentialSources(c.env as PlatformEnv | undefined, settingsStore),
+      readStoredSlackTeamInfo(c.env as PlatformEnv | undefined, settingsStore),
+      store(c).getSlackIdentity(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID),
+    ]);
+    const connected =
+      (defaultIdentity.lifecycle === 'connected' || defaultIdentity.lifecycle === 'degraded') &&
+      credentials.botToken !== 'missing' &&
+      credentials.signingSecret !== 'missing';
+    return {
+      connected,
+      teamId: teamInfo.teamId ?? defaultIdentity.teamId,
+      teamName: teamInfo.teamName,
+    };
+  };
+
+  const onboardingResponse = async (
+    c: Context,
+    initial: OnboardingSnapshot,
+  ): Promise<Response> => {
+    c.header('Cache-Control', 'no-store');
+    let snapshot = initial;
+    const { journey } = snapshot;
+    if (journey.state === 'complete') {
+      return c.json({
+        stage: 'complete',
+        revision: snapshot.revision,
+        workspace: journey.selectedWorkspaceId
+          ? { id: journey.selectedWorkspaceId, name: null }
+          : null,
+        channel: journey.selectedChannelId
+          ? { id: journey.selectedChannelId, name: journey.selectedChannelName }
+          : null,
+        tryStartedAt: journey.tryStartedAt ?? null,
+        completedAt: journey.completedAt ?? null,
+      });
+    }
+
+    const slack = await onboardingSlackContext(c);
+    if (!slack.connected || !slack.teamId) {
+      return c.json({
+        stage: 'connect_slack',
+        revision: snapshot.revision,
+        workspace: null,
+        channel: null,
+        tryStartedAt: null,
+        completedAt: null,
+      });
+    }
+
+    if (journey.selectedWorkspaceId && journey.selectedChannelId &&
+        journey.selectedChannelName && journey.tryStartedAt) {
+      const delivered = await hasDeliveredOnboardingReply(work(c), {
+        workspaceId: journey.selectedWorkspaceId,
+        channelId: journey.selectedChannelId,
+        tryStartedAt: journey.tryStartedAt,
+      });
+      if (delivered) {
+        try {
+          snapshot = await completeOnboardingJourney(settings(c), snapshot.revision);
+        } catch (error) {
+          const raced = await readOnboardingJourney(settings(c));
+          if (!raced || raced.journey.state !== 'complete') throw error;
+          snapshot = raced;
+        }
+      }
+      return c.json({
+        stage: snapshot.journey.state === 'complete' ? 'complete' : 'try',
+        revision: snapshot.revision,
+        workspace: {
+          id: journey.selectedWorkspaceId,
+          name: slack.teamId === journey.selectedWorkspaceId ? (slack.teamName ?? null) : null,
+        },
+        channel: { id: journey.selectedChannelId, name: journey.selectedChannelName },
+        tryStartedAt: journey.tryStartedAt,
+        completedAt: snapshot.journey.completedAt ?? null,
+      });
+    }
+
+    return c.json({
+      stage: 'choose_channel',
+      revision: snapshot.revision,
+      workspace: { id: slack.teamId, name: slack.teamName ?? null },
+      channel: null,
+      tryStartedAt: null,
+      completedAt: null,
+    });
+  };
+
+  app.get('/admin/api/onboarding', async (c) => {
+    try {
+      const snapshot = await readOnboardingJourney(settings(c));
+      if (!snapshot) return c.json({ error: 'onboarding_not_found' }, 404);
+      return onboardingResponse(c, snapshot);
+    } catch (error) {
+      return internalError(c, error);
+    }
+  });
+
+  app.post('/admin/api/onboarding/try', async (c) => {
+    const parsed = v.safeParse(onboardingTrySchema, await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
+    try {
+      const snapshot = await readOnboardingJourney(settings(c));
+      if (!snapshot) return c.json({ error: 'onboarding_not_found' }, 404);
+      if (snapshot.revision !== parsed.output.expectedRevision) {
+        return c.json({ error: 'onboarding_changed' }, 409);
+      }
+      if (snapshot.journey.state === 'complete') return onboardingResponse(c, snapshot);
+
+      const slack = await onboardingSlackContext(c);
+      if (!slack.connected || !slack.teamId) {
+        return c.json({ error: 'slack_not_connected' }, 409);
+      }
+      if (slack.teamId !== parsed.output.workspaceId) {
+        return c.json({ error: 'workspace_mismatch' }, 400);
+      }
+      const assignment = await store(c).getAssignment(
+        parsed.output.workspaceId,
+        parsed.output.channelId,
+      );
+      if (!assignment || !assignment.enabled || assignment.agentId !== 'agent_default') {
+        return c.json({ error: 'onboarding_assignment_missing' }, 409);
+      }
+      const { botToken } = await resolveSlackCredentials(
+        c.env as PlatformEnv | undefined,
+        settings(c),
+      );
+      if (!botToken) return c.json({ error: 'slack_not_connected' }, 409);
+      let membership: Awaited<ReturnType<typeof slackConversationsInfo>>;
+      try {
+        membership = await (options.slackConversationsInfo ?? slackConversationsInfo)(
+          botToken,
+          parsed.output.channelId,
+        );
+      } catch {
+        return c.json({ error: 'slack_channel_check_failed' }, 502);
+      }
+      if (!membership.ok || !membership.channel) {
+        return c.json({
+          error: membership.error === 'channel_not_found'
+            ? 'channel_not_found'
+            : 'slack_channel_check_failed',
+        }, membership.error === 'channel_not_found' ? 400 : 502);
+      }
+      if (membership.channel.isMember !== true) {
+        return c.json({ error: 'slack_channel_membership_required' }, 409);
+      }
+      const started = await startOnboardingTry(settings(c), {
+        expectedRevision: snapshot.revision,
+        workspaceId: parsed.output.workspaceId,
+        channelId: parsed.output.channelId,
+        channelName: assignment.channelLabel ?? parsed.output.channelName,
+      });
+      return onboardingResponse(c, started);
+    } catch (error) {
+      return internalError(c, error);
+    }
+  });
+
   app.get('/admin/api/assignments', async (c) => {
     if (!c.req.query('workspaceId') && !c.req.query('channelId')) {
       return c.json({ assignments: await store(c).listAssignments() });
@@ -4731,17 +4952,22 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       // populated by the wizard save for new installs, and by the first
       // channels-list / assignment backfill for pre-existing ones.
       const teamInfo = await readStoredSlackTeamInfo(c.env as PlatformEnv | undefined, settingsStore);
-      const requestUrl = `${requestOrigin(c)}/channels/slack/events`;
+      const defaultIdentity = await store(c).getSlackIdentity(
+        WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+      );
+      const requestUrl =
+        `${requestOrigin(c)}/channels/slack/events/${defaultIdentity.ingressKey}`;
       return c.json({
         credentials,
-        // Connected = both wire credentials resolvable somewhere. The bot
-        // user id is not required for a connection (it resolves via
-        // auth.test at event time when absent).
-        connected: credentials.botToken !== 'missing' && credentials.signingSecret !== 'missing',
+        connected:
+          (defaultIdentity.lifecycle === 'connected' ||
+            defaultIdentity.lifecycle === 'degraded') &&
+          credentials.botToken !== 'missing' &&
+          credentials.signingSecret !== 'missing',
         teamId: teamInfo.teamId ?? null,
         teamName: teamInfo.teamName ?? null,
         requestUrl,
-        manifestUrl: slackManifestUrl(requestOrigin(c)),
+        manifestUrl: slackManifestUrl(requestUrl),
       });
     } catch (err) {
       return internalError(c, err);
@@ -4838,12 +5064,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
   });
 
-  // Wizard paste-back: validate the bot token LIVE via auth.test (so the
-  // paste feels instant and verified), then persist token + signing secret +
-  // the auth.test bot user id in the settings store. Environment values keep
-  // precedence at resolution time, so storing while env creds exist is
-  // harmless. The signing secret cannot be pre-validated — Slack only proves
-  // it on the first signed event; the response says so.
+  // Wizard paste-back: the workspace-default identity follows the same
+  // pending -> verified -> connected lifecycle as dedicated identities. The
+  // opaque ingress retains Slack's fresh signed challenge while the human
+  // copies credentials; this transaction proves both credentials and live API
+  // readiness before projecting connected.
   app.post('/admin/api/slack-connection', async (c) => {
     const body = await readJson(c.req);
     const parsed = v.safeParse(slackConnectionSchema, body);
@@ -4862,69 +5087,143 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     let expectedRevision: string | null;
     let defaultIdentityBefore: SlackIdentity;
     let priorCredentialSources: SlackCredentialSources;
+    let priorCredentials: Awaited<ReturnType<typeof resolveSlackCredentials>>;
     try {
       settingsStore = settings(c);
-      expectedRevision = await readSlackConnectionRevision(settingsStore);
-      defaultIdentityBefore = await store(c).getSlackIdentity(
-        WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
-      );
-      priorCredentialSources = await describeSlackCredentialSources(
-        c.env as PlatformEnv | undefined,
-        settingsStore,
-      );
+      [expectedRevision, defaultIdentityBefore, priorCredentialSources, priorCredentials] =
+        await Promise.all([
+          readSlackConnectionRevision(settingsStore),
+          store(c).getSlackIdentity(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID),
+          describeSlackCredentialSources(c.env as PlatformEnv | undefined, settingsStore),
+          resolveSlackCredentials(c.env as PlatformEnv | undefined, settingsStore),
+        ]);
     } catch (err) {
       return internalError(c, err);
     }
-    let auth;
+    let validated: Awaited<ReturnType<typeof validateSlackIdentityBotInstallation>>;
     try {
-      auth = await slackAuthTest(botToken);
-    } catch (err) {
-      // Distinct from a rejected token: Slack (or the SLACK_API_URL override)
-      // could not be reached at all — retriable, nothing stored.
-      console.error(
-        '[chickpea] wizard auth.test unreachable:',
-        err instanceof Error ? err.message : String(err),
+      validated = await validateSlackIdentityBotInstallation(
+        {
+          config: store(c),
+          identityId: WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+          ...(((defaultIdentityBefore.lifecycle === 'connected' ||
+                defaultIdentityBefore.lifecycle === 'degraded') &&
+              defaultIdentityBefore.teamId)
+            ? { expectedTeamId: defaultIdentityBefore.teamId }
+            : {}),
+          botToken,
+          requireScopeEvidence: true,
+          requireChannelList: true,
+        },
+        options.slackIdentityBootstrap,
       );
-      return c.json({ error: 'slack_unreachable' }, 502);
+    } catch (error) {
+      return slackIdentityAdminError(c, error);
     }
-    if (!auth.ok) {
-      return c.json(
-        { error: 'slack_auth_failed', ...(auth.error ? { detail: auth.error } : {}) },
-        422,
+
+    if (
+      (defaultIdentityBefore.lifecycle === 'connected' ||
+        defaultIdentityBefore.lifecycle === 'degraded') &&
+      defaultIdentityBefore.appId &&
+      defaultIdentityBefore.appId !== validated.appId
+    ) {
+      return slackIdentityAdminError(
+        c,
+        new SlackIdentityBootstrapError(
+          'app_mismatch',
+          'This token belongs to a different Slack app',
+        ),
       );
     }
-    const missingScopes = missingRequiredSlackBotScopes(auth.grantedScopes);
-    if (missingScopes?.length) {
-      return c.json({ error: 'slack_missing_scopes', missingScopes }, 422);
+
+    const needsSignedChallenge =
+      defaultIdentityBefore.lifecycle === 'setup_incomplete' ||
+      defaultIdentityBefore.lifecycle === 'credentials_pending' ||
+      priorCredentialSources.botToken === 'missing' ||
+      priorCredentialSources.signingSecret === 'missing';
+    const establishedConnection =
+      defaultIdentityBefore.lifecycle === 'connected' ||
+      defaultIdentityBefore.lifecycle === 'degraded';
+    if (
+      establishedConnection &&
+      priorCredentials.signingSecret &&
+      !constantTimeEquals(signingSecret, priorCredentials.signingSecret)
+    ) {
+      return slackIdentityAdminError(
+        c,
+        new SlackIdentityBootstrapError(
+          'signing_secret_change_requires_reconnect',
+          'Disconnect this Slack app before replacing its Signing Secret',
+        ),
+      );
     }
+    let challengeReceipt: string | undefined;
+    if (needsSignedChallenge) {
+      const verification = await verifyPendingSlackChallenge(
+        settingsStore,
+        WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+        signingSecret,
+        {
+          expectedAppId: validated.appId,
+          expectedTeamId: validated.teamId,
+        },
+      );
+      if (!verification.verified) {
+        const code = slackChallengeErrorCode(verification.reason);
+        return slackIdentityAdminError(
+          c,
+          new SlackIdentityBootstrapError(
+            code,
+            'Slack Request URL verification did not match these credentials',
+          ),
+        );
+      }
+      challengeReceipt = verification.purgeReceipt;
+    }
+
     try {
+      const currentIdentity = await store(c).getSlackIdentity(
+        WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+      );
+      if (currentIdentity.connectionRevision !== defaultIdentityBefore.connectionRevision) {
+        throw new SlackIdentityRevisionConflictError(
+          currentIdentity.id,
+          defaultIdentityBefore.connectionRevision,
+          currentIdentity.connectionRevision,
+        );
+      }
+      const pendingIdentity = await store(c).updateSlackIdentity(
+        currentIdentity.id,
+        currentIdentity.connectionRevision,
+        {
+          lifecycle: 'credentials_pending',
+          teamId: validated.teamId,
+          appId: validated.appId,
+          botUserId: validated.botUserId,
+          observedDisplayName: validated.displayName ?? null,
+          observedAvatarUrl: validated.avatarUrl ?? null,
+          observedAt: validated.observedAt,
+          health: 'unknown',
+          healthDetail: null,
+        },
+      );
       const nextRevision = randomUUID();
       const writes = [
         { key: SLACK_SETTING_KEYS.connectionRevision, value: nextRevision },
         { key: SLACK_SETTING_KEYS.botToken, value: botToken },
         { key: SLACK_SETTING_KEYS.signingSecret, value: signingSecret },
-        ...(auth.botUserId
-          ? [{ key: SLACK_SETTING_KEYS.botUserId, value: auth.botUserId }]
-          : []),
-        ...(auth.teamId
-          ? [
-              { key: SLACK_SETTING_KEYS.teamId, value: auth.teamId },
-              {
-                key: SLACK_SETTING_KEYS.teamTokenFingerprint,
-                value: slackTokenFingerprint(botToken),
-              },
-            ]
-          : []),
-        ...(auth.teamName
-          ? [{ key: SLACK_SETTING_KEYS.teamName, value: auth.teamName }]
+        { key: SLACK_SETTING_KEYS.botUserId, value: validated.botUserId },
+        { key: SLACK_SETTING_KEYS.teamId, value: validated.teamId },
+        {
+          key: SLACK_SETTING_KEYS.teamTokenFingerprint,
+          value: slackTokenFingerprint(botToken),
+        },
+        ...(validated.teamName
+          ? [{ key: SLACK_SETTING_KEYS.teamName, value: validated.teamName }]
           : []),
       ];
       const deletes = [
-        ...(auth.botUserId ? [] : [SLACK_SETTING_KEYS.botUserId]),
-        ...(auth.teamId
-          ? []
-          : [SLACK_SETTING_KEYS.teamId, SLACK_SETTING_KEYS.teamTokenFingerprint]),
-        ...(auth.teamName ? [] : [SLACK_SETTING_KEYS.teamName]),
+        ...(validated.teamName ? [] : [SLACK_SETTING_KEYS.teamName]),
       ];
       // Persist the connected workspace identity from the same auth.test: the
       // admin names the workspace, and the assignment PUT rejects channels from
@@ -4952,8 +5251,33 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       primeStoredSlackCredentials({
         botToken,
         signingSecret,
-        botUserId: auth.botUserId,
+        botUserId: validated.botUserId,
       }, nextRevision);
+      if ((await readSlackConnectionRevision(settingsStore)) !== nextRevision) {
+        return c.json(
+          {
+            error: 'slack_connection_changed',
+            message: 'Slack connection changed before validation completed. Try again.',
+          },
+          409,
+        );
+      }
+      const connectedIdentity = await store(c).updateSlackIdentity(
+        pendingIdentity.id,
+        pendingIdentity.connectionRevision,
+        {
+          lifecycle: 'connected',
+          health: 'healthy',
+          healthDetail: null,
+        },
+      );
+      if (challengeReceipt) {
+        await purgePendingSlackChallenge(
+          settingsStore,
+          WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+          challengeReceipt,
+        );
+      }
       await appendSlackIdentityAudit(
         store(c),
         c,
@@ -4962,18 +5286,18 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           ? 'slack_identity.credentials_connected'
           : 'slack_identity.credentials_rotated',
         defaultIdentityBefore,
-        defaultIdentityBefore,
+        connectedIdentity,
       );
       return c.json({
         ok: true,
-        ...(auth.teamId ? { teamId: auth.teamId } : {}),
-        ...(auth.teamName ? { team: auth.teamName } : {}),
-        ...(auth.botName ? { botName: auth.botName } : {}),
-        ...(auth.botUserId ? { botUserId: auth.botUserId } : {}),
-        note: 'Signing secret saved; Slack proves it on the first signed event.',
+        teamId: validated.teamId,
+        ...(validated.teamName ? { team: validated.teamName } : {}),
+        ...(validated.botName ? { botName: validated.botName } : {}),
+        botUserId: validated.botUserId,
+        note: 'Slack credentials and Request URL verified.',
       });
     } catch (err) {
-      return internalError(c, err);
+      return slackIdentityAdminError(c, err);
     }
   });
 
@@ -5085,6 +5409,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           SLACK_SETTING_KEYS.teamId,
           SLACK_SETTING_KEYS.teamName,
           SLACK_SETTING_KEYS.teamTokenFingerprint,
+          slackIdentityPendingEnvelopeSettingKey(
+            WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+          ),
         ],
       });
       if (!applied) {
@@ -5103,12 +5430,30 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         signingSecret: undefined,
         botUserId: undefined,
       }, nextRevision);
+      const defaultIdentityCurrent = await configStore.getSlackIdentity(
+        WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+      );
+      const defaultIdentityAfter = await configStore.updateSlackIdentity(
+        defaultIdentityCurrent.id,
+        defaultIdentityCurrent.connectionRevision,
+        {
+          lifecycle: 'setup_incomplete',
+          teamId: null,
+          appId: null,
+          botUserId: null,
+          observedDisplayName: null,
+          observedAvatarUrl: null,
+          observedAt: null,
+          health: 'disconnected',
+          healthDetail: 'credentials_missing',
+        },
+      );
       await appendSlackIdentityAudit(
         configStore,
         c,
         'slack_identity.credentials_disconnected',
         defaultIdentityBefore,
-        defaultIdentityBefore,
+        defaultIdentityAfter,
       );
       return c.json({
         ok: true,
@@ -5644,10 +5989,22 @@ function lastForwardedHop(header: string | undefined): string | undefined {
  * removes the copy-the-events-URL step entirely. `$schema` is editor tooling,
  * not part of Slack's manifest schema — strip it from the deep link.
  */
-function slackManifestUrl(origin: string): string {
-  const { $schema: _schema, ...manifest } = slackAppManifest;
-  const json = JSON.stringify(manifest).replaceAll('https://<YOUR_PUBLIC_HOST>', origin);
-  return `https://api.slack.com/apps?new_app=1&manifest_json=${encodeURIComponent(json)}`;
+function slackManifestUrl(requestUrl: string): string {
+  // Preserve the local Node admin response shape even though Slack itself will
+  // reject a non-HTTPS Request URL. Public installs take the validated builder
+  // path below; the Admin UI already explains that setup needs its public URL.
+  if (new URL(requestUrl).protocol !== 'https:') {
+    const { $schema: _schema, ...manifest } = structuredClone(slackAppManifest);
+    manifest.settings.event_subscriptions.request_url = requestUrl;
+    return `https://api.slack.com/apps?new_app=1&manifest_json=${
+      encodeURIComponent(JSON.stringify(manifest))
+    }`;
+  }
+  return slackManifestPrefillUrl(buildSlackIdentityManifest(slackAppManifest, {
+    appName: slackAppManifest.display_information.name,
+    botDisplayName: slackAppManifest.features.bot_user.display_name,
+    requestUrl,
+  }));
 }
 
 // Any GET under /admin that is a PAGE navigation (the SPA serves every
@@ -6206,6 +6563,20 @@ async function appendSlackIdentityAudit(
   });
 }
 
+const SLACK_CHALLENGE_ERROR_CODES = {
+  expired: 'challenge_expired',
+  invalid_signature: 'challenge_invalid_signature',
+  app_mismatch: 'app_mismatch',
+  workspace_mismatch: 'workspace_mismatch',
+} as const satisfies Record<string, SlackIdentityBootstrapErrorCode>;
+
+function slackChallengeErrorCode(reason: string | undefined): SlackIdentityBootstrapErrorCode {
+  if (reason && Object.hasOwn(SLACK_CHALLENGE_ERROR_CODES, reason)) {
+    return SLACK_CHALLENGE_ERROR_CODES[reason as keyof typeof SLACK_CHALLENGE_ERROR_CODES];
+  }
+  return 'challenge_missing';
+}
+
 function slackIdentityAdminError(c: Context, error: unknown) {
   if (error instanceof UnknownSlackIdentityError || error instanceof UnknownAgentError) {
     return c.json({ error: 'not_found' }, 404);
@@ -6245,11 +6616,13 @@ function slackIdentityAdminError(c: Context, error: unknown) {
     return c.json({ error: 'slack_identity_credentials_changed' }, 409);
   }
   if (error instanceof SlackIdentityBootstrapError) {
-    const status = error.code === 'slack_unreachable' ? 502 :
+    const status = error.code === 'slack_unreachable' ||
+        error.code === 'slack_channel_list_failed' ? 502 :
       error.code.endsWith('_missing') || error.code.endsWith('_expired') ? 409 : 422;
     return c.json({
       error: error.code,
       message: error.message,
+      ...(error.detail ? { detail: error.detail } : {}),
       ...(error.missingScopes ? { missingScopes: error.missingScopes } : {}),
     }, status);
   }

@@ -23,9 +23,9 @@ and never receive host filesystem or host git/SSH access.
 - Expect the first Sandbox image build to take several minutes. Cloudflare must
   build and distribute the Ubuntu-based image before it can report ready.
 
-No extra deploy-time secret is required. The Deploy to Cloudflare metadata
-continues to prompt only for `CHICKPEA_RECOVERY_TOKEN`; the Sandbox selector
-below is a non-secret build variable.
+No deploy-time secret is required. The Deploy to Cloudflare form has no
+Chickpea credential fields; the Sandbox selector below is a non-secret build
+variable.
 
 The append-only `v3` Durable Object migration remains in both deployment
 profiles for compatibility. Its dormant `Sandbox` namespace is not proof that

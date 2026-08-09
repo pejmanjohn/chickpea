@@ -14,14 +14,10 @@ test('owner setup moves the fragment capability into same-tab storage and cleans
   const status = { hidden: false, className: '', textContent: '' };
   const input = { value: '' };
   const submit = { disabled: true };
-  const fallback = { hidden: false };
   const elements: Record<string, object> = {
     'owner-setup-form': form,
     'owner-setup-status': status,
     'owner-setup-capability': input,
-    'owner-setup-fallback': fallback,
-    'owner-setup-manual-capability': { value: '', addEventListener() {} },
-    'owner-setup-manual-continue': { addEventListener() {} },
     'owner-setup-submit': submit,
   };
 
@@ -45,31 +41,17 @@ test('owner setup moves the fragment capability into same-tab storage and cleans
   assert.equal(form.hidden, false);
   assert.equal(status.hidden, true);
   assert.equal(submit.disabled, false);
-  assert.equal(fallback.hidden, true);
 });
 
 test('owner setup fails closed when the private fragment capability is unavailable', () => {
   const form = { hidden: true };
   const status = { hidden: false, className: '', textContent: '' };
-  const manualListeners: Record<string, () => void> = {};
-  const continueListeners: Record<string, () => void> = {};
-  const manual = {
-    value: '',
-    addEventListener(name: string, listener: () => void) { manualListeners[name] = listener; },
-  };
-  const fallbackContinue = {
-    addEventListener(name: string, listener: () => void) { continueListeners[name] = listener; },
-  };
-  const fallback = { hidden: true };
   const input = { value: '' };
   const submit = { disabled: true };
   const elements: Record<string, object> = {
     'owner-setup-form': form,
     'owner-setup-status': status,
     'owner-setup-capability': input,
-    'owner-setup-fallback': fallback,
-    'owner-setup-manual-capability': manual,
-    'owner-setup-manual-continue': fallbackContinue,
     'owner-setup-submit': submit,
   };
 
@@ -82,17 +64,10 @@ test('owner setup fails closed when the private fragment capability is unavailab
   });
 
   assert.equal(form.hidden, true);
-  assert.equal(fallback.hidden, false);
-  assert.match(status.textContent, /private setup link/i);
-  manual.value = CAPABILITY;
-  manualListeners.input?.();
+  assert.match(status.textContent, /private setup link.*missing or expired/i);
+  assert.match(status.textContent, /retry your deployment/i);
   assert.equal(input.value, '');
   assert.equal(submit.disabled, true);
-  continueListeners.click?.();
-  assert.equal(input.value, CAPABILITY);
-  assert.equal(submit.disabled, false);
-  assert.equal(form.hidden, false);
-  assert.equal(fallback.hidden, true);
 });
 
 test('owner setup gives immediate password-length feedback and blocks short submissions', () => {

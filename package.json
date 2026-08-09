@@ -55,6 +55,7 @@
     "build:sandbox": "node scripts/cloudflare-deployment-profile.mjs sandbox build",
     "deploy": "node scripts/deploy-with-epilogue.mjs",
     "deploy:sandbox": "node scripts/cloudflare-deployment-profile.mjs sandbox deploy",
+    "setup:link": "node scripts/create-setup-link.mjs",
     "verify:cf-smoke": "node scripts/verify-cf-smoke.mjs",
     "verify:run-foundation": "node scripts/verify-run-foundation.mjs",
     "verify:admin-ui": "node scripts/verify-admin-ui.mjs",
@@ -118,10 +119,6 @@
     "categories": [
       "ai"
     ],
-    "bindings": {
-      "CHICKPEA_RECOVERY_TOKEN": {
-        "description": "Offline credential used once for owner setup and later only for bounded recovery. It is not an Admin login. Generate with: openssl rand -hex 32"
-      }
-    }
+    "bindings": {}
   }
 }

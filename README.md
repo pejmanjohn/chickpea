@@ -18,15 +18,15 @@ Chickpea is a present Slack teammate: an `@`-mention guarantees engagement, join
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/pejmanjohn/chickpea)
 
-The public Deploy button installs the complete runtime and built-in authentication in your own Cloudflare account:
+The public Deploy button installs the slim runtime and built-in authentication in your own Cloudflare account:
 
-1. **Save one recovery secret.** Generate `CHICKPEA_RECOVERY_TOKEN` with `openssl rand -hex 32`, put it in a password manager, and paste it into the Deploy form. It authorizes first-owner setup and bounded recovery; it is never your normal login. Losing both it and the owner password prevents recovery.
-2. **Click Deploy.** Cloudflare clones this repo into your GitHub, provisions the Worker, Durable Objects, D1 auth database, and Workers Builds CI, then applies the reviewed Better Auth migrations.
-3. **Open `/admin/setup`.** Enter the recovery secret once, name the workspace and first owner, and choose the owner's email and password. Chickpea creates a secure browser session and continues directly to Slack setup—no Zero Trust, external identity provider, or email service is required.
-4. **Click "Create your Slack app".** The first-run wizard deep-links Slack's app console with this repo's manifest—the events request URL already points at your worker. Install the app to your workspace. If Slack shows the request URL as unverified, click **Retry** on Event Subscriptions: the worker echoes the verification challenge even before credentials are saved.
-5. **Paste back the bot token and signing secret.** The wizard validates the token live against Slack `auth.test` and stores both in Durable Object state. Env secrets (`wrangler secret put`) always take precedence if you set them later.
+1. **Click Deploy.** There is no Chickpea secret to invent or save. The deploy creates its internal signing authority, provisions the Worker and D1 database, and finishes with one private setup link.
+2. **Open the private link.** It asks only for the owner's email, password, and password confirmation, then continues directly to onboarding.
+3. **Create @Chickpea in Slack.** The button opens Slack with this installation's manifest already filled in. Pick the customer workspace and install the app.
+4. **Paste two Slack values.** Return with the Bot User OAuth Token and Signing Secret. Chickpea verifies the signed Slack setup event, workspace, app, required scopes, and channel access before it says Connected.
+5. **Choose one channel and try Chickpea.** The channel picker opens immediately. Chickpea completes onboarding only after a real `@Chickpea` mention receives a visible reply in that channel.
 
-See [Authentication and roles](docs/authentication.md) for account, session, invitation, role, optional Access, and future Hosted SSO boundaries. Keep the recovery token offline after setup; the [built-in recovery runbook](docs/runbooks/password-recovery.md) covers lost credentials and compromise response.
+See [Authentication and roles](docs/authentication.md) for accounts, sessions, invitations, roles, optional Access, and Cloudflare-backed break-glass recovery. The [recovery runbook](docs/runbooks/password-recovery.md) explains how a Cloudflare account holder can temporarily enable one recovery without adding a recovery-code step to normal onboarding.
 
 The first DM answers with **zero model keys** on a fresh Cloudflare deploy: the seeded Default profile is explicitly pinned to [`cloudflare/@cf/zai-org/glm-5.2`](https://developers.cloudflare.com/workers-ai/models/glm-5.2/) through the Workers AI binding — that link is its Workers AI model page, so you can check availability on your plan before deploying. If the model errors on your account, the failure surfaces as one sanitized reply in the thread; pin any other model in `/admin`. Add an `ANTHROPIC_API_KEY` secret, or paste it in Settings, to make Claude models available in the picker; keys do not silently switch a pinned profile.
 
@@ -192,10 +192,9 @@ Deploys the same artifact the button does:
 
 ```bash
 npm run deploy                           # builds current source, then runs wrangler deploy
-npx wrangler secret put CHICKPEA_RECOVERY_TOKEN
 ```
 
-`npm run deploy -- --skip-build` reuses an artifact you just produced with `npm run build`; the default always rebuilds so stale ignored output cannot be deployed accidentally.
+The command generates any missing internal authority and finishes with the private setup link. `npm run deploy -- --skip-build` reuses an artifact you just produced with `npm run build`; the default always rebuilds so stale ignored output cannot be deployed accidentally.
 
 ### Self-host on any Node host
 
@@ -205,7 +204,7 @@ Requires Node >= 22.19 (see `.nvmrc`).
 npm run flue:build                       # Vite Node build -> dist/server.mjs
 ```
 
-Run `dist/server.mjs` on any host. State is file-backed SQLite. Set `CHICKPEA_RECOVERY_TOKEN`, terminate HTTPS in front of every non-loopback deployment, and open `/admin/setup` for the same built-in owner journey as Cloudflare. Point Slack's Events Request URL at `https://<host>/channels/slack/events`. Both targets run the same source — `src/config/state-backend.ts` picks SQLite or Durable Object state at runtime. Existing token-mode installations retain the older `npm run auth:recover` compatibility path; a personal token is a machine credential, not password-lifecycle authority.
+Run `dist/server.mjs` on any host. State is file-backed SQLite. Set a stable `CHICKPEA_AUTH_SECRET`, terminate HTTPS in front of every non-loopback deployment, then run `npm run setup:link -- https://<host>` to mint the same private setup-link contract as Cloudflare. Point Slack at the request URL generated by `/admin`. Both targets run the same source — `src/config/state-backend.ts` picks SQLite or Durable Object state at runtime. Existing token-mode installations retain the older `npm run auth:recover` compatibility path; a personal token is a machine credential, not password-lifecycle authority.
 
 Scheduled routines are the one current capability-tier exception: Node can inspect and shut down existing routine state but cannot create, resume, run, or schedule it. A future persistent scheduler adapter can add another deployment target without changing the product-owned definition/run model.
 
@@ -261,7 +260,8 @@ Dedicated identities are a permanent optional capability. Customers who use only
 | `SLACK_TAG_WELCOME_ON_JOIN` | optional | On by default: when @Chickpea joins an already-assigned channel, Chickpea posts one short welcome. `false` suppresses it. |
 | `SLACK_TAG_AMBIENT_PARTICIPATION` | optional | On by default: assigned channels evaluate useful unmentioned messages. `false` forces an installation-wide mention-only rollback without changing channel settings or capabilities. |
 | `SLACK_TAG_LEDGER_CANARY_CHANNELS` | internal rollout only | Exact comma-separated `workspace/channel` pairs (for example `T123/C456`) that assign new eligible interactive Runs to the channel-neutral durable driver. Empty is the committed/release default. Existing Runs never change owner. Explicit Memory/Routine commands, profiles with enabled MCP tools/API connections/repositories, and installations with open or non-empty allowlisted egress remain on the established lane. Read the [runtime rollout runbook](docs/runbooks/agent-runtime-rollout.md) before setting it. |
-| `CHICKPEA_RECOVERY_TOKEN` | fresh setup and recovery | Persistent offline root credential. Generate exactly 32 random bytes with `openssl rand -hex 32` and store it outside the deployment account. It is never an Admin session, password pepper, invitation, or bearer login. |
+| `CHICKPEA_AUTH_SECRET` | managed automatically on Cloudflare; required on Node | Stable 32-byte internal signing authority. It is write-only deployment configuration and never an Admin login or setup value. Normal Cloudflare deploys create and preserve it automatically. |
+| `CHICKPEA_RECOVERY_TOKEN` | optional break-glass recovery | Temporary 32-byte recovery capability created by a Cloudflare account holder only when the owner is locked out. One successful recovery consumes it; replace or delete the secret afterward. Legacy installations may still use it as signing authority until migrated. |
 | `TAG_ADMIN_TOKEN` | legacy migration only | Shared Admin credential accepted only while an existing installation has not completed identity-auth cutover. Successful Access or token-mode activation permanently stops it from authenticating. Do not configure it for new installs. |
 | `TAG_DB_PATH` | optional | SQLite path for the durable agent transcript. Default `./tmp/flue.db`; use `:memory:` for ephemeral runs. The default `tmp/**` path is ignored by `flue dev` watch mode. |
 | `SLACK_STATE_DB_PATH` | optional | SQLite path for app-owned state: runtime config, assignments, dedupe claims, joined-thread registry, per-thread config snapshots. Defaults to `<TAG_DB_PATH>.state`; a `:memory:` transcript DB implies a `:memory:` state store, so ephemeral runs stay fully ephemeral. |

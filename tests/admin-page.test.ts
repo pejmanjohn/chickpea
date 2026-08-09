@@ -98,6 +98,14 @@ type SlackChannelsFixture = {
   teamName: string;
   truncated?: boolean;
 };
+type OnboardingFixture = {
+  stage: 'connect_slack' | 'choose_channel' | 'try' | 'complete';
+  revision: string;
+  workspace: { id: string; name: string | null } | null;
+  channel: { id: string; name: string } | null;
+  tryStartedAt: number | null;
+  completedAt: number | null;
+};
 type SlackBehaviorEntry = { value: boolean; source: 'env' | 'stored' | 'default' };
 type SlackBehaviorFixture = {
   allowDms: SlackBehaviorEntry;
@@ -341,6 +349,7 @@ function runAdminPageHarness(
     slackDisconnectError?: { status: number; error: string };
     initialPath?: string;
     slackChannels?: SlackChannelsFixture;
+    onboarding?: OnboardingFixture | null;
     slackChannelFailures?: number;
     putIsMember?: boolean;
     putAssignmentError?: { status: number; error: string; message?: string };
@@ -413,6 +422,7 @@ function runAdminPageHarness(
   favContainers: Record<string, FakeElement>;
   listeners: Record<string, Listener>;
   putAssignments: unknown[];
+  onboardingTryPosts: Array<Record<string, unknown>>;
   slackPosts: unknown[];
   slackBehaviorPuts: Array<Record<string, boolean>>;
   slackBehaviorGets(): number;
@@ -546,6 +556,7 @@ function runAdminPageHarness(
   const favContainers: Record<string, FakeElement> = {};
   const listeners: Record<string, Listener> = {};
   const putAssignments: unknown[] = [];
+  const onboardingTryPosts: Array<Record<string, unknown>> = [];
   const slackPosts: unknown[] = [];
   const slackIdentityAttachPosts: Array<{
     identityId: string;
@@ -687,6 +698,7 @@ function runAdminPageHarness(
   const deferSlackIdentity = options.deferSlackIdentity === true;
   const deferSlackIdentityConnect = options.deferSlackIdentityConnect === true;
   const slackChannels = options.slackChannels;
+  let onboarding = options.onboarding ?? null;
   const putIsMember = options.putIsMember;
   const putAssignmentError = options.putAssignmentError;
   let slackChannelFailures = options.slackChannelFailures ?? 0;
@@ -1448,6 +1460,26 @@ function runAdminPageHarness(
       if (index >= 0) agentsList.splice(index, 1);
       return Promise.resolve(jsonResponse(null, 204));
     }
+    if (path === '/admin/api/onboarding' && method === 'GET') {
+      return Promise.resolve(
+        onboarding
+          ? jsonResponse(onboarding)
+          : jsonResponse({ error: 'onboarding_not_found' }, 404),
+      );
+    }
+    if (path === '/admin/api/onboarding/try' && method === 'POST') {
+      const body = JSON.parse(options?.body ?? '{}') as Record<string, unknown>;
+      onboardingTryPosts.push(body);
+      onboarding = {
+        stage: 'try',
+        revision: JSON.stringify({ ...body, tryStartedAt: 1_800_000_000_000 }),
+        workspace: { id: String(body.workspaceId), name: 'Acme Inc' },
+        channel: { id: String(body.channelId), name: String(body.channelName) },
+        tryStartedAt: 1_800_000_000_000,
+        completedAt: null,
+      };
+      return Promise.resolve(jsonResponse(onboarding));
+    }
     if (path === '/admin/api/assignments' && method === 'PUT') {
       const body = JSON.parse(options?.body ?? '{}') as AssignmentFixture;
       putAssignments.push(body);
@@ -2121,6 +2153,7 @@ function runAdminPageHarness(
     favContainers,
     listeners,
     putAssignments,
+    onboardingTryPosts,
     slackPosts,
     slackBehaviorPuts,
     slackBehaviorGets: () => slackBehaviorGets,
@@ -7782,6 +7815,179 @@ test('add-channel manual fallback reveals a server-validated channel-ID input', 
 
   assert.deepEqual(harness.putAssignments, [
     { workspaceId: 'T_DESIGN', channelId: 'C_MANUAL', agentId: releaseAgent.id, enabled: true },
+  ]);
+});
+
+test('onboarding starts with one Slack creation action and progressively reveals credentials', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/onboarding',
+    assignments: [],
+    slackConnection: disconnectedSlackFixture(),
+    onboarding: {
+      stage: 'connect_slack',
+      revision: '{"version":1}',
+      workspace: null,
+      channel: null,
+      tryStartedAt: null,
+      completedAt: null,
+    },
+  });
+  await flushAsync();
+
+  assert.equal(harness.locationPath(), '/admin/onboarding');
+  assert.match(harness.app.innerHTML, /Connect @Chickpea/);
+  assert.equal((harness.app.innerHTML.match(/data-action="advance-slack-step"/g) ?? []).length, 1);
+  assert.doesNotMatch(harness.app.innerHTML, /Events URL/);
+  assert.doesNotMatch(harness.app.innerHTML, /name="botToken"/);
+
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'advance-slack-step' }) });
+  assert.match(harness.app.innerHTML, /name="botToken"/);
+  assert.match(harness.app.innerHTML, /name="signingSecret"/);
+  assert.match(harness.app.innerHTML, /Where do I find these\?/);
+});
+
+test('onboarding gives compact recovery for each Slack verification failure code', async () => {
+  const cases = [
+    ['challenge_invalid_signature', /Retry the Event Subscriptions request URL check/],
+    ['challenge_expired', /verification check expired/],
+    ['challenge_missing', /waiting for Slack to verify the Events URL/],
+    ['signing_secret_change_requires_reconnect', /disconnect this Slack app and connect it again/],
+    ['workspace_mismatch', /different Slack workspace/],
+    ['app_mismatch', /different Slack apps/],
+    ['slack_scope_unverified', /required permissions/],
+    ['slack_channel_list_failed', /confirm channel access/],
+  ] as const;
+  for (const [error, expected] of cases) {
+    const harness = runAdminPageHarness({
+      initialPath: '/admin/onboarding',
+      assignments: [],
+      slackConnection: disconnectedSlackFixture(),
+      slackPostError: { status: 409, error, message: 'internal credential diagnostic must not render' },
+      onboarding: {
+        stage: 'connect_slack',
+        revision: '{"version":1}',
+        workspace: null,
+        channel: null,
+        tryStartedAt: null,
+        completedAt: null,
+      },
+    });
+    await flushAsync();
+    harness.listeners.submit?.({
+      target: submitTarget(
+        { 'data-action': 'slack-connect-form' },
+        { botToken: 'xoxb-safe-placeholder', signingSecret: 'safe-placeholder' },
+      ),
+      preventDefault() {},
+    });
+    await flushAsync();
+    assert.match(harness.app.innerHTML, expected, error);
+    assert.doesNotMatch(harness.app.innerHTML, /internal credential diagnostic/, error);
+  }
+});
+
+test('onboarding assigns one returned Slack channel and lands directly in Try Chickpea', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/onboarding',
+    assignments: [],
+    agents: [seededAgents[0]],
+    slackChannels: channelsFixture([
+      { id: 'C_NEW', name: 'new-channel', isPrivate: false, isMember: false },
+      { id: 'C_PRIVATE', name: 'invited-secret', isPrivate: true, isMember: true },
+    ]),
+    putIsMember: true,
+    onboarding: {
+      stage: 'choose_channel',
+      revision: '{"version":1,"state":"active"}',
+      workspace: { id: 'T_DESIGN', name: 'Acme Inc' },
+      channel: null,
+      tryStartedAt: null,
+      completedAt: null,
+    },
+  });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /Choose where Chickpea should start/);
+  assert.match(harness.app.innerHTML, /# new-channel/);
+  assert.match(harness.app.innerHTML, /# invited-secret \(private\)/);
+  assert.doesNotMatch(harness.app.innerHTML, /unreturned-secret/);
+
+  harness.listeners.submit?.({
+    target: submitTarget({ 'data-action': 'onboarding-channel-form' }, { channelSelect: 'C_NEW' }),
+    preventDefault() {},
+  });
+  await flushAsync();
+
+  assert.deepEqual(harness.putAssignments.at(-1), {
+    workspaceId: 'T_DESIGN',
+    channelId: 'C_NEW',
+    agentId: 'agent_default',
+    enabled: true,
+    channelLabel: 'new-channel',
+  });
+  assert.deepEqual(harness.onboardingTryPosts, [{
+    expectedRevision: '{"version":1,"state":"active"}',
+    workspaceId: 'T_DESIGN',
+    channelId: 'C_NEW',
+    channelName: 'new-channel',
+  }]);
+  assert.match(harness.app.innerHTML, /Try Chickpea/);
+  assert.match(harness.app.innerHTML, /https:\/\/app\.slack\.com\/client\/T_DESIGN\/C_NEW/);
+  assert.match(
+    harness.app.innerHTML,
+    /@Chickpea summarize the recent discussion in this channel and list any open questions\./,
+  );
+});
+
+test('onboarding stays on channel selection until Slack membership is positively verified', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/onboarding',
+    assignments: [],
+    agents: [seededAgents[0]],
+    slackChannels: channelsFixture([{ id: 'C_NEW', name: 'new-channel' }]),
+    onboarding: {
+      stage: 'choose_channel',
+      revision: '{"version":1,"state":"active"}',
+      workspace: { id: 'T_DESIGN', name: 'Acme Inc' },
+      channel: null,
+      tryStartedAt: null,
+      completedAt: null,
+    },
+  });
+  await flushAsync();
+
+  harness.listeners.submit?.({
+    target: submitTarget({ 'data-action': 'onboarding-channel-form' }, { channelSelect: 'C_NEW' }),
+    preventDefault() {},
+  });
+  await flushAsync();
+
+  assert.equal(harness.onboardingTryPosts.length, 0);
+  assert.match(harness.app.innerHTML, /could not verify that it joined #new-channel/);
+  assert.match(harness.app.innerHTML, /Choose where Chickpea should start/);
+});
+
+test('Try Chickpea keeps the exact prompt copyable and completion restores normal navigation', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/onboarding',
+    onboarding: {
+      stage: 'complete',
+      revision: '{"version":1,"state":"complete"}',
+      workspace: { id: 'T_DESIGN', name: 'Acme Inc' },
+      channel: { id: 'C_NEW', name: 'new-channel' },
+      tryStartedAt: 1_800_000_000_000,
+      completedAt: 1_800_000_005_000,
+    },
+  });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /Chickpea is ready/);
+  assert.match(harness.app.innerHTML, /aria-label="Admin navigation"/);
+  assert.match(harness.app.innerHTML, /readonly value="@Chickpea summarize/);
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'copy-onboarding-prompt' }) });
+  await flushAsync();
+  assert.deepEqual(harness.clipboardWrites, [
+    '@Chickpea summarize the recent discussion in this channel and list any open questions.',
   ]);
 });
 

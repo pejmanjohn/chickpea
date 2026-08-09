@@ -6,11 +6,11 @@ everyone: the bot token **does not exist** until the app is installed, and
 Slack's console offers three other token-shaped strings that are wrong for the
 normal HTTP Events API setup.
 
-**What you need before starting:** a completed Cloudflare Access owner setup,
-the Chickpea `/admin` URL (the deploy first sends you to
-`https://<worker>.<subdomain>.workers.dev/admin/setup`), and—critically—the
-name of the **Slack workspace the bot should live in**. The offline
-`CHICKPEA_RECOVERY_TOKEN` is used during owner setup, not to sign in here.
+**What you need before starting:** the private setup link printed by the
+deploy and—critically—the name of the **Slack workspace the bot should live
+in**. The owner creates an email/password account from that link and continues
+directly into the Slack and first-channel journey. Fresh installs do not ask
+for a deployment or recovery token.
 
 **If you are an AI agent:** confirm the target workspace with your human
 before step 2; it is the one choice that cannot be corrected later without

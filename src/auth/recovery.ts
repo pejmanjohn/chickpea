@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash } from 'node:crypto';
 
 import type { AuthProviderConfig, IdentityStore } from '../identity/types.ts';
 import { createBetterAuth } from './better-auth.ts';
@@ -49,8 +49,17 @@ export class PasswordOwnerRecoveryService {
       ...(organization ? { organizationName: organization.name } : {}),
     });
 
-    const capabilityHash = createHash('sha256').update(randomBytes(32)).digest('hex');
-    const operation = await this.identityStore.createAuthOperation({
+    const capabilityHash = createHash('sha256')
+      .update('chickpea/owner-recovery/v1\0')
+      .update(input.recoveryToken)
+      .digest('hex');
+    let operation = await this.identityStore.findAuthOperation('owner_recovery', capabilityHash);
+    if (operation && (
+      operation.status !== 'pending' ||
+      operation.expectedNormalizedEmail !== email ||
+      operation.organizationId !== control.betterAuthOrganizationId
+    )) throw new AuthDeniedError();
+    operation ??= await this.identityStore.createAuthOperation({
       kind: 'owner_recovery',
       organizationId: control.betterAuthOrganizationId,
       expectedEmail: email,
@@ -64,8 +73,6 @@ export class PasswordOwnerRecoveryService {
     );
     if (!account) throw new AuthDeniedError();
     const verifier = await this.environment.password.hash(input.newPassword);
-    await context.internalAdapter.updateAccount(account.id, { password: verifier });
-    await context.internalAdapter.deleteUserSessions(user.id);
     const advanced = await this.identityStore.advanceAuthOperation({
       operationId: operation.id,
       capabilityHash,
@@ -74,11 +81,17 @@ export class PasswordOwnerRecoveryService {
       betterAuthOrganizationId: control.betterAuthOrganizationId,
       betterAuthMembershipId: membership.id,
     });
+    // Consume the break-glass capability before mutating Better Auth. This is
+    // deliberately fail closed: if the downstream write fails, the operator
+    // issues a new temporary recovery secret instead of replaying the old one
+    // with a different password after an ambiguous partial result.
     await this.identityStore.consumeAuthOperation({
       operationId: advanced.id,
       capabilityHash,
       expectedStep: 1,
     });
+    await context.internalAdapter.updateAccount(account.id, { password: verifier });
+    await context.internalAdapter.deleteUserSessions(user.id);
     const tokens = (await this.identityStore.exportSummary()).personalTokens
       .filter((token) => token.userId === user.id && token.status === 'active');
     await Promise.all(tokens.map((token) => this.identityStore.revokePersonalToken(token.id)));

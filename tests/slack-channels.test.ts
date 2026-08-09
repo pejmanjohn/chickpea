@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHmac } from 'node:crypto';
 import { test } from 'node:test';
 
 import { Hono } from 'hono';
@@ -16,6 +17,7 @@ import {
   SLACK_SETTING_KEYS,
 } from '../src/slack/credentials.ts';
 import { renderSlackConfigureLink } from '../src/slack/message-format.ts';
+import { recordPendingSlackChallenge } from '../src/slack/identity-handshake.ts';
 import { FakeSlackBackend, type FakeSlackBackendConfig } from './parity/fake-slack.ts';
 import { withEnv } from './helpers/env.ts';
 import { loopbackListenSkipReason } from './helpers/listen.ts';
@@ -96,11 +98,33 @@ test('wizard POST persists the connected team id + name, and the connection GET 
   if (skip) return t.skip(skip);
 
   await withFake(
-    { slack: { identity: { teamId: 'T_ACME', teamName: 'Acme Inc' } } },
+    {
+      slack: {
+        identity: { appId: 'A0ACME', teamId: 'TACME', teamName: 'Acme Inc' },
+      },
+    },
     async () => {
       const settings = new SqliteSettingsStore(':memory:');
+      const store = new SqliteConfigStore(':memory:');
       try {
-        const app = appWith(settings);
+        const app = appWith(settings, store);
+        const timestamp = String(Math.floor(Date.now() / 1_000));
+        const challengeBody = JSON.stringify({
+          type: 'url_verification',
+          challenge: 'channels-wizard-proof',
+          api_app_id: 'A0ACME',
+          team_id: 'TACME',
+        });
+        const signature = `v0=${createHmac('sha256', 'acme-secret')
+          .update(`v0:${timestamp}:${challengeBody}`)
+          .digest('hex')}`;
+        const identity = await store.getSlackIdentity('slack_identity_default');
+        const challenged = await recordPendingSlackChallenge(settings, identity, {
+          rawBody: challengeBody,
+          timestamp,
+          signature,
+        });
+        assert.equal(challenged.accepted, true);
         const saved = await app.request('/admin/api/slack-connection', {
           method: 'POST',
           headers: { ...auth(), 'content-type': 'application/json' },
@@ -108,17 +132,18 @@ test('wizard POST persists the connected team id + name, and the connection GET 
         });
         assert.equal(saved.status, 200);
         const savedBody = (await saved.json()) as Record<string, unknown>;
-        assert.equal(savedBody.teamId, 'T_ACME');
+        assert.equal(savedBody.teamId, 'TACME');
         assert.equal(savedBody.team, 'Acme Inc');
 
-        assert.equal(await settings.getSetting(SLACK_SETTING_KEYS.teamId), 'T_ACME');
+        assert.equal(await settings.getSetting(SLACK_SETTING_KEYS.teamId), 'TACME');
         assert.equal(await settings.getSetting(SLACK_SETTING_KEYS.teamName), 'Acme Inc');
 
         const conn = await getJson(app, '/admin/api/slack-connection');
         const connBody = (await conn.json()) as Record<string, unknown>;
-        assert.equal(connBody.teamId, 'T_ACME');
+        assert.equal(connBody.teamId, 'TACME');
         assert.equal(connBody.teamName, 'Acme Inc');
       } finally {
+        store.close();
         settings.close();
       }
     },

@@ -19,13 +19,11 @@ export function passwordOwnerSetupClientScript(): string {
   var form = document.getElementById("owner-setup-form");
   var status = document.getElementById("owner-setup-status");
   var capabilityInput = document.getElementById("owner-setup-capability");
-  var manual = document.getElementById("owner-setup-manual-capability");
-  var fallback = document.getElementById("owner-setup-fallback");
-  var fallbackContinue = document.getElementById("owner-setup-manual-continue");
-  var fallbackError = document.getElementById("owner-setup-manual-error");
   var submit = document.getElementById("owner-setup-submit");
   var password = document.getElementById("password");
   var passwordError = document.getElementById("password-error");
+  var passwordConfirmation = document.getElementById("password-confirmation");
+  var passwordConfirmationError = document.getElementById("password-confirmation-error");
   var passwordMinimum = ${PASSWORD_MIN_CODE_POINTS};
   if (!form) {
     try { sessionStorage.removeItem(storageKey); } catch (_) {}
@@ -49,19 +47,39 @@ export function passwordOwnerSetupClientScript(): string {
     value = "";
     return valid;
   }
+  function validatePasswordConfirmation(showMessage) {
+    if (!password || !passwordConfirmation) return true;
+    var valid = Boolean(passwordConfirmation.value) && passwordConfirmation.value === password.value;
+    var message = passwordConfirmation.value ? "Passwords do not match." : "Enter your password again.";
+    if (passwordConfirmation.setCustomValidity) passwordConfirmation.setCustomValidity(valid ? "" : message);
+    if (valid) {
+      if (passwordConfirmation.removeAttribute) passwordConfirmation.removeAttribute("aria-invalid");
+      if (passwordConfirmationError) { passwordConfirmationError.hidden = true; passwordConfirmationError.textContent = ""; }
+    } else if (showMessage) {
+      if (passwordConfirmation.setAttribute) passwordConfirmation.setAttribute("aria-invalid", "true");
+      if (passwordConfirmationError) { passwordConfirmationError.hidden = false; passwordConfirmationError.textContent = message; }
+    }
+    return valid;
+  }
   function enablePasswordValidation() {
     if (passwordValidationReady) return;
     passwordValidationReady = true;
     if (password && password.addEventListener) {
-      password.addEventListener("input", function () { validatePassword(Boolean(password.value)); });
+      password.addEventListener("input", function () { validatePassword(Boolean(password.value)); validatePasswordConfirmation(Boolean(passwordConfirmation && passwordConfirmation.value)); });
       password.addEventListener("blur", function () { validatePassword(Boolean(password.value)); });
+    }
+    if (passwordConfirmation && passwordConfirmation.addEventListener) {
+      passwordConfirmation.addEventListener("input", function () { validatePasswordConfirmation(Boolean(passwordConfirmation.value)); });
+      passwordConfirmation.addEventListener("blur", function () { validatePasswordConfirmation(Boolean(passwordConfirmation.value)); });
     }
     if (form.addEventListener) form.addEventListener("submit", function (event) {
       var passwordAccepted = validatePassword(true);
-      var formAccepted = form.checkValidity ? form.checkValidity() : passwordAccepted;
-      if (passwordAccepted && formAccepted) return;
+      var confirmationAccepted = validatePasswordConfirmation(true);
+      var formAccepted = form.checkValidity ? form.checkValidity() : passwordAccepted && confirmationAccepted;
+      if (passwordAccepted && confirmationAccepted && formAccepted) return;
       if (event && event.preventDefault) event.preventDefault();
       if (!passwordAccepted && password && password.focus) password.focus();
+      else if (!confirmationAccepted && passwordConfirmation && passwordConfirmation.focus) passwordConfirmation.focus();
       if (form.reportValidity) form.reportValidity();
     });
   }
@@ -79,40 +97,12 @@ export function passwordOwnerSetupClientScript(): string {
     capability = "";
     try { sessionStorage.removeItem(storageKey); } catch (_) {}
     if (status) {
-      status.textContent = "Open the private setup link from your deploy results. If it is unavailable, enter the setup code manually below.";
+      status.textContent = "This private setup link is missing or expired. Retry your deployment to create a new link.";
     }
-    if (fallback) fallback.hidden = false;
-    if (manual) manual.addEventListener("input", function () {
-      if (fallbackError) { fallbackError.hidden = true; fallbackError.textContent = ""; }
-      if (manual.removeAttribute) manual.removeAttribute("aria-invalid");
-    });
-    if (fallbackContinue) fallbackContinue.addEventListener("click", function () {
-      var value = manual && manual.value ? manual.value : "";
-      var valid = value.length >= 32 && value.length <= 512 && !/\\s/.test(value);
-      if (!valid) {
-        if (fallbackError) {
-          fallbackError.hidden = false;
-          fallbackError.textContent = "Enter the setup code from your deploy results.";
-        }
-        if (manual && manual.setAttribute) manual.setAttribute("aria-invalid", "true");
-        if (manual && manual.focus) manual.focus();
-        return;
-      }
-      try { sessionStorage.setItem(storageKey, value); } catch (_) {}
-      if (capabilityInput) capabilityInput.value = value;
-      if (manual) manual.value = "";
-      if (submit) submit.disabled = false;
-      if (fallback) fallback.hidden = true;
-      form.hidden = false;
-      if (status) status.hidden = true;
-      enablePasswordValidation();
-      value = "";
-    });
     return;
   }
   if (capabilityInput) capabilityInput.value = capability;
   if (submit) submit.disabled = false;
-  if (fallback) fallback.hidden = true;
   form.hidden = false;
   if (status) status.hidden = true;
   capability = "";

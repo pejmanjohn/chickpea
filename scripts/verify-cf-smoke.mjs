@@ -6,8 +6,8 @@
  * SIGNED Slack events end-to-end. Asserts the parts of the port that only
  * workerd can prove:
  *
- *   1. recovery-backed password setup creates the first named owner and a
- *      Better Auth browser session without Cloudflare Access,
+ *   1. a deploy-minted setup capability creates the first owner and a Better
+ *      Auth browser session without Cloudflare Access or a recovery secret,
  *   2. the DO-backed config store seeds and serves /admin/api/agents,
  *   3. the app boots healthy with NO Slack creds: events fail closed (401)
  *      and the wizard GET reports missing credentials + a manifest deep-link
@@ -49,6 +49,11 @@ import {
   classifyCloudflareDeploymentProfile,
   resolveCloudflareDeploymentProfile,
 } from './cloudflare-deployment-profile.mjs';
+import {
+  mintSetupCapability,
+  SETUP_CAPABILITY_DIGEST_BINDING,
+  SETUP_CAPABILITY_ISSUED_AT_BINDING,
+} from '../src/auth/setup-capability.mjs';
 
 const WRANGLER_BIN = join(REPO_ROOT, 'node_modules', '.bin', 'wrangler');
 const CF_OUTPUT_DIR = join(REPO_ROOT, 'dist-cf');
@@ -56,11 +61,11 @@ const CF_WRANGLER_CONFIG = join(CF_OUTPUT_DIR, 'chickpea', 'wrangler.json');
 const CF_SMOKE_WRANGLER_CONFIG = join(CF_OUTPUT_DIR, 'chickpea', 'wrangler.smoke.json');
 const CF_AI_SMOKE_CONFIG = join(CF_OUTPUT_DIR, 'chickpea', 'wrangler.ai-smoke.json');
 const PERSIST_DIR = join(REPO_ROOT, '.wrangler-state');
-const RECOVERY_TOKEN = '9d'.repeat(32);
+const AUTH_SECRET = '9d'.repeat(32);
 const OWNER_PASSWORD = 'several unrelated amber words 5729';
-const WORKSPACE = 'T_SMOKE';
-const CHANNEL = 'C_SMOKE';
-const AI_CHANNEL = 'C_SMOKE_AI';
+const WORKSPACE = 'T0SMOKE';
+const CHANNEL = 'C0SMOKE';
+const AI_CHANNEL = 'C0SMOKEAI';
 const MENTION_TS = '1782770400.000100';
 const MEMORY_TS = '1782770450.000100';
 const AI_MENTION_TS = '1782770100.000100';
@@ -83,7 +88,7 @@ const BETA_FLUE_CLASSES = [
 
 // Slow-turn case: a distinct channel + thread whose provider is held open past
 // the old ~30s waitUntil horizon, proving the DO alarm relay delivers anyway.
-const SLOW_CHANNEL = 'C_SMOKE_SLOW';
+const SLOW_CHANNEL = 'C0SMOKESLOW';
 const SLOW_MENTION_TS = '1782771000.000100';
 // >35s so the turn outlives the ~30s cancellation a real deploy's events-
 // invocation waitUntil would hit. Overridable for iteration; keep it above 35s.
@@ -242,7 +247,7 @@ function verifyBuildArtifacts(expectedProfile = resolveCloudflareDeploymentProfi
   );
 }
 
-function writeSmokeWranglerConfigs() {
+function writeSmokeWranglerConfigs(setup) {
   const productionConfig = JSON.parse(readFileSync(CF_WRANGLER_CONFIG, 'utf8'));
   // The production AI binding accepts the turn's AbortSignal directly. Our
   // local stand-in crosses a service-RPC boundary, so opt only the disposable
@@ -258,6 +263,8 @@ function writeSmokeWranglerConfigs() {
         : database),
     vars: {
       ...(productionConfig.vars ?? {}),
+      [SETUP_CAPABILITY_DIGEST_BINDING]: setup.digest,
+      [SETUP_CAPABILITY_ISSUED_AT_BINDING]: String(setup.issuedAt),
       // Exercise exactly one internal workspace/channel through the enforced
       // ledger lane while the ordinary and slow channels remain legacy.
       SLACK_TAG_LEDGER_CANARY_CHANNELS: `${WORKSPACE}/${AI_CHANNEL}`,
@@ -303,7 +310,7 @@ function writeDevVars(fakeUrl) {
   writeFileSync(
     join(CF_OUTPUT_DIR, 'chickpea', '.dev.vars'),
     [
-      `CHICKPEA_RECOVERY_TOKEN=${RECOVERY_TOKEN}`,
+      `CHICKPEA_AUTH_SECRET=${AUTH_SECRET}`,
       `SLACK_API_URL=${fakeUrl}/api/`,
       `LOCAL_STUB_URL=${fakeUrl}/v1`,
       'SLACK_TAG_MODEL=local-stub/smoke-model',
@@ -405,14 +412,14 @@ async function adminFetch(baseUrl, path, init = {}) {
   return { status: response.status, body };
 }
 
-async function adminPageHtml(baseUrl) {
-  const response = await fetch(`${baseUrl}/admin`, {
+async function adminPageHtml(baseUrl, path = '/admin') {
+  const response = await fetch(`${baseUrl}${path}`, {
     headers: adminCookie ? { cookie: adminCookie } : {},
   });
   return response.text();
 }
 
-async function completePasswordSetup(baseUrl) {
+async function completePasswordSetup(baseUrl, setup) {
   const setupPage = await fetch(`${baseUrl}/admin/setup`);
   const setupHtml = await setupPage.text();
   check(
@@ -423,15 +430,15 @@ async function completePasswordSetup(baseUrl) {
       !setupHtml.includes('Your name') &&
       !setupHtml.includes('Deployment recovery secret') &&
       !setupHtml.includes('Zero Trust') &&
-      !setupHtml.includes(RECOVERY_TOKEN),
-    'fresh setup renders built-in owner creation without Access or recovery-secret echo',
+      !setupHtml.includes(setup.capability),
+    'fresh setup renders built-in owner creation without Access or setup-capability echo',
     `HTTP ${setupPage.status}`,
   );
   const body = new URLSearchParams({
-    organizationName: 'Smoke Workspace',
     ownerEmail: 'owner@example.com',
     password: OWNER_PASSWORD,
-    recoveryToken: RECOVERY_TOKEN,
+    passwordConfirmation: OWNER_PASSWORD,
+    recoveryToken: setup.capability,
   }).toString();
   const configured = await fetch(`${baseUrl}/admin/setup`, {
     method: 'POST',
@@ -446,9 +453,9 @@ async function completePasswordSetup(baseUrl) {
   });
   adminCookie = (configured.headers.get('set-cookie') ?? '').split(';', 1)[0] ?? '';
   check(
-    configured.status === 303 && configured.headers.get('location') === '/admin/ready' &&
+    configured.status === 303 && configured.headers.get('location') === '/admin/onboarding' &&
       /better-auth\.session_token=/.test(adminCookie),
-    'recovery proof creates the owner and returns a Better Auth browser session',
+    'deploy capability creates the owner and returns a Better Auth browser session',
     `HTTP ${configured.status} location=${configured.headers.get('location')}`,
   );
   const resumed = await fetch(`${baseUrl}/admin/setup`, { headers: { cookie: adminCookie } });
@@ -474,8 +481,8 @@ async function completePasswordSetup(baseUrl) {
   );
 }
 
-async function renderAdminWithWorkerdState(baseUrl) {
-  const html = await adminPageHtml(baseUrl);
+async function renderAdminWithWorkerdState(baseUrl, path = '/admin') {
+  const html = await adminPageHtml(baseUrl, path);
   const script = html.match(/<script>([\s\S]*?)<\/script>/)?.[1];
   if (!script) {
     throw new Error('admin page did not include its inline script');
@@ -511,6 +518,20 @@ async function renderAdminWithWorkerdState(baseUrl) {
       },
     });
   };
+  const location = {
+    pathname: path,
+    search: '',
+    hash: '',
+    href: `${baseUrl}${path}`,
+  };
+  const history = {
+    pushState(_state, _title, next) {
+      location.pathname = String(next).split(/[?#]/, 1)[0];
+    },
+    replaceState(_state, _title, next) {
+      location.pathname = String(next).split(/[?#]/, 1)[0];
+    },
+  };
   vm.runInNewContext(
     script,
     {
@@ -518,6 +539,8 @@ async function renderAdminWithWorkerdState(baseUrl) {
       fetch: authenticatedFetch,
       console,
       URLSearchParams,
+      location,
+      history,
       FormData: class {
         constructor(form) {
           this.form = form;
@@ -602,7 +625,7 @@ function mentionEvent(eventId = 'Ev_SMOKE_MENTION_1') {
   return {
     token: 'verification-token-not-a-secret',
     team_id: WORKSPACE,
-    api_app_id: 'A_SMOKE',
+    api_app_id: 'A0SMOKE',
     event_id: eventId,
     event_time: 1782770400,
     type: 'event_callback',
@@ -647,7 +670,7 @@ function slowMentionEvent(eventId = 'Ev_SMOKE_SLOW_1') {
   return {
     token: 'verification-token-not-a-secret',
     team_id: WORKSPACE,
-    api_app_id: 'A_SMOKE',
+    api_app_id: 'A0SMOKE',
     event_id: eventId,
     event_time: 1782771000,
     type: 'event_callback',
@@ -666,7 +689,7 @@ function threadReplyEvent() {
   return {
     token: 'verification-token-not-a-secret',
     team_id: WORKSPACE,
-    api_app_id: 'A_SMOKE',
+    api_app_id: 'A0SMOKE',
     event_id: 'Ev_SMOKE_REPLY_1',
     event_time: 1782770460,
     type: 'event_callback',
@@ -728,7 +751,8 @@ async function main() {
     // the documented iteration-only reuse path.
     buildAndVerify('sandbox', { reuseExisting: true });
   }
-  writeSmokeWranglerConfigs();
+  const setup = await mintSetupCapability();
+  writeSmokeWranglerConfigs(setup);
 
   // Fresh local DO state every run: the seeding + dedupe assertions assume a
   // first-boot Durable Object.
@@ -742,7 +766,7 @@ async function main() {
   const backend = new FakeSlackBackend({
     slack: {
       identity: {
-        appId: 'A_SMOKE',
+    appId: 'A0SMOKE',
         botUserId: 'U_BOT',
         teamId: WORKSPACE,
         teamName: 'Smoke Workspace',
@@ -751,7 +775,7 @@ async function main() {
         { id: CHANNEL, name: 'smoke-mentions', isMember: true, teamId: WORKSPACE },
         { id: AI_CHANNEL, name: 'smoke-workers-ai', isMember: true, teamId: WORKSPACE },
         { id: SLOW_CHANNEL, name: 'smoke-slow', isMember: true, teamId: WORKSPACE },
-        { id: 'C_SMOKE_EXTRA', name: 'general', isMember: false, teamId: WORKSPACE },
+        { id: 'C0SMOKEEXTRA', name: 'general', isMember: false, teamId: WORKSPACE },
       ],
       channelMembers: {
         [CHANNEL]: ['U_ALICE', 'U_BOT'],
@@ -776,7 +800,7 @@ async function main() {
   try {
     console.log('• waiting for wrangler dev (round 1)…');
     await waitForSetupReady(wrangler, baseUrl);
-    await completePasswordSetup(baseUrl);
+    await completePasswordSetup(baseUrl, setup);
     const agentsResult = await adminFetch(baseUrl, '/admin/api/agents');
     if (agentsResult.status !== 200 || !Array.isArray(agentsResult.body?.agents)) {
       throw new Error(`authenticated Admin API did not become ready (HTTP ${agentsResult.status})`);
@@ -857,10 +881,12 @@ async function main() {
       'wizard reports all credentials missing on first run',
       JSON.stringify(wizardCreds),
     );
-    const expectedRequestUrl = `${baseUrl}/channels/slack/events`;
+    const expectedRequestUrl = wizard.body?.requestUrl;
     check(
-      wizard.body?.requestUrl === expectedRequestUrl,
-      'wizard derived the events request URL from the admin request',
+      typeof expectedRequestUrl === 'string' &&
+        new RegExp(`^${baseUrl.replaceAll('.', '\\.')}/channels/slack/events/[a-f0-9]{48}$`)
+          .test(expectedRequestUrl),
+      'wizard derived one opaque events request URL from the admin request',
       String(wizard.body?.requestUrl),
     );
     check(
@@ -869,19 +895,30 @@ async function main() {
         wizard.body.manifestUrl.includes(encodeURIComponent(expectedRequestUrl)),
       'manifest deep-link carries the substituted request_url',
     );
-    const firstRunAdmin = await renderAdminWithWorkerdState(baseUrl);
+    const firstRunAdmin = await renderAdminWithWorkerdState(baseUrl, '/admin/onboarding');
     check(
       firstRunAdmin.html.includes('Connect @Chickpea') &&
         firstRunAdmin.html.includes('Create @Chickpea in Slack') &&
-        firstRunAdmin.html.includes('Events URL (already in the manifest)') &&
         firstRunAdmin.html.includes('data-action="advance-slack-step"'),
-      'first-run admin render shows the step-1 Connect stepper',
+      'first-run onboarding shows one Slack creation action',
     );
     check(
       firstRunAdmin.html.length > 0 &&
-        !firstRunAdmin.html.includes('Choose where Chickpea answers') &&
+        !firstRunAdmin.html.includes('Signing secret') &&
         !firstRunAdmin.html.includes('Connected workspace'),
-      'first-run admin render does not show the connected funnel',
+      'first-run onboarding keeps credentials and later stages hidden',
+    );
+
+    const challenge = await postSignedEvent(expectedRequestUrl, {
+      type: 'url_verification',
+      challenge: 'cf-smoke-setup',
+      api_app_id: 'A0SMOKE',
+      team_id: WORKSPACE,
+    });
+    check(
+      challenge.status === 200 && challenge.body?.challenge === 'cf-smoke-setup',
+      'opaque workspace ingress retains Slack setup proof before credentials exist',
+      `HTTP ${challenge.status}`,
     );
 
     // Paste-back: validated live against the fake Slack's auth.test, then
@@ -893,7 +930,7 @@ async function main() {
     check(
       saved.status === 200 && saved.body?.ok === true,
       'wizard POST validated the token via fake Slack auth.test',
-      `HTTP ${saved.status}`,
+      `HTTP ${saved.status} ${JSON.stringify(saved.body)}`,
     );
     check(
       saved.body?.botUserId === 'U_BOT',
@@ -915,18 +952,17 @@ async function main() {
       'wizard persisted the connected team id',
       String(postWizard.body?.teamId),
     );
-    const connectedAdmin = await renderAdminWithWorkerdState(baseUrl);
+    const connectedAdmin = await renderAdminWithWorkerdState(baseUrl, '/admin/onboarding');
     check(
-      connectedAdmin.html.includes('Connected workspace') &&
-        connectedAdmin.html.includes('Manage where Chickpea answers in Slack.') &&
-        connectedAdmin.html.includes('data-action="toggle-add-channel"'),
-      'post-wizard admin render shows the connected Slack overview',
+      connectedAdmin.html.includes('Choose where Chickpea should start') &&
+        connectedAdmin.html.includes('data-action="onboarding-channel-form"'),
+      'post-wizard onboarding advances directly to the first-channel picker',
     );
     check(
       connectedAdmin.html.length > 0 &&
         !connectedAdmin.html.includes('Connect @Chickpea') &&
         !connectedAdmin.html.includes('class="stepper"'),
-      'post-wizard admin render removes the Connect stepper',
+      'post-wizard onboarding removes the Connect step',
     );
 
     // --- Settings/model-provider screen APIs --------------------------------
@@ -1147,7 +1183,7 @@ async function main() {
     const mismatch = await adminFetch(baseUrl, '/admin/api/assignments', {
       method: 'PUT',
       body: JSON.stringify({
-        workspaceId: 'T_WRONG_WS',
+        workspaceId: 'T0WRONG',
         channelId: CHANNEL,
         agentId: 'agent_default',
         enabled: true,
@@ -1169,6 +1205,26 @@ async function main() {
       }),
     });
     check(put.status === 200, 'admin PUT created the channel assignment', `HTTP ${put.status}`);
+    const onboardingBeforeTry = await adminFetch(baseUrl, '/admin/api/onboarding');
+    check(
+      onboardingBeforeTry.status === 200 && onboardingBeforeTry.body?.stage === 'choose_channel',
+      'onboarding resumes at the channel picker after Slack connects',
+      `HTTP ${onboardingBeforeTry.status} stage=${String(onboardingBeforeTry.body?.stage)}`,
+    );
+    const onboardingTry = await adminFetch(baseUrl, '/admin/api/onboarding/try', {
+      method: 'POST',
+      body: JSON.stringify({
+        expectedRevision: onboardingBeforeTry.body?.revision,
+        workspaceId: WORKSPACE,
+        channelId: CHANNEL,
+        channelName: 'smoke-mentions',
+      }),
+    });
+    check(
+      onboardingTry.status === 200 && onboardingTry.body?.stage === 'try',
+      'one assigned channel advances onboarding to Try Chickpea',
+      `HTTP ${onboardingTry.status} stage=${String(onboardingTry.body?.stage)}`,
+    );
 
     // Signature is enforced from the WIZARD-STORED secret: tampered → rejected.
     const tampered = await postSignedEvent(eventsUrl, mentionEvent('Ev_SMOKE_TAMPERED'), {
@@ -1254,6 +1310,12 @@ async function main() {
       'final carries the stub provider reply',
     );
     check(finals[0]?.channel === CHANNEL, 'final landed in the mention channel');
+    const completedOnboarding = await adminFetch(baseUrl, '/admin/api/onboarding');
+    check(
+      completedOnboarding.status === 200 && completedOnboarding.body?.stage === 'complete',
+      'a delivered selected-channel mention completes onboarding',
+      `HTTP ${completedOnboarding.status} stage=${String(completedOnboarding.body?.stage)}`,
+    );
     console.log(`• measured turn wall-time: ${turnWallTimeMs}ms (signed POST → final on the wire)`);
 
     // Dedupe: the identical event (same event_id, same channel:ts) must not

@@ -1,6 +1,8 @@
 import { createServer, type IncomingHttpHeaders, type Server, type ServerResponse } from 'node:http';
 import { AddressInfo } from 'node:net';
 
+import { REQUIRED_SLACK_BOT_SCOPES } from '../../src/slack/scopes.ts';
+
 /**
  * In-memory fake Slack + fake Cloudflare Workers AI backend.
  *
@@ -48,6 +50,7 @@ interface RouteResult {
   body?: unknown;
   rawBody?: string;
   contentType?: string;
+  headers?: Record<string, string>;
 }
 
 /**
@@ -276,10 +279,13 @@ export class FakeSlackBackend {
       if (result.rawBody !== undefined) {
         return new Response(result.rawBody, {
           status: result.status,
-          headers: { 'content-type': result.contentType ?? 'text/plain' },
+          headers: { 'content-type': result.contentType ?? 'text/plain', ...result.headers },
         });
       }
-      return Response.json(result.body, { status: result.status });
+      return Response.json(result.body, {
+        status: result.status,
+        ...(result.headers ? { headers: result.headers } : {}),
+      });
     }) as typeof fetch;
   }
 
@@ -296,10 +302,13 @@ export class FakeSlackBackend {
         }
         const result = this.route(req.url ?? '/', bodyString, normalizeNodeHeaders(req.headers));
         if (result.rawBody !== undefined) {
-          res.writeHead(result.status, { 'content-type': result.contentType ?? 'text/plain' });
+          res.writeHead(result.status, {
+            'content-type': result.contentType ?? 'text/plain',
+            ...result.headers,
+          });
           res.end(result.rawBody);
         } else {
-          res.writeHead(result.status, { 'content-type': 'application/json' });
+          res.writeHead(result.status, { 'content-type': 'application/json', ...result.headers });
           res.end(JSON.stringify(result.body));
         }
       });
@@ -583,7 +592,13 @@ export class FakeSlackBackend {
     // fake rejected (a rejected `{ ok:false }` makes the real WebClient throw).
     entry.ok = slackBody.ok !== false;
     if (typeof slackBody.ts === 'string') entry.responseTs = slackBody.ts;
-    return { status: 200, body: slackBody };
+    return {
+      status: 200,
+      body: slackBody,
+      ...(method === 'auth.test'
+        ? { headers: { 'x-oauth-scopes': REQUIRED_SLACK_BOT_SCOPES.join(',') } }
+        : {}),
+    };
   }
 
   private providerAdminResponse(
@@ -776,6 +791,7 @@ export class FakeSlackBackend {
         return {
           ok: true,
           user_id: this.identity.botUserId,
+          bot_id: 'B_FAKE',
           app_id: this.identity.appId,
           team_id: this.identity.teamId,
           team: this.identity.teamName,

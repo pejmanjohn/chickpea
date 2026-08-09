@@ -9,6 +9,7 @@ import { SqliteIdentityStore } from '../src/identity/store.ts';
 
 const ORIGIN = 'https://chickpea.example';
 const RECOVERY = '9d'.repeat(32);
+const ROTATED_RECOVERY = '8c'.repeat(32);
 const PASSWORD = 'several unrelated words 5729';
 const NEXT_PASSWORD = 'another set of unrelated words 9182';
 
@@ -48,21 +49,23 @@ test('fresh password setup, login, self-change, logout, and owner recovery form 
     organizationName: 'Acme',
     ownerEmail: 'owner@example.com',
     password: 'short',
+    passwordConfirmation: 'short',
     recoveryToken: RECOVERY,
   }));
   assert.equal(shortSetup.status, 401);
   const shortSetupHtml = await shortSetup.text();
   assert.match(shortSetupHtml, /at least 8 characters/);
-  assert.match(shortSetupHtml, /value="Acme"/);
+  assert.doesNotMatch(shortSetupHtml, /organizationName|Organization name/);
   assert.match(shortSetupHtml, /value="owner@example\.com"/);
   const setup = await app.request(formRequest('/admin/setup', {
     organizationName: 'Acme',
     ownerEmail: 'owner@example.com',
     password: PASSWORD,
+    passwordConfirmation: PASSWORD,
     recoveryToken: RECOVERY,
   }));
   assert.equal(setup.status, 303, await setup.clone().text());
-  assert.equal(setup.headers.get('location'), '/admin/ready');
+  assert.equal(setup.headers.get('location'), '/admin/onboarding');
   const setupCookie = cookieHeader(setup.headers.get('set-cookie'));
   assert.match(setupCookie, /better-auth\.session_token=/);
   assert.equal((await app.request(`${ORIGIN}/admin/account`, {
@@ -100,13 +103,44 @@ test('fresh password setup, login, self-change, logout, and owner recovery form 
     headers: { cookie: loginCookie },
   })).status, 401);
 
-  const recovered = await app.request(formRequest('/admin/recovery', {
+  backend.database.exec(`CREATE TRIGGER fail_recovery_password_update
+    BEFORE UPDATE OF password ON account
+    BEGIN SELECT RAISE(ABORT, 'simulated password update failure'); END`);
+  const interruptedRecovery = await app.request(formRequest('/admin/recovery', {
     ownerEmail: 'owner@example.com',
     newPassword: PASSWORD,
     recoveryToken: RECOVERY,
   }));
+  assert.equal(interruptedRecovery.status, 401);
+  backend.database.exec('DROP TRIGGER fail_recovery_password_update');
+
+  const replayedRecovery = await app.request(formRequest('/admin/recovery', {
+    ownerEmail: 'owner@example.com',
+    newPassword: PASSWORD,
+    recoveryToken: RECOVERY,
+  }));
+  assert.equal(replayedRecovery.status, 401);
+
+  const rotatedEnvironment = { ...environment, recoveryToken: ROTATED_RECOVERY };
+  const rotatedApp = createAdminRoutes({
+    identity,
+    betterAuthEnvironment: rotatedEnvironment,
+    recoveryToken: ROTATED_RECOVERY,
+  });
+  const recovered = await rotatedApp.request(formRequest('/admin/recovery', {
+    ownerEmail: 'owner@example.com',
+    newPassword: PASSWORD,
+    recoveryToken: ROTATED_RECOVERY,
+  }));
   assert.equal(recovered.status, 200, await recovered.clone().text());
   assert.match(await recovered.text(), /Password recovered/);
+
+  const replayedRotatedRecovery = await rotatedApp.request(formRequest('/admin/recovery', {
+    ownerEmail: 'owner@example.com',
+    newPassword: NEXT_PASSWORD,
+    recoveryToken: ROTATED_RECOVERY,
+  }));
+  assert.equal(replayedRotatedRecovery.status, 401);
 
   const afterRecovery = await app.request(formRequest('/admin/login', {
     email: 'owner@example.com', password: PASSWORD, returnTo: '/admin/account',
@@ -133,6 +167,7 @@ test('local preview human auth forms accept the opaque Origin emitted by embedde
     organizationName: 'Local Preview',
     ownerEmail: 'owner@example.com',
     password: PASSWORD,
+    passwordConfirmation: PASSWORD,
     recoveryToken: RECOVERY,
   }).toString();
   const response = await app.request(new Request(`${origin}/admin/setup`, {
@@ -145,7 +180,7 @@ test('local preview human auth forms accept the opaque Origin emitted by embedde
     body,
   }));
   assert.equal(response.status, 303, await response.clone().text());
-  assert.equal(response.headers.get('location'), '/admin/ready');
+  assert.equal(response.headers.get('location'), '/admin/onboarding');
   const setupCookie = cookieHeader(response.headers.get('set-cookie'));
 
   const changeBody = new URLSearchParams({
@@ -217,6 +252,7 @@ test('hosted setup accepts an opaque Origin only with browser-authenticated same
     organizationName: 'Embedded Browser',
     ownerEmail: 'embedded@example.com',
     password: PASSWORD,
+    passwordConfirmation: PASSWORD,
     recoveryToken: RECOVERY,
   }).toString();
   const request = (fetchSite?: string) => new Request(`${ORIGIN}/admin/setup`, {
@@ -242,7 +278,7 @@ test('hosted setup accepts an opaque Origin only with browser-authenticated same
   const acceptedFixture = await fixture();
   const accepted = await acceptedFixture.app.request(request('same-origin'));
   assert.equal(accepted.status, 303, await accepted.clone().text());
-  assert.equal(accepted.headers.get('location'), '/admin/ready');
+  assert.equal(accepted.headers.get('location'), '/admin/onboarding');
   assert.match(cookieHeader(accepted.headers.get('set-cookie')), /better-auth\.session_token=/);
 
   acceptedFixture.backend.close();
@@ -262,7 +298,7 @@ test('password setup rejects a malicious return destination and machine credenti
   const app = createAdminRoutes({ identity, betterAuthEnvironment: environment, recoveryToken: RECOVERY });
   await app.request(formRequest('/admin/setup', {
     organizationName: 'Acme', ownerEmail: 'owner@example.com',
-    password: PASSWORD, recoveryToken: RECOVERY,
+    password: PASSWORD, passwordConfirmation: PASSWORD, recoveryToken: RECOVERY,
   }));
   const login = await app.request(formRequest('/admin/login', {
     email: 'owner@example.com', password: PASSWORD, returnTo: 'https://evil.example/steal',
@@ -298,6 +334,7 @@ test('fresh password setup cannot replace an existing legacy organization', asyn
       organizationName: 'Replacement',
       ownerEmail: 'attacker@example.com',
       password: PASSWORD,
+      passwordConfirmation: PASSWORD,
       recoveryToken: RECOVERY,
     }));
     assert.equal(denied.status, 401);

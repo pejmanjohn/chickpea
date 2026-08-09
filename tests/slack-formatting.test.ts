@@ -80,6 +80,7 @@ test('every progressive cut point is a monotone prefix of the canonical terminal
     '**Bold text** followed by _ordinary emphasis_ and `inline code`.',
     'Credential: xoxb-123456789012345678901234\nDo not expose it.',
     'OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz123456\nRotated.',
+    'CHICKPEA_AUTH_SECRET=consumer-install-secret-value\nNever render this.',
     '<https://example.com/path|Slack link> then a safe suffix.',
   ];
 

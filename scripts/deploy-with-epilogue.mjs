@@ -15,7 +15,15 @@
  * failed deploy), and stdout is scanned line-by-line rather than buffered.
  */
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -24,6 +32,12 @@ import {
   classifyCloudflareDeploymentProfile,
   resolveCloudflareDeploymentProfile,
 } from './cloudflare-deployment-profile.mjs';
+import {
+  mintSetupCapability,
+  SETUP_CAPABILITY_DIGEST_BINDING,
+  SETUP_CAPABILITY_ISSUED_AT_BINDING,
+  setupCapabilityUrl,
+} from '../src/auth/setup-capability.mjs';
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 // Invoke wrangler's bin with the current node (mirrors flue-build-cf.mjs):
@@ -75,9 +89,20 @@ function hasCustomConfigFlag(args) {
   );
 }
 
+function hasWorkerNameOverride(args) {
+  return args.some((argument) => argument === '--name' || argument.startsWith('--name='));
+}
+
 if (hasCustomConfigFlag(deployArgs)) {
   console.error(
     'Do not pass a custom Wrangler config. Build the Vite artifact and use its generated deploy redirect.',
+  );
+  process.exit(1);
+}
+
+if (hasWorkerNameOverride(deployArgs)) {
+  console.error(
+    'Do not override the Worker name. Chickpea must inspect and mutate the same Worker it deploys.',
   );
   process.exit(1);
 }
@@ -439,6 +464,78 @@ if (preflightOnly) {
   process.exit(0);
 }
 
+const AUTH_SECRET = 'CHICKPEA_AUTH_SECRET';
+const LEGACY_AUTH_SECRET = 'CHICKPEA_RECOVERY_TOKEN';
+
+function remoteWorkerSecretNames(artifact) {
+  const result = spawnSync(
+    process.execPath,
+    [
+      wranglerBin,
+      'secret',
+      'list',
+      '--format',
+      'json',
+      '--config',
+      artifact.configPath,
+      ...deploymentResourceArgs(),
+    ],
+    { cwd: projectRoot, encoding: 'utf8' },
+  );
+  if (result.error) {
+    throw new Error(`Unable to inspect Worker secrets: ${result.error.message}`);
+  }
+  const detail = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
+  if (result.status !== 0 && /Worker\s+"[^"]+"[^\n]*not found/i.test(detail)) return new Set();
+  if (result.status !== 0) {
+    throw new Error(
+      'Unable to inspect Worker secrets. The deploy credential must allow secret listing before Chickpea can deploy safely.',
+    );
+  }
+  let entries;
+  try {
+    entries = JSON.parse(result.stdout);
+  } catch {
+    throw new Error('Worker secret discovery returned an unreadable response.');
+  }
+  if (!Array.isArray(entries) || entries.some((entry) => typeof entry?.name !== 'string')) {
+    throw new Error('Worker secret discovery returned an unexpected response.');
+  }
+  return new Set(entries.map((entry) => entry.name));
+}
+
+async function prepareDeploymentAuthority(artifact, secretNames) {
+  const generatedSecrets = {};
+  if (!secretNames.has(AUTH_SECRET) && !secretNames.has(LEGACY_AUTH_SECRET)) {
+    generatedSecrets[AUTH_SECRET] = (await mintSetupCapability()).capability;
+  }
+  const setup = await mintSetupCapability();
+  artifact.config.vars = {
+    ...(artifact.config.vars ?? {}),
+    [SETUP_CAPABILITY_DIGEST_BINDING]: setup.digest,
+    [SETUP_CAPABILITY_ISSUED_AT_BINDING]: String(setup.issuedAt),
+  };
+  writeFileSync(artifact.configPath, `${JSON.stringify(artifact.config, null, 2)}\n`);
+  return { generatedSecrets, setup };
+}
+
+function createSecretsFile(secrets) {
+  if (Object.keys(secrets).length === 0) return undefined;
+  const directory = mkdtempSync(path.join(tmpdir(), 'chickpea-deploy-secrets-'));
+  const file = path.join(directory, 'secrets.json');
+  try {
+    writeFileSync(file, `${JSON.stringify(secrets)}\n`, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+  } catch (error) {
+    rmSync(directory, { recursive: true, force: true });
+    throw error;
+  }
+  return { directory, file };
+}
+
+function removeSecretsFile(prepared) {
+  if (prepared) rmSync(prepared.directory, { recursive: true, force: true });
+}
+
 function deploymentResourceArgs() {
   const args = [];
   for (let index = 0; index < deployArgs.length; index += 1) {
@@ -530,13 +627,17 @@ function existingAuthDatabaseId(databaseName) {
   return typeof id === 'string' && id.trim() ? id.trim() : undefined;
 }
 
+let deploymentAuthority;
+let remoteSecretNames;
 if (!deployArgs.includes('--dry-run')) {
   try {
+    remoteSecretNames = remoteWorkerSecretNames(builtArtifact);
     builtArtifact = ensureAuthDatabase(builtArtifact);
     // This is the final gate immediately before the first mutation of an
     // existing customer resource. It intentionally reruns after both D1 reuse
     // injection and D1 provisioning/rebuild.
     builtArtifact = validateDeploymentArtifact(builtArtifact, { requireDatabaseId: true });
+    deploymentAuthority = await prepareDeploymentAuthority(builtArtifact, remoteSecretNames);
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);
@@ -571,11 +672,41 @@ if (!deployArgs.includes('--dry-run')) {
   if (migration.status !== 0) process.exit(migration.status ?? 1);
 }
 
+let preparedSecrets;
+try {
+  preparedSecrets = deploymentAuthority
+    ? createSecretsFile(deploymentAuthority.generatedSecrets)
+    : undefined;
+} catch (error) {
+  console.error(`Unable to prepare the temporary Worker secrets file: ${error instanceof Error ? error.message : String(error)}`);
+  process.exit(1);
+}
+
 const child = spawn(
   process.execPath,
-  [wranglerBin, 'deploy', ...deployArgs],
+  [
+    wranglerBin,
+    'deploy',
+    ...deployArgs,
+    ...(preparedSecrets ? ['--secrets-file', preparedSecrets.file] : []),
+  ],
   { cwd: projectRoot, stdio: ['inherit', 'pipe', 'inherit'] },
 );
+
+let cleanedSecrets = false;
+function cleanupSecrets() {
+  if (cleanedSecrets) return;
+  cleanedSecrets = true;
+  removeSecretsFile(preparedSecrets);
+}
+process.once('exit', cleanupSecrets);
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+  process.once(signal, () => {
+    cleanupSecrets();
+    child.kill(signal);
+    process.exit(signal === 'SIGINT' ? 130 : 143);
+  });
+}
 
 let deployedUrl = '';
 let tail = '';
@@ -591,35 +722,70 @@ child.stdout.on('data', (chunk) => {
   tail = text.slice(-256);
 });
 
-/** Worker name from the built (redirected) config, falling back to the root config. */
-function workerName() {
-  const candidates = ['dist-cf', 'dist'];
-  for (const dist of candidates) {
-    const distDir = path.join(projectRoot, dist);
-    if (!existsSync(distDir)) continue;
-    try {
-      for (const entry of readFileSync(path.join(projectRoot, '.wrangler', 'deploy', 'config.json'), 'utf8').matchAll(/"configPath"\s*:\s*"([^"]+)"/g)) {
-        const configPath = path.resolve(path.join(projectRoot, '.wrangler', 'deploy'), entry[1]);
-        const parsed = JSON.parse(readFileSync(configPath, 'utf8'));
-        if (typeof parsed.name === 'string') return parsed.name;
-      }
-    } catch {
-      /* fall through to wrangler.jsonc */
-    }
-  }
-  try {
-    const raw = readFileSync(path.join(projectRoot, 'wrangler.jsonc'), 'utf8');
-    const match = raw.match(/"name"\s*:\s*"([^"]+)"/);
-    if (match) return match[1];
-  } catch {
-    /* unknown */
-  }
-  return 'chickpea';
-}
-
 const RULE = '────────────────────────────────────────────────────────';
 
-child.on('close', (code) => {
+async function setupSurfaceReadiness(baseUrl) {
+  const url = new URL('/admin/setup', baseUrl);
+  const retryDelays = [500, 1_000, 2_000, 4_000, 5_000, 5_000, 5_000];
+  for (let attempt = 0; attempt <= retryDelays.length; attempt += 1) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5_000);
+    try {
+      const response = await fetch(url, {
+        method: 'GET',
+        redirect: 'manual',
+        headers: { accept: 'text/html' },
+        signal: controller.signal,
+      });
+      if (response.status === 200) return 'ready';
+      if (response.status >= 300 && response.status < 400) return 'configured';
+    } catch {
+      // Deployment propagation is eventually consistent; retry below.
+    } finally {
+      clearTimeout(timeout);
+    }
+    if (attempt < retryDelays.length) {
+      await new Promise((resolve) => setTimeout(resolve, retryDelays[attempt]));
+    }
+  }
+  return 'unavailable';
+}
+
+function printPrivateSetupLink(baseUrl, setup, readiness) {
+  const privateSetupUrl = setupCapabilityUrl(baseUrl, setup.capability);
+  const propagationNotice = readiness === 'unavailable'
+    ? '  The public route is still propagating. If the page does not open yet, wait a minute and retry this same link.\n\n'
+    : '';
+  process.stdout.write(
+    [
+      '',
+      RULE,
+      '  ✔ Deployed. Chickpea is live.',
+      '',
+      propagationNotice + '  Open this private setup link:',
+      RULE,
+      privateSetupUrl,
+    ].join('\n'),
+  );
+}
+
+function printPrivateSetupPath(setup) {
+  const privatePath = new URL(setupCapabilityUrl('https://chickpea.invalid', setup.capability));
+  process.stdout.write(
+    [
+      '',
+      RULE,
+      '  ✔ Deployed. Chickpea is live.',
+      '',
+      '  Wrangler did not report a public origin. Open this private path on your configured Chickpea domain:',
+      RULE,
+      `${privatePath.pathname}${privatePath.hash}`,
+    ].join('\n'),
+  );
+}
+
+child.on('close', async (code) => {
+  cleanupSecrets();
   if (code !== 0) {
     process.exit(code ?? 1);
   }
@@ -627,41 +793,17 @@ child.on('close', (code) => {
   if (deployArgs.includes('--dry-run')) {
     process.exit(0);
   }
-  if (deployedUrl) {
-    process.stdout.write(
-      [
-        '',
-        RULE,
-        '  ✔ Deployed. Chickpea is live.',
-        '',
-        '  Next steps:',
-        `    1. Open  ${deployedUrl}/admin/setup`,
-        '    2. Use CHICKPEA_RECOVERY_TOKEN once to create the first owner.',
-        '    3. Choose the owner email and password, then continue to Slack setup.',
-        '',
-        '  Keep the recovery credential in a password manager after setup.',
-        '  It is not an Admin login. Losing it and the owner password prevents recovery.',
-        '  docs/authentication.md covers accounts and optional Access; SETUP_AGENT.md covers Slack.',
-        RULE,
-        '',
-      ].join('\n'),
-    );
-  } else {
-    process.stdout.write(
-      [
-        '',
-        RULE,
-        '  ✔ Deploy finished.',
-        '',
-        '  Your setup URL is:  https://<worker-name>.<your-subdomain>.workers.dev/admin/setup',
-        `    (worker name: ${workerName()} — find <your-subdomain> in the Cloudflare`,
-        '     dashboard → Workers & Pages → your account subdomain)',
-        '',
-        '  Then: create the first owner at /admin/setup and continue to Slack.',
-        RULE,
-        '',
-      ].join('\n'),
-    );
+  if (deployedUrl && deploymentAuthority) {
+    const readiness = await setupSurfaceReadiness(deployedUrl);
+    if (readiness === 'configured') {
+      process.stdout.write(
+        `\n${RULE}\n  ✔ Chickpea is deployed and already configured.\n  Open ${deployedUrl}/admin\n${RULE}\n`,
+      );
+      process.exit(0);
+    }
+    printPrivateSetupLink(deployedUrl, deploymentAuthority.setup, readiness);
+  } else if (deploymentAuthority) {
+    printPrivateSetupPath(deploymentAuthority.setup);
   }
   process.exit(0);
 });

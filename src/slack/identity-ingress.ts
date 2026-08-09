@@ -111,7 +111,11 @@ export async function handlePendingSlackIdentityChallenge(
   recordSlackIdentityOperationalEvent({
     operation: 'setup_handshake',
     identityId: identity.id,
-    ...(identity.appId ? { appId: identity.appId } : {}),
+    ...(result.accepted && result.appId
+      ? { appId: result.appId }
+      : identity.appId
+        ? { appId: identity.appId }
+        : {}),
     lifecycle: identity.lifecycle,
     outcome: result.accepted ? 'accepted' : 'rejected',
     ...(!result.accepted ? { failureClass: result.reason } : {}),

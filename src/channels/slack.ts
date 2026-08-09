@@ -269,40 +269,11 @@ async function recordSlackIngressRejection(
 }
 
 /**
- * Read a Slack `url_verification` challenge from an UNVERIFIED body, returning
- * the challenge string only for exactly that payload shape. Used solely on the
- * bootstrap path below (no signing secret yet); anything else returns
- * undefined so the caller fails closed.
- */
-async function urlVerificationChallenge(c: {
-  req?: { json(): Promise<unknown> };
-}): Promise<string | undefined> {
-  try {
-    const body = await c.req?.json();
-    if (
-      body &&
-      typeof body === 'object' &&
-      (body as Record<string, unknown>).type === 'url_verification' &&
-      typeof (body as Record<string, unknown>).challenge === 'string'
-    ) {
-      return (body as { challenge: string }).challenge;
-    }
-  } catch {
-    // Not JSON / no readable body — treat as not-a-challenge, fail closed.
-  }
-  return undefined;
-}
-
-/**
  * Events gate: resolve the signing secret (env > wizard-stored) per request,
  * then delegate to the real channel's verification + dispatch. No secret yet
- * (first-run, wizard not completed) → fail closed (401) so Slack retries later
- * and the rest of the app (notably /admin) keeps serving — with ONE
- * exception: a `url_verification` challenge is echoed unverified so a
- * manifest-created Slack app can verify its request URL BEFORE the wizard has
- * stored any credential. This is bootstrap-only: once a signing secret exists,
- * challenges take the verified path below and must pass signature verification
- * like any other event.
+ * (first-run, wizard not completed) → fail closed (401). Fresh setup uses the
+ * opaque per-install ingress below; this fixed route remains only as the signed
+ * compatibility route for already-installed apps.
  */
 const verifiedEventsHandler: SlackRouteHandler = async (c, next) => {
   const platformEnv = c.env as PlatformEnv | undefined;
@@ -317,10 +288,6 @@ const verifiedEventsHandler: SlackRouteHandler = async (c, next) => {
   );
   const { signingSecret } = credentials;
   if (!signingSecret) {
-    const challenge = await urlVerificationChallenge(c);
-    if (challenge !== undefined) {
-      return c.json({ challenge });
-    }
     return c.json({ error: 'slack_not_configured' }, 401);
   }
   const route = channelForIdentity(
@@ -353,9 +320,8 @@ const scopedIdentityEventsHandler: SlackRouteHandler = async (c, next) => {
   // The recorder accepts only url_verification payloads; event callbacks still
   // fail closed while the identity is unavailable.
   if (
-    candidate.identity.kind === 'dedicated' &&
-    (candidate.identity.lifecycle === 'setup_incomplete' ||
-      candidate.identity.lifecycle === 'credentials_pending')
+    candidate.identity.lifecycle === 'setup_incomplete' ||
+    candidate.identity.lifecycle === 'credentials_pending'
   ) {
     return handlePendingSlackIdentityChallenge(
       c.req.raw,

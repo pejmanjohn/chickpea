@@ -5,6 +5,7 @@ import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from '../src/config/types.ts';
 import {
   slackBotIdentityInfo,
+  slackConversationsList,
   slackIdentityAuthTest,
 } from '../src/slack/credentials.ts';
 import {
@@ -28,6 +29,10 @@ test('bounded Slack identity helpers degrade when Slack never settles', async ()
     const auth = await slackIdentityAuthTest('xoxb-timeout', { timeoutMs: 20 });
     assert.equal(auth.ok, false);
     assert.equal(auth.error, 'slack_request_timeout');
+
+    const channels = await slackConversationsList('xoxb-timeout', { timeoutMs: 20 });
+    assert.equal(channels.ok, false);
+    assert.equal(channels.error, 'slack_request_timeout');
   } finally {
     globalThis.fetch = originalFetch;
   }

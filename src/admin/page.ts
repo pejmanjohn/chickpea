@@ -1772,6 +1772,7 @@ details[open].advanced summary::before {
 </div>
 <script>
 (function () {
+  try { sessionStorage.removeItem("chickpea.owner-setup.v1"); } catch (_) {}
   // Server-resolved runtime target: the Workers AI row is binding-only, so it is
   // shown on Cloudflare and hidden on Node (the inline script has no target check
   // of its own — this is interpolated as a literal boolean at render time).
@@ -1784,6 +1785,7 @@ details[open].advanced summary::before {
   var GOOGLE_WORKSPACE_SCOPES = ${JSON.stringify(GOOGLE_WORKSPACE_SCOPE_OPTIONS)};
   var WORKSPACE_DEFAULT_SLACK_IDENTITY_ID = "slack_identity_default";
   var NEW_SLACK_IDENTITY_VALUE = "__new__";
+  var ONBOARDING_PROMPT = "@Chickpea summarize the recent discussion in this channel and list any open questions.";
   var state = {
     agents: [],
     assignments: [],
@@ -1803,6 +1805,7 @@ details[open].advanced summary::before {
     slackChannels: null,
     slackChannelsError: null,
     slackChannelsLoading: false,
+    slackChannelsRequestId: 0,
     swapOpen: false,
     channelDraft: { enabled: true, channelPromptAddendum: "", participationMode: "ambient" },
     dirty: false,
@@ -1913,6 +1916,11 @@ details[open].advanced summary::before {
     // pending navigation { action, agent } and the confirm modal is shown.
     leavePrompt: null,
     slack: null,
+    onboarding: null,
+    onboardingError: "",
+    onboardingBusy: false,
+    onboardingNotice: "",
+    onboardingChannelSelected: "",
     slackDraft: { botToken: "", signingSecret: "" },
     slackError: "",
     slackBusy: false,
@@ -2297,6 +2305,7 @@ details[open].advanced summary::before {
   var routeReady = false;
 
   function canonicalPath() {
+    if (state.view === "onboarding") return "/admin/onboarding";
     if (state.view === "usage") return "/admin/usage";
     if (state.view === "team") return "/admin/team";
     if (state.view === "settings") {
@@ -2347,6 +2356,13 @@ details[open].advanced summary::before {
       try { return decodeURIComponent(part); } catch (err) { return part; }
     });
     state.leavePrompt = null;
+    if (parts[1] === "onboarding") {
+      state.view = "onboarding";
+      state.channelScreen = "overview";
+      state.profileScreen = "list";
+      render();
+      return;
+    }
     if (parts[1] === "usage" && USAGE_ADMIN_UI) { applyUsageQuery(location.search || ""); openUsage(); return; }
     if (parts[1] === "team") { openTeam(); return; }
     if (parts[1] === "settings") {
@@ -2480,6 +2496,7 @@ details[open].advanced summary::before {
       if (identityConfirmFocus && identityConfirmFocus.focus) identityConfirmFocus.focus();
     }
     syncUrl();
+    syncOnboardingActivity();
   }
 
   function slackIdentityConfirmModalHtml() {
@@ -2577,12 +2594,27 @@ details[open].advanced summary::before {
   }
 
   function railHtml() {
+    if (state.view === "onboarding") return onboardingRailHtml();
     if (state.view === "usage") return usageRailHtml();
     if (state.view === "team") return teamRailHtml();
     if (state.view === "profiles") return profilesRailHtml();
     if (state.view === "settings") return settingsRailHtml();
     if (state.view === "audit") return state.auditDomain === "scheduled-work" ? scheduledWorkRailHtml() : auditRailHtml();
     return channelsRailHtml();
+  }
+
+  function onboardingRailHtml() {
+    var stage = state.onboarding && state.onboarding.stage;
+    var current = stage === "connect_slack" ? 0 : stage === "choose_channel" ? 1 : 2;
+    var labels = ["Connect Slack", "Choose a channel", "Try Chickpea"];
+    return '<nav class="rail" aria-label="Setup progress"><div class="rail-context">' +
+      '<div class="rail-head"><span class="section-eyebrow">Get started</span></div>' +
+      labels.map(function (label, index) {
+        var done = index < current || stage === "complete";
+        var active = index === current && stage !== "complete";
+        return '<div class="chan-item' + (active ? ' active' : '') + '"' + (active ? ' aria-current="step"' : '') + '>' +
+          '<span class="chan-name">' + (done ? '&#10003; ' : (index + 1) + '. ') + esc(label) + '</span></div>';
+      }).join("") + '</div>' + sectionSwitcherHtml() + '</nav>';
   }
 
   function channelsRailHtml() {
@@ -3235,7 +3267,91 @@ details[open].advanced summary::before {
       '<section class="usage-section"><div class="usage-section-head"><div><h2 class="section-title">Recent ' + usageActivityLabelHtml("activity") + '</h2><p class="hint">Hover over total tokens to see the input and output split.</p></div>' + filter + '</div>' + usageOperationsHtml() + '</section>';
   }
 
+  function onboardingConnectHtml() {
+    var conn = state.slack;
+    if (!conn) return '<div class="empty"><p class="hint">Loading Slack setup&hellip;</p></div>';
+    if (state.slackStep < 2) {
+      return '<section class="section"><div class="section-head"><div><h1 class="page-title">Connect @Chickpea</h1>' +
+        '<p class="hint">Create Chickpea in the Slack workspace where you want it to work.</p></div></div>' +
+        '<a class="btn btn-primary" href="' + esc(conn.manifestUrl) + '" target="_blank" rel="noreferrer" data-action="advance-slack-step">Create @Chickpea in Slack &nearr;</a>' +
+        '</section>';
+    }
+    var submit = state.slackBusy
+      ? '<button type="submit" class="btn btn-primary" disabled><span class="spinner"></span>Connecting&hellip;</button>'
+      : '<button type="submit" class="btn btn-primary">Connect Slack</button>';
+    return '<section class="section"><div class="section-head"><div><h1 class="page-title">Finish connecting Slack</h1>' +
+      '<p class="hint">Install the app in Slack, then paste the two values Slack gives you.</p></div></div>' +
+      '<form data-action="slack-connect-form" style="display:flex; flex-direction:column; gap:14px;">' +
+      '<div class="field"><label class="field-label" for="onboarding-signing-secret">Signing secret</label>' +
+      '<input class="input mono" id="onboarding-signing-secret" name="signingSecret" type="password" autocomplete="off" value="' + esc(state.slackDraft.signingSecret) + '"></div>' +
+      '<div class="field"><label class="field-label" for="onboarding-bot-token">Bot User OAuth Token</label>' +
+      '<input class="input mono" id="onboarding-bot-token" name="botToken" type="password" autocomplete="off" placeholder="xoxb-&hellip;" value="' + esc(state.slackDraft.botToken) + '"></div>' +
+      '<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">' + submit +
+      (state.slackError ? '<span class="field-error" role="alert" data-role="slack-connection-error">' + esc(state.slackError) + '</span>' : '') + '</div></form>' +
+      '<details class="advanced"><summary>Where do I find these?</summary><div class="adv-rows"><p class="hint">The signing secret is under Basic Information &rarr; App Credentials. Install the app from OAuth &amp; Permissions, then copy its xoxb- Bot User OAuth Token.</p></div></details>' +
+      '</section>';
+  }
+
+  function onboardingChannelOptionsHtml() {
+    var channels = state.slackChannels && state.slackChannels.channels ? state.slackChannels.channels : [];
+    if (!channels.length) return '<option value="">No channels available</option>';
+    return '<option value="">Choose a channel&hellip;</option>' + channels.map(function (channel) {
+      var suffix = channel.isPrivate ? ' (private)' : '';
+      return '<option value="' + esc(channel.id) + '"' + (channel.id === state.onboardingChannelSelected ? ' selected' : '') + '># ' + esc(channel.name + suffix) + '</option>';
+    }).join("");
+  }
+
+  function onboardingChooseChannelHtml() {
+    var workspace = state.onboarding && state.onboarding.workspace;
+    var loading = state.slackChannelsLoading || !state.slackChannels;
+    var picker = loading
+      ? '<p class="hint">Loading public channels&hellip;</p>'
+      : state.slackChannelsError
+        ? '<p class="field-error" role="alert">' + esc(state.slackChannelsError.text) + '</p>'
+        : '<span class="select-wrap"><select class="input" id="onboarding-channel" name="channelSelect" required data-action="onboarding-channel-select">' + onboardingChannelOptionsHtml() + '</select>' + icon("chevron-down", "select-caret") + '</span>';
+    return '<section class="section"><div class="section-head"><div><h1 class="page-title">Choose where Chickpea should start</h1>' +
+      '<p class="hint">Pick one Slack channel. Chickpea will join a public channel automatically and use the Default profile.</p></div></div>' +
+      '<form data-action="onboarding-channel-form" style="display:flex; flex-direction:column; gap:16px;">' +
+      '<div class="field"><label class="field-label">Workspace</label><div class="bundle-row"><span class="b-name">' + esc((workspace && workspace.name) || "Slack") + '</span><span class="b-meta">' + esc((workspace && workspace.id) || "") + '</span><span class="spacer"></span><span class="chip">locked</span></div></div>' +
+      '<div class="field"><label class="field-label" for="onboarding-channel">Channel</label><div style="display:flex; gap:8px; align-items:center;">' + picker +
+      '<button type="button" class="btn btn-soft btn-sm" data-action="refresh-onboarding-channels">' + icon("arrow-path") + 'Refresh</button></div>' +
+      '<p class="hint">For a private channel, invite @Chickpea there first, then Refresh.</p></div>' +
+      '<div style="display:flex; align-items:center; gap:10px;"><button type="submit" class="btn btn-primary"' + (loading || state.onboardingBusy ? ' disabled' : '') + '>' + (state.onboardingBusy ? 'Adding&hellip;' : 'Add channel') + '</button>' +
+      (state.onboardingError ? '<span class="field-error" role="alert">' + esc(state.onboardingError) + '</span>' : '') + '</div></form></section>';
+  }
+
+  function onboardingTryHtml(complete) {
+    var workspace = state.onboarding && state.onboarding.workspace;
+    var channel = state.onboarding && state.onboarding.channel;
+    if (!workspace || !channel) return '<div class="empty"><p class="field-error">The onboarding channel is unavailable.</p></div>';
+    var deepLink = 'https://app.slack.com/client/' + encodeURIComponent(workspace.id) + '/' + encodeURIComponent(channel.id);
+    return '<section class="section"><div class="section-head"><div><h1 class="page-title">' + (complete ? 'Chickpea is ready' : 'Try Chickpea') + '</h1>' +
+      '<p class="hint">' + (complete ? 'Chickpea replied successfully in #' + esc(channel.name) + '.' : 'Open #' + esc(channel.name) + ' in Slack and send the prompt below.') + '</p></div></div>' +
+      '<div style="display:flex; gap:10px; flex-wrap:wrap;"><a class="btn btn-primary" href="' + esc(deepLink) + '" target="_blank" rel="noopener noreferrer">Open #' + esc(channel.name) + ' in Slack &nearr;</a>' +
+      (complete ? '<button type="button" class="btn btn-soft" data-action="open-channels">Go to Channels</button>' : '') + '</div>' +
+      '<div class="field"><label class="field-label" for="onboarding-prompt">A good first prompt</label><div style="display:flex; gap:8px; align-items:center;">' +
+      '<input class="input" id="onboarding-prompt" readonly value="' + esc(ONBOARDING_PROMPT) + '">' +
+      '<button type="button" class="btn btn-soft" data-action="copy-onboarding-prompt">Copy</button></div></div>' +
+      (state.onboardingNotice ? '<p class="hint" role="status">' + esc(state.onboardingNotice) + '</p>' : '') +
+      (state.onboardingError ? '<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;"><span class="field-error" role="alert">' + esc(state.onboardingError) + '</span><button type="button" class="btn btn-soft btn-sm" data-action="retry-onboarding">Check again</button></div>' : '') +
+      (!complete ? '<p class="hint" role="status">Waiting for Chickpea to reply&hellip;</p>' : '') + '</section>';
+  }
+
+  function onboardingMainHtml() {
+    if (state.onboardingError && !state.onboarding) {
+      return '<div class="empty"><h1 class="page-title">Setup could not load</h1><p class="field-error">' + esc(state.onboardingError) + '</p><button type="button" class="btn btn-soft" data-action="retry-onboarding">Try again</button></div>';
+    }
+    if (!state.onboarding) return '<div class="empty"><h1 class="page-title">Loading setup&hellip;</h1></div>';
+    if (state.onboarding.stage === "connect_slack") return onboardingConnectHtml();
+    if (state.onboarding.stage === "choose_channel") return onboardingChooseChannelHtml();
+    if (state.onboarding.stage === "try") return onboardingTryHtml(false);
+    return onboardingTryHtml(true);
+  }
+
   function mainHtml() {
+    if (state.view === "onboarding") {
+      return '<main class="main"><div class="main-inner">' + onboardingMainHtml() + '</div></main>';
+    }
     if (state.view === "usage") {
       return '<main class="main"><div class="main-inner usage-main">' + usageMainHtml() + '</div></main>';
     }
@@ -3787,12 +3903,20 @@ details[open].advanced summary::before {
       '<div class="adv-rows" style="padding-bottom:14px;">' + slackCredentialsWellHtml(conn) + '</div></details>';
   }
 
-  function slackErrorText(message, detail) {
+  function slackErrorText(message, detail, serverMessage) {
+    if (message === "challenge_invalid_signature") return "Slack could not verify this app. Retry the Event Subscriptions request URL check in Slack, then try connecting again.";
+    if (message === "challenge_expired") return "Slack's verification check expired. Retry the Event Subscriptions request URL check in Slack, then try connecting again.";
+    if (message === "challenge_missing") return "Chickpea is still waiting for Slack to verify the Events URL. Open Event Subscriptions in Slack, click Retry, then try connecting again.";
+    if (message === "signing_secret_change_requires_reconnect") return "To change the Signing Secret, disconnect this Slack app and connect it again.";
+    if (message === "workspace_mismatch") return "This token belongs to a different Slack workspace. Use the app you created for this Chickpea install and workspace.";
+    if (message === "app_mismatch") return "The token and signing secret came from different Slack apps. Copy both values from the same app and try again.";
+    if (message === "slack_scope_unverified") return "Slack has not confirmed the required permissions. Reinstall the app to the workspace, allow the requested permissions, then try again.";
+    if (message === "slack_channel_list_failed") return "Chickpea could not confirm channel access. Reinstall the app to refresh its Slack permissions, then try again.";
     if (message === "slack_auth_failed") return "Slack rejected the bot token (auth.test failed" + (detail ? ": " + detail : "") + "). Re-copy the xoxb- token and try again.";
     if (message === "slack_unreachable") return "Could not reach the Slack API to validate the token. Check connectivity and try again.";
     if (message === "slack_missing_scopes") return "This bot token is from an older Slack authorization. Reinstall Chickpea in Slack, then paste the refreshed xoxb- token.";
     if (message === "internal_error") return "Chickpea could not store the credentials (an internal error). Check the worker logs and try again.";
-    return detail ? message + ": " + detail : message;
+    return serverMessage || (detail ? message + ": " + detail : message);
   }
 
   function submitSlackConnection(formData) {
@@ -3828,7 +3952,7 @@ details[open].advanced summary::before {
     }).catch(function (error) {
       state.slackBusy = false;
       state.slackConnectionBusy = "";
-      state.slackError = error.serverMessage || slackErrorText(error.message, error.detail);
+      state.slackError = slackErrorText(error.message, error.detail, error.serverMessage);
       render();
       focusSlackLiveRegion("slack-connection-error");
     });
@@ -9298,6 +9422,126 @@ details[open].advanced summary::before {
     ]).then(render);
   }
 
+  var onboardingPollTimer = null;
+  var onboardingPollRequest = false;
+
+  function onboardingResponseSignature(value) {
+    if (!value) return "";
+    return [value.revision, value.stage, value.tryStartedAt, value.completedAt].join("|");
+  }
+
+  function loadOnboarding(shouldRender) {
+    return api("/admin/api/onboarding").then(function (body) {
+      var changed = onboardingResponseSignature(state.onboarding) !== onboardingResponseSignature(body) || !!state.onboardingError;
+      state.onboarding = body;
+      state.onboardingError = "";
+      if (shouldRender !== false && changed) render();
+      return body;
+    }).catch(function (error) {
+      if (error && error.message === "onboarding_not_found") {
+        state.onboarding = null;
+        state.onboardingError = "This install does not have an active setup journey.";
+      } else {
+        state.onboardingError = (error && (error.serverMessage || error.message)) || "Could not load setup.";
+      }
+      if (shouldRender !== false) render();
+      return null;
+    });
+  }
+
+  function syncOnboardingActivity() {
+    var choose = state.view === "onboarding" && state.onboarding && state.onboarding.stage === "choose_channel";
+    if (choose && isSlackConnected() && !state.slackChannels && !state.slackChannelsLoading) {
+      loadSlackChannels(false);
+    }
+    var shouldPoll = state.view === "onboarding" && state.onboarding &&
+      state.onboarding.stage === "try" && !state.onboardingError;
+    if (!shouldPoll) {
+      if (onboardingPollTimer && typeof clearTimeout === "function") clearTimeout(onboardingPollTimer);
+      onboardingPollTimer = null;
+      return;
+    }
+    if (onboardingPollTimer || onboardingPollRequest || typeof setTimeout !== "function") return;
+    onboardingPollTimer = setTimeout(function () {
+      onboardingPollTimer = null;
+      onboardingPollRequest = true;
+      loadOnboarding(true).finally(function () {
+        onboardingPollRequest = false;
+        syncOnboardingActivity();
+      });
+    }, 2500);
+  }
+
+  function startOnboardingTry(formData) {
+    if (state.onboardingBusy || !state.onboarding || state.onboarding.stage !== "choose_channel") return;
+    var channelId = String(formData.get("channelSelect") || state.onboardingChannelSelected || "").trim();
+    var channel = findSlackChannel(channelId);
+    var workspace = state.onboarding.workspace;
+    var agent = state.agents.find(function (candidate) { return candidate.id === "agent_default"; }) || defaultAgent();
+    if (!channel) {
+      state.onboardingError = "Choose a channel.";
+      render();
+      return;
+    }
+    if (!workspace || !workspace.id || !agent) {
+      state.onboardingError = "Setup is missing its workspace or Default profile. Refresh and try again.";
+      render();
+      return;
+    }
+    state.onboardingBusy = true;
+    state.onboardingError = "";
+    render();
+    var savedAssignment = null;
+    putAssignment(workspace.id, channel.id, agent.id, true, undefined, channel.name).then(function (result) {
+      if (!result || result.isMember !== true) {
+        state.onboardingBusy = false;
+        state.onboardingError = result && result.isMember === false
+          ? "Chickpea could not join #" + channel.name + ". Invite @Chickpea there, then Refresh and try again."
+          : "Chickpea could not verify that it joined #" + channel.name + ". Refresh and try again.";
+        render();
+        return null;
+      }
+      savedAssignment = result && result.assignment;
+      return postJson("/admin/api/onboarding/try", "POST", {
+        expectedRevision: state.onboarding.revision,
+        workspaceId: workspace.id,
+        channelId: channel.id,
+        channelName: channel.name
+      });
+    }).then(function (body) {
+      if (!body) return;
+      state.onboarding = body;
+      state.onboardingBusy = false;
+      state.onboardingChannelSelected = "";
+      state.onboardingNotice = "";
+      if (savedAssignment) {
+        state.assignments = state.assignments.filter(function (assignment) {
+          return assignment.workspaceId !== savedAssignment.workspaceId || assignment.channelId !== savedAssignment.channelId;
+        });
+        state.assignments.push(savedAssignment);
+      }
+      render();
+    }).catch(function (error) {
+      state.onboardingBusy = false;
+      state.onboardingError = addChannelErrorText(error);
+      render();
+    });
+  }
+
+  function copyOnboardingPrompt() {
+    var copyFailed = function () {
+      state.onboardingNotice = "Copy failed. Select the prompt and copy it manually.";
+      render();
+    };
+    if (!navigator.clipboard || !navigator.clipboard.writeText) { copyFailed(); return; }
+    try {
+      Promise.resolve(navigator.clipboard.writeText(ONBOARDING_PROMPT)).then(function () {
+        state.onboardingNotice = "Prompt copied.";
+        render();
+      }).catch(copyFailed);
+    } catch (_) { copyFailed(); }
+  }
+
   function refreshData(loadIdentityAfterRender) {
     return Promise.all([
       api("/admin/api/agents"),
@@ -9318,6 +9562,16 @@ details[open].advanced summary::before {
       }),
       api("/admin/api/slack-identities").catch(function () {
         return { identities: [], globalDmAllowed: true };
+      }),
+      api("/admin/api/onboarding").then(function (body) {
+        return { body: body, error: "" };
+      }).catch(function (error) {
+        return {
+          body: null,
+          error: error && error.message === "onboarding_not_found"
+            ? "This install does not have an active setup journey."
+            : ((error && (error.serverMessage || error.message)) || "Could not load setup.")
+        };
       })
     ]).then(function (parts) {
       state.agents = parts[0].agents || [];
@@ -9330,6 +9584,8 @@ details[open].advanced summary::before {
       state.memoryScopes = parts[5].scopes;
       state.memoryScopesError = parts[5].error;
       state.slackIdentities = parts[6] || { identities: [], globalDmAllowed: true };
+      state.onboarding = parts[7].body;
+      state.onboardingError = parts[7].error;
       if (state.active) {
         var assignment = activeAssignment();
         if (assignment) {
@@ -9659,6 +9915,9 @@ details[open].advanced summary::before {
     // Stepper: mark step 1 done and reveal step 2. Not preventing default lets
     // the Create anchor still open Slack in a new tab.
     if (action === "advance-slack-step") { state.slackStep = 2; render(); }
+    if (action === "refresh-onboarding-channels") { loadSlackChannels(true); }
+    if (action === "retry-onboarding") { state.onboardingError = ""; loadOnboarding(true); }
+    if (action === "copy-onboarding-prompt") { copyOnboardingPrompt(); }
     if (action === "dismiss-slack-toast") { state.slackToastDismissed = true; render(); }
     if (action === "select-channel") { state.view = "channels"; state.channelScreen = "detail"; selectActive(target.getAttribute("data-workspace"), target.getAttribute("data-channel")); render(); }
     if (action === "open-channel-memory") {
@@ -10393,6 +10652,7 @@ details[open].advanced summary::before {
   document.addEventListener("change", function (event) {
     var target = event.target;
     var action = target.getAttribute && target.getAttribute("data-action");
+    if (action === "onboarding-channel-select") state.onboardingChannelSelected = target.value;
     if (action === "slack-identity-create-dm") state.slackIdentityCreateDraft.initialDmAgentId = target.value;
     if (action === "slack-identity-dm-state") state.slackIdentityDmDraft.dmState = target.value === "on" ? "on" : "off";
     if (action === "slack-identity-dm-agent") state.slackIdentityDmDraft.dmAgentId = target.value;
@@ -10618,6 +10878,7 @@ details[open].advanced summary::before {
     event.preventDefault();
     if (action === "team-invite-form") createTeamInvitation();
     if (action === "add-channel-form") addChannel(new FormData(form));
+    if (action === "onboarding-channel-form") startOnboardingTry(new FormData(form));
     if (action === "slack-connect-form") submitSlackConnection(new FormData(form));
     if (action === "slack-identity-create-form") createManagedSlackIdentity(new FormData(form));
     if (action === "slack-identity-setup-names-form") saveSlackIdentitySetupNames(new FormData(form));
@@ -10990,6 +11251,7 @@ details[open].advanced summary::before {
       state.slackIdentityError = "";
       state.slackIdentityLoading = false;
       state.slackIdentityRequestId += 1;
+      state.slackChannelsRequestId += 1;
       state.slackChannels = null;
       state.active = null;
       state.channelScreen = "overview";
@@ -11022,10 +11284,12 @@ details[open].advanced summary::before {
 
   function loadSlackChannels(refresh) {
     if (!isSlackConnected()) return Promise.resolve();
+    var requestId = ++state.slackChannelsRequestId;
     state.slackChannelsLoading = true;
     state.slackChannelsError = null;
     render();
     return api("/admin/api/slack-channels" + (refresh ? "?refresh=1" : "")).then(function (body) {
+      if (requestId !== state.slackChannelsRequestId) return null;
       state.slackChannels = body;
       state.slackChannelsLoading = false;
       // Adopt the workspace identity the proxy backfilled so the locked
@@ -11037,6 +11301,7 @@ details[open].advanced summary::before {
       }
       render();
     }).catch(function (error) {
+      if (requestId !== state.slackChannelsRequestId) return null;
       state.slackChannelsLoading = false;
       state.slackChannelsError = {
         text: slackChannelsErrorText(error),
@@ -12810,7 +13075,6 @@ export function renderPasswordLogin(
 export function renderPasswordOwnerSetupPage(
   options: {
     error?: boolean | PasswordPolicyErrorCode;
-    organizationName?: string;
     ownerEmail?: string;
   } = {},
 ): string {
@@ -12834,22 +13098,16 @@ export function renderPasswordOwnerSetupPage(
     error,
     intro: 'Create the first owner account. No email service is required.',
     body: `<p id="owner-setup-status" role="status" aria-live="polite">Opening your private setup link&hellip;</p>
-    <section id="owner-setup-fallback" hidden>
-      <label for="owner-setup-manual-capability">Setup code</label>
-      <input id="owner-setup-manual-capability" type="password" autocomplete="off">
-      <p class="field-help">Paste the setup code from your deploy results.</p>
-      <p id="owner-setup-manual-error" class="field-error" role="alert" aria-live="polite" hidden></p>
-      <button id="owner-setup-manual-continue" type="button">Continue to account setup</button>
-    </section>
     <form id="owner-setup-form" method="post" action="/admin/setup" hidden>
-      <label for="organization-name">Organization name</label>
-      <input id="organization-name" name="organizationName" autocomplete="organization" required maxlength="128" value="${escapeHtmlAttribute(options.organizationName ?? '')}">
       <label for="owner-email">Email</label>
       <input id="owner-email" name="ownerEmail" type="email" autocomplete="username" required maxlength="320" value="${escapeHtmlAttribute(options.ownerEmail ?? '')}">
       <label for="password">Password <span>${PASSWORD_MIN_CODE_POINTS} or more characters</span></label>
       <input id="password" name="password" type="password" autocomplete="new-password" required minlength="${PASSWORD_MIN_CODE_POINTS}" maxlength="256" aria-describedby="password-help password-error">
       <p id="password-help" class="field-help">Use at least ${PASSWORD_MIN_CODE_POINTS} characters. Spaces are allowed.</p>
       <p id="password-error" class="field-error" role="alert" aria-live="polite" hidden></p>
+      <label for="password-confirmation">Confirm password</label>
+      <input id="password-confirmation" name="passwordConfirmation" type="password" autocomplete="new-password" required minlength="${PASSWORD_MIN_CODE_POINTS}" maxlength="256" aria-describedby="password-confirmation-error">
+      <p id="password-confirmation-error" class="field-error" role="alert" aria-live="polite" hidden></p>
       <input id="owner-setup-capability" name="recoveryToken" type="hidden">
       <button id="owner-setup-submit" type="submit" disabled>Create owner account</button>
     </form><script src="/admin/setup/client.js" defer></script>`,

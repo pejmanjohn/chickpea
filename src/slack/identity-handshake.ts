@@ -2,14 +2,27 @@ import { createHmac } from 'node:crypto';
 
 import { constantTimeEquals } from '../admin/constant-time.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
-import type { SlackIdentity } from '../config/types.ts';
+import {
+  WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+  type SlackIdentity,
+} from '../config/types.ts';
 import {
   clearSlackIdentityCredentials,
   slackIdentityCredentialSettingKeys,
 } from './identity-credentials.ts';
 
 export const MAX_PENDING_SLACK_CHALLENGE_BYTES = 1_048_576;
-export const PENDING_SLACK_CHALLENGE_TTL_MS = 5 * 60_000;
+/** Slack requests must be current when they reach ingress. */
+export const SLACK_REQUEST_FRESHNESS_MS = 5 * 60_000;
+/** The verified-at-ingress envelope remains available during human setup. */
+export const PENDING_SLACK_CHALLENGE_TTL_MS = 24 * 60 * 60_000;
+/**
+ * Briefly pin the first envelope to absorb Slack's automatic retries. Slack's
+ * manifest installer can issue a challenge for a temporary app record before
+ * the final installed app exists, so a human-initiated Retry must be able to
+ * replace that envelope without waiting for the five-minute signature window.
+ */
+export const PENDING_SLACK_CHALLENGE_PIN_MS = 10_000;
 const MAX_CHALLENGE_TEXT_LENGTH = 4_096;
 
 export interface PendingSlackChallengeInput {
@@ -24,7 +37,13 @@ export interface PendingSlackChallengeEnvelope extends PendingSlackChallengeInpu
 }
 
 export type RecordPendingSlackChallengeResult =
-  | { accepted: true; challenge: string; expiresAt: number }
+  | {
+      accepted: true;
+      challenge: string;
+      expiresAt: number;
+      appId?: string;
+      teamId?: string;
+    }
   | {
       accepted: false;
       reason:
@@ -38,14 +57,25 @@ export type RecordPendingSlackChallengeResult =
 
 export type VerifyPendingSlackChallengeResult =
   | { verified: true; purgeReceipt: string }
-  | { verified: false; reason: 'missing' | 'expired' | 'invalid_signature' };
+  | {
+      verified: false;
+      reason:
+        | 'missing'
+        | 'expired'
+        | 'invalid_signature'
+        | 'app_mismatch'
+        | 'workspace_mismatch';
+    };
 
 export function slackIdentityPendingEnvelopeSettingKey(identityId: string): string {
+  if (identityId === WORKSPACE_DEFAULT_SLACK_IDENTITY_ID) {
+    return 'slack.pendingEnvelope';
+  }
   const revisionKey = slackIdentityCredentialSettingKeys(identityId).connectionRevision;
   return revisionKey.replace(/\.connectionRevision$/, '.pendingEnvelope');
 }
 
-/** Store one structurally valid, signed-header-bearing challenge for <=5 min. */
+/** Store one fresh, structurally valid, signed-header-bearing challenge for <=24h. */
 export async function recordPendingSlackChallenge(
   store: SettingsStore,
   identity: SlackIdentity,
@@ -53,9 +83,8 @@ export async function recordPendingSlackChallenge(
   options: { now?: number } = {},
 ): Promise<RecordPendingSlackChallengeResult> {
   if (
-    identity.kind !== 'dedicated' ||
-    (identity.lifecycle !== 'setup_incomplete' &&
-      identity.lifecycle !== 'credentials_pending')
+    identity.lifecycle !== 'setup_incomplete' &&
+    identity.lifecycle !== 'credentials_pending'
   ) {
     return { accepted: false, reason: 'identity_not_pending' };
   }
@@ -69,7 +98,7 @@ export async function recordPendingSlackChallenge(
   }
 
   const now = options.now ?? Date.now();
-  if (Math.abs(now - timestampSeconds * 1_000) > PENDING_SLACK_CHALLENGE_TTL_MS) {
+  if (Math.abs(now - timestampSeconds * 1_000) > SLACK_REQUEST_FRESHNESS_MS) {
     return { accepted: false, reason: 'stale_timestamp' };
   }
 
@@ -77,7 +106,11 @@ export async function recordPendingSlackChallenge(
   const current = await store.getSetting(key);
   if (current) {
     const existing = parseStoredEnvelope(current);
-    if (existing && existing.expiresAt > now) {
+    // Keep a brief anti-flood window, but let Slack's final installed app
+    // replace the manifest installer's temporary-app challenge during the same
+    // human setup session.
+    if (existing && existing.expiresAt > now &&
+        now - existing.receivedAt <= PENDING_SLACK_CHALLENGE_PIN_MS) {
       return { accepted: false, reason: 'rate_limited' };
     }
   }
@@ -92,7 +125,13 @@ export async function recordPendingSlackChallenge(
     set: [{ key, value: JSON.stringify(envelope) }],
   });
   return applied
-    ? { accepted: true, challenge: body.challenge, expiresAt: envelope.expiresAt }
+    ? {
+        accepted: true,
+        challenge: body.challenge,
+        expiresAt: envelope.expiresAt,
+        ...(body.appId ? { appId: body.appId } : {}),
+        ...(body.teamId ? { teamId: body.teamId } : {}),
+      }
     : { accepted: false, reason: 'changed' };
 }
 
@@ -120,7 +159,7 @@ export async function verifyPendingSlackChallenge(
   store: SettingsStore,
   identityId: string,
   signingSecret: string,
-  options: { now?: number } = {},
+  options: { now?: number; expectedAppId?: string; expectedTeamId?: string } = {},
 ): Promise<VerifyPendingSlackChallengeResult> {
   const key = slackIdentityPendingEnvelopeSettingKey(identityId);
   const raw = await store.getSetting(key);
@@ -136,9 +175,24 @@ export async function verifyPendingSlackChallenge(
     .update(`v0:${envelope.timestamp}:${envelope.rawBody}`)
     .digest('hex')}`;
   const verified = constantTimeEquals(expected, envelope.signature);
-  if (verified) return { verified: true, purgeReceipt: raw };
-  await purgePendingSlackChallenge(store, identityId, raw);
-  return { verified: false, reason: 'invalid_signature' };
+  if (!verified) return { verified: false, reason: 'invalid_signature' };
+
+  const body = parseChallengeBody(envelope.rawBody);
+  if (!body) {
+    await purgePendingSlackChallenge(store, identityId, raw);
+    return { verified: false, reason: 'expired' };
+  }
+  // Slack's documented url_verification body contains only token, challenge,
+  // and type. Compare identity metadata when Slack includes it, but do not
+  // reject the documented payload shape after its app-unique signature has
+  // verified. Normal event callbacks still require both app and workspace IDs.
+  if (options.expectedAppId && body.appId && body.appId !== options.expectedAppId) {
+    return { verified: false, reason: 'app_mismatch' };
+  }
+  if (options.expectedTeamId && body.teamId && body.teamId !== options.expectedTeamId) {
+    return { verified: false, reason: 'workspace_mismatch' };
+  }
+  return { verified: true, purgeReceipt: raw };
 }
 
 export async function purgePendingSlackChallenge(
@@ -171,7 +225,11 @@ export async function cancelPendingSlackIdentitySecrets(
   );
 }
 
-function parseChallengeBody(rawBody: string): { challenge: string } | undefined {
+function parseChallengeBody(rawBody: string): {
+  challenge: string;
+  appId?: string;
+  teamId?: string;
+} | undefined {
   try {
     const parsed = JSON.parse(rawBody) as unknown;
     if (!parsed || typeof parsed !== 'object') return undefined;
@@ -184,7 +242,11 @@ function parseChallengeBody(rawBody: string): { challenge: string } | undefined 
     ) {
       return undefined;
     }
-    return { challenge: body.challenge };
+    return {
+      challenge: body.challenge,
+      ...(typeof body.api_app_id === 'string' ? { appId: body.api_app_id } : {}),
+      ...(typeof body.team_id === 'string' ? { teamId: body.team_id } : {}),
+    };
   } catch {
     return undefined;
   }

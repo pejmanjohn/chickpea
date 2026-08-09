@@ -541,7 +541,7 @@ export interface SlackConversationsListPage {
  */
 export async function slackConversationsList(
   botToken: string,
-  options: { cursor?: string; limit?: number } = {},
+  options: { cursor?: string; limit?: number; timeoutMs?: number } = {},
 ): Promise<SlackConversationsListPage> {
   const params = new URLSearchParams({
     types: 'public_channel,private_channel',
@@ -549,15 +549,23 @@ export async function slackConversationsList(
     limit: String(options.limit ?? 200),
   });
   if (options.cursor) params.set('cursor', options.cursor);
-  const response = await fetch(`${slackApiBase()}/conversations.list`, {
+  const result = await fetchSlackTruthJson(`${slackApiBase()}/conversations.list`, {
     method: 'POST',
     headers: {
       authorization: `Bearer ${botToken}`,
       'content-type': 'application/x-www-form-urlencoded',
     },
     body: params.toString(),
-  });
-  const body = (await response.json()) as Record<string, unknown>;
+  }, options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs });
+  if (!result.ok) {
+    return {
+      ok: false,
+      error: result.error,
+      channels: [],
+      nextCursor: undefined,
+    };
+  }
+  const body = result.body;
   const rawChannels = Array.isArray(body.channels) ? body.channels : [];
   return {
     ok: body.ok === true,

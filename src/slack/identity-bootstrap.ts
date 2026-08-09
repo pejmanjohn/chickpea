@@ -4,9 +4,11 @@ import type { ConfigStore } from '../config/store.ts';
 import type { SlackIdentity } from '../config/types.ts';
 import {
   slackBotIdentityInfo,
+  slackConversationsList,
   slackIdentityAuthTest,
   type SlackAuthTestResult,
   type SlackBotIdentityResult,
+  type SlackConversationsListPage,
 } from './credentials.ts';
 import {
   resolveSlackIdentityCredentials,
@@ -26,10 +28,13 @@ export type SlackIdentityBootstrapErrorCode =
   | 'identity_not_connectable'
   | 'slack_auth_failed'
   | 'slack_missing_scopes'
+  | 'slack_scope_unverified'
+  | 'slack_channel_list_failed'
   | 'slack_unreachable'
   | 'bot_token_required'
   | 'workspace_unverified'
   | 'workspace_mismatch'
+  | 'app_mismatch'
   | 'bot_identity_missing'
   | 'app_identity_missing'
   | 'app_already_connected'
@@ -37,13 +42,15 @@ export type SlackIdentityBootstrapErrorCode =
   | 'credentials_missing'
   | 'challenge_missing'
   | 'challenge_expired'
-  | 'challenge_invalid_signature';
+  | 'challenge_invalid_signature'
+  | 'signing_secret_change_requires_reconnect';
 
 export class SlackIdentityBootstrapError extends Error {
   constructor(
     readonly code: SlackIdentityBootstrapErrorCode,
     message: string,
     readonly missingScopes?: readonly string[],
+    readonly detail?: string,
   ) {
     super(message);
     this.name = 'SlackIdentityBootstrapError';
@@ -73,6 +80,10 @@ export interface SlackIdentityBootstrapDeps {
     botToken: string,
     botUserId: string,
   ) => Promise<SlackBotIdentityResult>;
+  conversationsList?: (
+    botToken: string,
+    options?: { cursor?: string; limit?: number; timeoutMs?: number },
+  ) => Promise<SlackConversationsListPage>;
   now?: () => number;
 }
 
@@ -82,11 +93,14 @@ export async function validateSlackIdentityBotInstallation(
     identityId: string;
     expectedTeamId?: string;
     botToken: string;
+    requireScopeEvidence?: boolean;
+    requireChannelList?: boolean;
   },
   deps: SlackIdentityBootstrapDeps = {},
 ): Promise<ValidatedSlackIdentityInstallation> {
   const authTest = deps.authTest ?? slackIdentityAuthTest;
   const botIdentityInfo = deps.botIdentityInfo ?? slackBotIdentityInfo;
+  const conversationsList = deps.conversationsList ?? slackConversationsList;
   let auth: SlackAuthTestResult;
   try {
     auth = await authTest(input.botToken);
@@ -100,9 +114,17 @@ export async function validateSlackIdentityBotInstallation(
     throw new SlackIdentityBootstrapError(
       'slack_auth_failed',
       `Slack rejected this bot token${auth.error ? ` (${auth.error})` : ''}`,
+      undefined,
+      auth.error,
     );
   }
   const missingScopes = missingRequiredSlackBotScopes(auth.grantedScopes);
+  if (input.requireScopeEvidence && auth.grantedScopes === undefined) {
+    throw new SlackIdentityBootstrapError(
+      'slack_scope_unverified',
+      'Slack did not return the installed permission scopes',
+    );
+  }
   if (missingScopes?.length) {
     throw new SlackIdentityBootstrapError(
       'slack_missing_scopes',
@@ -166,6 +188,38 @@ export async function validateSlackIdentityBotInstallation(
       'app_already_connected',
       'This Slack app is already connected to another identity',
     );
+  }
+
+  if (input.requireChannelList) {
+    let page: SlackConversationsListPage;
+    try {
+      page = await conversationsList(input.botToken, { limit: 1 });
+    } catch {
+      throw new SlackIdentityBootstrapError(
+        'slack_unreachable',
+        'Slack could not be reached while checking channel access',
+      );
+    }
+    if (!page.ok) {
+      if (page.error === 'missing_scope') {
+        throw new SlackIdentityBootstrapError(
+          'slack_missing_scopes',
+          'Reinstall this Slack app to grant channel-list access',
+        );
+      }
+      if (page.error === 'invalid_auth' || page.error === 'token_revoked') {
+        throw new SlackIdentityBootstrapError(
+          'slack_auth_failed',
+          'Slack rejected this bot token while checking channel access',
+          undefined,
+          page.error,
+        );
+      }
+      throw new SlackIdentityBootstrapError(
+        'slack_channel_list_failed',
+        'Slack could not list channels for this installation',
+      );
+    }
   }
 
   const avatarUrl = sanitizeHttpsUrl(profile.avatarUrl);

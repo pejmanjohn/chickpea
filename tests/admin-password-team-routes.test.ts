@@ -30,6 +30,7 @@ test('password-mode invitation, enrollment, suspension, and administrative reset
       organizationName: 'Acme',
       ownerEmail: 'owner@example.com',
       password: OWNER_PASSWORD,
+      passwordConfirmation: OWNER_PASSWORD,
       recoveryToken: RECOVERY,
     }));
     assert.equal(setup.status, 303, await setup.clone().text());
@@ -222,7 +223,7 @@ test('concurrent owner demotion or removal retains one active owner', async () =
     try {
       const setup = await app.request(formRequest('/admin/setup', {
         organizationName: 'Acme', ownerEmail: 'owner@example.com',
-        password: OWNER_PASSWORD, recoveryToken: RECOVERY,
+        password: OWNER_PASSWORD, passwordConfirmation: OWNER_PASSWORD, recoveryToken: RECOVERY,
       }));
       const firstCookie = cookieHeader(setup.headers.get('set-cookie'));
       const invitationResponse = await app.request(jsonRequest('/admin/api/team/invitations', 'POST', {
@@ -294,7 +295,7 @@ test('an existing credentialed invitee signs in normally and resumes the exact s
   try {
     const setup = await app.request(formRequest('/admin/setup', {
       organizationName: 'Acme', ownerEmail: 'owner@example.com',
-      password: OWNER_PASSWORD, recoveryToken: RECOVERY,
+      password: OWNER_PASSWORD, passwordConfirmation: OWNER_PASSWORD, recoveryToken: RECOVERY,
     }));
     const ownerCookie = cookieHeader(setup.headers.get('set-cookie'));
     const privateAuth = createBetterAuth({ ...environment, allowSignUp: true, autoSignInAfterSignUp: false });

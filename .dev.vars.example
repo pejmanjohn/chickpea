@@ -1,14 +1,10 @@
-# Secrets for the Cloudflare lane (`wrangler dev` / the Deploy to Cloudflare
-# button prompt from this file). Slack credentials are NOT listed here on
-# purpose: the /admin Slack-connection wizard collects and stores them after
-# deploy, once the worker URL exists.
+# Cloudflare Deploy prompts for every active key in this file, so consumer
+# deployment intentionally has none. The deploy wrapper creates Chickpea's
+# stable auth authority and its one-time setup handoff automatically.
 
-# Offline credential for first-owner setup and bounded recovery. It is never a
-# browser login token. Generate one with:
-#   openssl rand -hex 32
-# Deliberately empty: the Deploy to Cloudflare button pre-fills its prompt with
-# the value written here, and a placeholder would deploy as the real token.
-CHICKPEA_RECOVERY_TOKEN=""
+# Break-glass recovery is dormant by default. An account holder may create a
+# temporary value only when recovery is needed:
+# CHICKPEA_RECOVERY_TOKEN=""
 
 # Legacy shared Admin login for existing installations during migration only.
 # Fresh deployments must not enable it:

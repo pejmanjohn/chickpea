@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 
 import type { IdentityResolution, IdentityStore } from '../identity/types.ts';
 import { normalizeCloudflareAccessIssuer } from './cloudflare-access.ts';
@@ -8,6 +8,7 @@ import { createBetterAuth, requireSupportedOrigin } from './better-auth.ts';
 import type { BetterAuthEnvironment } from './better-auth-environment.ts';
 import { assertPasswordPolicy } from './password-policy.ts';
 import { decodeRecoverySecret } from './recovery-secret.ts';
+import { SETUP_CAPABILITY_TTL_MS, verifySetupCapability } from './setup-capability.mjs';
 
 const OWNER_SETUP_TTL_MS = 24 * 60 * 60 * 1_000;
 
@@ -15,7 +16,8 @@ export interface CompletePasswordOwnerSetupInput {
   recoveryToken: string;
   email: string;
   password: string;
-  organizationName: string;
+  /** Accepted for source compatibility; fresh setup always creates Chickpea. */
+  organizationName?: string;
   canonicalOrigin: string;
 }
 
@@ -33,16 +35,21 @@ export class PasswordOwnerSetupService {
     private readonly identity: IdentityStore,
     private readonly environment: BetterAuthEnvironment,
     private readonly now: () => number = Date.now,
+    private readonly setupCapability?: { digest: string; issuedAt: number },
+    private readonly beginOnboarding: () => Promise<void> = async () => {},
   ) {}
 
   async complete(input: CompletePasswordOwnerSetupInput): Promise<CompletePasswordOwnerSetupResult> {
-    const recovery = requireMatchingRecoverySecret(
-      input.recoveryToken,
-      this.environment.recoveryToken,
-    );
+    const capabilityHash = this.setupCapability
+      ? await verifiedSetupCapabilityHash(input.recoveryToken, this.setupCapability, this.now)
+      : ownerSetupCapabilityHash(
+          requireMatchingRecoverySecret(input.recoveryToken, this.environment.recoveryToken),
+          normalizeSetupEmail(input.email),
+          requireSupportedOrigin(input.canonicalOrigin),
+        );
     const canonicalOrigin = requireSupportedOrigin(input.canonicalOrigin);
     if (canonicalOrigin !== this.environment.baseURL) throw new AuthDeniedError();
-    const organizationName = boundedHumanText(input.organizationName, 'organizationName');
+    const organizationName = 'Chickpea';
     const email = normalizeSetupEmail(input.email);
     const displayName = displayNameFromEmail(email);
     assertPasswordPolicy(input.password, { email, organizationName });
@@ -52,13 +59,14 @@ export class PasswordOwnerSetupService {
       this.identity.getOrganization(),
     ]);
     if (control.authMode !== 'unconfigured' || legacyOrganization) throw new AuthDeniedError();
-    const capabilityHash = ownerSetupCapabilityHash(recovery, email, canonicalOrigin);
     let operation = await this.identity.findAuthOperation('owner_setup', capabilityHash);
     operation ??= await this.identity.createAuthOperation({
       kind: 'owner_setup',
       expectedEmail: email,
       capabilityHash,
-      expiresAt: this.now() + OWNER_SETUP_TTL_MS,
+      expiresAt: this.setupCapability
+        ? this.setupCapability.issuedAt + SETUP_CAPABILITY_TTL_MS
+        : this.now() + OWNER_SETUP_TTL_MS,
     });
     if (operation.expectedNormalizedEmail !== email || operation.status !== 'pending') {
       throw new AuthDeniedError();
@@ -143,6 +151,10 @@ export class PasswordOwnerSetupService {
         membership?.userId !== userId || membership.organizationId !== completedOrganizationId ||
         membership.role !== 'owner') throw new AuthDeniedError();
 
+    // Seed the resumable product journey before releasing owner authority. A
+    // retry can safely observe the same record if the final control write is
+    // interrupted, while the owner can never be activated without a journey.
+    await this.beginOnboarding();
     await this.identity.completePasswordSetup({
       operationId: operation.id,
       capabilityHash,
@@ -313,6 +325,20 @@ function ownerSetupCapabilityHash(
     .update('\0')
     .update(canonicalOrigin)
     .digest('hex');
+}
+
+async function verifiedSetupCapabilityHash(
+  capability: string,
+  expected: { digest: string; issuedAt: number },
+  now: () => number,
+): Promise<string> {
+  if (!await verifySetupCapability({
+    capability,
+    digest: expected.digest,
+    issuedAt: expected.issuedAt,
+    now,
+  })) throw new AuthDeniedError();
+  return createHash('sha256').update(capability).digest('hex');
 }
 
 function normalizeSetupEmail(value: string): string {
