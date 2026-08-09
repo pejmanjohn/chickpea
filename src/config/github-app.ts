@@ -86,8 +86,14 @@ export async function saveGithubSetupState(
   settings: SettingsStore,
   input: GithubSetupState,
 ): Promise<void> {
+  const membershipIdValid = input.membershipId === null || (
+    input.membershipId === input.membershipId.trim() &&
+    input.membershipId.length > 0 &&
+    input.membershipId.length <= 256 &&
+    !/[\u0000-\u001f\u007f]/.test(input.membershipId)
+  );
   if (!/^[a-f0-9]{32}$/.test(input.state) || !Number.isSafeInteger(input.mintedAt) ||
-      (input.membershipId !== null && !/^membership_[A-Za-z0-9_-]+$/.test(input.membershipId))) {
+      !membershipIdValid) {
     throw new Error('GitHub setup state is invalid.');
   }
   await settings.setSetting(GITHUB_SETTING_KEYS.setupState, JSON.stringify({

@@ -21,6 +21,7 @@ import {
   githubErrorStatus,
   mintAppJwt,
   normalizePrivateKeyPem,
+  saveGithubSetupState,
   type GithubConnection,
 } from '../src/config/github-app.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
@@ -750,6 +751,24 @@ test('GitHub manifest omits the hook on non-public origins (localhost dev)', asy
     });
   } finally {
     store.close();
+    settings.close();
+  }
+});
+
+test('GitHub setup state accepts Better Auth UUID membership IDs', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const membershipId = 'c092ca9e-4aa0-4987-aa9f-72e2bef08815';
+  try {
+    await saveGithubSetupState(settings, {
+      state: 'a'.repeat(32),
+      mintedAt: Date.now(),
+      membershipId,
+    });
+    const stored = JSON.parse((await settings.getSetting('github.setup_state')) ?? '{}') as {
+      membershipId?: string;
+    };
+    assert.equal(stored.membershipId, membershipId);
+  } finally {
     settings.close();
   }
 });
