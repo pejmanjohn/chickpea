@@ -237,6 +237,7 @@ async function postCreds(app: Hono, body: unknown): Promise<Response> {
 function listenFakeSlack(
   authTestBody: Record<string, unknown>,
   usersInfoBody?: Record<string, unknown> | ReadonlyArray<Record<string, unknown>>,
+  authTestHeaders: Readonly<Record<string, string>> = {},
 ): Promise<{
   server: Server;
   baseUrl: string;
@@ -249,6 +250,9 @@ function listenFakeSlack(
   const server = createServer((req, res) => {
     res.setHeader('content-type', 'application/json');
     if (req.url?.endsWith('/auth.test')) {
+      for (const [name, value] of Object.entries(authTestHeaders)) {
+        res.setHeader(name, value);
+      }
       authHeaders.push(req.headers.authorization ?? '');
       res.end(JSON.stringify(authTestBody));
       return;
@@ -832,6 +836,29 @@ test('connection test distinguishes missing, Slack-rejected, and unreachable cre
       });
     } finally {
       await closeServer(rejectedSlack.server);
+    }
+
+    const staleSlack = await listenFakeSlack(
+      { ok: true, team_id: 'T_ACME', user_id: 'U_STALE' },
+      undefined,
+      { 'x-oauth-scopes': 'channels:history,chat:write' },
+    );
+    try {
+      await withEnv({ ...NO_SLACK_ENV, SLACK_API_URL: staleSlack.baseUrl }, async () => {
+        const stale = await appWith(settings).request('/admin/api/slack-connection/test', {
+          method: 'POST',
+          headers: auth(),
+        });
+        assert.equal(stale.status, 422);
+        assert.deepEqual(await stale.json(), {
+          error: 'slack_missing_scopes',
+          missingScopes: slackAppManifest.oauth_config.scopes.bot.filter(
+            (scope) => !['channels:history', 'chat:write'].includes(scope),
+          ),
+        });
+      });
+    } finally {
+      await closeServer(staleSlack.server);
     }
 
     await withEnv({ ...NO_SLACK_ENV, SLACK_API_URL: 'http://127.0.0.1:9/api/' }, async () => {
@@ -1861,6 +1888,48 @@ test('wizard POST stores nothing when Slack rejects the token', async (t) => {
       assert.equal(body.detail, 'invalid_auth');
       assert.equal(await settings.getSetting(SLACK_SETTING_KEYS.botToken), undefined);
       assert.equal(await settings.getSetting(SLACK_SETTING_KEYS.signingSecret), undefined);
+    });
+  } finally {
+    invalidateStoredSlackCredentials();
+    settings.close();
+    await closeServer(server);
+  }
+});
+
+test('wizard POST rejects a valid Slack token whose installation is missing manifest scopes', async (t) => {
+  const skip = await loopbackListenSkipReason();
+  if (skip) {
+    t.skip(skip);
+    return;
+  }
+  const { server, baseUrl } = await listenFakeSlack(
+    {
+      ok: true,
+      app_id: 'A_STALE',
+      team_id: 'T_ACME',
+      team: 'Acme Inc',
+      user_id: 'U_STALE',
+    },
+    undefined,
+    { 'x-oauth-scopes': 'channels:history,chat:write' },
+  );
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    await withEnv({ ...NO_SLACK_ENV, SLACK_API_URL: baseUrl }, async () => {
+      const response = await postCreds(appWith(settings), {
+        botToken: 'xoxb-stale-scopes',
+        signingSecret: 'stale-secret',
+      });
+      assert.equal(response.status, 422);
+      assert.deepEqual(await response.json(), {
+        error: 'slack_missing_scopes',
+        missingScopes: slackAppManifest.oauth_config.scopes.bot.filter(
+          (scope) => !['channels:history', 'chat:write'].includes(scope),
+        ),
+      });
+      assert.equal(await settings.getSetting(SLACK_SETTING_KEYS.botToken), undefined);
+      assert.equal(await settings.getSetting(SLACK_SETTING_KEYS.signingSecret), undefined);
+      assert.equal(await settings.getSetting(SLACK_SETTING_KEYS.connectionRevision), undefined);
     });
   } finally {
     invalidateStoredSlackCredentials();
@@ -3250,6 +3319,13 @@ test('dedicated identity validation rejects user tokens, cross-workspace install
         const { botId: _botId, ...userAuth } = await validDedicatedSlackDeps().authTest();
         return userAuth;
       },
+    });
+    await assertBootstrapCode('slack_missing_scopes', {
+      ...validDedicatedSlackDeps(),
+      authTest: async () => ({
+        ...(await validDedicatedSlackDeps().authTest()),
+        grantedScopes: ['channels:history', 'chat:write'],
+      }),
     });
     await assertBootstrapCode('workspace_mismatch', {
       ...validDedicatedSlackDeps(),

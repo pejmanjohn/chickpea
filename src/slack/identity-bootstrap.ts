@@ -17,6 +17,7 @@ import {
   purgePendingSlackChallenge,
   verifyPendingSlackChallenge,
 } from './identity-handshake.ts';
+import { missingRequiredSlackBotScopes } from './scopes.ts';
 
 const SLACK_APP_ID_PATTERN = /^A[A-Z0-9]{2,}$/;
 
@@ -24,6 +25,7 @@ export type SlackIdentityBootstrapErrorCode =
   | 'identity_not_dedicated'
   | 'identity_not_connectable'
   | 'slack_auth_failed'
+  | 'slack_missing_scopes'
   | 'slack_unreachable'
   | 'bot_token_required'
   | 'workspace_unverified'
@@ -41,6 +43,7 @@ export class SlackIdentityBootstrapError extends Error {
   constructor(
     readonly code: SlackIdentityBootstrapErrorCode,
     message: string,
+    readonly missingScopes?: readonly string[],
   ) {
     super(message);
     this.name = 'SlackIdentityBootstrapError';
@@ -97,6 +100,14 @@ export async function validateSlackIdentityBotInstallation(
     throw new SlackIdentityBootstrapError(
       'slack_auth_failed',
       `Slack rejected this bot token${auth.error ? ` (${auth.error})` : ''}`,
+    );
+  }
+  const missingScopes = missingRequiredSlackBotScopes(auth.grantedScopes);
+  if (missingScopes?.length) {
+    throw new SlackIdentityBootstrapError(
+      'slack_missing_scopes',
+      `Reinstall this Slack app to grant the required permissions: ${missingScopes.join(', ')}`,
+      missingScopes,
     );
   }
   if (!auth.botId) {

@@ -272,6 +272,7 @@ import {
   buildSlackIdentityManifest,
   slackManifestPrefillUrl,
 } from '../slack/identity-manifest.ts';
+import { missingRequiredSlackBotScopes } from '../slack/scopes.ts';
 import {
   clearSlackIdentityCredentials,
   resolveSlackIdentityCredentials,
@@ -4892,6 +4893,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         422,
       );
     }
+    const missingScopes = missingRequiredSlackBotScopes(auth.grantedScopes);
+    if (missingScopes?.length) {
+      return c.json({ error: 'slack_missing_scopes', missingScopes }, 422);
+    }
     try {
       const nextRevision = randomUUID();
       const writes = [
@@ -5007,6 +5012,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         { error: 'slack_auth_failed', ...(auth.error ? { detail: auth.error } : {}) },
         422,
       );
+    }
+    const missingScopes = missingRequiredSlackBotScopes(auth.grantedScopes);
+    if (missingScopes?.length) {
+      return c.json({ error: 'slack_missing_scopes', missingScopes }, 422);
     }
     return c.json({
       ok: true,
@@ -6238,7 +6247,11 @@ function slackIdentityAdminError(c: Context, error: unknown) {
   if (error instanceof SlackIdentityBootstrapError) {
     const status = error.code === 'slack_unreachable' ? 502 :
       error.code.endsWith('_missing') || error.code.endsWith('_expired') ? 409 : 422;
-    return c.json({ error: error.code, message: error.message }, status);
+    return c.json({
+      error: error.code,
+      message: error.message,
+      ...(error.missingScopes ? { missingScopes: error.missingScopes } : {}),
+    }, status);
   }
   return internalError(c, error);
 }

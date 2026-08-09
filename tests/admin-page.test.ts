@@ -2928,6 +2928,21 @@ test('Slack overview controls save behavior, test the connection, update credent
   assert.match(harness.app.innerHTML, /Connect @Chickpea/);
 });
 
+test('Slack connection test explains that an under-scoped token needs reinstalling', async () => {
+  const harness = runAdminPageHarness({
+    slackTestError: { status: 422, error: 'slack_missing_scopes' },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+
+  click({ target: actionTarget({ 'data-action': 'slack-test' }) });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /bot token is from an older Slack authorization/);
+  assert.match(harness.app.innerHTML, /Reinstall Chickpea in Slack/);
+});
+
 test('Slack credential replacement ignores stale identity successes and failures', async () => {
   const oldIdentity: SlackIdentityFixture = {
     displayName: 'Old Bot',
@@ -3722,21 +3737,19 @@ test('Add to channels preserves the catalog invite warning when assignment membe
   assert.match(harness.app.innerHTML, /#new-channel was added, but the connected Slack app isn&#39;t a member of it yet/);
 });
 
-test('Add to channels recovers from a Slack catalog failure with Retry', async () => {
+test('Add to channels explains how to repair a stale Slack authorization', async () => {
   const harness = runAdminPageHarness({
     slackConnection: connectedSlackFixture(),
     slackChannels: channelsFixture([{ id: 'C_NEW', name: 'new-channel' }]),
     slackChannelFailures: 1,
   });
-  const click = await openReleaseAttachPicker(harness);
+  await openReleaseAttachPicker(harness);
 
-  assert.match(harness.app.innerHTML, /Slack could not list channels \(missing_scope\)\./);
-  assert.match(harness.app.innerHTML, /data-action="refresh-channels">Retry/);
-  click({ target: actionTarget({ 'data-action': 'refresh-channels' }) });
-  await flushAsync();
-
-  assert.deepEqual(harness.channelListCalls, ['/admin/api/slack-channels', '/admin/api/slack-channels?refresh=1']);
-  assert.match(harness.app.innerHTML, /#new-channel/);
+  assert.match(harness.app.innerHTML, /Slack permissions are out of date/);
+  assert.match(harness.app.innerHTML, /Reinstall in Slack/);
+  assert.match(harness.app.innerHTML, /data-action="open-channels">Open Slack connection/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="refresh-channels">Retry/);
+  assert.equal(harness.channelListCalls.length, 1);
 });
 
 test('Add to channels can refresh an already-loaded workspace catalog', async () => {
@@ -7645,6 +7658,48 @@ test('add-channel opens a main-panel picker with the locked workspace and a chan
   assert.match(harness.app.innerHTML, /Enter ID manually/);
   // The picker fetched the proxy exactly once on open.
   assert.equal(harness.channelListCalls.length, 1);
+});
+
+test('add-channel missing_scope links reinstall and opens credential replacement', async () => {
+  const harness = runAdminPageHarness({
+    assignments: [],
+    slackConnection: connectedSlackFixture(),
+    slackChannelFailures: 1,
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+
+  click({ target: actionTarget({ 'data-action': 'toggle-add-channel' }) });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /Slack permissions are out of date/);
+  assert.match(harness.app.innerHTML, /href="https:\/\/api\.slack\.com\/apps"[^>]*>Reinstall in Slack/);
+  assert.match(harness.app.innerHTML, /data-action="slack-update-open">Update credentials/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="refresh-channels"[^>]*>[^<]*<svg[\s\S]*?Refresh<\/button>/);
+
+  click({ target: actionTarget({ 'data-action': 'slack-update-open' }) });
+  assert.match(harness.app.innerHTML, /Update Slack credentials/);
+  assert.doesNotMatch(harness.app.innerHTML, /<h2 class="section-title">Add a channel<\/h2>/);
+});
+
+test('add-channel missing_scope explains deployment-managed token repair', async () => {
+  const connection = connectedSlackFixture();
+  connection.credentials = { botToken: 'env', signingSecret: 'env', botUserId: 'env' };
+  const harness = runAdminPageHarness({
+    assignments: [],
+    slackConnection: connection,
+    slackChannelFailures: 1,
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+
+  click({ target: actionTarget({ 'data-action': 'toggle-add-channel' }) });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /replace <span class="mono">SLACK_BOT_TOKEN<\/span> in your deployment and redeploy Chickpea/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="slack-update-open">Update credentials/);
 });
 
 test('add-channel submit PUTs the connected workspace id and surfaces the invite reminder', async () => {

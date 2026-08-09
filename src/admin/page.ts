@@ -1801,7 +1801,7 @@ details[open].advanced summary::before {
     // "Add a new channel with this profile"); empty means the Default profile.
     addChannelAgentId: "",
     slackChannels: null,
-    slackChannelsError: "",
+    slackChannelsError: null,
     slackChannelsLoading: false,
     swapOpen: false,
     channelDraft: { enabled: true, channelPromptAddendum: "", participationMode: "ambient" },
@@ -3662,9 +3662,14 @@ details[open].advanced summary::before {
     if (state.slackChannelsLoading) {
       selector = '<div class="field"><label class="field-label">Channel</label><p class="hint">Loading channels&hellip;</p></div>';
     } else if (state.slackChannelsError) {
+      var staleAuthorization = state.slackChannelsError.code === "missing_scope";
       selector = '<div class="field"><label class="field-label">Channel</label>' +
-        '<p class="field-error">' + esc(state.slackChannelsError) + '</p>' +
-        '<div>' + refreshBtn + '</div></div>';
+        '<p class="field-error">' + esc(state.slackChannelsError.text) + '</p>' +
+        (staleAuthorization
+          ? '<div style="display:flex; gap:8px; flex-wrap:wrap;">' +
+            slackScopeReinstallLinkHtml() +
+            slackScopeCredentialRepairHtml('<button type="button" class="btn btn-primary btn-sm" data-action="slack-update-open">Update credentials</button>') + '</div>'
+          : '<div>' + refreshBtn + '</div>') + '</div>';
     } else if (state.addChannelManual) {
       selector = '<div class="field"><label class="field-label" for="add-channel-manual">Channel ID</label>' +
         '<input class="input mono" id="add-channel-manual" name="manualChannelId" value="' + esc(state.channelFormDraft.channelId || "") + '" placeholder="C0123ABC" data-action="manual-channel-input">' +
@@ -3785,6 +3790,7 @@ details[open].advanced summary::before {
   function slackErrorText(message, detail) {
     if (message === "slack_auth_failed") return "Slack rejected the bot token (auth.test failed" + (detail ? ": " + detail : "") + "). Re-copy the xoxb- token and try again.";
     if (message === "slack_unreachable") return "Could not reach the Slack API to validate the token. Check connectivity and try again.";
+    if (message === "slack_missing_scopes") return "This bot token is from an older Slack authorization. Reinstall Chickpea in Slack, then paste the refreshed xoxb- token.";
     if (message === "internal_error") return "Chickpea could not store the credentials (an internal error). Check the worker logs and try again.";
     return detail ? message + ": " + detail : message;
   }
@@ -5657,8 +5663,12 @@ details[open].advanced summary::before {
         '<span class="spacer"></span><button type="button" class="btn btn-ghost btn-sm" data-action="attach-cancel">Close</button></div>';
     }
     if (state.slackChannelsError) {
-      return '<div class="bundle-row"><span class="field-error">' + esc(state.slackChannelsError) + '</span>' +
-        '<span class="spacer"></span><button type="button" class="btn btn-soft btn-sm" data-action="refresh-channels">Retry</button>' +
+      return '<div class="bundle-row"><span class="field-error">' + esc(state.slackChannelsError.text) + '</span>' +
+        '<span class="spacer"></span>' +
+        (state.slackChannelsError.code === "missing_scope"
+          ? slackScopeReinstallLinkHtml() +
+            slackScopeCredentialRepairHtml('<button type="button" class="btn btn-primary btn-sm" data-action="open-channels">Open Slack connection</button>')
+          : '<button type="button" class="btn btn-soft btn-sm" data-action="refresh-channels">Retry</button>') +
         '<button type="button" class="btn btn-ghost btn-sm" data-action="attach-cancel">Close</button></div>';
     }
     if (state.slackChannelsLoading || !state.slackChannels) {
@@ -9724,7 +9734,7 @@ details[open].advanced summary::before {
     if (action === "slack-identity-confirm-apply") { applySlackIdentityConfirmation(); }
     if (action === "slack-behavior-retry") { loadSlackBehavior(); }
     if (action === "slack-test") { testSlackConnection(); }
-    if (action === "slack-update-open" && slackConnectionMutable()) { state.slackUpdateOpen = true; state.slackError = ""; render(); }
+    if (action === "slack-update-open" && slackConnectionMutable()) { state.addChannelOpen = false; state.slackUpdateOpen = true; state.slackError = ""; render(); }
     if (action === "slack-update-close" && !state.slackConnectionBusy) { state.slackUpdateOpen = false; state.slackDraft = { botToken: "", signingSecret: "" }; state.slackError = ""; render(); }
     if (action === "slack-disconnect-open" && slackConnectionMutable()) {
       state.slackDisconnectConfirm = true;
@@ -11013,7 +11023,7 @@ details[open].advanced summary::before {
   function loadSlackChannels(refresh) {
     if (!isSlackConnected()) return Promise.resolve();
     state.slackChannelsLoading = true;
-    state.slackChannelsError = "";
+    state.slackChannelsError = null;
     render();
     return api("/admin/api/slack-channels" + (refresh ? "?refresh=1" : "")).then(function (body) {
       state.slackChannels = body;
@@ -11028,17 +11038,39 @@ details[open].advanced summary::before {
       render();
     }).catch(function (error) {
       state.slackChannelsLoading = false;
-      state.slackChannelsError = slackChannelsErrorText(error);
+      state.slackChannelsError = {
+        text: slackChannelsErrorText(error),
+        code: error && error.message === "slack_list_failed" ? (error.detail || "") : ((error && error.message) || "")
+      };
       render();
     });
   }
 
   function slackChannelsErrorText(error) {
     if (error && error.message === "slack_not_configured") return "Connect @Chickpea first to list channels.";
+    if (error && error.message === "slack_list_failed" && error.detail === "missing_scope") {
+      return "Slack permissions are out of date. Reinstall Chickpea in Slack, then paste the refreshed bot token.";
+    }
     if (error && error.message === "slack_list_failed" && error.detail) {
       return "Slack could not list channels (" + error.detail + ").";
     }
     return (error && (error.serverMessage || error.message)) || "Could not load channels.";
+  }
+
+  function slackOAuthSettingsUrl() {
+    var appId = state.slackIdentity && state.slackIdentity.appId;
+    return appId && /^[A-Z0-9]+$/i.test(appId)
+      ? "https://api.slack.com/apps/" + encodeURIComponent(appId) + "/oauth"
+      : "https://api.slack.com/apps";
+  }
+
+  function slackScopeReinstallLinkHtml() {
+    return '<a class="btn btn-soft btn-sm" href="' + esc(slackOAuthSettingsUrl()) + '" target="_blank" rel="noopener noreferrer">Reinstall in Slack &nearr;</a>';
+  }
+
+  function slackScopeCredentialRepairHtml(storedActionHtml) {
+    if (slackConnectionMutable()) return storedActionHtml;
+    return '<p class="hint">After reinstalling, replace <span class="mono">SLACK_BOT_TOKEN</span> in your deployment and redeploy Chickpea.</p>';
   }
 
   function addChannelErrorText(error) {

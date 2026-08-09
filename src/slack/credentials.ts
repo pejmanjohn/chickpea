@@ -7,6 +7,7 @@ import {
   type PlatformEnv,
 } from '../config/state-backend.ts';
 import { readSlackIdentityProfile } from './identity-profile.ts';
+import { parseSlackGrantedScopes } from './scopes.ts';
 
 /**
  * Slack credential resolution: environment first, then the operator settings
@@ -301,6 +302,8 @@ export interface SlackAuthTestResult {
   botUserId: string | undefined;
   /** Present for bot installations; dedicated identities reject user tokens. */
   botId?: string;
+  /** Slack's live grants from the `x-oauth-scopes` response header. */
+  grantedScopes?: string[];
 }
 
 /**
@@ -328,10 +331,16 @@ export async function slackAuthTest(botToken: string): Promise<SlackAuthTestResu
     headers: { authorization: `Bearer ${botToken}` },
   });
   const body = (await response.json()) as Record<string, unknown>;
-  return parseSlackAuthTest(body);
+  return parseSlackAuthTest(
+    body,
+    parseSlackGrantedScopes(response.headers.get('x-oauth-scopes')),
+  );
 }
 
-function parseSlackAuthTest(body: Record<string, unknown>): SlackAuthTestResult {
+function parseSlackAuthTest(
+  body: Record<string, unknown>,
+  grantedScopes: string[] | undefined = undefined,
+): SlackAuthTestResult {
   return {
     ok: body.ok === true,
     error: typeof body.error === 'string' ? body.error : undefined,
@@ -341,6 +350,7 @@ function parseSlackAuthTest(body: Record<string, unknown>): SlackAuthTestResult 
     botName: typeof body.user === 'string' ? body.user : undefined,
     botUserId: typeof body.user_id === 'string' ? body.user_id : undefined,
     ...(typeof body.bot_id === 'string' ? { botId: body.bot_id } : {}),
+    ...(grantedScopes === undefined ? {} : { grantedScopes }),
   };
 }
 
@@ -412,7 +422,7 @@ export async function slackIdentityAuthTest(
     };
   }
   return {
-    ...parseSlackAuthTest(result.body),
+    ...parseSlackAuthTest(result.body, result.grantedScopes),
     ...(result.retryAfterMs === undefined ? {} : { retryAfterMs: result.retryAfterMs }),
   };
 }
@@ -578,6 +588,7 @@ interface SlackTruthJsonResult {
   body: Record<string, unknown>;
   error: string | undefined;
   retryAfterMs: number | undefined;
+  grantedScopes?: string[];
 }
 
 type DeadlineResult<T> =
@@ -647,7 +658,16 @@ async function fetchSlackTruthJson(
         retryAfter,
       );
     }
-    return { ok: true, body, error: undefined, retryAfterMs: retryAfter };
+    const grantedScopes = parseSlackGrantedScopes(
+      response.headers.get('x-oauth-scopes'),
+    );
+    return {
+      ok: true,
+      body,
+      error: undefined,
+      retryAfterMs: retryAfter,
+      ...(grantedScopes === undefined ? {} : { grantedScopes }),
+    };
   } finally {
     clearTimeout(timer);
   }
