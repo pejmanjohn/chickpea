@@ -404,31 +404,57 @@ button, input, textarea, select { font: inherit; }
 .main-inner { container-type: inline-size; display: flex; flex-direction: column; gap: 26px; margin: 0 auto; max-width: 760px; width: 100%; }
 .onboarding-frame { max-width: none; }
 .onboarding-shell { isolation: isolate; min-height: 100dvh; width: 100%; }
-.onboarding-shell-inner { margin: 0 auto; max-width: 1180px; padding: 30px 26px 52px; width: 100%; }
+.onboarding-shell-inner { margin: 0 auto; max-width: 1600px; padding: 26px 28px 64px; width: 100%; }
 .onboarding-brand-row { align-items: center; display: flex; gap: 20px; justify-content: space-between; }
 .onboarding-brand { align-items: center; color: var(--text); display: inline-flex; gap: 11px; min-width: 0; text-decoration: none; }
-.onboarding-brand .avatar, .onboarding-brand .avatar .pea { height: 34px; width: 34px; }
-.onboarding-brand .brand-name { font-size: 1.5rem; line-height: 1; }
-.onboarding-environment { color: var(--text-3); font-family: var(--mono); font-size: .6875rem; }
-.onboarding-orientation { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); list-style: none; margin: 34px auto 0; max-width: 710px; padding: 0; width: 100%; }
+.onboarding-brand .avatar, .onboarding-brand .avatar .pea { height: 40px; width: 40px; }
+.onboarding-brand .brand-name { font-size: 1.75rem; line-height: 1; }
+.onboarding-environment { color: var(--text-3); font-family: var(--mono); font-size: .8125rem; }
+.onboarding-orientation { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); list-style: none; margin: 26px auto 0; max-width: 560px; padding: 0; width: 100%; }
 .onboarding-orientation li { min-width: 0; position: relative; text-align: center; }
-.onboarding-orientation li:not(:first-child)::before { background: var(--line-strong); content: ""; height: 2px; position: absolute; right: 50%; top: 15px; width: 100%; z-index: -1; }
+.onboarding-orientation li:not(:first-child)::before { background: var(--line-strong); content: ""; height: 2px; position: absolute; right: 50%; top: 18px; width: 100%; z-index: -1; }
 .onboarding-orientation li.complete:not(:first-child)::before,
 .onboarding-orientation li.active:not(:first-child)::before { background: var(--ember); }
-.onboarding-step-dot { background: var(--canvas); border: 2px solid var(--line-strong); border-radius: 50%; color: var(--text-3); display: grid; font-family: var(--mono); font-size: .6875rem; font-variant-numeric: tabular-nums; height: 31px; margin: 0 auto 8px; place-items: center; width: 31px; }
+.onboarding-step-dot { background: var(--canvas); border: 2px solid var(--line-strong); border-radius: 50%; color: var(--text-3); display: grid; font-family: var(--mono); font-size: .875rem; font-variant-numeric: tabular-nums; height: 38px; margin: 0 auto 9px; place-items: center; width: 38px; }
 .complete .onboarding-step-dot { background: var(--ember); border-color: var(--ember); color: var(--text); }
 .active .onboarding-step-dot { background: var(--bg); border-color: var(--ember); box-shadow: 0 0 0 5px var(--ember-tint); color: var(--ember-deep); }
-.onboarding-step-label { color: var(--text-3); display: block; font-size: .8125rem; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.onboarding-step-label { color: var(--text-3); display: block; font-size: .875rem; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .active .onboarding-step-label, .complete .onboarding-step-label { color: var(--text); }
-.onboarding-stage { display: grid; min-height: 590px; padding-top: 42px; place-items: start center; }
-.onboarding-panel { background: var(--bg); border-radius: 24px; box-shadow: var(--card-shadow); padding: 42px; width: min(100%, 760px); }
-.onboarding-panel-wide { width: min(100%, 900px); }
-.onboarding-eyebrow { color: var(--ember-deep); font-family: var(--mono); font-size: .6875rem; letter-spacing: .08em; margin: 0 0 10px; text-transform: uppercase; }
-.onboarding-title { color: var(--text); font-family: var(--display); font-size: clamp(2rem, 5vw, 2.75rem); font-weight: 700; letter-spacing: -.025em; line-height: 1.03; margin: 0; max-width: 24ch; text-wrap: balance; }
-.onboarding-lede { color: var(--text-2); font-size: 1rem; line-height: 1.65; margin: 12px 0 0; max-width: 56ch; text-wrap: pretty; }
+.onboarding-stage { display: grid; min-height: 590px; padding-top: 34px; place-items: start center; }
+.onboarding-panel { background: var(--bg); border-radius: 30px; box-shadow: 0 4px 0 rgba(59, 50, 32, .11); padding: 46px 48px; width: min(82%, 1400px); }
+.onboarding-panel-wide { width: min(82%, 980px); }
+.onboarding-eyebrow { color: var(--ember-deep); font-family: var(--mono); font-size: .75rem; font-weight: 700; letter-spacing: .09em; margin: 0 0 12px; text-transform: uppercase; }
+.onboarding-title { color: var(--text); font-family: var(--display); font-size: clamp(2.375rem, 4vw, 3.25rem); font-weight: 700; letter-spacing: -.025em; line-height: 1; margin: 0; max-width: 24ch; text-wrap: balance; }
+.onboarding-lede { color: var(--text-2); font-size: 1.125rem; line-height: 1.5; margin: 14px 0 0; max-width: 58ch; text-wrap: pretty; }
 .onboarding-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 10px; margin-top: 30px; }
-.onboarding-actions .btn { min-height: 38px; padding: 9px 14px; }
-.onboarding-slack-logo { display: inline-block; flex: 0 0 auto; height: 18px; margin-right: 3px; width: 18px; }
+.onboarding-actions .btn { min-height: 50px; padding: 11px 19px; }
+.onboarding-slack-logo { display: inline-block; flex: 0 0 auto; height: 23px; margin-right: 7px; width: 23px; }
+.onboarding-instructions { display: grid; gap: 32px; margin-top: 32px; }
+.onboarding-instruction { display: grid; gap: 13px; }
+.onboarding-instruction-title { align-items: center; color: var(--text); display: grid; font-size: 1.125rem; font-weight: 700; gap: 12px; grid-template-columns: 36px minmax(0, 1fr); line-height: 1.35; margin: 0; }
+.onboarding-instruction-number { background: #faedca; border-radius: 50%; color: var(--ember-deep); display: grid; font-family: var(--mono); font-size: .875rem; font-weight: 700; height: 36px; place-items: center; width: 36px; }
+.onboarding-instruction-note { color: var(--text-2); font-size: .9375rem; line-height: 1.45; margin: -3px 0 0 48px; }
+.onboarding-shot { background: white; border: 1px solid var(--line-strong); border-radius: 16px; box-shadow: 0 2px 0 rgba(59, 50, 32, .07); overflow: hidden; }
+.onboarding-shot img { display: block; height: auto; width: 100%; }
+.onboarding-shot-viewport { height: 380px; }
+.onboarding-shot-viewport img { height: 100%; object-fit: cover; object-position: center bottom; }
+.onboarding-shot-banner { margin-left: 53px; width: min(920px, calc(100% - 53px)); }
+.onboarding-shot-focused { margin-left: 53px; width: min(700px, calc(100% - 53px)); }
+.onboarding-shot-events { aspect-ratio: 1.25; position: relative; }
+.onboarding-shot-events img { height: auto; left: 0; position: absolute; top: -7%; width: 100%; }
+.onboarding-guide-actions { align-items: center; border-top: 1px solid var(--line); display: flex; gap: 16px; justify-content: space-between; margin-top: 36px; padding-top: 22px; }
+.onboarding-inline-recovery { margin-top: 10px; min-height: 38px; padding-inline: 0; }
+.onboarding-credential-form { display: grid; gap: 32px; margin-top: 32px; }
+.onboarding-credential { display: grid; gap: 13px; }
+.onboarding-credential-grid { align-items: start; display: grid; gap: 26px; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.onboarding-credential-help { display: grid; gap: 9px; }
+.onboarding-credential-help .field { display: grid; gap: 7px; }
+.onboarding-credential-help .field-label { font-size: 1rem; }
+.onboarding-credential-help .input { background: var(--well); min-height: 54px; }
+.onboarding-credential-subtext { color: var(--text-3); display: block; font-size: .8125rem; margin-bottom: 7px; }
+.onboarding-shot-token { aspect-ratio: 4.1; position: relative; }
+.onboarding-shot-token img { height: auto; left: -4.7%; max-width: none; position: absolute; top: -9%; width: 109.4%; }
+.onboarding-shot-secret { width: min(420px, 100%); }
 .onboarding-return-note { align-items: flex-start; background: var(--ok-tint); border-radius: 13px; color: #466a38; display: flex; font-size: .875rem; gap: 10px; margin-bottom: 26px; padding: 13px 15px; }
 .onboarding-return-note strong { color: #36592a; }
 .onboarding-return-icon { background: var(--ok-solid); border-radius: 50%; color: white; display: grid; flex: 0 0 auto; font-size: .75rem; height: 19px; place-items: center; width: 19px; }
@@ -461,12 +487,24 @@ button, input, textarea, select { font: inherit; }
 .onboarding-prompt { color: var(--text); font-size: 1rem; font-weight: 600; line-height: 1.65; margin: 0; }
 .onboarding-status { color: var(--ok); font-size: .8125rem; font-weight: 700; margin: 10px 0 0; min-height: 20px; }
 @media (max-width: 720px) {
-  .onboarding-shell-inner { padding: 20px 14px 38px; }
+  .onboarding-shell-inner { padding: 20px 16px 45px; }
   .onboarding-environment { display: none; }
-  .onboarding-orientation { margin-top: 25px; }
-  .onboarding-step-label { font-size: .75rem; }
+  .onboarding-orientation { margin-top: 34px; }
+  .onboarding-step-dot { font-size: .75rem; height: 34px; width: 34px; }
+  .onboarding-orientation li:not(:first-child)::before { top: 16px; }
+  .onboarding-step-label { font-size: .6875rem; }
   .onboarding-stage { min-height: 520px; padding-top: 28px; }
-  .onboarding-panel { border-radius: 19px; padding: 28px 21px; }
+  .onboarding-panel, .onboarding-panel-wide { border-radius: 22px; padding: 30px 22px; width: 100%; }
+  .onboarding-title { font-size: 2.375rem; }
+  .onboarding-lede { font-size: 1.0625rem; }
+  .onboarding-instruction-title { font-size: 1rem; gap: 11px; grid-template-columns: 32px minmax(0, 1fr); }
+  .onboarding-instruction-number { font-size: .75rem; height: 32px; width: 32px; }
+  .onboarding-instruction-note { margin-left: 43px; }
+  .onboarding-shot-viewport { height: 250px; }
+  .onboarding-shot-banner, .onboarding-shot-focused { margin-left: 0; width: 100%; }
+  .onboarding-credential-grid { grid-template-columns: 1fr; }
+  .onboarding-guide-actions { align-items: stretch; flex-direction: column-reverse; }
+  .onboarding-guide-actions .btn { min-height: 44px; width: 100%; }
   .onboarding-actions, .onboarding-form-actions { align-items: stretch; flex-direction: column-reverse; }
   .onboarding-actions .btn, .onboarding-form-actions .btn { font-size: .9375rem; min-height: 44px; width: 100%; }
   .onboarding-workspace-row { align-items: flex-start; }
@@ -3402,6 +3440,16 @@ details[open].advanced summary::before {
       '<p class="hint">These values stay in this tab until Slack is connected. Chickpea validates the token now; Slack proves the Signing Secret when it confirms the Events URL.</p></div>';
   }
 
+  function onboardingSlackAsset(name) {
+    return "/admin/assets/onboarding/" + name + ".webp";
+  }
+
+  function onboardingSlackInstruction(number, title, note, imageName, imageClass, alt) {
+    return '<section class="onboarding-instruction"><h2 class="onboarding-instruction-title"><span class="onboarding-instruction-number">' + number + '</span><span>' + title + '</span></h2>' +
+      (note ? '<p class="onboarding-instruction-note">' + note + '</p>' : '') +
+      '<div class="onboarding-shot ' + imageClass + '"><img src="' + onboardingSlackAsset(imageName) + '" alt="' + alt + '" loading="lazy" decoding="async"></div></section>';
+  }
+
   function onboardingSlackContinuationHtml() {
     var continuation = state.slackOnboardingContinuation;
     var phase = continuation.phase || "finish";
@@ -3440,38 +3488,49 @@ details[open].advanced summary::before {
   function onboardingConnectHtml() {
     var conn = state.slack;
     if (!conn) return '<section class="onboarding-panel"><p class="onboarding-eyebrow">Step 1 of 3</p><h1 class="onboarding-title">Loading Slack setup&hellip;</h1></section>';
-    if (state.slackStep < 2) {
-      return '<section class="onboarding-panel"><p class="onboarding-eyebrow">Step 1 of 3</p>' +
-        '<h1 class="onboarding-title">Connect @Chickpea</h1>' +
-        '<p class="onboarding-lede">Create Chickpea in the Slack workspace where your team works.</p>' +
-        '<div class="onboarding-actions"><a class="btn btn-primary" href="' + esc(conn.manifestUrl) + '" target="_blank" rel="noopener noreferrer" data-action="advance-slack-step">' +
-        '<span class="onboarding-slack-logo slack-logo-image" aria-hidden="true"></span>Create @Chickpea in Slack</a></div></section>';
-    }
-    if (state.slackStep === 2) {
-      return '<section class="onboarding-panel"><p class="onboarding-eyebrow">Step 1 of 3</p>' +
-        '<h1 class="onboarding-title">Return here after Slack shows Chickpea</h1>' +
-        '<p class="onboarding-lede">Slack should open a manifest for an app named Chickpea. If signing in drops you on AI Agent, Blank app, or the app list, close that dialog and open Chickpea setup again from here.</p>' +
-        '<div class="onboarding-actions"><button type="button" class="btn btn-primary" data-action="slack-app-created">I created the Chickpea app</button>' +
-        '<a class="btn btn-soft" href="' + esc(conn.manifestUrl) + '" target="_blank" rel="noopener noreferrer"><span class="onboarding-slack-logo slack-logo-image" aria-hidden="true"></span>Open Chickpea setup in Slack</a></div>' +
-        '<button type="button" class="btn btn-ghost btn-sm" data-action="back-to-slack-create">Back</button></section>';
-    }
     if (state.slackOnboardingContinuation) return onboardingSlackContinuationHtml();
+    if (state.slackStep <= 2) {
+      var createActions = state.slackStep === 1
+        ? '<span></span><a class="btn btn-primary" href="' + esc(conn.manifestUrl) + '" target="_blank" rel="noopener noreferrer" data-action="advance-slack-step"><span class="onboarding-slack-logo slack-logo-image" aria-hidden="true"></span>Create Chickpea in Slack <span aria-hidden="true">&nearr;</span></a>'
+        : '<a class="btn btn-ghost" href="' + esc(conn.manifestUrl) + '" target="_blank" rel="noopener noreferrer"><span class="onboarding-slack-logo slack-logo-image" aria-hidden="true"></span>Open Slack setup again <span aria-hidden="true">&nearr;</span></a><button type="button" class="btn btn-primary" data-action="onboarding-slack-permissions">Next: Allow permissions</button>';
+      return '<section class="onboarding-panel"><p class="onboarding-eyebrow">Connect Slack</p>' +
+        '<h1 class="onboarding-title">Create Chickpea</h1>' +
+        '<p class="onboarding-lede">Slack opens in a new tab. Come back here after Chickpea is created.</p>' +
+        '<div class="onboarding-instructions">' +
+        onboardingSlackInstruction(1, 'Choose your workspace, then click Next.', '', 'create-workspace', 'onboarding-shot-viewport', 'Slack Create from manifest screen with the workspace picker and Next button') +
+        onboardingSlackInstruction(2, 'Review Chickpea, then click Create and Install.', '', 'create-review', 'onboarding-shot-viewport', 'Slack app review screen showing Chickpea permissions and Create and Install') +
+        '</div><div class="onboarding-guide-actions">' + createActions + '</div></section>';
+    }
+    if (state.slackStep === 3) {
+      return '<section class="onboarding-panel"><p class="onboarding-eyebrow">Connect Slack</p>' +
+        '<h1 class="onboarding-title">Allow permissions</h1>' +
+        '<p class="onboarding-lede">Three quick steps in Slack.</p>' +
+        '<a class="btn btn-ghost onboarding-inline-recovery" href="https://api.slack.com/apps" target="_blank" rel="noopener noreferrer">Reopen your Slack apps <span aria-hidden="true">&nearr;</span></a>' +
+        '<div class="onboarding-instructions">' +
+        onboardingSlackInstruction(1, 'Click the yellow reinstall your app link.', '', 'reinstall', 'onboarding-shot-banner', 'Slack yellow banner with the reinstall your app link') +
+        onboardingSlackInstruction(2, 'Click Allow.', '', 'allow', 'onboarding-shot-focused', 'Slack permission approval screen with the Allow button') +
+        onboardingSlackInstruction(3, 'In the left sidebar, open Event Subscriptions.', 'Look for Request URL: Verified. If Slack shows Retry, wait a few seconds—you may need to click it a few times.', 'events', 'onboarding-shot-focused onboarding-shot-events', 'Slack Event Subscriptions selected with Request URL Verified') +
+        '</div><div class="onboarding-guide-actions"><button type="button" class="btn btn-ghost" data-action="onboarding-slack-back" data-step="create">Back</button>' +
+        '<button type="button" class="btn btn-primary" data-action="onboarding-slack-keys">Next: Add tokens</button></div></section>';
+    }
     var submit = state.slackBusy
       ? '<button type="submit" class="btn btn-primary" disabled><span class="spinner"></span>Connecting&hellip;</button>'
-      : '<button type="submit" class="btn btn-primary">Validate and connect</button>';
+      : '<button type="submit" class="btn btn-primary">Connect Chickpea</button>';
     var errorHtml = state.slackError
       ? '<div class="onboarding-error" role="alert" aria-live="assertive" tabindex="-1" data-role="slack-connection-error"><p class="field-error">' + esc(state.slackError) + '</p></div>'
       : '';
     return '<section class="onboarding-panel">' +
-      '<div class="onboarding-return-note"><span class="onboarding-return-icon" aria-hidden="true">&rarr;</span><span><strong>Finish in Slack, then return here.</strong><br>Need to return to Slack? Open your Slack apps below and choose the Chickpea app you just created.</span></div>' +
-      '<p class="onboarding-eyebrow">Step 1 of 3</p><h1 class="onboarding-title">Finish connecting Slack</h1>' +
-      '<p class="onboarding-lede">Install the app in Slack, then paste the two values Slack gives you. Chickpea checks the workspace, permissions, and channel access before continuing.</p>' +
-      '<div class="onboarding-actions"><a class="btn btn-soft" href="https://api.slack.com/apps" target="_blank" rel="noopener noreferrer"><span class="onboarding-slack-logo slack-logo-image" aria-hidden="true"></span>Open your Slack apps</a></div>' +
-      '<form class="onboarding-form" data-action="slack-connect-form">' +
-      onboardingSlackCredentialInputs(false) +
-      errorHtml + '<div class="onboarding-form-actions"><button type="button" class="btn btn-ghost" data-action="back-to-slack-create">Back</button>' + submit + '</div></form>' +
-      '<details class="advanced"><summary>Where do I find these?</summary><div class="adv-rows"><p class="hint">The signing secret is under Basic Information &rarr; App Credentials. Install the app from OAuth &amp; Permissions, then copy its xoxb- Bot User OAuth Token.</p></div></details>' +
-      '</section>';
+      '<p class="onboarding-eyebrow">Connect Slack</p><h1 class="onboarding-title">Paste 2 values</h1>' +
+      '<p class="onboarding-lede">Copy each value from the same Chickpea app.</p>' +
+      '<a class="btn btn-ghost onboarding-inline-recovery" href="https://api.slack.com/apps" target="_blank" rel="noopener noreferrer">Reopen your Slack apps <span aria-hidden="true">&nearr;</span></a>' +
+      '<form class="onboarding-credential-form" data-action="slack-connect-form">' +
+      '<section class="onboarding-credential"><h2 class="onboarding-instruction-title"><span class="onboarding-instruction-number">1</span><span>In OAuth &amp; Permissions, copy Bot User OAuth Token.</span></h2>' +
+      '<div class="onboarding-credential-grid"><div class="onboarding-shot onboarding-shot-token"><img src="' + onboardingSlackAsset('bot-token') + '" alt="Slack OAuth Tokens showing the Bot User OAuth Token field and Copy button" loading="lazy" decoding="async"></div>' +
+      '<div class="onboarding-credential-help"><label class="field" for="onboarding-bot-token"><span class="field-label">Bot User OAuth Token</span><span class="onboarding-credential-subtext">Starts with xoxb-</span><input class="input mono" id="onboarding-bot-token" name="botToken" type="password" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" data-action="slack-bot-token"></label></div></div></section>' +
+      '<section class="onboarding-credential"><h2 class="onboarding-instruction-title"><span class="onboarding-instruction-number">2</span><span>In Basic Information, reveal and copy Signing Secret.</span></h2>' +
+      '<div class="onboarding-credential-grid"><div class="onboarding-shot onboarding-shot-secret"><img src="' + onboardingSlackAsset('signing-secret') + '" alt="Slack Basic Information showing the Signing Secret" loading="lazy" decoding="async"></div>' +
+      '<div class="onboarding-credential-help"><label class="field" for="onboarding-signing-secret"><span class="field-label">Signing Secret</span><span class="onboarding-credential-subtext">Use Signing Secret — not Client Secret.</span><input class="input mono" id="onboarding-signing-secret" name="signingSecret" type="password" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" data-action="slack-signing-secret"></label></div></div></section>' +
+      errorHtml + '<div class="onboarding-guide-actions"><button type="button" class="btn btn-ghost" data-action="onboarding-slack-back" data-step="permissions">Back</button>' + submit + '</div></form></section>';
   }
 
   function onboardingChannelChoicesHtml() {
@@ -4175,11 +4234,11 @@ details[open].advanced summary::before {
 
   function submitSlackCredentialPair(botToken, signingSecret) {
     if (state.slackConnectionBusy) return;
+    var onboardingAttempt = isOnboardingSlackConnection();
     // Submitting the paste form means the credential surface is active — pin it so a
     // validation error renders against the fields (not a collapsed step).
-    state.slackStep = 3;
+    state.slackStep = onboardingAttempt ? 4 : 3;
     state.slackDraft = { botToken: botToken, signingSecret: signingSecret };
-    var onboardingAttempt = isOnboardingSlackConnection();
     if (!botToken) { state.slackError = "Bot token is required."; if (onboardingAttempt) state.slackOnboardingFocus = "onboarding-bot-token"; render(); return; }
     if (!signingSecret) { state.slackError = "Signing secret is required."; if (onboardingAttempt) state.slackOnboardingFocus = "onboarding-signing-secret"; render(); return; }
     var continuationAttempt = onboardingAttempt && !!state.slackOnboardingContinuation;
@@ -10271,7 +10330,14 @@ details[open].advanced summary::before {
     // Stepper: mark step 1 done and reveal step 2. Not preventing default lets
     // the Create anchor still open Slack in a new tab.
     if (action === "advance-slack-step") { state.slackStep = 2; state.slackError = ""; state.slackRepair = null; render(); }
-    if (action === "slack-app-created") { state.slackStep = 3; state.slackError = ""; state.slackRepair = null; render(); }
+    if (action === "slack-app-created") { state.slackStep = isOnboardingSlackConnection() ? 4 : 3; state.slackError = ""; state.slackRepair = null; render(); }
+    if (action === "onboarding-slack-permissions" && isOnboardingSlackConnection()) { state.slackStep = 3; render(); }
+    if (action === "onboarding-slack-keys" && isOnboardingSlackConnection()) { state.slackStep = 4; state.slackOnboardingFocus = "onboarding-bot-token"; render(); }
+    if (action === "onboarding-slack-back" && isOnboardingSlackConnection()) {
+      state.slackStep = target.getAttribute("data-step") === "create" ? 2 : 3;
+      state.slackError = "";
+      render();
+    }
     if (action === "back-to-slack-create") { resetOnboardingSlackContinuation(true); state.slackStep = 1; render(); }
     if (action === "slack-permissions-open" && state.slackOnboardingContinuation && !state.slackConnectionBusy) {
       state.slackOnboardingContinuation = {
@@ -10287,7 +10353,7 @@ details[open].advanced summary::before {
     }
     if (action === "slack-permissions-start-over" && state.slackOnboardingContinuation && !state.slackConnectionBusy) {
       resetOnboardingSlackContinuation(true);
-      state.slackStep = 3;
+      state.slackStep = 4;
       state.slackOnboardingFocus = "onboarding-signing-secret";
       render();
     }

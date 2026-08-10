@@ -20,6 +20,7 @@ import {
   passwordFormClientScript,
 } from './page.ts';
 import { createMemoryAdminApi } from './memory-api.ts';
+import { onboardingAssetBytes } from './onboarding-assets.ts';
 import { createRoutineAdminApi } from './routines-api.ts';
 import { createUsageAdminApi } from './usage-api.ts';
 import { createWorkAdminApi } from './work-api.ts';
@@ -2445,6 +2446,14 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     c.header('Cache-Control', 'no-store');
     return c.html(renderAdminPage({ usageAdminUi: usageAdminUi(c) }));
   };
+
+  app.get('/admin/assets/onboarding/:name', (c) => {
+    const bytes = onboardingAssetBytes(c.req.param('name'));
+    if (!bytes) return c.notFound();
+    c.header('Cache-Control', 'public, max-age=31536000, immutable');
+    c.header('Content-Type', 'image/webp');
+    return c.body(bytes);
+  });
 
   app.get('/admin/migrate', async (c) => {
     authResponseHeaders(c);

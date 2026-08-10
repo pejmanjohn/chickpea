@@ -155,6 +155,14 @@ export class PasswordOwnerSetupService {
     // retry can safely observe the same record if the final control write is
     // interrupted, while the owner can never be activated without a journey.
     await this.beginOnboarding();
+    // Establish the owner's first usable session before releasing Chickpea's
+    // authority boundary. If a new Cloudflare Durable Object is briefly
+    // unavailable during password verification, the setup operation remains
+    // pending and the same private link can resume it safely.
+    const login = await auth.api.signInEmail({
+      body: { email, password: input.password },
+      returnHeaders: true,
+    });
     await this.identity.completePasswordSetup({
       operationId: operation.id,
       capabilityHash,
@@ -162,10 +170,6 @@ export class PasswordOwnerSetupService {
       expectedControlRevision: control.revision,
       canonicalAdminOrigin: canonicalOrigin,
       betterAuthOrganizationId: completedOrganizationId,
-    });
-    const login = await auth.api.signInEmail({
-      body: { email, password: input.password },
-      returnHeaders: true,
     });
     return {
       operationId: operation.id,

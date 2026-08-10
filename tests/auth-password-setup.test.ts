@@ -149,6 +149,49 @@ test('owner setup resumes after either Better Auth/control-store boundary withou
   }
 });
 
+test('owner setup keeps authority unconfigured until the initial session exists', async () => {
+  const identity = new SqliteIdentityStore(':memory:');
+  const backend = new NodeBetterAuthBackend(':memory:');
+  const nativePassword = nativePasswordPrimitive();
+  let rejectFirstVerification = true;
+  const environment = {
+    backend,
+    baseURL: ORIGIN,
+    password: {
+      hash: nativePassword.hash,
+      async verify(input: { hash: string; password: string }) {
+        if (rejectFirstVerification) {
+          rejectFirstVerification = false;
+          throw new Error('injected first-session failure');
+        }
+        return nativePassword.verify(input);
+      },
+    },
+    recoveryToken: RECOVERY,
+    secret: await deriveBetterAuthSecret(RECOVERY),
+  };
+  const input = {
+    canonicalOrigin: ORIGIN,
+    email: 'owner@example.com',
+    organizationName: 'Acme',
+    password: PASSWORD,
+    recoveryToken: RECOVERY,
+  };
+
+  await assert.rejects(
+    () => new PasswordOwnerSetupService(identity, environment).complete(input),
+    /injected first-session failure/,
+  );
+  assert.equal((await identity.getAuthControl())?.authMode, 'unconfigured');
+
+  const result = await new PasswordOwnerSetupService(identity, environment).complete(input);
+  assert.equal((await identity.getAuthControl())?.authMode, 'password_active');
+  assert.match(result.headers.get('set-cookie') ?? '', /better-auth\.session_token=/);
+  assert.equal((await backend.listMembershipsForUser(result.userId)).length, 1);
+  backend.close();
+  identity.close();
+});
+
 function cookieHeader(setCookie: string | null): string {
   return (setCookie ?? '').split(';', 1)[0] ?? '';
 }

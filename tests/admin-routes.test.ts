@@ -406,6 +406,29 @@ test('the worker root redirects to /admin instead of a bare 404', async () => {
   }
 });
 
+test('authenticated onboarding image routes serve the bundled retina Slack guides', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  try {
+    const app = appWithAdmin(store);
+    const response = await app.request('/admin/assets/onboarding/bot-token.webp', {
+      headers: auth(ADMIN_TOKEN),
+    });
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('content-type'), 'image/webp');
+    assert.equal(response.headers.get('cache-control'), 'public, max-age=31536000, immutable');
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    assert.equal(new TextDecoder().decode(bytes.slice(0, 4)), 'RIFF');
+    assert.ok(bytes.byteLength > 10_000);
+
+    const missing = await app.request('/admin/assets/onboarding/not-real.webp', {
+      headers: auth(ADMIN_TOKEN),
+    });
+    assert.equal(missing.status, 404);
+  } finally {
+    store.close();
+  }
+});
+
 test('MCP OAuth routes expose public metadata but gate start and return no secrets', async () => {
   const store = new SqliteConfigStore(':memory:', {
     agents: [agent({ mcpServers: [mcpServer({ authMode: 'oauth', oauthScope: 'read write' })] })],
