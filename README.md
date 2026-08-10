@@ -22,8 +22,8 @@ The public Deploy button installs the slim runtime and built-in authentication i
 
 1. **Click Deploy.** There is no Chickpea secret to invent or save. The deploy creates its internal signing authority, provisions the Worker and D1 database, and finishes with one private setup link.
 2. **Open the private link.** It asks only for the owner's email, password, and password confirmation, then continues directly to onboarding.
-3. **Create @Chickpea in Slack.** The button opens Slack with this installation's manifest already filled in. Pick the customer workspace and install the app.
-4. **Paste two Slack values.** Return with the Bot User OAuth Token and Signing Secret. Chickpea verifies the signed Slack setup event, workspace, app, required scopes, and channel access before it says Connected.
+3. **Create @Chickpea in Slack.** The button opens Slack with this installation's manifest already filled in. Pick the customer workspace and install its customer-owned app.
+4. **Paste two Slack values.** Return with the Bot User OAuth Token and Signing Secret. Chickpea verifies the signed Slack setup event, workspace, app, required scopes, and channel access, then normally continues automatically. If Slack needs one more permissions step, choose **Continue in Slack**, finish there, return, and choose **Check again**. The two values stay in place, so you do not paste them again.
 5. **Choose one channel and try Chickpea.** The channel picker opens immediately. Chickpea completes onboarding only after a real `@Chickpea` mention receives a visible reply in that channel.
 
 See [Authentication and roles](docs/authentication.md) for accounts, sessions, invitations, roles, optional Access, and Cloudflare-backed break-glass recovery. The [recovery runbook](docs/runbooks/password-recovery.md) explains how a Cloudflare account holder can temporarily enable one recovery without adding a recovery-code step to normal onboarding.
