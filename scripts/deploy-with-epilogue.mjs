@@ -723,51 +723,44 @@ child.stdout.on('data', (chunk) => {
 });
 
 const RULE = '────────────────────────────────────────────────────────';
-const READINESS_REQUIRED_SUCCESSES = 3;
-const READINESS_MAX_ATTEMPTS = 8;
+const READINESS_MAX_ATTEMPTS = 2;
+const READINESS_REQUEST_TIMEOUT_MS = 2_000;
 const READINESS_INTERVAL_MS = (() => {
-  // Keep the production settling window meaningful while allowing the
-  // integration harness to exercise every state without sleeping.
+  // This is only a quick handoff check, not a deployment gate. Cloudflare can
+  // keep propagating after the build completes, so never make the customer
+  // wait here for full convergence.
   const testOverride = process.env.DEPLOY_TEST_READINESS_INTERVAL_MS;
-  if (testOverride === undefined) return 2_000;
+  if (testOverride === undefined) return 500;
   const parsed = Number(testOverride);
-  return Number.isInteger(parsed) && parsed >= 0 ? parsed : 2_000;
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : 500;
 })();
 
 async function setupSurfaceReadiness(baseUrl) {
   const url = new URL('/admin/setup', baseUrl);
-  let candidate = '';
-  let consecutiveSuccesses = 0;
   for (let attempt = 0; attempt < READINESS_MAX_ATTEMPTS; attempt += 1) {
     url.searchParams.set('readiness', `${Date.now()}-${attempt}`);
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 5_000);
-    let observed = '';
+    let timeout;
     try {
-      const response = await fetch(url, {
-        method: 'GET',
-        redirect: 'manual',
-        cache: 'no-store',
-        headers: { accept: 'text/html', 'cache-control': 'no-cache' },
-        signal: controller.signal,
-      });
-      if (response.status === 200) observed = 'ready';
-      if (response.status >= 300 && response.status < 400) observed = 'configured';
-      await response.body?.cancel();
+      const response = await Promise.race([
+        fetch(url, {
+          method: 'HEAD',
+          redirect: 'manual',
+          cache: 'no-store',
+          headers: { accept: 'text/html', 'cache-control': 'no-cache' },
+          signal: controller.signal,
+        }).catch(() => undefined),
+        new Promise((resolve) => {
+          timeout = setTimeout(() => resolve(undefined), READINESS_REQUEST_TIMEOUT_MS);
+        }),
+      ]);
+      if (response?.status === 200) return 'ready';
+      if (response?.status >= 300 && response.status < 400) return 'configured';
     } catch {
       // Deployment propagation is eventually consistent; retry below.
     } finally {
-      clearTimeout(timeout);
-    }
-
-    if (observed && observed === candidate) {
-      consecutiveSuccesses += 1;
-    } else {
-      candidate = observed;
-      consecutiveSuccesses = observed ? 1 : 0;
-    }
-    if (consecutiveSuccesses >= READINESS_REQUIRED_SUCCESSES) {
-      return candidate;
+      if (timeout !== undefined) clearTimeout(timeout);
+      controller.abort();
     }
     if (attempt < READINESS_MAX_ATTEMPTS - 1) {
       await new Promise((resolve) => setTimeout(resolve, READINESS_INTERVAL_MS));
@@ -811,17 +804,21 @@ function printPrivateSetupPath(setup) {
   );
 }
 
+// Workers Builds receives stdout through a pipe. Let Node exit naturally after
+// this callback so the final setup link and Cloudflare's completion event can
+// flush; process.exit() can truncate asynchronous pipe writes.
 child.on('close', async (code) => {
   cleanupSecrets();
   if (code !== 0) {
-    process.exit(code ?? 1);
+    process.exitCode = code ?? 1;
+    return;
   }
   // A dry run deploys nothing — next-steps instructions would be a lie.
   if (deployArgs.includes('--dry-run')) {
-    process.exit(0);
+    return;
   }
   if (deployedUrl && deploymentAuthority) {
-    process.stdout.write('\nChecking the public setup URL...\n');
+    process.stdout.write('\nChecking the public setup URL (up to 5 seconds)...\n');
     const readiness = await setupSurfaceReadiness(deployedUrl);
     if (readiness === 'configured') {
       process.stdout.write(
@@ -829,11 +826,10 @@ child.on('close', async (code) => {
         '  Cloudflare may take another 1–2 minutes to make this URL available to you.\n\n' +
         `  Open ${deployedUrl}/admin\n${RULE}\n`,
       );
-      process.exit(0);
+      return;
     }
     printPrivateSetupLink(deployedUrl, deploymentAuthority.setup, readiness);
   } else if (deploymentAuthority) {
     printPrivateSetupPath(deploymentAuthority.setup);
   }
-  process.exit(0);
 });
