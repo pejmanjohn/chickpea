@@ -8496,6 +8496,8 @@ test('onboarding assigns one returned Slack channel and lands directly in Try Ch
   }]);
   assert.match(harness.app.innerHTML, /Try Chickpea/);
   assert.match(harness.app.innerHTML, /https:\/\/app\.slack\.com\/client\/T_DESIGN\/C_NEW/);
+  assert.match(harness.app.innerHTML, /Waiting for Chickpea to reply…/);
+  assert.doesNotMatch(harness.app.innerHTML, /Waiting for Chickpea to reply&amp;hellip;/);
   assert.match(
     harness.app.innerHTML,
     /@Chickpea summarize the recent discussion in this channel and list any open questions\./,

@@ -3511,7 +3511,7 @@ details[open].advanced summary::before {
       '<p class="onboarding-lede">' + (complete ? 'Chickpea replied successfully. Your setup is working.' : 'Open the channel and try one useful request. Your first reply confirms that everything is working.') + '</p></div></div>' +
       '<div class="onboarding-prompt-box"><p class="onboarding-prompt-label">Suggested first message</p><p class="onboarding-prompt">' + esc(ONBOARDING_PROMPT) + '</p>' +
       '<input id="onboarding-prompt" type="text" hidden readonly value="' + esc(ONBOARDING_PROMPT) + '">' +
-      '<p class="onboarding-status" role="status">' + esc(state.onboardingNotice || (!complete ? 'Waiting for Chickpea to reply&hellip;' : 'Reply confirmed.')) + '</p></div>' +
+      '<p class="onboarding-status" role="status">' + esc(state.onboardingNotice || (!complete ? 'Waiting for Chickpea to reply…' : 'Reply confirmed.')) + '</p></div>' +
       (state.onboardingError ? '<div class="onboarding-actions"><span class="field-error" role="alert">' + esc(state.onboardingError) + '</span><button type="button" class="btn btn-soft" data-action="retry-onboarding">Check again</button></div>' : '') +
       '<div class="onboarding-actions"><a class="btn btn-primary" href="' + esc(deepLink) + '" target="_blank" rel="noopener noreferrer">Open #' + esc(channel.name) + ' in Slack</a>' +
       '<button type="button" class="btn btn-soft" data-action="copy-onboarding-prompt">Copy message</button>' +
