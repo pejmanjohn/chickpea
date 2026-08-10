@@ -112,6 +112,12 @@ export async function validateSlackIdentityBotInstallation(
     );
   }
   if (!auth.ok) {
+    if (isSlackTransportFailure(auth.error)) {
+      throw new SlackIdentityBootstrapError(
+        'slack_unreachable',
+        'Slack could not be reached while validating this identity',
+      );
+    }
     throw new SlackIdentityBootstrapError(
       'slack_auth_failed',
       `Slack rejected this bot token${auth.error ? ` (${auth.error})` : ''}`,
@@ -531,6 +537,14 @@ function requireRevision(identity: SlackIdentity, expectedRevision: number): voi
       identity.connectionRevision,
     );
   }
+}
+
+function isSlackTransportFailure(error: string | undefined): boolean {
+  return error === 'slack_network_error' ||
+    error === 'slack_request_timeout' ||
+    error === 'slack_non_json_response' ||
+    error === 'ratelimited' ||
+    /^slack_http_5\d\d$/.test(error ?? '');
 }
 
 function sanitizeHttpsUrl(value: string | undefined): string | undefined {
