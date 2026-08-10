@@ -156,6 +156,22 @@ test('real identity preflight binds the app and classifies Slack authorization f
       (error: unknown) => error instanceof SlackIdentityUnavailableError &&
         error.reasonCode === 'ratelimited' && error.retryable && error.retryAfterMs === 3_000,
     );
+
+    authStatus = 500;
+    authBody = { ok: false, error: 'internal_error' };
+    await assert.rejects(
+      () => resolveSlackIdentityExecutionContext(IDENTITY_ID, undefined, { config, settings }),
+      (error: unknown) => error instanceof SlackIdentityUnavailableError &&
+        error.reasonCode === 'internal_error' && error.retryable,
+    );
+
+    authStatus = 200;
+    authBody = { ok: false, error: 'invalid_auth' };
+    await assert.rejects(
+      () => resolveSlackIdentityExecutionContext(IDENTITY_ID, undefined, { config, settings }),
+      (error: unknown) => error instanceof SlackIdentityUnavailableError &&
+        error.reasonCode === 'invalid_auth' && !error.retryable,
+    );
   });
 });
 

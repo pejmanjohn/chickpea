@@ -23,6 +23,7 @@ import {
   primeStoredSlackCredentials,
   resolveSlackCredentials,
   resolveSlackTeamInfo,
+  type SlackConversationsListPage,
   slackTokenFingerprint,
   SLACK_SETTING_KEYS,
 } from '../src/slack/credentials.ts';
@@ -4026,6 +4027,125 @@ test('dedicated identity validation rejects user tokens, cross-workspace install
         return { ...profileWithoutAppId, appId: undefined };
       },
     });
+  } finally {
+    config.close();
+  }
+});
+
+test('dedicated identity validation normalizes transient failures from every Slack preflight', async () => {
+  const config = new SqliteConfigStore(':memory:');
+  try {
+    await config.createSlackIdentity(pendingIdentity());
+    const initialIdentity = await config.getSlackIdentity('slack_identity_finance');
+    const validDeps = validDedicatedSlackDeps();
+    const auth = await validDeps.authTest();
+    const profile = await validDeps.botIdentityInfo();
+    const channels: SlackConversationsListPage = {
+      ok: true,
+      error: undefined,
+      channels: [],
+      nextCursor: undefined,
+    };
+    const cases: ReadonlyArray<{
+      name: string;
+      deps: SlackIdentityBootstrapDeps;
+      expectedCode: string;
+    }> = [
+      {
+        name: 'auth.test named server failure',
+        deps: {
+          ...validDeps,
+          authTest: async () => ({ ...auth, ok: false, error: 'internal_error' }),
+        },
+        expectedCode: 'slack_unreachable',
+      },
+      {
+        name: 'auth.test invalid token control',
+        deps: {
+          ...validDeps,
+          authTest: async () => ({ ...auth, ok: false, error: 'invalid_auth' }),
+        },
+        expectedCode: 'slack_auth_failed',
+      },
+      {
+        name: 'users.info named server failure',
+        deps: {
+          ...validDeps,
+          botIdentityInfo: async () => ({
+            ...profile,
+            ok: false,
+            error: 'service_unavailable',
+          }),
+        },
+        expectedCode: 'slack_unreachable',
+      },
+      {
+        name: 'users.info thrown transport failure',
+        deps: {
+          ...validDeps,
+          botIdentityInfo: async () => {
+            throw new TypeError('network down');
+          },
+        },
+        expectedCode: 'slack_unreachable',
+      },
+      {
+        name: 'users.info authorization control',
+        deps: {
+          ...validDeps,
+          botIdentityInfo: async () => ({ ...profile, ok: false, error: 'invalid_auth' }),
+        },
+        expectedCode: 'identity_profile_unavailable',
+      },
+      {
+        name: 'conversations.list synthetic server failure',
+        deps: {
+          ...validDeps,
+          conversationsList: async () => ({
+            ...channels,
+            ok: false,
+            error: 'slack_http_503',
+          }),
+        },
+        expectedCode: 'slack_unreachable',
+      },
+      {
+        name: 'conversations.list missing-scope control',
+        deps: {
+          ...validDeps,
+          conversationsList: async () => ({
+            ...channels,
+            ok: false,
+            error: 'missing_scope',
+          }),
+        },
+        expectedCode: 'slack_missing_scopes',
+      },
+    ];
+
+    for (const scenario of cases) {
+      await assert.rejects(
+        () => validateSlackIdentityBotInstallation(
+          {
+            config,
+            identityId: 'slack_identity_finance',
+            expectedTeamId: 'T_ACME',
+            botToken: 'xoxb-under-test',
+            requireChannelList: true,
+          },
+          scenario.deps,
+        ),
+        (error: unknown) =>
+          error instanceof SlackIdentityBootstrapError &&
+          error.code === scenario.expectedCode,
+        scenario.name,
+      );
+      assert.deepEqual(
+        await config.getSlackIdentity('slack_identity_finance'),
+        initialIdentity,
+        `${scenario.name} must not persist connection state`,
+      );
+    }
   } finally {
     config.close();
   }

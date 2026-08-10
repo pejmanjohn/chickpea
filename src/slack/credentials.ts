@@ -589,6 +589,23 @@ export interface SlackTruthFetchOptions {
   timeoutMs?: number;
 }
 
+/**
+ * Slack API failures that describe a temporary transport or service problem.
+ * Keep this policy beside the raw Slack fetch boundary so setup validation and
+ * runtime identity execution cannot drift into different retry semantics.
+ */
+export function isTransientSlackApiError(error: string | undefined): boolean {
+  return error === 'ratelimited' ||
+    error === 'slack_request_timeout' ||
+    error === 'slack_network_error' ||
+    error === 'slack_non_json_response' ||
+    error === 'internal_error' ||
+    error === 'fatal_error' ||
+    error === 'service_unavailable' ||
+    error === 'request_timeout' ||
+    /^slack_http_5\d\d$/.test(error ?? '');
+}
+
 const SLACK_TRUTH_FETCH_TIMEOUT_MS = 5_000;
 
 interface SlackTruthJsonResult {

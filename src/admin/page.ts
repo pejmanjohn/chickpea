@@ -3425,7 +3425,7 @@ details[open].advanced summary::before {
       '<p class="onboarding-lede">' + lede + '</p>' + status +
       '<div class="onboarding-form">' + onboardingSlackCredentialInputs(true) + '</div>' + fallback +
       '<div class="onboarding-actions">' + action +
-      '<button type="button" class="btn btn-ghost" data-action="slack-permissions-start-over">Start over</button></div></section>';
+      '<button type="button" class="btn btn-ghost" data-action="slack-permissions-start-over"' + (phase === "checking" ? " disabled" : "") + '>Start over</button></div></section>';
   }
 
   function onboardingConnectHtml() {
@@ -4151,6 +4151,12 @@ details[open].advanced summary::before {
       message === "challenge_invalid_signature" || message === "signing_secret_change_requires_reconnect";
   }
 
+  function isRetryableSlackContinuationFailure(message) {
+    return message === "slack_unreachable" ||
+      message === "identity_profile_unavailable" ||
+      message === "slack_channel_list_failed";
+  }
+
   function submitSlackConnection(formData) {
     submitSlackCredentialPair(
       String(formData.get("botToken") || "").trim(),
@@ -4219,7 +4225,7 @@ details[open].advanced summary::before {
         render();
         return;
       }
-      if (onboardingAttempt && continuationAttempt && error && error.message === "slack_unreachable") {
+      if (onboardingAttempt && continuationAttempt && error && isRetryableSlackContinuationFailure(error.message)) {
         state.slackRepair = null;
         state.slackError = "";
         state.slackOnboardingContinuation = {
@@ -4231,8 +4237,7 @@ details[open].advanced summary::before {
         render();
         return;
       }
-      if (onboardingAttempt && error && error.message === "slack_auth_failed" &&
-          (error.detail === "invalid_auth" || error.detail === "token_revoked")) {
+      if (onboardingAttempt && error && error.message === "slack_auth_failed") {
         state.slackRepair = null;
         state.slackOnboardingContinuation = null;
         state.slackDraft = continuationAttempt
@@ -4249,6 +4254,12 @@ details[open].advanced summary::before {
         state.slackRepair = null;
         state.slackOnboardingContinuation = null;
         state.slackDraft = { botToken: "", signingSecret: "" };
+      }
+      if (onboardingAttempt && continuationAttempt) {
+        // Every continuation response must leave the checking screen. Known
+        // retryable failures return above; all other errors re-open the normal
+        // credential form so its actionable error is visible.
+        state.slackOnboardingContinuation = null;
       }
       state.slackRepair = error && error.message === "slack_missing_scopes"
         ? {
@@ -10100,7 +10111,7 @@ details[open].advanced summary::before {
     // navigation or second connection action make it look canceled while the
     // POST is still live. Read-only connection tests may finish in the
     // background, but they cannot overlap another connection operation.
-    if (state.slackConnectionBusy === "update" && action !== "slack-permissions-start-over") return;
+    if (state.slackConnectionBusy === "update") return;
     if (state.slackConnectionBusy && (
       action === "slack-test" ||
       action === "slack-update-open" ||
@@ -10235,7 +10246,7 @@ details[open].advanced summary::before {
     if (action === "slack-permissions-check" && state.slackOnboardingContinuation && !state.slackConnectionBusy) {
       submitSlackCredentialPair(state.slackDraft.botToken, state.slackDraft.signingSecret);
     }
-    if (action === "slack-permissions-start-over" && state.slackOnboardingContinuation) {
+    if (action === "slack-permissions-start-over" && state.slackOnboardingContinuation && !state.slackConnectionBusy) {
       resetOnboardingSlackContinuation(true);
       state.slackStep = 3;
       state.slackOnboardingFocus = "onboarding-signing-secret";

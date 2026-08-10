@@ -8126,8 +8126,38 @@ test('onboarding keeps the draft through a transient Slack check and lets the ow
   assert.match(harness.app.innerHTML, /Finish applying Slack permissions/);
 });
 
-test('onboarding asks for only the current bot token when Slack revokes or rejects it', async () => {
-  for (const detail of ['invalid_auth', 'token_revoked']) {
+test('onboarding returns to Check again when Slack profile or channel preflight is temporarily unavailable', async () => {
+  for (const error of ['identity_profile_unavailable', 'slack_channel_list_failed']) {
+    const harness = runAdminPageHarness({
+      initialPath: '/admin/onboarding',
+      assignments: [],
+      slackConnection: disconnectedSlackFixture(),
+      slackPostResults: [
+        { status: 422, error: 'slack_missing_scopes', consoleUrl: 'https://api.slack.com/apps/A0REPAIR/oauth' },
+        { status: 502, error },
+      ],
+      onboarding: onboardingConnectFixture(),
+    });
+    await flushAsync();
+    submitOnboardingSlack(harness, `xoxb-${error}`, `${error}-secret`);
+    await flushAsync();
+    harness.listeners.click?.({ target: actionTarget({ 'data-action': 'slack-permissions-open' }) });
+    harness.listeners.click?.({ target: actionTarget({ 'data-action': 'slack-permissions-check' }) });
+    await flushAsync();
+
+    assert.match(harness.app.innerHTML, /Slack could not be checked just now/, error);
+    assert.match(harness.app.innerHTML, /data-action="slack-permissions-check"[^>]*>Check again/, error);
+    assert.doesNotMatch(harness.app.innerHTML, /Checking&hellip;|role="alert"/, error);
+    assert.deepEqual(harness.onboardingCredentialValues(), {
+      botToken: `xoxb-${error}`,
+      signingSecret: `${error}-secret`,
+    }, error);
+    assert.equal(harness.focusedAction(), 'slack-permissions-check', error);
+  }
+});
+
+test('onboarding asks for only the current bot token for recognized and unrecognized Slack auth failures', async () => {
+  for (const detail of ['invalid_auth', 'token_revoked', 'unexpected_auth_rejection']) {
     const harness = runAdminPageHarness({
       initialPath: '/admin/onboarding',
       assignments: [],
@@ -8157,7 +8187,7 @@ test('onboarding asks for only the current bot token when Slack revokes or rejec
 });
 
 test('onboarding clears both draft values for app, workspace, and signed-challenge mismatches', async () => {
-  for (const error of ['app_mismatch', 'workspace_mismatch', 'challenge_invalid_signature']) {
+  for (const error of ['app_mismatch', 'workspace_mismatch', 'challenge_invalid_signature', 'signing_secret_change_requires_reconnect']) {
     const harness = runAdminPageHarness({
       initialPath: '/admin/onboarding',
       assignments: [],
@@ -8233,11 +8263,12 @@ test('onboarding Start over and a fresh page discard the page-only Slack draft',
   assert.doesNotMatch(freshHarness.app.innerHTML, /xoxb-start-over|start-over-secret/);
 });
 
-test('onboarding ignores a stale permission response after Start over', async () => {
+test('onboarding cannot discard or overlap an in-flight permission check', async () => {
   const harness = runAdminPageHarness({
     initialPath: '/admin/onboarding',
     assignments: [],
     slackConnection: disconnectedSlackFixture(),
+    slackChannels: channelsFixture([{ id: 'C_NEW', name: 'new-channel', isMember: true }]),
     deferSlackPost: true,
     onboarding: onboardingConnectFixture(),
   });
@@ -8252,17 +8283,79 @@ test('onboarding ignores a stale permission response after Start over', async ()
   harness.listeners.click?.({ target: actionTarget({ 'data-action': 'slack-permissions-open' }) });
   harness.listeners.click?.({ target: actionTarget({ 'data-action': 'slack-permissions-check' }) });
   assert.equal(harness.slackPosts.length, 2);
+  assert.match(harness.app.innerHTML, /data-action="slack-permissions-start-over" disabled/);
+  assert.match(harness.app.innerHTML, /Checking&hellip;/);
   harness.listeners.click?.({ target: actionTarget({ 'data-action': 'slack-permissions-start-over' }) });
-  harness.resolveSlackPost(1, {
-    status: 422,
-    error: 'slack_missing_scopes',
-    consoleUrl: 'https://api.slack.com/apps/A0REPAIR/oauth',
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'slack-permissions-check' }) });
+
+  assert.equal(harness.slackPosts.length, 2, 'checking cannot overlap a second request');
+  assert.match(harness.app.innerHTML, /Checking&hellip;/);
+  assert.deepEqual(harness.onboardingCredentialValues(), {
+    botToken: 'xoxb-stale',
+    signingSecret: 'stale-secret',
   });
+
+  harness.resolveSlackPost(1, {});
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /Choose where Chickpea should start/);
+  assert.doesNotMatch(harness.app.innerHTML, /Checking&hellip;|Finish applying Slack permissions/);
+  assert.deepEqual(harness.onboardingCredentialValues(), { botToken: '', signingSecret: '' });
+});
+
+test('onboarding navigation discards the page-only Slack continuation draft', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/onboarding',
+    assignments: [],
+    slackConnection: disconnectedSlackFixture(),
+    slackPostError: {
+      status: 422,
+      error: 'slack_missing_scopes',
+      consoleUrl: 'https://api.slack.com/apps/A0REPAIR/oauth',
+    },
+    onboarding: onboardingConnectFixture(),
+  });
+  await flushAsync();
+  submitOnboardingSlack(harness, 'xoxb-navigation', 'navigation-secret');
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /Finish applying Slack permissions/);
+
+  harness.popstate('/admin/channels');
+  assert.equal(harness.locationPath(), '/admin/channels');
+  assert.doesNotMatch(harness.app.innerHTML, /Finish applying Slack permissions|xoxb-navigation|navigation-secret/);
+
+  harness.popstate('/admin/onboarding');
+  assert.match(harness.app.innerHTML, /Finish connecting Slack/);
+  assert.deepEqual(harness.onboardingCredentialValues(), { botToken: '', signingSecret: '' });
+});
+
+test('onboarding unexpected permission-check failures exit checking and show the ordinary error form', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/onboarding',
+    assignments: [],
+    slackConnection: disconnectedSlackFixture(),
+    slackPostResults: [
+      { status: 422, error: 'slack_missing_scopes', consoleUrl: 'https://api.slack.com/apps/A0REPAIR/oauth' },
+      { status: 500, error: 'internal_error' },
+    ],
+    onboarding: onboardingConnectFixture(),
+  });
+  await flushAsync();
+  submitOnboardingSlack(harness, 'xoxb-unexpected', 'unexpected-secret');
+  await flushAsync();
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'slack-permissions-open' }) });
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'slack-permissions-check' }) });
   await flushAsync();
 
   assert.match(harness.app.innerHTML, /Finish connecting Slack/);
-  assert.doesNotMatch(harness.app.innerHTML, /Finish applying Slack permissions/);
-  assert.deepEqual(harness.onboardingCredentialValues(), { botToken: '', signingSecret: '' });
+  assert.match(harness.app.innerHTML, /role="alert"[^>]*aria-live="assertive"/);
+  assert.match(harness.app.innerHTML, /could not store the credentials/);
+  assert.doesNotMatch(harness.app.innerHTML, /Checking&hellip;|Return here after Slack is done/);
+  assert.deepEqual(harness.onboardingCredentialValues(), {
+    botToken: 'xoxb-unexpected',
+    signingSecret: 'unexpected-secret',
+  });
+  assert.equal(harness.focusedAction(), 'slack-connection-error');
 });
 
 test('onboarding mirrors typed Slack credentials without serializing them into rendered markup or history', async () => {

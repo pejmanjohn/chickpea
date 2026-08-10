@@ -3,6 +3,7 @@ import type { SettingsStore } from '../config/settings-store.ts';
 import type { ConfigStore } from '../config/store.ts';
 import type { SlackIdentity } from '../config/types.ts';
 import {
+  isTransientSlackApiError,
   slackBotIdentityInfo,
   slackConversationsList,
   slackIdentityAuthTest,
@@ -112,7 +113,7 @@ export async function validateSlackIdentityBotInstallation(
     );
   }
   if (!auth.ok) {
-    if (isSlackTransportFailure(auth.error)) {
+    if (isTransientSlackApiError(auth.error)) {
       throw new SlackIdentityBootstrapError(
         'slack_unreachable',
         'Slack could not be reached while validating this identity',
@@ -171,11 +172,17 @@ export async function validateSlackIdentityBotInstallation(
     profile = await botIdentityInfo(input.botToken, auth.botUserId);
   } catch {
     throw new SlackIdentityBootstrapError(
-      'identity_profile_unavailable',
-      'Slack could not load the bot profile',
+      'slack_unreachable',
+      'Slack could not be reached while loading the bot profile',
     );
   }
   if (!profile.ok) {
+    if (isTransientSlackApiError(profile.error)) {
+      throw new SlackIdentityBootstrapError(
+        'slack_unreachable',
+        'Slack could not be reached while loading the bot profile',
+      );
+    }
     throw new SlackIdentityBootstrapError(
       'identity_profile_unavailable',
       `Slack could not load the bot profile${profile.error ? ` (${profile.error})` : ''}`,
@@ -210,6 +217,12 @@ export async function validateSlackIdentityBotInstallation(
       );
     }
     if (!page.ok) {
+      if (isTransientSlackApiError(page.error)) {
+        throw new SlackIdentityBootstrapError(
+          'slack_unreachable',
+          'Slack could not be reached while checking channel access',
+        );
+      }
       if (page.error === 'missing_scope') {
         throw new SlackIdentityBootstrapError(
           'slack_missing_scopes',
@@ -537,14 +550,6 @@ function requireRevision(identity: SlackIdentity, expectedRevision: number): voi
       identity.connectionRevision,
     );
   }
-}
-
-function isSlackTransportFailure(error: string | undefined): boolean {
-  return error === 'slack_network_error' ||
-    error === 'slack_request_timeout' ||
-    error === 'slack_non_json_response' ||
-    error === 'ratelimited' ||
-    /^slack_http_5\d\d$/.test(error ?? '');
 }
 
 function sanitizeHttpsUrl(value: string | undefined): string | undefined {

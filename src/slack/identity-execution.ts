@@ -8,6 +8,7 @@ import {
   type SlackIdentity,
 } from '../config/types.ts';
 import {
+  isTransientSlackApiError,
   slackConversationsInfo,
   slackIdentityAuthTest,
 } from './credentials.ts';
@@ -66,7 +67,7 @@ export class SlackIdentityUnavailableError extends Error {
   ) {
     super(`Slack identity ${identityId} is unavailable (${reasonCode})`);
     this.name = 'SlackIdentityUnavailableError';
-    this.retryable = options.retryable ?? transientSlackIdentityReason(reasonCode);
+    this.retryable = options.retryable ?? isTransientSlackApiError(reasonCode);
     this.retryAfterMs = options.retryAfterMs;
   }
 }
@@ -195,16 +196,4 @@ export async function verifySlackIdentityTurnAccess(
 
 export function effectiveTurnSlackIdentityId(turn: NormalizedSlackTurn): string {
   return turn.slackIdentityId ?? WORKSPACE_DEFAULT_SLACK_IDENTITY_ID;
-}
-
-function transientSlackIdentityReason(reasonCode: string): boolean {
-  return reasonCode === 'ratelimited' ||
-    reasonCode === 'slack_request_timeout' ||
-    reasonCode === 'slack_network_error' ||
-    reasonCode === 'slack_non_json_response' ||
-    reasonCode === 'internal_error' ||
-    reasonCode === 'fatal_error' ||
-    reasonCode === 'service_unavailable' ||
-    reasonCode === 'request_timeout' ||
-    /^slack_http_5\d\d$/.test(reasonCode);
 }
