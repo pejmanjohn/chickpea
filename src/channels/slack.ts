@@ -54,6 +54,9 @@ import {
   type ResolvedSlackIdentityCredentials,
 } from '../slack/identity-credentials.ts';
 import {
+  completeWorkspaceDefaultSlackConnectionIfVerified,
+} from '../slack/identity-bootstrap.ts';
+import {
   assignmentUsesSlackIdentity,
   resolveSlackIdentityDmAssignment,
 } from '../slack/identity-admission.ts';
@@ -323,11 +326,30 @@ const scopedIdentityEventsHandler: SlackRouteHandler = async (c, next) => {
     candidate.identity.lifecycle === 'setup_incomplete' ||
     candidate.identity.lifecycle === 'credentials_pending'
   ) {
-    return handlePendingSlackIdentityChallenge(
+    const response = await handlePendingSlackIdentityChallenge(
       c.req.raw,
       candidate.identity,
       stores.settings,
     );
+    if (
+      response.ok &&
+      candidate.identity.kind === 'workspace_default' &&
+      candidate.identity.lifecycle === 'credentials_pending'
+    ) {
+      try {
+        await completeWorkspaceDefaultSlackConnectionIfVerified({
+          config: stores.config,
+          settings: stores.settings,
+          identityId: candidate.identity.id,
+        });
+      } catch (error) {
+        console.error(
+          '[chickpea] Slack Events URL completion failed:',
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+    }
+    return response;
   }
 
   const credentials = await resolveSlackIdentityCredentials(

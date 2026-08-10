@@ -275,8 +275,10 @@ import {
   beginSlackIdentityConnection,
   cancelSlackIdentityConnection,
   completeSlackIdentityConnection,
+  completeWorkspaceDefaultSlackConnectionIfVerified,
   refreshSlackIdentityHealth,
   slackIdentityConsoleUrl,
+  slackIdentityEventSubscriptionsUrl,
   slackIdentityOAuthUrl,
   SlackIdentityBootstrapError,
   validateSlackIdentityBotInstallation,
@@ -4051,6 +4053,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
 
   const onboardingSlackContext = async (c: Context) => {
     const settingsStore = settings(c);
+    await completeWorkspaceDefaultSlackConnectionIfVerified({
+      config: store(c),
+      settings: settingsStore,
+      identityId: WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+    });
     const [credentials, teamInfo, defaultIdentity] = await Promise.all([
       describeSlackCredentialSources(c.env as PlatformEnv | undefined, settingsStore),
       readStoredSlackTeamInfo(c.env as PlatformEnv | undefined, settingsStore),
@@ -5182,6 +5189,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       );
     }
     let challengeReceipt: string | undefined;
+    let eventsVerificationRequired = false;
     if (needsSignedChallenge) {
       const verification = await verifyPendingSlackChallenge(
         settingsStore,
@@ -5192,7 +5200,15 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           expectedTeamId: validated.teamId,
         },
       );
-      if (!verification.verified) {
+      if (verification.verified) {
+        challengeReceipt = verification.purgeReceipt;
+      } else if (verification.reason === 'missing' || verification.reason === 'expired') {
+        // Slack's combined create/install UI can create and install the app
+        // without sending its Events URL challenge. Save the live-validated
+        // credentials as pending and let Slack's later Retry finish the signed
+        // proof. A present-but-invalid envelope still fails closed below.
+        eventsVerificationRequired = true;
+      } else {
         const code = slackChallengeErrorCode(verification.reason);
         return slackIdentityAdminError(
           c,
@@ -5202,7 +5218,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           ),
         );
       }
-      challengeReceipt = verification.purgeReceipt;
     }
 
     try {
@@ -5285,6 +5300,19 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           },
           409,
         );
+      }
+      if (eventsVerificationRequired) {
+        return c.json({
+          ok: true,
+          connected: false,
+          eventsVerificationRequired: true,
+          consoleUrl: slackIdentityEventSubscriptionsUrl(validated.appId),
+          teamId: validated.teamId,
+          ...(validated.teamName ? { team: validated.teamName } : {}),
+          ...(validated.botName ? { botName: validated.botName } : {}),
+          botUserId: validated.botUserId,
+          note: 'Credentials are ready; Slack still needs to confirm the Events URL.',
+        }, 202);
       }
       const connectedIdentity = await store(c).updateSlackIdentity(
         pendingIdentity.id,

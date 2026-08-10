@@ -395,6 +395,62 @@ export async function completeSlackIdentityConnection(input: {
   return connected;
 }
 
+/**
+ * Finish the workspace-default connection after Slack eventually retries its
+ * Events URL. Slack's combined create/install screen currently creates the app
+ * without always sending that verification request, so the credential paste
+ * may legitimately happen first. The stored secret still has to verify the
+ * exact signed envelope before this pending identity becomes connected.
+ */
+export async function completeWorkspaceDefaultSlackConnectionIfVerified(input: {
+  config: ConfigStore;
+  settings: SettingsStore;
+  identityId: string;
+}): Promise<SlackIdentity | undefined> {
+  const identity = await input.config.getSlackIdentity(input.identityId);
+  if (identity.kind !== 'workspace_default' || identity.lifecycle !== 'credentials_pending') {
+    return identity.kind === 'workspace_default' &&
+        (identity.lifecycle === 'connected' || identity.lifecycle === 'degraded')
+      ? identity
+      : undefined;
+  }
+  const credentials = await resolveSlackIdentityCredentials(
+    identity.id,
+    undefined,
+    input.settings,
+  );
+  if (!credentials.botToken || !credentials.signingSecret) return undefined;
+  const verification = await verifyPendingSlackChallenge(
+    input.settings,
+    identity.id,
+    credentials.signingSecret,
+    {
+      ...(identity.appId ? { expectedAppId: identity.appId } : {}),
+      ...(identity.teamId ? { expectedTeamId: identity.teamId } : {}),
+    },
+  );
+  if (!verification.verified) return undefined;
+  let connected: SlackIdentity;
+  try {
+    connected = await input.config.updateSlackIdentity(
+      identity.id,
+      identity.connectionRevision,
+      { lifecycle: 'connected', health: 'healthy', healthDetail: null },
+    );
+  } catch (error) {
+    if (!(error instanceof SlackIdentityRevisionConflictError)) throw error;
+    const raced = await input.config.getSlackIdentity(identity.id);
+    if (raced.lifecycle !== 'connected' && raced.lifecycle !== 'degraded') return undefined;
+    connected = raced;
+  }
+  await purgePendingSlackChallenge(
+    input.settings,
+    identity.id,
+    verification.purgeReceipt,
+  );
+  return connected;
+}
+
 export async function cancelSlackIdentityConnection(input: {
   config: ConfigStore;
   settings: SettingsStore;
@@ -523,6 +579,14 @@ export function slackIdentityConsoleUrl(appId: string | undefined): string {
 export function slackIdentityOAuthUrl(appId: string | undefined): string | undefined {
   return appId && SLACK_APP_ID_PATTERN.test(appId)
     ? `https://api.slack.com/apps/${appId}/oauth`
+    : undefined;
+}
+
+export function slackIdentityEventSubscriptionsUrl(
+  appId: string | undefined,
+): string | undefined {
+  return appId && SLACK_APP_ID_PATTERN.test(appId)
+    ? `https://api.slack.com/apps/${appId}/event-subscriptions`
     : undefined;
 }
 

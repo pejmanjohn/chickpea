@@ -71,6 +71,7 @@ type SlackPostResultFixture = {
   message?: string;
   missingScopes?: string[];
   consoleUrl?: string;
+  eventsVerificationRequired?: boolean;
 };
 type SlackIdentityAdminFixture = {
   id: string;
@@ -1052,6 +1053,17 @@ function runAdminPageHarness(
   const slackPostResponse = (result: SlackPostResultFixture = {}): FakeResponse => {
     if (result.error) {
       return jsonResponse(result, result.status ?? 422);
+    }
+    if (result.eventsVerificationRequired) {
+      return jsonResponse({
+        ok: true,
+        connected: false,
+        eventsVerificationRequired: true,
+        consoleUrl: result.consoleUrl,
+        team: 'Acme Inc',
+        botName: 'tag',
+        botUserId: 'U_BOT',
+      }, 202);
     }
     // A successful save flips the fixture to connected/stored, exactly like
     // the real endpoint's follow-up GET would report.
@@ -8052,6 +8064,41 @@ test('onboarding treats incomplete Slack permissions as a normal continuation', 
   assert.equal(harness.focusedAction(), 'slack-permissions-open');
 });
 
+test('onboarding treats a missing Slack Events check as one calm resumable step', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/onboarding',
+    assignments: [],
+    slackConnection: disconnectedSlackFixture(),
+    slackPostResults: [{
+      eventsVerificationRequired: true,
+      consoleUrl: 'https://api.slack.com/apps/A0EVENTS/event-subscriptions',
+    }],
+    onboarding: onboardingConnectFixture(),
+  });
+  await flushAsync();
+  submitOnboardingSlack(harness, 'xoxb-events', 'events-secret');
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /Finish Slack connection/);
+  assert.match(harness.app.innerHTML, /Open Event Subscriptions and click Retry once/);
+  assert.match(
+    harness.app.innerHTML,
+    /href="https:\/\/api\.slack\.com\/apps\/A0EVENTS\/event-subscriptions"/,
+  );
+  assert.match(harness.app.innerHTML, />Finish in Slack/);
+  assert.doesNotMatch(harness.app.innerHTML, /role="alert"|something is wrong|failed/i);
+  assert.doesNotMatch(harness.app.innerHTML, /xoxb-events|events-secret/);
+  assert.deepEqual(harness.onboardingCredentialValues(), {
+    botToken: 'xoxb-events',
+    signingSecret: 'events-secret',
+  });
+
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'slack-permissions-open' }) });
+  assert.match(harness.app.innerHTML, /Waiting for Slack/);
+  assert.match(harness.app.innerHTML, /continue as soon as Slack confirms/);
+  assert.match(harness.app.innerHTML, /data-action="slack-permissions-check"[^>]*>Check now/);
+});
+
 test('onboarding completes a permission continuation with the unchanged page-only draft', async () => {
   const harness = runAdminPageHarness({
     initialPath: '/admin/onboarding',
@@ -8230,8 +8277,7 @@ test('onboarding permission continuation uses a compact safe app-list fallback',
   await flushAsync();
 
   assert.match(harness.app.innerHTML, /href="https:\/\/api\.slack\.com\/apps"/);
-  assert.match(harness.app.innerHTML, /open the Chickpea app, choose OAuth &amp; Permissions/);
-  assert.match(harness.app.innerHTML, /Install to Workspace or Reinstall to Workspace/);
+  assert.match(harness.app.innerHTML, /open the Chickpea app and finish the requested step/);
   assert.doesNotMatch(harness.app.innerHTML, /attacker\.example|xoxb-leak|xoxb-fallback|fallback-secret/);
 });
 

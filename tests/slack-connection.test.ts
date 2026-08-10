@@ -2027,6 +2027,101 @@ test('wizard POST requires the signed challenge and live Slack readiness before 
   }
 });
 
+test('wizard stages validated credentials until Slack later retries the Events URL', async (t) => {
+  const skip = await loopbackListenSkipReason();
+  if (skip) {
+    t.skip(skip);
+    return;
+  }
+  const { server, baseUrl } = await listenFakeSlack(
+    {
+      ok: true,
+      app_id: 'A0CHICKPEA',
+      team_id: 'T_ACME',
+      team: 'Acme Inc',
+      user: 'tag',
+      user_id: 'U_TAG_BOT',
+      bot_id: 'B_TAG',
+    },
+    [{
+      ok: true,
+      user: {
+        id: 'U_TAG_BOT',
+        profile: { display_name: 'Chickpea', api_app_id: 'A0CHICKPEA' },
+      },
+    }],
+    { 'x-oauth-scopes': slackAppManifest.oauth_config.scopes.bot.join(',') },
+  );
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-slack-late-events-check-'));
+  const path = join(directory, 'state.db');
+  try {
+    await withEnv(
+      {
+        ...NO_SLACK_ENV,
+        SLACK_API_URL: baseUrl,
+        TAG_DB_PATH: path,
+        SLACK_STATE_DB_PATH: path,
+      },
+      async () => {
+        const settings = new SqliteSettingsStore(path);
+        const config = new SqliteConfigStore(path);
+        try {
+          const identity = await config.getSlackIdentity('slack_identity_default');
+          const admin = appWith(settings, config);
+          const staged = await postCreds(admin, {
+            botToken: 'xoxb-late-events',
+            signingSecret: 'late-events-secret',
+          });
+          assert.equal(staged.status, 202, await staged.clone().text());
+          const stagedBody = (await staged.json()) as Record<string, unknown>;
+          assert.equal(stagedBody.ok, true);
+          assert.equal(stagedBody.connected, false);
+          assert.equal(stagedBody.eventsVerificationRequired, true);
+          assert.equal(
+            stagedBody.consoleUrl,
+            'https://api.slack.com/apps/A0CHICKPEA/event-subscriptions',
+          );
+          assert.equal(await settings.getSetting(SLACK_SETTING_KEYS.botToken), 'xoxb-late-events');
+          assert.equal(await settings.getSetting(SLACK_SETTING_KEYS.signingSecret), 'late-events-secret');
+          assert.equal(
+            (await config.getSlackIdentity(identity.id)).lifecycle,
+            'credentials_pending',
+          );
+
+          const challenge = signedSlackEvent('late-events-secret', {
+            type: 'url_verification',
+            challenge: 'late-events-challenge',
+            api_app_id: 'A0CHICKPEA',
+            team_id: 'T_ACME',
+          });
+          const retry = await (await identityIngressApp()).request(
+            `/channels/slack/events/${identity.ingressKey}`,
+            { method: 'POST', headers: challenge.headers, body: challenge.body },
+          );
+          assert.equal(retry.status, 200, await retry.clone().text());
+          assert.deepEqual(await retry.json(), { challenge: 'late-events-challenge' });
+          assert.equal(
+            (await config.getSlackIdentity(identity.id)).lifecycle,
+            'connected',
+          );
+          assert.equal(await readPendingSlackChallenge(settings, identity.id), undefined);
+
+          const status = await admin.request('/admin/api/slack-connection', { headers: auth() });
+          assert.equal(status.status, 200);
+          assert.equal(((await status.json()) as { connected: boolean }).connected, true);
+        } finally {
+          invalidateStoredSlackCredentials();
+          config.close();
+          settings.close();
+        }
+      },
+    );
+  } finally {
+    await closeServer(server);
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('wizard rotation replaces the whole connection record with freshly validated metadata', async (t) => {
   const skip = await loopbackListenSkipReason();
   if (skip) {
