@@ -166,7 +166,7 @@ function pendingChallengeFailure(
   if (result.reason === 'oversized') {
     return Response.json({ error: 'request_too_large' }, { status: 413 });
   }
-  if (result.reason === 'rate_limited' || result.reason === 'changed') {
+  if (result.reason === 'changed') {
     return Response.json({ error: 'challenge_already_recorded' }, { status: 429 });
   }
   if (result.reason === 'identity_not_pending') {

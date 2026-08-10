@@ -43,7 +43,6 @@ import {
 } from '../src/slack/identity-bootstrap.ts';
 import {
   MAX_PENDING_SLACK_CHALLENGE_BYTES,
-  PENDING_SLACK_CHALLENGE_PIN_MS,
   PENDING_SLACK_CHALLENGE_TTL_MS,
   recordPendingSlackChallenge,
   readPendingSlackChallenge,
@@ -2684,7 +2683,8 @@ test('scoped identity ingress records one bounded pending challenge and rejects 
               headers: challenge.headers,
               body: challenge.body,
             });
-            assert.equal(duplicate.status, 429);
+            assert.equal(duplicate.status, 200, await duplicate.clone().text());
+            assert.deepEqual(await duplicate.json(), { challenge: 'challenge-finance' });
 
             const event = signedSlackEvent('future-secret', {
               type: 'event_callback',
@@ -4198,7 +4198,7 @@ test('dedicated identity setup requires a known workspace before calling Slack',
   }
 });
 
-test('a fresh Slack challenge replaces an abandoned app after the anti-flood window', async () => {
+test('a fresh Slack challenge immediately replaces an earlier app-creation challenge', async () => {
   const config = new SqliteConfigStore(':memory:');
   const settings = new SqliteSettingsStore(':memory:');
   const now = 1_700_000_000_000;
@@ -4207,16 +4207,7 @@ test('a fresh Slack challenge replaces an abandoned app after the anti-flood win
     const first = signedChallenge('first-secret', { timestamp: Math.floor(now / 1_000) });
     assert.equal((await recordPendingSlackChallenge(settings, draft, first, { now })).accepted, true);
 
-    const stillPinnedAt = now + PENDING_SLACK_CHALLENGE_PIN_MS;
-    const pinned = signedChallenge('pinned-secret', {
-      timestamp: Math.floor(stillPinnedAt / 1_000),
-    });
-    assert.deepEqual(
-      await recordPendingSlackChallenge(settings, draft, pinned, { now: stillPinnedAt }),
-      { accepted: false, reason: 'rate_limited' },
-    );
-
-    const replacementAt = now + PENDING_SLACK_CHALLENGE_PIN_MS + 1;
+    const replacementAt = now + 1;
     const replacement = signedChallenge('replacement-secret', {
       timestamp: Math.floor(replacementAt / 1_000),
     });
@@ -4261,7 +4252,7 @@ test('the documented Slack URL-verification payload verifies without optional ap
   }
 });
 
-test('pending Slack challenges are bounded, rate-limited, and atomically cleared with credentials', async () => {
+test('pending Slack challenges are bounded, idempotent, and atomically cleared with credentials', async () => {
   const config = new SqliteConfigStore(':memory:');
   const settings = new SqliteSettingsStore(':memory:');
   const now = 1_700_000_000_000;
@@ -4295,10 +4286,9 @@ test('pending Slack challenges are bounded, rate-limited, and atomically cleared
       assert.equal(first.appId, 'A0FINANCE');
       assert.equal(first.teamId, 'T_ACME');
     }
-    assert.deepEqual(
-      await recordPendingSlackChallenge(settings, draft, envelope, { now: now + 1 }),
-      { accepted: false, reason: 'rate_limited' },
-    );
+    const duplicate = await recordPendingSlackChallenge(settings, draft, envelope, { now: now + 1 });
+    assert.equal(duplicate.accepted, true);
+    if (duplicate.accepted) assert.equal(duplicate.challenge, 'challenge-finance');
     assert.deepEqual(
       await verifyPendingSlackChallenge(settings, draft.id, secret, {
         now: now + PENDING_SLACK_CHALLENGE_TTL_MS + 1,

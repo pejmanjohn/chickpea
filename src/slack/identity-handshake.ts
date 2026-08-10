@@ -16,13 +16,6 @@ export const MAX_PENDING_SLACK_CHALLENGE_BYTES = 1_048_576;
 export const SLACK_REQUEST_FRESHNESS_MS = 5 * 60_000;
 /** The verified-at-ingress envelope remains available during human setup. */
 export const PENDING_SLACK_CHALLENGE_TTL_MS = 24 * 60 * 60_000;
-/**
- * Briefly pin the first envelope to absorb Slack's automatic retries. Slack's
- * manifest installer can issue a challenge for a temporary app record before
- * the final installed app exists, so a human-initiated Retry must be able to
- * replace that envelope without waiting for the five-minute signature window.
- */
-export const PENDING_SLACK_CHALLENGE_PIN_MS = 10_000;
 const MAX_CHALLENGE_TEXT_LENGTH = 4_096;
 
 export interface PendingSlackChallengeInput {
@@ -51,7 +44,6 @@ export type RecordPendingSlackChallengeResult =
         | 'oversized'
         | 'invalid_envelope'
         | 'stale_timestamp'
-        | 'rate_limited'
         | 'changed';
     };
 
@@ -108,36 +100,50 @@ export async function recordPendingSlackChallenge(
   }
 
   const key = slackIdentityPendingEnvelopeSettingKey(identity.id);
-  const current = await store.getSetting(key);
-  if (current) {
-    const existing = parseStoredEnvelope(current);
-    // Keep a brief anti-flood window, but let Slack's final installed app
-    // replace the manifest installer's temporary-app challenge during the same
-    // human setup session.
-    if (existing && existing.expiresAt > now &&
-        now - existing.receivedAt <= PENDING_SLACK_CHALLENGE_PIN_MS) {
-      return { accepted: false, reason: 'rate_limited' };
+  // Slack's create-and-install UI may verify the same Request URL more than
+  // once, and may replace a temporary app challenge with the final app's
+  // challenge immediately. Every structurally valid, fresh attempt must get
+  // the documented challenge response. Pinning the first envelope made Slack
+  // report "Your URL didn't respond" and forced a manual Retry during setup.
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const current = await store.getSetting(key);
+    const existing = current ? parseStoredEnvelope(current) : undefined;
+    if (
+      existing &&
+      existing.expiresAt > now &&
+      existing.rawBody === input.rawBody &&
+      existing.signature === input.signature &&
+      existing.timestamp === input.timestamp
+    ) {
+      return {
+        accepted: true,
+        challenge: body.challenge,
+        expiresAt: existing.expiresAt,
+        ...(body.appId ? { appId: body.appId } : {}),
+        ...(body.teamId ? { teamId: body.teamId } : {}),
+      };
     }
-  }
 
-  const envelope: PendingSlackChallengeEnvelope = {
-    ...input,
-    receivedAt: now,
-    expiresAt: now + PENDING_SLACK_CHALLENGE_TTL_MS,
-  };
-  const applied = await store.applySettingsPatch({
-    expected: { key, value: current ?? null },
-    set: [{ key, value: JSON.stringify(envelope) }],
-  });
-  return applied
-    ? {
+    const envelope: PendingSlackChallengeEnvelope = {
+      ...input,
+      receivedAt: now,
+      expiresAt: now + PENDING_SLACK_CHALLENGE_TTL_MS,
+    };
+    const applied = await store.applySettingsPatch({
+      expected: { key, value: current ?? null },
+      set: [{ key, value: JSON.stringify(envelope) }],
+    });
+    if (applied) {
+      return {
         accepted: true,
         challenge: body.challenge,
         expiresAt: envelope.expiresAt,
         ...(body.appId ? { appId: body.appId } : {}),
         ...(body.teamId ? { teamId: body.teamId } : {}),
-      }
-    : { accepted: false, reason: 'changed' };
+      };
+    }
+  }
+  return { accepted: false, reason: 'changed' };
 }
 
 export async function readPendingSlackChallenge(

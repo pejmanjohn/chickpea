@@ -7970,8 +7970,10 @@ test('onboarding starts with one Slack creation action and progressively reveals
   assert.match(harness.app.innerHTML, /name="botToken"/);
   assert.match(harness.app.innerHTML, /name="signingSecret"/);
   assert.match(harness.app.innerHTML, /data-action="back-to-slack-create"/);
-  assert.match(harness.app.innerHTML, /Open Slack setup again/);
-  assert.match(harness.app.innerHTML, /If Slack asked you to sign in/);
+  assert.match(harness.app.innerHTML, /Open your Slack apps/);
+  assert.match(harness.app.innerHTML, /href="https:\/\/api\.slack\.com\/apps"/);
+  assert.match(harness.app.innerHTML, /choose the Chickpea app you just created/i);
+  assert.doesNotMatch(harness.app.innerHTML, /manifest_json/);
   assert.match(harness.app.innerHTML, /Where do I find these\?/);
 
   harness.listeners.click?.({ target: actionTarget({ 'data-action': 'back-to-slack-create' }) });

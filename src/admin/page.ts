@@ -3454,10 +3454,10 @@ details[open].advanced summary::before {
       ? '<div class="onboarding-error" role="alert" aria-live="assertive" tabindex="-1" data-role="slack-connection-error"><p class="field-error">' + esc(state.slackError) + '</p></div>'
       : '';
     return '<section class="onboarding-panel">' +
-      '<div class="onboarding-return-note"><span class="onboarding-return-icon" aria-hidden="true">&rarr;</span><span><strong>Install Chickpea in Slack, then return here.</strong><br>If Slack asked you to sign in, reopen the setup link. In OAuth &amp; Permissions, click Install to Workspace or Reinstall to Workspace before copying the token.</span></div>' +
+      '<div class="onboarding-return-note"><span class="onboarding-return-icon" aria-hidden="true">&rarr;</span><span><strong>Finish in Slack, then return here.</strong><br>Need to return to Slack? Open your Slack apps below and choose the Chickpea app you just created.</span></div>' +
       '<p class="onboarding-eyebrow">Step 1 of 3</p><h1 class="onboarding-title">Finish connecting Slack</h1>' +
       '<p class="onboarding-lede">Install the app in Slack, then paste the two values Slack gives you. Chickpea checks the workspace, permissions, and channel access before continuing.</p>' +
-      '<div class="onboarding-actions"><a class="btn btn-soft" href="' + esc(conn.manifestUrl) + '" target="_blank" rel="noopener noreferrer"><span class="onboarding-slack-logo slack-logo-image" aria-hidden="true"></span>Open Slack setup again</a></div>' +
+      '<div class="onboarding-actions"><a class="btn btn-soft" href="https://api.slack.com/apps" target="_blank" rel="noopener noreferrer"><span class="onboarding-slack-logo slack-logo-image" aria-hidden="true"></span>Open your Slack apps</a></div>' +
       '<form class="onboarding-form" data-action="slack-connect-form">' +
       onboardingSlackCredentialInputs(false) +
       errorHtml + '<div class="onboarding-form-actions"><button type="button" class="btn btn-ghost" data-action="back-to-slack-create">Back</button>' + submit + '</div></form>' +
