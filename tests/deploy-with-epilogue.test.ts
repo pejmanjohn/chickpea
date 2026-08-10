@@ -31,7 +31,6 @@ function createHarness() {
   const secretCapturePath = path.join(root, 'secret-capture.json');
   const npmStub = path.join(root, 'fake-npm.mjs');
   const wranglerStub = path.join(wranglerDir, 'wrangler.js');
-  const fetchStub = path.join(root, 'fake-fetch.mjs');
 
   mkdirSync(scriptsDir, { recursive: true });
   mkdirSync(authDir, { recursive: true });
@@ -107,30 +106,6 @@ function createHarness() {
       }
     `,
   );
-  writeFileSync(fetchStub, `
-    let fetchCount = 0;
-    globalThis.fetch = async (input, init) => {
-      const statuses = (process.env.DEPLOY_TEST_SETUP_STATUSES
-        || process.env.DEPLOY_TEST_SETUP_STATUS
-        || '200').split(',').map(Number);
-      const status = statuses[Math.min(fetchCount, statuses.length - 1)];
-      fetchCount += 1;
-      const headers = status >= 300 && status < 400 ? { location: '/admin' } : undefined;
-      if (process.env.DEPLOY_TEST_FETCH_LOG) {
-        const { appendFileSync } = await import('node:fs');
-        appendFileSync(process.env.DEPLOY_TEST_FETCH_LOG, JSON.stringify({
-          url: String(input), method: init?.method, redirect: init?.redirect,
-        }) + '\\n');
-      }
-      if (process.env.DEPLOY_TEST_FETCH_BODY_NEVER_SETTLES === '1') {
-        return {
-          status,
-          body: { cancel: () => new Promise(() => {}) },
-        };
-      }
-      return new Response('', { status, headers });
-    };
-  `);
   writeFileSync(
     path.join(root, 'slack-app-manifest.json'),
     JSON.stringify({ features: { agent_view: { agent_description: 'Test agent' } } }),
@@ -140,7 +115,6 @@ function createHarness() {
     root,
     logPath,
     secretCapturePath,
-    fetchStub,
     npmStub,
     script: path.join(scriptsDir, 'deploy-with-epilogue.mjs'),
   };
@@ -164,28 +138,12 @@ function runHarness(
       ...env,
       DEPLOY_TEST_LOG: harness.logPath,
       DEPLOY_TEST_SECRET_CAPTURE: harness.secretCapturePath,
-      DEPLOY_TEST_FETCH_LOG: path.join(harness.root, 'fetch.log'),
-      DEPLOY_TEST_READINESS_INTERVAL_MS: '0',
       npm_execpath: harness.npmStub,
-      NODE_OPTIONS: `${env.NODE_OPTIONS ?? ''} --import=${harness.fetchStub}`.trim(),
     },
   });
 }
 
-test('setup readiness cannot hold a completed deploy open on an unreadable response body', (context) => {
-  const harness = createHarness();
-  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
-
-  const result = runHarness(harness, ['--skip-build'], {
-    DEPLOY_TEST_URL: 'https://chickpea.example.workers.dev',
-    DEPLOY_TEST_FETCH_BODY_NEVER_SETTLES: '1',
-  }, 2_000);
-
-  assert.equal(result.status, 0, result.error?.message ?? result.stderr);
-  assert.match(result.stdout, /Chickpea setup is responding/);
-});
-
-test('successful deploy generates stable auth after a quick setup-route check', async (context) => {
+test('successful deploy generates stable auth and prints the setup link immediately', async (context) => {
   const harness = createHarness();
   context.after(() => rmSync(harness.root, { recursive: true, force: true }));
 
@@ -211,16 +169,9 @@ test('successful deploy generates stable auth after a quick setup-route check', 
   assert.equal(capture.mode, 0o600);
   assert.match(capture.values.CHICKPEA_AUTH_SECRET, /^[A-Za-z0-9_-]{43}$/);
   assert.equal(existsSync(capture.path), false);
-  const fetches = readFileSync(path.join(harness.root, 'fetch.log'), 'utf8').trim().split('\n');
-  assert.equal(fetches.length, 1);
-  for (const fetch of fetches) {
-    const parsed = JSON.parse(fetch);
-    assert.match(parsed.url, /^https:\/\/chickpea\.example\.workers\.dev\/admin\/setup\?readiness=\d+-\d+$/);
-    assert.equal(parsed.method, 'HEAD');
-    assert.equal(parsed.redirect, 'manual');
-  }
-  assert.match(result.stdout, /Chickpea setup is responding/);
-  assert.match(result.stdout, /may take another 1–2 minutes/);
+  assert.doesNotMatch(result.stdout, /Checking the public setup URL|setup is responding/);
+  assert.match(result.stdout, /✔ Worker deployed/);
+  assert.match(result.stdout, /may take 1–2 minutes/);
   assert.match(result.stdout, /🔐 PRIVATE SETUP LINK/);
   assert.match(result.stdout, /👉 https:\/\/chickpea\.example\.workers\.dev\/admin\/setup#setup=/);
   const invoked = commands(harness.logPath);
@@ -230,40 +181,6 @@ test('successful deploy generates stable auth after a quick setup-route check', 
     /^wrangler:\["d1","migrations","apply","AUTH_DB","--remote","--config",".*\/dist-cf\/chickpea\/wrangler\.json"\]$/,
   );
   assert.match(invoked[2] ?? '', /^wrangler:\["deploy","--secrets-file",".*"\]$/);
-});
-
-test('a quick retry can observe the setup route after initial propagation', (context) => {
-  const harness = createHarness();
-  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
-
-  const result = runHarness(harness, ['--skip-build'], {
-    DEPLOY_TEST_URL: 'https://chickpea.example.workers.dev',
-    DEPLOY_TEST_SETUP_STATUSES: '404,200',
-  });
-
-  assert.equal(result.status, 0, result.stderr);
-  const fetches = readFileSync(path.join(harness.root, 'fetch.log'), 'utf8').trim().split('\n');
-  assert.equal(fetches.length, 2);
-  assert.match(result.stdout, /Chickpea setup is responding/);
-  assert.doesNotMatch(result.stdout, /still activating/);
-});
-
-test('an unsettled public route is reported honestly without claiming readiness', (context) => {
-  const harness = createHarness();
-  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
-
-  const result = runHarness(harness, ['--skip-build'], {
-    DEPLOY_TEST_URL: 'https://chickpea.example.workers.dev',
-    DEPLOY_TEST_SETUP_STATUS: '404',
-  });
-
-  assert.equal(result.status, 0, result.stderr);
-  const fetches = readFileSync(path.join(harness.root, 'fetch.log'), 'utf8').trim().split('\n');
-  assert.equal(fetches.length, 2);
-  assert.match(result.stdout, /Worker deployed\. Cloudflare is still activating its public URL/);
-  assert.match(result.stdout, /may take another 1–2 minutes/);
-  assert.doesNotMatch(result.stdout, /Chickpea (?:setup|Admin) is (?:ready|responding)|Chickpea is live/);
-  assert.match(result.stdout, /\/admin\/setup#setup=[A-Za-z0-9_-]{43}/);
 });
 
 test('successful custom-route deploy preserves the private setup path when Wrangler reports no origin', (context) => {
@@ -337,9 +254,8 @@ test('new Worker not-found is fresh, but a denied secret inventory stops before 
 
   assert.equal(freshResult.status, 0, freshResult.stderr);
   assert.equal(existsSync(fresh.secretCapturePath), true);
-  assert.match(freshResult.stdout, /Checking the public setup URL \(up to 5 seconds\)/);
-  const freshFetches = readFileSync(path.join(fresh.root, 'fetch.log'), 'utf8').trim().split('\n');
-  assert.equal(freshFetches.length, 1);
+  assert.doesNotMatch(freshResult.stdout, /Checking the public setup URL/);
+  assert.match(freshResult.stdout, /PRIVATE SETUP LINK/);
   assert.equal(deniedResult.status, 1);
   assert.match(deniedResult.stderr, /must allow secret listing/);
   assert.equal(commands(denied.logPath).length, 1);
@@ -376,23 +292,6 @@ test('failed deploy removes its mode-0600 secret file and retry rotates only set
     failedConfig.vars.CHICKPEA_SETUP_CAPABILITY_DIGEST,
   );
   assert.equal(existsSync(harness.secretCapturePath), false);
-});
-
-test('redirected setup surface does not print a private link', (context) => {
-  const harness = createHarness();
-  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
-
-  const result = runHarness(harness, ['--skip-build'], {
-    DEPLOY_TEST_URL: 'https://chickpea.example.workers.dev',
-    DEPLOY_TEST_SETUP_STATUS: '303',
-  });
-
-  assert.equal(result.status, 0, result.stderr);
-  assert.doesNotMatch(result.stdout, /#setup=/);
-  assert.match(result.stdout, /Chickpea Admin is responding/);
-  assert.match(result.stdout, /may take another 1–2 minutes/);
-  const fetches = readFileSync(path.join(harness.root, 'fetch.log'), 'utf8').trim().split('\n');
-  assert.equal(fetches.length, 1);
 });
 
 test('fresh deploy provisions AUTH_DB before migrations and rebuilds the binding', (context) => {

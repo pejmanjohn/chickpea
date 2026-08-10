@@ -723,64 +723,15 @@ child.stdout.on('data', (chunk) => {
 });
 
 const RULE = '────────────────────────────────────────────────────────';
-const READINESS_MAX_ATTEMPTS = 2;
-const READINESS_REQUEST_TIMEOUT_MS = 2_000;
-const READINESS_INTERVAL_MS = (() => {
-  // This is only a quick handoff check, not a deployment gate. Cloudflare can
-  // keep propagating after the build completes, so never make the customer
-  // wait here for full convergence.
-  const testOverride = process.env.DEPLOY_TEST_READINESS_INTERVAL_MS;
-  if (testOverride === undefined) return 500;
-  const parsed = Number(testOverride);
-  return Number.isInteger(parsed) && parsed >= 0 ? parsed : 500;
-})();
-
-async function setupSurfaceReadiness(baseUrl) {
-  const url = new URL('/admin/setup', baseUrl);
-  for (let attempt = 0; attempt < READINESS_MAX_ATTEMPTS; attempt += 1) {
-    url.searchParams.set('readiness', `${Date.now()}-${attempt}`);
-    const controller = new AbortController();
-    let timeout;
-    try {
-      const response = await Promise.race([
-        fetch(url, {
-          method: 'HEAD',
-          redirect: 'manual',
-          cache: 'no-store',
-          headers: { accept: 'text/html', 'cache-control': 'no-cache' },
-          signal: controller.signal,
-        }).catch(() => undefined),
-        new Promise((resolve) => {
-          timeout = setTimeout(() => resolve(undefined), READINESS_REQUEST_TIMEOUT_MS);
-        }),
-      ]);
-      if (response?.status === 200) return 'ready';
-      if (response?.status >= 300 && response.status < 400) return 'configured';
-    } catch {
-      // Deployment propagation is eventually consistent; retry below.
-    } finally {
-      if (timeout !== undefined) clearTimeout(timeout);
-      controller.abort();
-    }
-    if (attempt < READINESS_MAX_ATTEMPTS - 1) {
-      await new Promise((resolve) => setTimeout(resolve, READINESS_INTERVAL_MS));
-    }
-  }
-  return 'unavailable';
-}
-
-function printPrivateSetupLink(baseUrl, setup, readiness) {
+function printPrivateSetupLink(baseUrl, setup) {
   const privateSetupUrl = setupCapabilityUrl(baseUrl, setup.capability);
-  const status = readiness === 'ready'
-    ? '  ✔ Worker deployed. Chickpea setup is responding.'
-    : '  ✔ Worker deployed. Cloudflare is still activating its public URL.';
   process.stdout.write(
     [
       '',
       RULE,
-      status,
+      '  ✔ Worker deployed.',
       '',
-      '  Cloudflare may take another 1–2 minutes to make this URL available to you.',
+      '  Cloudflare may take 1–2 minutes to make this URL available to you.',
       '',
       '  🔐 PRIVATE SETUP LINK — COPY AND OPEN THIS',
       RULE,
@@ -807,7 +758,7 @@ function printPrivateSetupPath(setup) {
 // Workers Builds receives stdout through a pipe. Let Node exit naturally after
 // this callback so the final setup link and Cloudflare's completion event can
 // flush; process.exit() can truncate asynchronous pipe writes.
-child.on('close', async (code) => {
+child.on('close', (code) => {
   cleanupSecrets();
   if (code !== 0) {
     process.exitCode = code ?? 1;
@@ -818,17 +769,7 @@ child.on('close', async (code) => {
     return;
   }
   if (deployedUrl && deploymentAuthority) {
-    process.stdout.write('\nChecking the public setup URL (up to 5 seconds)...\n');
-    const readiness = await setupSurfaceReadiness(deployedUrl);
-    if (readiness === 'configured') {
-      process.stdout.write(
-        `\n${RULE}\n  ✔ Worker deployed. Chickpea Admin is responding.\n\n` +
-        '  Cloudflare may take another 1–2 minutes to make this URL available to you.\n\n' +
-        `  Open ${deployedUrl}/admin\n${RULE}\n`,
-      );
-      return;
-    }
-    printPrivateSetupLink(deployedUrl, deploymentAuthority.setup, readiness);
+    printPrivateSetupLink(deployedUrl, deploymentAuthority.setup);
   } else if (deploymentAuthority) {
     printPrivateSetupPath(deploymentAuthority.setup);
   }
