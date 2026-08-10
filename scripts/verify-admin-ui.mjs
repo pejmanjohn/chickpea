@@ -274,6 +274,20 @@ try {
       pageHtml.includes('Prior exports, Slack or provider logs, backups, and Flue transcripts may still retain copies'),
   );
 
+  record(
+    'first-run Slack permission completion is accessible and keeps credentials out of markup',
+    pageHtml.includes('slackOnboardingContinuation') &&
+      pageHtml.includes('data-action="slack-permissions-open"') &&
+      pageHtml.includes('data-action="slack-permissions-check"') &&
+      pageHtml.includes('role="status" aria-live="polite"') &&
+      pageHtml.includes('target="_blank" rel="noopener noreferrer" data-action="slack-permissions-open"') &&
+      pageHtml.includes('type="password" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false"') &&
+      pageHtml.includes('signingSecretInput.value = state.slackDraft.signingSecret') &&
+      pageHtml.includes('botTokenInput.value = state.slackDraft.botToken') &&
+      !pageHtml.includes('id="onboarding-signing-secret" name="signingSecret" type="password" autocomplete="off" value="') &&
+      !pageHtml.includes('id="onboarding-bot-token" name="botToken" type="password" autocomplete="off" placeholder="xoxb-&hellip;" value="'),
+  );
+
   const usageOverview = await adminJson(
     app,
     `/admin/api/usage/overview?from=${usageNow - 86_400_000}&to=${usageNow + 1}&groupBy=channel&currency=USD`,

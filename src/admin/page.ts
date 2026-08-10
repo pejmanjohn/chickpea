@@ -1994,6 +1994,12 @@ details[open].advanced summary::before {
     slackError: "",
     slackRepair: null,
     slackBusy: false,
+    // First-run permission completion is a forward onboarding state, not the
+    // shared Slack recovery surface. The credential pair remains only in this
+    // live page state and is discarded on refresh or when onboarding is left.
+    slackOnboardingContinuation: null,
+    slackOnboardingRequestId: 0,
+    slackOnboardingFocus: "",
     // First-run Slack handoff: 1 opens the manifest, 2 is the explicit return
     // checkpoint, and 3 reveals install credentials. Client-side only — Slack
     // owns app creation, so there is no server signal for the transition.
@@ -2433,6 +2439,7 @@ details[open].advanced summary::before {
       render();
       return;
     }
+    if (state.view === "onboarding") resetOnboardingSlackContinuation(true);
     if (parts[1] === "usage" && USAGE_ADMIN_UI) { applyUsageQuery(location.search || ""); openUsage(); return; }
     if (parts[1] === "team") { openTeam(); return; }
     if (parts[1] === "settings") {
@@ -2487,6 +2494,24 @@ details[open].advanced summary::before {
     } else {
       app.className = "frame";
       app.innerHTML = topbarHtml() + '<div class="body">' + railHtml() + mainHtml() + "</div>" + overlays;
+    }
+    if (isOnboardingSlackConnection()) {
+      var signingSecretInput = document.getElementById("onboarding-signing-secret");
+      var botTokenInput = document.getElementById("onboarding-bot-token");
+      // Set credential values only as live DOM properties. They must never be
+      // serialized into innerHTML, history, storage, diagnostics, or URLs.
+      if (signingSecretInput) signingSecretInput.value = state.slackDraft.signingSecret;
+      if (botTokenInput) botTokenInput.value = state.slackDraft.botToken;
+    }
+    if (state.view === "onboarding" && state.slackOnboardingFocus) {
+      var pendingOnboardingFocus = state.slackOnboardingFocus;
+      var onboardingFocus = document.getElementById(state.slackOnboardingFocus) ||
+        document.querySelector('[data-action="' + state.slackOnboardingFocus + '"]');
+      state.slackOnboardingFocus = "";
+      if (onboardingFocus && onboardingFocus.focus) onboardingFocus.focus();
+      if (pendingOnboardingFocus === "onboarding-channel-heading" && !state.slackChannels) {
+        state.slackOnboardingFocus = pendingOnboardingFocus;
+      }
     }
     if (state.teamRemoveConfirm) {
       [document.querySelector(".topbar"), document.querySelector(".body")].forEach(function (region) {
@@ -3348,6 +3373,61 @@ details[open].advanced summary::before {
       '<section class="usage-section"><div class="usage-section-head"><div><h2 class="section-title">Recent ' + usageActivityLabelHtml("activity") + '</h2><p class="hint">Hover over total tokens to see the input and output split.</p></div>' + filter + '</div>' + usageOperationsHtml() + '</section>';
   }
 
+  function isOnboardingSlackConnection() {
+    return state.view === "onboarding" && state.onboarding && state.onboarding.stage === "connect_slack";
+  }
+
+  function onboardingSlackPermissionUrl(value) {
+    try {
+      var url = new URL(String(value || ""));
+      var pathParts = url.pathname.split("/").filter(Boolean);
+      var appSpecific = pathParts.length === 3 && pathParts[0] === "apps" && /^[A-Z0-9]+$/.test(pathParts[1]) && pathParts[2] === "oauth";
+      var appList = pathParts.length === 1 && pathParts[0] === "apps";
+      if (url.protocol !== "https:" || url.hostname !== "api.slack.com" || url.username || url.password || (!appSpecific && !appList)) return "";
+      var safePath = url.pathname.endsWith("/") ? url.pathname.slice(0, -1) : url.pathname;
+      return "https://api.slack.com" + safePath;
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function onboardingSlackCredentialInputs(readonly) {
+    var locked = readonly ? ' readonly aria-readonly="true"' : "";
+    var secureAttrs = ' type="password" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false"';
+    return '<div class="field"><label class="field-label" for="onboarding-signing-secret">Signing secret</label>' +
+      '<input class="input mono" id="onboarding-signing-secret" name="signingSecret"' + secureAttrs + ' data-action="slack-signing-secret"' + locked + '></div>' +
+      '<div class="field"><label class="field-label" for="onboarding-bot-token">Bot User OAuth Token</label>' +
+      '<input class="input mono" id="onboarding-bot-token" name="botToken"' + secureAttrs + ' data-action="slack-bot-token" placeholder="xoxb-&hellip;"' + locked + '>' +
+      '<p class="hint">These values stay in this tab until Slack is connected. The Signing Secret is accepted only after Slack&rsquo;s signed check matches this app.</p></div>';
+  }
+
+  function onboardingSlackContinuationHtml() {
+    var continuation = state.slackOnboardingContinuation;
+    var phase = continuation.phase || "finish";
+    var permissionUrl = onboardingSlackPermissionUrl(continuation.consoleUrl) || "https://api.slack.com/apps";
+    var appListFallback = permissionUrl === "https://api.slack.com/apps";
+    var fallback = appListFallback
+      ? '<div class="advanced-note"><p class="hint">In Slack, open the Chickpea app, choose OAuth &amp; Permissions, then choose Install to Workspace or Reinstall to Workspace. Return to this tab when Slack is done.</p></div>'
+      : '<p class="hint">Slack will open Chickpea&rsquo;s permissions page in a new tab.</p>';
+    var status = continuation.note
+      ? '<p class="onboarding-status" role="status" aria-live="polite">' + esc(continuation.note) + '</p>'
+      : '<p class="onboarding-status" role="status" aria-live="polite">Your details are ready for the next check.</p>';
+    var action = phase === "finish"
+      ? '<a class="btn btn-primary" href="' + esc(permissionUrl) + '" target="_blank" rel="noopener noreferrer" data-action="slack-permissions-open">Continue in Slack <span class="sr-only">(opens in a new tab)</span></a>'
+      : '<button type="button" class="btn btn-primary" data-action="slack-permissions-check"' + (phase === "checking" ? " disabled" : "") + '>' +
+        (phase === "checking" ? '<span class="spinner"></span>Checking&hellip;' : 'Check again') + '</button>';
+    var title = phase === "finish" ? "Finish applying Slack permissions" : "Return here after Slack is done";
+    var lede = phase === "finish"
+      ? "Slack has one more access step for Chickpea. Continue there, then return to this tab."
+      : "When Slack finishes, check the same details again. You do not need to paste them a second time.";
+    return '<section class="onboarding-panel"><p class="onboarding-eyebrow">Step 1 of 3</p>' +
+      '<h1 class="onboarding-title" id="slack-permission-heading" tabindex="-1">' + title + '</h1>' +
+      '<p class="onboarding-lede">' + lede + '</p>' + status +
+      '<div class="onboarding-form">' + onboardingSlackCredentialInputs(true) + '</div>' + fallback +
+      '<div class="onboarding-actions">' + action +
+      '<button type="button" class="btn btn-ghost" data-action="slack-permissions-start-over">Start over</button></div></section>';
+  }
+
   function onboardingConnectHtml() {
     var conn = state.slack;
     if (!conn) return '<section class="onboarding-panel"><p class="onboarding-eyebrow">Step 1 of 3</p><h1 class="onboarding-title">Loading Slack setup&hellip;</h1></section>';
@@ -3366,33 +3446,20 @@ details[open].advanced summary::before {
         '<a class="btn btn-soft" href="' + esc(conn.manifestUrl) + '" target="_blank" rel="noopener noreferrer"><span class="onboarding-slack-logo slack-logo-image" aria-hidden="true"></span>Open Chickpea setup in Slack</a></div>' +
         '<button type="button" class="btn btn-ghost btn-sm" data-action="back-to-slack-create">Back</button></section>';
     }
+    if (state.slackOnboardingContinuation) return onboardingSlackContinuationHtml();
     var submit = state.slackBusy
       ? '<button type="submit" class="btn btn-primary" disabled><span class="spinner"></span>Connecting&hellip;</button>'
       : '<button type="submit" class="btn btn-primary">Validate and connect</button>';
-    var repair = state.slackRepair;
-    var repairUrl = repair && repair.consoleUrl ? repair.consoleUrl : "https://api.slack.com/apps";
-    var repairHtml = repair
-      ? '<div class="onboarding-error" role="alert" aria-live="assertive" tabindex="-1" data-role="slack-connection-error"><h2 class="section-title">Apply Chickpea&rsquo;s Slack permissions</h2>' +
-        '<p class="hint">Slack issued a starter token before the complete manifest permissions were authorized. Reinstall the app, allow the requested permissions, then paste the refreshed Bot User OAuth Token.</p>' +
-        '<a class="btn btn-primary btn-sm" href="' + esc(repairUrl) + '" target="_blank" rel="noopener noreferrer">Reinstall @Chickpea in Slack</a></div>'
+    var errorHtml = state.slackError
+      ? '<div class="onboarding-error" role="alert" aria-live="assertive" tabindex="-1" data-role="slack-connection-error"><p class="field-error">' + esc(state.slackError) + '</p></div>'
       : '';
-    var missingScopes = repair && repair.missingScopes && repair.missingScopes.length
-      ? '<p class="onboarding-error-scopes">Missing: ' + esc(repair.missingScopes.join(", ")) + '</p>'
-      : '';
-    var errorHtml = state.slackError && !repair
-      ? '<div class="onboarding-error" role="alert" aria-live="assertive" tabindex="-1" data-role="slack-connection-error"><p class="field-error">' + esc(state.slackError) + '</p>' + missingScopes + repairHtml + '</div>'
-      : (repair ? repairHtml + missingScopes : '');
     return '<section class="onboarding-panel">' +
       '<div class="onboarding-return-note"><span class="onboarding-return-icon" aria-hidden="true">&rarr;</span><span><strong>Install Chickpea in Slack, then return here.</strong><br>If Slack asked you to sign in, reopen the setup link. In OAuth &amp; Permissions, click Install to Workspace or Reinstall to Workspace before copying the token.</span></div>' +
       '<p class="onboarding-eyebrow">Step 1 of 3</p><h1 class="onboarding-title">Finish connecting Slack</h1>' +
       '<p class="onboarding-lede">Install the app in Slack, then paste the two values Slack gives you. Chickpea checks the workspace, permissions, and channel access before continuing.</p>' +
       '<div class="onboarding-actions"><a class="btn btn-soft" href="' + esc(conn.manifestUrl) + '" target="_blank" rel="noopener noreferrer"><span class="onboarding-slack-logo slack-logo-image" aria-hidden="true"></span>Open Slack setup again</a></div>' +
       '<form class="onboarding-form" data-action="slack-connect-form">' +
-      '<div class="field"><label class="field-label" for="onboarding-signing-secret">Signing secret</label>' +
-      '<input class="input mono" id="onboarding-signing-secret" name="signingSecret" type="password" autocomplete="off" value="' + esc(state.slackDraft.signingSecret) + '"></div>' +
-      '<div class="field"><label class="field-label" for="onboarding-bot-token">Bot User OAuth Token</label>' +
-      '<input class="input mono" id="onboarding-bot-token" name="botToken" type="password" autocomplete="off" placeholder="xoxb-&hellip;" value="' + esc(state.slackDraft.botToken) + '">' +
-      '<p class="hint">These values stay inside your Chickpea deployment.</p></div>' +
+      onboardingSlackCredentialInputs(false) +
       errorHtml + '<div class="onboarding-form-actions"><button type="button" class="btn btn-ghost" data-action="back-to-slack-create">Back</button>' + submit + '</div></form>' +
       '<details class="advanced"><summary>Where do I find these?</summary><div class="adv-rows"><p class="hint">The signing secret is under Basic Information &rarr; App Credentials. Install the app from OAuth &amp; Permissions, then copy its xoxb- Bot User OAuth Token.</p></div></details>' +
       '</section>';
@@ -3423,7 +3490,7 @@ details[open].advanced summary::before {
     var selected = findSlackChannel(state.onboardingChannelSelected);
     var buttonLabel = selected ? 'Add @Chickpea to #' + selected.name : 'Choose a channel';
     return '<section class="onboarding-panel onboarding-panel-wide"><p class="onboarding-eyebrow">Step 2 of 3</p>' +
-      '<h1 class="onboarding-title">Choose where Chickpea should start</h1>' +
+      '<h1 class="onboarding-title" id="onboarding-channel-heading" tabindex="-1">Choose where Chickpea should start</h1>' +
       '<p class="onboarding-lede">Pick one channel for the first conversation. You can add or remove channels anytime.</p>' +
       '<div class="onboarding-workspace-row"><div><div class="onboarding-workspace-label">' + esc((workspace && workspace.name) || "Slack") + '</div>' +
       '<div class="onboarding-workspace-meta">' + esc((workspace && workspace.id) || "") + '</div></div><span class="badge badge-on"><span class="dot"></span>Slack connected</span></div>' +
@@ -4068,22 +4135,54 @@ details[open].advanced summary::before {
     return serverMessage || (detail ? message + ": " + detail : message);
   }
 
+  function resetOnboardingSlackContinuation(clearDraft) {
+    state.slackOnboardingRequestId += 1;
+    state.slackOnboardingContinuation = null;
+    state.slackOnboardingFocus = "";
+    if (clearDraft) state.slackDraft = { botToken: "", signingSecret: "" };
+    state.slackError = "";
+    state.slackRepair = null;
+    if (state.slackConnectionBusy === "update") state.slackConnectionBusy = "";
+    state.slackBusy = false;
+  }
+
+  function isSlackCredentialMismatch(message) {
+    return message === "workspace_mismatch" || message === "app_mismatch" ||
+      message === "challenge_invalid_signature" || message === "signing_secret_change_requires_reconnect";
+  }
+
   function submitSlackConnection(formData) {
+    submitSlackCredentialPair(
+      String(formData.get("botToken") || "").trim(),
+      String(formData.get("signingSecret") || "").trim()
+    );
+  }
+
+  function submitSlackCredentialPair(botToken, signingSecret) {
     if (state.slackConnectionBusy) return;
     // Submitting the paste form means the credential surface is active — pin it so a
     // validation error renders against the fields (not a collapsed step).
     state.slackStep = 3;
-    var botToken = String(formData.get("botToken") || "").trim();
-    var signingSecret = String(formData.get("signingSecret") || "").trim();
     state.slackDraft = { botToken: botToken, signingSecret: signingSecret };
-    if (!botToken) { state.slackError = "Bot token is required."; render(); return; }
-    if (!signingSecret) { state.slackError = "Signing secret is required."; render(); return; }
+    var onboardingAttempt = isOnboardingSlackConnection();
+    if (!botToken) { state.slackError = "Bot token is required."; if (onboardingAttempt) state.slackOnboardingFocus = "onboarding-bot-token"; render(); return; }
+    if (!signingSecret) { state.slackError = "Signing secret is required."; if (onboardingAttempt) state.slackOnboardingFocus = "onboarding-signing-secret"; render(); return; }
+    var continuationAttempt = onboardingAttempt && !!state.slackOnboardingContinuation;
+    var requestId = onboardingAttempt ? ++state.slackOnboardingRequestId : 0;
     state.slackError = "";
     state.slackRepair = null;
     state.slackBusy = true;
     state.slackConnectionBusy = "update";
+    if (continuationAttempt) {
+      state.slackOnboardingContinuation = {
+        phase: "checking",
+        consoleUrl: state.slackOnboardingContinuation.consoleUrl || "",
+        note: "Checking Slack."
+      };
+    }
     render();
     postJson("/admin/api/slack-connection", "POST", { botToken: botToken, signingSecret: signingSecret }).then(function (result) {
+      if (onboardingAttempt && requestId !== state.slackOnboardingRequestId) return null;
       state.slackBusy = false;
       state.slackConnectionBusy = "";
       state.slackDraft = { botToken: "", signingSecret: "" };
@@ -4099,10 +4198,58 @@ details[open].advanced summary::before {
       state.slackIdentityError = "";
       state.slackIdentityLoading = false;
       state.slackIdentityRequestId += 1;
+      if (onboardingAttempt) {
+        state.slackOnboardingContinuation = null;
+        state.slackOnboardingFocus = "onboarding-channel-heading";
+      }
       return refreshData();
     }).catch(function (error) {
+      if (onboardingAttempt && requestId !== state.slackOnboardingRequestId) return;
       state.slackBusy = false;
       state.slackConnectionBusy = "";
+      if (onboardingAttempt && error && error.message === "slack_missing_scopes") {
+        state.slackRepair = null;
+        state.slackError = "";
+        state.slackOnboardingContinuation = {
+          phase: "finish",
+          consoleUrl: onboardingSlackPermissionUrl(error.payload && error.payload.consoleUrl),
+          note: continuationAttempt ? "Slack needs one more confirmation before Chickpea can continue." : ""
+        };
+        state.slackOnboardingFocus = continuationAttempt ? "slack-permissions-open" : "slack-permission-heading";
+        render();
+        return;
+      }
+      if (onboardingAttempt && continuationAttempt && error && error.message === "slack_unreachable") {
+        state.slackRepair = null;
+        state.slackError = "";
+        state.slackOnboardingContinuation = {
+          phase: "awaiting",
+          consoleUrl: (state.slackOnboardingContinuation && state.slackOnboardingContinuation.consoleUrl) || "",
+          note: "Slack could not be checked just now. Your details are still here; check again when you are ready."
+        };
+        state.slackOnboardingFocus = "slack-permissions-check";
+        render();
+        return;
+      }
+      if (onboardingAttempt && error && error.message === "slack_auth_failed" &&
+          (error.detail === "invalid_auth" || error.detail === "token_revoked")) {
+        state.slackRepair = null;
+        state.slackOnboardingContinuation = null;
+        state.slackDraft = continuationAttempt
+          ? { botToken: "", signingSecret: signingSecret }
+          : { botToken: "", signingSecret: "" };
+        state.slackError = continuationAttempt
+          ? "Paste the current Bot User OAuth Token from Slack, then check again."
+          : "Slack rejected these credentials. Copy both values from the same Chickpea app and try again.";
+        state.slackOnboardingFocus = continuationAttempt ? "onboarding-bot-token" : "onboarding-signing-secret";
+        render();
+        return;
+      }
+      if (onboardingAttempt && error && isSlackCredentialMismatch(error.message)) {
+        state.slackRepair = null;
+        state.slackOnboardingContinuation = null;
+        state.slackDraft = { botToken: "", signingSecret: "" };
+      }
       state.slackRepair = error && error.message === "slack_missing_scopes"
         ? {
             missingScopes: (error.payload && error.payload.missingScopes) || [],
@@ -9953,7 +10100,7 @@ details[open].advanced summary::before {
     // navigation or second connection action make it look canceled while the
     // POST is still live. Read-only connection tests may finish in the
     // background, but they cannot overlap another connection operation.
-    if (state.slackConnectionBusy === "update") return;
+    if (state.slackConnectionBusy === "update" && action !== "slack-permissions-start-over") return;
     if (state.slackConnectionBusy && (
       action === "slack-test" ||
       action === "slack-update-open" ||
@@ -10076,7 +10223,24 @@ details[open].advanced summary::before {
     // the Create anchor still open Slack in a new tab.
     if (action === "advance-slack-step") { state.slackStep = 2; state.slackError = ""; state.slackRepair = null; render(); }
     if (action === "slack-app-created") { state.slackStep = 3; state.slackError = ""; state.slackRepair = null; render(); }
-    if (action === "back-to-slack-create") { state.slackStep = 1; state.slackError = ""; state.slackRepair = null; render(); }
+    if (action === "back-to-slack-create") { resetOnboardingSlackContinuation(true); state.slackStep = 1; render(); }
+    if (action === "slack-permissions-open" && state.slackOnboardingContinuation && !state.slackConnectionBusy) {
+      state.slackOnboardingContinuation = {
+        phase: "awaiting",
+        consoleUrl: state.slackOnboardingContinuation.consoleUrl || "",
+        note: "Finish in Slack, then return to this tab and check again."
+      };
+      render();
+    }
+    if (action === "slack-permissions-check" && state.slackOnboardingContinuation && !state.slackConnectionBusy) {
+      submitSlackCredentialPair(state.slackDraft.botToken, state.slackDraft.signingSecret);
+    }
+    if (action === "slack-permissions-start-over" && state.slackOnboardingContinuation) {
+      resetOnboardingSlackContinuation(true);
+      state.slackStep = 3;
+      state.slackOnboardingFocus = "onboarding-signing-secret";
+      render();
+    }
     if (action === "refresh-onboarding-channels") { loadSlackChannels(true); }
     if (action === "retry-onboarding") { state.onboardingError = ""; loadOnboarding(true); }
     if (action === "copy-onboarding-prompt") { copyOnboardingPrompt(); }
@@ -11272,6 +11436,7 @@ details[open].advanced summary::before {
   }
 
   function openChannels() {
+    if (state.view === "onboarding") resetOnboardingSlackContinuation(true);
     state.view = "channels";
     state.channelScreen = "overview";
     state.profileScreen = "list";
