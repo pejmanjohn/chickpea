@@ -3,7 +3,11 @@ import { test } from 'node:test';
 
 import { SqliteMemoryStateStore } from '../src/memory/store.ts';
 import { parseCurrentRequestEnvelope } from '../src/memory/tool-policy.ts';
-import { assembleSlackPrompt } from '../src/slack/web-client-context.ts';
+import {
+  assembleSlackPrompt,
+  renderSlackSelfMention,
+  SLACK_SELF_MENTION_PLACEHOLDER,
+} from '../src/slack/web-client-context.ts';
 import { applyVisibilityBarrier } from '../src/slack/run-turn.ts';
 import { sandboxThreadKey } from '../src/sandbox/thread-key.ts';
 import {
@@ -91,6 +95,31 @@ test('prompt assembly omits the trigger from history and places advisory memory 
     explicitExternalSideEffectIntent: false,
     explicitArtifactDeliveryIntent: false,
   });
+});
+
+test('prompt assembly identifies the live Slack sender without teaching the model a static handle', () => {
+  const turn: NormalizedSlackTurn = {
+    workspaceId: 'T', channelId: 'C', eventId: 'E', text: '<@U_FINANCE> help', userId: 'U',
+    messageTs: '2.0', threadTs: '1.0', source: 'app_mention', contextMode: 'thread',
+  };
+  const prompt = assembleSlackPrompt(
+    turn,
+    {
+      mode: 'thread', truncated: false, degradations: [],
+      messages: [{ userId: 'U', text: turn.text, ts: '2.0', isTrigger: true }],
+    },
+    {
+      slackIdentity: { botUserId: 'U_FINANCE', displayName: 'Finance Renamed' },
+    },
+  );
+
+  assert.match(prompt, /You are replying in Slack as "Finance Renamed"/);
+  assert.match(prompt, new RegExp(SLACK_SELF_MENTION_PLACEHOLDER.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.match(prompt, /do not guess a username or write @me/);
+  assert.equal(
+    renderSlackSelfMention(`Try ${SLACK_SELF_MENTION_PLACEHOLDER} summarize this.`, 'U_FINANCE'),
+    'Try <@U_FINANCE> summarize this.',
+  );
 });
 
 test('visibility barriers compare the full fractional Slack timestamp', () => {

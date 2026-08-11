@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import type { WebClient } from '@slack/web-api';
 
 import type { ResolvedAssignment } from '../src/config/types.ts';
+import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from '../src/config/types.ts';
 import type { SlackInteractionProgressPatch } from '../src/config/state-rpc.ts';
 import {
   AgentPromptFailure,
@@ -20,6 +21,7 @@ import { compileRuntimePlanV2, deriveRuntimePlanInstanceId } from '../src/agents
 import { SqliteWorkStore } from '../src/work/store.ts';
 import { prepareSlackShadowAdmission } from '../src/slack/work-admission.ts';
 import { SANDBOX_UNAVAILABLE_FALLBACK_NOTICE } from '../src/slack/web-client-presenter.ts';
+import { SLACK_SELF_MENTION_PLACEHOLDER } from '../src/slack/web-client-context.ts';
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -277,6 +279,48 @@ test('replay delivery skips model activity and never invokes the agent provider'
     ),
     false,
   );
+});
+
+test('runTurn resolves the authenticated self-mention placeholder before Slack delivery', async () => {
+  let delivered = '';
+  const client = {
+    assistant: {
+      threads: {
+        setStatus: async () => ({ ok: true }),
+      },
+    },
+    conversations: {
+      history: async () => ({ ok: true, messages: [] }),
+    },
+    chat: {
+      startStream: async (input: { markdown_text: string }) => {
+        delivered = input.markdown_text;
+        return { ok: true, ts: 'final-ts' };
+      },
+      stopStream: async () => ({ ok: true }),
+      postMessage: async () => ({ ok: true, channel: assignment.channelId, ts: 'final-ts' }),
+    },
+  } as unknown as WebClient;
+  const turn: NormalizedSlackTurn = {
+    ...workTurn('Ev_SELF_MENTION'),
+    interactionIntent: { disposition: 'reply', reason: 'substantive_request' },
+  };
+
+  await runTurn(turn, assignment, undefined, {
+    identityContext: {
+      identityId: WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+      botToken: 'xoxb-test',
+      botUserId: 'U_CHICKPEA',
+      teamId: assignment.workspaceId,
+      displayName: 'Chickpea Renamed',
+      client,
+    },
+    replayText: `Try ${SLACK_SELF_MENTION_PLACEHOLDER} summarize this channel.`,
+    usageRecordingEnabled: false,
+  });
+
+  assert.match(delivered, /Try <@U_CHICKPEA> summarize this channel\./);
+  assert.doesNotMatch(delivered, /CHICKPEA_SELF_MENTION/);
 });
 
 test('a recovery-required Flue conflict emits no Slack final', async () => {

@@ -8598,7 +8598,7 @@ test('onboarding assigns one returned Slack channel and lands directly in Try Ch
   assert.doesNotMatch(harness.app.innerHTML, /Waiting for Chickpea to reply&amp;hellip;/);
   assert.match(
     harness.app.innerHTML,
-    /@Chickpea summarize the recent discussion in this channel and list any open questions\./,
+    /@Chickpea Give me three useful ways you can help this channel, each with an example prompt I could try next\./,
   );
 });
 

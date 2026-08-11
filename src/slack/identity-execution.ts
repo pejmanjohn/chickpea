@@ -9,6 +9,7 @@ import {
 } from '../config/types.ts';
 import {
   isTransientSlackApiError,
+  slackBotIdentityInfo,
   slackConversationsInfo,
   slackIdentityAuthTest,
 } from './credentials.ts';
@@ -21,6 +22,15 @@ type MaybePromise<T> = T | Promise<T>;
 
 export interface SlackIdentityPolicyReader {
   getSlackIdentity(identityId: string): MaybePromise<SlackIdentity>;
+  updateSlackIdentity?(
+    identityId: string,
+    expectedRevision: number,
+    patch: {
+      observedDisplayName?: string | null;
+      observedAvatarUrl?: string | null;
+      observedAt?: number | null;
+    },
+  ): MaybePromise<SlackIdentity>;
 }
 
 export interface SlackIdentityExecutionContext {
@@ -28,8 +38,12 @@ export interface SlackIdentityExecutionContext {
   botToken: string;
   botUserId: string;
   teamId: string;
+  /** Cached presentation label only; botUserId remains the mention authority. */
+  displayName?: string;
   client: WebClient;
 }
+
+export const SLACK_IDENTITY_PRESENTATION_TTL_MS = 24 * 60 * 60 * 1_000;
 
 export type SlackIdentityExecutionResolver = (
   identityId: string,
@@ -92,6 +106,7 @@ export async function resolveSlackIdentityExecutionContext(
   options: {
     config?: SlackIdentityPolicyReader;
     settings?: SettingsStore;
+    now?: () => number;
   } = {},
 ): Promise<SlackIdentityExecutionContext> {
   const config = options.config ?? getConfigStore(env);
@@ -156,11 +171,47 @@ export async function resolveSlackIdentityExecutionContext(
   if (identity.botUserId && identity.botUserId !== auth.botUserId) {
     throw new SlackIdentityUnavailableError(identityId, 'bot_identity_mismatch');
   }
+  let displayName = identity.observedDisplayName ?? auth.botName;
+  const now = (options.now ?? Date.now)();
+  const presentationIsStale =
+    identity.observedAt === undefined ||
+    identity.observedAt <= now - SLACK_IDENTITY_PRESENTATION_TTL_MS;
+  if (presentationIsStale) {
+    // Presentation metadata is deliberately best-effort. Identity, workspace,
+    // and authorization were already established above; a users.info outage
+    // must not make an otherwise healthy Slack turn unavailable.
+    const presentation = await slackBotIdentityInfo(
+      credentials.botToken,
+      auth.botUserId,
+    );
+    if (presentation.ok) {
+      displayName = presentation.displayName ?? auth.botName ?? displayName;
+      if (config.updateSlackIdentity) {
+        try {
+          await config.updateSlackIdentity(
+            identityId,
+            identity.connectionRevision,
+            {
+              ...(displayName ? { observedDisplayName: displayName } : {}),
+              ...(presentation.avatarUrl
+                ? { observedAvatarUrl: presentation.avatarUrl }
+                : {}),
+              observedAt: now,
+            },
+          );
+        } catch {
+          // A concurrent refresh or Admin edit won the row CAS. Keep the live
+          // result for this turn and let the next resolver read the winner.
+        }
+      }
+    }
+  }
   return {
     identityId,
     botToken: credentials.botToken,
     botUserId: auth.botUserId,
     teamId: auth.teamId,
+    ...(displayName ? { displayName } : {}),
     client: createSlackWebClient(credentials.botToken),
   };
 }

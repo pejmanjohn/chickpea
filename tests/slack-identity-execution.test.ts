@@ -6,6 +6,7 @@ import { test } from 'node:test';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import type { SlackIdentity } from '../src/config/types.ts';
 import {
+  SLACK_IDENTITY_PRESENTATION_TTL_MS,
   resolveSlackIdentityExecutionContext,
   SlackIdentityUnavailableError,
   verifySlackIdentityTurnAccess,
@@ -29,6 +30,8 @@ function identity(overrides: Partial<SlackIdentity> = {}): SlackIdentity {
     dmAgentId: 'agent_finance',
     credentialProvenance: 'stored',
     connectionRevision: 1,
+    observedDisplayName: 'Finance',
+    observedAt: 4_000_000_000_000,
     health: 'healthy',
     createdAt: 1,
     updatedAt: 1,
@@ -172,6 +175,99 @@ test('real identity preflight binds the app and classifies Slack authorization f
       (error: unknown) => error instanceof SlackIdentityUnavailableError &&
         error.reasonCode === 'invalid_auth' && !error.retryable,
     );
+  });
+});
+
+test('identity presentation refreshes once after its TTL and then stays cached', async (t) => {
+  let userInfoCalls = 0;
+  const server = createServer((request, response) => {
+    if (request.url === '/auth.test') {
+      json(response, 200, {
+        ok: true,
+        app_id: 'A_FINANCE',
+        team_id: 'T_ACME',
+        user: 'finance',
+        user_id: 'U_FINANCE',
+        bot_id: 'B_FINANCE',
+      });
+      return;
+    }
+    if (request.url === '/users.info') {
+      userInfoCalls += 1;
+      json(response, 200, {
+        ok: true,
+        user: {
+          id: 'U_FINANCE',
+          profile: {
+            display_name: 'Finance Renamed',
+            image_72: 'https://avatars.slack-edge.com/finance-renamed.png',
+            api_app_id: 'A_FINANCE',
+          },
+        },
+      });
+      return;
+    }
+    json(response, 404, { ok: false, error: 'unknown_method' });
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise<void>((resolve, reject) => {
+    server.close((error) => error ? reject(error) : resolve());
+  }));
+  const address = server.address() as AddressInfo;
+  const settings = new SqliteSettingsStore(':memory:');
+  t.after(() => settings.close());
+  await writeSlackIdentityCredentials(settings, IDENTITY_ID, null, {
+    botToken: 'xoxb-finance',
+    signingSecret: 'finance-signing-secret',
+    botUserId: 'U_FINANCE',
+  });
+
+  const now = 1_800_000_000_000;
+  let current = identity({
+    observedDisplayName: 'Finance Before Rename',
+    observedAt: now - SLACK_IDENTITY_PRESENTATION_TTL_MS - 1,
+  });
+  let updates = 0;
+  const config = {
+    getSlackIdentity: async () => current,
+    updateSlackIdentity: async (
+      _identityId: string,
+      expectedRevision: number,
+      patch: Partial<SlackIdentity>,
+    ) => {
+      assert.equal(expectedRevision, current.connectionRevision);
+      updates += 1;
+      current = {
+        ...current,
+        ...patch,
+        connectionRevision: current.connectionRevision + 1,
+        updatedAt: now,
+      };
+      return current;
+    },
+  };
+
+  await withEnv({ SLACK_API_URL: `http://127.0.0.1:${address.port}` }, async () => {
+    const refreshed = await resolveSlackIdentityExecutionContext(IDENTITY_ID, undefined, {
+      config,
+      settings,
+      now: () => now,
+    });
+    assert.equal(refreshed.displayName, 'Finance Renamed');
+    assert.equal(refreshed.botUserId, 'U_FINANCE');
+    assert.equal(userInfoCalls, 1);
+    assert.equal(updates, 1);
+    assert.equal(current.observedDisplayName, 'Finance Renamed');
+    assert.equal(current.observedAt, now);
+
+    const cached = await resolveSlackIdentityExecutionContext(IDENTITY_ID, undefined, {
+      config,
+      settings,
+      now: () => now + 1,
+    });
+    assert.equal(cached.displayName, 'Finance Renamed');
+    assert.equal(userInfoCalls, 1, 'fresh presentation metadata must not call users.info again');
+    assert.equal(updates, 1);
   });
 });
 

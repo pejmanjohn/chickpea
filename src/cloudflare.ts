@@ -1488,6 +1488,8 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           {
             config: {
               getSlackIdentity: async (id) => stores.config.getSlackIdentity(id),
+              updateSlackIdentity: async (id, expectedRevision, patch) =>
+                stores.config.updateSlackIdentity(id, expectedRevision, patch),
             },
             settings: localSettings,
           },

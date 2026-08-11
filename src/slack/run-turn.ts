@@ -71,6 +71,7 @@ import {
 import {
   assembleSlackPrompt,
   hydrateSlackContextViaWebClient,
+  renderSlackSelfMention,
 } from './web-client-context.ts';
 import {
   AGENT_FAILURE_TEXT,
@@ -689,6 +690,16 @@ export async function runTurn(
     const prompt = assembleSlackPrompt(turn, context, {
       ...(preparedMemory?.promptBlock ? { memoryBlock: preparedMemory.promptBlock } : {}),
       memorySelected: (preparedMemory?.selection?.entries.length ?? 0) > 0,
+      ...(identityContext
+        ? {
+            slackIdentity: {
+              botUserId: identityContext.botUserId,
+              ...(identityContext.displayName
+                ? { displayName: identityContext.displayName }
+                : {}),
+            },
+          }
+        : {}),
     });
     const persistedPrompt = await workLifecycle?.prepareExecution(prompt);
     if (workLifecycle?.hasExecution) {
@@ -839,7 +850,12 @@ export async function runTurn(
         finishStatus();
         if (recoveredText) {
           await preparedMemory?.confirmInjection();
-          await presenter.deliverFinal(recoveredText, 'markdown');
+          await presenter.deliverFinal(
+            identityContext
+              ? renderSlackSelfMention(recoveredText, identityContext.botUserId)
+              : recoveredText,
+            'markdown',
+          );
           await finishDelivery();
           return;
         }
@@ -860,6 +876,9 @@ export async function runTurn(
       recoveredText,
       leaseValid,
     );
+    if (identityContext) {
+      text = renderSlackSelfMention(text, identityContext.botUserId);
+    }
     finishStatus();
     await presenter.deliverFinal(text, 'markdown');
     await finishDelivery();

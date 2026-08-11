@@ -1908,7 +1908,7 @@ details[open].advanced summary::before {
   var GOOGLE_WORKSPACE_SCOPES = ${JSON.stringify(GOOGLE_WORKSPACE_SCOPE_OPTIONS)};
   var WORKSPACE_DEFAULT_SLACK_IDENTITY_ID = "slack_identity_default";
   var NEW_SLACK_IDENTITY_VALUE = "__new__";
-  var ONBOARDING_PROMPT = "@Chickpea summarize the recent discussion in this channel and list any open questions.";
+  var ONBOARDING_PROMPT = "@Chickpea Give me three useful ways you can help this channel, each with an example prompt I could try next.";
   var state = {
     agents: [],
     assignments: [],
