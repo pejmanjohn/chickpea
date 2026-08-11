@@ -402,7 +402,7 @@ button, input, textarea, select { font: inherit; }
 }
 .main:has(.slack-overview) { padding-top: 32px; }
 .main-inner { container-type: inline-size; display: flex; flex-direction: column; gap: 26px; margin: 0 auto; max-width: 760px; width: 100%; }
-.onboarding-frame { max-width: none; }
+.frame.onboarding-frame { height: auto; max-width: none; overflow: visible; }
 .onboarding-shell { isolation: isolate; min-height: 100dvh; width: 100%; }
 .onboarding-shell-inner { margin: 0 auto; max-width: 1600px; padding: 26px 28px 64px; width: 100%; }
 .onboarding-brand-row { align-items: center; display: flex; gap: 20px; justify-content: space-between; }

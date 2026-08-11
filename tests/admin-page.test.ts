@@ -11,6 +11,14 @@ test('admin navigation exposes the signed-in account surface', () => {
   assert.match(html, /href="\/admin\/account">Account<\/a>/);
 });
 
+test('the dedicated onboarding frame remains document-scrollable on desktop', () => {
+  const html = renderAdminPage();
+  assert.match(
+    html,
+    /\.frame\.onboarding-frame\s*\{[^}]*height:\s*auto;[^}]*overflow:\s*visible;/s,
+  );
+});
+
 interface FakeResponse {
   ok: boolean;
   status: number;
