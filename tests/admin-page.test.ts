@@ -932,7 +932,7 @@ function runAdminPageHarness(
       if (id === 'onboarding-signing-secret' && appHtml.includes('id="onboarding-signing-secret"')) {
         return onboardingCredentialDom.signingSecret;
       }
-      if ((id === 'slack-permission-heading' || id === 'onboarding-channel-heading') && appHtml.includes(`id="${id}"`)) {
+      if ((id === 'slack-permission-heading' || id === 'onboarding-connected-heading' || id === 'onboarding-channel-heading') && appHtml.includes(`id="${id}"`)) {
         return focusElement(id);
       }
       // The favorites search re-renders only its own results container; hand it a
@@ -7985,9 +7985,14 @@ test('onboarding walks through the approved create, permissions, and keys sequen
   assert.doesNotMatch(harness.app.innerHTML, /name="botToken"/);
 
   harness.listeners.click?.({ target: actionTarget({ 'data-action': 'advance-slack-step' }) });
-  assert.match(harness.app.innerHTML, /Create Chickpea/);
+  assert.match(harness.app.innerHTML, /Finish creating Chickpea/);
+  assert.match(harness.app.innerHTML, /Review the permissions, then click Allow/);
+  assert.match(harness.app.innerHTML, /When Slack says Chickpea is ready, click Go to App Settings/);
+  assert.match(harness.app.innerHTML, /\/admin\/assets\/onboarding\/allow\.webp/);
+  assert.match(harness.app.innerHTML, /\/admin\/assets\/onboarding\/ready\.webp/);
   assert.match(harness.app.innerHTML, /Open Slack setup again/);
   assert.match(harness.app.innerHTML, /data-action="onboarding-slack-permissions"/);
+  assert.match(harness.app.innerHTML, /Next: Finish Slack setup/);
   assert.doesNotMatch(harness.app.innerHTML, /name="botToken"/);
 
   harness.listeners.click?.({ target: actionTarget({ 'data-action': 'onboarding-slack-permissions' }) });
@@ -8108,7 +8113,7 @@ test('onboarding treats a missing Slack Events check as one calm resumable step'
   await flushAsync();
 
   assert.match(harness.app.innerHTML, /Finish Slack connection/);
-  assert.match(harness.app.innerHTML, /Open Event Subscriptions and click Retry once/);
+  assert.match(harness.app.innerHTML, /click Retry until Request URL shows Verified/);
   assert.match(
     harness.app.innerHTML,
     /href="https:\/\/api\.slack\.com\/apps\/A0EVENTS\/event-subscriptions"/,
@@ -8127,7 +8132,7 @@ test('onboarding treats a missing Slack Events check as one calm resumable step'
   assert.match(harness.app.innerHTML, /data-action="slack-permissions-check"[^>]*>Check now/);
 });
 
-test('onboarding completes a permission continuation with the unchanged page-only draft', async () => {
+test('onboarding celebrates a connected Slack workspace before channel selection', async () => {
   const harness = runAdminPageHarness({
     initialPath: '/admin/onboarding',
     assignments: [],
@@ -8163,9 +8168,19 @@ test('onboarding completes a permission continuation with the unchanged page-onl
     { botToken: 'xoxb-page-only', signingSecret: 'page-only-secret' },
     { botToken: 'xoxb-page-only', signingSecret: 'page-only-secret' },
   ]);
-  assert.match(harness.app.innerHTML, /Choose where Chickpea should start/);
+  assert.match(harness.app.innerHTML, /Slack connected/);
+  assert.match(harness.app.innerHTML, /Everything worked/);
+  assert.match(harness.app.innerHTML, /ready for a channel/);
+  assert.match(harness.app.innerHTML, /Workspace, permissions, and event delivery are ready/);
+  assert.match(harness.app.innerHTML, /data-action="onboarding-continue-to-channel"[^>]*>Choose a channel/);
+  assert.doesNotMatch(harness.app.innerHTML, /Choose where Chickpea should start/);
   assert.doesNotMatch(harness.app.innerHTML, /Finish applying Slack permissions|page-only-secret|xoxb-page-only/);
   assert.deepEqual(harness.onboardingCredentialValues(), { botToken: '', signingSecret: '' });
+  assert.equal(harness.focusedAction(), 'onboarding-connected-heading');
+
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'onboarding-continue-to-channel' }) });
+  assert.match(harness.app.innerHTML, /Choose where Chickpea should start/);
+  assert.doesNotMatch(harness.app.innerHTML, /Everything worked/);
   assert.equal(harness.focusedAction(), 'onboarding-channel-heading');
 });
 
@@ -8374,7 +8389,7 @@ test('onboarding cannot discard or overlap an in-flight permission check', async
   harness.resolveSlackPost(1, {});
   await flushAsync();
 
-  assert.match(harness.app.innerHTML, /Choose where Chickpea should start/);
+  assert.match(harness.app.innerHTML, /Everything worked/);
   assert.doesNotMatch(harness.app.innerHTML, /Checking&hellip;|Finish applying Slack permissions/);
   assert.deepEqual(harness.onboardingCredentialValues(), { botToken: '', signingSecret: '' });
 });
@@ -8608,7 +8623,7 @@ test('onboarding stays on channel selection until Slack membership is positively
   assert.match(harness.app.innerHTML, /Choose where Chickpea should start/);
 });
 
-test('Try Chickpea keeps the exact prompt copyable and exits to normal navigation on request', async () => {
+test('completed onboarding confirms the reply and makes Channels the primary handoff', async () => {
   const harness = runAdminPageHarness({
     initialPath: '/admin/onboarding',
     onboarding: {
@@ -8622,14 +8637,13 @@ test('Try Chickpea keeps the exact prompt copyable and exits to normal navigatio
   });
   await flushAsync();
 
-  assert.match(harness.app.innerHTML, /Chickpea is ready/);
+  assert.match(harness.app.innerHTML, /Reply confirmed in #new-channel/);
+  assert.match(harness.app.innerHTML, /<h1 class="onboarding-title">Chickpea is ready<\/h1>/);
+  assert.match(harness.app.innerHTML, /Go to Channels to manage where Chickpea works/);
   assert.doesNotMatch(harness.app.innerHTML, /aria-label="Admin navigation"/);
-  assert.match(harness.app.innerHTML, /readonly value="@Chickpea summarize/);
-  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'copy-onboarding-prompt' }) });
-  await flushAsync();
-  assert.deepEqual(harness.clipboardWrites, [
-    '@Chickpea summarize the recent discussion in this channel and list any open questions.',
-  ]);
+  assert.match(harness.app.innerHTML, /class="btn btn-primary" data-action="open-channels">Go to Channels/);
+  assert.match(harness.app.innerHTML, /class="btn btn-soft" href="https:\/\/app\.slack\.com\/client\/T_DESIGN\/C_NEW"/);
+  assert.doesNotMatch(harness.app.innerHTML, /readonly value="@Chickpea summarize|Copy message/);
   harness.listeners.click?.({ target: actionTarget({ 'data-action': 'open-channels' }) });
   assert.match(harness.app.innerHTML, /aria-label="Admin navigation"/);
 });
