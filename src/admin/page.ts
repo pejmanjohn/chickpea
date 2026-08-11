@@ -443,6 +443,15 @@ button, input, textarea, select { font: inherit; }
 .onboarding-shot-ready { margin-left: 53px; width: min(760px, calc(100% - 53px)); }
 .onboarding-shot-events { aspect-ratio: 1.25; position: relative; }
 .onboarding-shot-events img { height: auto; left: 0; position: absolute; top: -7%; width: 100%; }
+.onboarding-shot-wide { margin-left: 53px; width: min(920px, calc(100% - 53px)); }
+.onboarding-check-list { display: grid; gap: 10px; margin-top: 26px; }
+.onboarding-check-row { align-items: center; background: white; border: 1px solid var(--line); border-radius: 14px; display: grid; gap: 13px; grid-template-columns: 34px minmax(0, 1fr); padding: 13px 14px; }
+.onboarding-check-copy strong { display: block; font-size: .875rem; }
+.onboarding-check-copy span { color: var(--text-2); display: block; font-size: .8125rem; line-height: 1.4; margin-top: 2px; }
+.onboarding-check-icon { background: var(--ok-solid); border-radius: 50%; color: white; display: grid; font-size: .75rem; height: 20px; place-items: center; width: 20px; }
+.onboarding-check-pending { background: #faedca; border-radius: 50%; color: var(--ember-deep); display: grid; font-family: var(--mono); font-size: .75rem; font-weight: 700; height: 30px; place-items: center; width: 30px; }
+.onboarding-recovery-note { background: #faedca; border-radius: 14px; color: var(--text-2); font-size: .9375rem; line-height: 1.5; margin-top: 24px; padding: 16px 18px; }
+.onboarding-recovery-note strong { color: var(--text); display: block; margin-bottom: 3px; }
 .onboarding-guide-actions { align-items: center; border-top: 1px solid var(--line); display: flex; gap: 16px; justify-content: space-between; margin-top: 36px; padding-top: 22px; }
 .onboarding-inline-recovery { margin-top: 10px; min-height: 38px; padding-inline: 0; }
 .onboarding-credential-form { display: grid; gap: 32px; margin-top: 32px; }
@@ -507,7 +516,7 @@ button, input, textarea, select { font: inherit; }
   .onboarding-instruction-number { font-size: .75rem; height: 32px; width: 32px; }
   .onboarding-instruction-note { margin-left: 43px; }
   .onboarding-shot-viewport { height: 250px; }
-  .onboarding-shot-banner, .onboarding-shot-focused, .onboarding-shot-ready { margin-left: 0; width: 100%; }
+  .onboarding-shot-banner, .onboarding-shot-focused, .onboarding-shot-ready, .onboarding-shot-wide { margin-left: 0; width: 100%; }
   .onboarding-credential-grid { grid-template-columns: 1fr; }
   .onboarding-guide-actions { align-items: stretch; flex-direction: column-reverse; }
   .onboarding-guide-actions .btn { min-height: 44px; width: 100%; }
@@ -3441,16 +3450,6 @@ details[open].advanced summary::before {
     }
   }
 
-  function onboardingSlackCredentialInputs(readonly) {
-    var locked = readonly ? ' readonly aria-readonly="true"' : "";
-    var secureAttrs = ' type="password" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false"';
-    return '<div class="field"><label class="field-label" for="onboarding-signing-secret">Signing secret</label>' +
-      '<input class="input mono" id="onboarding-signing-secret" name="signingSecret"' + secureAttrs + ' data-action="slack-signing-secret"' + locked + '></div>' +
-      '<div class="field"><label class="field-label" for="onboarding-bot-token">Bot User OAuth Token</label>' +
-      '<input class="input mono" id="onboarding-bot-token" name="botToken"' + secureAttrs + ' data-action="slack-bot-token" placeholder="xoxb-&hellip;"' + locked + '>' +
-      '<p class="hint">These values stay in this tab until Slack is connected. Chickpea validates the token now; Slack proves the Signing Secret when it confirms the Events URL.</p></div>';
-  }
-
   function onboardingSlackAsset(name) {
     return "/admin/assets/onboarding/" + name + ".webp";
   }
@@ -3467,9 +3466,6 @@ details[open].advanced summary::before {
     var permissionUrl = onboardingSlackPermissionUrl(continuation.consoleUrl) || "https://api.slack.com/apps";
     var appListFallback = permissionUrl === "https://api.slack.com/apps";
     var eventsContinuation = continuation.kind === "events";
-    var fallback = appListFallback
-      ? '<div class="advanced-note"><p class="hint">In Slack, open the Chickpea app and finish the requested step. Return to this tab when Slack is done.</p></div>'
-      : '<p class="hint">Slack will open the exact Chickpea settings page in a new tab.</p>';
     var status = continuation.note
       ? '<p class="onboarding-status" role="status" aria-live="polite">' + esc(continuation.note) + '</p>'
       : '<p class="onboarding-status" role="status" aria-live="polite">Your details are ready for the next check.</p>';
@@ -3478,28 +3474,42 @@ details[open].advanced summary::before {
         (eventsContinuation ? 'Finish in Slack' : 'Continue in Slack') + ' <span class="sr-only">(opens in a new tab)</span></a>'
       : '<button type="button" class="btn btn-primary" data-action="slack-permissions-check"' + (phase === "checking" ? " disabled" : "") + '>' +
         (phase === "checking" ? '<span class="spinner"></span>Checking&hellip;' : (eventsContinuation ? 'Check now' : 'Check again')) + '</button>';
-    var title = eventsContinuation
-      ? (phase === "finish" ? "Finish Slack connection" : "Waiting for Slack")
-      : (phase === "finish" ? "Finish applying Slack permissions" : "Return here after Slack is done");
-    var lede = eventsContinuation
-      ? (phase === "finish"
-        ? "Open Event Subscriptions and click Retry until Request URL shows Verified. Return here and Chickpea will continue automatically."
-        : "Chickpea will continue as soon as Slack confirms the Events URL. You do not need to paste anything again.")
-      : (phase === "finish"
-        ? "Slack has one more access step for Chickpea. Continue there, then return to this tab."
-        : "When Slack finishes, check the same details again. You do not need to paste them a second time.");
-    return '<section class="onboarding-panel"><p class="onboarding-eyebrow">Step 1 of 3</p>' +
-      '<h1 class="onboarding-title" id="slack-permission-heading" tabindex="-1">' + title + '</h1>' +
-      '<p class="onboarding-lede">' + lede + '</p>' + status +
-      '<div class="onboarding-form">' + onboardingSlackCredentialInputs(true) + '</div>' + fallback +
-      '<div class="onboarding-actions">' + action +
-      '<button type="button" class="btn btn-ghost" data-action="slack-permissions-start-over"' + (phase === "checking" ? " disabled" : "") + '>Start over</button></div></section>';
+    if (eventsContinuation) {
+      var eventsFallback = appListFallback
+        ? '<p class="hint">In Slack, open Chickpea, then open Event Subscriptions.</p>'
+        : '<p class="hint">Slack will open Chickpea&rsquo;s Event Subscriptions page.</p>';
+      return '<section class="onboarding-panel onboarding-panel-wide"><p class="onboarding-eyebrow">Event URL check</p>' +
+        '<h1 class="onboarding-title" id="slack-permission-heading" tabindex="-1">' + (phase === "finish" ? 'One more Slack check' : 'Return here when it says Verified') + '</h1>' +
+        '<p class="onboarding-lede">Open Event Subscriptions, click Retry beside Request URL, then click Save Changes. You do not need to paste the values again.</p>' + status + eventsFallback +
+        '<div class="onboarding-actions">' + action +
+        '<button type="button" class="btn btn-ghost" data-action="slack-permissions-start-over"' + (phase === "checking" ? " disabled" : "") + '>Start over</button></div></section>';
+    }
+    var openHelp = appListFallback
+      ? '<p class="hint">Open the Chickpea app, then choose OAuth &amp; Permissions.</p>'
+      : '<p class="hint">Slack will open Chickpea&rsquo;s OAuth &amp; Permissions page.</p>';
+    return '<section class="onboarding-panel"><p class="onboarding-eyebrow">Permissions check</p>' +
+      '<h1 class="onboarding-title" id="slack-permission-heading" tabindex="-1">One more Slack approval</h1>' +
+      '<p class="onboarding-lede">Slack created Chickpea without every permission it needs. Approve the complete set once, then check again.</p>' +
+      '<div class="onboarding-recovery-note"><strong>Your values are still here.</strong>You do not need to copy the token or Signing Secret again.</div>' +
+      '<div class="onboarding-instructions">' +
+      onboardingSlackInstruction(1, 'In OAuth &amp; Permissions, click the yellow reinstall your app link.', '', 'reinstall', 'onboarding-shot-banner', 'Slack yellow banner with the reinstall your app link') +
+      onboardingSlackInstruction(2, 'Review the permissions, then click Allow.', '', 'allow', 'onboarding-shot-focused', 'Slack permission approval screen with the Allow button') +
+      '</div>' + status + openHelp +
+      '<div class="onboarding-guide-actions"><button type="button" class="btn btn-ghost" data-action="slack-permissions-start-over"' + (phase === "checking" ? " disabled" : "") + '>Start over</button>' + action + '</div></section>';
   }
 
   function onboardingConnectHtml() {
     var conn = state.slack;
     if (!conn) return '<section class="onboarding-panel"><p class="onboarding-eyebrow">Step 1 of 3</p><h1 class="onboarding-title">Loading Slack setup&hellip;</h1></section>';
     if (state.slackOnboardingContinuation) return onboardingSlackContinuationHtml();
+    if (state.slackBusy && state.slackConnectionBusy === "update") {
+      return '<section class="onboarding-panel onboarding-panel-wide"><p class="onboarding-eyebrow">Connecting</p>' +
+        '<h1 class="onboarding-title">Checking your Slack setup&hellip;</h1>' +
+        '<div class="onboarding-check-list" role="status" aria-live="polite">' +
+        '<div class="onboarding-check-row"><span class="onboarding-check-icon">&check;</span><span class="onboarding-check-copy"><strong>Event URL</strong><span>Verified</span></span></div>' +
+        '<div class="onboarding-check-row"><span class="onboarding-check-pending">&middot;&middot;&middot;</span><span class="onboarding-check-copy"><strong>Workspace and permissions</strong><span>Checking</span></span></div>' +
+        '</div></section>';
+    }
     if (state.slackStep <= 2) {
       if (state.slackStep === 1) {
         return '<section class="onboarding-panel"><p class="onboarding-eyebrow">Connect Slack</p>' +
@@ -3516,30 +3526,30 @@ details[open].advanced summary::before {
         '<div class="onboarding-instructions">' +
         onboardingSlackInstruction(1, 'Review the permissions, then click Allow.', '', 'allow', 'onboarding-shot-focused', 'Slack permission approval screen with the Allow button') +
         onboardingSlackInstruction(2, 'When Slack says Chickpea is ready, click Go to App Settings.', '', 'ready', 'onboarding-shot-ready', 'Slack Chickpea is ready dialog with the Go to App Settings button') +
-        '</div><div class="onboarding-guide-actions"><a class="btn btn-ghost" href="' + esc(conn.manifestUrl) + '" target="_blank" rel="noopener noreferrer"><span class="onboarding-slack-logo slack-logo-image" aria-hidden="true"></span>Open Slack setup again <span aria-hidden="true">&nearr;</span></a><button type="button" class="btn btn-primary" data-action="onboarding-slack-permissions">Next: Finish Slack setup</button></div></section>';
+        '</div><div class="onboarding-guide-actions"><a class="btn btn-ghost" href="' + esc(conn.manifestUrl) + '" target="_blank" rel="noopener noreferrer"><span class="onboarding-slack-logo slack-logo-image" aria-hidden="true"></span>Open Slack setup again <span aria-hidden="true">&nearr;</span></a><button type="button" class="btn btn-primary" data-action="onboarding-slack-events">Next: Verify Event URL</button></div></section>';
     }
     if (state.slackStep === 3) {
       return '<section class="onboarding-panel"><p class="onboarding-eyebrow">Connect Slack</p>' +
-        '<h1 class="onboarding-title">Allow permissions</h1>' +
-        '<p class="onboarding-lede">Three quick steps in Slack.</p>' +
-        '<a class="btn btn-ghost onboarding-inline-recovery" href="https://api.slack.com/apps" target="_blank" rel="noopener noreferrer">Reopen your Slack apps <span aria-hidden="true">&nearr;</span></a>' +
+        '<h1 class="onboarding-title">Verify the Event URL</h1>' +
+        '<p class="onboarding-lede">Slack needs one manual check before it can send messages to Chickpea.</p>' +
+        '<a class="btn btn-ghost onboarding-inline-recovery" href="https://api.slack.com/apps" target="_blank" rel="noopener noreferrer">Lost the Slack tab? Open your apps <span aria-hidden="true">&nearr;</span></a>' +
         '<div class="onboarding-instructions">' +
-        onboardingSlackInstruction(1, 'Click the yellow reinstall your app link.', '', 'reinstall', 'onboarding-shot-banner', 'Slack yellow banner with the reinstall your app link') +
-        onboardingSlackInstruction(2, 'Click Allow.', '', 'allow', 'onboarding-shot-focused', 'Slack permission approval screen with the Allow button') +
-        onboardingSlackInstruction(3, 'In the left sidebar, open Event Subscriptions.', 'Look for Request URL: Verified. If Slack shows Retry, wait a few seconds—you may need to click it a few times.', 'events', 'onboarding-shot-focused onboarding-shot-events', 'Slack Event Subscriptions selected with Request URL Verified') +
+        '<section class="onboarding-instruction"><h2 class="onboarding-instruction-title"><span class="onboarding-instruction-number">1</span><span>In the left sidebar, open Event Subscriptions.</span></h2></section>' +
+        onboardingSlackInstruction(2, 'Beside Request URL, click Retry.', '', 'events-retry', 'onboarding-shot-wide', 'Slack Event Subscriptions showing Your URL did not respond and the Retry button') +
+        onboardingSlackInstruction(3, 'When Request URL says Verified, click Save Changes.', 'If it still says your URL did not respond, wait a few seconds and click Retry again.', 'events', 'onboarding-shot-focused onboarding-shot-events', 'Slack Event Subscriptions showing Request URL Verified') +
         '</div><div class="onboarding-guide-actions"><button type="button" class="btn btn-ghost" data-action="onboarding-slack-back" data-step="create">Back</button>' +
-        '<button type="button" class="btn btn-primary" data-action="onboarding-slack-keys">Next: Add tokens</button></div></section>';
+        '<button type="button" class="btn btn-primary" data-action="onboarding-slack-keys">I saved changes</button></div></section>';
     }
     var submit = state.slackBusy
-      ? '<button type="submit" class="btn btn-primary" disabled><span class="spinner"></span>Connecting&hellip;</button>'
-      : '<button type="submit" class="btn btn-primary">Connect Chickpea</button>';
+      ? '<button type="submit" class="btn btn-primary" disabled><span class="spinner"></span>Checking&hellip;</button>'
+      : '<button type="submit" class="btn btn-primary">Check and connect</button>';
     var errorHtml = state.slackError
       ? '<div class="onboarding-error" role="alert" aria-live="assertive" tabindex="-1" data-role="slack-connection-error"><p class="field-error">' + esc(state.slackError) + '</p></div>'
       : '';
     return '<section class="onboarding-panel">' +
-      '<p class="onboarding-eyebrow">Connect Slack</p><h1 class="onboarding-title">Paste 2 values</h1>' +
-      '<p class="onboarding-lede">Copy each value from the same Chickpea app.</p>' +
-      '<a class="btn btn-ghost onboarding-inline-recovery" href="https://api.slack.com/apps" target="_blank" rel="noopener noreferrer">Reopen your Slack apps <span aria-hidden="true">&nearr;</span></a>' +
+      '<p class="onboarding-eyebrow">Connect Slack</p><h1 class="onboarding-title">Add 2 values</h1>' +
+      '<p class="onboarding-lede">Paste them once. Chickpea checks everything before saving.</p>' +
+      '<a class="btn btn-ghost onboarding-inline-recovery" href="https://api.slack.com/apps" target="_blank" rel="noopener noreferrer">Lost the Slack tab? Open your apps <span aria-hidden="true">&nearr;</span></a>' +
       '<form class="onboarding-credential-form" data-action="slack-connect-form">' +
       '<section class="onboarding-credential"><h2 class="onboarding-instruction-title"><span class="onboarding-instruction-number">1</span><span>In OAuth &amp; Permissions, copy Bot User OAuth Token.</span></h2>' +
       '<div class="onboarding-credential-grid"><div class="onboarding-shot onboarding-shot-token"><img src="' + onboardingSlackAsset('bot-token') + '" alt="Slack OAuth Tokens showing the Bot User OAuth Token field and Copy button" loading="lazy" decoding="async"></div>' +
@@ -3547,7 +3557,7 @@ details[open].advanced summary::before {
       '<section class="onboarding-credential"><h2 class="onboarding-instruction-title"><span class="onboarding-instruction-number">2</span><span>In Basic Information, reveal and copy Signing Secret.</span></h2>' +
       '<div class="onboarding-credential-grid"><div class="onboarding-shot onboarding-shot-secret"><img src="' + onboardingSlackAsset('signing-secret') + '" alt="Slack Basic Information showing the Signing Secret" loading="lazy" decoding="async"></div>' +
       '<div class="onboarding-credential-help"><label class="field" for="onboarding-signing-secret"><span class="field-label">Signing Secret</span><span class="onboarding-credential-subtext">Use Signing Secret — not Client Secret.</span><input class="input mono" id="onboarding-signing-secret" name="signingSecret" type="password" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" data-action="slack-signing-secret"></label></div></div></section>' +
-      errorHtml + '<div class="onboarding-guide-actions"><button type="button" class="btn btn-ghost" data-action="onboarding-slack-back" data-step="permissions">Back</button>' + submit + '</div></form></section>';
+      errorHtml + '<div class="onboarding-guide-actions"><button type="button" class="btn btn-ghost" data-action="onboarding-slack-back" data-step="events">Back</button>' + submit + '</div></form></section>';
   }
 
   function onboardingSlackConnectedHtml() {
@@ -4224,7 +4234,7 @@ details[open].advanced summary::before {
   function slackErrorText(message, detail, serverMessage, payload) {
     if (message === "challenge_invalid_signature") return "Slack could not verify this app. Retry the Event Subscriptions request URL check in Slack, then try connecting again.";
     if (message === "challenge_expired") return "Slack's verification check expired. Retry the Event Subscriptions request URL check in Slack, then try connecting again.";
-    if (message === "challenge_missing") return "Chickpea is still waiting for Slack to verify the Events URL. Open Event Subscriptions in Slack, click Retry, then try connecting again.";
+    if (message === "challenge_missing") return "Chickpea is still waiting for Slack to verify the Events URL. Open Event Subscriptions in Slack, click Retry, click Save Changes, then try connecting again.";
     if (message === "signing_secret_change_requires_reconnect") return "To change the Signing Secret, disconnect this Slack app and connect it again.";
     if (message === "workspace_mismatch") return "This token belongs to a different Slack workspace. Use the app you created for this Chickpea install and workspace.";
     if (message === "app_mismatch") return "The token and signing secret came from different Slack apps. Copy both values from the same app and try again.";
@@ -10370,7 +10380,7 @@ details[open].advanced summary::before {
     // the Create anchor still open Slack in a new tab.
     if (action === "advance-slack-step") { state.slackStep = 2; state.slackError = ""; state.slackRepair = null; render(); }
     if (action === "slack-app-created") { state.slackStep = isOnboardingSlackConnection() ? 4 : 3; state.slackError = ""; state.slackRepair = null; render(); }
-    if (action === "onboarding-slack-permissions" && isOnboardingSlackConnection()) { state.slackStep = 3; render(); }
+    if (action === "onboarding-slack-events" && isOnboardingSlackConnection()) { state.slackStep = 3; render(); }
     if (action === "onboarding-slack-keys" && isOnboardingSlackConnection()) { state.slackStep = 4; state.slackOnboardingFocus = "onboarding-bot-token"; render(); }
     if (action === "onboarding-continue-to-channel" && state.view === "onboarding") {
       state.onboardingSlackConnected = false;

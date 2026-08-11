@@ -7952,7 +7952,7 @@ test('add-channel manual fallback reveals a server-validated channel-ID input', 
   ]);
 });
 
-test('onboarding walks through the approved create, permissions, and keys sequence', async () => {
+test('onboarding walks through the approved create, Event URL, and values sequence', async () => {
   const harness = runAdminPageHarness({
     initialPath: '/admin/onboarding',
     assignments: [],
@@ -7991,39 +7991,41 @@ test('onboarding walks through the approved create, permissions, and keys sequen
   assert.match(harness.app.innerHTML, /\/admin\/assets\/onboarding\/allow\.webp/);
   assert.match(harness.app.innerHTML, /\/admin\/assets\/onboarding\/ready\.webp/);
   assert.match(harness.app.innerHTML, /Open Slack setup again/);
-  assert.match(harness.app.innerHTML, /data-action="onboarding-slack-permissions"/);
-  assert.match(harness.app.innerHTML, /Next: Finish Slack setup/);
+  assert.match(harness.app.innerHTML, /data-action="onboarding-slack-events"/);
+  assert.match(harness.app.innerHTML, /Next: Verify Event URL/);
   assert.doesNotMatch(harness.app.innerHTML, /name="botToken"/);
 
-  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'onboarding-slack-permissions' }) });
-  assert.match(harness.app.innerHTML, /Allow permissions/);
-  assert.match(harness.app.innerHTML, /Click the yellow reinstall your app link/);
-  assert.match(harness.app.innerHTML, /Click Allow/);
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'onboarding-slack-events' }) });
+  assert.match(harness.app.innerHTML, /Verify the Event URL/);
   assert.match(harness.app.innerHTML, /open Event Subscriptions/);
-  assert.match(harness.app.innerHTML, /you may need to click it a few times/);
-  assert.match(harness.app.innerHTML, /\/admin\/assets\/onboarding\/reinstall\.webp/);
-  assert.match(harness.app.innerHTML, /\/admin\/assets\/onboarding\/allow\.webp/);
+  assert.match(harness.app.innerHTML, /Beside Request URL, click Retry/);
+  assert.match(harness.app.innerHTML, /When Request URL says Verified, click Save Changes/);
+  assert.match(harness.app.innerHTML, /wait a few seconds and click Retry again/);
+  assert.match(harness.app.innerHTML, /\/admin\/assets\/onboarding\/events-retry\.webp/);
   assert.match(harness.app.innerHTML, /\/admin\/assets\/onboarding\/events\.webp/);
   assert.match(harness.app.innerHTML, /data-action="onboarding-slack-keys"/);
+  assert.match(harness.app.innerHTML, />I saved changes<\/button>/);
+  assert.doesNotMatch(harness.app.innerHTML, /reinstall your app|\/reinstall\.webp/);
   assert.doesNotMatch(harness.app.innerHTML, /name="botToken"/);
 
   harness.listeners.click?.({ target: actionTarget({ 'data-action': 'onboarding-slack-keys' }) });
-  assert.match(harness.app.innerHTML, /Paste 2 values/);
+  assert.match(harness.app.innerHTML, /Add 2 values/);
+  assert.match(harness.app.innerHTML, /Paste them once\. Chickpea checks everything before saving/);
   assert.match(harness.app.innerHTML, /In OAuth &amp; Permissions, copy Bot User OAuth Token/);
   assert.match(harness.app.innerHTML, /In Basic Information, reveal and copy Signing Secret/);
   assert.match(harness.app.innerHTML, /\/admin\/assets\/onboarding\/bot-token\.webp/);
   assert.match(harness.app.innerHTML, /\/admin\/assets\/onboarding\/signing-secret\.webp/);
   assert.match(harness.app.innerHTML, /name="botToken"/);
   assert.match(harness.app.innerHTML, /name="signingSecret"/);
-  assert.match(harness.app.innerHTML, /data-action="onboarding-slack-back" data-step="permissions"/);
-  assert.match(harness.app.innerHTML, /Reopen your Slack apps/);
+  assert.match(harness.app.innerHTML, /data-action="onboarding-slack-back" data-step="events"/);
+  assert.match(harness.app.innerHTML, /Lost the Slack tab\? Open your apps/);
   assert.match(harness.app.innerHTML, /href="https:\/\/api\.slack\.com\/apps"/);
   assert.doesNotMatch(harness.app.innerHTML, /manifest_json/);
-  assert.match(harness.app.innerHTML, />Connect Chickpea<\/button>/);
+  assert.match(harness.app.innerHTML, />Check and connect<\/button>/);
 
-  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'onboarding-slack-back', 'data-step': 'permissions' }) });
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'onboarding-slack-back', 'data-step': 'events' }) });
   assert.doesNotMatch(harness.app.innerHTML, /name="botToken"/);
-  assert.match(harness.app.innerHTML, /Allow permissions/);
+  assert.match(harness.app.innerHTML, /Verify the Event URL/);
 });
 
 test('onboarding treats incomplete Slack permissions as a normal continuation', async () => {
@@ -8058,21 +8060,20 @@ test('onboarding treats incomplete Slack permissions as a normal continuation', 
   });
   await flushAsync();
 
-  assert.match(harness.app.innerHTML, /Finish applying Slack permissions/);
+  assert.match(harness.app.innerHTML, /One more Slack approval/);
   assert.match(harness.app.innerHTML, /Continue in Slack/);
   assert.match(harness.app.innerHTML, /href="https:\/\/api\.slack\.com\/apps\/A0REPAIR\/oauth"/);
   assert.match(harness.app.innerHTML, /target="_blank" rel="noopener noreferrer" data-action="slack-permissions-open"/);
   assert.doesNotMatch(harness.app.innerHTML, /role="alert"/);
-  assert.doesNotMatch(harness.app.innerHTML, /assistant:write|channels:read|starter token|reinstall/i);
+  assert.match(harness.app.innerHTML, /click the yellow reinstall your app link/);
+  assert.match(harness.app.innerHTML, /\/admin\/assets\/onboarding\/reinstall\.webp/);
+  assert.doesNotMatch(harness.app.innerHTML, /assistant:write|channels:read|starter token/i);
   assert.doesNotMatch(harness.app.innerHTML, /safe-placeholder|xoxb-under-scoped/);
-  assert.deepEqual(harness.onboardingCredentialValues(), {
-    botToken: 'xoxb-under-scoped',
-    signingSecret: 'safe-placeholder',
-  });
+  assert.deepEqual(harness.onboardingCredentialValues(), { botToken: '', signingSecret: '' });
   assert.equal(harness.focusedAction(), 'slack-permission-heading');
 
   harness.listeners.click?.({ target: actionTarget({ 'data-action': 'slack-permissions-open' }) });
-  assert.match(harness.app.innerHTML, /Return here after Slack is done/);
+  assert.match(harness.app.innerHTML, /Your values are still here/);
   assert.match(harness.app.innerHTML, /data-action="slack-permissions-check"[^>]*>Check again/);
   assert.doesNotMatch(harness.app.innerHTML, /Continue in Slack/);
 
@@ -8087,13 +8088,10 @@ test('onboarding treats incomplete Slack permissions as a normal continuation', 
     { botToken: 'xoxb-under-scoped', signingSecret: 'safe-placeholder' },
     { botToken: 'xoxb-under-scoped', signingSecret: 'safe-placeholder' },
   ]);
-  assert.match(harness.app.innerHTML, /Finish applying Slack permissions/);
+  assert.match(harness.app.innerHTML, /One more Slack approval/);
   assert.match(harness.app.innerHTML, /Slack needs one more confirmation/);
   assert.doesNotMatch(harness.app.innerHTML, /role="alert"|assistant:write|channels:read|starter token/i);
-  assert.deepEqual(harness.onboardingCredentialValues(), {
-    botToken: 'xoxb-under-scoped',
-    signingSecret: 'safe-placeholder',
-  });
+  assert.deepEqual(harness.onboardingCredentialValues(), { botToken: '', signingSecret: '' });
   assert.equal(harness.focusedAction(), 'slack-permissions-open');
 });
 
@@ -8112,8 +8110,8 @@ test('onboarding treats a missing Slack Events check as one calm resumable step'
   submitOnboardingSlack(harness, 'xoxb-events', 'events-secret');
   await flushAsync();
 
-  assert.match(harness.app.innerHTML, /Finish Slack connection/);
-  assert.match(harness.app.innerHTML, /click Retry until Request URL shows Verified/);
+  assert.match(harness.app.innerHTML, /One more Slack check/);
+  assert.match(harness.app.innerHTML, /click Retry beside Request URL, then click Save Changes/);
   assert.match(
     harness.app.innerHTML,
     /href="https:\/\/api\.slack\.com\/apps\/A0EVENTS\/event-subscriptions"/,
@@ -8121,14 +8119,11 @@ test('onboarding treats a missing Slack Events check as one calm resumable step'
   assert.match(harness.app.innerHTML, />Finish in Slack/);
   assert.doesNotMatch(harness.app.innerHTML, /role="alert"|something is wrong|failed/i);
   assert.doesNotMatch(harness.app.innerHTML, /xoxb-events|events-secret/);
-  assert.deepEqual(harness.onboardingCredentialValues(), {
-    botToken: 'xoxb-events',
-    signingSecret: 'events-secret',
-  });
+  assert.deepEqual(harness.onboardingCredentialValues(), { botToken: '', signingSecret: '' });
 
   harness.listeners.click?.({ target: actionTarget({ 'data-action': 'slack-permissions-open' }) });
-  assert.match(harness.app.innerHTML, /Waiting for Slack/);
-  assert.match(harness.app.innerHTML, /continue as soon as Slack confirms/);
+  assert.match(harness.app.innerHTML, /Return here when it says Verified/);
+  assert.match(harness.app.innerHTML, /do not need to paste the values again/);
   assert.match(harness.app.innerHTML, /data-action="slack-permissions-check"[^>]*>Check now/);
 });
 
@@ -8184,6 +8179,27 @@ test('onboarding celebrates a connected Slack workspace before channel selection
   assert.equal(harness.focusedAction(), 'onboarding-channel-heading');
 });
 
+test('onboarding replaces the credential form with a clear checking state', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/onboarding',
+    assignments: [],
+    slackConnection: disconnectedSlackFixture(),
+    deferSlackPost: true,
+    onboarding: onboardingConnectFixture(),
+  });
+  await flushAsync();
+  submitOnboardingSlack(harness, 'xoxb-checking', 'checking-secret');
+
+  assert.match(harness.app.innerHTML, /Checking your Slack setup&hellip;/);
+  assert.match(harness.app.innerHTML, /<strong>Event URL<\/strong><span>Verified<\/span>/);
+  assert.match(harness.app.innerHTML, /<strong>Workspace and permissions<\/strong><span>Checking<\/span>/);
+  assert.doesNotMatch(harness.app.innerHTML, /name="botToken"|name="signingSecret"|xoxb-checking|checking-secret/);
+
+  harness.resolveSlackPost(0, {});
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /Everything worked/);
+});
+
 test('onboarding keeps the draft through a transient Slack check and lets the owner check again', async () => {
   const harness = runAdminPageHarness({
     initialPath: '/admin/onboarding',
@@ -8206,16 +8222,13 @@ test('onboarding keeps the draft through a transient Slack check and lets the ow
   assert.match(harness.app.innerHTML, /Slack could not be checked just now/);
   assert.match(harness.app.innerHTML, /data-action="slack-permissions-check"[^>]*>Check again/);
   assert.doesNotMatch(harness.app.innerHTML, /role="alert"/);
-  assert.deepEqual(harness.onboardingCredentialValues(), {
-    botToken: 'xoxb-transient',
-    signingSecret: 'transient-secret',
-  });
+  assert.deepEqual(harness.onboardingCredentialValues(), { botToken: '', signingSecret: '' });
   assert.equal(harness.focusedAction(), 'slack-permissions-check');
 
   harness.listeners.click?.({ target: actionTarget({ 'data-action': 'slack-permissions-check' }) });
   await flushAsync();
   assert.equal(harness.slackPosts.length, 3);
-  assert.match(harness.app.innerHTML, /Finish applying Slack permissions/);
+  assert.match(harness.app.innerHTML, /One more Slack approval/);
 });
 
 test('onboarding returns to Check again when Slack profile or channel preflight is temporarily unavailable', async () => {
@@ -8240,10 +8253,7 @@ test('onboarding returns to Check again when Slack profile or channel preflight 
     assert.match(harness.app.innerHTML, /Slack could not be checked just now/, error);
     assert.match(harness.app.innerHTML, /data-action="slack-permissions-check"[^>]*>Check again/, error);
     assert.doesNotMatch(harness.app.innerHTML, /Checking&hellip;|role="alert"/, error);
-    assert.deepEqual(harness.onboardingCredentialValues(), {
-      botToken: `xoxb-${error}`,
-      signingSecret: `${error}-secret`,
-    }, error);
+    assert.deepEqual(harness.onboardingCredentialValues(), { botToken: '', signingSecret: '' }, error);
     assert.equal(harness.focusedAction(), 'slack-permissions-check', error);
   }
 });
@@ -8320,7 +8330,7 @@ test('onboarding permission continuation uses a compact safe app-list fallback',
   await flushAsync();
 
   assert.match(harness.app.innerHTML, /href="https:\/\/api\.slack\.com\/apps"/);
-  assert.match(harness.app.innerHTML, /open the Chickpea app and finish the requested step/);
+  assert.match(harness.app.innerHTML, /Open the Chickpea app, then choose OAuth &amp; Permissions/);
   assert.doesNotMatch(harness.app.innerHTML, /attacker\.example|xoxb-leak|xoxb-fallback|fallback-secret/);
 });
 
@@ -8342,7 +8352,7 @@ test('onboarding Start over and a fresh page discard the page-only Slack draft',
   await flushAsync();
   harness.listeners.click?.({ target: actionTarget({ 'data-action': 'slack-permissions-start-over' }) });
 
-  assert.match(harness.app.innerHTML, /Paste 2 values/);
+  assert.match(harness.app.innerHTML, /Add 2 values/);
   assert.deepEqual(harness.onboardingCredentialValues(), { botToken: '', signingSecret: '' });
   assert.equal(harness.focusedAction(), 'onboarding-signing-secret');
 
@@ -8381,10 +8391,7 @@ test('onboarding cannot discard or overlap an in-flight permission check', async
 
   assert.equal(harness.slackPosts.length, 2, 'checking cannot overlap a second request');
   assert.match(harness.app.innerHTML, /Checking&hellip;/);
-  assert.deepEqual(harness.onboardingCredentialValues(), {
-    botToken: 'xoxb-stale',
-    signingSecret: 'stale-secret',
-  });
+  assert.deepEqual(harness.onboardingCredentialValues(), { botToken: '', signingSecret: '' });
 
   harness.resolveSlackPost(1, {});
   await flushAsync();
@@ -8409,14 +8416,14 @@ test('onboarding navigation discards the page-only Slack continuation draft', as
   await flushAsync();
   submitOnboardingSlack(harness, 'xoxb-navigation', 'navigation-secret');
   await flushAsync();
-  assert.match(harness.app.innerHTML, /Finish applying Slack permissions/);
+  assert.match(harness.app.innerHTML, /One more Slack approval/);
 
   harness.popstate('/admin/channels');
   assert.equal(harness.locationPath(), '/admin/channels');
-  assert.doesNotMatch(harness.app.innerHTML, /Finish applying Slack permissions|xoxb-navigation|navigation-secret/);
+  assert.doesNotMatch(harness.app.innerHTML, /One more Slack approval|xoxb-navigation|navigation-secret/);
 
   harness.popstate('/admin/onboarding');
-  assert.match(harness.app.innerHTML, /Paste 2 values/);
+  assert.match(harness.app.innerHTML, /Add 2 values/);
   assert.deepEqual(harness.onboardingCredentialValues(), { botToken: '', signingSecret: '' });
 });
 
@@ -8438,7 +8445,7 @@ test('onboarding unexpected permission-check failures exit checking and show the
   harness.listeners.click?.({ target: actionTarget({ 'data-action': 'slack-permissions-check' }) });
   await flushAsync();
 
-  assert.match(harness.app.innerHTML, /Paste 2 values/);
+  assert.match(harness.app.innerHTML, /Add 2 values/);
   assert.match(harness.app.innerHTML, /role="alert"[^>]*aria-live="assertive"/);
   assert.match(harness.app.innerHTML, /could not store the credentials/);
   assert.doesNotMatch(harness.app.innerHTML, /Checking&hellip;|Return here after Slack is done/);
