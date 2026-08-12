@@ -3030,7 +3030,7 @@ details[open].advanced summary::before {
       }
     }
     var group = params.get("groupBy");
-    if (["channel", "profile", "provider", "model"].includes(group)) state.usageGroupBy = group;
+    if (["channel", "agent", "provider", "model"].includes(group)) state.usageGroupBy = group;
   }
 
   function syncUsageQueryUrl() {
@@ -3385,10 +3385,10 @@ details[open].advanced summary::before {
       var output = usageOperationTokens(detail, "outputTokens");
       var total = usageOperationTokens(detail, "totalTokens");
       return '<tr><td><strong class="usage-work-label">' + esc(usageWorkLabel(operation)) + '</strong><div class="hint">' + esc(new Date(operation.startedAt).toLocaleString()) + '</div></td>' +
-        '<td>' + esc(operation.profileLabel || operation.profileId || "Unknown") + '</td><td>' + esc(usageOperationProvider(detail)) + '</td><td>' + esc(usageOperationModel(detail)) + '</td>' +
+        '<td>' + esc(operation.agentLabel || operation.agentId || "Unknown") + '</td><td>' + esc(usageOperationProvider(detail)) + '</td><td>' + esc(usageOperationModel(detail)) + '</td>' +
         '<td>' + usageStatusBadge(operation.status) + '</td><td class="number">' + usageTokenTotalHtml(input, output, total) + '</td><td class="number">' + usageMoney(usageOperationAmount(detail), "USD") + '</td></tr>';
     }).join("");
-    return '<div class="usage-table-wrap"><table class="usage-table"><thead><tr><th>Channel or routine</th><th>Profile</th><th>Provider</th><th>Model</th><th>Status</th><th class="number">Tokens</th><th class="number">Spend</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+    return '<div class="usage-table-wrap"><table class="usage-table"><thead><tr><th>Channel or routine</th><th>Agent</th><th>Provider</th><th>Model</th><th>Status</th><th class="number">Tokens</th><th class="number">Spend</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
       (state.usageNextCursor ? '<button type="button" class="btn btn-ghost" data-action="usage-load-more"' + (state.usageLoadingMore ? ' disabled' : '') + '>' + (state.usageLoadingMore ? 'Loading&hellip;' : 'Load more') + '</button>' : '');
   }
 
@@ -3403,9 +3403,9 @@ details[open].advanced summary::before {
     var controls = '<div class="usage-controls"><div class="usage-control-row' + (state.usagePeriod === "custom" ? ' has-custom' : '') + '"><label class="field"><span class="field-label">Period</span><span class="select-wrap"><select class="input" name="usage-period" data-action="usage-range">' +
       periods.map(function (period) { return '<option value="' + period[0] + '"' + (state.usagePeriod === period[0] ? ' selected' : '') + '>' + period[1] + '</option>'; }).join("") +
       '</select><span class="select-caret">' + icon("chevron-down") + '</span></span></label><label class="field"><span class="field-label">Break down by</span><span class="select-wrap"><select class="input" name="usage-group" data-action="usage-group">' +
-      [["channel", "Channel"], ["profile", "Profile"], ["provider", "Provider"], ["model", "Model"]].map(function (option) { return '<option value="' + option[0] + '"' + (state.usageGroupBy === option[0] ? ' selected' : '') + '>' + option[1] + '</option>'; }).join("") +
+      [["channel", "Channel"], ["agent", "Agent"], ["provider", "Provider"], ["model", "Model"]].map(function (option) { return '<option value="' + option[0] + '"' + (state.usageGroupBy === option[0] ? ' selected' : '') + '>' + option[1] + '</option>'; }).join("") +
       '</select><span class="select-caret">' + icon("chevron-down") + '</span></span></label>' + customControls + '</div></div>';
-    var head = '<div class="usage-head"><div class="usage-head-copy"><span class="section-eyebrow">Reporting</span><h1 class="page-title">Usage</h1><p class="hint">See token usage and spend across channels, profiles, providers, and recent activity.</p></div></div>' + controls +
+    var head = '<div class="usage-head"><div class="usage-head-copy"><span class="section-eyebrow">Reporting</span><h1 class="page-title">Usage</h1><p class="hint">See token usage and spend across channels, Agents, providers, and recent activity.</p></div></div>' + controls +
       '<div class="usage-contract"><p><strong>Set spending limits with each model provider;</strong> Chickpea reports estimated spend for activity it handles.</p><button type="button" class="btn btn-ghost btn-sm" data-action="usage-open-settings">Model settings</button></div>';
     if (state.usageLoading && !state.usageOverview) return head + '<div class="empty"><p class="hint">Loading usage and estimated spend&hellip;</p></div>';
     if (state.usageError && !state.usageOverview) return head + '<div class="empty"><p class="field-error">' + esc(state.usageError) + '</p><button type="button" class="btn btn-ghost" data-action="usage-retry">Retry</button></div>';
@@ -11187,7 +11187,7 @@ details[open].advanced summary::before {
     }
     if (action === "usage-group") {
       var usageGroup = String(target.value || "channel");
-      state.usageGroupBy = ["channel", "profile", "provider", "model"].includes(usageGroup) ? usageGroup : "channel";
+      state.usageGroupBy = ["channel", "agent", "provider", "model"].includes(usageGroup) ? usageGroup : "channel";
       state.usageOperationFilter = null;
       syncUsageQueryUrl();
       loadUsage(true);

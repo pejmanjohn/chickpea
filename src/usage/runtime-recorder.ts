@@ -66,8 +66,8 @@ export class InteractiveUsageRecorder {
       startedAt: slackTimestampMs(options.turn.messageTs) ?? this.now(),
       installationId: installationId(options.platformEnv, options.processEnv),
       workspaceId: options.turn.workspaceId,
-      profileId: options.assignment.agentId,
-      profileLabel: options.assignment.agent.name,
+      agentId: options.assignment.agentId,
+      agentLabel: options.assignment.agent.name,
       channelId: options.turn.channelId,
       channelLabel: direct ? null : (options.assignment.channelLabel ?? options.turn.channelId),
       conversationKind: direct ? 'direct_message' : 'named_channel',
@@ -205,8 +205,8 @@ export interface RoutineUsageRecorderOptions {
   workspaceId: string;
   channelId: string;
   channelLabel?: string;
-  profileId: string | null;
-  profileLabel: string | null;
+  agentId: string | null;
+  agentLabel: string | null;
   routineId: string;
   routineLabel: string;
   requestedModel: string | null;
@@ -236,8 +236,8 @@ export interface InteractionUsageRecorderOptions {
   channelId: string;
   channelLabel?: string;
   conversationKind?: UsageConversationKind;
-  profileId: string | null;
-  profileLabel: string | null;
+  agentId: string | null;
+  agentLabel: string | null;
   requestedModel: string | null;
   credentialRefId: string | null;
   credentialVersion: number | null;
@@ -277,8 +277,8 @@ export class InteractionUsageRecorder {
       startedAt: options.startedAt,
       installationId: installationId(options.platformEnv, options.processEnv),
       workspaceId: options.workspaceId,
-      profileId: options.profileId,
-      profileLabel: options.profileLabel,
+      agentId: options.agentId,
+      agentLabel: options.agentLabel,
       channelId: options.channelId,
       channelLabel: options.channelLabel ?? options.channelId,
       conversationKind: options.conversationKind ?? 'named_channel',
@@ -386,8 +386,8 @@ export class RoutineUsageRecorder {
       startedAt: options.startedAt,
       installationId: installationId(options.platformEnv, options.processEnv),
       workspaceId: options.workspaceId,
-      profileId: options.profileId,
-      profileLabel: options.profileLabel,
+      agentId: options.agentId,
+      agentLabel: options.agentLabel,
       channelId: options.channelId,
       channelLabel: options.channelLabel ?? options.channelId,
       conversationKind: 'named_channel',

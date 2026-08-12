@@ -23,7 +23,10 @@ import type {
 } from './store.ts';
 import type {
   AgentSnapshot,
+  AgentSnapshotRootReference,
+  AgentReferenceSummary,
   ChannelAssignment,
+  ChannelConfig,
   CustomAgentConfig,
   SlackIdentity,
   SlackIdentityDmState,
@@ -228,7 +231,7 @@ function unwrap<T>(result: StateRpcResult<T>): T {
     case 'slack_identity_still_referenced':
       throw new SlackIdentityStillReferencedError(
         details?.identityId ?? 'unknown',
-        details?.profileIds ?? '',
+        details?.agentIds ?? '',
         details?.dmAgentId ?? '',
       );
     case 'slack_identity_revision_conflict':
@@ -631,6 +634,18 @@ export class CfConfigStore implements ConfigStore {
     return unwrap(await this.stub.configDeleteAgent(agentId));
   }
 
+  async listChannels(): Promise<ChannelConfig[]> {
+    return unwrap(await this.stub.configListChannels());
+  }
+
+  async getChannel(workspaceId: string, channelId: string): Promise<ChannelConfig | undefined> {
+    return orUndefined(unwrap(await this.stub.configGetChannel(workspaceId, channelId)));
+  }
+
+  async putChannel(channel: ChannelConfig): Promise<ChannelConfig> {
+    return unwrap(await this.stub.configPutChannel(channel));
+  }
+
   async listAssignments(): Promise<ChannelAssignment[]> {
     return unwrap(await this.stub.configListAssignments());
   }
@@ -660,6 +675,10 @@ export class CfConfigStore implements ConfigStore {
     options: AssignmentLookupOptions = {},
   ): Promise<ChannelAssignment | undefined> {
     return orUndefined(unwrap(await this.stub.configFind(workspaceId, channelId, options)));
+  }
+
+  async getAgentReferences(agentId: string): Promise<AgentReferenceSummary> {
+    return unwrap(await this.stub.configGetAgentReferences(agentId));
   }
 
   async listSlackIdentities(): Promise<SlackIdentity[]> {
@@ -805,6 +824,10 @@ export class CfAgentSnapshotStore implements AgentSnapshotStore {
 
   async putIfAbsent(threadKey: string, snapshot: AgentSnapshot): Promise<AgentSnapshot> {
     return unwrap(await this.stub.snapshotPutIfAbsent(threadKey, snapshot));
+  }
+
+  async listLiveRootsByAgent(agentId: string): Promise<AgentSnapshotRootReference[]> {
+    return unwrap(await this.stub.snapshotListLiveRootsByAgent(agentId));
   }
 }
 

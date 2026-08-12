@@ -1,7 +1,7 @@
 /**
- * A profile-attached skill: a named playbook the agent can load on demand.
+ * An Agent-attached skill: a named playbook the Agent can load on demand.
  * `name` must satisfy Flue's `defineSkill` rule (`^[a-z0-9]+(?:-[a-z0-9]+)*$`,
- * ≤64) and is unique per profile; `instructions` is the SKILL.md body Flue
+ * ≤64) and is unique per Agent; `instructions` is the SKILL.md body Flue
  * surfaces only after the model activates the skill (progressive disclosure).
  * Only `enabled` skills are materialized at turn time.
  */
@@ -14,7 +14,7 @@ export interface SkillConfig {
 
 /**
  * Metadata for a single tool discovered on an MCP server's last successful test.
- * Truncated to keep the profile row bounded (name ≤120, title ≤160, desc ≤400).
+ * Truncated to keep the Agent row bounded (name ≤120, title ≤160, desc ≤400).
  * Policy only — never a secret.
  */
 export interface McpConnectionToolInfo {
@@ -30,8 +30,8 @@ export interface McpConnectionIdentity {
 }
 
 /**
- * A profile-attached remote MCP server ("Connection"): tools added by URL that
- * join the agent's toolset at the `slack-thread.ts` seam. This is POLICY ONLY —
+ * An Agent-attached remote MCP server ("Connection"): tools added by URL that
+ * join the Agent's toolset at the `slack-thread.ts` seam. This is POLICY ONLY —
  * bearer tokens and header values live in the settings store by reference
  * (`headerNames` carries the names, never the values) and never touch this row,
  * snapshots, or API responses. The security invariant is `approved ∩ discovered`:
@@ -61,7 +61,7 @@ export interface McpConnectionConfig {
 }
 
 /**
- * A profile-attached API credential-connection policy. This record contains
+ * An Agent-attached API credential-connection policy. This record contains
  * allowlisted request metadata only — the credential value lives in the
  * settings store by reference and never touches this row, snapshots, or API
  * responses.
@@ -98,7 +98,7 @@ export interface RepositoryGrant {
 
 export type OpenAiAuthMethod = 'api_key' | 'subscription';
 
-/** Stable identity inherited by every Profile without an explicit selection. */
+/** Stable identity inherited by every Agent without an explicit selection. */
 export const WORKSPACE_DEFAULT_SLACK_IDENTITY_ID = 'slack_identity_default';
 
 export type SlackIdentityKind = 'workspace_default' | 'dedicated';
@@ -122,7 +122,7 @@ export interface SlackIdentitySetupIntent {
   appName?: string;
   displayName?: string;
   sourceAgentId?: string;
-  /** Profile identity binding captured when Profile-origin setup began. */
+  /** Agent identity binding captured when Agent-origin setup began. */
   sourceAgentSlackIdentityId?: string | null;
   /** True after an established identity starts credential replacement. */
   reconnecting?: boolean;
@@ -159,8 +159,20 @@ export interface SlackIdentity {
 
 export interface SlackIdentityReferenceSummary {
   identityId: string;
-  profileIds: string[];
+  agentIds: string[];
   dmAgentId?: string;
+}
+
+export interface AgentChannelReference {
+  workspaceId: string;
+  channelId: string;
+}
+
+export interface AgentReferenceSummary {
+  agentId: string;
+  channelAssignments: AgentChannelReference[];
+  dmIdentityIds: string[];
+  identityReferenceIds: string[];
 }
 
 export interface CustomAgentConfig {
@@ -181,11 +193,19 @@ export interface ChannelAssignment {
   workspaceId: string;
   channelId: string;
   agentId: string;
-  enabled: boolean;
-  channelLabel?: string;
-  channelPromptAddendum?: string;
-  /** Live participation ceiling. Missing legacy values resolve to ambient. */
-  participationMode?: 'ambient' | 'mention_only';
+}
+
+export type ChannelParticipationMode = 'ambient' | 'mention_only';
+export type ChannelLifecycle = 'active' | 'archived';
+
+/** Durable Channel-owned state. Agent placement lives only in ChannelAssignment. */
+export interface ChannelConfig {
+  workspaceId: string;
+  channelId: string;
+  label?: string;
+  additionalInstructions?: string;
+  participationMode: ChannelParticipationMode;
+  lifecycle: ChannelLifecycle;
 }
 
 export interface BotIdentityConfig {
@@ -223,10 +243,17 @@ export interface ResolvedAssignment {
 // resolved model/provider/instructions. Declaring the relation lets a
 // snapshot be used directly wherever a ResolvedAssignment is expected.
 export interface AgentSnapshot extends ResolvedAssignment {
+  schemaVersion: 2;
   model: string;
   providerId: string;
   instructions: string;
   repositories: RepositoryGrant[];
   snapshotHash: string;
   createdAt: number;
+}
+
+export interface AgentSnapshotRootReference {
+  threadKey: string;
+  agentId: string;
+  lastActivityAt: number;
 }

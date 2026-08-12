@@ -215,7 +215,7 @@ test('slack-thread wires the GLM binding override only into the exact model conf
     ['agent_rest', 'cloudflare-workers-ai/@cf/zai-org/glm-5.2', 'C_REST'],
   ] as const) {
     await store.createAgent(modelAgent({ id, model }));
-    await store.putAssignment({ workspaceId: 'T_POLICY', channelId, agentId: id, enabled: true });
+    await store.putAssignment({ workspaceId: 'T_POLICY', channelId, agentId: id });
   }
   store.close();
 
@@ -269,7 +269,6 @@ test('slack-thread initializes from the SQLite config store for the current stat
     workspaceId: 'T_RUNTIME',
     channelId: 'C_RUNTIME',
     agentId: 'agent_runtime',
-    enabled: true,
   });
   store.close();
 

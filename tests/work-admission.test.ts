@@ -478,7 +478,6 @@ test('Routine creation links a canonical Work/Binding and an occurrence links on
       workspaceId: 'T_home',
       channelId: 'C_public',
       agentId: 'agent_default',
-      enabled: true,
     });
     const routines = new RoutineStoreLogic(db, () => NOW);
     const projection = normalizeRoutineSchedule('0 * * * *', 'UTC', NOW);

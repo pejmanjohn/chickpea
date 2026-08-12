@@ -241,6 +241,7 @@ import {
 } from '../model-catalog/index.ts';
 import type {
   ChannelAssignment,
+  ChannelConfig,
   CustomAgentConfig,
   McpConnectionConfig,
   McpConnectionIdentity,
@@ -4188,7 +4189,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         parsed.output.workspaceId,
         parsed.output.channelId,
       );
-      if (!assignment || !assignment.enabled || assignment.agentId !== 'agent_default') {
+      if (!assignment || assignment.agentId !== 'agent_default') {
         return c.json({ error: 'onboarding_assignment_missing' }, 409);
       }
       const { botToken } = await resolveSlackCredentials(
@@ -4219,7 +4220,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         expectedRevision: snapshot.revision,
         workspaceId: parsed.output.workspaceId,
         channelId: parsed.output.channelId,
-        channelName: assignment.channelLabel ?? parsed.output.channelName,
+        channelName:
+          (await store(c).getChannel(parsed.output.workspaceId, parsed.output.channelId))?.label ??
+          parsed.output.channelName,
       });
       return onboardingResponse(c, started);
     } catch (error) {
@@ -4326,13 +4329,15 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
 
     const assignment = toAssignment(input);
-    if (authoritativeLabel !== undefined) {
-      assignment.channelLabel = authoritativeLabel;
-    }
+    const channel = toChannel(input, authoritativeLabel);
     try {
-      const saved = await store(c).putAssignment(assignment);
+      await store(c).putChannel(channel);
+      const saved = input.enabled
+        ? await store(c).putAssignment(assignment)
+        : (await store(c).deleteAssignment(assignment.workspaceId, assignment.channelId), null);
       return c.json({
         assignment: saved,
+        channel,
         ...(isMember !== undefined ? { isMember } : {}),
         ...(joined !== undefined ? { joined } : {}),
       });
@@ -4900,12 +4905,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         true,
       );
       if (
-        references.profileIds.length > 0 ||
+        references.agentIds.length > 0 ||
         before.dmState !== 'off' ||
         pendingDeliveryCount > 0
       ) {
         const profiles = await Promise.all(
-          references.profileIds.map((profileId) => configStore.getAgent(profileId)),
+          references.agentIds.map((agentId) => configStore.getAgent(agentId)),
         );
         return c.json({
           error: 'slack_identity_retirement_blocked',
@@ -6532,7 +6537,9 @@ async function preflightSlackIdentityMembership(input: {
   const joinedChannels: Array<{ workspaceId: string; channelId: string; label: string }> = [];
   const missingChannels: Array<{ workspaceId: string; channelId: string; label: string }> = [];
   for (const assignment of concrete) {
-    const label = assignment.channelLabel ?? assignment.channelId;
+    const label =
+      (await input.config.getChannel(assignment.workspaceId, assignment.channelId))?.label ??
+      assignment.channelId;
     const channel = {
       workspaceId: assignment.workspaceId,
       channelId: assignment.channelId,
@@ -6663,7 +6670,7 @@ function slackIdentityAdminError(c: Context, error: unknown) {
   if (error instanceof SlackIdentityStillReferencedError) {
     return c.json({
       error: 'slack_identity_still_referenced',
-      profileIds: error.profileIds ? error.profileIds.split(', ').filter(Boolean) : [],
+      agentIds: error.agentIds ? error.agentIds.split(', ').filter(Boolean) : [],
       dmAgentId: error.dmAgentId || null,
     }, 409);
   }
@@ -6733,12 +6740,23 @@ function toAssignment(input: v.InferOutput<typeof assignmentSchema>): ChannelAss
     workspaceId: input.workspaceId,
     channelId: input.channelId,
     agentId: input.agentId,
-    enabled: input.enabled,
-    ...(input.channelLabel !== undefined ? { channelLabel: input.channelLabel } : {}),
+  };
+}
+
+function toChannel(
+  input: v.InferOutput<typeof assignmentSchema>,
+  authoritativeLabel?: string,
+): ChannelConfig {
+  const label = authoritativeLabel ?? input.channelLabel;
+  return {
+    workspaceId: input.workspaceId,
+    channelId: input.channelId,
+    ...(label !== undefined ? { label } : {}),
     ...(input.channelPromptAddendum !== undefined
-      ? { channelPromptAddendum: input.channelPromptAddendum }
+      ? { additionalInstructions: input.channelPromptAddendum }
       : {}),
     participationMode: input.participationMode ?? 'ambient',
+    lifecycle: 'active',
   };
 }
 

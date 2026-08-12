@@ -66,7 +66,7 @@ test('Cloudflare config proxy preserves Slack identity records and reference ope
   const calls: Array<{ method: string; args: unknown[] }> = [];
   const references: SlackIdentityReferenceSummary = {
     identityId: identity.id,
-    profileIds: ['agent_finance'],
+    agentIds: ['agent_finance'],
   };
   const stub = {
     async configListSlackIdentities(): Promise<StateRpcResult<SlackIdentity[]>> {
@@ -187,7 +187,7 @@ test('Cloudflare config proxy reconstructs active-DM and referenced-identity dom
           message: 'Slack identity slack_identity_finance is still referenced',
           details: {
             identityId: 'slack_identity_finance',
-            profileIds: 'agent_finance',
+            agentIds: 'agent_finance',
             dmAgentId: '',
           },
         },
@@ -207,7 +207,7 @@ test('Cloudflare config proxy reconstructs active-DM and referenced-identity dom
     (error: unknown) =>
       error instanceof SlackIdentityStillReferencedError &&
       error.identityId === 'slack_identity_finance' &&
-      error.profileIds === 'agent_finance',
+      error.agentIds === 'agent_finance',
   );
 });
 

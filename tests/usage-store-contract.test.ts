@@ -21,8 +21,8 @@ function operation(
     startedAt: START,
     installationId: 'installation',
     workspaceId: 'T_USAGE',
-    profileId: 'agent_default',
-    profileLabel: 'Default',
+    agentId: 'agent_default',
+    agentLabel: 'Default',
     channelId: 'C_USAGE',
     channelLabel: 'usage-lab',
     conversationKind: 'named_channel',
@@ -200,8 +200,8 @@ test('rollups reconcile to bounded work-instance pages without treating unknowns
       priceUnknownReason: null,
     }));
     await store.admitOperation(operation('op_b', {
-      profileId: 'agent_support',
-      profileLabel: 'Support',
+      agentId: 'agent_support',
+      agentLabel: 'Support',
       channelId: 'C_SUPPORT',
       channelLabel: 'support',
     }));
@@ -217,7 +217,7 @@ test('rollups reconcile to bounded work-instance pages without treating unknowns
     const summary = await store.summarize({
       from: START - 1,
       to: START + 10_000,
-      groupBy: 'profile',
+      groupBy: 'agent',
       currency: 'USD',
     });
     assert.equal(summary.totals.operationCount, 2);

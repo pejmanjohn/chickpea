@@ -48,8 +48,8 @@ test('usage Admin APIs are authenticated, bounded, and expose no content fields'
       startedAt: 1_000,
       installationId: 'installation',
       workspaceId: 'T_ADMIN',
-      profileId: 'agent_default',
-      profileLabel: 'Default',
+      agentId: 'agent_default',
+      agentLabel: 'Default',
       channelId: 'C_ADMIN',
       channelLabel: 'admin-lab',
       conversationKind: 'named_channel',
@@ -156,8 +156,8 @@ test('Usage public and redacted serializers expose canonical Run IDs without ret
       startedAt: 1_000,
       installationId: 'installation',
       workspaceId: 'T_USAGE',
-      profileId: 'profile_usage',
-      profileLabel: 'Public profile',
+      agentId: 'profile_usage',
+      agentLabel: 'Public profile',
       channelId: 'C_PUBLIC',
       channelLabel: 'public-lab',
       conversationKind: 'named_channel',
@@ -174,8 +174,8 @@ test('Usage public and redacted serializers expose canonical Run IDs without ret
       startedAt: 2_000,
       installationId: 'installation',
       workspaceId: 'T_USAGE',
-      profileId: 'profile_usage',
-      profileLabel: privateCanary,
+      agentId: 'profile_usage',
+      agentLabel: privateCanary,
       channelId: 'C_PRIVATE',
       channelLabel: privateCanary,
       conversationKind: 'named_channel',
@@ -217,12 +217,12 @@ test('Usage public and redacted serializers expose canonical Run IDs without ret
     const publicItem = page.items.find((item: Record<string, any>) =>
       item.operation.operationId === 'op_usage_public');
     assert.equal(privateItem.projection, 'redacted');
-    assert.equal(privateItem.operation.profileLabel, null);
+    assert.equal(privateItem.operation.agentLabel, null);
     assert.equal(privateItem.operation.channelLabel, null);
     assert.equal(privateItem.operation.routineLabel, null);
     assert.equal(Object.hasOwn(privateItem, 'sessionDeepLink'), false);
     assert.equal(publicItem.projection, 'public');
-    assert.equal(publicItem.operation.profileLabel, 'Public profile');
+    assert.equal(publicItem.operation.agentLabel, 'Public profile');
     assert.equal(publicItem.operation.channelLabel, 'public-lab');
     assert.equal(Object.hasOwn(publicItem, 'sessionDeepLink'), false);
     assert.equal(visibilityLookups, 1);

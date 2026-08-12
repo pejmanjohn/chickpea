@@ -987,8 +987,8 @@ async function recordExplicitInteractionClassifierUsage(input: {
       ? 'Direct message'
       : input.assignment.channelLabel ?? input.turn.channelId,
     conversationKind: direct ? 'direct_message' : 'named_channel',
-    profileId: input.assignment.agentId,
-    profileLabel: input.assignment.agent.name,
+    agentId: input.assignment.agentId,
+    agentLabel: input.assignment.agent.name,
     requestedModel: input.requestedModel,
     credentialRefId: input.assignment.modelCredential?.credentialRefId ?? null,
     credentialVersion: input.assignment.modelCredential?.version ?? null,

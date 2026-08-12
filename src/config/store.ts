@@ -17,7 +17,9 @@ import type { AssignmentLookupOptions } from './resolver.ts';
 import { seededAgents, seededAssignments } from './seed.ts';
 import {
   WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+  type AgentReferenceSummary,
   type ChannelAssignment,
+  type ChannelConfig,
   type CustomAgentConfig,
   type SlackIdentity,
   type SlackIdentityDmState,
@@ -28,8 +30,17 @@ import type { StateDb } from '../state/state-db.ts';
 
 export interface ConfigSeed {
   agents: readonly CustomAgentConfig[];
-  assignments: readonly ChannelAssignment[];
+  assignments: readonly ConfigSeedAssignment[];
+  channels?: readonly ChannelConfig[];
 }
+
+/** Input-only bridge for pre-cutover fixtures and stored seed data. */
+type ConfigSeedAssignment = ChannelAssignment & {
+  enabled?: boolean;
+  channelLabel?: string;
+  channelPromptAddendum?: string;
+  participationMode?: ChannelConfig['participationMode'];
+};
 
 const DEFAULT_SEED: ConfigSeed = {
   agents: seededAgents,
@@ -56,10 +67,15 @@ interface AssignmentRow {
   workspace_id: string;
   channel_id: string;
   agent_id: string;
-  enabled: number;
-  channel_label: string | null;
-  channel_prompt_addendum: string | null;
-  participation_mode?: string | null;
+}
+
+interface ChannelRow {
+  workspace_id: string;
+  channel_id: string;
+  label: string | null;
+  additional_instructions: string | null;
+  participation_mode: string;
+  lifecycle: string;
 }
 
 interface SlackIdentityRow {
@@ -153,6 +169,9 @@ export interface ConfigStore {
   updateAgent(agentId: string, patch: ConfigAgentPatch): Promise<CustomAgentConfig>;
   markOAuthReauthorizationRequired(target: OAuthReauthorizationTarget): Promise<boolean>;
   deleteAgent(agentId: string): Promise<boolean>;
+  listChannels(): Promise<ChannelConfig[]>;
+  getChannel(workspaceId: string, channelId: string): Promise<ChannelConfig | undefined>;
+  putChannel(channel: ChannelConfig): Promise<ChannelConfig>;
   listAssignments(): Promise<ChannelAssignment[]>;
   getAssignment(workspaceId: string, channelId: string): Promise<ChannelAssignment | undefined>;
   listAssignmentsForAgent(agentId: string): Promise<ChannelAssignment[]>;
@@ -163,6 +182,7 @@ export interface ConfigStore {
     channelId: string,
     options?: AssignmentLookupOptions,
   ): Promise<ChannelAssignment | undefined>;
+  getAgentReferences(agentId: string): Promise<AgentReferenceSummary>;
   listSlackIdentities(): Promise<SlackIdentity[]>;
   getSlackIdentity(identityId: string): Promise<SlackIdentity>;
   getSlackIdentityByIngressKey(ingressKey: string): Promise<SlackIdentity | undefined>;
@@ -363,6 +383,45 @@ export class ConfigStoreLogic {
     return deleted.changes === 1;
   }
 
+  listChannels(): ChannelConfig[] {
+    return this.db
+      .all('SELECT * FROM config_channels ORDER BY workspace_id, channel_id')
+      .map((row) => rowToChannel(row as unknown as ChannelRow));
+  }
+
+  getChannel(workspaceId: string, channelId: string): ChannelConfig | undefined {
+    const row = this.db.get(
+      'SELECT * FROM config_channels WHERE workspace_id = ? AND channel_id = ?',
+      workspaceId,
+      channelId,
+    );
+    return row ? rowToChannel(row as unknown as ChannelRow) : undefined;
+  }
+
+  putChannel(channel: ChannelConfig): ChannelConfig {
+    this.putChannelRow(channel);
+    return this.getChannel(channel.workspaceId, channel.channelId) as ChannelConfig;
+  }
+
+  private putChannelRow(channel: ChannelConfig): void {
+    this.db.run(
+      `INSERT INTO config_channels (
+        workspace_id, channel_id, label, additional_instructions, participation_mode, lifecycle
+      ) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(workspace_id, channel_id) DO UPDATE SET
+        label = excluded.label,
+        additional_instructions = excluded.additional_instructions,
+        participation_mode = excluded.participation_mode,
+        lifecycle = excluded.lifecycle`,
+      channel.workspaceId,
+      channel.channelId,
+      channel.label ?? null,
+      channel.additionalInstructions ?? null,
+      channel.participationMode,
+      channel.lifecycle,
+    );
+  }
+
   listAssignments(): ChannelAssignment[] {
     return this.db
       .all('SELECT * FROM config_assignments ORDER BY workspace_id, channel_id')
@@ -392,8 +451,15 @@ export class ConfigStoreLogic {
   putAssignment(assignment: ChannelAssignment): ChannelAssignment {
     this.getAgent(assignment.agentId);
     return this.db.transaction(() => {
+      if (
+        assignment.workspaceId !== '*' &&
+        assignment.channelId !== '*' &&
+        !this.getChannel(assignment.workspaceId, assignment.channelId)
+      ) {
+        this.putChannelRow(defaultChannelConfig(assignment.workspaceId, assignment.channelId));
+      }
       this.putAssignmentRow(assignment);
-      this.syncDefaultDmIdentityFromLegacyAssignment(assignment);
+      this.syncDefaultDmIdentityFromAssignment(assignment);
       return this.getAssignment(assignment.workspaceId, assignment.channelId) as ChannelAssignment;
     });
   }
@@ -401,22 +467,13 @@ export class ConfigStoreLogic {
   private putAssignmentRow(assignment: ChannelAssignment): void {
     this.db.run(
       `INSERT INTO config_assignments (
-        workspace_id, channel_id, agent_id, enabled, channel_label, channel_prompt_addendum,
-        participation_mode
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        workspace_id, channel_id, agent_id
+      ) VALUES (?, ?, ?)
       ON CONFLICT(workspace_id, channel_id) DO UPDATE SET
-        agent_id = excluded.agent_id,
-        enabled = excluded.enabled,
-        channel_label = excluded.channel_label,
-        channel_prompt_addendum = excluded.channel_prompt_addendum,
-        participation_mode = excluded.participation_mode`,
+        agent_id = excluded.agent_id`,
       assignment.workspaceId,
       assignment.channelId,
       assignment.agentId,
-      assignment.enabled ? 1 : 0,
-      assignment.channelLabel ?? null,
-      assignment.channelPromptAddendum ?? null,
-      assignment.participationMode ?? 'ambient',
     );
   }
 
@@ -446,14 +503,9 @@ export class ConfigStoreLogic {
 
   // Assignment precedence, most specific first: exact (workspace, channel), then
   // (workspace, '*'), then ('*', channel), then the ('*', '*') catch-all. The
-  // winning row is selected regardless of its enabled flag: a disabled row at the
-  // winning specificity turns the channel OFF rather than silently falling
-  // through to a broader enabled rule, so PUT {enabled: false} is an explicit
-  // off switch — not a reset to the wildcard agent.
-  //
   // The ('*', '*') catch-all is the DIRECT-conversation default only. A 'channel'
   // surface excludes it entirely (fail-closed): a public/private channel answers
-  // only where an operator explicitly assigned a profile.
+  // only where an operator explicitly assigned an Agent.
   find(
     workspaceId: string,
     channelId: string,
@@ -480,8 +532,24 @@ export class ConfigStoreLogic {
       channelId,
     );
     if (!row) return undefined;
-    const assignment = rowToAssignment(row as unknown as AssignmentRow);
-    return assignment.enabled ? assignment : undefined;
+    return rowToAssignment(row as unknown as AssignmentRow);
+  }
+
+  getAgentReferences(agentId: string): AgentReferenceSummary {
+    this.getAgent(agentId);
+    const identities = this.listSlackIdentities();
+    return {
+      agentId,
+      channelAssignments: this.listAssignmentsForAgent(agentId).map(
+        ({ workspaceId, channelId }) => ({ workspaceId, channelId }),
+      ),
+      dmIdentityIds: identities
+        .filter((identity) => identity.dmAgentId === agentId)
+        .map(({ id }) => id),
+      identityReferenceIds: identities
+        .filter((identity) => identity.setupIntent?.sourceAgentId === agentId)
+        .map(({ id }) => id),
+    };
   }
 
   listSlackIdentities(): SlackIdentity[] {
@@ -635,7 +703,7 @@ export class ConfigStoreLogic {
     const identity = this.getSlackIdentity(identityId);
     return {
       identityId,
-      profileIds: this.listAgentsForSlackIdentity(identityId).map(({ id }) => id),
+      agentIds: this.listAgentsForSlackIdentity(identityId).map(({ id }) => id),
       ...(identity.dmAgentId ? { dmAgentId: identity.dmAgentId } : {}),
     };
   }
@@ -653,14 +721,13 @@ export class ConfigStoreLogic {
       });
       if (identityId !== WORKSPACE_DEFAULT_SLACK_IDENTITY_ID) return updated;
 
-      if (dmState === 'needs_setup' || !dmAgentId) {
+      if (dmState !== 'on' || !dmAgentId) {
         this.deleteAssignmentRow('*', '*');
       } else {
         this.putAssignmentRow({
           workspaceId: '*',
           channelId: '*',
           agentId: dmAgentId,
-          enabled: dmState === 'on',
         });
       }
       return updated;
@@ -734,10 +801,10 @@ export class ConfigStoreLogic {
       throw new SlackIdentityLifecycleError(identityId, 'retire', identity.lifecycle);
     }
     const references = this.getSlackIdentityReferences(identityId);
-    if (references.profileIds.length > 0) {
+    if (references.agentIds.length > 0) {
       throw new SlackIdentityStillReferencedError(
         identityId,
-        references.profileIds.join(', '),
+        references.agentIds.join(', '),
         '',
       );
     }
@@ -779,14 +846,14 @@ export class ConfigStoreLogic {
       throw new SlackIdentityLifecycleError(identityId, 'delete before credentials are erased', identity.lifecycle);
     }
     const references = this.getSlackIdentityReferences(identityId);
-    // A pending identity's DM Profile is setup intent, not a runtime binding:
+    // A pending identity's DM Agent is setup intent, not a runtime binding:
     // the identity cannot admit DMs until connected. It must not make a
-    // credential-erased cancellation undeletable. Explicit Profile presence
+    // credential-erased cancellation undeletable. Explicit Agent presence
     // references remain blockers.
-    if (references.profileIds.length > 0) {
+    if (references.agentIds.length > 0) {
       throw new SlackIdentityStillReferencedError(
         identityId,
-        references.profileIds.join(', '),
+        references.agentIds.join(', '),
         '',
       );
     }
@@ -824,10 +891,10 @@ export class ConfigStoreLogic {
 
   private requireNoSlackIdentityReferences(identityId: string): void {
     const references = this.getSlackIdentityReferences(identityId);
-    if (references.profileIds.length > 0 || references.dmAgentId) {
+    if (references.agentIds.length > 0 || references.dmAgentId) {
       throw new SlackIdentityStillReferencedError(
         identityId,
-        references.profileIds.join(', '),
+        references.agentIds.join(', '),
         references.dmAgentId ?? '',
       );
     }
@@ -896,14 +963,14 @@ export class ConfigStoreLogic {
     return row ? rowToSlackIdentity(row as unknown as SlackIdentityRow) : undefined;
   }
 
-  private syncDefaultDmIdentityFromLegacyAssignment(assignment: ChannelAssignment): void {
+  private syncDefaultDmIdentityFromAssignment(assignment: ChannelAssignment): void {
     if (assignment.workspaceId !== '*' || assignment.channelId !== '*') return;
     const identity = this.workspaceDefaultSlackIdentity();
     if (!identity) return;
     const agent = this.getAgent(assignment.agentId);
     this.updateSlackIdentity(identity.id, identity.connectionRevision, {
-      dmState: assignment.enabled ? (agent.enabled ? 'on' : 'needs_setup') : 'off',
-      dmAgentId: assignment.enabled && !agent.enabled ? null : agent.id,
+      dmState: agent.enabled ? 'on' : 'needs_setup',
+      dmAgentId: agent.enabled ? agent.id : null,
     });
   }
 
@@ -924,15 +991,15 @@ export class ConfigStoreLogic {
       throw new WorkspaceDefaultSlackIdentityProtectedError('retire');
     }
     if (identity.dmState === 'on' && !identity.dmAgentId) {
-      throw new Error(`Slack identity ${identity.id} requires a DM Profile while DMs are on`);
+      throw new Error(`Slack identity ${identity.id} requires a DM Agent while DMs are on`);
     }
     if (identity.dmState === 'needs_setup' && identity.dmAgentId) {
-      throw new Error(`Slack identity ${identity.id} cannot remember a DM Profile while setup is required`);
+      throw new Error(`Slack identity ${identity.id} cannot remember a DM Agent while setup is required`);
     }
     if (identity.dmAgentId) {
       const dmAgent = this.getAgent(identity.dmAgentId);
       if (!dmAgent.enabled && identity.dmState === 'on') {
-        throw new Error(`Slack identity ${identity.id} requires an enabled DM Profile`);
+        throw new Error(`Slack identity ${identity.id} requires an enabled DM Agent`);
       }
     }
   }
@@ -950,9 +1017,19 @@ export class ConfigStoreLogic {
         for (const agent of seed.agents) {
           this.insertAgent(agent);
         }
+        for (const channel of seed.channels ?? []) {
+          this.putChannelRow(channel);
+        }
         for (const assignment of seed.assignments) {
           this.getAgent(assignment.agentId);
-          this.putAssignmentRow(assignment);
+          if (
+            assignment.workspaceId !== '*' &&
+            assignment.channelId !== '*' &&
+            !this.getChannel(assignment.workspaceId, assignment.channelId)
+          ) {
+            this.putChannelRow(channelFromSeedAssignment(assignment));
+          }
+          if (assignment.enabled !== false) this.putAssignmentRow(assignment);
         }
       }
       this.db.run(
@@ -1024,13 +1101,13 @@ export class ConfigStoreLogic {
       return;
     }
     const direct = this.db.get(
-      `SELECT a.id, a.enabled AS agent_enabled, x.enabled AS assignment_enabled
+      `SELECT a.id, a.enabled AS agent_enabled
        FROM config_assignments x
        LEFT JOIN config_agents a ON a.id = x.agent_id
        WHERE x.workspace_id = '*' AND x.channel_id = '*'`,
     );
     const dmAgentId =
-      direct && Number(direct.assignment_enabled) === 1 && Number(direct.agent_enabled) === 1
+      direct && Number(direct.agent_enabled) === 1
         ? String(direct.id)
         : undefined;
     const now = Date.now();
@@ -1051,11 +1128,11 @@ export class ConfigStoreLogic {
 
   // Fresh databases start from the clean v1 schema. Migration v2 bridges the
   // pre-release default_models_json column; v3 adds API connection policy;
-  // v4 adds per-profile repository grants. v5 is reserved after the pre-release
-  // per-profile OpenAI auth experiment moved to one installation setting. v6
-  // adds the live Slack participation ceiling, defaulting existing channels to
-  // ambient as part of the product migration. v7 adds SlackIdentity policy,
-  // optional Profile references, and the reserved workspace-default backfill.
+  // v4 adds per-Agent repository grants. v5 is reserved after the pre-release
+  // per-Agent OpenAI auth experiment moved to one installation setting. v6
+  // added the original assignment-owned participation ceiling. v7 adds
+  // SlackIdentity policy and the reserved workspace-default backfill. v8
+  // separates durable Channel state from Agent placement.
   private runMigrations(): void {
     const MIGRATIONS: Array<{ version: number; up: (db: StateDb) => void }> = [
       {
@@ -1185,6 +1262,57 @@ export class ConfigStoreLogic {
           );
         },
       },
+      {
+        version: 8,
+        up: (db) => {
+          const assignmentColumns = new Set(
+            db.all('PRAGMA table_info(config_assignments)').map((column) => String(column.name)),
+          );
+          db.exec(
+            `CREATE TABLE IF NOT EXISTS config_channels (
+              workspace_id TEXT NOT NULL,
+              channel_id TEXT NOT NULL,
+              label TEXT,
+              additional_instructions TEXT,
+              participation_mode TEXT NOT NULL,
+              lifecycle TEXT NOT NULL,
+              PRIMARY KEY (workspace_id, channel_id)
+            )`,
+          );
+          const legacyParticipation = assignmentColumns.has('participation_mode')
+            ? "COALESCE(participation_mode, 'ambient')"
+            : "'ambient'";
+          db.exec(
+            `INSERT OR IGNORE INTO config_channels (
+              workspace_id, channel_id, label, additional_instructions,
+              participation_mode, lifecycle
+            )
+            SELECT workspace_id, channel_id, channel_label, channel_prompt_addendum,
+                   ${legacyParticipation}, 'active'
+            FROM config_assignments
+            WHERE workspace_id != '*' AND channel_id != '*'`,
+          );
+          db.exec(
+            `CREATE TABLE config_assignments_v8 (
+              workspace_id TEXT NOT NULL,
+              channel_id TEXT NOT NULL,
+              agent_id TEXT NOT NULL,
+              PRIMARY KEY (workspace_id, channel_id)
+            )`,
+          );
+          db.exec(
+            `INSERT INTO config_assignments_v8 (workspace_id, channel_id, agent_id)
+             SELECT workspace_id, channel_id, agent_id
+             FROM config_assignments
+             WHERE enabled = 1`,
+          );
+          db.exec('DROP TABLE config_assignments');
+          db.exec('ALTER TABLE config_assignments_v8 RENAME TO config_assignments');
+          db.exec(
+            'CREATE INDEX IF NOT EXISTS config_assignments_agent_idx ON config_assignments(agent_id)',
+          );
+        },
+      },
     ];
     const row = this.db.get('SELECT value FROM config_meta WHERE key = ?', SCHEMA_VERSION_KEY) as
       | { value: string }
@@ -1249,6 +1377,18 @@ export class SqliteConfigStore implements ConfigStore {
     return this.logic.deleteAgent(agentId);
   }
 
+  async listChannels(): Promise<ChannelConfig[]> {
+    return this.logic.listChannels();
+  }
+
+  async getChannel(workspaceId: string, channelId: string): Promise<ChannelConfig | undefined> {
+    return this.logic.getChannel(workspaceId, channelId);
+  }
+
+  async putChannel(channel: ChannelConfig): Promise<ChannelConfig> {
+    return this.logic.putChannel(channel);
+  }
+
   async listAssignments(): Promise<ChannelAssignment[]> {
     return this.logic.listAssignments();
   }
@@ -1278,6 +1418,10 @@ export class SqliteConfigStore implements ConfigStore {
     options: AssignmentLookupOptions = {},
   ): Promise<ChannelAssignment | undefined> {
     return this.logic.find(workspaceId, channelId, options);
+  }
+
+  async getAgentReferences(agentId: string): Promise<AgentReferenceSummary> {
+    return this.logic.getAgentReferences(agentId);
   }
 
   async listSlackIdentities(): Promise<SlackIdentity[]> {
@@ -1502,14 +1646,39 @@ function rowToAssignment(row: AssignmentRow): ChannelAssignment {
     workspaceId: row.workspace_id,
     channelId: row.channel_id,
     agentId: row.agent_id,
-    enabled: Boolean(row.enabled),
-    ...(row.channel_label ? { channelLabel: row.channel_label } : {}),
-    ...(row.channel_prompt_addendum
-      ? { channelPromptAddendum: row.channel_prompt_addendum }
+  };
+}
+
+function rowToChannel(row: ChannelRow): ChannelConfig {
+  return {
+    workspaceId: row.workspace_id,
+    channelId: row.channel_id,
+    ...(row.label ? { label: row.label } : {}),
+    ...(row.additional_instructions
+      ? { additionalInstructions: row.additional_instructions }
       : {}),
-    ...(row.participation_mode === 'mention_only'
-      ? { participationMode: 'mention_only' as const }
+    participationMode: row.participation_mode === 'mention_only' ? 'mention_only' : 'ambient',
+    lifecycle: row.lifecycle === 'archived' ? 'archived' : 'active',
+  };
+}
+
+function defaultChannelConfig(workspaceId: string, channelId: string): ChannelConfig {
+  return {
+    workspaceId,
+    channelId,
+    participationMode: 'ambient',
+    lifecycle: 'active',
+  };
+}
+
+function channelFromSeedAssignment(assignment: ConfigSeedAssignment): ChannelConfig {
+  return {
+    ...defaultChannelConfig(assignment.workspaceId, assignment.channelId),
+    ...(assignment.channelLabel ? { label: assignment.channelLabel } : {}),
+    ...(assignment.channelPromptAddendum
+      ? { additionalInstructions: assignment.channelPromptAddendum }
       : {}),
+    participationMode: assignment.participationMode ?? 'ambient',
   };
 }
 

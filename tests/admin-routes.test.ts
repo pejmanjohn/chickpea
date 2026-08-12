@@ -1519,7 +1519,6 @@ test('admin API blocks deleting an agent while assignments still reference it', 
       workspaceId: 'T_ADMIN',
       channelId: 'C_ADMIN',
       agentId: 'agent_admin',
-      enabled: true,
     });
 
     const response = await app.request('/admin/api/agents/agent_admin', {
@@ -1689,12 +1688,17 @@ test('onboarding API derives live stages and completes only after a delivered se
     assert.equal(chooseBody.stage, 'choose_channel');
     assert.equal(chooseBody.revision, journey.revision);
 
+    await store.putChannel({
+      workspaceId: 'TDESIGN',
+      channelId: 'CSTART',
+      label: 'start-here',
+      participationMode: 'ambient',
+      lifecycle: 'active',
+    });
     await store.putAssignment({
       workspaceId: 'TDESIGN',
       channelId: 'CSTART',
-      channelLabel: 'start-here',
       agentId: 'agent_default',
-      enabled: true,
     });
     onboardingChannelMember = false;
     const notJoined = await app.request('/admin/api/onboarding/try', {
@@ -1798,9 +1802,14 @@ test('admin API supports agent and assignment CRUD with the admin token', async 
         workspaceId: 'T_ADMIN',
         channelId: 'C_ADMIN',
         agentId: 'agent_admin',
-        enabled: true,
-        channelLabel: 'eng-releases',
-        channelPromptAddendum: 'Admin channel addendum.',
+      },
+      channel: {
+        workspaceId: 'T_ADMIN',
+        channelId: 'C_ADMIN',
+        label: 'eng-releases',
+        additionalInstructions: 'Admin channel addendum.',
+        participationMode: 'ambient',
+        lifecycle: 'active',
       },
     });
 
@@ -1814,9 +1823,6 @@ test('admin API supports agent and assignment CRUD with the admin token', async 
         workspaceId: 'T_ADMIN',
         channelId: 'C_ADMIN',
         agentId: 'agent_admin',
-        enabled: true,
-        channelLabel: 'eng-releases',
-        channelPromptAddendum: 'Admin channel addendum.',
       },
     });
 
@@ -1830,9 +1836,6 @@ test('admin API supports agent and assignment CRUD with the admin token', async 
           workspaceId: 'T_ADMIN',
           channelId: 'C_ADMIN',
           agentId: 'agent_admin',
-          enabled: true,
-          channelLabel: 'eng-releases',
-          channelPromptAddendum: 'Admin channel addendum.',
         },
       ],
     });
@@ -2241,12 +2244,17 @@ test('effective config endpoint resolves through the runtime assignment path', a
         slackIdentityId: identityId,
       }),
     );
+    await store.putChannel({
+      workspaceId: 'T_ADMIN',
+      channelId: 'C_ADMIN',
+      additionalInstructions: 'Channel addendum from the admin test.',
+      participationMode: 'ambient',
+      lifecycle: 'active',
+    });
     await store.putAssignment({
       workspaceId: 'T_ADMIN',
       channelId: 'C_ADMIN',
       agentId: 'agent_admin',
-      enabled: true,
-      channelPromptAddendum: 'Channel addendum from the admin test.',
     });
 
     const response = await app.request(
@@ -2274,7 +2282,7 @@ test('effective config endpoint resolves through the runtime assignment path', a
     assert.match(body.config.instructions, /Do not reveal Slack tokens/);
     assert.deepEqual(
       body.config.instructionLayers.map((layer) => layer.source),
-      ['interaction_defaults', 'profile', 'channel', 'runtime', 'guardrail'],
+      ['interaction_defaults', 'agent', 'channel', 'runtime', 'guardrail'],
     );
   } finally {
     store.close();
@@ -2303,7 +2311,6 @@ test('effective config endpoint uses SLACK_TAG_MODEL for an unpinned profile on 
           workspaceId: 'T_ADMIN',
           channelId: 'C_UNPINNED',
           agentId: 'agent_unpinned',
-          enabled: true,
         });
 
         const response = await app.request(
@@ -4346,7 +4353,6 @@ test('an assignment race leaves the live agent credentials intact and can retry'
               workspaceId: 'T_RACE',
               channelId: 'C_RACE',
               agentId,
-              enabled: true,
             });
           }
           return target.deleteAgent(agentId);
@@ -4931,9 +4937,7 @@ test('Slack identity preflight is Profile-mutation-free and requires wildcard ac
     await store.putAssignment({
       workspaceId: 'T_ACME',
       channelId: '*',
-      channelLabel: 'all channels',
       agentId: 'agent_finance',
-      enabled: true,
     });
     const app = appWithAdminOptions(store, { settings });
     const endpoint =

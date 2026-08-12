@@ -1,9 +1,9 @@
 import type { SettingsStore } from './settings-store.ts';
 
-export const ONBOARDING_JOURNEY_KEY = 'onboarding.journey.v1';
+export const ONBOARDING_JOURNEY_KEY = 'onboarding.journey.v2';
 
 export interface OnboardingJourney {
-  version: 1;
+  version: 2;
   state: 'active' | 'complete';
   startedAt: number;
   selectedWorkspaceId?: string;
@@ -32,7 +32,7 @@ export async function beginOnboardingJourney(
 ): Promise<OnboardingSnapshot> {
   const existing = await readOnboardingJourney(settings);
   if (existing) return existing;
-  const journey: OnboardingJourney = { version: 1, state: 'active', startedAt: validTime(startedAt) };
+  const journey: OnboardingJourney = { version: 2, state: 'active', startedAt: validTime(startedAt) };
   const revision = JSON.stringify(journey);
   const created = await settings.applySettingsPatch({
     expected: { key: ONBOARDING_JOURNEY_KEY, value: null },
@@ -90,11 +90,11 @@ export function parseOnboardingJourney(raw: string): OnboardingJourney {
   } catch {
     throw new Error('Stored onboarding journey is invalid.');
   }
-  if (!isRecord(value) || value.version !== 1 ||
+  if (!isRecord(value) || value.version !== 2 ||
       !['active', 'complete'].includes(String(value.state)) ||
       !isTime(value.startedAt)) throw new Error('Stored onboarding journey is invalid.');
   const journey: OnboardingJourney = {
-    version: 1,
+    version: 2,
     state: value.state as OnboardingJourney['state'],
     startedAt: value.startedAt,
     ...(typeof value.selectedWorkspaceId === 'string'

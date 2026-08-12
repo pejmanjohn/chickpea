@@ -18,8 +18,8 @@ test('usage retention preserves daily aggregates before deleting operation detai
     const startedAt = NOW - (USAGE_RAW_RETENTION_DAYS + 2) * DAY;
     await store.admitOperation({
       operationId: 'op_expired', operationKind: 'interactive_turn', sourceId: 'source_expired',
-      startedAt, installationId: 'installation', workspaceId: 'T_USAGE', profileId: 'agent_default',
-      profileLabel: 'Default', channelId: 'C_USAGE', channelLabel: 'usage', conversationKind: 'named_channel',
+      startedAt, installationId: 'installation', workspaceId: 'T_USAGE', agentId: 'agent_default',
+      agentLabel: 'Default', channelId: 'C_USAGE', channelLabel: 'usage', conversationKind: 'named_channel',
       requestedProvider: 'openai', requestedModel: 'gpt-4.1-mini', credentialRefId: 'cred_openai', credentialVersion: 1,
     });
     await store.recordTerminal({

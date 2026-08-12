@@ -54,3 +54,11 @@ test('onboarding journey rejects stale and malformed state', async () => {
   assert.throws(() => parseOnboardingJourney('{}'), /invalid/);
   settings.close();
 });
+
+test('onboarding v2 rejects the old application schema instead of dual-reading it', () => {
+  assert.equal(ONBOARDING_JOURNEY_KEY, 'onboarding.journey.v2');
+  assert.throws(
+    () => parseOnboardingJourney('{"version":1,"state":"active","startedAt":100}'),
+    /invalid/,
+  );
+});

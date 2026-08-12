@@ -5,6 +5,10 @@ export const SEED_CLOUDFLARE_MODEL_ID = '@cf/zai-org/glm-5.2';
 export const SEED_CLOUDFLARE_MODEL_PIN = `cloudflare/${SEED_CLOUDFLARE_MODEL_ID}`;
 
 export type SeedTarget = 'cloudflare' | 'node';
+export type SeedChannelAssignment = ChannelAssignment & {
+  enabled: boolean;
+  channelLabel?: string;
+};
 
 export function createSeededAgents(
   options: { target?: SeedTarget } = {},
@@ -36,7 +40,7 @@ export function createSeededAgents(
 
 export const seededAgents: CustomAgentConfig[] = createSeededAgents();
 
-export const seededAssignments: ChannelAssignment[] = [
+export const seededAssignments: SeedChannelAssignment[] = [
   {
     // The global '*,*' wildcard is the DIRECT-conversation default (DMs, App
     // Home) — NOT a channel catch-all. The config resolver excludes it for
@@ -57,7 +61,7 @@ export const seededAssignments: ChannelAssignment[] = [
 // seed T_DEMO channels with the same agent list the install ships. A scenario
 // that needs two DISTINCT profiles builds them in its own setup (see S29 in
 // tests/parity/scenarios.ts), not from these fixtures.
-export const demoEngChannelAssignment: ChannelAssignment = {
+export const demoEngChannelAssignment: SeedChannelAssignment = {
   workspaceId: 'T_DEMO',
   channelId: 'C_ENG',
   agentId: 'agent_default',
@@ -65,7 +69,7 @@ export const demoEngChannelAssignment: ChannelAssignment = {
   channelLabel: 'eng-releases',
 };
 
-export const demoExecChannelAssignment: ChannelAssignment = {
+export const demoExecChannelAssignment: SeedChannelAssignment = {
   workspaceId: 'T_DEMO',
   channelId: 'C_EXEC',
   agentId: 'agent_default',
@@ -73,7 +77,7 @@ export const demoExecChannelAssignment: ChannelAssignment = {
   channelLabel: 'exec-briefing',
 };
 
-export const demoChannelAssignments: ChannelAssignment[] = [
+export const demoChannelAssignments: SeedChannelAssignment[] = [
   demoEngChannelAssignment,
   demoExecChannelAssignment,
 ];

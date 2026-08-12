@@ -883,22 +883,29 @@ async function processSlackEvent(
     await state.setParticipation(threadKey, participationControl.mode);
   } else if (participationControl?.scope === 'channel' && surface === 'channel') {
     const current = await stores.config.getAssignment(turn.workspaceId, turn.channelId);
-    await stores.config.putAssignment({
+    const currentChannel = await stores.config.getChannel(turn.workspaceId, turn.channelId);
+    await stores.config.putChannel({
       workspaceId: turn.workspaceId,
       channelId: turn.channelId,
-      agentId: current?.agentId ?? assignment.agentId,
-      enabled: current?.enabled ?? true,
-      ...(current?.channelLabel || assignment.channelLabel
-        ? { channelLabel: current?.channelLabel ?? assignment.channelLabel }
+      ...(currentChannel?.label || assignment.channelLabel
+        ? { label: currentChannel?.label ?? assignment.channelLabel }
         : {}),
-      ...(current?.channelPromptAddendum || assignment.channelPromptAddendum
+      ...(currentChannel?.additionalInstructions || assignment.channelPromptAddendum
         ? {
-            channelPromptAddendum:
-              current?.channelPromptAddendum ?? assignment.channelPromptAddendum,
+            additionalInstructions:
+              currentChannel?.additionalInstructions ?? assignment.channelPromptAddendum,
           }
         : {}),
       participationMode: participationControl.mode,
+      lifecycle: currentChannel?.lifecycle ?? 'active',
     });
+    if (!current) {
+      await stores.config.putAssignment({
+        workspaceId: turn.workspaceId,
+        channelId: turn.channelId,
+        agentId: assignment.agentId,
+      });
+    }
   }
 
   let promotedDecisionKey: string | undefined;
@@ -1265,8 +1272,8 @@ async function recordInteractionClassifierUsage(input: {
       ? 'Direct message'
       : input.assignment.channelLabel ?? input.turn.channelId,
     conversationKind: input.surface === 'direct' ? 'direct_message' : 'named_channel',
-    profileId: input.assignment.agentId,
-    profileLabel: input.assignment.agent.name,
+    agentId: input.assignment.agentId,
+    agentLabel: input.assignment.agent.name,
     requestedModel: input.requestedModel,
     credentialRefId: input.assignment.modelCredential?.credentialRefId ?? null,
     credentialVersion: input.assignment.modelCredential?.version ?? null,

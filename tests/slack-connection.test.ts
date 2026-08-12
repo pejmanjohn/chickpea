@@ -2937,7 +2937,6 @@ test('scoped ingress verifies the selected identity secret and binds app plus wo
             workspaceId: 'T_ACME',
             channelId: 'C_FINANCE',
             agentId: 'agent_default',
-            enabled: true,
           });
           const app = await identityIngressApp();
           const url = `/channels/slack/events/${identity.ingressKey}`;
@@ -3119,7 +3118,6 @@ test('a verified non-selected identity exits before claims, Work, or Slack API r
             workspaceId: 'T_ACME',
             channelId: 'C_FINANCE',
             agentId: 'agent_default',
-            enabled: true,
           });
           await settings.setSetting(SLACK_SETTING_KEYS.botToken, 'xoxb-default');
           await settings.setSetting(SLACK_SETTING_KEYS.signingSecret, 'default-secret');
@@ -3216,7 +3214,6 @@ test('a connected selected dedicated identity is admitted only while it is in th
             workspaceId: 'T_ACME',
             channelId: 'C_FINANCE',
             agentId: 'agent_default',
-            enabled: true,
           });
           const app = await identityIngressApp();
           const url = `/channels/slack/events/${identity.ingressKey}`;

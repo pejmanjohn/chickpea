@@ -133,7 +133,7 @@ function redactAggregateLabels<T extends { groups: Array<{ key: string; label: s
   report: T,
   groupBy: UsageGroupBy | undefined,
 ): T {
-  if (!groupBy || !['workspace', 'profile', 'channel', 'routine'].includes(groupBy)) return report;
+  if (!groupBy || !['workspace', 'agent', 'channel', 'routine'].includes(groupBy)) return report;
   return {
     ...report,
     groups: report.groups.map((group) => ({ ...group, label: null })),
@@ -175,7 +175,7 @@ function usageOperationBase(detail: UsageOperationDetail): Record<string, unknow
     finishedAt: operation.finishedAt,
     installationId: operation.installationId,
     workspaceId: operation.workspaceId,
-    profileId: operation.profileId,
+    agentId: operation.agentId,
     channelId: operation.channelId,
     conversationKind: operation.conversationKind,
     routineId: operation.routineId,
@@ -194,7 +194,7 @@ function usageOperationBase(detail: UsageOperationDetail): Record<string, unknow
 function publicUsageOperation(detail: UsageOperationDetail): Record<string, unknown> {
   return {
     ...usageOperationBase(detail),
-    profileLabel: detail.operation.profileLabel,
+    agentLabel: detail.operation.agentLabel,
     channelLabel: detail.operation.channelLabel,
     routineLabel: detail.operation.routineLabel,
   };
@@ -203,7 +203,7 @@ function publicUsageOperation(detail: UsageOperationDetail): Record<string, unkn
 function redactedUsageOperation(detail: UsageOperationDetail): Record<string, unknown> {
   return {
     ...usageOperationBase(detail),
-    profileLabel: null,
+    agentLabel: null,
     channelLabel: null,
     routineLabel: null,
   };
@@ -236,7 +236,7 @@ function parseUsageQuery(c: Context, includeGroup: boolean): UsageQuery {
   const cursor = c.req.query('cursor');
   const filters: UsageFilters = {};
   assignCsv(filters, 'workspace', c.req.query('workspace'));
-  assignCsv(filters, 'profile', c.req.query('profile'));
+  assignCsv(filters, 'agent', c.req.query('agent'));
   assignCsv(filters, 'channel', c.req.query('channel'));
   assignCsv(filters, 'routine', c.req.query('routine'));
   assignCsv(filters, 'provider', c.req.query('provider'));

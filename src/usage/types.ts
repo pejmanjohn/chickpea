@@ -62,8 +62,8 @@ export interface AdmitUsageOperationInput {
   startedAt: number;
   installationId: string;
   workspaceId: string | null;
-  profileId: string | null;
-  profileLabel: string | null;
+  agentId: string | null;
+  agentLabel: string | null;
   channelId: string | null;
   channelLabel: string | null;
   conversationKind: UsageConversationKind;
@@ -86,8 +86,8 @@ export interface UsageOperation {
   finishedAt: number | null;
   installationId: string;
   workspaceId: string | null;
-  profileId: string | null;
-  profileLabel: string | null;
+  agentId: string | null;
+  agentLabel: string | null;
   channelId: string | null;
   channelLabel: string | null;
   conversationKind: UsageConversationKind;
@@ -142,7 +142,7 @@ export interface UsageOperationDetail {
 }
 
 export const USAGE_GROUP_BY_VALUES = [
-  'profile',
+  'agent',
   'channel',
   'work_kind',
   'routine',
@@ -155,7 +155,7 @@ export type UsageGroupBy = (typeof USAGE_GROUP_BY_VALUES)[number];
 
 export interface UsageFilters {
   workspace?: string[];
-  profile?: string[];
+  agent?: string[];
   channel?: string[];
   workKind?: UsageOperationKind[];
   routine?: string[];

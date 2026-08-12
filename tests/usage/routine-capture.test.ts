@@ -64,7 +64,7 @@ test('routine recorder captures success, no-op-style zero usage, failure, and in
       operationId: 'rrun_completed', executionId: 'exec_routine_completed', startedAt: 1_000,
       runId: 'run_usage_routine', runExecutionId: 'execution_usage_routine_1',
       workspaceId: routine.workspaceId, channelId: routine.channelId, channelLabel: 'usage-lab',
-      profileId: config.agentId, profileLabel: config.agent.name,
+      agentId: config.agentId, agentLabel: config.agent.name,
       routineId: routine.id, routineLabel: routine.name, requestedModel: config.model,
       credentialRefId: null, credentialVersion: null, store: usage, now: () => 2_000,
     });
@@ -83,7 +83,7 @@ test('routine recorder captures success, no-op-style zero usage, failure, and in
       const recorder = new RoutineUsageRecorder({
         operationId, executionId: `exec_${operationId}`, startedAt: 1_000,
         workspaceId: routine.workspaceId, channelId: routine.channelId,
-        profileId: config.agentId, profileLabel: config.agent.name,
+        agentId: config.agentId, agentLabel: config.agent.name,
         routineId: routine.id, routineLabel: routine.name, requestedModel: config.model,
         credentialRefId: null, credentialVersion: null, store: usage, now: () => 2_000,
       });
@@ -146,7 +146,7 @@ test('Scheduled Work detail prefers linked ledger facts and labels historical ro
     const recorder = new RoutineUsageRecorder({
       operationId: run.id, executionId: 'exec_admin_routine', startedAt: 1_000,
       workspaceId: routine.workspaceId, channelId: routine.channelId,
-      profileId: config.agentId, profileLabel: config.agent.name,
+      agentId: config.agentId, agentLabel: config.agent.name,
       routineId: routine.id, routineLabel: routine.name, requestedModel: config.model,
       credentialRefId: null, credentialVersion: null, store: usage, now: () => 2_000,
     });

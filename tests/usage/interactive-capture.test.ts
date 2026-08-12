@@ -80,7 +80,7 @@ test('interactive capture persists only bounded attribution and aggregate respon
     await recorder.recordSuccess(success());
 
     const detail = await store.getOperation('msg:C_USAGE:1000.0001');
-    assert.equal(detail?.operation.profileLabel, 'Usage profile');
+    assert.equal(detail?.operation.agentLabel, 'Usage profile');
     assert.equal(detail?.operation.channelLabel, 'usage-lab');
     assert.equal(detail?.operation.credentialVersion, 7);
     assert.equal(detail?.operation.runId, 'run_usage_interactive');

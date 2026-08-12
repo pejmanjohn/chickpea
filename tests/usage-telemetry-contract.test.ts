@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { parseAgentDispatchEnvelope } from '../src/slack/flue-dispatch.ts';
+import { USAGE_GROUP_BY_VALUES } from '../src/usage/types.ts';
 
 interface ProviderRouteFixture {
   id: string;
@@ -37,6 +38,11 @@ const persistenceBudget = JSON.parse(
   maximumAllowedBudgetMs: number;
   probes: Array<{ p95Ms: number }>;
 };
+
+test('usage grouping exposes Agent vocabulary without a Profile alias', () => {
+  assert.ok(USAGE_GROUP_BY_VALUES.includes('agent' as never));
+  assert.equal(USAGE_GROUP_BY_VALUES.includes('profile' as never), false);
+});
 
 test('provider matrix covers every current Chickpea inference route', () => {
   assert.equal(matrix.schemaVersion, 1);

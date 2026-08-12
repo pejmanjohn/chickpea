@@ -108,12 +108,17 @@ test('Scheduled Work APIs are admin-authenticated, body-safe, filterable, and co
       apiConnections: [],
       repositories: [],
     });
+    await config.putChannel({
+      workspaceId: 'T_TEST',
+      channelId: 'C_TEST',
+      label: 'routine-admin-lab',
+      participationMode: 'ambient',
+      lifecycle: 'active',
+    });
     await config.putAssignment({
       workspaceId: 'T_TEST',
       channelId: 'C_TEST',
       agentId: 'agent_routine_admin',
-      enabled: true,
-      channelLabel: 'routine-admin-lab',
     });
     await routines.createOccurrence({
       runId: 'rrun_admin', idempotencyKey: 'run-admin', routineId: routine.id,

@@ -31,7 +31,7 @@ export const SLACK_INTERACTION_DEFAULTS = [
 
 export type InstructionLayerSource =
   | 'interaction_defaults'
-  | 'profile'
+  | 'agent'
   | 'channel'
   | 'runtime'
   | 'guardrail';
@@ -104,7 +104,7 @@ export function effectiveSlackInstructionLayers(
       label: 'Slack interaction defaults',
       text: SLACK_INTERACTION_DEFAULTS,
     },
-    { source: 'profile', label: 'Profile', text: assignment.agent.instructions },
+    { source: 'agent', label: 'Agent', text: assignment.agent.instructions },
     ...(assignment.channelPromptAddendum
       ? [
           {

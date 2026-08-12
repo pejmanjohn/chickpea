@@ -167,8 +167,8 @@ export class UsageStoreLogic {
         input.startedAt,
         input.installationId,
         input.workspaceId,
-        input.profileId,
-        input.profileLabel,
+        input.agentId,
+        input.agentLabel,
         input.channelId,
         input.channelLabel,
         input.conversationKind,
@@ -987,8 +987,8 @@ function mapOperation(row: OperationRow): UsageOperation {
     finishedAt: nullableNumber(row.finished_at),
     installationId: row.installation_id,
     workspaceId: row.workspace_id,
-    profileId: row.profile_id,
-    profileLabel: row.profile_label,
+    agentId: row.profile_id,
+    agentLabel: row.profile_label,
     channelId: row.channel_id,
     channelLabel: row.channel_label,
     conversationKind: row.conversation_kind,
@@ -1056,8 +1056,8 @@ function sameAdmission(operation: UsageOperation, input: AdmitUsageOperationInpu
     operation.startedAt === input.startedAt &&
     operation.installationId === input.installationId &&
     operation.workspaceId === input.workspaceId &&
-    operation.profileId === input.profileId &&
-    operation.profileLabel === input.profileLabel &&
+    operation.agentId === input.agentId &&
+    operation.agentLabel === input.agentLabel &&
     operation.channelId === input.channelId &&
     operation.channelLabel === input.channelLabel &&
     operation.conversationKind === input.conversationKind &&

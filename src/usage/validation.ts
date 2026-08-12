@@ -47,8 +47,8 @@ export function normalizeAdmitUsageOperation(input: AdmitUsageOperationInput): A
     startedAt: timestamp(input.startedAt, 'started time'),
     installationId: opaqueId(input.installationId, 'installation ID'),
     workspaceId: optionalId(input.workspaceId, 'workspace ID'),
-    profileId: optionalId(input.profileId, 'profile ID'),
-    profileLabel: optionalLabel(input.profileLabel, 'profile label'),
+    agentId: optionalId(input.agentId, 'Agent ID'),
+    agentLabel: optionalLabel(input.agentLabel, 'Agent label'),
     channelId: optionalId(input.channelId, 'channel ID'),
     channelLabel,
     conversationKind,
@@ -180,7 +180,7 @@ export function normalizeUsageQuery(input: UsageQuery): NormalizedUsageQuery {
 function normalizeFilters(filters: UsageFilters): UsageFilters {
   const normalized: UsageFilters = {};
   assignFilter(normalized, 'workspace', filters.workspace, (value) => opaqueId(value, 'workspace filter', true));
-  assignFilter(normalized, 'profile', filters.profile, (value) => opaqueId(value, 'profile filter', true));
+  assignFilter(normalized, 'agent', filters.agent, (value) => opaqueId(value, 'Agent filter', true));
   assignFilter(normalized, 'channel', filters.channel, (value) => opaqueId(value, 'channel filter', true));
   assignFilter(normalized, 'routine', filters.routine, (value) => opaqueId(value, 'routine filter', true));
   assignFilter(normalized, 'provider', filters.provider, (value) => opaqueId(value, 'provider filter', true));

@@ -38,13 +38,13 @@ import { withEnv } from './helpers/env.ts';
 const AGENT_ID = 'agent_snapshot_unit';
 const THREAD_KEY = 'T_SNAPSHOT:C_SNAPSHOT:1782771900.000100';
 const NEW_THREAD_KEY = 'T_SNAPSHOT:C_SNAPSHOT:1782771901.000100';
-const ALPHA = 'SNAPSHOT_UNIT_ALPHA: original profile instructions.';
-const BETA = 'SNAPSHOT_UNIT_BETA: edited profile instructions.';
+const ALPHA = 'SNAPSHOT_UNIT_ALPHA: original Agent instructions.';
+const BETA = 'SNAPSHOT_UNIT_BETA: edited Agent instructions.';
 
 function agent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig {
   return {
     id: AGENT_ID,
-    name: 'Snapshot Unit Profile',
+    name: 'Snapshot Unit Agent',
     instructions: ALPHA,
     enabled: true,
     model: 'local-stub/snapshot-unit',
@@ -61,7 +61,6 @@ function assignment(overrides: Partial<ChannelAssignment> = {}): ChannelAssignme
     workspaceId: 'T_SNAPSHOT',
     channelId: 'C_SNAPSHOT',
     agentId: AGENT_ID,
-    enabled: true,
     ...overrides,
   };
 }
@@ -90,12 +89,13 @@ test('new snapshots freeze identity and version their hash input', () => {
   const defaultSnapshot = snapshotFromEffectiveConfig(defaultConfig, 1_000);
   const dedicatedSnapshot = snapshotFromEffectiveConfig(dedicatedConfig, 1_001);
 
+  assert.equal(defaultSnapshot.schemaVersion, 2);
   assert.equal(defaultSnapshot.slackIdentityId, WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
   assert.equal(dedicatedSnapshot.slackIdentityId, 'slack_identity_finance');
   assert.notEqual(defaultSnapshot.snapshotHash, dedicatedSnapshot.snapshotHash);
 });
 
-test('legacy snapshots resolve to the default identity without rewriting their hash', () => {
+test('legacy snapshots are rejected instead of normalized into v2', () => {
   const db = openStateDb(':memory:');
   try {
     const store = new SnapshotStoreLogic(db, () => 2_000);
@@ -114,19 +114,48 @@ test('legacy snapshots resolve to the default identity without rewriting their h
     );
 
     const observed = store.get('T_SNAPSHOT:C_LEGACY_IDENTITY:1');
-    assert.equal(observed?.slackIdentityId, WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
-    assert.equal(observed?.snapshotHash, legacyHash);
+    assert.equal(observed, undefined);
     const persisted = db.get(
       'SELECT snapshot_json FROM agent_snapshots WHERE thread_key = ?',
       'T_SNAPSHOT:C_LEGACY_IDENTITY:1',
-    ) as { snapshot_json: string };
-    assert.equal('slackIdentityId' in JSON.parse(persisted.snapshot_json), false);
+    );
+    assert.equal(persisted, undefined);
   } finally {
     db.close();
   }
 });
 
-test('an existing channel thread keeps its identity while a new thread sees the Profile change', async () => {
+test('snapshot v2 lists only live root keys for the indexed Agent', async () => {
+  let now = 10_000;
+  const store = new SqliteAgentSnapshotStore(':memory:', () => now);
+  try {
+    await store.putIfAbsent(
+      'T_SNAPSHOT:C_ONE:1',
+      snapshotFromEffectiveConfig(effConfig('C_ONE'), now),
+    );
+    await store.putIfAbsent(
+      'T_SNAPSHOT:C_TWO:2',
+      snapshotFromEffectiveConfig({
+        ...effConfig('C_TWO'),
+        agentId: 'agent_other',
+        agent: agent({ id: 'agent_other' }),
+      }, now),
+    );
+
+    assert.deepEqual(await store.listLiveRootsByAgent(AGENT_ID), [{
+      threadKey: 'T_SNAPSHOT:C_ONE:1',
+      agentId: AGENT_ID,
+      lastActivityAt: now,
+    }]);
+
+    now += THREAD_TTL_MS + 1;
+    assert.deepEqual(await store.listLiveRootsByAgent(AGENT_ID), []);
+  } finally {
+    store.close();
+  }
+});
+
+test('an existing channel thread keeps its identity while a new thread sees the Agent change', async () => {
   const store = new SqliteAgentSnapshotStore(':memory:', () => 2_000);
   try {
     const dedicated = {

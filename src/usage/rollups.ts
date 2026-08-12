@@ -12,7 +12,7 @@ export interface UsageWhereClause {
 
 const FILTER_COLUMNS = {
   workspace: 'o.workspace_id',
-  profile: "COALESCE(o.profile_id, 'unknown')",
+  agent: "COALESCE(o.profile_id, 'unknown')",
   channel: "CASE WHEN o.conversation_kind = 'direct_message' THEN 'direct_message' ELSE COALESCE(o.channel_id, 'unknown') END",
   workKind: 'o.operation_kind',
   routine: "COALESCE(o.routine_id, 'not_routine')",
@@ -43,10 +43,10 @@ export function usageGroupExpressions(groupBy: UsageGroupBy): {
   label: string;
 } {
   switch (groupBy) {
-    case 'profile':
+    case 'agent':
       return {
         key: "COALESCE(o.profile_id, 'unknown')",
-        label: "COALESCE(o.profile_label, o.profile_id, 'Unknown profile')",
+        label: "COALESCE(o.profile_label, o.profile_id, 'Unknown Agent')",
       };
     case 'channel':
       return {

@@ -48,7 +48,7 @@ export class AgentSlackIdentityConflictError extends Error {
     readonly actualIdentityId: string | null,
   ) {
     super(
-      `Profile ${agentId} changed Slack identity (expected ${expectedIdentityId ?? 'workspace default'}, actual ${actualIdentityId ?? 'workspace default'})`,
+      `Agent ${agentId} changed Slack identity (expected ${expectedIdentityId ?? 'workspace default'}, actual ${actualIdentityId ?? 'workspace default'})`,
     );
     this.name = 'AgentSlackIdentityConflictError';
   }
@@ -71,12 +71,12 @@ export class SlackIdentityExistsError extends Error {
 export class SlackIdentityStillReferencedError extends Error {
   constructor(
     readonly identityId: string,
-    readonly profileIds: string,
+    readonly agentIds: string,
     readonly dmAgentId: string,
   ) {
     const references = [
-      profileIds ? `Profiles ${profileIds}` : '',
-      dmAgentId ? `DM Profile ${dmAgentId}` : '',
+      agentIds ? `Agents ${agentIds}` : '',
+      dmAgentId ? `DM Agent ${dmAgentId}` : '',
     ].filter(Boolean);
     super(
       `Slack identity ${identityId} is still referenced${references.length ? ` by ${references.join(' and ')}` : ''}`,

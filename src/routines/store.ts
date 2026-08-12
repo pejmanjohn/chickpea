@@ -2087,14 +2087,17 @@ export class RoutineStoreLogic {
     try {
       const agent = this.config.getAgent(assignmentRow.agentId);
       if (!agent.enabled) return;
+      const channel = this.config.getChannel(routine.workspaceId, routine.channelId);
+      if (channel?.lifecycle === 'archived') return;
       assignment = {
         workspaceId: routine.workspaceId,
         channelId: routine.channelId,
         agentId: agent.id,
-        ...(assignmentRow.channelLabel ? { channelLabel: assignmentRow.channelLabel } : {}),
-        ...(assignmentRow.channelPromptAddendum
-          ? { channelPromptAddendum: assignmentRow.channelPromptAddendum }
+        ...(channel?.label ? { channelLabel: channel.label } : {}),
+        ...(channel?.additionalInstructions
+          ? { channelPromptAddendum: channel.additionalInstructions }
           : {}),
+        participationMode: channel?.participationMode ?? 'ambient',
         agent,
       };
     } catch {

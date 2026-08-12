@@ -67,7 +67,10 @@ import {
 } from './config/store.ts';
 import type {
   AgentSnapshot,
+  AgentSnapshotRootReference,
+  AgentReferenceSummary,
   ChannelAssignment,
+  ChannelConfig,
   CustomAgentConfig,
   SlackIdentity,
   SlackIdentityDmState,
@@ -608,6 +611,21 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     return this.call((stores) => stores.config.deleteAgent(agentId));
   }
 
+  async configListChannels(): Promise<StateRpcResult<ChannelConfig[]>> {
+    return this.call((stores) => stores.config.listChannels());
+  }
+
+  async configGetChannel(
+    workspaceId: string,
+    channelId: string,
+  ): Promise<StateRpcResult<ChannelConfig | null>> {
+    return this.call((stores) => stores.config.getChannel(workspaceId, channelId) ?? null);
+  }
+
+  async configPutChannel(channel: ChannelConfig): Promise<StateRpcResult<ChannelConfig>> {
+    return this.call((stores) => stores.config.putChannel(channel));
+  }
+
   // ── config: assignments ──────────────────────────────────────────────────
 
   async configListAssignments(): Promise<StateRpcResult<ChannelAssignment[]>> {
@@ -646,6 +664,12 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     options?: AssignmentLookupOptions,
   ): Promise<StateRpcResult<ChannelAssignment | null>> {
     return this.call((stores) => stores.config.find(workspaceId, channelId, options) ?? null);
+  }
+
+  async configGetAgentReferences(
+    agentId: string,
+  ): Promise<StateRpcResult<AgentReferenceSummary>> {
+    return this.call((stores) => stores.config.getAgentReferences(agentId));
   }
 
   // ── config: Slack identities ────────────────────────────────────────────
@@ -810,6 +834,12 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     snapshot: AgentSnapshot,
   ): Promise<StateRpcResult<AgentSnapshot>> {
     return this.call((stores) => stores.snapshots.putIfAbsent(threadKey, snapshot));
+  }
+
+  async snapshotListLiveRootsByAgent(
+    agentId: string,
+  ): Promise<StateRpcResult<AgentSnapshotRootReference[]>> {
+    return this.call((stores) => stores.snapshots.listLiveRootsByAgent(agentId));
   }
 
   // ── slack claims + thread registry ───────────────────────────────────────
@@ -1559,7 +1589,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       if (err instanceof SlackIdentityStillReferencedError) {
         return rpcError('slack_identity_still_referenced', err.message, {
           identityId: err.identityId,
-          profileIds: err.profileIds,
+          agentIds: err.agentIds,
           dmAgentId: err.dmAgentId,
         });
       }

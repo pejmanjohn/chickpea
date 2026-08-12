@@ -2,6 +2,7 @@ import { DisabledAgentError, NoAssignmentError } from './errors.ts';
 import {
   WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
   type ChannelAssignment,
+  type ChannelConfig,
   type CustomAgentConfig,
   type ResolvedAssignment,
 } from './types.ts';
@@ -52,6 +53,11 @@ export interface AssignmentReader {
 export interface ConfigStores {
   agents: AgentReader;
   assignments: AssignmentReader;
+  channels?: ChannelReader;
+}
+
+export interface ChannelReader {
+  getChannel(workspaceId: string, channelId: string): Promise<ChannelConfig | undefined>;
 }
 
 export async function resolveAssignment(
@@ -70,16 +76,27 @@ export async function resolveAssignment(
     throw new DisabledAgentError(agent.id);
   }
 
+  const channelReader = stores.channels ?? channelReaderFromAssignments(stores.assignments);
+  const channel = channelReader ? await channelReader.getChannel(workspaceId, channelId) : undefined;
+  if (channel?.lifecycle === 'archived') {
+    throw new NoAssignmentError(`Channel ${workspaceId}/${channelId} is archived`);
+  }
+
   return {
     workspaceId,
     channelId,
     agentId: agent.id,
     slackIdentityId: agent.slackIdentityId ?? WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
-    ...(assignment.channelLabel ? { channelLabel: assignment.channelLabel } : {}),
-    ...(assignment.channelPromptAddendum
-      ? { channelPromptAddendum: assignment.channelPromptAddendum }
+    ...(channel?.label ? { channelLabel: channel.label } : {}),
+    ...(channel?.additionalInstructions
+      ? { channelPromptAddendum: channel.additionalInstructions }
       : {}),
-    participationMode: assignment.participationMode ?? 'ambient',
+    participationMode: channel?.participationMode ?? 'ambient',
     agent,
   };
+}
+
+function channelReaderFromAssignments(assignments: AssignmentReader): ChannelReader | undefined {
+  const candidate = assignments as AssignmentReader & Partial<ChannelReader>;
+  return typeof candidate.getChannel === 'function' ? candidate as ChannelReader : undefined;
 }

@@ -7,7 +7,10 @@ import type {
 } from './store.ts';
 import type {
   AgentSnapshot,
+  AgentSnapshotRootReference,
+  AgentReferenceSummary,
   ChannelAssignment,
+  ChannelConfig,
   CustomAgentConfig,
   SlackIdentity,
   SlackIdentityDmState,
@@ -205,6 +208,12 @@ export interface TagStateRpc {
     target: OAuthReauthorizationTarget,
   ): Promise<StateRpcResult<boolean>>;
   configDeleteAgent(agentId: string): Promise<StateRpcResult<boolean>>;
+  configListChannels(): Promise<StateRpcResult<ChannelConfig[]>>;
+  configGetChannel(
+    workspaceId: string,
+    channelId: string,
+  ): Promise<StateRpcResult<ChannelConfig | null>>;
+  configPutChannel(channel: ChannelConfig): Promise<StateRpcResult<ChannelConfig>>;
   // -- config: assignments -------------------------------------------------
   configListAssignments(): Promise<StateRpcResult<ChannelAssignment[]>>;
   configGetAssignment(
@@ -222,6 +231,7 @@ export interface TagStateRpc {
     channelId: string,
     options?: AssignmentLookupOptions,
   ): Promise<StateRpcResult<ChannelAssignment | null>>;
+  configGetAgentReferences(agentId: string): Promise<StateRpcResult<AgentReferenceSummary>>;
   // -- config: Slack identities -------------------------------------------
   configListSlackIdentities(): Promise<StateRpcResult<SlackIdentity[]>>;
   configGetSlackIdentity(identityId: string): Promise<StateRpcResult<SlackIdentity>>;
@@ -288,6 +298,9 @@ export interface TagStateRpc {
     threadKey: string,
     snapshot: AgentSnapshot,
   ): Promise<StateRpcResult<AgentSnapshot>>;
+  snapshotListLiveRootsByAgent(
+    agentId: string,
+  ): Promise<StateRpcResult<AgentSnapshotRootReference[]>>;
   // -- slack claims + thread registry --------------------------------------
   claim(key: string): Promise<StateRpcResult<boolean>>;
   release(key: string): Promise<StateRpcResult<null>>;

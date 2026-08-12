@@ -2,6 +2,7 @@ import { computeSnapshotHash, type EffectiveSlackConfig } from './effective-conf
 import {
   WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
   type AgentSnapshot,
+  type AgentSnapshotRootReference,
 } from './types.ts';
 import { THREAD_TTL_MS } from '../slack/claim-store.ts';
 import { openStateDb, resolveStateDbPath, type NodeStateDb } from '../state/node-state-db.ts';
@@ -9,7 +10,17 @@ import type { StateDb } from '../state/state-db.ts';
 
 interface SnapshotRow {
   snapshot_json: string;
+  schema_version: number | null;
+  agent_id: string | null;
 }
+
+interface SnapshotRootRow {
+  thread_key: string;
+  agent_id: string;
+  last_activity_at: number;
+}
+
+export const AGENT_SNAPSHOT_SCHEMA_VERSION = 2;
 
 /**
  * Public async snapshot store. The write path is `putIfAbsent`, not a plain
@@ -24,6 +35,7 @@ export interface AgentSnapshotStore {
    * PERSISTED row either way, never a losing writer's discarded build.
    */
   putIfAbsent(threadKey: string, snapshot: AgentSnapshot): Promise<AgentSnapshot>;
+  listLiveRootsByAgent(agentId: string): Promise<AgentSnapshotRootReference[]>;
   /** Node backend only (closes the SQLite handle); absent on RPC proxies. */
   close?(): void;
 }
@@ -43,17 +55,31 @@ export class SnapshotStoreLogic {
         thread_key TEXT PRIMARY KEY,
         snapshot_json TEXT NOT NULL,
         snapshot_hash TEXT NOT NULL,
-        created_at INTEGER NOT NULL
+        created_at INTEGER NOT NULL,
+        schema_version INTEGER,
+        agent_id TEXT,
+        last_activity_at INTEGER
       )`,
     );
+    this.ensureV2Schema();
   }
 
   get(threadKey: string): AgentSnapshot | undefined {
     const row = this.db.get(
-      'SELECT snapshot_json FROM agent_snapshots WHERE thread_key = ?',
+      'SELECT snapshot_json, schema_version, agent_id FROM agent_snapshots WHERE thread_key = ?',
       threadKey,
     ) as SnapshotRow | undefined;
     if (!row) {
+      return undefined;
+    }
+    const snapshot = parseSnapshot(row.snapshot_json);
+    if (
+      row.schema_version !== AGENT_SNAPSHOT_SCHEMA_VERSION ||
+      row.agent_id === null ||
+      snapshot?.schemaVersion !== AGENT_SNAPSHOT_SCHEMA_VERSION ||
+      snapshot.agentId !== row.agent_id
+    ) {
+      this.db.run('DELETE FROM agent_snapshots WHERE thread_key = ?', threadKey);
       return undefined;
     }
     // Touch on read: the purge horizon must track LAST ACTIVITY, not thread
@@ -61,22 +87,26 @@ export class SnapshotStoreLogic {
     // long-lived thread stays admissible past 30 days — a birth-dated snapshot
     // would be purged under it, silently un-freezing the live thread's config.
     this.db.run(
-      'UPDATE agent_snapshots SET created_at = ? WHERE thread_key = ?',
+      'UPDATE agent_snapshots SET last_activity_at = ? WHERE thread_key = ?',
       this.now(),
       threadKey,
     );
-    return normalizeLegacySnapshot(JSON.parse(row.snapshot_json) as AgentSnapshot);
+    return snapshot;
   }
 
   putIfAbsent(threadKey: string, snapshot: AgentSnapshot): AgentSnapshot {
     this.purgeExpired();
     const inserted = this.db.run(
       `INSERT OR IGNORE INTO agent_snapshots (
-        thread_key, snapshot_json, snapshot_hash, created_at
-      ) VALUES (?, ?, ?, ?)`,
+        thread_key, snapshot_json, snapshot_hash, created_at,
+        schema_version, agent_id, last_activity_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
       threadKey,
       JSON.stringify(snapshot),
       snapshot.snapshotHash,
+      snapshot.createdAt,
+      snapshot.schemaVersion,
+      snapshot.agentId,
       snapshot.createdAt,
     );
 
@@ -94,11 +124,57 @@ export class SnapshotStoreLogic {
     return stored;
   }
 
+  listLiveRootsByAgent(agentId: string): AgentSnapshotRootReference[] {
+    this.purgeExpired();
+    return this.db
+      .all(
+        `SELECT thread_key, agent_id, last_activity_at
+         FROM agent_snapshots
+         WHERE schema_version = ? AND agent_id = ?
+         ORDER BY last_activity_at DESC, thread_key`,
+        AGENT_SNAPSHOT_SCHEMA_VERSION,
+        agentId,
+      )
+      .map((row) => {
+        const root = row as unknown as SnapshotRootRow;
+        return {
+          threadKey: root.thread_key,
+          agentId: root.agent_id,
+          lastActivityAt: Number(root.last_activity_at),
+        };
+      });
+  }
+
   // Snapshots outlive their thread's admissibility by no more than the thread
   // TTL: past it an implicit reply is no longer admitted (slack_threads is
   // purged on the same horizon), so the row is dead weight. Bounds the table.
   private purgeExpired(): void {
-    this.db.run('DELETE FROM agent_snapshots WHERE created_at < ?', this.now() - THREAD_TTL_MS);
+    this.db.run(
+      'DELETE FROM agent_snapshots WHERE last_activity_at IS NULL OR last_activity_at < ?',
+      this.now() - THREAD_TTL_MS,
+    );
+  }
+
+  private ensureV2Schema(): void {
+    const columns = new Set(
+      this.db.all('PRAGMA table_info(agent_snapshots)').map((column) => String(column.name)),
+    );
+    if (!columns.has('schema_version')) {
+      this.db.exec('ALTER TABLE agent_snapshots ADD COLUMN schema_version INTEGER');
+    }
+    if (!columns.has('agent_id')) {
+      this.db.exec('ALTER TABLE agent_snapshots ADD COLUMN agent_id TEXT');
+    }
+    if (!columns.has('last_activity_at')) {
+      this.db.exec('ALTER TABLE agent_snapshots ADD COLUMN last_activity_at INTEGER');
+    }
+    this.db.exec(
+      'CREATE INDEX IF NOT EXISTS agent_snapshots_agent_live_idx ON agent_snapshots(agent_id, last_activity_at)',
+    );
+    this.db.run(
+      'DELETE FROM agent_snapshots WHERE schema_version IS NULL OR schema_version != ?',
+      AGENT_SNAPSHOT_SCHEMA_VERSION,
+    );
   }
 }
 
@@ -122,6 +198,10 @@ export class SqliteAgentSnapshotStore implements AgentSnapshotStore {
 
   async putIfAbsent(threadKey: string, snapshot: AgentSnapshot): Promise<AgentSnapshot> {
     return this.logic.putIfAbsent(threadKey, snapshot);
+  }
+
+  async listLiveRootsByAgent(agentId: string): Promise<AgentSnapshotRootReference[]> {
+    return this.logic.listLiveRootsByAgent(agentId);
   }
 }
 
@@ -149,6 +229,7 @@ export function snapshotFromEffectiveConfig(
   createdAt: number,
 ): AgentSnapshot {
   return {
+    schemaVersion: AGENT_SNAPSHOT_SCHEMA_VERSION,
     workspaceId: config.workspaceId,
     channelId: config.channelId,
     agentId: config.agentId,
@@ -169,12 +250,11 @@ export function snapshotFromEffectiveConfig(
   };
 }
 
-/** Legacy snapshot rows predate SlackIdentity. Normalize only the in-memory
- * view: their stored JSON and original hash remain the durable drift anchor. */
-function normalizeLegacySnapshot(snapshot: AgentSnapshot): AgentSnapshot {
-  if (snapshot.slackIdentityId) return snapshot;
-  return {
-    ...snapshot,
-    slackIdentityId: WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
-  };
+function parseSnapshot(raw: string): AgentSnapshot | undefined {
+  try {
+    const parsed = JSON.parse(raw) as AgentSnapshot;
+    return parsed && typeof parsed === 'object' ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
 }

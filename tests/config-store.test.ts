@@ -5,7 +5,10 @@ import { tmpdir } from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 
-import { resolveEffectiveSlackConfig } from '../src/config/effective-config.ts';
+import {
+  effectiveSlackInstructionLayers,
+  resolveEffectiveSlackConfig,
+} from '../src/config/effective-config.ts';
 import { resolveAssignment, surfaceForChannelId } from '../src/config/resolver.ts';
 import {
   SEED_CLOUDFLARE_MODEL_PIN,
@@ -19,6 +22,7 @@ import { AgentSlackIdentityConflictError } from '../src/config/errors.ts';
 import {
   WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
   type ChannelAssignment,
+  type ChannelConfig,
   type CustomAgentConfig,
   type SlackIdentity,
 } from '../src/config/types.ts';
@@ -48,10 +52,74 @@ function assignment(overrides: Partial<ChannelAssignment> = {}): ChannelAssignme
     workspaceId: 'T_TEST',
     channelId: 'C_TEST',
     agentId: 'agent_test',
-    enabled: true,
     ...overrides,
   };
 }
+
+function channel(overrides: Partial<ChannelConfig> = {}): ChannelConfig {
+  return {
+    workspaceId: 'T_TEST',
+    channelId: 'C_TEST',
+    label: 'eng-releases',
+    additionalInstructions: 'Prefer channel-local launch context.',
+    participationMode: 'mention_only',
+    lifecycle: 'active',
+    ...overrides,
+  };
+}
+
+test('Channel config survives Agent placement changes and unassignment', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  await store.createAgent(agent());
+  await store.createAgent(agent({ id: 'agent_other', name: 'Other Agent' }));
+  const configured = await store.putChannel(channel());
+
+  assert.deepEqual(configured, channel());
+  assert.deepEqual(await store.putAssignment(assignment()), assignment());
+  assert.deepEqual(
+    await store.putAssignment(assignment({ agentId: 'agent_other' })),
+    assignment({ agentId: 'agent_other' }),
+  );
+  assert.equal(await store.deleteAssignment('T_TEST', 'C_TEST'), true);
+  assert.equal(await store.getAssignment('T_TEST', 'C_TEST'), undefined);
+  assert.deepEqual(await store.getChannel('T_TEST', 'C_TEST'), channel());
+  store.close();
+});
+
+test('Agent references enumerate placements, DM bindings, and identity setup references', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  await store.createAgent(agent());
+  await store.putAssignment(assignment());
+  await store.createSlackIdentity(slackIdentity({
+    dmState: 'on',
+    dmAgentId: 'agent_test',
+    setupIntent: { sourceAgentId: 'agent_test' },
+  }));
+
+  assert.deepEqual(await store.getAgentReferences('agent_test'), {
+    agentId: 'agent_test',
+    channelAssignments: [{ workspaceId: 'T_TEST', channelId: 'C_TEST' }],
+    dmIdentityIds: ['slack_identity_finance'],
+    identityReferenceIds: ['slack_identity_finance'],
+  });
+  store.close();
+});
+
+test('effective instructions expose Agent as the primary behavior layer', () => {
+  const layers = effectiveSlackInstructionLayers({
+    workspaceId: 'T_TEST',
+    channelId: 'C_TEST',
+    channelPromptAddendum: 'Channel addendum.',
+    agent: agent({ instructions: 'Agent instructions.' }),
+  });
+  assert.deepEqual(layers.map(({ source, label }) => ({ source, label })), [
+    { source: 'interaction_defaults', label: 'Slack interaction defaults' },
+    { source: 'agent', label: 'Agent' },
+    { source: 'channel', label: 'Channel instructions' },
+    { source: 'runtime', label: 'Runtime' },
+    { source: 'guardrail', label: 'Guardrail' },
+  ]);
+});
 
 function slackIdentity(overrides: Partial<SlackIdentity> = {}): SlackIdentity {
   return {
@@ -86,10 +154,8 @@ test('SqliteConfigStore round-trips agent and assignment CRUD', async () => {
   assert.equal(updated.instructions, 'Use the updated runtime instructions.');
   assert.equal(updated.model, 'local-stub/agent-updated');
 
-  const createdAssignment = assignment({
-    channelLabel: 'eng-releases',
-    channelPromptAddendum: 'Prefer channel-local launch context.',
-  });
+  const createdAssignment = assignment();
+  await store.putChannel(channel());
   await store.putAssignment(createdAssignment);
   assert.deepEqual(await store.find('T_TEST', 'C_TEST'), createdAssignment);
 
@@ -148,9 +214,9 @@ test('fresh stores backfill one workspace-default Slack identity and preserve pr
   store.close();
 });
 
-test('legacy direct-message assignment writes stay synchronized with the default identity', async () => {
+test('direct-message placement writes stay synchronized with the default identity', async () => {
   const store = new SqliteConfigStore(':memory:');
-  await store.createAgent(agent({ id: 'agent_dm', name: 'DM Profile' }));
+  await store.createAgent(agent({ id: 'agent_dm', name: 'DM Agent' }));
 
   await store.putAssignment(assignment({
     workspaceId: '*',
@@ -159,16 +225,6 @@ test('legacy direct-message assignment writes stay synchronized with the default
   }));
   let identity = await store.getSlackIdentity(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
   assert.equal(identity.dmState, 'on');
-  assert.equal(identity.dmAgentId, 'agent_dm');
-
-  await store.putAssignment(assignment({
-    workspaceId: '*',
-    channelId: '*',
-    agentId: 'agent_dm',
-    enabled: false,
-  }));
-  identity = await store.getSlackIdentity(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
-  assert.equal(identity.dmState, 'off');
   assert.equal(identity.dmAgentId, 'agent_dm');
 
   await store.deleteAssignment('*', '*');
@@ -180,7 +236,7 @@ test('legacy direct-message assignment writes stay synchronized with the default
 
 test('default identity DM binding writes through to the legacy wildcard row', async () => {
   const store = new SqliteConfigStore(':memory:');
-  await store.createAgent(agent({ id: 'agent_dm', name: 'DM Profile' }));
+  await store.createAgent(agent({ id: 'agent_dm', name: 'DM Agent' }));
   let identity = await store.getSlackIdentity(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
 
   identity = await store.setSlackIdentityDmBinding(
@@ -189,12 +245,7 @@ test('default identity DM binding writes through to the legacy wildcard row', as
     'off',
     'agent_dm',
   );
-  assert.deepEqual(await store.getAssignment('*', '*'), {
-    workspaceId: '*',
-    channelId: '*',
-    agentId: 'agent_dm',
-    enabled: false,
-  });
+  assert.equal(await store.getAssignment('*', '*'), undefined);
 
   identity = await store.setSlackIdentityDmBinding(
     identity.id,
@@ -213,12 +264,11 @@ test('default identity DM binding writes through to the legacy wildcard row', as
     workspaceId: '*',
     channelId: '*',
     agentId: 'agent_dm',
-    enabled: true,
   });
   store.close();
 });
 
-test('identity setup attaches a Profile in the same metadata transaction', async () => {
+test('identity setup attaches a Agent in the same metadata transaction', async () => {
   const store = new SqliteConfigStore(':memory:', {
     agents: [agent({ id: 'agent_finance', name: 'Finance' })],
     assignments: [],
@@ -251,7 +301,7 @@ test('identity setup attaches a Profile in the same metadata transaction', async
   }
 });
 
-test('identity attachment is stale-write fenced by the Profile current selection', async () => {
+test('identity attachment is stale-write fenced by the Agent current selection', async () => {
   const store = new SqliteConfigStore(':memory:', {
     agents: [agent({ id: 'agent_finance', name: 'Finance' })],
     assignments: [],
@@ -288,7 +338,7 @@ test('identity attachment is stale-write fenced by the Profile current selection
   }
 });
 
-test('several Profiles may share one connected Slack identity without changing its DM handler', async () => {
+test('several Agents may share one connected Slack identity without changing its DM handler', async () => {
   const store = new SqliteConfigStore(':memory:');
   await store.createAgent(agent({ id: 'agent_finance', name: 'Finance' }));
   await store.createSlackIdentity(
@@ -314,7 +364,7 @@ test('several Profiles may share one connected Slack identity without changing i
   store.close();
 });
 
-test('Slack identity references protect DM Profiles and dedicated identity retirement', async () => {
+test('Slack identity references protect DM Agents and dedicated identity retirement', async () => {
   const store = new SqliteConfigStore(':memory:');
   await store.createAgent(agent({ id: 'agent_finance', name: 'Finance' }));
   await store.createSlackIdentity(
@@ -345,7 +395,7 @@ test('Slack identity references protect DM Profiles and dedicated identity retir
   store.close();
 });
 
-test('retiring an off identity clears its remembered DM Profile so the tombstone can purge', async () => {
+test('retiring an off identity clears its remembered DM Agent so the tombstone can purge', async () => {
   const store = new SqliteConfigStore(':memory:');
   const identity = await store.createSlackIdentity(
     slackIdentity({ dmState: 'off', dmAgentId: 'agent_default' }),
@@ -371,10 +421,9 @@ test('retiring an off identity clears its remembered DM Profile so the tombstone
 
 test('channel participation defaults to ambient and persists mention-only narrowing', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
-  await store.createAgent(agent());
-  const ambient = await store.putAssignment(assignment());
-  assert.equal(ambient.participationMode ?? 'ambient', 'ambient');
-  const narrowed = await store.putAssignment(assignment({ participationMode: 'mention_only' }));
+  const ambient = await store.putChannel(channel({ participationMode: 'ambient' }));
+  assert.equal(ambient.participationMode, 'ambient');
+  const narrowed = await store.putChannel(channel({ participationMode: 'mention_only' }));
   assert.equal(narrowed.participationMode, 'mention_only');
   store.close();
 });
@@ -639,12 +688,12 @@ test('default seed ships a single Default profile plus the direct-message wildca
     ['Default'],
   );
 
-  const [defaultProfile] = agents;
-  assert.ok(defaultProfile);
-  assert.equal(defaultProfile.id, 'agent_default');
-  assert.equal(defaultProfile.model, undefined);
-  assert.match(defaultProfile.instructions, /general-purpose Slack assistant/i);
-  assert.match(defaultProfile.instructions, /never invent facts/i);
+  const [defaultAgent] = agents;
+  assert.ok(defaultAgent);
+  assert.equal(defaultAgent.id, 'agent_default');
+  assert.equal(defaultAgent.model, undefined);
+  assert.match(defaultAgent.instructions, /general-purpose Slack assistant/i);
+  assert.match(defaultAgent.instructions, /never invent facts/i);
 
   assert.equal(await store.getAssignment('T_DEMO', 'C_ENG'), undefined);
   assert.equal(await store.getAssignment('T_DEMO', 'C_EXEC'), undefined);
@@ -652,11 +701,10 @@ test('default seed ships a single Default profile plus the direct-message wildca
     {
       workspaceId: '*',
       channelId: '*',
-      agentId: defaultProfile.id,
-      enabled: true,
+      agentId: defaultAgent.id,
     },
   ]);
-  assert.equal((await store.find('T_OTHER', 'D_DM'))?.agentId, defaultProfile.id);
+  assert.equal((await store.find('T_OTHER', 'D_DM'))?.agentId, defaultAgent.id);
   assert.equal(await store.find('T_OTHER', 'C_OTHER', { surface: 'channel' }), undefined);
 
   assert.equal(seededAgents.length, 1);
@@ -665,11 +713,11 @@ test('default seed ships a single Default profile plus the direct-message wildca
 });
 
 test('Cloudflare first-boot seed pins Default to the keyless Workers AI binding model', () => {
-  const [defaultProfile] = createSeededAgents({ target: 'cloudflare' });
+  const [defaultAgent] = createSeededAgents({ target: 'cloudflare' });
 
-  assert.ok(defaultProfile);
-  assert.equal(defaultProfile.id, 'agent_default');
-  assert.equal(defaultProfile.model, SEED_CLOUDFLARE_MODEL_PIN);
+  assert.ok(defaultAgent);
+  assert.equal(defaultAgent.id, 'agent_default');
+  assert.equal(defaultAgent.model, SEED_CLOUDFLARE_MODEL_PIN);
 });
 
 test('SqliteConfigStore survives restart on a file database', async () => {
@@ -679,14 +727,16 @@ test('SqliteConfigStore survives restart on a file database', async () => {
   try {
     const first = new SqliteConfigStore(path, { agents: [], assignments: [] });
     await first.createAgent(created);
-    await first.putAssignment(
-      assignment({
-        workspaceId: 'T_FILE',
-        channelId: 'C_FILE',
-        agentId: created.id,
-        channelPromptAddendum: 'Persist this channel rule.',
-      }),
-    );
+    await first.putChannel(channel({
+      workspaceId: 'T_FILE',
+      channelId: 'C_FILE',
+      additionalInstructions: 'Persist this channel rule.',
+    }));
+    await first.putAssignment(assignment({
+      workspaceId: 'T_FILE',
+      channelId: 'C_FILE',
+      agentId: created.id,
+    }));
     first.close();
 
     const second = new SqliteConfigStore(path, { agents: [], assignments: [] });
@@ -695,9 +745,11 @@ test('SqliteConfigStore survives restart on a file database', async () => {
       workspaceId: 'T_FILE',
       channelId: 'C_FILE',
       agentId: created.id,
-      enabled: true,
-      channelPromptAddendum: 'Persist this channel rule.',
     });
+    assert.equal(
+      (await second.getChannel('T_FILE', 'C_FILE'))?.additionalInstructions,
+      'Persist this channel rule.',
+    );
     second.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -791,7 +843,7 @@ test('SqliteConfigStore migrates the legacy v1 default-models column without los
       .all() as Array<{ id: string }>;
     migratedDb.close();
 
-    assert.equal(version.value, '7');
+    assert.equal(version.value, '8');
     assert.equal(
       agentColumns.some(({ name }) => name === 'default_models_json'),
       false,
@@ -822,12 +874,15 @@ test('fresh databases start at the clean current config schema', () => {
     const assignmentColumns = db
       .prepare('SELECT name FROM pragma_table_info(?) ORDER BY cid')
       .all('config_assignments') as Array<{ name: string }>;
+    const channelColumns = db
+      .prepare('SELECT name FROM pragma_table_info(?) ORDER BY cid')
+      .all('config_channels') as Array<{ name: string }>;
     const identityColumns = db
       .prepare('SELECT name FROM pragma_table_info(?) ORDER BY cid')
       .all('config_slack_identities') as Array<{ name: string }>;
     db.close();
 
-    assert.equal(version.value, '7');
+    assert.equal(version.value, '8');
     assert.deepEqual(
       agentColumns.map(({ name }) => name),
       [
@@ -849,10 +904,6 @@ test('fresh databases start at the clean current config schema', () => {
         'workspace_id',
         'channel_id',
         'agent_id',
-        'enabled',
-        'channel_label',
-        'channel_prompt_addendum',
-        'participation_mode',
       ],
     );
     assert.deepEqual(
@@ -880,16 +931,24 @@ test('fresh databases start at the clean current config schema', () => {
         'setup_intent_json',
       ],
     );
+    assert.deepEqual(channelColumns.map(({ name }) => name), [
+      'workspace_id',
+      'channel_id',
+      'label',
+      'additional_instructions',
+      'participation_mode',
+      'lifecycle',
+    ]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test('v6 migration backfills a custom direct-message Profile exactly once', async () => {
+test('v6 migration backfills a custom direct-message Agent exactly once', async () => {
   const { dir, path } = tempDbPath();
   try {
     createV6Fixture(path, {
-      agents: [agent({ id: 'agent_custom', name: 'Custom DM Profile' })],
+      agents: [agent({ id: 'agent_custom', name: 'Custom DM Agent' })],
       directAgentId: 'agent_custom',
     });
 
@@ -916,7 +975,6 @@ test('v6 migration backfills a custom direct-message Profile exactly once', asyn
       workspaceId: '*',
       channelId: '*',
       agentId: 'agent_custom',
-      enabled: true,
     });
     second.close();
   } finally {
@@ -927,13 +985,13 @@ test('v6 migration backfills a custom direct-message Profile exactly once', asyn
 for (const fixture of [
   { name: 'missing wildcard', directAgentId: undefined },
   { name: 'disabled wildcard', directAgentId: 'agent_custom', directEnabled: false },
-  { name: 'missing Profile', directAgentId: 'agent_missing' },
+  { name: 'missing Agent', directAgentId: 'agent_missing' },
 ] as const) {
   test(`v6 migration opens with needs_setup for a ${fixture.name}`, async () => {
     const { dir, path } = tempDbPath();
     try {
       createV6Fixture(path, {
-        agents: [agent({ id: 'agent_custom', name: 'Custom DM Profile' })],
+        agents: [agent({ id: 'agent_custom', name: 'Custom DM Agent' })],
         ...(fixture.directAgentId ? { directAgentId: fixture.directAgentId } : {}),
         ...(fixture.directEnabled === undefined
           ? {}
@@ -1034,7 +1092,8 @@ test(':memory: config stores are isolated by connection', async () => {
 test('resolveAssignment accepts SqliteConfigStore and preserves channel addendum', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   await store.createAgent(agent());
-  await store.putAssignment(assignment({ channelPromptAddendum: 'Use the runtime channel rule.' }));
+  await store.putChannel(channel({ additionalInstructions: 'Use the runtime channel rule.' }));
+  await store.putAssignment(assignment());
 
   const resolved = await resolveAssignment('T_TEST', 'C_TEST', {
     agents: store,
@@ -1158,7 +1217,7 @@ test('the direct-message default (the seeded "*,*" row) is resolvable — admin 
   }
 });
 
-test('a disabled assignment at the winning specificity turns the channel off instead of falling back to the wildcard', async () => {
+test('a disabled legacy seed becomes an unassigned Channel without a Channel fallback', async () => {
   const store = new SqliteConfigStore(':memory:', {
     agents: [
       {
@@ -1178,8 +1237,7 @@ test('a disabled assignment at the winning specificity turns the channel off ins
     ],
   });
   try {
-    // Explicitly disabled exact row: no fall-through to the enabled catch-all.
-    assert.equal(await store.find('T_OFF', 'C_OFF'), undefined);
+    assert.equal(await store.find('T_OFF', 'C_OFF', { surface: 'channel' }), undefined);
     // Other channels still resolve through the wildcard.
     assert.equal((await store.find('T_OFF', 'C_ELSEWHERE'))?.agentId, 'agent_default');
   } finally {
