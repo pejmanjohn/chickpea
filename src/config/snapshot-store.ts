@@ -1,6 +1,9 @@
-import { computeSnapshotHash, type EffectiveSlackConfig } from './effective-config.ts';
 import {
-  WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+  computeSnapshotHash,
+  resolvedAssignmentFromEffectiveConfig,
+  type EffectiveSlackConfig,
+} from './effective-config.ts';
+import {
   type AgentSnapshot,
   type AgentSnapshotRootReference,
 } from './types.ts';
@@ -230,18 +233,8 @@ export function snapshotFromEffectiveConfig(
 ): AgentSnapshot {
   return {
     schemaVersion: AGENT_SNAPSHOT_SCHEMA_VERSION,
-    workspaceId: config.workspaceId,
-    channelId: config.channelId,
-    agentId: config.agentId,
-    slackIdentityId: config.slackIdentityId ?? WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
-    ...(config.channelLabel ? { channelLabel: config.channelLabel } : {}),
-    ...(config.channelPromptAddendum
-      ? { channelPromptAddendum: config.channelPromptAddendum }
-      : {}),
-    participationMode: config.participationMode ?? 'ambient',
-    agent: config.agent,
+    ...resolvedAssignmentFromEffectiveConfig(config),
     model: config.model,
-    ...(config.modelCredential ? { modelCredential: config.modelCredential } : {}),
     providerId: config.provider,
     instructions: config.instructions,
     repositories: config.agent.repositories,

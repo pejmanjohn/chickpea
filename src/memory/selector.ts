@@ -1,5 +1,4 @@
-import { createHash } from 'node:crypto';
-
+import { sha256Hex } from './markdown.ts';
 import type { MemoryEntry, OwnerMemoryEntry } from './types.ts';
 
 export const MEMORY_PROMPT_ENTRY_LIMIT = 8;
@@ -102,7 +101,7 @@ export function memorySelectionFingerprint(
   const input = entries.map(({ entry }) =>
     `${entry.storeId}:${entry.entryId}:${entry.version}:${entry.contentHash ?? contentFingerprint(entry)}`,
   ).join('|');
-  return createHash('sha256').update(input || 'none').digest('hex');
+  return sha256Hex(input || 'none');
 }
 
 function rankEntry<T extends SelectableMemoryEntry>(
@@ -167,7 +166,7 @@ function ownerSpecificity(entry: SelectableMemoryEntry): number {
 }
 
 function contentFingerprint(entry: SelectableMemoryEntry): string {
-  return createHash('sha256').update(`${entry.description}\0${entry.body}`).digest('hex');
+  return sha256Hex(`${entry.description}\0${entry.body}`);
 }
 
 function normalize(value: string): string {

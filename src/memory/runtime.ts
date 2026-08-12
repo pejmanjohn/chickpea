@@ -1,5 +1,5 @@
 import type { WebClient } from '@slack/web-api';
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
@@ -15,6 +15,7 @@ import { memoryEpochThreadKey, memoryQuarantineThreadKey, slackThreadKey } from 
 import type { NormalizedSlackTurn } from '../slack/types.ts';
 import { parseMemoryCommand, type MemoryCommand } from './commands.ts';
 import { fitMemorySelectionToPrompt, serializeMemoryPrompt } from './prompt.ts';
+import { sha256Hex } from './markdown.ts';
 import {
   createMemoryScopeSlack,
   authorizedMemoryScopeFingerprint,
@@ -1015,7 +1016,7 @@ function allStrings(...values: unknown[]): boolean {
 }
 
 function sha256(value: string): string {
-  return createHash('sha256').update(value).digest('hex');
+  return sha256Hex(value);
 }
 
 function resolveOwnerCommandEntry(entries: readonly OwnerMemoryEntry[], target: string): OwnerMemoryEntry {

@@ -1,5 +1,3 @@
-import { createHash } from 'node:crypto';
-
 import {
   slackConversationsInfo,
   slackConversationsMembers,
@@ -11,6 +9,7 @@ import {
 import { classifyMemorySlackUser } from '../slack/user-classification.ts';
 import { privateStoreId, publicStoreId } from './store.ts';
 import { ownerMemoryStoreId } from './ids.ts';
+import { sha256Hex } from './markdown.ts';
 import {
   MemoryStateError,
   type MemoryOwnerDescriptor,
@@ -112,7 +111,7 @@ export interface AuthorizedMemoryScope {
 }
 
 export function authorizedMemoryScopeFingerprint(scope: AuthorizedMemoryScope): string {
-  return createHash('sha256').update(JSON.stringify({
+  return sha256Hex(JSON.stringify({
     surface: scope.surface,
     workspaceId: scope.workspaceId,
     owners: scope.readOwners.map((owner) => ({
@@ -122,7 +121,7 @@ export function authorizedMemoryScopeFingerprint(scope: AuthorizedMemoryScope): 
       lifecycle: owner.lifecycle,
       resetEpoch: owner.resetEpoch,
     })),
-  })).digest('hex');
+  }));
 }
 
 export function bindAuthorizedMemoryScope(input: {

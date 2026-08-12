@@ -15,6 +15,7 @@ import {
   MEMORY_PUBLIC_ENTRY_LIMIT,
   MEMORY_SOURCE_ENTRY_LIMIT,
   MEMORY_RETENTION_MS,
+  MEMORY_REVISION_CONTENT_LIMIT,
   MEMORY_SCHEMA_VERSION,
   MemoryStateError,
   MemoryRateLimitError,
@@ -476,6 +477,7 @@ export class MemoryStoreLogic {
         beforeHash: fresh.contentHash, afterHash: hash, reasonCode: null,
         idempotencyKey: input.idempotencyKey,
       });
+      this.trimRevisionContent(fresh.entryId);
       this.audit.append({
         eventId: auditId(input.idempotencyKey), domain: 'memory', eventType: 'memory.updated',
         outcome: 'success', actorClass: input.actorClass, actorId: input.actorId,
@@ -675,7 +677,9 @@ export class MemoryStoreLogic {
           reasonCode: `superseded_by:${input.replacement.entryId}`,
           idempotencyKey: `${input.replacement.idempotencyKey}:source:${source.entryId}`,
         });
+        this.trimRevisionContent(source.entryId);
       }
+      this.trimRevisionContent(input.replacement.entryId);
       const replacement = requiredOwnerEntry(
         this.getOwnerEntry(input.replacement.entryId), input.replacement.entryId,
       );
@@ -2456,17 +2460,22 @@ export class MemoryStoreLogic {
   }
 
   private scrubOwnerEntries(storeId: string): void {
-    const ids = this.db.all(
-      'SELECT entry_id FROM memory_owner_entries WHERE store_id = ?', storeId,
-    ).map((row) => String(row.entry_id));
-    for (const entryId of ids) {
-      this.db.run(
-        `UPDATE memory_revisions SET description = NULL, body = NULL, type = NULL,
-           before_hash = NULL, after_hash = NULL WHERE entry_id = ?`, entryId,
-      );
-      this.db.run('DELETE FROM memory_revisions WHERE entry_id = ?', entryId);
-      this.db.run('DELETE FROM memory_forget_challenges WHERE entry_id = ?', entryId);
-    }
+    this.db.run(
+      `UPDATE memory_revisions SET description = NULL, body = NULL, type = NULL,
+         before_hash = NULL, after_hash = NULL
+       WHERE entry_id IN (SELECT entry_id FROM memory_owner_entries WHERE store_id = ?)`,
+      storeId,
+    );
+    this.db.run(
+      `DELETE FROM memory_forget_challenges
+       WHERE entry_id IN (SELECT entry_id FROM memory_owner_entries WHERE store_id = ?)`,
+      storeId,
+    );
+    this.db.run(
+      `DELETE FROM memory_revisions
+       WHERE entry_id IN (SELECT entry_id FROM memory_owner_entries WHERE store_id = ?)`,
+      storeId,
+    );
     this.db.run('DELETE FROM memory_owner_entries WHERE store_id = ?', storeId);
   }
 
@@ -2758,9 +2767,10 @@ export class MemoryStoreLogic {
     this.db.run(
       `UPDATE memory_revisions SET description = NULL, body = NULL, type = NULL
        WHERE entry_id = ? AND version <= (
-         SELECT MAX(version) - 50 FROM memory_revisions WHERE entry_id = ?
+         SELECT MAX(version) - ? FROM memory_revisions WHERE entry_id = ?
        )`,
       entryId,
+      MEMORY_REVISION_CONTENT_LIMIT,
       entryId,
     );
   }
