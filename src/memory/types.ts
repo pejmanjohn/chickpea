@@ -1,6 +1,6 @@
 import type { AuditEvent, AuditEventFilter } from '../audit/types.ts';
 
-export const MEMORY_SCHEMA_VERSION = 1;
+export const MEMORY_SCHEMA_VERSION = 2;
 export const MEMORY_ACTOR_RATE_LIMIT = 30;
 export const MEMORY_CHANNEL_RATE_LIMIT = 120;
 export const MEMORY_REVISION_CONTENT_LIMIT = 50;
@@ -18,6 +18,86 @@ export type MemoryEntryType = 'fact' | 'decision' | 'project' | 'feedback' | 'pr
 export type MemoryEntryStatus = 'active' | 'stale' | 'expired' | 'superseded' | 'forgotten';
 export type MemoryImportEntryStatus = Exclude<MemoryEntryStatus, 'forgotten'>;
 export type MemoryActorClass = 'member' | 'operator' | 'system';
+
+export type MemoryOwnerKind = 'agent' | 'channel';
+
+export interface MemoryOwnerRef {
+  workspaceId: string;
+  ownerKind: MemoryOwnerKind;
+  ownerId: string;
+}
+
+export interface MemoryOwnerDescriptor extends MemoryOwnerRef {
+  storeId: string;
+  lifecycle: 'active' | 'sealed';
+  resetEpoch: number;
+  createdAt: number;
+  sealedAt: number | null;
+  sealedReason: string | null;
+  schemaVersion: 2;
+}
+
+/** Provenance only. Authorization is always bound from MemoryOwnerDescriptor. */
+export type MemoryWriteOrigin =
+  | { kind: 'admin' }
+  | { kind: 'slack_channel'; channelId: string }
+  | { kind: 'slack_dm'; channelId: string };
+
+export interface OwnerMemoryEntry {
+  entryId: string;
+  storeId: string;
+  workspaceId: string;
+  ownerKind: MemoryOwnerKind;
+  ownerId: string;
+  slug: string;
+  description: string;
+  type: MemoryEntryType;
+  body: string;
+  status: MemoryEntryStatus;
+  version: number;
+  creatorActorId: string | null;
+  lastEditorActorId: string | null;
+  actorClass: MemoryActorClass;
+  writeOrigin: MemoryWriteOrigin | null;
+  sourceEventId: string | null;
+  sourceThreadTs: string | null;
+  sourceMessageTs: string | null;
+  createdAt: number;
+  modifiedAt: number;
+  expiresAt: number | null;
+  contentHash: string | null;
+  supersedingEntryId: string | null;
+}
+
+export interface CreateOwnerMemoryEntryInput {
+  entryId: string;
+  storeId: string;
+  workspaceId: string;
+  slug: string;
+  slugSeed?: string;
+  description: string;
+  type: MemoryEntryType;
+  body: string;
+  actorId: string;
+  actorClass: MemoryActorClass;
+  writeOrigin?: MemoryWriteOrigin | null;
+  sourceEventId?: string;
+  sourceThreadTs?: string;
+  sourceMessageTs?: string;
+  expiresAt?: number;
+  idempotencyKey: string;
+}
+
+export type UpdateOwnerMemoryEntryInput = UpdateMemoryEntryInput;
+
+export interface OwnerMemoryLifecycleInput {
+  actorId: string;
+  idempotencyKey: string;
+}
+
+export interface SealMemoryOwnerInput extends OwnerMemoryLifecycleInput {
+  reason: 'channel_archived' | 'agent_deleted' | 'operator_sealed';
+}
 
 export interface MemoryStoreDescriptor {
   storeId: string;
@@ -323,6 +403,15 @@ export class MemoryRateLimitError extends MemoryStateError {
 }
 
 export type MemoryRpcRequest =
+  | { kind: 'ensure_owner'; owner: MemoryOwnerRef }
+  | { kind: 'get_owner'; storeId: string }
+  | { kind: 'list_owners'; workspaceId?: string }
+  | { kind: 'create_owner_entry'; input: CreateOwnerMemoryEntryInput }
+  | { kind: 'update_owner_entry'; input: UpdateOwnerMemoryEntryInput }
+  | { kind: 'list_owner_entries'; owner: MemoryOwnerRef }
+  | { kind: 'list_owner_revisions'; entryId: string }
+  | { kind: 'reset_owner'; owner: MemoryOwnerRef; input: OwnerMemoryLifecycleInput }
+  | { kind: 'seal_owner'; owner: MemoryOwnerRef; input: SealMemoryOwnerInput }
   | { kind: 'ensure_public_store'; workspaceId: string }
   | { kind: 'ensure_private_store'; workspaceId: string; channelId: string; generation: number }
   | { kind: 'get_store'; storeId: string }
@@ -355,6 +444,10 @@ export type MemoryRpcRequest =
 
 export type MemoryRpcResponse =
   | { kind: 'ok' }
+  | { kind: 'owner'; owner: MemoryOwnerDescriptor | null }
+  | { kind: 'owners'; owners: MemoryOwnerDescriptor[] }
+  | { kind: 'owner_entry'; entry: OwnerMemoryEntry | null }
+  | { kind: 'owner_entries'; entries: OwnerMemoryEntry[] }
   | { kind: 'store'; store: MemoryStoreDescriptor | null }
   | { kind: 'stores'; stores: MemoryStoreDescriptor[] }
   | { kind: 'entry'; entry: MemoryEntry | null }
@@ -378,6 +471,15 @@ export type MemoryRpcResponse =
     };
 
 export interface MemoryStateStore {
+  ensureOwner(owner: MemoryOwnerRef): Promise<MemoryOwnerDescriptor>;
+  getOwner(storeId: string): Promise<MemoryOwnerDescriptor | undefined>;
+  listOwners(workspaceId?: string): Promise<MemoryOwnerDescriptor[]>;
+  createOwnerEntry(input: CreateOwnerMemoryEntryInput): Promise<OwnerMemoryEntry>;
+  updateOwnerEntry(input: UpdateOwnerMemoryEntryInput): Promise<OwnerMemoryEntry>;
+  listOwnerEntries(owner: MemoryOwnerRef): Promise<OwnerMemoryEntry[]>;
+  listOwnerRevisions(entryId: string): Promise<MemoryRevision[]>;
+  resetOwner(owner: MemoryOwnerRef, input: OwnerMemoryLifecycleInput): Promise<MemoryOwnerDescriptor>;
+  sealOwner(owner: MemoryOwnerRef, input: SealMemoryOwnerInput): Promise<MemoryOwnerDescriptor>;
   ensurePublicStore(workspaceId: string): Promise<MemoryStoreDescriptor>;
   ensurePrivateStore(
     workspaceId: string,

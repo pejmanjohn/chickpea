@@ -37,6 +37,28 @@ test('Cloudflare memory proxy forwards clone-safe requests and returns typed val
   assert.deepEqual(calls, [{ kind: 'cleanup_retention' }]);
 });
 
+test('Cloudflare memory proxy forwards owner-native lifecycle calls', async () => {
+  const calls: MemoryRpcRequest[] = [];
+  const descriptor = {
+    storeId: 'memory_owner_agent_T_TEST_agent_ops', workspaceId: 'T_TEST',
+    ownerKind: 'agent' as const, ownerId: 'agent_ops', lifecycle: 'active' as const,
+    resetEpoch: 1, createdAt: 100, sealedAt: null, sealedReason: null, schemaVersion: 2 as const,
+  };
+  const stub = {
+    async memoryExecute(request: MemoryRpcRequest): Promise<StateRpcResult<MemoryRpcResponse>> {
+      calls.push(request);
+      return { ok: true, value: { kind: 'owner', owner: descriptor } };
+    },
+  } as unknown as TagStateRpc;
+  const store = new CfMemoryStateStore(stub);
+  assert.deepEqual(await store.ensureOwner({
+    workspaceId: 'T_TEST', ownerKind: 'agent', ownerId: 'agent_ops',
+  }), descriptor);
+  assert.deepEqual(calls, [{ kind: 'ensure_owner', owner: {
+    workspaceId: 'T_TEST', ownerKind: 'agent', ownerId: 'agent_ops',
+  } }]);
+});
+
 test('Cloudflare memory proxy preserves typed rate-limit retry timestamps', async () => {
   const stub = {
     async memoryExecute(): Promise<StateRpcResult<MemoryRpcResponse>> {

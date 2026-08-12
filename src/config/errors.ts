@@ -41,6 +41,13 @@ export class AgentStillSlackDmHandlerError extends Error {
   }
 }
 
+export class AgentStillReferencedError extends Error {
+  constructor(readonly agentId: string, readonly references: string) {
+    super(`Agent ${agentId} is still referenced by ${references}`);
+    this.name = 'AgentStillReferencedError';
+  }
+}
+
 export class AgentSlackIdentityConflictError extends Error {
   constructor(
     readonly agentId: string,

@@ -3,6 +3,7 @@ import {
   AgentExistsError,
   AgentStillAssignedError,
   AgentStillSlackDmHandlerError,
+  AgentStillReferencedError,
   SlackIdentityExistsError,
   SlackIdentityLifecycleError,
   SlackIdentityRevisionConflictError,
@@ -110,6 +111,7 @@ import {
   type CreateMemoryEntryInput,
   type CreateForgetChallengeInput,
   type ConfirmMemoryConversationContextInput,
+  type CreateOwnerMemoryEntryInput,
   type ForgetMemoryEntryInput,
   type MemoryConversationContext,
   type MemoryChannelScopeState,
@@ -124,6 +126,10 @@ import {
   type MemoryRpcResponse,
   type MemoryStateStore,
   type MemoryStoreDescriptor,
+  type MemoryOwnerDescriptor,
+  type MemoryOwnerRef,
+  type OwnerMemoryEntry,
+  type OwnerMemoryLifecycleInput,
   type ObserveMemoryChannelScopeInput,
   type RecordMemoryReviewInput,
   type RecordMemoryAdminViewInput,
@@ -133,6 +139,8 @@ import {
   type ResolveMemoryConversationContextInput,
   type TransitionMemoryEntryInput,
   type UpdateMemoryEntryInput,
+  type UpdateOwnerMemoryEntryInput,
+  type SealMemoryOwnerInput,
 } from '../memory/types.ts';
 import type { AppendAuditEvent, AuditEvent, AuditEventFilter } from '../audit/types.ts';
 import {
@@ -217,6 +225,11 @@ function unwrap<T>(result: StateRpcResult<T>): T {
       throw new AgentStillSlackDmHandlerError(
         details?.agentId ?? 'unknown',
         details?.identityIds ?? '',
+      );
+    case 'agent_still_referenced':
+      throw new AgentStillReferencedError(
+        details?.agentId ?? 'unknown',
+        details?.references ?? '',
       );
     case 'agent_slack_identity_conflict':
       throw new AgentSlackIdentityConflictError(
@@ -634,6 +647,13 @@ export class CfConfigStore implements ConfigStore {
     return unwrap(await this.stub.configDeleteAgent(agentId));
   }
 
+  async deleteAgentWithMemory(
+    agentId: string,
+    idempotencyKey: string,
+  ): Promise<boolean> {
+    return unwrap(await this.stub.configDeleteAgentWithMemory(agentId, idempotencyKey));
+  }
+
   async listChannels(): Promise<ChannelConfig[]> {
     return unwrap(await this.stub.configListChannels());
   }
@@ -1016,6 +1036,60 @@ export class CfSettingsStore implements SettingsStore {
 
 export class CfMemoryStateStore implements MemoryStateStore {
   constructor(private readonly stub: TagStateRpc) {}
+
+  async ensureOwner(owner: MemoryOwnerRef): Promise<MemoryOwnerDescriptor> {
+    const response = await this.execute({ kind: 'ensure_owner', owner });
+    if (response.kind !== 'owner' || !response.owner) throw unexpectedMemoryResponse();
+    return response.owner;
+  }
+
+  async getOwner(storeId: string): Promise<MemoryOwnerDescriptor | undefined> {
+    const response = await this.execute({ kind: 'get_owner', storeId });
+    if (response.kind !== 'owner') throw unexpectedMemoryResponse();
+    return orUndefined(response.owner);
+  }
+
+  async listOwners(workspaceId?: string): Promise<MemoryOwnerDescriptor[]> {
+    const response = await this.execute({ kind: 'list_owners', ...(workspaceId ? { workspaceId } : {}) });
+    if (response.kind !== 'owners') throw unexpectedMemoryResponse();
+    return response.owners;
+  }
+
+  async createOwnerEntry(input: CreateOwnerMemoryEntryInput): Promise<OwnerMemoryEntry> {
+    const response = await this.execute({ kind: 'create_owner_entry', input });
+    if (response.kind !== 'owner_entry' || !response.entry) throw unexpectedMemoryResponse();
+    return response.entry;
+  }
+
+  async updateOwnerEntry(input: UpdateOwnerMemoryEntryInput): Promise<OwnerMemoryEntry> {
+    const response = await this.execute({ kind: 'update_owner_entry', input });
+    if (response.kind !== 'owner_entry' || !response.entry) throw unexpectedMemoryResponse();
+    return response.entry;
+  }
+
+  async listOwnerEntries(owner: MemoryOwnerRef): Promise<OwnerMemoryEntry[]> {
+    const response = await this.execute({ kind: 'list_owner_entries', owner });
+    if (response.kind !== 'owner_entries') throw unexpectedMemoryResponse();
+    return response.entries;
+  }
+
+  async listOwnerRevisions(entryId: string): Promise<MemoryRevision[]> {
+    const response = await this.execute({ kind: 'list_owner_revisions', entryId });
+    if (response.kind !== 'revisions') throw unexpectedMemoryResponse();
+    return response.revisions;
+  }
+
+  async resetOwner(owner: MemoryOwnerRef, input: OwnerMemoryLifecycleInput): Promise<MemoryOwnerDescriptor> {
+    const response = await this.execute({ kind: 'reset_owner', owner, input });
+    if (response.kind !== 'owner' || !response.owner) throw unexpectedMemoryResponse();
+    return response.owner;
+  }
+
+  async sealOwner(owner: MemoryOwnerRef, input: SealMemoryOwnerInput): Promise<MemoryOwnerDescriptor> {
+    const response = await this.execute({ kind: 'seal_owner', owner, input });
+    if (response.kind !== 'owner' || !response.owner) throw unexpectedMemoryResponse();
+    return response.owner;
+  }
 
   async ensurePublicStore(workspaceId: string): Promise<MemoryStoreDescriptor> {
     const response = await this.execute({ kind: 'ensure_public_store', workspaceId });

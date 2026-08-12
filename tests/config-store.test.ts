@@ -843,7 +843,7 @@ test('SqliteConfigStore migrates the legacy v1 default-models column without los
       .all() as Array<{ id: string }>;
     migratedDb.close();
 
-    assert.equal(version.value, '8');
+    assert.equal(version.value, '9');
     assert.equal(
       agentColumns.some(({ name }) => name === 'default_models_json'),
       false,
@@ -882,7 +882,7 @@ test('fresh databases start at the clean current config schema', () => {
       .all('config_slack_identities') as Array<{ name: string }>;
     db.close();
 
-    assert.equal(version.value, '8');
+    assert.equal(version.value, '9');
     assert.deepEqual(
       agentColumns.map(({ name }) => name),
       [

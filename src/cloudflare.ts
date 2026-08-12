@@ -13,6 +13,7 @@ import {
   AgentExistsError,
   AgentStillAssignedError,
   AgentStillSlackDmHandlerError,
+  AgentStillReferencedError,
   SlackIdentityExistsError,
   SlackIdentityLifecycleError,
   SlackIdentityRevisionConflictError,
@@ -609,6 +610,17 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
 
   async configDeleteAgent(agentId: string): Promise<StateRpcResult<boolean>> {
     return this.call((stores) => stores.config.deleteAgent(agentId));
+  }
+
+  async configDeleteAgentWithMemory(
+    agentId: string,
+    idempotencyKey: string,
+  ): Promise<StateRpcResult<boolean>> {
+    return this.call((stores) => stores.config.deleteAgentWithMemory(
+      agentId,
+      idempotencyKey,
+      stores.memory,
+    ));
   }
 
   async configListChannels(): Promise<StateRpcResult<ChannelConfig[]>> {
@@ -1567,6 +1579,12 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         return rpcError('agent_slack_dm_handler', err.message, {
           agentId: err.agentId,
           identityIds: err.identityIds,
+        });
+      }
+      if (err instanceof AgentStillReferencedError) {
+        return rpcError('agent_still_referenced', err.message, {
+          agentId: err.agentId,
+          references: err.references,
         });
       }
       if (err instanceof AgentSlackIdentityConflictError) {

@@ -4,7 +4,7 @@ import { AuditStoreLogic } from '../audit/store.ts';
 import type { AuditEvent, AuditEventFilter } from '../audit/types.ts';
 import { openStateDb, resolveStateDbPath, type NodeStateDb } from '../state/node-state-db.ts';
 import type { SqlParam, StateDb } from '../state/state-db.ts';
-import { isOpaqueMemoryId } from './ids.ts';
+import { isOpaqueMemoryId, ownerMemoryStoreId } from './ids.ts';
 import {
   MEMORY_RATE_WINDOW_MS,
   MEMORY_ACTOR_RATE_LIMIT,
@@ -23,6 +23,7 @@ import {
   type CreateMemoryEntryInput,
   type CreateForgetChallengeInput,
   type ConfirmMemoryConversationContextInput,
+  type CreateOwnerMemoryEntryInput,
   type ForgetMemoryEntryInput,
   type MemoryConversationContext,
   type MemoryChannelScopeState,
@@ -38,6 +39,10 @@ import {
   type MemoryRpcResponse,
   type MemoryStateStore,
   type MemoryStoreDescriptor,
+  type MemoryOwnerDescriptor,
+  type MemoryOwnerRef,
+  type OwnerMemoryEntry,
+  type OwnerMemoryLifecycleInput,
   type ObserveMemoryChannelScopeInput,
   type RecordMemoryReviewInput,
   type RecordMemoryAdminViewInput,
@@ -47,7 +52,34 @@ import {
   type ResolveMemoryConversationContextInput,
   type TransitionMemoryEntryInput,
   type UpdateMemoryEntryInput,
+  type UpdateOwnerMemoryEntryInput,
+  type SealMemoryOwnerInput,
 } from './types.ts';
+
+interface OwnerRow {
+  store_id: string;
+  workspace_id: string;
+  owner_kind: MemoryOwnerDescriptor['ownerKind'];
+  owner_id: string;
+  lifecycle: MemoryOwnerDescriptor['lifecycle'];
+  reset_epoch: number;
+  created_at: number;
+  sealed_at: number | null;
+  sealed_reason: string | null;
+  schema_version: number;
+}
+
+interface OwnerEntryRow {
+  entry_id: string; store_id: string; workspace_id: string;
+  owner_kind: OwnerMemoryEntry['ownerKind']; owner_id: string; slug: string;
+  description: string; type: OwnerMemoryEntry['type']; body: string;
+  status: OwnerMemoryEntry['status']; version: number; creator_actor_id: string | null;
+  last_editor_actor_id: string | null; actor_class: OwnerMemoryEntry['actorClass'];
+  write_origin_json: string | null; source_event_id: string | null;
+  source_thread_ts: string | null; source_message_ts: string | null;
+  created_at: number; modified_at: number; expires_at: number | null;
+  content_hash: string | null; superseding_entry_id: string | null;
+}
 
 interface StoreRow {
   store_id: string;
@@ -145,6 +177,7 @@ interface ImportReceiptRow {
 }
 
 const CHANNEL_RATE_ACTOR = '*channel*';
+const LEGACY_MEMORY_STORE_SCHEMA_VERSION = 1;
 const IMPORT_ENTRY_STATUSES = new Set<MemoryImportEntryStatus>([
   'active', 'stale', 'expired', 'superseded',
 ]);
@@ -171,6 +204,24 @@ export class MemoryStoreLogic {
 
   execute(request: MemoryRpcRequest): MemoryRpcResponse {
     switch (request.kind) {
+      case 'ensure_owner':
+        return { kind: 'owner', owner: this.ensureOwner(request.owner) };
+      case 'get_owner':
+        return { kind: 'owner', owner: this.getOwner(request.storeId) ?? null };
+      case 'list_owners':
+        return { kind: 'owners', owners: this.listOwners(request.workspaceId) };
+      case 'create_owner_entry':
+        return { kind: 'owner_entry', entry: this.createOwnerEntry(request.input) };
+      case 'update_owner_entry':
+        return { kind: 'owner_entry', entry: this.updateOwnerEntry(request.input) };
+      case 'list_owner_entries':
+        return { kind: 'owner_entries', entries: this.listOwnerEntries(request.owner) };
+      case 'list_owner_revisions':
+        return { kind: 'revisions', revisions: this.listOwnerRevisions(request.entryId) };
+      case 'reset_owner':
+        return { kind: 'owner', owner: this.resetOwner(request.owner, request.input) };
+      case 'seal_owner':
+        return { kind: 'owner', owner: this.sealOwner(request.owner, request.input) };
       case 'ensure_public_store':
         return { kind: 'store', store: this.ensurePublicStore(request.workspaceId) };
       case 'ensure_private_store':
@@ -263,6 +314,203 @@ export class MemoryStoreLogic {
       case 'cleanup_retention':
         return { kind: 'cleanup', ...this.cleanupRetention() };
     }
+  }
+
+  ensureOwner(owner: MemoryOwnerRef): MemoryOwnerDescriptor {
+    if (!isOpaqueMemoryId(owner.workspaceId) || !isOpaqueMemoryId(owner.ownerId)) {
+      throw new MemoryStateError('memory_owner_invalid', 'Memory owner identifiers are invalid.');
+    }
+    const storeId = ownerMemoryStoreId(owner);
+    this.db.run(
+      `INSERT OR IGNORE INTO memory_owners (
+        store_id, workspace_id, owner_kind, owner_id, lifecycle, reset_epoch,
+        created_at, sealed_at, sealed_reason, schema_version
+       ) VALUES (?, ?, ?, ?, 'active', 1, ?, NULL, NULL, 2)`,
+      storeId, owner.workspaceId, owner.ownerKind, owner.ownerId, this.now(),
+    );
+    const result = this.getOwner(storeId);
+    if (!result) throw new Error(`Memory owner ${storeId} was not readable after insert`);
+    return result;
+  }
+
+  getOwner(storeId: string): MemoryOwnerDescriptor | undefined {
+    const row = this.db.get('SELECT * FROM memory_owners WHERE store_id = ?', storeId);
+    return row ? rowToOwner(row as unknown as OwnerRow) : undefined;
+  }
+
+  listOwners(workspaceId?: string): MemoryOwnerDescriptor[] {
+    const rows = workspaceId
+      ? this.db.all('SELECT * FROM memory_owners WHERE workspace_id = ? ORDER BY owner_kind, owner_id', workspaceId)
+      : this.db.all('SELECT * FROM memory_owners ORDER BY workspace_id, owner_kind, owner_id');
+    return rows.map((row) => rowToOwner(row as unknown as OwnerRow));
+  }
+
+  createOwnerEntry(input: CreateOwnerMemoryEntryInput): OwnerMemoryEntry {
+    const replay = this.ownerEntryForReplay(input.idempotencyKey);
+    if (replay) return replay;
+    const owner = this.getOwner(input.storeId);
+    if (!owner || owner.workspaceId !== input.workspaceId) {
+      throw new MemoryStateError('memory_owner_not_found', 'Memory owner is unavailable.');
+    }
+    if (owner.lifecycle !== 'active') {
+      throw new MemoryStateError('memory_owner_sealed', 'Memory owner is sealed.');
+    }
+    const at = this.now();
+    const hash = contentHash(input.description, input.body);
+    return this.db.transaction(() => {
+      const second = this.ownerEntryForReplay(input.idempotencyKey);
+      if (second) return second;
+      this.enforceOwnerCreateQuota(owner, input.description, input.body);
+      if (input.actorClass !== 'operator') {
+        this.incrementMutationCounts(input.workspaceId, owner.storeId, input.actorId, at);
+      }
+      try {
+        this.db.run(
+          `INSERT INTO memory_owner_entries (
+            entry_id, store_id, workspace_id, owner_kind, owner_id, slug,
+            description, type, body, status, version, creator_actor_id,
+            last_editor_actor_id, actor_class, write_origin_json, source_event_id,
+            source_thread_ts, source_message_ts, created_at, modified_at,
+            expires_at, content_hash, superseding_entry_id
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+          input.entryId, owner.storeId, owner.workspaceId, owner.ownerKind, owner.ownerId,
+          input.slug, input.description, input.type, input.body, input.actorId, input.actorId,
+          input.actorClass, input.writeOrigin ? JSON.stringify(input.writeOrigin) : null,
+          input.sourceEventId ?? null, input.sourceThreadTs ?? null,
+          input.sourceMessageTs ?? null, at, at, input.expiresAt ?? null, hash,
+        );
+      } catch (error) {
+        if (isConstraintViolation(error)) {
+          throw new MemoryStateError('memory_slug_conflict', 'Memory name is already in use.');
+        }
+        throw error;
+      }
+      this.insertRevision({
+        entryId: input.entryId, version: 1, operation: 'create',
+        description: input.description, body: input.body, type: input.type,
+        actorId: input.actorId, actorClass: input.actorClass,
+        sourceEventId: input.sourceEventId ?? null, sourceThreadTs: input.sourceThreadTs ?? null,
+        sourceMessageTs: input.sourceMessageTs ?? null, createdAt: at,
+        beforeHash: null, afterHash: hash, reasonCode: `slug_seed:${input.slugSeed ?? input.slug}`,
+        idempotencyKey: input.idempotencyKey,
+      });
+      this.audit.append({
+        eventId: auditId(input.idempotencyKey), domain: 'memory', eventType: 'memory.created',
+        outcome: 'success', actorClass: input.actorClass, actorId: input.actorId,
+        workspaceId: owner.workspaceId,
+        channelId: input.writeOrigin?.kind === 'slack_channel' ? input.writeOrigin.channelId : null,
+        storeId: owner.storeId, subjectId: input.entryId, subjectVersion: 1,
+        createdAt: at, afterHash: hash, idempotencyKey: input.idempotencyKey,
+        metadataJson: JSON.stringify({ ownerKind: owner.ownerKind, ownerId: owner.ownerId }),
+      });
+      return requiredOwnerEntry(this.getOwnerEntry(input.entryId), input.entryId);
+    });
+  }
+
+  updateOwnerEntry(input: UpdateOwnerMemoryEntryInput): OwnerMemoryEntry {
+    const replay = this.ownerEntryForReplay(input.idempotencyKey);
+    if (replay) return replay;
+    const current = requiredOwnerEntry(this.getOwnerEntry(input.entryId), input.entryId);
+    this.assertMutableOwnerVersion(current, input.expectedVersion);
+    const at = this.now();
+    const hash = contentHash(input.description, input.body);
+    return this.db.transaction(() => {
+      const second = this.ownerEntryForReplay(input.idempotencyKey);
+      if (second) return second;
+      const fresh = requiredOwnerEntry(this.getOwnerEntry(input.entryId), input.entryId);
+      this.assertMutableOwnerVersion(fresh, input.expectedVersion);
+      const owner = this.getOwner(fresh.storeId)!;
+      this.enforceOwnerUpdateQuota(fresh, input.description, input.body);
+      if (input.actorClass !== 'operator') {
+        this.incrementMutationCounts(fresh.workspaceId, owner.storeId, input.actorId, at);
+      }
+      const version = fresh.version + 1;
+      this.db.run(
+        `UPDATE memory_owner_entries SET description = ?, type = ?, body = ?, version = ?,
+           last_editor_actor_id = ?, actor_class = ?, source_event_id = ?,
+           source_thread_ts = ?, source_message_ts = ?, modified_at = ?, expires_at = ?,
+           content_hash = ? WHERE entry_id = ? AND version = ?`,
+        input.description, input.type, input.body, version, input.actorId, input.actorClass,
+        input.sourceEventId ?? null, input.sourceThreadTs ?? null,
+        input.sourceMessageTs ?? null, at, input.expiresAt ?? null, hash,
+        fresh.entryId, fresh.version,
+      );
+      this.insertRevision({
+        entryId: fresh.entryId, version, operation: 'update', description: input.description,
+        body: input.body, type: input.type, actorId: input.actorId, actorClass: input.actorClass,
+        sourceEventId: input.sourceEventId ?? null, sourceThreadTs: input.sourceThreadTs ?? null,
+        sourceMessageTs: input.sourceMessageTs ?? null, createdAt: at,
+        beforeHash: fresh.contentHash, afterHash: hash, reasonCode: null,
+        idempotencyKey: input.idempotencyKey,
+      });
+      this.audit.append({
+        eventId: auditId(input.idempotencyKey), domain: 'memory', eventType: 'memory.updated',
+        outcome: 'success', actorClass: input.actorClass, actorId: input.actorId,
+        workspaceId: fresh.workspaceId, channelId: null, storeId: fresh.storeId,
+        subjectId: fresh.entryId, subjectVersion: version, createdAt: at,
+        beforeHash: fresh.contentHash, afterHash: hash, idempotencyKey: input.idempotencyKey,
+      });
+      return requiredOwnerEntry(this.getOwnerEntry(fresh.entryId), fresh.entryId);
+    });
+  }
+
+  getOwnerEntry(entryId: string): OwnerMemoryEntry | undefined {
+    const row = this.db.get('SELECT * FROM memory_owner_entries WHERE entry_id = ?', entryId);
+    return row ? rowToOwnerEntry(row as unknown as OwnerEntryRow) : undefined;
+  }
+
+  listOwnerEntries(owner: MemoryOwnerRef): OwnerMemoryEntry[] {
+    const storeId = ownerMemoryStoreId(owner);
+    return this.db.all(
+      'SELECT * FROM memory_owner_entries WHERE store_id = ? ORDER BY slug, entry_id', storeId,
+    ).map((row) => rowToOwnerEntry(row as unknown as OwnerEntryRow));
+  }
+
+  listOwnerRevisions(entryId: string): MemoryRevision[] {
+    if (!this.getOwnerEntry(entryId)) return [];
+    return this.listRevisions(entryId);
+  }
+
+  resetOwner(ownerRef: MemoryOwnerRef, input: OwnerMemoryLifecycleInput): MemoryOwnerDescriptor {
+    const owner = this.ensureOwner(ownerRef);
+    return this.db.transaction(() => {
+      const replay = this.audit.list({ domain: 'memory', idempotencyKey: input.idempotencyKey })[0];
+      if (replay) return this.getOwner(owner.storeId)!;
+      this.scrubOwnerEntries(owner.storeId);
+      this.db.run(
+        `UPDATE memory_owners SET reset_epoch = reset_epoch + 1, lifecycle = 'active',
+           sealed_at = NULL, sealed_reason = NULL WHERE store_id = ?`, owner.storeId,
+      );
+      const next = this.getOwner(owner.storeId)!;
+      this.audit.append({
+        eventId: auditId(input.idempotencyKey), domain: 'memory', eventType: 'memory.owner_reset',
+        outcome: 'success', actorClass: 'operator', actorId: input.actorId,
+        workspaceId: owner.workspaceId, channelId: null, storeId: owner.storeId,
+        subjectId: owner.ownerId, subjectVersion: next.resetEpoch, createdAt: this.now(),
+        idempotencyKey: input.idempotencyKey,
+      });
+      return next;
+    });
+  }
+
+  sealOwner(ownerRef: MemoryOwnerRef, input: SealMemoryOwnerInput): MemoryOwnerDescriptor {
+    const owner = this.ensureOwner(ownerRef);
+    if (owner.lifecycle === 'sealed') return owner;
+    return this.db.transaction(() => {
+      this.db.run(
+        `UPDATE memory_owners SET lifecycle = 'sealed', sealed_at = ?, sealed_reason = ?
+         WHERE store_id = ? AND lifecycle = 'active'`, this.now(), input.reason, owner.storeId,
+      );
+      const next = this.getOwner(owner.storeId)!;
+      this.audit.appendIdempotent({
+        eventId: auditId(input.idempotencyKey), domain: 'memory', eventType: 'memory.owner_sealed',
+        outcome: 'success', actorClass: 'operator', actorId: input.actorId,
+        workspaceId: owner.workspaceId, channelId: owner.ownerKind === 'channel' ? owner.ownerId : null,
+        storeId: owner.storeId, subjectId: owner.ownerId, subjectVersion: owner.resetEpoch,
+        createdAt: this.now(), reasonCode: input.reason, idempotencyKey: input.idempotencyKey,
+      });
+      return next;
+    });
   }
 
   ensurePublicStore(workspaceId: string): MemoryStoreDescriptor {
@@ -1516,6 +1764,56 @@ export class MemoryStoreLogic {
         UNIQUE (workspace_id, visibility, channel_id, generation)
       )`,
     );
+    // V2 clean-break owner-native memory. Legacy audience-owned tables above
+    // remain inert for append-only deployment history and are never queried by
+    // the owner API below.
+    this.db.exec(
+      `CREATE TABLE IF NOT EXISTS memory_owners (
+        store_id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        owner_kind TEXT NOT NULL,
+        owner_id TEXT NOT NULL,
+        lifecycle TEXT NOT NULL,
+        reset_epoch INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        sealed_at INTEGER,
+        sealed_reason TEXT,
+        schema_version INTEGER NOT NULL,
+        UNIQUE (workspace_id, owner_kind, owner_id)
+      )`,
+    );
+    this.db.exec(
+      `CREATE TABLE IF NOT EXISTS memory_owner_entries (
+        entry_id TEXT PRIMARY KEY,
+        store_id TEXT NOT NULL,
+        workspace_id TEXT NOT NULL,
+        owner_kind TEXT NOT NULL,
+        owner_id TEXT NOT NULL,
+        slug TEXT NOT NULL,
+        description TEXT NOT NULL,
+        type TEXT NOT NULL,
+        body TEXT NOT NULL,
+        status TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        creator_actor_id TEXT,
+        last_editor_actor_id TEXT,
+        actor_class TEXT NOT NULL,
+        write_origin_json TEXT,
+        source_event_id TEXT,
+        source_thread_ts TEXT,
+        source_message_ts TEXT,
+        created_at INTEGER NOT NULL,
+        modified_at INTEGER NOT NULL,
+        expires_at INTEGER,
+        content_hash TEXT,
+        superseding_entry_id TEXT,
+        UNIQUE (store_id, slug)
+      )`,
+    );
+    this.db.exec(
+      `CREATE INDEX IF NOT EXISTS memory_owner_entries_selection_idx
+       ON memory_owner_entries (store_id, status, modified_at DESC)`,
+    );
     this.db.exec(
       `CREATE TABLE IF NOT EXISTS memory_entries (
         entry_id TEXT PRIMARY KEY,
@@ -1655,7 +1953,7 @@ export class MemoryStoreLogic {
       input.channelId,
       input.generation,
       at,
-      MEMORY_SCHEMA_VERSION,
+      LEGACY_MEMORY_STORE_SCHEMA_VERSION,
     );
     const store = this.getStore(input.storeId);
     if (!store) throw new Error(`Memory store ${input.storeId} was not readable after insert`);
@@ -1673,6 +1971,99 @@ export class MemoryStoreLogic {
     if (!store || store.lifecycle !== 'active') {
       throw new MemoryStateError('memory_store_sealed', 'Memory store is sealed.');
     }
+  }
+
+  private assertMutableOwnerVersion(entry: OwnerMemoryEntry, expectedVersion: number): void {
+    if (entry.version !== expectedVersion) {
+      throw new MemoryVersionConflictError(entry.entryId, entry.version);
+    }
+    if (entry.status === 'forgotten' || entry.status === 'superseded') {
+      throw new MemoryStateError('memory_entry_not_mutable', 'Memory entry is not editable.');
+    }
+    const owner = this.getOwner(entry.storeId);
+    if (!owner || owner.lifecycle !== 'active') {
+      throw new MemoryStateError('memory_owner_sealed', 'Memory owner is sealed.');
+    }
+  }
+
+  private ownerEntryForReplay(idempotencyKey: string): OwnerMemoryEntry | undefined {
+    const row = this.db.get(
+      `SELECT r.entry_id FROM memory_revisions r
+       JOIN memory_owner_entries e ON e.entry_id = r.entry_id
+       WHERE r.idempotency_key = ?`, idempotencyKey,
+    );
+    return typeof row?.entry_id === 'string' ? this.getOwnerEntry(row.entry_id) : undefined;
+  }
+
+  private scrubOwnerEntries(storeId: string): void {
+    const ids = this.db.all(
+      'SELECT entry_id FROM memory_owner_entries WHERE store_id = ?', storeId,
+    ).map((row) => String(row.entry_id));
+    for (const entryId of ids) {
+      this.db.run(
+        `UPDATE memory_revisions SET description = NULL, body = NULL, type = NULL,
+           before_hash = NULL, after_hash = NULL WHERE entry_id = ?`, entryId,
+      );
+      this.db.run('DELETE FROM memory_revisions WHERE entry_id = ?', entryId);
+      this.db.run('DELETE FROM memory_forget_challenges WHERE entry_id = ?', entryId);
+    }
+    this.db.run('DELETE FROM memory_owner_entries WHERE store_id = ?', storeId);
+  }
+
+  /** Internal co-located lifecycle seam used by the atomic Agent delete. */
+  deleteOwnerRows(owner: MemoryOwnerRef): boolean {
+    const storeId = ownerMemoryStoreId(owner);
+    this.scrubOwnerEntries(storeId);
+    return this.db.run('DELETE FROM memory_owners WHERE store_id = ?', storeId).changes === 1;
+  }
+
+  deleteAgentOwnerRows(agentId: string): number {
+    const owners = this.db.all(
+      `SELECT workspace_id, owner_id FROM memory_owners
+       WHERE owner_kind = 'agent' AND owner_id = ?`, agentId,
+    );
+    for (const row of owners) {
+      this.deleteOwnerRows({
+        workspaceId: String(row.workspace_id), ownerKind: 'agent', ownerId: String(row.owner_id),
+      });
+    }
+    return owners.length;
+  }
+
+  private enforceOwnerCreateQuota(
+    owner: MemoryOwnerDescriptor,
+    description: string,
+    body: string,
+  ): void {
+    const totals = this.liveOwnerTotals(owner.storeId);
+    if (
+      totals.count >= MEMORY_PUBLIC_ENTRY_LIMIT ||
+      totals.bytes + contentBytes(description, body) > MEMORY_PUBLIC_BYTES_LIMIT
+    ) {
+      throw new MemoryStateError('memory_store_quota', 'This memory owner is full.');
+    }
+  }
+
+  private enforceOwnerUpdateQuota(
+    entry: OwnerMemoryEntry,
+    description: string,
+    body: string,
+  ): void {
+    const totals = this.liveOwnerTotals(entry.storeId);
+    const nextBytes = totals.bytes - contentBytes(entry.description, entry.body) + contentBytes(description, body);
+    if (nextBytes > MEMORY_PUBLIC_BYTES_LIMIT) {
+      throw new MemoryStateError('memory_store_quota', 'This memory owner is full.');
+    }
+  }
+
+  private liveOwnerTotals(storeId: string): { count: number; bytes: number } {
+    const row = this.db.get(
+      `SELECT COUNT(*) AS count,
+              COALESCE(SUM(length(CAST(description AS BLOB)) + length(CAST(body AS BLOB))), 0) AS bytes
+       FROM memory_owner_entries WHERE store_id = ? AND status IN ('active', 'stale')`,
+      storeId,
+    );
+    return { count: Number(row?.count ?? 0), bytes: Number(row?.bytes ?? 0) };
   }
 
   private insertRevision(revision: MemoryRevision): void {
@@ -1910,6 +2301,48 @@ export class SqliteMemoryStateStore implements MemoryStateStore {
     this.db.close();
   }
 
+  async ensureOwner(owner: MemoryOwnerRef): Promise<MemoryOwnerDescriptor> {
+    return this.logic.ensureOwner(owner);
+  }
+
+  async getOwner(storeId: string): Promise<MemoryOwnerDescriptor | undefined> {
+    return this.logic.getOwner(storeId);
+  }
+
+  async listOwners(workspaceId?: string): Promise<MemoryOwnerDescriptor[]> {
+    return this.logic.listOwners(workspaceId);
+  }
+
+  async createOwnerEntry(input: CreateOwnerMemoryEntryInput): Promise<OwnerMemoryEntry> {
+    return this.logic.createOwnerEntry(input);
+  }
+
+  async updateOwnerEntry(input: UpdateOwnerMemoryEntryInput): Promise<OwnerMemoryEntry> {
+    return this.logic.updateOwnerEntry(input);
+  }
+
+  async listOwnerEntries(owner: MemoryOwnerRef): Promise<OwnerMemoryEntry[]> {
+    return this.logic.listOwnerEntries(owner);
+  }
+
+  async listOwnerRevisions(entryId: string): Promise<MemoryRevision[]> {
+    return this.logic.listOwnerRevisions(entryId);
+  }
+
+  async resetOwner(
+    owner: MemoryOwnerRef,
+    input: OwnerMemoryLifecycleInput,
+  ): Promise<MemoryOwnerDescriptor> {
+    return this.logic.resetOwner(owner, input);
+  }
+
+  async sealOwner(
+    owner: MemoryOwnerRef,
+    input: SealMemoryOwnerInput,
+  ): Promise<MemoryOwnerDescriptor> {
+    return this.logic.sealOwner(owner, input);
+  }
+
   async ensurePublicStore(workspaceId: string): Promise<MemoryStoreDescriptor> {
     return this.logic.ensurePublicStore(workspaceId);
   }
@@ -2135,6 +2568,18 @@ function requiredEntry(entry: MemoryEntry | undefined, entryId: string): MemoryE
   return entry;
 }
 
+function requiredOwnerEntry(
+  entry: OwnerMemoryEntry | undefined,
+  entryId: string,
+): OwnerMemoryEntry {
+  if (!entry) {
+    throw new MemoryStateError('memory_entry_not_found', 'Memory entry was not found.', {
+      entryId,
+    });
+  }
+  return entry;
+}
+
 function requiredStore(
   store: MemoryStoreDescriptor | undefined,
   storeId: string,
@@ -2163,6 +2608,49 @@ function rowToStore(row: StoreRow): MemoryStoreDescriptor {
     sealedAt: row.sealed_at,
     sealedReason: row.sealed_reason,
     schemaVersion: row.schema_version,
+  };
+}
+
+function rowToOwner(row: OwnerRow): MemoryOwnerDescriptor {
+  return {
+    storeId: row.store_id,
+    workspaceId: row.workspace_id,
+    ownerKind: row.owner_kind,
+    ownerId: row.owner_id,
+    lifecycle: row.lifecycle,
+    resetEpoch: row.reset_epoch,
+    createdAt: row.created_at,
+    sealedAt: row.sealed_at,
+    sealedReason: row.sealed_reason,
+    schemaVersion: 2,
+  };
+}
+
+function rowToOwnerEntry(row: OwnerEntryRow): OwnerMemoryEntry {
+  return {
+    entryId: row.entry_id,
+    storeId: row.store_id,
+    workspaceId: row.workspace_id,
+    ownerKind: row.owner_kind,
+    ownerId: row.owner_id,
+    slug: row.slug,
+    description: row.description,
+    type: row.type,
+    body: row.body,
+    status: row.status,
+    version: row.version,
+    creatorActorId: row.creator_actor_id,
+    lastEditorActorId: row.last_editor_actor_id,
+    actorClass: row.actor_class,
+    writeOrigin: row.write_origin_json ? JSON.parse(row.write_origin_json) as OwnerMemoryEntry['writeOrigin'] : null,
+    sourceEventId: row.source_event_id,
+    sourceThreadTs: row.source_thread_ts,
+    sourceMessageTs: row.source_message_ts,
+    createdAt: row.created_at,
+    modifiedAt: row.modified_at,
+    expiresAt: row.expires_at,
+    contentHash: row.content_hash,
+    supersedingEntryId: row.superseding_entry_id,
   };
 }
 

@@ -71,6 +71,7 @@ export type StateRpcErrorCode =
   | 'unknown_agent'
   | 'agent_exists'
   | 'agent_still_assigned'
+  | 'agent_still_referenced'
   | 'agent_slack_dm_handler'
   | 'agent_slack_identity_conflict'
   | 'unknown_slack_identity'
@@ -395,6 +396,10 @@ export interface TagStateRpc {
   ): Promise<StateRpcResult<string[]>>;
   // -- memory + generic audit envelope ------------------------------------
   memoryExecute(request: MemoryRpcRequest): Promise<StateRpcResult<MemoryRpcResponse>>;
+  configDeleteAgentWithMemory(
+    agentId: string,
+    idempotencyKey: string,
+  ): Promise<StateRpcResult<boolean>>;
   // -- routines + scheduled-work audit ------------------------------------
   routinesExecute(request: RoutineRpcRequest): Promise<StateRpcResult<RoutineRpcResponse>>;
   // -- usage observability ------------------------------------------------

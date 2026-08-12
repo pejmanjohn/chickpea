@@ -3,6 +3,7 @@ import { test } from 'node:test';
 
 import { CfConfigStore } from '../src/config/cf-state-proxies.ts';
 import {
+  AgentStillReferencedError,
   AgentStillSlackDmHandlerError,
   SlackIdentityStillReferencedError,
 } from '../src/config/errors.ts';
@@ -208,6 +209,32 @@ test('Cloudflare config proxy reconstructs active-DM and referenced-identity dom
       error instanceof SlackIdentityStillReferencedError &&
       error.identityId === 'slack_identity_finance' &&
       error.agentIds === 'agent_finance',
+  );
+});
+
+test('Cloudflare config proxy reconstructs composite Agent deletion blocker errors', async () => {
+  const stub = {
+    async configDeleteAgentWithMemory(): Promise<StateRpcResult<boolean>> {
+      return {
+        ok: false,
+        error: {
+          code: 'agent_still_referenced',
+          message: 'Agent agent_finance is still referenced',
+          details: {
+            agentId: 'agent_finance',
+            references: 'T_TEST/C_FINANCE, DM:slack_identity_finance',
+          },
+        },
+      };
+    },
+  } as unknown as TagStateRpc;
+
+  await assert.rejects(
+    () => new CfConfigStore(stub).deleteAgentWithMemory('agent_finance', 'delete-1'),
+    (error: unknown) =>
+      error instanceof AgentStillReferencedError &&
+      error.agentId === 'agent_finance' &&
+      error.references === 'T_TEST/C_FINANCE, DM:slack_identity_finance',
   );
 });
 

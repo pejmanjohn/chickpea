@@ -3,6 +3,7 @@ import {
   AgentExistsError,
   AgentStillAssignedError,
   AgentStillSlackDmHandlerError,
+  AgentStillReferencedError,
   SlackIdentityExistsError,
   SlackIdentityLifecycleError,
   SlackIdentityRevisionConflictError,
@@ -27,6 +28,7 @@ import {
 } from './types.ts';
 import { openStateDb, resolveStateDbPath, type NodeStateDb } from '../state/node-state-db.ts';
 import type { StateDb } from '../state/state-db.ts';
+import { MemoryStoreLogic } from '../memory/store.ts';
 
 export interface ConfigSeed {
   agents: readonly CustomAgentConfig[];
@@ -169,6 +171,10 @@ export interface ConfigStore {
   updateAgent(agentId: string, patch: ConfigAgentPatch): Promise<CustomAgentConfig>;
   markOAuthReauthorizationRequired(target: OAuthReauthorizationTarget): Promise<boolean>;
   deleteAgent(agentId: string): Promise<boolean>;
+  deleteAgentWithMemory(
+    agentId: string,
+    idempotencyKey: string,
+  ): Promise<boolean>;
   listChannels(): Promise<ChannelConfig[]>;
   getChannel(workspaceId: string, channelId: string): Promise<ChannelConfig | undefined>;
   putChannel(channel: ChannelConfig): Promise<ChannelConfig>;
@@ -381,6 +387,44 @@ export class ConfigStoreLogic {
     this.requireAgentIsNotActiveSlackDmHandler(agentId);
     const deleted = this.db.run('DELETE FROM config_agents WHERE id = ?', agentId);
     return deleted.changes === 1;
+  }
+
+  deleteAgentWithMemory(
+    agentId: string,
+    idempotencyKey: string,
+    memory: MemoryStoreLogic = new MemoryStoreLogic(this.db),
+  ): boolean {
+    return this.db.transaction(() => {
+      const replay = this.db.get(
+        'SELECT agent_id FROM config_agent_deletion_receipts WHERE idempotency_key = ?',
+        idempotencyKey,
+      );
+      if (replay) {
+        if (replay.agent_id !== agentId) {
+          throw new Error('Agent deletion idempotency key belongs to another Agent.');
+        }
+        return true;
+      }
+      const references = this.getAgentReferences(agentId);
+      const blockers = [
+        ...references.channelAssignments.map((ref) => `${ref.workspaceId}/${ref.channelId}`),
+        ...references.dmIdentityIds.map((id) => `DM:${id}`),
+        ...references.identityReferenceIds.map((id) => `identity:${id}`),
+      ];
+      if (blockers.length > 0) {
+        throw new AgentStillReferencedError(agentId, blockers.join(', '));
+      }
+      const deleted = this.db.run('DELETE FROM config_agents WHERE id = ?', agentId);
+      if (deleted.changes !== 1) return false;
+      memory.deleteAgentOwnerRows(agentId);
+      this.db.run(
+        `INSERT INTO config_agent_deletion_receipts (
+          idempotency_key, workspace_id, agent_id, deleted_at
+         ) VALUES (?, ?, ?, ?)`,
+        idempotencyKey, '*', agentId, Date.now(),
+      );
+      return true;
+    });
   }
 
   listChannels(): ChannelConfig[] {
@@ -1313,6 +1357,19 @@ export class ConfigStoreLogic {
           );
         },
       },
+      {
+        version: 9,
+        up: (db) => {
+          db.exec(
+            `CREATE TABLE IF NOT EXISTS config_agent_deletion_receipts (
+              idempotency_key TEXT PRIMARY KEY,
+              workspace_id TEXT NOT NULL,
+              agent_id TEXT NOT NULL,
+              deleted_at INTEGER NOT NULL
+            )`,
+          );
+        },
+      },
     ];
     const row = this.db.get('SELECT value FROM config_meta WHERE key = ?', SCHEMA_VERSION_KEY) as
       | { value: string }
@@ -1375,6 +1432,13 @@ export class SqliteConfigStore implements ConfigStore {
 
   async deleteAgent(agentId: string): Promise<boolean> {
     return this.logic.deleteAgent(agentId);
+  }
+
+  async deleteAgentWithMemory(
+    agentId: string,
+    idempotencyKey: string,
+  ): Promise<boolean> {
+    return this.logic.deleteAgentWithMemory(agentId, idempotencyKey);
   }
 
   async listChannels(): Promise<ChannelConfig[]> {

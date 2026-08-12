@@ -31,6 +31,126 @@ function createInput(idempotencyKey = 'memory:slack:T_TEST:E1:0') {
   };
 }
 
+function ownerCreateInput(overrides: Record<string, unknown> = {}) {
+  return {
+    entryId: 'mem_owner_01',
+    storeId: 'memory_owner_agent_T_TEST_agent_ops',
+    workspaceId: 'T_TEST',
+    slug: 'release-convention',
+    description: 'How releases are prepared.',
+    type: 'project' as const,
+    body: 'Use the release checklist before merging.',
+    actorId: 'U_MEMBER',
+    actorClass: 'member' as const,
+    writeOrigin: { kind: 'slack_channel' as const, channelId: 'C_SOURCE' },
+    idempotencyKey: 'memory:owner:create:1',
+    ...overrides,
+  };
+}
+
+test('owner-native Agent and Channel stores are stable, distinct, and isolate entries', async () => {
+  const store = new SqliteMemoryStateStore(':memory:', () => createdAt);
+  try {
+    const agent = await store.ensureOwner({
+      workspaceId: 'T_TEST', ownerKind: 'agent', ownerId: 'agent_ops',
+    });
+    const channel = await store.ensureOwner({
+      workspaceId: 'T_TEST', ownerKind: 'channel', ownerId: 'agent_ops',
+    });
+    assert.equal(agent.storeId, 'memory_owner_agent_T_TEST_agent_ops');
+    assert.equal(channel.storeId, 'memory_owner_channel_T_TEST_agent_ops');
+    assert.notEqual(agent.storeId, channel.storeId);
+    const created = await store.createOwnerEntry(ownerCreateInput());
+    assert.equal(created.ownerKind, 'agent');
+    assert.deepEqual(await store.listOwnerEntries(agent), [created]);
+    assert.deepEqual(await store.listOwnerEntries(channel), []);
+  } finally {
+    store.close();
+  }
+});
+
+test('owner-native create replay is idempotent and updates preserve the winning version', async () => {
+  const store = new SqliteMemoryStateStore(':memory:', () => createdAt);
+  try {
+    const owner = await store.ensureOwner({
+      workspaceId: 'T_TEST', ownerKind: 'agent', ownerId: 'agent_ops',
+    });
+    const first = await store.createOwnerEntry(ownerCreateInput());
+    assert.deepEqual(await store.createOwnerEntry(ownerCreateInput()), first);
+    const winner = await store.updateOwnerEntry({
+      entryId: first.entryId, expectedVersion: 1,
+      description: 'Updated.', type: 'project', body: 'Winner.',
+      actorId: 'admin', actorClass: 'operator', idempotencyKey: 'owner:update:winner',
+    });
+    assert.equal(winner.version, 2);
+    await assert.rejects(
+      () => store.updateOwnerEntry({
+        entryId: first.entryId, expectedVersion: 1,
+        description: 'Loser.', type: 'project', body: 'Loser.',
+        actorId: 'admin', actorClass: 'operator', idempotencyKey: 'owner:update:loser',
+      }),
+      MemoryVersionConflictError,
+    );
+    assert.equal((await store.listOwnerEntries(owner))[0]?.body, 'Winner.');
+    assert.equal((await store.listOwnerRevisions(first.entryId)).length, 2);
+    assert.equal((await store.listAuditEvents({ subjectId: first.entryId })).length, 2);
+  } finally {
+    store.close();
+  }
+});
+
+test('owner slugs are unique per owner and write origin is optional provenance', async () => {
+  const store = new SqliteMemoryStateStore(':memory:', () => createdAt);
+  try {
+    const firstOwner = await store.ensureOwner({
+      workspaceId: 'T_TEST', ownerKind: 'agent', ownerId: 'agent_ops',
+    });
+    const secondOwner = await store.ensureOwner({
+      workspaceId: 'T_TEST', ownerKind: 'agent', ownerId: 'agent_other',
+    });
+    const withoutOrigin = await store.createOwnerEntry(ownerCreateInput({
+      writeOrigin: null,
+    }));
+    assert.equal(withoutOrigin.writeOrigin, null);
+    await assert.rejects(
+      () => store.createOwnerEntry(ownerCreateInput({
+        entryId: 'mem_duplicate', idempotencyKey: 'owner:create:duplicate',
+      })),
+      /already in use/,
+    );
+    const sameSlugElsewhere = await store.createOwnerEntry(ownerCreateInput({
+      entryId: 'mem_other', storeId: secondOwner.storeId,
+      idempotencyKey: 'owner:create:other', writeOrigin: { kind: 'slack_dm', channelId: 'D_ONE' },
+    }));
+    assert.equal(sameSlugElsewhere.slug, withoutOrigin.slug);
+    assert.deepEqual(sameSlugElsewhere.writeOrigin, { kind: 'slack_dm', channelId: 'D_ONE' });
+    assert.equal((await store.listOwnerEntries(firstOwner)).length, 1);
+  } finally {
+    store.close();
+  }
+});
+
+test('owner reset scrubs entries, rotates the epoch, and legacy rows never enter owner reads', async () => {
+  const store = new SqliteMemoryStateStore(':memory:', () => createdAt);
+  try {
+    const owner = await store.ensureOwner({
+      workspaceId: 'T_TEST', ownerKind: 'agent', ownerId: 'agent_ops',
+    });
+    await store.createOwnerEntry(ownerCreateInput());
+    await store.ensurePublicStore('T_TEST');
+    await store.createEntry(createInput('legacy-create'));
+    const reset = await store.resetOwner(owner, {
+      actorId: 'admin', idempotencyKey: 'owner:reset:1',
+    });
+    assert.equal(reset.resetEpoch, owner.resetEpoch + 1);
+    assert.deepEqual(await store.listOwnerEntries(reset), []);
+    assert.deepEqual(await store.listOwnerEntries(owner), []);
+    assert.equal((await store.listEntries({ storeId: 'store_public_T_TEST' })).length, 1);
+  } finally {
+    store.close();
+  }
+});
+
 test('memory state initializes beside existing tables and creates a public store', async () => {
   const db = openStateDb(':memory:');
   db.exec('CREATE TABLE existing_fixture (id TEXT PRIMARY KEY)');
