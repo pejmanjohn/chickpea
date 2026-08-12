@@ -2,6 +2,7 @@ import * as v from 'valibot';
 import type { WebClient } from '@slack/web-api';
 
 import type { PlatformEnv } from '../config/state-backend.ts';
+import { resolvedAssignmentFromEffectiveConfig } from '../config/effective-config.ts';
 import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from '../config/types.ts';
 import { prepareMemoryTurn } from '../memory/runtime.ts';
 import { createSlackWebClient } from '../slack/run-turn.ts';
@@ -78,6 +79,7 @@ export async function prepareRoutinePrompt(
     hydrateSlackContextViaWebClient(client, turn, { maxMessages: 20, maxPages: 1 }),
     prepareMemoryTurn({
       turn,
+      assignment: resolvedAssignmentFromEffectiveConfig(access.config),
       platformEnv: env,
       client,
       botToken: access.botToken,

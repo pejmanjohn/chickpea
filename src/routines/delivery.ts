@@ -253,7 +253,7 @@ function formatScheduledTime(timestamp: number, timezone: string): string {
 
 function routineReplyFooter(access: RoutineRuntimeAccess): SlackReplyFooter {
   return {
-    profileName: access.config.agent.name,
+    agentName: access.config.agent.name,
     modelLabel: access.config.model,
     agentId: access.config.agentId,
     publicUrl: access.publicUrl,

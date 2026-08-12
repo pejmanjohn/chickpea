@@ -43,7 +43,7 @@ export interface SlackAdminUrlParams {
 }
 
 export interface SlackReplyFooter {
-  profileName: string;
+  agentName: string;
   // Omitted when the model cannot be resolved — the footer drops the segment
   // rather than leaking a diagnostic placeholder into user-facing chrome.
   modelLabel?: string | undefined;
@@ -231,7 +231,7 @@ function contentBlockFor(rendered: RenderedSlackMessage): SlackMessageBlock {
 }
 
 export function renderSlackReplyFooterBlock(footer: SlackReplyFooter): SlackContextBlock {
-  const segments = [escapeSlackControlCharacters(footer.profileName)];
+  const segments = [escapeSlackControlCharacters(footer.agentName)];
   if (footer.modelLabel) {
     segments.push(escapeSlackControlCharacters(footer.modelLabel));
   }
@@ -271,7 +271,7 @@ export function renderChannelOnboarding(params: {
     'In an assigned channel, Chickpea may also join an unmentioned conversation when it has something materially useful to add.',
     'It evaluates bounded recent context per message and does not build a persistent workspace-message index.',
     'Once Chickpea joins a thread, human replies continue without another mention.',
-    `${configure} this channel's profile in /admin.`,
+    `${configure} this Channel's Agent in /admin.`,
   ].join(' ');
 }
 
@@ -286,8 +286,8 @@ export function renderUnassignedChannelHint(params: {
 }): string {
   const configure = renderSlackConfigureLink(params.publicUrl, { channelId: params.channelId });
   return [
-    `No profile is assigned to this channel yet, so <@${params.botUserId}> cannot reply here.`,
-    `${configure} this channel's profile in /admin.`,
+    `No Agent is assigned to this Channel yet, so <@${params.botUserId}> cannot reply here.`,
+    `${configure} this Channel's Agent in /admin.`,
   ].join(' ');
 }
 

@@ -92,6 +92,26 @@ export async function resolveEffectiveSlackConfig(
   };
 }
 
+/** Preserve the exact live assignment admitted by an effective-config consumer. */
+export function resolvedAssignmentFromEffectiveConfig(
+  config: EffectiveSlackConfig,
+): ResolvedAssignment {
+  return {
+    workspaceId: config.workspaceId,
+    channelId: config.channelId,
+    agentId: config.agentId,
+    slackIdentityId: config.slackIdentityId ?? WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+    ...(config.channelLabel ? { channelLabel: config.channelLabel } : {}),
+    ...(config.channelPromptAddendum
+      ? { channelPromptAddendum: config.channelPromptAddendum }
+      : {}),
+    participationMode: config.participationMode ?? 'ambient',
+    agent: config.agent,
+    model: config.model,
+    ...(config.modelCredential ? { modelCredential: config.modelCredential } : {}),
+  };
+}
+
 export function effectiveSlackInstructionLayers(
   assignment: Pick<
     ResolvedAssignment,

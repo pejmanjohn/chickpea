@@ -1,9 +1,12 @@
 import type { WebClient } from '@slack/web-api';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
-import { getConfigStore, getMemoryStateStore } from '../config/state-backend.ts';
+import { getConfigStore, getIdentityStore, getMemoryStateStore } from '../config/state-backend.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
+import { currentHumanIdentityDirectory } from '../identity/current-directory.ts';
+import type { ActorExternalIdentityBinding, Membership, MembershipAccessOverlay } from '../identity/types.ts';
 import { resolveSlackCredentials } from '../slack/credentials.ts';
 import { effectiveSlackIdentityId } from '../slack/identity-admission.ts';
 import { escapeSlackControlCharacters } from '../slack/message-format.ts';
@@ -36,6 +39,8 @@ import {
 const MEMORY_CONTEXT_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
 const MEMORY_RETENTION_CLEANUP_INTERVAL_MS = 60 * 60 * 1_000;
 const NODE_RECEIPT_RETRY_DELAYS_MS = [100, 500] as const;
+const DM_OWNER_WRITE_CONFIRMATION_TTL_MS = 5 * 60 * 1_000;
+const SLACK_ACTOR_BINDING_TTL_MS = 15 * 60 * 1_000;
 
 let lastMemoryRetentionCleanupAt = Number.NEGATIVE_INFINITY;
 
@@ -71,6 +76,12 @@ interface OwnerMemoryRuntime {
   platformEnv: PlatformEnv | undefined;
 }
 
+interface DmAuthorizedActor {
+  binding: ActorExternalIdentityBinding;
+  membership: Membership & { role: 'owner' | 'admin' };
+  overlay: MembershipAccessOverlay | undefined;
+}
+
 export async function handleMemoryCommand(input: {
   turn: NormalizedSlackTurn;
   platformEnv: PlatformEnv | undefined;
@@ -92,19 +103,6 @@ export async function handleMemoryCommand(input: {
   if (leadingMention && !resolvedBotUserId) return false;
   const command = parseMemoryCommand(input.turn.text, resolvedBotUserId);
   if (!command || command.kind === 'candidate') return false;
-  if (
-    input.turn.source === 'dm_message' &&
-    command.kind !== 'help' &&
-    command.kind !== 'list' &&
-    command.kind !== 'show' &&
-    command.kind !== 'invalid'
-  ) {
-    await input.presenter.deliverFinal(
-      'You can use this Agent’s memory in DMs, but changing shared Agent memory requires Owner or Admin confirmation.',
-      'plain_text',
-    );
-    return true;
-  }
   let responseText: string;
   let responseFormat: 'markdown' | 'plain_text' = 'markdown';
   let committedReceipt = false;
@@ -680,6 +678,12 @@ async function executeOwnerMemoryCommand(
       '', escapeSlackControlCharacters(entry.description), '', escapeSlackControlCharacters(entry.body),
     ].join('\n');
   }
+  if (runtime.scope.surface === 'dm') {
+    return command.kind === 'owner_write_confirm'
+      ? confirmDmOwnerMemoryWrite(command.token, turn, runtime)
+      : requestDmOwnerMemoryWrite(command, turn, runtime);
+  }
+  if (command.kind === 'owner_write_confirm') return ownerMemoryHelpText(runtime.scope.surface);
   const writeOwner = runtime.scope.writeOwner;
   if (!writeOwner || writeOwner.ownerKind !== 'channel' || writeOwner.ownerId !== turn.channelId) {
     throw new MemoryStateError('memory_owner_invalid', 'Channel memory write ownership is unavailable.');
@@ -749,6 +753,269 @@ async function executeOwnerMemoryCommand(
     return `Reported \`${entry.slug}\` as ${command.reason} for admin review.`;
   }
   return ownerMemoryHelpText(runtime.scope.surface);
+}
+
+async function requestDmOwnerMemoryWrite(
+  command: MemoryCommand,
+  turn: NormalizedSlackTurn,
+  runtime: OwnerMemoryRuntime,
+): Promise<string> {
+  const actor = await resolveDmAuthorizedActor(turn, runtime.platformEnv);
+  if (!actor) return createSlackActorBindingHandoff(turn, runtime);
+  const identityId = effectiveSlackIdentityId(runtime.assignment);
+  const config = getConfigStore(runtime.platformEnv);
+  const slackIdentity = await config.getSlackIdentity(identityId);
+  const agentOwner = runtime.scope.readOwners[0];
+  if (!agentOwner || agentOwner.ownerKind !== 'agent' || agentOwner.ownerId !== runtime.assignment.agentId) {
+    throw new MemoryStateError('memory_owner_invalid', 'DM Agent memory ownership is unavailable.');
+  }
+  const commandJson = canonicalDmMutation(command);
+  const mutationDigest = sha256(commandJson);
+  const token = randomBytes(24).toString('base64url');
+  const now = Date.now();
+  await runtime.state.createOwnerWriteChallenge({
+    challengeId: `owner_write_${randomUUID()}`,
+    tokenHash: sha256(token),
+    workspaceId: turn.workspaceId,
+    slackUserId: turn.userId,
+    slackIdentityId: identityId,
+    slackIdentityRevision: slackIdentity.connectionRevision,
+    actorBindingId: actor.binding.id,
+    actorBindingRevision: actor.binding.revision,
+    userId: actor.binding.userId,
+    organizationId: actor.membership.organizationId,
+    membershipId: actor.membership.id,
+    membershipRole: actor.membership.role,
+    membershipUpdatedAt: actor.membership.updatedAt,
+    membershipAccessVersion: actor.overlay?.membershipVersion ?? 0,
+    agentId: runtime.assignment.agentId,
+    agentName: runtime.assignment.agent.name,
+    storeId: agentOwner.storeId,
+    ownerResetEpoch: agentOwner.resetEpoch,
+    commandJson,
+    mutationDigest,
+    expiresAt: now + DM_OWNER_WRITE_CONFIRMATION_TTL_MS,
+    consumedAt: null,
+  });
+  return [
+    `This will save to Agent ${escapeSlackControlCharacters(runtime.assignment.agent.name)}; every channel where it works may use it.`,
+    `Confirm within five minutes with: \`!memory confirm ${token}\``,
+  ].join('\n');
+}
+
+async function confirmDmOwnerMemoryWrite(
+  token: string,
+  turn: NormalizedSlackTurn,
+  runtime: OwnerMemoryRuntime,
+): Promise<string> {
+  const tokenHash = sha256(token);
+  let challenge = await runtime.state.getOwnerWriteChallenge(tokenHash, turn.userId);
+  if (!challenge || !(await validateDmOwnerWriteChallenge(challenge, turn, runtime))) {
+    throw new MemoryStateError('memory_confirmation_invalid', 'Agent memory confirmation is unavailable or expired.');
+  }
+  challenge = await runtime.state.consumeOwnerWriteChallenge(tokenHash, turn.userId, Date.now());
+  if (!challenge || !(await validateDmOwnerWriteChallenge(challenge, turn, runtime))) {
+    throw new MemoryStateError('memory_confirmation_invalid', 'Agent memory confirmation is unavailable or expired.');
+  }
+  const command = parseCanonicalDmMutation(challenge.commandJson, challenge.mutationDigest);
+  const owner = runtime.scope.readOwners[0]!;
+  const confirmedScope = bindAuthorizedMemoryScope({
+    surface: 'dm', workspaceId: turn.workspaceId, agentOwner: owner, writeOwner: owner,
+  });
+  return executeConfirmedDmOwnerMutation(
+    command,
+    turn,
+    { ...runtime, scope: confirmedScope },
+    `memory:slack-dm-owner:${challenge.challengeId}`,
+  );
+}
+
+async function validateDmOwnerWriteChallenge(
+  challenge: import('./types.ts').OwnerMemoryWriteChallenge,
+  turn: NormalizedSlackTurn,
+  runtime: OwnerMemoryRuntime,
+): Promise<boolean> {
+  if (challenge.workspaceId !== turn.workspaceId || challenge.slackUserId !== turn.userId ||
+      challenge.agentId !== runtime.assignment.agentId || challenge.expiresAt < Date.now()) return false;
+  const owner = runtime.scope.readOwners[0];
+  if (!owner || owner.ownerKind !== 'agent' || owner.ownerId !== challenge.agentId ||
+      owner.storeId !== challenge.storeId || owner.resetEpoch !== challenge.ownerResetEpoch ||
+      owner.lifecycle !== 'active') return false;
+  const config = getConfigStore(runtime.platformEnv);
+  const [agent, slackIdentity] = await Promise.all([
+    config.getAgent(challenge.agentId), config.getSlackIdentity(challenge.slackIdentityId),
+  ]);
+  if (!agent.enabled || effectiveSlackIdentityId(runtime.assignment) !== challenge.slackIdentityId ||
+      slackIdentity.connectionRevision !== challenge.slackIdentityRevision ||
+      slackIdentity.teamId !== turn.workspaceId || slackIdentity.dmState !== 'on' ||
+      slackIdentity.dmAgentId !== challenge.agentId ||
+      (slackIdentity.lifecycle !== 'connected' && slackIdentity.lifecycle !== 'degraded')) return false;
+  const actor = await resolveDmAuthorizedActor(turn, runtime.platformEnv);
+  return !!actor && actor.binding.id === challenge.actorBindingId &&
+    actor.binding.revision === challenge.actorBindingRevision &&
+    actor.binding.userId === challenge.userId && actor.membership.organizationId === challenge.organizationId &&
+    actor.membership.id === challenge.membershipId && actor.membership.role === challenge.membershipRole &&
+    actor.membership.updatedAt === challenge.membershipUpdatedAt &&
+    (actor.overlay?.membershipVersion ?? 0) === challenge.membershipAccessVersion &&
+    sha256(challenge.commandJson) === challenge.mutationDigest;
+}
+
+async function resolveDmAuthorizedActor(
+  turn: NormalizedSlackTurn,
+  platformEnv: PlatformEnv | undefined,
+): Promise<DmAuthorizedActor | undefined> {
+  const identity = getIdentityStore(platformEnv);
+  const binding = await identity.resolveActorExternalIdentity('slack', turn.workspaceId, turn.userId);
+  if (!binding) return undefined;
+  const directory = await currentHumanIdentityDirectory(identity, platformEnv);
+  if (!directory) throw new MemoryStateError('memory_actor_unavailable', 'Admin identity is unavailable.');
+  const [organization, membership] = await Promise.all([
+    directory.getOrganization(), directory.getMembership(binding.membershipId),
+  ]);
+  const overlay = await identity.getMembershipAccessOverlay(binding.membershipId);
+  if (!organization || organization.id !== binding.organizationId || !membership || membership.userId !== binding.userId ||
+      membership.organizationId !== binding.organizationId || membership.status !== 'active' ||
+      (membership.role !== 'owner' && membership.role !== 'admin') ||
+      (overlay && (overlay.organizationId !== membership.organizationId || overlay.accessStatus !== 'active'))) {
+    throw new MemoryStateError('memory_actor_forbidden', 'Only an active Owner or Admin can change Agent memory from Slack.');
+  }
+  return { binding, membership: membership as Membership & { role: 'owner' | 'admin' }, overlay };
+}
+
+async function createSlackActorBindingHandoff(
+  turn: NormalizedSlackTurn,
+  runtime: OwnerMemoryRuntime,
+): Promise<string> {
+  const identity = getIdentityStore(runtime.platformEnv);
+  const config = getConfigStore(runtime.platformEnv);
+  const slackIdentityId = effectiveSlackIdentityId(runtime.assignment);
+  const [control, organization, slackIdentity] = await Promise.all([
+    identity.getAuthControl(), identity.getOrganization(), config.getSlackIdentity(slackIdentityId),
+  ]);
+  const origin = control?.canonicalAdminOrigin ?? organization?.canonicalAdminOrigin;
+  if (!origin) return 'Connect your Slack account from authenticated Chickpea Admin, then send this request again.';
+  const token = randomBytes(24).toString('base64url');
+  const now = Date.now();
+  await identity.createActorIdentityBindingHandoff({
+    handoffId: `actor_handoff_${randomUUID()}`, tokenHash: sha256(token),
+    issuer: turn.workspaceId, subject: turn.userId, slackIdentityId,
+    slackIdentityRevision: slackIdentity.connectionRevision,
+    expiresAt: now + SLACK_ACTOR_BINDING_TTL_MS, consumedAt: null,
+  });
+  return `Before changing shared Agent memory, connect this Slack account as an Owner or Admin: <${origin.replace(/\/$/, '')}/admin/slack-actor#bind=${encodeURIComponent(token)}|Connect in Chickpea Admin>. Then send the request again.`;
+}
+
+async function executeConfirmedDmOwnerMutation(
+  command: MemoryCommand,
+  turn: NormalizedSlackTurn,
+  runtime: OwnerMemoryRuntime,
+  idempotencyKey: string,
+): Promise<string> {
+  const writeOwner = runtime.scope.writeOwner!;
+  const entries = (await runtime.service.list({ scope: runtime.scope })).filter((entry) => entry.storeId === writeOwner.storeId);
+  if (command.kind === 'remember') {
+    const created = await runtime.service.remember({
+      scope: runtime.scope, workspaceId: turn.workspaceId, actorId: turn.userId,
+      eventId: turn.eventId, threadTs: turn.threadTs, messageTs: turn.messageTs,
+      name: command.name, description: command.description, type: 'fact', body: command.body,
+      idempotencyKey,
+    });
+    return `Saved Agent memory \`${created.entry.slug}\` (v${created.entry.version}).`;
+  }
+  if (command.kind === 'update') {
+    const current = resolveOwnerCommandEntry(entries, command.target);
+    const updated = await runtime.service.update({
+      scope: runtime.scope, actorId: turn.userId, eventId: turn.eventId,
+      threadTs: turn.threadTs, messageTs: turn.messageTs, target: current.entryId,
+      expectedVersion: current.version, description: command.description, type: current.type,
+      body: command.body, idempotencyKey,
+    });
+    return `Updated Agent memory \`${updated.entry.slug}\` to v${updated.entry.version}.`;
+  }
+  if (command.kind === 'merge') {
+    const merged = await runtime.service.merge({
+      scope: runtime.scope, workspaceId: turn.workspaceId, actorId: turn.userId,
+      eventId: turn.eventId, threadTs: turn.threadTs, messageTs: turn.messageTs,
+      targets: command.targets.map((target) => ({ target })), name: command.name,
+      description: command.description, type: 'fact', body: command.body, idempotencyKey,
+    });
+    return `Merged ${command.targets.length} Agent memory files into \`${merged.entry.slug}\` (v1).`;
+  }
+  if (command.kind === 'forget_request') {
+    const current = resolveOwnerCommandEntry(entries, command.target);
+    const challenge = await runtime.service.requestForget({ scope: runtime.scope, actorId: turn.userId, target: current.entryId, expectedVersion: current.version });
+    return [`This permanently removes Agent memory \`${challenge.entry.slug}\` and its recoverable revision content.`, `Confirm within five minutes with: \`!forget confirm ${challenge.token}\``].join('\n');
+  }
+  if (command.kind === 'forget_confirm') {
+    const forgotten = await runtime.service.confirmForget({ scope: runtime.scope, actorId: turn.userId, eventId: turn.eventId, confirmationToken: command.token, idempotencyKey });
+    return `Forgot Agent memory \`${forgotten.entry.slug}\`.`;
+  }
+  if (command.kind === 'report') {
+    const current = resolveOwnerCommandEntry(entries, command.target);
+    await runtime.service.reportReview({ scope: runtime.scope, qualifiedTarget: `${writeOwner.ownerId}/${current.slug}`, expectedVersion: current.version, reason: command.reason, actorId: turn.userId, idempotencyKey });
+    return `Reported Agent memory \`${current.slug}\` as ${command.reason} for admin review.`;
+  }
+  throw new MemoryStateError('memory_confirmation_invalid', 'Agent memory confirmation is invalid.');
+}
+
+function canonicalDmMutation(command: MemoryCommand): string {
+  if (command.kind === 'remember' && allStrings(command.name, command.description, command.body)) {
+    return JSON.stringify({
+      kind: command.kind,
+      name: command.name,
+      description: command.description,
+      body: command.body,
+    });
+  }
+  if (command.kind === 'update' && allStrings(command.target, command.description, command.body)) {
+    return JSON.stringify({
+      kind: command.kind,
+      target: command.target,
+      description: command.description,
+      body: command.body,
+    });
+  }
+  if (command.kind === 'merge' && Array.isArray(command.targets) && command.targets.length >= 2 &&
+      command.targets.every((target) => typeof target === 'string') &&
+      allStrings(command.name, command.description, command.body)) {
+    return JSON.stringify({
+      kind: command.kind,
+      targets: [...command.targets],
+      name: command.name,
+      description: command.description,
+      body: command.body,
+    });
+  }
+  if (command.kind === 'forget_request' && allStrings(command.target)) {
+    return JSON.stringify({ kind: command.kind, target: command.target });
+  }
+  if (command.kind === 'forget_confirm' && allStrings(command.token)) {
+    return JSON.stringify({ kind: command.kind, token: command.token });
+  }
+  if (command.kind === 'report' && allStrings(command.target) &&
+      ['stale', 'incorrect', 'unsafe', 'unclear'].includes(command.reason)) {
+    return JSON.stringify({ kind: command.kind, target: command.target, reason: command.reason });
+  }
+  throw new MemoryStateError('memory_confirmation_invalid', 'Agent memory confirmation is invalid.');
+}
+
+function parseCanonicalDmMutation(commandJson: string, expectedDigest: string): MemoryCommand {
+  if (sha256(commandJson) !== expectedDigest) throw new MemoryStateError('memory_confirmation_invalid', 'Agent memory confirmation is invalid.');
+  try {
+    const command = JSON.parse(commandJson) as MemoryCommand;
+    if (canonicalDmMutation(command) !== commandJson) throw new Error('not canonical');
+    return command;
+  } catch {
+    throw new MemoryStateError('memory_confirmation_invalid', 'Agent memory confirmation is invalid.');
+  }
+}
+
+function allStrings(...values: unknown[]): boolean {
+  return values.every((value) => typeof value === 'string');
+}
+
+function sha256(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
 }
 
 function resolveOwnerCommandEntry(entries: readonly OwnerMemoryEntry[], target: string): OwnerMemoryEntry {
@@ -971,7 +1238,11 @@ function memoryErrorText(error: unknown): string {
     case 'memory_confirmation_expired':
       return 'That forget confirmation expired. Start the forget action again.';
     case 'memory_confirmation_invalid':
-      return 'That forget confirmation is invalid or was already used.';
+      return 'That confirmation is unavailable, expired, or was already used. No memory change was made.';
+    case 'memory_actor_forbidden':
+      return 'Only an active Chickpea Owner or Admin can change shared Agent memory from Slack. No memory change was made.';
+    case 'memory_actor_unavailable':
+      return 'Chickpea could not verify an active Owner or Admin, so no Agent memory change was made.';
     case 'memory_membership_unknown':
       return 'Slack membership could not be verified, so no memory change was made.';
     default:
@@ -1065,6 +1336,7 @@ function isReceiptBearingCommand(command: MemoryCommand): boolean {
     command.kind === 'merge' ||
     command.kind === 'forget_request' ||
     command.kind === 'forget_confirm' ||
+    command.kind === 'owner_write_confirm' ||
     command.kind === 'report';
 }
 

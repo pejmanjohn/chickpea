@@ -31,6 +31,48 @@ test('identity initialization is explicit and idempotent without creating an own
   store.close();
 });
 
+test('Slack actor bindings are explicit opaque triples and revisions invalidate rebinds', async () => {
+  const store = new SqliteIdentityStore(':memory:', { now: () => NOW });
+  const first = await store.bindActorExternalIdentity({
+    provider: 'slack', issuer: 'T_ACME', subject: 'U_OWNER',
+    userId: 'better_auth_user_1', organizationId: 'better_auth_org_1',
+    membershipId: 'better_auth_membership_1',
+  });
+  assert.equal(first.revision, 1);
+  assert.equal((await store.resolveActorExternalIdentity('slack', 'T_ACME', 'U_OWNER'))?.userId, 'better_auth_user_1');
+  assert.equal(await store.resolveActorExternalIdentity('slack', 'T_OTHER', 'U_OWNER'), undefined);
+  const replay = await store.bindActorExternalIdentity({
+    provider: 'slack', issuer: 'T_ACME', subject: 'U_OWNER',
+    userId: 'better_auth_user_1', organizationId: 'better_auth_org_1',
+    membershipId: 'better_auth_membership_1',
+  });
+  assert.equal(replay.revision, 1);
+  const rebound = await store.bindActorExternalIdentity({
+    provider: 'slack', issuer: 'T_ACME', subject: 'U_OWNER',
+    userId: 'better_auth_user_2', organizationId: 'better_auth_org_1',
+    membershipId: 'better_auth_membership_2',
+  });
+  assert.equal(rebound.revision, 2);
+  assert.equal(rebound.userId, 'better_auth_user_2');
+  store.close();
+});
+
+test('Slack actor binding handoffs are one-shot and expire', async () => {
+  let now = NOW;
+  const store = new SqliteIdentityStore(':memory:', { now: () => now });
+  await store.createActorIdentityBindingHandoff({
+    handoffId: 'handoff_1', tokenHash: 'handoff_hash', issuer: 'T_ACME', subject: 'U_OWNER',
+    slackIdentityId: 'slack_identity_default', slackIdentityRevision: 4,
+    expiresAt: NOW + 1_000, consumedAt: null,
+  });
+  assert.equal((await store.getActorIdentityBindingHandoff('handoff_hash'))?.subject, 'U_OWNER');
+  assert.equal((await store.consumeActorIdentityBindingHandoff('handoff_hash', now))?.consumedAt, now);
+  assert.equal(await store.consumeActorIdentityBindingHandoff('handoff_hash', now), undefined);
+  now += 2_000;
+  assert.equal(await store.getActorIdentityBindingHandoff('handoff_hash'), undefined);
+  store.close();
+});
+
 test('matching owner claim creates one immutable binding and owner membership', async () => {
   const store = new SqliteIdentityStore(':memory:', { now: () => NOW });
   const organization = await store.ensureOrganization({ displayName: 'Chickpea' });

@@ -1096,7 +1096,7 @@ export const scenarios: Scenario[] = [
       const streamedStop = instance.backend.callsOfMethod('chat.stopStream').at(-1);
       assert.ok(streamedStop);
       assertFooterBlock(streamedStop.body.blocks, {
-        profileName: 'Default',
+        agentName: 'Default',
         modelLabel: 'local-stub/parity-stub-1',
         configureUrl: 'https://demo.example/admin?agent=agent_default',
       });
@@ -1116,7 +1116,7 @@ export const scenarios: Scenario[] = [
       const fallbackPost = instance.backend.callsOfMethod('chat.postMessage').at(-1);
       assert.ok(fallbackPost);
       assertFooterBlock(fallbackPost.body.blocks, {
-        profileName: 'Default',
+        agentName: 'Default',
         modelLabel: 'local-stub/parity-stub-1',
         configureUrl: 'https://demo.example/admin?agent=agent_default',
       });
@@ -1140,7 +1140,7 @@ export const scenarios: Scenario[] = [
       const failureStop = instance.backend.callsOfMethod('chat.stopStream').at(-1);
       assert.ok(failureStop);
       assertFooterBlock(failureStop.body.blocks, {
-        profileName: 'Default',
+        agentName: 'Default',
         modelLabel: 'local-stub/parity-stub-1',
         configureUrl: 'https://demo.example/admin?agent=agent_default',
       });
@@ -1834,7 +1834,7 @@ async function waitForWireCondition(
 
 function assertFooterBlock(
   blocks: unknown,
-  expected: { profileName: string; modelLabel: string; configureUrl: string },
+  expected: { agentName: string; modelLabel: string; configureUrl: string },
 ): void {
   assert.ok(Array.isArray(blocks), 'expected Slack blocks on the final delivery');
   const footerText = blocks
@@ -1848,7 +1848,7 @@ function assertFooterBlock(
     )
     .join('\n');
 
-  assert.match(footerText, new RegExp(escapeRegExp(expected.profileName)));
+  assert.match(footerText, new RegExp(escapeRegExp(expected.agentName)));
   assert.match(footerText, new RegExp(escapeRegExp(expected.modelLabel)));
   assert.match(footerText, new RegExp(`<${escapeRegExp(expected.configureUrl)}\\|Configure>`));
 }

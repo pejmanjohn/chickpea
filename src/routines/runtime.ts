@@ -94,7 +94,7 @@ export async function resolveRoutineRuntimeAccess(
     if (error instanceof NoAssignmentError) {
       throw new RoutineRuntimeError(
         'assignment_missing',
-        'This channel no longer has an active Chickpea profile.',
+        'This Channel no longer has an active Chickpea Agent.',
       );
     }
     throw new RoutineRuntimeError('access_denied', 'Current channel access could not be resolved.');

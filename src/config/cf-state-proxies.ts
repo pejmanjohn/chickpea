@@ -38,6 +38,8 @@ import type {
   ActivateAccessOwnerInput,
   AdvanceAuthOperationInput,
   AuthOperationKind,
+  ActorIdentityBindingHandoff,
+  BindActorExternalIdentityInput,
   BootstrapTokenOwnerInput,
   ClaimOwnerInput,
   ConsumeAuthOperationInput,
@@ -113,6 +115,7 @@ import {
   type CreateForgetChallengeInput,
   type ConfirmMemoryConversationContextInput,
   type CreateOwnerMemoryEntryInput,
+  type CreateOwnerMemoryWriteChallengeInput,
   type ForgetMemoryEntryInput,
   type ForgetOwnerMemoryEntryInput,
   type MemoryConversationContext,
@@ -132,6 +135,7 @@ import {
   type MemoryOwnerDescriptor,
   type MemoryOwnerRef,
   type OwnerMemoryEntry,
+  type OwnerMemoryWriteChallenge,
   type OwnerMemoryLifecycleInput,
   type ObserveMemoryChannelScopeInput,
   type RecordMemoryReviewInput,
@@ -459,6 +463,30 @@ export class CfIdentityStore implements IdentityStore {
     const response = await this.execute({ kind: 'list_external_identities' });
     if (response.kind !== 'external_identities') throw unexpectedIdentityResponse();
     return response.externalIdentities;
+  }
+  async resolveActorExternalIdentity(provider: 'slack', issuer: string, subject: string) {
+    const response = await this.execute({ kind: 'resolve_actor_external_identity', provider, issuer, subject });
+    if (response.kind !== 'actor_external_identity') throw unexpectedIdentityResponse();
+    return orUndefined(response.binding);
+  }
+  async bindActorExternalIdentity(input: BindActorExternalIdentityInput) {
+    const response = await this.execute({ kind: 'bind_actor_external_identity', input });
+    if (response.kind !== 'actor_external_identity' || !response.binding) throw unexpectedIdentityResponse();
+    return response.binding;
+  }
+  async createActorIdentityBindingHandoff(input: ActorIdentityBindingHandoff) {
+    const response = await this.execute({ kind: 'create_actor_identity_binding_handoff', input });
+    if (response.kind !== 'ok') throw unexpectedIdentityResponse();
+  }
+  async getActorIdentityBindingHandoff(tokenHash: string) {
+    const response = await this.execute({ kind: 'get_actor_identity_binding_handoff', tokenHash });
+    if (response.kind !== 'actor_identity_binding_handoff') throw unexpectedIdentityResponse();
+    return orUndefined(response.handoff);
+  }
+  async consumeActorIdentityBindingHandoff(tokenHash: string, consumedAt: number) {
+    const response = await this.execute({ kind: 'consume_actor_identity_binding_handoff', tokenHash, consumedAt });
+    if (response.kind !== 'actor_identity_binding_handoff') throw unexpectedIdentityResponse();
+    return orUndefined(response.handoff);
   }
   async listMemberships() {
     const response = await this.execute({ kind: 'list_memberships' });
@@ -1105,6 +1133,23 @@ export class CfMemoryStateStore implements MemoryStateStore {
   async createOwnerForgetChallenge(input: CreateForgetChallengeInput): Promise<void> {
     const response = await this.execute({ kind: 'create_owner_forget_challenge', input });
     if (response.kind !== 'ok') throw unexpectedMemoryResponse();
+  }
+
+  async createOwnerWriteChallenge(input: CreateOwnerMemoryWriteChallengeInput): Promise<void> {
+    const response = await this.execute({ kind: 'create_owner_write_challenge', input });
+    if (response.kind !== 'ok') throw unexpectedMemoryResponse();
+  }
+
+  async getOwnerWriteChallenge(tokenHash: string, slackUserId: string): Promise<OwnerMemoryWriteChallenge | undefined> {
+    const response = await this.execute({ kind: 'get_owner_write_challenge', tokenHash, slackUserId });
+    if (response.kind !== 'owner_write_challenge') throw unexpectedMemoryResponse();
+    return orUndefined(response.challenge);
+  }
+
+  async consumeOwnerWriteChallenge(tokenHash: string, slackUserId: string, consumedAt: number): Promise<OwnerMemoryWriteChallenge | undefined> {
+    const response = await this.execute({ kind: 'consume_owner_write_challenge', tokenHash, slackUserId, consumedAt });
+    if (response.kind !== 'owner_write_challenge') throw unexpectedMemoryResponse();
+    return orUndefined(response.challenge);
   }
 
   async replayOwnerImport(input: ReplayOwnerMemoryImportInput): Promise<OwnerMemoryEntry[] | undefined> {

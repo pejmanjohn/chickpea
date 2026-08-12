@@ -1,6 +1,6 @@
 import type { StateDb } from '../state/state-db.ts';
 
-export const IDENTITY_SCHEMA_VERSION = 3;
+export const IDENTITY_SCHEMA_VERSION = 4;
 
 interface IdentityMigration {
   version: number;
@@ -183,6 +183,34 @@ const MIGRATIONS: readonly IdentityMigration[] = [
       db.exec('DROP TABLE IF EXISTS identity_password_reset_capabilities');
       db.exec('DROP TABLE IF EXISTS identity_password_credentials');
     },
+  },
+  {
+    version: 4,
+    apply: (db) => runStatements(db, [
+      `CREATE TABLE IF NOT EXISTS identity_actor_external_bindings (
+        binding_id TEXT PRIMARY KEY,
+        provider TEXT NOT NULL CHECK (provider = 'slack'),
+        issuer TEXT NOT NULL,
+        subject TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        organization_id TEXT NOT NULL,
+        membership_id TEXT NOT NULL,
+        revision INTEGER NOT NULL CHECK (revision > 0),
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        UNIQUE (provider, issuer, subject)
+      )`,
+      `CREATE TABLE IF NOT EXISTS identity_actor_binding_handoffs (
+        handoff_id TEXT PRIMARY KEY,
+        token_hash TEXT NOT NULL UNIQUE,
+        issuer TEXT NOT NULL,
+        subject TEXT NOT NULL,
+        slack_identity_id TEXT NOT NULL,
+        slack_identity_revision INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        consumed_at INTEGER
+      )`,
+    ]),
   },
 ];
 

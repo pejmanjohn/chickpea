@@ -96,7 +96,7 @@ test('runtime access resolves current channel membership and hashes only non-sec
   assert.notEqual(changed.accessHash, access.accessHash);
 });
 
-test('runtime access resolves the live Profile identity and includes it in the access hash', async () => {
+test('runtime access resolves the live Agent identity and includes it in the access hash', async () => {
   const identityIds: string[] = [];
   const dedicatedConfig = {
     ...config,

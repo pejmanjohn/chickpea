@@ -1653,9 +1653,10 @@ export class RoutineStoreLogic {
         throw routineError('routine_run_transition_invalid', 'Routine occurrence transition is invalid.');
       }
       const publicError = validatePublicRoutineError(input.publicError);
+      const skipReason = validateRoutineSkipReason(input.skipReason);
       const finishedAt = TERMINAL_RUN_STATUSES.has(input.to) ? input.at : null;
       this.db.run(
-        `UPDATE routine_runs SET status = ?, failure_class = ?, public_error = ?,
+        `UPDATE routine_runs SET status = ?, failure_class = ?, public_error = ?, skip_reason = COALESCE(?, skip_reason),
            finished_at = COALESCE(?, finished_at), admission_owner = NULL,
            admission_lease_until = NULL, model = COALESCE(?, model),
            input_tokens = COALESCE(?, input_tokens), output_tokens = COALESCE(?, output_tokens),
@@ -1672,6 +1673,7 @@ export class RoutineStoreLogic {
         input.to,
         input.failureClass ?? null,
         publicError,
+        skipReason,
         finishedAt,
         input.model ?? null,
         input.inputTokens ?? null,
@@ -3408,7 +3410,7 @@ function targetState(action: ControlRoutineInput['action']): RoutineDefinition['
 function validTransition(from: RoutineRunStatus, to: RoutineRunStatus): boolean {
   const allowed: Record<RoutineRunStatus, readonly RoutineRunStatus[]> = {
     queued: ['admitting', 'skipped', 'cancelled'],
-    admitting: ['running', 'failed', 'superseded', 'cancelled'],
+    admitting: ['running', 'failed', 'skipped', 'superseded', 'cancelled'],
     running: ['succeeded', 'no_op', 'failed'],
     succeeded: [],
     no_op: [],
@@ -3418,6 +3420,14 @@ function validTransition(from: RoutineRunStatus, to: RoutineRunStatus): boolean 
     superseded: [],
   };
   return allowed[from].includes(to);
+}
+
+function validateRoutineSkipReason(value: string | null | undefined): string | null {
+  if (value === undefined || value === null) return null;
+  if (!/^[a-z0-9_]{1,80}$/.test(value)) {
+    throw routineError('routine_run_transition_invalid', 'Routine skip reason is invalid.');
+  }
+  return value;
 }
 
 function confirmationError(): RoutineStateError {

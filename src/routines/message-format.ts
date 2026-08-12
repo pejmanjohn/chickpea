@@ -49,7 +49,7 @@ export function renderRoutineDetail(
     provenance?.requestText
       ? `**Source request:** ${escapeSlackControlCharacters(provenance.requestText)}`
       : '**Source request:** Not retained for this legacy revision.',
-    '**Authority:** Current channel access, connections, profile, repositories, and credentials are resolved again for every run.',
+    '**Authority:** Current Channel access, connections, Agent, repositories, and credentials are resolved again for every run.',
     '',
     recent.length > 0 ? '**Recent occurrences**' : '**Recent occurrences:** None',
     ...recent.map((run) =>
@@ -108,7 +108,7 @@ export function renderRoutineHelp(): string {
     'Recurring schedules must be at least five minutes apart.',
     '',
     '**How routines run**',
-    'The saved task can request the same actions as a live tag in its channel. Current membership, profile, connections, repositories, credentials, policy, and resource limits are rechecked for each run.',
+    'The saved task can request the same actions as a live tag in its Channel. Current membership, Agent, connections, repositories, credentials, policy, and resource limits are rechecked for each run.',
     'Manage by an exact name: “Pause the routine “Support digest”.” If names collide, use the ID command.',
   ].join('\n');
 }

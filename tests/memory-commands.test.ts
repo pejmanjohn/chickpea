@@ -31,6 +31,9 @@ test('canonical memory commands parse after a Slack mention', () => {
   assert.deepEqual(parseMemoryCommand('!forget confirm token-123'), {
     kind: 'forget_confirm', token: 'token-123',
   });
+  assert.deepEqual(parseMemoryCommand('!memory confirm write-token_123'), {
+    kind: 'owner_write_confirm', token: 'write-token_123',
+  });
   assert.deepEqual(parseMemoryCommand('!memory report C123/release-checklist unsafe'), {
     kind: 'report', target: 'c123/release-checklist', reason: 'unsafe',
   });

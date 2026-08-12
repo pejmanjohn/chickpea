@@ -248,6 +248,33 @@ export interface MemoryForgetChallenge {
   expiresAt: number;
 }
 
+export interface OwnerMemoryWriteChallenge {
+  challengeId: string;
+  tokenHash: string;
+  workspaceId: string;
+  slackUserId: string;
+  slackIdentityId: string;
+  slackIdentityRevision: number;
+  actorBindingId: string;
+  actorBindingRevision: number;
+  userId: string;
+  organizationId: string;
+  membershipId: string;
+  membershipRole: 'owner' | 'admin';
+  membershipUpdatedAt: number;
+  membershipAccessVersion: number;
+  agentId: string;
+  agentName: string;
+  storeId: string;
+  ownerResetEpoch: number;
+  commandJson: string;
+  mutationDigest: string;
+  expiresAt: number;
+  consumedAt: number | null;
+}
+
+export type CreateOwnerMemoryWriteChallengeInput = OwnerMemoryWriteChallenge;
+
 export interface TransitionMemoryEntryInput {
   entryId: string;
   expectedVersion: number;
@@ -444,6 +471,9 @@ export type MemoryRpcRequest =
   | { kind: 'merge_owner_entries'; input: MergeOwnerMemoryEntriesInput }
   | { kind: 'record_owner_review'; input: RecordOwnerMemoryReviewInput }
   | { kind: 'create_owner_forget_challenge'; input: CreateForgetChallengeInput }
+  | { kind: 'create_owner_write_challenge'; input: CreateOwnerMemoryWriteChallengeInput }
+  | { kind: 'get_owner_write_challenge'; tokenHash: string; slackUserId: string }
+  | { kind: 'consume_owner_write_challenge'; tokenHash: string; slackUserId: string; consumedAt: number }
   | { kind: 'replay_owner_import'; input: ReplayOwnerMemoryImportInput }
   | { kind: 'apply_owner_import'; input: ApplyOwnerMemoryImportInput }
   | { kind: 'list_owner_entries'; owner: MemoryOwnerRef }
@@ -501,6 +531,7 @@ export type MemoryRpcResponse =
   | { kind: 'conversation_context_confirmed'; confirmed: boolean }
   | { kind: 'channel_scope'; state: MemoryChannelScopeState | null }
   | { kind: 'forget_challenge'; challenge: MemoryForgetChallenge | null }
+  | { kind: 'owner_write_challenge'; challenge: OwnerMemoryWriteChallenge | null }
   | {
       kind: 'cleanup';
       actorIdsCleared: number;
@@ -521,6 +552,9 @@ export interface MemoryStateStore {
   mergeOwnerEntries(input: MergeOwnerMemoryEntriesInput): Promise<OwnerMemoryEntry>;
   recordOwnerReview(input: RecordOwnerMemoryReviewInput): Promise<void>;
   createOwnerForgetChallenge(input: CreateForgetChallengeInput): Promise<void>;
+  createOwnerWriteChallenge(input: CreateOwnerMemoryWriteChallengeInput): Promise<void>;
+  getOwnerWriteChallenge(tokenHash: string, slackUserId: string): Promise<OwnerMemoryWriteChallenge | undefined>;
+  consumeOwnerWriteChallenge(tokenHash: string, slackUserId: string, consumedAt: number): Promise<OwnerMemoryWriteChallenge | undefined>;
   replayOwnerImport(input: ReplayOwnerMemoryImportInput): Promise<OwnerMemoryEntry[] | undefined>;
   applyOwnerImport(input: ApplyOwnerMemoryImportInput): Promise<OwnerMemoryEntry[]>;
   listOwnerEntries(owner: MemoryOwnerRef): Promise<OwnerMemoryEntry[]>;

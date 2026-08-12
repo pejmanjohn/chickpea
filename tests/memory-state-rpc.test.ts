@@ -59,6 +59,32 @@ test('Cloudflare memory proxy forwards owner-native lifecycle calls', async () =
   } }]);
 });
 
+test('Cloudflare memory proxy forwards exact one-shot owner write challenges', async () => {
+  const calls: MemoryRpcRequest[] = [];
+  const challenge = {
+    challengeId: 'challenge_1', tokenHash: 'token_hash', workspaceId: 'T_TEST',
+    slackUserId: 'U_OWNER', slackIdentityId: 'slack_identity_default', slackIdentityRevision: 2,
+    actorBindingId: 'actor_binding_1', actorBindingRevision: 3,
+    userId: 'better-user', organizationId: 'better-org', membershipId: 'better-membership',
+    membershipRole: 'admin' as const, membershipUpdatedAt: 20, membershipAccessVersion: 4,
+    agentId: 'agent_ops', agentName: 'Operations', storeId: 'memory_owner_agent_T_TEST_agent_ops',
+    ownerResetEpoch: 1, commandJson: '{"kind":"remember"}', mutationDigest: 'a'.repeat(64),
+    expiresAt: 100, consumedAt: null,
+  };
+  const stub = {
+    async memoryExecute(request: MemoryRpcRequest): Promise<StateRpcResult<MemoryRpcResponse>> {
+      calls.push(request);
+      return { ok: true, value: { kind: 'owner_write_challenge', challenge } };
+    },
+  } as unknown as TagStateRpc;
+  const store = new CfMemoryStateStore(stub);
+
+  assert.deepEqual(await store.consumeOwnerWriteChallenge('token_hash', 'U_OWNER', 50), challenge);
+  assert.deepEqual(calls, [{
+    kind: 'consume_owner_write_challenge', tokenHash: 'token_hash', slackUserId: 'U_OWNER', consumedAt: 50,
+  }]);
+});
+
 test('Cloudflare memory proxy preserves typed rate-limit retry timestamps', async () => {
   const stub = {
     async memoryExecute(): Promise<StateRpcResult<MemoryRpcResponse>> {

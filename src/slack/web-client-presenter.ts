@@ -26,7 +26,7 @@ export const PROVIDER_FAILURE_TEXT =
   'I reached the Slack thread, but the model provider call failed before completion. I did not expose provider error details in Slack.';
 
 export const OPENAI_SUBSCRIPTION_RECONNECT_TEXT =
-  'The ChatGPT subscription connection needs attention in Settings before this profile can answer. I did not use OpenAI API-key billing as fallback.';
+  'The ChatGPT subscription connection needs attention in Settings before this Agent can answer. I did not use OpenAI API-key billing as fallback.';
 
 export const OPENAI_SUBSCRIPTION_QUOTA_TEXT =
   'The ChatGPT subscription quota could not serve this request. I did not switch to OpenAI API-key billing.';
@@ -536,7 +536,7 @@ export class WebClientPresenter {
 
   private replyFooter(): SlackReplyFooter {
     return {
-      profileName: this.target.agentName,
+      agentName: this.target.agentName,
       modelLabel: this.target.modelLabel,
       agentId: this.target.agentId,
       publicUrl: this.target.publicUrl,
@@ -546,7 +546,7 @@ export class WebClientPresenter {
 }
 
 /** Replay a previously persisted adapter render without invoking the agent or
- * re-rendering from mutable profile/config state. */
+ * re-rendering from mutable Agent/config state. */
 export interface PersistedSlackDeliveryReceipt {
   method: string;
   deliveryRef: string;

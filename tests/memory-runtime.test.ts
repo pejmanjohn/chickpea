@@ -6,7 +6,7 @@ import { test } from 'node:test';
 
 import type { WebClient } from '@slack/web-api';
 
-import { getConfigStore, getMemoryStateStore } from '../src/config/state-backend.ts';
+import { getConfigStore, getIdentityStore, getMemoryStateStore } from '../src/config/state-backend.ts';
 import type { ResolvedAssignment } from '../src/config/types.ts';
 import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from '../src/config/types.ts';
 import { bindAuthorizedMemoryScope } from '../src/memory/scope.ts';
@@ -149,7 +149,7 @@ test('owner-native runtime reads frozen Agent memory plus exact Channel memory o
   }
 });
 
-test('DM runtime reads only its live Agent owner and keeps shared writes unavailable', async () => {
+test('DM runtime keeps reads available and requires authenticated Admin handoff for writes', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'chickpea-owner-dm-runtime-'));
   const previous = snapshotEnvironment();
   try {
@@ -218,11 +218,99 @@ test('DM runtime reads only its live Agent owner and keeps shared writes unavail
       client: {} as WebClient,
       presenter: { async deliverFinal(text: string) { delivered.push(text); } } as unknown as WebClientPresenter,
     }), true);
-    assert.match(delivered.at(-1) ?? '', /requires Owner or Admin confirmation/);
+    assert.match(delivered.at(-1) ?? '', /Connect your Slack account from authenticated Chickpea Admin/);
     assert.equal((await state.listOwnerEntries(agentOwner)).length, 1);
   } finally {
     process.env.SLACK_STATE_DB_PATH = ':memory:';
     getMemoryStateStore();
+    restoreEnvironment(previous);
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('DM Agent-memory writes bind exact mutation and execute once for an active mapped Admin', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-owner-dm-write-'));
+  const previous = snapshotEnvironment();
+  try {
+    process.env.SLACK_STATE_DB_PATH = join(directory, 'state.db');
+    const config = getConfigStore();
+    await config.createAgent(runtimeAssignment.agent);
+    const slackIdentity = await config.getSlackIdentity(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
+    await config.updateSlackIdentity(slackIdentity.id, slackIdentity.connectionRevision, {
+      lifecycle: 'connected', teamId: 'T_RUNTIME', appId: 'A_RUNTIME', botUserId: 'U_BOT',
+      dmState: 'on', dmAgentId: 'agent_runtime', credentialProvenance: 'stored', health: 'healthy',
+    });
+    const identity = getIdentityStore();
+    const organization = await identity.ensureOrganization({ displayName: 'Chickpea' });
+    await identity.createOwnerClaim({ organizationId: organization.id, email: 'owner@example.com' });
+    const owner = await identity.claimOwner({
+      organizationId: organization.id, provider: 'test', issuer: 'test', subject: 'owner',
+      verifiedEmail: 'owner@example.com', at: Date.now(),
+    });
+    await identity.bindActorExternalIdentity({
+      provider: 'slack', issuer: 'T_RUNTIME', subject: 'U_MEMBER', userId: owner.user.id,
+      organizationId: organization.id, membershipId: owner.membership.id,
+    });
+    const state = getMemoryStateStore();
+    const dmTurn: NormalizedSlackTurn = {
+      ...baseTurn, channelId: 'D_RUNTIME', source: 'dm_message', channelType: 'im',
+      contextMode: 'dm_history', eventId: 'E_DM_WRITE_REQUEST', text: '!remember launch-owner — Launch owner is Alice',
+    };
+    const dmAssignment = { ...runtimeAssignment, channelId: 'D_RUNTIME' };
+    const delivered: string[] = [];
+    const presenter = { async deliverFinal(text: string) { delivered.push(text); } } as unknown as WebClientPresenter;
+    assert.equal(await handleMemoryCommand({ turn: dmTurn, assignment: dmAssignment, platformEnv: undefined, client: {} as WebClient, presenter }), true);
+    assert.match(delivered.at(-1) ?? '', /save to Agent Runtime Agent; every channel where it works may use it/i);
+    const token = delivered.at(-1)?.match(/!memory confirm ([A-Za-z0-9._-]+)/)?.[1];
+    assert.ok(token);
+    const ownerRef = { workspaceId: 'T_RUNTIME', ownerKind: 'agent' as const, ownerId: 'agent_runtime' };
+    assert.equal((await state.listOwnerEntries(ownerRef)).length, 0);
+    assert.equal(await handleMemoryCommand({
+      turn: { ...dmTurn, eventId: 'E_DM_WRITE_CONFIRM', text: `!memory confirm ${token}` },
+      assignment: dmAssignment, platformEnv: undefined, client: {} as WebClient, presenter,
+    }), true);
+    assert.match(delivered.at(-1) ?? '', /Saved Agent memory/);
+    assert.equal((await state.listOwnerEntries(ownerRef)).length, 1);
+    assert.equal(await handleMemoryCommand({
+      turn: { ...dmTurn, eventId: 'E_DM_WRITE_REPLAY', text: `!memory confirm ${token}` },
+      assignment: dmAssignment, platformEnv: undefined, client: {} as WebClient, presenter,
+    }), true);
+    assert.match(delivered.at(-1) ?? '', /unavailable.*expired/i);
+    assert.equal((await state.listOwnerEntries(ownerRef)).length, 1);
+
+    assert.equal(await handleMemoryCommand({
+      turn: { ...dmTurn, eventId: 'E_DM_STALE_REQUEST', text: '!remember stale-owner — must not land' },
+      assignment: dmAssignment, platformEnv: undefined, client: {} as WebClient, presenter,
+    }), true);
+    const staleOwnerToken = delivered.at(-1)?.match(/!memory confirm ([A-Za-z0-9._-]+)/)?.[1];
+    assert.ok(staleOwnerToken);
+    await state.resetOwner(ownerRef, { actorId: owner.user.id, idempotencyKey: 'reset:agent-runtime' });
+    assert.equal(await handleMemoryCommand({
+      turn: { ...dmTurn, eventId: 'E_DM_STALE_CONFIRM', text: `!memory confirm ${staleOwnerToken}` },
+      assignment: dmAssignment, platformEnv: undefined, client: {} as WebClient, presenter,
+    }), true);
+    assert.match(delivered.at(-1) ?? '', /unavailable.*expired/i);
+    assert.equal((await state.listOwnerEntries(ownerRef)).length, 0);
+
+    assert.equal(await handleMemoryCommand({
+      turn: { ...dmTurn, eventId: 'E_DM_REBOUND_REQUEST', text: '!remember rebound-actor — must not land' },
+      assignment: dmAssignment, platformEnv: undefined, client: {} as WebClient, presenter,
+    }), true);
+    const reboundToken = delivered.at(-1)?.match(/!memory confirm ([A-Za-z0-9._-]+)/)?.[1];
+    assert.ok(reboundToken);
+    await identity.bindActorExternalIdentity({
+      provider: 'slack', issuer: 'T_RUNTIME', subject: 'U_MEMBER',
+      userId: 'rebound-user', organizationId: organization.id, membershipId: 'rebound-membership',
+    });
+    assert.equal(await handleMemoryCommand({
+      turn: { ...dmTurn, eventId: 'E_DM_REBOUND_CONFIRM', text: `!memory confirm ${reboundToken}` },
+      assignment: dmAssignment, platformEnv: undefined, client: {} as WebClient, presenter,
+    }), true);
+    assert.match(delivered.at(-1) ?? '', /unavailable|Owner or Admin/i);
+    assert.equal((await state.listOwnerEntries(ownerRef)).length, 0);
+  } finally {
+    process.env.SLACK_STATE_DB_PATH = ':memory:';
+    getMemoryStateStore(); getIdentityStore();
     restoreEnvironment(previous);
     rmSync(directory, { recursive: true, force: true });
   }

@@ -15,6 +15,7 @@ export type MemoryCommand =
     }
   | { kind: 'forget_request'; target: string }
   | { kind: 'forget_confirm'; token: string }
+  | { kind: 'owner_write_confirm'; token: string }
   | { kind: 'report'; target: string; reason: MemoryReportReason }
   | { kind: 'invalid'; hint: string };
 
@@ -46,7 +47,10 @@ export function parseMemoryCommand(
   }
   if (/^!memory\s+help\s*$/i.test(text)) return { kind: 'help' };
 
-  let match = text.match(new RegExp(`^!memory\\s+show\\s+(${TARGET})\\s*$`, 'i'));
+  let match = text.match(/^!memory\s+confirm\s+([A-Za-z0-9._-]{4,512})\s*$/i);
+  if (match) return { kind: 'owner_write_confirm', token: match[1]! };
+
+  match = text.match(new RegExp(`^!memory\\s+show\\s+(${TARGET})\\s*$`, 'i'));
   if (match) return { kind: 'show', target: match[1]!.toLowerCase() };
 
   match = text.match(new RegExp(`^!remember\\s+(.+?)${DASH}([^\\n]+)(?:\\n([\\s\\S]+))?$`, 'i'));

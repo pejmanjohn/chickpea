@@ -39,6 +39,41 @@ export interface ExternalIdentityBinding {
   updatedAt: number;
 }
 
+/** Explicit authenticated-user binding. Never inferred from email or display name. */
+export interface ActorExternalIdentityBinding {
+  id: string;
+  provider: 'slack';
+  issuer: string;
+  subject: string;
+  userId: string;
+  organizationId: string;
+  membershipId: string;
+  revision: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface BindActorExternalIdentityInput {
+  provider: 'slack';
+  issuer: string;
+  subject: string;
+  userId: string;
+  organizationId: string;
+  membershipId: string;
+  at?: number;
+}
+
+export interface ActorIdentityBindingHandoff {
+  handoffId: string;
+  tokenHash: string;
+  issuer: string;
+  subject: string;
+  slackIdentityId: string;
+  slackIdentityRevision: number;
+  expiresAt: number;
+  consumedAt: number | null;
+}
+
 export interface Membership {
   id: string;
   organizationId: string;
@@ -422,6 +457,11 @@ export interface IdentityStore extends HumanIdentityDirectory, ChickpeaIdentityC
     organizationId?: string,
   ): Promise<IdentityResolution | undefined>;
   listExternalIdentities(): Promise<ExternalIdentityBinding[]>;
+  resolveActorExternalIdentity(provider: 'slack', issuer: string, subject: string): Promise<ActorExternalIdentityBinding | undefined>;
+  bindActorExternalIdentity(input: BindActorExternalIdentityInput): Promise<ActorExternalIdentityBinding>;
+  createActorIdentityBindingHandoff(input: ActorIdentityBindingHandoff): Promise<void>;
+  getActorIdentityBindingHandoff(tokenHash: string): Promise<ActorIdentityBindingHandoff | undefined>;
+  consumeActorIdentityBindingHandoff(tokenHash: string, consumedAt: number): Promise<ActorIdentityBindingHandoff | undefined>;
   updateMembership(input: UpdateMembershipInput): Promise<Membership>;
   createInvitation(input: CreateInvitationInput): Promise<Invitation>;
   resendInvitation(input: ResendInvitationInput): Promise<Invitation>;
@@ -488,6 +528,11 @@ export type IdentityRpcRequest =
       organizationId?: string;
     }
   | { kind: 'list_external_identities' }
+  | { kind: 'resolve_actor_external_identity'; provider: 'slack'; issuer: string; subject: string }
+  | { kind: 'bind_actor_external_identity'; input: BindActorExternalIdentityInput }
+  | { kind: 'create_actor_identity_binding_handoff'; input: ActorIdentityBindingHandoff }
+  | { kind: 'get_actor_identity_binding_handoff'; tokenHash: string }
+  | { kind: 'consume_actor_identity_binding_handoff'; tokenHash: string; consumedAt: number }
   | { kind: 'list_memberships' }
   | { kind: 'get_user'; userId: string }
   | { kind: 'find_user_by_email'; email: string }
@@ -534,6 +579,8 @@ export type IdentityRpcResponse =
   | { kind: 'owner_claim'; ownerClaim: OwnerClaim | null }
   | { kind: 'identity_resolution'; resolution: IdentityResolution | null }
   | { kind: 'external_identities'; externalIdentities: ExternalIdentityBinding[] }
+  | { kind: 'actor_external_identity'; binding: ActorExternalIdentityBinding | null }
+  | { kind: 'actor_identity_binding_handoff'; handoff: ActorIdentityBindingHandoff | null }
   | { kind: 'memberships'; memberships: Membership[] }
   | { kind: 'user'; user: User | null }
   | { kind: 'membership'; membership: Membership | null }

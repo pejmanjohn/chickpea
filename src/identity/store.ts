@@ -8,6 +8,9 @@ import { identityError } from './errors.ts';
 import { installIdentityMigrations } from './migrations.ts';
 import type {
   BindExternalIdentityInput,
+  BindActorExternalIdentityInput,
+  ActorExternalIdentityBinding,
+  ActorIdentityBindingHandoff,
   ActivateAccessOwnerInput,
   AdvanceAuthOperationInput,
   AuthControl,
@@ -81,6 +84,12 @@ interface BindingRow {
   verified_email: string;
   created_at: number;
   updated_at: number;
+}
+
+interface ActorBindingRow {
+  binding_id: string; provider: 'slack'; issuer: string; subject: string;
+  user_id: string; organization_id: string; membership_id: string;
+  revision: number; created_at: number; updated_at: number;
 }
 
 interface MembershipRow {
@@ -290,6 +299,16 @@ export class IdentityStoreLogic {
         };
       case 'list_external_identities':
         return { kind: 'external_identities', externalIdentities: this.listExternalIdentities() };
+      case 'resolve_actor_external_identity':
+        return { kind: 'actor_external_identity', binding: this.resolveActorExternalIdentity(request.provider, request.issuer, request.subject) ?? null };
+      case 'bind_actor_external_identity':
+        return { kind: 'actor_external_identity', binding: this.bindActorExternalIdentity(request.input) };
+      case 'create_actor_identity_binding_handoff':
+        this.createActorIdentityBindingHandoff(request.input); return { kind: 'ok' };
+      case 'get_actor_identity_binding_handoff':
+        return { kind: 'actor_identity_binding_handoff', handoff: this.getActorIdentityBindingHandoff(request.tokenHash) ?? null };
+      case 'consume_actor_identity_binding_handoff':
+        return { kind: 'actor_identity_binding_handoff', handoff: this.consumeActorIdentityBindingHandoff(request.tokenHash, request.consumedAt) ?? null };
       case 'list_memberships':
         return { kind: 'memberships', memberships: this.listMemberships() };
       case 'get_user':
@@ -370,6 +389,72 @@ export class IdentityStoreLogic {
       case 'list_identity_audit_events':
         return { kind: 'audit_events', events: this.listAuditEvents(request.limit) };
     }
+  }
+
+  resolveActorExternalIdentity(provider: 'slack', issuer: string, subject: string): ActorExternalIdentityBinding | undefined {
+    const row = this.db.get(
+      `SELECT * FROM identity_actor_external_bindings WHERE provider = ? AND issuer = ? AND subject = ?`,
+      provider, strictText(issuer, 'issuer', 256), strictText(subject, 'subject', 256),
+    ) as ActorBindingRow | undefined;
+    return row ? actorBindingFromRow(row) : undefined;
+  }
+
+  bindActorExternalIdentity(input: BindActorExternalIdentityInput): ActorExternalIdentityBinding {
+    if (input.provider !== 'slack') throw identityError('identity_invalid', 'Actor identity provider is invalid.');
+    const issuer = strictText(input.issuer, 'issuer', 256);
+    const subject = strictText(input.subject, 'subject', 256);
+    const userId = strictText(input.userId, 'userId', 256);
+    const organizationId = strictText(input.organizationId, 'organizationId', 256);
+    const membershipId = strictText(input.membershipId, 'membershipId', 256);
+    const at = input.at ?? this.now();
+    const current = this.resolveActorExternalIdentity('slack', issuer, subject);
+    if (current && current.userId === userId && current.organizationId === organizationId && current.membershipId === membershipId) return current;
+    if (current) {
+      this.db.run(
+        `UPDATE identity_actor_external_bindings SET user_id = ?, organization_id = ?, membership_id = ?, revision = revision + 1, updated_at = ? WHERE binding_id = ?`,
+        userId, organizationId, membershipId, at, current.id,
+      );
+      return this.resolveActorExternalIdentity('slack', issuer, subject)!;
+    }
+    const id = `actor_binding_${randomUUID()}`;
+    this.db.run(
+      `INSERT INTO identity_actor_external_bindings (binding_id, provider, issuer, subject, user_id, organization_id, membership_id, revision, created_at, updated_at) VALUES (?, 'slack', ?, ?, ?, ?, ?, 1, ?, ?)`,
+      id, issuer, subject, userId, organizationId, membershipId, at, at,
+    );
+    return this.resolveActorExternalIdentity('slack', issuer, subject)!;
+  }
+
+  createActorIdentityBindingHandoff(input: ActorIdentityBindingHandoff): void {
+    if (!input.handoffId || !input.tokenHash || !input.issuer || !input.subject || !input.slackIdentityId ||
+        !Number.isSafeInteger(input.slackIdentityRevision) || input.slackIdentityRevision < 0 ||
+        !Number.isSafeInteger(input.expiresAt) || input.expiresAt <= this.now() || input.consumedAt !== null) {
+      throw identityError('identity_invalid', 'Slack actor binding handoff is invalid.');
+    }
+    this.db.run(
+      `INSERT INTO identity_actor_binding_handoffs (handoff_id, token_hash, issuer, subject, slack_identity_id, slack_identity_revision, expires_at, consumed_at) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)`,
+      input.handoffId, input.tokenHash, input.issuer, input.subject, input.slackIdentityId,
+      input.slackIdentityRevision, input.expiresAt,
+    );
+  }
+
+  getActorIdentityBindingHandoff(tokenHash: string): ActorIdentityBindingHandoff | undefined {
+    const row = this.db.get(
+      `SELECT * FROM identity_actor_binding_handoffs WHERE token_hash = ? AND consumed_at IS NULL AND expires_at >= ?`,
+      strictText(tokenHash, 'tokenHash', 512), this.now(),
+    ) as Record<string, unknown> | undefined;
+    return row ? actorHandoffFromRow(row) : undefined;
+  }
+
+  consumeActorIdentityBindingHandoff(tokenHash: string, consumedAt: number): ActorIdentityBindingHandoff | undefined {
+    return this.db.transaction(() => {
+      const current = this.getActorIdentityBindingHandoff(tokenHash);
+      if (!current || current.expiresAt < consumedAt) return undefined;
+      const changed = this.db.run(
+        `UPDATE identity_actor_binding_handoffs SET consumed_at = ? WHERE handoff_id = ? AND consumed_at IS NULL`,
+        consumedAt, current.handoffId,
+      ).changes;
+      return changed === 1 ? { ...current, consumedAt } : undefined;
+    });
   }
 
   ensureAuthControl(input: EnsureAuthControlInput = {}): AuthControl {
@@ -2003,6 +2088,15 @@ export class SqliteIdentityStore implements IdentityStore {
     return this.logic.resolveExternalIdentity(provider, issuer, subject, organizationId);
   }
   async listExternalIdentities() { return this.logic.listExternalIdentities(); }
+  async resolveActorExternalIdentity(provider: 'slack', issuer: string, subject: string) {
+    return this.logic.resolveActorExternalIdentity(provider, issuer, subject);
+  }
+  async bindActorExternalIdentity(input: BindActorExternalIdentityInput) {
+    return this.logic.bindActorExternalIdentity(input);
+  }
+  async createActorIdentityBindingHandoff(input: ActorIdentityBindingHandoff) { this.logic.createActorIdentityBindingHandoff(input); }
+  async getActorIdentityBindingHandoff(tokenHash: string) { return this.logic.getActorIdentityBindingHandoff(tokenHash); }
+  async consumeActorIdentityBindingHandoff(tokenHash: string, consumedAt: number) { return this.logic.consumeActorIdentityBindingHandoff(tokenHash, consumedAt); }
   async listMemberships() { return this.logic.listMemberships(); }
   async getUser(userId: string) { return this.logic.getUser(userId); }
   async findUserByEmail(email: string) { return this.logic.findUserByEmail(email); }
@@ -2190,6 +2284,30 @@ function rowToBinding(row: BindingRow): ExternalIdentityBinding {
     verifiedEmail: row.verified_email,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  };
+}
+
+function actorBindingFromRow(row: ActorBindingRow): ActorExternalIdentityBinding {
+  return {
+    id: row.binding_id,
+    provider: 'slack',
+    issuer: row.issuer,
+    subject: row.subject,
+    userId: row.user_id,
+    organizationId: row.organization_id,
+    membershipId: row.membership_id,
+    revision: row.revision,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function actorHandoffFromRow(row: Record<string, unknown>): ActorIdentityBindingHandoff {
+  return {
+    handoffId: String(row.handoff_id), tokenHash: String(row.token_hash),
+    issuer: String(row.issuer), subject: String(row.subject),
+    slackIdentityId: String(row.slack_identity_id), slackIdentityRevision: Number(row.slack_identity_revision),
+    expiresAt: Number(row.expires_at), consumedAt: row.consumed_at === null ? null : Number(row.consumed_at),
   };
 }
 

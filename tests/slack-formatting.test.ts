@@ -119,14 +119,14 @@ test('fallback text is plain enough for notifications and accessibility', () => 
   assert.equal(fallback, 'Hello &lt;team&gt;\n\nShip docs (https://example.com)');
 });
 
-test('reply footers render profile, model, and optional configure link', () => {
+test('reply footers render Agent, model, and optional configure link', () => {
   assert.equal(
     buildSlackAdminUrl('https://demo.example', { agentId: 'agent_default' }),
     'https://demo.example/admin?agent=agent_default',
   );
 
   const linked = renderSlackReplyFooterBlock({
-    profileName: 'Default <Team>',
+    agentName: 'Default <Team>',
     modelLabel: 'local-stub/parity-stub-1',
     agentId: 'agent_default',
     publicUrl: 'https://demo.example/flue',
@@ -142,7 +142,7 @@ test('reply footers render profile, model, and optional configure link', () => {
   });
 
   const unlinked = renderSlackReplyFooterBlock({
-    profileName: 'Default',
+    agentName: 'Default',
     modelLabel: 'local-stub/parity-stub-1',
     agentId: 'agent_default',
   });
@@ -156,7 +156,7 @@ test('reply footers render profile, model, and optional configure link', () => {
   // An unresolvable model omits the segment entirely — no 'unresolved model'
   // diagnostic leaks into the user-facing footer.
   const noModel = renderSlackReplyFooterBlock({
-    profileName: 'Default',
+    agentName: 'Default',
     agentId: 'agent_default',
     publicUrl: 'https://demo.example',
   });
@@ -168,7 +168,7 @@ test('reply footers render profile, model, and optional configure link', () => {
 
 test('reply footers disclose cross-channel memory as supplied advisory context', () => {
   const block = renderSlackReplyFooterBlock({
-    profileName: 'Chickpea', agentId: 'agent',
+    agentName: 'Chickpea', agentId: 'agent',
     memoryItems: ['Memory supplied: release-checklist (#product, C123)'],
   });
   assert.match(block.elements[0]!.text, /Memory supplied: release-checklist/);
@@ -191,7 +191,7 @@ test('a plain_text final with a footer keeps its content literal (not markdown-p
   assert.equal(plain.blocks, undefined);
 
   const withFooter = appendSlackReplyFooter(plain, {
-    profileName: 'Default',
+    agentName: 'Default',
     modelLabel: 'local-stub/parity-stub-1',
     agentId: 'agent_default',
   });
@@ -205,7 +205,7 @@ test('a plain_text final with a footer keeps its content literal (not markdown-p
   assert.equal(footer?.type, 'context');
 });
 
-test('channel onboarding discloses mention guarantee, ambient judgment, bounded retention, and Configure', () => {
+test('Channel onboarding discloses mention guarantee, ambient judgment, bounded retention, and Configure', () => {
   const linked = renderChannelOnboarding({
     botUserId: 'U_BOT',
     channelId: 'C_ENG',
@@ -215,29 +215,29 @@ test('channel onboarding discloses mention guarantee, ambient judgment, bounded 
   assert.match(linked, /join an unmentioned conversation/);
   assert.match(linked, /does not build a persistent workspace-message index/);
   assert.match(linked, /human replies continue without another mention/);
-  assert.match(linked, /<https:\/\/demo\.example\/admin\?channel=C_ENG\|Configure> this channel's profile/);
+  assert.match(linked, /<https:\/\/demo\.example\/admin\?channel=C_ENG\|Configure> this Channel's Agent/);
 
   const unlinked = renderChannelOnboarding({ botUserId: 'U_BOT', channelId: 'C_ENG', publicUrl: undefined });
-  assert.match(unlinked, /(^|\s)Configure this channel's profile/);
+  assert.match(unlinked, /(^|\s)Configure this Channel's Agent/);
   assert.doesNotMatch(unlinked, /\|Configure>/);
 });
 
-test('unassigned-channel hint names the bot, explains the silence, and links Configure', () => {
+test('unassigned-Channel hint names the bot, explains the silence, and links Configure', () => {
   const linked = renderUnassignedChannelHint({
     botUserId: 'U_BOT',
     channelId: 'C_NEW',
     publicUrl: 'https://demo.example',
   });
-  assert.match(linked, /No profile is assigned to this channel yet/);
+  assert.match(linked, /No Agent is assigned to this Channel yet/);
   assert.match(linked, /<@U_BOT> cannot reply here\./);
-  assert.match(linked, /<https:\/\/demo\.example\/admin\?channel=C_NEW\|Configure> this channel's profile/);
+  assert.match(linked, /<https:\/\/demo\.example\/admin\?channel=C_NEW\|Configure> this Channel's Agent/);
 
   const unlinked = renderUnassignedChannelHint({
     botUserId: 'U_BOT',
     channelId: 'C_NEW',
     publicUrl: undefined,
   });
-  assert.match(unlinked, /(^|\s)Configure this channel's profile/);
+  assert.match(unlinked, /(^|\s)Configure this Channel's Agent/);
   assert.doesNotMatch(unlinked, /\|Configure>/);
 });
 

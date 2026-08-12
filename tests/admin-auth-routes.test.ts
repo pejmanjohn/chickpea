@@ -8,6 +8,8 @@ import { NodeBetterAuthBackend } from '../src/auth/better-auth-node.ts';
 import { digest } from '../src/auth/personal-token.ts';
 import { nativePasswordPrimitive } from '../src/auth/password.ts';
 import type { ExternalIdentity } from '../src/auth/types.ts';
+import { SqliteConfigStore } from '../src/config/store.ts';
+import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from '../src/config/types.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 
 const RECOVERY = 'recovery-token-with-more-than-thirty-two-characters';
@@ -204,6 +206,7 @@ test('recovery requires issuer-backed owner proof, same-origin body, and the off
 
 test('password-mode admin requests use Better Auth sessions without legacy fallback', async () => {
   const identity = new SqliteIdentityStore(':memory:');
+  const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   const backend = new NodeBetterAuthBackend(':memory:');
   const password = nativePasswordPrimitive();
   const secret = Buffer.from(Uint8Array.from({ length: 32 }, (_, index) => index + 1))
@@ -233,8 +236,14 @@ test('password-mode admin requests use Better Auth sessions without legacy fallb
     canonicalAdminOrigin: ORIGIN,
     betterAuthOrganizationId: 'better-org',
   });
+  const slackIdentity = await config.getSlackIdentity(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
+  await config.updateSlackIdentity(slackIdentity.id, slackIdentity.connectionRevision, {
+    lifecycle: 'connected', teamId: 'T_ACME', appId: 'A_CHICKPEA', botUserId: 'U_BOT',
+    dmState: 'off', dmAgentId: null, credentialProvenance: 'stored', health: 'healthy',
+  });
   const app = createAdminRoutes({
     identity,
+    store: config,
     recoveryToken: RECOVERY,
     betterAuthEnvironment: {
       backend,
@@ -254,6 +263,28 @@ test('password-mode admin requests use Better Auth sessions without legacy fallb
   const team = await app.request(`${ORIGIN}/admin/api/team`, { headers: { cookie } });
   assert.equal(team.status, 200, await team.clone().text());
   assert.match(await team.text(), /better-member/);
+
+  const bindingToken = 'slack-actor-binding-token';
+  await identity.createActorIdentityBindingHandoff({
+    handoffId: 'handoff_owner', tokenHash: digest(bindingToken),
+    issuer: 'T_ACME', subject: 'U_OWNER', slackIdentityId: slackIdentity.id,
+    slackIdentityRevision: slackIdentity.connectionRevision + 1,
+    expiresAt: Date.now() + 60_000, consumedAt: null,
+  });
+  const handoffPage = await app.request(`${ORIGIN}/admin/slack-actor`, { headers: { cookie } });
+  assert.equal(handoffPage.status, 200);
+  assert.match(await handoffPage.text(), /\/admin\/slack-actor\/client\.js/);
+  const bindRequest = formRequest('/admin/slack-actor/bind', { token: bindingToken });
+  bindRequest.headers.set('cookie', cookie);
+  const bound = await app.request(bindRequest);
+  assert.equal(bound.status, 200, await bound.clone().text());
+  assert.equal(
+    (await identity.resolveActorExternalIdentity('slack', 'T_ACME', 'U_OWNER'))?.membershipId,
+    'better-member',
+  );
+  const replayRequest = formRequest('/admin/slack-actor/bind', { token: bindingToken });
+  replayRequest.headers.set('cookie', cookie);
+  assert.equal((await app.request(replayRequest)).status, 409);
 
   const crossOrigin = await app.request(`${ORIGIN}/admin/api/team/invitations`, {
     method: 'POST',
@@ -281,6 +312,7 @@ test('password-mode admin requests use Better Auth sessions without legacy fallb
   });
   assert.equal(machineTeam.status, 403);
   backend.close();
+  config.close();
   identity.close();
 });
 

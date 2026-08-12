@@ -70,7 +70,7 @@ test('routine delivery claims once, posts at top level, and records the Slack re
   assert.match(requests[0]?.blocks ?? '', /View in Audit/);
   assert.match(requests[0]?.blocks ?? '', /anthropic\/claude-sonnet-4/);
   const rendered = renderRoutineDelivery(routine, run, 'Done.', {
-    profileName: 'Default', modelLabel: 'anthropic/claude-sonnet-4',
+    agentName: 'Default', modelLabel: 'anthropic/claude-sonnet-4',
     agentId: 'agent_default', publicUrl: 'https://chickpea.example',
   });
   assert.equal(rendered.text, 'Routine completed: &lt;Daily &amp; write&gt;\n\nDone.');

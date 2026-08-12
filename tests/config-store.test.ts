@@ -7,6 +7,7 @@ import { test } from 'node:test';
 
 import {
   effectiveSlackInstructionLayers,
+  resolvedAssignmentFromEffectiveConfig,
   resolveEffectiveSlackConfig,
 } from '../src/config/effective-config.ts';
 import { resolveAssignment, surfaceForChannelId } from '../src/config/resolver.ts';
@@ -18,7 +19,10 @@ import {
 } from '../src/config/seed.ts';
 import { getConfigStore } from '../src/config/state-backend.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
-import { AgentSlackIdentityConflictError } from '../src/config/errors.ts';
+import {
+  AgentSlackIdentityConflictError,
+  AgentStillReferencedError,
+} from '../src/config/errors.ts';
 import {
   WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
   type ChannelAssignment,
@@ -102,7 +106,45 @@ test('Agent references enumerate placements, DM bindings, and identity setup ref
     dmIdentityIds: ['slack_identity_finance'],
     identityReferenceIds: ['slack_identity_finance'],
   });
+  await assert.rejects(
+    () => store.updateAgent('agent_test', { enabled: false }),
+    (error: unknown) =>
+      error instanceof AgentStillReferencedError &&
+      /T_TEST\/C_TEST/.test(error.references) &&
+      /DM:slack_identity_finance/.test(error.references) &&
+      /identity:slack_identity_finance/.test(error.references),
+  );
+  assert.equal((await store.getAgent('agent_test')).enabled, true);
   store.close();
+});
+
+test('effective config projects back to the exact admitted assignment for owner-native consumers', () => {
+  const effective = {
+    workspaceId: 'T_TEST',
+    channelId: 'C_TEST',
+    agentId: 'agent_test',
+    slackIdentityId: 'slack_identity_finance',
+    channelLabel: 'eng-releases',
+    channelPromptAddendum: 'Prefer release context.',
+    participationMode: 'mention_only' as const,
+    agent: agent(),
+    model: 'local-stub/test',
+    provider: 'local-stub',
+    instructions: 'compiled',
+    instructionLayers: [],
+  };
+
+  assert.deepEqual(resolvedAssignmentFromEffectiveConfig(effective), {
+    workspaceId: 'T_TEST',
+    channelId: 'C_TEST',
+    agentId: 'agent_test',
+    slackIdentityId: 'slack_identity_finance',
+    channelLabel: 'eng-releases',
+    channelPromptAddendum: 'Prefer release context.',
+    participationMode: 'mention_only',
+    agent: effective.agent,
+    model: 'local-stub/test',
+  });
 });
 
 test('effective instructions expose Agent as the primary behavior layer', () => {
@@ -375,14 +417,14 @@ test('Slack identity references protect DM Agents and dedicated identity retirem
   await assert.rejects(
     () => store.updateAgent('agent_finance', { enabled: false }),
     (error: unknown) =>
-      error instanceof Error && error.name === 'AgentStillSlackDmHandlerError',
+      error instanceof AgentStillReferencedError &&
+      error.references === 'DM:slack_identity_finance',
   );
   await assert.rejects(
     () => store.deleteAgent('agent_finance'),
     (error: unknown) =>
-      error instanceof Error &&
-      error.name === 'AgentStillSlackDmHandlerError' &&
-      /slack_identity_finance/.test(error.message),
+      error instanceof AgentStillReferencedError &&
+      error.references === 'DM:slack_identity_finance',
   );
   await assert.rejects(
     () => store.retireSlackIdentity('slack_identity_finance', 1),
@@ -639,12 +681,16 @@ test('SqliteConfigStore round-trips repository grants through create and update'
   store.close();
 });
 
-test('SqliteConfigStore blocks deleting agents that still have assignments', async () => {
+test('SqliteConfigStore blocks deleting Agents that still have assignments', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   await store.createAgent(agent());
   await store.putAssignment(assignment());
 
-  await assert.rejects(() => store.deleteAgent('agent_test'), /still assigned/);
+  await assert.rejects(
+    () => store.deleteAgent('agent_test'),
+    (error: unknown) =>
+      error instanceof AgentStillReferencedError && error.references === 'T_TEST/C_TEST',
+  );
   assert.deepEqual(await store.getAgent('agent_test'), agent());
 
   store.close();

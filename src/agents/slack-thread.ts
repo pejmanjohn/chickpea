@@ -142,12 +142,19 @@ interface ConfigurableCloudflareSandbox extends DestroyableSandbox, SandboxTurnC
 const cloudflareSandboxLifecycle =
   new SandboxLifecycleRegistry<ConfigurableCloudflareSandbox>();
 
+export class SealedAgentThreadError extends Error {
+  constructor(readonly agentId: string) {
+    super('This thread’s Agent is no longer available. Start a new thread with an active Agent.');
+    this.name = 'SealedAgentThreadError';
+  }
+}
+
 export function suppressProfileNamedConnectorSkills(
   connectorSkills: readonly SkillConfig[],
   profileSkills: readonly SkillConfig[],
 ): SkillConfig[] {
   const profileSkillNames = new Set(profileSkills.map((skill) => skill.name));
-  // Any profile row owns its name even when disabled: a disabled row is the
+  // Any Agent row owns its name even when disabled: a disabled row is the
   // operator's off-switch for an otherwise auto-attached connector skill.
   return connectorSkills.filter((skill) => !profileSkillNames.has(skill.name));
 }
@@ -157,7 +164,7 @@ export interface ResolvedRepositoryAccess {
   connectors: ResolvedApiConnection[];
   credentialMode?: SandboxCredentialMode;
   /**
-   * True whenever the profile has enabled grants, even if no credential
+   * True whenever the Agent has enabled grants, even if no credential
    * resolved this turn. Grants make repository routing authoritative for the
    * GitHub hosts: a mint failure must degrade to NO GitHub access, never fall
    * open to a legacy broad connector.
@@ -396,7 +403,7 @@ function repositoryPrefixes(grants: readonly RepositoryGrant[], prefix: string):
 
 /**
  * GitHub hosts are reserved for the dedicated App integration. Always remove
- * them from generic API connections, including already-saved rows and profiles
+ * them from generic API connections, including already-saved rows and Agents
  * with zero repository grants, so a pasted bearer credential can never create
  * an unscoped GitHub route. Repository connectors are the sole GitHub source.
  */
@@ -542,7 +549,7 @@ export async function createSlackAgentRuntime(
   // first turn; getOrCreateSnapshot serves that row). Direct conversations
   // Direct messages are one continuous session, not a discrete thread, so they
   // resolve the current config every turn instead of freezing — admin edits to
-  // the DM profile reach existing DM users.
+  // the DM Agent reach existing DM users.
   const isDirect = surfaceForChannelId(channelId) === 'direct';
   const config = input.liveConfig ?? (
     isDirect || input.freezeChannel === false
@@ -553,6 +560,9 @@ export async function createSlackAgentRuntime(
         resolve,
       )
   );
+  const frozenLiveAgent = !isDirect && input.freezeChannel !== false
+    ? await requireLiveFrozenAgent(store, config.agent.id)
+    : undefined;
   const runtimeModel = input.runtimeModel ?? await resolveRuntimeModel(
     config.agentId,
     config.model,
@@ -562,22 +572,15 @@ export async function createSlackAgentRuntime(
     },
   );
 
-  // A channel snapshot is a ceiling, not a revocation lease. Intersect its
-  // frozen grants with the current profile once, before repository access
-  // produces either worker-side connectors or Sandbox DO policy. A missing
-  // live profile fails closed. Direct conversations already resolved the live
-  // profile above and need no second lookup.
+  // A Channel snapshot freezes additions while the live Agent remains the
+  // revocation authority. Disabled or deleted Agents seal the old root; a
+  // reassignment alone keeps that root on its frozen, still-enabled Agent.
   let repositoryGrants = config.agent.repositories;
-  if (!isDirect && input.freezeChannel !== false) {
-    try {
-      const liveAgent = await store.getAgent(config.agent.id);
-      repositoryGrants = intersectFrozenRepositoryGrants(
-        config.agent.repositories,
-        liveAgent.repositories,
-      );
-    } catch {
-      repositoryGrants = [];
-    }
+  if (frozenLiveAgent) {
+    repositoryGrants = intersectFrozenRepositoryGrants(
+      config.agent.repositories,
+      frozenLiveAgent.repositories,
+    );
   }
 
   // API connection policy inherits the agent snapshot contract, while its
@@ -634,7 +637,7 @@ export async function createSlackAgentRuntime(
   );
   // Project resolved connectors into credential-free scope before skill
   // construction. Connector skills come first so the existing last-writer-wins
-  // dedupe lets a profile-authored skill deliberately override the built-in.
+  // dedupe lets an Agent-authored skill deliberately override the built-in.
   const connectorSkills = suppressProfileNamedConnectorSkills(
     connectorSkillsForConnections(
       [
@@ -663,7 +666,7 @@ export async function createSlackAgentRuntime(
     config.agent.skills,
   );
   // The install/runtime-derived workspace judge comes last so a stored
-  // same-named profile row cannot hide the live workspace security contract.
+  // same-named Agent row cannot hide the live workspace security contract.
   const skills = resolveProfileSkills([
     ...connectorSkills,
     ...config.agent.skills,
@@ -923,7 +926,7 @@ function createRuntimePlanSandbox(
   return {
     async createSessionEnv({ id }) {
       const env = await resolveAgentPlatformEnv();
-      const current = await getConfigStore(env).getAgent(plan.agentId);
+      const current = await requireLiveFrozenAgent(getConfigStore(env), plan.agentId);
       const agent = projectRuntimePlanAgent(plan, current);
       const runtime = await createSlackAgentRuntime({
         id,
@@ -957,12 +960,8 @@ function projectRuntimePlanAgent(
   plan: RuntimePlanV2,
   current: CustomAgentConfig,
 ): CustomAgentConfig {
-  // A channel thread owns its frozen RuntimePlan even if the profile is later
-  // disabled. Individual live grants still intersect below, so disabling a
-  // connection or repository revokes that capability without breaking the
-  // already-started conversation.
-  if (current.id !== plan.agentId) {
-    throw new Error('RuntimePlanV2 profile is unavailable.');
+  if (current.id !== plan.agentId || !current.enabled) {
+    throw new SealedAgentThreadError(plan.agentId);
   }
   const apiConnections = plan.apiConnections.map((declaration) => {
     const live = current.apiConnections.find((candidate) =>
@@ -1001,6 +1000,20 @@ function projectRuntimePlanAgent(
     apiConnections,
     repositories,
   };
+}
+
+async function requireLiveFrozenAgent(
+  store: ReturnType<typeof getConfigStore>,
+  agentId: string,
+): Promise<CustomAgentConfig> {
+  try {
+    const current = await store.getAgent(agentId);
+    if (!current.enabled) throw new SealedAgentThreadError(agentId);
+    return current;
+  } catch (error) {
+    if (error instanceof SealedAgentThreadError) throw error;
+    throw new SealedAgentThreadError(agentId);
+  }
 }
 
 function runtimeApiConnectionMatches(

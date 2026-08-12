@@ -1,8 +1,6 @@
 import {
   AgentSlackIdentityConflictError,
   AgentExistsError,
-  AgentStillAssignedError,
-  AgentStillSlackDmHandlerError,
   AgentStillReferencedError,
   SlackIdentityExistsError,
   SlackIdentityLifecycleError,
@@ -309,7 +307,7 @@ export class ConfigStoreLogic {
     }
     const next = { ...current, ...patch, id: agentId };
     if (current.enabled && !next.enabled) {
-      this.requireAgentIsNotActiveSlackDmHandler(agentId);
+      this.requireAgentHasNoBlockingReferences(agentId);
     }
     this.db.run(
       `UPDATE config_agents
@@ -377,14 +375,7 @@ export class ConfigStoreLogic {
   }
 
   deleteAgent(agentId: string): boolean {
-    const references = this.listAssignmentsForAgent(agentId);
-    if (references.length > 0) {
-      const keys = references
-        .map((assignment) => `${assignment.workspaceId}/${assignment.channelId}`)
-        .join(', ');
-      throw new AgentStillAssignedError(agentId, keys);
-    }
-    this.requireAgentIsNotActiveSlackDmHandler(agentId);
+    this.requireAgentHasNoBlockingReferences(agentId);
     const deleted = this.db.run('DELETE FROM config_agents WHERE id = ?', agentId);
     return deleted.changes === 1;
   }
@@ -405,15 +396,7 @@ export class ConfigStoreLogic {
         }
         return true;
       }
-      const references = this.getAgentReferences(agentId);
-      const blockers = [
-        ...references.channelAssignments.map((ref) => `${ref.workspaceId}/${ref.channelId}`),
-        ...references.dmIdentityIds.map((id) => `DM:${id}`),
-        ...references.identityReferenceIds.map((id) => `identity:${id}`),
-      ];
-      if (blockers.length > 0) {
-        throw new AgentStillReferencedError(agentId, blockers.join(', '));
-      }
+      this.requireAgentHasNoBlockingReferences(agentId);
       const deleted = this.db.run('DELETE FROM config_agents WHERE id = ?', agentId);
       if (deleted.changes !== 1) return false;
       memory.deleteAgentOwnerRows(agentId);
@@ -594,6 +577,18 @@ export class ConfigStoreLogic {
         .filter((identity) => identity.setupIntent?.sourceAgentId === agentId)
         .map(({ id }) => id),
     };
+  }
+
+  private requireAgentHasNoBlockingReferences(agentId: string): void {
+    const references = this.getAgentReferences(agentId);
+    const blockers = [
+      ...references.channelAssignments.map((ref) => `${ref.workspaceId}/${ref.channelId}`),
+      ...references.dmIdentityIds.map((id) => `DM:${id}`),
+      ...references.identityReferenceIds.map((id) => `identity:${id}`),
+    ];
+    if (blockers.length > 0) {
+      throw new AgentStillReferencedError(agentId, blockers.join(', '));
+    }
   }
 
   listSlackIdentities(): SlackIdentity[] {
@@ -940,21 +935,6 @@ export class ConfigStoreLogic {
         identityId,
         references.agentIds.join(', '),
         references.dmAgentId ?? '',
-      );
-    }
-  }
-
-  private requireAgentIsNotActiveSlackDmHandler(agentId: string): void {
-    const rows = this.db.all(
-      `SELECT id FROM config_slack_identities
-       WHERE dm_agent_id = ? AND dm_state = 'on' AND lifecycle != 'retired'
-       ORDER BY id`,
-      agentId,
-    );
-    if (rows.length > 0) {
-      throw new AgentStillSlackDmHandlerError(
-        agentId,
-        rows.map((row) => String(row.id)).join(', '),
       );
     }
   }

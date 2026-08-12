@@ -118,6 +118,27 @@ test('Cloudflare identity proxy reads Chickpea membership access overlays', asyn
   }]);
 });
 
+test('Cloudflare identity proxy keeps Slack actor bindings opaque and exact', async () => {
+  const calls: IdentityRpcRequest[] = [];
+  const binding = {
+    id: 'actor_binding_1', provider: 'slack' as const, issuer: 'T_ACME', subject: 'U_OWNER',
+    userId: 'better-user', organizationId: 'better-org', membershipId: 'better-membership',
+    revision: 2, createdAt: 10, updatedAt: 20,
+  };
+  const stub = {
+    async identityExecute(request: IdentityRpcRequest): Promise<StateRpcResult<IdentityRpcResponse>> {
+      calls.push(request);
+      return { ok: true, value: { kind: 'actor_external_identity', binding } };
+    },
+  } as unknown as TagStateRpc;
+  const store = new CfIdentityStore(stub);
+
+  assert.deepEqual(await store.resolveActorExternalIdentity('slack', 'T_ACME', 'U_OWNER'), binding);
+  assert.deepEqual(calls, [{
+    kind: 'resolve_actor_external_identity', provider: 'slack', issuer: 'T_ACME', subject: 'U_OWNER',
+  }]);
+});
+
 test('Cloudflare identity proxy reconstructs typed identity errors', async () => {
   const stub = {
     async identityExecute(): Promise<StateRpcResult<IdentityRpcResponse>> {

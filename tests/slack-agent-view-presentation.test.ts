@@ -96,7 +96,7 @@ function harness(input: {
     state,
     runId,
     runFencingToken: 0,
-    footer: { profileName: 'Chickpea', agentId: 'agent_default' },
+    footer: { agentName: 'Chickpea', agentId: 'agent_default' },
     minAppendIntervalMs: 750,
     now: () => clock,
     wait: async (milliseconds) => { clock += milliseconds; },

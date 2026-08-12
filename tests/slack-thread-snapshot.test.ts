@@ -9,6 +9,7 @@ import {
   intersectFrozenRepositoryGrants,
   legacySlackThreadAgent as slackThreadAgent,
   resolveSandboxScopedRepositoryAccess,
+  SealedAgentThreadError,
 } from '../src/agents/slack-thread.ts';
 import type { EffectiveSlackConfig } from '../src/config/effective-config.ts';
 import { GITHUB_SETTING_KEYS } from '../src/config/github-app.ts';
@@ -245,7 +246,7 @@ test('putIfAbsent is write-once: a losing writer gets the PERSISTED row back', a
   }
 });
 
-test('agent snapshots freeze repository grants with the effective profile', () => {
+test('Agent snapshots freeze repository grants with the effective Agent', () => {
   const repositories = [
     {
       id: 'repo-snapshot',
@@ -363,7 +364,7 @@ test('slack-thread constructs an isolated subscription model while a Platform ke
   }
 });
 
-test('frozen repository grant removed from the live profile is excluded', () => {
+test('frozen repository grant removed from the live Agent is excluded', () => {
   const frozen = {
     id: 'repo-frozen',
     installationId: 42,
@@ -375,7 +376,7 @@ test('frozen repository grant removed from the live profile is excluded', () => 
   assert.deepEqual(intersectFrozenRepositoryGrants([frozen], []), []);
 });
 
-test('frozen repository grant still present in the live profile is kept', () => {
+test('frozen repository grant still present in the live Agent is kept', () => {
   const frozen = {
     id: 'repo-frozen',
     installationId: 42,
@@ -394,7 +395,7 @@ test('frozen repository grant still present in the live profile is kept', () => 
   );
 });
 
-test('repository grant added only to the live profile does not join a frozen thread', () => {
+test('repository grant added only to the live Agent does not join a frozen thread', () => {
   const frozen = {
     id: 'repo-frozen',
     installationId: 42,
@@ -589,11 +590,36 @@ test('slack-thread freezes effective config per durable thread id', async () => 
         assert.match(String(newThread.instructions), /SNAPSHOT_UNIT_BETA/);
 
         const disabler = new SqliteConfigStore(dbPath, { agents: [], assignments: [] });
+        await disabler.createAgent(agent({
+          id: 'agent_snapshot_reassigned',
+          name: 'Reassigned Agent',
+          instructions: 'SNAPSHOT_UNIT_REASSIGNED: replacement Agent instructions.',
+        }));
+        await disabler.putAssignment(assignment({ agentId: 'agent_snapshot_reassigned' }));
+
+        const reassignedSameThread = await slackThreadAgent.initialize({ id: THREAD_KEY, env: {} });
+        assert.match(String(reassignedSameThread.instructions), /SNAPSHOT_UNIT_ALPHA/);
+        const reassignedNewThread = await slackThreadAgent.initialize({
+          id: 'T_SNAPSHOT:C_SNAPSHOT:1782771903.000100',
+          env: {},
+        });
+        assert.match(String(reassignedNewThread.instructions), /SNAPSHOT_UNIT_REASSIGNED/);
+
         await disabler.updateAgent(AGENT_ID, { enabled: false });
         disabler.close();
 
-        const disabledSameThread = await slackThreadAgent.initialize({ id: THREAD_KEY, env: {} });
-        assert.match(String(disabledSameThread.instructions), /SNAPSHOT_UNIT_ALPHA/);
+        await assert.rejects(
+          () => slackThreadAgent.initialize({ id: THREAD_KEY, env: {} }),
+          (error: unknown) => error instanceof SealedAgentThreadError && error.agentId === AGENT_ID,
+        );
+
+        const deleter = new SqliteConfigStore(dbPath, { agents: [], assignments: [] });
+        await deleter.deleteAgentWithMemory(AGENT_ID, 'delete:snapshot-agent');
+        deleter.close();
+        await assert.rejects(
+          () => slackThreadAgent.initialize({ id: THREAD_KEY, env: {} }),
+          (error: unknown) => error instanceof SealedAgentThreadError && error.agentId === AGENT_ID,
+        );
       },
     );
   } finally {

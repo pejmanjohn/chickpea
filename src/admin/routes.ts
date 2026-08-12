@@ -84,6 +84,7 @@ import {
   AgentExistsError,
   AgentStillAssignedError,
   AgentStillSlackDmHandlerError,
+  AgentStillReferencedError,
   ModelResolutionError,
   NoAssignmentError,
   SlackIdentityExistsError,
@@ -240,6 +241,7 @@ import {
   type RefreshModelCatalogOptions,
 } from '../model-catalog/index.ts';
 import type {
+  AgentReferenceSummary,
   ChannelAssignment,
   ChannelConfig,
   CustomAgentConfig,
@@ -2448,6 +2450,54 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     return c.html(renderAdminPage({ usageAdminUi: usageAdminUi(c) }));
   };
 
+  app.get('/admin/slack-actor/client.js', (c) => {
+    authResponseHeaders(c);
+    c.header('Content-Type', 'application/javascript; charset=UTF-8');
+    return c.body("const p=new URLSearchParams(location.hash.slice(1));const t=p.get('bind');document.getElementById('binding-token').value=t||'';document.getElementById('connect').disabled=!t;document.getElementById('missing').hidden=!!t;history.replaceState(null,'',location.pathname);");
+  });
+
+  app.get('/admin/slack-actor', (c) => {
+    authResponseHeaders(c);
+    c.header('Cache-Control', 'no-store');
+    c.header('Referrer-Policy', 'no-referrer');
+    return c.html(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Connect Slack · Chickpea</title></head><body style="font-family:system-ui;max-width:36rem;margin:10vh auto;padding:2rem;color:#392f1f"><h1>Connect this Slack account</h1><p>This lets your authenticated Owner or Admin account confirm Agent-memory changes requested from Slack.</p><form method="post" action="/admin/slack-actor/bind"><input id="binding-token" type="hidden" name="token"><button id="connect" type="submit" disabled>Connect Slack account</button></form><p id="missing" hidden>This link is missing or expired. Request a new link from Chickpea in Slack.</p><script src="/admin/slack-actor/client.js" defer></script></body></html>`);
+  });
+
+  app.post('/admin/slack-actor/bind', async (c) => {
+    authResponseHeaders(c);
+    c.header('Cache-Control', 'no-store');
+    const principal = principalByContext.get(c);
+    if (!principal || principal.machine || (principal.role !== 'owner' && principal.role !== 'admin')) {
+      return c.json({ error: 'forbidden' }, 403);
+    }
+    const parsed = v.safeParse(v.object({ token: v.pipe(v.string(), v.minLength(4), v.maxLength(512)) }), await readForm(c));
+    if (!parsed.success) return c.html(renderSlackActorBindingResult(false), 400);
+    const tokenHash = digest(parsed.output.token);
+    const handoff = await identity(c).getActorIdentityBindingHandoff(tokenHash);
+    if (!handoff) return c.html(renderSlackActorBindingResult(false), 409);
+    const [slackIdentity, directory, overlay] = await Promise.all([
+      store(c).getSlackIdentity(handoff.slackIdentityId), humanDirectory(c),
+      identity(c).getMembershipAccessOverlay(principal.membershipId),
+    ]);
+    const membership = await directory.getMembership(principal.membershipId);
+    if (!membership || membership.id !== principal.membershipId || membership.userId !== principal.userId ||
+        membership.organizationId !== principal.organizationId || membership.status !== 'active' ||
+        membership.role !== principal.role || (membership.role !== 'owner' && membership.role !== 'admin') ||
+        (overlay && (overlay.organizationId !== principal.organizationId || overlay.accessStatus !== 'active')) ||
+        slackIdentity.connectionRevision !== handoff.slackIdentityRevision ||
+        slackIdentity.teamId !== handoff.issuer) {
+      return c.html(renderSlackActorBindingResult(false), 409);
+    }
+    const consumed = await identity(c).consumeActorIdentityBindingHandoff(tokenHash, Date.now());
+    if (!consumed) return c.html(renderSlackActorBindingResult(false), 409);
+    await identity(c).bindActorExternalIdentity({
+      provider: 'slack', issuer: consumed.issuer, subject: consumed.subject,
+      userId: principal.userId, organizationId: principal.organizationId,
+      membershipId: principal.membershipId,
+    });
+    return c.html(renderSlackActorBindingResult(true));
+  });
+
   app.get('/admin/assets/onboarding/:name', (c) => {
     const bytes = onboardingAssetBytes(c.req.param('name'));
     if (!bytes) return c.notFound();
@@ -3934,6 +3984,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           identityIds: err.identityIds.split(', ').filter(Boolean),
         }, 409);
       }
+      if (err instanceof AgentStillReferencedError) {
+        return agentStillReferenced(c, err);
+      }
       return internalError(c, err);
     }
   });
@@ -3964,17 +4017,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       }
     }
 
-    const references = await configStore.listAssignmentsForAgent(agentId);
-    if (references.length > 0) {
-      return c.json(
-        {
-          error: 'agent_still_assigned',
-          assignments: references.map(({ workspaceId, channelId }) => ({ workspaceId, channelId })),
-        },
-        409,
-      );
+    const references = await configStore.getAgentReferences(agentId);
+    if (agentReferenceCount(references) > 0) {
+      return c.json({ error: 'agent_still_referenced', references }, 409);
     }
-    // Persist the cleanup inventory before deleting the profile. The marker is
+    // Persist the cleanup inventory before deleting the Agent. The marker is
     // independent of the config row, so settings cleanup can be retried after a
     // partial failure or an ambiguous DO/RPC response where the delete committed
     // but the caller only observed an error.
@@ -4011,9 +4058,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
 
     try {
-      // A false return means another request removed the row after our initial
-      // read. Either way the profile is absent and the staged cleanup is safe.
-      await configStore.deleteAgent(agentId);
+      // Config and Agent-owned memory delete in one state transaction. Live
+      // roots are not blockers; they seal fail-closed on their next use.
+      await configStore.deleteAgentWithMemory(
+        agentId,
+        agentDeleteIdempotencyKey(c, agentId),
+      );
     } catch (err) {
       try {
         await configStore.getAgent(agentId);
@@ -4044,6 +4094,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           profileId: err.agentId,
           identityIds: err.identityIds.split(', ').filter(Boolean),
         }, 409);
+      }
+      if (err instanceof AgentStillReferencedError) {
+        return agentStillReferenced(c, err);
       }
       return internalError(c, err);
     }
@@ -6149,7 +6202,12 @@ function isHumanAuthFormMutation(c: Context): boolean {
   return c.req.method === 'POST' && [
     '/admin/account/password',
     '/admin/logout',
+    '/admin/slack-actor/bind',
   ].includes(c.req.path);
+}
+
+function renderSlackActorBindingResult(success: boolean): string {
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Connect Slack · Chickpea</title></head><body style="font-family:system-ui;max-width:36rem;margin:10vh auto;padding:2rem;color:#392f1f"><h1>${success ? 'Slack account connected' : 'This connection link is unavailable'}</h1><p>${success ? 'Return to Slack and send your Agent-memory request again.' : 'Request a new connection link from Chickpea in Slack.'}</p></body></html>`;
 }
 
 function preservedFormValue(value: unknown, maxLength: number): string {
@@ -7093,6 +7151,26 @@ function internalError(
 ): Response {
   console.error('[chickpea] admin API failure:', err instanceof Error ? err.message : String(err));
   return c.json({ error: 'internal_error' }, 500);
+}
+
+function agentReferenceCount(references: AgentReferenceSummary): number {
+  return references.channelAssignments.length +
+    references.dmIdentityIds.length +
+    references.identityReferenceIds.length;
+}
+
+function agentStillReferenced(c: Context, error: AgentStillReferencedError): Response {
+  return c.json({
+    error: 'agent_still_referenced',
+    references: error.references.split(', ').filter(Boolean),
+  }, 409);
+}
+
+function agentDeleteIdempotencyKey(c: Context, agentId: string): string {
+  const supplied = c.req.header('idempotency-key')?.trim();
+  return supplied && /^[A-Za-z0-9_.:-]{1,512}$/.test(supplied)
+    ? supplied
+    : `admin:agent-delete:${agentId}:${randomUUID()}`;
 }
 
 function effectiveConfigResponse(config: EffectiveSlackConfig): object {

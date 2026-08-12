@@ -7,6 +7,7 @@ import type { EffectiveSlackConfig } from '../src/config/effective-config.ts';
 import {
   executeRoutineOccurrence,
 } from '../src/routines/execution.ts';
+import { RoutineRuntimeError } from '../src/routines/runtime.ts';
 import { hashRoutineValue } from '../src/routines/ids.ts';
 import { SqliteRoutineStore } from '../src/routines/store.ts';
 import type {
@@ -200,6 +201,105 @@ test('an interrupted local read stays resumable and the next execution reads the
     assert.equal(preparedSandboxKeys[0], preparedSandboxKeys[1]);
     assert.deepEqual(releasedSandboxKeys, [preparedSandboxKeys[0]]);
     assert.equal((await store.getRun(fixture.run.id))?.status, 'no_op');
+  } finally {
+    store.close();
+  }
+});
+
+test('an unresolved initial assignment records a skip without model or Agent side effects', async () => {
+  const store = new SqliteRoutineStore(':memory:', () => NOW);
+  const events: string[] = [];
+  try {
+    const fixture = await admittedFixture(store, 'assignment_missing');
+    const outcome = await executeRoutineOccurrence({
+      env: {}, store, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt,
+    }, {
+      ...dependencies(events),
+      resolveAccess: async () => {
+        events.push('live-access');
+        throw new RoutineRuntimeError(
+          'assignment_missing',
+          'This Channel does not have an active Chickpea Agent.',
+        );
+      },
+      resolveModel: async () => {
+        events.push('model');
+        return { model: config.model };
+      },
+      preparePrompt: async () => {
+        events.push('prompt');
+        throw new Error('must not prepare a prompt without an assignment');
+      },
+      handle: fakeHandle({ events }),
+    });
+
+    assert.equal(outcome, 'completed');
+    assert.deepEqual(events, ['live-access']);
+    const skipped = await store.getRun(fixture.run.id);
+    assert.equal(skipped?.status, 'skipped');
+    assert.equal(skipped?.skipReason, 'unresolved_assignment');
+    assert.equal(skipped?.failureClass, 'assignment_missing');
+    assert.equal(skipped?.flueAgentEnvelope, null);
+  } finally {
+    store.close();
+  }
+});
+
+test('reattachment never combines a frozen Agent A envelope with current Agent B access', async () => {
+  const store = new SqliteRoutineStore(':memory:', () => NOW);
+  try {
+    const fixture = await admittedFixture(store, 'reattach_agent_fence');
+    const first = await executeRoutineOccurrence({
+      env: {}, store, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt,
+    }, {
+      ...dependencies(),
+      handle: fakeHandle({ readError: new DOMException('reader stopped', 'AbortError') }),
+    });
+    assert.equal(first, 'resumable');
+    const frozen = (await store.getRun(fixture.run.id))?.flueAgentEnvelope;
+    assert.equal(
+      parseRoutineExecutionInitialData(frozen?.initialData).runtimePlan.agentId,
+      'agent_default',
+    );
+
+    const events: string[] = [];
+    const second = await executeRoutineOccurrence({
+      env: {}, store, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt,
+    }, {
+      ...dependencies(events),
+      resolveAccess: async (_run, routine) => {
+        events.push('live-access-b');
+        return {
+          config: {
+            ...config,
+            workspaceId: routine.workspaceId,
+            channelId: routine.channelId,
+            agentId: 'agent_b',
+            agent: { ...config.agent, id: 'agent_b', name: 'Agent B' },
+          },
+          accessHash: 'b'.repeat(64),
+          botToken: 'xoxb-test',
+          botUserId: 'U_BOT',
+        };
+      },
+      resolveModel: async () => {
+        events.push('model-b');
+        return { model: config.model };
+      },
+      preparePrompt: async () => {
+        events.push('prompt-b');
+        throw new Error('must not prepare Agent B context for Agent A reattachment');
+      },
+      handle: fakeHandle({ events }),
+    });
+
+    assert.equal(second, 'completed');
+    assert.deepEqual(events, ['live-access-b']);
+    const failed = await store.getRun(fixture.run.id);
+    assert.equal(failed?.status, 'failed');
+    assert.equal(failed?.failureClass, 'access_denied');
+    assert.equal(failed?.resolvedAgentId, 'agent_default');
+    assert.deepEqual(failed?.flueAgentEnvelope, frozen);
   } finally {
     store.close();
   }

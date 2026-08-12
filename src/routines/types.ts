@@ -431,6 +431,7 @@ export interface TransitionRoutineRunInput {
   at: number;
   failureClass?: RoutineFailureClass | null;
   publicError?: string | null;
+  skipReason?: string | null;
   model?: string;
   inputTokens?: number;
   outputTokens?: number;

@@ -390,7 +390,7 @@ export async function runTurn(
         runId: options.runId,
         runFencingToken: options.runFencingToken ?? 0,
         footer: {
-          profileName: assignment.agent.name,
+          agentName: assignment.agent.name,
           modelLabel: resolvedModel,
           agentId: assignment.agent.id,
           publicUrl,

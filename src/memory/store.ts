@@ -25,6 +25,7 @@ import {
   type CreateForgetChallengeInput,
   type ConfirmMemoryConversationContextInput,
   type CreateOwnerMemoryEntryInput,
+  type CreateOwnerMemoryWriteChallengeInput,
   type ForgetMemoryEntryInput,
   type ForgetOwnerMemoryEntryInput,
   type MemoryConversationContext,
@@ -45,6 +46,7 @@ import {
   type MemoryOwnerDescriptor,
   type MemoryOwnerRef,
   type OwnerMemoryEntry,
+  type OwnerMemoryWriteChallenge,
   type OwnerMemoryLifecycleInput,
   type ObserveMemoryChannelScopeInput,
   type RecordMemoryReviewInput,
@@ -234,6 +236,13 @@ export class MemoryStoreLogic {
       case 'create_owner_forget_challenge':
         this.createOwnerForgetChallenge(request.input);
         return { kind: 'ok' };
+      case 'create_owner_write_challenge':
+        this.createOwnerWriteChallenge(request.input);
+        return { kind: 'ok' };
+      case 'get_owner_write_challenge':
+        return { kind: 'owner_write_challenge', challenge: this.getOwnerWriteChallenge(request.tokenHash, request.slackUserId) ?? null };
+      case 'consume_owner_write_challenge':
+        return { kind: 'owner_write_challenge', challenge: this.consumeOwnerWriteChallenge(request.tokenHash, request.slackUserId, request.consumedAt) ?? null };
       case 'replay_owner_import':
         return { kind: 'owner_import_replay', entries: this.replayOwnerImport(request.input) ?? null };
       case 'apply_owner_import':
@@ -713,6 +722,45 @@ export class MemoryStoreLogic {
       throw new MemoryStateError('memory_confirmation_invalid', 'Forget confirmation is invalid.');
     }
     this.insertForgetChallenge(input);
+  }
+
+  createOwnerWriteChallenge(input: CreateOwnerMemoryWriteChallengeInput): void {
+    validateOwnerWriteChallenge(input);
+    this.db.run(
+      `INSERT INTO memory_owner_write_challenges (
+        challenge_id, token_hash, workspace_id, slack_user_id, slack_identity_id,
+        slack_identity_revision, actor_binding_id, actor_binding_revision, user_id,
+        organization_id, membership_id, membership_role, membership_updated_at,
+        membership_access_version, agent_id, agent_name, store_id, owner_reset_epoch,
+        command_json, mutation_digest, expires_at, consumed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+      input.challengeId, input.tokenHash, input.workspaceId, input.slackUserId,
+      input.slackIdentityId, input.slackIdentityRevision, input.actorBindingId,
+      input.actorBindingRevision, input.userId, input.organizationId, input.membershipId,
+      input.membershipRole, input.membershipUpdatedAt, input.membershipAccessVersion,
+      input.agentId, input.agentName, input.storeId, input.ownerResetEpoch,
+      input.commandJson, input.mutationDigest, input.expiresAt,
+    );
+  }
+
+  getOwnerWriteChallenge(tokenHash: string, slackUserId: string): OwnerMemoryWriteChallenge | undefined {
+    const row = this.db.get(
+      `SELECT * FROM memory_owner_write_challenges WHERE token_hash = ? AND slack_user_id = ? AND consumed_at IS NULL AND expires_at >= ?`,
+      tokenHash, slackUserId, this.now(),
+    ) as Record<string, unknown> | undefined;
+    return row ? rowToOwnerWriteChallenge(row) : undefined;
+  }
+
+  consumeOwnerWriteChallenge(tokenHash: string, slackUserId: string, consumedAt: number): OwnerMemoryWriteChallenge | undefined {
+    return this.db.transaction(() => {
+      const current = this.getOwnerWriteChallenge(tokenHash, slackUserId);
+      if (!current || current.expiresAt < consumedAt) return undefined;
+      const updated = this.db.run(
+        `UPDATE memory_owner_write_challenges SET consumed_at = ? WHERE challenge_id = ? AND consumed_at IS NULL`,
+        consumedAt, current.challengeId,
+      );
+      return updated.changes === 1 ? { ...current, consumedAt } : undefined;
+    });
   }
 
   getOwnerEntry(entryId: string): OwnerMemoryEntry | undefined {
@@ -2087,6 +2135,11 @@ export class MemoryStoreLogic {
          )`,
         at,
       );
+      this.db.run(
+        `DELETE FROM memory_owner_write_challenges
+         WHERE consumed_at IS NOT NULL OR expires_at < ?`,
+        at,
+      );
       return {
         actorIdsCleared: this.audit.clearExpiredActorIds(at - MEMORY_RETENTION_MS),
         rateWindowsDeleted: this.db.run(
@@ -2265,6 +2318,32 @@ export class MemoryStoreLogic {
         store_id TEXT NOT NULL,
         entry_id TEXT NOT NULL,
         expected_version INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        consumed_at INTEGER
+      )`,
+    );
+    this.db.exec(
+      `CREATE TABLE IF NOT EXISTS memory_owner_write_challenges (
+        challenge_id TEXT PRIMARY KEY,
+        token_hash TEXT NOT NULL UNIQUE,
+        workspace_id TEXT NOT NULL,
+        slack_user_id TEXT NOT NULL,
+        slack_identity_id TEXT NOT NULL,
+        slack_identity_revision INTEGER NOT NULL,
+        actor_binding_id TEXT NOT NULL,
+        actor_binding_revision INTEGER NOT NULL,
+        user_id TEXT NOT NULL,
+        organization_id TEXT NOT NULL,
+        membership_id TEXT NOT NULL,
+        membership_role TEXT NOT NULL CHECK (membership_role IN ('owner', 'admin')),
+        membership_updated_at INTEGER NOT NULL,
+        membership_access_version INTEGER NOT NULL,
+        agent_id TEXT NOT NULL,
+        agent_name TEXT NOT NULL,
+        store_id TEXT NOT NULL,
+        owner_reset_epoch INTEGER NOT NULL,
+        command_json TEXT NOT NULL,
+        mutation_digest TEXT NOT NULL,
         expires_at INTEGER NOT NULL,
         consumed_at INTEGER
       )`,
@@ -2749,6 +2828,18 @@ export class SqliteMemoryStateStore implements MemoryStateStore {
     this.logic.createOwnerForgetChallenge(input);
   }
 
+  async createOwnerWriteChallenge(input: CreateOwnerMemoryWriteChallengeInput): Promise<void> {
+    this.logic.createOwnerWriteChallenge(input);
+  }
+
+  async getOwnerWriteChallenge(tokenHash: string, slackUserId: string): Promise<OwnerMemoryWriteChallenge | undefined> {
+    return this.logic.getOwnerWriteChallenge(tokenHash, slackUserId);
+  }
+
+  async consumeOwnerWriteChallenge(tokenHash: string, slackUserId: string, consumedAt: number): Promise<OwnerMemoryWriteChallenge | undefined> {
+    return this.logic.consumeOwnerWriteChallenge(tokenHash, slackUserId, consumedAt);
+  }
+
   async replayOwnerImport(input: ReplayOwnerMemoryImportInput): Promise<OwnerMemoryEntry[] | undefined> {
     return this.logic.replayOwnerImport(input);
   }
@@ -3117,6 +3208,37 @@ function rowToOwnerEntry(row: OwnerEntryRow): OwnerMemoryEntry {
     contentHash: row.content_hash,
     supersedingEntryId: row.superseding_entry_id,
   };
+}
+
+function rowToOwnerWriteChallenge(row: Record<string, unknown>): OwnerMemoryWriteChallenge {
+  return {
+    challengeId: String(row.challenge_id), tokenHash: String(row.token_hash),
+    workspaceId: String(row.workspace_id), slackUserId: String(row.slack_user_id),
+    slackIdentityId: String(row.slack_identity_id), slackIdentityRevision: Number(row.slack_identity_revision),
+    actorBindingId: String(row.actor_binding_id), actorBindingRevision: Number(row.actor_binding_revision),
+    userId: String(row.user_id), organizationId: String(row.organization_id),
+    membershipId: String(row.membership_id), membershipRole: String(row.membership_role) as 'owner' | 'admin',
+    membershipUpdatedAt: Number(row.membership_updated_at), membershipAccessVersion: Number(row.membership_access_version),
+    agentId: String(row.agent_id), agentName: String(row.agent_name), storeId: String(row.store_id),
+    ownerResetEpoch: Number(row.owner_reset_epoch), commandJson: String(row.command_json),
+    mutationDigest: String(row.mutation_digest), expiresAt: Number(row.expires_at),
+    consumedAt: row.consumed_at === null ? null : Number(row.consumed_at),
+  };
+}
+
+function validateOwnerWriteChallenge(input: CreateOwnerMemoryWriteChallengeInput): void {
+  const required = [input.challengeId, input.tokenHash, input.workspaceId, input.slackUserId,
+    input.slackIdentityId, input.actorBindingId, input.userId, input.organizationId,
+    input.membershipId, input.agentId, input.agentName, input.storeId, input.commandJson,
+    input.mutationDigest];
+  if (required.some((value) => typeof value !== 'string' || value.trim().length === 0) ||
+      (input.membershipRole !== 'owner' && input.membershipRole !== 'admin') ||
+      !Number.isSafeInteger(input.slackIdentityRevision) || input.slackIdentityRevision < 0 ||
+      !Number.isSafeInteger(input.actorBindingRevision) || input.actorBindingRevision < 1 ||
+      !Number.isSafeInteger(input.ownerResetEpoch) || input.ownerResetEpoch < 1 ||
+      !Number.isSafeInteger(input.expiresAt) || input.expiresAt <= 0 || input.consumedAt !== null) {
+    throw new MemoryStateError('memory_confirmation_invalid', 'Owner write confirmation is invalid.');
+  }
 }
 
 function rowToEntry(row: EntryRow): MemoryEntry {

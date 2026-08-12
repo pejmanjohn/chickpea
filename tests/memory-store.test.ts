@@ -432,3 +432,30 @@ test('conversation contexts rotate monotonically only when the selection contrac
     store.close();
   }
 });
+
+test('Agent-memory owner write challenges are actor-bound and consume exactly once', async () => {
+  let now = 1_000;
+  const store = new SqliteMemoryStateStore(':memory:', () => now);
+  try {
+    const input = {
+      challengeId: 'challenge_owner_write_1', tokenHash: 'hash_owner_write_1',
+      workspaceId: 'T_OWNER_WRITE', slackUserId: 'U_ADMIN',
+      slackIdentityId: 'slack_identity_default', slackIdentityRevision: 4,
+      actorBindingId: 'actor_binding_1', actorBindingRevision: 2,
+      userId: 'user_admin', organizationId: 'org_oss', membershipId: 'membership_admin',
+      membershipRole: 'admin' as const, membershipUpdatedAt: 900, membershipAccessVersion: 3,
+      agentId: 'agent_default', agentName: 'Default Agent', storeId: 'memory_owner_agent_1',
+      ownerResetEpoch: 1, commandJson: '{"kind":"remember"}', mutationDigest: 'digest_1',
+      expiresAt: 61_000, consumedAt: null,
+    };
+    await store.createOwnerWriteChallenge(input);
+    assert.equal(await store.getOwnerWriteChallenge(input.tokenHash, 'U_OTHER'), undefined);
+    assert.equal((await store.getOwnerWriteChallenge(input.tokenHash, input.slackUserId))?.agentId, 'agent_default');
+    assert.equal((await store.consumeOwnerWriteChallenge(input.tokenHash, input.slackUserId, now))?.consumedAt, now);
+    assert.equal(await store.consumeOwnerWriteChallenge(input.tokenHash, input.slackUserId, now), undefined);
+    now = 62_000;
+    assert.equal(await store.getOwnerWriteChallenge(input.tokenHash, input.slackUserId), undefined);
+  } finally {
+    store.close();
+  }
+});

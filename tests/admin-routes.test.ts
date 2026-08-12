@@ -1510,7 +1510,7 @@ test('admin API accepts an unpinned agent only when SLACK_TAG_MODEL is set', asy
   }
 });
 
-test('admin API blocks deleting an agent while assignments still reference it', async () => {
+test('admin API reports every Agent reference before disable or atomic delete', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   try {
     const app = appWithAdmin(store);
@@ -1528,15 +1528,20 @@ test('admin API blocks deleting an agent while assignments still reference it', 
 
     assert.equal(response.status, 409);
     assert.deepEqual(await response.json(), {
-      error: 'agent_still_assigned',
-      assignments: [{ workspaceId: 'T_ADMIN', channelId: 'C_ADMIN' }],
+      error: 'agent_still_referenced',
+      references: {
+        agentId: 'agent_admin',
+        channelAssignments: [{ workspaceId: 'T_ADMIN', channelId: 'C_ADMIN' }],
+        dmIdentityIds: [],
+        identityReferenceIds: [],
+      },
     });
   } finally {
     store.close();
   }
 });
 
-test('admin API reports Slack DM identity blockers for Profile disable and delete', async () => {
+test('admin API reports Slack DM identity blockers for Agent disable and delete', async () => {
   const profileId = 'agent_dm_handler';
   const identityId = 'slack_identity_dm_handler';
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
@@ -1560,10 +1565,18 @@ test('admin API reports Slack DM identity blockers for Profile disable and delet
       updatedAt: 1_800_000_000_000,
     });
     const app = appWithAdminOptions(store, { settings });
-    const expected = {
-      error: 'agent_slack_dm_handler',
-      profileId,
-      identityIds: [identityId],
+    const disableExpected = {
+      error: 'agent_still_referenced',
+      references: [`DM:${identityId}`],
+    };
+    const deleteExpected = {
+      error: 'agent_still_referenced',
+      references: {
+        agentId: profileId,
+        channelAssignments: [],
+        dmIdentityIds: [identityId],
+        identityReferenceIds: [],
+      },
     };
 
     const disabled = await app.request(`/admin/api/agents/${profileId}`, {
@@ -1572,7 +1585,7 @@ test('admin API reports Slack DM identity blockers for Profile disable and delet
       body: JSON.stringify({ enabled: false }),
     });
     assert.equal(disabled.status, 409);
-    assert.deepEqual(await disabled.json(), expected);
+    assert.deepEqual(await disabled.json(), disableExpected);
     assert.equal((await store.getAgent(profileId)).enabled, true);
 
     const deleted = await app.request(`/admin/api/agents/${profileId}`, {
@@ -1580,7 +1593,7 @@ test('admin API reports Slack DM identity blockers for Profile disable and delet
       headers: auth(ADMIN_TOKEN),
     });
     assert.equal(deleted.status, 409);
-    assert.deepEqual(await deleted.json(), expected);
+    assert.deepEqual(await deleted.json(), deleteExpected);
     assert.equal((await store.getAgent(profileId)).id, profileId);
   } finally {
     settings.close();
@@ -4229,12 +4242,12 @@ test('agent deletion leaves secrets untouched when the config delete fails befor
   let failConfigDelete = true;
   const flakyStore = new Proxy(store, {
     get(target, property, receiver) {
-      if (property === 'deleteAgent') {
-        return async (agentId: string) => {
+      if (property === 'deleteAgentWithMemory') {
+        return async (agentId: string, idempotencyKey: string) => {
           if (failConfigDelete) {
             throw new Error('config deletion unavailable');
           }
-          return target.deleteAgent(agentId);
+          return target.deleteAgentWithMemory(agentId, idempotencyKey);
         };
       }
       const value = Reflect.get(target, property, receiver) as unknown;
@@ -4297,9 +4310,9 @@ test('agent deletion finishes cleanup after an ambiguous post-commit config erro
   const settings = new SqliteSettingsStore(':memory:');
   const ambiguousStore = new Proxy(store, {
     get(target, property, receiver) {
-      if (property === 'deleteAgent') {
-        return async (agentId: string) => {
-          await target.deleteAgent(agentId);
+      if (property === 'deleteAgentWithMemory') {
+        return async (agentId: string, idempotencyKey: string) => {
+          await target.deleteAgentWithMemory(agentId, idempotencyKey);
           throw new Error('durable object response lost after commit');
         };
       }
@@ -4345,8 +4358,8 @@ test('an assignment race leaves the live agent credentials intact and can retry'
   let injectAssignment = true;
   const racingStore = new Proxy(store, {
     get(target, property, receiver) {
-      if (property === 'deleteAgent') {
-        return async (agentId: string) => {
+      if (property === 'deleteAgentWithMemory') {
+        return async (agentId: string, idempotencyKey: string) => {
           if (injectAssignment) {
             injectAssignment = false;
             await target.putAssignment({
@@ -4355,7 +4368,7 @@ test('an assignment race leaves the live agent credentials intact and can retry'
               agentId,
             });
           }
-          return target.deleteAgent(agentId);
+          return target.deleteAgentWithMemory(agentId, idempotencyKey);
         };
       }
       const value = Reflect.get(target, property, receiver) as unknown;
@@ -4378,7 +4391,10 @@ test('an assignment race leaves the live agent credentials intact and can retry'
     });
 
     assert.equal(raced.status, 409);
-    assert.deepEqual(await raced.json(), { error: 'agent_still_assigned' });
+    assert.deepEqual(await raced.json(), {
+      error: 'agent_still_referenced',
+      references: ['T_RACE/C_RACE'],
+    });
     assert.deepEqual((await store.getAgent('agent_race')).mcpServers, [connection]);
     assert.equal(await settings.getSetting(bearerKey), 'tok');
     assert.equal(await settings.getSetting(headerKey), 'val');

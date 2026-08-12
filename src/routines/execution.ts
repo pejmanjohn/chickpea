@@ -157,13 +157,17 @@ export async function executeRoutineOccurrence(
   } catch (error) {
     if (error instanceof RoutineSupersededError) return 'superseded';
     const failure = runtimeFailure(error, false);
-    await failUnsettledRun(
-      input.store,
-      current.id,
-      failure.failureClass,
-      failure.publicError,
-      now(),
-    );
+    if (failure.failureClass === 'assignment_missing' && current.status === 'admitting') {
+      await skipUnresolvedRun(input.store, current.id, failure.publicError, now());
+    } else {
+      await failUnsettledRun(
+        input.store,
+        current.id,
+        failure.failureClass,
+        failure.publicError,
+        now(),
+      );
+    }
     return 'completed';
   }
   if (prepared.run.flueAgentSettlement) {
@@ -337,13 +341,26 @@ async function prepareExecution(
   }
   const resolveAccess = dependencies.resolveAccess ?? resolveRoutineRuntimeAccess;
   const access = await resolveAccess(input.run, input.routine, input.env);
+  if (input.run.flueAgentEnvelope) {
+    assertRoutineReattachmentAttribution(input.run, input.run.flueAgentEnvelope, access);
+  }
   const settingsStore = dependencies.settingsStore ?? getSettingsStore(input.env);
   const usageStore = dependencies.usageStore ?? getUsageStore(input.env);
   const resolveModel = dependencies.resolveModel ?? resolveRuntimeModel;
-  const runtimeModel = await resolveModel(access.config.agentId, access.config.model, {
-    settings: settingsStore,
-    env: input.env,
-  });
+  const frozenInitialData = input.run.flueAgentEnvelope
+    ? executionInitialData(input.run.flueAgentEnvelope)
+    : undefined;
+  const runtimeModel = frozenInitialData
+    ? {
+        model: frozenInitialData.runtimePlan.model,
+        ...(input.run.providerAuthRoute
+          ? { providerAuthRoute: input.run.providerAuthRoute }
+          : {}),
+      }
+    : await resolveModel(access.config.agentId, access.config.model, {
+        settings: settingsStore,
+        env: input.env,
+      });
   const prompt = await (dependencies.preparePrompt ?? prepareRoutinePrompt)(
     input.run,
     input.routine,
@@ -526,6 +543,26 @@ function createEnvelope(input: {
 
 function executionInitialData(envelope: RoutineAgentDispatchEnvelopeV1): RoutineExecutionInitialData {
   return parseRoutineExecutionInitialData(envelope.initialData);
+}
+
+function assertRoutineReattachmentAttribution(
+  run: RoutineRun,
+  envelope: RoutineAgentDispatchEnvelopeV1,
+  access: RoutineRuntimeAccess,
+): void {
+  const admittedAgentId = executionInitialData(envelope).runtimePlan.agentId;
+  if (
+    !run.resolvedAgentId ||
+    !run.resolvedAccessHash ||
+    run.resolvedAgentId !== admittedAgentId ||
+    access.config.agentId !== admittedAgentId ||
+    access.accessHash !== run.resolvedAccessHash
+  ) {
+    throw new RoutineRuntimeError(
+      'access_denied',
+      'Channel access changed while the routine was running.',
+    );
+  }
 }
 
 async function createRoutineShadowLifecycle(
@@ -821,6 +858,25 @@ async function failUnsettledRun(
     at,
     failureClass,
     publicError,
+  });
+}
+
+async function skipUnresolvedRun(
+  store: RoutineStore,
+  occurrenceId: string,
+  publicError: string,
+  at: number,
+): Promise<void> {
+  const run = await store.getRun(occurrenceId);
+  if (!run || run.status !== 'admitting') return;
+  await store.transitionRun({
+    occurrenceId: run.id,
+    from: ['admitting'],
+    to: 'skipped',
+    at,
+    failureClass: 'assignment_missing',
+    publicError,
+    skipReason: 'unresolved_assignment',
   });
 }
 
