@@ -1,106 +1,132 @@
 #!/usr/bin/env node
 /**
- * Reset the Chickpea live-test environment for a clean fresh install.
+ * Exact-resource cleanup for disposable Chickpea live acceptance runs.
  *
- * We do this reset every test cycle. The steps:
- *
- *   1. Ship the code the Deploy button installs from:
- *        git push origin main
- *      (The README's "Deploy to Cloudflare" button clones github.com/pejmanjohn/
- *       chickpea, so unpushed local commits will NOT be in a fresh install.)
- *
- *   2. Delete the previous test run's Cloudflare Worker (this script, with --yes).
- *      Each install creates a new worker (e.g. `chickpea-test-run`); pass its
- *      name with --worker. Deleting it (with force) also drops its Durable
- *      Object, which held the last test's Slack creds + config.
- *
- *   3. Delete the Slack app — MANUAL (no bot-token API for this):
- *        https://api.slack.com/apps -> the app in your test workspace (e.g.
- *        "Chickpea" in "Acme Inc") -> Basic Information -> Delete App -> confirm.
- *      Each fresh install's wizard creates a NEW app, so always delete the old.
- *
- *   4. Clear local dev state (this script, with --yes): removes tmp/ and
- *      .wrangler/. Add --wipe-creds to also remove the now-invalid
- *      .env.slack.* credential files.
- *
- *   5. Fresh install: click Deploy to Cloudflare, set
- *      CHICKPEA_RECOVERY_TOKEN (openssl rand -hex 32), open /admin/setup,
- *      configure the path-scoped authentication perimeter once, verify the owner, and
- *      follow the Slack manifest deep-link to connect a fresh app.
- *
- * Usage:
- *   node scripts/reset-test-env.mjs                                  # dry run — print the plan
- *   node scripts/reset-test-env.mjs --worker chickpea-test-run --yes # delete worker + clear local state
- *   node scripts/reset-test-env.mjs --worker <name> --yes --wipe-creds
- *
- * Requires Node >= 22.19 and an authenticated wrangler (`wrangler whoami`).
+ * Dry-run is mandatory first. This script never discovers cleanup targets by
+ * name or prefix: every target comes from an append-only run ledger. Slack UI
+ * resources and Cloudflare/GitHub resources without a supported exact CLI
+ * operation remain explicit manual actions and are not marked verified here.
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync, rmSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
 
-const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const DEPLOY_URL = 'https://deploy.workers.cloudflare.com/?url=https://github.com/pejmanjohn/chickpea';
+import { cleanupPlan, recordCleanupVerified } from './live-test-resource-ledger.mjs';
 
-const args = process.argv.slice(2);
-const flag = (name) => args.includes(name);
-const value = (name) => {
-  const i = args.indexOf(name);
-  return i >= 0 ? args[i + 1] : undefined;
-};
+const REPO_ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 
-const worker = value('--worker');
-const apply = flag('--yes');
-const wipeCreds = flag('--wipe-creds');
-
-const localTargets = ['tmp', '.wrangler', ...(wipeCreds ? ['.env.slack.local', '.env.slack.rehearsal'] : [])];
-
-console.log('\nChickpea test-env reset' + (apply ? '' : '  (dry run — pass --yes to execute)'));
-console.log('─'.repeat(52));
-console.log('1. Push code first (manual):  git push origin main');
-console.log(`2. Cloudflare worker:         ${worker ? `delete "${worker}"` : '(pass --worker <name> to delete)'}`);
-console.log('3. Slack app:                 delete at https://api.slack.com/apps  (MANUAL — no API)');
-console.log(`4. Local dev state:           remove ${localTargets.join(', ')}`);
-console.log(`5. Fresh install:             ${DEPLOY_URL}`);
-console.log('   Onboarding:                /admin/setup → verified email → Slack');
-console.log('─'.repeat(52));
-
-if (!apply) {
-  console.log('\nDry run only. Re-run with --yes to perform steps 2 and 4.');
-  console.log('Steps 1, 3, 5 are always yours to run (push / Slack console / Deploy button).\n');
-  process.exit(0);
+export function renderCleanupPlan(targets) {
+  if (!Array.isArray(targets) || targets.length === 0) return 'No pending owned resources.';
+  return targets.map((target, index) => {
+    const operation = target.action === 'archive' ? 'ARCHIVE' : 'DELETE';
+    return `${index + 1}. ${operation} ${target.provider}/${target.kind} id=${target.id}`;
+  }).join('\n');
 }
 
-// Step 2 — delete the Cloudflare worker (force also removes its Durable Object).
-if (worker) {
-  console.log(`\n→ Deleting Cloudflare worker "${worker}" …`);
-  const res = spawnSync('node_modules/.bin/wrangler', ['delete', '--name', worker], {
+export function automaticCleanupCommand(target, { d1Name } = {}) {
+  switch (`${target.provider}:${target.kind}`) {
+    case 'cloudflare:worker':
+    case 'cloudflare:capture_worker':
+      return { command: 'node_modules/.bin/wrangler', args: ['delete', target.id, '--force'], input: 'y\n' };
+    case 'cloudflare:d1':
+    case 'cloudflare:capture_store':
+      if (!d1Name) return null;
+      return { command: 'node_modules/.bin/wrangler', args: ['d1', 'delete', d1Name, '--skip-confirmation'] };
+    case 'cloudflare:container_app':
+      return { command: 'node_modules/.bin/wrangler', args: ['containers', 'delete', target.id], input: 'y\n' };
+    case 'cloudflare:container_image':
+      return { command: 'node_modules/.bin/wrangler', args: ['containers', 'images', 'delete', target.id, '--skip-confirmation'] };
+    case 'github:generated_repository':
+      return { command: 'gh', args: ['repo', 'delete', target.id, '--yes'] };
+    default:
+      return null;
+  }
+}
+
+export function resolveD1NameByExactId(target, rawList) {
+  const parsed = typeof rawList === 'string' ? JSON.parse(rawList) : rawList;
+  if (!Array.isArray(parsed)) throw new Error('Wrangler D1 inventory was not an array.');
+  const matches = parsed.filter((row) => row && row.uuid === target.id && typeof row.name === 'string');
+  if (matches.length !== 1) {
+    throw new Error(`D1 exact ID ${target.id} resolved to ${matches.length} resources; refusing cleanup.`);
+  }
+  return matches[0].name;
+}
+
+export function isManualCleanupTarget(target) {
+  return automaticCleanupCommand(target) === null &&
+    !['cloudflare:d1', 'cloudflare:capture_store'].includes(`${target.provider}:${target.kind}`);
+}
+
+export function executeCleanup({ ledgerPath, apply = false, runCommand = run, stdout = process.stdout }) {
+  const targets = cleanupPlan(ledgerPath);
+  stdout.write(`\nChickpea disposable cleanup${apply ? '' : ' (dry run)'}\n`);
+  stdout.write(`${renderCleanupPlan(targets)}\n`);
+  if (!apply || targets.length === 0) return { targets, completed: [], manual: targets.filter(isManualCleanupTarget) };
+
+  const completed = [];
+  const manual = [];
+  let d1Inventory;
+  for (const target of targets) {
+    let d1Name;
+    if (target.provider === 'cloudflare' && ['d1', 'capture_store'].includes(target.kind)) {
+      if (d1Inventory === undefined) {
+        const listed = runCommand({ command: 'node_modules/.bin/wrangler', args: ['d1', 'list', '--json'] });
+        if (listed.status !== 0) throw new Error('Unable to inventory D1 before exact cleanup.');
+        d1Inventory = listed.stdout;
+      }
+      d1Name = resolveD1NameByExactId(target, d1Inventory);
+    }
+    const command = automaticCleanupCommand(target, { d1Name });
+    if (!command) {
+      manual.push(target);
+      continue;
+    }
+    const result = runCommand(command);
+    if (result.status !== 0) {
+      throw new Error(`Cleanup failed for ${target.provider}/${target.kind}/${target.id}.`);
+    }
+    // Verification is deliberately a separate inventory pass. The executor
+    // cannot mark absence merely because a destructive command returned zero.
+    completed.push(target);
+  }
+  return { targets, completed, manual };
+}
+
+function run({ command, args, input }) {
+  return spawnSync(command, args, {
     cwd: REPO_ROOT,
-    input: 'y\ny\n',
+    ...(input ? { input } : {}),
     encoding: 'utf8',
+    stdio: ['pipe', 'pipe', 'pipe'],
   });
-  process.stdout.write(res.stdout || '');
-  process.stderr.write(res.stderr || '');
-  if (res.status !== 0) {
-    console.error('  wrangler delete failed — check `wrangler whoami` and the worker name.');
-  }
-} else {
-  console.log('\n→ No --worker given; skipping the Cloudflare delete.');
 }
 
-// Step 4 — clear local dev state.
-console.log('\n→ Clearing local state …');
-for (const target of localTargets) {
-  const path = join(REPO_ROOT, target);
-  if (existsSync(path)) {
-    rmSync(path, { recursive: true, force: true });
-    console.log(`  removed ${target}`);
-  } else {
-    console.log(`  (already gone) ${target}`);
+function argument(args, flag) {
+  const index = args.indexOf(flag);
+  return index >= 0 ? args[index + 1] : undefined;
+}
+
+async function cli() {
+  const args = process.argv.slice(2);
+  const ledgerPath = argument(args, '--ledger');
+  if (!ledgerPath) throw new Error('Pass --ledger <path>. Cleanup targets never come from command-line names.');
+  const apply = args.includes('--apply');
+  const result = executeCleanup({ ledgerPath, apply });
+  if (!apply) {
+    console.log('\nDry run only. Review every exact ID, then re-run with --apply.');
+  }
+  if (result.manual.length > 0) {
+    console.log('\nManual exact-ID cleanup still required:');
+    console.log(renderCleanupPlan(result.manual));
+  }
+  if (result.completed.length > 0) {
+    console.log('\nCommands completed but are NOT yet ledger-verified. Re-inventory each exact ID, then record cleanup_verified.');
   }
 }
 
-console.log('\nDone. Remaining manual steps:');
-console.log('  • Delete the Slack app (step 3) if you have not.');
-console.log(`  • Fresh install: ${DEPLOY_URL}\n`);
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  cli().catch((error) => { console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1; });
+}
+
+export { recordCleanupVerified };
