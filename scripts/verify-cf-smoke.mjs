@@ -555,7 +555,11 @@ async function renderAdminWithWorkerdState(baseUrl, path = '/admin') {
   const timeoutMs = 5000;
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (app.innerHTML.length > 0) {
+    if (
+      app.innerHTML.length > 0 &&
+      !app.innerHTML.includes('Loading setup&hellip;') &&
+      !app.innerHTML.includes('Loading Slack setup&hellip;')
+    ) {
       return { html: app.innerHTML, listeners };
     }
     await delay(10);
@@ -897,8 +901,8 @@ async function main() {
     );
     const firstRunAdmin = await renderAdminWithWorkerdState(baseUrl, '/admin/onboarding');
     check(
-      firstRunAdmin.html.includes('Connect @Chickpea') &&
-        firstRunAdmin.html.includes('Create @Chickpea in Slack') &&
+      firstRunAdmin.html.includes('Create Chickpea') &&
+        firstRunAdmin.html.includes('Create Chickpea in Slack') &&
         firstRunAdmin.html.includes('data-action="advance-slack-step"'),
       'first-run onboarding shows one Slack creation action',
     );
@@ -956,7 +960,7 @@ async function main() {
     check(
       connectedAdmin.html.includes('Choose where Chickpea should start') &&
         connectedAdmin.html.includes('data-action="onboarding-channel-form"'),
-      'post-wizard onboarding advances directly to the first-channel picker',
+      'fresh post-wizard onboarding resumes at the first-channel picker',
     );
     check(
       connectedAdmin.html.length > 0 &&
@@ -1341,26 +1345,19 @@ async function main() {
     );
     const memoryFinals = await waitForFinalCount(backend, 2, 90_000);
     check(
-      memoryFinals.length === 2 && Boolean(memoryFinals[1]?.text.includes('Saved workspace memory `release-guidance`')),
-      'explicit Memory command persisted and returned an attributed receipt',
+      memoryFinals.length === 2 && Boolean(memoryFinals[1]?.text.includes('Saved Channel memory `release-guidance`')),
+      'explicit Memory command persisted to exact Channel memory and returned an attributed receipt',
       memoryFinals[1]?.text ?? 'no memory receipt',
     );
-    const memoryScopes = await adminFetch(baseUrl, '/admin/api/audit/memory/scopes');
-    const smokeScope = memoryScopes.body?.scopes?.find((scope) => scope.channelId === CHANNEL);
-    const memoryFiles = smokeScope
-      ? await adminFetch(
-          baseUrl,
-          `/admin/api/audit/memory/stores/${encodeURIComponent(smokeScope.storeId)}/files` +
-            `?sourceChannelId=${encodeURIComponent(CHANNEL)}`,
-        )
-      : { status: 0, body: undefined };
+    const memoryOwnerPath = `/admin/api/audit/memory/owners/channel/${encodeURIComponent(WORKSPACE)}/${encodeURIComponent(CHANNEL)}`;
+    const memoryFiles = await adminFetch(baseUrl, `${memoryOwnerPath}/files`);
     const smokeMemoryFile = memoryFiles.body?.files?.find((file) => file.name === 'release-guidance.md');
     check(
-      memoryScopes.status === 200 && smokeScope?.privacy === 'public' &&
-        memoryFiles.status === 200 && memoryFiles.body?.files?.[0]?.name === 'MEMORY.md' &&
+      memoryFiles.status === 200 && memoryFiles.body?.owner?.ownerKind === 'channel' &&
+        memoryFiles.body?.owner?.ownerId === CHANNEL && memoryFiles.body?.files?.[0]?.name === 'MEMORY.md' &&
         Boolean(smokeMemoryFile?.entryId),
-      'workerd admin Memory API exposes scope, generated index, and saved file',
-      `scopes=${memoryScopes.status} files=${memoryFiles.status}`,
+      'workerd Admin Memory API exposes exact Channel owner, generated index, and saved file',
+      `files=${memoryFiles.status}`,
     );
     const memoryEditBody = JSON.stringify({
       expectedVersion: 1,
@@ -1370,7 +1367,7 @@ async function main() {
     });
     const memoryEdit = await adminFetch(
       baseUrl,
-      `/admin/api/audit/memory/entries/${encodeURIComponent(smokeMemoryFile?.entryId ?? '')}`,
+      `${memoryOwnerPath}/entries/${encodeURIComponent(smokeMemoryFile?.entryId ?? '')}`,
       {
         method: 'PUT',
         headers: { 'idempotency-key': 'cf-smoke-memory-edit' },
@@ -1379,7 +1376,7 @@ async function main() {
     );
     const memoryConflict = await adminFetch(
       baseUrl,
-      `/admin/api/audit/memory/entries/${encodeURIComponent(smokeMemoryFile?.entryId ?? '')}`,
+      `${memoryOwnerPath}/entries/${encodeURIComponent(smokeMemoryFile?.entryId ?? '')}`,
       {
         method: 'PUT',
         headers: { 'idempotency-key': 'cf-smoke-memory-conflict' },
@@ -1411,7 +1408,7 @@ async function main() {
     );
     const restartMemory = await adminFetch(
       baseUrl,
-      `/admin/api/audit/memory/entries/${encodeURIComponent(smokeMemoryFile?.entryId ?? '')}`,
+      `${memoryOwnerPath}/entries/${encodeURIComponent(smokeMemoryFile?.entryId ?? '')}`,
     );
     check(
       restartMemory.status === 200 && restartMemory.body?.entry?.version === 2 &&
