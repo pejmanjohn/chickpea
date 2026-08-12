@@ -13,11 +13,16 @@ test('sealed Channel owner rejects runtime writes and remains inspectable', asyn
     const owner = await state.ensureOwner({
       workspaceId: 'T_TEST', ownerKind: 'channel', ownerId: 'C_ARCHIVED',
     });
+    const existing = await state.createOwnerEntry({
+      entryId: 'mem_existing', storeId: owner.storeId, workspaceId: 'T_TEST',
+      slug: 'existing', description: 'Existing.', type: 'fact', body: 'Retained.',
+      actorId: 'admin', actorClass: 'operator', idempotencyKey: 'create:C_ARCHIVED',
+    });
     const sealed = await state.sealOwner(owner, {
       reason: 'channel_archived', actorId: 'admin', idempotencyKey: 'seal:C_ARCHIVED',
     });
     assert.equal(sealed.lifecycle, 'sealed');
-    assert.deepEqual(await state.listOwnerEntries(sealed), []);
+    assert.deepEqual(await state.listOwnerEntries(sealed), [existing]);
     await assert.rejects(
       () => state.createOwnerEntry({
         entryId: 'mem_sealed', storeId: sealed.storeId, workspaceId: 'T_TEST',
@@ -25,6 +30,21 @@ test('sealed Channel owner rejects runtime writes and remains inspectable', asyn
         actorId: 'U_MEMBER', actorClass: 'member',
         writeOrigin: { kind: 'slack_channel', channelId: 'C_ARCHIVED' },
         idempotencyKey: 'sealed-write',
+      }),
+      /sealed/,
+    );
+    await assert.rejects(
+      () => state.updateOwnerEntry({
+        entryId: existing.entryId, expectedVersion: 1, description: 'Changed.',
+        type: 'fact', body: 'Changed.', actorId: 'admin', actorClass: 'operator',
+        idempotencyKey: 'update:C_ARCHIVED',
+      }),
+      /sealed/,
+    );
+    await assert.rejects(
+      () => state.forgetOwnerEntry({
+        entryId: existing.entryId, expectedVersion: 1, actorId: 'admin',
+        actorClass: 'operator', idempotencyKey: 'forget:C_ARCHIVED',
       }),
       /sealed/,
     );

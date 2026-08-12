@@ -10,16 +10,24 @@ import {
   signImportPreview,
   verifyImportPreview,
 } from '../memory/import.ts';
-import { projectMemoryEntry, projectMemoryFiles, sha256Hex } from '../memory/markdown.ts';
+import {
+  projectMemoryEntry, projectMemoryFiles, projectOwnerMemoryEntry,
+  projectOwnerMemoryFiles, sha256Hex,
+} from '../memory/markdown.ts';
+import { ownerMemoryStoreId } from '../memory/ids.ts';
 import {
   MemoryStateError,
   MemoryVersionConflictError,
   type MemoryEntry,
   type MemoryEntryFilter,
   type MemoryEntryScopeSummary,
+  type MemoryOwnerDescriptor,
+  type MemoryOwnerKind,
+  type MemoryOwnerRef,
   type MemoryRevision,
   type MemoryStateStore,
   type MemoryStoreDescriptor,
+  type OwnerMemoryEntry,
 } from '../memory/types.ts';
 import { validateMemoryContent } from '../memory/validation.ts';
 
@@ -60,6 +68,106 @@ export function createMemoryAdminApi(options: MemoryAdminApiOptions): Hono {
   const app = new Hono();
   const now = options.now ?? Date.now;
   const id = options.id ?? randomUUID;
+
+  app.get('/audit/memory/owners', async (c) => {
+    try {
+      return c.json({ owners: await options.store(c).listOwners(c.req.query('workspaceId')) });
+    } catch (error) { return memoryError(c, error); }
+  });
+
+  app.get('/audit/memory/owners/:ownerKind/:workspaceId/:ownerId/files', async (c) => {
+    try {
+      const owner = await routeOwner(c, options.store(c));
+      const entries = await options.store(c).listOwnerEntries(owner);
+      const projected = projectOwnerMemoryFiles({ owner, entries });
+      const bySlug = new Map(entries.map((entry) => [`${entry.slug}.md`, entry]));
+      return c.json({ owner, files: projected.filter(({ path }) => path.endsWith('.md')).map((file) => {
+        const entry = bySlug.get(file.path);
+        return {
+          name: file.path, path: file.path, generated: file.path === 'MEMORY.md',
+          entryId: entry?.entryId ?? null, version: entry?.version ?? null,
+          status: entry?.status ?? null, description: entry?.description ?? null,
+          content: file.path === 'MEMORY.md' ? file.content : undefined,
+        };
+      }) });
+    } catch (error) { return memoryError(c, error); }
+  });
+
+  app.get('/audit/memory/owners/:ownerKind/:workspaceId/:ownerId/entries/:entryId', async (c) => {
+    try {
+      const state = options.store(c);
+      const owner = await routeOwner(c, state);
+      const entry = await routeOwnerEntry(c, state, owner);
+      const events = await state.listAuditEvents({ subjectId: entry.entryId, limit: 100 });
+      return c.json({ entry, owner, projected: entry.status === 'forgotten' ? null : projectOwnerMemoryEntry(entry),
+        unresolvedReview: unresolvedReview(events) });
+    } catch (error) { return memoryError(c, error); }
+  });
+
+  app.put('/audit/memory/owners/:ownerKind/:workspaceId/:ownerId/entries/:entryId', async (c) => {
+    if (!safeMutationRequest(c)) return c.json({ error: 'cross_origin_denied' }, 403);
+    const idempotencyKey = readIdempotencyKey(c);
+    if (!idempotencyKey) return c.json({ error: 'idempotency_key_required' }, 400);
+    const parsed = v.safeParse(updateSchema, await readJson(c));
+    if (!parsed.success) return invalid(c);
+    try {
+      const state = options.store(c);
+      const owner = await routeOwner(c, state);
+      const current = await routeOwnerEntry(c, state, owner);
+      const content = validateMemoryContent(parsed.output);
+      const entry = await state.updateOwnerEntry({
+        entryId: current.entryId, expectedVersion: parsed.output.expectedVersion, ...content,
+        actorId: adminActor(c), actorClass: 'operator', idempotencyKey: `admin:owner:update:${idempotencyKey}`,
+      });
+      return c.json({ entry, projected: projectOwnerMemoryEntry(entry) });
+    } catch (error) { return memoryError(c, error); }
+  });
+
+  app.delete('/audit/memory/owners/:ownerKind/:workspaceId/:ownerId/entries/:entryId', async (c) => {
+    if (!safeMutationRequest(c)) return c.json({ error: 'cross_origin_denied' }, 403);
+    const idempotencyKey = readIdempotencyKey(c);
+    if (!idempotencyKey) return c.json({ error: 'idempotency_key_required' }, 400);
+    const parsed = v.safeParse(deleteSchema, await readJson(c));
+    if (!parsed.success) return invalid(c);
+    try {
+      const state = options.store(c);
+      const owner = await routeOwner(c, state);
+      const current = await routeOwnerEntry(c, state, owner);
+      const entry = await state.forgetOwnerEntry({
+        entryId: current.entryId, expectedVersion: parsed.output.expectedVersion,
+        actorId: adminActor(c), actorClass: 'operator', reasonCode: 'admin_delete',
+        idempotencyKey: `admin:owner:delete:${idempotencyKey}`,
+      });
+      return c.json({ entry, irreversible: true });
+    } catch (error) { return memoryError(c, error); }
+  });
+
+  app.get('/audit/memory/owners/:ownerKind/:workspaceId/:ownerId/entries/:entryId/history', async (c) => {
+    try {
+      const state = options.store(c);
+      const owner = await routeOwner(c, state);
+      const entry = await routeOwnerEntry(c, state, owner);
+      return c.json({ revisions: await state.listOwnerRevisions(entry.entryId) });
+    } catch (error) { return memoryError(c, error); }
+  });
+
+  app.get('/audit/memory/owners/:ownerKind/:workspaceId/:ownerId/export', async (c) => {
+    try {
+      const state = options.store(c);
+      const owner = await routeOwner(c, state);
+      const archive = encodeMemoryArchive(projectOwnerMemoryFiles({
+        owner, entries: await state.listOwnerEntries(owner),
+      }));
+      await state.recordAdminEvent({
+        eventType: 'memory.exported', storeId: owner.storeId, actorId: adminActor(c),
+        idempotencyKey: `admin:owner:export:${adminActor(c)}:${owner.storeId}:${Math.floor(now() / 3_600_000)}`,
+      });
+      c.header('content-type', 'application/x-tar');
+      c.header('content-disposition', `attachment; filename="chickpea-${owner.ownerKind}-memory-${owner.ownerId}.tar"`);
+      c.header('cache-control', 'no-store'); c.header('x-content-type-options', 'nosniff');
+      return c.body(archive.buffer.slice(archive.byteOffset, archive.byteOffset + archive.byteLength) as ArrayBuffer);
+    } catch (error) { return memoryError(c, error); }
+  });
 
   app.get('/audit/memory/scopes', async (c) => {
     try {
@@ -442,6 +550,35 @@ async function listAllEntries(
   }
 }
 
+async function routeOwner(c: Context, state: MemoryStateStore): Promise<MemoryOwnerDescriptor> {
+  const ownerKind = c.req.param('ownerKind');
+  if (ownerKind !== 'agent' && ownerKind !== 'channel') {
+    throw new MemoryStateError('memory_owner_invalid', 'Memory owner is invalid.');
+  }
+  const ownerRef: MemoryOwnerRef = {
+    ownerKind: ownerKind as MemoryOwnerKind,
+    workspaceId: parseId(requiredRouteParam(c, 'workspaceId')),
+    ownerId: parseId(requiredRouteParam(c, 'ownerId')),
+  };
+  const owner = await state.getOwner(ownerMemoryStoreId(ownerRef));
+  if (!owner || owner.workspaceId !== ownerRef.workspaceId || owner.ownerKind !== ownerRef.ownerKind ||
+      owner.ownerId !== ownerRef.ownerId) {
+    throw new MemoryStateError('memory_owner_not_found', 'Memory owner was not found.');
+  }
+  return owner;
+}
+
+async function routeOwnerEntry(
+  c: Context, state: MemoryStateStore, owner: MemoryOwnerDescriptor,
+): Promise<OwnerMemoryEntry> {
+  const entry = await state.getOwnerEntry(parseId(requiredRouteParam(c, 'entryId')));
+  if (!entry || entry.storeId !== owner.storeId || entry.workspaceId !== owner.workspaceId ||
+      entry.ownerKind !== owner.ownerKind || entry.ownerId !== owner.ownerId) {
+    throw new MemoryStateError('memory_entry_not_found', 'Memory entry was not found.');
+  }
+  return entry;
+}
+
 function assertUpdateReceipt(
   revisions: readonly MemoryRevision[],
   idempotencyKey: string,
@@ -619,6 +756,12 @@ function projectionPrefix(store: MemoryStoreDescriptor, channelId: string): stri
 
 function parseId(value: string): string {
   if (!isOpaqueId(value)) throw new MemoryStateError('memory_invalid_id', 'Memory identifier is invalid.');
+  return value;
+}
+
+function requiredRouteParam(c: Context, name: string): string {
+  const value = c.req.param(name);
+  if (!value) throw new MemoryStateError('memory_invalid_id', 'Memory identifier is invalid.');
   return value;
 }
 

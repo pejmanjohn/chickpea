@@ -90,6 +90,36 @@ export interface CreateOwnerMemoryEntryInput {
 
 export type UpdateOwnerMemoryEntryInput = UpdateMemoryEntryInput;
 
+export type ForgetOwnerMemoryEntryInput = ForgetMemoryEntryInput;
+export type TransitionOwnerMemoryEntryInput = TransitionMemoryEntryInput;
+export type RecordOwnerMemoryReviewInput = RecordMemoryReviewInput;
+
+export interface MergeOwnerMemoryEntriesInput {
+  replacement: CreateOwnerMemoryEntryInput;
+  sources: Array<{ entryId: string; expectedVersion: number }>;
+}
+
+export interface ApplyOwnerMemoryImportOperation {
+  action: 'create' | 'update';
+  entryId: string;
+  expectedVersion?: number;
+  slug: string;
+  description: string;
+  type: MemoryEntryType;
+  body: string;
+  status?: MemoryImportEntryStatus;
+}
+
+export interface ApplyOwnerMemoryImportInput {
+  owner: MemoryOwnerRef;
+  actorId: string;
+  archiveSha256: string;
+  idempotencyKey: string;
+  operations: ApplyOwnerMemoryImportOperation[];
+}
+
+export type ReplayOwnerMemoryImportInput = Omit<ApplyOwnerMemoryImportInput, 'operations'>;
+
 export interface OwnerMemoryLifecycleInput {
   actorId: string;
   idempotencyKey: string;
@@ -407,7 +437,15 @@ export type MemoryRpcRequest =
   | { kind: 'get_owner'; storeId: string }
   | { kind: 'list_owners'; workspaceId?: string }
   | { kind: 'create_owner_entry'; input: CreateOwnerMemoryEntryInput }
+  | { kind: 'get_owner_entry'; entryId: string }
   | { kind: 'update_owner_entry'; input: UpdateOwnerMemoryEntryInput }
+  | { kind: 'forget_owner_entry'; input: ForgetOwnerMemoryEntryInput }
+  | { kind: 'transition_owner_entry'; input: TransitionOwnerMemoryEntryInput }
+  | { kind: 'merge_owner_entries'; input: MergeOwnerMemoryEntriesInput }
+  | { kind: 'record_owner_review'; input: RecordOwnerMemoryReviewInput }
+  | { kind: 'create_owner_forget_challenge'; input: CreateForgetChallengeInput }
+  | { kind: 'replay_owner_import'; input: ReplayOwnerMemoryImportInput }
+  | { kind: 'apply_owner_import'; input: ApplyOwnerMemoryImportInput }
   | { kind: 'list_owner_entries'; owner: MemoryOwnerRef }
   | { kind: 'list_owner_revisions'; entryId: string }
   | { kind: 'reset_owner'; owner: MemoryOwnerRef; input: OwnerMemoryLifecycleInput }
@@ -448,6 +486,7 @@ export type MemoryRpcResponse =
   | { kind: 'owners'; owners: MemoryOwnerDescriptor[] }
   | { kind: 'owner_entry'; entry: OwnerMemoryEntry | null }
   | { kind: 'owner_entries'; entries: OwnerMemoryEntry[] }
+  | { kind: 'owner_import_replay'; entries: OwnerMemoryEntry[] | null }
   | { kind: 'store'; store: MemoryStoreDescriptor | null }
   | { kind: 'stores'; stores: MemoryStoreDescriptor[] }
   | { kind: 'entry'; entry: MemoryEntry | null }
@@ -475,7 +514,15 @@ export interface MemoryStateStore {
   getOwner(storeId: string): Promise<MemoryOwnerDescriptor | undefined>;
   listOwners(workspaceId?: string): Promise<MemoryOwnerDescriptor[]>;
   createOwnerEntry(input: CreateOwnerMemoryEntryInput): Promise<OwnerMemoryEntry>;
+  getOwnerEntry(entryId: string): Promise<OwnerMemoryEntry | undefined>;
   updateOwnerEntry(input: UpdateOwnerMemoryEntryInput): Promise<OwnerMemoryEntry>;
+  forgetOwnerEntry(input: ForgetOwnerMemoryEntryInput): Promise<OwnerMemoryEntry>;
+  transitionOwnerEntry(input: TransitionOwnerMemoryEntryInput): Promise<OwnerMemoryEntry>;
+  mergeOwnerEntries(input: MergeOwnerMemoryEntriesInput): Promise<OwnerMemoryEntry>;
+  recordOwnerReview(input: RecordOwnerMemoryReviewInput): Promise<void>;
+  createOwnerForgetChallenge(input: CreateForgetChallengeInput): Promise<void>;
+  replayOwnerImport(input: ReplayOwnerMemoryImportInput): Promise<OwnerMemoryEntry[] | undefined>;
+  applyOwnerImport(input: ApplyOwnerMemoryImportInput): Promise<OwnerMemoryEntry[]>;
   listOwnerEntries(owner: MemoryOwnerRef): Promise<OwnerMemoryEntry[]>;
   listOwnerRevisions(entryId: string): Promise<MemoryRevision[]>;
   resetOwner(owner: MemoryOwnerRef, input: OwnerMemoryLifecycleInput): Promise<MemoryOwnerDescriptor>;

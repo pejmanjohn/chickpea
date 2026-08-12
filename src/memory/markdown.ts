@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
 
-import type { MemoryEntry, MemoryStoreDescriptor } from './types.ts';
+import type {
+  MemoryEntry, MemoryOwnerDescriptor, MemoryStoreDescriptor, OwnerMemoryEntry,
+} from './types.ts';
 
 export const MEMORY_EXPORT_SCHEMA_VERSION = 1;
 
@@ -41,6 +43,14 @@ export function sha256Hex(value: string | Uint8Array): string {
 }
 
 export function projectMemoryEntry(entry: MemoryEntry): string {
+  return projectEntryBody(entry);
+}
+
+export function projectOwnerMemoryEntry(entry: OwnerMemoryEntry): string {
+  return projectEntryBody(entry);
+}
+
+function projectEntryBody(entry: Pick<MemoryEntry, 'slug' | 'description' | 'type' | 'body' | 'modifiedAt'>): string {
   const body = normalizeLf(entry.body).replace(/^\n+/, '').replace(/\n*$/, '');
   return [
     '---',
@@ -54,6 +64,70 @@ export function projectMemoryEntry(entry: MemoryEntry): string {
     body,
     '',
   ].join('\n');
+}
+
+export interface OwnerMemoryExportManifest {
+  schemaVersion: 2;
+  owner: Pick<MemoryOwnerDescriptor,
+    'storeId' | 'workspaceId' | 'ownerKind' | 'ownerId' | 'lifecycle' | 'resetEpoch'>;
+  files: Array<{ path: string; sha256: string; generated: boolean }>;
+  entries: Array<Omit<MemoryExportManifestEntry, 'sourceChannelId'>>;
+}
+
+export function projectOwnerMemoryFiles(input: {
+  owner: MemoryOwnerDescriptor;
+  entries: readonly OwnerMemoryEntry[];
+}): MemoryProjectionFile[] {
+  const entries = input.entries.filter((entry) =>
+    entry.storeId === input.owner.storeId && entry.status !== 'forgotten')
+    .sort((left, right) => compareStable(left.slug, right.slug) || compareStable(left.entryId, right.entryId));
+  for (const entry of entries) {
+    if (entry.ownerKind !== input.owner.ownerKind || entry.ownerId !== input.owner.ownerId ||
+        entry.workspaceId !== input.owner.workspaceId || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/.test(entry.slug)) {
+      throw new Error('Memory projection crossed or contained an unsafe owner scope.');
+    }
+  }
+  const files: MemoryProjectionFile[] = [{
+    path: 'MEMORY.md',
+    content: renderOwnerIndex(input.owner, entries),
+  }];
+  const manifestEntries: OwnerMemoryExportManifest['entries'] = [];
+  for (const entry of entries) {
+    const path = `${entry.slug}.md`;
+    const content = projectOwnerMemoryEntry(entry);
+    files.push({ path, content });
+    manifestEntries.push({
+      entryId: entry.entryId, version: entry.version, path, sha256: sha256Hex(content),
+      slug: entry.slug, status: entry.status,
+      provenance: {
+        creatorActorId: entry.creatorActorId, lastEditorActorId: entry.lastEditorActorId,
+        sourceEventId: entry.sourceEventId, sourceThreadTs: entry.sourceThreadTs,
+        sourceMessageTs: entry.sourceMessageTs,
+      },
+    });
+  }
+  files.sort((left, right) => compareStable(left.path, right.path));
+  const manifest: OwnerMemoryExportManifest = {
+    schemaVersion: 2,
+    owner: {
+      storeId: input.owner.storeId, workspaceId: input.owner.workspaceId,
+      ownerKind: input.owner.ownerKind, ownerId: input.owner.ownerId,
+      lifecycle: input.owner.lifecycle, resetEpoch: input.owner.resetEpoch,
+    },
+    files: files.map((file) => ({
+      path: file.path, sha256: sha256Hex(file.content), generated: file.path === 'MEMORY.md',
+    })),
+    entries: manifestEntries,
+  };
+  files.push({ path: 'manifest.json', content: `${JSON.stringify(manifest, null, 2)}\n` });
+  return files;
+}
+
+function renderOwnerIndex(owner: MemoryOwnerDescriptor, entries: readonly OwnerMemoryEntry[]): string {
+  const heading = owner.ownerKind === 'agent' ? '# Agent Memory' : '# Channel Memory';
+  const links = entries.map((entry) =>
+    `- [${entry.slug}](${entry.slug}.md) — ${singleLine(entry.description)}`);
+  return `${heading}\n${links.length > 0 ? `\n${links.join('\n')}\n` : '\n'}`;
 }
 
 export function projectMemoryFiles(input: {

@@ -20,11 +20,13 @@ import {
   MemoryRateLimitError,
   MemoryVersionConflictError,
   type ApplyMemoryImportInput,
+  type ApplyOwnerMemoryImportInput,
   type CreateMemoryEntryInput,
   type CreateForgetChallengeInput,
   type ConfirmMemoryConversationContextInput,
   type CreateOwnerMemoryEntryInput,
   type ForgetMemoryEntryInput,
+  type ForgetOwnerMemoryEntryInput,
   type MemoryConversationContext,
   type MemoryChannelScopeState,
   type MemoryEntry,
@@ -33,6 +35,7 @@ import {
   type MemoryForgetChallenge,
   type MemoryImportEntryStatus,
   type MergeMemoryEntriesInput,
+  type MergeOwnerMemoryEntriesInput,
   type MemoryMutationCounts,
   type MemoryRevision,
   type MemoryRpcRequest,
@@ -45,12 +48,15 @@ import {
   type OwnerMemoryLifecycleInput,
   type ObserveMemoryChannelScopeInput,
   type RecordMemoryReviewInput,
+  type RecordOwnerMemoryReviewInput,
   type RecordMemoryAdminViewInput,
   type RecordMemoryAdminEventInput,
   type ReplayMemoryImportInput,
+  type ReplayOwnerMemoryImportInput,
   type RetainMemoryChannelScopeInput,
   type ResolveMemoryConversationContextInput,
   type TransitionMemoryEntryInput,
+  type TransitionOwnerMemoryEntryInput,
   type UpdateMemoryEntryInput,
   type UpdateOwnerMemoryEntryInput,
   type SealMemoryOwnerInput,
@@ -212,8 +218,26 @@ export class MemoryStoreLogic {
         return { kind: 'owners', owners: this.listOwners(request.workspaceId) };
       case 'create_owner_entry':
         return { kind: 'owner_entry', entry: this.createOwnerEntry(request.input) };
+      case 'get_owner_entry':
+        return { kind: 'owner_entry', entry: this.getOwnerEntry(request.entryId) ?? null };
       case 'update_owner_entry':
         return { kind: 'owner_entry', entry: this.updateOwnerEntry(request.input) };
+      case 'forget_owner_entry':
+        return { kind: 'owner_entry', entry: this.forgetOwnerEntry(request.input) };
+      case 'transition_owner_entry':
+        return { kind: 'owner_entry', entry: this.transitionOwnerEntry(request.input) };
+      case 'merge_owner_entries':
+        return { kind: 'owner_entry', entry: this.mergeOwnerEntries(request.input) };
+      case 'record_owner_review':
+        this.recordOwnerReview(request.input);
+        return { kind: 'ok' };
+      case 'create_owner_forget_challenge':
+        this.createOwnerForgetChallenge(request.input);
+        return { kind: 'ok' };
+      case 'replay_owner_import':
+        return { kind: 'owner_import_replay', entries: this.replayOwnerImport(request.input) ?? null };
+      case 'apply_owner_import':
+        return { kind: 'owner_entries', entries: this.applyOwnerImport(request.input) };
       case 'list_owner_entries':
         return { kind: 'owner_entries', entries: this.listOwnerEntries(request.owner) };
       case 'list_owner_revisions':
@@ -454,6 +478,243 @@ export class MemoryStoreLogic {
     });
   }
 
+  forgetOwnerEntry(input: ForgetOwnerMemoryEntryInput): OwnerMemoryEntry {
+    const replay = this.ownerEntryForReplay(input.idempotencyKey);
+    if (replay) return replay;
+    const at = this.now();
+    return this.db.transaction(() => {
+      const second = this.ownerEntryForReplay(input.idempotencyKey);
+      if (second) return second;
+      const current = requiredOwnerEntry(this.getOwnerEntry(input.entryId), input.entryId);
+      this.assertMutableOwnerVersion(current, input.expectedVersion);
+      if (input.confirmationTokenHash) {
+        this.consumeForgetChallenge(current, input, input.confirmationTokenHash, at);
+      }
+      if (input.actorClass !== 'operator') {
+        this.incrementMutationCounts(current.workspaceId, current.storeId, input.actorId, at);
+      }
+      const version = current.version + 1;
+      this.db.run(
+        `UPDATE memory_owner_entries SET description = '', body = '', status = 'forgotten',
+           version = ?, last_editor_actor_id = ?, actor_class = ?, source_event_id = ?,
+           modified_at = ?, expires_at = NULL, content_hash = NULL, superseding_entry_id = NULL
+         WHERE entry_id = ?`,
+        version, input.actorId, input.actorClass, input.sourceEventId ?? current.sourceEventId,
+        at, current.entryId,
+      );
+      this.insertRevision({
+        entryId: current.entryId, version, operation: 'forget', description: null, body: null,
+        type: null, actorId: input.actorId, actorClass: input.actorClass,
+        sourceEventId: input.sourceEventId ?? current.sourceEventId,
+        sourceThreadTs: current.sourceThreadTs, sourceMessageTs: current.sourceMessageTs,
+        createdAt: at, beforeHash: null, afterHash: null,
+        reasonCode: input.reasonCode ?? 'explicit_forget', idempotencyKey: input.idempotencyKey,
+      });
+      this.db.run(
+        `UPDATE memory_revisions SET description = NULL, body = NULL, type = NULL,
+           before_hash = NULL, after_hash = NULL WHERE entry_id = ?`, current.entryId,
+      );
+      this.db.run(
+        'UPDATE audit_events SET before_hash = NULL, after_hash = NULL WHERE subject_id = ?',
+        current.entryId,
+      );
+      this.audit.append({
+        eventId: auditId(input.idempotencyKey), domain: 'memory', eventType: 'memory.forgotten',
+        outcome: 'success', actorClass: input.actorClass, actorId: input.actorId,
+        workspaceId: current.workspaceId,
+        channelId: current.ownerKind === 'channel' ? current.ownerId : null,
+        storeId: current.storeId, subjectId: current.entryId, subjectVersion: version,
+        createdAt: at, reasonCode: input.reasonCode ?? 'explicit_forget',
+        idempotencyKey: input.idempotencyKey,
+      });
+      return requiredOwnerEntry(this.getOwnerEntry(current.entryId), current.entryId);
+    });
+  }
+
+  transitionOwnerEntry(input: TransitionOwnerMemoryEntryInput): OwnerMemoryEntry {
+    const replay = this.ownerEntryForReplay(input.idempotencyKey);
+    if (replay) return replay;
+    const at = this.now();
+    return this.db.transaction(() => {
+      const second = this.ownerEntryForReplay(input.idempotencyKey);
+      if (second) return second;
+      const current = requiredOwnerEntry(this.getOwnerEntry(input.entryId), input.entryId);
+      this.assertMutableOwnerVersion(current, input.expectedVersion);
+      if ((input.transition === 'expire' && current.status === 'expired') ||
+          (input.transition === 'restore' && current.status !== 'expired')) {
+        throw new MemoryStateError('memory_invalid_transition',
+          `Memory entry cannot be ${input.transition}d from its current state.`);
+      }
+      if (input.transition === 'restore') {
+        const owner = this.getOwner(current.storeId)!;
+        this.enforceOwnerCreateQuota(owner, current.description, current.body);
+      }
+      if (input.actorClass !== 'operator') {
+        this.incrementMutationCounts(current.workspaceId, current.storeId, input.actorId, at);
+      }
+      const status = input.transition === 'expire' ? 'expired' : 'active';
+      const version = current.version + 1;
+      this.db.run(
+        `UPDATE memory_owner_entries SET status = ?, version = ?, last_editor_actor_id = ?,
+           actor_class = ?, source_event_id = ?, modified_at = ?, expires_at = ? WHERE entry_id = ?`,
+        status, version, input.actorId, input.actorClass,
+        input.sourceEventId ?? current.sourceEventId, at,
+        input.transition === 'expire' ? at : null, current.entryId,
+      );
+      this.insertRevision({
+        entryId: current.entryId, version, operation: input.transition,
+        description: current.description, body: current.body, type: current.type,
+        actorId: input.actorId, actorClass: input.actorClass,
+        sourceEventId: input.sourceEventId ?? current.sourceEventId,
+        sourceThreadTs: current.sourceThreadTs, sourceMessageTs: current.sourceMessageTs,
+        createdAt: at, beforeHash: current.contentHash, afterHash: current.contentHash,
+        reasonCode: input.reasonCode ?? `explicit_${input.transition}`,
+        idempotencyKey: input.idempotencyKey,
+      });
+      this.audit.append({
+        eventId: auditId(input.idempotencyKey), domain: 'memory',
+        eventType: `memory.${input.transition}d`, outcome: 'success',
+        actorClass: input.actorClass, actorId: input.actorId, workspaceId: current.workspaceId,
+        channelId: current.ownerKind === 'channel' ? current.ownerId : null,
+        storeId: current.storeId, subjectId: current.entryId, subjectVersion: version,
+        createdAt: at, reasonCode: input.reasonCode ?? `explicit_${input.transition}`,
+        beforeHash: current.contentHash, afterHash: current.contentHash,
+        idempotencyKey: input.idempotencyKey,
+      });
+      this.trimRevisionContent(current.entryId);
+      return requiredOwnerEntry(this.getOwnerEntry(current.entryId), current.entryId);
+    });
+  }
+
+  mergeOwnerEntries(input: MergeOwnerMemoryEntriesInput): OwnerMemoryEntry {
+    const replay = this.ownerEntryForReplay(input.replacement.idempotencyKey);
+    if (replay) return replay;
+    if (input.sources.length < 2 || new Set(input.sources.map(({ entryId }) => entryId)).size !== input.sources.length) {
+      throw new MemoryStateError('memory_invalid_merge', 'A merge requires at least two distinct memory entries.');
+    }
+    const at = this.now();
+    return this.db.transaction(() => {
+      const owner = this.getOwner(input.replacement.storeId);
+      if (!owner || owner.workspaceId !== input.replacement.workspaceId || owner.lifecycle !== 'active') {
+        throw new MemoryStateError('memory_owner_sealed', 'Memory owner is unavailable.');
+      }
+      const sources = input.sources.map((source) => {
+        const entry = requiredOwnerEntry(this.getOwnerEntry(source.entryId), source.entryId);
+        this.assertMutableOwnerVersion(entry, source.expectedVersion);
+        if (entry.storeId !== owner.storeId || (entry.status !== 'active' && entry.status !== 'stale')) {
+          throw new MemoryStateError('memory_invalid_merge', 'Merged memories must use the same owner.');
+        }
+        return entry;
+      });
+      const hash = contentHash(input.replacement.description, input.replacement.body);
+      this.enforceOwnerCreateQuota(owner, input.replacement.description, input.replacement.body);
+      if (input.replacement.actorClass !== 'operator') {
+        this.incrementMutationCounts(owner.workspaceId, owner.storeId, input.replacement.actorId, at);
+      }
+      try {
+        this.db.run(
+          `INSERT INTO memory_owner_entries (
+            entry_id, store_id, workspace_id, owner_kind, owner_id, slug,
+            description, type, body, status, version, creator_actor_id,
+            last_editor_actor_id, actor_class, write_origin_json, source_event_id,
+            source_thread_ts, source_message_ts, created_at, modified_at,
+            expires_at, content_hash, superseding_entry_id
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+          input.replacement.entryId, owner.storeId, owner.workspaceId, owner.ownerKind, owner.ownerId,
+          input.replacement.slug, input.replacement.description, input.replacement.type,
+          input.replacement.body, input.replacement.actorId, input.replacement.actorId,
+          input.replacement.actorClass,
+          input.replacement.writeOrigin ? JSON.stringify(input.replacement.writeOrigin) : null,
+          input.replacement.sourceEventId ?? null, input.replacement.sourceThreadTs ?? null,
+          input.replacement.sourceMessageTs ?? null, at, at, input.replacement.expiresAt ?? null, hash,
+        );
+      } catch (error) {
+        if (isConstraintViolation(error)) {
+          throw new MemoryStateError('memory_slug_conflict', 'Memory name is already in use.');
+        }
+        throw error;
+      }
+      this.insertRevision({
+        entryId: input.replacement.entryId, version: 1, operation: 'create',
+        description: input.replacement.description, body: input.replacement.body,
+        type: input.replacement.type, actorId: input.replacement.actorId,
+        actorClass: input.replacement.actorClass, sourceEventId: input.replacement.sourceEventId ?? null,
+        sourceThreadTs: input.replacement.sourceThreadTs ?? null,
+        sourceMessageTs: input.replacement.sourceMessageTs ?? null, createdAt: at,
+        beforeHash: null, afterHash: hash,
+        reasonCode: `slug_seed:${input.replacement.slugSeed ?? input.replacement.slug}`,
+        idempotencyKey: input.replacement.idempotencyKey,
+      });
+      for (const source of sources) {
+        const version = source.version + 1;
+        this.db.run(
+          `UPDATE memory_owner_entries SET status = 'superseded', version = ?,
+             last_editor_actor_id = ?, actor_class = ?, source_event_id = ?, modified_at = ?,
+             superseding_entry_id = ? WHERE entry_id = ?`,
+          version, input.replacement.actorId, input.replacement.actorClass,
+          input.replacement.sourceEventId ?? source.sourceEventId, at,
+          input.replacement.entryId, source.entryId,
+        );
+        this.insertRevision({
+          entryId: source.entryId, version, operation: 'merge', description: source.description,
+          body: source.body, type: source.type, actorId: input.replacement.actorId,
+          actorClass: input.replacement.actorClass,
+          sourceEventId: input.replacement.sourceEventId ?? source.sourceEventId,
+          sourceThreadTs: input.replacement.sourceThreadTs ?? source.sourceThreadTs,
+          sourceMessageTs: input.replacement.sourceMessageTs ?? source.sourceMessageTs,
+          createdAt: at, beforeHash: source.contentHash, afterHash: source.contentHash,
+          reasonCode: `superseded_by:${input.replacement.entryId}`,
+          idempotencyKey: `${input.replacement.idempotencyKey}:source:${source.entryId}`,
+        });
+      }
+      const replacement = requiredOwnerEntry(
+        this.getOwnerEntry(input.replacement.entryId), input.replacement.entryId,
+      );
+      this.audit.append({
+        eventId: auditId(`${input.replacement.idempotencyKey}:merge`), domain: 'memory',
+        eventType: 'memory.merged', outcome: 'success', actorClass: input.replacement.actorClass,
+        actorId: input.replacement.actorId, workspaceId: owner.workspaceId,
+        channelId: owner.ownerKind === 'channel' ? owner.ownerId : null, storeId: owner.storeId,
+        subjectId: replacement.entryId, subjectVersion: replacement.version, createdAt: at,
+        afterHash: replacement.contentHash, idempotencyKey: `${input.replacement.idempotencyKey}:merge`,
+        metadataJson: JSON.stringify({ sourceEntryIds: sources.map(({ entryId }) => entryId) }),
+      });
+      return replacement;
+    });
+  }
+
+  recordOwnerReview(input: RecordOwnerMemoryReviewInput): void {
+    if (this.audit.findByIdempotencyKey(input.idempotencyKey)) return;
+    const entry = requiredOwnerEntry(this.getOwnerEntry(input.entryId), input.entryId);
+    if (entry.version !== input.expectedVersion) throw new MemoryVersionConflictError(entry.entryId, entry.version);
+    if (input.action === 'resolved' && !input.resolution) {
+      throw new MemoryStateError('memory_invalid_review', 'A resolved review requires an outcome.');
+    }
+    this.audit.append({
+      eventId: auditId(input.idempotencyKey), domain: 'memory',
+      eventType: `memory.review_${input.action}`,
+      outcome: input.action === 'requested' ? 'requested' : 'success',
+      actorClass: input.actorClass, actorId: input.actorId, workspaceId: entry.workspaceId,
+      channelId: entry.ownerKind === 'channel' ? entry.ownerId : null,
+      storeId: entry.storeId, subjectId: entry.entryId, subjectVersion: entry.version,
+      createdAt: this.now(), reasonCode: input.reasonCode ?? null,
+      metadataJson: JSON.stringify({
+        ...(input.resolution ? { resolution: input.resolution } : {}),
+        ...(input.reviewRequestEventId ? { reviewRequestEventId: input.reviewRequestEventId } : {}),
+      }),
+      idempotencyKey: input.idempotencyKey,
+    });
+  }
+
+  createOwnerForgetChallenge(input: CreateForgetChallengeInput): void {
+    const entry = requiredOwnerEntry(this.getOwnerEntry(input.entryId), input.entryId);
+    this.assertMutableOwnerVersion(entry, input.expectedVersion);
+    if (entry.storeId !== input.storeId) {
+      throw new MemoryStateError('memory_confirmation_invalid', 'Forget confirmation is invalid.');
+    }
+    this.insertForgetChallenge(input);
+  }
+
   getOwnerEntry(entryId: string): OwnerMemoryEntry | undefined {
     const row = this.db.get('SELECT * FROM memory_owner_entries WHERE entry_id = ?', entryId);
     return row ? rowToOwnerEntry(row as unknown as OwnerEntryRow) : undefined;
@@ -511,6 +772,116 @@ export class MemoryStoreLogic {
       });
       return next;
     });
+  }
+
+  applyOwnerImport(input: ApplyOwnerMemoryImportInput): OwnerMemoryEntry[] {
+    validateOwnerImportInput(input);
+    const replay = this.ownerImportForReplay(input);
+    if (replay) return replay;
+    if (input.operations.length > 1_024) {
+      throw new MemoryStateError('memory_import_too_large', 'Memory import has too many operations.');
+    }
+    const at = this.now();
+    return this.db.transaction(() => {
+      const second = this.ownerImportForReplay(input);
+      if (second) return second;
+      const owner = this.ensureOwner(input.owner);
+      if (owner.lifecycle !== 'active') {
+        throw new MemoryStateError('memory_owner_sealed', 'Memory owner is unavailable.');
+      }
+      const results: OwnerMemoryEntry[] = [];
+      for (const [index, operation] of input.operations.entries()) {
+        const key = `${input.idempotencyKey}:${index}`;
+        const hash = contentHash(operation.description, operation.body);
+        const status = operation.status ?? 'active';
+        if (operation.action === 'create') {
+          if (this.getOwnerEntry(operation.entryId)) {
+            throw new MemoryStateError('memory_entry_conflict', 'Imported memory already exists.');
+          }
+          this.enforceOwnerCreateQuota(owner, operation.description, operation.body);
+          try {
+            this.db.run(
+              `INSERT INTO memory_owner_entries (
+                entry_id, store_id, workspace_id, owner_kind, owner_id, slug,
+                description, type, body, status, version, creator_actor_id,
+                last_editor_actor_id, actor_class, write_origin_json, source_event_id,
+                source_thread_ts, source_message_ts, created_at, modified_at,
+                expires_at, content_hash, superseding_entry_id
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, 'operator', ?, NULL, NULL, NULL, ?, ?, NULL, ?, NULL)`,
+              operation.entryId, owner.storeId, owner.workspaceId, owner.ownerKind, owner.ownerId,
+              operation.slug, operation.description, operation.type, operation.body, status,
+              input.actorId, input.actorId, JSON.stringify({ kind: 'admin' }), at, at, hash,
+            );
+          } catch (error) {
+            if (isConstraintViolation(error)) {
+              throw new MemoryStateError('memory_slug_conflict', 'Memory name is already in use.');
+            }
+            throw error;
+          }
+          this.insertRevision({
+            entryId: operation.entryId, version: 1, operation: 'create',
+            description: operation.description, body: operation.body, type: operation.type,
+            actorId: input.actorId, actorClass: 'operator', sourceEventId: null,
+            sourceThreadTs: null, sourceMessageTs: null, createdAt: at, beforeHash: null,
+            afterHash: hash, reasonCode: 'admin_import', idempotencyKey: key,
+          });
+          this.audit.append({
+            eventId: auditId(key), domain: 'memory', eventType: 'memory.imported', outcome: 'success',
+            actorClass: 'operator', actorId: input.actorId, workspaceId: owner.workspaceId,
+            channelId: owner.ownerKind === 'channel' ? owner.ownerId : null,
+            storeId: owner.storeId, subjectId: operation.entryId, subjectVersion: 1,
+            createdAt: at, afterHash: hash, reasonCode: 'admin_import', idempotencyKey: key,
+          });
+        } else {
+          const current = requiredOwnerEntry(this.getOwnerEntry(operation.entryId), operation.entryId);
+          if (current.storeId !== owner.storeId || current.slug !== operation.slug) {
+            throw new MemoryStateError('memory_import_scope_conflict', 'Imported memory owner changed.');
+          }
+          this.assertMutableOwnerVersion(current, operation.expectedVersion ?? -1);
+          this.enforceOwnerUpdateQuota(current, operation.description, operation.body);
+          const version = current.version + 1;
+          this.db.run(
+            `UPDATE memory_owner_entries SET description = ?, type = ?, body = ?, status = ?,
+               version = ?, last_editor_actor_id = ?, actor_class = 'operator', modified_at = ?,
+               content_hash = ? WHERE entry_id = ?`,
+            operation.description, operation.type, operation.body, status, version,
+            input.actorId, at, hash, operation.entryId,
+          );
+          this.insertRevision({
+            entryId: operation.entryId, version, operation: 'update',
+            description: operation.description, body: operation.body, type: operation.type,
+            actorId: input.actorId, actorClass: 'operator', sourceEventId: current.sourceEventId,
+            sourceThreadTs: current.sourceThreadTs, sourceMessageTs: current.sourceMessageTs,
+            createdAt: at, beforeHash: current.contentHash, afterHash: hash,
+            reasonCode: 'admin_import', idempotencyKey: key,
+          });
+          this.audit.append({
+            eventId: auditId(key), domain: 'memory', eventType: 'memory.imported', outcome: 'success',
+            actorClass: 'operator', actorId: input.actorId, workspaceId: owner.workspaceId,
+            channelId: owner.ownerKind === 'channel' ? owner.ownerId : null,
+            storeId: owner.storeId, subjectId: operation.entryId, subjectVersion: version,
+            createdAt: at, beforeHash: current.contentHash, afterHash: hash,
+            reasonCode: 'admin_import', idempotencyKey: key,
+          });
+          this.trimRevisionContent(operation.entryId);
+        }
+        results.push(requiredOwnerEntry(this.getOwnerEntry(operation.entryId), operation.entryId));
+      }
+      this.db.run(
+        `INSERT INTO memory_import_receipts (
+          idempotency_key, store_id, workspace_id, actor_id, archive_sha256,
+          entry_ids_json, created_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        input.idempotencyKey, owner.storeId, owner.workspaceId, input.actorId,
+        input.archiveSha256, JSON.stringify(results.map(({ entryId }) => entryId)), at,
+      );
+      return results;
+    });
+  }
+
+  replayOwnerImport(input: ReplayOwnerMemoryImportInput): OwnerMemoryEntry[] | undefined {
+    validateReplayOwnerImportInput(input);
+    return this.ownerImportForReplay(input);
   }
 
   ensurePublicStore(workspaceId: string): MemoryStoreDescriptor {
@@ -850,11 +1221,17 @@ export class MemoryStoreLogic {
 
   recordAdminEvent(input: RecordMemoryAdminEventInput): void {
     if (this.audit.findByIdempotencyKey(input.idempotencyKey)) return;
-    const store = requiredStore(this.getStore(input.storeId), input.storeId);
+    const store = this.getStore(input.storeId);
+    const owner = this.getOwner(input.storeId);
+    if (!store && !owner) {
+      throw new MemoryStateError('memory_store_not_found', 'Memory store was not found.');
+    }
     this.audit.append({
       eventId: auditId(input.idempotencyKey), domain: 'memory', eventType: input.eventType,
       outcome: 'success', actorClass: 'operator', actorId: input.actorId,
-      workspaceId: store.workspaceId, channelId: store.channelId, storeId: store.storeId,
+      workspaceId: (store ?? owner)!.workspaceId,
+      channelId: store?.channelId ?? (owner?.ownerKind === 'channel' ? owner.ownerId : null),
+      storeId: (store ?? owner)!.storeId,
       createdAt: this.now(), idempotencyKey: input.idempotencyKey,
     });
   }
@@ -1326,6 +1703,10 @@ export class MemoryStoreLogic {
     if (entry.storeId !== input.storeId) {
       throw new MemoryStateError('memory_confirmation_invalid', 'Forget confirmation is invalid.');
     }
+    this.insertForgetChallenge(input);
+  }
+
+  private insertForgetChallenge(input: CreateForgetChallengeInput): void {
     this.db.run(
       `INSERT INTO memory_forget_challenges (
         challenge_id, token_hash, actor_id, store_id, entry_id,
@@ -2136,6 +2517,29 @@ export class MemoryStoreLogic {
     return entryIds.map((entryId) => requiredEntry(this.getEntry(entryId), entryId));
   }
 
+  private ownerImportForReplay(
+    input: ReplayOwnerMemoryImportInput,
+  ): OwnerMemoryEntry[] | undefined {
+    const row = this.db.get(
+      `SELECT store_id, workspace_id, actor_id, archive_sha256, entry_ids_json
+       FROM memory_import_receipts WHERE idempotency_key = ?`, input.idempotencyKey,
+    ) as unknown as ImportReceiptRow | undefined;
+    if (!row) return undefined;
+    const storeId = ownerMemoryStoreId(input.owner);
+    if (row.store_id !== storeId || row.workspace_id !== input.owner.workspaceId ||
+        row.actor_id !== input.actorId || row.archive_sha256 !== input.archiveSha256) {
+      throw new MemoryStateError('memory_idempotency_mismatch',
+        'The idempotency key belongs to a different import request.');
+    }
+    let entryIds: unknown;
+    try { entryIds = JSON.parse(row.entry_ids_json); }
+    catch { throw new MemoryStateError('memory_import_incomplete', 'Memory import replay is inconsistent.'); }
+    if (!Array.isArray(entryIds) || entryIds.some((entryId) => typeof entryId !== 'string')) {
+      throw new MemoryStateError('memory_import_incomplete', 'Memory import replay is inconsistent.');
+    }
+    return entryIds.map((entryId) => requiredOwnerEntry(this.getOwnerEntry(entryId), entryId));
+  }
+
   private incrementMutationCounts(
     workspaceId: string,
     channelId: string,
@@ -2166,7 +2570,7 @@ export class MemoryStoreLogic {
   }
 
   private consumeForgetChallenge(
-    entry: MemoryEntry,
+    entry: Pick<MemoryEntry, 'storeId' | 'entryId'>,
     input: ForgetMemoryEntryInput,
     tokenHash: string,
     at: number,
@@ -2317,8 +2721,40 @@ export class SqliteMemoryStateStore implements MemoryStateStore {
     return this.logic.createOwnerEntry(input);
   }
 
+  async getOwnerEntry(entryId: string): Promise<OwnerMemoryEntry | undefined> {
+    return this.logic.getOwnerEntry(entryId);
+  }
+
   async updateOwnerEntry(input: UpdateOwnerMemoryEntryInput): Promise<OwnerMemoryEntry> {
     return this.logic.updateOwnerEntry(input);
+  }
+
+  async forgetOwnerEntry(input: ForgetOwnerMemoryEntryInput): Promise<OwnerMemoryEntry> {
+    return this.logic.forgetOwnerEntry(input);
+  }
+
+  async transitionOwnerEntry(input: TransitionOwnerMemoryEntryInput): Promise<OwnerMemoryEntry> {
+    return this.logic.transitionOwnerEntry(input);
+  }
+
+  async mergeOwnerEntries(input: MergeOwnerMemoryEntriesInput): Promise<OwnerMemoryEntry> {
+    return this.logic.mergeOwnerEntries(input);
+  }
+
+  async recordOwnerReview(input: RecordOwnerMemoryReviewInput): Promise<void> {
+    this.logic.recordOwnerReview(input);
+  }
+
+  async createOwnerForgetChallenge(input: CreateForgetChallengeInput): Promise<void> {
+    this.logic.createOwnerForgetChallenge(input);
+  }
+
+  async replayOwnerImport(input: ReplayOwnerMemoryImportInput): Promise<OwnerMemoryEntry[] | undefined> {
+    return this.logic.replayOwnerImport(input);
+  }
+
+  async applyOwnerImport(input: ApplyOwnerMemoryImportInput): Promise<OwnerMemoryEntry[]> {
+    return this.logic.applyOwnerImport(input);
   }
 
   async listOwnerEntries(owner: MemoryOwnerRef): Promise<OwnerMemoryEntry[]> {
@@ -2546,6 +2982,35 @@ function validateImportInput(input: ApplyMemoryImportInput): void {
         (!Number.isInteger(operation.expectedVersion) || Number(operation.expectedVersion) < 1)) ||
       (operation.action === 'create' && operation.expectedVersion !== undefined)
     ) {
+      throw invalidImport();
+    }
+  }
+}
+
+function validateReplayOwnerImportInput(input: ReplayOwnerMemoryImportInput): void {
+  if (
+    !isOpaqueMemoryId(input.owner.workspaceId) || !isOpaqueMemoryId(input.owner.ownerId) ||
+    (input.owner.ownerKind !== 'agent' && input.owner.ownerKind !== 'channel') ||
+    !isOpaqueMemoryId(input.actorId) || !/^[a-f0-9]{64}$/.test(input.archiveSha256) ||
+    typeof input.idempotencyKey !== 'string' || input.idempotencyKey.length < 1 ||
+    input.idempotencyKey.length > 512 || !/^[A-Za-z0-9_.:-]+$/.test(input.idempotencyKey)
+  ) throw invalidImport();
+}
+
+function validateOwnerImportInput(input: ApplyOwnerMemoryImportInput): void {
+  validateReplayOwnerImportInput(input);
+  if (!Array.isArray(input.operations)) throw invalidImport();
+  for (const operation of input.operations) {
+    if (typeof operation !== 'object' || operation === null ||
+        (operation.action !== 'create' && operation.action !== 'update') ||
+        !isOpaqueMemoryId(operation.entryId) || typeof operation.slug !== 'string' ||
+        !/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/.test(operation.slug) ||
+        typeof operation.description !== 'string' || typeof operation.body !== 'string' ||
+        !MEMORY_ENTRY_TYPES.has(operation.type) ||
+        (operation.status !== undefined && !IMPORT_ENTRY_STATUSES.has(operation.status)) ||
+        (operation.action === 'update' &&
+          (!Number.isInteger(operation.expectedVersion) || Number(operation.expectedVersion) < 1)) ||
+        (operation.action === 'create' && operation.expectedVersion !== undefined)) {
       throw invalidImport();
     }
   }

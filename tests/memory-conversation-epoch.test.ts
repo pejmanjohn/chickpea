@@ -3,6 +3,8 @@ import { test } from 'node:test';
 
 import { SqliteMemoryStateStore } from '../src/memory/store.ts';
 import { parseCurrentRequestEnvelope } from '../src/memory/tool-policy.ts';
+import { authorizedMemoryScopeFingerprint, bindAuthorizedMemoryScope } from '../src/memory/scope.ts';
+import { memorySelectionFingerprint } from '../src/memory/selector.ts';
 import {
   assembleSlackPrompt,
   renderSlackSelfMention,
@@ -59,6 +61,37 @@ test('selection changes rotate agent transcripts while operational parsing stays
     assert.deepEqual(parseSlackThreadKey('T:C:100.1:memory-e2'), {
       workspaceId: 'T', channelId: 'C', threadTs: '100.1',
     });
+  } finally {
+    store.close();
+  }
+});
+
+test('owner reset epochs and selected content hashes rotate memory fingerprints deterministically', async () => {
+  const store = new SqliteMemoryStateStore(':memory:', () => 1_000);
+  try {
+    const agent = await store.ensureOwner({ workspaceId: 'T', ownerKind: 'agent', ownerId: 'A' });
+    const channel = await store.ensureOwner({ workspaceId: 'T', ownerKind: 'channel', ownerId: 'C' });
+    const scope = bindAuthorizedMemoryScope({
+      surface: 'channel', workspaceId: 'T', agentOwner: agent, channelOwner: channel,
+      writeOwner: channel,
+    });
+    const selected = await store.createOwnerEntry({
+      entryId: 'mem_selected', storeId: channel.storeId, workspaceId: 'T', slug: 'selected',
+      description: 'Selected', type: 'fact', body: 'One', actorId: 'U', actorClass: 'operator',
+      idempotencyKey: 'seed:selected',
+    });
+    const first = memorySelectionFingerprint([{ entry: selected }]);
+    const changed = { ...selected, version: selected.version + 1, contentHash: 'new-hash' };
+    assert.notEqual(memorySelectionFingerprint([{ entry: changed }]), first);
+    const irrelevant = { ...selected, entryId: 'mem_irrelevant', version: 99, contentHash: 'elsewhere' };
+    assert.equal(memorySelectionFingerprint([{ entry: selected }]), first, irrelevant.entryId);
+    const scopeFirst = authorizedMemoryScopeFingerprint(scope);
+    const reset = await store.resetOwner(channel, { actorId: 'U', idempotencyKey: 'reset:channel' });
+    const scopeReset = bindAuthorizedMemoryScope({
+      surface: 'channel', workspaceId: 'T', agentOwner: agent, channelOwner: reset,
+      writeOwner: reset,
+    });
+    assert.notEqual(authorizedMemoryScopeFingerprint(scopeReset), scopeFirst);
   } finally {
     store.close();
   }

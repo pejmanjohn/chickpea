@@ -30,14 +30,77 @@ async function harness() {
     type: 'project', body: 'Run tests before release.', actorId: 'U_MEMBER', actorClass: 'member',
     idempotencyKey: 'memory:test:create',
   });
+  const agentOwner = await memory.ensureOwner({ workspaceId: 'T_TEST', ownerKind: 'agent', ownerId: 'agent_default' });
+  const channelOwner = await memory.ensureOwner({ workspaceId: 'T_TEST', ownerKind: 'channel', ownerId: 'C_PRODUCT' });
+  const ownerEntry = await memory.createOwnerEntry({
+    entryId: 'mem_owner_product', storeId: channelOwner.storeId, workspaceId: 'T_TEST',
+    slug: 'channel-guidance', description: 'Only this channel.', type: 'fact', body: 'Channel owner body.',
+    actorId: 'U_MEMBER', actorClass: 'member', idempotencyKey: 'memory:test:owner-create',
+  });
+  await memory.createOwnerEntry({
+    entryId: 'mem_agent_product', storeId: agentOwner.storeId, workspaceId: 'T_TEST',
+    slug: 'agent-guidance', description: 'Only this agent.', type: 'fact', body: 'Agent owner body.',
+    actorId: 'U_MEMBER', actorClass: 'member', idempotencyKey: 'memory:test:agent-create',
+  });
   const app = new Hono();
   app.route('/', createAdminRoutes({
     store: config, settings, memory, routines, adminToken: ADMIN_TOKEN, knownProviders: new Set(),
   }));
-  return { app, config, settings, memory, routines, publicStore, entry };
+  return { app, config, settings, memory, routines, publicStore, entry, agentOwner, channelOwner, ownerEntry };
 }
 
 const auth = { authorization: `Bearer ${ADMIN_TOKEN}` };
+
+test('owner memory routes authenticate and derive exact owner from the route', async () => {
+  const h = await harness();
+  const base = '/admin/api/audit/memory/owners/channel/T_TEST/C_PRODUCT';
+  try {
+    for (const path of [
+      '/admin/api/audit/memory/owners', `${base}/files`,
+      `${base}/entries/${h.ownerEntry.entryId}`,
+      `${base}/entries/${h.ownerEntry.entryId}/history`, `${base}/export`,
+    ]) assert.equal((await h.app.request(path)).status, 401, path);
+    assert.equal((await h.app.request(`${base}/entries/${h.ownerEntry.entryId}`, {
+      method: 'PUT', headers: { 'content-type': 'application/json', 'idempotency-key': 'unauth' },
+      body: JSON.stringify({ expectedVersion: 1, description: 'x', type: 'fact', body: 'x' }),
+    })).status, 401);
+    assert.equal((await h.app.request(`${base}/entries/${h.ownerEntry.entryId}`, {
+      method: 'DELETE', headers: { 'content-type': 'application/json', 'idempotency-key': 'unauth' },
+      body: JSON.stringify({ expectedVersion: 1, acknowledgeIrreversible: true }),
+    })).status, 401);
+    const files = await h.app.request(`${base}/files`, { headers: auth });
+    assert.equal(files.status, 200);
+    assert.deepEqual(((await files.json()) as { files: Array<{ name: string }> }).files.map(({ name }) => name),
+      ['MEMORY.md', 'channel-guidance.md']);
+
+    const wrongOwner = await h.app.request(
+      `/admin/api/audit/memory/owners/agent/T_TEST/agent_default/entries/${h.ownerEntry.entryId}`,
+      { headers: auth },
+    );
+    assert.equal(wrongOwner.status, 404);
+
+    const update = await h.app.request(`${base}/entries/${h.ownerEntry.entryId}`, {
+      method: 'PUT', headers: { ...auth, 'content-type': 'application/json', 'idempotency-key': 'owner-edit-1' },
+      body: JSON.stringify({ expectedVersion: 1, description: 'Updated channel only.', type: 'fact', body: 'New body.' }),
+    });
+    const updateText = await update.text();
+    assert.equal(update.status, 200, updateText);
+    assert.equal((JSON.parse(updateText) as { entry: { ownerKind: string; ownerId: string; version: number } }).entry.version, 2);
+    assert.equal((await h.memory.getOwnerEntry('mem_agent_product'))?.version, 1);
+
+    const history = await h.app.request(`${base}/entries/${h.ownerEntry.entryId}/history`, { headers: auth });
+    assert.equal(history.status, 200);
+    assert.equal(((await history.json()) as { revisions: unknown[] }).revisions.length, 2);
+
+    const exported = await h.app.request(`${base}/export`, { headers: auth });
+    assert.equal(exported.status, 200);
+    const archive = decodeMemoryArchive(new Uint8Array(await exported.arrayBuffer()));
+    assert.equal(JSON.stringify(archive).includes('Agent owner body.'), false);
+    assert.deepEqual(archive.map(({ path }) => path), ['MEMORY.md', 'channel-guidance.md', 'manifest.json']);
+  } finally {
+    h.config.close(); h.settings.close(); h.memory.close(); h.routines.close();
+  }
+});
 
 test('memory admin scopes, files, entry detail, history, and audit events are authenticated', async () => {
   const h = await harness();
@@ -72,7 +135,9 @@ test('memory admin scopes, files, entry detail, history, and audit events are au
 
     const events = await h.app.request('/admin/api/audit/memory/events', { headers: auth });
     assert.equal(events.status, 200);
-    assert.equal(((await events.json()) as { events: unknown[] }).events.length, 1);
+    const eventTypes = ((await events.json()) as { events: Array<{ eventType: string }> }).events
+      .map(({ eventType }) => eventType);
+    assert.ok(eventTypes.includes('memory.created'));
     assert.equal((await h.app.request('/admin/api/audit/scheduled_work/events', { headers: auth })).status, 200);
   } finally {
     h.config.close(); h.settings.close(); h.memory.close(); h.routines.close();

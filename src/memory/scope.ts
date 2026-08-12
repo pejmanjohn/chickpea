@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import {
   slackConversationsInfo,
   slackConversationsMembers,
@@ -8,7 +10,12 @@ import {
 } from '../slack/credentials.ts';
 import { classifyMemorySlackUser } from '../slack/user-classification.ts';
 import { privateStoreId, publicStoreId } from './store.ts';
-import { MemoryStateError, type MemoryStateStore } from './types.ts';
+import { ownerMemoryStoreId } from './ids.ts';
+import {
+  MemoryStateError,
+  type MemoryOwnerDescriptor,
+  type MemoryStateStore,
+} from './types.ts';
 
 const PAGE_LIMIT = 200;
 const MAX_PAGES = 5;
@@ -92,6 +99,76 @@ export type MemoryScopeDecision =
     };
 
 export type EnabledMemoryScope = Extract<MemoryScopeDecision, { enabled: true }>;
+
+/**
+ * Runtime ownership is supplied by trusted config/admission code. Slack text,
+ * model arguments, and tool payloads never participate in this binding.
+ */
+export interface AuthorizedMemoryScope {
+  surface: 'channel' | 'dm' | 'admin';
+  workspaceId: string;
+  readOwners: readonly MemoryOwnerDescriptor[];
+  writeOwner: MemoryOwnerDescriptor | null;
+}
+
+export function authorizedMemoryScopeFingerprint(scope: AuthorizedMemoryScope): string {
+  return createHash('sha256').update(JSON.stringify({
+    surface: scope.surface,
+    workspaceId: scope.workspaceId,
+    owners: scope.readOwners.map((owner) => ({
+      kind: owner.ownerKind,
+      id: owner.ownerId,
+      storeId: owner.storeId,
+      lifecycle: owner.lifecycle,
+      resetEpoch: owner.resetEpoch,
+    })),
+  })).digest('hex');
+}
+
+export function bindAuthorizedMemoryScope(input: {
+  surface: AuthorizedMemoryScope['surface'];
+  workspaceId: string;
+  agentOwner?: MemoryOwnerDescriptor;
+  channelOwner?: MemoryOwnerDescriptor;
+  writeOwner?: MemoryOwnerDescriptor | null;
+}): AuthorizedMemoryScope {
+  const owners = [input.agentOwner, input.channelOwner].filter(
+    (owner): owner is MemoryOwnerDescriptor => owner !== undefined,
+  );
+  if (input.surface === 'channel') {
+    if (owners.length !== 2 || owners[0]?.ownerKind !== 'agent' || owners[1]?.ownerKind !== 'channel') {
+      throw new MemoryStateError('memory_owner_invalid', 'Channel memory requires one Agent and exact Channel owner.');
+    }
+  } else if (input.surface === 'dm') {
+    if (owners.length !== 1 || owners[0]?.ownerKind !== 'agent' || input.channelOwner) {
+      throw new MemoryStateError('memory_owner_invalid', 'DM memory permits only its Agent owner.');
+    }
+  }
+  if (input.surface === 'admin' && owners.length !== 1) {
+    throw new MemoryStateError('memory_owner_invalid', 'Admin memory requires one route-bound owner.');
+  }
+  if (owners.some((owner) =>
+    owner.workspaceId !== input.workspaceId ||
+    owner.lifecycle !== 'active' ||
+    owner.storeId !== ownerMemoryStoreId(owner)
+  )) {
+    throw new MemoryStateError('memory_owner_unavailable', 'Memory owner is unavailable.');
+  }
+  const unique = new Set(owners.map(({ storeId }) => storeId));
+  if (unique.size !== owners.length) {
+    throw new MemoryStateError('memory_owner_invalid', 'Memory read owners must be distinct.');
+  }
+  const writeOwner = input.writeOwner ?? null;
+  if (writeOwner && (
+    writeOwner.workspaceId !== input.workspaceId ||
+    writeOwner.lifecycle !== 'active' ||
+    !unique.has(writeOwner.storeId) ||
+    (input.surface === 'channel' && writeOwner.storeId !== input.channelOwner?.storeId)
+  )) {
+    throw new MemoryStateError('memory_owner_invalid', 'Write owner is not authorized by this memory scope.');
+  }
+  return { surface: input.surface, workspaceId: input.workspaceId, readOwners: owners, writeOwner };
+}
 
 export async function resolveMemoryScope(
   input: ResolveMemoryScopeInput,

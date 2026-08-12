@@ -3,7 +3,7 @@ import { test } from 'node:test';
 
 import { MemoryService } from '../src/memory/service.ts';
 import { SqliteMemoryStateStore } from '../src/memory/store.ts';
-import type { EnabledMemoryScope } from '../src/memory/scope.ts';
+import { bindAuthorizedMemoryScope, type EnabledMemoryScope } from '../src/memory/scope.ts';
 
 const scope: EnabledMemoryScope = {
   enabled: true,
@@ -27,6 +27,107 @@ function service(state: SqliteMemoryStateStore): MemoryService {
     token: () => 'confirm-token',
   });
 }
+
+test('owner-native service reads Agent plus exact Channel and always writes the prebound owner', async () => {
+  const state = new SqliteMemoryStateStore(':memory:', () => 1_000);
+  try {
+    const agent = await state.ensureOwner({ workspaceId: 'T_TEST', ownerKind: 'agent', ownerId: 'agent_default' });
+    const channel = await state.ensureOwner({ workspaceId: 'T_TEST', ownerKind: 'channel', ownerId: 'C_SOURCE' });
+    const other = await state.ensureOwner({ workspaceId: 'T_TEST', ownerKind: 'channel', ownerId: 'C_OTHER' });
+    await state.createOwnerEntry({
+      entryId: 'mem_agent', storeId: agent.storeId, workspaceId: 'T_TEST', slug: 'shared',
+      description: 'Agent fact', type: 'fact', body: 'Agent body', actorId: 'U_ADMIN',
+      actorClass: 'operator', idempotencyKey: 'seed:agent',
+    });
+    await state.createOwnerEntry({
+      entryId: 'mem_other', storeId: other.storeId, workspaceId: 'T_TEST', slug: 'other',
+      description: 'Other channel fact', type: 'fact', body: 'Must remain isolated', actorId: 'U_ADMIN',
+      actorClass: 'operator', idempotencyKey: 'seed:other',
+    });
+    const scope = bindAuthorizedMemoryScope({
+      surface: 'channel', workspaceId: 'T_TEST', agentOwner: agent, channelOwner: channel,
+      writeOwner: channel,
+    });
+    const memory = service(state);
+    const created = await memory.remember({
+      scope, workspaceId: 'T_TEST', actorId: 'U_MEMBER', eventId: 'E_OWNER',
+      name: 'Channel only', description: 'Exact channel fact', type: 'fact', body: 'Channel body',
+      idempotencyKey: 'owner:remember:1',
+      // Deliberately untrusted extra input: the service has no owner argument and ignores it.
+      ownerId: agent.ownerId,
+    } as Parameters<MemoryService['remember']>[0] & { ownerId: string });
+    assert.equal(created.entry.storeId, channel.storeId);
+    await assert.rejects(() => memory.remember({
+      scope, workspaceId: 'T_TEST', actorId: 'U_MEMBER', eventId: 'E_OWNER',
+      name: 'Channel only', description: 'Changed replay', type: 'fact', body: 'Different body',
+      idempotencyKey: 'owner:remember:1',
+    }), /different memory content/i);
+    assert.deepEqual((await memory.list({ scope })).map(({ entryId }) => entryId), ['mem_agent', created.entry.entryId]);
+    assert.equal((await state.listOwnerEntries(other)).length, 1);
+
+    const dm = bindAuthorizedMemoryScope({ surface: 'dm', workspaceId: 'T_TEST', agentOwner: agent });
+    assert.deepEqual((await memory.list({ scope: dm })).map(({ entryId }) => entryId), ['mem_agent']);
+    await assert.rejects(() => memory.remember({
+      scope: dm, workspaceId: 'T_TEST', actorId: 'U_MEMBER', eventId: 'E_DM', name: 'No write',
+      description: 'No write', type: 'fact', body: 'No write', idempotencyKey: 'owner:dm:1',
+    }), /not authorized/i);
+  } finally {
+    state.close();
+  }
+});
+
+test('owner-native mutations preserve conflicts, review, expiry, merge, and irreversible forget', async () => {
+  const state = new SqliteMemoryStateStore(':memory:', () => 1_000);
+  try {
+    const channel = await state.ensureOwner({ workspaceId: 'T_TEST', ownerKind: 'channel', ownerId: 'C_SOURCE' });
+    const scope = bindAuthorizedMemoryScope({
+      surface: 'admin', workspaceId: 'T_TEST', channelOwner: channel, writeOwner: channel,
+    });
+    const memory = service(state);
+    const first = await memory.remember({
+      scope, workspaceId: 'T_TEST', actorId: 'U_ADMIN', actorClass: 'operator', eventId: 'E1',
+      name: 'First', description: 'First', type: 'fact', body: 'Alpha', idempotencyKey: 'owner:first',
+    });
+    const second = await memory.remember({
+      scope, workspaceId: 'T_TEST', actorId: 'U_ADMIN', actorClass: 'operator', eventId: 'E2',
+      name: 'Second', description: 'Second', type: 'fact', body: 'Beta', idempotencyKey: 'owner:second',
+    });
+    await assert.rejects(() => memory.update({
+      scope, actorId: 'U_ADMIN', actorClass: 'operator', eventId: 'E3', target: first.entry.slug,
+      expectedVersion: 99, description: 'Bad', type: 'fact', body: 'Bad', idempotencyKey: 'owner:bad',
+    }), /changed before this update/i);
+    const merged = await memory.merge({
+      scope, workspaceId: 'T_TEST', actorId: 'U_ADMIN', actorClass: 'operator', eventId: 'E4',
+      targets: [{ target: first.entry.slug }, { target: second.entry.slug }], name: 'Combined',
+      description: 'Combined', type: 'fact', body: 'Alpha + Beta', idempotencyKey: 'owner:merge',
+    });
+    assert.deepEqual((await memory.list({ scope })).map(({ slug }) => slug), ['combined']);
+    await memory.requestReview({
+      scope, target: merged.entry.slug, expectedVersion: 1, actorId: 'U_ADMIN', actorClass: 'operator',
+      idempotencyKey: 'owner:review:1',
+    });
+    const expired = await memory.expire({
+      scope, target: merged.entry.slug, expectedVersion: 1, actorId: 'U_ADMIN', actorClass: 'operator',
+      eventId: 'E5', idempotencyKey: 'owner:expire',
+    });
+    const restored = await memory.restore({
+      scope, target: merged.entry.slug, expectedVersion: expired.entry.version, actorId: 'U_ADMIN',
+      actorClass: 'operator', eventId: 'E6', idempotencyKey: 'owner:restore',
+    });
+    const challenge = await memory.requestForget({
+      scope, actorId: 'U_ADMIN', target: restored.entry.slug, expectedVersion: restored.entry.version,
+    });
+    const forgotten = await memory.forget({
+      scope, actorId: 'U_ADMIN', actorClass: 'operator', eventId: 'E7', target: restored.entry.slug,
+      expectedVersion: restored.entry.version, confirmationToken: challenge.token,
+      idempotencyKey: 'owner:forget',
+    });
+    assert.equal(forgotten.entry.status, 'forgotten');
+    assert.equal(forgotten.entry.body, '');
+    assert.ok((await state.listAuditEvents({ storeId: channel.storeId }))
+      .some(({ eventType }) => eventType === 'memory.merged'));
+  } finally { state.close(); }
+});
 
 test('remember, show, update, list, and exact replay preserve provenance and versions', async () => {
   const state = new SqliteMemoryStateStore(':memory:', () => 1_000);

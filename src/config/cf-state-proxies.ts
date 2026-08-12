@@ -108,11 +108,13 @@ import {
   MemoryRateLimitError,
   MemoryVersionConflictError,
   type ApplyMemoryImportInput,
+  type ApplyOwnerMemoryImportInput,
   type CreateMemoryEntryInput,
   type CreateForgetChallengeInput,
   type ConfirmMemoryConversationContextInput,
   type CreateOwnerMemoryEntryInput,
   type ForgetMemoryEntryInput,
+  type ForgetOwnerMemoryEntryInput,
   type MemoryConversationContext,
   type MemoryChannelScopeState,
   type MemoryEntry,
@@ -120,6 +122,7 @@ import {
   type MemoryEntryScopeSummary,
   type MemoryForgetChallenge,
   type MergeMemoryEntriesInput,
+  type MergeOwnerMemoryEntriesInput,
   type MemoryMutationCounts,
   type MemoryRevision,
   type MemoryRpcRequest,
@@ -132,12 +135,15 @@ import {
   type OwnerMemoryLifecycleInput,
   type ObserveMemoryChannelScopeInput,
   type RecordMemoryReviewInput,
+  type RecordOwnerMemoryReviewInput,
   type RecordMemoryAdminViewInput,
   type RecordMemoryAdminEventInput,
   type ReplayMemoryImportInput,
+  type ReplayOwnerMemoryImportInput,
   type RetainMemoryChannelScopeInput,
   type ResolveMemoryConversationContextInput,
   type TransitionMemoryEntryInput,
+  type TransitionOwnerMemoryEntryInput,
   type UpdateMemoryEntryInput,
   type UpdateOwnerMemoryEntryInput,
   type SealMemoryOwnerInput,
@@ -1061,10 +1067,56 @@ export class CfMemoryStateStore implements MemoryStateStore {
     return response.entry;
   }
 
+  async getOwnerEntry(entryId: string): Promise<OwnerMemoryEntry | undefined> {
+    const response = await this.execute({ kind: 'get_owner_entry', entryId });
+    if (response.kind !== 'owner_entry') throw unexpectedMemoryResponse();
+    return orUndefined(response.entry);
+  }
+
   async updateOwnerEntry(input: UpdateOwnerMemoryEntryInput): Promise<OwnerMemoryEntry> {
     const response = await this.execute({ kind: 'update_owner_entry', input });
     if (response.kind !== 'owner_entry' || !response.entry) throw unexpectedMemoryResponse();
     return response.entry;
+  }
+
+  async forgetOwnerEntry(input: ForgetOwnerMemoryEntryInput): Promise<OwnerMemoryEntry> {
+    const response = await this.execute({ kind: 'forget_owner_entry', input });
+    if (response.kind !== 'owner_entry' || !response.entry) throw unexpectedMemoryResponse();
+    return response.entry;
+  }
+
+  async transitionOwnerEntry(input: TransitionOwnerMemoryEntryInput): Promise<OwnerMemoryEntry> {
+    const response = await this.execute({ kind: 'transition_owner_entry', input });
+    if (response.kind !== 'owner_entry' || !response.entry) throw unexpectedMemoryResponse();
+    return response.entry;
+  }
+
+  async mergeOwnerEntries(input: MergeOwnerMemoryEntriesInput): Promise<OwnerMemoryEntry> {
+    const response = await this.execute({ kind: 'merge_owner_entries', input });
+    if (response.kind !== 'owner_entry' || !response.entry) throw unexpectedMemoryResponse();
+    return response.entry;
+  }
+
+  async recordOwnerReview(input: RecordOwnerMemoryReviewInput): Promise<void> {
+    const response = await this.execute({ kind: 'record_owner_review', input });
+    if (response.kind !== 'ok') throw unexpectedMemoryResponse();
+  }
+
+  async createOwnerForgetChallenge(input: CreateForgetChallengeInput): Promise<void> {
+    const response = await this.execute({ kind: 'create_owner_forget_challenge', input });
+    if (response.kind !== 'ok') throw unexpectedMemoryResponse();
+  }
+
+  async replayOwnerImport(input: ReplayOwnerMemoryImportInput): Promise<OwnerMemoryEntry[] | undefined> {
+    const response = await this.execute({ kind: 'replay_owner_import', input });
+    if (response.kind !== 'owner_import_replay') throw unexpectedMemoryResponse();
+    return response.entries ?? undefined;
+  }
+
+  async applyOwnerImport(input: ApplyOwnerMemoryImportInput): Promise<OwnerMemoryEntry[]> {
+    const response = await this.execute({ kind: 'apply_owner_import', input });
+    if (response.kind !== 'owner_entries') throw unexpectedMemoryResponse();
+    return response.entries;
   }
 
   async listOwnerEntries(owner: MemoryOwnerRef): Promise<OwnerMemoryEntry[]> {

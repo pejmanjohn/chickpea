@@ -2,10 +2,12 @@ export type MemoryMetricValue = boolean | number | string;
 
 const MEMORY_METRIC_FIELDS = new Set([
   'action',
+  'agentCount',
   'candidateCount',
-  'crossChannelCount',
+  'channelCount',
   'inject',
   'outcome',
+  'ownerCount',
   'reason',
   'selectedCount',
   'serializedBytes',

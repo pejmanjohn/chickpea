@@ -2,9 +2,35 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { selectMemoryEntries } from '../src/memory/selector.ts';
-import type { MemoryEntry } from '../src/memory/types.ts';
+import type { MemoryEntry, OwnerMemoryEntry } from '../src/memory/types.ts';
 
 const now = Date.UTC(2026, 6, 25);
+
+function ownerEntry(overrides: Partial<OwnerMemoryEntry> & Pick<OwnerMemoryEntry, 'entryId' | 'slug' | 'ownerKind' | 'ownerId'>): OwnerMemoryEntry {
+  return {
+    entryId: overrides.entryId, storeId: `store_${overrides.ownerKind}_${overrides.ownerId}`,
+    workspaceId: 'T', ownerKind: overrides.ownerKind, ownerId: overrides.ownerId,
+    slug: overrides.slug, description: overrides.description ?? 'Project status',
+    type: overrides.type ?? 'project', body: overrides.body ?? 'Blocker status.',
+    status: overrides.status ?? 'active', version: overrides.version ?? 1,
+    creatorActorId: 'U', lastEditorActorId: 'U', actorClass: 'member', writeOrigin: null,
+    sourceEventId: null, sourceThreadTs: null, sourceMessageTs: null,
+    createdAt: now, modifiedAt: overrides.modifiedAt ?? now,
+    expiresAt: overrides.expiresAt ?? null, contentHash: overrides.contentHash ?? 'hash',
+    supersedingEntryId: null,
+  };
+}
+
+test('owner selector uses Channel only as equal-score specificity tie-break', () => {
+  const selection = selectMemoryEntries({
+    entries: [
+      ownerEntry({ entryId: 'agent', slug: 'status', ownerKind: 'agent', ownerId: 'A' }),
+      ownerEntry({ entryId: 'channel', slug: 'status', ownerKind: 'channel', ownerId: 'C' }),
+    ],
+    query: 'project status', now,
+  });
+  assert.deepEqual(selection.entries.map(({ entry: item }) => item.entryId), ['channel', 'agent']);
+});
 
 function entry(overrides: Partial<MemoryEntry> & Pick<MemoryEntry, 'entryId' | 'slug' | 'sourceChannelId'>): MemoryEntry {
   return {

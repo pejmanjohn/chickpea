@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { projectMemoryFiles } from '../src/memory/markdown.ts';
-import type { MemoryEntry, MemoryStoreDescriptor } from '../src/memory/types.ts';
+import { projectMemoryFiles, projectOwnerMemoryFiles } from '../src/memory/markdown.ts';
+import type {
+  MemoryEntry, MemoryOwnerDescriptor, MemoryStoreDescriptor, OwnerMemoryEntry,
+} from '../src/memory/types.ts';
 
 const store: MemoryStoreDescriptor = {
   storeId: 'store_public_T_TEST',
@@ -97,4 +99,35 @@ test('private projection stays in its generation namespace', () => {
   });
   assert.ok(files.some((file) => file.path === 'private/C_PRIVATE/generation-3/release-guidance.md'));
   assert.ok(files.every((file) => !file.path.startsWith('channel/')));
+});
+
+test('owner projection is flat, deterministic, generated-index read-only, and owner isolated', () => {
+  const owner: MemoryOwnerDescriptor = {
+    storeId: 'memory_owner_agent_T_TEST_agent_default', workspaceId: 'T_TEST', ownerKind: 'agent',
+    ownerId: 'agent_default', lifecycle: 'active', resetEpoch: 4, createdAt: 1,
+    sealedAt: null, sealedReason: null, schemaVersion: 2,
+  };
+  const ownerEntry = (entryId: string, slug: string, body: string): OwnerMemoryEntry => ({
+    entryId, storeId: owner.storeId, workspaceId: owner.workspaceId, ownerKind: owner.ownerKind,
+    ownerId: owner.ownerId, slug, description: `${slug} desc`, type: 'fact', body,
+    status: 'active', version: 2, creatorActorId: 'U', lastEditorActorId: 'U', actorClass: 'operator',
+    writeOrigin: { kind: 'admin' }, sourceEventId: null, sourceThreadTs: null,
+    sourceMessageTs: null, createdAt: 1, modifiedAt: 2, expiresAt: null,
+    contentHash: 'hash', supersedingEntryId: null,
+  });
+  const entries = [ownerEntry('mem_b', 'same-slug', 'Agent-only body')];
+  const projected = projectOwnerMemoryFiles({ owner, entries });
+  assert.deepEqual(projected.map(({ path }) => path), ['MEMORY.md', 'same-slug.md', 'manifest.json']);
+  assert.deepEqual(projectOwnerMemoryFiles({ owner, entries: [...entries].reverse() }), projected);
+  assert.match(projected[0]!.content, /^# Agent Memory/);
+  const manifest = JSON.parse(projected.at(-1)!.content);
+  assert.equal(manifest.schemaVersion, 2);
+  assert.deepEqual(manifest.owner, {
+    storeId: owner.storeId, workspaceId: owner.workspaceId, ownerKind: 'agent',
+    ownerId: 'agent_default', lifecycle: 'active', resetEpoch: 4,
+  });
+  const foreign = { ...entries[0]!, storeId: 'memory_owner_channel_T_TEST_C', ownerKind: 'channel' as const,
+    ownerId: 'C', body: 'Foreign secret' };
+  const withoutForeign = projectOwnerMemoryFiles({ owner, entries: [...entries, foreign] });
+  assert.equal(JSON.stringify(withoutForeign).includes('Foreign secret'), false);
 });
