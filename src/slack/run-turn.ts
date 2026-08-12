@@ -329,6 +329,7 @@ export async function runTurn(
     ? undefined
     : await prepareMemoryTurn({
         turn,
+        assignment,
         platformEnv,
         client,
         ...(identityContext
@@ -559,12 +560,17 @@ export async function runTurn(
   // 1. Visible work: set status; if it is rejected, post a durable progress
   //    placeholder so the user still sees work in-flight before the final.
   try {
+    // Owner-native memory is authorized live, independently of the frozen
+    // config snapshot. Fence every visible Slack effect as well as model/tool
+    // execution when the selected owner lease has already gone stale.
+    if (preparedMemory?.ownerBound && !(await preparedMemory.validateLease())) return;
     await agentViewPresentation?.setTitle(turn.text).catch(() => {
       console.warn('[chickpea] Slack Agent View title could not be recorded');
     });
     if (memoryCommand) {
       const handled = await handleMemoryCommand({
         turn,
+        assignment,
         platformEnv,
         client,
         presenter,
@@ -871,6 +877,7 @@ export async function runTurn(
     // lease-valid answer.
     await preparedMemory?.confirmInjection();
     const leaseValid = await preparedMemory?.validateLease() ?? true;
+    if (preparedMemory?.ownerBound && !leaseValid && !recoveredText) return;
     text = resolveMemoryDeliveryText(
       text,
       recoveredText,
