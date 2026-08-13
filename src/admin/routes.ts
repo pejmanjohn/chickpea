@@ -4370,14 +4370,36 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
 
   app.get('/admin/api/assignments', async (c) => {
     if (!c.req.query('workspaceId') && !c.req.query('channelId')) {
-      return c.json({ assignments: await store(c).listAssignments() });
+      const configStore = store(c);
+      const [assignments, channels] = await Promise.all([
+        configStore.listAssignments(),
+        configStore.listChannels(),
+      ]);
+      const channelsByKey = new Map(
+        channels.map((channel) => [
+          `${channel.workspaceId}\u0000${channel.channelId}`,
+          channel,
+        ]),
+      );
+      return c.json({
+        assignments: assignments.map((assignment) => toAdminAssignment(
+          assignment,
+          channelsByKey.get(`${assignment.workspaceId}\u0000${assignment.channelId}`),
+        )),
+      });
     }
     const key = assignmentKey(c);
     if (!key) {
       return invalidRequest(c);
     }
-    const assignment = await store(c).getAssignment(key.workspaceId, key.channelId);
-    return assignment ? c.json({ assignment }) : c.json({ error: 'not_found' }, 404);
+    const configStore = store(c);
+    const [assignment, channel] = await Promise.all([
+      configStore.getAssignment(key.workspaceId, key.channelId),
+      configStore.getChannel(key.workspaceId, key.channelId),
+    ]);
+    return assignment
+      ? c.json({ assignment: toAdminAssignment(assignment, channel) })
+      : c.json({ error: 'not_found' }, 404);
   });
 
   app.get('/admin/api/channels', async (c) => {
@@ -4594,7 +4616,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           : current?.agentId ?? null,
       });
       return c.json({
-        assignment: placement.assignment,
+        assignment: placement.assignment
+          ? toAdminAssignment(placement.assignment, placement.channel)
+          : null,
         channel: placement.channel,
         ...(isMember !== undefined ? { isMember } : {}),
         ...(joined !== undefined ? { joined } : {}),
@@ -7016,6 +7040,26 @@ function toAssignment(input: v.InferOutput<typeof assignmentSchema>): ChannelAss
     workspaceId: input.workspaceId,
     channelId: input.channelId,
     agentId: input.agentId,
+  };
+}
+
+/**
+ * The Admin editor owns Channel policy as well as the Agent placement. Keep
+ * those fields in one projection so a reload cannot silently reset the draft
+ * to disabled/empty values just because ConfigStore separates the two rows.
+ */
+function toAdminAssignment(
+  assignment: ChannelAssignment,
+  channel: ChannelConfig | undefined,
+) {
+  return {
+    ...assignment,
+    enabled: true,
+    ...(channel?.label !== undefined ? { channelLabel: channel.label } : {}),
+    ...(channel?.additionalInstructions !== undefined
+      ? { channelPromptAddendum: channel.additionalInstructions }
+      : {}),
+    participationMode: channel?.participationMode ?? 'ambient',
   };
 }
 

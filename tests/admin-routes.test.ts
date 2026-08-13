@@ -1889,6 +1889,10 @@ test('admin API supports agent and assignment CRUD with the admin token', async 
         workspaceId: 'T_ADMIN',
         channelId: 'C_ADMIN',
         agentId: 'agent_admin',
+        enabled: true,
+        channelLabel: 'eng-releases',
+        channelPromptAddendum: 'Admin channel addendum.',
+        participationMode: 'ambient',
       },
       channel: {
         workspaceId: 'T_ADMIN',
@@ -1910,6 +1914,10 @@ test('admin API supports agent and assignment CRUD with the admin token', async 
         workspaceId: 'T_ADMIN',
         channelId: 'C_ADMIN',
         agentId: 'agent_admin',
+        enabled: true,
+        channelLabel: 'eng-releases',
+        channelPromptAddendum: 'Admin channel addendum.',
+        participationMode: 'ambient',
       },
     });
 
@@ -1923,6 +1931,10 @@ test('admin API supports agent and assignment CRUD with the admin token', async 
           workspaceId: 'T_ADMIN',
           channelId: 'C_ADMIN',
           agentId: 'agent_admin',
+          enabled: true,
+          channelLabel: 'eng-releases',
+          channelPromptAddendum: 'Admin channel addendum.',
+          participationMode: 'ambient',
         },
       ],
     });
