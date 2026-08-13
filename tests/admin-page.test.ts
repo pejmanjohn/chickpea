@@ -9910,7 +9910,7 @@ test('Channel Advanced keeps additional instructions and exact-Channel memory to
     }),
   });
   await flushAsync();
-  assert.match(harness.app.innerHTML, /<summary>Advanced<\/summary>/);
+  assert.match(harness.app.innerHTML, /<summary data-action="channel-advanced-toggle">Advanced<\/summary>/);
   assert.match(harness.app.innerHTML, /<h2 class="section-title">Additional instructions<\/h2>/);
   assert.match(harness.app.innerHTML, /<h2 class="section-title">Channel memory<\/h2>/);
   assert.match(harness.app.innerHTML, /Exact-Channel files stay here even if the assigned Agent changes/);
@@ -9924,6 +9924,27 @@ test('Channel Advanced keeps additional instructions and exact-Channel memory to
   assert.match(harness.app.innerHTML, /Markdown body/);
   assert.match(harness.app.innerHTML, /Version history \(1\)/);
   assert.match(harness.app.innerHTML, /This memory stays only in #eng-releases, even if its Agent changes/);
+});
+
+test('Channel Advanced stays open across memory editor re-renders', async () => {
+  const harness = runAdminPageHarness({ initialPath: '/admin/channels/T_DESIGN/C0EXR3L9T' });
+  await flushAsync();
+
+  const advancedTarget: FakeTarget = {
+    closest(selector: string) {
+      if (selector === '[data-action]') return this;
+      if (selector === 'details') return { open: false } as unknown as FakeTarget;
+      return null;
+    },
+    getAttribute(name: string) {
+      return name === 'data-action' ? 'channel-advanced-toggle' : null;
+    },
+  };
+  harness.listeners.click?.({ target: advancedTarget });
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'owner-memory-create-open' }) });
+
+  assert.match(harness.app.innerHTML, /<details class="advanced" open><summary data-action="channel-advanced-toggle">Advanced<\/summary>/);
+  assert.match(harness.app.innerHTML, /data-action="owner-memory-create-confirm"/);
 });
 
 test('Review scheduled work opens Audit with the selected channel filters', async () => {

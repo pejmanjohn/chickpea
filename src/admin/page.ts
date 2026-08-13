@@ -2010,6 +2010,9 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     channelIndexQuery: "",
     swapOpen: false,
     channelDraft: { enabled: true, channelPromptAddendum: "", participationMode: "ambient" },
+    // Channel-memory actions re-render the page. Preserve this disclosure so
+    // those actions do not hide their own form inside a collapsed <details>.
+    channelAdvancedOpen: false,
     dirty: false,
     saveError: "",
     // Agents are the primary authoring destination. channelScreen distinguishes
@@ -4725,7 +4728,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
         '<div class="kv"><dt>Provider</dt><dd class="mono">' + esc(state.effective.provider || "unknown") + '</dd></div>' +
         '<div class="kv"><dt>Snapshot</dt><dd class="mono">sha256:' + esc(shortHash(state.effective.snapshotHash)) + ' · new threads only</dd></div>';
     }
-    return '<details class="advanced"><summary>Advanced</summary><div class="channel-advanced-content">' +
+    return '<details class="advanced"' + (state.channelAdvancedOpen ? " open" : "") + '><summary data-action="channel-advanced-toggle">Advanced</summary><div class="channel-advanced-content">' +
       '<section><div class="section-head"><div><h2 class="section-title">Additional instructions</h2><p class="hint">Appended after the assigned Agent instructions in this Channel only.</p></div></div>' +
       '<div class="field"><label class="field-label" for="addendum">Channel additional instructions</label><textarea class="textarea" id="addendum" rows="6" data-action="channel-addendum" placeholder="Add context unique to this Channel">' + esc(state.channelDraft.channelPromptAddendum || "") + '</textarea></div></section>' +
       '<section><div class="section-head"><div><h2 class="section-title">Channel memory</h2><p class="hint">Exact-Channel files stay here even if the assigned Agent changes.</p></div></div>' + ownerMemoryPanelHtml("channel", assignment.channelId, assignment.channelLabel || assignment.channelId) + '</section>' +
@@ -10512,6 +10515,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     state.active = { workspaceId: workspaceId, channelId: channelId };
     var assignment = activeChannelRecord();
     state.channelDraft = channelDraftFrom(assignment);
+    state.channelAdvancedOpen = false;
     state.channelFormDraft.workspaceId = workspaceId || state.channelFormDraft.workspaceId;
     state.dirty = false;
     state.saveError = "";
@@ -11117,6 +11121,10 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     if (action === "copy-onboarding-prompt") { copyOnboardingPrompt(); }
     if (action === "dismiss-slack-toast") { state.slackToastDismissed = true; render(); }
     if (action === "select-channel") { state.view = "channels"; state.channelScreen = "detail"; selectActive(target.getAttribute("data-workspace"), target.getAttribute("data-channel")); render(); }
+    if (action === "channel-advanced-toggle") {
+      var channelAdvancedDetails = target.closest("details");
+      state.channelAdvancedOpen = !(channelAdvancedDetails && channelAdvancedDetails.open);
+    }
     if (action === "open-channel-memory") {
       openAuditLogs(target.getAttribute("data-store") || "", target.getAttribute("data-channel") || "", "");
     }
