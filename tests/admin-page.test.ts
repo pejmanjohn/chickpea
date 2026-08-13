@@ -1672,7 +1672,18 @@ function runAdminPageHarness(
       ];
       return Promise.resolve(
         jsonResponse({
-          assignment: body,
+          // The real assignment DTO carries only the placement key + Agent.
+          // Channel metadata is returned separately from the persisted Channel.
+          assignment: {
+            workspaceId: body.workspaceId,
+            channelId: body.channelId,
+            agentId: body.agentId,
+          },
+          channel: {
+            workspaceId: body.workspaceId,
+            channelId: body.channelId,
+            label: body.channelLabel,
+          },
           ...(putIsMember !== undefined ? { isMember: putIsMember } : {}),
         }),
       );
@@ -8981,6 +8992,37 @@ test('onboarding stays on channel selection until Slack membership is positively
   assert.equal(harness.onboardingTryPosts.length, 0);
   assert.match(harness.app.innerHTML, /could not verify that it joined #new-channel/);
   assert.match(harness.app.innerHTML, /Choose where Chickpea should start/);
+});
+
+test('onboarding carries the saved Slack channel name into the immediate Agent handoff', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/onboarding',
+    assignments: [],
+    agents: [seededAgents[0]],
+    putIsMember: true,
+    slackChannels: channelsFixture([{ id: 'C_NEW', name: 'new-channel' }]),
+    onboarding: {
+      stage: 'choose_channel',
+      revision: '{"version":1,"state":"active"}',
+      workspace: { id: 'T_DESIGN', name: 'Acme Inc' },
+      channel: null,
+      tryStartedAt: null,
+      completedAt: null,
+    },
+  });
+  await flushAsync();
+
+  harness.listeners.submit?.({
+    target: submitTarget({ 'data-action': 'onboarding-channel-form' }, { channelSelect: 'C_NEW' }),
+    preventDefault() {},
+  });
+  await flushAsync();
+  harness.listeners.click?.({
+    target: actionTarget({ 'data-action': 'open-profiles', 'data-agent': 'agent_default' }),
+  });
+
+  assert.match(harness.app.innerHTML, /># new-channel <span aria-hidden="true">&nearr;<\/span><\/button>/);
+  assert.doesNotMatch(harness.app.innerHTML, /># C_NEW <span aria-hidden="true">&nearr;<\/span><\/button>/);
 });
 
 test('completed onboarding confirms the reply and hands off to the canonical Agent', async () => {

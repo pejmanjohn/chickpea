@@ -10621,6 +10621,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     state.onboardingError = "";
     render();
     var savedAssignment = null;
+    var savedChannel = null;
     putAssignment(workspace.id, channel.id, agent.id, true, undefined, channel.name, undefined, null).then(function (result) {
       if (!result || result.isMember !== true) {
         state.onboardingBusy = false;
@@ -10631,6 +10632,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
         return null;
       }
       savedAssignment = result && result.assignment;
+      savedChannel = result && result.channel;
       return postJson("/admin/api/onboarding/try", "POST", {
         expectedRevision: state.onboarding.revision,
         workspaceId: workspace.id,
@@ -10647,7 +10649,13 @@ button.where-pill, button.capability-pill { cursor: pointer; }
         state.assignments = state.assignments.filter(function (assignment) {
           return assignment.workspaceId !== savedAssignment.workspaceId || assignment.channelId !== savedAssignment.channelId;
         });
-        state.assignments.push(savedAssignment);
+        state.assignments.push(Object.assign({}, savedAssignment, {
+          channelLabel: normalizeChannelLabel(
+            savedChannel && savedChannel.label
+              ? savedChannel.label
+              : (channel.name || savedAssignment.channelId)
+          )
+        }));
       }
       render();
     }).catch(function (error) {
